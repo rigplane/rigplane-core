@@ -2,12 +2,13 @@
 
 These tests start the actual simulator on ephemeral loopback ports and talk
 to it with a bare asyncio datagram client — no production code involved —
-so drop/duplicate/corrupt/truncate/reorder are observed on the wire,
-exactly as a real client would see them.
+so drop/duplicate/corrupt/truncate/reorder and the reboot/keepalive-silence
+events are observed on the wire, exactly as a real client would see them.
 """
 
 import asyncio
 import struct
+import time
 
 import pytest
 
@@ -20,6 +21,9 @@ _CLIENT_ID = 0x11223344
 _PT_DATA = 0x00
 _PT_ARE_YOU_THERE = 0x03
 _PT_I_AM_HERE = 0x04
+_PT_PING = 0x07
+
+_ERR_PREV_SESSION_ACTIVE = 0xFFFFFFFF
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +82,26 @@ def _ayt() -> bytes:
     return bytes(_header(0x10, _PT_ARE_YOU_THERE))
 
 
+def _ping() -> bytes:
+    pkt = _header(0x15, _PT_PING, seq=7)
+    pkt[0x10] = 0x00  # request flag
+    pkt[0x11:0x15] = b"\x01\x02\x03\x04"  # timestamp to echo
+    return bytes(pkt)
+
+
+def _login() -> bytes:
+    pkt = _header(0x80, _PT_DATA)
+    struct.pack_into("<H", pkt, 0x1A, 0x0001)  # token request
+    return bytes(pkt)
+
+
+def _conninfo(token: int = 0) -> bytes:
+    pkt = _header(0x90, _PT_DATA)
+    pkt[0x15] = 0x03  # requesttype: client conninfo
+    struct.pack_into("<I", pkt, 0x1C, token)
+    return bytes(pkt)
+
+
 def _freq_get(seq: int = 1) -> bytes:
     """CI-V 'get frequency' (0x03) wrapped in a DATA header for the civ port."""
     frame = b"\xfe\xfe\x98\xe0\x03\xfd"
@@ -85,6 +109,13 @@ def _freq_get(seq: int = 1) -> bytes:
     pkt[0x10] = 0xC1
     struct.pack_into("<H", pkt, 0x11, len(frame))
     pkt[0x15:] = frame
+    return bytes(pkt)
+
+
+def _openclose() -> bytes:
+    """OpenClose(open) on the CI-V port — starts the client's data stream."""
+    pkt = _header(0x16, _PT_DATA)
+    pkt[0x15] = 0x04  # open_stream
     return bytes(pkt)
 
 
@@ -207,3 +238,152 @@ async def test_inbound_drop_silences_the_server(server, client):
     client.send(_ayt(), server.control_port)
     reply = await client.recv()
     assert struct.unpack_from("<H", reply, 4)[0] == _PT_I_AM_HERE
+
+
+# ---------------------------------------------------------------------------
+# Scheduled events
+# ---------------------------------------------------------------------------
+
+
+async def test_reboot_drops_session_then_busy_then_recovers(server, client):
+    # Phase 1 — clean login and conninfo before the reboot.
+    client.send(_login(), server.control_port)
+    login1 = await client.recv()
+    assert len(login1) == 0x60
+    assert struct.unpack_from("<I", login1, 0x30)[0] == 0  # error OK
+    token1 = struct.unpack_from("<I", login1, 0x1C)[0]
+    client.send(_conninfo(), server.control_port)
+    status = await client.recv()
+    assert struct.unpack_from(">H", status, 0x42)[0] == server.civ_port
+
+    # Reboot: down [+0.2, +1.6], busy [+1.6, +2.8] — every probe below keeps
+    # a ≥0.5 s margin from the window edge it exercises.
+    server.reboot(at=0.2, down_for=1.4, busy_for=1.2)
+    t0 = time.monotonic()
+
+    # Phase 2 — powered off: discovery goes unanswered. Probe at +0.75; the
+    # 0.3 s silence observation ends at +1.05, still ≥0.5 s inside the window.
+    await asyncio.sleep(0.75)
+    client.send(_ayt(), server.control_port)
+    await client.expect_silence(0.3)
+
+    # Phase 3 — busy window: conninfo rejected previous-session-active.
+    await asyncio.sleep(max(0.0, 2.2 - (time.monotonic() - t0)))
+    client.send(_conninfo(), server.control_port)
+    busy = await client.recv()
+    assert struct.unpack_from("<I", busy, 0x30)[0] == _ERR_PREV_SESSION_ACTIVE
+    assert struct.unpack_from(">H", busy, 0x42)[0] == 0
+
+    # Phase 4 — recovered: fresh conninfo and a login with a rotated token.
+    await asyncio.sleep(max(0.0, 3.3 - (time.monotonic() - t0)))
+    client.send(_conninfo(), server.control_port)
+    status2 = await client.recv()
+    assert struct.unpack_from("<I", status2, 0x30)[0] == 0
+    assert struct.unpack_from(">H", status2, 0x42)[0] == server.civ_port
+    client.send(_login(), server.control_port)
+    login2 = await client.recv()
+    token2 = struct.unpack_from("<I", login2, 0x1C)[0]
+    assert token2 != token1
+    assert server.reboot_count == 1
+
+
+async def test_keepalive_silence_stops_ping_replies_but_keeps_receiving(
+    server,
+    client,
+):
+    # Baseline: pings are answered (ptype 0x07, reply flag 0x01).
+    client.send(_ping(), server.control_port)
+    reply = await client.recv()
+    assert struct.unpack_from("<H", reply, 4)[0] == _PT_PING
+    assert reply[0x10] == 0x01
+
+    # Silence window [+0.2, +1.8]: pings received but never answered. Probes
+    # below keep a ≥0.5 s margin from both window edges.
+    server.keepalive_silence(at=0.2, for_seconds=1.6)
+    t0 = time.monotonic()
+    await asyncio.sleep(0.7)
+
+    # Still receiving: discovery is answered inside the silence window.
+    client.send(_ayt(), server.control_port)
+    assert struct.unpack_from("<H", await client.recv(), 4)[0] == _PT_I_AM_HERE
+
+    # But ping replies are suppressed (observation ends ~+1.0, margin 0.8 s).
+    client.send(_ping(), server.control_port)
+    await client.expect_silence(0.3)
+
+    # After the window, pings are answered again (+2.3, 0.5 s past the edge).
+    await asyncio.sleep(max(0.0, 2.3 - (time.monotonic() - t0)))
+    client.send(_ping(), server.control_port)
+    reply = await client.recv()
+    assert struct.unpack_from("<H", reply, 4)[0] == _PT_PING
+    assert reply[0x10] == 0x01
+
+
+async def test_reboot_fences_stale_client_until_fresh_open(server, client):
+    """After a reboot the radio shuts out the pre-reboot client: its CI-V data
+    and pings get silence until it completes a fresh OpenClose(open)."""
+    # Log in, open the data port, and confirm the client is served.
+    client.send(_login(), server.control_port)
+    await client.recv()
+    client.send(_conninfo(), server.control_port)
+    await client.recv()
+    client.send(_openclose(), server.civ_port)
+    await client.recv()  # unsolicited CI-V frame on open
+    client.send(_freq_get(), server.civ_port)
+    assert _is_freq_reply(await client.recv())
+
+    # Reboot: down [+0.2, +0.8], busy [+0.8, +1.6].
+    server.reboot(at=0.2, down_for=0.6, busy_for=0.8)
+    t0 = time.monotonic()
+
+    # The radio is back (probe at +1.3: 0.5 s past the down window), but the
+    # stale client is fenced — CI-V data and pings are ignored.
+    await asyncio.sleep(max(0.0, 1.3 - (time.monotonic() - t0)))
+    client.send(_ping(), server.civ_port)
+    client.send(_freq_get(), server.civ_port)
+    await client.expect_silence(0.3)
+
+    # A fresh login from a new client succeeds and is served (probe at +2.1:
+    # 0.5 s past the busy window ending at +1.6).
+    fresh = _UdpClient()
+    await asyncio.get_running_loop().create_datagram_endpoint(
+        lambda: fresh, local_addr=(_HOST, 0)
+    )
+    try:
+        await asyncio.sleep(max(0.0, 2.1 - (time.monotonic() - t0)))
+        fresh.send(_login(), server.control_port)
+        login = await fresh.recv()
+        assert struct.unpack_from("<I", login, 0x30)[0] == 0
+        fresh.send(_conninfo(), server.control_port)
+        status = await fresh.recv()
+        assert struct.unpack_from(">H", status, 0x42)[0] == server.civ_port
+        fresh.send(_openclose(), server.civ_port)
+        await fresh.recv()
+        fresh.send(_freq_get(), server.civ_port)
+        assert _is_freq_reply(await fresh.recv())
+        # ...while the stale client is still fenced.
+        client.send(_freq_get(), server.civ_port)
+        await client.expect_silence(0.3)
+    finally:
+        fresh.close()
+
+
+async def test_reboot_ignores_control_packets_carrying_the_old_token(server, client):
+    """After a reboot a conninfo carrying the pre-reboot token gets no answer,
+    while the same conninfo carrying the token from a fresh login is served."""
+    client.send(_login(), server.control_port)
+    old_token = struct.unpack_from("<I", await client.recv(), 0x1C)[0]
+
+    # Reboot: down [+0.1, +0.4], no busy window.
+    server.reboot(at=0.1, down_for=0.3, busy_for=0.0)
+    await asyncio.sleep(0.9)
+
+    client.send(_conninfo(old_token), server.control_port)
+    await client.expect_silence(0.3)
+
+    client.send(_login(), server.control_port)
+    new_token = struct.unpack_from("<I", await client.recv(), 0x1C)[0]
+    assert new_token != old_token
+    client.send(_conninfo(new_token), server.control_port)
+    status = await client.recv()
+    assert struct.unpack_from(">H", status, 0x42)[0] == server.civ_port

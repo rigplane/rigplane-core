@@ -12,6 +12,8 @@ the established team pattern (vendored static JSON + a `--check`-style drift
 gate), not a CDC framework, submodule, or published package — no cross-repo
 version pin, no network, no extra runtime dependency.
 
+`frontend/web_surface.json` registers the bundled web frontend (`frontend/src/`) as a consumer. It lists the command names from `RADIO_INTENT_NAMES`, the `/api/v1/ws` route and the stable HTTP endpoints the frontend calls, each with its source symbol in `source_symbols`. WebSocket envelope types and controller-lease fields are not covered, because the runner builds no artifact for them.
+
 ## How a file is structured
 
 ```jsonc
@@ -28,7 +30,7 @@ version pin, no network, no extra runtime dependency.
 
 `producer_artifact` selects an in-process builder in
 `scripts/run_consumer_contracts.py` (`info` → `GET /api/v1/info` body via the
-public `WebServer`; `discovery` → the `DiscoveryResponder` datagram). The runner
+public `WebServer`; `discovery` → the `DiscoveryResponder` datagram); `web_surface` → the WebSocket command names (`ControlHandler._COMMANDS`), WebSocket route paths and HTTP `METHOD path` strings from `web/api_contract.py`. The runner
 builds the **real** artifact from public `rigplane.*` symbols, validates the
 `schema`, and (if present) asserts the `speaks_version` field equals what the
 consumer declares it speaks.

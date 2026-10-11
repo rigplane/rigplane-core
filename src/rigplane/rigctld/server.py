@@ -20,7 +20,7 @@ import inspect
 import logging
 import re
 import time
-from collections.abc import Coroutine, Sequence
+from collections.abc import Callable, Coroutine, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from ..core.acquisition_drain import AcquisitionDrain
@@ -199,6 +199,8 @@ class RigctldServer:
         _protocol: Override the protocol module (for testing).
         _handler: Override the handler instance (for testing).
         _circuit_breaker: Override the circuit breaker (for testing).
+        clock: Monotonic clock for the rate-limit and refusal-throttle
+            windows; defaults to ``time.monotonic``.
     """
 
     def __init__(
@@ -212,6 +214,7 @@ class RigctldServer:
         _protocol: Any = None,
         _handler: Any = None,
         _circuit_breaker: Any = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         supplied = (
             managed_tx_authority is not None,
@@ -229,6 +232,7 @@ class RigctldServer:
         self._command_service = command_service
         self._radio = radio
         self._config = config or RigctldConfig()
+        self._clock = clock
         self._server: asyncio.Server | None = None
         self._client_tasks: set[asyncio.Task[None]] = set()
         self._client_count = 0
@@ -1003,7 +1007,7 @@ class RigctldServer:
         limit = self._config.command_rate_limit
         if limit is None:
             return True
-        now = time.monotonic()
+        now = self._clock()
         window = self._rate_windows.setdefault(client_id, [])
         cutoff = now - 1.0
         while window and window[0] <= cutoff:
@@ -1025,7 +1029,7 @@ class RigctldServer:
         per-peer window is what keeps a browser re-dialing the port from
         flooding the log.
         """
-        now = time.monotonic()
+        now = self._clock()
         last = self._http_refusal_logged_at.get(peer_host)
         if last is not None and now - last < _HTTP_REFUSAL_LOG_WINDOW_S:
             return

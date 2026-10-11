@@ -187,8 +187,8 @@ class MockIcomRadio:
         fault_plan: optional :class:`~rigplane_testkit.icom.faults.FaultPlan`
             applying per-port/per-direction drop/duplicate/delay/reorder/
             corrupt/truncate rules on top of the legacy ``drop_rate`` /
-            ``reorder_window`` / ``response_delay`` / ``stall_for`` knobs,
-            which keep working unchanged.
+            ``response_delay`` / ``stall_for`` knobs, which keep working
+            unchanged.
     """
 
     def __init__(
@@ -203,7 +203,6 @@ class MockIcomRadio:
         single_owner: bool = False,
         keepalive_hold_s: float = _DEFAULT_KEEPALIVE_HOLD_S,
         drop_rate: float = 0.0,
-        reorder_window: int = 0,
         unsolicited_civ: bool = False,
         unsolicited_interval_s: float = 0.1,
         fault_plan: FaultPlan | None = None,
@@ -274,18 +273,19 @@ class MockIcomRadio:
 
         # Fault injection
         self.drop_rate: float = drop_rate  # probability [0,1] of dropping a reply
-        self.reorder_window: int = reorder_window  # buffer N replies then flush
         self._stall_until: float = 0.0  # suppress unsolicited CI-V until this time
         # Declarative per-port/per-direction fault plan (sits BESIDE the legacy
         # knobs above: it has its own seeded RNG and never touches their state).
         # None = no plan, every stream passes through untouched.
         self.fault_plan: FaultPlan | None = fault_plan
-        self._reorder_buf: dict[
-            str, list[tuple[_MockProtocol, bytes, tuple[str, int]]]
-        ] = {
-            "ctrl": [],
-            "civ": [],
-        }
+        # Scheduled events (reboot / keepalive silence) — absolute deadlines,
+        # 0.0 = inactive.
+        self._down_until: float = 0.0  # reboot: radio "powered off" until then
+        self._busy_until: float = 0.0  # post-reboot busy-reject window
+        self._keepalive_silent_until: float = 0.0  # pings received, not answered
+        self.reboot_count: int = 0  # number of simulated reboots started
+        # Tokens issued before a reboot; control packets carrying one are ignored.
+        self._retired_tokens: set[int] = set()
         self._rng = random.Random(0xC0FFEE)
 
         # Autonomous state + unsolicited CI-V streaming
@@ -295,6 +295,9 @@ class MockIcomRadio:
         # Last CI-V client (set on OpenClose(open)) — target for unsolicited frames.
         self._civ_owner_addr: tuple[str, int] | None = None
         self._civ_owner_id: int = 0
+        # Post-reboot fence: CI-V data and pings are ignored until the client
+        # completes a fresh OpenClose(open).
+        self._fence_civ_until_open: bool = False
         self.unsolicited_sent: int = 0  # count of autonomous frames emitted
         # Counters / observability for simulator-fidelity tests
         self.busy_rejects: int = 0  # number of 0xFFFFFFFF rejects sent
@@ -408,6 +411,69 @@ class MockIcomRadio:
         self._release_session(reason)
 
     # ------------------------------------------------------------------
+    # Scheduled events (reboot / keepalive silence)
+    # ------------------------------------------------------------------
+
+    def reboot(self, *, at: float, down_for: float, busy_for: float = 0.5) -> None:
+        """Schedule a simulated radio reboot.
+
+        At ``at`` seconds from now the radio "powers off" for ``down_for``
+        seconds: it answers nothing on either port, forgets the held session
+        (``free_session`` path), drops the CI-V owner, rotates its token and
+        restarts CI-V sequence numbering. Until a client completes a fresh
+        OpenClose(open) its CI-V data and pings are ignored — a rebooted
+        radio does not serve a stale client. Token packets (0x40) and
+        conninfo (0x90) carrying a pre-reboot token are ignored as well;
+        ``docs/internals/protocol.md`` does not describe what an IC-7610 does
+        with a stale token, so "ignored" is this simulator's assumption, not
+        a recorded radio behaviour. It then answers conninfo
+        requests with a previous-session-active busy reject (``0xFFFFFFFF``)
+        for ``busy_for`` seconds — modelled on the single-owner reject in
+        ``_conninfo_status`` — after which conninfo is served normally.
+
+        Must be called from inside the running event loop.
+        """
+        loop = asyncio.get_running_loop()
+        loop.call_later(
+            max(0.0, at), self._begin_reboot, max(0.0, down_for), max(0.0, busy_for)
+        )
+
+    def _begin_reboot(self, down_for: float, busy_for: float) -> None:
+        now = time.monotonic()
+        self._down_until = now + down_for
+        self._busy_until = self._down_until + busy_for
+        self._release_session("reboot")
+        self._civ_owner_addr = None
+        self._civ_owner_id = 0
+        self._retired_tokens.add(self.token)
+        self.token = (self.token + 0x9E3779B9) & 0xFFFFFFFF
+        self._civ_seq = 1
+        # Shut out the pre-reboot client until it completes a fresh
+        # OpenClose(open) — a rebooted radio does not serve stale clients.
+        self._fence_civ_until_open = True
+        self.reboot_count += 1
+        logger.debug("Mock: reboot — down %.2fs, then busy %.2fs", down_for, busy_for)
+
+    def keepalive_silence(self, *, at: float, for_seconds: float) -> None:
+        """Schedule a window where keepalives are received but never answered.
+
+        From ``at`` seconds from now, for ``for_seconds`` seconds, ping
+        requests on both ports get no reply; control-port pings still
+        refresh the held session, and every other packet is answered as
+        usual.
+
+        Must be called from inside the running event loop.
+        """
+        loop = asyncio.get_running_loop()
+        loop.call_later(
+            max(0.0, at), self._begin_keepalive_silence, max(0.0, for_seconds)
+        )
+
+    def _begin_keepalive_silence(self, for_seconds: float) -> None:
+        self._keepalive_silent_until = time.monotonic() + for_seconds
+        logger.debug("Mock: keepalive silence for %.2fs", for_seconds)
+
+    # ------------------------------------------------------------------
     # Session ownership (single-owner model)
     # ------------------------------------------------------------------
 
@@ -456,6 +522,14 @@ class MockIcomRadio:
         When ``single_owner`` is False this preserves the legacy behaviour
         (always return the real CI-V port) so existing tests stay green.
         """
+        # Post-reboot busy window (applies in both ownership modes): the radio
+        # is up but not ready to hold a session yet.
+        if time.monotonic() < self._busy_until:
+            self.busy_rejects += 1
+            return self._status_response(
+                sender_id, civ_port=0, error=_ERR_PREV_SESSION_ACTIVE
+            )
+
         if not self.single_owner:
             return self._status_response(sender_id)
 
@@ -535,6 +609,8 @@ class MockIcomRadio:
         (port, ``to_client``) decides drop/delay/duplicate/corrupt/truncate/
         reorder per packet; delayed emissions are scheduled on the loop.
         """
+        if time.monotonic() < self._down_until:
+            return  # reboot window: the radio is "powered off"
         plan = self.fault_plan
         port = self._port_of(label)
         if plan is None or plan.is_noop(port, "to_client"):
@@ -558,8 +634,9 @@ class MockIcomRadio:
     ) -> None:
         """Emit the plan's emissions for one packet.
 
-        Emissions with a delay are scheduled on the loop and re-enter this
-        method with ``delay=0.0`` when the timer fires.
+        Delayed emissions re-check the reboot down-window when they fire: a
+        packet the plan delayed into a reboot dies with the radio "off"
+        instead of being delivered by a powered-down radio.
         """
         loop = asyncio.get_running_loop()
         for delay, payload in planned:
@@ -573,7 +650,7 @@ class MockIcomRadio:
                     addr,
                     label,
                 )
-            else:
+            elif time.monotonic() >= self._down_until:
                 if direction == "to_client":
                     proto.send(payload, addr)
                 else:
@@ -609,35 +686,6 @@ class MockIcomRadio:
             plan.flush(port, direction), direction, proto, addr, label
         )
 
-    def _emit(
-        self,
-        proto: _MockProtocol,
-        pkt: bytes,
-        addr: tuple[str, int],
-        label: str,
-    ) -> None:
-        """Send a reply through the fault-injection layer (drop/reorder).
-
-        Replies built by the handlers go through here instead of ``proto.send``
-        directly so that ``drop_rate`` and ``reorder_window`` apply. Discovery
-        and the session-critical handshake are never dropped — only data-plane
-        and post-handshake replies — to keep connect() deterministic while still
-        exercising the data watchdog and recovery paths.
-        """
-        if self.drop_rate > 0.0 and self._rng.random() < self.drop_rate:
-            logger.debug("Mock: dropped %s reply (%d bytes)", label, len(pkt))
-            return
-        if self.reorder_window > 1:
-            buf = self._reorder_buf[label]
-            buf.append((proto, pkt, addr))
-            if len(buf) >= self.reorder_window:
-                self._rng.shuffle(buf)
-                for p, b, a in buf:
-                    p.send(b, a)
-                buf.clear()
-            return
-        proto.send(pkt, addr)
-
     def _on_packet(
         self,
         data: bytes,
@@ -652,6 +700,8 @@ class MockIcomRadio:
         before the simulator parses it. With no plan (or a no-op rule) the
         packet goes straight to ``_receive`` — the pre-plan behaviour.
         """
+        if time.monotonic() < self._down_until:
+            return  # reboot window: the radio is "powered off"
         plan = self.fault_plan
         port = self._port_of(label)
         if plan is not None and not plan.is_noop(port, "from_client"):
@@ -718,6 +768,12 @@ class MockIcomRadio:
     ) -> None:
         n = len(data)
 
+        # Token packets and conninfo carrying a pre-reboot token: ignored.
+        if n in (0x40, 0x90) and struct.unpack_from("<I", data, 0x1C)[0] in (
+            self._retired_tokens
+        ):
+            return
+
         # Are You There → I Am Here
         if n == _HEADER_SIZE and ptype == _PT_ARE_YOU_THERE:
             self._send(proto, self._ctrl_pkt(_PT_I_AM_HERE, 0, sender_id), addr, "ctrl")
@@ -733,6 +789,8 @@ class MockIcomRadio:
         # Ping request → Ping reply (refreshes the keepalive for the owner)
         if n == _PING_SIZE and ptype == _PT_PING and data[0x10] == 0x00:
             self._refresh_keepalive((addr, sender_id))
+            if time.monotonic() < self._keepalive_silent_until:
+                return  # keepalive_silence window: receive but never reply
             self._send(proto, self._ping_reply(data, sender_id), addr, "ctrl")
             return
 
@@ -773,6 +831,18 @@ class MockIcomRadio:
     # CI-V port
     # ------------------------------------------------------------------
 
+    def _civ_fenced(self, addr: tuple[str, int], sender_id: int) -> bool:
+        """True when the post-reboot fence shuts this client out of the CI-V port.
+
+        After a reboot only the client that completed a fresh OpenClose(open)
+        — tracked in ``_civ_owner_addr`` / ``_civ_owner_id`` — is served;
+        CI-V data and pings from anyone else are ignored.
+        """
+        return self._fence_civ_until_open and (addr, sender_id) != (
+            self._civ_owner_addr,
+            self._civ_owner_id,
+        )
+
     def _handle_civ(
         self,
         data: bytes,
@@ -798,6 +868,10 @@ class MockIcomRadio:
 
         # Ping request → Ping reply
         if n == _PING_SIZE and ptype == _PT_PING and data[0x10] == 0x00:
+            if self._civ_fenced(addr, sender_id):
+                return  # post-reboot: stale client until a fresh OpenClose(open)
+            if time.monotonic() < self._keepalive_silent_until:
+                return  # keepalive_silence window: receive but never reply
             self._send(proto, self._ping_reply(data, sender_id), addr, "civ")
             return
 
@@ -825,6 +899,8 @@ class MockIcomRadio:
 
         # CI-V data (DATA type, larger than header)
         if ptype == _PT_DATA and n > _CIV_HEADER_SIZE:
+            if self._civ_fenced(addr, sender_id):
+                return  # post-reboot: stale client until a fresh OpenClose(open)
             self._handle_civ_data(data, addr, sender_id, proto)
 
     def _handle_civ_data(
@@ -879,6 +955,8 @@ class MockIcomRadio:
                     continue
                 if time.monotonic() < self._stall_until:
                     continue  # stalled: deliberately starve the watchdog
+                if time.monotonic() < self._down_until:
+                    continue  # rebooted: the radio is "powered off"
                 addr = self._civ_owner_addr
                 if addr is None:
                     continue

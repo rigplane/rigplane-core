@@ -11,8 +11,12 @@ Covers the pure layer (``rigplane.validation.gating``) and its CLI wiring in
   missing check, declaration drift) vs non-blocking improvements/additions;
 * ``rigplane validate --gate`` exits 0 against a matching golden and 1 on a
   regression; ``--regen-golden`` writes the normalized artifact;
-* the committed IC-7610 dry-run golden (``tests/golden/validation/``) matches
-  the live generated matrix and gates clean.
+* the nine committed dry-run goldens (``tests/golden/validation/``) match
+  the live generated matrices and gate clean;
+* the declaration digest pins the declared ``[commands]`` frames plus the
+  ``[vfo]`` select/swap codes and the enumerated value tables of the nine
+  golden radios' profiles, and is updated only by a human review
+  (``test_declaration_digest_matches_committed``).
 
 All tests are dry-run / no-hardware and use the REAL schema dataclasses
 (MagicMock hides signature bugs).
@@ -22,10 +26,15 @@ from __future__ import annotations
 
 import copy
 import json
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from rigplane.cli import _build_parser, _validate
+from rigplane.commands.command_spec import CatCommandSpec, CivCommandSpec
+from rigplane.profiles.rig_loader import load_rig
 from rigplane.validation.gating import (
     GateReport,
     format_gate_report,
@@ -47,13 +56,22 @@ from rigplane.validation.schema import (
 
 MODEL = "IC-7610"
 
-_GOLDEN_FIXTURE = (
-    Path(__file__).resolve().parent / "golden" / "validation" / "ic7610.dry-run.json"
-)
-_REGEN_COMMAND = (
-    "uv run rigplane --model IC-7610 validate --dry-run "
-    "--regen-golden tests/golden/validation/ic7610.dry-run.json"
-)
+_GOLDEN_DIR = Path(__file__).resolve().parent / "golden" / "validation"
+_RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
+
+# (model, golden slug) for every radio with a committed dry-run golden. The
+# slug is both the golden filename stem and the rigs/<slug>.toml stem.
+_GOLDEN_RADIOS = [
+    ("IC-7610", "ic7610"),
+    ("IC-7300", "ic7300"),
+    ("IC-7300MK2", "ic7300mk2"),
+    ("IC-705", "ic705"),
+    ("IC-9700", "ic9700"),
+    ("X6100", "x6100"),
+    ("TX-500", "tx500"),
+    ("X6200", "x6200"),
+    ("FTX-1", "ftx1"),
+]
 
 
 def _make_artifact(
@@ -377,34 +395,147 @@ def test_cli_regen_then_gate_round_trips(tmp_path: Path, capsys: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Committed IC-7610 dry-run golden fixture
+# Committed dry-run golden fixtures (nine radios) + declaration digest
 # ---------------------------------------------------------------------------
 
 
-def test_committed_ic7610_golden_matches_live_dry_run(capsys: Any) -> None:
+@pytest.mark.parametrize(("model", "slug"), _GOLDEN_RADIOS)
+def test_committed_golden_matches_live_dry_run(
+    model: str, slug: str, capsys: Any
+) -> None:
     """The committed golden equals the live normalized dry-run output exactly.
 
     Regenerate after an intentional matrix change with::
 
-        uv run rigplane --model IC-7610 validate --dry-run \
-          --regen-golden tests/golden/validation/ic7610.dry-run.json
+        uv run rigplane --model <MODEL> validate --dry-run \
+          --regen-golden tests/golden/validation/<slug>.dry-run.json
     """
+    golden = _GOLDEN_DIR / f"{slug}.dry-run.json"
     rc, out, _err = _run_validate(
-        ["--model", MODEL, "validate", "--dry-run", "--json"], capsys
+        ["--model", model, "validate", "--dry-run", "--json"], capsys
     )
     assert rc == 0
     live = normalize_artifact(json.loads(out))
-    committed = json.loads(_GOLDEN_FIXTURE.read_text(encoding="utf-8"))
-    assert live == committed, f"Golden fixture is stale; regen: {_REGEN_COMMAND}"
+    committed = json.loads(golden.read_text(encoding="utf-8"))
+    assert live == committed, (
+        f"Golden fixture is stale; regen: uv run rigplane --model {model} "
+        f"validate --dry-run --regen-golden {golden}"
+    )
 
 
-def test_cli_gate_against_committed_golden_exits_zero(capsys: Any) -> None:
+@pytest.mark.parametrize(("model", "slug"), _GOLDEN_RADIOS)
+def test_cli_gate_against_committed_golden_exits_zero(
+    model: str, slug: str, capsys: Any
+) -> None:
+    golden = _GOLDEN_DIR / f"{slug}.dry-run.json"
     rc, _out, err = _run_validate(
-        ["--model", MODEL, "validate", "--dry-run", "--gate", str(_GOLDEN_FIXTURE)],
+        ["--model", model, "validate", "--dry-run", "--gate", str(golden)],
         capsys,
     )
     assert rc == 0
     assert "PASS" in err
+
+
+def _frame_repr(spec: Any) -> str | None:
+    """Canonical frame string for a declared command spec.
+
+    ``None`` for ``AbsentCommandSpec`` entries: they declare a confirmed
+    refusal, not frame bytes, and their name sets are pinned separately by
+    ``tests/test_rig_loader.py``.
+    """
+    if isinstance(spec, CivCommandSpec):
+        frame = "civ:" + ",".join(f"{b:02x}" for b in spec.bytes)
+        if spec.value_variants:
+            frame += "|" + ";".join(
+                f"{key}=" + ",".join(f"{b:02x}" for b in wire)
+                for key, wire in spec.value_variants
+            )
+        return frame
+    if isinstance(spec, CatCommandSpec):
+        return f"cat:r={spec.read}|w={spec.write}|p={spec.parse}"
+    return None
+
+
+# Wire data outside ``[commands]`` that the digest also pins: the ``[vfo]``
+# select/swap/equalize codes (``profiles/__init__.py: RadioProfile`` exposes
+# them as single-byte codes consumed by ``web/radio_poller.py`` and
+# ``web/handlers/control.py``) and the enumerated value tables of
+# ``rig_loader.py: RigConfig`` (validated by ``runtime/radio.py`` setters).
+# Display-only ``*_labels`` maps and every other profile field are NOT
+# pinned; ``test_declaration_digest_matches_committed`` states the same.
+_DIGEST_PROFILE_FIELDS = (
+    "vfo_main_select",
+    "vfo_sub_select",
+    "vfo_swap_ab",
+    "vfo_equal_ab",
+    "vfo_swap_main_sub",
+    "vfo_equal_main_sub",
+    "att_values",
+    "pre_values",
+    "agc_modes",
+    "agc_readback_modes",
+    "agc_auto_mode",
+    "break_in_modes",
+    "notch_width_values",
+    "ssb_tx_bw_values",
+    "filter_shape_values",
+    "scan_type_values",
+    "scan_resume_values",
+)
+
+
+def _declaration_digest() -> str:
+    """sha256 over the sorted wire-declaration rows of the nine golden
+    radios' profiles: one (model, command name, frame) row per declared
+    ``[commands]`` entry, plus one (model, field, value) row per non-``None``
+    ``_DIGEST_PROFILE_FIELDS`` member."""
+    rows: list[str] = []
+    for model, slug in _GOLDEN_RADIOS:
+        config = load_rig(_RIGS_DIR / f"{slug}.toml")
+        for name, spec in config.commands.items():
+            frame = _frame_repr(spec)
+            if frame is not None:
+                rows.append(f"{model}\t{name}\t{frame}")
+        for field_name in _DIGEST_PROFILE_FIELDS:
+            value = getattr(config, field_name)
+            if value is not None:
+                rows.append(f"{model}\t{field_name}\t{value!r}")
+    return sha256("\n".join(sorted(rows)).encode("utf-8")).hexdigest()
+
+
+_DECLARATION_DIGEST = "a7c64678bd2efdcec88a4418d765b1876e774569b2dd434b801ea27ab7e227d3"
+
+
+def test_declaration_digest_matches_committed() -> None:
+    """The committed declaration digest pins the golden radios' wire data.
+
+    The dry-run goldens pin WHICH checks each profile declares; they cannot
+    see the CI-V/CAT wire bytes behind those declarations, so a profile edit
+    that changes the bytes a radio receives can leave every golden green.
+    This digest narrows that gap. It is a sha256 over sorted rows covering
+    exactly: every declared ``[commands]`` entry (overrides merge into
+    ``RigConfig.commands``), as (model, command name, frame) rows, and the
+    ``_DIGEST_PROFILE_FIELDS`` members — the ``[vfo]`` select/swap/equalize
+    codes and the enumerated value tables (``att_values``, ``pre_values``,
+    ``agc_modes``, ...) — as (model, field, value) rows. Any one-byte change
+    inside that pinned set changes the digest. Profile data outside it —
+    display-only ``*_labels`` maps, ``[controls]`` domains, ``[filters]``
+    width rules, CTCSS/tone-squelch tables, meter calibrations — does NOT
+    change the digest.
+
+    The digest is NOT to be regenerated by a script: there is no
+    ``--regenerate`` path (the CLI's ``--regen-golden`` writes only golden
+    artifacts, never this constant). A human updates ``_DECLARATION_DIGEST``
+    only after reviewing the frame diff behind the change (``git diff
+    rigs/``); the failing assertion prints the recomputed digest to paste in
+    once that review is done.
+    """
+    actual = _declaration_digest()
+    assert actual == _DECLARATION_DIGEST, (
+        "Declaration digest drift: a declared frame changed. Review "
+        "`git diff rigs/` first; only then paste the recomputed digest "
+        f"(now {actual}) into _DECLARATION_DIGEST."
+    )
 
 
 # ---------------------------------------------------------------------------

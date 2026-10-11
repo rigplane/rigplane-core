@@ -525,9 +525,11 @@ class RadioPoller:
         acquisition_executor: AcquisitionExecutor | None = None,
         managed_tx_authority: ManagedWriteAdmission | None = None,
         tx_active_hint: Callable[[], bool] | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         queue = legacy_queue if legacy_queue is not None else command_queue
         self._radio = radio
+        self._clock = clock
         self._radio_state = radio_state
         self._state_diagnostics = diagnostics
         self._state_store = state_store or StateStore()
@@ -790,7 +792,7 @@ class RadioPoller:
         def validate_currency() -> None:
             validate_command_queue_entry_currency(
                 entry,
-                now=time.monotonic(),
+                now=self._clock(),
                 provider_generation=self._provider_generation(),
                 connection_generation=getattr(self._radio, "_civ_epoch", None),
                 session_is_live=self._queue.session_is_live,
@@ -852,7 +854,7 @@ class RadioPoller:
         command_service: CommandService | None,
         provider_generation: int,
     ) -> None:
-        observed_at = time.monotonic()
+        observed_at = self._clock()
         metadata = SourceMetadata(
             source="poll_response",
             provider="web_poller",
@@ -1406,7 +1408,7 @@ class RadioPoller:
                 command_source=source,
                 session_id=session_id,
             ),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=self._clock(),
             correlation_id=f"{command_id}:{name}" if command_id else None,
             provider_generation=provider_generation,
         )
@@ -1454,7 +1456,7 @@ class RadioPoller:
                 command_source=source,
                 session_id=session_id,
             ),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=self._clock(),
             correlation_id=f"{command_id}:{name}" if command_id else None,
             provider_generation=provider_generation,
         )
@@ -2087,7 +2089,7 @@ class RadioPoller:
                     field.freshness is not FreshnessState.FRESH
                     or (
                         field.max_age is not None
-                        and time.monotonic() - field.last_observed_monotonic
+                        and self._clock() - field.last_observed_monotonic
                         > field.max_age
                     )
                     or field.provider_generation != provider_generation
@@ -2148,7 +2150,7 @@ class RadioPoller:
                         session_id=session_id,
                         native_id="direct_vfo_frequency_readback",
                     ),
-                    timestamp_monotonic=time.monotonic(),
+                    timestamp_monotonic=self._clock(),
                     correlation_id=command_id,
                     provider_generation=provider_generation,
                 )
@@ -3907,7 +3909,7 @@ class RadioPoller:
         target = self._compute_tx_target()
         path = FieldPath.global_("tx_state", "tx_target")
         max_age = self._tx_target_max_age()
-        now = time.monotonic()
+        now = self._clock()
         try:
             current = self._state_store.snapshot().field(path)
         except KeyError:
@@ -3963,7 +3965,7 @@ class RadioPoller:
                     session_id=session_id,
                     native_id="explicit_slot_ack_readback",
                 ),
-                timestamp_monotonic=time.monotonic(),
+                timestamp_monotonic=self._clock(),
                 correlation_id=command_id,
                 provider_generation=provider_generation,
             )

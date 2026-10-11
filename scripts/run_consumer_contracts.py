@@ -87,9 +87,25 @@ def _build_discovery() -> dict[str, Any]:
     return json.loads(responder.build_response("127.0.0.1").decode("utf-8"))
 
 
+def _build_web_surface() -> dict[str, Any]:
+    """Build the web command/route surface from the public web modules."""
+    from rigplane.web.api_contract import STABLE_HTTP_ENDPOINTS, STABLE_WEBSOCKET_ROUTES
+    from rigplane.web.handlers.control import ControlHandler
+
+    return {
+        "ws_commands": sorted(ControlHandler._COMMANDS),
+        "ws_routes": [route["path"] for route in STABLE_WEBSOCKET_ROUTES],
+        "http_endpoints": [
+            f"{endpoint['method']} {endpoint['path']}"
+            for endpoint in STABLE_HTTP_ENDPOINTS
+        ],
+    }
+
+
 ARTIFACT_BUILDERS: dict[str, Callable[[], dict[str, Any]]] = {
     "info": _build_info,
     "discovery": _build_discovery,
+    "web_surface": _build_web_surface,
 }
 
 

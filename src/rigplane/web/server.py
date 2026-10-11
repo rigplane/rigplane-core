@@ -31,6 +31,7 @@ import os
 import pathlib
 import signal as _signal
 import sys
+import threading
 import time
 import urllib.parse
 from collections.abc import Awaitable, Callable, Collection, Coroutine, Mapping
@@ -1103,6 +1104,8 @@ class WebServer:
         self._watched_audio_session: AudioSession | None = None
         # Latest reconnect status forwarded from the radio (MOR-594)
         self._connection_status: dict[str, Any] | None = None
+        # Count of ``reconnecting`` edges seen by ``_on_reconnect_status``
+        self._reconnects_total: int = 0
         # Scope health monitor
         self._scope_last_nonzero: float = 0.0
         self._scope_health_task: asyncio.Task[None] | None = None
@@ -3332,6 +3335,11 @@ class WebServer:
             setter(None)
 
     def _on_reconnect_status(self, status: dict[str, Any]) -> None:
+        previous = self._connection_status
+        if status.get("state") == "reconnecting" and (
+            previous is None or previous.get("state") != "reconnecting"
+        ):
+            self._reconnects_total += 1
         self._connection_status = dict(status)
         self._snapshot_for_delivery()
         self.broadcast_event("connection_status", dict(status))
@@ -4186,6 +4194,51 @@ class WebServer:
             return broadcaster.capture_diagnostics()
         return {"schemaVersion": 1, "lastFailureCategory": None}
 
+    def _runtime_process_payload(self) -> dict[str, Any]:
+        """Process metrics; a value this platform cannot report is ``None``."""
+        rss_bytes: int | None = None
+        try:
+            with open("/proc/self/statm", encoding="ascii") as statm:
+                rss_bytes = int(statm.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+        except (OSError, ValueError, IndexError):
+            pass
+        open_fds: int | None = None
+        for fd_dir in ("/proc/self/fd", "/dev/fd"):
+            try:
+                names = os.listdir(fd_dir)
+            except OSError:
+                continue
+            # The listing can name its own, already closed, directory
+            # descriptor; ``fstat`` fails on it, so it is not counted.
+            open_fds = 0
+            for name in names:
+                try:
+                    os.fstat(int(name))
+                except (OSError, ValueError):
+                    continue
+                open_fds += 1
+            break
+        radio = self._radio
+        # Reconnect status is emitted only by the LAN watchdog/reconnect
+        # loops (``runtime/radio_reconnect.py``), started solely by
+        # ``ControlPhase._start_watchdog`` — recorded in ``_watchdog_task``.
+        # Serial CI-V radios inherit ``set_reconnect_status_callback`` yet
+        # their own watchdog never emits, so only a started watchdog makes
+        # the count measured; anything else reports null ("not counted").
+        watchdog_task = (
+            getattr(radio, "_watchdog_task", None) if radio is not None else None
+        )
+        reconnects_observable = watchdog_task is not None
+        return {
+            "rssBytes": rss_bytes,
+            "openFds": open_fds,
+            "threads": threading.active_count(),
+            "asyncioTasks": len(asyncio.all_tasks()),
+            "reconnectsTotal": self._reconnects_total
+            if reconnects_observable
+            else None,
+        }
+
     async def _serve_runtime(
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
@@ -4219,6 +4272,7 @@ class WebServer:
                 # from the supervisor rather than re-derived from the poller's
                 # PTT mirror — which knows nothing about leases or obligations.
                 "txSafety": build_tx_safety_payload(radio),
+                "process": self._runtime_process_payload(),
                 "lastError": self._runtime_last_error,
             },
             separators=(",", ":"),

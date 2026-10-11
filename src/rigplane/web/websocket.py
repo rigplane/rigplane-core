@@ -16,6 +16,7 @@ import hashlib
 import struct
 import time
 import zlib
+from collections.abc import Callable
 
 __all__ = [
     "WS_MAGIC",
@@ -184,6 +185,8 @@ class WebSocketConnection:
         reader: asyncio StreamReader (post-HTTP handshake).
         writer: asyncio StreamWriter (post-HTTP handshake).
         deflate: Enable permessage-deflate compression.
+        clock: Monotonic clock for the pong-freshness liveness decision;
+            defaults to ``time.monotonic``.
     """
 
     def __init__(
@@ -192,6 +195,7 @@ class WebSocketConnection:
         writer: asyncio.StreamWriter,
         *,
         deflate: bool = False,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -199,8 +203,9 @@ class WebSocketConnection:
         self._deflate = deflate
         self._fragmented_opcode: int = 0
         self._fragments: list[bytes] = []
-        self._last_pong: float = time.monotonic()
+        self._last_pong: float = clock()
         self._pong_timeout: float = 60.0
+        self._clock = clock
 
     @property
     def deflate_enabled(self) -> bool:
@@ -211,7 +216,7 @@ class WebSocketConnection:
         """True if connection is open and a pong was received recently enough."""
         if self._closed:
             return False
-        return (time.monotonic() - self._last_pong) < self._pong_timeout
+        return (self._clock() - self._last_pong) < self._pong_timeout
 
     def _compress(self, data: bytes) -> bytes:
         """Compress payload per RFC 7692 §7.2.1."""
@@ -254,7 +259,7 @@ class WebSocketConnection:
                 continue
 
             if opcode == WS_OP_PONG:
-                self._last_pong = time.monotonic()
+                self._last_pong = self._clock()
                 continue
 
             if opcode == WS_OP_CLOSE:
