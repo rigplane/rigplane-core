@@ -185,6 +185,18 @@ async def test_reorder_permutes_replies(server, client):
     assert seqs != [1, 2, 3]
 
 
+@pytest.mark.parametrize("direction", ["to_client", "from_client"])
+async def test_reorder_flush_releases_held_burst_on_idle(server, client, direction):
+    """A single request can never fill a reorder_window=4 rule: the reply
+    only arrives because MockIcomRadio._arm_reorder_flush fires the idle
+    flush after FaultRule.reorder_flush_s seconds."""
+    rule = FaultRule(reorder_window=4, reorder_flush_s=0.05)
+    server.fault_plan = FaultPlan(**{f"civ_{direction}": rule})
+    client.send(_freq_get(), server.civ_port)
+    assert _is_freq_reply(await client.recv(timeout=1.0))
+    assert rule.held == 0
+
+
 async def test_inbound_drop_silences_the_server(server, client):
     """client → radio direction: dropped requests get no answer at all."""
     server.fault_plan = FaultPlan(control_from_client=FaultRule(drop_probability=1.0))
