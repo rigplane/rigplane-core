@@ -5,6 +5,8 @@ module re-exports its public surface so callers can write
 ``from rigplane_testkit.icom import MockIcomRadio``.
 """
 
+from rigplane_testkit.icom.recorder import IcomSessionRecorder, redact_datagram
+from rigplane_testkit.icom.replay import Recording, Record, ReplayResponder
 from rigplane_testkit.icom.simulator import (
     _CMD_ACK,
     _CMD_ATT,
@@ -58,6 +60,11 @@ from rigplane_testkit.icom.simulator import (
 
 __all__ = [
     "MockIcomRadio",
+    "IcomSessionRecorder",
+    "redact_datagram",
+    "Recording",
+    "Record",
+    "ReplayResponder",
     "_MockProtocol",
     "_bcd_byte",
     "_bcd_decode_freq",
