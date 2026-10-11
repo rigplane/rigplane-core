@@ -10,8 +10,7 @@
  * string "undefined", so a member that stops existing is a visible diff
  * instead of a silent JSON drop; non-enumerable own properties are included,
  * which captures `toRitXitProps`'s `ritDomain`; functions — not expected in
- * props — are recorded as "<function>". Keys keep insertion order: order is
- * part of the pinned shape.
+ * props — are recorded as "<function>".
  *
  * Regenerate (from `frontend/`, paths resolve from the process cwd):
  *   UPDATE_GOLDENS=1 npx vitest run src/lib/runtime/props/__tests__/panel-props.goldens.test.ts
