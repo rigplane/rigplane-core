@@ -1,0 +1,447 @@
+"""A stateful IC-7300 serial CI-V fake behind the production link seam (MOR-3218).
+
+``CivSerialFake`` speaks the wire: bytes in, bytes out, framed
+``FE FE ... FD``. It mounts behind the production ``SerialCivLink``
+unmodified through its ``open_serial_connection`` seam (a zero-argument
+async callable returning ``(reader, writer)``) and behind
+``rigplane.core.serial_open.open_serial_port`` through the ``opener`` seam
+(keyword ``url``/``baudrate``), so serial identity/reconnect tests can drive
+the real link instead of mocking it.
+
+Wire-codec ringfence (the discipline ``tests/civ_fake.py`` documents): the
+frame envelope comes from the production codec — this module imports exactly
+``parse_civ_frame``, ``build_civ_frame`` and ``CONTROLLER_ADDR`` from
+``rigplane.commands``, plus the profile loader and ``CivFrame``. The fake
+does NOT share ``SerialFrameCodec`` with the link under test: inbound stream
+splitting is a deliberately dumb loop (split on ``FE FE``, take to the first
+``FD`` — no resync, no abort handling, no length cap), so a codec bug in the
+link cannot be masked by a shared implementation. BCD helpers are imported
+from ``rigplane_testkit.icom``, never re-implemented here.
+
+Identity is profile-derived, never hardcoded: the CI-V address comes from
+``[radio].civ_addr`` and the ``19 00`` model-id answer from
+``[identity].expected_ids`` of the resolved profile (``rigs/ic7300.toml``
+declares both; a profile without ``expected_ids`` makes the constructor
+refuse rather than guess). The personality — frequency (03/05), mode/filter
+(04/06), PTT (1C 00), S-meter (15 02), identity (19 00), ACK/NAK — follows
+the IC-7300 Full Manual (English) v6, §19 CONTROL COMMAND.
+
+The USB CI-V port echoes every inbound frame by default: production serial
+code observes that echo on a real IC-7300 (``backends/discovery.py`` —
+"first read often returns only the echo of our" probe frame — and
+``backends/_icom_serial_base.py: _read_serial_identity_payload`` — "the raw
+payload bytes after the 19 00 echo"). The setting is documented as CI-V USB
+Echo Back, IC-7300 Full Manual §19, item 0075 (wire-inverted: 00=ON). Pass
+``echo=False`` to turn it off.
+
+Faults are scriptable and deterministic: ``delay_identity_answer``,
+``answer_identity_after_reconnect_only``, ``wrong_model_id``, ``silence``
+(the MOR-2861 case: link open, nothing answers), ``usb_vanish`` /
+``usb_reappear`` (reads, writes and new opens raise ``ENODEV``, the class
+``core/serial_open.py: serial_open_diagnostic`` maps to
+``serial_not_found``).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import errno
+import time
+from typing import Any
+
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
+from rigplane.profiles import resolve_radio_profile
+from rigplane.types import CivFrame
+
+from rigplane_testkit.icom import (
+    _bcd_decode_freq,
+    _bcd_encode_freq,
+    _level_bcd_encode,
+)
+
+_BROADCAST_ADDR = 0x00  # CI-V broadcast: every radio hears it, none NAKs it
+
+# IC-7300 Full Manual (English) v6, §19 CONTROL COMMAND.
+_CMD_FREQ_GET = 0x03  # read operating frequency
+_CMD_MODE_GET = 0x04  # read operating mode (+ filter)
+_CMD_FREQ_SET = 0x05  # set operating frequency
+_CMD_MODE_SET = 0x06  # set operating mode (+ filter)
+_CMD_METER = 0x15  # meter readings
+_SUB_S_METER = 0x02
+_CMD_TRANSCEIVER_ID = 0x19  # read transceiver ID
+_SUB_TRANSCEIVER_ID = 0x00
+_CMD_PTT = 0x1C  # transceiver status
+_SUB_PTT = 0x00
+_CMD_ACK = 0xFB
+_CMD_NAK = 0xFA
+
+# Errno a disappeared USB-serial device raises on the next read; mapped to
+# ``serial_not_found`` by ``core/serial_open.py: serial_open_diagnostic``.
+_VANISH_ERRNO = errno.ENODEV
+
+
+class CivSerialFake:
+    """A stateful Icom radio on the far end of an in-memory serial duplex.
+
+    State (frequency, mode, filter, PTT, S-meter) changes only through the
+    wire or the explicit test-setup property setters. Refusals (the ``0xFA``
+    NAK) follow from the personality alone; every fault is scripted through
+    the methods below, never hidden in an answer table.
+    """
+
+    def __init__(
+        self,
+        model: str = "IC-7300",
+        *,
+        civ_addr: int | None = None,
+        model_id: bytes | None = None,
+        echo: bool = True,
+        frequency_hz: int = 14_074_000,
+        mode: int = 0x01,  # USB (§19 mode table)
+        filter_width: int = 1,
+        s_meter: int = 120,
+    ) -> None:
+        profile = resolve_radio_profile(model=model)
+        self._model = profile.model
+        self._civ_addr = civ_addr if civ_addr is not None else profile.civ_addr
+        if model_id is None:
+            if not profile.expected_identity_ids:
+                raise ValueError(
+                    f"profile {profile.model!r} declares no "
+                    "[identity].expected_ids; pass model_id= explicitly from a "
+                    "manual-cited source"
+                )
+            model_id = bytes.fromhex(profile.expected_identity_ids[0])
+        self._model_id = bytes(model_id)
+        self.echo = echo
+        self._frequency_hz = frequency_hz
+        self._mode = mode
+        self._filter_width = filter_width
+        self._ptt = False
+        self._s_meter = s_meter
+
+        # Fault surface (all off by default).
+        self._identity_delay_s = 0.0
+        self._identity_after_reconnect_only = False
+        self._model_id_override: bytes | None = None
+        self._silent_until = 0.0
+        self._vanished = False
+
+        self._open_count = 0
+        self._connections: list[_Connection] = []
+        self._commands: list[CivFrame] = []
+
+    # ------------------------------------------------------------------
+    # Identity / state surface
+    # ------------------------------------------------------------------
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @property
+    def civ_addr(self) -> int:
+        return self._civ_addr
+
+    @property
+    def model_id(self) -> bytes:
+        """The model-id bytes the ``19 00`` identity read answers with."""
+        return self._model_id_override or self._model_id
+
+    @property
+    def frequency_hz(self) -> int:
+        return self._frequency_hz
+
+    @frequency_hz.setter
+    def frequency_hz(self, value: int) -> None:
+        self._frequency_hz = int(value)
+
+    @property
+    def mode(self) -> int:
+        return self._mode
+
+    @property
+    def filter_width(self) -> int:
+        return self._filter_width
+
+    @property
+    def ptt(self) -> bool:
+        return self._ptt
+
+    @property
+    def s_meter(self) -> int:
+        return self._s_meter
+
+    @s_meter.setter
+    def s_meter(self, value: int) -> None:
+        self._s_meter = int(value)
+
+    @property
+    def open_count(self) -> int:
+        """How many times the port has been (re)opened."""
+        return self._open_count
+
+    @property
+    def commands(self) -> tuple[CivFrame, ...]:
+        """Every well-formed inbound frame, parsed, in order of arrival."""
+        return tuple(self._commands)
+
+    # ------------------------------------------------------------------
+    # Scriptable faults
+    # ------------------------------------------------------------------
+
+    def delay_identity_answer(self, seconds: float) -> None:
+        """Answer the ``19 00`` identity read *seconds* late."""
+        if seconds < 0:
+            raise ValueError("seconds must be >= 0")
+        self._identity_delay_s = seconds
+
+    def answer_identity_after_reconnect_only(self) -> None:
+        """Drop ``19 00`` until the port is REOPENED (open ordinal >= 2)."""
+        self._identity_after_reconnect_only = True
+
+    def wrong_model_id(self, model_id: bytes | None = None) -> None:
+        """Answer ``19 00`` with a model id the profile does not expect.
+
+        The default wrong id is profile-derived too: the IC-7610's declared
+        native ID from ``rigs/ic7610.toml`` — a real radio that is not this
+        one. (Falls back to an inverted byte if the profiles ever collide.)
+        """
+        if model_id is None:
+            other = resolve_radio_profile(model="IC-7610")
+            candidate = (
+                bytes.fromhex(other.expected_identity_ids[0])
+                if other.expected_identity_ids
+                else b""
+            )
+            if not candidate or candidate == self._model_id:
+                candidate = bytes([self._model_id[0] ^ 0xFF])
+            model_id = candidate
+        self._model_id_override = bytes(model_id)
+
+    def silence(self, for_seconds: float) -> None:
+        """MOR-2861: the link stays open and nothing answers for the window.
+
+        Writes are still accepted (a silent device does not error the port);
+        reads simply never yield — echo included.
+        """
+        self._silent_until = time.monotonic() + max(0.0, for_seconds)
+
+    def usb_vanish(self, at: float = 0.0) -> None:
+        """Make the device disappear *at* seconds from now.
+
+        Every open connection fails: pending and later reads raise
+        ``OSError(ENODEV)`` and writes raise it too. New opens raise the same
+        error while the device is gone — the class ``serial_open.py`` maps to
+        ``serial_not_found``.
+        """
+        asyncio.get_running_loop().call_later(max(0.0, at), self._vanish_now)
+
+    def usb_reappear(self, after: float = 0.0) -> None:
+        """Make the device openable again *after* seconds from now."""
+        asyncio.get_running_loop().call_later(max(0.0, after), self._reappear_now)
+
+    def _vanish_now(self) -> None:
+        self._vanished = True
+        error = OSError(_VANISH_ERRNO, "CI-V fake: USB device disappeared")
+        for connection in self._connections:
+            connection.fail(error)
+
+    def _reappear_now(self) -> None:
+        self._vanished = False
+
+    # ------------------------------------------------------------------
+    # Mounting seams
+    # ------------------------------------------------------------------
+
+    async def open_serial_connection(self) -> tuple[asyncio.StreamReader, Any]:
+        """Zero-argument opener for ``SerialCivLink(open_serial_connection=...)``."""
+        return self._open()
+
+    async def opener(
+        self,
+        *,
+        url: str | None = None,
+        baudrate: int | None = None,
+        **kwargs: Any,
+    ) -> tuple[asyncio.StreamReader, Any]:
+        """``open_serial_port``-style opener (keyword ``url``/``baudrate``)."""
+        _ = (url, baudrate, kwargs)
+        return self._open()
+
+    def _open(self) -> tuple[asyncio.StreamReader, "_FakeSerialWriter"]:
+        if self._vanished:
+            raise OSError(_VANISH_ERRNO, "CI-V fake: USB device is gone")
+        self._open_count += 1
+        connection = _Connection(self, self._open_count)
+        self._connections.append(connection)
+        return connection.reader, connection.writer
+
+    # ------------------------------------------------------------------
+    # Radio behaviour
+    # ------------------------------------------------------------------
+
+    def _on_wire_frame(self, connection: "_Connection", frame: bytes) -> None:
+        if self._vanished or time.monotonic() < self._silent_until:
+            return  # silent device: writes accepted, nothing answers, no echo
+        if self.echo:
+            # USB CI-V echo: the port returns the inbound frame verbatim.
+            connection.deliver(frame)
+        try:
+            parsed = parse_civ_frame(frame)
+        except ValueError:
+            return  # garbage on the wire: a real radio ignores it
+        self._commands.append(parsed)
+        if parsed.to_addr not in (self._civ_addr, _BROADCAST_ADDR):
+            return
+        reply = self._answer(parsed, connection)
+        if reply is None:
+            return
+        delay = self._identity_delay_s if parsed.command == _CMD_TRANSCEIVER_ID else 0.0
+        if delay > 0.0:
+            asyncio.get_running_loop().call_later(delay, connection.deliver, reply)
+        else:
+            connection.deliver(reply)
+
+    def _answer(self, parsed: CivFrame, connection: "_Connection") -> bytes | None:
+        cmd = parsed.command
+        if cmd == _CMD_TRANSCEIVER_ID and parsed.sub == _SUB_TRANSCEIVER_ID:
+            if self._identity_after_reconnect_only and connection.ordinal < 2:
+                return None
+            return build_civ_frame(
+                CONTROLLER_ADDR,
+                self._civ_addr,
+                _CMD_TRANSCEIVER_ID,
+                sub=_SUB_TRANSCEIVER_ID,
+                data=self.model_id,
+            )
+        if cmd == _CMD_FREQ_GET and not parsed.data:
+            return build_civ_frame(
+                CONTROLLER_ADDR,
+                self._civ_addr,
+                _CMD_FREQ_GET,
+                data=_bcd_encode_freq(self._frequency_hz),
+            )
+        if cmd == _CMD_FREQ_SET:
+            if len(parsed.data) == 5:
+                self._frequency_hz = _bcd_decode_freq(parsed.data)
+                return self._ack()
+            return self._nak()
+        if cmd == _CMD_MODE_GET and not parsed.data:
+            return build_civ_frame(
+                CONTROLLER_ADDR,
+                self._civ_addr,
+                _CMD_MODE_GET,
+                data=bytes([self._mode, self._filter_width]),
+            )
+        if cmd == _CMD_MODE_SET:
+            if parsed.data:
+                self._mode = parsed.data[0]
+                if len(parsed.data) > 1:
+                    self._filter_width = parsed.data[1]
+                return self._ack()
+            return self._nak()
+        if cmd == _CMD_PTT and parsed.sub == _SUB_PTT:
+            if not parsed.data:
+                return build_civ_frame(
+                    CONTROLLER_ADDR,
+                    self._civ_addr,
+                    _CMD_PTT,
+                    sub=_SUB_PTT,
+                    data=bytes([int(self._ptt)]),
+                )
+            if parsed.data[0] in (0x00, 0x01):
+                self._ptt = bool(parsed.data[0])
+                return self._ack()
+            return self._nak()
+        if cmd == _CMD_METER and parsed.sub == _SUB_S_METER and not parsed.data:
+            return build_civ_frame(
+                CONTROLLER_ADDR,
+                self._civ_addr,
+                _CMD_METER,
+                sub=_SUB_S_METER,
+                data=_level_bcd_encode(self._s_meter),
+            )
+        if cmd in (_CMD_ACK, _CMD_NAK):
+            return None  # a controller's own ACK/NAK is not answered
+        if parsed.to_addr == _BROADCAST_ADDR:
+            return None  # unknown broadcast: silence, as on a real bus
+        return self._nak()
+
+    def _ack(self) -> bytes:
+        return build_civ_frame(CONTROLLER_ADDR, self._civ_addr, _CMD_ACK)
+
+    def _nak(self) -> bytes:
+        return build_civ_frame(CONTROLLER_ADDR, self._civ_addr, _CMD_NAK)
+
+
+class _Connection:
+    """One open session of the fake: an asyncio reader/writer pair.
+
+    ``ordinal`` is the 1-based open counter value of this session, so the
+    radio can tell a reconnect (ordinal >= 2) from the first open.
+    """
+
+    def __init__(self, fake: CivSerialFake, ordinal: int) -> None:
+        self._fake = fake
+        self.ordinal = ordinal
+        self.reader = asyncio.StreamReader()
+        self.writer = _FakeSerialWriter(fake, self)
+        self.error: OSError | None = None
+
+    def fail(self, error: OSError) -> None:
+        """Kill this session: pending and later reads raise *error*."""
+        self.error = error
+        self.reader.set_exception(error)
+
+    def deliver(self, data: bytes) -> None:
+        if self.error is None:
+            self.reader.feed_data(data)
+
+
+class _FakeSerialWriter:
+    """The write half of a fake serial connection.
+
+    De-frames host bytes into the radio with a deliberately dumb splitter
+    (ringfence rule 2: split on ``FE FE``, take to the first ``FD``), so a
+    framing bug in the production ``SerialFrameCodec`` stays visible here.
+    """
+
+    def __init__(self, fake: CivSerialFake, connection: _Connection) -> None:
+        self._fake = fake
+        self._connection = connection
+        self._buf = bytearray()
+        self.closed = False
+
+    def write(self, data: bytes) -> None:
+        if self._connection.error is not None:
+            raise self._connection.error
+        if self.closed:
+            raise RuntimeError("write to a closed fake serial writer")
+        self._buf += bytes(data)
+        while True:
+            start = self._buf.find(b"\xfe\xfe")
+            if start < 0:
+                self._buf.clear()
+                return
+            end = self._buf.find(b"\xfd", start + 2)
+            if end < 0:
+                del self._buf[:start]
+                return
+            frame = bytes(self._buf[start : end + 1])
+            del self._buf[: end + 1]
+            self._fake._on_wire_frame(self._connection, frame)
+
+    async def drain(self) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
+        if self._connection.error is None:
+            self._connection.reader.feed_eof()
+
+    async def wait_closed(self) -> None:
+        pass
+
+
+__all__ = ["CivSerialFake"]

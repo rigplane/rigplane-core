@@ -12,6 +12,15 @@ UDP code paths as production.
   fault injection (drop, reorder, stall, delay). The implementation lives in
   `rigplane_testkit/icom/simulator.py` and was moved unchanged from
   `tests/mock_server.py`.
+- `rigplane_testkit.serial` — `CivSerialFake`, a stateful IC-7300 personality
+  on an in-memory serial duplex (frequency, mode, filter, PTT, S-meter,
+  profile-derived identity, USB CI-V echo). It mounts behind the production
+  `SerialCivLink` through its `open_serial_connection` seam and behind
+  `open_serial_port` through the `opener` seam, and scripts the serial-side
+  faults the link was fixed against: delayed identity, identity only after a
+  reconnect, wrong model id, a silent link (MOR-2861), and USB vanish /
+  reappear (`ENODEV`, mapped to `serial_not_found`). The implementation lives
+  in `rigplane_testkit/serial/civ_serial.py`.
 
 ## How tests import it
 
