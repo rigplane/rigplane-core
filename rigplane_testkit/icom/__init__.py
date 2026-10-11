@@ -1,13 +1,14 @@
 """Icom LAN (UDP) radio simulator used by the rigplane test suites.
 
-The implementation lives in :mod:`rigplane_testkit.icom_lan.simulator`; this
+The implementation lives in :mod:`rigplane_testkit.icom.simulator`; this
 module re-exports its public surface so callers can write
-``from rigplane_testkit.icom_lan import MockIcomRadio``.
+``from rigplane_testkit.icom import MockIcomRadio``.
 """
 
-from rigplane_testkit.icom_lan.simulator import (
+from rigplane_testkit.icom.simulator import (
     _CMD_ACK,
     _CMD_ATT,
+    _CMD_CMD29,
     _CMD_FREQ_GET,
     _CMD_FREQ_SET,
     _CMD_LEVEL,
@@ -96,6 +97,7 @@ __all__ = [
     "_CMD_PTT",
     "_CMD_ACK",
     "_CMD_NAK",
+    "_CMD_CMD29",
     "_SUB_RF_POWER",
     "_SUB_S_METER",
     "_SUB_SWR_METER",

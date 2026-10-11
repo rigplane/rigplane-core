@@ -1,9 +1,10 @@
-"""Compatibility shim: the Icom LAN simulator moved to ``rigplane_testkit.icom_lan``."""
+"""Compatibility shim: the Icom LAN simulator moved to ``rigplane_testkit.icom``."""
 
-# Real implementation: rigplane_testkit/icom_lan/simulator.py (moved unchanged).
-from rigplane_testkit.icom_lan.simulator import (
+# Real implementation: rigplane_testkit/icom/simulator.py (moved unchanged).
+from rigplane_testkit.icom.simulator import (
     _CMD_ACK,
     _CMD_ATT,
+    _CMD_CMD29,
     _CMD_FREQ_GET,
     _CMD_FREQ_SET,
     _CMD_LEVEL,
@@ -92,6 +93,7 @@ __all__ = [
     "_CMD_PTT",
     "_CMD_ACK",
     "_CMD_NAK",
+    "_CMD_CMD29",
     "_SUB_RF_POWER",
     "_SUB_S_METER",
     "_SUB_SWR_METER",

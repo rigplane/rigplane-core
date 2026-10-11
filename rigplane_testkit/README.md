@@ -6,21 +6,21 @@ UDP code paths as production.
 
 ## Contents
 
-- `rigplane_testkit.icom_lan` — `MockIcomRadio`, an asyncio UDP simulator of an
+- `rigplane_testkit.icom` — `MockIcomRadio`, an asyncio UDP simulator of an
   Icom IC-7610 LAN interface: control-port discovery/login/token/ping, a CI-V
   command port, single-owner session holding with keepalive renewal, and
   fault injection (drop, reorder, stall, delay). The implementation lives in
-  `rigplane_testkit/icom_lan/simulator.py` and was moved unchanged from
+  `rigplane_testkit/icom/simulator.py` and was moved unchanged from
   `tests/mock_server.py`.
 
 ## How tests import it
 
 Existing tests keep their imports unchanged: `tests/mock_server.py` is a thin
-re-export shim over `rigplane_testkit.icom_lan.simulator`. New code can import
+re-export shim over `rigplane_testkit.icom.simulator`. New code can import
 the package directly:
 
 ```python
-from rigplane_testkit.icom_lan import MockIcomRadio
+from rigplane_testkit.icom import MockIcomRadio
 ```
 
 The package is importable under pytest because `pyproject.toml` sets
@@ -30,7 +30,7 @@ The package is importable under pytest because `pyproject.toml` sets
 
 `rigplane_testkit` is **not** part of the published `rigplane` wheel:
 `[tool.hatch.build.targets.wheel]` packages only `src/rigplane` and
-`src/icom_lan`. It exists for development and testing only.
+the legacy compatibility shim. It exists for development and testing only.
 
 ## Planned next
 
