@@ -3,20 +3,23 @@
 The MOR-2861 case driven end to end: the real ``Ic7300SerialRadio`` (the
 class ``rigplane web --backend serial --model IC-7300`` resolves through
 ``backends/factory.py``) connected to ``CivSerialFake`` through the
-production ``SerialCivLink`` opener seam, a live poller driving the public
-``get_freq(bypass_cache=True)`` so real CI-V ``0x03`` polls with response
-waiters are continuously outstanding, and a managed-TX composition
-installed the way ``cli: _cmd_web`` installs it. When the fake goes silent
-with the port open, the watchdog must declare link-down inside the
-documented budget (``_serial_link_down_silence_limit_s`` /
-``_SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD`` answer windows, whichever the
-evidence crosses first) and park managed TX: the authority must refuse keys
-for the gap instead of letting one land on a dead wire.
+production ``SerialCivLink`` opener seam, a live poller sending
+fire-and-forget CI-V ``0x03`` reads in the shape ``web/radio_poller.py``
+sends them (``send_civ(..., wait_response=False, wait_dispatch=False)``),
+and a managed-TX composition installed the way ``cli: _cmd_web`` installs
+it. Those reads leave keyed response sinks outstanding but never produce a
+counted request timeout, so only the silence path
+(``_serial_link_down_silence_limit_s``) can declare link-down here; the
+test asserts that path by its log text and its budget.
+``_declare_serial_link_down`` must park managed TX before it tears down
+audio: the authority must have retired its provider by then, and must
+refuse keys afterwards.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Callable
@@ -27,6 +30,7 @@ import pytest
 from rigplane import RadioConnectionState
 from rigplane.backends.ic7300 import Ic7300SerialRadio
 from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
+from rigplane.commands.commander import Priority
 from rigplane.core.state_store import StateStore
 from rigplane.runtime.managed_tx_authority import ShutdownResult
 from rigplane.runtime.managed_tx_composition import (
@@ -38,6 +42,23 @@ from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane_testkit.serial import CivSerialFake
 
 _DEVICE = "civ-serial-fake"  # synthetic node name; no real path is opened
+
+# Cadence knobs the test sets on the radio, and the silence limit the
+# production formula (_serial_link_down_silence_limit_s: two answer windows
+# plus one watchdog tick) must yield for them. Pinned here so a change to
+# that formula fails this test instead of silently widening its budget.
+_ANSWER_WINDOW_S = 0.2
+_WATCHDOG_TICK_S = 0.02
+_SILENCE_LIMIT_S = 2 * _ANSWER_WINDOW_S + _WATCHDOG_TICK_S
+# The timeout path's threshold (_SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD); pinned
+# for the same reason, although these reads never feed it.
+_TIMEOUT_THRESHOLD = 3
+# Budget: the silence limit, one tick until the first watchdog tick that
+# starts the silence clock, one tick until the tick that sees the limit
+# crossed, and slack for event loop scheduling on a loaded test host.
+_SCHEDULING_SLACK_S = 0.2
+_LINK_DOWN_BUDGET_S = _SILENCE_LIMIT_S + 2 * _WATCHDOG_TICK_S + _SCHEDULING_SLACK_S
+_SILENCE_EVIDENCE_LOG = "polls outstanding and no CI-V frame parsed"
 
 # Shutdown budgets, scaled down from cli: _MANAGED_TX_SHUTDOWN_DRAIN_S and
 # _MANAGED_TX_SHUTDOWN_SETTLE_S in _shutdown_managed_tx_composition.
@@ -63,18 +84,21 @@ async def _wait_until(predicate: Callable[[], bool], *, timeout_s: float = 3.0) 
 
 
 async def _poll_loop(radio: Ic7300SerialRadio, stop: asyncio.Event) -> None:
-    """A live poller: one public frequency read after another, errors ignored.
+    """A live poller: fire-and-forget frequency reads, errors ignored.
 
-    While CONNECTED each read puts a real CI-V ``0x03`` on the wire with a
-    response waiter outstanding — the "polls outstanding" half of the
-    MOR-2861 evidence. A timed-out read falls back to the state cache or
-    raises; both shapes are absorbed here so the loop keeps polling through
-    the outage, the same absorb-and-continue stance ``web/radio_poller.py``
-    takes toward failed polls.
+    Each read registers a keyed response sink and puts a real CI-V ``0x03``
+    on the wire, the call ``web/radio_poller.py: RadioPoller._civ`` makes
+    for background polls. After link-down a read waits in the CI-V recovery
+    path, so teardown cancels this task rather than awaiting it.
     """
     while not stop.is_set():
         try:
-            await radio.get_freq(bypass_cache=True)
+            await radio.send_civ(
+                0x03,
+                wait_response=False,
+                priority=Priority.BACKGROUND,
+                wait_dispatch=False,
+            )
         except Exception:
             pass
         await asyncio.sleep(0.02)
@@ -93,8 +117,8 @@ async def test_silent_link_declares_link_down_in_budget_and_parks_tx(
         civ_link=link,
         _enumerate_serial_ports_fn=lambda: [],  # no real OS port enumeration
     )
-    radio._civ_get_timeout = 0.2
-    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.02
+    radio._civ_get_timeout = _ANSWER_WINDOW_S
+    radio._SERIAL_WATCHDOG_INTERVAL_S = _WATCHDOG_TICK_S
     radio._SERIAL_WATCHDOG_RETRY_S = 0.05
     radio._SERIAL_WATCHDOG_RETRY_MAX_S = 0.1
     composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
@@ -103,23 +127,30 @@ async def test_silent_link_declares_link_down_in_budget_and_parks_tx(
     store.begin_provider_generation()
     await composition.bind_state_store(store)  # as cli: _cmd_web does
 
+    assert radio._serial_link_down_silence_limit_s() == pytest.approx(_SILENCE_LIMIT_S)
+    assert radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD == _TIMEOUT_THRESHOLD
+
     await radio.connect()
     assert radio.connected
     assert (await composition.authority.snapshot()).provider_generation is not None
 
+    # Record the authority's provider generation at the moment link-down
+    # moves on to audio teardown, which _declare_serial_link_down does only
+    # after its park has returned.
+    generation_at_audio_teardown: list[int | None] = []
+    stop_audio = radio._stop_serial_audio_driver
+
+    async def _recording_stop_audio() -> None:
+        generation_at_audio_teardown.append(
+            composition.authority.snapshot_nowait().provider_generation
+        )
+        await stop_audio()
+
+    radio._stop_serial_audio_driver = _recording_stop_audio  # type: ignore[method-assign]
+
     stop = asyncio.Event()
     poller = asyncio.create_task(_poll_loop(radio, stop))
-    # The documented budget: the MOR-2861 silence limit or three consecutive
-    # answer-window timeouts (MOR-1440), whichever the evidence crosses
-    # first, plus the tick phase against the asynchronous RX pump.
-    budget_s = (
-        max(
-            radio._serial_link_down_silence_limit_s(),
-            radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD * radio._civ_get_timeout,
-        )
-        + 2.0 * radio._SERIAL_WATCHDOG_INTERVAL_S
-        + 0.3
-    )
+    budget_s = _LINK_DOWN_BUDGET_S
     try:
         assert await _wait_until(
             lambda: any(frame.command == 0x03 for frame in fake.commands),
@@ -148,23 +179,26 @@ async def test_silent_link_declares_link_down_in_budget_and_parks_tx(
             if record.levelno >= logging.ERROR and "link-down" in record.getMessage()
         ]
         assert len(link_down_errors) == 1
+        assert _SILENCE_EVIDENCE_LOG in link_down_errors[0].getMessage(), (
+            "link-down was not declared by the silence path: "
+            f"{link_down_errors[0].getMessage()!r}"
+        )
 
-        # TX is parked for the gap. Parking is not instantaneous: the
-        # reconnect path parks through radio: _park_managed_tx →
-        # composition.transport_unavailable, which submits a force_off and
-        # waits for its settlement before retiring the provider, so on the
-        # silent wire the park completes at the attempt deadline (authority
-        # default ATTEMPT_TIMEOUT_S). Wait for the park, then assert both
-        # observables: no ready provider, and a refused key instead of a
-        # WRITE_ON landing on the dead wire.
+        # Link-down parks TX itself: by the time it tears down audio the
+        # provider is retired.
         assert await _wait_until(
-            lambda: composition.authority.snapshot_nowait().provider_generation is None,
-            timeout_s=_PARK_SETTLE_S,
-        ), "managed TX never parked after the silent-link link-down"
+            lambda: bool(generation_at_audio_teardown), timeout_s=_PARK_SETTLE_S
+        ), "link-down never reached audio teardown"
+        assert generation_at_audio_teardown[0] is None, (
+            "link-down tore down audio with managed TX still provided "
+            f"(generation {generation_at_audio_teardown[0]})"
+        )
         assert await composition.authority.transmit_on() is ManagedTxOutcome.REJECTED
     finally:
         stop.set()
-        await poller
+        poller.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await poller
         # Teardown order as production runs it (cli: _cmd_web drives the
         # command inside ``async with session``; ``_ManagedTxRadioSession.
         # __aexit__`` awaits ``_shutdown_managed_tx_composition`` before the
