@@ -1,8 +1,6 @@
 name: Platform subset
 
 on:
-  push:
-    branches: [codex/platform-subset]
   schedule:
     # Daily 01:30 UTC.
     - cron: "30 1 * * *"
