@@ -2,20 +2,14 @@
 
 ``.github/workflows/consumer-contracts-gate.yml`` runs
 ``scripts/run_consumer_contracts.py`` only when a filtered path changes. The
-runner's ``web_surface`` artifact (added in PR #4046) exposes
-``ControlHandler._COMMANDS`` (``scripts/run_consumer_contracts.py``:
-``_build_web_surface``), and that set is the literal handler command list
-unioned with ``frozenset(command_descriptors())`` in
-``src/rigplane/web/handlers/control.py`` (``ControlHandler._COMMANDS``).
-``control.py`` imports ``command_descriptors`` from
-``rigplane.core.command_dispatch`` and builds ``_COMMANDS`` as the literal
-handler command list unioned with ``frozenset(command_descriptors())``, so a
-command added or removed in ``src/rigplane/core/command_dispatch.py`` changes
-the artifact without touching any filtered path — only the in-suite
-``tests/contracts/test_consumer_contracts.py`` would catch it. This test
-therefore requires ``src/rigplane/core/command_dispatch.py`` plus every
-``rigplane.*`` module the runner imports to appear in BOTH the ``push:`` and
-``pull_request:`` ``paths:`` blocks.
+runner's ``web_surface`` artifact (``_build_web_surface``) exposes
+``ControlHandler._COMMANDS`` from ``src/rigplane/web/handlers/control.py``,
+which is the literal handler command list unioned with
+``frozenset(command_descriptors())`` imported from
+``rigplane.core.command_dispatch``. This test therefore requires
+``src/rigplane/core/command_dispatch.py`` plus every ``rigplane.*`` module the
+runner imports to appear in BOTH the ``push:`` and ``pull_request:`` ``paths:``
+blocks.
 """
 
 from __future__ import annotations
