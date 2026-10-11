@@ -1431,8 +1431,8 @@ describe('RF gain additive display observation', () => {
           'src/lib/runtime/adapters/__tests__/fixtures/strict-projection.golden.json'),
         JSON.stringify(JSON.parse(strictJson), null, 2) + '\n');
     }
-    // One golden serves both freshness values: everything that differs
-    // between stale=false and stale=true is dropped by the replacer.
+    // One golden serves both freshness values: the stale/fresh difference
+    // sits in `display`, which the replacer drops.
     expect(view.dsp?.agcMode.reading).toEqual({ status: 'known', value: 0 });
     expect(view.receiverIndicators?.[0].agcMode.reading).toEqual({ status: 'known', value: 0 });
     expect(view.dsp?.manualNotchWidth.availability).toEqual({ structural: false, operational: false });
