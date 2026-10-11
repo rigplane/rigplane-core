@@ -14,10 +14,10 @@ fails when a test file not listed in the ledger constructs
 `MagicMock()`/`AsyncMock()`/`Mock()` without `spec=`/`spec_set=` and
 uses it where a radio, backend or transport is expected — assigned to
 such a name, assigned to such an attribute (unless the attribute name
-marks a callable stub: `_ensure_*`/`_handle_*` prefix or `_fn`/`_cls`
-suffix), passed as such a keyword parameter, or returned from a fixture
-factory with such a name. The full counting rule and the regeneration
-command are in the module docstring; today's offenders are listed in
+marks a callable stub: an `_ensure_*`/`_handle_*` prefix), passed as
+such a keyword parameter, or returned from a fixture factory with such
+a name. The full counting rule and the regeneration command are in the
+module docstring; today's offenders are listed in
 `tests/mock_spec_uncovered.txt`.
 
 ## Assertion-free test functions (MOR-3239)

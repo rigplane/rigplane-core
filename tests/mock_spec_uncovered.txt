@@ -2,7 +2,7 @@
 # MagicMock()/AsyncMock()/Mock() without spec=/spec_set= and use
 # it where a project object (radio, backend, transport) is
 # expected, not counting callable-stub attribute assignments
-# (_ensure_*/_handle_* prefix, _fn/_cls suffix). One path per
+# (_ensure_*/_handle_* prefix). One path per
 # line, relative to tests/, sorted. The test fails on an
 # offender missing here, and on a line here that no longer
 # offends -- delete that line, never keep it. Regenerate, do

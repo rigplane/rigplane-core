@@ -17,10 +17,10 @@ one of four uses, each of which names the mock as a project object:
    ``transport`` (case-insensitive), via ``=`` or an annotated ``=``;
 2. assigned to an attribute whose own name contains one of those tokens
    (``radio._civ_transport = MagicMock()``) -- unless the attribute name
-   marks a callable stub: an ``_ensure_`` or ``_handle_`` prefix, or an
-   ``_fn`` or ``_cls`` suffix. ``radio._ensure_audio_transport =
-   AsyncMock()`` replaces one method with a stub; the mock never stands
-   in for a transport object, so it is not counted;
+   marks a callable stub: an ``_ensure_`` or ``_handle_`` prefix.
+   ``radio._ensure_audio_transport = AsyncMock()`` replaces one method
+   with a stub; the mock never stands in for a transport object, so it
+   is not counted;
 3. passed as a keyword argument whose parameter name contains one of
    those tokens (``make_handler(radio=AsyncMock())``);
 4. returned or yielded by a function whose own name contains one of
@@ -56,7 +56,6 @@ REGEN_ENV = "RIGPLANE_REGEN_MOCK_SPEC_UNCOVERED"
 MOCK_CONSTRUCTORS = frozenset({"MagicMock", "AsyncMock", "Mock"})
 PROJECT_NAME_TOKENS = ("radio", "backend", "transport")
 STUB_ATTRIBUTE_PREFIXES = ("_ensure_", "_handle_")
-STUB_ATTRIBUTE_SUFFIXES = ("_fn", "_cls")
 
 Offence = tuple[int, str]  # (source line, why this is an offence)
 
@@ -91,14 +90,12 @@ def _mentions_project_type(name: str) -> bool:
 def _is_callable_stub_attribute(name: str) -> bool:
     """True when an attribute name marks a callable stub, not an object.
 
-    ``_ensure_*``/``_handle_*`` prefixes and ``_fn``/``_cls`` suffixes name
-    methods being replaced by a stub (``radio._ensure_audio_transport =
-    AsyncMock()``); the mock never stands in for a radio, backend or
-    transport object, so rule 2 does not count it.
+    An ``_ensure_*``/``_handle_*`` prefix names a method being replaced
+    by a stub (``radio._ensure_audio_transport = AsyncMock()``); the
+    mock never stands in for a radio, backend or transport object,
+    so rule 2 does not count it.
     """
-    return name.startswith(STUB_ATTRIBUTE_PREFIXES) or name.endswith(
-        STUB_ATTRIBUTE_SUFFIXES
-    )
+    return name.startswith(STUB_ATTRIBUTE_PREFIXES)
 
 
 def _mock_spec_offences(tree: ast.Module) -> list[Offence]:
@@ -171,7 +168,7 @@ def _render_ledger(offending: Mapping[str, Sequence[Offence]]) -> str:
         "# MagicMock()/AsyncMock()/Mock() without spec=/spec_set= and use",
         "# it where a project object (radio, backend, transport) is",
         "# expected, not counting callable-stub attribute assignments",
-        "# (_ensure_*/_handle_* prefix, _fn/_cls suffix). One path per",
+        "# (_ensure_*/_handle_* prefix). One path per",
         "# line, relative to tests/, sorted. The test fails on an",
         "# offender missing here, and on a line here that no longer",
         "# offends -- delete that line, never keep it. Regenerate, do",
@@ -227,6 +224,10 @@ _OFFENDING_SOURCE = textwrap.dedent(
         radio._civ_transport = MagicMock()
 
 
+    def test_attribute_transport_cls(radio):
+        radio._transport_cls = Mock()
+
+
     def test_keyword_radio(make_handler):
         handler = make_handler(radio=AsyncMock())
         assert handler is not None
@@ -257,8 +258,6 @@ _CLEAN_SOURCE = textwrap.dedent(
 
         radio._ensure_audio_transport = AsyncMock()
         handler._handle_radio_connect = AsyncMock()
-        radio._transport_fn = Mock()
-        radio._transport_cls = Mock()
         assert radio and backend and unrelated and logger and made
     """
 )
@@ -277,6 +276,7 @@ def test_offending_fixture_is_flagged(tmp_path: pathlib.Path) -> None:
         "assigned to 'radio'",
         "assigned to 'backend'",
         "assigned to attribute '_civ_transport'",
+        "assigned to attribute '_transport_cls'",
         "keyword argument 'radio'",
         "returned from 'radio'",
     }
