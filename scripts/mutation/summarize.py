@@ -1,7 +1,8 @@
 """Summarize ``mutmut results --all`` text per mutated module.
 
 Reads the four-space-indented ``<mutant name>: <status>`` lines that
-``uv run mutmut results --all`` prints, attributes each mutant to the
+``uv run mutmut results --all=true`` prints (mutmut 3.8 takes a value,
+not a bare flag), attributes each mutant to the
 longest matching module name given on the command line, and emits a JSON
 object of the form::
 
