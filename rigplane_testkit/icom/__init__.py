@@ -7,6 +7,8 @@ fault-injection plan lives in :mod:`rigplane_testkit.icom.faults`.
 """
 
 from rigplane_testkit.icom.faults import FaultPlan, FaultRule
+from rigplane_testkit.icom.recorder import IcomSessionRecorder, redact_datagram
+from rigplane_testkit.icom.replay import Recording, Record, ReplayResponder
 from rigplane_testkit.icom.simulator import (
     _CMD_ACK,
     _CMD_ATT,
@@ -62,6 +64,11 @@ __all__ = [
     "MockIcomRadio",
     "FaultPlan",
     "FaultRule",
+    "IcomSessionRecorder",
+    "redact_datagram",
+    "Recording",
+    "Record",
+    "ReplayResponder",
     "_MockProtocol",
     "_bcd_byte",
     "_bcd_decode_freq",

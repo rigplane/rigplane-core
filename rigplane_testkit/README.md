@@ -27,6 +27,27 @@ UDP code paths as production.
   (`drop_rate`, `reorder_window`, `response_delay`, `stall_for`), which are
   unchanged.
   Wire-level examples live in `tests/testkit/test_simulator_faults.py`.
+- `rigplane_testkit.serial` — `CivSerialFake`, a stateful IC-7300 personality
+  on an in-memory serial duplex (frequency, mode, filter, PTT, S-meter,
+  profile-derived identity, USB CI-V echo). It mounts behind the production
+  `SerialCivLink` through its `open_serial_connection` seam and behind
+  `open_serial_port` through the `opener` seam, and scripts the serial-side
+  faults the link was fixed against: delayed identity, identity only after a
+  reconnect, wrong model id, a silent link (MOR-2861), and USB vanish /
+  reappear (`ENODEV`, mapped to `serial_not_found`). The implementation lives
+  in `rigplane_testkit/serial/civ_serial.py`.
+- `rigplane_testkit.icom.recorder` — `IcomSessionRecorder`, an asyncio UDP
+  proxy that sits between a client and a radio (real or simulated) and writes
+  every datagram on the control/CI-V/audio ports to JSONL with direction,
+  port and monotonic time. The radio-advertised CI-V/audio ports in the
+  status packet are rewritten to the proxy's listeners; login credentials and
+  the session-token slot of every control packet (0x40/0x50/0x60/0x90, both
+  directions) are zeroed before anything hits disk. CLI:
+  `python -m rigplane_testkit.icom record --radio HOST --out FILE`.
+- `rigplane_testkit.icom.replay` — `Recording.load` plus `ReplayResponder`,
+  a pure (socket-free) replayer that answers CI-V requests with the recorded
+  reply bytes (latest wins, misses land in `unanswered`) and yields the
+  recorded unsolicited frames on their timeline.
 
 ## How tests import it
 
@@ -50,8 +71,9 @@ the legacy compatibility shim. It exists for development and testing only.
 ## Planned next
 
 - Audio (RTP) port simulation alongside control and CI-V ports.
-- A recorder/replayer that captures real radio sessions and replays them
-  through the same simulator surface.
+- Wiring the replayer into the simulator so recorded sessions answer through
+  the same simulator surface (the recorder and the pure `ReplayResponder`
+  are in place; the simulator mount is a separate task).
 - Extraction of the CI-V dispatcher into `civ_model.py`, deferred from the
   initial move because `_dispatch_civ` and the radio state it mutates are
   methods and attributes of the single `MockIcomRadio` class.
