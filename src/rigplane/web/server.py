@@ -4219,9 +4219,16 @@ class WebServer:
                 open_fds += 1
             break
         radio = self._radio
-        reconnects_observable = radio is not None and callable(
-            getattr(radio, "set_reconnect_status_callback", None)
+        # Reconnect status is emitted only by the LAN watchdog/reconnect
+        # loops (``runtime/radio_reconnect.py``), started solely by
+        # ``ControlPhase._start_watchdog`` — recorded in ``_watchdog_task``.
+        # Serial CI-V radios inherit ``set_reconnect_status_callback`` yet
+        # their own watchdog never emits, so only a started watchdog makes
+        # the count measured; anything else reports null ("not counted").
+        watchdog_task = (
+            getattr(radio, "_watchdog_task", None) if radio is not None else None
         )
+        reconnects_observable = watchdog_task is not None
         return {
             "rssBytes": rss_bytes,
             "openFds": open_fds,

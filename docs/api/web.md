@@ -313,7 +313,7 @@ report is `null`.
 | `openFds` | Open file descriptors listed in `/proc/self/fd` or `/dev/fd`; `null` where neither can be listed (Windows). |
 | `threads` | Python threads, `threading.active_count()`. |
 | `asyncioTasks` | Unfinished tasks on the server's event loop, `asyncio.all_tasks()`. |
-| `reconnectsTotal` | `reconnecting` edges reported to `WebServer._on_reconnect_status` since the web server was created; `null` when the radio has no `set_reconnect_status_callback`. |
+| `reconnectsTotal` | `reconnecting` edges reported to `WebServer._on_reconnect_status` since the web server was created; `null` when the radio never emits reconnect status — only the LAN watchdog/reconnect loops emit it, so serial CI-V radios (whose own watchdog reconnects silently) and radios whose LAN watchdog has not been started report `null`. |
 
 ## `POST /api/v1/commands`
 

@@ -53,7 +53,7 @@ async def test_process_block_has_expected_keys_and_types() -> None:
         ), key
     assert type(process["threads"]) is int and process["threads"] >= 1
     assert type(process["asyncioTasks"]) is int and process["asyncioTasks"] >= 1
-    # The stub radio has no reconnect-status callback, so no count is observable.
+    # The stub radio has no started watchdog, so no count is observable.
     assert process["reconnectsTotal"] is None
 
 
@@ -83,11 +83,32 @@ async def test_open_fds_counts_a_descriptor_opened_by_the_test() -> None:
     assert after == before + 1
 
 
-async def test_reconnects_total_counts_reconnecting_edges_only() -> None:
+async def test_reconnects_total_null_for_serial_shaped_radio() -> None:
+    """A serial radio inherits the callback setter but never emits status.
+
+    ``backends/_icom_serial_base.py: _IcomSerialRadioBase`` inherits
+    ``set_reconnect_status_callback`` from ``CoreRadio``, yet only the LAN
+    watchdog/reconnect loops ever call it; the serial CI-V watchdog
+    reconnects silently. Such a radio must report null ("not counted"),
+    not a constant 0.
+    """
     srv = _stub_server()
     srv._radio = SimpleNamespace(  # noqa: SLF001
         **vars(srv._radio),  # noqa: SLF001
         set_reconnect_status_callback=lambda callback: None,
+        _watchdog_task=None,
+    )
+    assert (await _runtime(srv))["process"]["reconnectsTotal"] is None
+
+
+async def test_reconnects_total_counts_reconnecting_edges_only() -> None:
+    srv = _stub_server()
+    watchdog_task = asyncio.create_task(asyncio.sleep(0))
+    await watchdog_task  # done, like a watchdog that fired — still "started"
+    srv._radio = SimpleNamespace(  # noqa: SLF001
+        **vars(srv._radio),  # noqa: SLF001
+        set_reconnect_status_callback=lambda callback: None,
+        _watchdog_task=watchdog_task,
     )
     assert (await _runtime(srv))["process"]["reconnectsTotal"] == 0
     for status in (
