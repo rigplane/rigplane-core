@@ -20,7 +20,7 @@ freeze limits how the code itself moves.
 
 ## What gets mutated
 
-`only_mutate` in `pyproject.toml` names the fifteen modules from MOR-3285:
+`only_mutate` in `pyproject.toml` names the fifteen high-risk modules the stabilization program picked:
 the web delta encoder, the rigctld protocol and routing modules, the CIv
 codec, the audio codecs, the command frame codec, the core types and
 state store, the acquisition drain, the controller authority, the TX
@@ -127,7 +127,7 @@ rerun).
   import time, so the selected tests exercise table data, not the
   trampolined functions mutmut attributes coverage through. Fixing this
   needs either dedicated routing unit tests or a different measurement
-  approach — tracked in MOR-3285, not solved by this job.
+  approach — tracked in the ticket that owns this job, not solved by it.
 * `rigplane.core.tx_target` has no dedicated unit-test file; 70 of 101
   mutants report `no tests`.
 * `rigplane.audio._codecs` kills only 26 of 502 mutants: the focused

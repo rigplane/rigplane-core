@@ -1,5 +1,5 @@
 # Weekly mutation-testing trend sweep over the small high-risk modules
-# (MOR-3285). Informational only: it uploads per-module killed/survived
+# of the stabilization program. Informational only: it uploads per-module killed/survived
 # counts as artifacts and posts nothing to any PR, and it is not a
 # required check anywhere. How to read the results:
 # docs/development/mutation-testing.md.

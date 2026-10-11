@@ -92,7 +92,7 @@ dev = [
     "pytest-xdist>=3.6",
     "ruff>=0.15.2",
     "types-pyserial>=3.5",
-    # Dev/CI-only — drives the weekly mutation-testing trend job (MOR-3285).
+    # Dev/CI-only — drives the weekly mutation-testing trend job.
     "mutmut>=3.8,<4",
 ]
 
@@ -225,9 +225,9 @@ module = [
 disable_error_code = ["attr-defined"]
 
 [tool.mutmut]
-# Weekly mutation-testing trend job (MOR-3285). The whole src/ tree is
+# Weekly mutation-testing trend job. The whole src/ tree is
 # copied into mutants/ so imports stay intact; only_mutate restricts
-# mutation to the small high-risk modules named in MOR-3285.
+# mutation to the small high-risk modules of the stabilization program.
 source_paths = ["src/"]
 # Top-level test-support and rig-profile data; without these the copied
 # tree cannot import rigplane_testkit (pythonpath=["."]) or discover any
