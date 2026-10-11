@@ -1,9 +1,6 @@
 /**
- * Pure PTT restore gate for the TX adapter.
- *
- * Extracted verbatim from tx-adapter.ts so Stryker can mutate it: both
- * helpers are functions of their arguments only — no runtime singleton,
- * stores, or module-level state.
+ * Pure PTT restore gate for the TX adapter: both helpers are functions of
+ * their arguments only — no runtime singleton, stores, or module-level state.
  */
 
 export interface PttObservationMarker {

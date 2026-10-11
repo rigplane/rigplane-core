@@ -66,14 +66,14 @@ Open `mutation.html` and select a file. Each mutant has a status:
 The following files in `frontend/src/lib/runtime/adapters/` import a store
 module (`$lib/stores/*`) or the runtime singleton (`../frontend-runtime`)
 and call into it, so what they return or do depends on module-level state,
-not only on their arguments. They are not mutated; splitting their pure parts out is follow-up
-work.
+not only on their arguments. A row names the pure module that is mutated in
+its place where one exists; the rest of each file is not mutated.
 
 | File | Imports |
 |---|---|
 | `audio-adapter.ts` | `runtime` from `../frontend-runtime` |
 | `panel-adapters.ts` | `runtime` from `../frontend-runtime`; `$lib/stores/capabilities.svelte`; `$lib/stores/commands.svelte` |
-| `tx-adapter.ts` | `runtime` from `../frontend-runtime`; its restore-gate helpers (`markerIsStrictlyNewer`, `canRestoreModAfterConfirmedOff`) now live in the pure `ptt-restore-gate.ts` and are mutated, while the local-audio attempt lifecycle over module state stays here, unmutated |
+| `tx-adapter.ts` | `runtime` from `../frontend-runtime`. Its restore-gate helpers (`markerIsStrictlyNewer`, `canRestoreModAfterConfirmedOff`) are the pure `ptt-restore-gate.ts`, which is mutated; the local-audio attempt lifecycle over module state is not |
 | `vfo-adapter.ts` | `runtime` from `../frontend-runtime` |
 | `mod-input-auto.svelte.ts` | `getRadioState` from `$lib/stores/radio.svelte`; `getCapabilities` from `$lib/stores/capabilities.svelte` |
 | `mod-input-tx-guard.svelte.ts` | `getRadioState` from `$lib/stores/radio.svelte`; `getCapabilities` from `$lib/stores/capabilities.svelte` |
