@@ -1,6 +1,6 @@
 # Frontend mutation testing (Stryker)
 
-Stryker mutates two pure view-model modules and checks whether their own
+Stryker mutates three pure view-model modules and checks whether their own
 tests notice each change. The run is informational: it is not a required
 check, has no threshold that fails it, and runs only nightly or by hand
 (`.github/workflows/stryker-nightly.yml`).
@@ -11,12 +11,16 @@ check, has no threshold that fails it, and runs only nightly or by hand
 
 - `frontend/src/lib/runtime/adapters/radio-view-model-adapter.ts`
 - `frontend/src/semantic/radio-view-model.ts`
+- `frontend/src/lib/runtime/props/panel-props.ts`
 
 `frontend/vitest.stryker.config.ts` names the tests that run against each
 mutant in `test.include`:
 
 - `frontend/src/lib/runtime/adapters/__tests__/radio-view-model-adapter.test.ts`
 - `frontend/src/semantic/__tests__/radio-view-model.test.ts`
+- `frontend/src/lib/runtime/props/__tests__/panel-props.test.ts`
+- `frontend/src/lib/runtime/props/__tests__/notch-freq-domain.isolated.test.ts`
+- `frontend/src/lib/runtime/props/__tests__/nr-level-projection.isolated.test.ts`
 
 Other test files in the suite also import these modules. They are not in
 the Stryker test set, so a mutant reported as survived or without coverage
@@ -59,6 +63,13 @@ Open `mutation.html` and select a file. Each mutant has a status:
 `mutation.json` holds the same results in machine-readable form.
 
 ## Adapters that are not pure
+
+Two adapters in the table below read the runtime singleton only to feed
+`props/panel-props.ts`: `audio-adapter.ts`'s `deriveRxAudioProps` passes
+runtime state to `toRxAudioProps`, and `vfo-adapter.ts`'s `deriveMainVfo`,
+`deriveSubVfo` and `deriveVfoOps` pass it to `toVfoProps` and
+`toVfoOpsProps`. Their state→props mapping therefore runs inside
+`panel-props.ts`, which the Stryker run mutates.
 
 The following files in `frontend/src/lib/runtime/adapters/` import a store
 module (`$lib/stores/*`) or the runtime singleton (`../frontend-runtime`)

@@ -4,6 +4,7 @@ export default {
   mutate: [
     'src/lib/runtime/adapters/radio-view-model-adapter.ts',
     'src/semantic/radio-view-model.ts',
+    'src/lib/runtime/props/panel-props.ts',
   ],
   testRunner: 'vitest',
   vitest: {
@@ -11,9 +12,7 @@ export default {
   },
   tempDirName: '.stryker-tmp',
   // The default prepends `// @ts-nocheck` to JS/TS files under src/, lib/, test/.
-  // vitest does not type-check, so that buys nothing here, and under --inPlace
-  // it rewrites files that tests pin by sha256
-  // (MobileRadioLayout.honesty.isolated.test.ts).
+  // vitest does not type-check, so that buys nothing here.
   disableTypeChecks: false,
   timeoutMS: 5000,
   concurrency: 4,
