@@ -1886,50 +1886,44 @@ async def test_reconnect_loop_retries_on_failure(radio: IcomRadio) -> None:
 async def test_reconnect_loop_stops_audio_transport_on_reconnect(
     radio: IcomRadio,
 ) -> None:
-    """_reconnect_loop disconnects audio transport during retry (lines 559-561)."""
+    """The reconnect release tears the audio transport down via the lifecycle.
+
+    No other test pins the audio-transport disconnect on the release path
+    (the token-remove/CI-V clear are pinned on the wire in
+    tests/test_leon_recovery_ports.py), so this drives the real release:
+    the lifecycle is placed into a claimed CONNECTED session directly — a
+    bare fixture radio never logged in, so ``_teardown`` would treat the
+    disconnect as an idempotent no-op and never reach
+    ``ControlPhaseRuntime.release``.
+    """
+    from types import SimpleNamespace
+
     from rigplane.runtime._connection_state import RadioConnectionState
+    from rigplane.runtime.session_lifecycle import LifecycleState
 
     radio._conn_state = RadioConnectionState.RECONNECTING
+    radio._session_lifecycle._state = LifecycleState.CONNECTED
+    radio._session_lifecycle._claimed = True
 
-    audio_transport = MagicMock()
-    audio_transport.disconnect = AsyncMock()
+    audio_transport = SimpleNamespace(
+        my_id=0x00010001,
+        remote_id=0xDEADBEEF,
+        send_tracked=AsyncMock(),
+        disconnect=AsyncMock(),
+    )
     radio._audio_transport = audio_transport
 
     async def fake_connect() -> None:
         radio._conn_state = RadioConnectionState.CONNECTED
 
     with (
-        patch("rigplane.radio.IcomTransport", return_value=MagicMock()),
+        patch("rigplane.radio.IcomTransport", return_value=SimpleNamespace()),
         patch.object(radio, "connect", side_effect=fake_connect),
-        patch.object(radio, "_stop_token_renewal"),
         patch.object(radio._audio_runtime, "capture_snapshot", return_value=None),
     ):
         await radio._reconnect_loop()
 
     audio_transport.disconnect.assert_awaited_once()
-
-
-async def test_reconnect_loop_stops_civ_transport_on_reconnect(
-    radio: IcomRadio,
-) -> None:
-    """_reconnect_loop disconnects civ transport during retry (lines 564-567)."""
-    from rigplane.runtime._connection_state import RadioConnectionState
-
-    radio._conn_state = RadioConnectionState.RECONNECTING
-
-    async def fake_connect() -> None:
-        radio._conn_state = RadioConnectionState.CONNECTED
-
-    with (
-        patch("rigplane.radio.IcomTransport", return_value=MagicMock()),
-        patch.object(radio, "connect", side_effect=fake_connect),
-        patch.object(radio, "_stop_token_renewal"),
-        patch.object(radio._audio_runtime, "capture_snapshot", return_value=None),
-    ):
-        await radio._reconnect_loop()
-
-    # _civ_transport was disconnected during reconnect
-    assert radio._civ_transport is None
 
 
 async def test_reconnect_loop_stops_ctrl_transport_on_reconnect(
@@ -1951,33 +1945,6 @@ async def test_reconnect_loop_stops_ctrl_transport_on_reconnect(
     ):
         await radio._reconnect_loop()
     # No assertion needed — just verify it doesn't raise
-
-
-async def test_reconnect_loop_attempts_token_remove(
-    radio: IcomRadio,
-) -> None:
-    """_reconnect_loop sends token-remove before ctrl transport disconnect."""
-    from rigplane.runtime._connection_state import RadioConnectionState
-
-    radio._conn_state = RadioConnectionState.RECONNECTING
-    radio._audio_transport = None
-    radio._civ_transport = None
-    radio._ctrl_transport = MagicMock()
-    radio._ctrl_transport.disconnect = AsyncMock()
-
-    async def fake_connect() -> None:
-        radio._conn_state = RadioConnectionState.CONNECTED
-
-    with (
-        patch("rigplane.radio.IcomTransport", return_value=MagicMock()),
-        patch.object(radio, "connect", side_effect=fake_connect),
-        patch.object(radio, "_stop_token_renewal"),
-        patch.object(radio._audio_runtime, "capture_snapshot", return_value=None),
-        patch.object(radio, "_send_token", new=AsyncMock()) as send_token,
-    ):
-        await radio._reconnect_loop()
-
-    send_token.assert_awaited_once_with(0x01)
 
 
 # ---------------------------------------------------------------------------
