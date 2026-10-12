@@ -1084,8 +1084,7 @@ class ControlPhaseRuntime:
                         or getattr(h, "_owner_stop_epoch", None) != owner_stop_epoch
                     ):
                         logger.warning(
-                            "soft_reconnect: audio re-arm failed on attempt "
-                            "%d/%d: %s",
+                            "soft_reconnect: audio re-arm failed on attempt %d/%d: %s",
                             attempt,
                             self._SOFT_AUDIO_REBUILD_ATTEMPTS,
                             exc,
