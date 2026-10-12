@@ -573,6 +573,16 @@ class _RigctldCommandExecutor:
             classification = _classify_rigctld_tx_intent(intent)
             if (
                 classification.disposition is TxInterlockDisposition.BLOCK
+                # An exact raw de-key skips the RF-state refusal, as the
+                # typed PttOff always does: a raw unkey must never get
+                # harder because the observed PTT read TX or went stale
+                # (MOR-3378).  Managed mode above still refuses it.
+                and not (
+                    intent.name == "send_raw"
+                    and tx_interlock.is_exact_raw_dekey_frame(
+                        intent.params["frame_bytes"]
+                    )
+                )
                 and self.handler._has_canonical_state_store
                 and self.handler._resolve_rigctld_rf_state()
                 is not tx_interlock.RfState.RX

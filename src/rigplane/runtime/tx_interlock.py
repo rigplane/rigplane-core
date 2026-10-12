@@ -69,6 +69,7 @@ __all__ = [
     "classify_tx_interlock",
     "evaluate_tx_interlock",
     "get_tx_interlock_command_family_metadata",
+    "is_exact_raw_dekey_frame",
     "resolve_rf_state",
 ]
 
@@ -506,7 +507,7 @@ def _unwrap_civ_frame(frame: bytes) -> tuple[int, int | None, bytes] | None:
     final ``FD``, or a TX-family command without its sub byte.  This is
     the one envelope parser shared by
     :func:`classify_raw_civ_frame_tx_family` and
-    :func:`_is_exact_raw_dekey_frame`.
+    :func:`is_exact_raw_dekey_frame`.
     """
 
     if (
@@ -547,7 +548,7 @@ def classify_raw_civ_frame_tx_family(frame: bytes) -> bool | None:
     return _is_tx_family_civ_command(*unwrapped)
 
 
-def _is_exact_raw_dekey_frame(frame: bytes) -> bool:
+def is_exact_raw_dekey_frame(frame: bytes) -> bool:
     """True when one whole well-formed frame is exactly a raw de-key.
 
     The frame must unwrap — through the same :func:`_unwrap_civ_frame`
@@ -556,10 +557,11 @@ def _is_exact_raw_dekey_frame(frame: bytes) -> bool:
     a 0x29 receiver prefix; the 0x29 form must be exactly receiver plus
     inner actuation.  Anything with extra payload bytes, a different sub or
     data value, or an unparseable envelope is not a de-key.  The unmanaged
-    HTTP raw seat exempts exactly these frames from its RF-state refusal so
-    that a raw de-key stays as easy to execute as the typed one, which
-    ``classify_tx_interlock`` never refuses (``PttOff`` and tuner-off are
-    ALWAYS_PASS).
+    HTTP raw seat, the unmanaged rigctld ``w`` seat, and the poller's
+    ``send_civ`` seat exempt exactly these frames from their RF-state
+    refusal so that a raw de-key stays as easy to execute as the typed
+    one, which ``classify_tx_interlock`` never refuses (``PttOff`` and
+    tuner-off are ALWAYS_PASS).
     """
 
     unwrapped = _unwrap_civ_frame(frame)

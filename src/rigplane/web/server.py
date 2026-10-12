@@ -91,8 +91,8 @@ from ..runtime.managed_tx_state import ManagedTxIntentKind
 from ..runtime.tx_interlock import (
     RfState,
     TxInterlockRefusal,
-    _is_exact_raw_dekey_frame,
     classify_raw_civ_frame_tx_family,
+    is_exact_raw_dekey_frame,
     resolve_rf_state,
 )
 from ..sdr import IqSource, SdrConfig
@@ -537,9 +537,7 @@ class _HttpCommandExecutor:
                         "radio is under managed TX authority",
                         reason_code="managed_tx_refused",
                     )
-            elif tx_family_verdict is not False and not _is_exact_raw_dekey_frame(
-                frame
-            ):
+            elif tx_family_verdict is not False and not is_exact_raw_dekey_frame(frame):
                 # Unmanaged seat: a TX-family frame, or one that cannot
                 # be parsed as a single whole CI-V frame, is refused
                 # unless the observed PTT resolves to fresh-known RX;

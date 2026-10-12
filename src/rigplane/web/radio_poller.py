@@ -72,7 +72,7 @@ from ..capabilities import (
     CAP_VOX,
 )
 from .._queue_pressure import PRESSURE_THRESHOLD
-from ..commands._frame import decode_wire_tuple
+from ..commands._frame import build_civ_frame, decode_wire_tuple
 from ..commands.command_map import CommandMap
 from ..commands.commander import Priority
 from ..core.command_service import (
@@ -130,6 +130,7 @@ from ..runtime.tx_interlock import (
     TxInterlockRefusal,
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
+    is_exact_raw_dekey_frame,
     resolve_rf_state,
 )
 
@@ -644,6 +645,15 @@ class RadioPoller:
             metadata.family not in _WEB_IMMEDIATE_BLOCK_FAMILIES
             and metadata.base_disposition is not TxInterlockDisposition.DEFER
         ):
+            return
+        if isinstance(cmd, SendCiv) and is_exact_raw_dekey_frame(
+            build_civ_frame(0x00, 0x00, cmd.command, cmd.sub, cmd.data)
+        ):
+            # An exact raw de-key skips the RF-state refusal, as the typed
+            # PttOff always does: a raw unkey must never get harder
+            # because the observed PTT read TX or went stale (MOR-3378).
+            # The managed early return above keeps managed send_civ on its
+            # own ingress refusal.
             return
         rf_state = self._current_rf_state()
         decision = evaluate_tx_interlock(cmd, rf_state=rf_state)
