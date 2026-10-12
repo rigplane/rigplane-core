@@ -3,12 +3,13 @@
 A bare asyncio datagram client speaks the CI-V wire format against a real
 ``MockIcomRadio`` on loopback UDP — no production code involved — pinning the
 selected/unselected receiver frequency and mode reads and writes (0x25/0x26,
-both subcommand bytes) and the 0x1A 05 MOD-input menu reads the product's
-startup reader issues (observed on the wire: ``web/radio_poller.py:
-_fetch_mod_inputs`` reads items 0x0091-0x0094 at connect).
+both subcommand bytes) and the 0x1A 05 menu items the product's startup
+reader asks for at connect (``web/radio_poller.py``: ``_fetch_mod_inputs``
+reads the MOD-input items 0x0091-0x0094 and ``_fetch_nb_controls`` reads the
+NB items 0x0290/0x0291).
 
-BCD frequency decoding here is deliberately independent of the simulator's
-own encoder so an encoding defect cannot cancel out.
+BCD decoding here is deliberately independent of the simulator's own
+encoders so an encoding defect cannot cancel out.
 """
 
 import asyncio
@@ -101,6 +102,14 @@ def _decode_bcd_freq(data: bytes) -> int:
     for i, byte in enumerate(data):
         freq += (byte & 0x0F) * (10 ** (2 * i)) + (byte >> 4) * (10 ** (2 * i + 1))
     return freq
+
+
+def _decode_bcd_value(data: bytes) -> int:
+    """Decode packed BCD menu/level values, most significant pair first."""
+    value = 0
+    for byte in data:
+        value = value * 100 + (byte >> 4) * 10 + (byte & 0x0F)
+    return value
 
 
 async def _send_civ(client: _UdpClient, port: int, frame: bytes) -> bytes:
@@ -198,6 +207,14 @@ async def test_selected_mode_round_trip(server, client):
 
 
 async def test_unselected_mode_read_returns_own_defaults(server, client):
+    # Move the SELECTED receiver away from the unselected defaults first
+    # (0x06 set -> CW, FIL3), so a 0x26 01 read that wrongly returns the
+    # selected state cannot pass for the unselected one.
+    ack = await _send_civ(client, server.civ_port, _frame(0x06, b"\x03\x03"))
+    assert ack[4] == 0xFB
+    selected = await _send_civ(client, server.civ_port, _frame(0x26, b"\x00"))
+    assert selected[5:9] == b"\x00\x03\x00\x03"  # CW, DATA OFF, FIL3
+
     reply = await _send_civ(client, server.civ_port, _frame(0x26, b"\x01"))
     assert reply[4] == 0x26
     assert reply[5] == 0x01
@@ -205,8 +222,24 @@ async def test_unselected_mode_read_returns_own_defaults(server, client):
     assert (mode, data_mode, filt) == (0x01, 0x00, 0x01)
 
 
+async def test_unselected_mode_write_round_trip_leaves_selected_unchanged(
+    server,
+    client,
+):
+    # 0x26 01 set: receiver, mode (0x00=LSB), data-mode flag (0x01=ON), FIL2 —
+    # distinct from the selected defaults on every byte the round trip reads.
+    ack = await _send_civ(client, server.civ_port, _frame(0x26, b"\x01\x00\x01\x02"))
+    assert ack[4] == 0xFB
+    reply = await _send_civ(client, server.civ_port, _frame(0x26, b"\x01"))
+    assert reply[5:9] == b"\x01\x00\x01\x02"
+
+    # The selected receiver is untouched: 0x04 still answers the defaults.
+    plain = await _send_civ(client, server.civ_port, _frame(0x04, b""))
+    assert plain[5:7] == b"\x01\x01"  # USB / FIL1
+
+
 # ---------------------------------------------------------------------------
-# 0x1A 05 menu items (startup MOD-input reads)
+# 0x1A 05 menu items (startup MOD-input and NB reads)
 # ---------------------------------------------------------------------------
 
 
@@ -223,3 +256,43 @@ async def test_unknown_1a05_item_still_naks(server, client):
     # table — it must NAK, not answer a made-up byte.
     reply = await _send_civ(client, server.civ_port, _frame(0x1A, b"\x05\x00\x33"))
     assert reply[4] == 0xFA  # NAK
+
+
+async def test_1a05_mod_input_write_then_read_round_trip(server, client):
+    ack = await _send_civ(client, server.civ_port, _frame(0x1A, b"\x05\x00\x91\x00"))
+    assert ack[4] == 0xFB
+    reply = await _send_civ(client, server.civ_port, _frame(0x1A, b"\x05\x00\x91"))
+    # Item echo then the written value 0 (MIC), not the ACC default.
+    assert reply[6:9] == b"\x00\x91\x00"
+
+
+async def test_1a05_nb_depth_read_answers_valid_byte(server, client):
+    reply = await _send_civ(client, server.civ_port, _frame(0x1A, b"\x05\x02\x90"))
+    assert reply[4] == 0x1A
+    assert reply[5] == 0x05
+    assert reply[6:8] == b"\x02\x90"  # NB depth item echo
+    assert reply[-1] == 0xFD
+    # One BCD digit (0-9); the frame carries exactly one value byte.
+    assert len(reply) == 10
+    assert _decode_bcd_value(reply[8:9]) == 0  # documented default
+
+
+async def test_1a05_nb_width_read_answers_valid_byte(server, client):
+    reply = await _send_civ(client, server.civ_port, _frame(0x1A, b"\x05\x02\x91"))
+    assert reply[6:8] == b"\x02\x91"  # NB width item echo
+    assert reply[-1] == 0xFD
+    # get_nb_width parses a 2-byte BCD payload (0-255), so the reply must
+    # carry exactly two value bytes, not the 1-byte MOD-input form.
+    assert len(reply) == 11
+    assert _decode_bcd_value(reply[8:10]) == 0  # documented default
+
+
+async def test_1a05_nb_width_write_then_read_round_trip(server, client):
+    # 120 -> two BCD bytes 01 20 (big-endian digit pairs, the production
+    # bcd_encode_value layout for byte_count=2).
+    ack = await _send_civ(
+        client, server.civ_port, _frame(0x1A, b"\x05\x02\x91\x01\x20")
+    )
+    assert ack[4] == 0xFB
+    reply = await _send_civ(client, server.civ_port, _frame(0x1A, b"\x05\x02\x91"))
+    assert reply[8:10] == b"\x01\x20"

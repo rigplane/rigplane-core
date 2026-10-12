@@ -93,20 +93,27 @@ _SUB_PREAMP_STATUS = 0x02
 _SUB_DIGISEL_STATUS = 0x4E
 _SUB_PTT = 0x00
 
-# CI-V 0x1A 05 menu items modelled by the simulator, as ``(item, default)``.
-# These four MOD-input sources (0x0091-0x0094, declared in
-# ``rigs/ic7610.toml`` [commands.overrides]) are what the product's startup
-# reader asks for at connect (``src/rigplane/web/radio_poller.py``:
-# ``_fetch_mod_inputs``; observed on the wire against this simulator).
-# Values follow the MOD-input source enum 0=MIC .. 5=LAN
-# (``frontend/src/lib/radio/mod-input.ts``): DATA OFF answers ACC (1) and
-# the DATA groups answer LAN (5) — a simulator default, not a recorded
-# factory setting. Items outside this table still NAK.
-_CTL_MEM_MENU_STARTUP_ITEMS: dict[bytes, int] = {
-    b"\x00\x91": 1,  # DATA OFF mod input -> ACC
-    b"\x00\x92": 5,  # DATA1 mod input -> LAN
-    b"\x00\x93": 5,  # DATA2 mod input -> LAN
-    b"\x00\x94": 5,  # DATA3 mod input -> LAN
+# CI-V 0x1A 05 menu items modelled by the simulator, as
+# ``(item, (default, bcd_bytes))``. The four MOD-input sources (0x0091-
+# 0x0094, ``rigs/ic7610.toml`` [commands.overrides]: get/set_data*_mod_input)
+# are read at connect by ``src/rigplane/web/radio_poller.py``:
+# ``_fetch_mod_inputs``; the two NB items (0x0290/0x0291, ``rigs/ic7610.toml``:
+# get/set_nb_depth and get/set_nb_width) by ``_fetch_nb_controls`` on radios
+# with the "nb" capability (IC-7610 declares it). MOD-input values follow the
+# MOD-input source enum 0=MIC .. 5=LAN (``frontend/src/lib/radio/mod-input.ts``):
+# DATA OFF answers ACC (1) and the DATA groups answer LAN (5). NB depth is one
+# BCD digit 0-9 and NB width two BCD digits 0-255 — the wire shapes
+# ``src/rigplane/commands/levels.py`` set_nb_depth / set_nb_width build — and
+# both default to 0 like ``src/rigplane/core/radio_state.py``
+# (RadioState.nb_depth / nb_width). All defaults are simulator choices, not
+# recorded factory settings. Items outside this table still NAK.
+_CTL_MEM_MENU_STARTUP_ITEMS: dict[bytes, tuple[int, int]] = {
+    b"\x00\x91": (1, 1),  # DATA OFF mod input -> ACC
+    b"\x00\x92": (5, 1),  # DATA1 mod input -> LAN
+    b"\x00\x93": (5, 1),  # DATA2 mod input -> LAN
+    b"\x00\x94": (5, 1),  # DATA3 mod input -> LAN
+    b"\x02\x90": (0, 1),  # NB depth (0-9, one BCD digit)
+    b"\x02\x91": (0, 2),  # NB width (0-255, two BCD digits)
 }
 
 
@@ -135,6 +142,18 @@ def _bcd_encode_freq(freq_hz: int) -> bytes:
         high = int(digits[9 - 2 * i - 1])
         result[i] = (high << 4) | low
     return bytes(result)
+
+
+def _bcd_decode_value(data: bytes) -> int:
+    """Decode packed BCD digits, most significant pair first (120 → b'\\x01\\x20').
+
+    Same layout as ``src/rigplane/commands/_codec.py``: ``_bcd_decode_value``
+    (menu/level values), unlike the little-endian-by-byte frequency codec.
+    """
+    value = 0
+    for byte in data:
+        value = value * 100 + (byte >> 4) * 10 + (byte & 0x0F)
+    return value
 
 
 def _bcd_decode_freq(data: bytes) -> int:
@@ -279,8 +298,12 @@ class MockIcomRadio:
         self._unselected_mode: int = 0x01  # USB
         self._unselected_data_mode: int = 0  # 0=OFF
         self._unselected_filter: int = 1  # FIL1
-        # Modelling of the 0x1A 05 menu items the startup reader reads.
-        self._ctl_mem_menu: dict[bytes, int] = dict(_CTL_MEM_MENU_STARTUP_ITEMS)
+        # Modelling of the 0x1A 05 menu items the startup reader reads;
+        # current values (defaults and byte widths live in the table above).
+        self._ctl_mem_menu: dict[bytes, int] = {
+            item: default
+            for item, (default, _width) in _CTL_MEM_MENU_STARTUP_ITEMS.items()
+        }
 
         # Behaviour flags for edge-case tests
         self.auth_fail: bool = False
@@ -1101,7 +1124,7 @@ class MockIcomRadio:
             rest = payload[1:]
             if sub == _SUB_RF_POWER:  # 0x0A RF power
                 if rest:  # set
-                    self._power = self._decode_level_bcd(rest)
+                    self._power = _bcd_decode_value(rest)
                     return self._civ_ack(to, frm)
                 else:  # get
                     return self._civ_frame(
@@ -1208,23 +1231,28 @@ class MockIcomRadio:
                 return self._civ_ack(to, frm)
             return self._civ_nak(to, frm)
 
-        # --- 0x1A 05 menu items (the startup MOD-input reads) ---
+        # --- 0x1A 05 menu items (the startup MOD-input and NB reads) ---
         if cmd == _CMD_CTL_MEM_MENU and payload[:1] == b"\x05":
             rest = payload[1:]
             if len(rest) >= 2 and rest[:2] in self._ctl_mem_menu:
                 item = rest[:2]
-                if len(rest) == 2:  # GET: item echo + 1-byte BCD value
+                width = _CTL_MEM_MENU_STARTUP_ITEMS[item][1]
+                if len(rest) == 2:  # GET: item echo + BCD value, item width
                     value = self._ctl_mem_menu[item]
+                    encoded = (
+                        bytes([_bcd_byte(value)])
+                        if width == 1
+                        else _level_bcd_encode(value)
+                    )
                     return self._civ_frame(
                         to,
                         frm,
                         _CMD_CTL_MEM_MENU,
                         sub=0x05,
-                        data=item + bytes([_bcd_byte(value)]),
+                        data=item + encoded,
                     )
-                if len(rest) == 3:  # SET: one BCD data byte
-                    raw = rest[2]
-                    self._ctl_mem_menu[item] = ((raw >> 4) & 0x0F) * 10 + (raw & 0x0F)
+                if len(rest) == 2 + width:  # SET: BCD value bytes, item width
+                    self._ctl_mem_menu[item] = _bcd_decode_value(rest[2:])
                     return self._civ_ack(to, frm)
             return self._civ_nak(to, frm)
 
@@ -1363,15 +1391,6 @@ class MockIcomRadio:
         pkt[_CIV_HEADER_SIZE:] = civ_frame
         self._civ_seq = (self._civ_seq + 1) & 0xFFFF
         return bytes(pkt)
-
-    @staticmethod
-    def _decode_level_bcd(data: bytes) -> int:
-        """Decode 2-byte BCD level (e.g. b'\\x01\\x28' → 128)."""
-        d0 = (data[0] >> 4) & 0x0F
-        d1 = data[0] & 0x0F
-        d2 = (data[1] >> 4) & 0x0F
-        d3 = data[1] & 0x0F
-        return d0 * 1000 + d1 * 100 + d2 * 10 + d3
 
     # ------------------------------------------------------------------
     # Control packet builders
