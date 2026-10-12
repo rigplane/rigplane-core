@@ -130,6 +130,14 @@ class ControlPhaseRuntime:
     # first-connect busy policy, wired in ``CoreRadio``); exhausting it
     # raises that loop's resident never-ready ConnectionError.
     STARTUP_BUSY_HOLD_BUDGET_S: float = 600.0
+    # Live-holder stop for first-connect busy retries (MOR-3391 part 1b):
+    # the dead client's last packet precedes our first busy reject and its
+    # hold ends at most 85.9 s after that packet, so a busy reject on an
+    # attempt that STARTS at or after first-busy + this threshold proves a
+    # LIVE session holds the radio — retrying would fight it. Sizing bench
+    # (2026-10-12): (70.7, 85.9] s with separate client ports; about 71 s
+    # in proxy-recorded windows.
+    STARTUP_BUSY_LIVE_HOLDER_AFTER_S: float = 90.0
     # Token-renewal probe of a held session (``probe_control_session``). An
     # answer counts only with reply flag 0x02 at 0x14, request type 0x05 and
     # our token at 0x1C; the u32 at ``_RENEWAL_RESPONSE_OFFSET`` is the verdict.

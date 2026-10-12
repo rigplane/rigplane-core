@@ -717,12 +717,18 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             # Start-up busy-hold policy (MOR-3391): on the first connect a
             # profile-selected stereo status-stage busy reject and an
             # auth-stage busy reject retry with a fresh login after the
-            # reject cooldown, until the start-up budget elapses.  Later
-            # connects keep the immediate attempts above; their
+            # reject cooldown, until the start-up budget elapses — unless
+            # a busy reject on an attempt starting at or after first-busy
+            # plus the live-holder threshold proves a LIVE session holds
+            # the radio (part 1b), which stops with the honest busy error.
+            # Later connects keep the immediate attempts above; their
             # status-stage busy path stays in ``_connect_once``.
             first_connect_busy_cooldown_s=(ControlPhaseRuntime._STATUS_REJECT_COOLDOWN),
             first_connect_busy_budget_s=(
                 ControlPhaseRuntime.STARTUP_BUSY_HOLD_BUDGET_S
+            ),
+            first_connect_busy_live_holder_after_s=(
+                ControlPhaseRuntime.STARTUP_BUSY_LIVE_HOLDER_AFTER_S
             ),
             # Recovery backoff is ZERO for the in-process CoreRadio (A4): the
             # CI-V data watchdog already spends its patient OpenClose phase
