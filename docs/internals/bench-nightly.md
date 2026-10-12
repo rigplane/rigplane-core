@@ -72,3 +72,32 @@ runner user: `latest.json` (the normalized artifact the next night compares
 against), `current.raw.json` (the raw artifact, which records the LAN endpoint)
 and `diagnose-latest.zip` (runner logs and configuration). None of them is
 uploaded, because workflow artifacts of this public repository are public.
+
+## Certification status
+
+`.github/workflows/certification-status.yml` (manual dispatch from `main`) runs
+`.github/scripts/certification_status.py`. It reads the scheduled runs of
+`bench-nightly.yml` on `main`, their jobs and steps, from the Actions API (never
+from artifacts) and writes a summary table to the log and the run page.
+
+```bash
+gh workflow run certification-status.yml --ref main -f nights=3
+```
+
+- **Night.** One completed `schedule` run; manual dispatches are not nights.
+  Saturday and Sunday by the run's `created_at` (UTC) are write-and-restore
+  nights, the other days read-only.
+- **PASS.** The radio's job (its name is the radio label) concluded `success`
+  and its `Validate` step concluded `success`. Any other night carries a name:
+  `busy`, `not configured` or `dry run` (the failed `Outcome: …` step),
+  `validate failed`, `diff failed`, `failed: <step>`, `missing` (no job for that
+  radio), `job <conclusion>`, or `validate not run` (the job concluded `success`
+  but its `Validate` step did not).
+- **Streak.** PASS nights from the newest backwards to the first non-PASS. A
+  radio is certified when its streak reaches `nights` (default 3) and contains
+  a write-and-restore night anywhere in it, not only among the last `nights`.
+- **Verdict.** CERTIFIED only if every listed radio is certified. `radios` is a
+  comma-separated list of labels; empty means every radio with a job in the
+  newest completed scheduled run. Exit status 1 means not certified, 2 that the run
+  history could not be read or is not newest first. At most the 30 newest
+  completed scheduled runs are read.
