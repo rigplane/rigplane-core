@@ -13,10 +13,14 @@ import asyncio
 import socket
 import struct
 from collections.abc import AsyncGenerator
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from rigplane.core.transport import ConnectionState
 from rigplane.core.types import PacketType
+from rigplane.radio import IcomRadio
+from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.transport import CONTROL_SIZE, IcomTransport
 
 _RADIO_ID = 0xDEADBEEF
@@ -92,3 +96,34 @@ async def test_disconnect_releases_the_local_udp_port_before_returning(
     finally:
         await t1.disconnect()
         await t2.disconnect()
+
+
+async def test_full_connect_recovery_closes_the_session_less_control_endpoint(
+    echo_port: int,
+) -> None:
+    """The full-connect branch of ``soft_reconnect`` must close the control
+    endpoint a failed attempt left open before ``_connect_once`` opens a new
+    one on the same transport."""
+    radio = IcomRadio("127.0.0.1", port=echo_port, model="IC-7610")
+    radio._has_connected_once = True
+    radio._civ_transport = None
+    ctrl = radio._ctrl_transport
+    # Residue of a failed attempt: discovered, never logged in.
+    await ctrl.connect("127.0.0.1", echo_port)
+    stale = ctrl._udp_transport
+    assert stale is not None
+    assert ctrl.state is ConnectionState.CONNECTING
+    login = AsyncMock(side_effect=asyncio.TimeoutError("no login response"))
+    try:
+        with patch.object(radio._control_phase, "_wait_for_packet", login):
+            with pytest.raises(asyncio.TimeoutError):
+                await radio._control_phase.soft_reconnect()
+        assert login.await_count == 1
+        assert ctrl._udp_transport is not None
+        assert ctrl._udp_transport is not stale
+        assert stale.is_closing()
+        assert stale.get_extra_info("socket").fileno() == -1
+    finally:
+        radio._conn_state = RadioConnectionState.DISCONNECTED
+        await ctrl.disconnect()
+        stale.close()

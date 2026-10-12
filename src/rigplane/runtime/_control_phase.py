@@ -822,6 +822,11 @@ class ControlPhaseRuntime:
                     await teardown_audio()
                 except Exception:
                     logger.debug("soft_reconnect: audio teardown failed", exc_info=True)
+            if getattr(h._ctrl_transport, "_udp_transport", None) is not None:
+                # Open but not CONNECTED: ``_connect_once`` opens a new
+                # endpoint on this transport without closing this one.
+                with _suppress(Exception):
+                    await h._ctrl_transport.disconnect()
             await self._connect_once()
             identity_epoch = getattr(h, "_lan_identity_owned_epoch", None)
             await self._after_reconnect(
