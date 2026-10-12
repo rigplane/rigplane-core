@@ -34,6 +34,7 @@ from testkit.test_simulator_faults import (
     _login,
     _openclose,
     _ping,
+    _recv_reply,
 )
 
 _HOST = "127.0.0.1"
@@ -42,6 +43,8 @@ _HOST = "127.0.0.1"
 _PT_ARE_YOU_READY = 0x06
 _PT_I_AM_HERE = 0x04
 _PT_PING = 0x07
+
+_ERR_PREV_SESSION_ACTIVE = 0xFFFFFFFF
 
 
 def _ayr() -> bytes:
@@ -60,9 +63,9 @@ def _conninfo_declaring(civ_local_port: int) -> bytes:
     """Client conninfo declaring its local CI-V port.
 
     The big-endian u32 at 0x7C is exactly where ``core/auth.py``:
-    ``build_conninfo_packet`` packs ``civ_local_port``, and the production
-    client then opens its CI-V stream from that port
-    (``runtime/_control_phase.py``: ``_send_conninfo``).
+    ``build_conninfo_packet`` packs ``civ_local_port`` — the bound local
+    port the production client opens its CI-V stream from
+    (``runtime/_control_phase.py``: ``_connect_once`` / ``soft_reconnect``).
     """
     pkt = bytearray(_conninfo())
     struct.pack_into(">I", pkt, 0x7C, civ_local_port)
@@ -177,7 +180,7 @@ async def test_civ_data_from_dropped_client_gets_no_answer(server, client):
     client.send(_openclose(), server.civ_port)
     await client.recv()  # unsolicited CI-V frame on open
     client.send(_freq_get(), server.civ_port)
-    assert _is_freq_reply(await client.recv())  # baseline: served
+    assert _is_freq_reply(await _recv_reply(client, _freq_get()))  # baseline: served
 
     server.drop_session(at=0.2, notice=False)
     await asyncio.sleep(0.5)  # past the drop
@@ -196,7 +199,7 @@ async def test_stale_openclose_does_not_reopen_stream_and_counters(server, clien
     await client.recv()  # unsolicited CI-V frame on open
     assert server.openclose_open_count == 1
     client.send(_freq_get(), server.civ_port)
-    assert _is_freq_reply(await client.recv())  # baseline: served
+    assert _is_freq_reply(await _recv_reply(client, _freq_get()))  # baseline: served
 
     server.drop_session(at=0.2, notice=False)
     await asyncio.sleep(0.5)  # past the drop
@@ -219,19 +222,20 @@ async def test_stale_openclose_does_not_reopen_stream_and_counters(server, clien
     await client.recv()  # unsolicited CI-V frame on open
     assert server.openclose_open_count == 3
     client.send(_freq_get(), server.civ_port)
-    assert _is_freq_reply(await client.recv())
+    assert _is_freq_reply(await _recv_reply(client, _freq_get()))
 
 
 async def test_fence_permission_is_per_client_not_shared(server, client):
     """(d, two clients) The fence permission belongs to the client whose
-    fresh login was accepted: B (fresh login + OpenClose from its declared
-    CI-V port) is served, stale A (never re-logs) still gets nothing —
-    even though both clients sit on the same IP."""
+    fresh login's own conninfo was accepted: B (fresh login + accepted
+    conninfo + OpenClose from its declared CI-V port) is served, stale A
+    (never re-logs) still gets nothing — even though both clients sit on
+    the same IP."""
     await _login_and_claim(client, server)
     client.send(_openclose(), server.civ_port)
     await client.recv()  # unsolicited CI-V frame on open
     client.send(_freq_get(), server.civ_port)
-    assert _is_freq_reply(await client.recv())  # A baseline: served
+    assert _is_freq_reply(await _recv_reply(client, _freq_get()))  # A baseline: served
 
     server.drop_session(at=0.2, notice=False)
     await asyncio.sleep(0.5)  # past the drop
@@ -255,7 +259,7 @@ async def test_fence_permission_is_per_client_not_shared(server, client):
         client_b.send(_openclose(), server.civ_port)
         await client_b.recv()  # unsolicited CI-V frame on open
         client_b.send(_freq_get(), server.civ_port)
-        assert _is_freq_reply(await client_b.recv())  # B is served
+        assert _is_freq_reply(await _recv_reply(client_b, _freq_get()))  # B is served
 
         # A never re-logs: its OpenClose(open) still gets nothing — B's
         # accepted login did not open the gate for the shared IP.
@@ -308,7 +312,7 @@ async def test_reboot_fences_stale_openclose_until_fresh_login(server, client):
     client.send(_openclose(), server.civ_port)
     await client.recv()
     client.send(_freq_get(), server.civ_port)
-    assert _is_freq_reply(await client.recv())  # baseline: served
+    assert _is_freq_reply(await _recv_reply(client, _freq_get()))  # baseline: served
 
     server.reboot(at=0.2, down_for=0.4, busy_for=0.0)  # default notice=False
     await asyncio.sleep(1.0)  # radio back (down ended at ~+0.62)
@@ -328,4 +332,129 @@ async def test_reboot_fences_stale_openclose_until_fresh_login(server, client):
     client.send(_openclose(), server.civ_port)
     await client.recv()
     client.send(_freq_get(), server.civ_port)
-    assert _is_freq_reply(await client.recv())
+    assert _is_freq_reply(await _recv_reply(client, _freq_get()))
+
+
+async def test_busy_rejected_conninfo_does_not_steal_fence_permission(server, client):
+    """MOR-3340: the fence permission is recorded at accepted conninfo, not
+    at login — a second login whose conninfo is busy-rejected cannot take it
+    from the session owner. Two clients on the same IP."""
+    await _login_and_claim(client, server)
+    client.send(_openclose(), server.civ_port)
+    await client.recv()  # unsolicited CI-V frame on open
+    request = _freq_get()
+    client.send(request, server.civ_port)
+    assert _is_freq_reply(await _recv_reply(client, request))  # A served
+
+    server.drop_session(at=0.2, notice=False)
+    await asyncio.sleep(0.5)  # past the drop
+
+    loop = asyncio.get_running_loop()
+    client_b = _UdpClient()
+    await loop.create_datagram_endpoint(lambda: client_b, local_addr=(_HOST, 0))
+    try:
+        b_civ_port = client_b.transport.get_extra_info("sockname")[1]
+
+        # B logs in afresh and its conninfo is accepted: the permission is B's.
+        client_b.send(_login(), server.control_port)
+        login_b = await client_b.recv()
+        assert struct.unpack_from("<I", login_b, 0x30)[0] == 0  # error OK
+        client_b.send(_conninfo_declaring(b_civ_port), server.control_port)
+        status_b = await client_b.recv()
+        assert struct.unpack_from(">H", status_b, 0x42)[0] == server.civ_port
+        client_b.send(_openclose(), server.civ_port)
+        await client_b.recv()  # unsolicited CI-V frame on open
+        b_request = _freq_get()
+        client_b.send(b_request, server.civ_port)
+        assert _is_freq_reply(await _recv_reply(client_b, b_request))  # B served
+
+        # A logs in again, but B holds the session: A's conninfo is
+        # busy-rejected and must not move the permission.
+        client.send(_login(), server.control_port)
+        await client.recv()
+        client.send(_conninfo(), server.control_port)
+        busy = await client.recv()
+        assert struct.unpack_from("<I", busy, 0x30)[0] == _ERR_PREV_SESSION_ACTIVE
+        assert struct.unpack_from(">H", busy, 0x42)[0] == 0
+
+        # B is still served; A is still fenced.
+        client_b.send(b_request, server.civ_port)
+        assert _is_freq_reply(await _recv_reply(client_b, b_request))
+        client.send(_openclose(), server.civ_port)
+        await client.expect_silence(0.3)
+        client.send(request, server.civ_port)
+        await client.expect_silence(0.3)
+    finally:
+        client_b.close()
+
+
+async def test_open_before_conninfo_stays_fenced(server, client):
+    """A fresh login alone grants no fence permission — not even the
+    declared-port-0 IP fallback: an OpenClose(open) sent before the login's
+    own conninfo is accepted stays fenced, and so does CI-V data."""
+    await _login_and_claim(client, server)
+    server.drop_session(at=0.2, notice=False)
+    await asyncio.sleep(0.5)  # past the drop
+
+    # Fresh login, conninfo not yet sent: the open is fenced, and so is data.
+    client.send(_login(), server.control_port)
+    await client.recv()
+    client.send(_openclose(), server.civ_port)
+    await client.expect_silence(0.3)
+    request = _freq_get()
+    client.send(request, server.civ_port)
+    await client.expect_silence(0.3)
+
+    # The conninfo arrives and is accepted: the next open is served.
+    client.send(_conninfo(), server.control_port)
+    await client.recv()
+    client.send(_openclose(), server.civ_port)
+    await client.recv()  # unsolicited CI-V frame on open
+    client.send(request, server.civ_port)
+    assert _is_freq_reply(await _recv_reply(client, request))
+
+
+async def test_foreign_conninfo_does_not_move_permission(server, client):
+    """The ``(addr, sender_id) == _last_login`` guard: a conninfo from any
+    other socket leaves the fence permission where it was — even when the
+    session is free so the conninfo itself is accepted."""
+    await _login_and_claim(client, server)
+    server.drop_session(at=0.2, notice=False)
+    await asyncio.sleep(0.5)  # past the drop
+
+    loop = asyncio.get_running_loop()
+    client_b = _UdpClient()
+    await loop.create_datagram_endpoint(lambda: client_b, local_addr=(_HOST, 0))
+    try:
+        # B is the fresh login, but A's stale socket sends a conninfo first:
+        # the session is free so it is accepted (the real CI-V port comes
+        # back), yet the guard holds the permission back — A's open is fenced.
+        client_b.send(_login(), server.control_port)
+        await client_b.recv()
+        client.send(_conninfo(), server.control_port)
+        status = await client.recv()
+        assert struct.unpack_from(">H", status, 0x42)[0] == server.civ_port
+        client.send(_openclose(), server.civ_port)
+        await client.expect_silence(0.3)
+
+        # B's own conninfo is now busy-rejected (A holds the session); it
+        # moves nothing either, so B's open is fenced too.
+        client_b.send(_conninfo(), server.control_port)
+        busy = await client_b.recv()
+        assert struct.unpack_from("<I", busy, 0x30)[0] == _ERR_PREV_SESSION_ACTIVE
+        client_b.send(_openclose(), server.civ_port)
+        await client_b.expect_silence(0.3)
+
+        # A logs in afresh; its accepted conninfo records the permission and
+        # its open is served again.
+        client.send(_login(), server.control_port)
+        await client.recv()
+        client.send(_conninfo(), server.control_port)
+        await client.recv()
+        client.send(_openclose(), server.civ_port)
+        await client.recv()  # unsolicited CI-V frame on open
+        request = _freq_get()
+        client.send(request, server.civ_port)
+        assert _is_freq_reply(await _recv_reply(client, request))
+    finally:
+        client_b.close()

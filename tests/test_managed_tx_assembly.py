@@ -199,7 +199,7 @@ def test_unconnected_radio_publishes_no_tx_snapshot() -> None:
 
 
 class _CivPort:
-    """A CI-V data transport stand-in; its identity is all the radio reads.
+    """A CI-V data transport stand-in.
 
     ``soft_disconnect`` is the one path that calls methods on it, so the close
     is real (and idempotent) rather than an attribute error swallowed by the
@@ -210,6 +210,7 @@ class _CivPort:
         self.closed = False
         self.my_id = 0x00010001
         self.remote_id = 0xDEADBEEF
+        self.send_seq = 0
         self.sent: list[bytes] = []
 
     async def disconnect(self) -> None:

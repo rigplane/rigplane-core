@@ -33,6 +33,12 @@ diff instead of a re-signed digest.
 - Golden: `frontend/src/lib/runtime/adapters/__tests__/fixtures/strict-projection.golden.json`,
   pinned by the `preserves legacy strict model members` test in
   `frontend/src/lib/runtime/adapters/__tests__/radio-view-model-adapter.test.ts`.
+- A second instance is
+  `frontend/src/lib/runtime/props/__tests__/panel-props.goldens.test.ts`, whose
+  two goldens `panel-props.ic7300.golden.json` and
+  `panel-props.ftx1.golden.json` live under
+  `frontend/src/lib/runtime/props/__tests__/fixtures/` and are loaded the same
+  way (ES JSON import), so they too need no ledger row.
 - A golden is loaded with an ES JSON import (as `fixtures/ic7300-profile.ts`
   loads `ic7300-state.json`), so it is not a source-text pin and needs no
   ledger row: none of `READ_PATTERN`'s forms matches it.

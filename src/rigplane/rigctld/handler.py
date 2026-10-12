@@ -557,6 +557,17 @@ class _RigctldCommandExecutor:
             and str(intent.params["func"]).upper() == "TUNER"
         ):
             return await self._execute_managed_tuner(intent)
+        if managed and intent.name == "send_raw":
+            # A raw TX-family frame is refused by payload alone —
+            # regardless of the observed RF state, and without consulting
+            # the authority.  An unparseable frame fails closed.
+            if (
+                tx_interlock.classify_raw_civ_frame_tx_family(
+                    intent.params["frame_bytes"]
+                )
+                is not False
+            ):
+                raise _RigctldCommandFailure(HamlibError.ERJCTED)
 
         if not managed:
             classification = _classify_rigctld_tx_intent(intent)

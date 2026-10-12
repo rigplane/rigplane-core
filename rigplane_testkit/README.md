@@ -32,8 +32,9 @@ UDP code paths as production.
   `MockIcomRadio` also offers scheduled events: `reboot(at, down_for,
   busy_for, notice=False)` — stop answering, forget the session, rotate the
   token, restart CI-V sequence numbering, fence every pre-reboot client off
-  the CI-V port until the client whose fresh login was accepted opens from
-  the CI-V port its conninfo declared (its IP alone when it declared none),
+  the CI-V port until the client whose fresh login's own conninfo was
+  accepted opens from the CI-V port its conninfo declared (its IP alone
+  when it declared none),
   ignore token and conninfo packets carrying the pre-reboot
   token, answer busy, then accept a fresh login; with `notice=True` the
   recorded power-off order is replayed first — one unsolicited 0x90 conninfo

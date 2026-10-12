@@ -19,6 +19,8 @@ import pytest
 
 from rigplane_testkit.icom import MockIcomRadio
 
+from testkit.test_simulator_faults import _recv_reply
+
 _HOST = "127.0.0.1"
 _CLIENT_ID = 0x11223344
 _PT_DATA = 0x00
@@ -113,9 +115,14 @@ def _decode_bcd_value(data: bytes) -> int:
 
 
 async def _send_civ(client: _UdpClient, port: int, frame: bytes) -> bytes:
-    """Send one CI-V frame, return the CI-V frame of the reply."""
-    client.send(_civ_packet(frame), port)
-    reply = await client.recv()
+    """Send one CI-V frame, return the CI-V frame of the reply.
+
+    The shared ``_recv_reply`` skips the simulator's LAN CI-V echo (the
+    request packet back byte-identical), so this resolves to the reply.
+    """
+    request = _civ_packet(frame)
+    client.send(request, port)
+    reply = await _recv_reply(client, request)
     assert reply[0x15:0x17] == b"\xfe\xfe"
     return reply[0x15:]
 

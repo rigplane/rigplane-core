@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 from .. import __version__
 from .._bounded_queue import BoundedQueue
 from ..audio.route import resolve_audio_route
+from ..commands._frame import build_civ_frame
 from ..core.acquisition_scheduler import (
     AcquisitionScheduler,
     MeterObservationCoalescer,
@@ -87,6 +88,7 @@ from ..runtime.controller_authority import (
 )
 from ..runtime.managed_tx_authority import ManagedTxAuthority
 from ..runtime.managed_tx_state import ManagedTxIntentKind
+from ..runtime.tx_interlock import TxInterlockRefusal, classify_raw_civ_frame_tx_family
 from ..sdr import IqSource, SdrConfig
 from ..sdr.runtime import SdrScopeRuntime
 from ..radio_state import RadioState
@@ -493,6 +495,28 @@ class _HttpCommandExecutor:
             if not isinstance(radio, CivTransactionCapable):
                 raise RuntimeError(
                     "active backend does not support raw CI-V transactions"
+                )
+            # A TX-family raw transaction is refused by payload alone —
+            # regardless of the observed RF state, and without consulting
+            # the authority.  The verdict is computed on the exact frame
+            # the transaction below would send — addresses play no part
+            # in it.
+            if self.server._managed_tx_authority() is not None and (
+                classify_raw_civ_frame_tx_family(
+                    build_civ_frame(
+                        0x00,
+                        0x00,
+                        int(params["command"]),
+                        sub=None if params.get("sub") is None else int(params["sub"]),
+                        data=bytes(params["data"]),
+                    )
+                )
+                is not False
+            ):
+                raise TxInterlockRefusal(
+                    "raw CI-V TX-family transactions are refused while the "
+                    "radio is under managed TX authority",
+                    reason_code="managed_tx_refused",
                 )
             result = await radio.send_civ_transaction(
                 int(params["command"]),
@@ -5559,6 +5583,14 @@ class WebServer:
             )
             details = service_result.executor_result.details or {}
             result = details["transaction_result"]
+        except TxInterlockRefusal as exc:
+            await self._send_json(
+                writer,
+                403,
+                "Forbidden",
+                {"error": exc.reason_code, "message": str(exc)},
+            )
+            return
         except (RigplaneTimeoutError, TimeoutError):
             await self._send_json(
                 writer,
@@ -5924,6 +5956,13 @@ class WebServer:
             )
             details = service_result.executor_result.details or {}
             result = details["transaction_result"]
+        except TxInterlockRefusal as exc:
+            return self._failed_transaction_batch_result(
+                step,
+                status="refused",
+                error=exc.reason_code,
+                message=str(exc),
+            )
         except (RigplaneTimeoutError, TimeoutError):
             return self._failed_transaction_batch_result(
                 step,

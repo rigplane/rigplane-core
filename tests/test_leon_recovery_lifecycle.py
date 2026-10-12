@@ -19,6 +19,7 @@ class _Transport:
         self._udp_transport: object | None = object()
         self.my_id = 1
         self.remote_id = 2
+        self.send_seq = 0
 
     async def send_tracked(self, packet: bytes) -> None:
         if len(packet) == 0x40 and packet[0x15] == 0x01:

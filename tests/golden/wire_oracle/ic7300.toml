@@ -1,0 +1,216 @@
+# Transcribed by hand from the IC-7300 Advanced Manual (11a), section 19. Never regenerate from code.
+[[row]]
+control = "frequency_set"
+direction = "set"
+value = "14.074 MHz"
+frame = "FE FE 94 E0 05 00 40 07 14 00 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3; frequency format, p. 19-9"
+note = "twenty metre FT8 dial frequency"
+
+[[row]]
+control = "frequency_read"
+direction = "read"
+value = "n/a (read request)"
+frame = "FE FE 94 E0 03 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "no data, reply carries frequency"
+
+[[row]]
+control = "mode_usb_fil1"
+direction = "set"
+value = "USB, filter 1"
+frame = "FE FE 94 E0 06 01 01 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3; mode format, p. 19-9"
+note = "upper sideband, first filter"
+
+[[row]]
+control = "vfo_a"
+direction = "set"
+value = "VFO A"
+frame = "FE FE 94 E0 07 00 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "receive and transmit on A"
+
+[[row]]
+control = "vfo_b"
+direction = "set"
+value = "VFO B"
+frame = "FE FE 94 E0 07 01 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "receive and transmit on B"
+
+[[row]]
+control = "split_off"
+direction = "set"
+value = "off"
+frame = "FE FE 94 E0 0F 00 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "simplex operation"
+
+[[row]]
+control = "split_on"
+direction = "set"
+value = "on"
+frame = "FE FE 94 E0 0F 01 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "separate transmit frequency enabled"
+
+[[row]]
+control = "attenuator_off"
+direction = "set"
+value = "off (0 dB)"
+frame = "FE FE 94 E0 11 00 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "full receive sensitivity"
+
+[[row]]
+control = "attenuator_on"
+direction = "set"
+value = "on (20 dB)"
+frame = "FE FE 94 E0 11 20 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "twenty decibel receive attenuation"
+
+[[row]]
+control = "af_level"
+direction = "set"
+value = "128 of 0..255"
+frame = "FE FE 94 E0 14 01 01 28 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "mid speaker volume"
+
+[[row]]
+control = "rf_gain"
+direction = "set"
+value = "200 of 0..255"
+frame = "FE FE 94 E0 14 02 02 00 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "high receive gain"
+
+[[row]]
+control = "squelch_level"
+direction = "set"
+value = "32 of 0..255"
+frame = "FE FE 94 E0 14 03 00 32 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "low squelch threshold"
+
+[[row]]
+control = "nr_level"
+direction = "set"
+value = "128 of 0..255"
+frame = "FE FE 94 E0 14 06 01 28 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "mid noise reduction depth"
+
+[[row]]
+control = "rf_power"
+direction = "set"
+value = "200 of 0..255"
+frame = "FE FE 94 E0 14 0A 02 00 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "high transmit power"
+
+[[row]]
+control = "mic_gain"
+direction = "set"
+value = "128 of 0..255"
+frame = "FE FE 94 E0 14 0B 01 28 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "mid microphone gain"
+
+[[row]]
+control = "cw_key_speed"
+direction = "set"
+value = "120 of 0..255"
+frame = "FE FE 94 E0 14 0C 01 20 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "medium keying speed"
+
+[[row]]
+control = "comp_level"
+direction = "set"
+value = "150 of 0..255"
+frame = "FE FE 94 E0 14 0E 01 50 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "mid compression amount"
+
+[[row]]
+control = "preamp"
+direction = "set"
+value = "preamp 1 on"
+frame = "FE FE 94 E0 16 02 01 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "first preamplifier stage on"
+
+[[row]]
+control = "agc"
+direction = "set"
+value = "MID"
+frame = "FE FE 94 E0 16 12 02 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "medium recovery time"
+
+[[row]]
+control = "nb_on"
+direction = "set"
+value = "on"
+frame = "FE FE 94 E0 16 22 01 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "pulse noise blanking on"
+
+[[row]]
+control = "nr_on"
+direction = "set"
+value = "on"
+frame = "FE FE 94 E0 16 40 01 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "noise reduction on"
+
+[[row]]
+control = "auto_notch_on"
+direction = "set"
+value = "on"
+frame = "FE FE 94 E0 16 41 01 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "automatic notch on"
+
+[[row]]
+control = "vox_on"
+direction = "set"
+value = "on"
+frame = "FE FE 94 E0 16 46 01 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "voice operated transmit on"
+
+[[row]]
+control = "breakin"
+direction = "set"
+value = "semi break-in"
+frame = "FE FE 94 E0 16 47 01 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "semi break-in keying"
+
+[[row]]
+control = "ptt_on"
+direction = "set"
+value = "transmit"
+frame = "FE FE 94 E0 1C 00 01 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-7"
+note = "transmit on, bytes only"
+
+[[row]]
+control = "ptt_off"
+direction = "set"
+value = "receive"
+frame = "FE FE 94 E0 1C 00 00 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-7"
+note = "back to receive, bytes only"
+
+[[row]]
+control = "tuner_on"
+direction = "set"
+value = "on"
+frame = "FE FE 94 E0 1C 01 01 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-7"
+note = "tuner on, bytes only"
