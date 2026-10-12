@@ -655,8 +655,13 @@ class ControlPhaseRuntime:
         self._deferred_retail = None
         # Best-effort teardown of any data/audio transports first (mirrors
         # disconnect ordering), then the always-sent token-remove.
+        # No ``_stop_reconnect`` here: ``release()`` itself does not stop
+        # the reconnect loop.  This is the partial-claim branch — when
+        # ``conn_state`` is CONNECTED, ``ControlPhaseSessionMechanism.
+        # release`` routes the per-attempt release to
+        # ``ControlPhaseRuntime.disconnect`` instead, whose
+        # ``_stop_reconnect()`` does cancel the loop.
         self._stop_watchdog()
-        self._stop_reconnect()
         self._stop_token_renewal()
         # An identity-held partial session can have live CI-V tasks. Retire
         # their generation before closing transports or accepting late replies.
@@ -676,6 +681,16 @@ class ControlPhaseRuntime:
             with _suppress(asyncio.CancelledError, Exception):
                 await identity_reader
         self._close_pending_sockets()
+        # Stop the stream before the transport teardown, mirroring
+        # ``disconnect``: a stale stream left in RECEIVING makes
+        # ``_ensure_audio_transport`` return early, so the post-reconnect
+        # audio recovery fails with "Cannot start RX in state receiving".
+        if h._audio_stream is not None:
+            with _suppress(Exception):
+                await h._audio_stream.stop_rx()
+            with _suppress(Exception):
+                await h._audio_stream.stop_tx()
+            h._audio_stream = None
         audio_t = getattr(h, "_audio_transport", None)
         if audio_t is not None:
             with _suppress(Exception):
@@ -1230,8 +1245,14 @@ class ControlPhaseRuntime:
     def _stop_reconnect(self) -> None:
         h = self._host
         if h._reconnect_task is not None and not h._reconnect_task.done():
+            # The reconnect loop reaches this through a release it awaits;
+            # cancelling here would cancel the caller itself.  Keep the
+            # handle in that case: clearing it would leave a running loop
+            # that no later owner stop (a user disconnect()) can reach.
+            if h._reconnect_task is asyncio.current_task():
+                return
             h._reconnect_task.cancel()
-            h._reconnect_task = None
+        h._reconnect_task = None
 
 
 class ControlPhaseSessionMechanism:
