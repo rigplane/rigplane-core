@@ -303,6 +303,22 @@ class MockIcomRadio:
             corrupt/truncate rules on top of the legacy ``drop_rate`` /
             ``response_delay`` / ``stall_for`` knobs, which keep working
             unchanged.
+        stateful_ptt: opt-in stateful PTT (default False keeps the
+            pre-hook behaviour byte-for-byte: ``1C 00`` GET always answers
+            OFF and every ``1C 00`` SET NAKs — the MOR-1217 note). When
+            True, SET ``1C 00 01`` / ``1C 00 00`` is acknowledged FB and
+            flips the simulated PTT state (readable as :attr:`ptt_on`),
+            GET answers the current state, and any other ``1C 00`` payload
+            still NAKs.
+        ptt_on_session_loss: what the simulated radio does with an active
+            PTT when its LAN session ends — ``drop_session`` (with or
+            without notice), ``free_session``, ``reboot``, or the keepalive
+            going silent long enough for the radio to end the session.
+            ``"release"`` unkeys at that moment; ``"hold"`` keeps PTT on
+            until a client unkeys. The real IC-7610 behaviour is UNRECORDED
+            (TX is never actuated on the bench), so tests that depend on it
+            cover both values
+            (``tests/integration/test_tx_under_fault_matrix.py``).
     """
 
     def __init__(
@@ -321,6 +337,8 @@ class MockIcomRadio:
         unsolicited_civ: bool = False,
         unsolicited_interval_s: float = 0.1,
         fault_plan: FaultPlan | None = None,
+        stateful_ptt: bool = False,
+        ptt_on_session_loss: Literal["hold", "release"] = "hold",
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -412,6 +430,23 @@ class MockIcomRadio:
         # deadline — drives CONNECTING -> COOLDOWN -> CONNECTING without a
         # 0xFFFFFFFF reject. 0.0 means "always available".
         self._civ_unavailable_until: float = 0.0
+
+        # Opt-in stateful PTT (MOR-3251): default OFF keeps the pre-hook
+        # behaviour byte-for-byte (GET always OFF, every SET NAK). The new
+        # handling lives in the CI-V dispatcher ``_dispatch_civ``, which
+        # ``_handle_civ_data`` reaches only after the sequence-gap gate and
+        # after the LAN echo — recorded IC-7610 order for every request.
+        self._stateful_ptt: bool = stateful_ptt
+        self._ptt_on_session_loss: Literal["hold", "release"] = ptt_on_session_loss
+        self._ptt_state: bool = False
+        # Every simulated PTT state change as (monotonic time, new state):
+        # wire SETs and the ptt_on_session_loss="release" unkey at session
+        # end. Wire SETs are additionally recorded in ``ptt_set_writes`` as
+        # (monotonic time, on, ci-v stream open) — a PTT-on SET processed
+        # with no open CI-V stream is a TX frame that keyed a session-less
+        # radio.
+        self.ptt_transitions: list[tuple[float, bool]] = []
+        self.ptt_set_writes: list[tuple[float, bool, bool]] = []
 
         # Fault injection
         self.drop_rate: float = drop_rate  # probability [0,1] of dropping a reply
@@ -597,6 +632,21 @@ class MockIcomRadio:
     def civ_gap_open(self) -> bool:
         """True while any client sequence number is missing on the CI-V port."""
         return any(t.missing for t in self._civ_gap.values())
+
+    @property
+    def ptt_on(self) -> bool:
+        """Simulated PTT state (only meaningful with ``stateful_ptt=True``)."""
+        return self._ptt_state
+
+    def _set_simulated_ptt(self, on: bool, *, wire_set: bool) -> None:
+        """Flip the simulated PTT state and record the transition."""
+        if wire_set:
+            self.ptt_set_writes.append(
+                (time.monotonic(), on, self._civ_owner_addr is not None)
+            )
+        if on != self._ptt_state:
+            self.ptt_transitions.append((time.monotonic(), on))
+        self._ptt_state = on
 
     # ------------------------------------------------------------------
     # Session-lifecycle test knobs
@@ -791,6 +841,17 @@ class MockIcomRadio:
             self._owner = None
             self.released_count += 1
             self.last_release_reason = reason
+            # ptt_on_session_loss (opt-in, stateful PTT only): "release"
+            # unkeys the simulated radio at the moment the session ends.
+            # The real IC-7610 behaviour is UNRECORDED — TX is never
+            # actuated on the bench — which is why the TX-under-fault
+            # matrix covers both this and "hold".
+            if (
+                self._stateful_ptt
+                and self._ptt_on_session_loss == "release"
+                and self._ptt_state
+            ):
+                self._set_simulated_ptt(False, wire_set=False)
 
     def _arm_keepalive(self) -> None:
         """(Re)start the keepalive auto-release timer for the held session."""
@@ -1799,10 +1860,19 @@ class MockIcomRadio:
                 # seed the authoritative observation. Always answer PTT OFF so
                 # a rig that can in fact be supervised is recognised as such
                 # (MOR-1217); a SET or an unrecognised sub-command NAKs, same
-                # as an unimplemented command.
+                # as an unimplemented command. With ``stateful_ptt`` the GET
+                # instead answers the current simulated state (MOR-3251).
+                state = 0x01 if self._ptt_state else 0x00
                 return self._civ_frame(
-                    to, frm, _CMD_PTT, sub=_SUB_PTT, data=bytes([0x00])
+                    to, frm, _CMD_PTT, sub=_SUB_PTT, data=bytes([state])
                 )
+            if self._stateful_ptt and sub == _SUB_PTT and rest in (b"\x00", b"\x01"):
+                # Opt-in stateful PTT (MOR-3251): SET on/off answers FB and
+                # flips the simulated state. Reached only after the
+                # sequence-gap gate and behind the LAN echo above, like any
+                # other CI-V request.
+                self._set_simulated_ptt(rest == b"\x01", wire_set=True)
+                return self._civ_ack(to, frm)
             return self._civ_nak(to, frm)
 
         # ACK / NAK from client — ignore
