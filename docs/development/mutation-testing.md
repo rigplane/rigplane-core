@@ -38,9 +38,10 @@ was measured first: popular functions such as the frame codec's
 encode/decode inherit every integration test that touches them, and
 per-mutant runs reached roughly a minute. The committed selection is the
 focused per-module unit-test files, which keeps the full fifteen-module
-sweep near fifteen minutes. `mutmut` runs only the tests its stats phase
-saw covering each mutated function, so per-mutant cost stays bounded by
-those focused tests.
+sweep to an estimated fifteen minutes (the baseline section below says
+where and how that estimate was measured). `mutmut` runs only the tests
+its stats phase saw covering each mutated function, so per-mutant cost
+stays bounded by those focused tests.
 
 Two kinds of tests must stay out of the selection entirely:
 
@@ -53,8 +54,11 @@ Two kinds of tests must stay out of the selection entirely:
   the tracked tree on disk). Inside the `mutants/` sandbox every
   mutated function is a trampoline whose signature is `*args, **kwargs`,
   so these counts and scans disagree with their baselines by design.
-* A failed stats phase aborts the whole sweep (`mutmut` runs the
-  selection with `-x`), so one incompatible file costs the entire run.
+* A failed stats phase aborts the whole sweep: mutmut stops with
+  "failed to collect stats" when the stats run exits non-zero, and the
+  selection runs with `-x` because this config's own
+  `pytest_add_cli_args` passes it (not because mutmut adds one), so one
+  incompatible file costs the entire run.
 
 ## Baseline (2026-10-11, commit `8081ec75`, 4 children, fresh cache)
 
@@ -84,13 +88,16 @@ Per module (killed / survived / timeout / no tests):
 | `rigplane.backends.yaesu_cat.parser` | 79 | 28 | 2 | 0 |
 | `rigplane.rigctld.routing` | 0 | 2 | 0 | 910 |
 
-Measured wall times on the self-hosted build runner: the frame module
-alone (197 mutants) took 3 m 50 s end to end; the full sweep finished in
-about fifteen minutes (4772 of 4971 mutants completed inside a 590 s
-window, the slower tail included timeouts at ten times the covering
-tests' duration). The workflow's `timeout-minutes: 30` is that measured
-full sweep doubled for headroom, well under the 180-minute cap for this
-job family.
+The wall times were measured on the builder's Linux test host (x86_64,
+16 cores), not on the CI runner, and they vary by host: the frame
+module alone (197 mutants) ran 430 s there against 3 m 50 s on the
+Mac mini. "About fifteen minutes" for the full sweep is an estimate,
+not a measurement — 4772 of 4971 mutants completed inside a 590 s
+bounded window on the Linux host, the slower tail being mutants that
+hit mutmut's CPU-time limit (see below). The workflow's
+`timeout-minutes: 30` is a ceiling over that estimate, to be
+re-measured on the runner after the first scheduled run; it stays well
+under the 180-minute cap for this job family.
 
 ## Reading a surviving mutant
 
@@ -98,7 +105,7 @@ A **survived** mutant means mutmut changed a line, ran every selected
 test that covers that function, and nothing failed. Inspect it with:
 
 ```bash
-uv run mutmut show rigplane.core.civ.x_parse__mutmut_12
+uv run mutmut show rigplane.core.civ.x_iter_civ_frames__mutmut_12
 ```
 
 which prints the status line and the exact diff of the mutation. Then
@@ -114,20 +121,30 @@ in the ticket why this particular mutation is behaviorally equivalent
 exactly because it is honest.
 
 Other statuses: **timeout** (the mutation likely broke a wait/loop and
-the covering tests hit their per-test timeout — read it as a kill with a
-performance angle), **no tests** (no selected test covers the mutated
+burned CPU until mutmut killed it — mutmut 3.8 enforces a CPU-time
+limit, SIGXCPU, not a per-test timeout; the installed source computes
+the limit as `ceil((estimated_time_of_tests + timeout_constant) *
+timeout_multiplier * 2)`, i.e. 30 × (estimated test time + 1 s) with
+the defaults (multiplier 15.0, constant 1.0) — read it as a kill with
+a performance angle), **no tests** (no selected test covers the mutated
 function at all — a coverage hole in the focused selection), and
-**suspicious** (an indeterminate exit; worth `mutmut show` plus a manual
-rerun).
+**suspicious** (an indeterminate exit; worth `mutmut show` plus a
+manual rerun).
 
 ## Known blind spots at the baseline
 
 * `rigplane.rigctld.routing` is effectively unmeasured: 910 of its 912
-  mutants report `no tests`. The module builds its route tables at
-  import time, so the selected tests exercise table data, not the
-  trampolined functions mutmut attributes coverage through. Fixing this
-  needs either dedicated routing unit tests or a different measurement
-  approach — tracked in the ticket that owns this job, not solved by it.
+  mutants report `no tests`. The committed selection covers only 14 % of
+  the module's lines (measured on the Linux test host by running the 21
+  selected files under coverage): the tests that cover it —
+  `tests/test_rigctld_handler.py`,
+  `tests/test_rigctld_level_quantize.py` and
+  `tests/test_rigctld_dump_state_snapshot.py`, which together reach
+  92 % line coverage in about 80 s — are deliberately left out of
+  `pytest_add_cli_args_test_selection` to keep the sweep short. Adding
+  those three files when the runtime budget allows is the follow-up that
+  makes the module's rows meaningful; the ticket that owns this job
+  tracks it.
 * `rigplane.core.tx_target` has no dedicated unit-test file; 70 of 101
   mutants report `no tests`.
 * `rigplane.audio._codecs` kills only 26 of 502 mutants: the focused

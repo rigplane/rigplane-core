@@ -15,7 +15,9 @@ permissions:
   contents: read
 
 # Never cancel a running sweep from a queued one, and keep this group
-# disjoint from quick/visual so PR CI is never displaced by the trend job.
+# disjoint from quick/visual so the sweep is never cancelled by PR CI;
+# on the shared runner it can still delay queued PR jobs by up to 30
+# minutes (the timeout-minutes ceiling below).
 concurrency:
   group: mutmut-weekly
   cancel-in-progress: false
@@ -25,9 +27,11 @@ jobs:
     # Same build-tier runner as quick/visual; the sweep needs the
     # pre-baked audio/Tauri system libraries for the codec tests.
     runs-on: [self-hosted, linux, build]
-    # 2x the measured full-sweep wall time (~15 min with 4 children on
-    # this runner class, see docs/development/mutation-testing.md); the
-    # hard cap for this job family is 180.
+    # Ceiling over the estimated full-sweep wall time (~15 min with 4
+    # children, an estimate from a 590 s bounded window on the Linux
+    # test host, see docs/development/mutation-testing.md); to be
+    # re-measured on the runner after the first scheduled run. The hard
+    # cap for this job family is 180.
     timeout-minutes: 30
     env:
       # Same Python pin as quick.yml: `uv run` must not drift to the
