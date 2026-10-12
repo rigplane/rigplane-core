@@ -17,33 +17,27 @@
  * The pending transaction is intentionally memory-only. A disconnect,
  * reload, or cached state cannot authorize MOD restoration.
  *
- * This module never touches the audio byte path.
+ * The gating decisions are pure and live in `./mod-input-gates.ts`; this
+ * wrapper owns the opt-in flag, the pending latch, `localStorage` and the
+ * dispatch. This module never touches the audio byte path.
  */
 
 import { getRadioState } from '$lib/stores/radio.svelte';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
-import { isFieldRead } from '$lib/state/field-status';
-import {
-  LAN_MOD_INPUT_SOURCE,
-  modInputCommand,
-  modInputStateKey,
-  type ModInputCommand,
-  type ModInputStateKey,
-} from '$lib/radio/mod-input';
+import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
 import { dispatchRadioIntent } from '../commands/radio-intents';
-import type { ServerState } from '$lib/types/state';
+import {
+  autoLanModInputAvailable,
+  planAutoLanSet,
+  restoreTarget,
+  type ModInputSetPlan,
+} from './mod-input-gates';
 
 /** localStorage key of the opt-in preference ('true' / 'false'). */
 export const AUTO_LAN_PREF_KEY = 'rigplane:auto-lan-mod-input';
 
 /** Legacy localStorage key retained only for safe migration cleanup. */
 export const PENDING_RESTORE_KEY = 'rigplane:mod-input-tx-restore:v1';
-
-interface PendingRestore {
-  command: ModInputCommand;
-  key: ModInputStateKey;
-  source: number;
-}
 
 /* ── Preference (opt-in, default OFF) ────────────────────────────── */
 
@@ -81,20 +75,14 @@ export interface AutoLanModInputProps {
 
 /** Reactive props for the settings toggle (call inside `$derived`). */
 export function deriveAutoLanModInputProps(): AutoLanModInputProps {
-  const state = getRadioState();
-  const caps = getCapabilities();
-  const key = modInputStateKey(activeDataMode(state));
-  const available =
-    state !== null &&
-    (caps?.capabilities?.includes('data_mode') ?? false) &&
-    isFieldRead(state, key);
+  const available = autoLanModInputAvailable(getRadioState(), getCapabilities());
   return { available, enabled };
 }
 
 /* ── Pending restore (memory only) ───────────────────────────────── */
 
 /** Set while a web TX keyed by auto-set is in flight; owns the restore. */
-let pending: PendingRestore | null = null;
+let pending: ModInputSetPlan | null = null;
 
 function clearPersistedPending(): void {
   if (typeof localStorage === 'undefined') return;
@@ -107,42 +95,30 @@ function clearPersistedPending(): void {
 
 /* ── Auto-set / restore engine ───────────────────────────────────── */
 
-function activeDataMode(state: ServerState | null): number {
-  const rx = state?.active === 'SUB' ? state.sub : state?.main;
-  return rx?.dataMode ?? 0;
-}
-
 /**
  * Opt-in TX-start hook (called by `tx-adapter.startTx` BEFORE the MOR-617
  * guard arms; the guard stays truthfully visible until readback confirms).
- * Same quiet-gating as the guard: no state, no data_mode capability, group
- * not read, source unknown, or already LAN → no change, no pending.
+ * The quiet-gating decision is `planAutoLanSet` in `./mod-input-gates.ts`.
  */
 export function autoSetLanModInputForTx(): void {
   if (!enabled) return;
-  const state = getRadioState();
-  if (!state) return;
-  const caps = getCapabilities();
-  if (!(caps?.capabilities?.includes('data_mode') ?? false)) return;
-  const dataMode = activeDataMode(state);
-  const key = modInputStateKey(dataMode);
-  if (!isFieldRead(state, key)) return;
-  const source = state[key] ?? null;
-  if (source === null || source === LAN_MOD_INPUT_SOURCE) return;
+  const plan = planAutoLanSet(getRadioState(), getCapabilities());
+  if (!plan) return;
 
-  pending = { command: modInputCommand(dataMode), key, source };
+  pending = plan;
   // Same per-group SET path as the ModePanel control (MOR-616), routed
   // through the typed facade; the backend confirms via write-through
   // readback (MOR-615).
   dispatchRadioIntent({
-    name: pending.command,
+    name: plan.command,
     params: { source: LAN_MOD_INPUT_SOURCE },
   });
 }
 
 /**
  * Confirmed-off hook. One-shot: consumes the pending restore whether or not a
- * command is sent. Skips the SET when the group is known to be off LAN already.
+ * command is sent. Skips the SET when the group is known to be off LAN already
+ * (`restoreTarget` in `./mod-input-gates.ts`).
  */
 export function restoreModInputAfterTx(): void {
   const p = pending;
@@ -150,8 +126,10 @@ export function restoreModInputAfterTx(): void {
   clearPersistedPending();
   if (!p) return;
   const current = getRadioState()?.[p.key] ?? null;
-  if (current !== null && current !== LAN_MOD_INPUT_SOURCE) return;
-  dispatchRadioIntent({ name: p.command, params: { source: p.source } });
+  const target = restoreTarget(p, current);
+  if (target) {
+    dispatchRadioIntent({ name: target.command, params: { source: target.source } });
+  }
 }
 
 /**

@@ -94,6 +94,8 @@ dev = [
     "pytest-xdist>=3.6",
     "ruff>=0.15.2",
     "types-pyserial>=3.5",
+    # Dev/CI-only — drives the weekly mutation-testing trend job.
+    "mutmut>=3.8,<4",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -224,3 +226,66 @@ module = [
     "rigplane.rigctld.handler",
 ]
 disable_error_code = ["attr-defined"]
+
+[tool.mutmut]
+# Weekly mutation-testing trend job. The whole src/ tree is
+# copied into mutants/ so imports stay intact; only_mutate restricts
+# mutation to the small high-risk modules of the stabilization program.
+source_paths = ["src/"]
+# Top-level test-support and rig-profile data; without these the copied
+# tree cannot import rigplane_testkit (pythonpath=["."]) or discover any
+# rig TOML profiles (profiles: _RIG_DIRS).
+also_copy = ["rigplane_testkit/", "rigs/"]
+only_mutate = [
+    "src/rigplane/web/_delta_encoder.py",
+    "src/rigplane/rigctld/protocol.py",
+    "src/rigplane/core/civ.py",
+    "src/rigplane/audio/_codecs.py",
+    "src/rigplane/commands/_frame.py",
+    "src/rigplane/core/types.py",
+    "src/rigplane/core/state_store.py",
+    "src/rigplane/core/acquisition_drain.py",
+    "src/rigplane/runtime/controller_authority.py",
+    "src/rigplane/core/tx_safety.py",
+    "src/rigplane/core/tx_target.py",
+    "src/rigplane/core/tx_observation.py",
+    "src/rigplane/runtime/managed_tx_fence.py",
+    "src/rigplane/backends/yaesu_cat/parser.py",
+    "src/rigplane/rigctld/routing.py",
+]
+# Per-mutant pytest invocation: -x -q -p no:cacheprovider. The selection
+# is the focused per-module unit-test files, not every file that imports
+# the mutated modules: the import closure (~84 files) makes popular
+# functions inherit hundreds of slow integration tests and pushed
+# per-mutant runs past a minute, while this list keeps the full
+# 15-module sweep near an estimated fifteen minutes (from a 590 s
+# bounded window on the builder's Linux test host, not the CI runner;
+# see docs/development/mutation-testing.md). Source-introspection tests
+# (census/inventory scans such as tests/test_command_map_parity.py)
+# cannot run inside the mutants copy at all and must stay out.
+# mutmut runs only the tests its stats phase saw covering each mutated
+# function, so per-mutant cost stays bounded by those tests.
+pytest_add_cli_args = ["-x", "-q", "-p", "no:cacheprovider"]
+pytest_add_cli_args_test_selection = [
+    "tests/contracts/test_tx_observation_conformance.py",
+    "tests/test_acquisition_drain.py",
+    "tests/test_audio_codecs.py",
+    "tests/test_civ_rx_coverage.py",
+    "tests/test_combined_acquisition_drain.py",
+    "tests/test_controller_authority.py",
+    "tests/test_delta_encoder.py",
+    "tests/test_managed_tx_fence.py",
+    "tests/test_pcm_ingress_decode.py",
+    "tests/test_raw_civ_transaction.py",
+    "tests/test_response_shape_from_profile.py",
+    "tests/test_rigctld_protocol.py",
+    "tests/test_rigctld_routable_extension.py",
+    "tests/test_single_rx_plain_routing.py",
+    "tests/test_state_queries.py",
+    "tests/test_state_store.py",
+    "tests/test_tx_band_edge.py",
+    "tests/test_tx_safety.py",
+    "tests/test_tx_safety_diagnostics.py",
+    "tests/test_wire_tuple_splitting.py",
+    "tests/test_yaesu_cat_parser.py",
+]

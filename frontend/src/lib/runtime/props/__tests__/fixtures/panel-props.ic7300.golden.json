@@ -1,0 +1,343 @@
+{
+  "toVfoProps(main)": {
+    "receiver": "main",
+    "freq": 14188000,
+    "mode": "USB",
+    "filter": "FIL1",
+    "sValue": 0,
+    "isActive": true,
+    "badges": {
+      "NB": true,
+      "NR": true,
+      "DIGI-SEL": false,
+      "IP+": false,
+      "ANF": false,
+      "NOTCH": false,
+      "ATT": false,
+      "PRE": false,
+      "RFG": true,
+      "SQL": false,
+      "ATU": false
+    },
+    "rit": "undefined"
+  },
+  "toVfoProps(sub)": {
+    "receiver": "sub",
+    "freq": "NaN",
+    "mode": "",
+    "filter": "",
+    "sValue": "NaN",
+    "isActive": false,
+    "badges": {}
+  },
+  "toVfoOpsProps": {
+    "splitActive": false,
+    "splitKnown": true,
+    "txVfo": "main",
+    "dualWatch": false,
+    "mainSubTracking": false
+  },
+  "toRfFrontEndProps": {
+    "rfGain": 0.8196078431372549,
+    "squelch": 0,
+    "att": 0,
+    "digiSel": false,
+    "ipPlus": false,
+    "pre": 0,
+    "rfGainAvailable": true,
+    "squelchAvailable": true,
+    "attAvailable": true,
+    "preAvailable": true,
+    "digiSelAvailable": false,
+    "ipPlusAvailable": false,
+    "attValues": [
+      0,
+      20
+    ],
+    "attLabels": {},
+    "preValues": [
+      0,
+      1,
+      2
+    ],
+    "preOptions": [
+      {
+        "value": 0,
+        "label": "OFF"
+      },
+      {
+        "value": 1,
+        "label": "P1"
+      },
+      {
+        "value": 2,
+        "label": "P2"
+      }
+    ],
+    "showRfGain": true,
+    "showSquelch": true,
+    "showAtt": true,
+    "showPre": true,
+    "preDisabled": false,
+    "preDisabledReason": "",
+    "showDigiSel": false,
+    "showIpPlus": false
+  },
+  "toFilterProps": {
+    "currentMode": "USB",
+    "currentFilter": 1,
+    "filterShape": null,
+    "hasFilterShape": true,
+    "filterLabels": [
+      "FIL1",
+      "FIL2",
+      "FIL3"
+    ],
+    "filterWidth": "NaN",
+    "filterWidthMin": 50,
+    "filterWidthMax": 3600,
+    "filterConfig": {
+      "defaults": [
+        3000,
+        2400,
+        1800
+      ],
+      "fixed": false,
+      "maxHz": 3600,
+      "minHz": 50,
+      "segments": [
+        {
+          "hzMax": 500,
+          "hzMin": 50,
+          "indexMin": 0,
+          "stepHz": 50
+        },
+        {
+          "hzMax": 3600,
+          "hzMin": 600,
+          "indexMin": 10,
+          "stepHz": 100
+        }
+      ]
+    },
+    "ifShift": 0,
+    "ifShiftDomain": null,
+    "hasIfShift": false,
+    "hasPbt": true,
+    "pbtInner": null,
+    "pbtOuter": null,
+    "pbtDomain": null
+  },
+  "toAgcProps": {
+    "agcMode": 3,
+    "agcModes": [
+      1,
+      2,
+      3
+    ],
+    "agcLabels": {
+      "1": "FAST",
+      "2": "MID",
+      "3": "SLOW"
+    },
+    "hasAgc": true
+  },
+  "toRitXitProps": {
+    "ritActive": false,
+    "ritOffset": "NaN",
+    "xitActive": false,
+    "xitOffset": "NaN",
+    "hasRit": false,
+    "hasXit": false,
+    "ritKnown": false,
+    "xitKnown": false,
+    "ritDomain": null
+  },
+  "toModeProps": {
+    "currentMode": "USB",
+    "modes": [
+      "USB",
+      "LSB",
+      "CW",
+      "CW-R",
+      "AM",
+      "FM",
+      "RTTY",
+      "RTTY-R"
+    ],
+    "dataMode": 0,
+    "hasDataMode": true,
+    "dataModeCount": 1,
+    "dataModeLabels": {
+      "0": "OFF",
+      "1": "DATA"
+    },
+    "modInputSource": null,
+    "modInputChoices": [],
+    "hasModInput": false
+  },
+  "toDspProps": {
+    "nrMode": 1,
+    "nrLevel": 0,
+    "nrLevelProjection": {
+      "value": null,
+      "domain": {
+        "min": 0,
+        "max": 15,
+        "step": 1,
+        "origin": 0
+      },
+      "adjustable": false
+    },
+    "nbActive": true,
+    "nbLevel": 0,
+    "nbDepth": 0,
+    "nbWidth": 0,
+    "notchMode": "off",
+    "notchFreq": 0,
+    "manualNotchWidth": 0,
+    "agcTimeConstant": 0,
+    "hasNr": true,
+    "hasNb": true,
+    "hasNbDepth": false,
+    "hasNbWidth": false,
+    "nbLevelMax": 255,
+    "nbLevelPercent": true,
+    "hasNotch": false,
+    "hasAutoNotch": false,
+    "hasAgcTime": false,
+    "hasManualNotchWidth": false,
+    "nbKnown": true,
+    "nrKnown": true,
+    "manualNotchKnown": false,
+    "autoNotchKnown": false
+  },
+  "toTxProps": {
+    "txActive": false,
+    "rfPower": 0.011764705882352941,
+    "atuActive": false,
+    "atuTuning": false,
+    "voxActive": false,
+    "compActive": true,
+    "compLevel": 151,
+    "monActive": false,
+    "monLevel": 0,
+    "hasTx": true,
+    "hasTuner": true,
+    "hasMonitor": false,
+    "hasVox": true,
+    "hasComp": true,
+    "txActiveAvailable": true,
+    "rfPowerAvailable": true,
+    "micGainAvailable": false,
+    "atuAvailable": true,
+    "voxAvailable": false,
+    "compAvailable": true,
+    "compLevelAvailable": true,
+    "monAvailable": false,
+    "monLevelAvailable": false,
+    "driveGainAvailable": false
+  },
+  "toCwProps": {
+    "cwPitch": 0,
+    "keySpeed": 0,
+    "breakIn": 0,
+    "apfMode": 0,
+    "twinPeak": false,
+    "currentMode": "USB",
+    "apfDisabled": true,
+    "tpfDisabled": true,
+    "wpm": 0,
+    "breakInActive": false,
+    "breakInDelay": 0,
+    "sidetonePitch": 0,
+    "sidetoneLevel": 0,
+    "reversePaddle": false,
+    "hasCw": true,
+    "hasBreakIn": true,
+    "hasApf": false,
+    "hasTwinPeak": true,
+    "breakInChoices": [],
+    "autoTuneAvailable": true,
+    "cwPitchDomain": {
+      "min": 300,
+      "max": 900,
+      "step": 5,
+      "origin": 300
+    },
+    "keySpeedDomain": null
+  },
+  "toMeterProps": {
+    "sValue": 0,
+    "signal": 0,
+    "rfPower": 0,
+    "swr": 0,
+    "alc": 0,
+    "comp": 0,
+    "vd": 0,
+    "id": 0,
+    "txActive": false,
+    "hasTx": true
+  },
+  "toRxAudioProps": {
+    "monitorMode": "live",
+    "afLevel": 0.42,
+    "hasAfLevel": true,
+    "hasLiveAudio": true,
+    "isAudioConnected": true,
+    "hasDualReceiver": false,
+    "hasAudioRouting": false
+  },
+  "toBandSelectorProps": {
+    "currentFreq": 14188000
+  },
+  "toAntennaProps": {
+    "txAntenna": null,
+    "rxAnt": null,
+    "antennaCount": 1,
+    "hasRxAntenna": false
+  },
+  "toScanProps": {
+    "scanning": false,
+    "scanType": 0,
+    "scanResumeMode": 0,
+    "scanningKnown": false
+  },
+  "toAudioSpectrumProps": {
+    "filterWidth": "NaN",
+    "filterWidthMax": 3600,
+    "ifShift": 0,
+    "pbtInner": 128,
+    "pbtOuter": 128,
+    "pbtRange": {
+      "rawCenter": 128,
+      "displayMin": -1200,
+      "displayMax": 1200
+    },
+    "manualNotch": false,
+    "notchFreq": 0,
+    "contour": 0,
+    "contourFreq": 128
+  },
+  "toMemoryPanelProps": {
+    "activeFreqHz": 14188000,
+    "activeMode": "USB",
+    "vfoIdentityKnown": false
+  },
+  "toAmberTelemetryProps": {
+    "vdRaw": 0,
+    "idRaw": 0
+  },
+  "toVfoControlProps": {
+    "mode": "USB",
+    "isCwMode": false,
+    "breakInMode": 0,
+    "hasDualRx": false,
+    "hasSplit": true,
+    "hasRit": true,
+    "hasTuner": true,
+    "hasCw": true,
+    "hasBreakIn": true,
+    "breakInChoices": []
+  }
+}
