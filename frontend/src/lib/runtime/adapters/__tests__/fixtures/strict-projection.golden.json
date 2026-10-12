@@ -1,0 +1,866 @@
+{
+  "topologyId": "2/main_sub",
+  "vfoScheme": "main_sub",
+  "activeReceiver": {
+    "status": "known",
+    "receiver": "MAIN"
+  },
+  "vfos": [
+    {
+      "receiver": "MAIN",
+      "slot": {
+        "kind": "unslotted"
+      },
+      "label": "MAIN",
+      "frequencyHz": 14250000,
+      "mode": "USB",
+      "filter": "FIL1",
+      "isActive": true,
+      "isActiveSlot": true,
+      "isTxTarget": true
+    },
+    {
+      "receiver": "SUB",
+      "slot": {
+        "kind": "unslotted"
+      },
+      "label": "SUB",
+      "frequencyHz": 14300000,
+      "mode": "USB",
+      "filter": "FIL1",
+      "isActive": false,
+      "isActiveSlot": true,
+      "isTxTarget": false
+    }
+  ],
+  "split": {
+    "status": "known",
+    "value": false
+  },
+  "dualWatch": {
+    "status": "known",
+    "value": false
+  },
+  "txTarget": {
+    "status": "known",
+    "receiver": "MAIN",
+    "frequencyHz": 14250000,
+    "slot": {
+      "kind": "unslotted"
+    }
+  },
+  "txPermit": {
+    "status": "allowed",
+    "band": "20m"
+  },
+  "scope": {
+    "hardwareScope": {
+      "structural": true,
+      "operational": true
+    },
+    "audioFftScope": {
+      "structural": true,
+      "operational": true
+    }
+  },
+  "disabledReasons": [],
+  "receiverIndicators": [
+    {
+      "receiver": "MAIN",
+      "availability": {
+        "structural": true,
+        "operational": true
+      },
+      "sMeter": {
+        "reading": {
+          "status": "known",
+          "value": 0
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "bandwidthHz": {
+        "reading": {
+          "status": "known",
+          "value": 2400
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "agcMode": {
+        "reading": {
+          "status": "known",
+          "value": 0
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "nbActive": {
+        "reading": {
+          "status": "known",
+          "value": false
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "nrActive": {
+        "reading": {
+          "status": "known",
+          "value": true
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "notchMode": {
+        "reading": {
+          "status": "known",
+          "value": "off"
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "attenuator": {
+        "reading": {
+          "status": "known",
+          "value": 0
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "preamp": {
+        "reading": {
+          "status": "known",
+          "value": 0
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "rfGain": {
+        "reading": {
+          "status": "known",
+          "value": 0
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "digiSel": {
+        "reading": {
+          "status": "known",
+          "value": false
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "ipPlus": {
+        "reading": {
+          "status": "known",
+          "value": true
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      }
+    },
+    {
+      "receiver": "SUB",
+      "availability": {
+        "structural": true,
+        "operational": true
+      },
+      "sMeter": {
+        "reading": {
+          "status": "known",
+          "value": -37
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "bandwidthHz": {
+        "reading": {
+          "status": "known",
+          "value": 500
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "agcMode": {
+        "reading": {
+          "status": "known",
+          "value": "SLOW"
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "nbActive": {
+        "reading": {
+          "status": "known",
+          "value": true
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "nrActive": {
+        "reading": {
+          "status": "known",
+          "value": false
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "notchMode": {
+        "reading": {
+          "status": "known",
+          "value": "auto"
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "attenuator": {
+        "reading": {
+          "status": "known",
+          "value": 12
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "preamp": {
+        "reading": {
+          "status": "known",
+          "value": 2
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "rfGain": {
+        "reading": {
+          "status": "known",
+          "value": 0.75
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "digiSel": {
+        "reading": {
+          "status": "known",
+          "value": true
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      },
+      "ipPlus": {
+        "reading": {
+          "status": "known",
+          "value": false
+        },
+        "availability": {
+          "structural": true,
+          "operational": true
+        }
+      }
+    }
+  ],
+  "radioWideIndicators": {
+    "rfState": "receiving",
+    "antenna": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    },
+    "atu": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    },
+    "dialLock": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    },
+    "ritActive": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    },
+    "ritOffset": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    },
+    "xitActive": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    },
+    "xitOffset": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    },
+    "actions": {
+      "main": {
+        "structural": true,
+        "operational": true
+      },
+      "sub": {
+        "structural": true,
+        "operational": true
+      },
+      "equalize": {
+        "structural": false,
+        "operational": false
+      },
+      "swap": {
+        "structural": false,
+        "operational": false
+      }
+    }
+  },
+  "meters": {
+    "rfState": "receiving",
+    "signal": {
+      "reading": {
+        "status": "known",
+        "value": 0
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      },
+      "relevant": true
+    },
+    "power": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      },
+      "relevant": false
+    },
+    "swr": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      },
+      "relevant": false
+    },
+    "alc": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      },
+      "relevant": false
+    },
+    "compression": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      },
+      "relevant": false
+    },
+    "drainVoltage": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      },
+      "relevant": true
+    },
+    "drainCurrent": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      },
+      "relevant": false
+    }
+  },
+  "modeFilter": {
+    "currentMode": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    },
+    "modeChoices": [],
+    "currentFilter": {
+      "reading": {
+        "status": "known",
+        "value": 1
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "filterChoices": [
+      "FIL1"
+    ],
+    "filterWidth": {
+      "reading": {
+        "status": "known",
+        "value": 2400
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "filterWidthMin": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "filterWidthMax": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    }
+  },
+  "filterPassband": {
+    "filterShape": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "filterShapeControlStructural": false,
+    "ifShift": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    },
+    "ifShiftControlStructural": false,
+    "pbtInner": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    },
+    "pbtOuter": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    },
+    "narrow": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    },
+    "dataMode": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    }
+  },
+  "dsp": {
+    "nrActive": {
+      "reading": {
+        "status": "known",
+        "value": true
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "nrLevel": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "nrLevelProjection": {
+      "value": null,
+      "domain": {
+        "min": 0,
+        "max": 15,
+        "step": 1,
+        "origin": 0
+      },
+      "adjustable": false
+    },
+    "nbActive": {
+      "reading": {
+        "status": "known",
+        "value": false
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "nbLevel": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "nbDepth": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    },
+    "nbWidth": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    },
+    "notchMode": {
+      "reading": {
+        "status": "known",
+        "value": "off"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "notchFreq": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "manualNotchWidth": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    },
+    "agcMode": {
+      "reading": {
+        "status": "known",
+        "value": 0
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "agcModes": [
+      0,
+      2
+    ],
+    "agcTimeConstant": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    }
+  },
+  "rfFrontEnd": {
+    "preamp": {
+      "reading": {
+        "status": "known",
+        "value": 0
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "preValues": [],
+    "attenuator": {
+      "reading": {
+        "status": "known",
+        "value": 0
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "attValues": [],
+    "rfGain": {
+      "reading": {
+        "status": "known",
+        "value": 0
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "squelch": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": false,
+        "operational": false
+      }
+    },
+    "digiSel": {
+      "reading": {
+        "status": "known",
+        "value": false
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "ipPlus": {
+      "reading": {
+        "status": "known",
+        "value": true
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    }
+  },
+  "scopeControls": {
+    "mode": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "edge": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "span": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "speed": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "hold": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "refDb": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "dual": {
+      "reading": {
+        "status": "known",
+        "value": false
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "receiver": {
+      "reading": {
+        "status": "known",
+        "value": 0
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "duringTx": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "centerType": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "vbwNarrow": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    },
+    "rbw": {
+      "reading": {
+        "status": "unknown"
+      },
+      "availability": {
+        "structural": true,
+        "operational": true
+      }
+    }
+  }
+}
