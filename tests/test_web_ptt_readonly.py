@@ -32,6 +32,7 @@ def _make_handler(
     radio: Any = None,
     ptt: object = False,
     stale: bool = False,
+    expired: bool = False,
     authority: Any = None,
 ) -> tuple[ControlHandler, CommandQueue]:
     """Build a ControlHandler with a fake server and return (handler, command_queue)."""
@@ -58,6 +59,10 @@ def _make_handler(
         )
         if stale:
             state_store.mark_stale_due(now=12.0)
+        elif expired:
+            # No StateFreshnessService tick ran: the FRESH flag outlives the
+            # 1.0 s TTL, so only age recomputation can catch the expiry.
+            clock.advance(1.03)
 
     server = SimpleNamespace(
         command_queue=command_queue,
@@ -323,6 +328,30 @@ class TestWebTunerReadOnly:
             await handler._enqueue_command("set_tuner_status", {"value": value})
 
         assert not q.drain()
+
+    @pytest.mark.parametrize("value", [1, 2])
+    async def test_tuner_engage_refused_when_fresh_flag_outlives_ttl(
+        self, value: int
+    ) -> None:
+        """PTT=False past its TTL but still flagged FRESH reads UNKNOWN."""
+        radio = self._make_tuner_radio()
+        handler, q = _make_handler(radio=radio, ptt=False, expired=True)
+
+        with pytest.raises(CommandError, match="RF state is unknown"):
+            await handler._enqueue_command("set_tuner_status", {"value": value})
+
+        radio.set_tuner_status.assert_not_awaited()
+        assert not q.drain()
+
+    async def test_tuner_engage_allowed_inside_ttl_with_fresh_ptt_false(self) -> None:
+        """The same PTT=False observation inside its TTL still allows engage."""
+        radio = self._make_tuner_radio()
+        handler, _ = _make_handler(radio=radio, ptt=False)
+
+        result = await handler._enqueue_command("set_tuner_status", {"value": 2})
+
+        assert result == {"value": 2, "label": "TUNING"}
+        radio.set_tuner_status.assert_awaited_once_with(2)
 
     @pytest.mark.parametrize(
         ("ptt", "stale"),

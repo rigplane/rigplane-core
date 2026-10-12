@@ -86,23 +86,11 @@ The KNOWN divergences of the simulators from this recording, one flat map
 keyed by a stable id:
 
 - LAN answer-class divergences: the request frame hex;
-- serial-fake divergences: `usb:` + the request frame hex, plus
-  `usb_echo_default` (the fake echoes by default; the radio does not on
-  USB). The fake takes its CI-V address and `19 00` model id from the
-  resolved profile (`rigplane_testkit/serial/civ_serial.py: CivSerialFake`)
-  but answers only a handful of commands (frequency 03/05, mode 04/06,
-  PTT 1C 00, S-meter 15 02, identity 19 00) and NAKs any other frame
-  addressed to it (a controller's own ACK/NAK, unknown broadcasts and
-  frames addressed elsewhere get no answer);
-- `lan_civ_echo` (the radio echoes every LAN request; the simulator must
-  echo every replayed request too and currently echoes none);
 - `handshake_<n>` — positional handshake divergences, `n` counting from 1
   over the recorded handshake sequence (pings/idle dropped, cut before the
   first client token renewal);
-- `token_renew_reply` (the radio answers every renew with a 0x40/0x05
-  control packet; the simulator stays silent), `scope_wave` (the
-  recording holds 5 complete `27 00` wave frames after wave-on; the
-  simulator must send at least as many and sends none).
+- `scope_wave` (the recording holds 5 complete `27 00` wave frames after
+  wave-on; the simulator must send at least as many and sends none).
 
 Each value is `{"recorded": ..., "simulator": ..., "ticket": "MOR-3310"}`
 with the reply-class spelling documented in the test module
@@ -133,3 +121,14 @@ repeated about every 0.1 s, each twice, no CI-V answers after),
 numbers, narrowing the request to single 132, then the request stalled
 through the gap answered after the fill) and
 `single_gap_filled_by_idle` (one skipped number refilled by idle).
+
+The serial fake (`rigplane_testkit/serial/civ_serial.py: CivSerialFake`)
+takes its CI-V address and `19 00` model id from the resolved profile.
+Without a recorded table it answers only a handful of commands (frequency
+03/05, mode 04/06, PTT 1C 00, S-meter 15 02, identity 19 00) and NAKs any
+other frame addressed to it (a controller's own ACK/NAK, unknown broadcasts
+and frames addressed elsewhere get no answer). With the recorded USB table
+mounted (`tests/testkit/ic7610_fakes.py: ic7610_usb_fake`), a
+Command29-wrapped request addressed to it is answered from the table or
+NAKed, never by those commands, and so is an unwrapped one those commands
+do not handle (a controller's own ACK/NAK still gets no answer).

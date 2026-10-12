@@ -102,6 +102,12 @@ def _conninfo(token: int = 0) -> bytes:
     return bytes(pkt)
 
 
+def _renew() -> bytes:
+    pkt = _header(0x40, _PT_DATA)
+    pkt[0x15] = 0x05  # requesttype: token renew
+    return bytes(pkt)
+
+
 def _freq_get(seq: int = 1) -> bytes:
     """CI-V 'get frequency' (0x03) wrapped in a DATA header for the civ port."""
     frame = b"\xfe\xfe\x98\xe0\x03\xfd"
@@ -426,3 +432,14 @@ async def test_reboot_ignores_control_packets_carrying_the_old_token(server, cli
     client.send(_conninfo(new_token), server.control_port)
     status = await client.recv()
     assert struct.unpack_from(">H", status, 0x42)[0] == server.civ_port
+
+
+async def test_token_renew_reply_swaps_endpoint_ids(server, client):
+    """The 0x40/0x05 renew answer carries the radio id as sender and the
+    client id as receiver (pinned by the reply bytes below)."""
+    client.send(_renew(), server.control_port)
+    reply = await client.recv()
+    assert len(reply) == 0x40
+    assert reply[0x15] == 0x05
+    assert struct.unpack_from("<I", reply, 0x08)[0] == server.radio_id
+    assert struct.unpack_from("<I", reply, 0x0C)[0] == _CLIENT_ID

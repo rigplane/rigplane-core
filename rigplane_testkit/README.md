@@ -45,8 +45,9 @@ UDP code paths as production.
   `MockIcomRadio` also offers scheduled events: `reboot(at, down_for,
   busy_for, notice=False)` — stop answering, forget the session, rotate the
   token, restart CI-V sequence numbering, fence every pre-reboot client off
-  the CI-V port until the client whose fresh login was accepted opens from
-  the CI-V port its conninfo declared (its IP alone when it declared none),
+  the CI-V port until the client whose fresh login's own conninfo was
+  accepted opens from the CI-V port its conninfo declared (its IP alone
+  when it declared none),
   ignore token and conninfo packets carrying the pre-reboot
   token, answer busy, then accept a fresh login; with `notice=True` the
   recorded power-off order is replayed first — one unsolicited 0x90 conninfo
@@ -67,7 +68,15 @@ UDP code paths as production.
   `open_serial_port` through the `opener` seam, and scripts the serial-side
   faults the link was fixed against: delayed identity, identity only after a
   reconnect, wrong model id, a silent link (MOR-2861), and USB vanish /
-  reappear (`ENODEV`, mapped to `serial_not_found`). The implementation lives
+  reappear (`ENODEV`, mapped to `serial_not_found`). The
+  `recorded_answers=` keyword mounts a
+  `rigplane_testkit.icom.replay.RecordedAnswerTable`. For a request
+  addressed to the fake, the native handlers keep precedence for unwrapped
+  requests, a Command29-wrapped request is answered only from the table or
+  NAKed (never unwrapped into a native handler), and any other unknown
+  request falls to the table then a NAK (a controller's own ACK/NAK gets no
+  reply). The echo default comes from the table's `echo` fact unless
+  `echo=` is passed explicitly. The implementation lives
   in `rigplane_testkit/serial/civ_serial.py`.
 - `rigplane_testkit.serial.recorder` — `SerialCivRecorder`, a TCP↔serial
   bridge that opens the real USB CI-V device through the production
@@ -116,7 +125,18 @@ UDP code paths as production.
 - `rigplane_testkit.icom.replay` — `Recording.load` plus `ReplayResponder`,
   a pure (socket-free) replayer that answers CI-V requests with the recorded
   reply bytes (latest wins, misses land in `unanswered`) and yields the
-  recorded unsolicited frames on their timeline.
+  recorded unsolicited frames on their timeline; and `RecordedAnswerTable`,
+  the recorded request → reply facts of one civ_pairs transport as a
+  stateful answer table keyed on the CI-V body: a data reply that starts
+  with the request body registers the read selector; a recorded ACK to a
+  request extending an already registered selector marks that selector
+  writable, and answering a request that extends writable selectors stores
+  the remainder into the longest one's register and ACKs (unless the
+  recording has an entry for that exact request); a recorded NAK NAKs that
+  exact request; and the `echo` fact is read from the rows (never from the
+  transport name). `CivSerialFake(recorded_answers=...)` mounts a table;
+  `tests/testkit/ic7610_fakes.py: ic7610_usb_fake` builds the fake IC-7610
+  over USB with the recorded `usb_session` table.
 
 ## How tests import it
 

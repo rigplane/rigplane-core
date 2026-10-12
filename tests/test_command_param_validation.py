@@ -17,10 +17,17 @@ JSON type is refused by ``core/command_service.py:
 command_intent_from_request``; ``set_att``/``set_af_level`` with
 ``receiver: null`` are refused by ``core/command_dispatch.py:
 _bind_attenuator``/``_bind_level``; a non-string command ``name`` gets the
-``unknown_command`` reply and the session continues; ``ptt_off`` with
-``params: null`` is admitted past ingress validation. The control row pins
-that a genuine programmer error — an executor raising ``AttributeError`` —
-is still logged at ERROR.
+``unknown_command`` reply and the session continues — also when the same
+frame carries a non-object ``params`` (the name check runs before the
+params refusal, so an unhashable name never reaches ``command_descriptor``
+inside the failure sender); ``ptt_off`` with ``params: null`` is admitted
+past ingress validation. Legacy executor-side commands whose params are
+coerced inside the command-service executor (``set_band``, ``set_nr_level``,
+``set_data_mode``, ``set_rit_frequency``, ``set_key_speed``,
+``set_scope_span``) fail the same way: one ``command_failed`` reply naming
+the field, one WARNING record, no ERROR record, and nothing queued. The
+control row pins that a genuine programmer error — an executor raising
+``AttributeError`` — is still logged at ERROR.
 """
 
 from __future__ import annotations
@@ -77,6 +84,38 @@ def _handler_with_queue() -> tuple[ControlHandler, _RecordingWebSocket]:
         server=SimpleNamespace(command_queue=SimpleNamespace()),
     )
     return handler, ws
+
+
+class _RecordingQueue:
+    """Fake command queue that records every enqueued command."""
+
+    def __init__(self) -> None:
+        self.commands: list[Any] = []
+
+    def put(self, command: Any, **_: Any) -> None:
+        self.commands.append(command)
+
+    def put_ordered(self, command: Any, **_: Any) -> None:
+        self.commands.append(command)
+
+
+def _handler_with_legacy_queue() -> tuple[
+    ControlHandler, _RecordingWebSocket, _RecordingQueue
+]:
+    """Handler whose server exposes a command queue, so legacy commands
+    (``set_band``, ``set_nr_level``, ...) reach their executor-side
+    coercion in the ``_enqueue_rc_*`` helpers."""
+    ws = _RecordingWebSocket()
+    queue = _RecordingQueue()
+    radio = SimpleNamespace(connected=True, capabilities={"nb"})
+    handler = ControlHandler(
+        ws,  # type: ignore[arg-type]
+        radio,
+        "9.9.9",
+        "IC-7610",
+        server=SimpleNamespace(command_queue=queue),
+    )
+    return handler, ws, queue
 
 
 @dataclass(slots=True)
@@ -204,6 +243,92 @@ async def test_non_string_command_name_gets_unknown_command(
             "ok": False,
             "error": "unknown_command",
             "message": f"unknown command: {name!r}",
+        }
+    ]
+    records = [record for record in caplog.records if record.name == _CONTROL_LOGGER]
+    errors = [record for record in records if record.levelno >= logging.ERROR]
+    warnings = [record for record in records if record.levelno == logging.WARNING]
+    assert errors == []
+    assert len(warnings) == 1
+
+
+@pytest.mark.parametrize(
+    ("frame", "expected_message_part"),
+    [
+        pytest.param(
+            {"id": "e1", "name": "set_band", "params": {"band": None}},
+            "band",
+            id="set_band-band-null",
+        ),
+        pytest.param(
+            {"id": "e2", "name": "set_nr_level", "params": {"level": None}},
+            "level",
+            id="set_nr_level-level-null",
+        ),
+        pytest.param(
+            {"id": "e3", "name": "set_data_mode", "params": {"mode": {}}},
+            "mode",
+            id="set_data_mode-mode-object",
+        ),
+        pytest.param(
+            # ``set_vfo_freq``'s ``freq`` is never coerced by a bare int()
+            # (it rides the ordered-queue identity machinery), and
+            # ``set_freq``'s executor site is pre-validated at ingress, so
+            # the reachable executor-side ``freq`` coercion is
+            # ``set_rit_frequency``.
+            {"id": "e4", "name": "set_rit_frequency", "params": {"freq": None}},
+            "freq",
+            id="set_rit_frequency-freq-null",
+        ),
+        pytest.param(
+            {"id": "e5", "name": "set_key_speed", "params": {"speed": "abc"}},
+            "speed",
+            id="set_key_speed-speed-non-numeric",
+        ),
+        pytest.param(
+            {"id": "e6", "name": "set_scope_span", "params": {"span": None}},
+            "span",
+            id="set_scope_span-span-null",
+        ),
+    ],
+)
+async def test_executor_side_param_coercion_fails_as_client_error(
+    frame: dict[str, Any],
+    expected_message_part: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    handler, ws, queue = _handler_with_legacy_queue()
+    with caplog.at_level(logging.WARNING, logger=_CONTROL_LOGGER):
+        await handler._handle_command(frame)  # noqa: SLF001
+
+    _assert_single_client_failure(ws, frame["id"], expected_message_part, caplog)
+    assert queue.commands == []
+
+
+async def test_list_name_with_non_object_params_gets_unknown_command(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The name check runs before the params refusal.
+
+    A list ``name`` alongside a non-object ``params`` used to reach the
+    params refusal first, where ``command_descriptor`` raised TypeError
+    (unhashable key) and ended the control session. It must answer
+    ``unknown_command`` and keep the session alive instead.
+    """
+    handler, ws = _handler()
+    with caplog.at_level(logging.WARNING, logger=_CONTROL_LOGGER):
+        # Returns normally: the malformed frame must not end the session.
+        await handler._handle_command(  # noqa: SLF001
+            {"id": "e7", "name": ["set_freq"], "params": []}
+        )
+
+    assert ws.sent == [
+        {
+            "type": "response",
+            "id": "e7",
+            "ok": False,
+            "error": "unknown_command",
+            "message": "unknown command: ['set_freq']",
         }
     ]
     records = [record for record in caplog.records if record.name == _CONTROL_LOGGER]
