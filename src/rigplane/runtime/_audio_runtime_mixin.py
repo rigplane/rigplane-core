@@ -763,8 +763,8 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 logger.debug(
                     "audio teardown: transport disconnect failed", exc_info=True
                 )
-            # The radio session stays up across this teardown, so the next
-            # ``_ensure_audio_transport`` rebuild resumes this numbering.
+            # Record the numbering; a rebuild on the same session resumes
+            # it, and a new login (``_connect_once``) clears it.
             self._audio_resume_seq = audio_transport.send_seq
             self._audio_transport = None
 
