@@ -724,6 +724,82 @@ async def test_http_command_batch_raw_civ_transaction_managed_refuses_tx_family(
     assert probe.touches == []
 
 
+@pytest.mark.asyncio
+async def test_http_command_managed_refuses_tx_family_send_civ() -> None:
+    """Managed mode answers a TX-family named send_civ with 403 and its
+    reason code, mirroring the raw_civ_transaction refusal surface, and
+    nothing reaches the radio, the command queue, or the managed TX
+    authority."""
+    radio = _radio()
+    srv, probe = _managed_server(radio)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands",
+        {"name": "send_civ", "params": {"command": 0x1C, "sub": 0x00, "data": "01"}},
+    )
+
+    assert writer.response_status == 403
+    assert writer.response_body["error"] == "managed_tx_refused"
+    assert "managed TX authority" in writer.response_body["message"]
+    radio.send_civ.assert_not_awaited()
+    assert srv.command_queue.drain() == []
+    assert probe.touches == []
+
+
+@pytest.mark.asyncio
+async def test_http_command_managed_passes_set_frequency_send_civ() -> None:
+    """A managed set-frequency raw frame still flows through the named
+    HTTP command route and queues its SendCiv unchanged."""
+    radio = _radio()
+    srv, probe = _managed_server(radio)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands",
+        {"name": "send_civ", "params": {"command": 0x05, "data": "0000101400"}},
+    )
+
+    assert writer.response_status == 200
+    assert writer.response_body["ok"] is True
+    assert srv.command_queue.drain() == [
+        SendCiv(command=0x05, sub=None, data=bytes.fromhex("0000101400"))
+    ]
+    radio.send_civ.assert_not_awaited()
+    assert probe.touches == []
+
+
+@pytest.mark.asyncio
+async def test_http_command_batch_managed_refuses_tx_family_send_civ() -> None:
+    """The named-command batch reports a refused step carrying the reason
+    code instead of failing the whole request with an internal error."""
+    radio = _radio()
+    srv, probe = _managed_server(radio)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands/batch",
+        {
+            "steps": [
+                {
+                    "name": "send_civ",
+                    "params": {"command": 0x1C, "sub": 0x00, "data": "01"},
+                }
+            ]
+        },
+    )
+
+    assert writer.response_status == 200
+    assert writer.response_body["ok"] is False
+    [step] = writer.response_body["results"]
+    assert step["ok"] is False
+    assert step["status"] == "refused"
+    assert step["error"] == "managed_tx_refused"
+    radio.send_civ.assert_not_awaited()
+    assert srv.command_queue.drain() == []
+    assert probe.touches == []
+
+
 def _unmanaged_server(radio: MagicMock) -> WebServer:
     return WebServer(radio, WebConfig(host="127.0.0.1", port=0))
 
