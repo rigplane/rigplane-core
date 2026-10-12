@@ -97,9 +97,8 @@ keyed by a stable id:
 - `lan_civ_echo` (the radio echoes every LAN request; the simulator must
   echo every replayed request too and currently echoes none);
 - `handshake_<n>` — positional handshake divergences, `n` counting from 1
-  over the recorded handshake sequence (pings/idle dropped, cut at the
-  first CI-V data); the simulator side is cut at the same event, its own
-  first CI-V data frame;
+  over the recorded handshake sequence (pings/idle dropped, cut before the
+  first client token renewal);
 - `token_renew_reply` (the radio answers every renew with a 0x40/0x05
   control packet; the simulator stays silent), `scope_wave` (the
   recording holds 5 complete `27 00` wave frames after wave-on; the
