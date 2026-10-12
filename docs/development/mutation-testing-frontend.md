@@ -77,8 +77,8 @@ workflow uploads both as the `stryker-report-<run id>-<attempt>` artifact.
 A full run of this configuration took 52 minutes (3118 s) on 2026-10-12
 with `npx stryker run --concurrency 4` (Stryker core and vitest-runner 10.0.0)
 on a 16-core Linux test host: 7112 mutants across the ten mutated files.
-The workflow's `timeout-minutes` is 120 because the CI runner is a
-different machine whose speed for this run has not been measured.
+The workflow's `timeout-minutes` is 120 because the CI runner's speed for
+this run has not been measured.
 
 ## Reading a survivor
 
@@ -115,7 +115,7 @@ its place where one exists; the rest of each file is not mutated.
 | File | Imports |
 |---|---|
 | `audio-adapter.ts` | `runtime` from `../frontend-runtime` |
-| `panel-adapters.ts` | `runtime` from `../frontend-runtime`; `$lib/stores/capabilities.svelte`; `$lib/stores/commands.svelte` — its command-feedback and pending-intent logic lives in the pure `control-feedback-projection.ts`, `pending-intent-table.ts`, `receiver-feedback.ts`, `level-feedback.ts` and `if-shift-feedback.ts`, all mutated; the runtime/store reads, handler singletons and re-exports stay in the wrapper |
+| `panel-adapters.ts` | `runtime` from `../frontend-runtime`; `$lib/stores/capabilities.svelte`; `$lib/stores/commands.svelte`. The pure `control-feedback-projection.ts`, `pending-intent-table.ts`, `receiver-feedback.ts`, `level-feedback.ts` and `if-shift-feedback.ts` were split out of it and are mutated |
 | `tx-adapter.ts` | `runtime` from `../frontend-runtime`. Its restore-gate helpers (`markerIsStrictlyNewer`, `canRestoreModAfterConfirmedOff`) are the pure `ptt-restore-gate.ts`, which is mutated; the local-audio attempt lifecycle over module state is not |
 | `vfo-adapter.ts` | `runtime` from `../frontend-runtime` |
 | `mod-input-auto.svelte.ts` | `getRadioState` from `$lib/stores/radio.svelte`; `getCapabilities` from `$lib/stores/capabilities.svelte` — gate logic lives in `mod-input-gates.ts` (mutated); only the store reads, `localStorage`, the `$state` opt-in flag, the memory-only `pending` latch (a plain `let`) with its consume-once logic in `restoreModInputAfterTx`, and the dispatch stay in the wrapper |
