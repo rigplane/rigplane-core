@@ -348,7 +348,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     # Retry identity on the same control session.
     _LAN_IDENTITY_REREAD_BACKOFF_S: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0)
     _LAN_IDENTITY_REREAD_STEADY_S: float = 15.0
-    # Least time between two dead-session escalations from the hold.
+    # A dead verdict this soon after the previous escalation keeps holding.
     _LAN_IDENTITY_ESCALATION_SPACING_S: float = 60.0
 
     # CoreRadio publishes the exact CI-V transport identity at arm/rearm and
@@ -1958,8 +1958,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def _escalate_lan_identity_hold_if_dead(self) -> bool:
         """Probe the held control session; request a re-login if it is dead.
 
-        True when the re-read must stop: recovery was requested, or the hold,
-        its CI-V epoch or the owner's session changed while the probe ran.
+        True when the re-read must stop: recovery was requested, or while the
+        probe ran the hold was lost, the CI-V epoch moved or disconnect() ran.
         A dead verdict within ``_LAN_IDENTITY_ESCALATION_SPACING_S`` of the
         previous escalation keeps holding.
         """
