@@ -277,7 +277,8 @@ describe('ws-client → real radio store gate (integration)', () => {
       deltaEnvelope(makeState({ revision: 6, stateRevision: 6 }), { ptt: true }),
     );
 
-    // Real store accepted via the semanticAdvanced branch (6 > 5).
+    // Real store accepted via the semantic-revision advance term of
+    // ``live-metadata.ts`` ``isStateAdvance`` (6 > 5).
     const s = store.getRadioState() as ServerStateWithObservation | null;
     expect(s?.revision).toBe(6);
     expect(s?.stateRevision).toBe(6);

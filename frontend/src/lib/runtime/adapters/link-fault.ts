@@ -21,7 +21,7 @@ export interface LinkFaultInput {
   everConnected: boolean;
   /** The control WebSocket's live transport state. */
   wsConnected: boolean;
-  /** No accepted `state_update` for at least the store's stale threshold. */
+  /** True only after an accepted update has been seen and none arrived past the store's stale threshold (`connection.svelte.ts: isStale`). */
   connectionStale: boolean;
 }
 
