@@ -171,7 +171,7 @@ async def test_a_fresh_login_starts_past_the_record() -> None:
 
 
 @pytest.mark.parametrize("record", ["none", "corrupt", "stale", "other-guid"])
-async def test_a_fresh_login_without_a_usable_record_starts_at_zero(record: str) -> None:
+async def test_an_unusable_record_starts_a_fresh_login_at_zero(record: str) -> None:
     radio = _radio()
     path = civ_seq._record_path(radio._host, radio._port)
     if record == "corrupt":
@@ -240,6 +240,17 @@ def test_the_status_line_is_the_radios_last_error_and_the_served_health(
     radio._conn_state = state
     assert radio.last_error == expected
     assert classify_radio_health(radio)["lastError"] == expected
+
+
+def test_a_last_error_a_backend_sets_comes_first() -> None:
+    radio = _radio()
+    radio._control_phase.fresh_login_status = _HELD
+    radio._connection_identity = RadioIdentity(status=_NO_RESPONSE)
+    radio._conn_state = _CONNECTING
+    radio.last_error = "port busy"  # as the serial Icom radios do
+    assert radio.last_error == "port busy"
+    radio.last_error = None
+    assert radio.last_error == _HELD
 
 
 def _recording_radio(send_seq: int) -> tuple[IcomRadio, _OfflineCivTransport]:
