@@ -69,13 +69,12 @@ _STORM_MARKER = "civ.soft_reconnect.already_open_stalled"
 
 # Standby scenario: the watchdog hands the silent CI-V link off after
 # _STANDBY_PATIENCE_S of unanswered OpenClose nudges (CI-V-port pings stay
-# answered, so the 60 s patient deadline applies), and the identity hold's
-# re-read turns run every _STANDBY_REREAD_S. One turn also waits out the
-# silent identity read (radio._civ_get_timeout), so _STANDBY_TURNS turns take
-# _STANDBY_TURNS x (_STANDBY_REREAD_S + that timeout).
+# answered, so the 60 s patient deadline applies), the identity hold's
+# re-read turns run every _STANDBY_REREAD_S, and the test keeps the radio
+# in standby for _STANDBY_HOLD_S after the hold is first observed.
 _STANDBY_PATIENCE_S = 2.0
 _STANDBY_REREAD_S = 0.5
-_STANDBY_TURNS = 5
+_STANDBY_HOLD_S = 12.5
 
 
 @pytest.fixture
@@ -338,12 +337,10 @@ async def test_standby_radio_answering_renewals_never_escalates(
         1.0,
     )
     caplog.set_level(logging.INFO, logger="rigplane")
-    # The fixture's 0.5 s auto-release is an accelerated drop-driver; a
-    # session renewed every 1.0 s (and pinged every 0.5 s) cannot survive a
-    # multi-second standby hold on it, and a real IC-7610 holds an un-renewed
-    # session far longer (the simulator's own default comment says 40-60 s).
-    # This scenario needs the session to stay held for the whole hold, like
-    # the renew_standby tests.
+    # The fixture's 0.5 s keepalive hold races the 0.5 s ping period: in one
+    # run it released the session mid-hold (sim.last_release_reason ==
+    # 'keepalive_timeout'). This scenario needs the session held for the
+    # whole standby window, so lift the hold.
     sim.keepalive_hold_s = 30.0
     radio = _client(sim)
     with fast_connect():
@@ -352,7 +349,6 @@ async def test_standby_radio_answering_renewals_never_escalates(
         try:
             logins0 = sim.login_count
             first_record = len(caplog.records)
-            standby_started = time.monotonic()
             sim.civ_standby(True)
 
             states: list[RadioConnectionState] = []
@@ -364,13 +360,13 @@ async def test_standby_radio_answering_renewals_never_escalates(
             ), (
                 f"no identity hold before standby ends; states={[s.value for s in states]}"
             )
+            # The hold is owned from here on; a renewal answered earlier,
+            # while still CONNECTED, must not satisfy the assert below.
+            hold_observed_at = time.monotonic()
 
-            # Stay in the hold for at least _STANDBY_TURNS re-read turns:
-            # each turn is one spacing sleep plus the silent identity read
-            # waiting out its answer timeout.
-            turn_s = _STANDBY_REREAD_S + radio._civ_get_timeout
+            # Stay in the hold for at least _STANDBY_HOLD_S.
             owned: list[bool] = []
-            end = time.monotonic() + _STANDBY_TURNS * turn_s
+            end = time.monotonic() + _STANDBY_HOLD_S
             while time.monotonic() < end:
                 owned.append(radio._lan_identity_phase_owns_open_link())
                 await asyncio.sleep(0.05)
@@ -381,7 +377,10 @@ async def test_standby_radio_answering_renewals_never_escalates(
             )
 
             answered_at = radio._control_phase._renewal_answered_at
-            assert answered_at is not None and answered_at >= standby_started
+            assert answered_at is not None and answered_at > hold_observed_at, (
+                f"no renewal answered inside the hold: answered_at={answered_at}, "
+                f"hold_observed_at={hold_observed_at}"
+            )
             sim.civ_standby(False)
 
             assert await _sample(
