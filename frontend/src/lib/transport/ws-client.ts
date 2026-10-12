@@ -906,7 +906,7 @@ function refreshCapabilities(generation: number): void {
     if (record.stateContractVersion !== 1 || record.providerGeneration !== generation) return;
     if (setCapabilities(caps)) {
       refresh.completed = true;
-      commitCurrentState();
+      if (commitCurrentState()) markStateUpdated();
     }
   }).catch(() => {
     // Keep state fail-closed; the session-owned timer retries metadata only.
