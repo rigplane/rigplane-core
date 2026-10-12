@@ -6356,26 +6356,6 @@ class WebServer:
                         )
                     await self._send_batch_response(writer, payload, results)
                     return
-            except TxInterlockRefusal as exc:
-                results.append(
-                    {
-                        "index": step.index,
-                        "name": step.name,
-                        "ok": False,
-                        "status": "refused",
-                        "error": exc.reason_code,
-                        "message": str(exc),
-                    }
-                )
-                if not continue_on_error:
-                    for skip_index in range(step.index + 1, len(raw_steps)):
-                        results.append(
-                            self._skipped_batch_result_for_raw_step(
-                                skip_index, raw_steps[skip_index]
-                            )
-                        )
-                    await self._send_batch_response(writer, payload, results)
-                    return
             except CommandError as exc:
                 results.append(
                     {
