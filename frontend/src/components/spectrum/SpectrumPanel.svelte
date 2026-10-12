@@ -139,7 +139,7 @@
   let managedUnavailable = $derived(managed && (!scopeDemandOn || scopeProjection === null));
   let scopeConnected = $derived(managed ? !managedUnavailable : audioFft
     ? runtime.defaultScopeStatus.transport === 'connected'
-    : runtime.scope.hardwareScopeConnected && runtime.scope.hardwareScopeFrameLive);
+    : runtime.scope.hardwareScopeConnected || runtime.scope.hardwareScopeFrameLive);
   let scopeLease: ReturnType<typeof runtime.acquireHardwareScope> | null = null;
   let scopePixels = $state<Uint8Array | null>(null);
   let sampledReceipt: number | null = null;
