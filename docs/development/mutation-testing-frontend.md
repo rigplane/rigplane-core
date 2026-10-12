@@ -14,6 +14,11 @@ check, has no threshold that fails it, and runs only nightly or by hand
 - `frontend/src/lib/runtime/props/panel-props.ts`
 - `frontend/src/lib/runtime/adapters/ptt-restore-gate.ts`
 - `frontend/src/lib/runtime/adapters/mod-input-gates.ts`
+- `frontend/src/lib/runtime/adapters/control-feedback-projection.ts`
+- `frontend/src/lib/runtime/adapters/pending-intent-table.ts`
+- `frontend/src/lib/runtime/adapters/receiver-feedback.ts`
+- `frontend/src/lib/runtime/adapters/level-feedback.ts`
+- `frontend/src/lib/runtime/adapters/if-shift-feedback.ts`
 
 `frontend/vitest.stryker.config.ts` names the tests that run against each
 mutant in `test.include`:
@@ -25,6 +30,18 @@ mutant in `test.include`:
 - `frontend/src/lib/runtime/props/__tests__/nr-level-projection.isolated.test.ts`
 - `frontend/src/lib/runtime/adapters/__tests__/mod-input-auto.isolated.test.ts`
 - `frontend/src/lib/runtime/adapters/__tests__/mod-input-tx-guard.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/filter-width-command-lifecycle.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/dsp-command-feedback.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/tx-aux-command-feedback.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/rf-sql-command-feedback.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/af-rf-power-command-feedback.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/cw-level-command-feedback.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/pbt-if-shift-command-feedback.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/pbt-if-shift-terminal-outcome-retention.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/mor1441-pending-discrete.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/mor1441-pending-frequency.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/mor1519-mode-armed.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/mor2111-repeater-conformance.isolated.test.ts`
 
 The two mod-input test files import the `.svelte.ts` wrappers, not
 `mod-input-gates.ts` directly; the wrappers call the mutated module for
@@ -56,6 +73,17 @@ itself; an interrupted in-place run can leave instrumented source behind,
 so use it only in a throwaway checkout. Reports are written to
 `frontend/reports/mutation/` (`mutation.html`, `mutation.json`); the
 workflow uploads both as the `stryker-report-<run id>-<attempt>` artifact.
+
+Measured on 2026-10-12 on the Linux test host (16 cores, 32 GB RAM) with
+`npx stryker run --concurrency 4` (Stryker core and vitest-runner 10.0.0):
+10 mutated files instrumented into 7112 mutants, the initial test run green
+over all 816 tests in 32 seconds, and mutation testing still unfinished
+when the run's 3000-second bound killed it — the wall time exceeds
+50 minutes and no per-file score table was produced. That bound already
+puts wall × 1.3 above the workflow's previous 30-minute timeout, so
+`timeout-minutes` is raised to 120, the ceiling of the
+next-multiple-of-10-above-wall-×-1.5 rule (cap 120); no smaller multiple
+has a completed measurement to justify it.
 
 ## Reading a survivor
 
@@ -92,7 +120,7 @@ its place where one exists; the rest of each file is not mutated.
 | File | Imports |
 |---|---|
 | `audio-adapter.ts` | `runtime` from `../frontend-runtime` |
-| `panel-adapters.ts` | `runtime` from `../frontend-runtime`; `$lib/stores/capabilities.svelte`; `$lib/stores/commands.svelte` |
+| `panel-adapters.ts` | `runtime` from `../frontend-runtime`; `$lib/stores/capabilities.svelte`; `$lib/stores/commands.svelte` — its command-feedback and pending-intent logic lives in the pure `control-feedback-projection.ts`, `pending-intent-table.ts`, `receiver-feedback.ts`, `level-feedback.ts` and `if-shift-feedback.ts`, all mutated; the runtime/store reads, handler singletons and re-exports stay in the wrapper |
 | `tx-adapter.ts` | `runtime` from `../frontend-runtime`. Its restore-gate helpers (`markerIsStrictlyNewer`, `canRestoreModAfterConfirmedOff`) are the pure `ptt-restore-gate.ts`, which is mutated; the local-audio attempt lifecycle over module state is not |
 | `vfo-adapter.ts` | `runtime` from `../frontend-runtime` |
 | `mod-input-auto.svelte.ts` | `getRadioState` from `$lib/stores/radio.svelte`; `getCapabilities` from `$lib/stores/capabilities.svelte` — gate logic lives in `mod-input-gates.ts` (mutated); only the store reads, `localStorage`, the `$state` opt-in flag, the memory-only `pending` latch (a plain `let`) with its consume-once logic in `restoreModInputAfterTx`, and the dispatch stay in the wrapper |
