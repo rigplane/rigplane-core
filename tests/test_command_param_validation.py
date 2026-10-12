@@ -27,23 +27,33 @@ coerced inside the command-service executor (``set_band``, ``set_nr_level``,
 ``set_scope_span``) fail the same way: one ``command_failed`` reply naming
 the field, one WARNING record, no ERROR record, and nothing queued. The
 control row pins that a genuine programmer error — an executor raising
-``AttributeError`` — is still logged at ERROR.
+``AttributeError`` — is still logged at ERROR. Infinite JSON numbers
+(``1e400`` decodes to ``float("inf")``) for an integer param are refused
+the same way as any other bad integer param: ``_int_param`` raises the
+field-naming ``ValueError`` (unit row), the control WebSocket answers the
+client-error reply with nothing enqueued, and HTTP ``POST
+/api/v1/commands`` answers 400 ``invalid_request`` with nothing enqueued.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from rigplane.core.command_dispatch import _int_param
 from rigplane.core.command_service import CommandExecutionResult, CommandService
 from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.core.state_store import StateStore
+from rigplane.profiles import resolve_radio_profile
 from rigplane.web.handlers.control import ControlHandler
+from rigplane.web.server import WebConfig, WebServer
 
 _CONTROL_LOGGER = "rigplane.web.handlers.control"
 
@@ -350,6 +360,136 @@ async def test_ptt_off_with_null_params_is_not_refused_as_malformed() -> None:
     # This fixture has no managed transmit authority, so the refusal proves
     # the frame was admitted past ingress validation into the PTT path.
     assert reply["error"] == "radio_nak"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(1e400, id="positive-1e400"),
+        pytest.param(float("inf"), id="positive-inf"),
+        pytest.param(-1e400, id="negative-1e400"),
+        pytest.param("abc", id="non-numeric-string"),
+    ],
+)
+def test_int_param_rejects_non_finite_floats_like_non_numeric_strings(
+    value: Any,
+) -> None:
+    """``1e400`` decodes to ``float("inf")``; ``int()`` of it raises
+    ``OverflowError``, not ``ValueError``. It must surface as the same
+    field-naming validation error as any other bad integer param."""
+    with pytest.raises(ValueError, match="receiver must be an integer"):
+        _int_param(value, "receiver")
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        pytest.param(
+            {
+                "id": "w1",
+                "name": "set_att",
+                "params": {"db": 20, "receiver": float("inf")},
+            },
+            id="set_att-receiver-inf",
+        ),
+        pytest.param(
+            {
+                "id": "w2",
+                "name": "set_af_level",
+                "params": {"level": 10, "receiver": float("inf")},
+            },
+            id="set_af_level-receiver-inf",
+        ),
+    ],
+)
+async def test_infinite_receiver_in_descriptor_bound_commands_fails_as_client_error(
+    frame: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An infinite ``receiver`` is a client error naming the field, and
+    nothing is enqueued — the same reply shape as ``receiver: null``."""
+    handler, ws, queue = _handler_with_legacy_queue()
+    with caplog.at_level(logging.WARNING, logger=_CONTROL_LOGGER):
+        await handler._handle_command(frame)  # noqa: SLF001
+
+    _assert_single_client_failure(ws, frame["id"], "receiver", caplog)
+    assert queue.commands == []
+
+
+class _FakeHttpWriter:
+    """Minimal writer capturing the raw HTTP response bytes."""
+
+    def __init__(self) -> None:
+        self.buffer = bytearray()
+        self.closed = False
+
+    def write(self, data: bytes) -> None:
+        self.buffer.extend(data)
+
+    async def drain(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        return None
+
+    def get_extra_info(self, name: str, default: Any = None) -> Any:
+        if name == "peername":
+            return ("127.0.0.1", 55555)
+        return default
+
+    @property
+    def response_status(self) -> int:
+        line = self.buffer.split(b"\r\n", 1)[0]
+        return int(line.split(b" ")[1])
+
+    @property
+    def response_body(self) -> dict[str, Any]:
+        body = self.buffer.split(b"\r\n\r\n", 1)[1]
+        return json.loads(body) if body else {}
+
+
+async def _post_raw_body(srv: WebServer, path: str, raw_body: str) -> _FakeHttpWriter:
+    """POST a body verbatim so a ``1e400`` literal survives to ``json.loads``."""
+    body = raw_body.encode()
+    writer = _FakeHttpWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(body)
+    reader.feed_eof()
+    await srv._handle_http(  # noqa: SLF001
+        writer,  # type: ignore[arg-type]
+        "POST",
+        path,
+        headers={"content-length": str(len(body))},
+        reader=reader,
+    )
+    return writer
+
+
+async def test_http_single_command_rejects_infinite_integer_param() -> None:
+    """``POST /api/v1/commands`` with ``receiver: 1e400`` answers 400
+    ``invalid_request`` naming the field — the same as any other bad
+    integer param — and enqueues nothing."""
+    profile = resolve_radio_profile(model="IC-9700")
+    radio = MagicMock()
+    radio.profile = profile
+    radio.model = profile.model
+    radio.capabilities = set(profile.capabilities)
+    radio.send_civ = AsyncMock()
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+
+    writer = await _post_raw_body(
+        srv,
+        "/api/v1/commands",
+        '{"id": "h1", "name": "set_att", "params": {"db": 20, "receiver": 1e400}}',
+    )
+
+    assert writer.response_status == 400
+    assert writer.response_body["error"] == "invalid_request"
+    assert "receiver must be an integer" in writer.response_body["message"]
+    assert srv.command_queue.drain() == []
 
 
 async def test_programmer_error_from_executor_still_logs_an_error(
