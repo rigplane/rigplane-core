@@ -348,6 +348,23 @@ jobs:
           path: .playwright-output
           if-no-files-found: ignore
 
+      # Operator journey (connect, tune, mode, filter width) against
+      # tests/e2e/journey_web_server.py, which the Playwright config starts
+      # through `uv run`. Serves the frontend/dist built above. Blocking.
+      - name: Frontend operator-journey fake-server E2E
+        if: needs.classify.outputs.frontend == 'true'
+        working-directory: frontend
+        continue-on-error: false
+        run: npx playwright test -c ./playwright.journey.config.ts
+
+      - name: Upload operator-journey E2E report on failure
+        if: failure() && needs.classify.outputs.frontend == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: journey-e2e-report
+          path: .playwright-output
+          if-no-files-found: ignore
+
       - name: Type-check web boundary
         if: needs.classify.outputs.core == 'true' && needs.classify.outputs.frontend == 'true'
         run: uv run mypy --strict src/rigplane/web
