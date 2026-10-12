@@ -832,8 +832,8 @@ class CoreRadioSessionLifecycle:
             # propagate so the awaiter sees the cancel.
             raise
         except BaseException:
-            # A connection error escaping the attempt (release already ran in
-            # ``_attempt_with_release``): drive the observable machine home.
+            # Any other exception: release already ran in ``_attempt_with_release``;
+            # paths that already emitted DISCONNECTED are skipped by the guard.
             self._connecting_started = None
             if self._state not in (
                 LifecycleState.CLOSING,
