@@ -496,12 +496,15 @@ def _unwrap_civ_frame(frame: bytes) -> tuple[int, int | None, bytes] | None:
     """Parse one whole CI-V envelope into its ``FE FE to from cmd [sub] data
     FD`` parts.
 
-    Returns ``(command, sub, data)`` with ``data`` excluding the trailing
-    ``FD``; ``sub`` is a byte only for the TX-family command, None for every
-    other command.  Returns None when the envelope cannot be parsed: a frame
-    shorter than the minimum, a bad head or tail, an ``FE``/``FD``/``FC``
-    byte between the leading ``FE FE`` and the final ``FD``, or a TX-family
-    command without its sub byte.  This is the one envelope parser shared by
+    Returns ``(command, sub, data)``: for the TX-family command ``sub`` is
+    its sub byte and ``data`` the bytes after it up to the trailing ``FD``;
+    for the 0x29 receiver prefix ``sub`` is None and ``data`` is every byte
+    after the command up to the trailing ``FD``; for any other command
+    ``sub`` is None and ``data`` is empty.  Returns None when the envelope
+    cannot be parsed: a frame shorter than the minimum, a bad head or tail,
+    an ``FE``/``FD``/``FC`` byte between the leading ``FE FE`` and the
+    final ``FD``, or a TX-family command without its sub byte.  This is
+    the one envelope parser shared by
     :func:`classify_raw_civ_frame_tx_family` and
     :func:`_is_exact_raw_dekey_frame`.
     """
