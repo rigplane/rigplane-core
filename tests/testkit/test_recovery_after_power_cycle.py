@@ -1,105 +1,30 @@
-"""Recovery after a full radio power-cycle (MOR-3296).
+"""Recovery after a full radio power-cycle (MOR-3296, second PR).
 
-Second PR for the power-cycle defect family: the CI-V data watchdog's
-recovery handoff, the control-socket login gate in ``soft_reconnect``, and
-the resident reconnect loop that restarts recovery after the lifecycle
-exhausts. The packet-count watchdog's own ``reconnect_loop`` fix lives in a
-sibling PR; nothing here touches it.
+Pins the CI-V data watchdog's recovery handoff and the control-socket login
+gate in ``soft_reconnect``. The packet-count watchdog's own
+``reconnect_loop`` fix lives in a sibling PR; nothing here touches it.
+
+An end-to-end reboot test on ``MockIcomRadio`` is not deliverable here: the
+simulator answers discovery and OpenClose on the CI-V port for the stale
+pre-reboot client (``rigplane_testkit/icom/simulator.py: _handle_civ`` has
+no session gate for those, and ``_begin_reboot``'s fence lifts on any
+OpenClose(open)), so the data-watchdog recovery rebuilds a working CI-V
+stream without ever re-logging in and the lifecycle never exhausts — with
+or without these fixes the sim client ends CONNECTED holding the pre-reboot
+token. The real radio instead frees the session and reports it via the
+conninfo notice, which the simulator does not model.
 """
 
 from __future__ import annotations
 
 import asyncio
-import time
-from collections.abc import AsyncGenerator, Callable
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
 
 from rigplane.core.exceptions import ConnectionError as RigplaneConnectionError
 from rigplane.core.transport import ConnectionState
 from rigplane.radio import IcomRadio
 from rigplane.runtime._connection_state import RadioConnectionState
-
-from rigplane_testkit.icom import MockIcomRadio
-
-from _perf_helpers import fast_connect
-
-
-@pytest.fixture
-async def sim() -> AsyncGenerator[MockIcomRadio]:
-    server = MockIcomRadio(single_owner=True, keepalive_hold_s=0.5)
-    await server.start()
-    yield server
-    await server.stop()
-
-
-def _client(radio_sim: MockIcomRadio) -> IcomRadio:
-    return IcomRadio(
-        host="127.0.0.1",
-        port=radio_sim.control_port,
-        username="testuser",
-        password="testpass",
-        timeout=5.0,
-        model="IC-7610",
-        auto_reconnect=True,
-        reconnect_delay=0.2,
-        reconnect_max_delay=0.5,
-    )
-
-
-async def _states_until(
-    radio: IcomRadio,
-    deadline_s: float,
-    done: Callable[[list[RadioConnectionState]], bool] = lambda _: False,
-) -> list[RadioConnectionState]:
-    """Sample ``conn_state`` every 50 ms until ``done(seen)`` or the deadline."""
-    seen: list[RadioConnectionState] = []
-    end = time.monotonic() + deadline_s
-    while time.monotonic() < end:
-        state = radio.conn_state
-        if not seen or seen[-1] is not state:
-            seen.append(state)
-        if done(seen):
-            break
-        await asyncio.sleep(0.05)
-    return seen
-
-
-async def test_power_cycle_recovery_relogins_with_new_token(sim: MockIcomRadio) -> None:
-    """A radio power-cycle must end in a fresh session, not a dead client.
-
-    The client keeps the DEFAULT ``watchdog_timeout`` (30 s) so the CI-V data
-    watchdog, not the packet-count watchdog, drives recovery. At the defect
-    the lifecycle's recovery exhausts and nothing restarts it: the client
-    stays down for good. With the handoff to the resident reconnect loop the
-    client re-logins after the radio returns and answers commands with the
-    radio's post-reboot token (MOR-3296)."""
-    radio = _client(sim)
-    statuses: list[dict] = []
-    radio._on_reconnect_status = statuses.append
-    with fast_connect():
-        await radio.connect()
-    try:
-        old_token = radio._token
-        assert old_token == sim.token
-
-        sim.reboot(at=0.1, down_for=3.0, busy_for=0.5)
-
-        def recovered(seen: list[RadioConnectionState]) -> bool:
-            return radio.connected and radio._token != old_token
-
-        seen = await _states_until(radio, 25.0, recovered)
-        assert recovered(seen), (seen, radio._token, sim.token, statuses)
-        assert sim.reboot_count == 1
-        assert radio._token == sim.token
-        assert radio._token != old_token
-        freq = await asyncio.wait_for(radio.get_freq(), timeout=5.0)
-        assert freq == 14_074_000
-        assert any(s.get("state") == "reconnecting" for s in statuses)
-    finally:
-        await radio.disconnect()
 
 
 def _exhaustion_radio() -> tuple[IcomRadio, list[dict]]:
@@ -162,7 +87,6 @@ async def test_watchdog_recover_hands_exhaustion_to_resident_reconnect_loop() ->
             await radio._civ_runtime._watchdog_recover()
         task = radio._reconnect_task
         assert task is not None, "exhaustion must start the resident loop"
-        assert loop_entries == [RadioConnectionState.RECONNECTING]
         assert statuses == [
             {
                 "state": "reconnecting",
@@ -172,6 +96,7 @@ async def test_watchdog_recover_hands_exhaustion_to_resident_reconnect_loop() ->
         ]
         release_loop.set()
         await task
+        assert loop_entries == [RadioConnectionState.RECONNECTING]
     finally:
         release_loop.set()
         task = radio._reconnect_task
