@@ -178,7 +178,8 @@ async def test_icom_serial_owner_connect_without_demand_runs_no_recovery() -> No
 async def test_icom_serial_owner_stop_during_connect_runs_no_recovery() -> None:
     """Owner ``disconnect()`` landing while ``connect()`` awaits its
     identity read leaves no recovery and no deferred stash behind."""
-    radio, driver, _link = _icom_serial_radio()
+    recovery_cb = MagicMock()
+    radio, driver, _link = _icom_serial_radio(recovery_cb)
     await radio.connect()
     session = radio.audio_session
     sub = await session.subscribe_rx("web")
@@ -204,6 +205,7 @@ async def test_icom_serial_owner_stop_during_connect_runs_no_recovery() -> None:
     await asyncio.wait_for(connect_task, timeout=5.0)
 
     assert driver.rx_running is False  # nothing re-armed on the dead link
+    assert _recovery_events(recovery_cb) == []  # no RECOVERING/FAILED at all
     assert radio._serial_deferred_audio is None
     assert session.rx_demand == 1  # the demand stays held, un-armed
     await sub.release()
