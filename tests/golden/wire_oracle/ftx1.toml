@@ -1,0 +1,261 @@
+# Transcribed by hand from the FTX-1 CAT Operation Reference Manual (2508-C). Never regenerate from code.
+[[row]]
+control = "vfo_a_freq"
+side = "none"
+direction = "set"
+value = "14.074 MHz (000030000-470000000 Hz)"
+frame = "FA014074000;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), FA command, p. 16"
+note = "lower voice segment frequency"
+
+[[row]]
+control = "vfo_a_freq"
+side = "none"
+direction = "read"
+value = "14.074 MHz (000030000-470000000 Hz)"
+frame = "FA;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), FA command, p. 16"
+note = "readback check"
+
+[[row]]
+control = "vfo_b_freq"
+side = "none"
+direction = "set"
+value = "7.074 MHz (000030000-470000000 Hz)"
+frame = "FB007074000;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), FB command, p. 16"
+note = "lower voice segment frequency"
+
+[[row]]
+control = "mode"
+side = "main"
+direction = "set"
+value = "USB 2 (modes 0-9,A-J)"
+frame = "MD02;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), MD command, p. 19"
+note = "voice mode on main"
+
+[[row]]
+control = "split"
+side = "none"
+direction = "set"
+value = "ON (0 OFF, 1 ON)"
+frame = "ST1;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), ST command, p. 25"
+note = "split enabled"
+
+[[row]]
+control = "split"
+side = "none"
+direction = "set"
+value = "OFF (0 OFF, 1 ON)"
+frame = "ST0;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), ST command, p. 25"
+note = "split disabled"
+
+[[row]]
+control = "rf_power"
+side = "none"
+direction = "set"
+value = "50 W (005-100 W, SPA-1)"
+frame = "PC2050;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), PC command, p. 21"
+note = "midrange output level"
+
+[[row]]
+control = "mic_gain"
+side = "none"
+direction = "set"
+value = "50 (000-100)"
+frame = "MG050;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), MG command, p. 19"
+note = "midrange microphone sensitivity"
+
+[[row]]
+control = "cw_key_speed"
+side = "none"
+direction = "set"
+value = "20 WPM (004-060)"
+frame = "KS020;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), KS command, p. 18"
+note = "comfortable sending pace"
+
+[[row]]
+control = "speech_proc_level"
+side = "none"
+direction = "set"
+value = "50 (000 OFF, 001-100)"
+frame = "PL050;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), PL command, p. 22"
+note = "midrange compression amount"
+
+[[row]]
+control = "vox"
+side = "none"
+direction = "set"
+value = "ON (0 OFF, 1 ON)"
+frame = "VX1;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), VX command, p. 26"
+note = "handsfree transmit enabled"
+
+[[row]]
+control = "break_in"
+side = "none"
+direction = "set"
+value = "ON (0 OFF, 1 ON)"
+frame = "BI1;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), BI command, p. 7"
+note = "automatic transmit switching"
+
+[[row]]
+control = "ptt"
+side = "none"
+direction = "set"
+value = "CAT TX ON (0 OFF, 1 ON; 2 answer)"
+frame = "TX1;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), TX command, p. 25"
+note = "transmit started"
+
+[[row]]
+control = "ptt"
+side = "none"
+direction = "set"
+value = "TX OFF (0 OFF, 1 ON; 2 answer)"
+frame = "TX0;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), TX command, p. 25"
+note = "transmit stopped"
+
+[[row]]
+control = "tuner"
+side = "none"
+direction = "set"
+value = "internal ON (P1 0, P2 0, P3 1)"
+frame = "AC001;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), AC command, p. 6"
+note = "matching unit engaged"
+
+[[row]]
+control = "af_gain"
+side = "main"
+direction = "set"
+value = "100 (000-255)"
+frame = "AG0100;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), AG command, p. 6"
+note = "moderate loudness"
+
+[[row]]
+control = "af_gain"
+side = "sub"
+direction = "set"
+value = "80 (000-255)"
+frame = "AG1080;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), AG command, p. 6"
+note = "quieter second receiver"
+
+[[row]]
+control = "rf_gain"
+side = "main"
+direction = "set"
+value = "100 (000-255)"
+frame = "RG0100;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), RG command, p. 22"
+note = "moderate front end gain"
+
+[[row]]
+control = "rf_gain"
+side = "sub"
+direction = "set"
+value = "120 (000-255)"
+frame = "RG1120;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), RG command, p. 22"
+note = "slightly hotter second receiver"
+
+[[row]]
+control = "squelch"
+side = "main"
+direction = "set"
+value = "100 (000-255)"
+frame = "SQ0100;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), SQ command, p. 24"
+note = "mid muting threshold"
+
+[[row]]
+control = "squelch"
+side = "sub"
+direction = "set"
+value = "80 (000-255)"
+frame = "SQ1080;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), SQ command, p. 24"
+note = "lighter second receiver muting"
+
+[[row]]
+control = "preamp"
+side = "none"
+direction = "set"
+value = "HF AMP1 (0 IPO, 1 AMP1, 2 AMP2)"
+frame = "PA01;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), PA command, p. 21"
+note = "shortwave first amplifier"
+
+[[row]]
+control = "attenuator"
+side = "none"
+direction = "set"
+value = "ON (0 OFF, 1 ON)"
+frame = "RA01;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), RA command, p. 22"
+note = "input padding engaged"
+
+[[row]]
+control = "agc"
+side = "main"
+direction = "set"
+value = "FAST (0 OFF, 1 FAST, 2 MID, 3 SLOW, 4 AUTO)"
+frame = "GT01;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), GT command, p. 17"
+note = "quick recovery gain"
+
+[[row]]
+control = "agc"
+side = "sub"
+direction = "set"
+value = "FAST (0 OFF, 1 FAST, 2 MID, 3 SLOW, 4 AUTO)"
+frame = "GT11;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), GT command, p. 17"
+note = "quick recovery second receiver"
+
+[[row]]
+control = "noise_blanker"
+side = "main"
+direction = "set"
+value = "5 (000 OFF, 001-010)"
+frame = "NL0005;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), NL command, p. 21"
+note = "mid pulse suppression"
+
+[[row]]
+control = "noise_blanker"
+side = "sub"
+direction = "set"
+value = "5 (000 OFF, 001-010)"
+frame = "NL1005;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), NL command, p. 21"
+note = "mid suppression second receiver"
+
+[[row]]
+control = "noise_reduction"
+side = "main"
+direction = "set"
+value = "05 (00 OFF, 01-10)"
+frame = "RL005;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), RL command, p. 23"
+note = "medium hiss cleanup"
+
+[[row]]
+control = "noise_reduction"
+side = "sub"
+direction = "set"
+value = "05 (00 OFF, 01-10)"
+frame = "RL105;"
+manual = "FTX-1 CAT Operation Reference Manual (2508-C), RL command, p. 23"
+note = "medium cleanup second receiver"

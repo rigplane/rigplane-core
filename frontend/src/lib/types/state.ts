@@ -198,6 +198,20 @@ export interface ReceiverStatePublic {
   toneFreq?: number | null;
   tsqlFreq?: number | null;
   repeaterShift?: number | null;
+  toneSquelchType?:
+    | (
+        | "off"
+        | "tone"
+        | "tsql"
+        | "dtcs"
+        | "dtcs_t"
+        | "tone_t_dtcs_r"
+        | "dtcs_t_tsql_r"
+        | "tone_t_tsql_r"
+        | "pr_freq"
+        | "rev_tone"
+      )
+    | null;
   dcd?: boolean | null;
 }
 /**

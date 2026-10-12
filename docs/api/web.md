@@ -177,6 +177,10 @@ Stable supervisor routes:
 | `/api/v1/audio` | Audio control and media frames | when radio/audio backend supports audio |
 | `/api/v1/audio-scope` | Audio FFT spectrum stream | when audio FFT is available |
 
+### Keepalive
+
+The `/api/v1/ws`, `/api/v1/scope`, and `/api/v1/audio-scope` routes answer a JSON `{"type":"ping"}` text frame with `{"type":"pong"}`: the control route in `src/rigplane/web/handlers/control.py: ControlHandler._handle_text`, and both scope routes in `src/rigplane/web/handlers/scope.py: ScopeHandler._handle_control` (`/api/v1/audio-scope` is served by `ScopeHandler` with `audio_mode=True`; see `src/rigplane/web/server.py: WebServer._handle_websocket`). `/api/v1/audio` does not answer ping frames: `src/rigplane/web/handlers/audio.py: AudioHandler._handle_control` handles only `audio_start`, `audio_stop`, `audio_config`, and `audio_stats`. The browser client sends that ping every 15 s on the channels that use `WsChannel` (`frontend/src/lib/transport/ws-client.ts: KEEPALIVE_INTERVAL_MS`) — the control channel and the named `scope` and `audio-scope` channels (`getChannel`, wired in `scope-controller.svelte.ts: ScopeController`) — and closes and reconnects a channel when no frame of any kind arrives for 30 s (`HEARTBEAT_TIMEOUT_MS`).
+
 ### Optional WebRTC DataChannels
 
 WebRTC is optional and requires the `rigplane[webrtc]` extra (`aiortc`). There

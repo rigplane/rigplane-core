@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
 import pytest
 
-from rigplane.core.state_pipeline_contracts import CommandIntent
+from rigplane.core.state_pipeline_contracts import (
+    CommandIntent,
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from rigplane.profiles import resolve_radio_profile
 from rigplane.web import server as web_server
 from rigplane.web.radio_poller import (
@@ -547,6 +553,596 @@ async def test_http_command_rejects_raw_civ_when_backend_does_not_support_it() -
     assert writer.response_body["error"] == "unsupported_command"
     assert "does not support send_civ" in writer.response_body["message"]
     assert srv.command_queue.drain() == []
+
+
+class _AuthorityTouchProbe:
+    """Managed TX authority fake that records every attribute reached for."""
+
+    def __init__(self) -> None:
+        self.touches: list[str] = []
+
+    def __bool__(self) -> bool:
+        raise AssertionError("managed references must be tested with is None")
+
+    def __getattr__(self, name: str) -> object:
+        if name.startswith("__"):
+            raise AttributeError(name)
+        self.touches.append(name)
+        raise AssertionError(f"managed TX authority was consulted: {name}")
+
+
+def _managed_server(radio: MagicMock) -> tuple[WebServer, _AuthorityTouchProbe]:
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    probe = _AuthorityTouchProbe()
+    srv._production_managed_tx_port = SimpleNamespace(authority=probe)  # noqa: SLF001
+    return srv, probe
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"command": 0x1C, "sub": 0x00, "data": "01", "expect": "none"},
+        {"command": 0x1C, "sub": 0x00, "data": "00", "expect": "none"},
+        {"command": 0x1C, "sub": 0x01, "data": "01", "expect": "none"},
+        {"command": 0x1C, "sub": 0x01, "data": "02", "expect": "none"},
+        {"command": 0x29, "data": "001C0001", "expect": "none"},
+        {"command": 0x29, "data": "00", "expect": "none"},
+        {"command": 0x29, "sub": 0x00, "data": "1C0001", "expect": "none"},
+        {"command": 0x28, "sub": 0x00, "data": "01", "expect": "none"},
+        {"command": 0x28, "sub": 0x00, "data": "00", "expect": "none"},
+        {"command": 0x29, "sub": 0x00, "data": "280001", "expect": "none"},
+        {"command": 0x03, "data": "FDFEFE94E01C0001", "expect": "none"},
+        {"command": 0x03, "data": "FCFEFE94E01C0001", "expect": "none"},
+        {"command": 0x03, "data": "FE1C0001", "expect": "none"},
+        {"command": 0x29, "expect": "none"},
+    ],
+    ids=[
+        "ptt-on",
+        "ptt-off",
+        "tuner-engage",
+        "tuner-tune",
+        "cmd29-ptt-on",
+        "cmd29-truncated",
+        "cmd29-sub-form-ptt-on",
+        "voice-memory-tx",
+        "voice-memory-stop",
+        "cmd29-voice-memory-tx",
+        "smuggled-frame-in-data",
+        "fc-separator-smuggled-frame",
+        "leading-extra-fe-in-data",
+        "cmd29-empty",
+    ],
+)
+async def test_http_raw_civ_transaction_managed_refuses_tx_family(
+    payload: dict,
+) -> None:
+    """Managed mode refuses TX-family raw CI-V transactions by payload,
+    before anything reaches the radio or the managed TX authority.  The
+    verdict is computed on the exact frame the transaction would send, so a
+    cmd29 wrapper split as (sub, data), a frame smuggled inside the data
+    field past an FD, FC, or stray FE delimiter, and a cmd29 wrapper shorter
+    than receiver plus inner command are refused exactly as their wire form
+    is."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock()
+    srv, probe = _managed_server(radio)
+
+    writer = await _post_json(srv, "/api/v1/civ/transaction", payload)
+
+    assert writer.response_status == 403
+    assert writer.response_body["error"] == "managed_tx_refused"
+    radio.send_civ_transaction.assert_not_awaited()
+    assert probe.touches == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "expected_command", "expected_sub"),
+    [
+        ({"command": 0x03, "expect": "none"}, 0x03, None),
+        ({"command": 0x1C, "sub": 0x00, "expect": "none"}, 0x1C, 0x00),
+    ],
+    ids=["freq-read", "ptt-read"],
+)
+async def test_http_raw_civ_transaction_managed_passes_reads(
+    payload: dict, expected_command: int, expected_sub: int | None
+) -> None:
+    """Read-only raw transactions (no data payload) pass in managed mode."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv, probe = _managed_server(radio)
+
+    writer = await _post_json(srv, "/api/v1/civ/transaction", payload)
+
+    assert writer.response_status == 200
+    radio.send_civ_transaction.assert_awaited_once_with(
+        expected_command,
+        sub=expected_sub,
+        data=b"",
+        expect="none",
+        timeout=None,
+    )
+    assert probe.touches == []
+
+
+@pytest.mark.asyncio
+async def test_http_raw_civ_transaction_managed_passes_non_tx_write() -> None:
+    """A non-TX raw write (set frequency) passes in managed mode and reaches
+    the radio's transaction entry point unchanged."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv, probe = _managed_server(radio)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/civ/transaction",
+        {"command": 0x05, "data": "0000101400", "expect": "none"},
+    )
+
+    assert writer.response_status == 200
+    radio.send_civ_transaction.assert_awaited_once_with(
+        0x05,
+        sub=None,
+        data=bytes.fromhex("0000101400"),
+        expect="none",
+        timeout=None,
+    )
+    assert probe.touches == []
+
+
+@pytest.mark.asyncio
+async def test_http_command_batch_raw_civ_transaction_managed_refuses_tx_family() -> (
+    None
+):
+    """The batch executor shares the managed refusal with the single endpoint."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock()
+    srv, probe = _managed_server(radio)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands/batch",
+        {
+            "steps": [
+                {
+                    "type": "raw_civ_transaction",
+                    "command": 0x1C,
+                    "sub": 0x00,
+                    "data": "01",
+                    "expect": "none",
+                }
+            ]
+        },
+    )
+
+    assert writer.response_status == 200
+    assert writer.response_body["ok"] is False
+    [step] = writer.response_body["results"]
+    assert step["ok"] is False
+    assert step["status"] == "refused"
+    assert step["error"] == "managed_tx_refused"
+    radio.send_civ_transaction.assert_not_awaited()
+    assert probe.touches == []
+
+
+@pytest.mark.asyncio
+async def test_http_command_managed_refuses_tx_family_send_civ() -> None:
+    """Managed mode answers a TX-family named send_civ with 403 and its
+    reason code, mirroring the raw_civ_transaction refusal surface, and
+    nothing reaches the radio, the command queue, or the managed TX
+    authority."""
+    radio = _radio()
+    srv, probe = _managed_server(radio)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands",
+        {"name": "send_civ", "params": {"command": 0x1C, "sub": 0x00, "data": "01"}},
+    )
+
+    assert writer.response_status == 403
+    assert writer.response_body["error"] == "managed_tx_refused"
+    assert "managed TX authority" in writer.response_body["message"]
+    radio.send_civ.assert_not_awaited()
+    assert srv.command_queue.drain() == []
+    assert probe.touches == []
+
+
+@pytest.mark.asyncio
+async def test_http_command_managed_passes_set_frequency_send_civ() -> None:
+    """A managed set-frequency raw frame still flows through the named
+    HTTP command route and queues its SendCiv unchanged."""
+    radio = _radio()
+    srv, probe = _managed_server(radio)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands",
+        {"name": "send_civ", "params": {"command": 0x05, "data": "0000101400"}},
+    )
+
+    assert writer.response_status == 200
+    assert writer.response_body["ok"] is True
+    assert srv.command_queue.drain() == [
+        SendCiv(command=0x05, sub=None, data=bytes.fromhex("0000101400"))
+    ]
+    radio.send_civ.assert_not_awaited()
+    assert probe.touches == []
+
+
+@pytest.mark.asyncio
+async def test_http_command_batch_managed_refuses_tx_family_send_civ() -> None:
+    """The named-command batch reports a refused step carrying the reason
+    code instead of failing the whole request with an internal error."""
+    radio = _radio()
+    srv, probe = _managed_server(radio)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/commands/batch",
+        {
+            "steps": [
+                {
+                    "name": "send_civ",
+                    "params": {"command": 0x1C, "sub": 0x00, "data": "01"},
+                }
+            ]
+        },
+    )
+
+    assert writer.response_status == 200
+    assert writer.response_body["ok"] is False
+    [step] = writer.response_body["results"]
+    assert step["ok"] is False
+    assert step["status"] == "refused"
+    assert step["error"] == "managed_tx_refused"
+    radio.send_civ.assert_not_awaited()
+    assert srv.command_queue.drain() == []
+    assert probe.touches == []
+
+
+def _unmanaged_server(radio: MagicMock) -> WebServer:
+    return WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+
+
+_PTT_PATH = FieldPath.global_("tx_state", "ptt")
+_TEST_SOURCE = SourceMetadata(source="test", provider="tests")
+
+
+def _observe_ptt(srv: WebServer, value: bool, *, age_seconds: float = 0.0) -> None:
+    srv.command_state_store.apply_current(
+        Observation(
+            path=_PTT_PATH,
+            value=value,
+            source=_TEST_SOURCE,
+            timestamp_monotonic=time.monotonic() - age_seconds,
+            max_age=60.0,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_http_raw_civ_transaction_unmanaged_refuses_ptt_on() -> None:
+    """The unmanaged HTTP raw path refuses PTT-on when RF state
+    is UNKNOWN (no PTT observation at all) instead of keying the rig with
+    no interlock at all."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv = _unmanaged_server(radio)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/civ/transaction",
+        {"command": 0x1C, "sub": 0x00, "data": "01", "expect": "none"},
+    )
+
+    assert writer.response_status == 403, (
+        "MOR-3364: unmanaged HTTP raw PTT-on still reaches the radio"
+    )
+    assert writer.response_body["error"] == "rf_state_unknown"
+    radio.send_civ_transaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "ptt_value", "age_seconds", "expected_error"),
+    [
+        (
+            {"command": 0x1C, "sub": 0x00, "data": "01", "expect": "none"},
+            True,
+            0.0,
+            "radio_transmitting",
+        ),
+        (
+            {"command": 0x1C, "sub": 0x00, "data": "01", "expect": "none"},
+            False,
+            120.0,
+            "rf_state_unknown",
+        ),
+        (
+            {"command": 0x29, "sub": 0x00, "data": "1C0001", "expect": "none"},
+            None,
+            0.0,
+            "rf_state_unknown",
+        ),
+        (
+            {"command": 0x1C, "sub": 0x01, "data": "01", "expect": "none"},
+            None,
+            0.0,
+            "rf_state_unknown",
+        ),
+        (
+            {"command": 0x28, "sub": 0x00, "data": "01", "expect": "none"},
+            True,
+            0.0,
+            "radio_transmitting",
+        ),
+        (
+            {"command": 0x29, "sub": 0x00, "data": "280001", "expect": "none"},
+            True,
+            0.0,
+            "radio_transmitting",
+        ),
+    ],
+    ids=[
+        "ptt-on-observed-tx",
+        "ptt-on-stale-rx",
+        "cmd29-ptt-on-unknown",
+        "tuner-engage-unknown",
+        "voice-memory-tx-observed-tx",
+        "cmd29-voice-memory-tx-observed-tx",
+    ],
+)
+async def test_http_raw_civ_transaction_unmanaged_refuses_tx_family_without_fresh_rx(
+    payload: dict,
+    ptt_value: bool | None,
+    age_seconds: float,
+    expected_error: str,
+) -> None:
+    """A TX-family raw frame that is not an exact de-key is refused
+    unless the observed PTT resolves to fresh-known RX, matching what
+    unmanaged rigctld raw ``w`` does to TX-family frames
+    (``_RigctldCommandExecutor.execute``): observed TX refuses, and so
+    does a stale or absent observation."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv = _unmanaged_server(radio)
+    if ptt_value is not None:
+        _observe_ptt(srv, ptt_value, age_seconds=age_seconds)
+
+    writer = await _post_json(srv, "/api/v1/civ/transaction", payload)
+
+    assert writer.response_status == 403
+    assert writer.response_body["error"] == expected_error
+    radio.send_civ_transaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "ptt_value"),
+    [
+        (
+            {"command": 0x1C, "sub": 0x00, "data": "00", "expect": "none"},
+            True,
+        ),
+        (
+            {"command": 0x1C, "sub": 0x00, "data": "00", "expect": "none"},
+            None,
+        ),
+        (
+            {"command": 0x29, "sub": 0x00, "data": "1C0000", "expect": "none"},
+            True,
+        ),
+        (
+            {"command": 0x1C, "sub": 0x01, "data": "00", "expect": "none"},
+            True,
+        ),
+        (
+            {"command": 0x28, "sub": 0x00, "data": "00", "expect": "none"},
+            True,
+        ),
+        (
+            {"command": 0x29, "sub": 0x00, "data": "280000", "expect": "none"},
+            True,
+        ),
+    ],
+    ids=[
+        "ptt-off-observed-tx",
+        "ptt-off-unknown",
+        "cmd29-ptt-off-observed-tx",
+        "tuner-off-observed-tx",
+        "voice-memory-stop-observed-tx",
+        "cmd29-voice-memory-stop-observed-tx",
+    ],
+)
+async def test_http_raw_civ_transaction_unmanaged_passes_exact_dekey(
+    payload: dict,
+    ptt_value: bool | None,
+) -> None:
+    """An exact raw de-key frame — PTT off ``1C 00 00`` or tuner off
+    ``1C 01 00``, bare or inside a cmd29 prefix — always reaches the radio
+    on the unmanaged HTTP raw seat, observed TX or unknown RF state
+    included, exactly as the typed PTT-off command always passes: a de-key
+    must never get harder to execute."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv = _unmanaged_server(radio)
+    if ptt_value is not None:
+        _observe_ptt(srv, ptt_value)
+
+    writer = await _post_json(srv, "/api/v1/civ/transaction", payload)
+
+    assert writer.response_status == 200, (
+        "MOR-3364: a raw de-key must not be refused by the RF-state check"
+    )
+    radio.send_civ_transaction.assert_awaited_once_with(
+        payload["command"],
+        sub=payload["sub"],
+        data=bytes.fromhex(payload["data"]),
+        expect="none",
+        timeout=None,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"command": 0x03, "data": "FDFEFE94E01C0001", "expect": "none"},
+        {"command": 0x03, "data": "FCFEFE94E01C0001", "expect": "none"},
+    ],
+    ids=["smuggled-frame-in-data", "fc-separator-smuggled-frame"],
+)
+async def test_http_raw_civ_transaction_unmanaged_refuses_smuggled_while_tx(
+    payload: dict,
+) -> None:
+    """A payload that cannot be parsed as one whole CI-V frame — a PTT-on
+    smuggled in the data field past an FD, or an FC collision byte standing
+    in for the separator — is refused while TX is observed, exactly as a
+    parsed TX-family frame is: the refusal covers the cannot-parse verdict,
+    not only an explicit True."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv = _unmanaged_server(radio)
+    _observe_ptt(srv, True)
+
+    writer = await _post_json(srv, "/api/v1/civ/transaction", payload)
+
+    assert writer.response_status == 403
+    assert writer.response_body["error"] == "radio_transmitting"
+    radio.send_civ_transaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_http_raw_civ_transaction_unmanaged_passes_ptt_on_with_fresh_rx() -> None:
+    """With a fresh-known RX observation the unmanaged HTTP raw
+    seat passes a TX-family frame to the radio, exactly as unmanaged
+    rigctld raw ``w`` and the typed ``T 1`` do."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv = _unmanaged_server(radio)
+    _observe_ptt(srv, False)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/civ/transaction",
+        {"command": 0x1C, "sub": 0x00, "data": "01", "expect": "none"},
+    )
+
+    assert writer.response_status == 200
+    radio.send_civ_transaction.assert_awaited_once_with(
+        0x1C,
+        sub=0x00,
+        data=b"\x01",
+        expect="none",
+        timeout=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_http_raw_civ_transaction_unmanaged_passes_voice_tx_with_fresh_rx() -> (
+    None
+):
+    """MOR-3374: with a fresh-known RX observation the unmanaged HTTP raw
+    seat passes a voice TX memory transmit frame to the radio, exactly as
+    it passes a raw PTT-on in the same state."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv = _unmanaged_server(radio)
+    _observe_ptt(srv, False)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/civ/transaction",
+        {"command": 0x28, "sub": 0x00, "data": "01", "expect": "none"},
+    )
+
+    assert writer.response_status == 200
+    radio.send_civ_transaction.assert_awaited_once_with(
+        0x28,
+        sub=0x00,
+        data=b"\x01",
+        expect="none",
+        timeout=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_http_raw_civ_transaction_unmanaged_raw_cw_text_still_passes_while_tx() -> (
+    None
+):
+    """MOR-3374 parity pin: raw CW text ``0x17`` is not TX-family, so it
+    keeps passing this seat while TX is observed, exactly as before the
+    voice-memory frames joined the family — the typed ``send_cw_text``
+    path is not interlocked, so by parity the raw form stays unchanged.
+    A later decision to add 0x17 to the family makes this row fail."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv = _unmanaged_server(radio)
+    _observe_ptt(srv, True)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/civ/transaction",
+        {"command": 0x17, "data": "41", "expect": "none"},
+    )
+
+    assert writer.response_status == 200
+    radio.send_civ_transaction.assert_awaited_once_with(
+        0x17,
+        sub=None,
+        data=b"\x41",
+        expect="none",
+        timeout=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_http_raw_civ_transaction_unmanaged_passes_non_tx_while_observed_tx() -> (
+    None
+):
+    """A non-TX frame (set frequency) passes regardless of the observed RF
+    state, observed TX included: it is not a TX actuation."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv = _unmanaged_server(radio)
+    _observe_ptt(srv, True)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/civ/transaction",
+        {"command": 0x05, "data": "0000101400", "expect": "none"},
+    )
+
+    assert writer.response_status == 200
+    radio.send_civ_transaction.assert_awaited_once_with(
+        0x05,
+        sub=None,
+        data=bytes.fromhex("0000101400"),
+        expect="none",
+        timeout=None,
+    )
 
 
 @pytest.mark.asyncio

@@ -874,19 +874,21 @@ async def test_snapshot_state_returns_dict_with_basics(
     assert "frequency" in snap or len(snap) >= 0  # best-effort
 
 
-async def test_snapshot_state_uses_cache_on_failure(
+async def test_snapshot_state_omits_keys_when_reads_fail(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """When CI-V times out, snapshot falls back to cached values."""
+    """Failed freq/mode/power reads record nothing, never the mirrors."""
     radio._last_freq_hz = 7_074_000
     radio._last_mode = Mode.LSB
     radio._last_power = 100
-    # No responses queued → all get* will timeout → cache fallback
+    radio.get_freq = AsyncMock(side_effect=TimeoutError("no response"))
+    radio.get_mode_info = AsyncMock(side_effect=TimeoutError("no response"))
+    radio.get_rf_power = AsyncMock(side_effect=TimeoutError("no response"))
 
     snap = await radio.snapshot_state()
-    assert snap.get("frequency") == 7_074_000
-    assert snap.get("mode") == Mode.LSB
-    assert snap.get("power") == 100
+    assert "frequency" not in snap
+    assert "mode" not in snap
+    assert "power" not in snap
 
 
 async def test_snapshot_state_includes_packet_data_settings(
@@ -2210,65 +2212,77 @@ async def test_get_ip_plus_returns_false_on_empty_data(
 
 
 # ---------------------------------------------------------------------------
-# snapshot_state — cached attribute fallback paths (lines 1520, 1530, 1532, 1534, 1536)
+# snapshot_state — unconfirmed mirrors are never recorded (MOR-1818)
 # ---------------------------------------------------------------------------
 
 
-async def test_snapshot_state_includes_cached_filter(
+async def test_snapshot_state_omits_filter_when_mode_read_fails(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """snapshot_state() includes _filter_width when mode fails (line 1520)."""
+    """A failed mode read omits mode/filter, never the mirrors."""
     radio._last_mode = Mode.USB
     radio._filter_width = 2  # cached filter
-    radio._last_freq_hz = 14_074_000
-    radio._last_power = 100
+    radio.get_mode_info = AsyncMock(side_effect=TimeoutError("no response"))
 
     snap = await radio.snapshot_state()
-    assert snap.get("filter") == 2
+    assert "mode" not in snap
+    assert "filter" not in snap
 
 
-async def test_snapshot_state_includes_last_split(
+async def test_snapshot_state_omits_split_when_read_fails(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """snapshot_state() includes _last_split when set (line 1530)."""
+    """A failed strict split read omits split, never the _last_split mirror."""
     radio._last_split = True
-    radio._last_freq_hz = 14_074_000
+    # No queued reply: the real get_split(strict=True) raises, the default
+    # read still returns the mirror for every other caller.
+    with pytest.raises((CommandError, TimeoutError)):
+        await radio.get_split(strict=True)
+    assert await radio.get_split() is True
 
     snap = await radio.snapshot_state()
-    assert snap.get("split") is True
+    assert "split" not in snap
 
 
-async def test_snapshot_state_includes_last_vfo(
+async def test_snapshot_state_never_records_vfo(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """snapshot_state() includes _last_vfo when set (line 1532)."""
+    """Snapshots carry no vfo key: no radio read exists for the VFO slot."""
     radio._last_vfo = "VFOB"
-    radio._last_freq_hz = 14_074_000
+    assert await radio.get_vfo_slot() == "A"  # optimistic, reads no radio
 
     snap = await radio.snapshot_state()
-    assert snap.get("vfo") == "VFOB"
+    assert "vfo" not in snap
 
 
-async def test_snapshot_state_includes_attenuator_state(
+async def test_snapshot_state_omits_attenuator_when_read_fails(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """snapshot_state() includes _attenuator_state when set (line 1534)."""
+    """A failed strict attenuator read omits attenuator, never the mirror."""
     radio._attenuator_state = True
-    radio._last_freq_hz = 14_074_000
+    # No queued reply: the real get_attenuator(strict=True) raises, the
+    # default read still returns the mirror for every other caller.
+    with pytest.raises((CommandError, TimeoutError)):
+        await radio.get_attenuator(strict=True)
+    assert await radio.get_attenuator() is True
 
     snap = await radio.snapshot_state()
-    assert snap.get("attenuator") is True
+    assert "attenuator" not in snap
 
 
-async def test_snapshot_state_includes_preamp_level(
+async def test_snapshot_state_omits_preamp_when_read_fails(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """snapshot_state() includes _preamp_level when set (line 1536)."""
+    """A failed strict preamp read omits preamp, never the _preamp_level mirror."""
     radio._preamp_level = 1
-    radio._last_freq_hz = 14_074_000
+    # No queued reply: the real get_preamp(strict=True) raises, the default
+    # read still returns the mirror for every other caller.
+    with pytest.raises((CommandError, TimeoutError)):
+        await radio.get_preamp(strict=True)
+    assert await radio.get_preamp() == 1
 
     snap = await radio.snapshot_state()
-    assert snap.get("preamp") == 1
+    assert "preamp" not in snap
 
 
 # ---------------------------------------------------------------------------

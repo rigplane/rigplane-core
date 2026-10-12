@@ -183,7 +183,6 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         await self._send_civ_raw(civ, wait_response=False)
         if update_cache:
             self._last_freq_hz = freq_hz
-            self._state_cache.update_freq(freq_hz)
 
     async def _get_mode_info_main(
         self, *, update_cache: bool = True
@@ -245,10 +244,6 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         if update_cache:
             if filter_width is not None:
                 self._filter_width = filter_width
-            cached_filter = (
-                filter_width if filter_width is not None else self._filter_width
-            )
-            self._state_cache.update_mode(mode.name, cached_filter)
 
     # ------------------------------------------------------------------
     # Selected / Unselected receiver freq & mode (0x25 / 0x26)

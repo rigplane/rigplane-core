@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 from .. import __version__
 from .._bounded_queue import BoundedQueue
 from ..audio.route import resolve_audio_route
+from ..commands._frame import build_civ_frame
 from ..core.acquisition_scheduler import (
     AcquisitionScheduler,
     MeterObservationCoalescer,
@@ -87,6 +88,13 @@ from ..runtime.controller_authority import (
 )
 from ..runtime.managed_tx_authority import ManagedTxAuthority
 from ..runtime.managed_tx_state import ManagedTxIntentKind
+from ..runtime.tx_interlock import (
+    RfState,
+    TxInterlockRefusal,
+    classify_raw_civ_frame_tx_family,
+    is_exact_raw_dekey_frame,
+    resolve_rf_state,
+)
 from ..sdr import IqSource, SdrConfig
 from ..sdr.runtime import SdrScopeRuntime
 from ..radio_state import RadioState
@@ -479,6 +487,19 @@ def _command_error_code(exc: BaseException) -> str:
 class _HttpCommandExecutor:
     server: "WebServer"
 
+    def _observed_rf_state(self) -> RfState:
+        """Resolve RF state from the server's state store snapshot.
+
+        Mirrors ``ControlHandler._observed_rf_state``: no usable store
+        reads as UNKNOWN, and a TX-family raw frame that is not an exact
+        de-key then refuses.
+        """
+
+        state_store = getattr(self.server, "command_state_store", None)
+        if isinstance(state_store, StateStore):
+            return resolve_rf_state(state_store.snapshot())
+        return RfState.UNKNOWN
+
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
         radio = self.server._radio
         if radio is None:
@@ -494,6 +515,48 @@ class _HttpCommandExecutor:
                 raise RuntimeError(
                     "active backend does not support raw CI-V transactions"
                 )
+            # The TX-family verdict is computed on the exact frame the
+            # transaction below would send — addresses play no part in it.
+            frame = build_civ_frame(
+                0x00,
+                0x00,
+                int(params["command"]),
+                sub=None if params.get("sub") is None else int(params["sub"]),
+                data=bytes(params["data"]),
+            )
+            tx_family_verdict = classify_raw_civ_frame_tx_family(frame)
+            if self.server._managed_tx_authority() is not None:
+                # Managed mode refuses a TX-family raw transaction by
+                # payload alone — regardless of the observed RF state,
+                # and without consulting the authority.  An exact raw
+                # de-key is refused with it: in managed mode PTT moves
+                # only through the authority.
+                if tx_family_verdict is not False:
+                    raise TxInterlockRefusal(
+                        "raw CI-V TX-family transactions are refused while the "
+                        "radio is under managed TX authority",
+                        reason_code="managed_tx_refused",
+                    )
+            elif tx_family_verdict is not False and not is_exact_raw_dekey_frame(frame):
+                # Unmanaged seat: a TX-family frame, or one that cannot
+                # be parsed as a single whole CI-V frame, is refused
+                # unless the observed PTT resolves to fresh-known RX;
+                # any other non-TX frame passes regardless of the
+                # observed RF state.  An exact de-key frame (PTT off or
+                # tuner off, bare or inside a cmd29 prefix) is exempt
+                # from that refusal, as ``classify_tx_interlock`` never
+                # refuses the typed PTT-off and tuner-off either.
+                rf_state = self._observed_rf_state()
+                if rf_state is not RfState.RX:
+                    raise TxInterlockRefusal(
+                        "raw CI-V TX-family transactions require a "
+                        "fresh-known RX observation",
+                        reason_code=(
+                            "radio_transmitting"
+                            if rf_state is RfState.TX
+                            else "rf_state_unknown"
+                        ),
+                    )
             result = await radio.send_civ_transaction(
                 int(params["command"]),
                 sub=params.get("sub"),
@@ -5559,6 +5622,14 @@ class WebServer:
             )
             details = service_result.executor_result.details or {}
             result = details["transaction_result"]
+        except TxInterlockRefusal as exc:
+            await self._send_json(
+                writer,
+                403,
+                "Forbidden",
+                {"error": exc.reason_code, "message": str(exc)},
+            )
+            return
         except (RigplaneTimeoutError, TimeoutError):
             await self._send_json(
                 writer,
@@ -5650,6 +5721,14 @@ class WebServer:
                 command_id=None if payload.get("id") is None else str(payload["id"]),
                 source="http",
             )
+        except TxInterlockRefusal as exc:
+            await self._send_json(
+                writer,
+                403,
+                "Forbidden",
+                {"error": exc.reason_code, "message": str(exc)},
+            )
+            return
         except PermissionError as exc:
             await self._send_json(
                 writer,
@@ -5924,6 +6003,13 @@ class WebServer:
             )
             details = service_result.executor_result.details or {}
             result = details["transaction_result"]
+        except TxInterlockRefusal as exc:
+            return self._failed_transaction_batch_result(
+                step,
+                status="refused",
+                error=exc.reason_code,
+                message=str(exc),
+            )
         except (RigplaneTimeoutError, TimeoutError):
             return self._failed_transaction_batch_result(
                 step,
@@ -6141,6 +6227,18 @@ class WebServer:
                 return
             try:
                 step = await self._prepare_http_batch_step(index, raw_step)
+            except TxInterlockRefusal as exc:
+                results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "ok": False,
+                        "status": "refused",
+                        "error": exc.reason_code,
+                        "message": str(exc),
+                    }
+                )
+                step = None
             except PermissionError as exc:
                 results.append(
                     {

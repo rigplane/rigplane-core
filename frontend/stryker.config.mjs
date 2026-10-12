@@ -7,6 +7,11 @@ export default {
     'src/lib/runtime/props/panel-props.ts',
     'src/lib/runtime/adapters/ptt-restore-gate.ts',
     'src/lib/runtime/adapters/mod-input-gates.ts',
+    'src/lib/runtime/adapters/control-feedback-projection.ts',
+    'src/lib/runtime/adapters/pending-intent-table.ts',
+    'src/lib/runtime/adapters/receiver-feedback.ts',
+    'src/lib/runtime/adapters/level-feedback.ts',
+    'src/lib/runtime/adapters/if-shift-feedback.ts',
   ],
   testRunner: 'vitest',
   vitest: {

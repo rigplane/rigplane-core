@@ -215,8 +215,11 @@ class IcomTransport:
         Raises:
             TimeoutError: If the radio does not respond to discovery.
         """
-        # A reused instance opens a new radio session, so it must not carry
-        # the previous session's counters into it.
+        # Start the sequence numbers at 0 and drop the buffered packets and
+        # gap tracking of any earlier use of this instance. After a teardown
+        # that kept the radio session, ControlPhaseRuntime.soft_reconnect
+        # (runtime/_control_phase.py) sets the CI-V send_seq back to the number
+        # recorded then; tests/test_civ_seq_continuity.py pins that.
         self.send_seq = 0
         self.ping_seq = 0
         self.tx_buffer.clear()

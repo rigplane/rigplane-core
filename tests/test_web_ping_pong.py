@@ -62,6 +62,22 @@ async def test_scope_channel_answers_ping_with_pong(audio_mode: bool) -> None:
     assert _sent_json(ws.send_text) == [{"type": "pong"}]
 
 
+async def test_scope_run_skips_non_utf8_text_frame() -> None:
+    ws = SimpleNamespace(
+        recv=AsyncMock(
+            side_effect=[
+                (WS_OP_TEXT, b"\xff\xfe{"),
+                (WS_OP_TEXT, json.dumps({"type": "ping"}).encode("utf-8")),
+                EOFError(),
+            ]
+        ),
+        send_text=AsyncMock(),
+        send_binary=AsyncMock(),
+    )
+    await ScopeHandler(ws, None).run()  # type: ignore[arg-type]
+    assert _sent_json(ws.send_text) == [{"type": "pong"}]
+
+
 async def test_scope_channel_other_control_message_unanswered(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

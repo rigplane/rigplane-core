@@ -1286,6 +1286,44 @@ describe('WsChannel', () => {
     expect(instances[0].sent).toEqual([]);
   });
 
+  it('a server-side close stops the keepalive interval', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    instances[0].simulateClose();
+
+    // After the close only the reconnect timer should remain: onclose
+    // clears the heartbeat timeout and stops the keepalive interval.
+    expect(vi.getTimerCount()).toBe(1);
+    ch.disconnect();
+  });
+
+  it('a late close from a replaced socket does not stop the new keepalive', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+
+    ch.connect('ws://test');
+    const stale = instances[0];
+    stale.simulateOpen();
+    stale.simulateClose();
+    vi.advanceTimersByTime(1_300); // first backoff is at most 1.2 s (calcBackoff jitter)
+    const current = instances[1];
+    current.simulateOpen();
+
+    // Late close event from the already-replaced socket: it must not stop
+    // the channel's keepalive, which now belongs to the new socket.
+    stale.simulateClose(1000, 'delayed close', true);
+    vi.advanceTimersByTime(15_000);
+
+    const pingFrames = current.sent
+      .map((data) => JSON.parse(data))
+      .filter((msg) => msg.type === 'ping');
+    expect(pingFrames).toHaveLength(1);
+    ch.disconnect();
+  });
+
   it('no ping is sent while reconnecting after a server-side close', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
@@ -1295,9 +1333,9 @@ describe('WsChannel', () => {
     instances[0].simulateClose();
     vi.advanceTimersByTime(120_000);
 
-    // The keepalive interval survives a server-side close (only the next
-    // onopen or disconnect() stops it), so it is the one timer left.
-    expect(vi.getTimerCount()).toBe(1);
+    // onclose stops the keepalive interval and clears the heartbeat timeout,
+    // so once the reconnect backoff has fired, no channel timer is left.
+    expect(vi.getTimerCount()).toBe(0);
     expect(instances).toHaveLength(2);
     for (const socket of instances) {
       const pingFrames = socket.sent

@@ -3318,26 +3318,31 @@ class TestGetFallbackCacheTTL:
 # ---------------------------------------------------------------------------
 
 
-class TestSetCommandsUpdateCache:
-    """SET commands update the state cache without waiting for ACK."""
+class TestSetCommandsLeaveStateCacheToReadbacks:
+    """SET commands leave the state cache alone.
+
+    The StateCache holds only radio readbacks, so fire-and-forget setters
+    must not write their commanded values into it; the ``_last_*`` mirrors
+    still track what was sent.
+    """
 
     @pytest.mark.asyncio
-    async def test_set_frequency_updates_state_cache(
+    async def test_set_frequency_does_not_update_state_cache(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        """set_frequency updates the frequency cache immediately."""
+        """set_frequency leaves the frequency cache empty but tracks _last."""
         await radio.set_freq(21_074_000)
-        assert radio.state_cache.freq == 21_074_000
-        assert radio.state_cache.freq_ts > 0.0
+        assert radio.state_cache.freq_ts == 0.0
+        assert radio._last_freq_hz == 21_074_000
 
     @pytest.mark.asyncio
-    async def test_set_mode_updates_state_cache(
+    async def test_set_mode_does_not_update_state_cache(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        """set_mode updates the mode cache immediately."""
+        """set_mode leaves the mode cache empty but tracks _last_mode."""
         await radio.set_mode(Mode.CW)
-        assert radio.state_cache.mode == "CW"
-        assert radio.state_cache.mode_ts > 0.0
+        assert radio.state_cache.mode_ts == 0.0
+        assert radio._last_mode == Mode.CW
 
     @pytest.mark.asyncio
     async def test_rapid_set_frequency_does_not_block(
@@ -3346,8 +3351,124 @@ class TestSetCommandsUpdateCache:
         """Rapid consecutive set_frequency calls are all fire-and-forget."""
         for freq in [7_000_000, 7_100_000, 7_200_000]:
             await radio.set_freq(freq)
-        # Cache holds the last value sent.
-        assert radio.state_cache.freq == 7_200_000
+        # The mirror holds the last value sent; the cache stays empty.
+        assert radio._last_freq_hz == 7_200_000
+        assert radio.state_cache.freq_ts == 0.0
+
+
+class TestSetterTargetsNotCached:
+    """Set commands must not populate the StateCache.
+
+    The cache holds only radio readbacks (successful ``get_*`` replies and
+    CI-V transceive ingress). A ``get_*`` that times out therefore falls
+    back to the last readback — never to a value a setter merely commanded.
+    """
+
+    def _make_radio(
+        self,
+        mock_transport: MockTransport,
+        cache_ttl_s: dict[str, float] | None = None,
+    ) -> IcomRadio:
+        radio = IcomRadio(
+            "192.168.1.100",
+            timeout=0.5,
+            cache_ttl_s=cache_ttl_s,
+            model="IC-7610",
+        )
+        radio._ctrl_transport = mock_transport
+        radio._civ_transport = mock_transport
+        radio._connected = True
+        return radio
+
+    @pytest.mark.asyncio
+    async def test_timed_out_get_returns_last_readback_not_set_target(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """A read cached F1, then set(F2), then a timed-out read returns F1."""
+        radio = self._make_radio(mock_transport, {"freq": 10.0})
+        mock_transport.queue_response(_freq_response(14_074_000))
+        assert await radio.get_freq() == 14_074_000
+        await radio.set_freq(14_200_000)
+        assert await radio.get_freq() == 14_074_000
+
+    @pytest.mark.asyncio
+    async def test_timed_out_get_raises_without_readback(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """With no readback, set(F2) then a timed-out read raises TimeoutError."""
+        radio = self._make_radio(mock_transport, {"freq": 10.0})
+        await radio.set_freq(14_200_000)
+        with pytest.raises(TimeoutError):
+            await radio.get_freq()
+
+    @pytest.mark.asyncio
+    async def test_timed_out_get_mode_returns_last_readback_not_set_target(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """A mode read cached (USB, 2), then set(CW); timed-out read keeps USB."""
+        radio = self._make_radio(mock_transport, {"mode": 10.0})
+        mock_transport.queue_response(_mode_response(Mode.USB, 2))
+        assert await radio.get_mode_info() == (Mode.USB, 2)
+        await radio.set_mode(Mode.CW)
+        assert await radio.get_mode_info() == (Mode.USB, 2)
+
+    @pytest.mark.asyncio
+    async def test_timed_out_get_mode_raises_without_readback(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """With no readback, set(CW) then a timed-out read raises TimeoutError."""
+        radio = self._make_radio(mock_transport, {"mode": 10.0})
+        await radio.set_mode(Mode.CW)
+        with pytest.raises(TimeoutError):
+            await radio.get_mode_info()
+
+    @pytest.mark.asyncio
+    async def test_set_rf_power_leaves_cache_empty(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """The RF power setter never populated the cache (readback path only)."""
+        radio = self._make_radio(mock_transport, {"rf_power": 30.0})
+        await radio.set_rf_power(200)
+        assert radio.state_cache.rf_power is None
+        with pytest.raises(TimeoutError):
+            await radio.get_rf_power()
+
+    @pytest.mark.asyncio
+    async def test_readback_after_set_is_cached(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """A successful readback after a set is cached as before."""
+        radio = self._make_radio(mock_transport, {"freq": 10.0})
+        await radio.set_freq(14_200_000)
+        assert radio.state_cache.freq_ts == 0.0
+        mock_transport.queue_response(_freq_response(14_074_000))
+        assert await radio.get_freq() == 14_074_000
+        assert radio.state_cache.freq == 14_074_000
+
+    @pytest.mark.asyncio
+    async def test_transceive_ingress_updates_cache(
+        self, mock_transport: MockTransport
+    ) -> None:
+        """Unsolicited CI-V transceive frames still update the cache."""
+        radio = self._make_radio(mock_transport)
+        radio._update_state_cache_from_frame(
+            CivFrame(
+                to_addr=CONTROLLER_ADDR,
+                from_addr=IC_7610_ADDR,
+                command=0x00,
+                data=bcd_encode(14_200_000),
+            )
+        )
+        assert radio.state_cache.freq == 14_200_000
+        radio._update_state_cache_from_frame(
+            CivFrame(
+                to_addr=CONTROLLER_ADDR,
+                from_addr=IC_7610_ADDR,
+                command=0x01,
+                data=bytes([Mode.CW, 0x01]),
+            )
+        )
+        assert radio.state_cache.mode == "CW"
 
 
 class TestDspLevelParity:

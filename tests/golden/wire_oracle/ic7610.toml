@@ -1,0 +1,306 @@
+# Transcribed by hand from the IC-7610 CI-V Reference Guide (2021). Never regenerate from code.
+[[row]]
+control = "operating_freq"
+receiver = "none"
+direction = "set"
+value = "14.074 MHz"
+frame = "FE FE 98 E0 05 00 40 07 14 00 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "common digital mode frequency"
+
+[[row]]
+control = "operating_freq"
+receiver = "none"
+direction = "read"
+value = "readback"
+frame = "FE FE 98 E0 03 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "readback carries no data"
+
+[[row]]
+control = "operating_mode"
+receiver = "none"
+direction = "set"
+value = "USB FIL1"
+frame = "FE FE 98 E0 06 01 01 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "upper sideband narrow filter"
+
+[[row]]
+control = "select_main"
+receiver = "none"
+direction = "set"
+value = "MAIN band"
+frame = "FE FE 98 E0 07 D0 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "front panel main receiver"
+
+[[row]]
+control = "select_sub"
+receiver = "none"
+direction = "set"
+value = "SUB band"
+frame = "FE FE 98 E0 07 D1 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "front panel sub receiver"
+
+[[row]]
+control = "dualwatch"
+receiver = "none"
+direction = "set"
+value = "on"
+frame = "FE FE 98 E0 07 C1 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "listen two frequencies together"
+
+[[row]]
+control = "dualwatch"
+receiver = "none"
+direction = "set"
+value = "off"
+frame = "FE FE 98 E0 07 C0 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "single receiver only"
+
+[[row]]
+control = "split"
+receiver = "none"
+direction = "set"
+value = "on"
+frame = "FE FE 98 E0 0F 01 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "transmit split from receive"
+
+[[row]]
+control = "split"
+receiver = "none"
+direction = "set"
+value = "off"
+frame = "FE FE 98 E0 0F 00 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "same frequency both ways"
+
+[[row]]
+control = "rf_power"
+receiver = "none"
+direction = "set"
+value = "200 of 0..255"
+frame = "FE FE 98 E0 14 0A 02 00 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "high but not full"
+
+[[row]]
+control = "mic_gain"
+receiver = "none"
+direction = "set"
+value = "128 of 0..255"
+frame = "FE FE 98 E0 14 0B 01 28 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "mid scale voice level"
+
+[[row]]
+control = "cw_key_speed"
+receiver = "none"
+direction = "set"
+value = "0128 of 0000..0255"
+frame = "FE FE 98 E0 14 0C 01 28 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "comfortable mid sending pace"
+
+[[row]]
+control = "comp_level"
+receiver = "none"
+direction = "set"
+value = "0100 of 0000..0255"
+frame = "FE FE 98 E0 14 0E 01 00 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "moderate speech compression"
+
+[[row]]
+control = "vox"
+receiver = "none"
+direction = "set"
+value = "on"
+frame = "FE FE 98 E0 16 46 01 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 4"
+note = "voice keyed transmit"
+
+[[row]]
+control = "break_in"
+receiver = "none"
+direction = "set"
+value = "semi break-in"
+frame = "FE FE 98 E0 16 47 01 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 4"
+note = "keys between characters"
+
+[[row]]
+control = "ptt"
+receiver = "none"
+direction = "set"
+value = "on"
+frame = "FE FE 98 E0 1C 00 01 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 9"
+note = "key transmitter now"
+
+[[row]]
+control = "ptt"
+receiver = "none"
+direction = "set"
+value = "off"
+frame = "FE FE 98 E0 1C 00 00 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 9"
+note = "back to receive"
+
+[[row]]
+control = "antenna_tuner"
+receiver = "none"
+direction = "set"
+value = "on"
+frame = "FE FE 98 E0 1C 01 01 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 9"
+note = "match antenna before transmitting"
+
+[[row]]
+control = "af_level"
+receiver = "main"
+direction = "set"
+value = "128 of 0..255"
+frame = "FE FE 98 E0 29 00 14 01 01 28 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "mid loudness main speaker"
+
+[[row]]
+control = "af_level"
+receiver = "sub"
+direction = "set"
+value = "64 of 0..255"
+frame = "FE FE 98 E0 29 01 14 01 00 64 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "quiet sub speaker"
+
+[[row]]
+control = "rf_gain"
+receiver = "main"
+direction = "set"
+value = "200 of 0..255"
+frame = "FE FE 98 E0 29 00 14 02 02 00 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "near full main sensitivity"
+
+[[row]]
+control = "rf_gain"
+receiver = "sub"
+direction = "set"
+value = "128 of 0..255"
+frame = "FE FE 98 E0 29 01 14 02 01 28 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "mid sub sensitivity"
+
+[[row]]
+control = "squelch"
+receiver = "main"
+direction = "set"
+value = "0085 of 0000..0255"
+frame = "FE FE 98 E0 29 00 14 03 00 85 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "light main muting threshold"
+
+[[row]]
+control = "squelch"
+receiver = "sub"
+direction = "set"
+value = "0050 of 0000..0255"
+frame = "FE FE 98 E0 29 01 14 03 00 50 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "lighter sub muting threshold"
+
+[[row]]
+control = "attenuator"
+receiver = "main"
+direction = "set"
+value = "3 dB"
+frame = "FE FE 98 E0 29 00 11 03 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "smallest main input cut"
+
+[[row]]
+control = "attenuator"
+receiver = "sub"
+direction = "set"
+value = "30 dB"
+frame = "FE FE 98 E0 29 01 11 30 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 3"
+note = "heavy sub input cut"
+
+[[row]]
+control = "preamp"
+receiver = "main"
+direction = "set"
+value = "preamp 1 on"
+frame = "FE FE 98 E0 29 00 16 02 01 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 4"
+note = "main weak signal boost"
+
+[[row]]
+control = "preamp"
+receiver = "sub"
+direction = "set"
+value = "preamp 2 on"
+frame = "FE FE 98 E0 29 01 16 02 02 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 4"
+note = "sub stronger signal boost"
+
+[[row]]
+control = "agc"
+receiver = "main"
+direction = "set"
+value = "MID"
+frame = "FE FE 98 E0 29 00 16 12 02 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 4"
+note = "medium main leveling speed"
+
+[[row]]
+control = "agc"
+receiver = "sub"
+direction = "set"
+value = "SLOW"
+frame = "FE FE 98 E0 29 01 16 12 03 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 4"
+note = "slow sub leveling speed"
+
+[[row]]
+control = "noise_blanker"
+receiver = "main"
+direction = "set"
+value = "on"
+frame = "FE FE 98 E0 29 00 16 22 01 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 4"
+note = "cut main pulse interference"
+
+[[row]]
+control = "noise_blanker"
+receiver = "sub"
+direction = "set"
+value = "on"
+frame = "FE FE 98 E0 29 01 16 22 01 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 4"
+note = "cut sub pulse interference"
+
+[[row]]
+control = "noise_reduction"
+receiver = "main"
+direction = "set"
+value = "on"
+frame = "FE FE 98 E0 29 00 16 40 01 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 4"
+note = "clean main background hiss"
+
+[[row]]
+control = "noise_reduction"
+receiver = "sub"
+direction = "set"
+value = "on"
+frame = "FE FE 98 E0 29 01 16 40 01 FD"
+manual = "IC-7610 CI-V Reference Guide (2021), command table, p. 4"
+note = "clean sub background hiss"
