@@ -5,6 +5,11 @@ on:
     # Mon/Wed/Fri 03:00 UTC (06:00 MSK)
     - cron: "0 3 * * 1,3,5"
   workflow_dispatch:
+    inputs:
+      rc:
+        description: "Release-candidate run: also run the slow-marked tests"
+        type: boolean
+        default: false
   push:
     branches: [main]
 
@@ -109,13 +114,15 @@ jobs:
 
       - name: Run tests
         id: tests
+        # When the dispatch input `rc` is true, the -m replaces the 'not slow
+        # and not benchmark' from addopts, so the slow-marked tests run too.
         run: |
           # Without pipefail the pipe's exit status is tee's (always 0), so
           # pytest failures were swallowed and the step reported success.
           # Capture pytest's exit code via PIPESTATUS, extract the summary
           # (still needed for the badge, including on failure), then exit
           # with pytest's code so failing tests fail the step.
-          uv run pytest tests/ -n auto --tb=short --timeout=300 --timeout-method=thread \
+          uv run pytest tests/ -n auto ${{ inputs.rc && '-m "not benchmark"' || '' }} --tb=short --timeout=300 --timeout-method=thread \
             | tee pytest-output.txt
           rc=${PIPESTATUS[0]}
           SUMMARY=$(tail -1 pytest-output.txt)
