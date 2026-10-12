@@ -2779,9 +2779,7 @@ class TestDisconnectDuringStartupBusyHold:
 
     @staticmethod
     def _args() -> Any:
-        return _build_parser().parse_args(
-            ["--host", "1.2.3.4", "web", "--no-rigctld"]
-        )
+        return _build_parser().parse_args(["--host", "1.2.3.4", "web", "--no-rigctld"])
 
     @staticmethod
     def _make(*, busy_first: bool) -> tuple[Any, Any, Any]:
@@ -2853,8 +2851,10 @@ class TestDisconnectDuringStartupBusyHold:
             # cancelled here.
             await radio.disconnect()
             await self._wait_for(
-                lambda: lifecycle.state is not None
-                and lifecycle.state.name == "DISCONNECTED",
+                lambda: (
+                    lifecycle.state is not None
+                    and lifecycle.state.name == "DISCONNECTED"
+                ),
                 timeout=5.0,
             )
 

@@ -885,9 +885,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
     @property
     def startup_busy_hold_retry_in_seconds(self) -> float | None:
-        """Seconds until the next start-up busy re-login (MOR-3391).
-
-        The live cooldown remainder while one runs, else the hold's
+        """The live cooldown remainder while one runs, else the hold's
         cooldown between two busy passes; ``None`` when no hold is
         active. Read through the private session lifecycle — this module
         owns that layer, so no upper layer has to.

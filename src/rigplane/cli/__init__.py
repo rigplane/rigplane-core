@@ -2366,7 +2366,11 @@ async def _serve_while_startup_connect_pending(
       then serving continues until shutdown;
     * the enter finishes first and fails (budget out, refused) — serving
       is torn down and the connect error propagates, so the process ends
-      exactly as a start-up connect failure does today;
+      with the same ``Error:`` text and return code 1;
+    * the enter is cancelled by an operator disconnect during the hold —
+      serving continues until shutdown, the same as a disconnect after a
+      normal start (a later operator connect re-primes through the radio
+      control handler);
     * serving ends first (shutdown) — the pending enter is left for the
       caller, which cancels it and still runs the radio's exit.
     """
@@ -2376,11 +2380,23 @@ async def _serve_while_startup_connect_pending(
             {startup_enter, serve_task}, return_when=asyncio.FIRST_COMPLETED
         )
         if startup_enter in done:
-            # The hold cleared (or gave up) before shutdown: success runs
-            # the late completion and serving continues; failure tears
-            # serving down by raising through the finally below.
-            await startup_enter
-            await server.finish_startup_busy_hold()
+            current = asyncio.current_task()
+            if startup_enter.cancelled() and (
+                current is None or current.cancelling() == 0
+            ):
+                # An operator disconnect during the hold cancels the
+                # background enter without cancelling this task (awaiting
+                # a cancelled task raises here but leaves this task
+                # uncancelled): keep serving below. A genuine shutdown
+                # cancels this task too, so it still falls through to
+                # the re-raise and ends cleanly.
+                pass
+            else:
+                # The hold cleared (or gave up) before shutdown: success
+                # runs the late completion and serving continues; failure
+                # tears serving down by raising through the finally below.
+                await startup_enter
+                await server.finish_startup_busy_hold()
         await serve_task
     finally:
         if not serve_task.done():

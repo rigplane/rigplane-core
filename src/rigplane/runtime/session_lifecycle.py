@@ -762,9 +762,7 @@ class CoreRadioSessionLifecycle:
 
     @property
     def startup_busy_hold_retry_in_seconds(self) -> float | None:
-        """Seconds until the next first-connect busy re-login (MOR-3391).
-
-        The live cooldown remainder while one runs, else the hold's
+        """The live cooldown remainder while one runs, else the hold's
         cooldown between two busy passes (the state is CONNECTING there,
         with no live deadline); ``None`` when no hold is active. Read by
         the radio's public busy surface for the web wire.
