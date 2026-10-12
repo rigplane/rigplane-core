@@ -6,7 +6,10 @@ the 0.4.x line. Windows ARM64 is excluded from the hold — no 0.4.x release
 ships a ``win_arm64`` wheel, so ARM64 resolves the unbounded requirement —
 and other platforms track sounddevice unpinned. This module pins the declared
 markers in ``pyproject.toml`` and the resolved 0.4.x entry in ``uv.lock``;
-both fail if the pin is widened or dropped.
+both fail if the pin is widened or dropped. Note: the generated lock resolves
+the Windows fork on ``sys_platform`` alone, so ``uv.lock`` still assigns
+Windows ARM64 to 0.4.7; only installers that evaluate the markers per
+platform resolve ARM64 to the unbounded requirement.
 """
 
 from __future__ import annotations
@@ -110,9 +113,7 @@ def test_windows_x64_sounddevice_excludes_0_5() -> None:
     held, _other = _ordered_reqs()
     specifier = held.split(";", maxsplit=1)[0][len("sounddevice") :]
     assert _admits("0.4.7", specifier), f"Windows pin must admit 0.4.7: {held}"
-    assert not _admits("0.5.0", specifier), (
-        f"Windows pin must exclude 0.5.0: {held}"
-    )
+    assert not _admits("0.5.0", specifier), f"Windows pin must exclude 0.5.0: {held}"
 
 
 def test_other_sounddevice_has_no_upper_bound() -> None:
