@@ -81,9 +81,21 @@ describe('isStateAdvance', () => {
     expect(isStateAdvance(baseline, next)).toBe(false);
   });
 
-  it('rejects a lower semantic revision', () => {
+  it('rejects a lower semantic revision even when the observation sequence advances', () => {
     const baseline = baselineFrom(BASE_STATE);
-    expect(isStateAdvance(baseline, { ...BASE_STATE, revision: 4, stateRevision: 4 })).toBe(false);
+    expect(
+      isStateAdvance(baseline, { ...BASE_STATE, revision: 4, stateRevision: 4, observationSeq: 3 }),
+    ).toBe(false);
+  });
+
+  it('accepts a delivery advance carried by publicStateSeq alone', () => {
+    const baseline = baselineFrom(BASE_STATE);
+    const next = {
+      ...BASE_STATE,
+      publicStateSeq: 11,
+      connection: { rigConnected: false },
+    };
+    expect(isStateAdvance(baseline, next)).toBe(true);
   });
 
   it('rejects an identical state', () => {
