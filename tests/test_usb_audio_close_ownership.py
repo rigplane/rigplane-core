@@ -335,6 +335,9 @@ def native_driver(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(ctypes, "WinDLL", Mock(return_value=ole32), raising=False)
     monkeypatch.setattr(backend, "sys", SimpleNamespace(platform="win32"))
     monkeypatch.setattr(usb_driver, "sys", SimpleNamespace(platform="win32"))
+    # The duplex policy reads platform.system(), not sys.platform: simulate
+    # the same Windows host so the same-index CODEC pair stays "full".
+    monkeypatch.setattr(usb_driver.platform, "system", lambda: "Windows")
 
     class NativeStream:
         def __init__(self, **_kwargs: object) -> None:

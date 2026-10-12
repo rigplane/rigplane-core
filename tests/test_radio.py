@@ -1,6 +1,7 @@
 """Tests for IcomRadio high-level API."""
 
 import asyncio
+import logging
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -29,7 +30,12 @@ from rigplane.commands import (
     parse_civ_frame,
 )
 from rigplane.commander import Priority
-from rigplane.exceptions import CommandError, ConnectionError, TimeoutError
+from rigplane.exceptions import (
+    CommandError,
+    CommandRejectedError,
+    ConnectionError,
+    TimeoutError,
+)
 from rigplane.core import tx_safety as tx
 from rigplane.core.civ import CivEvent, CivEventType, CivRequestTracker
 from rigplane.radio import IcomRadio
@@ -1709,15 +1715,19 @@ class TestCapturedExecuteLifetime:
                 entered.set()
                 await release.wait()
 
-        async def controlled_timeout(pending, *, timeout):
+        async def controlled_wait(
+            waiters, *, timeout, return_when=asyncio.FIRST_COMPLETED
+        ):
             if pause == "response-timeout":
                 entered.set()
                 await release.wait()
-            pending.cancel()
-            raise asyncio.TimeoutError
+            # A timed-out ``asyncio.wait`` leaves every future pending and
+            # reports an empty done set; the caller owns cancelling them.
+            return set(), set(waiters)
 
         runtime_asyncio = SimpleNamespace(
-            wait_for=controlled_timeout,
+            wait=controlled_wait,
+            FIRST_COMPLETED=asyncio.FIRST_COMPLETED,
             sleep=asyncio.sleep,
             TimeoutError=asyncio.TimeoutError,
             CancelledError=asyncio.CancelledError,
@@ -2008,6 +2018,67 @@ class TestResponseDeadlineOpensAtSend:
 
         assert frame is not None
         assert frame.command == 0x03
+
+
+class TestRefusedReadSettlesOnNak:
+    """A refused read (0xFA) settles on its NAK, not the answer window (MOR-3297).
+
+    ``_civ_rx.py: CivRuntime._execute_civ_raw`` registered only a response
+    waiter for a GET, and a refusal — a bare FA that names no command — is
+    handed by ``CivRequestTracker.resolve`` to ACK waiters only, so it parked
+    in the orphan backlog while the read waited out ``_civ_get_timeout`` and
+    reported a timeout. The write branch and the raw transaction path
+    (``nak_terminal=True`` default) already settle on their NAK.
+    """
+
+    @pytest.mark.asyncio
+    async def test_refused_get_raises_command_rejected_without_waiting(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        radio._civ_get_timeout = 2.0
+        mock_transport.queue_response_on_send(1, _nak_response())
+        cmd = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x1A, sub=0x05, data=b"\x00\x90"
+        )
+        timeouts_before = radio._civ_request_tracker.timeout_count
+
+        started = time.monotonic()
+        with caplog.at_level(logging.DEBUG, logger="rigplane.runtime._civ_rx"):
+            with pytest.raises(CommandRejectedError, match="refused \\(NAK\\)"):
+                await radio._execute_civ_raw(cmd)
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.5, f"refused read took {elapsed:.3f}s to settle"
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "rigplane.runtime._civ_rx"
+        ]
+        assert any("CI-V command 0x1A refused (NAK)" in m for m in messages)
+        assert not any("timed out" in m for m in messages)
+        assert radio._civ_request_tracker.timeout_count == timeouts_before
+
+    @pytest.mark.asyncio
+    async def test_refused_identity_read_counts_as_no_answer(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+    ) -> None:
+        """The identity gate's 19 00 read treats a NAK as silence.
+
+        ``runtime/radio.py: CoreRadio._lan_identity_reread_loop`` has only
+        ``Exception`` at its edge: a ``CommandRejectedError`` escaping
+        ``_read_lan_identity_payload`` would abandon the hold instead of
+        retrying, and the connect-time gate would raise out of ``connect()``.
+        """
+        mock_transport.queue_response_on_send(1, _nak_response())
+
+        payload = await radio._read_lan_identity_payload()
+
+        assert payload is None
 
 
 class _PacingClock:
