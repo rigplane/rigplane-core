@@ -12,8 +12,8 @@ UDP code paths as production.
   fault injection (drop, reorder, stall, delay). The CI-V dispatcher answers
   0x03/0x04/0x05/0x06 plus the selected/unselected receiver vocabulary
   0x25/0x26 (both subcommands; the selected VFO shares the 0x03-0x06 state,
-  the unselected VFO has its own fields) and the 0x1A 05 MOD-input menu reads
-  the product's startup reader issues (wire-pinned by
+  the unselected VFO has its own fields) and the 0x1A 05 MOD-input and NB
+  menu reads the product's startup reader issues (wire-pinned by
   `tests/testkit/test_simulator_civ_vocab.py`). The implementation lives in
   `rigplane_testkit/icom/simulator.py`.
 - `rigplane_testkit.icom.faults` — `FaultPlan` / `FaultRule`: a declarative,

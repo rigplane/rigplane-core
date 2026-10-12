@@ -1355,6 +1355,16 @@ class MockIcomRadio:
         self._civ_seq = (self._civ_seq + 1) & 0xFFFF
         return bytes(pkt)
 
+    @staticmethod
+    def _decode_level_bcd(data: bytes) -> int:
+        """Decode a 2-byte BCD level (e.g. b'\\x01\\x28' → 128).
+
+        Kept for test-local ``MockIcomRadio`` subclasses (see
+        ``tests/integration/test_dsp_levels_integration.py``); the dispatcher
+        itself uses the module-level ``_bcd_decode_value``.
+        """
+        return _bcd_decode_value(data[:2])
+
     # ------------------------------------------------------------------
     # Control packet builders
     # ------------------------------------------------------------------
