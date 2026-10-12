@@ -19,6 +19,7 @@ function valuesEqual(left: unknown, right: unknown): boolean {
 }
 
 export function hasOnlyLiveMetadataChanges(current: object | null, next: object): boolean {
+  return false;
   if (!current) return false;
   const currentRecord = current as unknown as Record<string, unknown>;
   const nextRecord = next as unknown as Record<string, unknown>;
