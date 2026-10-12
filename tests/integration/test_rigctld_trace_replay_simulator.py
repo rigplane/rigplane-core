@@ -61,7 +61,10 @@ Checked replay rules, per step kind:
 Error contract (so a strict xfail can never hide a harness problem):
 harness waits (``_wait_until``, ``_poll_until_reply``) raise
 ``TimeoutError`` and fixture/parse/oracle setup mistakes raise
-``RuntimeError`` — never ``AssertionError``. The ONLY ``AssertionError``
+``RuntimeError`` — never ``AssertionError``. A SET's landed check
+(``F`` as for ``T``) polls the simulated radio with a deadline but
+never raises ``TimeoutError`` itself; its final compare is the
+divergence assertion. The ONLY ``AssertionError``
 a full-trace replay raises at its divergent line is re-raised by the
 test as ``TraceDivergence`` (matched on the trace line number and the
 ``>`` line text); any other ``AssertionError`` becomes ``RuntimeError``
@@ -69,15 +72,13 @@ and FAILS instead of xfailing.
 
 Remaining divergence (traces never edited):
 
-* wsjtx line 62 ``F VFOB 14076000`` answers ``RPRT -7``, want ``RPRT 0``:
-  the recorded table answers the ``0x0F`` split SET, so line 60 passes,
-  but writing the SUB receiver selects it over CI-V ``0x07`` first and
-  the simulator implements no VFO-select handler (no ``0x07`` branch in
-  ``simulator.py: _dispatch_civ_native``) while the recorded table has
-  no select-SUB row (``replay.py: RecordedAnswerTable.answer`` misses),
-  so the native NAK stands and ``radio.py: CoreRadio._set_vfo_wire``
-  raises ``CommandError``. The remainder of the trace (from line 62 on)
-  is the strict xfail.
+* wsjtx line 62 ``F VFOB 14076000`` answers ``RPRT 0`` but never
+  lands on the SUB receiver: the recorded table ACKs the CI-V ``0x07``
+  select (so line 60 passes and the SET is accepted), but
+  ``simulator.py: MockIcomRadio`` keeps no per-receiver frequency
+  behind a ``0x07`` select while its native ``0x05`` handler writes
+  MAIN, so the landed check diverges. The remainder of the trace
+  (from line 62 on) is the strict xfail (MOR-3310).
 * fldigi and js8call pass whole: their single PTT cycle (``T … 1`` /
   ``T … 0``) converges through the stateful PTT hook, and every ``t``
   read in all three traces happens while PTT is off.
@@ -444,11 +445,23 @@ async def _check_set_landed(
     """Check (i) simulator state and (ii) captured frame for one SET line."""
     if op.cmd == "F":
         want_hz = int(op.args[0])
-        await _wait_until(
-            f"simulator frequency {want_hz}",
-            op.line_no,
-            lambda: _sim_freq(sim, op.receiver) == want_hz,
-            timeout=_SETTLE_TIMEOUT,
+        vfo = "VFOA" if op.receiver == 0 else "VFOB"
+        # Frequency writes are fire-and-forget, so poll the simulator's
+        # decoded frequency with a deadline; the final compare is the
+        # divergence assertion — a SET that never lands is a divergence
+        # of the simulated radio, not a harness stall. This poll never
+        # raises TimeoutError itself, so a harness timeout elsewhere
+        # still FAILS instead of xfailing.
+        deadline = time.monotonic() + _SETTLE_TIMEOUT
+        while _sim_freq(sim, op.receiver) != want_hz:
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(0.05)
+        got_hz = _sim_freq(sim, op.receiver)
+        assert got_hz == want_hz, (
+            f"line {op.line_no}: `F {vfo} {op.args[0]}` set {want_hz} but "
+            f"the simulator's {'MAIN' if op.receiver == 0 else 'SUB'} "
+            f"frequency is {got_hz}"
         )
     elif op.cmd == "M":
         try:
@@ -590,7 +603,7 @@ async def _replay_checked(
                     actual = await _read_line(reader, timeout=_READ_TIMEOUT)
                     # Names the `>` line number and text: a divergence
                     # here is the line-tied xfail signal for e.g. wsjtx
-                    # line 62 `F VFOB 14076000` (`RPRT -7` for `RPRT 0`).
+                    # line 62 `F VFOB 14076000` (landed check on SUB).
                     assert actual == steps[j].payload, (
                         f"line {step.line_no}: `{step.payload}` diverged "
                         f"at reply line {steps[j].line_no}: expected "
@@ -626,11 +639,10 @@ async def _replay_checked(
 
 
 _WSJTX_XFAIL_REASON = (
-    "line 62 `F VFOB 14076000` answers `RPRT -7`, want `RPRT 0`: "
-    "simulator.py: _dispatch_civ_native implements no 0x07 VFO-select "
-    "handler and replay.py: RecordedAnswerTable.answer misses the "
-    "select-SUB frame, so the native NAK stands and radio.py: "
-    "CoreRadio._set_vfo_wire raises CommandError"
+    "MOR-3310: line 62 `F VFOB 14076000` never lands on the SUB "
+    "receiver: the recorded table ACKs the 07 D1 select, but "
+    "MockIcomRadio keeps no per-receiver frequency behind it and the "
+    "native 05 handler writes MAIN"
 )
 
 _SPECS = [
