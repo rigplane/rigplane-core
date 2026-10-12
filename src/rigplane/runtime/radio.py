@@ -514,6 +514,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._watchdog_timeout = watchdog_timeout
         self._watchdog_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
+        # ``disconnect`` increments this before it stops the resident loops.
+        # ``radio_reconnect.reconnect_loop`` and ``CivRuntime._watchdog_recover``
+        # read it when they start and take a later change for the owner's
+        # stop: a per-attempt release also sets ``_conn_state`` DISCONNECTED,
+        # so that state cannot tell the two apart.
+        self._owner_stop_epoch: int = 0
         self._auto_recover_audio = auto_recover_audio
         self._on_audio_recovery = on_audio_recovery
         self._on_reconnect: Callable[[], None] | None = None
@@ -1549,6 +1555,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # released and unclaimed, so the lifecycle disconnect below is a
         # no-op and the CONNECTED-gated control-phase teardown never runs —
         # without this the loop would log back in after the user left.
+        self._owner_stop_epoch += 1
         self._control_phase._stop_watchdog()
         self._control_phase._stop_reconnect()
         if self._conn_state is RadioConnectionState.RECONNECTING:

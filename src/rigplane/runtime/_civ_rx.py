@@ -1587,6 +1587,7 @@ class CivRuntime:
         hold keeps it paused until acceptance; a released control session has
         no stream to watch.
         """
+        owner_stop_epoch = self._host._owner_stop_epoch
         escalate = full_reconnect_reason is not None or (
             self._soft_recovery_epoch is not None
             and self._soft_recovery_epoch == self._host._civ_epoch
@@ -1622,7 +1623,7 @@ class CivRuntime:
                 "transient); watchdog will re-arm if the session survives",
                 exc_info=True,
             )
-            self._hand_off_exhaustion_to_reconnect_loop(exc)
+            self._hand_off_exhaustion_to_reconnect_loop(exc, owner_stop_epoch)
         except Exception:
             logger.error(
                 "civ-data-watchdog: unexpected error in lifecycle recovery",
@@ -1635,14 +1636,20 @@ class CivRuntime:
             else:
                 self._rearm_data_watchdog_after_recovery()
 
-    def _hand_off_exhaustion_to_reconnect_loop(self, exc: Exception) -> None:
+    def _hand_off_exhaustion_to_reconnect_loop(
+        self, exc: Exception, owner_stop_epoch: int
+    ) -> None:
         """Start the resident reconnect loop after lifecycle recovery exhausted.
 
         The exhaustion is the ``RigplaneConnectionError`` that
         ``CoreRadioSessionLifecycle._run_recover`` raises after its release.
+        ``owner_stop_epoch`` is the host's ``_owner_stop_epoch`` when the
+        recovery started; an owner stop since then starts no loop.
         """
         host = self._host
         if not isinstance(exc, ConnectionError):
+            return
+        if host._owner_stop_epoch != owner_stop_epoch:
             return
         if host._conn_state is not RadioConnectionState.DISCONNECTED:
             return
