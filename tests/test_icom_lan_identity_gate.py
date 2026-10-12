@@ -17,6 +17,7 @@ from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.exceptions import ConnectionError
 from rigplane.radio import IcomRadio
+from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime.session_lifecycle import LifecycleState
 
@@ -87,12 +88,52 @@ def _answer_token_renewal(transport: MockTransport, data: bytes) -> None:
     asyncio.get_running_loop().call_soon(deliver)
 
 
-class _LiveControlTransport(MockTransport):
-    """Mock control transport whose session is live: it answers renewals."""
+def _is_identity_frame(packet: bytes) -> bool:
+    """A UDP-wrapped CI-V frame with command 0x19, sub-command 0x00."""
+    frame = packet[CIV_HEADER_SIZE:]
+    return (
+        len(frame) >= 6
+        and frame[:2] == b"\xfe\xfe"
+        and frame[4] == _IDENTITY_CMD
+        and frame[5] == _IDENTITY_SUB
+    )
+
+
+class _IdentityAnswersOnRead(MockTransport):
+    """CI-V double: a ``19 00`` answer queued for send N is released by the
+    first ``19 00`` read sent at or after send N, as a radio answers a read."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._identity_answers: list[tuple[int, bytes]] = []
+
+    def queue_response_on_send(self, send_number: int, data: bytes) -> None:
+        if not _is_identity_frame(data):
+            super().queue_response_on_send(send_number, data)
+            return
+        self._identity_answers.append((send_number, data))
+
+    async def send_tracked(self, data: bytes) -> None:
+        await super().send_tracked(data)
+        if not _is_identity_frame(data):
+            return
+        due = [item for item in self._identity_answers if item[0] <= self.send_seq]
+        for item in due:
+            self._identity_answers.remove(item)
+            self.queue_response(item[1])
+
+
+class _LiveControlTransport(_IdentityAnswersOnRead):
+    """Shared CI-V and control double whose session is live: it answers
+    ``19 00`` reads as above and token renewals."""
 
     async def send_tracked(self, data: bytes) -> None:
         await super().send_tracked(data)
         _answer_token_renewal(self, data)
+
+
+class _ColdCiv(_IdentityAnswersOnRead, ConnectMockTransport):
+    """CI-V double for the cold connect: answers ``19 00`` reads as above."""
 
 
 def make_radio(
@@ -570,7 +611,7 @@ def _cold_radio(
     radio.rearm_managed_tx = AsyncMock()
     ctrl = _ReconnectingCtrl()
     radio._ctrl_transport = ctrl
-    civ = ConnectMockTransport()
+    civ = _ColdCiv()
     civ._udp_transport = object()
     return radio, ctrl, civ
 
