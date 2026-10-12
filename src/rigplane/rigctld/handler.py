@@ -1338,7 +1338,7 @@ class RigctldHandler:
         path: FieldPath | str,
         value: Any,
         *,
-        source: Literal["hamlib_response", "state_poller"],
+        source: Literal["hamlib_response"],
         max_age: float | None = None,
     ) -> None:
         provider_generation = _RIGCTLD_PROVIDER_GENERATION.get()
@@ -1533,15 +1533,11 @@ class RigctldHandler:
         # Per-VFO routing for VFOB on dual-RX: read SUB receiver state directly.
         # StateStore projections are canonical when present; RadioState remains
         # a compatibility fallback until runtime observation delivery owns SUB.
+        # Mirror answers go to this client only — an untimestamped mirror
+        # value is never written into the canonical store.
         if receiver == 1:
             state = self._radio_state()
             if state is not None:
-                self._record_state_sample(
-                    path,
-                    state.sub.freq,
-                    source="state_poller",
-                    max_age=self._config.cache_ttl,
-                )
                 return RigctldResponse(values=[str(state.sub.freq)])
             # State unavailable. For an EXPLICIT VFOB request under chk_vfo=1
             # surface ENIMPL rather than silently returning MAIN data labelled
@@ -1553,12 +1549,6 @@ class RigctldHandler:
 
         main_state = self._main_receiver_state()
         if main_state is not None:
-            self._record_state_sample(
-                path,
-                main_state.freq,
-                source="state_poller",
-                max_age=self._config.cache_ttl,
-            )
             return RigctldResponse(values=[str(main_state.freq)])
         freq = await self._radio.get_freq()
         self._record_state_sample(
@@ -2479,17 +2469,13 @@ class RigctldHandler:
 
         # STRENGTH — per-receiver on dual-RX. VFOB reads SUB s_meter
         # directly from RadioState until runtime observations own SUB meters.
+        # Mirror answers go to this client only — an untimestamped mirror
+        # value is never written into the canonical store.
         if level == "STRENGTH":
             if receiver == 1:
                 state = self._radio_state()
                 if state is not None:
                     raw = state.sub.s_meter
-                    self._record_state_sample(
-                        self._level_path(level, receiver=receiver) or "",
-                        raw,
-                        source="state_poller",
-                        max_age=self._config.cache_ttl,
-                    )
                     return RigctldResponse(
                         values=[str(round((raw / 241.0) * 114.0 - 54.0))]
                     )
@@ -2507,12 +2493,6 @@ class RigctldHandler:
                 return _err(HamlibError.ENIMPL)
             if main_state is not None:
                 raw = main_state.s_meter
-                self._record_state_sample(
-                    self._level_path(level, receiver=receiver) or "",
-                    raw,
-                    source="state_poller",
-                    max_age=self._config.cache_ttl,
-                )
                 return RigctldResponse(
                     values=[str(round((raw / 241.0) * 114.0 - 54.0))]
                 )
@@ -2533,12 +2513,6 @@ class RigctldHandler:
             state = self._radio_state()
             if state is not None and main_state is not None:
                 raw_power = state.power_level / 255.0
-                self._record_state_sample(
-                    self._level_path(level, receiver=receiver) or "",
-                    state.power_level,
-                    source="state_poller",
-                    max_age=self._config.cache_ttl,
-                )
                 return RigctldResponse(values=[f"{raw_power:.6f}"])
             if CAP_METERS not in self._radio.capabilities:
                 return _err(HamlibError.ENIMPL)
@@ -2890,15 +2864,10 @@ class RigctldHandler:
         if projected is not None:
             split = bool(projected.value)
         else:
+            # Mirror answers go to this client only — an untimestamped
+            # mirror value is never written into the canonical store.
             state = self._radio_state()
             split = state.split if state is not None else False
-            if state is not None:
-                self._record_state_sample(
-                    split_path,
-                    split,
-                    source="state_poller",
-                    max_age=self._config.cache_ttl,
-                )
         # ``_split_tx_vfo`` is handler-local Hamlib-protocol state, set by
         # the most recent ``S`` command (issue #1345 — fixes #1319 finding
         # #2 where this used to leak the active VFO instead of TX_VFO).

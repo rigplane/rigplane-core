@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from math import isfinite
 
 from rigplane.core.exceptions import CommandError
+from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_store import FreshnessState, StateSnapshot
 from rigplane.core.tx_interlock_contract import (
     TX_INTERLOCK_COMMAND_FAMILY_METADATA,
     TxInterlockCommandFamily,
@@ -67,6 +70,7 @@ __all__ = [
     "evaluate_tx_interlock",
     "get_tx_interlock_command_family_metadata",
     "is_tx_family_civ_command",
+    "resolve_rf_state",
 ]
 
 
@@ -240,6 +244,50 @@ class DeferredTxCommandLane:
         outcome: TxInterlockDeferredOutcome, entry: _DeferredTxCommand
     ) -> TxInterlockDeferredResult:
         return TxInterlockDeferredResult(outcome, entry.command, entry.expires_at)
+
+
+_PTT_PATH = FieldPath.global_("tx_state", "ptt")
+
+
+def resolve_rf_state(snapshot: StateSnapshot) -> RfState:
+    """Resolve RF state from the bool ``tx_state.ptt`` observation.
+
+    Applies the predicate set of ``core.tx_observation.project_observed_ptt``,
+    adapted to a bool value: the age is recomputed from the snapshot instead
+    of trusting the FRESH flag, so an observation past its TTL reads UNKNOWN
+    even when no freshness tick has cleared the flag yet.
+    """
+
+    try:
+        field = snapshot.field(_PTT_PATH)
+    except KeyError:
+        return RfState.UNKNOWN
+    timing = (
+        snapshot.generated_at_monotonic,
+        field.last_observed_monotonic,
+        field.max_age,
+    )
+    if (
+        field.freshness is not FreshnessState.FRESH
+        or type(field.value) is not bool
+        or type(field.provider_generation) is not int
+        or type(snapshot.provider_generation) is not int
+        or field.provider_generation != snapshot.provider_generation
+        or any(
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not isfinite(value)
+            for value in timing
+        )
+        or field.max_age is None
+        or field.max_age <= 0
+        or field.last_observed_monotonic < 0
+        or snapshot.generated_at_monotonic < field.last_observed_monotonic
+        or snapshot.generated_at_monotonic - field.last_observed_monotonic
+        >= field.max_age
+    ):
+        return RfState.UNKNOWN
+    return RfState.TX if field.value else RfState.RX
 
 
 # These structural exemptions are intentionally checked before all disruptive
