@@ -15,8 +15,9 @@ vi.mock('../http-client', async (importOriginal) => ({
 // control-channel ``_ctrl.onMessage`` handler feeds the real
 // ``setRadioState`` gate in ``radio.svelte.ts``. No store stand-in. The
 // assertions therefore only pass when the production
-// ``liveMetadataAdvanced`` / ``metadataAdvanced`` gate runs for real
-// (MOR-442 fidelity gap).
+// ``live-metadata.ts`` ``isStateAdvance`` predicate runs for real in both
+// ``ws-client.ts`` ``applyDeltaEnvelope`` and ``radio.svelte.ts``
+// ``setRadioState``.
 //
 // ``connection.svelte`` is also left REAL — its setters are plain ``$state``
 // assignments, harmless under jsdom.
@@ -330,13 +331,101 @@ describe('ws-client → real radio store gate (integration)', () => {
       ),
     );
 
-    // This is the core MOR-442 regression class: equal semantic revision but
-    // advancing observation metadata. Acceptance flows through the real
-    // store's ``observationAdvanced`` → ``metadataAdvanced`` branch, NOT a mock.
+    // Equal semantic revision but advancing observation metadata. Acceptance
+    // flows through the real store's ``setRadioState`` observation-sequence
+    // term of ``live-metadata.ts`` ``isStateAdvance``, NOT a mock.
     const s = store.getRadioState() as ServerStateWithObservation | null;
     expect(s?.stateRevision).toBe(5);
     expect(s?.observationSeq).toBe(2);
     expect(s?.fieldStatus?.['main.freqHz']).toEqual(nextFieldStatus['main.freqHz']);
+  });
+
+  it('accepts a full that changes only live metadata on a delivery advance', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    const connection = await import('../../stores/connection.svelte');
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    // Same state/freshness/health/observation revisions; only transportSeq
+    // and connection.rigConnected differ between the two full snapshots.
+    sendStateUpdate(
+      instances[0],
+      fullEnvelope(makeState({ revision: 5, stateRevision: 5, transportSeq: 10 })),
+    );
+    expect(store.getRadioState()?.connection.rigConnected).toBe(true);
+
+    sendStateUpdate(
+      instances[0],
+      fullEnvelope(makeState({
+        revision: 5, stateRevision: 5, transportSeq: 11,
+        connection: { rigConnected: false, radioReady: true, controlConnected: true },
+      })),
+    );
+
+    expect(store.getRadioState()?.connection.rigConnected).toBe(false);
+    expect(connection.getRigConnected()).toBe(false);
+  });
+
+  it('accepts a full with a lower delivery sequence when the semantic revision advances', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    sendStateUpdate(
+      instances[0],
+      fullEnvelope(makeState({ revision: 5, stateRevision: 5, transportSeq: 10 })),
+    );
+    expect(store.getRadioState()?.stateRevision).toBe(5);
+
+    // Newer semantic revision (6 > 5) with a changed semantic field, but a
+    // delivery sequence that went back (9 < 10).
+    sendStateUpdate(
+      instances[0],
+      fullEnvelope(makeState({
+        revision: 6, stateRevision: 6, transportSeq: 9,
+        main: makeReceiver({ freqHz: 7_100_000 }),
+      })),
+    );
+
+    const s = store.getRadioState() as ServerStateWithObservation | null;
+    expect(s?.stateRevision).toBe(6);
+    expect(s?.main.freqHz).toBe(7_100_000);
+    expect(store.getLastRevision()).toBe(6);
+  });
+
+  it('rejects a metadata delta that removes a non-metadata key in both layers', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    // The sub receiver ships in the full snapshot with a frequency no other
+    // field carries, and radio.svelte.ts isValidServerState accepts a state
+    // without it — so a delta dropping it stays contract-valid end to end.
+    sendStateUpdate(
+      instances[0],
+      fullEnvelope(makeState({ revision: 5, stateRevision: 5, transportSeq: 10 })),
+    );
+    expect(store.getRadioState()?.sub?.freqHz).toBe(7_074_000);
+
+    sendStateUpdate(
+      instances[0],
+      deltaEnvelope(
+        makeState({ revision: 5, stateRevision: 5, transportSeq: 11 }),
+        { connection: { rigConnected: false, radioReady: true, controlConnected: true } },
+        ['sub'],
+      ),
+    );
+
+    sendStateUpdate(
+      instances[0],
+      deltaEnvelope(makeState({ revision: 6, stateRevision: 6 }), { ptt: true }),
+    );
+
+    expect(store.getRadioState()?.sub?.freqHz).toBe(7_074_000);
+    expect(store.getRadioState()?.ptt).toBe(true);
   });
 
   it('keeps a retained relative tuple visible and applies a live leaf delta', async () => {
@@ -423,9 +512,10 @@ describe('ws-client → real radio store gate (integration)', () => {
       ),
     );
 
-    // ws-client's ``isRevisionAcceptable`` rejects at the accumulator
-    // (neither semanticAdvanced nor metadataAdvanced nor isReset), so
-    // ``setRadioState`` is never invoked and the real store cannot regress.
+    // ``ws-client.ts`` ``applyDeltaEnvelope`` returns null via
+    // ``live-metadata.ts`` ``isStateAdvance`` (lower semantic revision, so
+    // the revision-mismatch early return), so ``setRadioState`` is never
+    // invoked and the real store cannot regress.
     const s = store.getRadioState() as ServerStateWithObservation | null;
     expect(s?.stateRevision).toBe(6);
     expect(s?.observationSeq).toBe(6);

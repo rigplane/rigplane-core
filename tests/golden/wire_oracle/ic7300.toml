@@ -214,3 +214,19 @@ value = "on"
 frame = "FE FE 94 E0 1C 01 01 FD"
 manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-7"
 note = "tuner on, bytes only"
+
+[[row]]
+control = "cw_key_speed_wpm"
+direction = "set"
+value = "6 wpm (manual endpoint)"
+frame = "FE FE 94 E0 14 0C 00 00 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "slowest keyer rate"
+
+[[row]]
+control = "cw_key_speed_wpm"
+direction = "set"
+value = "48 wpm (manual endpoint)"
+frame = "FE FE 94 E0 14 0C 02 55 FD"
+manual = "IC-7300 Advanced Manual (11a), §19 command table, p. 19-3"
+note = "fastest keyer rate"

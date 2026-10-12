@@ -4,6 +4,7 @@ import { refusalBlockedReason, type KeyBlockedReason } from '../../semantic/rx-t
 import { isLiveRadioAvailable, setWsConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
 import { setRxSilent } from '../stores/rx-silence.svelte';
 import { isValidServerState, matchesCurrentCapabilityTopology, resetRadioState, setRadioState } from '../stores/radio.svelte';
+import { isStateAdvance, type StateAdvanceBaseline } from '../stores/live-metadata';
 import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
 import { fetchCapabilities } from './http-client';
 import { authenticatedWsUrl, withoutWsAuthToken } from './ws-url';
@@ -954,18 +955,6 @@ function stateRevisionOf(state: Record<string, unknown> | null): number {
   return -1;
 }
 
-function freshnessRevisionOf(state: Record<string, unknown> | null): number {
-  return typeof state?.freshnessRevision === 'number' ? state.freshnessRevision : 0;
-}
-
-function healthRevisionOf(state: Record<string, unknown> | null): number {
-  return typeof state?.healthRevision === 'number' ? state.healthRevision : 0;
-}
-
-function observationSeqOf(state: Record<string, unknown> | null): number {
-  return typeof state?.observationSeq === 'number' ? state.observationSeq : 0;
-}
-
 function deliverySeqOf(state: Record<string, unknown> | null): number {
   if (!state) return -1;
   const publicStateSeq = typeof state.publicStateSeq === 'number' ? state.publicStateSeq : 0;
@@ -973,43 +962,16 @@ function deliverySeqOf(state: Record<string, unknown> | null): number {
   return Math.max(publicStateSeq, transportSeq);
 }
 
-const LIVE_METADATA_KEYS = new Set([
-  'connection',
-  'fieldStatus',
-  'healthRevision',
-  'publicStateSeq',
-  'radioHealth',
-  'transportSeq',
-  'updatedAt',
-  'wsClients',
-]);
-
-function hasOnlyLiveMetadataKeys(keys: string[]): boolean {
-  return keys.length > 0 && keys.every((key) => LIVE_METADATA_KEYS.has(key));
-}
-
-function isRevisionAcceptable(
-  currentState: Record<string, unknown> | null,
-  nextState: Record<string, unknown>,
-  changedKeys: string[] = [],
-): boolean {
-  if (!currentState) return true;
-
-  const lastRevision = stateRevisionOf(currentState);
-  const nextRevision = stateRevisionOf(nextState);
-  const semanticAdvanced = nextRevision > lastRevision;
-  const semanticCurrent = nextRevision === lastRevision;
-  const metadataAdvanced = semanticCurrent && (
-    freshnessRevisionOf(nextState) > freshnessRevisionOf(currentState)
-    || healthRevisionOf(nextState) > healthRevisionOf(currentState)
-    || observationSeqOf(nextState) > observationSeqOf(currentState)
-    || (
-      deliverySeqOf(nextState) > deliverySeqOf(currentState)
-      && hasOnlyLiveMetadataKeys(changedKeys)
-    )
-  );
-
-  return semanticAdvanced || metadataAdvanced;
+function stateAdvanceBaselineOf(state: Record<string, unknown> | null): StateAdvanceBaseline | null {
+  if (!state) return null;
+  return {
+    stateRevision: stateRevisionOf(state),
+    freshnessRevision: typeof state.freshnessRevision === 'number' ? state.freshnessRevision : 0,
+    observationSeq: typeof state.observationSeq === 'number' ? state.observationSeq : 0,
+    healthRevision: typeof state.healthRevision === 'number' ? state.healthRevision : 0,
+    deliverySeq: deliverySeqOf(state),
+    state,
+  };
 }
 
 function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, unknown> | null {
@@ -1035,11 +997,7 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
     if (
       _acceptedProviderGeneration === generation
       && _fullState !== null
-      && (
-        stateRevisionOf(nextState) < stateRevisionOf(_fullState)
-        || deliverySeqOf(nextState) < deliverySeqOf(_fullState)
-        || !isRevisionAcceptable(_fullState, nextState, Object.keys(nextState))
-      )
+      && !isStateAdvance(stateAdvanceBaselineOf(_fullState), nextState)
     ) return null;
     if (_acceptedProviderGeneration !== generation || !_hasReceivedFullState) {
       // Bootstrap may already have fetched matching capabilities. Keep that
@@ -1084,7 +1042,7 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
     return null;
   }
   const nextState = candidate!;
-  if (!isRevisionAcceptable(currentState, nextState, Object.keys(changed))) return null;
+  if (!isStateAdvance(stateAdvanceBaselineOf(currentState), nextState)) return null;
   _fullState = nextState;
   return commitCurrentState() ? _fullState : null;
 }
