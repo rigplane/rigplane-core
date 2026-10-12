@@ -1087,21 +1087,35 @@ async def test_discovery_timeouts_until_threshold_stop_with_busy_reason(
 
 
 async def test_discovery_timeout_before_any_busy_stays_fatal(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """MOR-3391 round 2 (bench first run): a discovery timeout on the very
-    first attempt — before any busy reject — stays fatal with today's
-    message, exactly as before.  A radio that is off looks the same and
-    must fail fast.
+    """MOR-3391 part 1b(c) (bench first run): silent first discoveries
+    retry twice, then stay fatal with today's message.
+
+    Three unanswered first-connect discoveries — before any busy reject —
+    raise the discovery error (never the busy reason) after exactly three
+    attempts, one log line per attempt, about two cooldowns apart.  A radio
+    that is off looks the same and fails here, only slower.
     """
     clock = _VirtualClock()
     lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
-    mech.queue_discovery_timeout()
+    for _ in range(3):
+        mech.queue_discovery_timeout()
 
     with pytest.raises(TimeoutError, match="did not respond to discovery"):
         await lc.connect()
 
-    assert mech.connect_calls == 1
+    message_lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "rigplane.runtime.session_lifecycle"
+    ]
+    assert mech.connect_calls == 3
+    assert [
+        f"discovery attempt {n}/3 got no answer" for n in (1, 2, 3)
+    ] == [line for line in message_lines if line.startswith("discovery attempt")]
+    assert not any("busy" in line.lower() for line in message_lines)
+    assert clock.now - 1_000.0 == pytest.approx(2 * 30.0)
     assert lc.state is LifecycleState.DISCONNECTED
 
 
@@ -1144,4 +1158,75 @@ async def test_discovery_timeout_after_a_clean_connect_stays_fatal(
     with pytest.raises(TimeoutError, match="did not respond to discovery"):
         await lc.connect()
 
+    assert lc.state is LifecycleState.DISCONNECTED
+
+
+# ---------------------------------------------------------------------------
+# MOR-3391 part 1b(c) — a silent first discovery retries twice, then gives up
+# ---------------------------------------------------------------------------
+
+
+async def test_silent_first_discovery_then_grant_connects(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-3391 part 1b(c) (bench second run): a silent first discovery
+    retries once and connects.
+
+    The unanswered first attempt logs exactly one ``discovery attempt 1/3
+    got no answer`` line and waits out one busy-cadence cooldown; the
+    granted retry connects as today.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    mech.queue_discovery_timeout()
+    mech.queue_ok()
+
+    with caplog.at_level("WARNING", logger="rigplane.runtime.session_lifecycle"):
+        await lc.connect()
+
+    assert lc.state is LifecycleState.CONNECTED
+    assert mech.connect_calls == 2
+    lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "rigplane.runtime.session_lifecycle"
+    ]
+    assert lines.count("discovery attempt 1/3 got no answer") == 1
+    assert not any(line.startswith("discovery attempt") and line !=
+                   "discovery attempt 1/3 got no answer" for line in lines)
+    assert not any("busy" in line.lower() for line in lines)
+    assert clock.now - 1_000.0 == pytest.approx(30.0)
+
+
+async def test_silent_first_discovery_then_busy_uses_busy_rules(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-3391 part 1b(c): a busy reject after a silent discovery takes
+    over under the #4178 rules.
+
+    One silent discovery, then busy rejects until the live-holder stop:
+    the loop stops with "radio busy: another client holds the session"
+    (never the discovery message), and the single silent attempt logged
+    its one line.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    mech.queue_discovery_timeout()
+    for _ in range(4):
+        mech.queue_busy_reject()
+
+    with pytest.raises(ConnectionError) as excinfo:
+        await lc.connect()
+
+    message = str(excinfo.value)
+    assert "another client holds the session" in message
+    assert "did not respond to discovery" not in message
+    # Silent attempt at +0, busy passes at +30/+60/+90, stop at +120.
+    assert mech.connect_calls == 5
+    lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "rigplane.runtime.session_lifecycle"
+    ]
+    assert lines.count("discovery attempt 1/3 got no answer") == 1
     assert lc.state is LifecycleState.DISCONNECTED
