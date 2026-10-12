@@ -41,6 +41,16 @@ _TOKEN_RENEW = 0x05  # keepalive renewal
 _OPENCLOSE_CLOSE = 0x00  # graceful data-port close — frees the held session
 _OPENCLOSE_OPEN = 0x04
 
+# Conninfo notice (unsolicited 0x90, radio → client): request-type 0x00 at
+# 0x15 marks it radio-originated; the busy u32 at 0x60 = 0 means "session free"
+# (recorded IC-7610 layout, bench capture MOR-2625/2627 and recording w2).
+_CONNINFO_NOTICE_REQUEST_TYPE = 0x00
+# Recorded timing: the notice follows the drop by ~0.1 s (MOR-2625/2627).
+_DROP_NOTICE_DELAY_S = 0.1
+# Recorded timing (recording w2): after the power-off notice the radio still
+# answers discovery and pings for ~0.02 s before going dark.
+_POWER_OFF_NOTICE_WINDOW_S = 0.02
+
 # Default accelerated keepalive hold (D7). Real radios hold ~40-60 s; the fast
 # suite uses ~0.5 s so a dropped session frees quickly. A near-real value
 # (~45-60 s) can be passed for the one slow timing test.
@@ -217,9 +227,11 @@ class MockIcomRadio:
         # UDP transports (set after start())
         self._ctrl_udp: asyncio.DatagramTransport | None = None
         self._civ_udp: asyncio.DatagramTransport | None = None
-        # CI-V protocol object (set after start()) — used by the unsolicited
-        # loop so autonomous frames go through the same fault-plan funnel.
+        # Protocol objects (set after start()) — the CI-V one is used by the
+        # unsolicited loop, the control one by the conninfo notice, so
+        # autonomous datagrams go through the same fault-plan funnel as replies.
         self._civ_proto: _MockProtocol | None = None
+        self._ctrl_proto: _MockProtocol | None = None
 
         # Actual bound ports
         self._actual_ctrl_port: int = 0
@@ -278,13 +290,17 @@ class MockIcomRadio:
         # knobs above: it has its own seeded RNG and never touches their state).
         # None = no plan, every stream passes through untouched.
         self.fault_plan: FaultPlan | None = fault_plan
-        # Scheduled events (reboot / keepalive silence) — absolute deadlines,
-        # 0.0 = inactive.
+        # Scheduled events (reboot / keepalive silence / drop_session) —
+        # absolute deadlines, 0.0 = inactive.
         self._down_until: float = 0.0  # reboot: radio "powered off" until then
         self._busy_until: float = 0.0  # post-reboot busy-reject window
         self._keepalive_silent_until: float = 0.0  # pings received, not answered
+        # Power-off notice window (recording w2): after the 0x90 notice the
+        # radio still answers discovery/pings until this deadline, then goes dark.
+        self._poweroff_notice_until: float = 0.0
         self.reboot_count: int = 0  # number of simulated reboots started
-        # Tokens issued before a reboot; control packets carrying one are ignored.
+        # Tokens issued before a reboot or drop; control packets carrying one
+        # are ignored.
         self._retired_tokens: set[int] = set()
         self._rng = random.Random(0xC0FFEE)
 
@@ -295,14 +311,25 @@ class MockIcomRadio:
         # Last CI-V client (set on OpenClose(open)) — target for unsolicited frames.
         self._civ_owner_addr: tuple[str, int] | None = None
         self._civ_owner_id: int = 0
-        # Post-reboot fence: CI-V data and pings are ignored until the client
-        # completes a fresh OpenClose(open).
+        # Post-event fence (reboot / drop_session): CI-V data is ignored until
+        # the client completes a fresh OpenClose(open) — and that open only
+        # lifts the fence when a fresh login was accepted after the event
+        # (MOR-3315: a stale client's OpenClose(open) gets no stream).
         self._fence_civ_until_open: bool = False
+        self._fence_open_allowed: bool = True  # no event yet → no login needed
+        # The reboot fence also ignores CI-V-port pings; the drop_session fence
+        # does not (recorded: the CI-V port keeps answering pings after a drop).
+        self._fence_blocks_pings: bool = False
+        # (addr, sender_id) of the last accepted login — target for the
+        # unsolicited conninfo notice when no session is held.
+        self._last_login: tuple[tuple[str, int], int] | None = None
         self.unsolicited_sent: int = 0  # count of autonomous frames emitted
         # Counters / observability for simulator-fidelity tests
         self.busy_rejects: int = 0  # number of 0xFFFFFFFF rejects sent
         self.released_count: int = 0  # number of sessions freed (any path)
         self.last_release_reason: str | None = None
+        self._login_count: int = 0  # accepted logins
+        self._openclose_open_count: int = 0  # CI-V OpenClose(open) received
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -317,6 +344,7 @@ class MockIcomRadio:
             local_addr=(self._host, self._ctrl_port_hint),
         )
         self._ctrl_udp = ctrl_transport
+        self._ctrl_proto = ctrl_proto
         sockname = ctrl_transport.get_extra_info("sockname")
         self._actual_ctrl_port = sockname[1]
 
@@ -359,6 +387,7 @@ class MockIcomRadio:
             self._civ_udp.close()
             self._civ_udp = None
         self._civ_proto = None
+        self._ctrl_proto = None
         logger.debug("MockIcomRadio stopped")
 
     # ------------------------------------------------------------------
@@ -384,6 +413,16 @@ class MockIcomRadio:
     def owner(self) -> tuple[tuple[str, int], int] | None:
         """Current owner identity ``((host, port), my_id)`` or ``None``."""
         return self._owner
+
+    @property
+    def login_count(self) -> int:
+        """Number of accepted logins (auth-fail responses are not counted)."""
+        return self._login_count
+
+    @property
+    def openclose_open_count(self) -> int:
+        """CI-V OpenClose(open) packets received, accepted or fenced."""
+        return self._openclose_open_count
 
     # ------------------------------------------------------------------
     # Session-lifecycle test knobs
@@ -411,19 +450,27 @@ class MockIcomRadio:
         self._release_session(reason)
 
     # ------------------------------------------------------------------
-    # Scheduled events (reboot / keepalive silence)
+    # Scheduled events (reboot / keepalive silence / drop_session)
     # ------------------------------------------------------------------
 
-    def reboot(self, *, at: float, down_for: float, busy_for: float = 0.5) -> None:
+    def reboot(
+        self,
+        *,
+        at: float,
+        down_for: float,
+        busy_for: float = 0.5,
+        notice: bool = False,
+    ) -> None:
         """Schedule a simulated radio reboot.
 
         At ``at`` seconds from now the radio "powers off" for ``down_for``
         seconds: it answers nothing on either port, forgets the held session
         (``free_session`` path), drops the CI-V owner, rotates its token and
-        restarts CI-V sequence numbering. Until a client completes a fresh
-        OpenClose(open) its CI-V data and pings are ignored — a rebooted
-        radio does not serve a stale client. Token packets (0x40) and
-        conninfo (0x90) carrying a pre-reboot token are ignored as well;
+        restarts CI-V sequence numbering. Until a fresh login has been
+        accepted AND the client completes a fresh OpenClose(open), its CI-V
+        data and pings are ignored — a rebooted radio does not serve a stale
+        client (MOR-3315). Token packets (0x40) and conninfo (0x90) carrying
+        a pre-reboot token are ignored as well;
         ``docs/internals/protocol.md`` does not describe what an IC-7610 does
         with a stale token, so "ignored" is this simulator's assumption, not
         a recorded radio behaviour. It then answers conninfo
@@ -431,28 +478,98 @@ class MockIcomRadio:
         for ``busy_for`` seconds — modelled on the single-owner reject in
         ``_conninfo_status`` — after which conninfo is served normally.
 
+        With ``notice=True`` the recorded power-off order (IC-7610 recording
+        w2) is replayed before going dark: first the unsolicited 0x90
+        conninfo notice (busy=0, "session free") goes to the client's control
+        address, then for ~0.02 s the radio still answers
+        AreYouThere/AreYouReady and pings, then total silence. The default
+        ``False`` keeps the pre-notice behaviour for existing tests.
+
         Must be called from inside the running event loop.
         """
         loop = asyncio.get_running_loop()
         loop.call_later(
-            max(0.0, at), self._begin_reboot, max(0.0, down_for), max(0.0, busy_for)
+            max(0.0, at),
+            self._begin_reboot,
+            max(0.0, down_for),
+            max(0.0, busy_for),
+            notice,
         )
 
-    def _begin_reboot(self, down_for: float, busy_for: float) -> None:
-        now = time.monotonic()
-        self._down_until = now + down_for
-        self._busy_until = self._down_until + busy_for
+    def _begin_reboot(
+        self, down_for: float, busy_for: float, notice: bool = False
+    ) -> None:
+        if notice:
+            # Recorded power-off order (recording w2): the 0x90 notice goes
+            # out first, then a ~0.02 s window in which discovery and pings
+            # are still answered (gated in ``_on_packet``), then darkness.
+            target = self._owner or self._last_login
+            if target is not None:
+                self._send_conninfo_notice(*target)
+            self._poweroff_notice_until = time.monotonic() + _POWER_OFF_NOTICE_WINDOW_S
+            asyncio.get_running_loop().call_later(
+                _POWER_OFF_NOTICE_WINDOW_S, self._begin_dark, down_for, busy_for
+            )
+        else:
+            self._begin_dark(down_for, busy_for)
         self._release_session("reboot")
         self._civ_owner_addr = None
         self._civ_owner_id = 0
         self._retired_tokens.add(self.token)
         self.token = (self.token + 0x9E3779B9) & 0xFFFFFFFF
         self._civ_seq = 1
-        # Shut out the pre-reboot client until it completes a fresh
-        # OpenClose(open) — a rebooted radio does not serve stale clients.
+        # Shut out the pre-reboot client until a fresh login has been accepted
+        # and it completes a fresh OpenClose(open) — a rebooted radio does not
+        # serve stale clients.
         self._fence_civ_until_open = True
+        self._fence_blocks_pings = True
+        self._fence_open_allowed = False
         self.reboot_count += 1
         logger.debug("Mock: reboot — down %.2fs, then busy %.2fs", down_for, busy_for)
+
+    def _begin_dark(self, down_for: float, busy_for: float) -> None:
+        """Start the powered-off window (and the busy window after it)."""
+        now = time.monotonic()
+        self._down_until = now + down_for
+        self._busy_until = self._down_until + busy_for
+
+    def drop_session(self, *, at: float, notice: bool = True) -> None:
+        """Schedule a radio-initiated LAN session drop (recorded IC-7610
+        behaviour, bench capture MOR-2625/2627).
+
+        At ``at`` seconds from now the radio frees the held session (the same
+        ``_release_session`` path ``reboot`` uses), rotates its token, stops
+        unsolicited CI-V and fences the dropped client off the CI-V data
+        stream: CI-V DATA from that client is ignored while pings on both
+        ports are still answered (recorded: the CI-V port keeps answering
+        pings) — the fence lifts only once a fresh login has been accepted
+        and the client completes a fresh OpenClose(open). With
+        ``notice=True`` one unsolicited 0x90 conninfo notice (busy=0,
+        "session free"; recorded layout in ``_conninfo_notice``) is sent to
+        the dropped client's control address ~0.1 s after the drop. The
+        notice targets the current session owner, or the last accepted login
+        when no session is held; with neither, no notice is sent.
+
+        Must be called from inside the running event loop.
+        """
+        loop = asyncio.get_running_loop()
+        loop.call_later(max(0.0, at), self._begin_drop_session, notice)
+
+    def _begin_drop_session(self, notice: bool) -> None:
+        target = self._owner or self._last_login
+        self._release_session("drop_session")
+        self._civ_owner_addr = None
+        self._civ_owner_id = 0
+        self._retired_tokens.add(self.token)
+        self.token = (self.token + 0x9E3779B9) & 0xFFFFFFFF
+        self._fence_civ_until_open = True
+        self._fence_blocks_pings = False  # recorded: pings keep being answered
+        self._fence_open_allowed = False
+        if notice and target is not None:
+            asyncio.get_running_loop().call_later(
+                _DROP_NOTICE_DELAY_S, self._send_conninfo_notice, *target
+            )
+        logger.debug("Mock: session dropped (notice=%s)", notice)
 
     def keepalive_silence(self, *, at: float, for_seconds: float) -> None:
         """Schedule a window where keepalives are received but never answered.
@@ -702,6 +819,13 @@ class MockIcomRadio:
         """
         if time.monotonic() < self._down_until:
             return  # reboot window: the radio is "powered off"
+        if (
+            time.monotonic() < self._poweroff_notice_until
+            and not self._poweroff_notice_packet(data)
+        ):
+            # Recorded power-off window (recording w2): right after the 0x90
+            # notice only discovery and pings are still answered.
+            return
         plan = self.fault_plan
         port = self._port_of(label)
         if plan is not None and not plan.is_noop(port, "from_client"):
@@ -713,6 +837,22 @@ class MockIcomRadio:
             self._deliver_planned(planned, "from_client", proto, addr, label)
             return
         self._receive(data, addr, label, proto)
+
+    @staticmethod
+    def _poweroff_notice_packet(data: bytes) -> bool:
+        """True for the packets still answered in the power-off notice window.
+
+        Recorded (IC-7610 recording w2): after the 0x90 notice the radio
+        answers AreYouThere with I-Am-Here, AreYouReady with I-Am-Ready and
+        one more ping reply before going dark.
+        """
+        n = len(data)
+        if n < _HEADER_SIZE:
+            return False
+        ptype = struct.unpack_from("<H", data, 4)[0]
+        if n == _HEADER_SIZE and ptype in (_PT_ARE_YOU_THERE, _PT_ARE_YOU_READY):
+            return True
+        return n == _PING_SIZE and ptype == _PT_PING
 
     def _receive(
         self,
@@ -797,6 +937,12 @@ class MockIcomRadio:
         # Login (0x80 bytes)
         if n == 0x80:
             self._send(proto, self._login_response(data, sender_id), addr, "ctrl")
+            if not self.auth_fail:
+                self._login_count += 1
+                self._last_login = (addr, sender_id)
+                # A login accepted after a reboot/drop authorises the next
+                # OpenClose(open) to lift the CI-V fence (MOR-3315).
+                self._fence_open_allowed = True
             return
 
         # Token ack (0x40 bytes, requesttype=0x02) → send GUID conninfo
@@ -832,11 +978,13 @@ class MockIcomRadio:
     # ------------------------------------------------------------------
 
     def _civ_fenced(self, addr: tuple[str, int], sender_id: int) -> bool:
-        """True when the post-reboot fence shuts this client out of the CI-V port.
+        """True when the post-event fence shuts this client out of the CI-V port.
 
-        After a reboot only the client that completed a fresh OpenClose(open)
-        — tracked in ``_civ_owner_addr`` / ``_civ_owner_id`` — is served;
-        CI-V data and pings from anyone else are ignored.
+        After a reboot or drop_session only the client that completed a fresh
+        OpenClose(open) — tracked in ``_civ_owner_addr`` / ``_civ_owner_id`` —
+        is served; CI-V data from anyone else is ignored. Whether the fence
+        also ignores pings is decided by ``_fence_blocks_pings`` (True after a
+        reboot, False after a drop).
         """
         return self._fence_civ_until_open and (addr, sender_id) != (
             self._civ_owner_addr,
@@ -868,7 +1016,7 @@ class MockIcomRadio:
 
         # Ping request → Ping reply
         if n == _PING_SIZE and ptype == _PT_PING and data[0x10] == 0x00:
-            if self._civ_fenced(addr, sender_id):
+            if self._civ_fenced(addr, sender_id) and self._fence_blocks_pings:
                 return  # post-reboot: stale client until a fresh OpenClose(open)
             if time.monotonic() < self._keepalive_silent_until:
                 return  # keepalive_silence window: receive but never reply
@@ -883,6 +1031,12 @@ class MockIcomRadio:
         # the stream as active for mock-based integration tests.
         if n == 0x16:
             if data[0x15] == _OPENCLOSE_OPEN:  # open_stream
+                self._openclose_open_count += 1
+                if self._fence_civ_until_open and not self._fence_open_allowed:
+                    # After a reboot/drop the fence lifts only once a fresh
+                    # login was accepted — a stale client's open gets no
+                    # stream (MOR-3315).
+                    return
                 self._civ_owner_addr = addr
                 self._civ_owner_id = sender_id
                 civ = self._civ_frame(to=0x00, frm=self._radio_addr, cmd=0x00)
@@ -1284,6 +1438,30 @@ class MockIcomRadio:
         # Fake GUID at 0x20-0x30
         pkt[0x20:0x30] = bytes(range(0x01, 0x11))
         return bytes(pkt)
+
+    def _conninfo_notice(self, client_id: int) -> bytes:
+        """Build the unsolicited 0x90 conninfo notice (busy=0, "session free").
+
+        Recorded IC-7610 layout (bench capture MOR-2625/2627 and recording
+        w2): request-type 0x00 (radio-originated) at 0x15; every field from
+        0x20 on is zero — GUID area 0x20..0x30, device name 0x40..0x60, the
+        busy u32 at 0x60 (0 = "free"), client name 0x64..0x74 and client IP
+        0x84. The production parser
+        ``ControlPhaseRuntime._on_conninfo_notice`` reads the u32 at 0x60 and
+        classifies busy=0 as the radio having freed the LAN session.
+        """
+        pkt = bytearray(0x90)
+        struct.pack_into("<I", pkt, 0x00, 0x90)
+        struct.pack_into("<H", pkt, 0x04, _PT_DATA)
+        struct.pack_into("<I", pkt, 0x08, self.radio_id)
+        struct.pack_into("<I", pkt, 0x0C, client_id)
+        pkt[0x15] = _CONNINFO_NOTICE_REQUEST_TYPE
+        return bytes(pkt)
+
+    def _send_conninfo_notice(self, addr: tuple[str, int], client_id: int) -> None:
+        """Send the 0x90 notice through the same outbound funnel as replies."""
+        if self._ctrl_proto is not None:
+            self._send(self._ctrl_proto, self._conninfo_notice(client_id), addr, "ctrl")
 
     def _status_response(
         self,
