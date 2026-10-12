@@ -322,11 +322,11 @@ async def _start_simulator_stack() -> _SimulatorStack:
     the RigctldServer takes the same standalone wiring as `rigplane
     serve`, reusing the web seat's state services on the radio.
     """
-    # Simulator audio port left off on purpose (MOR-3415: Lane B audio is not restarted after an owner disconnect + connect; the soak turns the port on once that is fixed).
     sim = MockIcomRadio(
         single_owner=True,
         unsolicited_civ=True,
         unsolicited_interval_s=0.1,
+        enable_audio=True,
     )
     await sim.start()
     # timeout=1.0: the simulator does not answer a few menu reads the
