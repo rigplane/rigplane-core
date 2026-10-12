@@ -27,6 +27,7 @@ class _FakeTransport:
 
     def __init__(self, error_count: int = 0) -> None:
         self._udp_error_count = error_count
+        self.send_seq = 0
         self.rx_packet_count = 0
         self.disconnected = False
 
@@ -219,6 +220,24 @@ class TestAudioWatchdogRecovery:
         await _run_watchdog_n_ticks(radio, 2)
 
         assert radio._audio_runtime.recovered
+
+    @pytest.mark.asyncio
+    async def test_recovery_records_packet_numbering_for_rebuild(self) -> None:
+        """The watchdog records the torn-down transport's send_seq.
+
+        The audio transport torn down by the recovery ran on a session the
+        radio still holds, so its packet numbering must survive for the
+        ``_ensure_audio_transport`` rebuild to resume (mirrors the CI-V
+        continuity fix).
+        """
+        radio = _FakeRadio()
+        old_transport = _FakeTransport(error_count=_THRESHOLD)
+        old_transport.send_seq = 2543
+        radio._audio_transport = old_transport
+
+        await _run_watchdog_n_ticks(radio, 2)
+
+        assert radio._audio_resume_seq == 2543
 
     @pytest.mark.asyncio
     async def test_no_restore_when_auto_recover_disabled(self) -> None:
