@@ -30,10 +30,14 @@ UDP code paths as production.
   at least 75 ms old (single form for one missing number, otherwise one
   ranges packet per contiguous missing run), plus a twice every 0.1 s
   repeat, likewise paced, as the fallback for a silent client. `civ_retransmit_requests` counts the request packets sent
-  on the CI-V port; `civ_gap_open` is true while any number is missing. `refused_civ_commands` is an opt-in set of `(cmd, sub)` pairs answered with a bare NAK instead of dispatching (default off; `refused_count` counts the refused frames).
+  on the CI-V port; `civ_gap_open` is true while any number is missing.
   A re-sent OpenClose still gets its stream-active marker; only
   tracked-packet processing follows the ignore rule.
   The implementation lives in `rigplane_testkit/icom/simulator.py`.
+- `MockIcomRadio.refused_civ_commands` — an opt-in set of `(cmd, sub)` pairs
+  answered with a bare NAK instead of dispatching (default off;
+  `refused_count` counts the refused frames), for tests that drive a
+  radio-refused write end to end.
 - `rigplane_testkit.icom.faults` — `FaultPlan` / `FaultRule`: a declarative,
   seeded (deterministic) fault plan with one rule per port (`control`, `civ`)
   and direction (`to_client`, `from_client`). Each rule can drop (probability

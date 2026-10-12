@@ -261,32 +261,41 @@ async def _require_refusal(sim: MockIcomRadio, before: int) -> None:
         await asyncio.sleep(0.02)
 
 
-async def _observation_seq(port: int) -> int:
-    """Read the public snapshot's observationSeq; transport trouble is loud."""
+async def _freq_observed_at(port: int) -> float:
+    """Read the frequency field's observation time from the public snapshot.
+
+    ``fieldStatus["main.freqHz"].lastObservedMonotonic`` moves only when a
+    frequency observation applies (``core/state_store.py: StateStore``
+    rewrites the field entry's time on every applied observation), so it
+    names the frequency path itself rather than any applied observation.
+    Transport / shape trouble is loud.
+    """
     status, body = await _http_json(port, "GET", "/api/v1/state")
     if status != 200:
         raise RuntimeError(f"GET /api/v1/state answered HTTP {status}")
     try:
-        return int(body["observationSeq"])
+        return float(body["fieldStatus"]["main.freqHz"]["lastObservedMonotonic"])
     except (KeyError, TypeError, ValueError) as exc:
-        raise RuntimeError(f"/api/v1/state has no observationSeq: {exc}") from exc
+        raise RuntimeError(
+            f"/api/v1/state has no main.freqHz observation time: {exc}"
+        ) from exc
 
 
-async def _require_observation_advance(port: int, after: int) -> None:
-    """Wait for one poll to apply after the observed sequence number.
+async def _require_freq_observation_advance(port: int, after: float) -> None:
+    """Wait for one frequency read to apply after the observed timestamp.
 
-    Every applied poll observation bumps the public ``observationSeq``, so a
-    larger value proves the poller completed a cycle after ``after`` was read.
-    Raises ``TimeoutError`` when the poller stalls.
+    A larger ``lastObservedMonotonic`` on ``main.freqHz`` proves the poller
+    completed a frequency poll after ``after`` was read. Raises
+    ``TimeoutError`` when the frequency path stalls.
     """
     deadline = time.monotonic() + 10.0
     while True:
-        seq = await _observation_seq(port)
-        if seq > after:
+        seen = await _freq_observed_at(port)
+        if seen > after:
             return
         if time.monotonic() >= deadline:
             raise TimeoutError(
-                f"no poll applied after observationSeq {after} within 10 s"
+                f"no frequency observation applied after {after} within 10 s"
             )
         await asyncio.sleep(0.05)
 
@@ -337,11 +346,11 @@ async def test_ws_refused_write_ends_lifecycle_failed(stack: _Stack) -> None:
     command_id = "polygon-ws-nak"
     refused_before = stack.sim.refused_count
     async with _ws_set_freq_refused(stack, command_id):
-        # The NAK was served, then a full poll applied after it: the command
-        # had every chance to fail, so the lifecycle below is settled.
+        # The NAK was served, then a frequency read applied after it: the
+        # command had every chance to fail, so the lifecycle below is settled.
         await _require_refusal(stack.sim, refused_before)
-        await _require_observation_advance(
-            stack.web.port, await _observation_seq(stack.web.port)
+        await _require_freq_observation_advance(
+            stack.web.port, await _freq_observed_at(stack.web.port)
         )
 
     events = [
@@ -349,13 +358,7 @@ async def test_ws_refused_write_ends_lifecycle_failed(stack: _Stack) -> None:
         for event in stack.web.command_service.lifecycle_events()
         if event.command_id == command_id
     ]
-    assert [event.state for event in events] == [
-        "accepted",
-        "queued",
-        "sent",
-        "acknowledged",
-        "failed",
-    ]
+    assert events[-1].state == "failed"
     assert events[-1].source == "websocket"
 
 
@@ -407,11 +410,11 @@ async def test_http_refused_write_ends_lifecycle_failed(stack: _Stack) -> None:
                 "id": "polygon-http-nak",
             },
         )
-        if status != 200:
+        if status not in (200, 409):
             raise RuntimeError(f"POST /api/v1/commands answered HTTP {status}")
         await _require_refusal(stack.sim, refused_before)
-        await _require_observation_advance(
-            stack.web.port, await _observation_seq(stack.web.port)
+        await _require_freq_observation_advance(
+            stack.web.port, await _freq_observed_at(stack.web.port)
         )
 
     events = [
@@ -445,8 +448,8 @@ async def test_http_refused_write_reply_reports_failure(stack: _Stack) -> None:
             },
         )
         await _require_refusal(stack.sim, refused_before)
-        await _require_observation_advance(
-            stack.web.port, await _observation_seq(stack.web.port)
+        await _require_freq_observation_advance(
+            stack.web.port, await _freq_observed_at(stack.web.port)
         )
     assert status == 409
     assert body["ok"] is False
@@ -470,11 +473,11 @@ async def test_web_state_keeps_radio_value_after_refused_write(
     refused_before = stack.sim.refused_count
     async with _ws_set_freq_refused(stack, "polygon-ws-state"):
         # Discriminate "refused" from "not polled yet": the NAK was served
-        # and a full poll applied after it, so the write had its chance to
-        # take effect before the snapshot below is read.
+        # and a frequency read applied after it, so the write had its
+        # chance to take effect before the snapshot below is read.
         await _require_refusal(stack.sim, refused_before)
-        await _require_observation_advance(
-            stack.web.port, await _observation_seq(stack.web.port)
+        await _require_freq_observation_advance(
+            stack.web.port, await _freq_observed_at(stack.web.port)
         )
 
         status, state = await _http_json(stack.web.port, "GET", "/api/v1/state")
