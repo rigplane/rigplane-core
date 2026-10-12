@@ -84,15 +84,20 @@ from artifacts) and writes a summary table to the log and the run page.
 gh workflow run certification-status.yml --ref main -f nights=3
 ```
 
-- **Night.** One completed `schedule` run; manual dispatches are not nights.
-  Saturday and Sunday by the run's `created_at` (UTC) are write-and-restore
-  nights, the other days read-only.
+- **Night.** A UTC date, taken from the run's `created_at`. Its run is the
+  newest completed `schedule` run created that day; manual dispatches and older
+  runs of the same day are ignored. A day between two runs with no run of its
+  own is `missing night` for every radio; nothing is counted before the oldest
+  run or after the newest. The date is the cron's own date unless the run is
+  created 22 h 30 min or more after its 01:30 UTC cron. Saturday and Sunday are
+  write-and-restore nights, the other days read-only.
 - **PASS.** The radio's job (its name is the radio label) concluded `success`
   and its `Validate` step concluded `success`. Any other night carries a name:
   `busy`, `not configured` or `dry run` (the failed `Outcome: …` step),
   `validate failed`, `diff failed`, `failed: <step>`, `missing` (no job for that
-  radio), `job <conclusion>`, or `validate not run` (the job concluded `success`
-  but its `Validate` step did not).
+  radio), `missing night` (no run that day), `job <conclusion>`, or
+  `validate not run` (the job concluded `success` but its `Validate` step did
+  not).
 - **Streak.** PASS nights from the newest backwards to the first non-PASS. A
   radio is certified when its streak reaches `nights` (default 3) and contains
   a write-and-restore night anywhere in it, not only among the last `nights`.
@@ -100,4 +105,4 @@ gh workflow run certification-status.yml --ref main -f nights=3
   comma-separated list of labels; empty means every radio with a job in the
   newest completed scheduled run. Exit status 1 means not certified, 2 that the run
   history could not be read or is not newest first. At most the 30 newest
-  completed scheduled runs are read.
+  nights are read.

@@ -14,13 +14,14 @@ import os
 import sys
 import urllib.request
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, NamedTuple
 
 WORKFLOW = "bench-nightly.yml"
 PER_PAGE = 100
 MAX_NIGHTS = 30
 PASS = "PASS"
+MISSING_NIGHT = "missing night"
 READ_ONLY, WRITE_RESTORE = "read-only", "write-and-restore"
 SATURDAY, SUNDAY = 5, 6  # datetime.weekday(); the cron "30 1 * * 0,6" of the workflow
 VALIDATE_STEP = "Validate"
@@ -63,10 +64,18 @@ def classify_job(job: Job | None) -> str:
     return f"failed: {failed}"
 
 
-def night_kind(created_at: str) -> str:
-    """write-and-restore if created_at (a Z-suffixed UTC stamp) is a Saturday or Sunday."""
-    weekday = datetime.fromisoformat(created_at).weekday()
-    return WRITE_RESTORE if weekday in (SATURDAY, SUNDAY) else READ_ONLY
+def night_date(created_at: str) -> date:
+    """UTC date of a run's created_at (a Z-suffixed stamp).
+
+    For the 01:30 UTC crons of the workflow this is the cron's own date unless the
+    run is created 22 h 30 min or more after its cron.
+    """
+    return datetime.fromisoformat(created_at).date()
+
+
+def night_kind(day: date) -> str:
+    """write-and-restore on Saturday and Sunday, read-only on the other days."""
+    return WRITE_RESTORE if day.weekday() in (SATURDAY, SUNDAY) else READ_ONLY
 
 
 def streak(nights: Sequence[Night]) -> tuple[int, bool]:
@@ -81,7 +90,12 @@ def streak(nights: Sequence[Night]) -> tuple[int, bool]:
 
 
 def judge(history: Mapping[str, Sequence[Night]], nights: int) -> dict[str, str]:
-    """Reason per radio that is not certified; an empty result certifies all."""
+    """Reason per radio that is not certified; an empty result certifies all.
+
+    A radio is certified when its streak reaches `nights` and contains a
+    write-and-restore night. Interpretation: that night may be any night of the
+    streak, not only one of the last `nights`.
+    """
     reasons: dict[str, str] = {}
     for radio, rows in history.items():
         count, write_restore = streak(rows)
@@ -97,6 +111,27 @@ def judge(history: Mapping[str, Sequence[Night]], nights: int) -> dict[str, str]
     return reasons
 
 
+def night_slots(runs: Iterable[Run]) -> Iterator[tuple[date, Run | None]]:
+    """One (date, run) per UTC date from the newest run's date back to the oldest run's.
+
+    The newest run of a date is the one used; a date between two runs that has none
+    yields None. A listing that is not newest first raises ValueError.
+    """
+    newest, previous = "", None
+    for run in runs:
+        created = run["created_at"]
+        if newest and created > newest:
+            raise ValueError("scheduled runs are not listed newest first")
+        newest, day = created, night_date(created)
+        if day == previous:
+            continue
+        while previous is not None and previous - day > timedelta(days=1):
+            previous -= timedelta(days=1)
+            yield previous, None
+        yield day, run
+        previous = day
+
+
 def collect(
     runs: Iterable[Run],
     fetch_jobs: Callable[[int], list[Job]],
@@ -105,22 +140,17 @@ def collect(
 ) -> dict[str, list[Night]]:
     """Per radio its nights, newest first. Radios default to the newest run's jobs.
 
-    Runs are read lazily. Reading stops after MAX_NIGHTS runs, once `nights` runs are
-    in and every radio's streak has ended, or when no radio is known after the first.
+    Runs are read lazily. Reading stops after MAX_NIGHTS nights, once `nights` nights
+    are in and every radio's streak has ended, or when no radio is known after the first.
     """
     history: dict[str, list[Night]] = {radio: [] for radio in radios}
-    newest = ""
-    for count, run in enumerate(runs, 1):
-        created = run["created_at"]
-        if newest and created > newest:
-            raise ValueError("scheduled runs are not listed newest first")
-        newest = created
-        jobs = {job["name"]: job for job in fetch_jobs(run["id"])}
+    for count, (day, run) in enumerate(night_slots(runs), 1):
+        jobs = {job["name"]: job for job in fetch_jobs(run["id"])} if run else {}
         if count == 1 and not history:
             history = {name: [] for name in jobs}
         for radio, rows in history.items():
-            outcome = classify_job(jobs.get(radio))
-            rows.append(Night(created[:10], night_kind(created), outcome))
+            outcome = classify_job(jobs.get(radio)) if run else MISSING_NIGHT
+            rows.append(Night(day.isoformat(), night_kind(day), outcome))
         ended = all(streak(rows)[0] < len(rows) for rows in history.values())
         if not history or count >= MAX_NIGHTS or (ended and count >= nights):
             break
@@ -135,8 +165,9 @@ def render(
         f"### Bench certification: {verdict}",
         "",
         f"Rule: {nights} consecutive PASS nights per radio, newest backwards, with a "
-        f"{WRITE_RESTORE} night (Saturday or Sunday UTC) in the streak. Source: "
-        f"completed scheduled runs of {WORKFLOW} on main, at most {MAX_NIGHTS} read.",
+        f"{WRITE_RESTORE} night (Saturday or Sunday UTC) in the streak. A night is a "
+        f"UTC date: its newest completed scheduled run of {WORKFLOW} on main, or "
+        f"{MISSING_NIGHT} if it has none. At most {MAX_NIGHTS} nights are read.",
         "",
     ]
     if not history:

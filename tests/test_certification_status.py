@@ -58,9 +58,9 @@ def busy(name: str) -> Job:
     return job(name, "failure", NOT_RUN | over)
 
 
-def day(back: int) -> str:
-    """created_at of the run `back` days before Sunday 2026-10-11."""
-    return f"{date(2026, 10, 11) - timedelta(days=back)}T01:31:07Z"
+def day(back: int, at: str = "01:31:07") -> str:
+    """created_at, at time `at`, of the run `back` days before Sunday 2026-10-11."""
+    return f"{date(2026, 10, 11) - timedelta(days=back)}T{at}Z"
 
 
 def history(*nights: tuple[str, list[Job]]) -> tuple[list[Job], Any]:
@@ -117,7 +117,7 @@ def test_a_radio_without_a_job_is_missing() -> None:
 def test_weekend_nights_are_write_and_restore_and_the_rest_read_only(
     created_at: str, kind: str
 ) -> None:
-    assert script.night_kind(created_at) == kind
+    assert script.night_kind(script.night_date(created_at)) == kind
 
 
 def test_streak_counts_back_from_newest_and_stops_at_the_first_non_pass() -> None:
@@ -188,6 +188,46 @@ def test_runs_listed_oldest_first_are_refused() -> None:
         script.collect(runs, fetch, [], 3)
 
 
+def test_a_date_without_a_run_is_a_missing_night_that_breaks_the_streak() -> None:
+    nights = [(day(i), [job("IC-7610")]) for i in (0, 1, 3, 4)]
+    runs, fetch = history(*nights)
+    rows = script.collect(runs, fetch, [], 5)["IC-7610"]
+    assert [(r.date, r.outcome) for r in rows] == [
+        ("2026-10-11", PASS),
+        ("2026-10-10", PASS),
+        ("2026-10-09", "missing night"),
+        ("2026-10-08", PASS),
+        ("2026-10-07", PASS),
+    ]
+    assert script.streak(rows) == (2, True)
+    assert fetch.asked == [1, 2, 3, 4]
+
+
+def test_two_runs_on_one_date_count_once_and_the_newer_wins() -> None:
+    newer, older = (day(0, "07:34:12"), [busy("IC-7610")]), (day(0), [job("IC-7610")])
+    runs, fetch = history(newer, older, (day(1), [job("IC-7610")]))
+    rows = script.collect(runs, fetch, [], 3)["IC-7610"]
+    assert [(r.date, r.outcome) for r in rows] == [
+        ("2026-10-11", "busy"),
+        ("2026-10-10", PASS),
+    ]
+    assert fetch.asked == [1, 3]
+
+
+def test_runs_created_hours_after_their_cron_keep_the_crons_date() -> None:
+    runs, fetch = history(
+        (day(-1, "07:34:12"), [job("IC-7610")]),  # Monday, 6 h 04 min after 01:30
+        (day(0, "22:29:59"), [job("IC-7610")]),  # Sunday, 20 h 59 min after 01:30
+        (day(1), [job("IC-7610")]),  # Saturday, on time
+    )
+    rows = script.collect(runs, fetch, [], 3)["IC-7610"]
+    assert [(r.date, r.kind, r.outcome) for r in rows] == [
+        ("2026-10-12", RO, PASS),
+        ("2026-10-11", WR, PASS),
+        ("2026-10-10", WR, PASS),
+    ]
+
+
 def test_certify_exit_status_follows_the_verdict() -> None:
     nights = [(day(i), [job("IC-7610"), job("FTX-1")]) for i in range(3)]
     code, text = script.certify(*history(*nights), [], 3)
@@ -207,9 +247,9 @@ def test_summary_table_text() -> None:
         "### Bench certification: NOT CERTIFIED\n"
         "\n"
         "Rule: 3 consecutive PASS nights per radio, newest backwards, with a "
-        "write-and-restore night (Saturday or Sunday UTC) in the streak. Source: "
-        "completed scheduled runs of bench-nightly.yml on main, at most "
-        f"{script.MAX_NIGHTS} read.\n"
+        "write-and-restore night (Saturday or Sunday UTC) in the streak. A night is a "
+        "UTC date: its newest completed scheduled run of bench-nightly.yml on main, "
+        f"or missing night if it has none. At most {script.MAX_NIGHTS} nights are read.\n"
         "\n"
         "| Radio | Streak | Write-and-restore in streak | Result |\n"
         "| --- | ---: | --- | --- |\n"
