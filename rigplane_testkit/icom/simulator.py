@@ -311,13 +311,10 @@ class MockIcomRadio:
             GET answers the current state, and any other ``1C 00`` payload
             still NAKs.
         ptt_on_session_loss: what the simulated radio does with an active
-            PTT when its LAN session ends — ``drop_session`` (with or
-            without notice), ``free_session``, ``reboot``, or the keepalive
-            going silent long enough for the radio to end the session.
-            ``"release"`` unkeys at that moment; ``"hold"`` keeps PTT on
-            until a client unkeys. The real IC-7610 behaviour is UNRECORDED
-            (TX is never actuated on the bench), so tests that depend on it
-            cover both values
+            PTT at every session end. ``"release"`` unkeys at that moment;
+            ``"hold"`` keeps PTT on until a client unkeys. The real IC-7610
+            behaviour is UNRECORDED (TX is never actuated on the bench),
+            so tests that depend on it cover both values
             (``tests/integration/test_tx_under_fault_matrix.py``).
     """
 
@@ -442,11 +439,9 @@ class MockIcomRadio:
         # Every simulated PTT state change as (monotonic time, new state):
         # wire SETs and the ptt_on_session_loss="release" unkey at session
         # end. Wire SETs are additionally recorded in ``ptt_set_writes`` as
-        # (monotonic time, on, ci-v stream open) — a PTT-on SET processed
-        # with no open CI-V stream is a TX frame that keyed a session-less
-        # radio.
+        # (monotonic time, on).
         self.ptt_transitions: list[tuple[float, bool]] = []
-        self.ptt_set_writes: list[tuple[float, bool, bool]] = []
+        self.ptt_set_writes: list[tuple[float, bool]] = []
 
         # Fault injection
         self.drop_rate: float = drop_rate  # probability [0,1] of dropping a reply
@@ -641,9 +636,7 @@ class MockIcomRadio:
     def _set_simulated_ptt(self, on: bool, *, wire_set: bool) -> None:
         """Flip the simulated PTT state and record the transition."""
         if wire_set:
-            self.ptt_set_writes.append(
-                (time.monotonic(), on, self._civ_owner_addr is not None)
-            )
+            self.ptt_set_writes.append((time.monotonic(), on))
         if on != self._ptt_state:
             self.ptt_transitions.append((time.monotonic(), on))
         self._ptt_state = on

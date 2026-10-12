@@ -9,9 +9,8 @@ MOR-3251 part 1. Bare asyncio UDP clients against a real ``MockIcomRadio``
   flips the simulated state, GET answers the current state, and any other
   ``1C 00`` payload still NAKs;
 * the LAN CI-V echo precedes the FB reply, as it does for every request;
-* ``ptt_on_session_loss``: ``"release"`` unkeys at the moment the session
-  ends (drop with and without notice, free_session, reboot, keepalive
-  timeout), ``"hold"`` keeps PTT on until a client unkeys.
+* ``ptt_on_session_loss``: ``"release"`` unkeys at every session end,
+  ``"hold"`` keeps PTT on until a client unkeys.
 """
 
 from __future__ import annotations
@@ -167,7 +166,7 @@ async def test_stateful_set_and_get_round_trip(client: _UdpClient) -> None:
         assert [state for _, state in server.ptt_transitions] == [True, False]
         times = [t for t, _ in server.ptt_transitions]
         assert times == sorted(times)
-        assert [on for _, on, _ in server.ptt_set_writes] == [True, False]
+        assert [on for _, on in server.ptt_set_writes] == [True, False]
     finally:
         await server.stop()
 
@@ -233,7 +232,9 @@ async def test_release_unkeys_at_session_end(
     client: _UdpClient, loss_event, release_reason: str
 ) -> None:
     server = await _server(
-        single_owner=True, keepalive_hold_s=5.0, stateful_ptt=True,
+        single_owner=True,
+        keepalive_hold_s=5.0,
+        stateful_ptt=True,
         ptt_on_session_loss="release",
     )
     try:
@@ -251,7 +252,7 @@ async def test_release_unkeys_at_session_end(
         assert server.ptt_on is False
         assert [state for _, state in server.ptt_transitions] == [True, False]
         # The session-end unkey is not a CI-V write: no client frame did it.
-        assert [on for _, on, _ in server.ptt_set_writes] == [True]
+        assert [on for _, on in server.ptt_set_writes] == [True]
     finally:
         await server.stop()
 
@@ -287,7 +288,9 @@ async def test_hold_keeps_ptt_across_the_drop_until_a_client_unkeys(
     client: _UdpClient,
 ) -> None:
     server = await _server(
-        single_owner=True, keepalive_hold_s=5.0, stateful_ptt=True,
+        single_owner=True,
+        keepalive_hold_s=5.0,
+        stateful_ptt=True,
         ptt_on_session_loss="hold",
     )
     try:
