@@ -374,6 +374,7 @@ export class WsChannel {
       console.info('[ws] closed', _lastCloseInfo);
       if (this.ws !== ws) return;
       this._clearHeartbeat();
+      this._stopKeepalive();
       this.trackedNonPttCommands.clear();
       this.trackedLifecycleCommands.clear();
       this.ws = null;
