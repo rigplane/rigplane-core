@@ -10,12 +10,14 @@ the session token it holds).
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import AsyncGenerator, Callable
 
 import pytest
 
 from rigplane.radio import IcomRadio
+from rigplane.runtime import radio_reconnect
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.types import AudioCodec
 
@@ -191,10 +193,10 @@ async def test_user_disconnect_during_reconnect_ends_loop(
 ) -> None:
     """A user ``disconnect()`` during RECONNECTING ends the reconnect loop.
 
-    After an attempt fails with the discovery timeout (radio off) the
-    lifecycle is already released and unclaimed and ``conn_state`` is
-    RECONNECTING, so neither the lifecycle disconnect nor the
-    CONNECTED-gated control-phase teardown stops the loop —
+    The disconnect lands during the backoff sleep that follows a failed
+    attempt: by then the lifecycle is already released and unclaimed and
+    ``conn_state`` is RECONNECTING, so neither the lifecycle disconnect
+    nor the CONNECTED-gated control-phase teardown stops the loop —
     ``disconnect()`` must stop it explicitly, or the client logs back in
     after the user has disconnected.
     """
@@ -206,23 +208,26 @@ async def test_user_disconnect_during_reconnect_ends_loop(
         try:
             # Long outage: the attempt fails against a radio that is
             # off, so the failure is a discovery timeout, not a busy
-            # reject, and by the time the second attempt announces
-            # itself the lifecycle is released and unclaimed.
+            # reject.
             sim.reboot(at=0.1, down_for=22.0, busy_for=0.0)
             radio_back_at = time.monotonic() + 0.1 + 22.0
 
-            deadline = time.monotonic() + 40.0
-            while time.monotonic() < deadline:
-                if any(
-                    s["state"] == "reconnecting" and s["attempt"] >= 2 for s in statuses
-                ):
-                    break
-                await asyncio.sleep(0.02)
-            assert any(
-                s["state"] == "reconnecting" and s["attempt"] >= 2 for s in statuses
-            ), statuses
+            attempt_failed = asyncio.Event()
 
-            await radio.disconnect()  # the user's disconnect, mid-reconnect
+            class _FailureHandler(logging.Handler):
+                def emit(self, record: logging.LogRecord) -> None:
+                    msg = record.getMessage()
+                    if "Reconnect attempt" in msg and "failed" in msg:
+                        attempt_failed.set()
+
+            failure_handler = _FailureHandler(level=logging.WARNING)
+            radio_reconnect.logger.addHandler(failure_handler)
+            try:
+                await asyncio.wait_for(attempt_failed.wait(), timeout=40.0)
+            finally:
+                radio_reconnect.logger.removeHandler(failure_handler)
+
+            await radio.disconnect()  # the user's disconnect, mid-backoff
 
             n_status = len(statuses)
             # Watch past the radio's return: a loop that survived the
