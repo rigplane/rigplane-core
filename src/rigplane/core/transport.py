@@ -101,6 +101,9 @@ class _UdpProtocol(asyncio.DatagramProtocol):
 
     def connection_lost(self, exc: Exception | None) -> None:
         logger.info("UDP connection lost [peer=%s]: %s", self._peer, exc)
+        close_event = self._owner._udp_close_event
+        if close_event is not None:
+            close_event.set()
 
 
 class IcomTransport:
@@ -129,6 +132,7 @@ class IcomTransport:
         self.rx_missing: dict[int, int] = {}  # seq -> retry count
         self._udp_transport: asyncio.DatagramTransport | None = None
         self._udp_peer_addr: tuple[str, int] | None = None
+        self._udp_close_event: asyncio.Event | None = None
         self._ping_task: asyncio.Task[None] | None = None
         self._idle_task: asyncio.Task[None] | None = None
         self._retransmit_task: asyncio.Task[None] | None = None
@@ -227,6 +231,7 @@ class IcomTransport:
                 break
         self.state = ConnectionState.CONNECTING
         loop = asyncio.get_running_loop()
+        self._udp_close_event = asyncio.Event()
         if sock is not None:
             # Caller reserved this socket earlier; connect + hand off.
             sock.connect((host, port))
@@ -282,6 +287,7 @@ class IcomTransport:
         self.state = ConnectionState.CONNECTING
         loop = asyncio.get_running_loop()
         local_addr = (local_host, 0) if local_host else None
+        self._udp_close_event = asyncio.Event()
         await loop.create_datagram_endpoint(
             lambda: _UdpProtocol(self),
             remote_addr=(host, port),
@@ -379,8 +385,12 @@ class IcomTransport:
         Keepalive tasks are cancelled AND awaited so that when this
         coroutine returns nothing from this transport is left pending in
         the event loop and a follow-up ``connect()`` on the same instance
-        restarts the loops from a clean slate (MOR-595).  Idempotent —
-        safe to call again after a partial start.
+        restarts the loops from a clean slate (MOR-595).  The UDP socket
+        close is likewise awaited (bounded at 1 s): asyncio closes the socket
+        in a deferred callback, right after ``connection_lost``, and returning
+        earlier let a reconnect rebind the same local port and fail with
+        EADDRINUSE.
+        Idempotent — safe to call again after a partial start.
         """
         tasks = [
             task
@@ -396,9 +406,18 @@ class IcomTransport:
             pkt = self._build_control(ptype=PacketType.DISCONNECT, seq=0)
             self._raw_send(pkt)
 
+        close_wait_cancelled: asyncio.CancelledError | None = None
         if self._udp_transport is not None:
+            close_event = self._udp_close_event
             self._udp_transport.close()
             self._udp_transport = None
+            if close_event is not None:
+                try:
+                    await asyncio.wait_for(close_event.wait(), 1.0)
+                except asyncio.TimeoutError:
+                    logger.debug("UDP socket close not confirmed within 1s; continuing")
+                except asyncio.CancelledError as exc:
+                    close_wait_cancelled = exc
 
         self.state = ConnectionState.DISCONNECTED
 
@@ -410,6 +429,8 @@ class IcomTransport:
             except Exception:
                 logger.debug("keepalive task raised during disconnect", exc_info=True)
         logger.info("Disconnected")
+        if close_wait_cancelled is not None:
+            raise close_wait_cancelled
 
     def start_ping_loop(self) -> None:
         """Start the periodic ping task."""

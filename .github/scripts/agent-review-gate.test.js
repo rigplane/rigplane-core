@@ -572,7 +572,7 @@ function v2Context() {
   };
 }
 
-test('v2 observer publishes nothing when the base is not the current main head', async () => {
+test('v2 observer marks a stale base pending instead of leaving a stale success', async () => {
   const core = coreMock();
   const {github, statuses} = v2Github({
     pullsGet: async () => ({data: v2Pull(HEAD)}),
@@ -585,13 +585,17 @@ test('v2 observer publishes nothing when the base is not the current main head',
     core,
     workspace: path.join(__dirname, '..', '..'),
   });
-  assert.deepEqual(statuses, []);
+  assert.equal(statuses.length, 1);
+  assert.equal(statuses[0].sha, HEAD);
+  assert.equal(statuses[0].state, 'pending');
+  assert.equal(statuses[0].context, 'Agent Review Gate v2 observe');
+  assert.equal(statuses[0].description, 'Not observed: PR base is not the current main head.');
   assert.deepEqual(core.failures, []);
   assert.equal(core.notices.length, 1);
   assert.match(core.notices[0], /base is not the current main head/u);
 });
 
-test('v2 observer publishes nothing when head or main moves during the run', async () => {
+test('v2 observer marks a moved head or main pending instead of leaving a stale success', async () => {
   const core = coreMock();
   let pullsCalls = 0;
   const {github, statuses} = v2Github({
@@ -605,7 +609,11 @@ test('v2 observer publishes nothing when head or main moves during the run', asy
     workspace: path.join(__dirname, '..', '..'),
   });
   assert.equal(pullsCalls, 2);
-  assert.deepEqual(statuses, []);
+  assert.equal(statuses.length, 1);
+  assert.equal(statuses[0].sha, HEAD);
+  assert.equal(statuses[0].state, 'pending');
+  assert.equal(statuses[0].context, 'Agent Review Gate v2 observe');
+  assert.equal(statuses[0].description, 'Not observed: PR head or main moved during the observation.');
   assert.deepEqual(core.failures, []);
   assert.equal(core.notices.length, 1);
   assert.match(core.notices[0], /changed during review observation/u);
