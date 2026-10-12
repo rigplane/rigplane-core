@@ -1,4 +1,4 @@
-"""Compare IC-7300 / IC-7610 profile wire bytes with their manual oracles.
+"""Compare IC-7300, IC-7610 and FTX-1 profile wire bytes with their manual oracles.
 
 Each oracle (``tests/golden/wire_oracle/ic7300.toml``,
 ``tests/golden/wire_oracle/ic7610.toml``) is transcribed from the radio
@@ -493,9 +493,7 @@ def test_oracle_bytes_match_production(label: str, key: _Key) -> None:
 # ``format_command`` and sends the resulting string. This section renders
 # the same way: the mapping names the CAT command the runtime method
 # writes for the row's side, with the value arguments that method passes.
-# The ``receiver`` field records the side argument the runtime passes
-# (``main`` = 0, ``sub`` = 1, ``None`` = side ``"none"``); the command
-# name is the one the runtime selects for that side:
+# The command name is the one the runtime method selects for the row:
 #
 # - ``set_freq`` / ``set_freq_sub`` <- ``set_freq(freq, receiver)``
 #   (0 = VFO-A, 1 = VFO-B); ``get_freq`` <- the ``FA;`` read;
