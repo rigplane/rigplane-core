@@ -107,6 +107,14 @@ class ControlPhaseRuntime:
     # owns CONNECTING↔COOLDOWN (it RELEASES before each cooldown wait).
     _STATUS_RETRY_PAUSE = 10.0
     _STATUS_REJECT_COOLDOWN = 30.0
+    # Budget for session-allocation retries after a busy reject (status
+    # error=0xFFFFFFFF: the radio still holds a dead client's session),
+    # first connect only, profile-selected stereo codec. IC-7610 holds
+    # after an unclean client death, with no token renewals for the dead
+    # session, ran about 69-113 s (MOR-3349, bench 2026-10-12); three
+    # ~30 s retries (~90 s) could give up first. Exhausting it raises the
+    # busy-retry loop's "after retries" ConnectionError in ``_connect_once``.
+    STARTUP_BUSY_HOLD_BUDGET_S: float = 120.0
     # Token-renewal probe of a held session (``probe_control_session``). An
     # answer counts only with reply flag 0x02 at 0x14, request type 0x05 and
     # our token at 0x1C; the u32 at ``_RENEWAL_RESPONSE_OFFSET`` is the verdict.
@@ -160,6 +168,7 @@ class ControlPhaseRuntime:
         h = self._host
         h._conn_state = RadioConnectionState.CONNECTING
         h._civ_resume_seq = None
+        h._audio_resume_seq = None
         h._civ_stream_ready = False
         h._civ_recovering = False
         h._last_status_error = 0
@@ -354,21 +363,56 @@ class ControlPhaseRuntime:
 
                 # Busy-retry loop — runs when:
                 #   (a) first status was civ_port=0 without 0xFFFFFFFF, or
-                #   (b) mono fallback above produced civ_port=0 without 0xFFFFFFFF.
+                #   (b) mono fallback above produced civ_port=0 without
+                #       0xFFFFFFFF, or
+                #   (c) the profile-selected stereo codec was busy-rejected
+                #       (0xFFFFFFFF) above (first connect only).
                 if civ_port == 0:
                     retry_pause = self._status_retry_pause()
                     status_error = getattr(h, "_last_status_error", 0)
+                    # First connect only: the resident reconnect loop,
+                    # lifecycle recovery and owner reconnects reach this
+                    # code with ``_has_connected_once`` already set
+                    # (``_reconnect`` above) and keep main's fixed three
+                    # attempts.
+                    busy_reject = status_error == 0xFFFFFFFF and not _reconnect
                     logger.warning(
                         "Status returned civ_port=0 (error=0x%08X) — the radio "
                         "did not allocate a session. Retrying after %.0fs "
-                        "pause. %s",
+                        "pause%s. %s",
                         status_error,
                         retry_pause,
+                        (
+                            f" for up to {self.STARTUP_BUSY_HOLD_BUDGET_S:.0f}s"
+                            if busy_reject
+                            else ""
+                        ),
                         _session_reject_hint(status_error),
                     )
-                    for _retry in range(3):
+                    # A first-connect busy reject is sized by the radio's
+                    # hold of a dead client's session: retry until the
+                    # start-up busy budget elapses. Reconnects and any
+                    # other civ_port=0 keep the fixed three attempts.
+                    busy_deadline = time.monotonic() + self.STARTUP_BUSY_HOLD_BUDGET_S
+                    attempts = 0
+                    while True:
+                        if busy_reject:
+                            exhausted = time.monotonic() >= busy_deadline
+                        else:
+                            exhausted = attempts >= 3
+                        if exhausted:
+                            self._close_pending_sockets()
+                            await h._ctrl_transport.disconnect()
+                            h._conn_state = RadioConnectionState.DISCONNECTED
+                            error_val = getattr(h, "_last_status_error", 0)
+                            raise ConnectionError(
+                                f"Radio rejected session allocation (civ_port=0, "
+                                f"error=0x{error_val:08X}) after retries. "
+                                f"{_session_reject_hint(error_val)}"
+                            )
+                        attempts += 1
                         await asyncio.sleep(retry_pause)
-                        logger.info("Retrying conninfo (attempt %d/3)...", _retry + 1)
+                        logger.info("Retrying conninfo (attempt %d)...", attempts)
                         await self._send_conninfo(
                             guid, _civ_local_port, _audio_local_port
                         )
@@ -380,16 +424,6 @@ class ControlPhaseRuntime:
                                 break
                         except asyncio.TimeoutError:
                             pass
-                    else:
-                        self._close_pending_sockets()
-                        await h._ctrl_transport.disconnect()
-                        h._conn_state = RadioConnectionState.DISCONNECTED
-                        error_val = getattr(h, "_last_status_error", 0)
-                        raise ConnectionError(
-                            f"Radio rejected session allocation (civ_port=0, "
-                            f"error=0x{error_val:08X}) after retries. "
-                            f"{_session_reject_hint(error_val)}"
-                        )
         except asyncio.TimeoutError:
             logger.debug("No status packet received, using default ports")
             logger.warning("Audio port not in status, using default %d", h._audio_port)
@@ -542,6 +576,7 @@ class ControlPhaseRuntime:
             return
         h._conn_state = RadioConnectionState.DISCONNECTING
         h._civ_resume_seq = None
+        h._audio_resume_seq = None
         civ_rt = getattr(h, "_civ_runtime", None)
         if civ_rt is not None:
             civ_rt.advance_generation("disconnect")
@@ -676,6 +711,7 @@ class ControlPhaseRuntime:
         self._deferred_retail = None
         self._renewal_waiter = None
         h._civ_resume_seq = None
+        h._audio_resume_seq = None
         # Best-effort teardown of any data/audio transports first (mirrors
         # disconnect ordering), then the always-sent token-remove.
         self._stop_watchdog()

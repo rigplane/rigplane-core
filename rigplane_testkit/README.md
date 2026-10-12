@@ -62,6 +62,10 @@ UDP code paths as production.
   CI-V implementation lives in `rigplane_testkit/icom/simulator.py`; the
   audio port in `rigplane_testkit/icom/simulator_audio.py`
   (`AudioPortMixin`).
+- `MockIcomRadio.refused_civ_commands` — an opt-in set of `(cmd, sub)` pairs
+  answered with a bare NAK instead of dispatching (default off;
+  `refused_count` counts the refused frames), for tests that drive a
+  radio-refused write end to end.
 - `rigplane_testkit.icom.faults` — `FaultPlan` / `FaultRule`: a declarative,
   seeded (deterministic) fault plan with one rule per port (`control`, `civ`)
   and direction (`to_client`, `from_client`). Each rule can drop (probability

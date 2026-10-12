@@ -250,6 +250,10 @@ async def audio_error_watchdog_loop(radio: "IcomRadio") -> None:
                 logger.debug(
                     "audio-watchdog: transport disconnect failed", exc_info=True
                 )
+            # Audio-only recovery keeps the radio session (control and CI-V
+            # stay up): record the numbering; the ``_ensure_audio_transport``
+            # rebuild below resumes it, and a new login clears it.
+            radio._audio_resume_seq = audio_t.send_seq
             radio._audio_transport = None
 
             if not radio._connected:

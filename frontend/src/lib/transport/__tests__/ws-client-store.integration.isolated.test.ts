@@ -209,7 +209,7 @@ describe('ws-client → real radio store gate (integration)', () => {
       fullEnvelope(makeState({ revision: 5, stateRevision: 5, ptt: false })),
     );
 
-    // Real store accepted the initial full snapshot (isInitial branch).
+    // Real store accepted the initial full snapshot.
     const s = store.getRadioState() as ServerStateWithObservation | null;
     expect(s?.stateRevision).toBe(5);
     expect(s?.ptt).toBe(false);

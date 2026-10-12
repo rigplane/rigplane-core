@@ -30,7 +30,7 @@ version pin, no network, no extra runtime dependency.
 
 `producer_artifact` selects an in-process builder in
 `scripts/run_consumer_contracts.py` (`info` → `GET /api/v1/info` body via the
-public `WebServer`; `discovery` → the `DiscoveryResponder` datagram); `web_surface` → the WebSocket command names (`ControlHandler._COMMANDS`), WebSocket route paths and HTTP `METHOD path` strings from `web/api_contract.py`. The runner
+public `WebServer`; `discovery` → the `DiscoveryResponder` datagram; `startup_event` → the `WebServer.emit_startup_event` stdout line; `runtime` → the `GET /api/v1/runtime` body via `WebServer._handle_http` with no radio; `ready` → the `GET /readyz` body via `WebServer._handle_http` with no radio); `web_surface` → the WebSocket command names (`ControlHandler._COMMANDS`), WebSocket route paths and HTTP `METHOD path` strings from `web/api_contract.py`. The runner
 builds the **real** artifact from public `rigplane.*` symbols, validates the
 `schema`, and (if present) asserts the `speaks_version` field equals what the
 consumer declares it speaks.
