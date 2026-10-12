@@ -4,9 +4,8 @@ Pure, socket-free.  :class:`Recording` loads the JSONL written by
 :class:`~rigplane_testkit.icom.recorder.IcomSessionRecorder`;
 :class:`ReplayResponder` keys recorded CI-V request → reply pairs and answers
 lookups, and reports the frames the radio sent without a matching request as
-the unsolicited timeline.  MOR-3217 mounts this in the simulator.
-:class:`RecordedAnswerTable` answers CI-V requests from the civ_pairs rows of
-one transport.
+the unsolicited timeline.  :class:`RecordedAnswerTable` answers CI-V
+requests from the civ_pairs rows of one transport.
 """
 
 from __future__ import annotations
@@ -202,18 +201,20 @@ class RecordedAnswerTable:
       registers: the request body (the read selector) keys the rest of the
       reply body.  A data reply that does not start with its request body is
       a fixed answer for that exact request body.
-    - a recorded **ACK** marks a write: the request body is the longest
-      register key that prefixes it plus the value.  Answering a later write
-      (any request body that extends a written register key) stores the value
-      into that register and ACKs.  An ACK whose request body no register
-      key prefixes is a plain ACK for that exact body.
+    - a recorded **ACK** whose request body extends a register key recorded
+      earlier makes that key (the longest such one) writable; any other
+      recorded ACK is a plain ACK for that exact body.
     - a recorded **NAK** NAKs that exact request body.
     - ``echo`` is true when the transport's rows show the radio echoing
       requests (an ``r2c`` row equal to the ``c2r`` row before it), read
       from the rows — never from the transport name.
 
     :meth:`answer` returns the reply frame addressed back to the requester
-    (to/from swapped), or None when the request is not in the recording.
+    (to/from swapped).  It tries the exact request body first, in this order:
+    recorded NAK, fixed answer, register read, plain ACK.  A body with no
+    exact entry that extends a writable register key is a write: the
+    remainder after the longest such key is stored into that register and
+    the answer is an ACK.  Any other body returns None.
     """
 
     def __init__(self) -> None:
@@ -279,12 +280,7 @@ class RecordedAnswerTable:
             self._fixed[body] = reply_body
 
     def answer(self, frame: bytes) -> bytes | None:
-        """The recorded reply to one request frame, else None.
-
-        A write (a request body extending a written register key) stores its
-        value into that register before ACKing, so the next read of the
-        register answers with the written value.
-        """
+        """The reply to one request frame, else None (order: class docstring)."""
         body = _frame_body(frame)
         if body in self._naks:
             return self._reply(frame, bytes([_CIV_NAK]))

@@ -94,9 +94,8 @@ class CivSerialFake:
     """A stateful Icom radio on the far end of an in-memory serial duplex.
 
     State (frequency, mode, filter, PTT, S-meter) changes only through the
-    wire or the explicit test-setup property setters. Refusals (the ``0xFA``
-    NAK) follow from the personality alone; every fault is scripted through
-    the methods below, never hidden in an answer table.
+    wire or the explicit test-setup property setters. Every fault is
+    scripted through the methods below, never hidden in an answer table.
     """
 
     def __init__(
