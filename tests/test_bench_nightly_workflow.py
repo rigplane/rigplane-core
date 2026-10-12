@@ -221,19 +221,17 @@ def test_evidence_steps_do_not_decide_the_verdict() -> None:
 
 
 def test_radio_commands_go_through_the_guard() -> None:
-    """Every radio-capable invocation in every job's step `run` text goes
+    """Radio-capable invocations in the workflow's step `run` text go
     through `bash scripts/bench/guard.sh run -- `.
 
     Radio-capable shapes: `uv run` of `rigplane`, `pytest`, or
     `python -m rigplane`; bare `python -m rigplane`; `uvx` of `rigplane`;
-    `.venv/bin/rigplane` and `.venv/bin/pytest`. Every job in the workflow
-    is scanned, not just `radio`. A `run:` block with any `|`/`>` header is
-    parsed (`>` folds lines with spaces); backslash-newline continuations
-    are joined before matching; full-line `#` comments are ignored. A `run:`
-    value the parser does not understand fails loudly, and the check fails
-    unless guarded invocations were seen in the Validate, Hardware pytest
-    subset, and rigplane diagnose steps, so a parser that reads nothing
-    cannot pass.
+    `.venv/bin/rigplane` and `.venv/bin/pytest`. Backslash-newline
+    continuations are joined before matching; full-line `#` comments are
+    ignored. An empty `run:` value or an unrecognised `|`/`>` header fails
+    loudly, and the check fails unless guarded invocations were seen in the
+    Validate, Hardware pytest subset, and rigplane diagnose steps, so a
+    parser that reads nothing cannot pass.
     """
     unguarded: list[str] = []
     guarded_steps: set[str] = set()
