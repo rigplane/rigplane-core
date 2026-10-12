@@ -17,7 +17,7 @@ requests without a controller credential.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 
@@ -96,9 +96,9 @@ async def test_executor_transmission_end_from_non_controller_reaches_radio(
         await _arm_remote(srv)
         command, sub, data = frame
         await _HttpCommandExecutor(srv).execute(_raw_intent(command, sub, data))
-        srv._radio.send_civ_transaction.assert_awaited_once_with(
-            command, sub=sub, data=data, expect="none", timeout=None
-        )
+        assert srv._radio.send_civ_transaction.await_args_list == [
+            call(command, sub=sub, data=data, expect="none", timeout=None)
+        ]
     finally:
         await _release(srv)
 
@@ -118,9 +118,9 @@ async def test_executor_transmission_end_with_remote_ticket_reaches_radio(
         command, sub, data = frame
         with srv._controller.bind(ticket):
             await _HttpCommandExecutor(srv).execute(_raw_intent(command, sub, data))
-        srv._radio.send_civ_transaction.assert_awaited_once_with(
-            command, sub=sub, data=data, expect="none", timeout=None
-        )
+        assert srv._radio.send_civ_transaction.await_args_list == [
+            call(command, sub=sub, data=data, expect="none", timeout=None)
+        ]
     finally:
         await _release(srv)
 

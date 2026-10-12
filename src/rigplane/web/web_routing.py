@@ -44,9 +44,8 @@ logger = logging.getLogger(__name__)
 def _raw_transaction_frame_from_payload(payload: object) -> bytes | None:
     """Build the frame a raw CI-V transaction body would send, raise-free.
 
-    Reuses ``WebServer``'s own parameter validation, so the peek accepts
-    exactly the bodies the handler would send: anything malformed
-    returns None and keeps today's route refusal.
+    Parses command/sub/data with the handler's own parsers; anything
+    malformed returns None and keeps today's route refusal.
     """
 
     from . import server as _server_mod  # noqa: TID251
