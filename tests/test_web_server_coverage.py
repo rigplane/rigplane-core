@@ -7,6 +7,7 @@ import io
 import json
 import pathlib
 import time
+from collections.abc import Callable
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -46,6 +47,17 @@ from test_radio_poller_coverage import (
     _instrument_guarded_vfo_wire,
     _make_radio,
 )
+
+
+async def _await_condition(
+    predicate: Callable[[], bool], *, timeout: float = 5.0, interval: float = 0.01
+) -> None:
+    """Wait until ``predicate()`` is true, bounded by ``timeout`` seconds."""
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"condition not met within {timeout} s")
+        await asyncio.sleep(interval)
 
 
 class _FakeSocket:
@@ -454,8 +466,11 @@ async def test_managed_tx_start_still_registers_reconnect_recovery_pass() -> Non
         # Simulate the radio's post-soft_reconnect edge: the registered
         # callback must refetch state and queue the scope re-enable.
         srv._scope_handlers.add(MagicMock())  # noqa: SLF001
+        scope_callbacks_before = radio.on_scope_data.call_count
         radio._reconnect_callback()
-        await asyncio.sleep(0.05)  # let the refetch task complete
+        await _await_condition(
+            lambda: radio.on_scope_data.call_count > scope_callbacks_before
+        )
 
         radio._fetch_initial_state.assert_awaited_once()
         assert any(isinstance(c, EnableScope) for c in srv.command_queue.drain())
@@ -2161,8 +2176,11 @@ async def test_scope_health_and_radio_state_event_paths() -> None:
     scope_handler = MagicMock()
     srv._scope_handlers.add(scope_handler)
     radio._fetch_initial_state = AsyncMock()
+    scope_callbacks_before = radio.on_scope_data.call_count
     srv._on_radio_reconnect()  # noqa: SLF001
-    await asyncio.sleep(0.05)  # let the refetch task complete
+    await _await_condition(
+        lambda: radio.on_scope_data.call_count > scope_callbacks_before
+    )
     cmds = srv.command_queue.drain
     assert any(isinstance(c, EnableScope) for c in cmds())
 
@@ -3139,8 +3157,11 @@ async def test_on_radio_reconnect_enables_scope_without_waiting_for_broadcast() 
     srv = WebServer(radio)
     srv._scope_handlers.add(MagicMock())
 
+    scope_callbacks_before = radio.on_scope_data.call_count
     srv._on_radio_reconnect()  # noqa: SLF001
-    await asyncio.sleep(0.05)  # let the refetch task complete
+    await _await_condition(
+        lambda: radio.on_scope_data.call_count > scope_callbacks_before
+    )
 
     assert any(isinstance(c, EnableScope) for c in srv.command_queue.drain())
     assert radio.radio_ready is False  # gate was bypassed, not flipped
@@ -3169,7 +3190,7 @@ async def test_passive_reconnect_attempts_no_vfo_select_or_swap() -> None:
     srv._radio_poller = poller  # noqa: SLF001
 
     srv._on_radio_reconnect()  # noqa: SLF001
-    await asyncio.sleep(0.05)  # let the refetch task complete
+    await _await_condition(poller._initial_fetch_done.is_set)  # noqa: SLF001
 
     assert poller._initial_fetch_done.is_set()  # noqa: SLF001
     assert ledger.mutation_counts() == {
@@ -3202,7 +3223,7 @@ async def test_on_radio_reconnect_reseeds_scan_facts() -> None:
     srv._radio_poller = poller  # noqa: SLF001
 
     srv._on_radio_reconnect()  # noqa: SLF001
-    await asyncio.sleep(0.05)  # let the refetch task complete
+    await _await_condition(lambda: seed_call_count >= 1)
 
     assert seed_call_count == 1
     field = store.snapshot().field(FieldPath.global_("slow_state", "scanning"))

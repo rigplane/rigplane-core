@@ -1,4 +1,5 @@
 import type { ServerState, ReceiverState } from '../types/state';
+import { isStateAdvance, type StateAdvanceBaseline } from './live-metadata';
 import { setRadioPowerOn, setRigConnected, setRadioReady, setControlConnected, setRadioHealth } from './connection.svelte';
 import { getFieldStatus, isFieldAvailable } from '../state/field-status';
 import { capabilitiesMatchGeneration, getCapabilities } from './capabilities.svelte';
@@ -20,16 +21,6 @@ let lastFreshnessRevision = -1;
 let lastObservationSeq = -1;
 let lastHealthRevision = -1;
 const stateSubscribers = new Set<(state: ServerState | null) => void>();
-const LIVE_METADATA_KEYS = new Set([
-  'connection',
-  'fieldStatus',
-  'healthRevision',
-  'publicStateSeq',
-  'radioHealth',
-  'transportSeq',
-  'updatedAt',
-  'wsClients',
-]);
 
 function stateRevision(state: ServerState): number {
   return state.stateRevision ?? state.revision;
@@ -46,31 +37,6 @@ function observationSeq(state: ServerState): number {
 function deliverySeq(state: ServerState | null): number {
   if (!state) return -1;
   return Math.max(state.publicStateSeq ?? 0, state.transportSeq ?? 0);
-}
-
-function valuesEqual(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) return true;
-  try {
-    return JSON.stringify(left) === JSON.stringify(right);
-  } catch {
-    return false;
-  }
-}
-
-function hasOnlyLiveMetadataChanges(current: ServerState | null, next: ServerState): boolean {
-  if (!current) return false;
-  const currentRecord = current as unknown as Record<string, unknown>;
-  const nextRecord = next as unknown as Record<string, unknown>;
-  const keys = new Set([...Object.keys(current), ...Object.keys(next)]);
-  for (const key of keys) {
-    if (valuesEqual(currentRecord[key], nextRecord[key])) {
-      continue;
-    }
-    if (!LIVE_METADATA_KEYS.has(key)) {
-      return false;
-    }
-  }
-  return true;
 }
 
 function notifyRadioStateSubscribers(): void {
@@ -267,27 +233,16 @@ export function setRadioState(state: ServerState): boolean {
   const nextStateRevision = stateRevision(nextState);
   const nextFreshnessRevision = freshnessRevision(nextState);
   const nextObservationSeq = observationSeq(nextState);
-  const isInitial = radio.current === null;
   const nextHealthRevision = nextState.healthRevision ?? 0;
-  const healthAdvanced = nextHealthRevision > lastHealthRevision;
-  const freshnessAdvanced = nextFreshnessRevision > lastFreshnessRevision;
-  const observationAdvanced = nextObservationSeq > lastObservationSeq;
-  const semanticAdvanced = nextStateRevision > lastRevision;
-  const semanticCurrent = nextStateRevision === lastRevision;
-  const metadataAdvanced = semanticCurrent && (
-    freshnessAdvanced
-    || observationAdvanced
-    || healthAdvanced
-    || (
-      deliverySeq(nextState) > deliverySeq(radio.current)
-      && hasOnlyLiveMetadataChanges(radio.current, nextState)
-    )
-  );
-  if (
-    isInitial
-    || semanticAdvanced
-    || metadataAdvanced
-  ) {
+  const baseline: StateAdvanceBaseline | null = radio.current === null ? null : {
+    stateRevision: lastRevision,
+    freshnessRevision: lastFreshnessRevision,
+    observationSeq: lastObservationSeq,
+    healthRevision: lastHealthRevision,
+    deliverySeq: deliverySeq(radio.current),
+    state: radio.current,
+  };
+  if (isStateAdvance(baseline, nextState)) {
     lastRevision = nextStateRevision;
     lastFreshnessRevision = nextFreshnessRevision;
     lastObservationSeq = nextObservationSeq;

@@ -933,9 +933,7 @@ class CivRuntime:
         as it drops the runtime — the one moment the counter restarts — and
         never during a session, where retirement's own marks are load-bearing
         (a port whose close failed stays registered so the retirement can be
-        retried). A retirement still in flight when this runs cannot undo it:
-        everything it writes here happens before its one ``await``, the
-        transport close, and that close is all it has left to do.
+        retried). A retirement still in flight when this runs cannot undo it.
         """
         for tasks in self._managed_tx_sends.values():
             for task in tasks:
@@ -965,7 +963,8 @@ class CivRuntime:
             self.unbind_ptt_observer()
         if self._host._civ_epoch == token.civ_source_generation:
             self.advance_generation("managed TX physical port retired")
-        if self._host._civ_transport is token.transport:
+        retired_live_transport = self._host._civ_transport is token.transport
+        if retired_live_transport:
             self._host._civ_transport = None
         barrier = self._managed_tx_retirements.get(provider_generation)
         if barrier is None or (
@@ -974,6 +973,8 @@ class CivRuntime:
             barrier = asyncio.create_task(token.transport.disconnect())
             self._managed_tx_retirements[provider_generation] = barrier
         await asyncio.shield(barrier)
+        if retired_live_transport:
+            self._host._civ_resume_seq = token.transport.send_seq
 
     async def stop_pump(self) -> None:
         """Stop CI-V receive pump and fail pending request futures."""

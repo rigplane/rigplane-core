@@ -831,13 +831,9 @@ class CoreRadioSessionLifecycle:
             # release already ran in ``_attempt_with_release``/teardown; just
             # propagate so the awaiter sees the cancel.
             raise
-        except (AuthenticationError, RigplaneConnectionError):
-            # Hard-fail / exhaustion paths already drove the machine to
-            # DISCONNECTED; just re-raise.
-            raise
         except BaseException:
-            # Any other post-claim exception: release ran inside
-            # ``_attempt_with_release``; drive the observable machine home.
+            # Any other exception: release already ran in ``_attempt_with_release``;
+            # paths that already emitted DISCONNECTED are skipped by the guard.
             self._connecting_started = None
             if self._state not in (
                 LifecycleState.CLOSING,

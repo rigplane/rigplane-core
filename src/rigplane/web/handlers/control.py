@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from ..._bounded_queue import BoundedQueue
+from ...commands._frame import build_civ_frame
 from ...core.command_service import (
     CommandExecutionResult,
     CommandService,
@@ -37,7 +38,13 @@ from ...profiles import RadioProfile, resolve_radio_profile
 from ...profiles.control_domain import encode_legacy_control, validate_control_raw_value
 from ...runtime._poller_types import SetNarrow
 from ...runtime._dual_rx_runtime import require_receiver_for_profile
-from ...runtime.tx_interlock import RfState, evaluate_tx_interlock, resolve_rf_state
+from ...runtime.tx_interlock import (
+    RfState,
+    TxInterlockRefusal,
+    classify_raw_civ_frame_tx_family,
+    evaluate_tx_interlock,
+    resolve_rf_state,
+)
 from ...runtime.managed_tx_state import ManagedTxOutcome
 from ..protocol import (  # noqa: TID251
     decode_json,
@@ -854,7 +861,12 @@ class ControlHandler:
             while True:
                 opcode, payload = await self._ws.recv()
                 if opcode == WS_OP_TEXT:
-                    await self._handle_text(payload.decode("utf-8"))
+                    try:
+                        text = payload.decode("utf-8")
+                    except UnicodeDecodeError as exc:
+                        logger.debug("control: invalid UTF-8: %s", exc)
+                        continue
+                    await self._handle_text(text)
         except EOFError:
             pass
         finally:
@@ -1140,14 +1152,43 @@ class ControlHandler:
             return
         try:
             if not self._radio.connected:
+                conn_state = getattr(self._radio, "conn_state", None)
+                state_value = getattr(conn_state, "value", conn_state)
+                if state_value == "disconnecting":
+                    await self._send_json(
+                        {
+                            "type": "response",
+                            "id": msg_id,
+                            "ok": True,
+                            "result": {"status": "already_disconnected"},
+                        }
+                    )
+                    return
+                # Not connected and no teardown in flight: take the
+                # owner-level disconnect() path even when conn_state reads
+                # "disconnected" — during the lifecycle recovery's backoff
+                # wait between attempts it reads disconnected while
+                # _run_recover still owns another attempt, so only
+                # disconnect() (which cancels the recovery, bumps the
+                # owner-stop epoch and releases the session) stops the
+                # reconnect. disconnect() is idempotent, so a truly idle
+                # radio answers "disconnected" after a no-op teardown.
+                # MOR-2615: the same provider-epoch invalidation as the
+                # HTTP disconnect path, via the attached server when present.
+                await self._radio.disconnect()
+                store = getattr(self._server, "command_state_store", None)
+                begin_generation = getattr(store, "begin_provider_generation", None)
+                if callable(begin_generation):
+                    begin_generation()
                 await self._send_json(
                     {
                         "type": "response",
                         "id": msg_id,
                         "ok": True,
-                        "result": {"status": "already_disconnected"},
+                        "result": {"status": "disconnected"},
                     }
                 )
+                await self._broadcast_connection_state(False)
                 return
             from ...radio_protocol import RecoverableConnection
 
@@ -2556,6 +2597,17 @@ class ControlHandler:
                 if any(ch not in "0123456789abcdefABCDEF" for ch in raw_data):
                     raise ValueError("data must be a compact hex string")
                 data = bytes.fromhex(raw_data)
+                if self._managed_tx_authority is not None and (
+                    classify_raw_civ_frame_tx_family(
+                        build_civ_frame(0x00, 0x00, command, sub, data)
+                    )
+                    is not False
+                ):
+                    raise TxInterlockRefusal(
+                        "raw CI-V TX-family send_civ is refused while the "
+                        "radio is under managed TX authority",
+                        reason_code="managed_tx_refused",
+                    )
                 queue_cmd = SendCiv(command=command, sub=sub, data=data)
                 put_ordered = getattr(q, "put_ordered", None)
                 if callable(put_ordered):

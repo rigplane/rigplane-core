@@ -80,7 +80,11 @@ class ScopeHandler:
                 while True:
                     opcode, payload = await self._ws.recv()
                     if opcode == WS_OP_TEXT:
-                        await self._handle_control(payload.decode("utf-8"))
+                        try:
+                            text = payload.decode("utf-8")
+                        except UnicodeDecodeError:
+                            continue
+                        await self._handle_control(text)
             except EOFError:
                 pass
             finally:

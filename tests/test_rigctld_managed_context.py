@@ -1,4 +1,4 @@
-"""Reference injection only; no managed admission or queue scheduling claim."""
+"""Managed-reference injection and managed raw ``w`` frame routing."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
-from rigplane.rigctld.contract import RigctldConfig
+from rigplane.rigctld.contract import HamlibError, RigctldConfig
 from rigplane.rigctld.handler import RigctldHandler
 from rigplane.rigctld.protocol import parse_line
 from rigplane.rigctld.server import RigctldServer
@@ -30,6 +30,22 @@ from rigplane.runtime._poller_types import CommandQueue
 class _NoTruthProbe:
     def __bool__(self):
         raise AssertionError("managed references must be tested with is None")
+
+
+class _AuthorityTouchProbe:
+    """Managed TX authority fake that records every attribute reached for."""
+
+    def __init__(self):
+        self.touches = []
+
+    def __bool__(self):
+        raise AssertionError("managed references must be tested with is None")
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        self.touches.append(name)
+        raise AssertionError(f"managed TX authority was consulted: {name}")
 
 
 class _RecordingRadio(SerialMockRadio):
@@ -203,4 +219,127 @@ async def test_managed_non_tuner_writes_bypass_legacy_rf_gates(
     assert context.radio.write_calls[0][0] == expected_family
     legacy_defer.assert_not_called()
     legacy_rf.assert_not_called()
+    assert handler._command_service.lifecycle_events()[-1].state == "acknowledged"  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    "ptt_observed", [True, False], ids=["tx-observed", "rx-observed"]
+)
+@pytest.mark.parametrize(
+    "wire",
+    [
+        b"w FE FE 98 E0 1C 00 01 FD",
+        b"w FE FE 98 E0 1C 00 00 FD",
+        b"w FE FE 98 E0 1C 01 01 FD",
+        b"w FE FE 98 E0 1C 01 02 FD",
+        b"w FE FE 98 E0 29 00 1C 00 01 FD",
+        b"w FE FE 98 E0 28 00 01 FD",
+        b"w FE FE 98 E0 28 00 00 FD",
+        b"w FE FE 98 E0 29 00 28 00 01 FD",
+        b"w FE FE 98 E0 1C",
+        b"w FE FE 94 E0 03 FD FE FE 94 E0 1C 00 01 FD",
+        b"w FE FE 94 E0 03 FC FE FE 94 E0 1C 00 01 FD",
+        b"w FE FE FE 98 E0 1C 00 01 FD",
+        b"w FE FE 98 E0 FD",
+        b"w FE FE 98",
+    ],
+    ids=[
+        "ptt-on",
+        "ptt-off",
+        "tuner-engage",
+        "tuner-tune",
+        "cmd29-ptt-on",
+        "voice-memory-tx",
+        "voice-memory-stop",
+        "cmd29-voice-memory-tx",
+        "unparseable",
+        "concatenated-after-fd",
+        "concatenated-after-fc",
+        "leading-extra-fe",
+        "short-frame",
+        "truncated-frame",
+    ],
+)
+async def test_managed_raw_w_tx_family_frames_are_refused(context, wire, ptt_observed):
+    """Managed mode refuses TX-family raw ``w`` frames by payload — PTT in
+    both directions, tuner actuation, the voice TX memory transmit and its
+    stop form (MOR-3374), a cmd29-wrapped PTT or voice-memory frame, any
+    frame whose envelope cannot be parsed, and any payload that smuggles a
+    second frame past a single-frame envelope check (an FE/FD/FC byte
+    between the leading FE FE and the final FD), and any payload shorter
+    than a minimal frame — unconditionally, regardless of the observed PTT
+    state, without consulting the managed TX authority and without
+    anything reaching the radio."""
+    authority = _AuthorityTouchProbe()
+    refs = dict(context.refs, managed_tx_authority=authority)
+    context.store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=ptt_observed,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=asyncio.get_running_loop().time(),
+            max_age=1e9,
+        )
+    )
+    handler = RigctldHandler(context.radio, RigctldConfig(), **refs)
+
+    response = await handler.execute(parse_line(wire), session_id="client")
+
+    assert response.error is HamlibError.ERJCTED
+    assert context.radio.write_calls == []
+    assert authority.touches == []
+
+
+@pytest.mark.parametrize(
+    "ptt_observed", [True, False], ids=["tx-observed", "rx-observed"]
+)
+async def test_managed_raw_w_non_tx_write_frames_pass(context, ptt_observed):
+    """A non-TX raw write (set frequency) passes in managed mode and reaches
+    the radio unchanged — at observed TX as well as observed RX — still
+    without consulting the managed TX authority."""
+    authority = _AuthorityTouchProbe()
+    refs = dict(context.refs, managed_tx_authority=authority)
+    context.store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=ptt_observed,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=asyncio.get_running_loop().time(),
+            max_age=1e9,
+        )
+    )
+    handler = RigctldHandler(context.radio, RigctldConfig(), **refs)
+
+    response = await handler.execute(
+        parse_line(b"w FE FE 98 E0 05 00 00 10 14 00 FD"), session_id="client"
+    )
+
+    assert response.ok
+    assert context.radio.write_calls == [
+        ("raw", bytes.fromhex("FEFE98E0050000101400FD"))
+    ]
+    assert authority.touches == []
+
+
+@pytest.mark.parametrize(
+    ("wire", "frame_hex"),
+    [
+        (b"w FE FE 98 E0 03 FD", "FEFE98E003FD"),
+        (b"w FE FE 98 E0 1C 00 FD", "FEFE98E01C00FD"),
+    ],
+    ids=["freq-read", "ptt-read"],
+)
+async def test_managed_raw_w_read_frames_pass(context, wire, frame_hex):
+    """Read frames carry no data payload and pass in managed mode exactly as
+    before, still without consulting the managed TX authority."""
+    authority = _AuthorityTouchProbe()
+    refs = dict(context.refs, managed_tx_authority=authority)
+    handler = RigctldHandler(context.radio, RigctldConfig(), **refs)
+
+    response = await handler.execute(parse_line(wire), session_id="client")
+
+    assert context.radio.write_calls == [("raw", bytes.fromhex(frame_hex))]
+    assert authority.touches == []
+    assert response.ok
+    assert response.values == []
     assert handler._command_service.lifecycle_events()[-1].state == "acknowledged"  # noqa: SLF001

@@ -139,7 +139,7 @@
   let managedUnavailable = $derived(managed && (!scopeDemandOn || scopeProjection === null));
   let scopeConnected = $derived(managed ? !managedUnavailable : audioFft
     ? runtime.defaultScopeStatus.transport === 'connected'
-    : runtime.scope.hardwareScopeConnected);
+    : runtime.scope.hardwareScopeConnected && runtime.scope.hardwareScopeFrameLive);
   let scopeLease: ReturnType<typeof runtime.acquireHardwareScope> | null = null;
   let scopePixels = $state<Uint8Array | null>(null);
   let sampledReceipt: number | null = null;
@@ -908,11 +908,11 @@
   // the disconnect overlay. Pinned by `stops painting on drop and repaints
   // only from a post-reconnect frame`.
   //
-  // The unmanaged audio-FFT source keeps its canvas: there `scopeConnected`
-  // reads `runtime.defaultScopeStatus`, a different observation than the
-  // frames this panel paints, and `preserves distinct 80/120/160 producer
-  // levels in the trace, peak hold and waterfall` paints frames while that
-  // observation reads `disconnected`.
+  // On the raw hardware path `scopeConnected` also requires a live frame, so
+  // transport loss or 500 ms of frame silence clears the trace through the
+  // effect below. The unmanaged audio-FFT source keeps its canvas: there
+  // `scopeConnected` reads `runtime.defaultScopeStatus`, a different
+  // observation than the frames this panel paints.
   let scopeTraceLive = $derived(scopeConnected || (!managed && audioFft));
   $effect(() => {
     if (scopeTraceLive) return;

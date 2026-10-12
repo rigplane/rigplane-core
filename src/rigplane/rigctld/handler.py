@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import time
 from collections.abc import Callable, Sequence
 from contextvars import ContextVar
@@ -558,11 +557,32 @@ class _RigctldCommandExecutor:
             and str(intent.params["func"]).upper() == "TUNER"
         ):
             return await self._execute_managed_tuner(intent)
+        if managed and intent.name == "send_raw":
+            # A raw TX-family frame is refused by payload alone —
+            # regardless of the observed RF state, and without consulting
+            # the authority.  An unparseable frame fails closed.
+            if (
+                tx_interlock.classify_raw_civ_frame_tx_family(
+                    intent.params["frame_bytes"]
+                )
+                is not False
+            ):
+                raise _RigctldCommandFailure(HamlibError.ERJCTED)
 
         if not managed:
             classification = _classify_rigctld_tx_intent(intent)
             if (
                 classification.disposition is TxInterlockDisposition.BLOCK
+                # An exact raw de-key skips the RF-state refusal, as the
+                # typed PttOff always does: a raw unkey must never get
+                # harder because the observed PTT read TX or went stale
+                # (MOR-3378).  Managed mode above still refuses it.
+                and not (
+                    intent.name == "send_raw"
+                    and tx_interlock.is_exact_raw_dekey_frame(
+                        intent.params["frame_bytes"]
+                    )
+                )
                 and self.handler._has_canonical_state_store
                 and self.handler._resolve_rigctld_rf_state()
                 is not tx_interlock.RfState.RX
@@ -845,38 +865,7 @@ class RigctldHandler:
 
     def _resolve_rigctld_rf_state(self) -> tx_interlock.RfState:
         """Resolve strict, generation-bound RF truth for hard-block writes."""
-        snapshot = self._state_store.snapshot()
-        try:
-            field = snapshot.field(FieldPath.global_("tx_state", "ptt"))
-        except KeyError:
-            return tx_interlock.RfState.UNKNOWN
-        values = (
-            snapshot.generated_at_monotonic,
-            field.last_observed_monotonic,
-            field.max_age,
-        )
-        if (
-            field.freshness is not FreshnessState.FRESH
-            or type(field.value) is not bool
-            or any(
-                not isinstance(value, (int, float))
-                or isinstance(value, bool)
-                or not math.isfinite(value)
-                for value in values
-            )
-            or field.max_age is None
-            or field.max_age <= 0
-            or field.last_observed_monotonic < 0
-            or snapshot.generated_at_monotonic < field.last_observed_monotonic
-            or snapshot.generated_at_monotonic - field.last_observed_monotonic
-            >= field.max_age
-            or type(snapshot.provider_generation) is not int
-            or type(field.provider_generation) is not int
-            or snapshot.provider_generation < 0
-            or field.provider_generation != snapshot.provider_generation
-        ):
-            return tx_interlock.RfState.UNKNOWN
-        return tx_interlock.RfState.TX if field.value else tx_interlock.RfState.RX
+        return tx_interlock.resolve_rf_state(self._state_store.snapshot())
 
     def _defer_write_gate(self, intent: CommandIntent) -> RigctldResponse | None:
         """Decide a DEFER-classified write's fate before it can touch state.
