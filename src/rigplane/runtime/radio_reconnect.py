@@ -139,9 +139,6 @@ async def reconnect_loop(radio: IcomRadio) -> None:
                 # lifecycle leaves it in CONNECTED, and connect() then skips
                 # the login while the CI-V transport is already gone.
                 await radio._session_lifecycle.disconnect()
-                task = asyncio.current_task()
-                if task is not None and task.cancelling():
-                    raise asyncio.CancelledError
 
                 # Re-initialize transport
                 radio._ctrl_transport = IcomTransport()

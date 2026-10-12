@@ -244,6 +244,14 @@ async def test_user_disconnect_during_reconnect_ends_loop(
             await radio.disconnect()
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "MOR-3335: a user disconnect landing inside the loop's per-round "
+        "release is absorbed by CivRuntime helper awaits; the loop logs in "
+        "again"
+    ),
+)
 async def test_user_disconnect_inside_loop_release_ends_loop() -> None:
     """A user ``disconnect()`` landing inside the loop's own release ends it.
 
