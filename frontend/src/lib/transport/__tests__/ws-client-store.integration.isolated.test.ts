@@ -358,7 +358,7 @@ describe('ws-client → real radio store gate (integration)', () => {
       instances[0],
       fullEnvelope(makeState({
         revision: 5, stateRevision: 5, transportSeq: 11,
-        connection: { rigConnected: false },
+        connection: { rigConnected: false, radioReady: true, controlConnected: true },
       })),
     );
 
