@@ -186,6 +186,7 @@ def test_radio_commands_go_through_the_guard() -> None:
                     f"{_step_name(block)!r}: {match.group('cmd')} "
                     f"invocation not guarded: {match.group(0)!r}"
                 )
+    detail = "; ".join(unguarded)
     assert not unguarded, (
-        "radio-touching commands bypassing guard.sh run -- : " + "; ".join(unguarded)
+        f"radio-touching commands bypassing guard.sh run -- : {detail}"
     )
