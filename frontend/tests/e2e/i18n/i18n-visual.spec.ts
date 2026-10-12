@@ -3,8 +3,7 @@
  *
  * Drives the built Core frontend with a stubbed backend (no live radio,
  * no live Tower) under three locales — `en-US`, `ja-JP`, `qps-ploc` — at
- * two viewports — desktop 1280×800 and mobile 390×844 — and captures a
- * screenshot of every P0 surface extracted in RP-ML-005.
+ * two viewports — desktop 1280×800 and mobile 390×844.
  *
  * Locale switch path:
  *   - We do NOT click through `LanguageSelector` per locale (slow + flaky).
@@ -20,12 +19,19 @@
  *     `__i18nWsDispatch(msg)` hook for pushing fake `notification` frames
  *     (used for the Toast surface).
  *
- * Assertion floor (no screenshot diffs are forced — see README):
+ * Assertion floor:
  *   - Page text AND page markup MUST NOT contain `[missing:` (lookup-miss
  *     marker) or `${` (raw template leak). The markup pass catches
  *     markers in `aria-label`/`title`/`placeholder` attributes and in
  *     hidden containers that the visibility-filtered `innerText` pass
  *     never sees.
+ *   - The status-bar, disconnected and toast cases assert their own
+ *     surface rather than the app shell: the desktop `.status-bar` must
+ *     be visible and the mobile layout must not render one; the
+ *     disconnected case (skipped on mobile) expects the StatusBar radio
+ *     indicator to report `degraded`; the toast case requires the
+ *     `__i18nWsDispatch` hook, dispatches through it and expects a
+ *     visible toast.
  *   - Glossary tokens used by populated state — `MAIN`, `SUB`, `USB`,
  *     `LSB`, `RTTY`, `VFO` — MUST appear verbatim in EVERY locale,
  *     including `qps-ploc`, on the desktop app-shell. The radio model is
@@ -40,15 +46,11 @@
  * Scope split with RP-ML-013A:
  *   - RP-ML-013A is the cheap unit-test floor (vitest + jsdom) that runs
  *     in <2s with no browser. It validates the runtime transform.
- *   - RP-ML-006 (this file) is the heavier full-page visual smoke. It
- *     catches layout regressions (clipped buttons, overflow, broken
- *     mobile sheets) that a string-level test cannot see.
+ *   - RP-ML-006 (this file) is the heavier full-page smoke driven in a
+ *     real browser.
  */
 
 import { test, expect, type Page, type Route } from '@playwright/test';
-import { mkdir } from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import {
   mockCapabilities,
@@ -57,9 +59,6 @@ import {
   mockLocalControllerStatus,
   mockState,
 } from './fixtures';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BASELINE_DIR = path.join(__dirname, '__screenshots__', 'i18n');
 
 type SupportedLocale = 'en-US' | 'ja-JP' | 'qps-ploc';
 const LOCALES: SupportedLocale[] = ['en-US', 'ja-JP', 'qps-ploc'];
@@ -271,20 +270,6 @@ async function preparePage(
   await routeMockBackend(page, selectedState);
 }
 
-function screenshotPath(
-  surface: string,
-  locale: SupportedLocale,
-  viewport: ViewportSpec,
-): string {
-  return path.join(BASELINE_DIR, locale, `${surface}-${viewport.name}.png`);
-}
-
-async function ensureScreenshotDir(): Promise<void> {
-  for (const locale of LOCALES) {
-    await mkdir(path.join(BASELINE_DIR, locale), { recursive: true });
-  }
-}
-
 /**
  * Inspect the rendered body text and the full page markup for forbidden
  * markers.
@@ -321,9 +306,11 @@ async function assertGlossaryTokens(
   surfaceLabel: string,
 ): Promise<void> {
   if (viewport.name !== 'desktop') return;
-  const bodyText = await page.locator('body').innerText();
   for (const token of GLOSSARY_TOKENS_DESKTOP) {
-    expect(bodyText, `${surfaceLabel}: glossary token "${token}" missing`).toContain(token);
+    await expect(
+      page.locator('body'),
+      `${surfaceLabel}: glossary token "${token}" missing`,
+    ).toContainText(token, { useInnerText: true });
   }
 }
 
@@ -339,11 +326,10 @@ async function assertPseudoMarkers(
   surfaceLabel: string,
 ): Promise<void> {
   if (locale !== 'qps-ploc') return;
-  const bodyText = await page.locator('body').innerText();
-  expect(
-    bodyText,
+  await expect(
+    page.locator('body'),
     `${surfaceLabel}: no pseudo-locale markers — did the locale fall back to English?`,
-  ).toMatch(PSEUDO_MARKERS);
+  ).toContainText(PSEUDO_MARKERS, { useInnerText: true });
 }
 
 async function waitForAppShell(page: Page): Promise<void> {
@@ -354,7 +340,7 @@ async function waitForAppShell(page: Page): Promise<void> {
     .first()
     .waitFor({ state: 'visible', timeout: 15_000 });
   // Settle layout: small idle window so transitions and Svelte 5
-  // effects flush before the screenshot.
+  // effects flush before the assertions.
   await page.waitForTimeout(400);
 }
 
@@ -364,16 +350,6 @@ async function gotoApp(page: Page, locale: SupportedLocale): Promise<void> {
     response?.ok(),
     `app navigation for ${locale} returned ${response?.status() ?? 'no response'}`,
   ).toBe(true);
-}
-
-async function captureBaseline(
-  page: Page,
-  surface: string,
-  locale: SupportedLocale,
-  viewport: ViewportSpec,
-): Promise<void> {
-  const dest = screenshotPath(surface, locale, viewport);
-  await page.screenshot({ path: dest, fullPage: false });
 }
 
 // MOR-1549: this file used to force `mode: 'serial'` here, which made the
@@ -400,10 +376,6 @@ async function captureBaseline(
 test.describe.configure({ mode: 'default' });
 
 test.describe('i18n visual smoke (RP-ML-006)', () => {
-  test.beforeAll(async () => {
-    await ensureScreenshotDir();
-  });
-
   for (const locale of LOCALES) {
     for (const viewport of VIEWPORTS) {
       test(`app-shell loaded — ${locale} @ ${viewport.name}`, async ({ page }) => {
@@ -413,31 +385,48 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
         await assertNoLookupMisses(page, `app-shell/${locale}/${viewport.name}`);
         await assertGlossaryTokens(page, viewport, `app-shell/${locale}/${viewport.name}`);
         await assertPseudoMarkers(page, locale, `app-shell/${locale}/${viewport.name}`);
-        await captureBaseline(page, 'app-shell', locale, viewport);
       });
 
       test(`status-bar populated — ${locale} @ ${viewport.name}`, async ({ page }) => {
         await preparePage(page, locale, viewport);
         await gotoApp(page, locale);
         await waitForAppShell(page);
-        // StatusBar lives at the top of the layout in both skins.
-        const statusBar = page.locator('.status-bar, [data-status-bar], header.status-bar');
-        if ((await statusBar.count()) > 0) {
-          await statusBar.first().scrollIntoViewIfNeeded();
+        // StatusBar.svelte renders the `.status-bar` element and
+        // RadioLayout.svelte mounts it; MobileRadioLayout.svelte does
+        // not reference StatusBar, so the mobile case pins its absence.
+        const statusBar = page.locator('.status-bar');
+        if (viewport.name === 'desktop') {
+          await expect(
+            statusBar,
+            `status-bar/${locale}/${viewport.name}: .status-bar not visible`,
+          ).toBeVisible();
+        } else {
+          await expect(
+            statusBar,
+            `status-bar/${locale}/${viewport.name}: the mobile skin must not render a status bar`,
+          ).toHaveCount(0);
         }
         await assertNoLookupMisses(page, `status-bar/${locale}/${viewport.name}`);
-        await captureBaseline(page, 'status-bar', locale, viewport);
       });
 
       test(`connection-overlay disconnected — ${locale} @ ${viewport.name}`, async ({ page }) => {
+        test.skip(
+          viewport.name !== 'desktop',
+          'the phone layout shows no radio-link state for this fixture',
+        );
         await preparePage(page, locale, viewport, { state: mockDisconnectedState });
         await gotoApp(page, locale);
         await waitForAppShell(page);
+        // StatusBar.svelte interpolates the raw link state
+        // (`state: radioState`) into the radio indicator's title.
+        await expect(
+          page.locator('.status-bar .indicator[title*="degraded"]'),
+          `connection-overlay/${locale}/${viewport.name}: no StatusBar indicator reports the degraded radio link`,
+        ).toBeVisible();
         await assertNoLookupMisses(
           page,
           `connection-overlay/${locale}/${viewport.name}`,
         );
-        await captureBaseline(page, 'connection-overlay', locale, viewport);
       });
 
       test(`settings modal open — ${locale} @ ${viewport.name}`, async ({ page }) => {
@@ -469,7 +458,6 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
           page,
           `settings-modal/${locale}/${viewport.name}`,
         );
-        await captureBaseline(page, 'settings-modal', locale, viewport);
       });
 
       test(`send-report dialog open — ${locale} @ ${viewport.name}`, async ({ page }) => {
@@ -496,7 +484,6 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
           page,
           `send-report-dialog/${locale}/${viewport.name}`,
         );
-        await captureBaseline(page, 'send-report-dialog', locale, viewport);
       });
 
       test(`toast notification — ${locale} @ ${viewport.name}`, async ({ page }) => {
@@ -505,26 +492,35 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
         await waitForAppShell(page);
         // Dispatch a notification through the stubbed WebSocket using
         // a code that is bundled in en-US.json (RP-ML-005 emits
-        // reasonCode + params from `broadcast_notification`).
+        // reasonCode + params from `broadcast_notification`). The hook
+        // is asserted before use so a missing stub fails with its own
+        // message.
+        const hookType = await page.evaluate(() =>
+          typeof (window as unknown as { __i18nWsDispatch?: unknown }).__i18nWsDispatch
+        );
+        expect(
+          hookType,
+          `toast/${locale}/${viewport.name}: window.__i18nWsDispatch is missing — the WS stub never installed it`,
+        ).toBe('function');
         await page.evaluate(() => {
-          const dispatch = (
-            window as unknown as {
-              __i18nWsDispatch?: (msg: unknown) => void;
-            }
-          ).__i18nWsDispatch;
-          if (dispatch) {
-            dispatch({
-              type: 'notification',
-              level: 'warning',
-              code: 'licenseExpired',
-              message: 'Your license has expired. Reactivate to continue.',
-              params: {},
-            });
-          }
+          (window as unknown as { __i18nWsDispatch: (msg: unknown) => void }).__i18nWsDispatch({
+            type: 'notification',
+            level: 'warning',
+            code: 'licenseExpired',
+            message: 'Your license has expired. Reactivate to continue.',
+            params: {},
+          });
         });
+        // Toast.svelte renders a notification as `button.toast` inside
+        // its own `.toast-container`; AppGlobalHost.svelte mounts it.
+        // The toast's `in:fly` transition lasts 200 ms; the wait below
+        // is 400 ms.
+        await expect(
+          page.locator('.toast-container .toast'),
+          `toast/${locale}/${viewport.name}: dispatched notification rendered no toast`,
+        ).toBeVisible();
         await page.waitForTimeout(400);
         await assertNoLookupMisses(page, `toast/${locale}/${viewport.name}`);
-        await captureBaseline(page, 'toast', locale, viewport);
       });
     }
   }
