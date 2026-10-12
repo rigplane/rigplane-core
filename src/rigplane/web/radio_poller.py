@@ -2171,7 +2171,7 @@ class RadioPoller:
                     await radio.set_freq(freq, receiver=rx)
                 else:
                     # No lower-layer equivalent for a VFO-aware MAIN write:
-                    # CoreRadio.set_freq(freq, receiver=0) sends a blind,
+                    # CoreRadio.set_freq(freq, receiver=0) sends a
                     # VFO-unaware 0x05 regardless of which VFO is selected.
                     # When SUB is active the poller must still switch to
                     # MAIN, write, and switch back — routed through the

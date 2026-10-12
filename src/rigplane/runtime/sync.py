@@ -91,9 +91,8 @@ class _SyncCommandExecutor:
 
         observations: tuple[Observation, ...] = ()
         if intent.target is not None:
-            # The setters above are fire-and-forget CI-V writes — no radio
-            # answer was parsed, so this echo is the locally expected value,
-            # not a radio confirmation (MOR-2893). It still retires the
+            # This echo is the locally expected value, not a value parsed
+            # from a radio readback (MOR-2893). It still retires the
             # command's pending overlay exactly as before; only the
             # provenance label changes.
             observations = (

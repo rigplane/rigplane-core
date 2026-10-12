@@ -988,9 +988,7 @@ class RigctldHandler:
         ``_cmd_set_*`` inventing its own.
 
         Note on evidence: what counts as an ACK is a property of the backend
-        beneath the executor, not of this seat. An Icom ``set_freq`` is
-        dispatched without waiting for a reply, so ``acknowledged`` there means
-        "sent, uncontested" — not "the radio took it". The provider-owned
+        beneath the executor, not of this seat. The provider-owned
         readback seam (:class:`PhysicalWriteReadbackCapable`, MOR-1779) cannot
         strengthen that here: it only correlates commands dispatched through
         the observation poller's queue, which rigctld writes deliberately do
