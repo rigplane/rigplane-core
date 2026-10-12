@@ -47,7 +47,7 @@ def _radio_job_text() -> str:
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
     start = _JOB_START_RE.search(text)
     assert start is not None, "the radio job is missing from bench-nightly.yml"
-    rest = text[start.end() :]
+    rest = text[start.end():]
     following = _NEXT_JOB_RE.search(rest)
     return rest[:following.start()] if following else rest
 
@@ -187,6 +187,5 @@ def test_radio_commands_go_through_the_guard() -> None:
                     f"invocation not guarded: {match.group(0)!r}"
                 )
     assert not unguarded, (
-        "radio-touching commands bypassing guard.sh run -- : "
-        + "; ".join(unguarded)
+        "radio-touching commands bypassing guard.sh run -- : " + "; ".join(unguarded)
     )
