@@ -24,11 +24,9 @@ Per trace two tests share one checked replay:
 
 * ``test_<client>_prefix`` replays every step before the spec's prefix
   cutoff with all checks green.
-* ``test_<client>_full`` replays the whole trace: the wsjtx row
-  strict-xfails with the first divergent line in its reason
-  (``pytest.mark.xfail``, ``strict=True``,
-  ``raises=TraceDivergence``); the fldigi and js8call rows pass
-  outright. Execution stops at the divergence, like the golden replay.
+* ``test_<client>_full`` replays the whole trace; all three rows
+  pass outright. A divergence would stop the replay and surface as
+  ``TraceDivergence`` naming the trace line, like the golden replay.
 
 Checked replay rules, per step kind:
 
@@ -58,27 +56,25 @@ Checked replay rules, per step kind:
   and passband from the simulator's mode byte and filter; PTT readback,
   which the simulator constantly reports OFF).
 
-Error contract (so a strict xfail can never hide a harness problem):
+Error contract (so a divergence can never hide a harness problem):
 harness waits (``_wait_until``, ``_poll_until_reply``) raise
 ``TimeoutError`` and fixture/parse/oracle setup mistakes raise
 ``RuntimeError`` — never ``AssertionError``. A SET's landed check
 (``F`` as for ``T``) polls the simulated radio with a deadline but
 never raises ``TimeoutError`` itself; its final compare is the
 divergence assertion. The ONLY ``AssertionError``
-a full-trace replay raises at its divergent line is re-raised by the
+a full-trace replay raises at a divergent line is re-raised by the
 test as ``TraceDivergence`` (matched on the trace line number and the
 ``>`` line text); any other ``AssertionError`` becomes ``RuntimeError``
-and FAILS instead of xfailing.
+and FAILS.
 
-Remaining divergence (traces never edited):
+Receiver select (traces never edited, MOR-3310):
 
-* wsjtx line 62 ``F VFOB 14076000`` answers ``RPRT 0`` but never
-  lands on the SUB receiver: the recorded table ACKs the CI-V ``0x07``
-  select (so line 60 passes and the SET is accepted), but
-  ``simulator.py: MockIcomRadio`` keeps no per-receiver frequency
-  behind a ``0x07`` select while its native ``0x05`` handler writes
-  MAIN, so the landed check diverges. The remainder of the trace
-  (from line 62 on) is the strict xfail (MOR-3310).
+* wsjtx line 62 ``F VFOB 14076000`` lands on SUB through the native
+  ``07 D0``/``D1`` handling: ``simulator.py: MockIcomRadio`` swaps the
+  selected and unselected receiver fields behind the select (opt-in
+  ``dual_receiver``), so the landed check converges and the whole trace
+  passes. The spec keeps line 62 as its formerly-divergent anchor.
 * fldigi and js8call pass whole: their single PTT cycle (``T … 1`` /
   ``T … 0``) converges through the stateful PTT hook, and every ``t``
   read in all three traces happens while PTT is off.
@@ -218,7 +214,9 @@ def _parse_send(payload: str, line_no: int) -> _SetOp | _ReadOp | None:
 
 async def _stack() -> AsyncGenerator[tuple[RigctldServer, MockIcomRadio], None]:
     """Live RigctldServer on a CoreRadio connected to the LAN simulator."""
-    sim = ic7610_lan_fake(capture_civ_frames=True, stateful_ptt=True)
+    sim = ic7610_lan_fake(
+        capture_civ_frames=True, stateful_ptt=True, dual_receiver=True
+    )
     await sim.start()
     # Trace precondition (wsjtx §4): both receivers start at 14074000 Hz.
     sim._unselected_frequency = 14_074_000  # noqa: SLF001
@@ -408,15 +406,27 @@ async def _wait_until(
 
 
 def _sim_freq(sim: MockIcomRadio, receiver: int) -> int:
-    if receiver == 0:
-        return sim._frequency  # noqa: SLF001
-    return sim._unselected_frequency  # noqa: SLF001
+    """The absolute receiver's frequency through the 07 D0/D1 selection."""
+    main_selected = sim._selected_receiver == 0  # noqa: SLF001
+    if receiver == 0:  # MAIN is the selected fields iff SUB is not selected
+        if main_selected:
+            return sim._frequency  # noqa: SLF001
+        return sim._unselected_frequency  # noqa: SLF001
+    if main_selected:
+        return sim._unselected_frequency  # noqa: SLF001
+    return sim._frequency  # noqa: SLF001
 
 
 def _sim_mode_filter(sim: MockIcomRadio, receiver: int) -> tuple[int, int]:
-    if receiver == 0:
-        return sim._mode, sim._filter  # noqa: SLF001
-    return sim._unselected_mode, sim._unselected_filter  # noqa: SLF001
+    """The absolute receiver's (mode, filter) through the 07 D0/D1 selection."""
+    main_selected = sim._selected_receiver == 0  # noqa: SLF001
+    if receiver == 0:  # MAIN is the selected fields iff SUB is not selected
+        if main_selected:
+            return sim._mode, sim._filter  # noqa: SLF001
+        return sim._unselected_mode, sim._unselected_filter  # noqa: SLF001
+    if main_selected:
+        return sim._unselected_mode, sim._unselected_filter  # noqa: SLF001
+    return sim._mode, sim._filter  # noqa: SLF001
 
 
 def _sim_ptt_readback(sim: MockIcomRadio) -> int:
@@ -638,13 +648,6 @@ async def _replay_checked(
 # ---------------------------------------------------------------------------
 
 
-_WSJTX_XFAIL_REASON = (
-    "MOR-3310: line 62 `F VFOB 14076000` never lands on the SUB "
-    "receiver: the recorded table ACKs the 07 D1 select, but "
-    "MockIcomRadio keeps no per-receiver frequency behind it and the "
-    "native 05 handler writes MAIN"
-)
-
 _SPECS = [
     _TraceSpec(
         name="wsjtx",
@@ -696,27 +699,14 @@ async def test_prefix_passes(
     assert last_line == steps[-1].line_no < spec.prefix_before_line
 
 
-@pytest.mark.parametrize(
-    "spec",
-    [
-        pytest.param(
-            _SPECS[0],
-            marks=pytest.mark.xfail(
-                strict=True, raises=TraceDivergence, reason=_WSJTX_XFAIL_REASON
-            ),
-        ),
-        _SPECS[1],
-        _SPECS[2],
-    ],
-    ids=[s.name for s in _SPECS],
-)
+@pytest.mark.parametrize("spec", _SPECS, ids=[s.name for s in _SPECS])
 async def test_full_trace(
     stack: tuple[RigctldServer, MockIcomRadio], spec: _TraceSpec
 ) -> None:
-    """Whole-trace replay; the wsjtx row xfails exactly at the known
-    divergent line.
+    """Whole-trace replay; all three rows pass outright.
 
-    Only the divergent line maps to ``TraceDivergence``. A harness
+    Only a divergent line maps to ``TraceDivergence`` (the wsjtx spec
+    keeps line 62 as its formerly-divergent anchor). A harness
     ``TimeoutError``/``RuntimeError``, or an ``AssertionError`` from any
     other line, becomes ``RuntimeError`` and FAILS. (``raises=`` with a
     message match via ``pytest.RaisesExc`` is not used: the repo's
