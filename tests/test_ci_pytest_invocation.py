@@ -34,11 +34,23 @@ did.
 
 Also pins that the `Run tests` job in each of those three workflows checks
 out with `fetch-depth` of at least 2.
+
+Also pins the `-m` marker selection. `pyproject.toml` `addopts` deselects the
+`slow` and `benchmark` tests, and a `-m` on the command line replaces that
+expression. `publish.yml`, which runs when a release is published, passes
+`-m 'not benchmark'`; `quick.yml` passes no `-m`; `full.yml` passes one only
+when `inputs.rc` is true. `full.yml` writes that choice as one
+`${{ inputs.rc && '...' || '' }}` expression, which `_marker_selection`
+evaluates for `rc` true, false and unset instead of matching its text. These
+pins read the `uv run pytest tests/` line, so a `-m` on a later physical line
+of a `run: >` block, such as `quick.yml`'s web-subset step, is not seen.
 """
 
 from __future__ import annotations
 
 import re
+import shlex
+import tomllib
 from pathlib import Path
 
 WORKFLOWS_DIR = Path(__file__).resolve().parent.parent / ".github" / "workflows"
@@ -70,6 +82,21 @@ _CHECKOUT_STEP_RE = re.compile(
 
 _FETCH_DEPTH_RE = re.compile(r"fetch-depth:\s*(\d+)")
 
+PYPROJECT = WORKFLOWS_DIR.parent.parent / "pyproject.toml"
+
+# The one expression shape `full.yml` uses to choose the marker flags:
+# `${{ inputs.rc && '<flags when true>' || '<flags otherwise>' }}`.
+_RC_GATE_RE = re.compile(
+    r"\$\{\{\s*inputs\.rc\s*&&\s*'(?P<on>(?:[^']|'')*)'"
+    r"\s*\|\|\s*'(?P<off>(?:[^']|'')*)'\s*\}\}"
+)
+
+# The body of the `rc` input under `workflow_dispatch:` in full.yml.
+_RC_INPUT_RE = re.compile(
+    r"^  workflow_dispatch:\n    inputs:\n      rc:\n((?:        .*\n)+)",
+    re.MULTILINE,
+)
+
 
 def _pytest_invocations(workflow_name: str) -> list[str]:
     text = (WORKFLOWS_DIR / workflow_name).read_text()
@@ -93,6 +120,25 @@ def _run_tests_step_body(workflow_name: str) -> str:
         "the step was renamed or restructured"
     )
     return match.group(1)
+
+
+def _marker_selection(command: str, *, rc: bool | None = None) -> list[str]:
+    """The `-m` expressions `command` passes when `inputs.rc` is `rc`."""
+    rendered = _RC_GATE_RE.sub(
+        lambda m: (m["on"] if rc else m["off"]).replace("''", "'"), command
+    )
+    assert "${{" not in rendered, (
+        f"an expression this pin does not evaluate is in {command!r} — "
+        "extend `_RC_GATE_RE` if the workflow gates the selection another way"
+    )
+    tokens = shlex.split(rendered)
+    selected = []
+    for index, token in enumerate(tokens):
+        if token == "-m":
+            selected.append(tokens[index + 1])
+        elif token.startswith("-m") and not token.startswith("--"):
+            selected.append(token[2:])
+    return selected
 
 
 def test_no_workflow_excludes_integration_tests() -> None:
@@ -144,3 +190,46 @@ def test_run_tests_job_checks_out_at_least_two_commits() -> None:
                 "includes a monotonic comparison against the parent commit, "
                 "which needs the parent in the checkout"
             )
+
+
+def test_pyproject_deselects_slow_tests_by_default() -> None:
+    options = tomllib.loads(PYPROJECT.read_text())["tool"]["pytest"]["ini_options"]
+    assert any("not slow" in m for m in _marker_selection(options["addopts"])), (
+        "pyproject.toml addopts no longer deselects `slow` tests, so every "
+        "build that passes no `-m` would run them"
+    )
+
+
+def test_quick_passes_no_marker_selection() -> None:
+    for invocation in _pytest_invocations("quick.yml"):
+        assert _marker_selection(invocation) == [], (
+            "quick.yml passes its own `-m`, replacing the `addopts` default "
+            f"that deselects `slow` tests: {invocation!r}"
+        )
+
+
+def test_publish_validate_runs_the_slow_tests() -> None:
+    for invocation in _pytest_invocations("publish.yml"):
+        assert _marker_selection(invocation) == ["not benchmark"], (
+            "publish.yml must pass `-m 'not benchmark'`, which replaces the "
+            f"`addopts` default that deselects `slow` tests: {invocation!r}"
+        )
+
+
+def test_full_runs_the_slow_tests_only_for_an_rc_dispatch() -> None:
+    for invocation in _pytest_invocations("full.yml"):
+        assert _marker_selection(invocation, rc=True) == ["not benchmark"], (
+            f"an RC dispatch of full.yml does not select `-m 'not benchmark'`: {invocation!r}"
+        )
+        for rc in (False, None):
+            assert _marker_selection(invocation, rc=rc) == [], (
+                f"full.yml selects markers when `rc` is {rc!r}: {invocation!r}"
+            )
+
+
+def test_full_declares_a_boolean_rc_input_defaulting_to_false() -> None:
+    match = _RC_INPUT_RE.search((WORKFLOWS_DIR / "full.yml").read_text())
+    assert match, "no `rc` input under `workflow_dispatch` in full.yml"
+    body = match.group(1)
+    assert re.search(r"^\s+type:\s*boolean\s*$", body, re.MULTILINE), body
+    assert re.search(r"^\s+default:\s*false\s*$", body, re.MULTILINE), body

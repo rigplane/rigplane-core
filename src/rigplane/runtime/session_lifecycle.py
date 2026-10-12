@@ -692,6 +692,8 @@ class CoreRadioSessionLifecycle:
         max_recovery_attempts: int = _MAX_RECONNECTS,
         recovery_backoff_s: tuple[float, ...] = _RECONNECT_BACKOFF,
         max_connect_attempts: int = _MAX_CONNECT_ATTEMPTS,
+        first_connect_busy_cooldown_s: float | None = None,
+        first_connect_busy_budget_s: float | None = None,
     ) -> None:
         self._mech = mechanism
         self._not_ready_cooldown_s = not_ready_cooldown_s
@@ -699,6 +701,17 @@ class CoreRadioSessionLifecycle:
         self._max_recovery_attempts = max_recovery_attempts
         self._recovery_backoff_s = recovery_backoff_s
         self._max_connect_attempts = max_connect_attempts
+        # Start-up busy-hold policy (MOR-3391): when set, a SESSION_BUSY_REJECT
+        # on the first connect (before any connect through this loop has
+        # reached CONNECTED) retries with a real cooldown until the wall-clock
+        # budget elapses, and those busy passes do not count against
+        # ``max_connect_attempts`` — its retries stay reserved for the other
+        # transient outcomes.  Later connects and mechanisms without the
+        # policy keep the constructed cooldown/attempt behaviour. ``None``
+        # disables it.
+        self._first_connect_busy_cooldown_s = first_connect_busy_cooldown_s
+        self._first_connect_busy_budget_s = first_connect_busy_budget_s
+        self._connected_once = False
 
         self._state: LifecycleState = LifecycleState.DISCONNECTED
         self._last_error: LifecycleErrorReason = LifecycleErrorReason.NONE
@@ -847,6 +860,8 @@ class CoreRadioSessionLifecycle:
 
     async def _connect_loop(self) -> None:
         attempt = 0
+        busy_attempts = 0
+        busy_deadline: float | None = None
         while True:
             attempt += 1
             self._connecting_started = time.monotonic()
@@ -855,6 +870,7 @@ class CoreRadioSessionLifecycle:
 
             if outcome is AttemptOutcome.CONNECTED:
                 self._connecting_started = None
+                self._connected_once = True
                 self._emit(LifecycleState.CONNECTED)
                 return
 
@@ -873,11 +889,72 @@ class CoreRadioSessionLifecycle:
                     "Authentication failed (error=0xFEFFFFFF); credentials rejected"
                 )
 
+            if (
+                outcome is AttemptOutcome.SESSION_BUSY_REJECT
+                and not self._connected_once
+                and self._first_connect_busy_budget_s is not None
+            ):
+                # Start-up busy-hold policy (MOR-3391): the radio still holds
+                # a dead client's session and the busy-issued token is
+                # unusable afterwards, so the reject was already released
+                # inside ``_attempt_with_release`` and the next attempt logs
+                # in again.  Retry with a real cooldown until the start-up
+                # budget elapses; the busy passes do not count against
+                # ``max_connect_attempts`` — those retries stay reserved for
+                # the other transient outcomes.
+                busy_attempts += 1
+                now = time.monotonic()
+                if busy_deadline is None:
+                    busy_deadline = now + self._first_connect_busy_budget_s
+                if now >= busy_deadline:
+                    # Deferred import: ``_control_phase`` imports this module
+                    # at its own call sites, and the public contract module
+                    # stays importable without the control-phase machinery.
+                    from rigplane.runtime._control_phase import (
+                        _session_reject_hint,
+                    )
+
+                    self._connecting_started = None
+                    self._emit(LifecycleState.DISCONNECTED)
+                    raise RigplaneConnectionError(
+                        "Radio session never became ready: still busy after "
+                        f"{busy_attempts} start-up re-logins against the "
+                        f"{self._first_connect_busy_budget_s:.0f}s start-up "
+                        f"busy budget. {_session_reject_hint(0xFFFFFFFF)}"
+                    )
+                cooldown = self._first_connect_busy_cooldown_s
+                if cooldown is None:
+                    cooldown = self._reject_cooldown_s
+                _logger.warning(
+                    "Radio session busy (startup attempt %d): retrying with "
+                    "a fresh login after %.0fs (startup busy budget %.0fs).",
+                    busy_attempts,
+                    cooldown,
+                    self._first_connect_busy_budget_s,
+                )
+                self._connecting_started = None
+                self._cooldown_total_s = cooldown
+                self._cooldown_deadline = time.monotonic() + cooldown
+                self._emit(
+                    LifecycleState.COOLDOWN,
+                    reason=LifecycleErrorReason.SESSION_BUSY_REJECT,
+                    cooldown_remaining_s=cooldown,
+                )
+                try:
+                    await asyncio.sleep(cooldown)
+                finally:
+                    self._cooldown_deadline = None
+                    self._cooldown_total_s = None
+                continue
+
             # Transient: SESSION_NOT_READY (civ_port==0) or SESSION_BUSY_REJECT
             # (0xFFFFFFFF).  The session was already released inside
             # ``_attempt_with_release`` (release BEFORE the wait — Hole 4 / Cause
             # A inversion).  Now enter COOLDOWN and wait in-process.
-            if attempt >= self._max_connect_attempts:
+            # Busy passes that retried under the first-connect policy above
+            # must not consume these retries; busy passes on later connects
+            # (``busy_attempts`` stays 0 there) still count.
+            if attempt - busy_attempts >= self._max_connect_attempts:
                 self._connecting_started = None
                 self._emit(LifecycleState.DISCONNECTED)
                 raise RigplaneConnectionError(

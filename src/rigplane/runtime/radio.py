@@ -477,6 +477,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._ctrl_transport = IcomTransport()
         self._civ_transport: IcomTransport | None = None
         self._audio_transport: IcomTransport | None = None
+        # Single-flight lock for ``_ensure_audio_transport`` (MOR-3400): the
+        # whole rebuild runs under it; no teardown ever takes it.
+        self._audio_ensure_lock = asyncio.Lock()
         self._audio_stream: AudioStream | None = None
         self._pcm_transcoder: PcmOpusTranscoder | None = None
         self._pcm_transcoder_fmt: tuple[int, int, int] | None = None
@@ -705,11 +708,22 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             # attempts is the radio's own keepalive window, and the lifecycle
             # already RELEASES the (partial) session before each retry, so no
             # client-side cooldown sleep is needed here.  The within-attempt
-            # conninfo busy-retry pacing still lives in ``_connect_once``
-            # (``_STATUS_RETRY_PAUSE``).  The longer-lived Pro service constructs
-            # the lifecycle with the default 10/30 s cooldowns.
+            # conninfo retry pacing for reconnects and not-ready sessions
+            # still lives in ``_connect_once`` (``_STATUS_RETRY_PAUSE``).  The
+            # longer-lived Pro service constructs the lifecycle with the
+            # default 10/30 s cooldowns.
             not_ready_cooldown_s=0.0,
             reject_cooldown_s=0.0,
+            # Start-up busy-hold policy (MOR-3391): on the first connect a
+            # profile-selected stereo status-stage busy reject and an
+            # auth-stage busy reject retry with a fresh login after the
+            # reject cooldown, until the start-up budget elapses.  Later
+            # connects keep the immediate attempts above; their
+            # status-stage busy path stays in ``_connect_once``.
+            first_connect_busy_cooldown_s=(ControlPhaseRuntime._STATUS_REJECT_COOLDOWN),
+            first_connect_busy_budget_s=(
+                ControlPhaseRuntime.STARTUP_BUSY_HOLD_BUDGET_S
+            ),
             # Recovery backoff is ZERO for the in-process CoreRadio (A4): the
             # CI-V data watchdog already spends its patient OpenClose phase
             # (~``_OPENCLOSE_DEADLINE`` = 60 s) BEFORE handing off to this
@@ -1624,14 +1638,19 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._pcm_tx_fmt = None
         self._pcm_rx_user_callback = None
         self._opus_rx_user_callback = None
-        if self._audio_transport is not None:
+        audio_t = self._audio_transport
+        if audio_t is not None:
             try:
                 await self._send_audio_open_close(open_stream=False)
             except Exception:
                 logger.debug("soft_disconnect: audio open/close failed", exc_info=True)
-            await self._audio_transport.disconnect()
-            self._audio_resume_seq = self._audio_transport.send_seq
-            self._audio_transport = None
+            # A queued ensure's entry teardown can empty the slot during the
+            # awaits above: disconnect the local, record its numbering, and
+            # clear the slot only if it still holds this transport.
+            await audio_t.disconnect()
+            self._audio_resume_seq = audio_t.send_seq
+            if self._audio_transport is audio_t:
+                self._audio_transport = None
 
         # Stop CI-V
         if self._civ_transport:

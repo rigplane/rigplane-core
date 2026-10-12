@@ -299,6 +299,31 @@ async def test_busy_reject_releases_before_cooldown_then_connects() -> None:
     assert first_release < second_connect, mech.ops
 
 
+async def test_first_connect_busy_passes_do_not_consume_the_attempt_budget() -> None:
+    """MOR-3391: first-connect busy re-logins stay out of the retry budget.
+
+    ``CoreRadio`` constructs the lifecycle with ``max_connect_attempts=4``;
+    busy passes consumed by the start-up hold must not leave a following
+    not-ready with zero retries (main gave three). The busy passes retry
+    under the start-up busy budget instead.
+    """
+    lc, mech, _events = make_lifecycle(
+        max_connect_attempts=4,
+        first_connect_busy_cooldown_s=0.0,
+        first_connect_busy_budget_s=600.0,
+    )
+    for _ in range(3):
+        mech.queue_busy_reject()
+    mech.queue_not_ready()
+    mech.queue_ok()
+
+    await lc.connect()
+
+    assert lc.state is LifecycleState.CONNECTED
+    # 3 busy re-logins + 1 not-ready + the connecting attempt.
+    assert mech.connect_calls == 5
+
+
 # ---------------------------------------------------------------------------
 # D3 — hard-fail on 0xFEFFFFFF (auth credentials); NO resident retry
 # ---------------------------------------------------------------------------

@@ -44,6 +44,11 @@ def _exhaustion_radio() -> tuple[IcomRadio, list[dict]]:
     lifecycle = radio._session_lifecycle
     lifecycle._max_recovery_attempts = 1
     lifecycle._recovery_backoff_s = (0.0,)
+    # Recovery exhaustion only happens to a radio that had connected, so
+    # this loop's busy rejects must take the post-connect path: with
+    # ``_connected_once`` unset they would enter the first-connect busy
+    # policy and sleep its real 30 s cooldown between attempts.
+    lifecycle._connected_once = True
 
     async def always_fail() -> None:
         raise RigplaneConnectionError("injected per-attempt failure")
