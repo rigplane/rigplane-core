@@ -2326,6 +2326,167 @@ class _ManagedTxRadioSession:
         return result
 
 
+def _startup_busy_hold_event_of(session: Any) -> asyncio.Event | None:
+    """The radio's start-up busy signal, if it publishes one (MOR-3391)."""
+    radio = session._radio if isinstance(session, _ManagedTxRadioSession) else session
+    event = getattr(radio, "startup_busy_hold_event", None)
+    return event if isinstance(event, asyncio.Event) else None
+
+
+async def _cancel_task_quietly(task: asyncio.Task[Any]) -> None:
+    """Cancel a task and retrieve it, swallowing the expected cancel."""
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+async def _settle_background_enter(enter_task: asyncio.Task[Any]) -> None:
+    """Leave no background session enter unretrieved after serving ends.
+
+    A still-pending enter is cancelled (shutdown during the hold); an
+    enter that failed while serving was already ending is logged — the
+    serve outcome wins that race — so its exception is still retrieved
+    and never surfaces as "Task exception was never retrieved".
+    """
+    if not enter_task.done():
+        await _cancel_task_quietly(enter_task)
+        return
+    if enter_task.cancelled():
+        return
+    failure = enter_task.exception()
+    if failure is not None:
+        logger.warning("background start-up connect failed: %s", failure)
+
+
+async def _serve_while_startup_connect_pending(
+    server: Any,
+    startup_enter: asyncio.Task[Any],
+    serve: Any,
+) -> None:
+    """Serve while the start-up connect keeps running (MOR-3391 part 2).
+
+    ``serve`` (the blocking ``serve_forever``) runs as a child task raced
+    against the pending session enter:
+    * the enter finishes first and succeeds — the late completion runs,
+      then serving continues until shutdown;
+    * the enter finishes first and fails (budget out, refused) — serving
+      is torn down and the connect error propagates, so the process ends
+      with the same ``Error:`` text and return code 1;
+    * the enter is cancelled by an operator disconnect during the hold —
+      serving continues until shutdown, the same as a disconnect after a
+      normal start (a later operator connect re-primes through the radio
+      control handler);
+    * serving ends first (shutdown) — the pending enter is left for the
+      caller, which cancels it and still runs the radio's exit.
+    """
+    serve_task: asyncio.Task[None] = asyncio.ensure_future(serve())
+    try:
+        done, _pending = await asyncio.wait(
+            {startup_enter, serve_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if startup_enter in done:
+            current = asyncio.current_task()
+            if startup_enter.cancelled() and (
+                current is None or current.cancelling() == 0
+            ):
+                # An operator disconnect during the hold cancels the
+                # background enter without cancelling this task (awaiting
+                # a cancelled task raises here but leaves this task
+                # uncancelled): keep serving below. A genuine shutdown
+                # cancels this task too, so it still falls through to
+                # the re-raise and ends cleanly.
+                pass
+            else:
+                # The hold cleared (or gave up) before shutdown: success
+                # runs the late completion and serving continues; failure
+                # tears serving down by raising through the finally below.
+                await startup_enter
+                await server.finish_startup_busy_hold()
+        await serve_task
+    finally:
+        if not serve_task.done():
+            serve_task.cancel()
+            try:
+                await serve_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        elif not serve_task.cancelled():
+            # Retrieve a terminal serve error without masking the
+            # in-flight one (a re-raise of the same instance is harmless).
+            serve_task.exception()
+
+
+async def _run_web_station_with_busy_hold(
+    session: Any,
+    args: argparse.Namespace,
+    *,
+    managed_tx_composition: ManagedTxCompositionPort | None,
+    shutdown_backstop: _ShutdownBackstop | None,
+) -> int:
+    """Run web/station when the radio publishes a start-up busy signal.
+
+    Behaviour is unchanged unless the first connect enters the busy
+    cooldown: the enter is raced against the hold signal, and only when
+    the hold wins does start-up stop waiting — ``_cmd_web`` serves
+    not-ready while THE SAME connect keeps running in the background (no
+    second connect is started). A radio without the signal never reaches
+    here; ``serve`` and every other command keep awaiting the connect.
+    """
+    event = _startup_busy_hold_event_of(session)
+    assert event is not None
+    radio = session._radio if isinstance(session, _ManagedTxRadioSession) else session
+    enter_task: asyncio.Task[Any] = asyncio.ensure_future(session.__aenter__())
+    busy_waiter: asyncio.Task[bool] = asyncio.ensure_future(event.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {enter_task, busy_waiter}, return_when=asyncio.FIRST_COMPLETED
+        )
+    except BaseException:
+        await _cancel_task_quietly(busy_waiter)
+        await _cancel_task_quietly(enter_task)
+        raise
+    if not busy_waiter.done():
+        await _cancel_task_quietly(busy_waiter)
+    if enter_task in done:
+        # The first connect finished before any busy cooldown: exactly
+        # today's start-up, with manual enter/exit standing in for
+        # ``async with`` (a failed enter propagates with no exit, as the
+        # context manager would).
+        await enter_task
+        try:
+            result = await _cmd_web(
+                radio,
+                args,
+                managed_tx_composition=managed_tx_composition,
+                shutdown_backstop=shutdown_backstop,
+            )
+        except BaseException as exc:
+            await session.__aexit__(type(exc), exc, exc.__traceback__)
+            raise
+        await session.__aexit__(None, None, None)
+        return result
+    # The busy hold won: serve now while the same connect keeps running.
+    # Its post-enter continuation (transport_ready) runs inside the
+    # background ``__aenter__`` itself when the grant lands.
+    try:
+        result = await _cmd_web(
+            radio,
+            args,
+            managed_tx_composition=managed_tx_composition,
+            shutdown_backstop=shutdown_backstop,
+            startup_enter=enter_task,
+        )
+    except BaseException as exc:
+        await _settle_background_enter(enter_task)
+        await session.__aexit__(type(exc), exc, exc.__traceback__)
+        raise
+    await _settle_background_enter(enter_task)
+    await session.__aexit__(None, None, None)
+    return result
+
+
 async def _run(args: argparse.Namespace) -> int:
     wants_stats = bool(getattr(args, "stats", False))
     if args.command == "audio" and args.audio_command == "caps" and not wants_stats:
@@ -2436,6 +2597,18 @@ async def _run(args: argparse.Namespace) -> int:
         else _ManagedTxRadioSession(radio, managed_tx_composition, backstop)
     )
     try:
+        if args.command in ("web", "station") and (
+            _startup_busy_hold_event_of(session) is not None
+        ):
+            # MOR-3391 part 2: this radio reports a first-connect busy
+            # hold through a public signal; start-up stops waiting only
+            # when that hold is entered, and serves not-ready meanwhile.
+            return await _run_web_station_with_busy_hold(
+                session,
+                args,
+                managed_tx_composition=managed_tx_composition,
+                shutdown_backstop=backstop,
+            )
         async with session:
             if args.command == "audio" and args.audio_command == "caps":
                 if CAP_AUDIO not in radio.capabilities:
@@ -4206,6 +4379,7 @@ async def _cmd_web(
     *,
     managed_tx_composition: ManagedTxCompositionPort | None = None,
     shutdown_backstop: _ShutdownBackstop | None = None,
+    startup_enter: asyncio.Task[Any] | None = None,
 ) -> int:
     import pathlib
 
@@ -4536,7 +4710,7 @@ async def _cmd_web(
             dx_cluster=dx_info,
         )
 
-    try:
+    async def _serve() -> None:
         if shutdown_backstop is None:
             await server.serve_forever(on_started=_banner)
         else:
@@ -4545,6 +4719,15 @@ async def _cmd_web(
                 on_shutdown_signal=shutdown_backstop.arm,
                 on_tx_release=shutdown_backstop.protect,
             )
+
+    try:
+        if startup_enter is None:
+            await _serve()
+        else:
+            # MOR-3391 part 2: the first connect is waiting out a busy
+            # reject; serve not-ready now (the bundled rigctld above is
+            # already bound) while the same connect keeps running.
+            await _serve_while_startup_connect_pending(server, startup_enter, _serve)
     except asyncio.CancelledError:
         pass
     finally:

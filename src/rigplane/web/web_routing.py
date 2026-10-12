@@ -21,6 +21,10 @@ import json
 import logging
 from typing import TYPE_CHECKING
 from rigplane.runtime.controller_authority import ControllerAuthority, ControllerError
+from rigplane.runtime.tx_interlock import (
+    is_exact_raw_transmission_end_frame,
+    send_civ_frame,
+)
 
 from .host_guard import (  # noqa: TID251
     MISDIRECTED_BODY,
@@ -35,6 +39,82 @@ if TYPE_CHECKING:
 __all__ = ["dispatch_http_request"]
 
 logger = logging.getLogger(__name__)
+
+
+def _raw_transaction_frame_from_payload(payload: object) -> bytes | None:
+    """Build the frame a raw CI-V transaction body would send, raise-free.
+
+    Parses command/sub/data with the handler's own parsers; anything
+    malformed returns None and keeps today's route refusal.
+    """
+
+    from . import server as _server_mod  # noqa: TID251
+
+    if not isinstance(payload, dict):
+        return None
+    try:
+        command = _server_mod.WebServer._parse_civ_byte(  # noqa: SLF001
+            payload.get("command"), "command"
+        )
+        sub = _server_mod.WebServer._parse_civ_byte(  # noqa: SLF001
+            payload.get("sub"), "sub", required=False
+        )
+        data = _server_mod.WebServer._parse_civ_hex_data(  # noqa: SLF001
+            payload.get("data", "")
+        )
+    except ValueError:
+        return None
+    if command is None:
+        return None
+    # Annotated local: under the web-scoped mypy run the runtime import
+    # resolves to Any, and a bare return would trip no-any-return while
+    # the value is real bytes-or-None.
+    frame: bytes | None = send_civ_frame(command, sub, data)
+    return frame
+
+
+async def _buffered_reader_for_transmission_end_frame(
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+) -> asyncio.StreamReader | None:
+    """Re-buffer the body when it is exactly a transmission-end frame.
+
+    Returns a fresh reader over the same bytes for the handler, or None
+    when the body does not build to a frame that ends a transmission —
+    missing, oversize, unreadable, or malformed — so the caller keeps
+    today's route refusal.
+    """
+
+    from . import server as _server_mod  # noqa: TID251
+
+    try:
+        content_length = int((headers or {}).get("content-length", "0"))
+    except ValueError:
+        return None
+    if reader is None or content_length <= 0:
+        return None
+    try:
+        body = await _server_mod._read_capped_body(reader, content_length)
+    except Exception:  # noqa: BLE001 — any read failure keeps the refusal
+        return None
+    if body is None:
+        return None
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return None
+    frame = _raw_transaction_frame_from_payload(payload)
+    if frame is None:
+        return None
+    # Annotated local, as above: the predicate resolves to Any under the
+    # web-scoped mypy run while the value is a real bool.
+    ends: bool = is_exact_raw_transmission_end_frame(frame)
+    if not ends:
+        return None
+    buffered = asyncio.StreamReader()
+    buffered.feed_data(body)
+    buffered.feed_eof()
+    return buffered
 
 
 async def dispatch_http_request(
@@ -167,6 +247,21 @@ async def _dispatch_http_request(
             return
         try:
             if path not in ("/api/v1/commands", "/api/v1/commands/batch"):
+                if path == "/api/v1/civ/transaction":
+                    # A raw transaction whose frame ends a transmission
+                    # is exempt from the route refusal, matching the
+                    # executor's capture exemption: the peek rebuilds
+                    # the exact bytes the handler would send, so a
+                    # malformed or non-exempt body keeps today's
+                    # refusal below.
+                    replacement = await _buffered_reader_for_transmission_end_frame(
+                        headers, reader
+                    )
+                    if replacement is not None:
+                        await _dispatch_http_routes(
+                            server, writer, method, path, headers, replacement, query
+                        )
+                        return
                 raise ControllerError("controller_local_required")
             ticket = controller.credential((headers or {}).get("x-rigplane-controller"))
             with controller.bind(ticket):

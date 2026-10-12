@@ -93,7 +93,9 @@ from ..runtime.tx_interlock import (
     TxInterlockRefusal,
     classify_raw_civ_frame_tx_family,
     is_exact_raw_dekey_frame,
+    is_exact_raw_transmission_end_frame,
     resolve_rf_state,
+    send_civ_frame,
 )
 from ..sdr import IqSource, SdrConfig
 from ..sdr.runtime import SdrScopeRuntime
@@ -483,6 +485,30 @@ def _command_error_code(exc: BaseException) -> str:
     return "command_failed"
 
 
+def _raw_civ_transaction_frame(params: Mapping[str, Any]) -> bytes | None:
+    """Build the exact frame a ``raw_civ_transaction`` intent would send.
+
+    Raise-free: anything that does not build — a missing key, a
+    non-numeric part, an out-of-range byte — returns None, so the
+    caller keeps today's capture behavior and the existing error
+    surfaces downstream.
+    """
+
+    try:
+        sub = params.get("sub")
+        # Annotated local: under the web-scoped mypy run the runtime
+        # import resolves to Any, and a bare return would trip
+        # no-any-return while the value is real bytes-or-None.
+        frame: bytes | None = send_civ_frame(
+            int(params["command"]),
+            None if sub is None else int(sub),
+            bytes(params["data"]),
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return frame
+
+
 @dataclass(slots=True)
 class _HttpCommandExecutor:
     server: "WebServer"
@@ -506,9 +532,20 @@ class _HttpCommandExecutor:
             raise RuntimeError("No radio configured")
         controller = getattr(self.server, "_controller", None)
         if isinstance(controller, ControllerAuthority):
-            ticket = controller.capture()
-            if ticket.remote:
-                raise ControllerError("controller_tx_unsupported")
+            # A raw transaction whose frame ends a transmission never
+            # takes a controller seat: the raw PTT off and voice TX
+            # memory stop unkey like the typed PTT-off, which never
+            # captures either.  Anything that does not build to
+            # exactly such a frame captures as before.
+            raw_frame = (
+                _raw_civ_transaction_frame(intent.params)
+                if intent.name == "raw_civ_transaction"
+                else None
+            )
+            if raw_frame is None or not is_exact_raw_transmission_end_frame(raw_frame):
+                ticket = controller.capture()
+                if ticket.remote:
+                    raise ControllerError("controller_tx_unsupported")
         params = intent.params
         if intent.name == "raw_civ_transaction":
             if not isinstance(radio, CivTransactionCapable):
@@ -738,6 +775,17 @@ def _serialize_choices(
     if not values or not labels:
         return []
     return [{"value": value, "label": labels[str(value)]} for value in values]
+
+
+def _startup_busy_session_payload(
+    busy: bool, retry_in_seconds: float | None
+) -> dict[str, object]:
+    """The served ``connection.session`` object (MOR-3391 part 2).
+
+    Always present: ``busy`` false and ``retryInSeconds`` null outside a
+    start-up busy hold.
+    """
+    return {"busy": busy, "retryInSeconds": retry_in_seconds}
 
 
 def _serialize_keyboard_config(profile: "RadioProfile") -> dict[str, object] | None:
@@ -1225,6 +1273,10 @@ class WebServer:
         # could not be opened; ``_build_radio_health`` combines it with the
         # same no-radio-observation predicate.
         self._served_without_port: bool = False
+        # MOR-3391 part 2: set once the startup gate released for a
+        # start-up busy hold. Unlike the silent-link mark above it never
+        # feeds health: a held session is a busy radio, not a silent one.
+        self._served_with_startup_busy_hold: bool = False
         # Audio bridge (virtual device integration)
         self._audio_bridge: "AudioBridge | None" = None
         # MOR-3078: bridge kwargs armed by ``defer_audio_bridge_start``
@@ -1461,6 +1513,22 @@ class WebServer:
     def _radio_ready(self) -> bool:
         """Backend view of radio readiness (CI-V healthy)."""
         return bool(radio_ready(self._radio))
+
+    def _startup_busy_hold(self) -> tuple[bool, float | None]:
+        """Whether the first connect waits out a busy reject (MOR-3391).
+
+        Read through the radio's public busy surface only; a radio
+        without it is never busy. The retry number is the live cooldown
+        remainder while one runs, else the hold's cooldown between two
+        busy passes.
+        """
+        event = getattr(self._radio, "startup_busy_hold_event", None)
+        if not isinstance(event, asyncio.Event) or not event.is_set():
+            return False, None
+        retry = getattr(self._radio, "startup_busy_hold_retry_in_seconds", None)
+        if isinstance(retry, bool) or not isinstance(retry, (int, float)):
+            return True, None
+        return True, float(retry)
 
     def _connection_identity_payload(self) -> dict[str, object] | None:
         """The served ``connection.identity`` object (MOR-3071).
@@ -3118,8 +3186,8 @@ class WebServer:
                 # the OFF down.
                 logger.warning("reconnect: managed TX release failed", exc_info=True)
 
-    def _on_radio_reconnect(self) -> None:
-        """Called after soft_reconnect — refetch state and re-enable scope."""
+    def _begin_reconnect_reacquire(self) -> None:
+        """Reset epoch facts and reopen the readiness gate for a refetch."""
         # A/B identity and relative samples are connection-epoch facts.  Clear
         # them before any new-epoch read can arrive; the topology-derived MAIN
         # fact is independently valid and is reasserted without touching TX.
@@ -3130,79 +3198,110 @@ class WebServer:
         if self._radio_poller is not None:
             self._radio_poller._initial_fetch_done.clear()
 
-        async def _refetch_and_reenable() -> None:
-            """Release TX first, then refetch state, signal readiness and scope."""
-            try:
-                # Inside the guard, not above it (MOR-1187's shape, MOR-1196):
-                # servicing the release resolves the supervisor, which is
-                # backend code and free to raise anything.  Above the
-                # ``finally`` it escapes with the gate still clear, and since
-                # this closure is the only thing in ``src/`` that ever re-sets
-                # the gate, the poller defers and re-queues ``EnableScope`` for
-                # good.  The failure still propagates — the point is that
-                # cleanup runs first, not that anything is swallowed.
-                await self._service_managed_tx_release()
-                try:
-                    if self._radio is not None and hasattr(
-                        self._radio, "_fetch_initial_state"
-                    ):
-                        await self._radio._fetch_initial_state()
-                    if isinstance(self._radio_poller, RadioPoller):
-                        await self._radio_poller.select_vfo_a_on_connect(
-                            read_only=self._config.read_only
-                        )
-                except Exception:
-                    logger.warning("reconnect: refetch failed", exc_info=True)
-            finally:
-                # The readiness gate MUST reopen unconditionally for any
-                # attached poller-like object (MOR-1187/1196 invariant —
-                # ``_refetch_and_reenable`` is the only thing in ``src/``
-                # that ever re-sets it; ``test_web_recovery_durable_off``
-                # pins this with a non-RadioPoller stub).
-                if self._radio_poller is not None:
-                    self._radio_poller._initial_fetch_done.set()
-                if isinstance(self._radio_poller, RadioPoller):
-                    # MOR-1495 review R2: RadioPoller._run()'s one-time
-                    # startup section never re-fires after a soft-reconnect,
-                    # so re-seed scanning/scan_resume_mode here too — otherwise
-                    # a reconnect after any scan command would leave the web
-                    # trusting a possibly-stale pre-reconnect value forever.
-                    # This is a pure local seed and never writes to the radio.
-                    try:
-                        self._radio_poller._seed_scan_facts_at_connect()
-                    except Exception:
-                        logger.warning(
-                            "reconnect: scan facts seed failed",
-                            exc_info=True,
-                        )
-            # Re-enable scope after refetch completes.
-            # Do NOT gate on self._radio_ready(): that property waits for
-            # CI-V broadcast data, but on IC-7610 in the "deaf" firmware
-            # state broadcast may only resume once a scope-enable command
-            # is sent — creating a deadlock where scope re-enable waits
-            # for the very signal it would itself trigger.  The session
-            # is already up at this point (soft_reconnect completed auth +
-            # discovery), so queue EnableScope unconditionally; if the
-            # radio is genuinely unreachable the command will fail on its
-            # own, which is strictly better than a silent 30-second wait
-            # every reconnect cycle.
-            if (
-                self._scope_handlers
-                and self._radio is not None
-                and self._hardware_scope_available
-                and not self._scope_enable_failed
-            ):
-                self._set_scope_data_callback(self._on_hardware_scope_frame)
-                if await self._execute_scope_command(
-                    EnableScope(generation=self._scope_demand_generation)
-                ):
-                    self._scope_enabled = True
-                    logger.info(
-                        "scope: re-enable confirmed after reconnect (%d handlers)",
-                        len(self._scope_handlers),
-                    )
+    def _on_radio_reconnect(self) -> None:
+        """Called after soft_reconnect — refetch state and re-enable scope."""
+        self._begin_reconnect_reacquire()
+        self._spawn(self._refetch_and_reenable())
 
-        self._spawn(_refetch_and_reenable())
+    async def finish_startup_busy_hold(self) -> None:
+        """Complete web start-up after a start-up busy hold is granted.
+
+        Runs the late-connect completion: the shared
+        ``_refetch_and_reenable`` (initial-state refetch, VFO-A select,
+        scan seeding and scope re-enable — the same body a late
+        ``connect()`` gets through ``_on_radio_reconnect``) plus the
+        poller's one-time start-up fetches, which ran against the
+        disconnected radio while the hold was pending. Awaited (not
+        spawned) so the caller knows when the station is ready.
+        """
+        self._begin_reconnect_reacquire()
+        await self._refetch_and_reenable()
+        if isinstance(self._radio_poller, RadioPoller):
+            # The poller's one-time fetches from ``RadioPoller._run``
+            # already ran at server start, against the disconnected
+            # radio; run them once now that the grant landed.
+            try:
+                await self._radio_poller._fetch_nb_controls()
+            except Exception:
+                logger.debug(
+                    "radio-poller: NB controls late fetch failed", exc_info=True
+                )
+            try:
+                await self._radio_poller._fetch_mod_inputs()
+            except Exception:
+                logger.debug("radio-poller: MOD-input late fetch failed", exc_info=True)
+
+    async def _refetch_and_reenable(self) -> None:
+        """Release TX first, then refetch state, signal readiness and scope."""
+        try:
+            # Inside the guard, not above it (MOR-1187's shape, MOR-1196):
+            # servicing the release resolves the supervisor, which is
+            # backend code and free to raise anything.  Above the
+            # ``finally`` it escapes with the gate still clear, and since
+            # this method is the only thing in ``src/`` that ever re-sets
+            # the gate, the poller defers and re-queues ``EnableScope`` for
+            # good.  The failure still propagates — the point is that
+            # cleanup runs first, not that anything is swallowed.
+            await self._service_managed_tx_release()
+            try:
+                if self._radio is not None and hasattr(
+                    self._radio, "_fetch_initial_state"
+                ):
+                    await self._radio._fetch_initial_state()
+                if isinstance(self._radio_poller, RadioPoller):
+                    await self._radio_poller.select_vfo_a_on_connect(
+                        read_only=self._config.read_only
+                    )
+            except Exception:
+                logger.warning("reconnect: refetch failed", exc_info=True)
+        finally:
+            # The readiness gate MUST reopen unconditionally for any
+            # attached poller-like object (MOR-1187/1196 invariant —
+            # ``_refetch_and_reenable`` is the only thing in ``src/``
+            # that ever re-sets it; ``test_web_recovery_durable_off``
+            # pins this with a non-RadioPoller stub).
+            if self._radio_poller is not None:
+                self._radio_poller._initial_fetch_done.set()
+            if isinstance(self._radio_poller, RadioPoller):
+                # MOR-1495 review R2: RadioPoller._run()'s one-time
+                # startup section never re-fires after a soft-reconnect,
+                # so re-seed scanning/scan_resume_mode here too — otherwise
+                # a reconnect after any scan command would leave the web
+                # trusting a possibly-stale pre-reconnect value forever.
+                # This is a pure local seed and never writes to the radio.
+                try:
+                    self._radio_poller._seed_scan_facts_at_connect()
+                except Exception:
+                    logger.warning(
+                        "reconnect: scan facts seed failed",
+                        exc_info=True,
+                    )
+        # Re-enable scope after refetch completes.
+        # Do NOT gate on self._radio_ready(): that property waits for
+        # CI-V broadcast data, but on IC-7610 in the "deaf" firmware
+        # state broadcast may only resume once a scope-enable command
+        # is sent — creating a deadlock where scope re-enable waits
+        # for the very signal it would itself trigger.  The session
+        # is already up at this point (soft_reconnect completed auth +
+        # discovery), so queue EnableScope unconditionally; if the
+        # radio is genuinely unreachable the command will fail on its
+        # own, which is strictly better than a silent 30-second wait
+        # every reconnect cycle.
+        if (
+            self._scope_handlers
+            and self._radio is not None
+            and self._hardware_scope_available
+            and not self._scope_enable_failed
+        ):
+            self._set_scope_data_callback(self._on_hardware_scope_frame)
+            if await self._execute_scope_command(
+                EnableScope(generation=self._scope_demand_generation)
+            ):
+                self._scope_enabled = True
+                logger.info(
+                    "scope: re-enable confirmed after reconnect (%d handlers)",
+                    len(self._scope_handlers),
+                )
 
     def _cancel_scope_reenable_task(self) -> None:
         """Cancel readiness work invalidated by a last-viewer transition."""
@@ -4038,6 +4137,9 @@ class WebServer:
                     "radioReady": self._radio_ready(),
                     "controlConnected": control_connected,
                     "identity": self._connection_identity_payload(),
+                    "session": _startup_busy_session_payload(
+                        *self._startup_busy_hold()
+                    ),
                     "wsClients": len(self._client_tasks),
                 },
             },
@@ -4062,6 +4164,31 @@ class WebServer:
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
         ready = self._radio_ready()
+        busy, retry = self._startup_busy_hold()
+        if busy and not ready:
+            # MOR-3391 part 2: the first connect is waiting out a busy
+            # reject while HTTP already serves. Every other not-ready body
+            # stays exactly {"status": "not_ready", "radioReady": false}.
+            # The 0.0 is unreachable with the production radio (its event
+            # is set only with a live cooldown); it guards doubles that
+            # set the event without a retry number.
+            body = json.dumps(
+                {
+                    "status": "not_ready",
+                    "radioReady": False,
+                    "reason": "session_busy",
+                    "retryInSeconds": retry if retry is not None else 0.0,
+                },
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer,
+                503,
+                "Service Unavailable",
+                body,
+                {"Content-Type": "application/json"},
+            )
+            return
         body = json.dumps(
             {
                 "status": "ready" if ready else "not_ready",
@@ -5712,13 +5839,44 @@ class WebServer:
             )
             return
         try:
-            params = _consume_normalized_level_unit(raw_name, raw_params)
-            result = await self._control_handler_for()._enqueue_command(  # noqa: SLF001
-                raw_name,
-                params,
-                command_id=None if payload.get("id") is None else str(payload["id"]),
-                source="http",
-            )
+            if (
+                raw_name in ControlHandler._READ_ONLY_HANDLERS  # noqa: SLF001
+                or raw_name == "set_vfo_freq"
+            ):
+                # Queue-bypass commands (get_*, send_cw_text, ...) execute
+                # inline through _enqueue_command and already report their
+                # outcome; the batch rejects them, so they keep this path.
+                # set_vfo_freq already awaits its own completion (write plus
+                # readback under the bound connection generation) inside
+                # _enqueue_command, so it keeps this path too — the batch
+                # proxy collector cannot supply capture_connection_generation.
+                # It is the only such command: managed PTT awaits submission
+                # but refuses non-websocket sources, and every other queued
+                # command completes on the poller-settled ordered future.
+                params = _consume_normalized_level_unit(raw_name, raw_params)
+                result = await self._control_handler_for()._enqueue_command(  # noqa: SLF001
+                    raw_name,
+                    params,
+                    command_id=None
+                    if payload.get("id") is None
+                    else str(payload["id"]),
+                    source="http",
+                )
+            else:
+                # Every other command runs the batch step path — prepare,
+                # then execute to completion — so the reply reports the
+                # poller outcome (409 radio_nak, 504 timeout), not the
+                # enqueue ack.
+                raw_step: dict[str, Any] = {
+                    "name": raw_name,
+                    "params": raw_params,
+                }
+                if "id" in payload:
+                    raw_step["id"] = payload["id"]
+                step = await self._prepare_http_batch_step(0, raw_step)
+                result = await self._execute_http_prepared_step(
+                    step, use_executor_details=True
+                )
         except TxInterlockRefusal as exc:
             await self._send_json(
                 writer,
@@ -5781,6 +5939,22 @@ class WebServer:
                 status,
                 reason,
                 {"ok": False, "error": code, "message": message},
+            )
+            return
+        except Exception as exc:
+            # The batch's catch-all: a poller failure that is neither a
+            # CommandError nor a timeout (e.g. a lost radio link during an
+            # identity hold) still answers with the error envelope, never
+            # the routing layer's generic 500.
+            await self._send_json(
+                writer,
+                500,
+                "Internal Server Error",
+                {
+                    "ok": False,
+                    "error": "command_failed",
+                    "message": str(exc) or type(exc).__name__,
+                },
             )
             return
 
@@ -5879,6 +6053,48 @@ class WebServer:
             source=entry.source,
             command_service=entry.command_service,
         )
+
+    async def _execute_http_prepared_step(
+        self,
+        step: _HttpBatchStep,
+        *,
+        use_executor_details: bool = False,
+    ) -> dict[str, Any]:
+        """Run one prepared HTTP step to completion, batch and single alike.
+
+        Intent steps execute through the shared command service (which waits
+        for poller completion itself); queued steps wait on the poller-settled
+        ordered future under ``_COMMAND_BATCH_STEP_TIMEOUT``, failing the
+        lifecycle on timeout. Returns the step's acknowledgement result —
+        or, when *use_executor_details* is set (the single-command path), the
+        executor's details, which is the body ``_enqueue_command`` returns
+        (the ``admitted_level`` enrichment included).
+        """
+        if isinstance(step.command, CommandIntent):
+            service_result = await self.command_service.execute(step.command)
+            if use_executor_details:
+                return dict(service_result.executor_result.details or {})
+            return step.result
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._command_queue.put_ordered(
+            step.command,
+            future=future,
+            command_id=step.command_id,
+            source=step.source,
+            command_service=step.command_service,
+        )
+        try:
+            await asyncio.wait_for(future, timeout=_COMMAND_BATCH_STEP_TIMEOUT)
+        except (RigplaneTimeoutError, TimeoutError) as exc:
+            if step.command_service is not None and step.command_id is not None:
+                step.command_service.fail_command(
+                    step.command_id,
+                    message=str(exc) or type(exc).__name__,
+                    timed_out=True,
+                    source=step.source,
+                )
+            raise
+        return step.result
 
     def _prepare_http_batch_transaction_step(
         self,
@@ -6308,32 +6524,8 @@ class WebServer:
                 return
 
             try:
-                if isinstance(step.command, CommandIntent):
-                    await self.command_service.execute(step.command)
-                else:
-                    future: asyncio.Future[None] = (
-                        asyncio.get_running_loop().create_future()
-                    )
-                    self._command_queue.put_ordered(
-                        step.command,
-                        future=future,
-                        command_id=step.command_id,
-                        source=step.source,
-                        command_service=step.command_service,
-                    )
-                    await asyncio.wait_for(future, timeout=_COMMAND_BATCH_STEP_TIMEOUT)
+                step_result = await self._execute_http_prepared_step(step)
             except (RigplaneTimeoutError, TimeoutError) as exc:
-                if (
-                    not isinstance(step.command, CommandIntent)
-                    and step.command_service is not None
-                    and step.command_id is not None
-                ):
-                    step.command_service.fail_command(
-                        step.command_id,
-                        message=str(exc) or type(exc).__name__,
-                        timed_out=True,
-                        source=step.source,
-                    )
                 results.append(
                     {
                         "index": step.index,
@@ -6402,7 +6594,7 @@ class WebServer:
                         "name": step.name,
                         "ok": True,
                         "status": "executed",
-                        "result": step.result,
+                        "result": step_result,
                     }
                 )
 

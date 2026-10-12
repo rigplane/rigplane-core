@@ -106,6 +106,20 @@ def test_measured_values_and_a_driver_error_are_formatted(
     assert "- Driver error: `ValueError: boom`" in lines
 
 
+def test_an_incomplete_verdict_is_shown_with_its_unevaluated_criterion(
+    smoke_report: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = copy.deepcopy(smoke_report)
+    report["criteria"]["rssGrowth"].update(
+        status="NOT_EVALUATED", slopeBytesPerHour=None
+    )
+    report["verdict"] = soak_driver.VERDICT_INCOMPLETE
+    code, lines = _summarize(tmp_path, monkeypatch, report)
+    assert code == 0
+    assert lines[0].startswith("## Soak INCOMPLETE: ")
+    assert "- RSS growth NOT_EVALUATED: n/a (limit 50 MiB/h)" in lines
+
+
 @pytest.mark.parametrize("report_text", [None, "{not json", "[]"])
 def test_missing_or_unusable_report_exits_1_with_a_no_report_summary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, report_text: str | None

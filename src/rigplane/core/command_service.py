@@ -1699,7 +1699,7 @@ def _receiver_count_value(params: Mapping[str, Any]) -> int | None:
         return None
     try:
         return int(params["receiver_count"])
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 

@@ -731,11 +731,63 @@ def _close(seq: int) -> bytes:
     return bytes(pkt)
 
 
+class _ManualClock:
+    """A hand-advanced clock driving the simulator's retransmit pacing.
+
+    The simulator stamps and compares round times through its ``clock``
+    attribute; freezing it here removes wall time from the pacing
+    assertion below. Starts at an arbitrary nonzero base.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+async def _drain(client: _UdpClient, timeout: float = 0.05) -> list[bytes]:
+    """Collect every packet that arrives before ``timeout`` runs dry."""
+    out: list[bytes] = []
+    while True:
+        try:
+            out.append(await client.recv(timeout=timeout))
+        except TimeoutError:
+            return out
+
+
+async def _paced_sim(clock: _ManualClock) -> MockIcomRadio:
+    """A started simulator whose rounds answer only to ``clock``.
+
+    Stops the silent-client repeat loop, so every round below is
+    packet-triggered and stamped with ``clock``. The fallback itself
+    stays pinned by
+    ``test_unfilled_gap_repeats_ranges_twice_per_round``. The caller
+    must ``await sim.stop()``.
+    """
+    sim = MockIcomRadio(clock=clock)
+    await sim.start()
+    loop_task = sim._civ_gap_task
+    sim._civ_gap_task = None
+    if loop_task is not None:
+        loop_task.cancel()
+        try:
+            await loop_task
+        except (asyncio.CancelledError, Exception):
+            pass
+    return sim
+
+
 async def _replay_rounds(window: str) -> tuple[int, list[float]]:
     """Drive one window's recorded c2r timeline against a fresh simulator.
 
     Returns the recorded round count (one per r2c retransmit row) and the
-    arrival times of each observed round's first packet.
+    simulator-clock time of each observed round. Client packets go out at
+    their recorded offsets on a manual clock, so round spacing is measured
+    on the simulator's clock, never wall time.
     """
     rows = _fixture_rows(window)
     script = [
@@ -749,8 +801,8 @@ async def _replay_rounds(window: str) -> tuple[int, list[float]]:
         for row in rows
         if row["dir"] == "r2c" and row["kind"].startswith("retransmit")
     )
-    sim = MockIcomRadio()
-    await sim.start()
+    clock = _ManualClock()
+    sim = await _paced_sim(clock)
     loop = asyncio.get_running_loop()
     proto = _UdpClient()
     await loop.create_datagram_endpoint(lambda: proto, local_addr=(_HOST, 0))
@@ -763,44 +815,40 @@ async def _replay_rounds(window: str) -> tuple[int, list[float]]:
             assert await proto.recv() == req
             assert _is_freq_reply(await proto.recv())
         base = script[0][0]
-        t0 = time.monotonic()
-        hits: list[tuple[float, bytes]] = []
-        end = t0 + (script[-1][0] - base) + 0.15
-
-        async def _gather() -> None:
-            while time.monotonic() < end:
-                try:
-                    hits.append((time.monotonic(), await proto.recv(timeout=0.02)))
-                except TimeoutError:
-                    pass
-
-        job = asyncio.create_task(_gather())
+        starts: list[float] = []
+        retransmits = 0
         for stamp, seq, kind in script:
-            await asyncio.sleep(max(0.0, t0 + (stamp - base) - time.monotonic()))
+            # The simulator processes this packet while the clock still
+            # reads the step's time, so an observed round is stamped here.
+            clock.now = 1000.0 + (stamp - base)
+            before = sim.civ_retransmit_requests
             proto.send(
                 _idle(seq) if kind == "idle" else _freq_get(seq=seq), sim.civ_port
             )
-        await job
+            for pkt in await _drain(proto):
+                if _parse_retransmit(pkt) is not None:
+                    retransmits += 1
+            delta = sim.civ_retransmit_requests - before
+            assert delta % 2 == 0, (window, delta)
+            starts.extend([clock.now] * (delta // 2))
+        assert retransmits == sim.civ_retransmit_requests, (window, retransmits)
     finally:
         proto.close()
         await sim.stop()
-    starts = [t for t, pkt in hits if _parse_retransmit(pkt) is not None][0::2]
-    assert len(starts) * 2 == sum(
-        1 for _, pkt in hits if _parse_retransmit(pkt) is not None
-    ), (window, len(hits))
+    assert len(starts) * 2 == retransmits, (window, retransmits)
     return recorded, starts
 
 
-async def test_round_rate_matches_recording(
-    server: MockIcomRadio, client: _UdpClient
-) -> None:
+async def test_round_rate_matches_recording() -> None:
     """Each window's client timeline draws about its recorded rounds.
 
     Per window the observed round count is within ±20 % of the recorded
-    one and no two rounds are closer than 70 ms. The tail pins row 143
-    @1.005 of gap_filled_by_idle: fills 131/133 narrow the request to
-    single 132, and a packet 3 ms after that round draws no round, while
-    the next one past the pacing window does.
+    one and no two rounds are closer than 70 ms — both measured on the
+    simulator's injected manual clock, so a loaded runner cannot skew
+    them. The tail pins row 143 @1.005 of gap_filled_by_idle: fills 131/133
+    narrow the request to single 132: a packet 3 ms after that round
+    draws no round, one 53 ms after it is still silent, while the next
+    one past the pacing window draws a round.
     """
     for window in (
         "gap_lost_buffered",
@@ -814,25 +862,38 @@ async def test_round_rate_matches_recording(
             gaps = [after - before for before, after in zip(starts, starts[1:])]
             assert min(gaps) >= 0.070, (window, min(gaps))
 
-    await _open_stream(client, server, 129)
-    req = _freq_get(seq=130)
-    client.send(req, server.civ_port)
-    assert await client.recv() == req
-    assert _is_freq_reply(await client.recv())
-    client.send(_idle(134), server.civ_port)
-    pair = [await client.recv() for _ in range(2)]
-    assert all(_parse_retransmit(p) == ("ranges", [(131, 133)]) for p in pair)
-    await asyncio.sleep(0.09)
-    client.send(_idle(131), server.civ_port)  # in order: fills, no round
-    client.send(_idle(133), server.civ_port)  # narrows to single 132: round
-    pair = [await client.recv() for _ in range(2)]
-    assert all(_parse_retransmit(p) == ("single", 132) for p in pair)
-    client.send(_idle(135), server.civ_port)  # ~3 ms after the round: silence
-    assert await _collect(client, 0.06) == []
-    await asyncio.sleep(0.1)
-    client.send(_idle(136), server.civ_port)
-    pair = [await client.recv() for _ in range(2)]
-    assert all(_parse_retransmit(p) == ("single", 132) for p in pair)
+    clock = _ManualClock()
+    sim = await _paced_sim(clock)
+    loop = asyncio.get_running_loop()
+    proto = _UdpClient()
+    await loop.create_datagram_endpoint(lambda: proto, local_addr=(_HOST, 0))
+    try:
+        await _open_stream(proto, sim, 129)
+        req = _freq_get(seq=130)
+        proto.send(req, sim.civ_port)
+        assert await proto.recv() == req
+        assert _is_freq_reply(await proto.recv())
+        proto.send(_idle(134), sim.civ_port)
+        pair = [await proto.recv() for _ in range(2)]
+        assert all(_parse_retransmit(p) == ("ranges", [(131, 133)]) for p in pair)
+        clock.advance(0.09)
+        proto.send(_idle(131), sim.civ_port)  # in order: fills, no round
+        proto.send(_idle(133), sim.civ_port)  # narrows to single 132: round
+        pair = [await proto.recv() for _ in range(2)]
+        assert all(_parse_retransmit(p) == ("single", 132) for p in pair)
+        clock.advance(0.003)
+        proto.send(_idle(135), sim.civ_port)  # ~3 ms after the round: silence
+        assert await _drain(proto) == []
+        clock.advance(0.05)  # ~53 ms after the round: still inside the window
+        proto.send(_idle(136), sim.civ_port)
+        assert await _drain(proto) == []
+        clock.advance(0.1)
+        proto.send(_idle(137), sim.civ_port)
+        pair = [await proto.recv() for _ in range(2)]
+        assert all(_parse_retransmit(p) == ("single", 132) for p in pair)
+    finally:
+        proto.close()
+        await sim.stop()
 
 
 async def test_tracked_openclose_close_consumes_its_number(

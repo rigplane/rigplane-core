@@ -23,6 +23,11 @@ from rigplane.radio import (
 from rigplane.audio.route import AudioConfigSource
 from rigplane.profiles import RadioProfile
 from rigplane.runtime._control_phase import ControlPhaseRuntime, _session_reject_hint
+from rigplane.runtime.session_lifecycle import (
+    AttemptResult,
+    CoreRadioSessionLifecycle,
+    LifecycleState,
+)
 from rigplane.transport import ConnectionState
 from rigplane.types import AudioCodec
 
@@ -30,6 +35,7 @@ from rigplane_testkit.icom import MockIcomRadio
 
 from _perf_helpers import fast_connect
 from test_radio import MockTransport
+from test_session_lifecycle import FakeMechanism
 
 
 # ---------------------------------------------------------------------------
@@ -1905,6 +1911,331 @@ class TestSessionRejectHint:
         assert send_mock.await_count == 4
 
         assert mt.disconnected is True
+
+
+class TestStartupBusyHoldSignal:
+    """MOR-3391 part 2: the public busy-hold surface on the radio.
+
+    The start-up gate in ``cli`` and the web wire read the hold through
+    ``startup_busy_hold_event`` / ``startup_busy_hold_retry_in_seconds``
+    instead of the private session lifecycle: the signal is set while a
+    first-connect busy cooldown owns the loop, never on a reconnect, and
+    clears when the grant lands.
+    """
+
+    @pytest.mark.asyncio
+    async def test_busy_signal_set_during_first_connect_hold(self) -> None:
+        """Two busy rejects then acceptance: the signal owns the hold."""
+
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        clock = _VirtualMonotonic()
+        tokens = [0x5000 + i for i in range(4)]
+        logins = [_build_login_response(token=t) for t in tokens]
+        busy_left = [2]
+        observed: list[tuple[bool, object]] = []
+
+        async def _status_flow() -> int:
+            observed.append(
+                (
+                    radio.startup_busy_hold_event.is_set(),
+                    radio.startup_busy_hold_retry_in_seconds,
+                )
+            )
+            if busy_left[0] > 0:
+                busy_left[0] -= 1
+                clock.advance(_REJECT_STEP_S)
+                radio._last_status_error = 0xFFFFFFFF
+                return 0
+            radio._last_status_error = 0
+            return 50001
+
+        send_mock = AsyncMock()
+        with _busy_hold_patch_stack(
+            radio,
+            clock,
+            login_responses=logins,
+            status_flow=_status_flow,
+            send_mock=send_mock,
+        ):
+            await radio.connect()
+
+        assert radio._civ_port == 50001
+        # The first sample runs before any reject (no hold yet); every
+        # sample after a reject runs during the next attempt, inside the
+        # hold between passes.
+        assert observed[0] == (False, None)
+        assert len(observed) == 3
+        for held, retry in observed[1:]:
+            assert held is True
+            assert isinstance(retry, (int, float)) and not isinstance(retry, bool)
+            assert retry >= 0
+        # The grant clears the signal and the retry number with it.
+        assert radio.startup_busy_hold_event.is_set() is False
+        assert radio.startup_busy_hold_retry_in_seconds is None
+
+    @pytest.mark.asyncio
+    async def test_reconnect_busy_reject_never_sets_the_busy_signal(self) -> None:
+        """A reconnect keeps the immediate attempts: no hold signal.
+
+        Drives the lifecycle directly: a lifecycle that already connected
+        once treats a SESSION_BUSY_REJECT (the transient the auth-stage
+        0xFFFFFFFF mapping produces) as an ordinary immediate retry, so
+        the start-up hold event stays clear through every attempt.
+        """
+
+        mech = FakeMechanism()
+        lifecycle = CoreRadioSessionLifecycle(
+            mech,
+            reject_cooldown_s=0.0,
+            not_ready_cooldown_s=0.0,
+            max_connect_attempts=3,
+            first_connect_busy_cooldown_s=30.0,
+            first_connect_busy_budget_s=600.0,
+        )
+        lifecycle._connected_once = True
+        for _ in range(3):
+            mech.queue_busy_reject()
+        # Sampled at each attempt's start: the terminal DISCONNECTED
+        # clears the event, so only per-attempt samples prove the
+        # reconnect path never raised it mid-loop.
+        seen: list[bool] = []
+        original_attempt = mech.connect_attempt
+
+        async def _probing_attempt() -> AttemptResult:
+            seen.append(lifecycle.startup_busy_hold_event.is_set())
+            return await original_attempt()
+
+        mech.connect_attempt = _probing_attempt  # type: ignore[method-assign]
+        with pytest.raises(ConnectionError, match="never became ready"):
+            await lifecycle.connect()
+
+        assert mech.connect_calls == 3
+        assert mech.release_calls == 3
+        assert seen == [False, False, False]
+        assert lifecycle.startup_busy_hold_event.is_set() is False
+        assert lifecycle.startup_busy_hold_retry_in_seconds is None
+
+    @pytest.mark.asyncio
+    async def test_not_ready_between_busy_passes_keeps_the_hold_retry_number(
+        self,
+    ) -> None:
+        """A NOT_READY pass mid-hold keeps serving the hold's retry number.
+
+        Pin for the served wire: after a busy pass, a SESSION_NOT_READY
+        attempt must not clear the hold's cooldown total while the hold
+        event is still set — ``startup_busy_hold_retry_in_seconds`` keeps
+        reporting the hold's cooldown (never null, which ``/readyz``
+        would serve as 0.0) until the grant lands.
+        """
+
+        mech = FakeMechanism()
+        busy_cooldown = 0.05
+        lifecycle = CoreRadioSessionLifecycle(
+            mech,
+            reject_cooldown_s=30.0,
+            not_ready_cooldown_s=0.07,
+            max_connect_attempts=5,
+            first_connect_busy_cooldown_s=busy_cooldown,
+            first_connect_busy_budget_s=600.0,
+        )
+        mech.queue_busy_reject()
+        mech.queue_not_ready()
+        mech.queue_busy_reject()
+        mech.queue_ok()
+        samples: list[float | None] = []
+        original_attempt = mech.connect_attempt
+
+        async def _probing_attempt() -> AttemptResult:
+            samples.append(lifecycle.startup_busy_hold_retry_in_seconds)
+            return await original_attempt()
+
+        mech.connect_attempt = _probing_attempt  # type: ignore[method-assign]
+        await lifecycle.connect()
+
+        assert samples == [None, busy_cooldown, busy_cooldown, busy_cooldown]
+        assert lifecycle.startup_busy_hold_event.is_set() is False
+        assert lifecycle.startup_busy_hold_retry_in_seconds is None
+
+    @pytest.mark.asyncio
+    async def test_busy_retry_number_inside_cooldown_is_the_live_remainder(
+        self,
+    ) -> None:
+        """Inside the busy COOLDOWN sleep the number is the live remainder.
+
+        Sampled from within the cooldown wait itself: it equals the
+        lifecycle's remaining time and is already less than the hold's
+        total — the value ``/readyz`` serves as ``retryInSeconds`` while
+        a re-login waits.
+        """
+
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        clock = _VirtualMonotonic()
+        tokens = [0x6000 + i for i in range(3)]
+        logins = [_build_login_response(token=t) for t in tokens]
+        busy_left = [1]
+        samples: list[tuple[float | None, float | None, float | None]] = []
+
+        async def _status_flow() -> int:
+            if busy_left[0] > 0:
+                busy_left[0] -= 1
+                clock.advance(_REJECT_STEP_S)
+                radio._last_status_error = 0xFFFFFFFF
+                return 0
+            radio._last_status_error = 0
+            return 50001
+
+        async def _sampling_sleep(delay: float) -> None:
+            lifecycle = radio._session_lifecycle
+            if lifecycle.status.cooldown_remaining_s is None:
+                # Not a cooldown wait (the connect's own pacing sleeps):
+                # pass through as a no-op like the stack's sleep double.
+                return
+            # Half the cooldown elapses "during" the wait, so the live
+            # remainder is strictly below the hold's total when sampled.
+            clock.advance(delay / 2)
+            samples.append(
+                (
+                    radio.startup_busy_hold_retry_in_seconds,
+                    lifecycle.status.cooldown_remaining_s,
+                    lifecycle.status.cooldown_total_s,
+                )
+            )
+
+        send_mock = AsyncMock()
+        with _busy_hold_patch_stack(
+            radio,
+            clock,
+            login_responses=logins,
+            status_flow=_status_flow,
+            send_mock=send_mock,
+        ):
+            with patch(
+                "rigplane.runtime.session_lifecycle.asyncio.sleep",
+                new=_sampling_sleep,
+            ):
+                await radio.connect()
+
+        assert radio._civ_port == 50001
+        assert len(samples) == 1
+        retry, remaining, total = samples[0]
+        assert isinstance(retry, float)
+        assert isinstance(remaining, float)
+        assert isinstance(total, float)
+        assert retry == remaining
+        assert retry < total
+        assert radio.startup_busy_hold_event.is_set() is False
+        assert radio.startup_busy_hold_retry_in_seconds is None
+
+    @pytest.mark.asyncio
+    async def test_discovery_pass_reports_the_busy_hold_like_a_busy_reject(
+        self,
+    ) -> None:
+        """A discovery-timeout pass holds the same busy signal as a reject.
+
+        MOR-3391 part 2 round 3: after one busy reject an unanswered
+        discovery counts as a busy pass, so the hold event stays set and
+        the retry number keeps reporting the cooldown until the grant
+        clears both. The live-holder stop is off here (``None``) to reach
+        the grant; the stop's own clearing is pinned below.
+        """
+
+        mech = FakeMechanism()
+        busy_cooldown = 0.05
+        lifecycle = CoreRadioSessionLifecycle(
+            mech,
+            reject_cooldown_s=30.0,
+            not_ready_cooldown_s=0.07,
+            max_connect_attempts=5,
+            first_connect_busy_cooldown_s=busy_cooldown,
+            first_connect_busy_budget_s=600.0,
+            first_connect_busy_live_holder_after_s=None,
+        )
+        mech.queue_busy_reject()
+        mech.queue_discovery_timeout()
+        mech.queue_ok()
+        samples: list[tuple[bool, float | None]] = []
+        original_attempt = mech.connect_attempt
+
+        async def _probing_attempt() -> AttemptResult:
+            samples.append(
+                (
+                    lifecycle.startup_busy_hold_event.is_set(),
+                    lifecycle.startup_busy_hold_retry_in_seconds,
+                )
+            )
+            return await original_attempt()
+
+        mech.connect_attempt = _probing_attempt  # type: ignore[method-assign]
+        await lifecycle.connect()
+
+        assert samples == [
+            (False, None),
+            (True, busy_cooldown),
+            (True, busy_cooldown),
+        ]
+        assert lifecycle.startup_busy_hold_event.is_set() is False
+        assert lifecycle.startup_busy_hold_retry_in_seconds is None
+
+    @pytest.mark.asyncio
+    async def test_live_holder_stop_after_a_discovery_pass_clears_the_signal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The stop clears the hold even when a discovery pass triggers it.
+
+        MOR-3391 part 2 round 3: the first attempt busy-rejects (one real
+        cooldown, so the second attempt starts past the compressed
+        threshold) and the second — a discovery timeout — already proves
+        a live holder, so the loop raises the honest busy error (never
+        the discovery message) and the hold clears with the stop. The
+        production 90 s cadence is pinned by part 1b's own rows.
+        """
+
+        mech = FakeMechanism()
+        lifecycle = CoreRadioSessionLifecycle(
+            mech,
+            reject_cooldown_s=30.0,
+            not_ready_cooldown_s=0.07,
+            max_connect_attempts=5,
+            first_connect_busy_cooldown_s=0.05,
+            first_connect_busy_budget_s=600.0,
+            first_connect_busy_live_holder_after_s=0.01,
+        )
+        mech.queue_busy_reject()
+        mech.queue_discovery_timeout()
+        samples: list[tuple[bool, float | None]] = []
+        real_sleep = asyncio.sleep
+
+        async def _recording_sleep(delay: float) -> None:
+            samples.append(
+                (
+                    lifecycle.startup_busy_hold_event.is_set(),
+                    lifecycle.startup_busy_hold_retry_in_seconds,
+                )
+            )
+            await real_sleep(delay)
+
+        monkeypatch.setattr(
+            "rigplane.runtime.session_lifecycle.asyncio.sleep", _recording_sleep
+        )
+
+        with pytest.raises(ConnectionError) as excinfo:
+            await lifecycle.connect()
+
+        message = str(excinfo.value)
+        assert "another client holds the session" in message
+        assert "did not respond to discovery" not in message
+        assert mech.connect_calls == 2
+        # The single pass set the hold before the stop cleared it.
+        assert len(samples) == 1
+        assert samples[0][0] is True
+        assert isinstance(samples[0][1], float)
+        assert lifecycle.state is LifecycleState.DISCONNECTED
+        assert lifecycle.startup_busy_hold_event.is_set() is False
+        assert lifecycle.startup_busy_hold_retry_in_seconds is None
 
 
 class _FakeSocket:
