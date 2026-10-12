@@ -1,11 +1,11 @@
 """Per-radio record of the CI-V tracked sequence number (MOR-3418).
 
-The control phase records the CI-V transport's ``send_seq`` here, and a fresh
-login starts its numbering just past the record instead of at 0.
-``tests/testkit/test_orphan_civ_restart.py`` characterizes the case this
-serves. One JSON file per ``host:port`` under the platformdirs state
-directory, holding the radio's GUID from login; a record whose GUID differs
-from the current login's is not used.
+The control phase records the CI-V transport's ``send_seq`` here, deletes the
+record at a clean exit, and starts a fresh login's numbering just past a record
+it finds instead of at 0. ``tests/testkit/test_orphan_civ_restart.py``
+characterizes the case this serves. One JSON file per ``host:port`` under the
+platformdirs state directory, holding the radio's GUID from login; a record
+whose GUID differs from the current login's is not used.
 """
 
 from __future__ import annotations
@@ -116,3 +116,17 @@ def write_record(host: str, port: int, guid: bytes, send_seq: int, now: float) -
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def remove_record(host: str, port: int, guid: bytes) -> None:
+    """Delete this radio's record; a record of another GUID is left alone.
+
+    An absent file is not an error.
+    """
+    path = _record_path(host, port)
+    try:
+        other = json.loads(path.read_text(encoding="utf-8")).get("guid") != guid.hex()
+    except (OSError, ValueError, AttributeError):
+        other = False
+    if not other:
+        path.unlink(missing_ok=True)

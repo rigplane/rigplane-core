@@ -160,6 +160,16 @@ def test_a_failed_rename_leaves_the_old_record_intact(
     assert names == [civ_seq._record_path("192.0.2.1", 50001).name]
 
 
+def test_a_record_is_removed_only_for_its_own_radio() -> None:
+    path = civ_seq._record_path("192.0.2.1", 50001)
+    civ_seq.write_record("192.0.2.1", 50001, _OTHER_GUID, 5, _NOW)
+    civ_seq.remove_record("192.0.2.1", 50001, _GUID)
+    assert path.exists()
+    civ_seq.remove_record("192.0.2.1", 50001, _OTHER_GUID)
+    assert not path.exists()
+    civ_seq.remove_record("192.0.2.1", 50001, _OTHER_GUID)  # absent: no error
+
+
 async def test_a_fresh_login_starts_past_the_record() -> None:
     radio = _radio()
     _record(radio, 1000)
@@ -182,15 +192,18 @@ async def test_an_unusable_record_starts_a_fresh_login_at_zero(record: str) -> N
     assert radio._control_phase.fresh_login_status == _HELD
 
 
-async def test_a_login_without_a_guid_reads_and_writes_no_record() -> None:
+async def test_a_login_without_a_guid_touches_no_record() -> None:
     radio = _radio()
     with patch.object(civ_seq, "read_record", side_effect=AssertionError("read")):
         assert await _first_seq(radio, with_guid=False) == 0
     cp = radio._control_phase
     assert cp.fresh_login_status == _HELD
-    with patch.object(civ_seq, "write_record", side_effect=AssertionError("write")):
+    with (
+        patch.object(civ_seq, "write_record", side_effect=AssertionError("write")),
+        patch.object(civ_seq, "remove_record", side_effect=AssertionError("remove")),
+    ):
         cp._record_civ_seq()
-        await cp._record_civ_seq_on_exit(7)
+        await cp._forget_civ_seq()
     cp._stop_civ_seq_persistence()
     assert cp._civ_seq_write is None
 
@@ -266,7 +279,11 @@ async def _wait_for(condition: Callable[[], bool], budget_s: float = 3.0) -> boo
     return condition()
 
 
-async def test_the_numbering_is_recorded_off_the_loop_until_stopped(
+def _recorded(radio: IcomRadio) -> int | None:
+    return civ_seq.read_record(radio._host, radio._port, _GUID, time.time())
+
+
+async def test_the_numbering_is_recorded_off_the_loop_thread(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(civ_seq, "WRITE_INTERVAL_S", 0.05)
@@ -278,37 +295,81 @@ async def test_the_numbering_is_recorded_off_the_loop_until_stopped(
         real_write(*args)  # type: ignore[arg-type]
 
     monkeypatch.setattr(civ_seq, "write_record", spy)
-    radio, transport = _recording_radio(4242)
+    radio, _ = _recording_radio(4242)
     cp = radio._control_phase
-
-    def recorded() -> int | None:
-        return civ_seq.read_record(radio._host, radio._port, _GUID, time.time())
-
     cp._start_civ_seq_persistence()
     try:
-        assert await _wait_for(lambda: recorded() == 4242)
-        transport.send_seq = 4300
-        assert await _wait_for(lambda: recorded() == 4300)
+        assert await _wait_for(lambda: _recorded(radio) == 4242)
     finally:
         cp._stop_civ_seq_persistence()
-    await _wait_for(lambda: cp._civ_seq_write is None or cp._civ_seq_write.done())
-    transport.send_seq = 9999
-    await asyncio.sleep(0.3)
-    assert recorded() == 4300
     assert threads and threading.get_ident() not in threads
 
 
-@pytest.mark.parametrize("teardown", ["disconnect", "release"])
-async def test_a_clean_exit_records_the_final_numbering_and_removes_the_token(
-    teardown: str,
+async def test_a_crash_leaves_the_last_periodic_record_on_disk(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    radio, transport = _recording_radio(777)
+    monkeypatch.setattr(civ_seq, "WRITE_INTERVAL_S", 0.05)
+    radio, transport = _recording_radio(4242)
+    cp = radio._control_phase
+    cp._start_civ_seq_persistence()
+    try:
+        assert await _wait_for(lambda: _recorded(radio) == 4242)
+        transport.send_seq = 4300
+        assert await _wait_for(lambda: _recorded(radio) == 4300)
+    finally:
+        cp._stop_civ_seq_persistence()  # a dead process runs no teardown
+    await _wait_for(lambda: cp._civ_seq_write is None or cp._civ_seq_write.done())
+    transport.send_seq = 9999
+    await asyncio.sleep(0.3)
+    assert _recorded(radio) == 4300
+
+
+@pytest.mark.parametrize("teardown", ["disconnect", "release"])
+async def test_a_clean_exit_deletes_the_record_and_removes_the_token(
+    teardown: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(civ_seq, "WRITE_INTERVAL_S", 0.05)
+    radio, _ = _recording_radio(777)
     cp = radio._control_phase
     radio._token = 0x1234
+    path = civ_seq._record_path(radio._host, radio._port)
+    cp._start_civ_seq_persistence()
+    assert await _wait_for(path.exists)  # a periodic record is on disk
     send_token = AsyncMock()
     with patch.object(cp, "_send_token", send_token):
         await getattr(cp, teardown)()
     send_token.assert_any_call(0x01)
-    # The OpenClose(close) sent before the teardown took number 777.
-    assert transport.send_seq == 778
-    assert civ_seq.read_record(radio._host, radio._port, _GUID, time.time()) == 778
+    await asyncio.sleep(0.3)  # several intervals: nothing writes it back
+    assert not path.exists()
+    await cp._forget_civ_seq()  # an absent record is not an error
+
+
+async def test_a_late_periodic_write_cannot_recreate_a_deleted_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(civ_seq, "WRITE_INTERVAL_S", 0.05)
+    started, release = threading.Event(), threading.Event()
+    real_write = civ_seq.write_record
+
+    def held_write(*args: object) -> None:
+        started.set()
+        release.wait(5)
+        real_write(*args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(civ_seq, "write_record", held_write)
+    radio, _ = _recording_radio(4242)
+    cp = radio._control_phase
+    path = civ_seq._record_path(radio._host, radio._port)
+    cp._start_civ_seq_persistence()
+    try:
+        assert await _wait_for(started.is_set)  # a write is in flight, held
+        forget = asyncio.create_task(cp._forget_civ_seq())
+        await asyncio.sleep(0.2)  # several intervals: the delete waits for it
+        assert not forget.done()
+        release.set()
+        await forget
+        await asyncio.sleep(0.3)  # a surviving timer would write again here
+        assert not path.exists()
+    finally:
+        release.set()
+        cp._stop_civ_seq_persistence()

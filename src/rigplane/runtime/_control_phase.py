@@ -643,17 +643,26 @@ class ControlPhaseRuntime:
         if not future.cancelled() and future.exception() is not None:
             logger.debug("CI-V numbering record failed", exc_info=future.exception())
 
-    async def _record_civ_seq_on_exit(self, send_seq: int | None) -> None:
-        """Record the numbering a clean exit ends on (best effort)."""
+    async def _forget_civ_seq(self) -> None:
+        """Delete this radio's record at a clean exit (best effort).
+
+        The delete is submitted only after the timer is cancelled (a cancelled
+        timer starts no further write) and the write already submitted has
+        finished, so no write can land after it.
+        """
         guid = self._civ_seq_guid
-        if guid is None or send_seq is None:
+        if guid is None:
             return
+        self._stop_civ_seq_persistence()
         try:
             if self._civ_seq_write is not None:
                 await asyncio.wait([self._civ_seq_write])
-            await self._submit_civ_seq_write(guid, send_seq)
+            h = self._host
+            await asyncio.get_running_loop().run_in_executor(
+                None, civ_seq.remove_record, h._host, h._port, guid
+            )
         except Exception:
-            logger.debug("CI-V numbering record on exit failed", exc_info=True)
+            logger.debug("CI-V numbering record removal failed", exc_info=True)
 
     async def _cleanup_data_port_discovery_timeout(self) -> None:
         """Release startup resources after data-port discovery times out."""
@@ -718,7 +727,6 @@ class ControlPhaseRuntime:
                 logger.debug("disconnect: audio open/close failed", exc_info=True)
             await h._audio_transport.disconnect()
             h._audio_transport = None
-        final_civ_seq: int | None = None
         if h._civ_transport:
             try:
                 await self._send_open_close(open_stream=False)
@@ -733,7 +741,6 @@ class ControlPhaseRuntime:
                 await h._stop_civ_worker()
                 await h._stop_civ_rx_pump()
             await h._civ_transport.disconnect()
-            final_civ_seq = h._civ_transport.send_seq
             h._civ_transport = None
         # Shield the token-remove on the graceful CONNECTED path too (A3-verifier
         # forward-note).  Now that recovery/shutdown can run this disconnect()
@@ -751,7 +758,7 @@ class ControlPhaseRuntime:
         h._conn_state = RadioConnectionState.DISCONNECTED
         h._civ_stream_ready = False
         h._civ_recovering = False
-        await self._record_civ_seq_on_exit(final_civ_seq)
+        await self._forget_civ_seq()
         logger.info("Disconnected from %s:%d", h._host, h._port)
 
     # ------------------------------------------------------------------
@@ -899,11 +906,9 @@ class ControlPhaseRuntime:
                 await h._stop_civ_worker()
             with _suppress(Exception):
                 await h._stop_civ_rx_pump()
-        final_civ_seq: int | None = None
         if civ_t is not None:
             with _suppress(Exception):
                 await civ_t.disconnect()
-            final_civ_seq = civ_t.send_seq
             h._civ_transport = None
         # The token-remove is the load-bearing release: send it whenever a
         # control transport exists, regardless of conn_state.
@@ -928,7 +933,7 @@ class ControlPhaseRuntime:
         h._conn_state = RadioConnectionState.DISCONNECTED
         h._civ_stream_ready = False
         h._civ_recovering = False
-        await self._record_civ_seq_on_exit(final_civ_seq)
+        await self._forget_civ_seq()
 
     async def soft_reconnect(self) -> None:
         """Reconnect CI-V transport using existing control session."""
