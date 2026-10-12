@@ -17,7 +17,12 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
-from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
+from rigplane.core.state_store import (
+    FreshnessClock,
+    FreshnessState,
+    StateSnapshot,
+    StateStore,
+)
 from rigplane.core.tx_interlock_contract import TxInterlockDisposition
 from rigplane.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.radio_state import RadioState
@@ -885,3 +890,108 @@ async def test_ptt_poll_records_the_mirror_fallback_as_a_diagnostic() -> None:
     assert len(events) == 1
     assert events[0].source == "rigctld.handler"
     assert events[0].details["value"] is True
+
+
+def _rf_snapshot_base() -> tuple[FreshnessClock, StateStore]:
+    """One fresh PTT=False observation at t0=10.0 on a manual clock."""
+
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=clock.now(),
+            max_age=1.0,
+        )
+    )
+    return clock, store
+
+
+def _corrupt_rf_snapshot(snapshot: StateSnapshot, case: str) -> StateSnapshot:
+    path = FieldPath.global_("tx_state", "ptt")
+    field = snapshot.field(path)
+    if case == "missing":
+        return replace(snapshot, fields=())
+    if case == "stale-flag":
+        stale = replace(field, freshness=FreshnessState.STALE)
+        return replace(snapshot, fields=(stale,))
+    if case == "non-bool":
+        return replace(snapshot, fields=(replace(field, value=1),))
+    if case == "max-age-none":
+        return replace(snapshot, fields=(replace(field, max_age=None),))
+    if case == "max-age-zero":
+        return replace(snapshot, fields=(replace(field, max_age=0.0),))
+    if case == "nan-observed":
+        nan = replace(field, last_observed_monotonic=float("nan"))
+        return replace(snapshot, fields=(nan,))
+    if case == "inf-max-age":
+        return replace(snapshot, fields=(replace(field, max_age=float("inf")),))
+    if case == "nan-generated":
+        return replace(snapshot, generated_at_monotonic=float("nan"))
+    if case == "generation-mismatch":
+        moved = replace(field, provider_generation=field.provider_generation + 1)
+        return replace(snapshot, fields=(moved,))
+    if case == "negative-generation":
+        negative = replace(field, provider_generation=-1)
+        return replace(snapshot, fields=(negative,), provider_generation=-1)
+    raise AssertionError(f"unknown corruption case: {case}")
+
+
+_RIGCTLD_CORRUPT_CASES = (
+    "missing",
+    "stale-flag",
+    "non-bool",
+    "max-age-none",
+    "max-age-zero",
+    "nan-observed",
+    "inf-max-age",
+    "nan-generated",
+    "age-at-ttl",
+    "age-over-ttl",
+    "future",
+    "generation-mismatch",
+    "negative-generation",
+)
+
+
+@pytest.mark.parametrize("case", _RIGCTLD_CORRUPT_CASES)
+def test_rigctld_resolver_matches_shared_resolver_on_corrupt_shapes(
+    case: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rigctld seat and the shared resolver refuse every corrupt shape.
+
+    The negative-generation row is the delegation contract: the seat
+    refuses it today, and the shared resolver must refuse it too before
+    the seat can delegate.
+    """
+
+    clock, store = _rf_snapshot_base()
+    if case == "age-at-ttl":
+        clock.advance(1.0)
+        snapshot = store.snapshot()
+    elif case == "age-over-ttl":
+        clock.advance(1.5)
+        snapshot = store.snapshot()
+    elif case == "future":
+        _observe_future_ptt(store, clock)
+        snapshot = store.snapshot()
+    else:
+        snapshot = _corrupt_rf_snapshot(store.snapshot(), case)
+    handler, _, _ = _handler(store)
+    monkeypatch.setattr(StateStore, "snapshot", lambda _: snapshot)
+    assert handler._resolve_rigctld_rf_state() is tx_interlock.RfState.UNKNOWN  # noqa: SLF001
+    assert tx_interlock.resolve_rf_state(snapshot) is tx_interlock.RfState.UNKNOWN
+
+
+def _observe_future_ptt(store: StateStore, clock: FreshnessClock) -> None:
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=clock.now() + 5.0,
+            max_age=1.0,
+        )
+    )

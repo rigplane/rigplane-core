@@ -1,5 +1,6 @@
 import asyncio
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -14,7 +15,12 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.core.state_store import (
+    FreshnessClock,
+    FreshnessState,
+    StateSnapshot,
+    StateStore,
+)
 from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime._poller_types import (
@@ -42,6 +48,7 @@ from rigplane.runtime.tx_interlock import (
     TxInterlockDisposition,
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
+    resolve_rf_state,
 )
 from rigplane.web.radio_poller import (
     _WEB_IMMEDIATE_BLOCK_FAMILIES,
@@ -1003,3 +1010,109 @@ async def test_refused_ptt_on_emits_machine_readable_failed_lifecycle() -> None:
         "RF state is unknown; this command must not be attempted yet."
     )
     radio.set_ptt.assert_not_awaited()
+
+
+def _manual_snapshot_base() -> tuple[FreshnessClock, StateStore, RadioPoller]:
+    """One fresh PTT=False observation at t0=10.0 on a manual clock."""
+
+    clock = FreshnessClock(start=10.0)
+    radio, store = _radio(), StateStore(freshness_clock=clock)
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    _observe_ptt(store, False, observed_at=clock.now())
+    return clock, store, poller
+
+
+def test_stale_snapshot_after_generation_roll_stays_unknown() -> None:
+    """A snapshot taken before a generation roll must never read RX/TX again.
+
+    The shared resolver only compares the field against its own snapshot, so
+    it still reads RX here; the poller must keep refusing the stale proof
+    against the store's current generation. A naive delegation without the
+    current-generation check would answer RX — more permissive. Forbidden.
+    """
+
+    _clock, store, poller = _manual_snapshot_base()
+    stale = store.snapshot()
+    assert poller._current_rf_state(stale) is RfState.RX  # noqa: SLF001
+
+    store.begin_provider_generation()
+
+    assert resolve_rf_state(stale) is RfState.RX
+    assert poller._current_rf_state(stale) is RfState.UNKNOWN  # noqa: SLF001
+    assert poller._current_rf_state() is RfState.UNKNOWN  # noqa: SLF001
+
+
+def _corrupt_snapshot(snapshot: StateSnapshot, case: str) -> StateSnapshot:
+    field = snapshot.field(_PTT)
+    if case == "missing":
+        return replace(snapshot, fields=())
+    if case == "stale-flag":
+        stale = replace(field, freshness=FreshnessState.STALE)
+        return replace(snapshot, fields=(stale,))
+    if case == "non-bool":
+        return replace(snapshot, fields=(replace(field, value=1),))
+    if case == "max-age-none":
+        return replace(snapshot, fields=(replace(field, max_age=None),))
+    if case == "max-age-zero":
+        return replace(snapshot, fields=(replace(field, max_age=0.0),))
+    if case == "nan-observed":
+        nan = replace(field, last_observed_monotonic=float("nan"))
+        return replace(snapshot, fields=(nan,))
+    if case == "inf-max-age":
+        return replace(snapshot, fields=(replace(field, max_age=float("inf")),))
+    if case == "nan-generated":
+        return replace(snapshot, generated_at_monotonic=float("nan"))
+    if case == "generation-mismatch":
+        moved = replace(
+            field, provider_generation=field.provider_generation + 1
+        )
+        return replace(snapshot, fields=(moved,))
+    raise AssertionError(f"unknown corruption case: {case}")
+
+
+_CORRUPT_CASES = (
+    ("missing", True),
+    ("stale-flag", True),
+    ("non-bool", True),
+    ("max-age-none", True),
+    ("max-age-zero", True),
+    # Non-finite timings: the legacy poller answers RX here (seen red), so
+    # delegation through the shared resolver is strictly tighter, never
+    # looser. The shared answer is what the table pins for these rows.
+    ("nan-observed", False),
+    ("inf-max-age", False),
+    ("nan-generated", False),
+    ("age-at-ttl", True),
+    ("age-over-ttl", True),
+    ("future", True),
+    ("generation-mismatch", True),
+)
+
+
+@pytest.mark.parametrize(("case", "legacy_refuses"), _CORRUPT_CASES)
+def test_delegated_answer_never_permits_where_poller_refuses(
+    case: str, legacy_refuses: bool
+) -> None:
+    """Delegation must lose none of the poller's refusals.
+
+    Every corrupt shape must read UNKNOWN through the shared resolver the
+    poller is about to delegate to; shapes today's poller already refuses
+    must read UNKNOWN through it too.
+    """
+
+    clock, store, poller = _manual_snapshot_base()
+    if case == "age-at-ttl":
+        clock.advance(1.0)
+        snapshot = store.snapshot()
+    elif case == "age-over-ttl":
+        clock.advance(1.5)
+        snapshot = store.snapshot()
+    elif case == "future":
+        _observe_ptt(store, False, observed_at=clock.now() + 5.0)
+        snapshot = store.snapshot()
+    else:
+        snapshot = _corrupt_snapshot(store.snapshot(), case)
+    if legacy_refuses:
+        assert poller._current_rf_state(snapshot) is RfState.UNKNOWN  # noqa: SLF001
+    assert resolve_rf_state(snapshot) is RfState.UNKNOWN

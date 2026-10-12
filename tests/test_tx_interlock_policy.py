@@ -1,6 +1,6 @@
 """Focused contract tests for the shared TX interlock policy."""
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import pytest
 
@@ -492,3 +492,13 @@ def test_resolve_rf_state_with_non_bool_value_is_unknown() -> None:
     store, _clock = _ptt_store(value=1, max_age=1.0)
 
     assert resolve_rf_state(store.snapshot()) is RfState.UNKNOWN
+
+
+def test_resolve_rf_state_with_negative_snapshot_generation_is_unknown() -> None:
+    store, _clock = _ptt_store(value=False, max_age=1.0)
+    snapshot = store.snapshot()
+    path = FieldPath.global_("tx_state", "ptt")
+    field = replace(snapshot.field(path), provider_generation=-1)
+    negative = replace(snapshot, fields=(field,), provider_generation=-1)
+
+    assert resolve_rf_state(negative) is RfState.UNKNOWN
