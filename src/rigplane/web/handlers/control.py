@@ -515,11 +515,13 @@ def _consume_normalized_level_unit(name: str, params: dict[str, Any]) -> dict[st
     return normalized
 
 
-# Executor failures that mean the command path itself is broken (a missing
-# attribute, a wrong call signature, an undefined name), not that the radio
-# refused a command. ``ControlHandler._send_command_failure`` logs these as
-# ERROR with a traceback so they cannot masquerade as an ordinary
-# ``command_failed``. Pinned by tests/test_control_command_programmer_errors.py.
+# ``ControlHandler._send_command_failure`` logs these exception types at
+# ERROR with a traceback and every other failure as one WARNING line; the
+# client reply is the same for both. They are what a bug in the command
+# path raises (a missing attribute, a wrong call signature, an undefined
+# name); malformed client parameters can raise TypeError or AttributeError
+# too (``int(None)`` in ``command_intent_from_request``) and are logged the
+# same way. Pinned by tests/test_control_command_programmer_errors.py.
 _PROGRAMMER_ERRORS: tuple[type[Exception], ...] = (AttributeError, TypeError, NameError)
 
 
