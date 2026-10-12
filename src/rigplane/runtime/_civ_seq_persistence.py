@@ -1,13 +1,11 @@
 """Per-radio record of the CI-V tracked sequence number (MOR-3418).
 
-The control phase records the CI-V transport's ``send_seq`` here while the
-CI-V transport exists, and a fresh login starts its numbering just past the
-recorded number instead of at 0. ``tests/testkit/test_orphan_civ_restart.py``
-characterizes the case this serves.
-
-One JSON file per ``host:port`` under the platformdirs state directory, holding
-the radio's GUID from login; a record whose GUID differs from the current
-login's is not used.
+The control phase records the CI-V transport's ``send_seq`` here, and a fresh
+login starts its numbering just past the record instead of at 0.
+``tests/testkit/test_orphan_civ_restart.py`` characterizes the case this
+serves. One JSON file per ``host:port`` under the platformdirs state
+directory, holding the radio's GUID from login; a record whose GUID differs
+from the current login's is not used.
 """
 
 from __future__ import annotations
@@ -51,11 +49,9 @@ def _record_path(host: str, port: int) -> Path:
 
 
 def advance(interval_s: float | None = None) -> int:
-    """How far past the recorded number a fresh login starts.
-
-    ``interval_s`` seconds at ``ADVANCE_RATE_PER_S`` plus ``ADVANCE_MARGIN``,
-    never above ``MAX_ADVANCE``; ``WRITE_INTERVAL_S`` when omitted.
-    """
+    """Packets a fresh login starts past the record: ``interval_s`` (default
+    ``WRITE_INTERVAL_S``) at ``ADVANCE_RATE_PER_S`` plus ``ADVANCE_MARGIN``,
+    never above ``MAX_ADVANCE``."""
     interval = WRITE_INTERVAL_S if interval_s is None else interval_s
     return min(math.ceil(interval * ADVANCE_RATE_PER_S) + ADVANCE_MARGIN, MAX_ADVANCE)
 
@@ -66,25 +62,24 @@ def start_seq(recorded: int) -> int:
 
 
 def wait_seconds() -> int:
-    """The step divided by ``FILL_RATE_PER_S``, rounded up: the operator-facing wait."""
+    """The step over ``FILL_RATE_PER_S``, rounded up: the wait shown to the operator."""
     return math.ceil(advance() / FILL_RATE_PER_S)
 
 
 def status_line(waiting_s: int | None) -> str:
-    """The operator-visible sentence for a fresh login the radio does not answer.
+    """Operator sentence for a fresh login the radio leaves unanswered.
 
-    The wait is left out when no record fed the step: there is no estimate.
+    Without a record there is no estimate, so ``waiting_s`` is None and the wait
+    is left out.
     """
     line = "radio still holds the previous session; waiting"
     return line if waiting_s is None else f"{line} ~{waiting_s} s"
 
 
 def read_record(host: str, port: int, guid: bytes, now: float) -> int | None:
-    """The recorded ``send_seq`` of this radio, or ``None`` when none is usable.
-
-    ``None`` for a missing, unreadable or malformed file, a different GUID, or
-    a record older than ``MAX_RECORD_AGE_S`` (or dated after ``now``).
-    """
+    """The recorded ``send_seq``, or None for a missing, unreadable or malformed
+    file, a different GUID, or a record older than ``MAX_RECORD_AGE_S`` or dated
+    after ``now``."""
     try:
         document = json.loads(_record_path(host, port).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -105,10 +100,7 @@ def read_record(host: str, port: int, guid: bytes, now: float) -> int | None:
 
 
 def write_record(host: str, port: int, guid: bytes, send_seq: int, now: float) -> None:
-    """Replace this radio's record atomically (temporary file, then rename).
-
-    Not fsynced: ``read_record`` treats a truncated or empty file as no record.
-    """
+    """Replace the record atomically (temporary file, then rename); not fsynced."""
     path = _record_path(host, port)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")

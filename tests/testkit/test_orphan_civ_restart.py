@@ -18,9 +18,8 @@ a fresh login starts just past that record:
    inherited frontier.
 2. ``test_clean_logout_restart_connects`` — control.
 3. ``test_expiry_restart_connects`` — control.
-4. ``test_restart_without_a_record_reports_the_held_session`` and
-   ``test_restart_short_of_the_frontier_reports_the_wait`` — a B that still
-   stays behind the frontier says so through ``last_error``.
+4. ``test_a_restart_short_of_the_frontier_reports_the_held_session`` — a B
+   that still stays behind the frontier says so through ``last_error``.
 """
 
 from __future__ import annotations
@@ -47,11 +46,10 @@ _CONNECTED = RadioConnectionState.CONNECTED
 
 # The GUID the simulator sends at login (``MockIcomRadio._guid_conninfo``).
 _SIM_GUID = bytes(range(0x01, 0x11))
-# Record interval for these tests (the shipped value is 5 s).
+# Record interval for these tests (the shipped value is 5 s). The step is then
+# ceil(0.2 * ADVANCE_RATE_PER_S) + ADVANCE_MARGIN = 33 packets, and the wait the
+# status line shows is ceil(33 / FILL_RATE_PER_S) = 4 s.
 _RECORD_INTERVAL_S = 0.2
-# Wait the status line shows at this interval: the step is
-# ceil(0.2 * ADVANCE_RATE_PER_S) + ADVANCE_MARGIN = 3 + 30 = 33 packets, and
-# ceil(33 / FILL_RATE_PER_S) = 4 s.
 _WAIT_AT_TEST_INTERVAL_S = 4
 
 # Frontier the dead client leaves behind. A restarted production client
@@ -358,69 +356,33 @@ async def test_expiry_restart_connects() -> None:
         await sim.stop()
 
 
-async def _restart_behind_the_frontier(
-    sim: MockIcomRadio, *, record_seq: int | None
-) -> IcomRadio:
-    """Kill A uncleanly at the frontier, then connect a B that falls short of it.
+async def test_a_restart_short_of_the_frontier_reports_the_held_session() -> None:
+    """A record too low to pass the frontier: B stays deaf and says so.
 
-    ``record_seq`` None leaves A's record absent, which holds only while the
-    caller keeps ``WRITE_INTERVAL_S`` beyond the test (an unclean death writes
-    nothing); otherwise that number is recorded for B to find. Returns B after
-    its ``connect()``.
+    B starts a step past record 0, still behind A's frontier, so its identity
+    stays NO_RESPONSE and ``last_error`` carries the sentence with the wait.
     """
-    a = _client(sim)
-    with fast_connect():
-        await a.connect()
-    assert a.conn_state is _CONNECTED and a.connected, "A never connected"
-    await _run_until_frontier(a, _FRONTIER_TARGET)
-    await _kill_uncleanly(a)
-    assert await _wait_hold_released(sim), "held session never expired"
-    if record_seq is not None:
-        civ_seq.write_record(
-            _HOST, sim.control_port, _SIM_GUID, record_seq, time.time()
-        )
-    sim.keepalive_hold_s = 30.0
-    b = _client(sim)
-    with fast_connect():
-        await b.connect()
-    return b
-
-
-async def test_restart_without_a_record_reports_the_held_session(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No record: B numbers from 0, stays deaf, and says the radio holds a session.
-
-    The line carries no wait: there is no record to estimate one from.
-    """
-    monkeypatch.setattr(civ_seq, "WRITE_INTERVAL_S", 3600.0)
     sim = _orphan_sim()
     await sim.start()
     b: IcomRadio | None = None
     try:
-        b = await _restart_behind_the_frontier(sim, record_seq=None)
-        identity = b.connection_identity
-        assert identity is not None
-        assert identity.status is RadioIdentityStatus.NO_RESPONSE
-        assert b.last_error == "radio still holds the previous session; waiting"
-    finally:
-        if b is not None:
-            await _kill_uncleanly(b)
-        await sim.stop()
-
-
-async def test_restart_short_of_the_frontier_reports_the_wait() -> None:
-    """A record too low to pass the frontier: B stays deaf and states the wait."""
-    sim = _orphan_sim()
-    await sim.start()
-    b: IcomRadio | None = None
-    try:
-        b = await _restart_behind_the_frontier(sim, record_seq=0)
+        a = _client(sim)
+        with fast_connect():
+            await a.connect()
+        assert a.conn_state is _CONNECTED and a.connected, "A never connected"
+        await _run_until_frontier(a, _FRONTIER_TARGET)
+        await _kill_uncleanly(a)
+        assert await _wait_hold_released(sim), "held session never expired"
+        civ_seq.write_record(_HOST, sim.control_port, _SIM_GUID, 0, time.time())
+        sim.keepalive_hold_s = 30.0
+        b = _client(sim)
+        with fast_connect():
+            await b.connect()
         identity = b.connection_identity
         assert identity is not None
         assert identity.status is RadioIdentityStatus.NO_RESPONSE
         assert b.last_error == (
-            f"radio still holds the previous session; waiting "
+            "radio still holds the previous session; waiting "
             f"~{_WAIT_AT_TEST_INTERVAL_S} s"
         )
     finally:

@@ -168,16 +168,9 @@ class ControlPhaseRuntime:
         self._civ_seq_guid: bytes | None = None
         self._civ_seq_timer: asyncio.TimerHandle | None = None
         self._civ_seq_write: asyncio.Future[None] | None = None
-        self._fresh_login_status: str | None = None
-
-    @property
-    def fresh_login_status(self) -> str | None:
-        """Sentence for the current fresh login if the radio does not answer it.
-
-        ``None`` outside a fresh login. Whether the radio is unanswered is the
-        identity gate's call: ``CoreRadio.last_error`` combines the two.
-        """
-        return self._fresh_login_status
+        #: Sentence for the current fresh login should the radio leave it
+        #: unanswered (``CoreRadio.last_error``); None outside a fresh login.
+        self.fresh_login_status: str | None = None
 
     def _resolve_local_bind_host(self) -> str:
         """Resolve the routed local interface IP used to reach the radio."""
@@ -217,7 +210,7 @@ class ControlPhaseRuntime:
         h._civ_resume_seq = None
         h._audio_resume_seq = None
         self._civ_seq_guid = None
-        self._fresh_login_status = None
+        self.fresh_login_status = None
         h._civ_stream_ready = False
         h._civ_recovering = False
         h._last_status_error = 0
@@ -585,28 +578,23 @@ class ControlPhaseRuntime:
             h._civ_port,
         )
 
-    # ------------------------------------------------------------------
-    # CI-V numbering across fresh logins (MOR-3418)
-    # ------------------------------------------------------------------
-    #
-    # Record writes go through the default executor, never the event loop:
-    # the loop also runs the control and CI-V keep-alive timers, and a slow
-    # disk must not delay them. The periodic record is a ``call_later``
-    # timer, not a task that sleeps: it cannot be left spinning under a test
-    # double that replaces ``asyncio.sleep``.
+    # CI-V numbering across fresh logins (MOR-3418). Record file I/O runs in
+    # the default executor, never on the event loop that also runs the
+    # keep-alive timers. The periodic record is a ``call_later`` timer, not a
+    # task that sleeps, so a test double that replaces ``asyncio.sleep`` cannot
+    # leave it spinning.
 
     async def _number_fresh_login(
         self, transport: IcomTransport, guid: bytes | None
     ) -> None:
-        """Number a fresh login's CI-V transport just past its recorded number.
+        """Number a just-connected CI-V transport past its recorded number.
 
-        Called once the CI-V transport has connected (which numbered it from 0)
-        and before it sends a tracked packet. Without a GUID or a usable record
-        the numbering stays 0. Sets the sentence ``fresh_login_status`` serves.
+        Runs before the transport sends a tracked packet; without a GUID or a
+        usable record the numbering stays 0. Sets ``fresh_login_status``.
         """
         h = self._host
         self._civ_seq_guid = guid
-        self._fresh_login_status = civ_seq.status_line(None)
+        self.fresh_login_status = civ_seq.status_line(None)
         if guid is None:
             return
         recorded = await asyncio.get_running_loop().run_in_executor(
@@ -615,7 +603,7 @@ class ControlPhaseRuntime:
         if recorded is None:
             return
         transport.send_seq = civ_seq.start_seq(recorded)
-        self._fresh_login_status = civ_seq.status_line(civ_seq.wait_seconds())
+        self.fresh_login_status = civ_seq.status_line(civ_seq.wait_seconds())
 
     def _start_civ_seq_persistence(self) -> None:
         if self._civ_seq_timer is None:
@@ -724,7 +712,7 @@ class ControlPhaseRuntime:
         self._stop_watchdog()
         self._stop_token_renewal()
         self._stop_civ_seq_persistence()
-        self._fresh_login_status = None
+        self.fresh_login_status = None
         stop_audio_wd = getattr(h, "_stop_audio_watchdog", None)
         if stop_audio_wd is not None:
             await stop_audio_wd()
@@ -868,7 +856,7 @@ class ControlPhaseRuntime:
         self._stop_watchdog()
         self._stop_token_renewal()
         self._stop_civ_seq_persistence()
-        self._fresh_login_status = None
+        self.fresh_login_status = None
         # An identity-held partial session can have live CI-V tasks. Retire
         # their generation before closing transports or accepting late replies.
         civ_rt = getattr(h, "_civ_runtime", None)
@@ -1051,7 +1039,7 @@ class ControlPhaseRuntime:
         h._civ_stream_ready = False
         h._civ_recovering = True
         # A rebuild on the kept session is not a fresh login.
-        self._fresh_login_status = None
+        self.fresh_login_status = None
 
         # Tear down the audio transport BEFORE the CI-V rebuild and re-arm it
         # AFTER, mirroring the audio-before-civ order in ``disconnect()``.  Soft

@@ -276,10 +276,9 @@ def _isolate_civ_seq_state_dir(
 ) -> None:
     """Point the CI-V numbering records (MOR-3418) at a per-test tmp dir.
 
-    A radio that connects writes its record into the platformdirs state
-    directory of whoever runs the suite, and a fresh login reads it back, so
-    one test's record would start the next test's login at a number other
-    than 0.
+    Without it a connecting radio would write its record into the platformdirs
+    state directory of whoever runs the suite, and a later test's fresh login
+    would read it back.
     """
     from rigplane.runtime import _civ_seq_persistence
 
