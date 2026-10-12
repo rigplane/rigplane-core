@@ -108,8 +108,8 @@ class ControlPhaseRuntime:
     _STATUS_RETRY_PAUSE = 10.0
     _STATUS_REJECT_COOLDOWN = 30.0
     # Token-renewal probe of a held session (``probe_control_session``). An
-    # answer counts only for request type 0x05 and our token at 0x1C; the u32
-    # at ``_RENEWAL_RESPONSE_OFFSET`` is the verdict.
+    # answer counts only with reply flag 0x02 at 0x14, request type 0x05 and
+    # our token at 0x1C; the u32 at ``_RENEWAL_RESPONSE_OFFSET`` is the verdict.
     _RENEWAL_PROBE_TIMEOUT_S = 1.0
     _RENEWAL_PROBE_ATTEMPTS = 3
     _RENEWAL_RESPONSE_OFFSET = 0x30
@@ -1055,11 +1055,11 @@ class ControlPhaseRuntime:
     def _on_token_reply(self, data: bytes) -> None:
         """A 0x40 packet on the control port; settles a pending renewal probe.
 
-        Runs inside the datagram callback. Only a renewal answer carrying our
-        token counts; OK also stamps ``_renewal_answered_at``.
+        Runs inside the datagram callback. Only a reply to a renewal carrying
+        our token counts; OK also stamps ``_renewal_answered_at``.
         """
-        h = self._host
-        if data[0x15] != 0x05 or struct.unpack_from("<I", data, 0x1C)[0] != h._token:
+        token = struct.unpack_from("<I", data, 0x1C)[0]
+        if data[0x14] != 0x02 or data[0x15] != 0x05 or token != self._host._token:
             return
         result = struct.unpack_from("<I", data, self._RENEWAL_RESPONSE_OFFSET)[0]
         if result == self._RENEWAL_OK:

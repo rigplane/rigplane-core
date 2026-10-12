@@ -1508,7 +1508,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         async with self._lan_identity_connect_lock:
             if self.connected or self._lan_identity_phase_owns_open_link():
                 return
-            self._lan_identity_escalated_at = None
+            # The resident reconnect loop runs as ``_reconnect_task``; its own
+            # connect() keeps the escalation spacing, an owner connect resets it.
+            if asyncio.current_task() is not getattr(self, "_reconnect_task", None):
+                self._lan_identity_escalated_at = None
             self._reset_external_cat_session()
             checking = RadioIdentity(
                 status=RadioIdentityStatus.CHECKING, expected_model=self.model

@@ -29,6 +29,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from rigplane.core.exceptions import AuthenticationError
 from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.exceptions import ConnectionError
 from rigplane.radio import IcomRadio
@@ -43,14 +44,16 @@ _RENEWAL_OK = 0x00000000
 _RENEWAL_REJECT = 0xFFFFFFFF
 
 
-def _renewal_answer(token: int, result: int, *, request_type: int = 0x05) -> bytes:
-    """A 0x40 token answer: reply flag 0x02 at 0x14, the request type at
+def _renewal_answer(
+    token: int, result: int, *, request_type: int = 0x05, reply_flag: int = 0x02
+) -> bytes:
+    """A 0x40 token answer: the reply flag at 0x14, the request type at
     0x15, the token at 0x1C and the u32 result at 0x30."""
     pkt = bytearray(0x40)
     struct.pack_into("<I", pkt, 0x00, 0x40)
     struct.pack_into("<H", pkt, 0x06, 1)
     struct.pack_into(">I", pkt, 0x10, 0x30)
-    pkt[0x14] = 0x02
+    pkt[0x14] = reply_flag
     pkt[0x15] = request_type
     struct.pack_into("<I", pkt, 0x1C, token)
     struct.pack_into(">H", pkt, 0x24, 0x0798)
@@ -411,6 +414,31 @@ async def test_owner_connect_and_disconnect_reset_the_escalation_spacing() -> No
     assert radio._lan_identity_escalated_at is None
 
 
+async def test_reconnect_loop_connect_keeps_the_spacing_owner_connect_resets_it() -> (
+    None
+):
+    radio, _transport, _answers = make_radio()
+    stamp = time.monotonic()
+    radio._lan_identity_escalated_at = stamp
+    radio._conn_state = RadioConnectionState.RECONNECTING
+    login = AsyncMock(side_effect=AuthenticationError("wrong password"))
+    with (
+        patch.object(radio._session_lifecycle, "connect", login),
+        patch.object(radio._session_lifecycle, "disconnect", AsyncMock()),
+    ):
+        # Started the way production starts the resident loop.
+        radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
+        await radio._reconnect_task
+        assert login.await_count == 1
+        assert radio._lan_identity_escalated_at == stamp
+
+        login.side_effect = ConnectionError("refused")
+        with pytest.raises(ConnectionError):
+            await radio.connect()
+    assert login.await_count == 2
+    assert radio._lan_identity_escalated_at is None
+
+
 @pytest.mark.parametrize(
     ("answer", "holds"),
     [
@@ -420,6 +448,7 @@ async def test_owner_connect_and_disconnect_reset_the_escalation_spacing() -> No
         (_renewal_answer(_TOKEN ^ 1, _RENEWAL_REJECT), None),
         (_renewal_answer(_TOKEN, _RENEWAL_OK, request_type=0x01), None),
         (_renewal_answer(_TOKEN, 0x00000001), None),
+        (_renewal_answer(_TOKEN, _RENEWAL_OK, reply_flag=0x01), None),
     ],
     ids=[
         "ok",
@@ -428,6 +457,7 @@ async def test_owner_connect_and_disconnect_reset_the_escalation_spacing() -> No
         "stale-token-reject",
         "token-remove-answer",
         "unknown-result",
+        "request-not-reply",
     ],
 )
 async def test_token_answer_classifier(answer: bytes, holds: bool | None) -> None:
