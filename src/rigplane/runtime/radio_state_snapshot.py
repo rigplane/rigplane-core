@@ -8,12 +8,12 @@ and the wire-level helper ``_set_vfo_wire``).
 Snapshots record only confirmed readings: each key comes from a successful
 public-getter read, and a failed read omits the key. Split, attenuator and
 preamp are read strictly (``strict=True``), so a failed read raises instead
-of returning a setter-written mirror. The VFO slot is not snapshotted — no
-radio read exists for it. Restore applies only the keys present in the
-snapshot (it still applies a ``vfo`` key when a snapshot carries one). All
-per-field failures are best-effort, swallowed and logged at DEBUG level. The
-public ``IcomRadio.snapshot_state`` / ``IcomRadio.restore_state`` methods
-delegate here.
+of returning a setter-written mirror. The VFO slot is not snapshotted
+(``get_vfo_slot`` reads no radio). Restore applies only the keys present in
+the snapshot (it still applies a ``vfo`` key when a snapshot carries one).
+All per-field failures are best-effort, swallowed and logged at DEBUG level.
+The public ``IcomRadio.snapshot_state`` / ``IcomRadio.restore_state``
+methods delegate here.
 """
 
 from __future__ import annotations
