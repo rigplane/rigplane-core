@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import struct
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
@@ -44,6 +45,10 @@ def _session_lifecycle_double(radio: IcomRadio) -> AsyncMock:
 
     async def _connect() -> None:
         radio._conn_state = RadioConnectionState.CONNECTED
+        # ``_connect_once`` routes token answers to the control phase.
+        radio._ctrl_transport._token_reply_callback = (
+            radio._control_phase._on_token_reply
+        )
         radio._civ_runtime.start_data_watchdog()
 
     async def _disconnect() -> None:
@@ -56,6 +61,40 @@ def _session_lifecycle_double(radio: IcomRadio) -> AsyncMock:
     return lifecycle
 
 
+def _renewal_ok_answer(request: bytes) -> bytes:
+    """A token-renewal answer: 0x40 bytes, ptype 0, reply 0x02 at 0x14, request
+    type 0x05 at 0x15, the request's token at 0x1C and result 0 at 0x30."""
+    answer = bytearray(0x40)
+    struct.pack_into("<I", answer, 0x00, 0x40)
+    answer[0x14] = 0x02
+    answer[0x15] = 0x05
+    answer[0x1C:0x20] = request[0x1C:0x20]
+    struct.pack_into("<I", answer, 0x30, 0)
+    return bytes(answer)
+
+
+def _answer_token_renewal(transport: MockTransport, data: bytes) -> None:
+    """Answer a renewal sent on a live control session through the reply
+    route, ``_token_reply_callback``, after the send returns."""
+    if len(data) != 0x40 or data[0x15] != 0x05:
+        return
+
+    def deliver() -> None:
+        callback = getattr(transport, "_token_reply_callback", None)
+        if callback is not None:
+            callback(_renewal_ok_answer(data))
+
+    asyncio.get_running_loop().call_soon(deliver)
+
+
+class _LiveControlTransport(MockTransport):
+    """Mock control transport whose session is live: it answers renewals."""
+
+    async def send_tracked(self, data: bytes) -> None:
+        await super().send_tracked(data)
+        _answer_token_renewal(self, data)
+
+
 def make_radio(
     *,
     expected_ids: tuple[str, ...] | None = (),
@@ -65,7 +104,7 @@ def make_radio(
     radio = IcomRadio("192.168.1.100", model="IC-7610", timeout=timeout)
     if expected_ids is not None:
         radio._profile = replace(radio._profile, expected_identity_ids=expected_ids)
-    transport = MockTransport()
+    transport = _LiveControlTransport()
     transport._udp_transport = object()  # control session looks open
     radio._civ_transport = transport
     radio._ctrl_transport = transport
@@ -506,6 +545,10 @@ class _ReconnectingCtrl(ConnectMockTransport):
     ) -> None:
         await super().reconnect(host, port, local_host=local_host)
         self._udp_transport = object()
+
+    async def send_tracked(self, data: bytes) -> None:
+        await super().send_tracked(data)
+        _answer_token_renewal(self, data)
 
 
 def _cold_radio(
