@@ -3,7 +3,9 @@ name: Soak (nightly)
 # MOR-3236: nightly operated soak of the web stack against the IC-7610
 # simulator. Informational — not a required PR check; a red run points at
 # a leak or recovery regression to investigate, not at a broken change.
-# The report artifact (always uploaded) is the evidence to read first.
+# The verdict and the measured numbers are written to the job summary; the
+# report artifact is a best-effort upload that does not decide the result.
+# A dispatch with `certification` runs the 24 h job instead of the 75 min one.
 
 on:
   schedule:
@@ -17,6 +19,11 @@ on:
         required: false
         default: "3600"
         type: string
+      certification:
+        description: "Run the 24 h certification soak (86400 s; duration is ignored)"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   # One queued run per ref: a queued duplicate displaces a waiting run
@@ -30,6 +37,7 @@ permissions:
 
 jobs:
   soak:
+    if: ${{ !inputs.certification }}
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 75
     env:
@@ -60,8 +68,130 @@ jobs:
           --duration ${{ inputs.duration || '3600' }}
           --report soak-report.json
 
+      - name: Write soak verdict to the job summary
+        if: always()
+        run: |
+          uv run --no-project python - >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+
+          MIB = 1024 * 1024
+          try:
+              with open("soak-report.json", encoding="utf-8") as fh:
+                  r = json.load(fh)
+              c = r["criteria"]
+              rss, rec = c["rssGrowth"], c["recovery"]
+              slope = rss["slopeBytesPerHour"]
+              lines = [
+                  f"## Soak {r['verdict']}: {r['durationActualS']:.0f} s of {r['durationConfiguredS']:.0f} s",
+                  f"- RSS growth {rss['status']}: "
+                  + ("n/a" if slope is None else f"{slope / MIB:+.1f} MiB/h")
+                  + f" (limit {rss['limitBytesPerHour'] / MIB:.0f} MiB/h)",
+              ]
+              for label, key in (("FDs", "fdsStability"), ("Tasks", "tasksStability")):
+                  checks = c[key]["checks"]
+                  worst = max((abs(k["delta"]) for k in checks), default=0)
+                  lines.append(
+                      f"- {label} {c[key]['status']}: max abs delta {worst}"
+                      f" ({len(checks)} checked, tolerance {c[key]['tolerance']})"
+                  )
+              lines.append(
+                  f"- Unrecovered disconnects {rec['status']}: {rec['unrecovered']}"
+                  f" of {rec['forced']} (budget {rec['budgetS']:.0f} s)"
+              )
+              if r["error"]:
+                  lines.append(f"- Driver error: `{r['error']}`")
+          except (OSError, ValueError, KeyError, TypeError) as exc:
+              print("## Soak: NO REPORT")
+              print()
+              print(f"`soak-report.json` is missing or unusable ({type(exc).__name__}).")
+              sys.exit(1)
+          print("\n".join(lines))
+          PY
+
       - name: Upload soak report
         if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-report
+          path: soak-report.json
+          if-no-files-found: warn
+
+  soak-24h:
+    if: ${{ inputs.certification }}
+    runs-on: [self-hosted, linux, build]
+    timeout-minutes: 1500
+    env:
+      UV_PYTHON: "3.11"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Run soak driver on the simulator
+        run: >-
+          uv run python -m scripts.soak.soak_driver
+          --duration 86400
+          --report soak-report.json
+
+      - name: Write soak verdict to the job summary
+        if: always()
+        run: |
+          uv run --no-project python - >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+
+          MIB = 1024 * 1024
+          try:
+              with open("soak-report.json", encoding="utf-8") as fh:
+                  r = json.load(fh)
+              c = r["criteria"]
+              rss, rec = c["rssGrowth"], c["recovery"]
+              slope = rss["slopeBytesPerHour"]
+              lines = [
+                  f"## Soak {r['verdict']}: {r['durationActualS']:.0f} s of {r['durationConfiguredS']:.0f} s",
+                  f"- RSS growth {rss['status']}: "
+                  + ("n/a" if slope is None else f"{slope / MIB:+.1f} MiB/h")
+                  + f" (limit {rss['limitBytesPerHour'] / MIB:.0f} MiB/h)",
+              ]
+              for label, key in (("FDs", "fdsStability"), ("Tasks", "tasksStability")):
+                  checks = c[key]["checks"]
+                  worst = max((abs(k["delta"]) for k in checks), default=0)
+                  lines.append(
+                      f"- {label} {c[key]['status']}: max abs delta {worst}"
+                      f" ({len(checks)} checked, tolerance {c[key]['tolerance']})"
+                  )
+              lines.append(
+                  f"- Unrecovered disconnects {rec['status']}: {rec['unrecovered']}"
+                  f" of {rec['forced']} (budget {rec['budgetS']:.0f} s)"
+              )
+              if r["error"]:
+                  lines.append(f"- Driver error: `{r['error']}`")
+          except (OSError, ValueError, KeyError, TypeError) as exc:
+              print("## Soak: NO REPORT")
+              print()
+              print(f"`soak-report.json` is missing or unusable ({type(exc).__name__}).")
+              sys.exit(1)
+          print("\n".join(lines))
+          PY
+
+      - name: Upload soak report
+        if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: soak-report
