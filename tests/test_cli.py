@@ -2658,6 +2658,266 @@ class TestStartupBusyHoldOrdering:
         composition.transport_ready.assert_not_awaited()
 
 
+class _GrantGatedLifecycleMechanism:
+    """Scripted first connect: one busy reject, then a grant-gated attempt.
+
+    The first attempt busy-rejects so a real lifecycle enters its
+    start-up hold; the next attempt parks until the test grants it, the
+    way a held session waits for release. With ``busy_first=False`` the
+    first attempt connects at once (the control: a normal start).
+    """
+
+    def __init__(self, *, busy_first: bool) -> None:
+        self._busy_first = busy_first
+        self.connect_calls = 0
+        self.release_calls = 0
+        self.grant: Any = None
+
+    async def connect_attempt(self) -> Any:
+        from rigplane.runtime.session_lifecycle import (
+            AttemptOutcome,
+            AttemptResult,
+        )
+
+        self.connect_calls += 1
+        if self._busy_first and self.connect_calls == 1:
+            return AttemptResult(AttemptOutcome.SESSION_BUSY_REJECT)
+        await self.grant.wait()
+        return AttemptResult(AttemptOutcome.CONNECTED)
+
+    async def release(self) -> None:
+        self.release_calls += 1
+
+
+class _LifecycleBusyHoldRadio:
+    """A busy-hold radio whose hold is a real lifecycle mid-loop.
+
+    The public busy surface delegates to the lifecycle and the session
+    enter drives ``lifecycle.connect()`` — so an operator ``disconnect()``
+    during the hold cancels the background enter exactly the way the
+    production ``CoreRadio`` does (MOR-3391 round 4 probe shape).
+    """
+
+    backend_id = "rigplane"
+    model = "FAKE-LIFECYCLE-CLI"
+    capabilities: set[str] = set()
+
+    def __init__(self, lifecycle: Any, mech: _GrantGatedLifecycleMechanism) -> None:
+        import asyncio
+
+        self._lifecycle = lifecycle
+        self._mech = mech
+        self.connected = False
+        self.control_connected = False
+        self.radio_ready = False
+        # Production ``CoreRadio.connect`` reports CHECKING before the
+        # lifecycle's first attempt, so a busy hold always reads CHECKING
+        # here until the grant lands.
+        self.connection_identity: Any = RadioIdentity(
+            status=RadioIdentityStatus.CHECKING,
+            expected_model="FAKE-LIFECYCLE-CLI",
+        )
+        self._grant = asyncio.Event()
+        mech.grant = self._grant
+        self.enter_calls = 0
+        self.exits: list[tuple[Any, ...]] = []
+        self.events: list[str] = []
+        self._managed_tx_composition = None
+
+    @property
+    def startup_busy_hold_event(self) -> Any:
+        return self._lifecycle.startup_busy_hold_event
+
+    @property
+    def startup_busy_hold_retry_in_seconds(self) -> Any:
+        return self._lifecycle.startup_busy_hold_retry_in_seconds
+
+    def install_managed_tx_composition(self, composition: Any) -> None:
+        self._managed_tx_composition = composition
+
+    async def actuate(self, _token: Any, _operation: Any, *, is_current: Any) -> Any:
+        from rigplane.runtime.managed_tx_state import ActuationResult
+
+        return ActuationResult.ACCEPTED if is_current() else ActuationResult.REJECTED
+
+    async def set_ptt(self, _on: bool) -> None:
+        raise AssertionError("raw PTT must be replaced before connect")
+
+    async def disconnect(self) -> None:
+        """Operator disconnect: the owner-level teardown path."""
+
+        await self._lifecycle.disconnect()
+
+    async def __aenter__(self) -> "_LifecycleBusyHoldRadio":
+        self.enter_calls += 1
+        self.events.append("enter-start")
+        await self._lifecycle.connect()
+        self.connected = True
+        self.control_connected = True
+        self.radio_ready = True
+        self.connection_identity = RadioIdentity(
+            status=RadioIdentityStatus.VERIFIED,
+            expected_model="FAKE-LIFECYCLE-CLI",
+            answered_model="FAKE-LIFECYCLE-CLI",
+        )
+        self.events.append("enter-done")
+        return self
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        self.exits.append(exc)
+        self.events.append("radio-exit")
+        return False
+
+
+class TestDisconnectDuringStartupBusyHold:
+    """MOR-3391 round 4 (BL-1): an operator disconnect during the hold.
+
+    Disconnecting while the first connect waits out a busy reject must
+    keep serving — the same as a disconnect after a normal start — and
+    only an intentional shutdown ends the process (rc 0, radio exit once).
+    """
+
+    @staticmethod
+    def _args() -> Any:
+        return _build_parser().parse_args(
+            ["--host", "1.2.3.4", "web", "--no-rigctld"]
+        )
+
+    @staticmethod
+    def _make(*, busy_first: bool) -> tuple[Any, Any, Any]:
+        from rigplane.runtime.session_lifecycle import CoreRadioSessionLifecycle
+
+        mech = _GrantGatedLifecycleMechanism(busy_first=busy_first)
+        lifecycle = CoreRadioSessionLifecycle(
+            mech,
+            reject_cooldown_s=30.0,
+            not_ready_cooldown_s=30.0,
+            max_connect_attempts=5,
+            first_connect_busy_cooldown_s=30.0,
+            first_connect_busy_budget_s=600.0,
+            first_connect_busy_live_holder_after_s=None,
+        )
+        radio = _LifecycleBusyHoldRadio(lifecycle, mech)
+        composition = _busy_hold_composition()
+        return radio, lifecycle, composition
+
+    @staticmethod
+    def _patches(radio: Any, composition: Any) -> Any:
+        return (
+            patch("rigplane.cli.create_radio", return_value=radio),
+            patch("rigplane.cli.check_ports_available"),
+            patch("rigplane.cli.ManagedTxComposition", return_value=composition),
+            patch("rigplane.web.server.WebServer", _BusyHoldWebServer),
+        )
+
+    @staticmethod
+    async def _wait_for(predicate: Any, *, timeout: float = 2.0) -> None:
+        import asyncio
+
+        async def _poll() -> None:
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(_poll(), timeout=timeout)
+
+    @pytest.mark.asyncio
+    async def test_disconnect_during_busy_hold_keeps_serving(self) -> None:
+        """The cancelled background enter ends serving only at shutdown."""
+
+        import asyncio
+
+        from rigplane.cli import _run
+
+        radio, lifecycle, composition = self._make(busy_first=True)
+        _BusyHoldWebServer.instances.clear()
+        args = self._args()
+        p1, p2, p3, p4 = self._patches(radio, composition)
+        with p1, p2, p3, p4:
+            run_task = asyncio.ensure_future(_run(args))
+            try:
+                await self._wait_for(
+                    lambda: (
+                        bool(_BusyHoldWebServer.instances)
+                        and "serve-start" in _BusyHoldWebServer.instances[-1].events
+                    ),
+                    timeout=5.0,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                run_task.cancel()
+                pytest.fail("serve did not start while the connect held busy")
+            server = _BusyHoldWebServer.instances[-1]
+            assert lifecycle.startup_busy_hold_event.is_set()
+
+            # The operator disconnect path (HTTP/WS) calls disconnect()
+            # even when not connected: the background enter ends
+            # cancelled here.
+            await radio.disconnect()
+            await self._wait_for(
+                lambda: lifecycle.state is not None
+                and lifecycle.state.name == "DISCONNECTED",
+                timeout=5.0,
+            )
+
+            # Still serving after a bounded wait: no Error, no exit, the
+            # listener task still held.
+            await asyncio.sleep(1.0)
+            assert not run_task.done()
+            assert "serve-cancelled" not in server.events
+            assert "serve-returned" not in server.events
+            assert radio.exits == []
+
+            # Intentional shutdown ends cleanly: rc 0, radio exit once.
+            run_task.cancel()
+            result = await asyncio.wait_for(run_task, timeout=10.0)
+
+        assert result == 0
+        assert len(radio.exits) == 1
+        composition.transport_ready.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_after_normal_start_keeps_serving(self) -> None:
+        """Control: the same disconnect after a normal start keeps serving."""
+
+        import asyncio
+
+        from rigplane.cli import _run
+
+        radio, lifecycle, composition = self._make(busy_first=False)
+        radio._grant.set()
+        _BusyHoldWebServer.instances.clear()
+        args = self._args()
+        p1, p2, p3, p4 = self._patches(radio, composition)
+        with p1, p2, p3, p4:
+            run_task = asyncio.ensure_future(_run(args))
+            try:
+                await self._wait_for(
+                    lambda: (
+                        bool(_BusyHoldWebServer.instances)
+                        and "serve-start" in _BusyHoldWebServer.instances[-1].events
+                    ),
+                    timeout=5.0,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                run_task.cancel()
+                pytest.fail("serve did not start after the normal connect")
+            server = _BusyHoldWebServer.instances[-1]
+            assert lifecycle.startup_busy_hold_event.is_set() is False
+
+            await radio.disconnect()
+
+            await asyncio.sleep(1.0)
+            assert not run_task.done()
+            assert "serve-cancelled" not in server.events
+            assert "serve-returned" not in server.events
+
+            run_task.cancel()
+            result = await asyncio.wait_for(run_task, timeout=10.0)
+
+        assert result == 0
+        assert len(radio.exits) == 1
+        composition.transport_ready.assert_awaited_once_with(radio)
+
+
 class TestFirstSignalShutdownBound:
     """MOR-2875: the bound on a web/station shutdown after its first signal."""
 

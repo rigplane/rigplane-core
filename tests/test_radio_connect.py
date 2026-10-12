@@ -1963,7 +1963,8 @@ class TestStartupBusyHoldSignal:
 
         assert radio._civ_port == 50001
         # The first sample runs before any reject (no hold yet); every
-        # sample after a reject runs inside the busy cooldown.
+        # sample after a reject runs during the next attempt, inside the
+        # hold between passes.
         assert observed[0] == (False, None)
         assert len(observed) == 3
         for held, retry in observed[1:]:
