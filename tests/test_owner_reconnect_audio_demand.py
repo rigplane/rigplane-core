@@ -1,21 +1,29 @@
-"""Characterization: held audio RX demand across an owner disconnect + connect.
+"""Held audio RX demand across an owner disconnect + connect, and the
+recovery paths that re-establish it.
 
 The soft and hard reconnect paths re-establish session-held audio demand
-after ``connect()`` returns: ``radio_reconnect.reconnect_loop`` calls
-``AudioRecoveryRuntime.recover`` (deferred through the LAN identity hold
-via ``CoreRadio._run_hard_reconnect_deferred_audio``), and the soft path
-recovers in ``ControlPhaseRuntime._after_reconnect``. The web owner path
-(``/api/v1/radio/connect`` → ``radio.connect()`` + ``_on_radio_reconnect``)
-re-fetches state but re-establishes no audio, so a consumer's declared RX
-demand — which survives the control-path teardown — never flows again.
+after ``connect()`` returns: ``radio_reconnect.reconnect_loop`` and the
+owner-connect tail of ``CoreRadio.connect`` both funnel into
+``CoreRadio._recover_audio_after_connect`` (deferred through the LAN
+identity hold via ``CoreRadio._run_hard_reconnect_deferred_audio``), and
+the soft path recovers in ``ControlPhaseRuntime._after_reconnect``. The
+web owner path (``/api/v1/radio/connect`` → ``radio.connect()`` +
+``_on_radio_reconnect``) used to re-fetch state but re-establish no
+audio, so a consumer's declared RX demand — which survives the
+control-path teardown — never flowed again.
 
-These tests pin the expected behaviour (decided from
+The owner-connect tests pin the expected behaviour (decided from
 docs/plans/2026-06-09-target-audio-architecture.md T2/T3 and step 20):
 after an owner ``disconnect()`` → ``connect()`` the still-held demand is
 re-established exactly once, and under the LAN identity hold only after
-the hold completes. They fail on main; the positive control runs the same
-recovery the reconnect loop runs and passes, proving the fixture can
-observe success.
+the hold completes. The loop tests run the resident hard-reconnect round
+with the real ``connect()`` and pin ``exactly once`` both without and
+with the hold — the not-the-reconnect-task guard in ``connect()`` is
+what keeps the loop's round single. The negative tests pin silence with
+no held demand and with ``auto_recover_audio=False``; the stash test
+pins that an owner ``disconnect()`` while the recovery is stashed drops
+it. The positive control runs the same recovery the reconnect loop runs
+and passes, proving the fixture can observe success.
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime.radio import IcomRadio
 
 from test_audio_recovery_session import _StatefulFakeStream
+from test_hard_reconnect_hold_audio import _complete_hold
 from test_icom_lan_identity_gate import _LiveControlTransport, _fast_reread, _wait_until
 
 _PACKET = AudioPacket(ident=0x0080, send_seq=1, data=b"\x01\x00" * 160)
@@ -224,11 +233,12 @@ async def test_positive_control_manual_recover_restores_rx_after_owner_connect()
     Running by hand what ``radio_reconnect.reconnect_loop`` runs after its
     ``connect()`` — ``radio._audio_runtime.recover`` with the snapshot
     captured before the disconnect — makes every assertion of the
-    owner-connect test pass: the failing tests above are about the missing
-    call, not about the fixture.
+    owner-connect test pass. ``auto_recover_audio=False`` keeps the manual
+    call the only recovery now that ``connect()`` recovers on its own.
     """
     recovery_cb = MagicMock()
     radio = _owner_connect_radio(recovery_cb)
+    radio._auto_recover_audio = False
     radio._read_lan_identity_payload = AsyncMock(return_value=b"\x98")
     session = radio.audio_session
     sub = await session.subscribe_rx("web")
@@ -237,6 +247,7 @@ async def test_positive_control_manual_recover_restores_rx_after_owner_connect()
 
     await radio.disconnect()
     await radio.connect()
+    assert [c.args[0] for c in recovery_cb.call_args_list] == []  # nothing yet
     await radio._audio_runtime.recover(snapshot)
 
     try:
@@ -244,3 +255,148 @@ async def test_positive_control_manual_recover_restores_rx_after_owner_connect()
     finally:
         await sub.release()
         await radio.disconnect()
+
+
+def _run_resident_reconnect(radio: IcomRadio) -> "asyncio.Task[None]":
+    """Start one resident hard-reconnect round the way the watchdog does."""
+    radio._conn_state = RadioConnectionState.RECONNECTING
+    radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
+    return radio._reconnect_task
+
+
+async def test_hard_reconnect_loop_recovers_held_demand_once() -> None:
+    """A resident hard-reconnect round over the real ``connect()`` recovers
+    the held demand exactly once — ``connect()`` itself must leave the
+    recovery to the loop (the not-the-reconnect-task guard)."""
+    recovery_cb = MagicMock()
+    radio = _owner_connect_radio(recovery_cb)
+    radio._read_lan_identity_payload = AsyncMock(return_value=b"\x98")
+    session = radio.audio_session
+    sub = await session.subscribe_rx("web")
+
+    loop_task = _run_resident_reconnect(radio)
+    await asyncio.wait_for(loop_task, timeout=5.0)
+    assert radio.connected
+
+    try:
+        await _assert_rx_reestablished_once(radio, session, sub, recovery_cb)
+    finally:
+        await sub.release()
+        await radio.disconnect()
+
+
+async def test_hard_reconnect_loop_into_hold_recovers_once_after_completion() -> None:
+    """The loop's round that ends in the identity hold stashes the recovery;
+    the hold's completion runs it exactly once — over the real ``connect()``."""
+    recovery_cb = MagicMock()
+    radio = _owner_connect_radio(recovery_cb)
+    _fast_reread(radio)
+    session = radio.audio_session
+    sub = await session.subscribe_rx("web")
+
+    gate_open = asyncio.Event()
+    reads = 0
+
+    async def _scripted_identity() -> bytes | None:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return None  # the connect-time gate gets no answer → hold
+        await gate_open.wait()  # the re-read completes only when allowed
+        return b"\x98"
+
+    radio._read_lan_identity_payload = AsyncMock(side_effect=_scripted_identity)
+
+    loop_task = _run_resident_reconnect(radio)
+    await asyncio.wait_for(loop_task, timeout=5.0)
+
+    # The round ended in the hold: recovery stashed, nothing re-armed yet.
+    assert [c.args[0] for c in recovery_cb.call_args_list] == []
+    assert radio._audio_stream is None
+    assert radio._hard_reconnect_deferred_audio is not None
+    reread_task = radio._lan_identity_reread_task
+    assert reread_task is not None and not reread_task.done()
+
+    gate_open.set()  # the radio answers its 19 00 on the held link
+    try:
+        assert await _wait_until(reread_task.done, timeout=5.0)
+        assert radio.connected
+        await _assert_rx_reestablished_once(radio, session, sub, recovery_cb)
+    finally:
+        await sub.release()
+        await radio.disconnect()
+
+
+async def test_owner_connect_without_held_demand_runs_no_recovery() -> None:
+    """No session demand held across the owner disconnect → connect ends
+    with no recovery events and no audio leg."""
+    recovery_cb = MagicMock()
+    radio = _owner_connect_radio(recovery_cb)
+    radio._read_lan_identity_payload = AsyncMock(return_value=b"\x98")
+
+    await radio.disconnect()
+    await radio.connect()
+    assert radio.connected
+
+    assert [c.args[0] for c in recovery_cb.call_args_list] == []
+    assert radio._audio_stream is None
+    await radio.disconnect()
+
+
+async def test_owner_connect_with_auto_recover_disabled_runs_no_recovery() -> None:
+    """``auto_recover_audio=False`` → the owner connect recovers nothing."""
+    recovery_cb = MagicMock()
+    radio = _owner_connect_radio(recovery_cb)
+    radio._auto_recover_audio = False
+    radio._read_lan_identity_payload = AsyncMock(return_value=b"\x98")
+    session = radio.audio_session
+    sub = await session.subscribe_rx("web")
+
+    await radio.disconnect()
+    await radio.connect()
+    assert radio.connected
+
+    assert [c.args[0] for c in recovery_cb.call_args_list] == []
+    assert radio._audio_stream is None  # the held demand stays un-armed
+    await sub.release()
+    await radio.disconnect()
+
+
+async def test_owner_disconnect_while_recovery_stashed_drops_it() -> None:
+    """Owner ``disconnect()`` while the owner connect's recovery is stashed
+    (hold active) → the stash is dropped and no recovery runs, even for a
+    hold completion that straggles past the stop."""
+    recovery_cb = MagicMock()
+    radio = _owner_connect_radio(recovery_cb)
+    _fast_reread(radio)
+    session = radio.audio_session
+    sub = await session.subscribe_rx("web")
+
+    gate_open = asyncio.Event()
+    reads = 0
+
+    async def _scripted_identity() -> bytes | None:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return None  # the connect-time gate gets no answer → hold
+        await gate_open.wait()  # never set: the re-read stays pending
+        return b"\x98"
+
+    radio._read_lan_identity_payload = AsyncMock(side_effect=_scripted_identity)
+
+    await radio.disconnect()
+    await radio.connect()  # returns into the hold with the recovery stashed
+    assert not radio.connected
+    assert radio._hard_reconnect_deferred_audio is not None
+
+    await radio.disconnect()  # the owner stops the radio while stashed
+
+    # A straggling hold completion — the only path that could still run the
+    # stash — drops it: the owner stop moved ``_owner_stop_epoch`` (and the
+    # teardown moved the CI-V epoch).
+    await _complete_hold(radio)
+    assert [c.args[0] for c in recovery_cb.call_args_list] == []
+    assert radio._audio_stream is None
+    assert radio._hard_reconnect_deferred_audio is None
+    await sub.release()
