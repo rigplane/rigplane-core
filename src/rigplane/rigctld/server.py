@@ -196,12 +196,12 @@ class RigctldServer:
     Args:
         radio: Connected IcomRadio instance.
         config: Server configuration; defaults to RigctldConfig().
-        allow_not_ready: Skip the start-up readiness check so the
-            listener binds while the radio is not ready (the bundled
-            seat shared by ``web`` and ``station``, whose own start-up
-            gate already serves a radio in its connect-time identity
-            hold). Default False keeps the fail-hard check for
-            standalone use.
+        allow_not_ready: a failed start-up readiness check is logged
+            as a warning instead of aborting, so the listener binds
+            while the radio is not ready (the bundled seat shared by
+            ``web`` and ``station``, whose own start-up gate already
+            serves a radio in its connect-time identity hold). Default
+            False keeps the fail-hard check for standalone use.
         _protocol: Override the protocol module (for testing).
         _handler: Override the handler instance (for testing).
         _circuit_breaker: Override the circuit breaker (for testing).
@@ -864,9 +864,9 @@ class RigctldServer:
         """Start the TCP listener and initialise the command handler.
 
         With ``allow_not_ready`` a radio still in its connect-time
-        identity hold does not abort start-up: the start-up readiness
-        check is skipped so the listener binds while the radio is not
-        ready.
+        identity hold does not abort start-up: a failed start-up
+        readiness check is logged as a warning instead of aborting, so
+        the listener binds while the radio is not ready.
         """
         try:
             assert_radio_startup_ready(self._radio, component="rigctld startup")
