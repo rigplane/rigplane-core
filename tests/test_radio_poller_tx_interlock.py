@@ -1064,9 +1064,7 @@ def _corrupt_snapshot(snapshot: StateSnapshot, case: str) -> StateSnapshot:
     if case == "nan-generated":
         return replace(snapshot, generated_at_monotonic=float("nan"))
     if case == "generation-mismatch":
-        moved = replace(
-            field, provider_generation=field.provider_generation + 1
-        )
+        moved = replace(field, provider_generation=field.provider_generation + 1)
         return replace(snapshot, fields=(moved,))
     raise AssertionError(f"unknown corruption case: {case}")
 

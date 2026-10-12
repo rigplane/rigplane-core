@@ -269,6 +269,7 @@ def resolve_rf_state(snapshot: StateSnapshot) -> RfState:
         or type(field.value) is not bool
         or type(field.provider_generation) is not int
         or type(snapshot.provider_generation) is not int
+        or snapshot.provider_generation < 0
         or field.provider_generation != snapshot.provider_generation
         or any(
             not isinstance(value, (int, float))

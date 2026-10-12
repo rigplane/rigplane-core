@@ -130,6 +130,7 @@ from ..runtime.tx_interlock import (
     TxInterlockRefusal,
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
+    resolve_rf_state,
 )
 
 if TYPE_CHECKING:
@@ -629,21 +630,9 @@ class RadioPoller:
     def _current_rf_state(self, snapshot: StateSnapshot | None = None) -> RfState:
         """Return RF truth only from a fresh current-provider PTT observation."""
         snapshot = snapshot or self._state_store.snapshot()
-        try:
-            field = snapshot.field(_PTT_PATH)
-        except KeyError:
+        if snapshot.provider_generation != self._provider_generation():
             return RfState.UNKNOWN
-        now = snapshot.generated_at_monotonic
-        if (
-            field.freshness is not FreshnessState.FRESH
-            or type(field.value) is not bool
-            or field.provider_generation != self._provider_generation()
-            or field.max_age is None
-            or now < field.last_observed_monotonic
-            or now >= field.last_observed_monotonic + field.max_age
-        ):
-            return RfState.UNKNOWN
-        return RfState.TX if field.value else RfState.RX
+        return resolve_rf_state(snapshot)
 
     def _enforce_tx_interlock(self, cmd: Command) -> None:
         if self._managed_tx_authority is not None and not isinstance(
