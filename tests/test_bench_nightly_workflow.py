@@ -83,9 +83,7 @@ def test_outcome_steps_fail_the_job() -> None:
             f"{output_condition!r}"
         )
         run = step.get("run", "")
-        assert "::error title=" in run, (
-            f"{name!r} does not emit a ::error annotation"
-        )
+        assert "::error title=" in run, f"{name!r} does not emit a ::error annotation"
         assert "$GITHUB_STEP_SUMMARY" in run, (
             f"{name!r} does not report to the job summary"
         )
@@ -97,9 +95,7 @@ def test_outcome_steps_fail_the_job() -> None:
 def test_evidence_steps_do_not_decide_the_verdict() -> None:
     steps = _steps_by_name(_radio_job())
     for name in EVIDENCE_STEP_NAMES:
-        assert name in steps, (
-            f"evidence step {name!r} is missing from the radio job"
-        )
+        assert name in steps, f"evidence step {name!r} is missing from the radio job"
         assert steps[name].get("continue-on-error") is True, (
             f"evidence step {name!r} must stay continue-on-error so artifact "
             "storage or diagnose failures cannot decide the night"
