@@ -54,10 +54,11 @@ silence window the same way.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from rigplane.backends.ic7300 import Ic7300SerialRadio
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.runtime._audio_recovery import AudioRecoveryState
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.types import AudioCodec
 from rigplane_testkit.yaesu import FakeCatRadio
@@ -72,9 +73,14 @@ from test_yaesu_audio import FakeAudioDriver
 _PCM_FRAME = b"\x01\x02\x03\x04"
 
 
-def _icom_serial_radio() -> tuple[
-    Ic7300SerialRadio, _FakeUsbAudioDriver, _FakeSerialCivLink
-]:
+def _recovery_events(cb: MagicMock) -> list[AudioRecoveryState]:
+    """The ``on_audio_recovery`` states emitted so far, in order."""
+    return [c.args[0] for c in cb.call_args_list]
+
+
+def _icom_serial_radio(
+    recovery_cb: MagicMock | None = None,
+) -> tuple[Ic7300SerialRadio, _FakeUsbAudioDriver, _FakeSerialCivLink]:
     link = _FakeSerialCivLink(model_id=0x94)
     driver = _FakeUsbAudioDriver()
     radio = Ic7300SerialRadio(
@@ -85,6 +91,8 @@ def _icom_serial_radio() -> tuple[
         # Hermetic on any host: no OS enumeration, so no real port is probed.
         _enumerate_serial_ports_fn=lambda: [],
     )
+    if recovery_cb is not None:
+        radio._on_audio_recovery = recovery_cb
     # The fake link answers no keep-alive poll; hold the CI-V watchdog off
     # for the test's lifetime (no tick, no link-down declaration).
     radio._SERIAL_WATCHDOG_INTERVAL_S = 3600.0
@@ -119,7 +127,8 @@ async def test_icom_serial_owner_reconnect_reestablishes_held_rx_demand() -> Non
     """Owner disconnect() + connect() on the Icom serial backend
     re-establishes the RX demand the AudioSession still holds, exactly
     once (MOR-3436)."""
-    radio, driver, _link = _icom_serial_radio()
+    recovery_cb = MagicMock()
+    radio, driver, _link = _icom_serial_radio(recovery_cb)
     await radio.connect()
     session = radio.audio_session
     sub = await session.subscribe_rx("web")
@@ -141,6 +150,10 @@ async def test_icom_serial_owner_reconnect_reestablishes_held_rx_demand() -> Non
         # connect — re-established exactly once.
         assert driver.rx_running is True
         assert driver.rx_starts == 2
+        assert _recovery_events(recovery_cb) == [
+            AudioRecoveryState.RECOVERING,
+            AudioRecoveryState.RECOVERED,
+        ]
         driver.emit_rx_pcm(_PCM_FRAME)
         packet = await sub.get(timeout=1.0)
         assert packet is not None and packet.data == _PCM_FRAME
@@ -201,7 +214,8 @@ async def test_icom_serial_soft_reconnect_reestablishes_held_rx_demand_once() ->
     """The backend's own reconnect path (the watchdog's link-down →
     ``soft_reconnect`` flow) re-establishes the held RX demand exactly
     once."""
-    radio, driver, _link = _icom_serial_radio()
+    recovery_cb = MagicMock()
+    radio, driver, _link = _icom_serial_radio(recovery_cb)
     await radio.connect()
     session = radio.audio_session
     sub = await session.subscribe_rx("web")
@@ -217,6 +231,10 @@ async def test_icom_serial_soft_reconnect_reestablishes_held_rx_demand_once() ->
         assert radio.connected is True
         assert driver.rx_running is True
         assert driver.rx_starts == 2  # re-established exactly once
+        assert _recovery_events(recovery_cb) == [
+            AudioRecoveryState.RECOVERING,
+            AudioRecoveryState.RECOVERED,
+        ]
         driver.emit_rx_pcm(_PCM_FRAME)
         packet = await sub.get(timeout=1.0)
         assert packet is not None and packet.data == _PCM_FRAME
@@ -228,7 +246,8 @@ async def test_icom_serial_soft_reconnect_reestablishes_held_rx_demand_once() ->
 async def test_icom_serial_identity_hold_reestablishes_once_after_completion() -> None:
     """A connect that returns into the identity hold re-establishes
     nothing until the hold completes, then exactly once."""
-    radio, driver, link = _icom_serial_radio()
+    recovery_cb = MagicMock()
+    radio, driver, link = _icom_serial_radio(recovery_cb)
     await radio.connect()
     session = radio.audio_session
     sub = await session.subscribe_rx("web")
@@ -241,12 +260,17 @@ async def test_icom_serial_identity_hold_reestablishes_once_after_completion() -
         assert not radio.connected
         assert driver.rx_running is False  # nothing re-armed during the hold
         assert radio._serial_deferred_audio is not None
+        assert _recovery_events(recovery_cb) == []
 
         link.answer_identity = True  # the re-read gets its answer
         assert await _wait_until(lambda: radio.connected, timeout_s=5.0)
         assert await _wait_until(lambda: driver.rx_running, timeout_s=5.0)
         assert driver.rx_starts == 2  # re-established exactly once, after
         assert radio._serial_deferred_audio is None
+        assert _recovery_events(recovery_cb) == [
+            AudioRecoveryState.RECOVERING,
+            AudioRecoveryState.RECOVERED,
+        ]
         driver.emit_rx_pcm(_PCM_FRAME)
         packet = await sub.get(timeout=1.0)
         assert packet is not None and packet.data == _PCM_FRAME
@@ -259,7 +283,8 @@ async def test_icom_serial_hard_reconnect_loop_recovers_held_demand_once() -> No
     """A resident hard-reconnect round over the real ``connect()`` recovers
     the held demand exactly once — ``connect()`` itself must leave the
     recovery to the loop (the not-the-reconnect-task guard)."""
-    radio, driver, _link = _icom_serial_radio()
+    recovery_cb = MagicMock()
+    radio, driver, _link = _icom_serial_radio(recovery_cb)
     await radio.connect()
     session = radio.audio_session
     sub = await session.subscribe_rx("web")
@@ -272,6 +297,10 @@ async def test_icom_serial_hard_reconnect_loop_recovers_held_demand_once() -> No
 
         assert driver.rx_running is True
         assert driver.rx_starts == 2  # the loop's own recovery, exactly once
+        assert _recovery_events(recovery_cb) == [
+            AudioRecoveryState.RECOVERING,
+            AudioRecoveryState.RECOVERED,
+        ]
         driver.emit_rx_pcm(_PCM_FRAME)
         packet = await sub.get(timeout=1.0)
         assert packet is not None and packet.data == _PCM_FRAME
@@ -386,6 +415,17 @@ async def test_yaesu_cat_owner_stop_during_connect_runs_no_recovery() -> None:
 
         radio._seed_state_from_if = AsyncMock(side_effect=_gated_seed)
 
+        # The tail must not even attempt the re-establishment after the
+        # owner stop: spy on the session call the tail makes.
+        reestablish_calls: list[int] = []
+        real_reestablish = radio.audio_session.reestablish
+
+        async def _spied_reestablish() -> None:
+            reestablish_calls.append(1)
+            await real_reestablish()
+
+        radio.audio_session.reestablish = _spied_reestablish  # type: ignore[method-assign]
+
         await radio.disconnect()
         assert driver.rx_running is False
 
@@ -396,6 +436,7 @@ async def test_yaesu_cat_owner_stop_during_connect_runs_no_recovery() -> None:
         await asyncio.wait_for(connect_task, timeout=5.0)
 
         assert driver.rx_running is False  # nothing re-armed on the dead link
+        assert reestablish_calls == []  # no attempt after the owner stop
         assert session.rx_demand == 1  # the demand stays held, un-armed
         await sub.release()
         await radio.disconnect()
