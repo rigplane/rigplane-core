@@ -1031,7 +1031,7 @@ async def test_cmd_web_managed_ignores_env_auth_and_keeps_loopback_rigctld(
             raise asyncio.CancelledError
 
     class FakeRigctldServer:
-        def __init__(self, _radio, cfg):
+        def __init__(self, _radio, cfg, *, allow_not_ready=False):
             captured["rigctld_cfg"] = cfg
 
         async def start(self):

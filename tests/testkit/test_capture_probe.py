@@ -182,7 +182,9 @@ async def test_driver_classifies_against_simulator() -> None:
                 radio, subset, allowed, pace=0.0, timeout=1.0
             )
 
-            # One probe with its reply dropped on the wire: silence.
+            # One probe with its reply dropped on the wire: silence (the echo
+            # is off so the plan drops the reply itself, not its echo).
+            server.lan_civ_echo = False
             server.fault_plan = FaultPlan(
                 civ_to_client=FaultRule(drop_probability=1.0, max_packets=1)
             )

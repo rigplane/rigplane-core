@@ -4446,12 +4446,19 @@ async def _cmd_web(
             wsjtx_data_mode=wsjtx_data_mode,
             wsjtx_data_mod_input=wsjtx_data_mod_input,
         )
+        # The bundled seat shared by `web` and `station` tolerates a radio
+        # that is still in its connect-time identity hold: a failed start-up
+        # readiness check is logged as a warning instead of aborting, so the
+        # bundled listener binds while the radio is not ready, mirroring the
+        # web start-up gate.
+        # Standalone `serve` keeps the fail-hard check.
         if managed_tx_composition is None:
-            candidate = RigctldServer(radio, rigctld_config)
+            candidate = RigctldServer(radio, rigctld_config, allow_not_ready=True)
         else:
             candidate = RigctldServer(
                 radio,
                 rigctld_config,
+                allow_not_ready=True,
                 managed_tx_authority=managed_tx_composition.authority,
                 command_queue=server.command_queue,
                 command_service=server.command_service,

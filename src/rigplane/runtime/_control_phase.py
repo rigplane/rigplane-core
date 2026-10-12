@@ -159,6 +159,7 @@ class ControlPhaseRuntime:
         """Open connection to the radio and authenticate."""
         h = self._host
         h._conn_state = RadioConnectionState.CONNECTING
+        h._civ_resume_seq = None
         h._civ_stream_ready = False
         h._civ_recovering = False
         h._last_status_error = 0
@@ -540,6 +541,7 @@ class ControlPhaseRuntime:
         if h._conn_state != RadioConnectionState.CONNECTED:
             return
         h._conn_state = RadioConnectionState.DISCONNECTING
+        h._civ_resume_seq = None
         civ_rt = getattr(h, "_civ_runtime", None)
         if civ_rt is not None:
             civ_rt.advance_generation("disconnect")
@@ -673,6 +675,7 @@ class ControlPhaseRuntime:
         h = self._host
         self._deferred_retail = None
         self._renewal_waiter = None
+        h._civ_resume_seq = None
         # Best-effort teardown of any data/audio transports first (mirrors
         # disconnect ordering), then the always-sent token-remove.
         self._stop_watchdog()
@@ -896,6 +899,11 @@ class ControlPhaseRuntime:
             h._civ_stream_ready = False
             h._civ_recovering = ctrl_alive
             raise ConnectionError(f"Failed to reconnect CI-V: {exc}") from exc
+
+        if h._civ_resume_seq is not None:
+            # ``connect`` reset the numbering to 0; continue that of the CI-V
+            # transport torn down by ``soft_disconnect`` or ``_force_cleanup_civ``.
+            h._civ_transport.send_seq = h._civ_resume_seq
 
         h._civ_transport.start_ping_loop()
         h._civ_transport.start_retransmit_loop()

@@ -14,6 +14,11 @@ check, has no threshold that fails it, and runs only nightly or by hand
 - `frontend/src/lib/runtime/props/panel-props.ts`
 - `frontend/src/lib/runtime/adapters/ptt-restore-gate.ts`
 - `frontend/src/lib/runtime/adapters/mod-input-gates.ts`
+- `frontend/src/lib/runtime/adapters/control-feedback-projection.ts`
+- `frontend/src/lib/runtime/adapters/pending-intent-table.ts`
+- `frontend/src/lib/runtime/adapters/receiver-feedback.ts`
+- `frontend/src/lib/runtime/adapters/level-feedback.ts`
+- `frontend/src/lib/runtime/adapters/if-shift-feedback.ts`
 
 `frontend/vitest.stryker.config.ts` names the tests that run against each
 mutant in `test.include`:
@@ -25,6 +30,18 @@ mutant in `test.include`:
 - `frontend/src/lib/runtime/props/__tests__/nr-level-projection.isolated.test.ts`
 - `frontend/src/lib/runtime/adapters/__tests__/mod-input-auto.isolated.test.ts`
 - `frontend/src/lib/runtime/adapters/__tests__/mod-input-tx-guard.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/filter-width-command-lifecycle.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/dsp-command-feedback.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/tx-aux-command-feedback.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/rf-sql-command-feedback.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/af-rf-power-command-feedback.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/cw-level-command-feedback.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/pbt-if-shift-command-feedback.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/pbt-if-shift-terminal-outcome-retention.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/mor1441-pending-discrete.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/mor1441-pending-frequency.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/mor1519-mode-armed.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/mor2111-repeater-conformance.isolated.test.ts`
 
 The two mod-input test files import the `.svelte.ts` wrappers, not
 `mod-input-gates.ts` directly; the wrappers call the mutated module for
@@ -56,6 +73,12 @@ itself; an interrupted in-place run can leave instrumented source behind,
 so use it only in a throwaway checkout. Reports are written to
 `frontend/reports/mutation/` (`mutation.html`, `mutation.json`); the
 workflow uploads both as the `stryker-report-<run id>-<attempt>` artifact.
+
+A full run of this configuration took 52 minutes (3118 s) on 2026-10-12
+with `npx stryker run --concurrency 4` (Stryker core and vitest-runner 10.0.0)
+on a 16-core Linux test host: 7112 mutants across the ten mutated files.
+The workflow's `timeout-minutes` is 120 because the CI runner's speed for
+this run has not been measured.
 
 ## Reading a survivor
 
@@ -92,7 +115,7 @@ its place where one exists; the rest of each file is not mutated.
 | File | Imports |
 |---|---|
 | `audio-adapter.ts` | `runtime` from `../frontend-runtime` |
-| `panel-adapters.ts` | `runtime` from `../frontend-runtime`; `$lib/stores/capabilities.svelte`; `$lib/stores/commands.svelte` |
+| `panel-adapters.ts` | `runtime` from `../frontend-runtime`; `$lib/stores/capabilities.svelte`; `$lib/stores/commands.svelte`. The pure `control-feedback-projection.ts`, `pending-intent-table.ts`, `receiver-feedback.ts`, `level-feedback.ts` and `if-shift-feedback.ts` were split out of it and are mutated |
 | `tx-adapter.ts` | `runtime` from `../frontend-runtime`. Its restore-gate helpers (`markerIsStrictlyNewer`, `canRestoreModAfterConfirmedOff`) are the pure `ptt-restore-gate.ts`, which is mutated; the local-audio attempt lifecycle over module state is not |
 | `vfo-adapter.ts` | `runtime` from `../frontend-runtime` |
 | `mod-input-auto.svelte.ts` | `getRadioState` from `$lib/stores/radio.svelte`; `getCapabilities` from `$lib/stores/capabilities.svelte` — gate logic lives in `mod-input-gates.ts` (mutated); only the store reads, `localStorage`, the `$state` opt-in flag, the memory-only `pending` latch (a plain `let`) with its consume-once logic in `restoreModInputAfterTx`, and the dispatch stay in the wrapper |

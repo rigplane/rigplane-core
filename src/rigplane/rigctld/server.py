@@ -54,7 +54,7 @@ from ..runtime._state_queries import (
 )
 from ..runtime._poller_types import CommandQueue
 from ..runtime.managed_tx_authority import ATTEMPT_TIMEOUT_S, RETRY_DELAY_S
-from ..startup_checks import assert_radio_startup_ready
+from ..startup_checks import _radio_details, assert_radio_startup_ready
 from . import audit as _audit  # noqa: TID251
 from .circuit_breaker import CircuitBreaker, CircuitState  # noqa: TID251
 from .contract import ClientSession, HamlibError, RigctldConfig  # noqa: TID251
@@ -196,6 +196,12 @@ class RigctldServer:
     Args:
         radio: Connected IcomRadio instance.
         config: Server configuration; defaults to RigctldConfig().
+        allow_not_ready: a failed start-up readiness check is logged
+            as a warning instead of aborting, so the listener binds
+            while the radio is not ready (the bundled seat shared by
+            ``web`` and ``station``, whose own start-up gate already
+            serves a radio in its connect-time identity hold). Default
+            False keeps the fail-hard check for standalone use.
         _protocol: Override the protocol module (for testing).
         _handler: Override the handler instance (for testing).
         _circuit_breaker: Override the circuit breaker (for testing).
@@ -208,6 +214,7 @@ class RigctldServer:
         radio: "Radio",
         config: RigctldConfig | None = None,
         *,
+        allow_not_ready: bool = False,
         managed_tx_authority: ManagedTxAuthority | None = None,
         command_queue: CommandQueue | None = None,
         command_service: CommandService | None = None,
@@ -231,6 +238,7 @@ class RigctldServer:
         self._command_queue = command_queue
         self._command_service = command_service
         self._radio = radio
+        self._allow_not_ready = allow_not_ready
         self._config = config or RigctldConfig()
         self._clock = clock
         self._server: asyncio.Server | None = None
@@ -853,8 +861,26 @@ class RigctldServer:
         await self._state_acquisition_drain().run_once()
 
     async def start(self) -> None:
-        """Start the TCP listener and initialise the command handler."""
-        assert_radio_startup_ready(self._radio, component="rigctld startup")
+        """Start the TCP listener and initialise the command handler.
+
+        With ``allow_not_ready`` a radio still in its connect-time
+        identity hold does not abort start-up: a failed start-up
+        readiness check is logged as a warning instead of aborting, so
+        the listener binds while the radio is not ready.
+        """
+        try:
+            assert_radio_startup_ready(self._radio, component="rigctld startup")
+        except RuntimeError:
+            if not self._allow_not_ready:
+                raise
+            connected, ready, control_connected = _radio_details(self._radio)
+            logger.warning(
+                "rigctld starting while the radio is not ready "
+                "(connected=%s, radio_ready=%s, control_connected=%s)",
+                connected,
+                ready,
+                control_connected,
+            )
 
         if self._protocol is None:
             from . import protocol as _proto_mod  # noqa: PLC0415, TID251

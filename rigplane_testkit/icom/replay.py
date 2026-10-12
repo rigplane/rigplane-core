@@ -121,10 +121,12 @@ class ReplayResponder:
 
     Heuristic limits: an unsolicited frame sharing a command (and
     subcommand, when present) with an in-flight request is attributed as
-    that request's reply (echo-free pairing is not recoverable from the wire
-    alone), and with several requests outstanding at once an ACK's true
-    owner is not recoverable — attribution picks the most recent, harmless
-    while ACK frames are byte-identical.
+    that request's reply; only a radio frame byte-identical to a pending
+    request escapes that attribution — it is the LAN CI-V echo, skipped by
+    ``__post_init__`` as neither reply nor unsolicited. With several
+    requests outstanding at once an ACK's true owner is not recoverable —
+    attribution picks the most recent, harmless while ACK frames are
+    byte-identical.
     """
 
     recording: Recording
@@ -137,6 +139,11 @@ class ReplayResponder:
         for _t, direction, frame in self.recording.civ_frames():
             if direction == "c2r":
                 pending.append(frame)
+                continue
+            if frame in pending:
+                # LAN CI-V echo: the radio sends every request back
+                # byte-identical before its reply — neither reply nor
+                # unsolicited, and the request stays pending.
                 continue
             match = self._match(pending, frame)
             if match is not None:

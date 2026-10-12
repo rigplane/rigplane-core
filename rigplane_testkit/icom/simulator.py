@@ -176,6 +176,20 @@ def _bcd_decode_freq(data: bytes) -> int:
     return freq
 
 
+def _status_accepted(reply: bytes) -> bool:
+    """True when a conninfo status reply claims the session for its client.
+
+    Acceptance is a returned CI-V port with a zero error: the layout
+    ``_status_response`` writes (error LE u32 at 0x30, CI-V port BE u16 at
+    0x42). Busy rejects and not-ready answers carry port 0.
+    """
+    if len(reply) < 0x50:
+        return False
+    error = struct.unpack_from("<I", reply, 0x30)[0]
+    civ_port = struct.unpack_from(">H", reply, 0x42)[0]
+    return error == _ERR_OK and civ_port != 0
+
+
 # ---------------------------------------------------------------------------
 # asyncio DatagramProtocol
 # ---------------------------------------------------------------------------
@@ -232,6 +246,10 @@ class MockIcomRadio:
         username: Expected username (any value accepted when ``auth_fail`` is False).
         password: Expected password (unused; see ``auth_fail``).
         radio_addr: CI-V address the mock claims to be (default 0x98 = IC-7610).
+        lan_civ_echo: Echo every CI-V DATA frame addressed to the radio back
+            byte-identical before its reply (recorded IC-7610 LAN behaviour).
+            Default True (fidelity); fault-injection tests that mangle the
+            reply itself set it False so the plan sees one packet, not two.
         fault_plan: optional :class:`~rigplane_testkit.icom.faults.FaultPlan`
             applying per-port/per-direction drop/duplicate/delay/reorder/
             corrupt/truncate rules on top of the legacy ``drop_rate`` /
@@ -251,6 +269,7 @@ class MockIcomRadio:
         single_owner: bool = False,
         keepalive_hold_s: float = _DEFAULT_KEEPALIVE_HOLD_S,
         drop_rate: float = 0.0,
+        lan_civ_echo: bool = True,
         unsolicited_civ: bool = False,
         unsolicited_interval_s: float = 0.1,
         fault_plan: FaultPlan | None = None,
@@ -284,8 +303,9 @@ class MockIcomRadio:
         self._civ_seq: int = 1
 
         # Radio state (for CI-V responses)
-        # MOR-3064: test-data model-id answered to ``19 00`` (identity read).
-        # Not a production IC-7610 expected ID — suites override it per case.
+        # MOR-3064: test-data model-id answered to ``19 00`` (identity read),
+        # matching the recorded IC-7610 (answers 19 00 with 98 on LAN and
+        # USB) — suites override it per case.
         self.model_id: bytes = b"\x98"
         self._frequency: int = 14_074_000
         self._mode: int = 0x01  # USB
@@ -319,6 +339,12 @@ class MockIcomRadio:
         # Behaviour flags for edge-case tests
         self.auth_fail: bool = False
         self.response_delay: float = 0.0  # extra sleep before sending a response
+        # LAN CI-V echo (recorded IC-7610 behaviour): every CI-V DATA frame
+        # addressed to the radio is sent back byte-identical before its
+        # reply. The production client drops it in ``_route_civ_frame``
+        # (``src/rigplane/runtime/_civ_rx.py``: a frame whose sender is not
+        # the radio address never routes), so CI-V routing ignores it.
+        self.lan_civ_echo: bool = lan_civ_echo
 
         # ----------------------------------------------------------------
         # Session-lifecycle modelling (additive; all opt-in)
@@ -368,19 +394,23 @@ class MockIcomRadio:
         self._civ_owner_addr: tuple[str, int] | None = None
         self._civ_owner_id: int = 0
         # Post-event fence (reboot / drop_session): CI-V data is ignored until
-        # a fresh OpenClose(open) — and only the client whose fresh login was
-        # accepted after the event may lift the fence with its own open
-        # (MOR-3315: a stale client's OpenClose(open) gets no stream).
+        # a fresh OpenClose(open) — and only the client whose fresh login's
+        # own conninfo was accepted after the event may lift the fence with
+        # its own open (MOR-3315: a stale client's OpenClose(open) gets no
+        # stream).
         self._fence_civ_until_open: bool = False
         # Fence permission is per client, not a shared flag: after the event
-        # only the client whose fresh login was accepted may lift the fence
-        # with its own OpenClose(open) — identified by the login's IP plus
-        # the CI-V port that client's conninfo request declared (the u32 at
-        # 0x7C, big-endian — ``core/auth.py``: ``build_conninfo_packet``
-        # packs ``civ_local_port`` there, and the production client opens
-        # its CI-V stream from exactly that port,
-        # ``runtime/_control_phase.py``: ``_send_conninfo``). See
-        # ``_fence_open_allowed_for`` for the fallback when no port is
+        # only the client whose fresh login's own conninfo request was
+        # accepted (CI-V port returned) may lift the fence
+        # with its own OpenClose(open) — identified by that conninfo's IP
+        # plus the CI-V port it declared (the u32 at 0x7C, big-endian —
+        # ``core/auth.py``: ``build_conninfo_packet`` packs
+        # ``civ_local_port`` there, the bound local port the production
+        # client opens its CI-V stream from in
+        # ``runtime/_control_phase.py``: ``_connect_once`` /
+        # ``soft_reconnect``). A conninfo from any other socket, or one the
+        # radio busy-rejects, leaves the permission where it was (MOR-3340).
+        # See ``_fence_open_allowed_for`` for the fallback when no port is
         # declared.
         self._fence_login_ip: str | None = None
         self._fence_login_civ_port: int | None = None
@@ -533,11 +563,13 @@ class MockIcomRadio:
         At ``at`` seconds from now the radio "powers off" for ``down_for``
         seconds: it answers nothing on either port, forgets the held session
         (``free_session`` path), drops the CI-V owner, rotates its token and
-        restarts CI-V sequence numbering. Until the client whose fresh login
-        is accepted completes an OpenClose(open) from the CI-V port its
-        conninfo declared (see ``_fence_open_allowed_for``), CI-V data and
-        pings from pre-reboot clients are ignored — a rebooted radio does
-        not serve a stale client that never logs in again (MOR-3315). Token
+        restarts CI-V sequence numbering. Until the client whose fresh
+        login's own conninfo is accepted completes an OpenClose(open) from
+        the CI-V port that conninfo declared (see
+        ``_fence_open_allowed_for``), CI-V data and CI-V-port pings from
+        pre-reboot clients are ignored — a rebooted radio does
+        not serve a stale client that never logs in again (MOR-3315);
+        control-port pings are still answered. Token
         packets (0x40) and conninfo (0x90) carrying
         a pre-reboot token are ignored as well;
         ``docs/internals/protocol.md`` does not describe what an IC-7610 does
@@ -614,9 +646,9 @@ class MockIcomRadio:
         unsolicited CI-V and fences the dropped client off the CI-V data
         stream: CI-V DATA from that client is ignored while pings on both
         ports are still answered (recorded: the CI-V port keeps answering
-        pings) — the fence lifts only for the client whose fresh login is
-        accepted, once its OpenClose(open) arrives from the CI-V port its
-        conninfo declared (see ``_fence_open_allowed_for``). With
+        pings) — the fence lifts only for the client whose fresh login's
+        own conninfo is accepted, once its OpenClose(open) arrives from the
+        CI-V port that conninfo declared (see ``_fence_open_allowed_for``). With
         ``notice=True`` one unsolicited 0x90 conninfo notice (busy=0,
         "session free"; recorded layout in ``_conninfo_notice``) is sent to
         the dropped client's control address ~0.1 s after the drop. The
@@ -637,8 +669,8 @@ class MockIcomRadio:
         self.token = (self.token + 0x9E3779B9) & 0xFFFFFFFF
         self._fence_civ_until_open = True
         self._fence_blocks_pings = False  # recorded: pings keep being answered
-        # The fence permission resets with the event: only a fresh accepted
-        # login re-grants it, and only to that client.
+        # The fence permission resets with the event: only an accepted
+        # conninfo from a fresh login re-grants it, and only to that client.
         self._fence_login_ip = None
         self._fence_login_civ_port = None
         if notice and target is not None:
@@ -1016,12 +1048,11 @@ class MockIcomRadio:
             if not self.auth_fail:
                 self._login_count += 1
                 self._last_login = (addr, sender_id)
-                # A login accepted after a reboot/drop authorises that
-                # client — and only that client — to lift the CI-V fence
-                # with its next OpenClose(open) (MOR-3315); its conninfo
-                # request declares the port that open must come from.
-                self._fence_login_ip = addr[0]
-                self._fence_login_civ_port = None
+                # The fence permission is NOT granted here: it is recorded
+                # when this login's own conninfo request is accepted below
+                # (MOR-3340) — otherwise a second login whose conninfo is
+                # busy-rejected would still steal the permission from the
+                # session owner.
             return
 
         # Token ack (0x40 bytes, requesttype=0x02) → send GUID conninfo
@@ -1031,8 +1062,11 @@ class MockIcomRadio:
             return
 
         # Token renewal (0x40 bytes, requesttype=0x05) → refresh keepalive
+        # and answer with a 0x40/0x05 control packet (recorded: the radio
+        # answered 10/10 renews in the idle window, ``idle_cadence.json``).
         if n == 0x40 and data[0x15] == _TOKEN_RENEW:
             self._refresh_keepalive((addr, sender_id))
+            self._send(proto, self._token_renew_reply(data, sender_id), addr, "ctrl")
             return
 
         # Token remove (0x40 bytes, requesttype=0x01) → graceful close: free now
@@ -1043,15 +1077,21 @@ class MockIcomRadio:
 
         # Client conninfo (0x90 bytes, requesttype=0x03) → status with CI-V port
         if n == 0x90 and data[0x15] == 0x03:
-            if self._fence_login_ip is not None and (addr, sender_id) == (
-                self._last_login
-            ):
-                # The fresh login's own conninfo declares the CI-V port its
-                # OpenClose(open) must come from (big-endian u32 at 0x7C —
-                # ``core/auth.py``: ``build_conninfo_packet``); a conninfo
-                # from any other socket does not move the permission.
-                self._fence_login_civ_port = struct.unpack_from(">I", data, 0x7C)[0]
-            self._send(proto, self._conninfo_status(addr, sender_id), addr, "ctrl")
+            own_conninfo = (addr, sender_id) == self._last_login
+            declared_port = (
+                struct.unpack_from(">I", data, 0x7C)[0] if own_conninfo else None
+            )
+            reply = self._conninfo_status(addr, sender_id)
+            if own_conninfo and declared_port is not None and _status_accepted(reply):
+                # The fresh login's own conninfo was accepted (CI-V port
+                # returned): that client — and only that
+                # client — may now lift the CI-V fence with its
+                # OpenClose(open) (MOR-3315). A conninfo from any other
+                # socket, or one that was busy-rejected, leaves the
+                # permission where it was (MOR-3340).
+                self._fence_login_ip = addr[0]
+                self._fence_login_civ_port = declared_port
+            self._send(proto, reply, addr, "ctrl")
             return
 
         # Disconnect → free a held session for this owner
@@ -1081,21 +1121,18 @@ class MockIcomRadio:
     def _fence_open_allowed_for(self, addr: tuple[str, int]) -> bool:
         """True when an OpenClose(open) from ``addr`` may lift the fence.
 
-        Permission is per client: it belongs to the client whose fresh login
-        was accepted after the event (``_fence_login_ip``) once that login's
-        own conninfo request declared the CI-V port it opens from
-        (``_fence_login_civ_port``). A declared port of 0 — the client
-        reserved no local port — falls back to the login's IP alone, so a
-        single-socket client that logs in afresh is still served. No fresh
-        login, or a login whose conninfo has not arrived yet, leaves every
-        open fenced.
+        Permission is per client: it belongs to the client whose fresh
+        login's own conninfo request was accepted after the event
+        (``_fence_login_ip`` / ``_fence_login_civ_port``). A declared port
+        of 0 — the client reserved no local port — falls back to the login's
+        IP alone, so a single-socket client that logs in afresh is still
+        served (and, on a shared IP, any same-IP socket with it). No
+        accepted conninfo since the event leaves every open fenced.
         """
         if self._fence_login_ip is None:
-            return False  # no login accepted since the event
+            return False  # no conninfo accepted since the event
         if addr[0] != self._fence_login_ip:
             return False
-        if self._fence_login_civ_port is None:
-            return False  # the fresh login has not sent its conninfo yet
         if self._fence_login_civ_port == 0:
             return True  # no port declared → fall back to the login's IP
         return addr[1] == self._fence_login_civ_port
@@ -1145,9 +1182,10 @@ class MockIcomRadio:
                     addr
                 ):
                     # After a reboot/drop the fence lifts only for the
-                    # client whose fresh login was accepted — another
-                    # client's open gets no stream, even from the same IP
-                    # (MOR-3315).
+                    # client whose fresh login's own conninfo was accepted
+                    # (MOR-3315) — a stale client's open gets no stream
+                    # unless the accepted client declared port 0, which
+                    # falls back to the login's IP alone.
                     return
                 self._civ_owner_addr = addr
                 self._civ_owner_id = sender_id
@@ -1198,6 +1236,14 @@ class MockIcomRadio:
         # Only handle commands addressed to this radio
         if to_addr != self._radio_addr:
             return
+
+        if self.lan_civ_echo:
+            # Recorded IC-7610 LAN behaviour: the request CI-V frame comes
+            # back byte-identical immediately before the reply — including
+            # requests answered with NAK (``civ_pairs.jsonl`` records CI-V
+            # frames only). Through the same outbound funnel as the reply,
+            # so a fault plan sees both packets.
+            self._send(proto, data, addr, "civ")
 
         response_civ = self._dispatch_civ(cmd, payload, from_addr)
         if response_civ is not None:
@@ -1621,6 +1667,22 @@ class MockIcomRadio:
             struct.pack_into("<I", pkt, 0x1C, self.token)
             # error at 0x30 stays 0x00000000 → success
             pkt[0x40:0x44] = b"FTTH"
+        return bytes(pkt)
+
+    def _token_renew_reply(self, data: bytes, sender_id: int) -> bytes:
+        """Build the 0x40 renew answer from the client's renew packet.
+
+        Copies the client's renew packet and writes the endpoint IDs (radio
+        as sender, client as receiver), keeping request type 0x05.
+        ``_login_response`` instead builds a fresh packet, so the two share
+        no mirror helper. Only the length and request type are recorded
+        radio behaviour; the remaining bytes round-trip the client's own
+        values.
+        """
+        pkt = bytearray(data[:0x40])
+        struct.pack_into("<I", pkt, 0x08, self.radio_id)
+        struct.pack_into("<I", pkt, 0x0C, sender_id)
+        pkt[0x15] = _TOKEN_RENEW
         return bytes(pkt)
 
     def _guid_conninfo(self, sender_id: int) -> bytes:

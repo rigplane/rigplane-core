@@ -59,6 +59,7 @@ from rigplane.runtime.tx_interlock import (
     TxInterlockDeferredOutcome,
     TxInterlockDecision,
     TxInterlockDisposition,
+    classify_raw_civ_frame_tx_family,
     classify_tx_interlock,
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
@@ -492,3 +493,29 @@ def test_resolve_rf_state_with_non_bool_value_is_unknown() -> None:
     store, _clock = _ptt_store(value=1, max_age=1.0)
 
     assert resolve_rf_state(store.snapshot()) is RfState.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("frame_hex", "expected"),
+    (
+        ("FEFE98E01CFD", None),
+        ("FEFE98E0290029001C0001FD", True),
+        ("FEFE98E029001C00FD", False),
+    ),
+    ids=(
+        "short-1c-frame-unparseable",
+        "doubly-wrapped-cmd29-fails-closed",
+        "cmd29-ptt-read-passes",
+    ),
+)
+def test_raw_frame_classifier_pins_fail_closed_branches(
+    frame_hex: str, expected: bool | None
+) -> None:
+    """Pin the byte-level TX-family verdict on edge frames.
+
+    A 0x1C frame with no sub byte cannot be parsed, a cmd29 wrapper
+    around another cmd29 wrapper cannot be unwrapped to a known inner
+    command, and a cmd29 wrapper around a PTT read is a read: the first
+    two fail closed (refused in managed mode), the read passes.
+    """
+    assert classify_raw_civ_frame_tx_family(bytes.fromhex(frame_hex)) is expected

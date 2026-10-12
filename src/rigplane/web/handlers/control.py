@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from ..._bounded_queue import BoundedQueue
+from ...commands._frame import build_civ_frame
 from ...core.command_service import (
     CommandExecutionResult,
     CommandService,
@@ -37,7 +38,13 @@ from ...profiles import RadioProfile, resolve_radio_profile
 from ...profiles.control_domain import encode_legacy_control, validate_control_raw_value
 from ...runtime._poller_types import SetNarrow
 from ...runtime._dual_rx_runtime import require_receiver_for_profile
-from ...runtime.tx_interlock import RfState, evaluate_tx_interlock, resolve_rf_state
+from ...runtime.tx_interlock import (
+    RfState,
+    TxInterlockRefusal,
+    classify_raw_civ_frame_tx_family,
+    evaluate_tx_interlock,
+    resolve_rf_state,
+)
 from ...runtime.managed_tx_state import ManagedTxOutcome
 from ..protocol import (  # noqa: TID251
     decode_json,
@@ -2556,6 +2563,17 @@ class ControlHandler:
                 if any(ch not in "0123456789abcdefABCDEF" for ch in raw_data):
                     raise ValueError("data must be a compact hex string")
                 data = bytes.fromhex(raw_data)
+                if self._managed_tx_authority is not None and (
+                    classify_raw_civ_frame_tx_family(
+                        build_civ_frame(0x00, 0x00, command, sub, data)
+                    )
+                    is not False
+                ):
+                    raise TxInterlockRefusal(
+                        "raw CI-V TX-family send_civ is refused while the "
+                        "radio is under managed TX authority",
+                        reason_code="managed_tx_refused",
+                    )
                 queue_cmd = SendCiv(command=command, sub=sub, data=data)
                 put_ordered = getattr(q, "put_ordered", None)
                 if callable(put_ordered):

@@ -179,6 +179,7 @@ class ControlPhaseHost(Protocol):
     # CI-V send sequence numbers (used by open/close)
     _civ_send_seq: int
     _audio_send_seq: int
+    _civ_resume_seq: int | None
 
     # Scope assembler (shared with CivRuntimeHost; used to set shed callback)
     _scope_assembler: "ScopeAssembler"
