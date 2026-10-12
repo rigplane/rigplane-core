@@ -18,8 +18,8 @@ after an owner ``disconnect()`` → ``connect()`` the still-held demand is
 re-established exactly once, and under the LAN identity hold only after
 the hold completes. The loop tests run the resident hard-reconnect round
 with the real ``connect()`` and pin ``exactly once`` both without and
-with the hold — the not-the-reconnect-task guard in ``connect()`` is
-what keeps the loop's round single. The negative tests pin silence
+with the hold; the not-the-reconnect-task guard in ``connect()`` is what
+keeps the loop's no-hold round single. The negative tests pin silence
 with no held demand, with ``auto_recover_audio=False``, and when the
 owner stops the radio while ``connect()`` fetches initial state; the
 stash test pins that an owner ``disconnect()`` while the recovery is
