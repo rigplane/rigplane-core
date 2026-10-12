@@ -1888,13 +1888,10 @@ async def test_reconnect_loop_stops_audio_transport_on_reconnect(
 ) -> None:
     """The reconnect release tears the audio transport down via the lifecycle.
 
-    No other test pins the audio-transport disconnect on the release path
-    (the token-remove/CI-V clear are pinned on the wire in
-    tests/test_leon_recovery_ports.py), so this drives the real release:
-    the lifecycle is placed into a claimed CONNECTED session directly — a
-    bare fixture radio never logged in, so ``_teardown`` would treat the
-    disconnect as an idempotent no-op and never reach
-    ``ControlPhaseRuntime.release``.
+    This drives the real release: the lifecycle is placed into a claimed
+    CONNECTED session directly — a bare fixture radio never logged in, so
+    ``_teardown`` would treat the disconnect as an idempotent no-op and
+    never reach ``ControlPhaseRuntime.release``.
     """
     from types import SimpleNamespace
 

@@ -101,8 +101,7 @@ async def test_reboot_mid_session_client_reconnects_with_new_token(
             def reconnected(seen: list[RadioConnectionState]) -> bool:
                 # The RECONNECTING window can be shorter than the 20 ms
                 # sampling step, so the reconnect evidence is the status
-                # callback (emitted synchronously by watchdog_loop, one per
-                # loop attempt), not the sampled states.
+                # callback, not the sampled states.
                 return (
                     seen[-1] is RadioConnectionState.CONNECTED
                     and bool(statuses)
@@ -150,8 +149,7 @@ async def test_keepalive_silence_longer_than_watchdog_fires_link_down() -> None:
     client's release is the only release.
 
     The RECONNECTING window can be shorter than the 20 ms sampling step,
-    so the reconnect evidence is the status callback (emitted
-    synchronously by watchdog_loop, one per loop attempt), not the sampled
+    so the reconnect evidence is the status callback, not the sampled
     states.
     """
     server = MockIcomRadio(single_owner=True, keepalive_hold_s=2.0)
@@ -216,8 +214,7 @@ async def test_user_disconnect_during_reconnect_ends_loop(
             deadline = time.monotonic() + 40.0
             while time.monotonic() < deadline:
                 if any(
-                    s["state"] == "reconnecting" and s["attempt"] >= 2
-                    for s in statuses
+                    s["state"] == "reconnecting" and s["attempt"] >= 2 for s in statuses
                 ):
                     break
                 await asyncio.sleep(0.02)
@@ -246,8 +243,8 @@ async def test_reboot_busy_window_longer_than_reconnect_rounds_recovers(
 ) -> None:
     """A busy window spanning several reconnect rounds still recovers.
 
-    A real IC-7610 busy-rejected new logins for ~90 s after the previous
-    client died without a release, so the reconnect loop must keep backing
+    A real IC-7610 busy-rejected new logins after the previous client
+    died without a release, so the reconnect loop must keep backing
     off across a busy window longer than one connect() call instead of
     treating the reject as permanent.
 
@@ -264,10 +261,10 @@ async def test_reboot_busy_window_longer_than_reconnect_rounds_recovers(
     profile-selected stereo codec a status-stage busy reject enters
     ``_connect_once``'s busy-retry loop with the 30 s
     ``_STATUS_REJECT_COOLDOWN`` pause, which parks the first connect()
-    for ~30 s (recovery at ~34 s, one busy reject) and cannot meet the
-    20 s deadline. The explicit codec makes each busy connect() fail
-    fast, so what is pinned here is the reconnect loop's own retry
-    policy: several rounds inside the busy window, then a clean recovery.
+    and cannot meet the 20 s deadline. The explicit codec makes each
+    busy connect() fail fast, so what is pinned here is the reconnect
+    loop's own retry policy: several rounds inside the busy window, then
+    a clean recovery.
     """
     radio = _client(
         sim,

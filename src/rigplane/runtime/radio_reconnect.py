@@ -5,8 +5,6 @@ the god-object module. The two coroutines here read/write radio state through
 internal attributes and helpers (``_check_connected``/``_connected``/
 ``_advance_civ_generation`` are call hubs that stay on ``IcomRadio`` per the
 spike — they are invoked here via the ``radio`` parameter).
-
-Public API, reconnect timing and watchdog cadence are unchanged.
 """
 
 from __future__ import annotations
