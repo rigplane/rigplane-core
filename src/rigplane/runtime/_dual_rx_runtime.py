@@ -31,7 +31,11 @@ from rigplane.commands import (
 from rigplane.commands import (
     parse_selected_mode_response as _parse_selected_mode_response,
 )
-from rigplane.core.exceptions import CommandError, TimeoutError
+from rigplane.core.exceptions import (
+    CommandError,
+    CommandRejectedError,
+    TimeoutError,
+)
 from rigplane.core.types import Mode
 from rigplane.profiles import RadioProfile
 
@@ -180,7 +184,11 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         civ = self._commands.set_freq(
             freq_hz, to_addr=self._radio_addr, receiver=RECEIVER_MAIN
         )
-        await self._send_civ_raw(civ, wait_response=False)
+        resp = await self._send_civ_expect(civ, label="set_frequency_main")
+        if parse_ack_nak(resp) is False:
+            raise CommandRejectedError(
+                f"Radio rejected MAIN set_frequency({freq_hz})"
+            )
         if update_cache:
             self._last_freq_hz = freq_hz
 
