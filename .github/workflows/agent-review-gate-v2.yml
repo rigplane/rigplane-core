@@ -73,8 +73,8 @@ jobs:
               if (baseBranch.commit.sha !== baseSha) {
                 // The observer evaluates exact-current-base trust only: a PR
                 // behind main is outside its domain, not a failure. Publish a
-                // pending observation so an earlier success for this head
-                // cannot stay green while the PR sits on a stale base.
+                // pending observation, which replaces any earlier success for this
+                // head from this run onward.
                 await github.rest.repos.createCommitStatus({
                   owner, repo, sha: headSha, state: 'pending',
                   context: 'Agent Review Gate v2 observe',
@@ -132,8 +132,8 @@ jobs:
               ) {
                 // main or the PR head moved during the run, so the evaluated
                 // snapshot no longer binds the exact current base: publish a
-                // pending observation so an earlier success for this head
-                // cannot stay green, and end the job successfully, as above.
+                // pending observation, which replaces any earlier success for this
+                // head from this run onward, and end the job successfully.
                 await github.rest.repos.createCommitStatus({
                   owner, repo, sha: headSha, state: 'pending',
                   context: 'Agent Review Gate v2 observe',
