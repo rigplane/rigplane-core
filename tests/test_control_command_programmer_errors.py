@@ -1,12 +1,10 @@
 """Programmer errors in the command executor path must log a traceback.
 
-``ControlHandler._send_command_failure`` answers every executor failure with
-the same ``command_failed`` reply (the frontend consumes that code, so it
-must not change), but the log record must distinguish the two cases: a bug
-in the command path itself (``AttributeError``/``TypeError``/``NameError``)
-is an ERROR carrying ``exc_info``, while an ordinary command failure (a
-radio refusal such as ``CommandError``) stays a one-line WARNING without a
-traceback.
+``ControlHandler._send_command_failure`` logs ``AttributeError``,
+``TypeError`` and ``NameError`` as an ERROR carrying ``exc_info`` and any
+other failure (for example a refusal raised as ``CommandError``) as a
+one-line WARNING without a traceback; the reply sent to the client does
+not depend on this classification.
 """
 
 from __future__ import annotations
