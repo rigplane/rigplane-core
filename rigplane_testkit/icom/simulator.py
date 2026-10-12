@@ -26,6 +26,7 @@ import logging
 import random
 import struct
 import time
+from collections import deque
 from typing import Literal
 
 from rigplane_testkit.icom.faults import Direction, FaultPlan, Port
@@ -71,6 +72,10 @@ _DEFAULT_KEEPALIVE_HOLD_S = 0.5
 # 77 ms apart; ``tests/fixtures/ic7610/retransmit_gaps.jsonl``).
 _CIV_GAP_RETRANSMIT_PERIOD_S = 0.1
 _CIV_GAP_ROUND_MIN_SPACING_S = 0.075
+
+# How long an unclaimed orphan CI-V stream state survives a session's
+# unclean end: IC-7610, MOR-3418, between 126 and 150 s, w43/w44.
+ORPHAN_CIV_STATE_EXPIRY_S = 140.0
 
 # ---------------------------------------------------------------------------
 # Protocol constants (duplicated here to keep mock self-contained)
@@ -266,6 +271,13 @@ class _CivGapState:
         self.missing: set[int] = set()
         self.held: dict[int, tuple[str, bytes, tuple[str, int], int]] = {}
         self.last_round_at: float | None = None
+        # True when seeded from the previous session's orphan state
+        # (MOR-3418 slice G); only inherited trackers use the w50 knobs.
+        self.inherited: bool = False
+        # Fills accepted since the last 0.1 s round (the fill-budget window).
+        self.fills_this_round: int = 0
+        # Consecutive 0.1 s rounds each missing number went without a fill.
+        self.unanswered_rounds: dict[int, int] = {}
 
 
 def _missing_runs(missing: set[int]) -> list[tuple[int, int]]:
@@ -345,6 +357,29 @@ class MockIcomRadio(AudioPortMixin):
         capture_civ_frames: record every well-formed inbound CI-V frame
             addressed to the radio in :attr:`civ_frames_received`.
             Default False (no recording, no retention).
+        civ_state_survives_unclean_end: keep the CI-V stream state
+            (frontier plus gap list) of a session whose hold expires on
+            its own as orphan state for the next opener (recorded IC-7610,
+            MOR-3418; pinned by
+            ``tests/testkit/test_simulator_civ_orphan.py``). Default False
+            keeps the previous behaviour. Modelled globally, not per IP
+            (unestablished); no expiry of a claimed state is modelled
+            (unmeasured).
+        orphan_civ_state_expiry_s: how long an unclaimed orphan waits for
+            the next opener before it is dropped (default
+            ``ORPHAN_CIV_STATE_EXPIRY_S``). A clean logout (owner
+            token-remove, disconnect, the stream owner's OpenClose(close))
+            and ``reboot`` clear it at once.
+        civ_inherited_fills_per_round: fills of missing numbers an
+            inherited tracker accepts per 0.1 s round (default 0 =
+            unlimited, the #4141 gap model). Extra fills are dropped; the
+            loop re-asks and the client resends. From one capture
+            (MOR-3418 w50 b: one number per round, in order).
+        civ_inherited_drop_unanswered_rounds: consecutive 0.1 s rounds a
+            missing number may go without an accepted fill before it is
+            dropped from the requested set (default 0 = never, the #4141
+            model). From one capture (MOR-3418 w50 b: dropped after
+            ~17 rounds).
     """
 
     def __init__(
@@ -368,6 +403,10 @@ class MockIcomRadio(AudioPortMixin):
         ptt_on_session_loss: Literal["hold", "release"] = "hold",
         recorded_answers: RecordedAnswerTable | None = None,
         capture_civ_frames: bool = False,
+        civ_state_survives_unclean_end: bool = False,
+        orphan_civ_state_expiry_s: float = ORPHAN_CIV_STATE_EXPIRY_S,
+        civ_inherited_fills_per_round: int = 0,
+        civ_inherited_drop_unanswered_rounds: int = 0,
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -530,6 +569,26 @@ class MockIcomRadio(AudioPortMixin):
         # Retransmit-request packets sent on the CI-V port so far (each
         # round sends two while a sequence gap is open).
         self.civ_retransmit_requests: int = 0
+        # What each round asked for: ``(monotonic time, runs)`` per
+        # contiguous missing run, bounded to the last 4096 rounds. Lets a
+        # test tell a client that skips requests apart from the radio pace.
+        self.civ_retransmit_request_log: deque[
+            tuple[float, tuple[tuple[int, int], ...]]
+        ] = deque(maxlen=4096)
+        # Orphan CI-V stream state (MOR-3418 slice G): ``(next_expected,
+        # missing, died_at)`` kept when a held session's hold expires on
+        # its own. None when the knob is off, after a clean end, a reboot,
+        # consumption by one opener, or the unclaimed expiry.
+        self.civ_state_survives_unclean_end: bool = civ_state_survives_unclean_end
+        self.orphan_civ_state_expiry_s: float = orphan_civ_state_expiry_s
+        self.civ_inherited_fills_per_round: int = civ_inherited_fills_per_round
+        self.civ_inherited_drop_unanswered_rounds: int = (
+            civ_inherited_drop_unanswered_rounds
+        )
+        self._civ_orphan: tuple[int, frozenset[int], float] | None = None
+        # Monotonic time of the held session's last keepalive refresh
+        # (claim or live-token renewal): the death stamp of an orphan.
+        self._keepalive_last_refresh: float = 0.0
         # Tokens issued before a reboot or drop; control packets carrying one
         # are ignored.
         self._retired_tokens: set[int] = set()
@@ -933,6 +992,11 @@ class MockIcomRadio(AudioPortMixin):
         path through here: token-remove/logout, CI-V OpenClose(close),
         keepalive timeout, ``drop_session``, reboot).
         """
+        if reason != "keepalive_timeout":
+            # Any decided end drops a kept orphan: clean logout, explicit
+            # ``free_session``, ``drop_session``/reboot. Only the hold
+            # expiring on its own keeps it (see ``_expire_hold``).
+            self._civ_orphan = None
         if self._keepalive_timer is not None:
             self._keepalive_timer.cancel()
             self._keepalive_timer = None
@@ -980,6 +1044,7 @@ class MockIcomRadio(AudioPortMixin):
         """(Re)start the keepalive auto-release timer for the held session."""
         if self._owner is None:
             return
+        self._keepalive_last_refresh = time.monotonic()
         if self._keepalive_timer is not None:
             self._keepalive_timer.cancel()
         loop = asyncio.get_running_loop()
@@ -992,8 +1057,56 @@ class MockIcomRadio(AudioPortMixin):
         """Release an un-renewed session and end its token epoch."""
         if self._owner is None:
             return
+        self._keep_civ_orphan()
         self._release_session("keepalive_timeout")
         self._retire_token()
+
+    def _keep_civ_orphan(self) -> None:
+        """Keep the dying session's stream state as orphan state.
+
+        Copies the stream owner's tracker (frontier plus gap list),
+        stamped with the hold's last refresh. Only with the knob; a
+        ``drop_session`` end keeps nothing (unrecorded). The live map is
+        left alone: the orphan is a copy, not a move.
+        """
+        if not self.civ_state_survives_unclean_end:
+            return
+        tracker = None
+        if self._civ_owner_addr is not None:
+            tracker = self._civ_gap.get((self._civ_owner_addr, self._civ_owner_id))
+        if tracker is None or tracker.next_expected is None:
+            self._civ_orphan = None
+            return
+        self._civ_orphan = (
+            tracker.next_expected,
+            frozenset(tracker.missing),
+            self._keepalive_last_refresh,
+        )
+
+    def _seed_tracker_from_orphan(self, key: tuple[tuple[str, int], int]) -> None:
+        """Seed a new CI-V identity's tracker from the orphan state.
+
+        A known identity keeps its numbering (MOR-3361). An unknown one
+        opening within the expiry inherits frontier and gap list and
+        consumes the orphan; past the expiry it starts clean.
+        """
+        if key in self._civ_gap:
+            return
+        orphan = self._civ_orphan
+        if (
+            orphan is not None
+            and self.civ_state_survives_unclean_end
+            and time.monotonic() - orphan[2] <= self.orphan_civ_state_expiry_s
+        ):
+            tracker = _CivGapState(key[0], key[1])
+            tracker.next_expected = orphan[0]
+            tracker.missing = set(orphan[1])
+            tracker.inherited = True
+            self._civ_gap[key] = tracker
+            self._civ_orphan = None
+            return
+        self._civ_orphan = None
+        self._civ_gap_ensure(key)
 
     def _claim_session(self, owner: tuple[tuple[str, int], int]) -> None:
         """Mark ``owner`` as the holder and arm the keepalive timer."""
@@ -1540,8 +1653,10 @@ class MockIcomRadio(AudioPortMixin):
                 # tracked packet (the production client sends it through
                 # ``send_tracked``), while sequence tracking itself
                 # belongs to the radio session: a re-sent open never
-                # restarts it (MOR-3361).
-                self._civ_gap_ensure((addr, sender_id))
+                # restarts it (MOR-3361). A new identity instead inherits
+                # the previous session's orphan state when one is kept
+                # (MOR-3418 slice G).
+                self._seed_tracker_from_orphan((addr, sender_id))
                 if not self._civ_standby:
                     civ = self._civ_frame(to=0x00, frm=self._radio_addr, cmd=0x00)
                     self._send(proto, self._wrap_civ(civ, sender_id), addr, "civ")
@@ -1725,6 +1840,7 @@ class MockIcomRadio(AudioPortMixin):
         if delta == 0:
             # In order — or the fill of the expected number itself.
             tracker.missing.discard(seq)
+            tracker.unanswered_rounds.pop(seq, None)
             tracker.next_expected = (expected + 1) & 0xFFFF
             return True
         if 1 <= delta <= 0x7FFF:
@@ -1737,7 +1853,19 @@ class MockIcomRadio(AudioPortMixin):
                 # missing: the recorded radio keeps requesting the original
                 # gap while later packets arrive (gap_filled_by_idle stays
                 # ``[[131, 133]]`` through 134..178).
+                is_fill = seq in tracker.missing
+                if (
+                    is_fill
+                    and tracker.inherited
+                    and self.civ_inherited_fills_per_round > 0
+                    and tracker.fills_this_round >= self.civ_inherited_fills_per_round
+                ):
+                    # Over budget (MOR-3418 w50 b): drop; the loop re-asks.
+                    return False
                 tracker.missing.discard(seq)
+                if is_fill:
+                    tracker.fills_this_round += 1
+                    tracker.unanswered_rounds.pop(seq, None)
             else:
                 for off in range(delta):
                     opened = (expected + off) & 0xFFFF
@@ -1828,6 +1956,9 @@ class MockIcomRadio(AudioPortMixin):
         if proto is None:
             return
         tracker.last_round_at = time.monotonic()
+        self.civ_retransmit_request_log.append(
+            (tracker.last_round_at, tuple(_missing_runs(tracker.missing)))
+        )
         pkt = self._civ_gap_request(tracker)
         for _ in range(2):
             # Through the same outbound funnel as replies, so a fault plan
@@ -1840,6 +1971,10 @@ class MockIcomRadio(AudioPortMixin):
 
         A fallback for a silent client: a round goes out only when the
         previous round (packet-triggered or not) is at least 0.1 s old.
+        Each tick is also the pacing window of an inherited tracker: its
+        per-round fill budget resets, and missing numbers with no accepted
+        fill for ``civ_inherited_drop_unanswered_rounds`` ticks are dropped
+        (one inherited-state capture, MOR-3418 w50 b).
         """
         try:
             while True:
@@ -1848,6 +1983,23 @@ class MockIcomRadio(AudioPortMixin):
                 if proto is None:
                     continue
                 for tracker in list(self._civ_gap.values()):
+                    if tracker.inherited:
+                        tracker.fills_this_round = 0
+                        drop_after = self.civ_inherited_drop_unanswered_rounds
+                        if drop_after > 0 and tracker.missing:
+                            counts = tracker.unanswered_rounds
+                            for num in tracker.missing:
+                                counts[num] = counts.get(num, 0) + 1
+                            dropped = {
+                                num
+                                for num in tracker.missing
+                                if counts[num] >= drop_after
+                            }
+                            if dropped:
+                                tracker.missing.difference_update(dropped)
+                            for num in list(counts):
+                                if num not in tracker.missing:
+                                    del counts[num]
                     if tracker.missing:
                         now = time.monotonic()
                         last = tracker.last_round_at
