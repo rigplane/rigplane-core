@@ -500,7 +500,7 @@ class _HttpCommandExecutor:
             # regardless of the observed RF state, and without consulting
             # the authority.  The verdict is computed on the exact frame
             # the transaction below would send — addresses play no part
-            # in it — so both surfaces share the one raw classifier.
+            # in it.
             if self.server._managed_tx_authority() is not None and (
                 classify_raw_civ_frame_tx_family(
                     build_civ_frame(

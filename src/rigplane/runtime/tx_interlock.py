@@ -455,7 +455,7 @@ def evaluate_tx_interlock(
 # command 0x1C sub 0x01 (``SetTunerStatus`` values 1/2 are BLOCK).  Raw
 # tuner-off (``1C 01 00``) is refused too, which is stricter than the typed
 # policy: ``classify_tx_interlock`` lets ``SetTunerStatus`` value 0 through.
-# Read frames carry no data payload and are not actuations.
+# A PTT or tuner read (``1C 00`` / ``1C 01`` with no data byte) is not an actuation.
 
 _CIV_FRAME_HEAD = 0xFE
 _CIV_FRAME_TAIL = 0xFD
