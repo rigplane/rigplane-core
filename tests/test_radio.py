@@ -3318,7 +3318,7 @@ class TestGetFallbackCacheTTL:
 # ---------------------------------------------------------------------------
 
 
-class TestSetCommandsUpdateCache:
+class TestSetCommandsLeaveStateCacheToReadbacks:
     """SET commands leave the state cache alone.
 
     The StateCache holds only radio readbacks, so fire-and-forget setters
@@ -3327,7 +3327,7 @@ class TestSetCommandsUpdateCache:
     """
 
     @pytest.mark.asyncio
-    async def test_set_frequency_updates_state_cache(
+    async def test_set_frequency_does_not_update_state_cache(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
         """set_frequency leaves the frequency cache empty but tracks _last."""
@@ -3336,7 +3336,7 @@ class TestSetCommandsUpdateCache:
         assert radio._last_freq_hz == 21_074_000
 
     @pytest.mark.asyncio
-    async def test_set_mode_updates_state_cache(
+    async def test_set_mode_does_not_update_state_cache(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
         """set_mode leaves the mode cache empty but tracks _last_mode."""
