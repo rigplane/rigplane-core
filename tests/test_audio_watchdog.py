@@ -68,10 +68,15 @@ class _FakeRadio:
         self._audio_stream: _FakeAudioStream | None = None
         self._auto_recover_audio = True
         self._audio_runtime = _FakeAudioRuntime()
+        self._audio_resume_seq: int | None = None
+        self._rebuild_resume_seqs: list[int | None] = []
         self._ensure_audio_calls: int = 0
         self._ensure_audio_exception: Exception | None = None
 
     async def _ensure_audio_transport(self) -> None:
+        # The real rebuild restores ``_audio_resume_seq``; capture the
+        # number this rebuild saw.
+        self._rebuild_resume_seqs.append(self._audio_resume_seq)
         self._ensure_audio_calls += 1
         if self._ensure_audio_exception is not None:
             raise self._ensure_audio_exception
@@ -223,11 +228,13 @@ class TestAudioWatchdogRecovery:
 
     @pytest.mark.asyncio
     async def test_recovery_records_packet_numbering_for_rebuild(self) -> None:
-        """The watchdog records the torn-down transport's send_seq.
+        """The rebuild sees the recorded packet number.
 
         The audio transport torn down by the recovery ran on a session the
-        radio still holds, so its packet numbering must survive for the
-        ``_ensure_audio_transport`` rebuild to resume (mirrors the CI-V
+        radio still holds, so the watchdog must record its ``send_seq``
+        before the ``_ensure_audio_transport`` rebuild: the fake captures
+        the value each rebuild saw, and the one rebuild of this recovery
+        must have seen the torn-down transport's number (mirrors the CI-V
         continuity fix).
         """
         radio = _FakeRadio()
@@ -237,6 +244,7 @@ class TestAudioWatchdogRecovery:
 
         await _run_watchdog_n_ticks(radio, 2)
 
+        assert radio._rebuild_resume_seqs == [2543]
         assert radio._audio_resume_seq == 2543
 
     @pytest.mark.asyncio
