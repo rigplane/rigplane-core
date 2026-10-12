@@ -371,6 +371,69 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertIn('      - "!frontend/**/*.md"', visual)
         self.assertIn('      - "!frontend/**/*.rst"', visual)
         self.assertNotIn('      - ".github/workflows/visual.yml"', visual)
+        # The push-to-main trigger carries the same paths
+        # list as pull_request, entry for entry, and targets only main.
+        pull_request_paths = [
+            line
+            for line in visual[
+                visual.index("  pull_request:") : visual.index("  push:")
+            ].splitlines()
+            if line.startswith('      - "')
+        ]
+        self.assertEqual(
+            "\n".join(
+                ["  push:", "    branches: [main]", "    paths:", *pull_request_paths]
+            ),
+            visual[
+                visual.index("  push:") : visual.index("  workflow_dispatch:")
+            ].strip("\n"),
+        )
+
+    def test_visual_push_run_is_wired_and_dispatch_has_its_own_concurrency(
+        self,
+    ) -> None:
+        visual = VISUAL_YML.read_text(encoding="utf-8")
+        visual_job_start = "\n  visual:\n"
+        self.assertIn(visual_job_start, visual)
+        visual_job = visual[visual.index(visual_job_start) :]
+
+        # The push trigger alone would give an all-skipped green run: the
+        # `changes` job must select push runs and the `visual` job must let
+        # them through.
+        self.assertIn(
+            "      frontend: ${{ steps.filter.outputs.frontend"
+            " || steps.manual.outputs.frontend"
+            " || steps.push.outputs.frontend }}",
+            visual,
+        )
+        push_step_start = "      - name: Select push main run\n"
+        self.assertIn(push_step_start, visual)
+        push_step = visual[
+            visual.index(push_step_start) : visual.index(visual_job_start)
+        ]
+        self.assertIn("        id: push\n", push_step)
+        self.assertIn("        if: github.event_name == 'push'\n", push_step)
+        self.assertIn(
+            '        run: echo "frontend=true" >> "$GITHUB_OUTPUT"', push_step
+        )
+        self.assertIn(
+            "    if: >-\n"
+            "      needs.changes.outputs.frontend == 'true' &&\n"
+            "      (github.event_name == 'workflow_dispatch' ||\n"
+            "      github.event_name == 'push' ||\n"
+            "      github.event.pull_request.draft == false)\n",
+            visual_job,
+        )
+
+        # The event name is part of the group key, so a push to main and a
+        # workflow_dispatch on main are different groups.
+        self.assertIn(
+            "concurrency:\n"
+            "  group: visual-${{ github.workflow }}-${{ github.event_name }}"
+            "-${{ github.ref }}\n"
+            "  cancel-in-progress: true\n",
+            visual,
+        )
 
     def test_component_kit_api_proof_is_frontend_selected_and_mirrored(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
