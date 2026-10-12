@@ -14,7 +14,8 @@ dependencies = [
     "pyserial>=3.5",
     "pyserial-asyncio>=0.6",
     "opuslib",
-    "sounddevice",
+    "sounddevice>=0.4,<0.5; sys_platform == 'win32'",
+    "sounddevice; sys_platform != 'win32'",
     "numpy",
     "platformdirs>=4.2",
 ]

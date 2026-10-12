@@ -67,6 +67,10 @@ pip install rigplane[webrtc]   # WebRTC audio transport (aiortc)
     The legacy `[audio]` and `[bridge]` extras are preserved as no-op
     aliases so existing install commands keep working.
 
+    On Windows, sounddevice is held below 0.5 because the PortAudio build
+    bundled with 0.5.x crashed the process during initialisation on our
+    Windows runner.
+
 ## Verify Installation
 
 ```bash

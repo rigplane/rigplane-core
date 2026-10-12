@@ -78,9 +78,7 @@ def test_windows_sounddevice_excludes_0_5() -> None:
     dep = windows[0]
     specifier = dep.split(";", maxsplit=1)[0][len("sounddevice") :]
     assert _admits("0.4.6", specifier), f"Windows pin must admit 0.4.6: {dep}"
-    assert not _admits("0.5.0", specifier), (
-        f"Windows pin must exclude 0.5.0: {dep}"
-    )
+    assert not _admits("0.5.0", specifier), f"Windows pin must exclude 0.5.0: {dep}"
 
 
 def test_non_windows_sounddevice_has_no_upper_bound() -> None:
