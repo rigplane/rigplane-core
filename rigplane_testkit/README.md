@@ -44,7 +44,8 @@ UDP code paths as production.
   cadence (bursts of two 1388-byte and one 1136-byte packet every 20 ms
   = 3840 payload bytes per burst, both header sequences stepping 1;
   `tests/fixtures/ic7610/audio_stream.json` and
-  `audio_rx_headers.jsonl`). Every client audio DATA frame is recorded
+  `audio_rx_headers.jsonl`). Every client audio DATA frame sent while
+  the audio stream lives is recorded
   in `audio_tx_frames` (header seq, inner seq at 0x12, payload length,
   arrival time; the client's format is the only reference — the TX path
   is unrecorded). The stream survives a CI-V-only soft reconnect
@@ -52,13 +53,12 @@ UDP code paths as production.
   `drop_session`, reboot); `audio_stream_drop()` stops it keeping the
   session, `audio_port_silence(at, for_seconds)` blacks out only the
   audio port, and `audio_last_client_seq` tracks the client numbering
-  per session. CI-V 0x1C 00 PTT SET is ACKed and tracked
-  (`MockIcomRadio.ptt`), like `CivSerialFake` — a simulator choice (the
-  real radio's PTT SET was never actuated on the bench).
+  per session.
   Wire-level examples live in `tests/testkit/test_simulator_faults.py`
   and `tests/testkit/test_simulator_drop_session.py`; the audio port is
-  pinned by `tests/testkit/test_simulator_audio.py`, including a full
-  `IcomRadio` + `AudioBridge` + `FakeAudioBackend` PTT-gated TX run. The
+  pinned by `tests/testkit/test_simulator_audio.py`, including a TX-sink
+  run whose frames are built with the production builder
+  (`src/rigplane/audio/lan_stream.py`: `build_audio_packet`). The
   CI-V implementation lives in `rigplane_testkit/icom/simulator.py`; the
   audio port in `rigplane_testkit/icom/simulator_audio.py`
   (`AudioPortMixin`).

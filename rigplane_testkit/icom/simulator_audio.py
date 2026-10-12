@@ -26,9 +26,11 @@ Recorded evidence — real IC-7610 LAN audio port, 10-minute idle RX window
 
 NOT recorded on the bench (simulator choices, never claimed as radio
 behaviour): the TX audio path — transmit is never actuated, so the sink
-records the CLIENT's format as the only reference; whether the radio
-applies an in-order rule to client audio packets (none applied here);
-what stops the RX stream other than the session ending (here the
+records the CLIENT's format as the only reference, and only while the
+audio stream lives (its OpenClose(open) until the stream stops: audio
+OpenClose(close), ``audio_stream_drop`` or the session end); whether the
+radio applies an in-order rule to client audio packets (none applied
+here); what stops the RX stream other than the session ending (here the
 audio-port OpenClose(close), ``audio_stream_drop`` and the session-end
 paths stop it; a re-open restarts it with continued numbering — the
 stream epoch is the radio session, like the CI-V tracker's).
@@ -174,14 +176,16 @@ class AudioPortMixin:
 
     @property
     def audio_last_client_seq(self) -> int | None:
-        """The client's last tracked audio-port number, per session.
+        """The client's last tracked audio-port number, per stream.
 
-        Every tracked type-0 packet the client sends — idle, OpenClose,
-        audio DATA — advances it (one numbering space, like the CI-V
-        port's tracker). ``None`` before the first packet and after the
-        session ends; a client that restarts its numbering (MOR-3366)
-        shows as a lower or wrapped value. No in-order rule is applied
-        (unrecorded).
+        Every tracked type-0 packet the client sends while the audio
+        stream lives — idle, OpenClose, audio DATA — advances it (one
+        numbering space, like the CI-V port's tracker; the audio
+        OpenClose(open) itself is the first tracked number).
+        ``None`` before the open and after the stream stops (audio
+        OpenClose(close), ``audio_stream_drop``, session end); a client
+        that restarts its numbering (MOR-3366) shows as a lower or
+        wrapped value. No in-order rule is applied (unrecorded).
         """
         return self._audio_last_client_seq
 
@@ -235,11 +239,12 @@ class AudioPortMixin:
     def _audio_end_session(self, reason: str) -> None:
         """End the audio stream epoch with the radio session.
 
-        Stops the RX stream, forgets the audio client and resets the
-        client-numbering observable (a new session starts a new numbering,
-        like the CI-V tracker reset). The cumulative counters
-        (``audio_rx_frames_sent``, ``audio_tx_frames``,
-        ``audio_retransmit_requests_received``) survive for assertions.
+        Stops the RX stream, forgets the audio client (which also stops
+        TX-frame recording) and resets the client-numbering observable
+        (a new session starts a new numbering, like the CI-V tracker
+        reset). The cumulative counters (``audio_rx_frames_sent``,
+        ``audio_tx_frames``, ``audio_retransmit_requests_received``)
+        survive for assertions.
         """
         self._audio_stop_rx(reason)
         self._audio_last_client_seq = None
@@ -306,30 +311,42 @@ class AudioPortMixin:
             return
 
         if ptype == _sim._PT_DATA:
-            self._audio_last_client_seq = seq
             if n == _sim._HEADER_SIZE:
                 # Idle keepalive: tracked, never answered — like the CI-V
-                # port, which keeps its own cadence.
+                # port, which keeps its own cadence. Only while the audio
+                # stream lives; before the open and after the stream or
+                # session ended it draws no tracking.
+                if self._audio_client is not None:
+                    self._audio_last_client_seq = seq
                 return
             if n == 0x16:
                 # The production audio OpenClose (open starts the RX
                 # stream; close stops it).
                 if data[0x15] == _sim._OPENCLOSE_OPEN:
                     self._audio_start_rx(addr, sender_id)
+                    # The open itself is the first tracked packet, like
+                    # the CI-V port's open (``_civ_gap_ensure``).
+                    self._audio_last_client_seq = seq
                 else:
                     self._audio_stop_rx("audio_openclose_close")
                 return
             if n > AUDIO_HEADER_SIZE:
-                # Client audio DATA frame → the TX sink (every frame, PTT
-                # or not: whether the RADIO gates TX audio is unrecorded).
-                self.audio_tx_frames.append(
-                    ClientAudioFrame(
-                        seq=seq,
-                        inner_seq=struct.unpack_from(">H", data, 0x12)[0],
-                        payload_len=n - AUDIO_HEADER_SIZE,
-                        received_at=time.monotonic(),
+                # Client audio DATA frame → the TX sink, recorded only
+                # while the audio stream lives (its OpenClose(open) until
+                # the stream stops: audio OpenClose(close),
+                # ``audio_stream_drop`` or the session end). Whether and
+                # how a real radio gates TX audio is unrecorded; the
+                # scope of this sink is a simulator choice.
+                if self._audio_client is not None:
+                    self._audio_last_client_seq = seq
+                    self.audio_tx_frames.append(
+                        ClientAudioFrame(
+                            seq=seq,
+                            inner_seq=struct.unpack_from(">H", data, 0x12)[0],
+                            payload_len=n - AUDIO_HEADER_SIZE,
+                            received_at=time.monotonic(),
+                        )
                     )
-                )
                 return
 
     def _audio_start_rx(self, addr: tuple[str, int], sender_id: int) -> None:

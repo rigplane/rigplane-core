@@ -2,9 +2,9 @@
 
 Bare asyncio UDP clients against a real ``MockIcomRadio`` — reusing the
 ``_UdpClient`` and packet builders of ``tests/testkit/test_simulator_faults.py``
-— plus one production-client test driving ``IcomRadio``, ``AudioBridge``
-and ``FakeAudioBackend`` end to end (the PTT-gated TX path). The recorded
-reference is ``tests/fixtures/ic7610/audio_stream.json`` and
+— with client TX frames built by the production packet builder
+(``src/rigplane/audio/lan_stream.py``: ``build_audio_packet``). The
+recorded reference is ``tests/fixtures/ic7610/audio_stream.json`` and
 ``audio_rx_headers.jsonl``; the layout tests parse those files and derive
 their expectations from them instead of restating the bytes.
 """
@@ -20,10 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from _perf_helpers import fast_connect
-from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
-from rigplane.audio.bridge import AudioBridge
-from rigplane.radio import IcomRadio
+from rigplane.audio import build_audio_packet
 
 from rigplane_testkit.icom import MockIcomRadio
 from rigplane_testkit.icom.simulator import _HEADER_SIZE, _PT_CONTROL, _PT_DATA
@@ -103,16 +100,18 @@ def _idle(seq: int) -> bytes:
     return bytes(_header(_HEADER_SIZE, _PT_DATA, seq=seq))
 
 
-def _tx_audio(seq: int, inner_seq: int, payload: bytes) -> bytes:
-    """Client→radio audio DATA frame — ``audio/lan_stream.py``:
-    ``build_audio_packet`` (LE ident 0x0080 at 0x10, BE inner seq at
-    0x12, BE payload length at 0x16), sent tracked."""
-    total = AUDIO_HEADER_SIZE + len(payload)
-    pkt = _header(total, _PT_DATA, seq=seq)
-    struct.pack_into("<H", pkt, 0x10, 0x0080)
-    struct.pack_into(">H", pkt, 0x12, inner_seq)
-    struct.pack_into(">H", pkt, 0x16, len(payload))
-    pkt[AUDIO_HEADER_SIZE:] = payload
+def _tx_audio(seq: int, inner_seq: int, payload: bytes, radio_id: int) -> bytes:
+    """Client→radio audio DATA frame in the production layout: the packet
+    ``src/rigplane/audio/lan_stream.py``: ``build_audio_packet`` builds
+    (ident 0x0080 at 0x10, BE inner seq at 0x12, BE payload length at
+    0x16), with the tracked header seq the production transport writes
+    at 0x06 (``core/transport.py``: ``send_tracked``)."""
+    pkt = bytearray(
+        build_audio_packet(
+            payload, sender_id=_CLIENT_ID, receiver_id=radio_id, send_seq=inner_seq
+        )
+    )
+    struct.pack_into("<H", pkt, 0x06, seq)
     return bytes(pkt)
 
 
@@ -208,15 +207,6 @@ async def _recv_type(client: _UdpClient, ptype: int, timeout: float = 2.0) -> by
 
 def _u16be(pkt: bytes, off: int) -> int:
     return struct.unpack_from(">H", pkt, off)[0]
-
-
-async def _wait_for(predicate, timeout: float) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        await asyncio.sleep(0.02)
-    raise AssertionError(f"condition not met within {timeout} s")
 
 
 # ---------------------------------------------------------------------------
@@ -387,11 +377,11 @@ async def test_tx_sink_records_client_frames_and_numbering(
 ) -> None:
     """DATA frames land in ``audio_tx_frames``; tracked numbering follows
     every type-0 packet (idle/OpenClose included), per session."""
-    await _open_audio(client, server)
+    radio_id = await _open_audio(client, server)
     t0 = time.monotonic()
     client.send(_idle(seq=1), server.audio_port)
-    client.send(_tx_audio(2, 0, bytes(1364)), server.audio_port)
-    client.send(_tx_audio(3, 1, bytes(556)), server.audio_port)
+    client.send(_tx_audio(2, 0, bytes(1364), radio_id), server.audio_port)
+    client.send(_tx_audio(3, 1, bytes(556), radio_id), server.audio_port)
     await asyncio.sleep(0.1)
     t1 = time.monotonic()
 
@@ -409,9 +399,9 @@ async def test_no_retransmit_requests_from_radio_despite_client_gap(
 ) -> None:
     """Recorded: ZERO retransmit requests from the radio on the audio port
     however the client's numbering breaks; client requests are counted."""
-    await _open_audio(client, server)
-    client.send(_tx_audio(5, 0, bytes(64)), server.audio_port)
-    client.send(_tx_audio(9, 1, bytes(64)), server.audio_port)  # gap 6..8
+    radio_id = await _open_audio(client, server)
+    client.send(_tx_audio(5, 0, bytes(64), radio_id), server.audio_port)
+    client.send(_tx_audio(9, 1, bytes(64), radio_id), server.audio_port)  # gap 6..8
 
     packets = await _collect_audio(client, 0.35)  # CI-V loop fires at 0.1 s
     # Every radio-originated packet in the window must be RX data: a
@@ -512,8 +502,8 @@ async def test_session_end_stops_rx(
     ctrl = await _udp()
     try:
         await _claim(server, ctrl)
-        await _open_audio(client, server)
-        client.send(_tx_audio(1, 0, bytes(64)), server.audio_port)
+        radio_id = await _open_audio(client, server)
+        client.send(_tx_audio(1, 0, bytes(64), radio_id), server.audio_port)
         await asyncio.sleep(0.1)
         assert server.audio_last_client_seq == 1
         assert _rx_frames(await _collect_audio(client, 0.08))
@@ -533,89 +523,42 @@ async def test_session_end_stops_rx(
 
 
 # ---------------------------------------------------------------------------
-# Production client: PTT-gated TX through AudioBridge + FakeAudioBackend
+# TX sink scope: production frame layout, recording stops with the stream
 # ---------------------------------------------------------------------------
 
 
-async def test_ptt_gates_tx_frames_to_the_sink_via_production_client() -> None:
-    """MOR-3256 shape: with PTT on, mic frames reach the radio's audio port;
-    with PTT off none do — the production client drives everything.
-
-    ``IcomRadio`` connects for real; ``AudioBridge`` captures from a
-    ``FakeAudioBackend`` device (the CLAUDE.md audio-test rule: no one-off
-    audio mocks) and its TX gate is the production PTT observation
-    (``read_transmit_state`` — the CI-V 0x1C read decoded by the runtime).
-    """
-    server = MockIcomRadio(single_owner=True, keepalive_hold_s=30.0)
-    await server.start()
-    radio = IcomRadio(
-        host=_HOST,
-        port=server.control_port,
-        username="testuser",
-        password="testpass",
-        model="IC-7610",
-    )
-    backend = FakeAudioBackend(
-        [
-            AudioDeviceInfo(
-                id=AudioDeviceId(0),
-                name="RigPlane Virtual Cable",
-                input_channels=1,
-                output_channels=2,
-            )
-        ]
-    )
-
-    async def ptt_gate() -> bool:
-        return (await radio.read_transmit_state()).value is True
-
-    with fast_connect():
-        await radio.connect()
-    bridge = AudioBridge(
-        radio,
-        device_name="RigPlane Virtual Cable",
-        backend=backend,
-        tx_gate=ptt_gate,
-    )
+async def test_tx_sink_records_production_frames_until_the_session_ends(
+    server: MockIcomRadio, client: _UdpClient
+) -> None:
+    """A raw client that has opened the audio stream sends DATA frames in
+    the production TX layout (``build_audio_packet``); ``audio_tx_frames``
+    records header seq, inner seq, payload length and arrival time — and
+    nothing after the session ends (token remove)."""
+    ctrl = await _udp()
     try:
-        await bridge.start()
-        capture = backend.rx_streams[-1]
-        # 20 ms of 48 kHz mono s16 with a strong ramp (past the bridge's
-        # silence suppression): 960 samples × 2 bytes = 1920.
-        frame = b"".join(struct.pack("<h", 3000 + (i % 800)) for i in range(960))
+        await _claim(server, ctrl)
+        radio_id = await _open_audio(client, server)
+        t0 = time.monotonic()
+        client.send(_tx_audio(2, 0, bytes(1364), radio_id), server.audio_port)
+        client.send(_tx_audio(3, 1, bytes(556), radio_id), server.audio_port)
+        await asyncio.sleep(0.1)
+        t1 = time.monotonic()
 
-        # PTT off: the gate suppresses every captured frame.
-        for _ in range(3):
-            capture.inject_frame(frame)
-        await asyncio.sleep(0.4)
-        assert server.audio_tx_frames == []
+        assert len(server.audio_tx_frames) == 2
+        first, second = server.audio_tx_frames
+        assert (first.seq, first.inner_seq, first.payload_len) == (2, 0, 1364)
+        assert (second.seq, second.inner_seq, second.payload_len) == (3, 1, 556)
+        assert all(t0 <= f.received_at <= t1 for f in (first, second))
+        assert server.audio_last_client_seq == 3
 
-        # PTT on (production fire-and-forget SET, observed via the GET).
-        await radio.set_ptt(True)
-        assert (await radio.read_transmit_state()).value is True
-
-        # Feed the capture at the mic cadence; the bridge's echo-tail drop
-        # eats the first frame after the gate opens, so >= 3 pushes land.
-        for _ in range(4):
-            capture.inject_frame(frame)
-            await asyncio.sleep(0.03)
-        await _wait_for(lambda: len(server.audio_tx_frames) >= 6, 2.0)
-        # One 1920-byte PCM frame chunks into 1364 + 556 wire payloads
-        # (audio/lan_stream.py: MAX_AUDIO_PAYLOAD), inner seq per chunk.
-        payload_lens = [f.payload_len for f in server.audio_tx_frames]
-        assert payload_lens == [1364, 556] * (len(payload_lens) // 2)
-        inner = [f.inner_seq for f in server.audio_tx_frames]
-        assert inner == list(range(len(inner)))
-
-        # PTT off again: the gate closes.
-        await radio.set_ptt(False)
-        assert (await radio.read_transmit_state()).value is False
-        frozen = len(server.audio_tx_frames)
-        for _ in range(2):
-            capture.inject_frame(frame)
-        await asyncio.sleep(0.4)
-        assert len(server.audio_tx_frames) == frozen
+        # Session end (token remove): frames sent afterwards are recorded
+        # nowhere — not in the sink, not in the per-stream numbering.
+        ctrl.send(_token_remove(), server.control_port)
+        await asyncio.sleep(0.05)
+        client.send(_tx_audio(4, 2, bytes(64), radio_id), server.audio_port)
+        client.send(_idle(seq=5), server.audio_port)
+        await asyncio.sleep(0.1)
+        assert server.audio_tx_frames == [first, second]
+        assert server.audio_last_client_seq is None
     finally:
-        await bridge.stop()
-        await radio.disconnect()
-        await server.stop()
+        ctrl.close()

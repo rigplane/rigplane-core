@@ -495,12 +495,6 @@ class MockIcomRadio(AudioPortMixin):
         self.last_release_reason: str | None = None
         self._login_count: int = 0  # accepted logins
         self._openclose_open_count: int = 0  # CI-V OpenClose(open) received
-        # PTT state (CI-V 0x1C 00): SET flips it and ACKs, GET answers it —
-        # the state machine ``rigplane_testkit/serial/civ_serial.py`` carries.
-        # The real radio's PTT SET was never actuated on the bench (a
-        # simulator choice); the default stays OFF so the managed-TX arming
-        # probe (MOR-1016/MOR-1217) still observes a supervisable rig.
-        self._ptt_on: bool = False
         self._audio_init()  # audio-port state (RX streamer, TX sink)
 
     # ------------------------------------------------------------------
@@ -591,11 +585,6 @@ class MockIcomRadio(AudioPortMixin):
     def civ_port(self) -> int:
         """Actual bound CI-V port number."""
         return self._actual_civ_port
-
-    @property
-    def ptt(self) -> bool:
-        """Tracked CI-V PTT state (0x1C 00 SET flips it, GET answers it)."""
-        return self._ptt_on
 
     @property
     def session_held(self) -> bool:
@@ -1832,18 +1821,17 @@ class MockIcomRadio(AudioPortMixin):
                 return self._civ_nak(to, frm)
             sub = payload[0]
             rest = payload[1:]
-            if sub == _SUB_PTT and not rest:  # 0x00 GET
-                # The managed-TX arming probe (MOR-1016) and
-                # ``request_fresh_ptt`` read PTT around capture; GET
-                # answers the tracked state (OFF until a SET), so a rig
-                # that can in fact be supervised is recognised (MOR-1217).
+            if sub == _SUB_PTT and not rest:  # 0x00 GET only
+                # The managed-TX arming probe (MOR-1016) reads PTT once,
+                # unmanaged, before any port is captured — and
+                # ``request_fresh_ptt`` reads it again right after capture to
+                # seed the authoritative observation. Always answer PTT OFF so
+                # a rig that can in fact be supervised is recognised as such
+                # (MOR-1217); a SET or an unrecognised sub-command NAKs, same
+                # as an unimplemented command.
                 return self._civ_frame(
-                    to, frm, _CMD_PTT, sub=_SUB_PTT, data=bytes([int(self._ptt_on)])
+                    to, frm, _CMD_PTT, sub=_SUB_PTT, data=bytes([0x00])
                 )
-            if sub == _SUB_PTT and len(rest) == 1:  # SET (ptt_on/ptt_off)
-                # ACK-and-track (a simulator choice, see ``self.ptt``).
-                self._ptt_on = bool(rest[0])
-                return self._civ_ack(to, frm)
             return self._civ_nak(to, frm)
 
         # ACK / NAK from client — ignore
