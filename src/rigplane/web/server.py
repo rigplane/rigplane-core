@@ -2749,6 +2749,14 @@ class WebServer:
             served_with_silent_link=self._served_with_silent_link and not observed,
             served_without_port=self._served_without_port and not observed,
         )
+        busy, _retry = self._startup_busy_hold()
+        if busy:
+            # MOR-3450: the radio is present and busy-rejecting, retrying in
+            # the background — not missing and not on a dead network. The
+            # held session is a bounded wait, so the verdict is the
+            # ``recovering`` readiness literal, never ``stalled``.
+            health["likelyCause"] = "radio_session_busy"
+            health["readiness"] = "recovering"
         signature = (
             health.get("serverReachable"),
             health.get("radioLink"),
@@ -4244,7 +4252,14 @@ class WebServer:
         backend = getattr(radio, "backend_id", None) if radio is not None else None
         radio_payload = self._radio_runtime_payload()
         health = self._build_radio_health()
-        if radio_payload["radioReady"]:
+        busy, _retry = self._startup_busy_hold()
+        if busy:
+            readiness = "radio_session_busy"
+            message = (
+                "The radio's LAN session is held by another client; retrying "
+                "— stop the other client to connect sooner."
+            )
+        elif radio_payload["radioReady"]:
             readiness = "ready_with_radio"
             message = "Station server is ready with an attached radio."
         elif radio is None:

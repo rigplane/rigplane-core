@@ -971,6 +971,7 @@ Current readiness values are:
 - `no_usb_radio_connected`
 - `lan_radio_unsupported_or_not_found`
 - `requires_configuration_or_auth`
+- `radio_session_busy`
 
 `requires_configuration_or_auth` retains its compatibility spelling and refers
 to radio target configuration, not an application credential prompt
