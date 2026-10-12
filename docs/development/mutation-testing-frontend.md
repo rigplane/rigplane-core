@@ -74,16 +74,11 @@ so use it only in a throwaway checkout. Reports are written to
 `frontend/reports/mutation/` (`mutation.html`, `mutation.json`); the
 workflow uploads both as the `stryker-report-<run id>-<attempt>` artifact.
 
-Measured on 2026-10-12 on the Linux test host (16 cores, 32 GB RAM) with
-`npx stryker run --concurrency 4` (Stryker core and vitest-runner 10.0.0):
-10 mutated files instrumented into 7112 mutants, the initial test run green
-over all 816 tests in 32 seconds, and mutation testing still unfinished
-when the run's 3000-second bound killed it — the wall time exceeds
-50 minutes and no per-file score table was produced. That bound already
-puts wall × 1.3 above the workflow's previous 30-minute timeout, so
-`timeout-minutes` is raised to 120, the ceiling of the
-next-multiple-of-10-above-wall-×-1.5 rule (cap 120); no smaller multiple
-has a completed measurement to justify it.
+A full run of this configuration took 52 minutes (3118 s) on 2026-10-12
+with `npx stryker run --concurrency 4` (Stryker core and vitest-runner 10.0.0)
+on a 16-core Linux test host: 7112 mutants across the ten mutated files.
+The workflow's `timeout-minutes` is 120 because the CI runner is a
+different machine whose speed for this run has not been measured.
 
 ## Reading a survivor
 
