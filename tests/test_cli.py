@@ -2166,15 +2166,15 @@ class TestCheckPortsAvailable:
         assert str(occupied_rigctld_port) in captured.err
         assert "lsof" in captured.err.lower()
 
-    def test_second_resident_start_refuses_before_radio_open(
-        self, capsys, tmp_path, monkeypatch
-    ):
+    def test_second_resident_start_refuses_before_radio_open(self, capsys, tmp_path):
         """MOR-3391: a second resident start for the same radio refuses with 1.
 
         The holder is a separate process, as in production. The guard is
         taken before the radio is constructed, the port preflight probes,
         or any listener binds — the fake radio is never created and the
-        refusal message names the holding process's pid.
+        refusal message names the holding process's pid. The conftest
+        fixture redirects the guard's default lock directory at this test's
+        tmp dir, so the child and `_run` below share one lock file.
         """
         import asyncio
         import os
@@ -2183,8 +2183,6 @@ class TestCheckPortsAvailable:
 
         from rigplane.cli import _run
         from rigplane.cli._instance_guard import radio_lock_identity
-
-        monkeypatch.setattr(platformdirs, "user_cache_path", lambda _appname: tmp_path)
 
         args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
         identity = radio_lock_identity(

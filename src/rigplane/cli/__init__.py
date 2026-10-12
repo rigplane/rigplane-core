@@ -93,6 +93,7 @@ from rigplane.cli._instance_guard import (  # noqa: E402
     RESIDENT_COMMANDS,
     ResidentAlreadyRunningError,
     acquire_resident_lock,
+    guards_backend,
     radio_lock_identity,
 )
 from rigplane.cli._validate import (  # noqa: E402
@@ -2354,8 +2355,10 @@ async def _run(args: argparse.Namespace) -> int:
     # taken before the radio is opened and before any listener binds; the
     # acquired lock is held for the process lifetime (the OS releases it on
     # exit, including SIGKILL). Re-entering _run in the same process reuses
-    # the held lock — only another process is refused.
-    if args.command in RESIDENT_COMMANDS:
+    # the held lock — only another process is refused. Only backends holding
+    # an exclusive radio session are guarded (LAN, local serial); the
+    # rigctld backend talks to an external rigctld and is never guarded.
+    if args.command in RESIDENT_COMMANDS and guards_backend(config):
         try:
             acquire_resident_lock(radio_lock_identity(config))
         except ResidentAlreadyRunningError as exc:

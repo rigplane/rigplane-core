@@ -9,6 +9,7 @@ del _os
 
 import struct  # noqa: E402
 from collections.abc import AsyncGenerator, Iterator  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 import pytest  # noqa: E402
 
@@ -242,6 +243,31 @@ def observed_rx_dispatch_premise(monkeypatch: pytest.MonkeyPatch) -> None:
         "_current_rf_state",
         lambda self, snapshot=None: RfState.RX,
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_resident_lock_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Point the resident single-instance guard at a per-test tmp dir.
+
+    MOR-3391: resident CLI starts take a REAL OS file lock in the default
+    user cache and hold it for the pytest worker's life, so parallel
+    workers running the same radio identity refuse each other. Redirecting
+    the guard's default lock directory per test keeps workers independent;
+    closing and clearing the held locks on teardown keeps tests in one
+    worker independent too.
+    """
+    from rigplane.cli import _instance_guard as _guard
+
+    monkeypatch.setattr(_guard, "_default_lock_dir", lambda: tmp_path)
+    yield
+    for lock in list(_guard._HELD.values()):
+        try:
+            lock.close()
+        except OSError:
+            pass
+    _guard._HELD.clear()
 
 
 @pytest.fixture(autouse=True)
