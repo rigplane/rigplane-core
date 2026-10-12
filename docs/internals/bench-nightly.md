@@ -7,8 +7,10 @@ not a required check.
 ## What runs
 
 One matrix job per radio (IC-7610 over LAN, IC-7300 and FTX-1 over USB serial),
-one at a time (`max-parallel: 1`), `fail-fast: false` and
-`continue-on-error: true`, so a busy or failing radio does not hide the others.
+one at a time (`max-parallel: 1`); `fail-fast: false` keeps one radio's
+failure from cancelling the others. There is no job-level
+`continue-on-error`, so a night passes for a radio only when its job
+concludes success (see Outcomes below).
 Each job:
 
 1. **Guard.** `scripts/bench/guard.sh check-env` fails the job when any of
@@ -20,7 +22,8 @@ Each job:
    abbreviations such as `--tun`. Commands not wrapped this way are not checked.
 2. **Lock.** `scripts/bench/bench-lock.sh acquire <radio>` takes a per-radio
    `mkdir` lock under `/tmp/rigplane-bench-locks` (`BENCH_LOCK_DIR`). A held lock
-   records `<radio>: skipped: busy` and the radio steps are skipped. A lock older
+   records `<radio>: skipped: busy`, the radio steps are skipped, and the job
+   fails red in the `Outcome: busy` step. A lock older
    than two hours (`BENCH_LOCK_STALE_SECONDS`) is taken over. Only processes that
    use this script see the lock.
 3. **Validate.** `rigplane validate --hardware --allow-hardware --read-only`
@@ -36,6 +39,18 @@ Each job:
 6. **`rigplane diagnose`**, saved on the runner as `diagnose-latest.zip`.
 7. **Upload.** The normalized validate artifact and the diff, kept 14 days.
 
+## Outcomes
+
+A night passes for a radio only when its job concludes success, which
+requires Validate — and, where they run, the night-to-night diff and the
+IC-7610 hardware subset — to have run and passed. Three endings that used
+to be silent green now fail red with their own step names: `Outcome: not
+configured` (radio secrets missing), `Outcome: busy` (bench lock held by
+another run) and `Outcome: dry run` (a dry run never certifies a radio).
+`rigplane diagnose` and the artifact upload are evidence only and cannot
+decide the night; `Release bench lock` still fails the job when it fails,
+because a leaked lock matters.
+
 ## Modes
 
 | Trigger | Mode |
@@ -45,7 +60,8 @@ Each job:
 | `workflow_dispatch` | read-only, unless `rx_write_restore` is ticked |
 
 `dry_run` on manual dispatch runs the guard, the lock and `rigplane diagnose`
-only: no validate, diff or pytest.
+only: no validate, diff or pytest. The job then fails red in the
+`Outcome: dry run` step: a dry run is never a certification night.
 
 ```bash
 gh workflow run bench-nightly.yml --ref <branch> -f dry_run=true
@@ -54,7 +70,8 @@ gh workflow run bench-nightly.yml --ref <branch> -f dry_run=true
 ## Secrets the owner creates
 
 Repository secrets (Settings → Secrets and variables → Actions). A radio whose
-secrets are missing reports `skipped: not configured`. Serial device paths are
+secrets are missing reports `skipped: not configured` and fails red in the
+`Outcome: not configured` step. Serial device paths are
 secrets too, so the runner log masks them.
 
 | Secret | Used as |
