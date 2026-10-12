@@ -417,9 +417,7 @@ class IcomTransport:
                 try:
                     await asyncio.wait_for(close_event.wait(), 1.0)
                 except asyncio.TimeoutError:
-                    logger.debug(
-                        "UDP socket close not confirmed within 1s; continuing"
-                    )
+                    logger.debug("UDP socket close not confirmed within 1s; continuing")
 
         self.state = ConnectionState.DISCONNECTED
 
