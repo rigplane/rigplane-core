@@ -14,6 +14,17 @@ const STALE = 'abcdef1234567890abcdef1234567890abcdef12';
 const COMMITTED_AT = new Date('2026-08-08T04:50:00Z');
 const AGENTS_PATH = path.join(__dirname, '..', '..', 'AGENTS.md');
 const WORKFLOW_PATH = path.join(__dirname, '..', 'workflows', 'agent-review-gate.yml');
+const WORKFLOW_V2_PATH = path.join(__dirname, '..', 'workflows', 'agent-review-gate-v2.yml');
+
+// The one predicate "this event can change the verdict", kept byte-identical
+// between each workflow's job-level `if:` and its workflow-level concurrency
+// group (pinned by 'job condition and concurrency group share one
+// verdict-relevance predicate' below).
+const ISSUE_COMMENT_PREDICATE =
+  "github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:'))";
+const GATE_PREDICATE = `github.event_name == 'pull_request' || (${ISSUE_COMMENT_PREDICATE})`;
+const V2_PREDICATE =
+  `github.event_name == 'pull_request_target' && (github.event.action != 'edited' || github.event.changes.base) || (${ISSUE_COMMENT_PREDICATE})`;
 
 function directive(result, sha = HEAD) {
   return `Agent Review: ${result} ${sha}`;
@@ -42,8 +53,8 @@ function assertFailure(body, message = body) {
   assert.equal(evaluate([comment(body)]).state, 'failure', message);
 }
 
-function workflowScript(stepName) {
-  const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+function workflowScript(stepName, workflowPath = WORKFLOW_PATH) {
+  const workflow = fs.readFileSync(workflowPath, 'utf8');
   const marker = `      - name: ${stepName}\n`;
   const stepStart = workflow.indexOf(marker);
   assert.notEqual(stepStart, -1, `missing workflow step ${stepName}`);
@@ -424,6 +435,197 @@ test('workflow preserves triggers, workflow revision checkout, pagination, and e
   assert.match(workflow, /persist-credentials: false/);
   assert.match(workflow, /github\.paginate\(github\.rest\.issues\.listComments/);
   assert.doesNotMatch(workflow, /head_sha\s*=\s*['"]\$\{\{\s*github\.sha/);
+});
+
+function jobCondition(workflowText) {
+  const match = /^ {4}if: (.+)$/mu.exec(workflowText);
+  assert.notEqual(match, null, 'missing job-level if');
+  return match[1];
+}
+
+function concurrencyGroup(workflowText) {
+  const match = /^ {2}group: (.+)$/mu.exec(workflowText);
+  assert.notEqual(match, null, 'missing workflow-level concurrency group');
+  return match[1];
+}
+
+test('job condition and concurrency group share one verdict-relevance predicate', () => {
+  const gate = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+  const v2 = fs.readFileSync(WORKFLOW_V2_PATH, 'utf8');
+  assert.equal(jobCondition(gate), GATE_PREDICATE);
+  assert.equal(jobCondition(v2), V2_PREDICATE);
+  // A run skipped by the job `if:` is still a workflow run in its
+  // concurrency group: without the predicate inside the group, a
+  // non-qualifying comment posted within seconds of a directive would
+  // cancel the in-flight evaluation and publish nothing (lost verdict).
+  // Qualifying runs share the per-PR 'eval' group; every non-qualifying
+  // run lands in its own github.run_id group and cancels nothing.
+  for (const [name, text, predicate] of [
+    ['gate', gate, GATE_PREDICATE],
+    ['v2', v2, V2_PREDICATE],
+  ]) {
+    assert.ok(
+      concurrencyGroup(text).includes(`(${(predicate)}) && 'eval' || github.run_id`),
+      `${name} concurrency group must route non-qualifying runs into a unique group`,
+    );
+    assert.match(text, /cancel-in-progress: true/u, name);
+  }
+  // The issue_comment leg is byte-identical in both workflows and appears
+  // exactly twice in each: once in the job `if:`, once in the group.
+  for (const [name, text] of [['gate', gate], ['v2', v2]]) {
+    assert.equal(text.split(ISSUE_COMMENT_PREDICATE).length - 1, 2, name);
+  }
+});
+
+test('the verdict-relevance predicate inspects the pre-edit body', () => {
+  // An edit that turns a directive into prose carries the marker only in
+  // github.event.changes.body.from; without this clause such an edit would
+  // be skipped and the deleted verdict would never be recomputed.
+  for (const workflowPath of [WORKFLOW_PATH, WORKFLOW_V2_PATH]) {
+    assert.ok(
+      jobCondition(fs.readFileSync(workflowPath, 'utf8')).includes('github.event.changes.body.from'),
+      workflowPath,
+    );
+  }
+});
+
+function githubContains(haystack, needle) {
+  // GitHub expression contains(): case-insensitive substring match; a
+  // missing (null) haystack never matches.
+  return typeof haystack === 'string' &&
+    haystack.toLowerCase().includes(needle.toLowerCase());
+}
+
+test('the contains() filter is a superset of every accepted directive shape', () => {
+  const accepted = [
+    directive('PASS'),
+    `${directive('BLOCKED')}\nConcrete English details`,
+    directive('BLOCKED'),
+    `\n${directive('PASS')}`,
+    ` \t\n\t\n${directive('PASS')}\nExplanation`,
+    `\uFEFF${directive('PASS')}\nExplanation`,
+    ` \t\r\n\t\r\n${directive('PASS')}\r\nExplanation`,
+  ];
+  for (const body of accepted) {
+    assert.equal(parseReviewDirectives(body, HEAD).currentHead, true, JSON.stringify(body));
+  }
+  const rejected = [
+    `agent review: pass ${HEAD}`,
+    `Agent Review PASS ${HEAD}`,
+    'plain prose with no marker at all',
+    `${directive('PASS')} `,
+    directive('PASS', STALE),
+  ];
+  for (const body of rejected) {
+    assert.equal(parseReviewDirectives(body, HEAD).currentHead, false, JSON.stringify(body));
+  }
+  // The load-bearing property: any body the parser accepts as a current-head
+  // directive also passes the workflow's contains() filter, so no
+  // verdict-setting comment can be skipped by the job `if:`.
+  for (const body of [...accepted, ...rejected]) {
+    if (parseReviewDirectives(body, HEAD).currentHead) {
+      assert.equal(githubContains(body, 'Agent Review:'), true, JSON.stringify(body));
+    }
+  }
+});
+
+const V2_STEP = 'Evaluate comments with the exact trusted base parser';
+const MAIN_HEAD = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const BASE_SHA = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const MOVED_SHA = 'cccccccccccccccccccccccccccccccccccccccc';
+
+function v2Pull(head, base = BASE_SHA) {
+  return {head: {sha: head}, base: {ref: 'main', sha: base}, updated_at: '2026-08-08T04:50:00Z'};
+}
+
+function v2Github({pullsGet, branchSha = BASE_SHA, comments = []}) {
+  const statuses = [];
+  const github = {
+    paginate: async () => comments,
+    rest: {
+      pulls: {get: pullsGet},
+      repos: {
+        getBranch: async () => ({data: {commit: {sha: branchSha}}}),
+        getCommit: async () => ({data: {commit: {committer: {date: '2026-08-08T04:50:00Z'}}}}),
+        getContent: async () => ({
+          data: {
+            type: 'file',
+            encoding: 'base64',
+            content: Buffer.from(
+              fs.readFileSync(path.join(__dirname, 'agent-review-gate.js'), 'utf8'),
+              'utf8',
+            ).toString('base64'),
+          },
+        }),
+        createCommitStatus: async (status) => statuses.push(status),
+      },
+    },
+  };
+  return {github, statuses};
+}
+
+function v2Context() {
+  return {
+    ...workflowContext(7),
+    payload: {pull_request: {number: 2321, head: {sha: HEAD}}},
+  };
+}
+
+test('v2 observer publishes nothing when the base is not the current main head', async () => {
+  const core = coreMock();
+  const {github, statuses} = v2Github({
+    pullsGet: async () => ({data: v2Pull(HEAD)}),
+    branchSha: MOVED_SHA,
+    comments: [comment(directive('PASS'))],
+  });
+  await runWorkflowScript(workflowScript(V2_STEP, WORKFLOW_V2_PATH), {
+    github,
+    context: v2Context(),
+    core,
+    workspace: path.join(__dirname, '..', '..'),
+  });
+  assert.deepEqual(statuses, []);
+  assert.deepEqual(core.failures, []);
+  assert.equal(core.notices.length, 1);
+  assert.match(core.notices[0], /base is not the current main head/u);
+});
+
+test('v2 observer publishes nothing when head or main moves during the run', async () => {
+  const core = coreMock();
+  let pullsCalls = 0;
+  const {github, statuses} = v2Github({
+    pullsGet: async () => ({data: ++pullsCalls === 1 ? v2Pull(HEAD) : v2Pull(MOVED_SHA)}),
+    comments: [comment(directive('PASS'))],
+  });
+  await runWorkflowScript(workflowScript(V2_STEP, WORKFLOW_V2_PATH), {
+    github,
+    context: v2Context(),
+    core,
+    workspace: path.join(__dirname, '..', '..'),
+  });
+  assert.equal(pullsCalls, 2);
+  assert.deepEqual(statuses, []);
+  assert.deepEqual(core.failures, []);
+  assert.equal(core.notices.length, 1);
+  assert.match(core.notices[0], /changed during review observation/u);
+});
+
+test('v2 observer still fails closed with a failure status on an API error', async () => {
+  const core = coreMock();
+  const {github, statuses} = v2Github({
+    pullsGet: async () => { throw new Error('pulls API unavailable'); },
+  });
+  await runWorkflowScript(workflowScript(V2_STEP, WORKFLOW_V2_PATH), {
+    github,
+    context: v2Context(),
+    core,
+    workspace: path.join(__dirname, '..', '..'),
+  });
+  assert.equal(statuses.length, 1);
+  assert.equal(statuses[0].sha, HEAD);
+  assert.equal(statuses[0].state, 'failure');
+  assert.equal(statuses[0].context, 'Agent Review Gate v2 observe');
+  assert.equal(core.failures.length, 1);
 });
 
 test('AGENTS documents both exact head-bound directive forms', () => {
