@@ -1,4 +1,4 @@
-"""Managed-reference injection plus raw ``w`` frame routing, as built."""
+"""Managed-reference injection and managed raw ``w`` frame routing."""
 
 from __future__ import annotations
 
@@ -20,11 +20,10 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
-from rigplane.rigctld.contract import RigctldConfig
+from rigplane.rigctld.contract import HamlibError, RigctldConfig
 from rigplane.rigctld.handler import RigctldHandler
 from rigplane.rigctld.protocol import parse_line
 from rigplane.rigctld.server import RigctldServer
-from rigplane.runtime import tx_interlock
 from rigplane.runtime._poller_types import CommandQueue
 
 
@@ -224,39 +223,67 @@ async def test_managed_non_tuner_writes_bypass_legacy_rf_gates(
 
 
 @pytest.mark.parametrize(
-    ("wire", "frame_hex"),
-    [
-        (b"w FE FE 98 E0 1C 00 01 FD", "FEFE98E01C0001FD"),
-        (b"w FE FE 98 E0 1C 00 00 FD", "FEFE98E01C0000FD"),
-        (b"w FE FE 98 E0 03 FD", "FEFE98E003FD"),
-    ],
-    ids=["ptt-on", "ptt-off", "freq-read"],
+    "ptt_observed", [True, False], ids=["tx-observed", "rx-observed"]
 )
-async def test_managed_raw_w_frame_reaches_raw_write_without_authority(
-    context, wire, frame_hex
-):
-    """Characterization: under managed refs a raw ``w`` frame — including the
-    Icom PTT-ON frame — reaches ``_send_civ_raw`` verbatim even while the
-    store observes the radio transmitting, the managed TX authority is never
-    consulted, and the write is acknowledged. Unmanaged mode refuses the same
-    wire unless PTT is fresh-known RX (tests/test_rigctld_tx_interlock.py:
-    test_hard_blocks_require_fresh_known_rx).
-    """
+@pytest.mark.parametrize(
+    "wire",
+    [
+        b"w FE FE 98 E0 1C 00 01 FD",
+        b"w FE FE 98 E0 1C 00 00 FD",
+        b"w FE FE 98 E0 1C 01 01 FD",
+        b"w FE FE 98 E0 1C 01 02 FD",
+        b"w FE FE 98 E0 29 00 1C 00 01 FD",
+        b"w FE FE 98 E0 1C",
+    ],
+    ids=[
+        "ptt-on",
+        "ptt-off",
+        "tuner-engage",
+        "tuner-tune",
+        "cmd29-ptt-on",
+        "unparseable",
+    ],
+)
+async def test_managed_raw_w_tx_family_frames_are_refused(context, wire, ptt_observed):
+    """Managed mode refuses TX-family raw ``w`` frames by payload — PTT in
+    both directions, tuner actuation, a cmd29-wrapped PTT frame, and any
+    frame whose envelope cannot be parsed — unconditionally, regardless of
+    the observed PTT state, without consulting the managed TX authority and
+    without anything reaching the radio."""
     authority = _AuthorityTouchProbe()
     refs = dict(context.refs, managed_tx_authority=authority)
     context.store.apply_current(
         Observation(
             path=FieldPath.global_("tx_state", "ptt"),
-            value=True,
+            value=ptt_observed,
             source=SourceMetadata(source="test", provider="tests"),
             timestamp_monotonic=asyncio.get_running_loop().time(),
             max_age=1e9,
         )
     )
     handler = RigctldHandler(context.radio, RigctldConfig(), **refs)
-    assert (
-        handler._resolve_rigctld_rf_state() is tx_interlock.RfState.TX  # noqa: SLF001
-    )
+
+    response = await handler.execute(parse_line(wire), session_id="client")
+
+    assert response.error is HamlibError.ERJCTED
+    assert context.radio.write_calls == []
+    assert authority.touches == []
+
+
+@pytest.mark.parametrize(
+    ("wire", "frame_hex"),
+    [
+        (b"w FE FE 98 E0 03 FD", "FEFE98E003FD"),
+        (b"w FE FE 98 E0 1C 00 FD", "FEFE98E01C00FD"),
+    ],
+    ids=["freq-read", "ptt-read"],
+)
+async def test_managed_raw_w_read_frames_pass(context, wire, frame_hex):
+    """Read frames carry no data payload and pass in managed mode exactly as
+    before, still without consulting the managed TX authority."""
+    authority = _AuthorityTouchProbe()
+    refs = dict(context.refs, managed_tx_authority=authority)
+    handler = RigctldHandler(context.radio, RigctldConfig(), **refs)
 
     response = await handler.execute(parse_line(wire), session_id="client")
 
