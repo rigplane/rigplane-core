@@ -88,7 +88,12 @@ from ..runtime.controller_authority import (
 )
 from ..runtime.managed_tx_authority import ManagedTxAuthority
 from ..runtime.managed_tx_state import ManagedTxIntentKind
-from ..runtime.tx_interlock import TxInterlockRefusal, classify_raw_civ_frame_tx_family
+from ..runtime.tx_interlock import (
+    RfState,
+    TxInterlockRefusal,
+    classify_raw_civ_frame_tx_family,
+    resolve_rf_state,
+)
 from ..sdr import IqSource, SdrConfig
 from ..sdr.runtime import SdrScopeRuntime
 from ..radio_state import RadioState
@@ -481,6 +486,18 @@ def _command_error_code(exc: BaseException) -> str:
 class _HttpCommandExecutor:
     server: "WebServer"
 
+    def _observed_rf_state(self) -> RfState:
+        """Resolve RF state from the server's state store snapshot.
+
+        Mirrors ``ControlHandler._observed_rf_state``: no usable store
+        reads as UNKNOWN, and a TX-family raw frame then refuses.
+        """
+
+        state_store = getattr(self.server, "command_state_store", None)
+        if isinstance(state_store, StateStore):
+            return resolve_rf_state(state_store.snapshot())
+        return RfState.UNKNOWN
+
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
         radio = self.server._radio
         if radio is None:
@@ -496,28 +513,42 @@ class _HttpCommandExecutor:
                 raise RuntimeError(
                     "active backend does not support raw CI-V transactions"
                 )
-            # A TX-family raw transaction is refused by payload alone —
-            # regardless of the observed RF state, and without consulting
-            # the authority.  The verdict is computed on the exact frame
-            # the transaction below would send — addresses play no part
-            # in it.
-            if self.server._managed_tx_authority() is not None and (
-                classify_raw_civ_frame_tx_family(
-                    build_civ_frame(
-                        0x00,
-                        0x00,
-                        int(params["command"]),
-                        sub=None if params.get("sub") is None else int(params["sub"]),
-                        data=bytes(params["data"]),
+            # The TX-family verdict is computed on the exact frame the
+            # transaction below would send — addresses play no part in it.
+            tx_family_verdict = classify_raw_civ_frame_tx_family(
+                build_civ_frame(
+                    0x00,
+                    0x00,
+                    int(params["command"]),
+                    sub=None if params.get("sub") is None else int(params["sub"]),
+                    data=bytes(params["data"]),
+                )
+            )
+            if self.server._managed_tx_authority() is not None:
+                # Managed mode refuses a TX-family raw transaction by
+                # payload alone — regardless of the observed RF state,
+                # and without consulting the authority.
+                if tx_family_verdict is not False:
+                    raise TxInterlockRefusal(
+                        "raw CI-V TX-family transactions are refused while the "
+                        "radio is under managed TX authority",
+                        reason_code="managed_tx_refused",
                     )
-                )
-                is not False
-            ):
-                raise TxInterlockRefusal(
-                    "raw CI-V TX-family transactions are refused while the "
-                    "radio is under managed TX authority",
-                    reason_code="managed_tx_refused",
-                )
+            elif tx_family_verdict is not False:
+                # Unmanaged parity with rigctld raw ``w``: a TX-family
+                # frame (or one that cannot be parsed) requires the
+                # observed PTT to resolve to fresh-known RX.
+                rf_state = self._observed_rf_state()
+                if rf_state is not RfState.RX:
+                    raise TxInterlockRefusal(
+                        "raw CI-V TX-family transactions require a "
+                        "fresh-known RX observation",
+                        reason_code=(
+                            "radio_transmitting"
+                            if rf_state is RfState.TX
+                            else "rf_state_unknown"
+                        ),
+                    )
             result = await radio.send_civ_transaction(
                 int(params["command"]),
                 sub=params.get("sub"),
