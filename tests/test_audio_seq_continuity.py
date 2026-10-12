@@ -84,6 +84,23 @@ class _FlakyDiscoveryAudioTransport(_OfflineAudioTransport):
             raise TimeoutError("Audio port did not answer discovery")
 
 
+class _SlotClearingAudioTransport(_OfflineAudioTransport):
+    """Audio transport whose ``disconnect`` empties the host slot first.
+
+    Reproduces a queued ensure's entry teardown landing inside
+    ``soft_disconnect``'s disconnect await: the host slot is already None
+    by the time the await returns.
+    """
+
+    def __init__(self, radio: IcomRadio) -> None:
+        super().__init__()
+        self._radio = radio
+
+    async def disconnect(self) -> None:
+        self._radio._audio_transport = None
+        await super().disconnect()
+
+
 def _kept_session_radio() -> IcomRadio:
     """A LAN radio whose control session is up; the test sets its audio transport."""
     radio = IcomRadio("127.0.0.1", model="IC-7610", timeout=0.5)
@@ -178,6 +195,25 @@ async def test_soft_disconnect_records_the_audio_numbering() -> None:
     assert old.wire[0][0x15] == _OPENCLOSE_CLOSE
     assert _header_seq(old.wire[0]) == _OLD_NEXT_SEQ
     assert radio._audio_resume_seq == _OLD_NEXT_SEQ + 1
+    await old.disconnect()
+
+
+async def test_soft_disconnect_survives_the_slot_clearing_during_disconnect() -> None:
+    """A slot that empties inside soft_disconnect's await must not crash it.
+
+    Pre-fix, the numbering line re-read ``self._audio_transport`` after the
+    disconnect await and raised ``AttributeError`` on the cleared slot; the
+    recorded numbering is the local transport's either way.
+    """
+    radio = _kept_session_radio()
+    old = _SlotClearingAudioTransport(radio)
+    old.send_seq = _OLD_NEXT_SEQ
+    radio._audio_transport = old
+    radio._audio_stream = None
+    await radio.soft_disconnect()
+    assert radio._audio_transport is None
+    assert old.send_seq == _OLD_NEXT_SEQ + 1  # the close was still sent
+    assert radio._audio_resume_seq == _OLD_NEXT_SEQ + 1  # the local's seq
     await old.disconnect()
 
 

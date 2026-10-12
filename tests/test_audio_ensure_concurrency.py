@@ -221,49 +221,44 @@ async def test_owner_stop_during_rebuild_supersedes(
     sock.close()
 
 
-class _OpenCloseGateHost(_EnsureHost):
-    """Host whose audio open/close parks on an event until released."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.open_close_release = asyncio.Event()
-
-    async def _send_audio_open_close(self, *, open_stream: bool) -> None:
-        if open_stream:
-            await self.open_close_release.wait()
-        return None
-
-
 @pytest.mark.asyncio
-async def test_teardown_during_open_close_raises_and_builds_no_stream(
+async def test_queued_ensure_after_owner_stop_raises_before_building(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """A teardown during the open/close await must fail the rebuild.
+    """A caller that waited on the lock while the owner stopped must fail.
 
-    Pre-fix, the post-await code built ``AudioStream(self._audio_transport)``
-    on whatever the slot held — ``None`` after the teardown.
+    Pre-fix, the queued caller read the epochs only after acquiring the
+    lock — the post-stop values — passed every check and published a live
+    transport (keep-alive loops running) after ``disconnect()``.
     """
-    monkeypatch.setattr(IcomTransport, "connect", _connect_fd_only, raising=True)
+    gate = _ConnectGate()
+    gate.install(monkeypatch)
 
-    host = _OpenCloseGateHost()
+    host = _EnsureHost()
     sock, port = _reserve_audio_socket()
     host._audio_sock_pending = sock
     host._audio_local_port = port
     host._audio_resume_seq = 1234
 
-    ensure_task = asyncio.create_task(host._ensure_audio_transport())
-    await asyncio.sleep(0.01)  # connect done; parked inside open/close
+    first = asyncio.create_task(host._ensure_audio_transport())
+    await asyncio.sleep(0.01)  # first parks inside connect, holding the lock
 
-    # A teardown lands while the open/close send is parked: it disconnects
-    # the published transport and records its real numbering.
-    await host._teardown_audio_transport()
+    second = asyncio.create_task(host._ensure_audio_transport())
+    await asyncio.sleep(0.01)  # second parks queued on the lock
 
-    host.open_close_release.set()
-    with pytest.raises(ConnectionError):
-        await ensure_task
+    host._owner_stop_epoch += 1  # owner stop lands while both are parked
 
-    # No stream was built on the torn-down transport...
+    gate.release.set()
+    results = await asyncio.gather(first, second, return_exceptions=True)
+
+    # Both callers fail...
+    assert all(isinstance(result, ConnectionError) for result in results)
+    # ...nothing was published or built...
+    assert host._audio_transport is None
     assert host._audio_stream is None
-    # ...and the teardown's recording of the real seq stands.
+    # ...the carried numbering stands...
     assert host._audio_resume_seq == 1234
+    # ...and every transport that was connected has been disconnected.
+    for transport in gate.claimed:
+        assert transport._udp_transport is None
     sock.close()
