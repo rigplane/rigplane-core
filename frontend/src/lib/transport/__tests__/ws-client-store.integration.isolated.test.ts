@@ -339,6 +339,66 @@ describe('ws-client → real radio store gate (integration)', () => {
     expect(s?.fieldStatus?.['main.freqHz']).toEqual(nextFieldStatus['main.freqHz']);
   });
 
+  it('accepts a full that changes only live metadata on a delivery advance', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    const connection = await import('../../stores/connection.svelte');
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    // Same state/freshness/health/observation revisions; only transportSeq
+    // and connection.rigConnected differ between the two full snapshots.
+    sendStateUpdate(
+      instances[0],
+      fullEnvelope(makeState({ revision: 5, stateRevision: 5, transportSeq: 10 })),
+    );
+    expect(store.getRadioState()?.connection.rigConnected).toBe(true);
+
+    sendStateUpdate(
+      instances[0],
+      fullEnvelope(makeState({
+        revision: 5, stateRevision: 5, transportSeq: 11,
+        connection: { rigConnected: false },
+      })),
+    );
+
+    expect(store.getRadioState()?.connection.rigConnected).toBe(false);
+    expect(connection.getRigConnected()).toBe(false);
+  });
+
+  it('rejects a metadata delta that removes a non-metadata key in both layers', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    // The sub receiver ships in the full snapshot with a frequency no other
+    // field carries, and radio.svelte.ts isValidServerState accepts a state
+    // without it — so a delta dropping it stays contract-valid end to end.
+    sendStateUpdate(
+      instances[0],
+      fullEnvelope(makeState({ revision: 5, stateRevision: 5, transportSeq: 10 })),
+    );
+    expect(store.getRadioState()?.sub?.freqHz).toBe(7_074_000);
+
+    sendStateUpdate(
+      instances[0],
+      deltaEnvelope(
+        makeState({ revision: 5, stateRevision: 5, transportSeq: 11 }),
+        { connection: { rigConnected: false, radioReady: true, controlConnected: true } },
+        ['sub'],
+      ),
+    );
+
+    sendStateUpdate(
+      instances[0],
+      deltaEnvelope(makeState({ revision: 6, stateRevision: 6 }), { ptt: true }),
+    );
+
+    expect(store.getRadioState()?.sub?.freqHz).toBe(7_074_000);
+    expect(store.getRadioState()?.ptt).toBe(true);
+  });
+
   it('keeps a retained relative tuple visible and applies a live leaf delta', async () => {
     const { wsClient, store, capabilities } = await loadModules();
     capabilities.setCapabilities(makeCapabilities());
