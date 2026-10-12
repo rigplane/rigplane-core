@@ -1337,11 +1337,12 @@ class TestWebRigctldDefault:
         started = []
 
         class FakeRigctldServer:
-            def __init__(self, _radio, cfg):
+            def __init__(self, _radio, cfg, *, allow_not_ready=False):
                 self.cfg = cfg
+                self.allow_not_ready = allow_not_ready
 
             async def start(self):
-                started.append(self.cfg.port)
+                started.append((self.cfg.port, self.allow_not_ready))
 
             async def stop(self):
                 pass
@@ -1364,7 +1365,9 @@ class TestWebRigctldDefault:
             rc = await _cmd_web(radio, args)
 
         assert rc == 0
-        assert started == [4532], "rigctld should start on default port 4532"
+        assert started == [(4532, True)], (
+            "rigctld should start on default port 4532 tolerating a not-ready radio"
+        )
         out = capsys.readouterr().out
         assert "rigctld:" in out
         assert "4532" in out
@@ -1424,6 +1427,7 @@ class TestWebRigctldDefault:
             )
 
         assert captured == {
+            "allow_not_ready": True,
             "managed_tx_authority": authority,
             "command_queue": command_queue,
             "command_service": command_service,
@@ -1447,7 +1451,7 @@ class TestWebRigctldDefault:
                 self.command_state_store = object()
 
         class LegacyOnlyRigctldServer:
-            def __init__(self, _radio, _cfg):
+            def __init__(self, _radio, _cfg, *, allow_not_ready=False):
                 pass
 
         args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
@@ -1478,7 +1482,7 @@ class TestWebRigctldDefault:
         captured = []
 
         class FakeRigctldServer:
-            def __init__(self, _radio, cfg):
+            def __init__(self, _radio, cfg, *, allow_not_ready=False):
                 self.cfg = cfg
                 captured.append(cfg)
 
@@ -1530,7 +1534,7 @@ class TestWebRigctldDefault:
         captured = []
 
         class FakeRigctldServer:
-            def __init__(self, _radio, cfg):
+            def __init__(self, _radio, cfg, *, allow_not_ready=False):
                 self.cfg = cfg
                 captured.append(cfg)
 
@@ -1593,7 +1597,7 @@ class TestWebRigctldDefault:
         captured = []
 
         class FakeRigctldServer:
-            def __init__(self, _radio, cfg):
+            def __init__(self, _radio, cfg, *, allow_not_ready=False):
                 self.cfg = cfg
                 captured.append(cfg)
 
@@ -1654,7 +1658,7 @@ class TestWebRigctldDefault:
         captured = []
 
         class FakeRigctldServer:
-            def __init__(self, _radio, cfg):
+            def __init__(self, _radio, cfg, *, allow_not_ready=False):
                 captured.append(cfg)
 
             async def start(self):
@@ -1754,7 +1758,7 @@ class TestWebRigctldDefault:
         radio.model = "IC-7610"
 
         class BusyRigctldServer:
-            def __init__(self, _radio, cfg):
+            def __init__(self, _radio, cfg, *, allow_not_ready=False):
                 self.cfg = cfg
 
             async def start(self):
@@ -1805,7 +1809,7 @@ class TestWebRigctldDefault:
         radio.model = "IC-7610"
 
         class PrivilegedRigctldServer:
-            def __init__(self, _radio, cfg):
+            def __init__(self, _radio, cfg, *, allow_not_ready=False):
                 self.cfg = cfg
 
             async def start(self):
@@ -1853,7 +1857,7 @@ class TestWebRigctldDefault:
         radio.model = "IC-7610"
 
         class ExhaustedRigctldServer:
-            def __init__(self, _radio, cfg):
+            def __init__(self, _radio, cfg, *, allow_not_ready=False):
                 self.cfg = cfg
 
             async def start(self):
