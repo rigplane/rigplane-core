@@ -29,7 +29,11 @@ import asyncio
 
 import pytest
 
-from rigplane.core.exceptions import AuthenticationError, ConnectionError
+from rigplane.core.exceptions import (
+    AuthenticationError,
+    ConnectionError,
+    TimeoutError,
+)
 from rigplane.runtime.session_lifecycle import (
     AttemptOutcome,
     AttemptResult,
@@ -89,6 +93,23 @@ class FakeMechanism:
     def queue_exception(self, exc: BaseException) -> None:
         self.queue_outcome(AttemptResult(AttemptOutcome.CONNECTED, raises=exc))
 
+    def queue_discovery_timeout(self) -> None:
+        """Pre-login discovery timeout, as production raises it today.
+
+        An unanswered control-channel discovery surfaces as a
+        ``TimeoutError`` from the transport: auth never ran, so the
+        attempt sent no login and claimed nothing.  The fake mirrors
+        that by raising instead of returning an outcome.
+        """
+        self.queue_outcome(
+            AttemptResult(
+                AttemptOutcome.CONNECTED,
+                raises=TimeoutError(
+                    "Radio did not respond to discovery after 10 attempts"
+                ),
+            )
+        )
+
     def set_scan_result(self, presences: list[RadioPresence]) -> None:
         self._scan_result = presences
 
@@ -106,7 +127,13 @@ class FakeMechanism:
         # A claim happens on auth success, which for the fake is any outcome
         # except a pre-auth-style AUTH_CREDENTIALS reject.  CONNECTED/
         # NOT_READY/BUSY_REJECT all imply auth succeeded → session claimed.
-        if result.outcome is not AttemptOutcome.AUTH_CREDENTIALS:
+        # A pre-auth timeout (discovery, login-response wait) claims
+        # nothing: auth never ran, so the attempt holds no session.
+        is_pre_auth_timeout = isinstance(result.raises, TimeoutError)
+        if (
+            result.outcome is not AttemptOutcome.AUTH_CREDENTIALS
+            and not is_pre_auth_timeout
+        ):
             self.claimed = True
         if result.raises is not None:
             raise result.raises
@@ -978,3 +1005,142 @@ async def test_startup_busy_budget_cap_without_live_holder(
     assert mech.connect_calls == 21
     assert mech.release_calls == 21
     assert not mech.claimed
+
+
+# ---------------------------------------------------------------------------
+# MOR-3391 part 1b round 2 — a discovery timeout inside the busy loop is a
+# busy pass
+# ---------------------------------------------------------------------------
+
+
+async def test_discovery_timeout_after_busy_is_a_busy_pass_then_connects(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-3391 round 2 (bench second run): busy, a retry whose discovery
+    times out, then a grant.
+
+    The mid-loop discovery timeout counts as one more busy pass — same
+    30 s cadence, one status line naming its kind — instead of exiting on
+    the discovery error, so the later attempt connects.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    mech.queue_busy_reject()
+    mech.queue_discovery_timeout()
+    mech.queue_ok()
+
+    with caplog.at_level("WARNING", logger="rigplane.runtime.session_lifecycle"):
+        await lc.connect()
+
+    assert lc.state is LifecycleState.CONNECTED
+    assert mech.connect_calls == 3
+    # The granted attempt holds its session: only the two failed attempts
+    # released.
+    assert mech.release_calls == 2
+    busy_lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "rigplane.runtime.session_lifecycle"
+        and "Radio session busy" in rec.getMessage()
+    ]
+    discovery_lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "rigplane.runtime.session_lifecycle"
+        and "discovery" in rec.getMessage().lower()
+    ]
+    assert len(busy_lines) == 1
+    assert len(discovery_lines) == 1
+    assert "attempt 1" in busy_lines[0]
+    assert "attempt 2" in discovery_lines[0]
+    assert "fresh login" not in discovery_lines[0]
+
+
+async def test_discovery_timeouts_until_threshold_stop_with_busy_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 round 2: busy, then unanswered discoveries until the
+    threshold attempt stops with the busy reason — never the discovery
+    message.  A hold that still answers nothing at the threshold proves a
+    live session either way.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    mech.queue_busy_reject()
+    mech.queue_discovery_timeout()
+    mech.queue_discovery_timeout()
+    mech.queue_discovery_timeout()
+
+    with pytest.raises(ConnectionError) as excinfo:
+        await lc.connect()
+
+    message = str(excinfo.value)
+    assert "another client holds the session" in message
+    assert "from this computer" in message
+    assert "did not respond to discovery" not in message
+    # Attempts start at +0/+30/+60/+90 s; the fourth is at the threshold.
+    assert mech.connect_calls == 4
+    assert mech.release_calls == 4
+    assert not mech.claimed
+    assert lc.state is LifecycleState.DISCONNECTED
+
+
+async def test_discovery_timeout_before_any_busy_stays_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 round 2 (bench first run): a discovery timeout on the very
+    first attempt — before any busy reject — stays fatal with today's
+    message, exactly as before.  A radio that is off looks the same and
+    must fail fast.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    mech.queue_discovery_timeout()
+
+    with pytest.raises(TimeoutError, match="did not respond to discovery"):
+        await lc.connect()
+
+    assert mech.connect_calls == 1
+    assert lc.state is LifecycleState.DISCONNECTED
+
+
+async def test_non_discovery_timeout_inside_loop_stays_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 round 2 scope pin: only the discovery timeout converts.
+
+    A timeout from a later stage (here a login-response wait, which runs
+    after discovery already answered) stays fatal even after a busy
+    reject — the busy-pass conversion covers discovery attempts, which
+    sent no login, not attempts that already spoke to the radio.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    mech.queue_busy_reject()
+    mech.queue_exception(TimeoutError("login response timed out"))
+
+    with pytest.raises(TimeoutError, match="login response timed out"):
+        await lc.connect()
+
+    assert mech.connect_calls == 2
+
+
+async def test_discovery_timeout_after_a_clean_connect_stays_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 round 2: reconnects keep today's behaviour.
+
+    A discovery timeout on a later connect — with no busy reject on this
+    connect — is fatal even though an earlier connect succeeded.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    mech.queue_ok()
+    await lc.connect()
+    await lc.disconnect()
+    mech.queue_discovery_timeout()
+
+    with pytest.raises(TimeoutError, match="did not respond to discovery"):
+        await lc.connect()
+
+    assert lc.state is LifecycleState.DISCONNECTED
