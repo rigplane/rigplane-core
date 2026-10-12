@@ -130,6 +130,7 @@ const runtimeHarness = vi.hoisted(() => {
     currentCaps: Object.freeze({ source: 'test-capabilities' }) as unknown,
     currentSession: { state: 'connected' as const, epoch: 1 },
     mockScopeConnected: true,
+    mockScopeFrameLive: true,
     tuningStep: 1_000,
     nextLeaseId: 0,
     hardwareUnsubscribe: vi.fn(),
@@ -145,6 +146,7 @@ const runtimeHarness = vi.hoisted(() => {
       registerPresentationDriver: vi.fn(),
       subscribe: vi.fn(() => () => {}),
       get hardwareScopeConnected() { return state.mockScopeConnected; },
+      get hardwareScopeFrameLive() { return state.mockScopeFrameLive; },
       subscribeHardware: vi.fn((handler: (frame: TestScopeFrame) => void) => {
         state.capturedHardwareFrame = handler;
         return state.hardwareUnsubscribe;
@@ -175,6 +177,12 @@ Object.defineProperty(runtimeHarness.state, 'mockScopeConnected', {
   configurable: true,
   get: () => hardwareScopeTransport.get('connected')!,
   set: (value: boolean) => hardwareScopeTransport.set('connected', value),
+});
+const hardwareScopeFrameLive = new SvelteMap<string, boolean>([['live', true]]);
+Object.defineProperty(runtimeHarness.state, 'mockScopeFrameLive', {
+  configurable: true,
+  get: () => hardwareScopeFrameLive.get('live')!,
+  set: (value: boolean) => hardwareScopeFrameLive.set('live', value),
 });
 
 const authorityHarness = vi.hoisted(() => {
@@ -650,6 +658,7 @@ beforeEach(() => {
   runtimeHarness.state.capturedHardwareFrame = null;
   runtimeHarness.state.capturedDxMessage = null;
   runtimeHarness.state.mockScopeConnected = true;
+  runtimeHarness.state.mockScopeFrameLive = true;
   runtimeHarness.state.tuningStep = 1_000;
   runtimeHarness.state.nextLeaseId = 0;
   runtimeHarness.state.hardwareUnsubscribe = vi.fn();
@@ -2513,6 +2522,44 @@ describe('hardware scope drop clears the trace (R53)', () => {
     emitFrame({ pixels: new Uint8Array(475).fill(100) });
     await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
     expect(spectrumRendererHarness.render.mock.calls.at(-1)![1][0]).toBe(100);
+  });
+});
+
+describe('silent raw scope refuses click-to-tune', () => {
+  it('clears the stale span on frame silence and tunes again after a fresh frame', () => {
+    const target = mountPanel();
+    emitFrame({ mode: 1, startFreq: 14_000_000, endFreq: 14_100_000 });
+    prepareGeometry(target);
+
+    // Frames stop while the transport stays connected.
+    runtimeHarness.state.mockScopeFrameLive = false;
+    flushSync();
+
+    authorityHarness.state.current = authority({ frequencyHz: 7_050_000 });
+    refreshSpectrumAuthority();
+    flushSync();
+
+    const { spectrum, waterfall } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 8, 100);
+    pointer(spectrum, 'pointermove', 8, 104);
+    pointer(spectrum, 'pointerup', 8, 104);
+    const canvas = waterfall.querySelector('canvas')!;
+    pointer(canvas, 'pointerdown', 4, 150);
+    pointer(canvas, 'pointerup', 4, 150);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    expect(mockRuntime.send).not.toHaveBeenCalled();
+    expect(target.querySelector('.dx-badge')).toBeNull();
+
+    runtimeHarness.state.mockScopeFrameLive = true;
+    flushSync();
+    emitFrame({ mode: 1, startFreq: 7_000_000, endFreq: 7_100_000 });
+    prepareGeometry(target);
+    const revived = target.querySelector('.waterfall-content canvas')!;
+    pointer(revived, 'pointerdown', 4, 150);
+    pointer(revived, 'pointerup', 4, 150);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(7_050_000, 0);
+    expect(mockRuntime.send).not.toHaveBeenCalled();
   });
 });
 
