@@ -50,9 +50,15 @@ _RESTART_BOUND_S = 10.0
 
 
 def _orphan_sim(**kwargs) -> MockIcomRadio:
-    """Single-owner simulator with orphan CI-V state on (slice G knobs)."""
+    """Single-owner simulator with orphan CI-V state on (slice G knobs).
+
+    The hold is 2.0 s: longer than the production client's ~0.5 s ping
+    period, so a live session survives a multi-second run (its pings keep
+    re-arming the hold), and short enough that a dead session releases
+    within ~2 s of its last refresh.
+    """
     kwargs.setdefault("single_owner", True)
-    kwargs.setdefault("keepalive_hold_s", 0.3)
+    kwargs.setdefault("keepalive_hold_s", 2.0)
     kwargs.setdefault("civ_state_survives_unclean_end", True)
     return MockIcomRadio(**kwargs)
 
@@ -70,7 +76,7 @@ def _client(sim: MockIcomRadio) -> IcomRadio:
 
 
 async def _run_until_frontier(radio: IcomRadio, target: int) -> int:
-    """Drive the client's tracked CI-V seq to ``target`` via identity reads."""
+    """Drive the client's tracked CI-V seq to ``target`` via frequency reads."""
     for _ in range(target + 200):
         assert radio._civ_transport is not None
         if radio._civ_transport.send_seq >= target:
@@ -119,12 +125,11 @@ async def _kill_uncleanly(radio: IcomRadio) -> None:
     ):
         if transport is None:
             continue
-        pending = [
-            task
-            for attr in ("_ping_task", "_idle_task", "_retransmit_task")
-            if (task := getattr(transport, attr, None)) is not None
-            and not task.done()
-        ]
+        pending = []
+        for attr in ("_ping_task", "_idle_task", "_retransmit_task"):
+            task = getattr(transport, attr, None)
+            if task is not None and not task.done():
+                pending.append(task)
         for task in pending:
             task.cancel()
         udp = getattr(transport, "_udp_transport", None)
@@ -133,14 +138,12 @@ async def _kill_uncleanly(radio: IcomRadio) -> None:
         transport._udp_transport = None
         transport.state = ConnectionState.DISCONNECTED
         for task in pending:
-            with contextlib.suppress(
-                asyncio.CancelledError, Exception
-            ):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await asyncio.wait_for(task, 2.0)
     radio._conn_state = RadioConnectionState.DISCONNECTED
 
 
-async def _wait_hold_released(sim: MockIcomRadio, budget_s: float = 5.0) -> bool:
+async def _wait_hold_released(sim: MockIcomRadio, budget_s: float = 8.0) -> bool:
     """True once the simulator holds no session (bounded wait)."""
     deadline = time.monotonic() + budget_s
     while sim.session_held:
@@ -204,14 +207,16 @@ async def test_restarted_client_stays_deaf_behind_orphan_frontier(
         assert orphan[0] == frontier, (
             f"orphan frontier {orphan[0]} != A's tracked seq {frontier}"
         )
+        assert orphan[1] == frozenset(), f"orphan gap list is not empty: {orphan[1]}"
 
-        # The production client renews, so lengthen the hold: the fresh
-        # session must stay held through the asserts below.
+        # The production client renews slowly: lengthen the hold so the
+        # fresh session stays held through the asserts below.
         sim.keepalive_hold_s = 30.0
         b = _client(sim)
         first_record = len(caplog.records)
         with fast_connect():
             await b.connect()  # returns: the identity gate gets no answer
+        assert sim._civ_orphan is None, "B's open did not consume the orphan"
         inherited = [t for t in sim._civ_gap.values() if t.inherited]
         assert len(inherited) == 1, "B's open did not seed one inherited tracker"
         tracker = inherited[0]
@@ -233,9 +238,8 @@ async def test_restarted_client_stays_deaf_behind_orphan_frontier(
         dead_lines = [
             record.getMessage()
             for record in caplog.records[first_record:]
-            if record.name == "rigplane" or record.name.startswith("rigplane.")
+            if "control session dead" in record.getMessage()
         ]
-        dead_lines = [line for line in dead_lines if "control session dead" in line]
         identity = b.connection_identity
         report = (
             f"B answered={answered} connected={b.connected} "
@@ -301,8 +305,10 @@ async def test_expiry_restart_connects() -> None:
 
         assert await _wait_hold_released(sim), "held session never expired"
         assert sim._civ_orphan is not None, "no orphan state kept after the unclean end"
-        await asyncio.sleep(2.5)  # outlast the 2 s orphan expiry
-        assert sim._civ_orphan is None, "orphan state survived its expiry"
+        # The orphan expiry is checked lazily at the next open
+        # (``_seed_tracker_from_orphan``), so sleep outlasts it from the
+        # death stamp, then prove the clean start through B's tracker.
+        await asyncio.sleep(3.0)
 
         sim.keepalive_hold_s = 30.0
         b = _client(sim)
@@ -312,6 +318,9 @@ async def test_expiry_restart_connects() -> None:
             f"B not CONNECTED within {_RESTART_BOUND_S} s past the orphan expiry "
             f"(A frontier was {frontier})"
         )
+        assert sim._civ_orphan is None, "orphan state survived past B's open"
+        inherited = [t for t in sim._civ_gap.values() if t.inherited]
+        assert inherited == [], "B inherited orphan state past its expiry"
         assert await asyncio.wait_for(b.get_freq(), 5.0) == 14_074_000
     finally:
         if b is not None:
