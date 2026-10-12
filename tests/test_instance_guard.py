@@ -18,11 +18,16 @@ from pathlib import Path
 
 import pytest
 
-from rigplane.backends.config import LanBackendConfig, SerialBackendConfig
+from rigplane.backends.config import (
+    LanBackendConfig,
+    RigctldBackendConfig,
+    SerialBackendConfig,
+)
 from rigplane.cli._instance_guard import (
     ResidentAlreadyRunningError,
     ResidentLock,
     acquire_resident_lock,
+    guards_backend,
     radio_lock_identity,
 )
 
@@ -141,8 +146,9 @@ def test_unwritable_cache_dir_warns_without_guard(
         is_root = os.geteuid() == 0
     except AttributeError:  # Windows has no geteuid; chmod still applies.
         is_root = False
-    if is_root:
-        # Root bypasses permission bits, so a regular file stands in for the
+    if is_root or sys.platform == "win32":
+        # Root bypasses permission bits, and Windows ignores directory
+        # read-only attributes, so a regular file stands in for the
         # unwritable directory: creating locks/ under it fails either way.
         blocker = tmp_path / "blocker"
         blocker.write_text("x")
@@ -195,13 +201,52 @@ def test_radio_lock_identity_rows() -> None:
     sys.platform != "win32",
     reason="Windows-only: exercises the msvcrt.locking branch",
 )
-def test_windows_branch_same_identity_refused(tmp_path: Path) -> None:
-    """On Windows the second acquire for the same identity is refused."""
+def test_windows_branch_cross_process_refused(tmp_path: Path) -> None:
+    """On Windows a child-held lock refuses the parent and names the child pid.
+
+    Same-process double acquire can never raise (the per-process registry
+    short-circuits it), so the Windows byte-lock branch needs a child holder,
+    like the POSIX row above.
+    """
     identity = "lan:1.2.3.4:50001"
-    first = acquire_resident_lock(identity, cache_dir=tmp_path)
-    assert first is not None
+    proc = _spawn_holder(identity, tmp_path)
     try:
-        with pytest.raises(ResidentAlreadyRunningError):
-            acquire_resident_lock(identity, cache_dir=tmp_path)
+        kind, result = _try_acquire(identity, tmp_path)
     finally:
-        first.close()
+        proc.kill()
+        proc.wait(timeout=30)
+    assert kind == "refused"
+    assert isinstance(result, ResidentAlreadyRunningError)
+    assert str(proc.pid) in str(result)
+
+
+def test_rigctld_backend_is_not_guarded() -> None:
+    """The rigctld backend takes no resident lock.
+
+    An external rigctld accepts several clients, so there is no exclusive
+    radio session to protect — only LAN and local-serial backends are
+    guarded.
+    """
+    rigctld = RigctldBackendConfig(host="1.2.3.4", port=4532)
+    with pytest.raises(TypeError):
+        radio_lock_identity(rigctld)
+    assert guards_backend(rigctld) is False
+    assert guards_backend(LanBackendConfig(host="1.2.3.4", port=50001)) is True
+    assert guards_backend(SerialBackendConfig(device="/dev/ttyUSB0")) is True
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: exercises os.path.realpath device symlinks",
+)
+def test_serial_symlink_maps_to_same_lock(tmp_path: Path) -> None:
+    """A by-id symlink and its target digest to the same lock identity."""
+    target = tmp_path / "ttyUSB0"
+    target.write_text("")
+    link_dir = tmp_path / "by-id"
+    link_dir.mkdir()
+    link = link_dir / "usb-serial-foo"
+    os.symlink(target, link)
+    assert radio_lock_identity(SerialBackendConfig(device=str(link))) == (
+        radio_lock_identity(SerialBackendConfig(device=str(target)))
+    )
