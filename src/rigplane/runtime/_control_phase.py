@@ -1065,19 +1065,22 @@ class ControlPhaseRuntime:
         # demand. Each failed attempt logs a WARNING with the cause.
         # ``AudioRecoveryState.FAILED`` reaches ``on_audio_recovery`` at most
         # once — only after the retrying ends with the transport still not
-        # rebuilt, and only when recovery was owed: the reconnect snapshot
+        # rebuilt, only when recovery was owed (the reconnect snapshot
         # holds audio demand and ``_auto_recover_audio`` is set, the same
         # gate the hard path and the audio watchdog apply before running
-        # ``recover`` (radio_reconnect). With nothing owed, exactly one
-        # best-effort attempt runs and its failure stays a WARNING. On the
+        # ``recover`` (radio_reconnect)), and only while ownership is
+        # unchanged: the hard path returns silently on an owner stop and
+        # a new CI-V generation runs its own recovery, so this tail
+        # stays silent too. With nothing owed, exactly one best-effort
+        # attempt runs and its failure stays a WARNING. On the
         # identity-hold path this tail runs in a task ``disconnect()`` cannot
         # cancel, so unchanged CI-V / owner-stop epochs are the only
         # ownership guard: they are re-read after every backoff sleep,
         # immediately before the attempt they authorize — no await sits
         # between that check and the rebuild — and once more before the
-        # post-success ``recover``. Bounded/safe: failures are never raised,
-        # so a CI-V soft reconnect still succeeds even if audio cannot be
-        # re-established.
+        # post-success ``recover`` and the FAILED report. Bounded/safe:
+        # failures are never raised, so a CI-V soft reconnect still
+        # succeeds even if audio cannot be re-established.
         ensure_audio = getattr(h, "_ensure_audio_transport", None)
         if ensure_audio is not None:
             owed = audio_snapshot is not None and getattr(
@@ -1121,7 +1124,7 @@ class ControlPhaseRuntime:
                         self._SOFT_AUDIO_REBUILD_ATTEMPTS,
                         exc,
                     )
-            if not rearmed and owed:
+            if not rearmed and owed and not _ownership_moved_on():
                 on_audio_recovery = getattr(h, "_on_audio_recovery", None)
                 if on_audio_recovery is not None:
                     on_audio_recovery(AudioRecoveryState.FAILED)

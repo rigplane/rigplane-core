@@ -516,7 +516,7 @@ async def test_soft_reconnect_owner_stop_during_backoff_stops_audio_rebuild_retr
     await runtime.soft_reconnect()
 
     assert host._ensure_calls == 1
-    assert host.recovery_states == [AudioRecoveryState.FAILED]
+    assert host.recovery_states == []
 
 
 @pytest.mark.asyncio
@@ -542,7 +542,7 @@ async def test_soft_reconnect_civ_epoch_change_during_backoff_stops_audio_rebuil
     await runtime.soft_reconnect()
 
     assert host._ensure_calls == 1
-    assert host.recovery_states == [AudioRecoveryState.FAILED]
+    assert host.recovery_states == []
 
 
 @pytest.mark.asyncio
