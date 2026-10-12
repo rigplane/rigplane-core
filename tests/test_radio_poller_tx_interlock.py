@@ -189,6 +189,59 @@ async def test_fresh_rx_preserves_truthful_unsupported_failure() -> None:
         await _dispatch(poller, SendCiv(command=0x1A, data=b"\x01"))
 
 
+# ── MOR-3378: an unmanaged send_civ de-key must never be refused ────────────
+# ``SendCiv`` is in ``_WEB_IMMEDIATE_BLOCK_FAMILIES`` (family RAW_CIV), so a
+# raw PTT off (``1C 00 00``) or tuner off (``1C 01 00``) sent through
+# ``send_civ`` was refused once the observed PTT read TX or went stale —
+# leaving a raw keyer keyed. An exact de-key frame is exempt from that
+# RF-state refusal on this seat, exactly as the typed ``PttOff`` always is
+# (ALWAYS_PASS) and as the unmanaged HTTP raw seat already exempts it
+# (PR #4122). The frame is rebuilt with ``build_civ_frame(0x00, 0x00,
+# command, sub, data)`` — the same construction the HTTP seat refuses on.
+
+_DEKEY_SEND_CIV_COMMANDS = (
+    SendCiv(command=0x1C, sub=0x00, data=b"\x00"),
+    SendCiv(command=0x29, sub=0x00, data=b"\x1c\x00\x00"),
+    SendCiv(command=0x1C, sub=0x01, data=b"\x00"),
+)
+
+
+@pytest.mark.parametrize(
+    "cmd", _DEKEY_SEND_CIV_COMMANDS, ids=["ptt-off", "cmd29-ptt-off", "tuner-off"]
+)
+@pytest.mark.parametrize("ptt", (True, None), ids=("tx", "unknown"))
+async def test_send_civ_exact_dekey_passes_rf_state_refusal(
+    cmd: SendCiv, ptt: bool | None
+) -> None:
+    poller, radio, store = _poller()
+    if ptt is not None:
+        _observe_ptt(store, ptt)
+
+    await _dispatch(poller, cmd)
+
+    radio.send_civ.assert_awaited_once_with(
+        cmd.command, sub=cmd.sub, data=cmd.data, wait_response=False
+    )
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    (
+        SendCiv(command=0x1C, sub=0x00, data=b"\x01"),
+        SendCiv(command=0x1C, sub=0x00, data=b"\x00\x00"),
+    ),
+    ids=["raw-ptt-on", "dekey-with-extra-byte"],
+)
+async def test_send_civ_non_dekey_still_refused_while_tx(cmd: SendCiv) -> None:
+    poller, radio, store = _poller()
+    _observe_ptt(store, True)
+
+    with pytest.raises(CommandError, match="RF state is TX"):
+        await _dispatch(poller, cmd)
+
+    radio.send_civ.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     ("cmd", "method"),
     (

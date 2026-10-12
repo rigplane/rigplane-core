@@ -234,6 +234,64 @@ async def test_hard_blocks_dispatch_once_with_fresh_rx(wire: bytes) -> None:
         radio._send_civ_raw.assert_awaited_once_with(b"\xfe\xfe\x98\xe0\x03\xfd")
 
 
+# ── MOR-3378: an unmanaged raw de-key must never be refused ─────────────────
+# The unmanaged branch of ``_RigctldCommandExecutor.execute`` maps every
+# ``w`` frame to the BLOCK family, so a raw PTT off (``1C 00 00``) or tuner
+# off (``1C 01 00``) was refused once the observed PTT read TX or went
+# stale — leaving a raw keyer keyed. An exact de-key frame is exempt from
+# that RF-state refusal on this seat, exactly as the typed ``T 0`` always
+# was (``PttOff`` is ALWAYS_PASS) and as the unmanaged HTTP raw seat
+# already exempts it (PR #4122).
+
+_DEKEY_WIRES = (
+    (b"w FE FE 98 E0 1C 00 00 FD", b"\xfe\xfe\x98\xe0\x1c\x00\x00\xfd"),
+    (b"w FE FE 98 E0 29 00 1C 00 00 FD", b"\xfe\xfe\x98\xe0\x29\x00\x1c\x00\x00\xfd"),
+    (b"w FE FE 98 E0 1C 01 00 FD", b"\xfe\xfe\x98\xe0\x1c\x01\x00\xfd"),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["tx", "absent"], ids=["tx", "unknown"])
+@pytest.mark.parametrize(
+    ("wire", "frame"),
+    _DEKEY_WIRES,
+    ids=["ptt-off", "cmd29-ptt-off", "tuner-off"],
+)
+async def test_unmanaged_raw_dekey_passes_rf_state_refusal(
+    case: str, wire: bytes, frame: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, forced = _store(case)
+    handler, radio, _routing = _handler(store)
+    if forced is not None:
+        monkeypatch.setattr(StateStore, "snapshot", lambda _: forced)
+
+    response = await handler.execute(parse_line(wire))
+
+    assert response.ok, (
+        "MOR-3378: an exact raw de-key must not be refused by the RF-state check"
+    )
+    radio._send_civ_raw.assert_awaited_once_with(frame)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wire",
+    (
+        b"w FE FE 98 E0 1C 00 01 FD",
+        b"w FE FE 98 E0 1C 00 00 00 FD",
+        b"w FE FE 98 E0 03 FD",
+    ),
+    ids=["raw-ptt-on", "dekey-with-extra-byte", "non-tx-raw"],
+)
+async def test_unmanaged_non_dekey_raw_still_refused_while_tx(wire: bytes) -> None:
+    handler, radio, _routing = _handler(_store("tx")[0])
+
+    response = await handler.execute(parse_line(wire))
+
+    assert response.error is HamlibError.ERJCTED
+    radio._send_civ_raw.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     ("case", "expected"),
     [("before", tx_interlock.RfState.RX)]
