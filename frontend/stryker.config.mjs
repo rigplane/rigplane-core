@@ -6,6 +6,7 @@ export default {
     'src/semantic/radio-view-model.ts',
     'src/lib/runtime/props/panel-props.ts',
     'src/lib/runtime/adapters/ptt-restore-gate.ts',
+    'src/lib/runtime/adapters/mod-input-gates.ts',
   ],
   testRunner: 'vitest',
   vitest: {
