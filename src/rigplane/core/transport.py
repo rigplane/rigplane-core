@@ -624,16 +624,26 @@ class IcomTransport:
         self._handle_data_packet(data, ptype, seq, sender_id)
 
     def _retransmit(self, seq: int) -> None:
+        seq &= 0xFFFF
         data = self.tx_buffer.get(seq)
         if data is None:
+            logger.debug("retransmit #%d not buffered; answering with idle", seq)
+            self._raw_send(self._build_control(ptype=0x00, seq=seq))
             return
         is_current = self._tx_guards.get(seq)
         if is_current is not None:
             try:
                 if not is_current():
+                    logger.debug("retransmit #%d stale; answering with idle", seq)
+                    self._raw_send(self._build_control(ptype=0x00, seq=seq))
                     return
             except Exception:
-                logger.debug("Skipping retransmit with failed guard", exc_info=True)
+                logger.debug(
+                    "retransmit #%d guard failed; answering with idle",
+                    seq,
+                    exc_info=True,
+                )
+                self._raw_send(self._build_control(ptype=0x00, seq=seq))
                 return
         self._raw_send(data)
 
@@ -646,11 +656,23 @@ class IcomTransport:
             self._retransmit(seq)
             return True
 
-        # Multi retransmit request
-        for i in range(CONTROL_SIZE, len(data), 2):
-            if i + 2 <= len(data):
-                rseq = struct.unpack_from("<H", data, i)[0]
-                self._retransmit(rseq)
+        # Multi retransmit request: the payload past the header holds
+        # consecutive 4-byte (first, last) inclusive ranges in the 16-bit
+        # sequence space. A trailing partial pair carries no range.
+        end = CONTROL_SIZE + (len(data) - CONTROL_SIZE) // 4 * 4
+        for i in range(CONTROL_SIZE, end, 4):
+            first, last = struct.unpack_from("<HH", data, i)
+            span = (last - first) & 0xFFFF
+            if span >= MAX_MISSING:
+                logger.debug(
+                    "retransmit range %d..%d wider than %d; ignoring",
+                    first,
+                    last,
+                    MAX_MISSING,
+                )
+                continue
+            for offset in range(span + 1):
+                self._retransmit((first + offset) & 0xFFFF)
         return True
 
     def _handle_ping_packet(
