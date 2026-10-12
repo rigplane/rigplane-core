@@ -1,4 +1,4 @@
-"""Compare IC-7300, IC-7610 and FTX-1 profile wire bytes with their manual oracles.
+"""Compare IC-7300, IC-7610, IC-705 and FTX-1 profile wire bytes with their manual oracles.
 
 Each oracle (``tests/golden/wire_oracle/ic7300.toml``,
 ``tests/golden/wire_oracle/ic7610.toml``) is transcribed from the radio
@@ -82,6 +82,7 @@ ORACLE_DIR = REPO_ROOT / "tests" / "golden" / "wire_oracle"
 
 _IC7300_MIN_ROWS = 29
 _IC7610_MIN_ROWS = 34
+_IC705_MIN_ROWS = 26
 
 #: Oracle row key: (control, receiver, direction, value). Rows without a
 #: receiver field (the whole IC-7300 table) key as ``"none"``.
@@ -106,6 +107,13 @@ class _ProductionCall:
     captured from the ``CoreRadio`` coroutine named by ``builder``, with
     the WPM number parsed from the row's ``value``, so the runtime's
     WPM-to-level conversion is part of the compared path.
+
+    Rows with ``runtime_coro`` set carry the coroutine's value arguments
+    in ``kwargs``: their bytes are captured from the ``CoreRadio``
+    coroutine named by ``builder`` on the recording fake transport, so a
+    profile-dependent builder choice inside the coroutine
+    (``runtime/radio.py: CoreRadio.set_mode`` picks per ``profiles:
+    RadioProfile.set_mode_via_selected``) is part of the compared path.
     """
 
     builder: str
@@ -113,6 +121,7 @@ class _ProductionCall:
     cmd29_route: tuple[int, ...] | None = None
     receiver: int | None = None
     runtime_wpm: bool = False
+    runtime_coro: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +168,10 @@ _PROFILE_7610 = load_rig(RIGS_DIR / "ic7610.toml").to_profile()
 assert _PROFILE_7610.command_map is not None
 assert _PROFILE_7610.vfo_main_code is not None
 assert _PROFILE_7610.vfo_sub_code is not None
+_PROFILE_705 = load_rig(RIGS_DIR / "ic705.toml").to_profile()
+assert _PROFILE_705.command_map is not None
+assert _PROFILE_705.vfo_main_code is not None
+assert _PROFILE_705.vfo_sub_code is not None
 
 _IC7300_MAPPING: dict[_Key, _ProductionCall] = {
     ("frequency_set", "none", "set", "14.074 MHz"): _ProductionCall(
@@ -335,6 +348,94 @@ _IC7610_MAPPING: dict[_Key, _ProductionCall] = {
 
 _NOT_DECLARED_7610: dict[_Key, _NotDeclared] = {}
 
+#: IC-705 rows key ``"none"`` throughout: the profile declares one
+#: receiver (``rigs/ic705.toml: receiver_count``), so every builder runs
+#: receiver-independent (builders default to the main receiver, the same
+#: argument the runtime's own ``CoreRadio.set_*`` methods pass). The
+#: ``operating_mode`` row goes through the ``CoreRadio.set_mode``
+#: coroutine: this profile routes it to ``set_selected_mode``.
+_IC705_MAPPING: dict[_Key, _ProductionCall] = {
+    ("operating_frequency", "none", "set", "14.074 MHz"): _ProductionCall(
+        "set_freq", {"freq_hz": 14074000}
+    ),
+    ("operating_frequency", "none", "read", ""): _ProductionCall("get_freq", {}),
+    ("operating_mode", "none", "set", "USB FIL1"): _ProductionCall(
+        "set_mode", {"mode": Mode.USB, "filter_width": 1}, runtime_coro=True
+    ),
+    ("vfo_select", "none", "set", "A"): _ProductionCall(
+        "set_vfo", {"code": _PROFILE_705.vfo_main_code}
+    ),
+    ("vfo_select", "none", "set", "B"): _ProductionCall(
+        "set_vfo", {"code": _PROFILE_705.vfo_sub_code}
+    ),
+    ("split", "none", "set", "on"): _ProductionCall("set_split", {"on": True}),
+    ("split", "none", "set", "off"): _ProductionCall("set_split", {"on": False}),
+    ("rf_power", "none", "set", "128 of 0..255"): _ProductionCall(
+        "set_rf_power", {"level": 128}
+    ),
+    ("mic_gain", "none", "set", "100 of 0..255"): _ProductionCall(
+        "set_mic_gain", {"level": 100}
+    ),
+    ("cw_key_speed", "none", "set", "128 of 0..255"): _ProductionCall(
+        "set_key_speed", {"level": 128}
+    ),
+    ("comp_level", "none", "set", "128 of 0..255"): _ProductionCall(
+        "set_compressor_level", {"level": 128}
+    ),
+    ("vox", "none", "set", "on"): _ProductionCall("set_vox", {"on": True}),
+    ("break_in", "none", "set", "semi on"): _ProductionCall(
+        "set_break_in", {"mode": BreakInMode.SEMI}
+    ),
+    ("transmit", "none", "set", "on"): _ProductionCall("ptt_on", {}),
+    ("transmit", "none", "set", "off"): _ProductionCall("ptt_off", {}),
+    ("af_level", "none", "set", "128 of 0..255"): _ProductionCall(
+        "set_af_level", {"level": 128}, (0x14, 0x01)
+    ),
+    ("rf_gain", "none", "set", "200 of 0..255"): _ProductionCall(
+        "set_rf_gain", {"level": 200}, (0x14, 0x02)
+    ),
+    ("squelch_level", "none", "set", "30 of 0..255"): _ProductionCall(
+        "set_squelch", {"level": 30}, (0x14, 0x03)
+    ),
+    ("attenuator", "none", "set", "on (20 dB)"): _ProductionCall(
+        "set_attenuator_level", {"db": 20}, (0x11,)
+    ),
+    ("preamp", "none", "set", "P.AMP1"): _ProductionCall(
+        "set_preamp", {"level": 1}, (0x16, 0x02)
+    ),
+    ("agc", "none", "set", "MID"): _ProductionCall(
+        "set_agc", {"mode": AgcMode.MID}, (0x16, 0x12)
+    ),
+    ("noise_blanker", "none", "set", "on"): _ProductionCall(
+        "set_nb", {"on": True}, (0x16, 0x22)
+    ),
+    ("noise_reduction", "none", "set", "on"): _ProductionCall(
+        "set_nr", {"on": True}, (0x16, 0x40)
+    ),
+    ("antenna_tuner", "none", "set", "on"): _ProductionCall(
+        "set_tuner_status", {"value": 1}
+    ),
+}
+
+_NOT_DECLARED_705: dict[_Key, _NotDeclared] = {
+    ("voice_tx_memory", "none", "set", "T1"): _NotDeclared(
+        "the profile declares set_voice_tx [0x28] but no runtime path "
+        "sends voice-memory playback (no caller of the bound set_voice_tx "
+        "builder exists in src); 0x28 T1/stop frames exist only as raw "
+        "TX-family frames gated by runtime/tx_interlock.py: "
+        "classify_raw_civ_frame_tx_family — add a comparison row if a "
+        "runtime sender is ever added"
+    ),
+    ("voice_tx_memory", "none", "set", "stop"): _NotDeclared(
+        "the profile declares set_voice_tx [0x28] but no runtime path "
+        "sends voice-memory playback (no caller of the bound set_voice_tx "
+        "builder exists in src); 0x28 T1/stop frames exist only as raw "
+        "TX-family frames gated by runtime/tx_interlock.py: "
+        "classify_raw_civ_frame_tx_family — add a comparison row if a "
+        "runtime sender is ever added"
+    ),
+}
+
 
 def _load_oracle(path: Path) -> tuple[dict[_Key, bytes], dict[_Key, str], list[_Key]]:
     with open(path, "rb") as handle:
@@ -369,7 +470,11 @@ def _make_setup(
     radio = CoreRadio("127.0.0.1", profile=profile)  # type: ignore[arg-type]
     object.__setattr__(setup, "commands", radio._commands)
     object.__setattr__(setup, "to_addr", profile.civ_addr)  # type: ignore[union-attr]
-    oracle_file = "ic7300.toml" if label == "IC-7300" else "ic7610.toml"
+    oracle_file = {
+        "IC-7300": "ic7300.toml",
+        "IC-7610": "ic7610.toml",
+        "IC-705": "ic705.toml",
+    }[label]
     frames, manuals, keys = _load_oracle(ORACLE_DIR / oracle_file)
     object.__setattr__(setup, "oracle", frames)
     object.__setattr__(setup, "manual", manuals)
@@ -392,9 +497,23 @@ _SETUPS: dict[str, _ProfileSetup] = {
         _IC7610_MIN_ROWS,
         _PROFILE_7610,
     ),
+    "IC-705": _make_setup(
+        "IC-705",
+        _IC705_MAPPING,
+        _NOT_DECLARED_705,
+        _IC705_MIN_ROWS,
+        _PROFILE_705,
+    ),
 }
 
 _XFAIL_7610: dict[_Key, str] = {}
+
+_XFAIL_705: dict[_Key, str] = {
+    ("operating_mode", "none", "set", "USB FIL1"): (
+        "runtime routes set_mode through 0x26 0x00 (set_selected_mode) "
+        "while the row prints the bare 0x06 frame"
+    ),
+}
 
 
 def _hex(frame: bytes) -> str:
@@ -430,10 +549,39 @@ async def _runtime_wpm_frame(setup: _ProfileSetup, key: _Key) -> bytes:
         radio._connected = False
 
 
+async def _runtime_coro_frame(setup: _ProfileSetup, key: _Key) -> bytes:
+    """Capture the frame one runtime coroutine puts on the wire.
+
+    The radio is the row's profile over ``MockTransport`` (injected the way
+    ``tests/test_radio.py`` builds a radio under test: both transports
+    replaced, connected flag set), called with the mapping's ``kwargs``;
+    the returned bytes are the CI-V frame inside the single tracked packet
+    the coroutine sends — UDP header stripped. Any value conversion or
+    builder choice inside the coroutine is part of the compared path.
+    """
+    spec = setup.mapping[key]
+    transport = MockTransport()
+    radio = CoreRadio("127.0.0.1", profile=setup.profile)  # type: ignore[arg-type]
+    radio._civ_transport = transport
+    radio._ctrl_transport = transport
+    radio._connected = True
+    try:
+        await getattr(radio, spec.builder)(**spec.kwargs)
+        assert len(transport.sent_packets) == 1, (
+            f"{setup.label} {key!r}: runtime sent "
+            f"{len(transport.sent_packets)} packets, expected exactly one"
+        )
+        return transport.sent_packets[0][CIV_HEADER_SIZE:]
+    finally:
+        radio._connected = False
+
+
 async def _production_bytes(setup: _ProfileSetup, key: _Key) -> bytes:
     spec = setup.mapping[key]
     if spec.runtime_wpm:
         return await _runtime_wpm_frame(setup, key)
+    if spec.runtime_coro:
+        return await _runtime_coro_frame(setup, key)
     builder = getattr(setup.commands, spec.builder)
     kwargs: dict[str, object] = {"to_addr": setup.to_addr, **spec.kwargs}
     if spec.receiver is not None:
@@ -449,15 +597,17 @@ def _page(manual: str) -> str:
 
 
 def _compare_params() -> list:
+    xfail_by_label = {"IC-7610": _XFAIL_7610, "IC-705": _XFAIL_705}
     params: list = []
     for label, setup in _SETUPS.items():
         for key in sorted(setup.mapping):
-            if label == "IC-7610" and key in _XFAIL_7610:
+            xfail = xfail_by_label.get(label, {})
+            if key in xfail:
                 expected = setup.oracle[key]
                 produced = asyncio.run(_production_bytes(setup, key))
                 reason = (
-                    f"IC-7610 reference p. {_page(setup.manual[key])} disagrees "
-                    f"with the profile: {_XFAIL_7610[key]} "
+                    f"{label} reference p. {_page(setup.manual[key])} disagrees "
+                    f"with the profile: {xfail[key]} "
                     f"(production {_hex(produced)} != oracle {_hex(expected)})"
                 )
                 params.append(
