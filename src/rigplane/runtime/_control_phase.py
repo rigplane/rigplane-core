@@ -20,6 +20,7 @@ from rigplane.core.auth import (
 )
 from ._connection_state import RadioConnectionState
 from rigplane.core.exceptions import AuthenticationError, ConnectionError, TimeoutError
+from ._audio_recovery import AudioRecoveryState
 from .startup_checks import wait_for_radio_startup_ready
 from rigplane.core.transport import ConnectionState, IcomTransport
 from rigplane.core.types import AudioCodec
@@ -123,6 +124,13 @@ class ControlPhaseRuntime:
     _RENEWAL_RESPONSE_OFFSET = 0x30
     _RENEWAL_OK = 0x00000000
     _RENEWAL_REJECT = 0xFFFFFFFF
+    # Soft-reconnect audio-rebuild retry bound: a failed
+    # ``_ensure_audio_transport`` re-arm is retried at most this many attempts
+    # with ``_SOFT_AUDIO_REBUILD_BACKOFF_S`` between them, and only while the
+    # reconnect snapshot still holds audio demand and the CI-V / owner-stop
+    # epochs say this session still owns the radio.
+    _SOFT_AUDIO_REBUILD_ATTEMPTS = 3
+    _SOFT_AUDIO_REBUILD_BACKOFF_S = 0.1
 
     def __init__(self, host: ControlPhaseHost) -> None:
         self._host = host
@@ -1052,22 +1060,62 @@ class ControlPhaseRuntime:
                 )
 
         # Re-arm the audio transport on a fresh FD and restore any live demand.
-        # Bounded/safe: failures are logged, never raised, so a CI-V soft
-        # reconnect still succeeds even if audio cannot be re-established.
+        # A failed re-arm is reported (WARNING with the cause, plus FAILED to
+        # ``on_audio_recovery``) and retried with a bound, only while audio
+        # demand and this session's ownership hold (CI-V epoch / owner-stop
+        # epoch unchanged between attempts). Bounded/safe: failures are never
+        # raised, so a CI-V soft reconnect still succeeds even if audio cannot
+        # be re-established.
         ensure_audio = getattr(h, "_ensure_audio_transport", None)
         if ensure_audio is not None:
-            try:
-                await ensure_audio()
-                if (
-                    audio_runtime is not None
-                    and audio_snapshot is not None
-                    and getattr(h, "_auto_recover_audio", False)
-                ):
-                    recover = getattr(audio_runtime, "recover", None)
-                    if recover is not None:
+            civ_epoch = getattr(h, "_civ_epoch", None)
+            owner_stop_epoch = getattr(h, "_owner_stop_epoch", None)
+            rearmed = False
+            for attempt in range(1, self._SOFT_AUDIO_REBUILD_ATTEMPTS + 1):
+                try:
+                    await ensure_audio()
+                    rearmed = True
+                    break
+                except Exception as exc:
+                    if (
+                        attempt >= self._SOFT_AUDIO_REBUILD_ATTEMPTS
+                        or audio_snapshot is None
+                        or getattr(h, "_civ_epoch", None) != civ_epoch
+                        or getattr(h, "_owner_stop_epoch", None) != owner_stop_epoch
+                    ):
+                        logger.warning(
+                            "soft_reconnect: audio re-arm failed on attempt "
+                            "%d/%d: %s",
+                            attempt,
+                            self._SOFT_AUDIO_REBUILD_ATTEMPTS,
+                            exc,
+                        )
+                        on_audio_recovery = getattr(h, "_on_audio_recovery", None)
+                        if on_audio_recovery is not None:
+                            on_audio_recovery(AudioRecoveryState.FAILED)
+                        break
+                    logger.warning(
+                        "soft_reconnect: audio re-arm failed on attempt %d/%d: "
+                        "%s; retrying",
+                        attempt,
+                        self._SOFT_AUDIO_REBUILD_ATTEMPTS,
+                        exc,
+                    )
+                    await asyncio.sleep(self._SOFT_AUDIO_REBUILD_BACKOFF_S)
+            if (
+                rearmed
+                and audio_runtime is not None
+                and audio_snapshot is not None
+                and getattr(h, "_auto_recover_audio", False)
+            ):
+                recover = getattr(audio_runtime, "recover", None)
+                if recover is not None:
+                    try:
                         await recover(audio_snapshot)
-            except Exception:
-                logger.debug("soft_reconnect: audio re-arm failed", exc_info=True)
+                    except Exception:
+                        logger.debug(
+                            "soft_reconnect: audio recovery failed", exc_info=True
+                        )
 
     async def _send_token_ack(self) -> None:
         h = self._host
