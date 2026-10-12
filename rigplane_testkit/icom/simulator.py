@@ -303,6 +303,9 @@ class MockIcomRadio:
             corrupt/truncate rules on top of the legacy ``drop_rate`` /
             ``response_delay`` / ``stall_for`` knobs, which keep working
             unchanged.
+        capture_civ_frames: record every well-formed inbound CI-V frame
+            addressed to the radio in :attr:`civ_frames_received`.
+            Default False (no recording, no retention).
     """
 
     def __init__(
@@ -321,6 +324,7 @@ class MockIcomRadio:
         unsolicited_civ: bool = False,
         unsolicited_interval_s: float = 0.1,
         fault_plan: FaultPlan | None = None,
+        capture_civ_frames: bool = False,
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -420,6 +424,14 @@ class MockIcomRadio:
         # knobs above: it has its own seeded RNG and never touches their state).
         # None = no plan, every stream passes through untouched.
         self.fault_plan: FaultPlan | None = fault_plan
+        # Opt-in capture of inbound CI-V frames (default off): every
+        # well-formed CI-V frame addressed to this radio is appended to
+        # ``civ_frames_received`` in arrival order, whether the command is
+        # implemented or NAKed. Lets a test assert the exact bytes the
+        # production stack put on the wire without re-implementing the
+        # command builders.
+        self.capture_civ_frames: bool = capture_civ_frames
+        self.civ_frames_received: list[bytes] = []
         # Scheduled events (reboot / keepalive silence / drop_session) —
         # absolute deadlines, 0.0 = inactive.
         self._down_until: float = 0.0  # reboot: radio "powered off" until then
@@ -622,6 +634,10 @@ class MockIcomRadio:
     def free_session(self, reason: str = "manual") -> None:
         """Release the held session immediately (test helper)."""
         self._release_session(reason)
+
+    def clear_captured_civ_frames(self) -> None:
+        """Drop all CI-V frames recorded so far (test helper)."""
+        self.civ_frames_received.clear()
 
     # ------------------------------------------------------------------
     # Scheduled events (reboot / keepalive silence / drop_session)
@@ -1359,6 +1375,9 @@ class MockIcomRadio:
         # Only handle commands addressed to this radio
         if to_addr != self._radio_addr:
             return
+
+        if self.capture_civ_frames:
+            self.civ_frames_received.append(bytes(civ))
 
         if self.lan_civ_echo:
             # Recorded IC-7610 LAN behaviour: the request CI-V frame comes
