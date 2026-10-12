@@ -280,13 +280,6 @@ async def test_session_drop_without_notice_recovers_within_the_watchdog_budget(
     assert run.freq == _FREQ_HZ, run.report()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "MOR-3296: the second recovery attempt after a power-off rebuilds CI-V "
-        "on a control transport that never logged in"
-    ),
-)
 async def test_power_off_with_notice_recovers_with_one_login(
     sim: MockIcomRadio, caplog: pytest.LogCaptureFixture
 ) -> None:
