@@ -8,8 +8,8 @@ dropped), :func:`control_structure` (who sent what kind of control packet
 when — never payload bytes), :func:`cadence` (ping / token-renew /
 retransmit / audio-length statistics), :func:`audio_headers` (samples
 truncated).  Before committing the output, run ``python -m
-rigplane_testkit.redaction_gate`` over it and hand-check the leaks that
-gate does not cover (its docstring lists them).
+rigplane_testkit.redaction_gate`` over it; the gate's known gaps are
+listed in its docstring.
 
 CLI::
 
@@ -136,11 +136,12 @@ def cadence(records: list[Record]) -> dict:
 
     Returns ``{"pings", "token_renewals", "retransmit_requests",
     "audio_lengths"}``: pings (0x15-byte type-0x07 packets) keyed
-    ``"port:dir:kind"`` — kind is ``"request"`` (flag byte 0x10 == 0x00)
-    or ``"reply"`` (0x01), the same split the production client makes in
-    ``rigplane/core/transport.py: _build_ping`` / ``_handle_ping_packet``,
-    so radio-originated pings the client answers never blend into the
-    client's own ping rhythm — each entry with ``count`` / ``median_s`` /
+    ``"port:dir:kind"`` — the flag byte at 0x10 labels ``0x01`` as
+    ``"reply"`` and every other value as ``"request"`` (the reply flag
+    ``_build_ping`` / ``_handle_ping_packet`` in
+    ``rigplane/core/transport.py`` use, so radio-originated pings the
+    client answers never blend into the client's own ping rhythm) —
+    each entry with ``count`` / ``median_s`` /
     ``p95_s`` / ``max_s`` interval statistics (null when fewer than two
     pings) and the first-to-last ``seconds`` span; token renewals as
     ``[{"t", "answered_after_s"|None}]`` — a c2r 0x40-byte control packet

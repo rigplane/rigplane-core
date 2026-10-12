@@ -128,18 +128,20 @@ class TestCadenceAndAudio:
     """Cadence statistics and audio headers over fabricated records."""
 
     def test_ping_stats_split_by_request_and_reply(self) -> None:
-        # 0.5 s client requests and 0.5 s radio replies offset by 0.2 s:
-        # merged into one stream the median collapses to 0.25 s.
+        # Same direction, mixed flags: the kind must come from the flag
+        # byte at 0x10, not from the direction (a radio-originated ping
+        # the client answers is a c2r reply).
         request = _packet(0x15, 0x07, flag=0x00)
         reply = _packet(0x15, 0x07, flag=0x01)
         records = [
             *[_rec(t, "c2r", "control", request) for t in (0.0, 0.5, 1.0, 1.5)],
-            *[_rec(t, "r2c", "control", reply) for t in (0.2, 0.7, 1.2, 1.7)],
+            *[_rec(t, "c2r", "control", reply) for t in (0.2, 0.7, 1.2, 1.7)],
         ]
         pings = cadence(records)["pings"]
-        assert set(pings) == {"control:c2r:request", "control:r2c:reply"}
-        assert pings["control:c2r:request"]["median_s"] == 0.5
-        assert pings["control:r2c:reply"]["median_s"] == 0.5
+        assert set(pings) == {"control:c2r:request", "control:c2r:reply"}
+        for key in ("control:c2r:request", "control:c2r:reply"):
+            assert pings[key]["count"] == 4
+            assert pings[key]["median_s"] == 0.5
 
     def test_pings_renews_retransmits_histogram(self) -> None:
         ping = _packet(0x15, 0x07)
@@ -169,11 +171,11 @@ class TestCadenceAndAudio:
         assert result["audio_lengths"] == {"c2r": {}, "r2c": {"1280": 2}}
 
     def test_civ_window_bounds_are_inclusive(self) -> None:
-        # Both bounds are inclusive: a record exactly at t_from or t_to
-        # stays in the window (pinned here; the docstring states it).
+        # Both bounds are inclusive and both are pinned: t=1.0 is cut
+        # only by t_from, t=4.0 only by t_to (the docstring states it).
         records = [
             _rec(t, "c2r", "civ", _civ_packet(b"\xfe\xfe\xe0\x98\x19\x00\xfd"))
-            for t in (1.0, 2.0, 3.0)
+            for t in (1.0, 2.0, 3.0, 4.0)
         ]
         assert [f["t"] for f in civ_frames(records, t_from=2.0, t_to=3.0)] == [2.0, 3.0]
 

@@ -70,6 +70,24 @@ class TestScopeWaveExemption:
         _write_jsonl(target, [{"hex": blob.hex()}])
         assert [f.kind for f in scan([str(target)])] == ["ascii-run"]
 
+    def test_wave_prefix_before_next_frame_flagged(self, tmp_path) -> None:
+        # The first FD after a "27 00" prefix may belong to the NEXT
+        # frame; that frame's FD must not exempt this prefix's run.
+        blob = b"\xfe\xfe\xe0\x98\x27\x00" + b"SHACKPC1"
+        blob += b"\xfe\xfe\xe0\x98\x03\x00\xfd"
+        target = tmp_path / "leak.jsonl"
+        _write_jsonl(target, [{"hex": blob.hex()}])
+        assert [f.kind for f in scan([str(target)])] == ["ascii-run"]
+
+    def test_wave_prefix_before_another_wave_frame_flagged(self, tmp_path) -> None:
+        # Same shape with a scope wave frame as the follower: only a
+        # prefix whose OWN FD comes first exempts anything.
+        blob = b"\xfe\xfe\xe0\x98\x27\x00" + b"SHACKPC1"
+        blob += b"\xfe\xfe\xe0\x98\x27\x00\xfd"
+        target = tmp_path / "leak.jsonl"
+        _write_jsonl(target, [{"hex": blob.hex()}])
+        assert [f.kind for f in scan([str(target)])] == ["ascii-run"]
+
 
 class TestTextFindings:
     def test_deny_string_in_plain_text(self, tmp_path) -> None:

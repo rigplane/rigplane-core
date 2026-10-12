@@ -6,9 +6,11 @@ committed.  A hex string value (even length, >= 8 chars) is decoded and
 searched for each ``--ipv4`` address (4 bytes, both byte orders), each
 ``--mac`` address (6 bytes) and each deny string (UTF-8 bytes);
 printable-ASCII runs of >= 6 bytes are reported too, EXCEPT runs fully
-inside a COMPLETE CI-V scope wave frame (``FE FE xx xx 27 00 .. FD`` —
-a prefix with no ``FD`` terminator is not a frame and exempts nothing),
-whose amplitude bytes are legitimately printable.  A non-hex string
+inside a COMPLETE CI-V scope wave frame (``FE FE xx xx 27 00 .. FD``),
+whose amplitude bytes are legitimately printable.  A frame ends at the
+first ``FD`` or ``FE`` after the ``27 00`` prefix — a ``FE`` there
+starts the NEXT frame — so a prefix whose own terminator never comes
+exempts nothing.  A non-hex string
 value is searched for the deny strings and ``--ipv4`` addresses as
 text, and for dotted quads other than 127.0.0.1, 0.0.0.0 and the
 RFC 5737 documentation ranges (192.0.2.0/24, 198.51.100.0/24,
@@ -16,8 +18,10 @@ RFC 5737 documentation ranges (192.0.2.0/24, 198.51.100.0/24,
 
 Not covered — check these by hand before committing: IPv4 addresses
 encoded as BCD inside CI-V payloads (e.g. the IC-7610 ``1A 05`` network
-items), JSON object keys, JSON numbers, and MAC addresses written as
-text.
+items), JSON object keys, JSON numbers, MAC addresses written as text,
+ASCII runs shorter than 6 bytes that are on no deny list, and hex
+strings shorter than 8 characters or of odd length (never decoded as
+bytes).
 
 A :class:`Finding` never carries the matched value — only path, line, kind
 and an index: the matching ``ipv4`` / ``mac`` / ``deny`` list entry, the
@@ -50,6 +54,7 @@ _HEX_RE = re.compile(r"[0-9a-fA-F]+")
 _ASCII_RUN_RE = re.compile(rb"[\x20-\x7e]{6,}")
 _SCOPE_WAVE_RE = re.compile(rb"\xfe\xfe..\x27\x00", re.DOTALL)
 _CIV_TERM = 0xFD
+_CIV_PREAMBLE = 0xFE
 _DOTTED_QUAD_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _ALLOWED_QUADS = frozenset({"127.0.0.1", "0.0.0.0"})
 _DOC_PREFIXES = ("192.0.2.", "198.51.100.", "203.0.113.")
@@ -122,14 +127,19 @@ def _iter_strings(path: str) -> Iterator[tuple[int, str]]:
 def _scope_wave_spans(blob: bytes) -> list[tuple[int, int]]:
     """Byte spans of COMPLETE scope wave frames (prefix .. FD terminator).
 
-    A ``FE FE .. 27 00`` prefix with no ``FD`` terminator after it is not
-    a frame and yields no span, so the bytes after it stay scanned.
+    The scan stops at the first ``FD`` or ``FE`` after the ``27 00``
+    prefix — a ``FE`` starts the NEXT frame, whose own ``FD`` must not
+    exempt this prefix's bytes.  A span is kept only when the stop byte
+    is the frame's own ``FD``; a prefix that runs into a ``FE`` or the
+    end of the value yields no span, so the bytes after it stay scanned.
     """
     spans = []
     for match in _SCOPE_WAVE_RE.finditer(blob):
-        end = blob.find(bytes([_CIV_TERM]), match.end())
-        if end != -1:
-            spans.append((match.start(), end + 1))
+        stop = match.end()
+        while stop < len(blob) and blob[stop] not in (_CIV_TERM, _CIV_PREAMBLE):
+            stop += 1
+        if stop < len(blob) and blob[stop] == _CIV_TERM:
+            spans.append((match.start(), stop + 1))
     return spans
 
 
