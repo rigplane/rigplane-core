@@ -873,6 +873,26 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         return self._connection_identity
 
     @property
+    def last_error(self) -> str | None:
+        """Sentence for a fresh login whose identity read the radio leaves unanswered.
+
+        ``None`` otherwise, so it clears when the identity answers.
+        ``web/runtime_helpers.py: classify_radio_health`` reads it as the
+        health ``lastError``, as it reads the serial Icom radio's
+        ``last_error``. Requires ``CONNECTING`` so
+        ``web_startup._serial_port_unopened`` (``RECONNECTING`` plus a string)
+        cannot take it for an unopened port.
+        """
+        identity = self._connection_identity
+        if (
+            identity is None
+            or identity.status is not RadioIdentityStatus.NO_RESPONSE
+            or self._conn_state is not RadioConnectionState.CONNECTING
+        ):
+            return None
+        return self._control_phase.fresh_login_status
+
+    @property
     def startup_busy_hold_event(self) -> asyncio.Event:
         """Set while the first connect waits out a busy reject (MOR-3391).
 

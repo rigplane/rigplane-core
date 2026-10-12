@@ -18,6 +18,7 @@ from rigplane.core.auth import (
     parse_auth_response,
     parse_status_response,
 )
+from . import _civ_seq_persistence as civ_seq
 from ._connection_state import RadioConnectionState
 from rigplane.core.exceptions import AuthenticationError, ConnectionError, TimeoutError
 from ._audio_recovery import AudioRecoveryState
@@ -163,6 +164,20 @@ class ControlPhaseRuntime:
         self._renewal_waiter: asyncio.Future[bool] | None = None
         self._renewal_sent_at: float | None = None
         self._renewal_answered_at: float | None = None
+        # GUID of the current fresh login (None: no record is read or written).
+        self._civ_seq_guid: bytes | None = None
+        self._civ_seq_timer: asyncio.TimerHandle | None = None
+        self._civ_seq_write: asyncio.Future[None] | None = None
+        self._fresh_login_status: str | None = None
+
+    @property
+    def fresh_login_status(self) -> str | None:
+        """Sentence for the current fresh login if the radio does not answer it.
+
+        ``None`` outside a fresh login. Whether the radio is unanswered is the
+        identity gate's call: ``CoreRadio.last_error`` combines the two.
+        """
+        return self._fresh_login_status
 
     def _resolve_local_bind_host(self) -> str:
         """Resolve the routed local interface IP used to reach the radio."""
@@ -201,6 +216,8 @@ class ControlPhaseRuntime:
         h._conn_state = RadioConnectionState.CONNECTING
         h._civ_resume_seq = None
         h._audio_resume_seq = None
+        self._civ_seq_guid = None
+        self._fresh_login_status = None
         h._civ_stream_ready = False
         h._civ_recovering = False
         h._last_status_error = 0
@@ -498,6 +515,8 @@ class ControlPhaseRuntime:
             # Socket consumed by asyncio — no longer ours to close.
             h._civ_sock_pending = None
 
+        await self._number_fresh_login(h._civ_transport, guid)
+
         h._civ_transport.start_ping_loop()
         h._civ_transport.start_retransmit_loop()
         h._civ_transport.start_idle_loop()
@@ -530,6 +549,7 @@ class ControlPhaseRuntime:
         h._ctrl_transport._conninfo_notice_callback = self._on_conninfo_notice
         h._ctrl_transport._token_reply_callback = self._on_token_reply
         self._start_token_renewal()
+        self._start_civ_seq_persistence()
         if h._auto_reconnect:
             self._start_watchdog()
 
@@ -564,6 +584,100 @@ class ControlPhaseRuntime:
             h._port,
             h._civ_port,
         )
+
+    # ------------------------------------------------------------------
+    # CI-V numbering across fresh logins (MOR-3418)
+    # ------------------------------------------------------------------
+    #
+    # Record writes go through the default executor, never the event loop:
+    # the loop also runs the control and CI-V keep-alive timers, and a slow
+    # disk must not delay them. The periodic record is a ``call_later``
+    # timer, not a task that sleeps: it cannot be left spinning under a test
+    # double that replaces ``asyncio.sleep``.
+
+    async def _number_fresh_login(
+        self, transport: IcomTransport, guid: bytes | None
+    ) -> None:
+        """Number a fresh login's CI-V transport just past its recorded number.
+
+        Called once the CI-V transport has connected (which numbered it from 0)
+        and before it sends a tracked packet. Without a GUID or a usable record
+        the numbering stays 0. Sets the sentence ``fresh_login_status`` serves.
+        """
+        h = self._host
+        self._civ_seq_guid = guid
+        self._fresh_login_status = civ_seq.status_line(None)
+        if guid is None:
+            return
+        recorded = await asyncio.get_running_loop().run_in_executor(
+            None, civ_seq.read_record, h._host, h._port, guid, time.time()
+        )
+        if recorded is None:
+            return
+        transport.send_seq = civ_seq.start_seq(recorded)
+        self._fresh_login_status = civ_seq.status_line(civ_seq.wait_seconds())
+
+    def _start_civ_seq_persistence(self) -> None:
+        if self._civ_seq_timer is None:
+            self._civ_seq_timer = asyncio.get_running_loop().call_later(
+                civ_seq.WRITE_INTERVAL_S, self._record_civ_seq
+            )
+
+    def _stop_civ_seq_persistence(self) -> None:
+        timer, self._civ_seq_timer = self._civ_seq_timer, None
+        if timer is not None:
+            timer.cancel()
+
+    def _record_civ_seq(self) -> None:
+        """Timer tick: hand the CI-V transport's current number to the executor."""
+        h = self._host
+        loop = asyncio.get_running_loop()
+        self._civ_seq_timer = loop.call_later(
+            civ_seq.WRITE_INTERVAL_S, self._record_civ_seq
+        )
+        guid = self._civ_seq_guid
+        transport = h._civ_transport
+        pending = self._civ_seq_write
+        if guid is None or transport is None:
+            return
+        if pending is not None and not pending.done():
+            return
+        self._civ_seq_write = loop.run_in_executor(
+            None,
+            civ_seq.write_record,
+            h._host,
+            h._port,
+            guid,
+            transport.send_seq,
+            time.time(),
+        )
+        self._civ_seq_write.add_done_callback(self._civ_seq_write_done)
+
+    @staticmethod
+    def _civ_seq_write_done(future: "asyncio.Future[None]") -> None:
+        if not future.cancelled() and future.exception() is not None:
+            logger.debug("CI-V numbering record failed", exc_info=future.exception())
+
+    async def _record_civ_seq_on_exit(self, send_seq: int | None) -> None:
+        """Record the numbering a clean exit ends on (best effort)."""
+        guid = self._civ_seq_guid
+        if guid is None or send_seq is None:
+            return
+        h = self._host
+        try:
+            if self._civ_seq_write is not None:
+                await asyncio.wait([self._civ_seq_write])
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                civ_seq.write_record,
+                h._host,
+                h._port,
+                guid,
+                send_seq,
+                time.time(),
+            )
+        except Exception:
+            logger.debug("CI-V numbering record on exit failed", exc_info=True)
 
     async def _cleanup_data_port_discovery_timeout(self) -> None:
         """Release startup resources after data-port discovery times out."""
@@ -609,6 +723,8 @@ class ControlPhaseRuntime:
             h._advance_civ_generation("disconnect")
         self._stop_watchdog()
         self._stop_token_renewal()
+        self._stop_civ_seq_persistence()
+        self._fresh_login_status = None
         stop_audio_wd = getattr(h, "_stop_audio_watchdog", None)
         if stop_audio_wd is not None:
             await stop_audio_wd()
@@ -626,6 +742,7 @@ class ControlPhaseRuntime:
                 logger.debug("disconnect: audio open/close failed", exc_info=True)
             await h._audio_transport.disconnect()
             h._audio_transport = None
+        final_civ_seq: int | None = None
         if h._civ_transport:
             try:
                 await self._send_open_close(open_stream=False)
@@ -640,6 +757,7 @@ class ControlPhaseRuntime:
                 await h._stop_civ_worker()
                 await h._stop_civ_rx_pump()
             await h._civ_transport.disconnect()
+            final_civ_seq = h._civ_transport.send_seq
             h._civ_transport = None
         # Shield the token-remove on the graceful CONNECTED path too (A3-verifier
         # forward-note).  Now that recovery/shutdown can run this disconnect()
@@ -657,6 +775,7 @@ class ControlPhaseRuntime:
         h._conn_state = RadioConnectionState.DISCONNECTED
         h._civ_stream_ready = False
         h._civ_recovering = False
+        await self._record_civ_seq_on_exit(final_civ_seq)
         logger.info("Disconnected from %s:%d", h._host, h._port)
 
     # ------------------------------------------------------------------
@@ -748,6 +867,8 @@ class ControlPhaseRuntime:
         # disconnect ordering), then the always-sent token-remove.
         self._stop_watchdog()
         self._stop_token_renewal()
+        self._stop_civ_seq_persistence()
+        self._fresh_login_status = None
         # An identity-held partial session can have live CI-V tasks. Retire
         # their generation before closing transports or accepting late replies.
         civ_rt = getattr(h, "_civ_runtime", None)
@@ -802,9 +923,11 @@ class ControlPhaseRuntime:
                 await h._stop_civ_worker()
             with _suppress(Exception):
                 await h._stop_civ_rx_pump()
+        final_civ_seq: int | None = None
         if civ_t is not None:
             with _suppress(Exception):
                 await civ_t.disconnect()
+            final_civ_seq = civ_t.send_seq
             h._civ_transport = None
         # The token-remove is the load-bearing release: send it whenever a
         # control transport exists, regardless of conn_state.
@@ -829,6 +952,7 @@ class ControlPhaseRuntime:
         h._conn_state = RadioConnectionState.DISCONNECTED
         h._civ_stream_ready = False
         h._civ_recovering = False
+        await self._record_civ_seq_on_exit(final_civ_seq)
 
     async def soft_reconnect(self) -> None:
         """Reconnect CI-V transport using existing control session."""
@@ -926,6 +1050,8 @@ class ControlPhaseRuntime:
         h._conn_state = RadioConnectionState.CONNECTING
         h._civ_stream_ready = False
         h._civ_recovering = True
+        # A rebuild on the kept session is not a fresh login.
+        self._fresh_login_status = None
 
         # Tear down the audio transport BEFORE the CI-V rebuild and re-arm it
         # AFTER, mirroring the audio-before-civ order in ``disconnect()``.  Soft

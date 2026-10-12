@@ -1,21 +1,26 @@
-"""A client restarted after an unclean death inherits the dead CI-V stream state (MOR-3418 phase 1).
+"""A client restarted after an unclean death inherits the dead CI-V stream state (MOR-3418).
 
-Characterization only: no production change. Lane A (real IC-7610, captures
-w41-w50) found that after a client dies WITHOUT logout the radio keeps that
-client's CI-V stream state (frontier + gap list) and the next client inherits
-it: packets at/behind the frontier are silently ignored, so a restarted
-production client (tracked CI-V seq restarts at 0, advances ~10/s while
-waiting) stays deaf for roughly frontier/10 s.
+Lane A (real IC-7610, captures w41-w50) found that after a client dies
+WITHOUT logout the radio keeps that client's CI-V stream state (frontier + gap
+list) and the next client inherits it: packets at/behind the frontier are
+silently ignored, so a restarted production client (tracked CI-V seq restarts
+at 0, advances ~10/s while waiting) stays deaf for roughly frontier/10 s.
 
 The simulator models this behind opt-in knobs (slice G, pinned by
 ``tests/testkit/test_simulator_civ_orphan.py``); these tests run a production
-``IcomRadio`` as the dead client AND as the restarted client:
+``IcomRadio`` as the dead client AND as the restarted client. The client
+records its CI-V seq while connected (``runtime/_civ_seq_persistence.py``) and
+a fresh login starts just past that record:
 
-1. ``test_restarted_client_stays_deaf_behind_orphan_frontier`` — RED on main:
-   B must be CONNECTED with identity answered within 10 s; it stays
-   NO_RESPONSE / not connected behind the inherited frontier.
-2. ``test_clean_logout_restart_connects`` — control, GREEN on main.
-3. ``test_expiry_restart_connects`` — control, GREEN on main.
+1. ``test_restarted_client_connects_past_orphan_frontier`` — B must be
+   CONNECTED with identity answered within 10 s. Without the record (phase 1,
+   commit 273a9c4c) it stayed NO_RESPONSE / not connected behind the
+   inherited frontier.
+2. ``test_clean_logout_restart_connects`` — control.
+3. ``test_expiry_restart_connects`` — control.
+4. ``test_restart_without_a_record_reports_the_held_session`` and
+   ``test_restart_short_of_the_frontier_reports_the_wait`` — a B that still
+   stays behind the frontier says so through ``last_error``.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ import pytest
 from rigplane.core.radio_protocol import RadioIdentityStatus
 from rigplane.core.transport import ConnectionState
 from rigplane.radio import IcomRadio
+from rigplane.runtime import _civ_seq_persistence as civ_seq
 from rigplane.runtime._connection_state import RadioConnectionState
 
 from rigplane_testkit.icom import MockIcomRadio
@@ -39,6 +45,15 @@ from _perf_helpers import fast_connect
 _HOST = "127.0.0.1"
 _CONNECTED = RadioConnectionState.CONNECTED
 
+# The GUID the simulator sends at login (``MockIcomRadio._guid_conninfo``).
+_SIM_GUID = bytes(range(0x01, 0x11))
+# Record interval for these tests (the shipped value is 5 s).
+_RECORD_INTERVAL_S = 0.2
+# Wait the status line shows at this interval: the step is
+# ceil(0.2 * ADVANCE_RATE_PER_S) + ADVANCE_MARGIN = 3 + 30 = 33 packets, and
+# ceil(33 / FILL_RATE_PER_S) = 4 s.
+_WAIT_AT_TEST_INTERVAL_S = 4
+
 # Frontier the dead client leaves behind. A restarted production client
 # numbers from 0 at ~10 tracked packets/s while waiting, so reaching 320
 # naturally takes >= 30 s — well past the 10 s bound below, which cleanly
@@ -47,6 +62,11 @@ _FRONTIER_TARGET = 320
 # Bound a fixed client must meet: CONNECTED with identity answered this soon
 # after its login is accepted.
 _RESTART_BOUND_S = 10.0
+
+
+@pytest.fixture(autouse=True)
+def _short_record_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(civ_seq, "WRITE_INTERVAL_S", _RECORD_INTERVAL_S)
 
 
 def _orphan_sim(**kwargs) -> MockIcomRadio:
@@ -101,6 +121,7 @@ async def _kill_uncleanly(radio: IcomRadio) -> None:
     """
     cp = radio._control_phase
     cp._stop_token_renewal()
+    cp._stop_civ_seq_persistence()
     cp._stop_watchdog()
     cp._stop_reconnect()
     for stopper in (
@@ -174,16 +195,16 @@ async def _wait_answered(radio: IcomRadio, budget_s: float) -> bool:
     return _answered(radio)
 
 
-async def test_restarted_client_stays_deaf_behind_orphan_frontier(
+async def test_restarted_client_connects_past_orphan_frontier(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """RED on main: a restarted client stays deaf behind the orphan frontier.
+    """A restarted client starts past the orphan frontier from A's record.
 
-    A disinherited production client B numbers from 0 while the radio still
-    holds A's frontier (>= 320): every B packet lands at/behind it and is
-    silently ignored, so B's identity read is never answered and B never
-    reaches CONNECTED within the bound. A fix must make B CONNECTED with
-    identity answered within the bound.
+    The radio holds A's frontier (>= 320). Numbering from 0, every B packet
+    would land at/behind it and be silently ignored, so B's identity read
+    would never be answered. B reads A's record and starts just past it, so
+    its packets pass the frontier and B reaches CONNECTED with identity
+    answered within the bound.
     """
     caplog.set_level(logging.INFO, logger="rigplane")
     sim = _orphan_sim()
@@ -194,8 +215,19 @@ async def test_restarted_client_stays_deaf_behind_orphan_frontier(
         with fast_connect():
             await a.connect()
         assert a.conn_state is _CONNECTED and a.connected, "A never connected"
-        frontier = await _run_until_frontier(a, _FRONTIER_TARGET)
+        await _run_until_frontier(a, _FRONTIER_TARGET)
+        # Let A record its numbering again after the loop above, then kill
+        # it. A sends nothing after the kill, so its numbering then is the
+        # frontier it leaves behind.
+        await asyncio.sleep(3 * _RECORD_INTERVAL_S)
         await _kill_uncleanly(a)
+        assert a._civ_transport is not None
+        frontier = a._civ_transport.send_seq
+        recorded = civ_seq.read_record(_HOST, sim.control_port, _SIM_GUID, time.time())
+        assert recorded is not None, "A never recorded its numbering"
+        assert 0 <= frontier - recorded < civ_seq.advance(), (
+            f"A's record {recorded} is not within one step of its frontier {frontier}"
+        )
 
         assert await _wait_hold_released(sim), "held session never expired"
         assert sim.last_release_reason == "keepalive_timeout", (
@@ -215,23 +247,20 @@ async def test_restarted_client_stays_deaf_behind_orphan_frontier(
         b = _client(sim)
         first_record = len(caplog.records)
         with fast_connect():
-            await b.connect()  # returns: the identity gate gets no answer
+            await b.connect()
         assert sim._civ_orphan is None, "B's open did not consume the orphan"
         inherited = [t for t in sim._civ_gap.values() if t.inherited]
         assert len(inherited) == 1, "B's open did not seed one inherited tracker"
         tracker = inherited[0]
-        assert tracker.next_expected == frontier, (
-            f"inherited frontier {tracker.next_expected} != {frontier}"
+        assert tracker.inherited_frontier == frontier, (
+            f"inherited frontier {tracker.inherited_frontier} != {frontier}"
         )
-        assert tracker.inherited_armed is False
+        assert tracker.inherited_armed is True, "B's packets never passed the frontier"
         logins_after_login = sim.login_count
 
         answered = await _wait_answered(b, _RESTART_BOUND_S)
 
         requests = list(sim.civ_retransmit_request_log)
-        assert requests == [], (
-            f"radio asked for fills while B stayed behind the frontier: {requests}"
-        )
         assert sim.login_count == logins_after_login, (
             f"B re-logged in ({sim.login_count - logins_after_login} extra logins)"
         )
@@ -251,7 +280,7 @@ async def test_restarted_client_stays_deaf_behind_orphan_frontier(
             f"extra logins={sim.login_count - logins_after_login} "
             f"control-session-dead lines={len(dead_lines)}"
         )
-        assert answered, f"RED (MOR-3418): restarted client stays deaf: {report}"
+        assert answered, f"restarted client stays deaf: {report}"
     finally:
         if b is not None:
             await _kill_uncleanly(b)
@@ -259,7 +288,7 @@ async def test_restarted_client_stays_deaf_behind_orphan_frontier(
 
 
 async def test_clean_logout_restart_connects() -> None:
-    """Control, GREEN on main: after a clean logout B connects in the bound."""
+    """Control: after a clean logout B connects in the bound."""
     sim = _orphan_sim()
     await sim.start()
     b: IcomRadio | None = None
@@ -291,7 +320,7 @@ async def test_clean_logout_restart_connects() -> None:
 
 
 async def test_expiry_restart_connects() -> None:
-    """Control, GREEN on main: past the orphan expiry B connects in the bound."""
+    """Control: past the orphan expiry B connects in the bound."""
     sim = _orphan_sim(orphan_civ_state_expiry_s=2.0)
     await sim.start()
     b: IcomRadio | None = None
@@ -326,4 +355,75 @@ async def test_expiry_restart_connects() -> None:
         if b is not None:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(b.disconnect(), 10.0)
+        await sim.stop()
+
+
+async def _restart_behind_the_frontier(
+    sim: MockIcomRadio, *, record_seq: int | None
+) -> IcomRadio:
+    """Kill A uncleanly at the frontier, then connect a B that falls short of it.
+
+    ``record_seq`` None leaves A's record absent, which holds only while the
+    caller keeps ``WRITE_INTERVAL_S`` beyond the test (an unclean death writes
+    nothing); otherwise that number is recorded for B to find. Returns B after
+    its ``connect()``.
+    """
+    a = _client(sim)
+    with fast_connect():
+        await a.connect()
+    assert a.conn_state is _CONNECTED and a.connected, "A never connected"
+    await _run_until_frontier(a, _FRONTIER_TARGET)
+    await _kill_uncleanly(a)
+    assert await _wait_hold_released(sim), "held session never expired"
+    if record_seq is not None:
+        civ_seq.write_record(
+            _HOST, sim.control_port, _SIM_GUID, record_seq, time.time()
+        )
+    sim.keepalive_hold_s = 30.0
+    b = _client(sim)
+    with fast_connect():
+        await b.connect()
+    return b
+
+
+async def test_restart_without_a_record_reports_the_held_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No record: B numbers from 0, stays deaf, and says the radio holds a session.
+
+    The line carries no wait: there is no record to estimate one from.
+    """
+    monkeypatch.setattr(civ_seq, "WRITE_INTERVAL_S", 3600.0)
+    sim = _orphan_sim()
+    await sim.start()
+    b: IcomRadio | None = None
+    try:
+        b = await _restart_behind_the_frontier(sim, record_seq=None)
+        identity = b.connection_identity
+        assert identity is not None
+        assert identity.status is RadioIdentityStatus.NO_RESPONSE
+        assert b.last_error == "radio still holds the previous session; waiting"
+    finally:
+        if b is not None:
+            await _kill_uncleanly(b)
+        await sim.stop()
+
+
+async def test_restart_short_of_the_frontier_reports_the_wait() -> None:
+    """A record too low to pass the frontier: B stays deaf and states the wait."""
+    sim = _orphan_sim()
+    await sim.start()
+    b: IcomRadio | None = None
+    try:
+        b = await _restart_behind_the_frontier(sim, record_seq=0)
+        identity = b.connection_identity
+        assert identity is not None
+        assert identity.status is RadioIdentityStatus.NO_RESPONSE
+        assert b.last_error == (
+            f"radio still holds the previous session; waiting "
+            f"~{_WAIT_AT_TEST_INTERVAL_S} s"
+        )
+    finally:
+        if b is not None:
+            await _kill_uncleanly(b)
         await sim.stop()
