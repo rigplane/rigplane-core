@@ -861,7 +861,12 @@ class ControlHandler:
             while True:
                 opcode, payload = await self._ws.recv()
                 if opcode == WS_OP_TEXT:
-                    await self._handle_text(payload.decode("utf-8"))
+                    try:
+                        text = payload.decode("utf-8")
+                    except UnicodeDecodeError as exc:
+                        logger.debug("control: invalid UTF-8: %s", exc)
+                        continue
+                    await self._handle_text(text)
         except EOFError:
             pass
         finally:
