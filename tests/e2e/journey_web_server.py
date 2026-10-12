@@ -53,6 +53,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="start the WebServer with WebConfig.read_only=True",
     )
+    parser.add_argument(
+        "--freq",
+        default=None,
+        type=int,
+        help="set the radio's MAIN frequency in Hz before serving (default: SerialMockRadio baseline)",
+    )
     return parser.parse_args()
 
 
@@ -62,6 +68,8 @@ async def run() -> None:
         raise SystemExit(f"frontend build is missing: {args.static_dir}")
     radio = JourneyRadio()
     await radio.connect()
+    if args.freq is not None:
+        await radio.set_freq(args.freq)
     server = WebServer(
         radio,
         WebConfig(

@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import { startJourneyServer, type JourneyServerHandle } from './server-process';
 
 /**
  * Operator journey against the real WebServer with the in-memory IC-7610
@@ -236,5 +237,70 @@ test.describe('read-only server, phone layout', () => {
     expect(await reportedPtt()).not.toBe(true);
 
     await page.mouse.up();
+  });
+});
+
+// The third fake is not a config webServer entry: the spec starts it (and its
+// replacement) itself via server-process.ts, so it can SIGKILL the process
+// group mid-session and restart on the same port.
+const RESTART_PORT = 18768;
+const RESTART_URL = `http://127.0.0.1:${RESTART_PORT}`;
+const FREQ_A = 7_030_000;
+const FREQ_B = 14_100_000;
+
+test.describe('server killed and restarted on the same port', () => {
+  test.use({ baseURL: RESTART_URL });
+
+  const servers: JourneyServerHandle[] = [];
+  test.afterAll(async () => {
+    for (const server of servers) {
+      await server.kill();
+    }
+  });
+
+  test('operator journey: the UI shows the outage and then FRESH state', async ({ page }) => {
+    test.setTimeout(90_000);
+    await installWebSocketInterceptor(page);
+    const readout = page.locator('.receiver-instrument [data-vfo-freq]').first();
+    const controlSockets = async () =>
+      (await openedSockets(page)).filter((socketPath) => socketPath === '/api/v1/ws');
+
+    const first = await startJourneyServer(RESTART_PORT, FREQ_A);
+    servers.push(first);
+    try {
+      await page.goto('/?ui=v2', { waitUntil: 'domcontentloaded' });
+
+      // Before the kill: the readout shows frequency A and the control link is connected.
+      await expect(page.locator('[role="status"][title="Control WebSocket: connected"]')).toBeVisible();
+      await expect(page.locator('.control-link-lost')).toHaveCount(0);
+      expect(await controlSockets()).toHaveLength(1);
+      await expectReadoutHz(readout, FREQ_A);
+
+      // SIGKILL the whole process group; the control link is lost.
+      await first.kill();
+
+      // After SIGKILL: the UI shows the link as lost, both through the banner
+      // and through the control indicator's title.
+      await expect(page.locator('.control-link-lost')).toBeVisible();
+      await expect(page.locator('.control-link-lost')).toHaveText('Control link lost');
+      await expect(page.locator('[role="status"][title="Control WebSocket: disconnected"]')).toBeVisible();
+
+      // Restart on the same port with frequency B, promptly: the client's
+      // reconnect backoff starts at 1 s and doubles (ws-client.ts calcBackoff),
+      // so the next attempt must land within seconds, not minutes.
+      servers.push(await startJourneyServer(RESTART_PORT, FREQ_B));
+
+      // The client reconnects on its own (a second control socket opened) and
+      // the link shows connected again. 30 s is well under the 90 s test timeout.
+      await expect.poll(controlSockets, { timeout: 30_000 }).toHaveLength(2);
+      await expect(page.locator('[role="status"][title="Control WebSocket: connected"]')).toBeVisible();
+      await expect(page.locator('.control-link-lost')).toHaveCount(0);
+
+      // FRESH state: the readout and /api/v1/state report B, never A again.
+      await expectReadoutHz(readout, FREQ_B);
+      await expectServerMain(page, { freqHz: FREQ_B });
+    } finally {
+      await first.kill().catch(() => undefined);
+    }
   });
 });
