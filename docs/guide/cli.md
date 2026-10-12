@@ -1108,8 +1108,7 @@ The table below applies to `web`, `station`, `serve` and the radio commands.
 | `2` | Usage error (argument parsing) |
 | `3` | Radio session held by a live owner — a deliberate stop, not a crash |
 
-`validate`, `radio-validate`, `convert` and `diagnose` use their own exit codes;
-`2` and `3` mean something else there.
+`validate`, `radio-validate`, `convert` and `diagnose` use their own exit codes.
 
 ## Examples
 

@@ -668,8 +668,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  1  runtime error (connection, auth, command failure)\n"
             "  2  usage error (argument parsing)\n"
             "  3  radio session held by a live owner (a deliberate stop, not a crash)\n"
-            "validate, radio-validate, convert and diagnose use their own exit codes;\n"
-            "2 and 3 mean something else there.\n"
+            "validate, radio-validate, convert and diagnose use their own exit codes.\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
