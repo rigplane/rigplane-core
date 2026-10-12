@@ -1,0 +1,594 @@
+"""MOR-3251: the TX-under-fault matrix on the Icom LAN simulator.
+
+The production stack — ``WebServer`` + ``RigctldServer`` + managed TX
+authority (``ManagedTxComposition``, the same composition root the CLI's
+``web``/``station`` commands install) + an IC-7610 ``IcomRadio`` over the
+``MockIcomRadio`` LAN transport, ``stateful_ptt=True`` — is keyed through
+one of the two real ingress lanes and then a fault is injected on the
+simulator (or the keying client). Every cell asserts the TX-safety
+contract:
+
+1. the simulator's PTT returns to 0 within a budget;
+2. unkey ownership: the authority's lease ends released (intent RX, no
+   owed release, no pending effect) and nothing re-keys the radio after
+   recovery — PTT stays 0 across a settle window.
+
+Lanes: (W) the WebSocket managed-PTT lane — a raw WebSocket control
+session sending ``ptt_on`` (``control.py: ControlHandler._enqueue_managed_ptt``
+→ ``WebServer.enqueue_managed_positive_tx``); (R) rigctld ``T 1`` — in the
+default bundled configuration (``cli/__init__.py: _cmd_web`` constructs
+``RigctldServer`` with ``managed_tx_authority=``) this keys MANAGED, through
+the same authority with owner ``rigctld-client-N``.
+
+The real IC-7610 behaviour for an active PTT when its LAN session ends is
+UNRECORDED (TX is never actuated on the bench), so every simulator fault
+cell runs under both ``ptt_on_session_loss`` values.
+
+FAKE RADIO ONLY — the simulator; nothing here can key a real radio.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+# Make tests/ importable from tests/integration/.
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# All tests in this module use MockIcomRadio and require no real hardware.
+pytestmark = pytest.mark.mock_integration
+
+from rigplane.core.state_pipeline_contracts import FieldPath  # noqa: E402
+from rigplane.radio import IcomRadio  # noqa: E402
+from rigplane.rigctld.contract import RigctldConfig  # noqa: E402
+from rigplane.rigctld.server import RigctldServer  # noqa: E402
+from rigplane.runtime._civ_rx import (  # noqa: E402
+    _CIV_DATA_WATCHDOG_TIMEOUT,
+    _SILENT_OPENCLOSE_DEADLINE,
+)
+from rigplane.runtime.managed_tx_authority import (  # noqa: E402
+    ATTEMPT_TIMEOUT_S,
+    RETRY_DELAY_S,
+)
+from rigplane.runtime.managed_tx_composition import (  # noqa: E402
+    ManagedTxComposition,
+    install_managed_tx_composition,
+)
+from rigplane.runtime.managed_tx_config import ManagedTxTotConfigStore  # noqa: E402
+from rigplane.runtime.managed_tx_state import ManagedTxIntentKind  # noqa: E402
+from rigplane.web.server import WebConfig, WebServer  # noqa: E402
+from rigplane.web.web_startup import (  # noqa: E402
+    attach_managed_tx_composition,
+    prepare_managed_tx_observation_generation,
+)
+from rigplane_testkit.icom import MockIcomRadio  # noqa: E402
+
+from _perf_helpers import fast_connect  # noqa: E402
+from test_web_server import (  # noqa: E402
+    _ws_connect,
+    _ws_recv_frame,
+    _ws_send_text,
+    _ws_skip_handshake,
+)
+
+# ---------------------------------------------------------------------------
+# Knobs the test itself owns (fault shapes), each justified at its use
+# ---------------------------------------------------------------------------
+
+# Client-side detection speed: the IcomRadio control watchdog. Existing
+# simulator-event tests use this value (tests/testkit/test_simulator_events.py).
+_WATCHDOG_TIMEOUT_S = 1.5
+_RECONNECT_DELAY_S = 0.2
+_RECONNECT_MAX_DELAY_S = 0.5
+
+# The simulator holds a LAN session this long without client pings; 2.0 s
+# keeps the radio's own timer from racing the client's control pings during
+# a keepalive-silence window (tests/testkit/test_simulator_events.py).
+_KEEPALIVE_HOLD_S = 2.0
+
+# Fault shapes.
+_REBOOT_AT_S = 0.1
+_REBOOT_DOWN_FOR_S = 3.0
+_REBOOT_BUSY_FOR_S = 0.5
+_SILENCE_FOR_S = _WATCHDOG_TIMEOUT_S + 1.5
+# The patient OpenClose window for a silent drop, shortened from
+# _OPENCLOSE_DEADLINE the way tests/testkit/test_reconnect_storm.py does,
+# so the no-notice drop is detected in test time.
+_PATIENCE_S = 10.0
+
+# Software TOT (seconds) written into the composition's config file with
+# the production store (ManagedTxTotConfigStore). The stall cells use a
+# short TOT because a stalled-but-answering radio leaves the TOT as the
+# only force-off; every other cell keeps the TOT beyond its budget so the
+# reconnect-driven release is the mechanism the cell pins.
+_STALL_TOT_S = 3.0
+_LINK_FAULT_TOT_S = 30.0
+
+# Recovery slack for one reconnect round (login + conninfo + OpenClose +
+# startup reads) under runner load — the same allowance
+# tests/testkit/test_reconnect_storm.py (_RECOVERY_S) uses.
+_ONE_RECOVERY_ROUND_S = 10.0
+
+# Detection + recovery + release budget per fault family.
+_KEY_DEADLINE_S = ATTEMPT_TIMEOUT_S + RETRY_DELAY_S + 2.0
+_LEASE_BUDGET_S = ATTEMPT_TIMEOUT_S + RETRY_DELAY_S + 2.0
+_TOT_BUDGET_S = _STALL_TOT_S + ATTEMPT_TIMEOUT_S + 2.0
+_NOTICE_DROP_BUDGET_S = (
+    _RECONNECT_MAX_DELAY_S + _ONE_RECOVERY_ROUND_S + RETRY_DELAY_S + ATTEMPT_TIMEOUT_S
+)
+_SILENT_DROP_BUDGET_S = (
+    2 * 1.5 * _CIV_DATA_WATCHDOG_TIMEOUT
+    + _PATIENCE_S
+    + _SILENT_OPENCLOSE_DEADLINE
+    + _ONE_RECOVERY_ROUND_S
+    + RETRY_DELAY_S
+    + ATTEMPT_TIMEOUT_S
+)
+_REBOOT_BUDGET_S = (
+    _REBOOT_AT_S
+    + _REBOOT_DOWN_FOR_S
+    + _REBOOT_BUSY_FOR_S
+    + _ONE_RECOVERY_ROUND_S
+    + RETRY_DELAY_S
+    + ATTEMPT_TIMEOUT_S
+)
+
+# After the release and the reconnect, PTT must stay 0 for a window that
+# covers two release-retry cadences (managed_tx_authority.py:
+# RETRY_DELAY_S) plus one force-off attempt bound.
+_SETTLE_S = 2 * RETRY_DELAY_S + ATTEMPT_TIMEOUT_S
+
+# Grace for the release DEBT to clear. The force-receive's confirmation is
+# deliberately distrustful (runtime/radio.py: CoreRadio.actuate, MOR-2860):
+# an ACK/NAK another write left unclaimed within one ``_civ_get_timeout``
+# (radio.py: ``min(timeout, 2.0)``) makes the attempt UNCERTAIN and the
+# authority retries it after RETRY_DELAY_S. The simulator NAKs the
+# profile's declared reads it does not model, which keeps that ambiguity
+# window refreshed under load, so the debt clears a few retries later than
+# the radio-side unkey: the grace spans several retry cadences.
+_RELEASE_DEBT_GRACE_S = ATTEMPT_TIMEOUT_S + 5 * RETRY_DELAY_S
+
+_GATE_TIMEOUT_S = 20.0  # tests/test_mor2557_web_rigctld_shared_seat.py
+
+
+# ---------------------------------------------------------------------------
+# Keying clients
+# ---------------------------------------------------------------------------
+
+
+class _WsKeyClient:
+    """A raw WebSocket control session that keys via ``ptt_on``."""
+
+    def __init__(self, host: str, port: int) -> None:
+        self._host = host
+        self._port = port
+        self._writer: Any = None
+        self._reader: Any = None
+
+    async def connect(self) -> None:
+        self._reader, self._writer, _ = await _ws_connect(
+            self._host, self._port, "/api/v1/ws"
+        )
+        await _ws_skip_handshake(self._reader)
+
+    async def key(self, command_id: str) -> bool:
+        assert self._writer is not None and self._reader is not None
+        await _ws_send_text(
+            self._writer,
+            json.dumps(
+                {"type": "cmd", "id": command_id, "name": "ptt_on", "params": {}}
+            ),
+        )
+        while True:
+            _, payload = await _ws_recv_frame(self._reader, timeout=10.0)
+            message = json.loads(payload)
+            if message.get("type") == "response" and message.get("id") == command_id:
+                return bool(message.get("ok"))
+
+    def kill(self) -> None:
+        if self._writer is not None:
+            self._writer.close()
+
+    async def close(self) -> None:
+        self.kill()
+
+
+class _RigctldKeyClient:
+    """A rigctld TCP client that keys via ``T 1``."""
+
+    def __init__(self, host: str, port: int) -> None:
+        self._host = host
+        self._port = port
+        self._writer: Any = None
+        self._reader: Any = None
+
+    async def connect(self) -> None:
+        self._reader, self._writer = await asyncio.open_connection(
+            self._host, self._port
+        )
+
+    async def key(self) -> bool:
+        assert self._writer is not None and self._reader is not None
+        self._writer.write(b"T 1\n")
+        await self._writer.drain()
+        line = await asyncio.wait_for(self._reader.readline(), timeout=10.0)
+        return line.strip() == b"RPRT 0"
+
+    async def close(self) -> None:
+        if self._writer is not None:
+            self._writer.close()
+            with contextlib.suppress(Exception):
+                await self._writer.wait_closed()
+
+
+# ---------------------------------------------------------------------------
+# The stack
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _Stack:
+    sim: MockIcomRadio
+    radio: IcomRadio
+    composition: ManagedTxComposition
+    web: WebServer
+    rigctld: RigctldServer
+    rigctld_port: int
+
+
+async def _stand_up_stack(
+    tmp_path: Path, *, loss: str, tot_seconds: float, unsolicited: bool
+) -> _Stack:
+    """Build the production stack over the simulator, in the CLI's order."""
+    config_path = tmp_path / "managed-tx.json"
+    # Written through the production store so the file's shape is exactly
+    # what ManagedTxTotConfigStore loads in ManagedTxComposition.
+    ManagedTxTotConfigStore(config_path).set_timeout_seconds(tot_seconds)
+
+    sim = MockIcomRadio(
+        single_owner=True,
+        keepalive_hold_s=_KEEPALIVE_HOLD_S,
+        stateful_ptt=True,
+        ptt_on_session_loss=loss,
+        unsolicited_civ=unsolicited,
+    )
+    await sim.start()
+
+    radio = IcomRadio(
+        host="127.0.0.1",
+        port=sim.control_port,
+        username="testuser",
+        password="testpass",
+        timeout=5.0,
+        model="IC-7610",
+        auto_reconnect=True,
+        reconnect_delay=_RECONNECT_DELAY_S,
+        reconnect_max_delay=_RECONNECT_MAX_DELAY_S,
+        watchdog_timeout=_WATCHDOG_TIMEOUT_S,
+    )
+    composition = ManagedTxComposition(radio, config_path=config_path)
+    install_managed_tx_composition(radio, composition)
+    with fast_connect():
+        await radio.connect()
+
+    web = WebServer(
+        radio,
+        WebConfig(
+            host="127.0.0.1",
+            port=0,
+            discovery=False,
+        ),
+    )
+    prepare_managed_tx_observation_generation(web)
+    await composition.bind_state_store(web.command_state_store)
+    attach_managed_tx_composition(web, composition)
+
+    rigctld = RigctldServer(
+        radio,
+        RigctldConfig(host="127.0.0.1", port=0),
+        allow_not_ready=True,
+        managed_tx_authority=composition.authority,
+        command_queue=web.command_queue,
+        command_service=web.command_service,
+    )
+    await rigctld.start()
+    await asyncio.wait_for(web.start(), timeout=_GATE_TIMEOUT_S)
+    rigctld_port = rigctld._server.sockets[0].getsockname()[1]  # noqa: SLF001
+    return _Stack(sim, radio, composition, web, rigctld, rigctld_port)
+
+
+async def _tear_down_stack(stack: _Stack) -> None:
+    with contextlib.suppress(Exception):
+        await stack.rigctld.stop()
+    with contextlib.suppress(Exception):
+        await stack.web.stop()
+    with contextlib.suppress(Exception):
+        with fast_connect():
+            await asyncio.wait_for(stack.radio.disconnect(), 10.0)
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(
+            stack.composition.shutdown(termination=asyncio.Event()), 5.0
+        )
+    with contextlib.suppress(Exception):
+        await stack.sim.stop()
+
+
+# ---------------------------------------------------------------------------
+# Cell plumbing
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _Cell:
+    lane: str  # "ws" | "rigctld"
+    fault: str
+    loss: str  # "hold" | "release"
+
+    timeline: list[str] = field(default_factory=list, init=False)
+
+    @property
+    def id(self) -> str:
+        return f"{self.lane}-{self.fault}-{self.loss}"
+
+    def note(self, text: str) -> None:
+        self.timeline.append(text)
+
+
+_BUDGETS = {
+    "ws_kill": _LEASE_BUDGET_S,
+    "lease_loss": _LEASE_BUDGET_S,
+    "stall": _TOT_BUDGET_S,
+    "silence": _TOT_BUDGET_S,
+    "drop_notice": _NOTICE_DROP_BUDGET_S,
+    "drop_silent": _SILENT_DROP_BUDGET_S,
+    "reboot": _REBOOT_BUDGET_S,
+}
+
+_WS_FAULTS = (
+    "stall",
+    "drop_notice",
+    "drop_silent",
+    "silence",
+    "reboot",
+    "ws_kill",
+    "lease_loss",
+)
+_RIGCTLD_FAULTS = ("stall", "drop_notice", "drop_silent", "silence", "reboot")
+
+# Faults that keep every CI-V query answered, so the client-side link
+# never breaks and the software TOT is the only unkey path: the autonomous
+# stream stopping (stall) and the ping path going silent (silence).
+_TOT_FAULTS = ("stall", "silence")
+
+# Faults that end the radio session and force a client recovery round.
+_LINK_FAULTS = ("drop_notice", "drop_silent", "reboot")
+
+
+def _cells() -> list[pytest.param]:
+    params = []
+    for fault in _WS_FAULTS:
+        for loss in ("hold", "release"):
+            params.append(pytest.param("ws", fault, loss, id=f"ws-{fault}-{loss}"))
+    for fault in _RIGCTLD_FAULTS:
+        for loss in ("hold", "release"):
+            params.append(
+                pytest.param("rigctld", fault, loss, id=f"rigctld-{fault}-{loss}")
+            )
+    return params
+
+
+async def _wait_ptt(sim: MockIcomRadio, expected: bool, deadline_s: float) -> float:
+    """Wait until the simulated PTT equals ``expected``; return the elapsed."""
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        if sim.ptt_on is expected:
+            return deadline_s - (end - time.monotonic())
+        await asyncio.sleep(0.02)
+    raise AssertionError(
+        f"simulator PTT stayed {not expected} for {deadline_s:.1f}s; "
+        f"transitions={sim.ptt_transitions}"
+    )
+
+
+async def _wait_recovered(
+    sim: MockIcomRadio, radio: IcomRadio, old_token: int, deadline_s: float
+) -> float:
+    """Wait until the client re-claimed the session on the rotated token.
+
+    ``radio.connected`` alone is not recovery evidence: a soft recovery
+    round keeps it true. The composite is the one
+    tests/testkit/test_reconnect_storm.py waits for — the event fired
+    (token rotated), the client is connected, and its token matches the
+    simulator's again.
+    """
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        if (
+            sim.token != old_token and radio.connected and radio._token == sim.token  # noqa: SLF001
+        ):
+            return deadline_s - (end - time.monotonic())
+        await asyncio.sleep(0.02)
+    raise AssertionError(
+        f"radio did not recover within {deadline_s:.1f}s "
+        f"(sim token rotated={sim.token != old_token}, connected={radio.connected})"
+    )
+
+
+async def _wait_ptt_observed(web: WebServer, deadline_s: float) -> None:
+    """Wait until the poller has observed the PTT field at least once.
+
+    The startup gate (``WebConfig.await_initial_state``) is off because the
+    simulator models a narrower CI-V vocabulary than the profile's declared
+    startup reads (split ``0x0F`` NAKs, for one); keying instead waits for
+    the one observation the TX paths consume — a fresh ``1C 00`` readback.
+    """
+    path = FieldPath.global_("tx_state", "ptt")
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        try:
+            web.command_state_store.snapshot().field(path)
+            return
+        except KeyError:
+            await asyncio.sleep(0.05)
+    raise AssertionError(f"poller never observed {path} within {deadline_s:.1f}s")
+
+
+# ---------------------------------------------------------------------------
+# The matrix
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("lane", "fault", "loss"), _cells())
+async def test_tx_under_fault_matrix(
+    lane: str,
+    fault: str,
+    loss: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cell = _Cell(lane, fault, loss)
+    budget = _BUDGETS[fault]
+    if fault == "drop_silent":
+        # Patient OpenClose window shortened for test time, as
+        # tests/testkit/test_reconnect_storm.py does for the same fault.
+        monkeypatch.setattr("rigplane.runtime._civ_rx._OPENCLOSE_DEADLINE", _PATIENCE_S)
+    if fault == "reboot":
+        # A post-reboot login inside the busy window must not pause one
+        # whole _STATUS_REJECT_COOLDOWN (30 s); cap it to the busy window
+        # (tests/testkit/test_reconnect_storm.py does the same).
+        monkeypatch.setattr(
+            "rigplane.runtime._control_phase.ControlPhaseRuntime"
+            "._STATUS_REJECT_COOLDOWN",
+            _REBOOT_BUSY_FOR_S,
+        )
+
+    stack = await _stand_up_stack(
+        tmp_path,
+        loss=loss,
+        tot_seconds=_STALL_TOT_S if fault in _TOT_FAULTS else _LINK_FAULT_TOT_S,
+        unsolicited=fault == "stall",
+    )
+    client: _WsKeyClient | _RigctldKeyClient
+    try:
+        sim, radio, composition = stack.sim, stack.radio, stack.composition
+        if lane == "ws":
+            client = _WsKeyClient("127.0.0.1", stack.web.port)
+        else:
+            client = _RigctldKeyClient("127.0.0.1", stack.rigctld_port)
+        await client.connect()
+        await _wait_ptt_observed(stack.web, _GATE_TIMEOUT_S)
+
+        # Key through the lane, then prove the lease is held by it.
+        keyed = await (client.key("cell-key") if lane == "ws" else client.key())
+        assert keyed, f"{cell.id}: the lane refused the key"
+        key_elapsed = await _wait_ptt(sim, True, _KEY_DEADLINE_S)
+        cell.note(f"keyed in {key_elapsed:.2f}s")
+        old_token = sim.token
+        projection = await composition.authority.snapshot()
+        owner = projection.state.intent.owner_token
+        assert projection.state.intent.kind is ManagedTxIntentKind.PTT
+        assert isinstance(owner, str) and bool(owner), (
+            f"{cell.id}: no lease owner held the key"
+        )
+        if lane == "rigctld":
+            assert owner.startswith("rigctld-client-"), owner
+
+        # Inject the fault.
+        if fault == "stall":
+            sim.stall_for(_STALL_TOT_S + _TOT_BUDGET_S)
+        elif fault == "drop_notice":
+            sim.drop_session(at=0.05, notice=True)
+        elif fault == "drop_silent":
+            sim.drop_session(at=0.05, notice=False)
+        elif fault == "silence":
+            sim.keepalive_silence(at=0.05, for_seconds=_SILENCE_FOR_S)
+        elif fault == "reboot":
+            sim.reboot(
+                at=_REBOOT_AT_S,
+                down_for=_REBOOT_DOWN_FOR_S,
+                busy_for=_REBOOT_BUSY_FOR_S,
+                notice=True,
+            )
+        elif fault == "ws_kill":
+            client.kill()  # close the socket without an unkey
+        elif fault == "lease_loss":
+            # The lease lives in ManagedTxAuthority's intent (ptt(owner));
+            # it is lost through owner_disconnect — the same call the
+            # WebSocket teardown and the rigctld session handback make.
+            # Invoked directly here to separate lease loss from socket
+            # death.
+            loss_task = asyncio.ensure_future(
+                composition.authority.owner_disconnect(owner)
+            )
+            loss_task.add_done_callback(lambda task: task.exception())
+
+        # (1) The simulator's PTT is 0 within the budget.
+        ptt0_elapsed = await _wait_ptt(sim, False, budget)
+        cell.note(f"ptt=0 in {ptt0_elapsed:.2f}s after fault")
+
+        if fault in _LINK_FAULTS:
+            # (2) Recovery: the session is re-claimed against the rotated
+            # token (the same composite tests/testkit/test_reconnect_storm.py
+            # waits for — ``connected`` alone stays true across a soft
+            # recovery round, so it is not recovery evidence).
+            recovered = await _wait_recovered(sim, radio, old_token, budget)
+            cell.note(f"recovered in {recovered:.2f}s after fault")
+        t_settled = time.monotonic()
+
+        # …and nothing re-keys the radio across the settle window.
+        settle_end = time.monotonic() + _SETTLE_S
+        while time.monotonic() < settle_end:
+            assert not sim.ptt_on, (
+                f"{cell.id}: radio re-keyed after recovery; writes={sim.ptt_set_writes}"
+            )
+            await asyncio.sleep(0.05)
+        rekeys = [
+            write for write in sim.ptt_set_writes if write[1] and write[0] > t_settled
+        ]
+        assert not rekeys, f"{cell.id}: PTT-on writes after the fault: {rekeys}"
+
+        # (2) Unkey ownership: the authority's lease ended released. The
+        # lease itself (intent/owner) flips at the force-off submission;
+        # the release DEBT clears when a retry confirms the unkey — see
+        # _RELEASE_DEBT_GRACE_S for why that can trail the radio-side
+        # unkey under this simulator's NAK vocabulary.
+        deadline = time.monotonic() + _RELEASE_DEBT_GRACE_S
+        while True:
+            projection = await composition.authority.snapshot()
+            state = projection.state
+            if (
+                state.intent.kind is ManagedTxIntentKind.RX
+                and not state.release_required
+                and state.pending_effect is None
+            ):
+                break
+            if time.monotonic() >= deadline:
+                assert state.intent.kind is ManagedTxIntentKind.RX, (
+                    f"{cell.id}: lease still held by {state.intent.owner_token!r}"
+                )
+                assert not state.release_required, (
+                    f"{cell.id}: release still owed after "
+                    f"{_RELEASE_DEBT_GRACE_S:.1f}s; transitions="
+                    f"{sim.ptt_transitions}"
+                )
+                assert state.pending_effect is None, (
+                    f"{cell.id}: effect still pending after "
+                    f"{_RELEASE_DEBT_GRACE_S:.1f}s"
+                )
+                break
+            await asyncio.sleep(0.1)
+        cell.note("lease released, debt cleared")
+
+        print(f"[{cell.id}] {'; '.join(cell.timeline)}")
+    finally:
+        with contextlib.suppress(Exception):
+            await client.close()
+        await _tear_down_stack(stack)

@@ -33,6 +33,41 @@ UDP code paths as production.
   on the CI-V port; `civ_gap_open` is true while any number is missing.
   A re-sent OpenClose still gets its stream-active marker; only
   tracked-packet processing follows the ignore rule.
+  The audio port advertised at 0x46 of the status reply is a real
+  listener only with `MockIcomRadio(enable_audio=True)` (default off;
+  `MockIcomRadio.audio_port`, bound at the CI-V port + 1 when free).
+  With the default the reply still advertises the port but nothing
+  listens there and nothing answers. When on, the listener speaks the
+  same transport handshake as the CI-V port: AYT→IAH,
+  AreYouReady echo, ping replies, tracked client numbering — never
+  answered with retransmit requests (recorded: zero on the audio port).
+  The client's audio OpenClose(open) — the packet
+  `runtime/_audio_runtime_mixin.py: _ensure_audio_transport` sends after
+  the handshake — starts the RX stream: synthetic PCM at the recorded
+  cadence (bursts of two 1388-byte and one 1136-byte packet every 20 ms
+  = 3840 payload bytes per burst, both header sequences stepping 1;
+  `tests/fixtures/ic7610/audio_stream.json` and
+  `audio_rx_headers.jsonl`). Every client audio DATA frame sent while
+  the audio stream lives is recorded
+  in `audio_tx_frames` (header seq, inner seq at 0x12, payload length,
+  arrival time; the client's format is the only reference — the TX path
+  is unrecorded). The stream survives a CI-V-only soft reconnect
+  (recorded) and stops when the session ends (token-remove/logout,
+  `drop_session`, reboot); without an owned session the audio opener's
+  own token-remove/control-disconnect still ends it, while a foreign one
+  changes nothing. `audio_stream_drop()` stops it keeping the
+  session, `audio_port_silence(at, for_seconds)` blacks out only the
+  audio port (`audio_rx_frames_sent` counts only packets actually sent),
+  and `audio_last_client_seq` tracks the client numbering
+  per session.
+  Wire-level examples live in `tests/testkit/test_simulator_faults.py`
+  and `tests/testkit/test_simulator_drop_session.py`; the audio port is
+  pinned by `tests/testkit/test_simulator_audio.py`, including a TX-sink
+  run whose frames are built with the production builder
+  (`src/rigplane/audio/lan_stream.py`: `build_audio_packet`). The
+  CI-V implementation lives in `rigplane_testkit/icom/simulator.py`; the
+  audio port in `rigplane_testkit/icom/simulator_audio.py`
+  (`AudioPortMixin`).
   A `recorded_answers=` keyword mounts a
   `rigplane_testkit.icom.replay.RecordedAnswerTable`: a request the native
   CI-V handlers NAK — including one with no native handler — is answered

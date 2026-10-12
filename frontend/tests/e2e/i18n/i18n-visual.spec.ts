@@ -28,9 +28,10 @@
  *   - The status-bar, disconnected and toast cases assert their own
  *     surface rather than the app shell: the desktop `.status-bar` must
  *     be visible and the mobile layout must not render one; the
- *     disconnected case (skipped on mobile) expects the StatusBar radio
- *     indicator to report `degraded`; the toast case requires the
- *     `__i18nWsDispatch` hook, dispatches through it and expects a
+ *     disconnected case expects the StatusBar radio indicator to report
+ *     `degraded` on desktop and the phone's radio-link line to be visible
+ *     with the localized lost-link text on mobile; the toast case requires
+ *     the `__i18nWsDispatch` hook, dispatches through it and expects a
  *     visible toast.
  *   - Glossary tokens used by populated state — `MAIN`, `SUB`, `USB`,
  *     `LSB`, `RTTY`, `VFO` — MUST appear verbatim in EVERY locale,
@@ -101,6 +102,18 @@ const GLOSSARY_TOKENS_DESKTOP = ['MAIN', 'SUB', 'USB', 'LSB', 'RTTY', 'VFO'];
  */
 const PSEUDO_MARKERS =
   /[⟦⟧áƀçđéƒğĥíĵķłɱñóþǫŕšťúṽŵẋýžÁƁÇĐÉƑĞĤÍĴĶŁⱮÑÓÞǪŔŠŤÚṼŴẊÝŽ]/;
+
+/**
+ * What the phone's radio-link line must read for `mockDisconnectedState`
+ * (`likelyCause: 'radio_network_lost'`): the catalog entry
+ * `core.statusbar.health.radioLinkLost` in each locale. `qps-ploc` has no
+ * catalog file, so it is matched by the pseudo-locale wrappers.
+ */
+const RADIO_LINK_LOST_TEXT: Record<SupportedLocale, string | RegExp> = {
+  'en-US': 'radio link lost',
+  'ja-JP': 'トランシーバーとの通信が切断されました',
+  'qps-ploc': /^⟦.+⟧$/,
+};
 
 function locStorageInit(locale: SupportedLocale) {
   // Stamp both keys: the explicit Core selector (LanguageSelector path)
@@ -352,6 +365,61 @@ async function gotoApp(page: Page, locale: SupportedLocale): Promise<void> {
   ).toBe(true);
 }
 
+interface Rect { x: number; y: number; width: number; height: number }
+
+interface RadioLinkLineMeasure {
+  line: Rect;
+  next: Rect | null;
+  nextClass: string | null;
+  overlay: Rect | null;
+  spectrum: Rect | null;
+  hitIsLine: boolean;
+  style: { fontFamily: string; fontSize: string; fontWeight: string; firstLetter: string };
+}
+
+/**
+ * Geometry and typography of the phone's radio-link line, read in the page:
+ * its box, the box of the element that follows it in the DOM, the landscape
+ * overlay bar and spectrum, whether the line is what a hit test finds at its
+ * own centre, and the computed style the operator sees (including the
+ * first-letter pseudo-element's text transform).
+ */
+async function measureRadioLinkLine(page: Page): Promise<RadioLinkLineMeasure | null> {
+  return page.evaluate(() => {
+    const line = document.querySelector<HTMLElement>('[data-testid="radio-link-line"]');
+    if (line === null) return null;
+    const rect = (el: Element | null) => {
+      if (el === null) return null;
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height };
+    };
+    const own = line.getBoundingClientRect();
+    const hit = document.elementFromPoint(own.x + own.width / 2, own.y + own.height / 2);
+    const style = getComputedStyle(line);
+    return {
+      line: rect(line)!,
+      next: rect(line.nextElementSibling),
+      nextClass: line.nextElementSibling?.className ?? null,
+      overlay: rect(document.querySelector('.m-ls-overlay')),
+      spectrum: rect(document.querySelector('.m-ls-spectrum')),
+      hitIsLine: hit !== null && line.contains(hit),
+      style: {
+        fontFamily: style.fontFamily,
+        fontSize: style.fontSize,
+        fontWeight: style.fontWeight,
+        firstLetter: getComputedStyle(line, '::first-letter').textTransform,
+      },
+    };
+  });
+}
+
+/** True when the two boxes share any area (sub-pixel edge contact is not overlap). */
+function overlaps(a: Rect, b: Rect): boolean {
+  const eps = 0.5;
+  return a.x + eps < b.x + b.width && b.x + eps < a.x + a.width
+    && a.y + eps < b.y + b.height && b.y + eps < a.y + a.height;
+}
+
 // MOR-1549: this file used to force `mode: 'serial'` here, which made the
 // first failing screenshot-diff case (see the `MOR-1400 production
 // design-language contract` describe below) abort every later case in the
@@ -383,6 +451,14 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
         await gotoApp(page, locale);
         await waitForAppShell(page);
         await assertNoLookupMisses(page, `app-shell/${locale}/${viewport.name}`);
+        if (viewport.name === 'mobile') {
+          // Control for the disconnected case below: the connected fixture
+          // must not raise the phone's radio-link line.
+          await expect(
+            page.getByTestId('radio-link-line'),
+            `app-shell/${locale}/${viewport.name}: radio-link line shown while the link is healthy`,
+          ).toHaveCount(0);
+        }
         await assertGlossaryTokens(page, viewport, `app-shell/${locale}/${viewport.name}`);
         await assertPseudoMarkers(page, locale, `app-shell/${locale}/${viewport.name}`);
       });
@@ -410,19 +486,39 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
       });
 
       test(`connection-overlay disconnected — ${locale} @ ${viewport.name}`, async ({ page }) => {
-        test.skip(
-          viewport.name !== 'desktop',
-          'the phone layout shows no radio-link state for this fixture',
-        );
         await preparePage(page, locale, viewport, { state: mockDisconnectedState });
         await gotoApp(page, locale);
         await waitForAppShell(page);
-        // StatusBar.svelte interpolates the raw link state
-        // (`state: radioState`) into the radio indicator's title.
-        await expect(
-          page.locator('.status-bar .indicator[title*="degraded"]'),
-          `connection-overlay/${locale}/${viewport.name}: no StatusBar indicator reports the degraded radio link`,
-        ).toBeVisible();
+        if (viewport.name === 'desktop') {
+          // StatusBar.svelte interpolates the raw link state
+          // (`state: radioState`) into the radio indicator's title.
+          await expect(
+            page.locator('.status-bar .indicator[title*="degraded"]'),
+            `connection-overlay/${locale}/${viewport.name}: no StatusBar indicator reports the degraded radio link`,
+          ).toBeVisible();
+        } else {
+          // The phone has no status bar; its radio-link line carries the
+          // same localized reason, readable (16 px or larger) and inside
+          // the first screen without scrolling.
+          const line = page.getByTestId('radio-link-line');
+          await expect(
+            line,
+            `connection-overlay/${locale}/${viewport.name}: no radio-link line on the phone`,
+          ).toBeVisible();
+          await expect(
+            line,
+            `connection-overlay/${locale}/${viewport.name}: radio-link line text`,
+          ).toHaveText(RADIO_LINK_LOST_TEXT[locale]);
+          const fontSize = await line.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+          expect(fontSize, `connection-overlay/${locale}/${viewport.name}: line font size`)
+            .toBeGreaterThanOrEqual(16);
+          const box = await line.boundingBox();
+          expect(box, `connection-overlay/${locale}/${viewport.name}: line has no box`).not.toBeNull();
+          expect(box!.y, `connection-overlay/${locale}/${viewport.name}: line above the viewport`)
+            .toBeGreaterThanOrEqual(0);
+          expect(box!.y + box!.height, `connection-overlay/${locale}/${viewport.name}: line below the first screen`)
+            .toBeLessThanOrEqual(viewport.height);
+        }
         await assertNoLookupMisses(
           page,
           `connection-overlay/${locale}/${viewport.name}`,
@@ -524,6 +620,43 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
       });
     }
   }
+
+  test('radio-link line takes layout space and keeps one style — portrait and landscape', async ({ page }) => {
+    const label = 'radio-link-line/en-US';
+    await preparePage(page, 'en-US', { name: 'mobile', width: 390, height: 844 }, {
+      state: mockDisconnectedState,
+    });
+    await gotoApp(page, 'en-US');
+    await waitForAppShell(page);
+    await expect(page.locator('.m-layout'), `${label}/portrait: portrait layout`).toBeVisible();
+    const portrait = await measureRadioLinkLine(page);
+    await page.setViewportSize({ width: 844, height: 390 });
+    await expect(page.locator('.m-landscape'), `${label}/landscape: landscape layout`).toBeVisible();
+    await page.waitForTimeout(200);
+    const landscape = await measureRadioLinkLine(page);
+
+    for (const [name, m] of [['portrait', portrait], ['landscape', landscape]] as const) {
+      expect(m, `${label}/${name}: no radio-link line`).not.toBeNull();
+      const found = m!;
+      expect(found.line.height, `${label}/${name}: line has no height`).toBeGreaterThan(0);
+      expect(found.hitIsLine, `${label}/${name}: something covers the line's centre`).toBe(true);
+      expect(found.next, `${label}/${name}: no element follows the line`).not.toBeNull();
+      expect(overlaps(found.line, found.next!), `${label}/${name}: line overlaps the next sibling`).toBe(false);
+      expect(found.line.y + found.line.height, `${label}/${name}: next sibling starts above the line's bottom edge`)
+        .toBeLessThanOrEqual(found.next!.y + 0.5);
+      expect(parseFloat(found.style.fontSize), `${label}/${name}: font size`).toBeGreaterThanOrEqual(16);
+      expect(found.style.firstLetter, `${label}/${name}: first-letter text transform`).toBe('uppercase');
+    }
+    expect(portrait!.nextClass, 'radio-link-line/portrait: next sibling').toContain('m-content');
+    expect(landscape!.nextClass, 'radio-link-line/landscape: next sibling').toContain('m-ls-body');
+    expect(landscape!.overlay, 'radio-link-line/landscape: overlay bar missing').not.toBeNull();
+    expect(overlaps(landscape!.line, landscape!.overlay!), 'radio-link-line/landscape: line overlaps the overlay bar')
+      .toBe(false);
+    expect(landscape!.spectrum, 'radio-link-line/landscape: spectrum missing').not.toBeNull();
+    expect(overlaps(landscape!.line, landscape!.spectrum!), 'radio-link-line/landscape: line overlaps the spectrum')
+      .toBe(false);
+    expect(landscape!.style, 'radio-link-line: one typography in both orientations').toEqual(portrait!.style);
+  });
 });
 
 type ProductionLanguageCase = {

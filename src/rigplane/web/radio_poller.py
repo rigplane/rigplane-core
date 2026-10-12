@@ -2171,7 +2171,7 @@ class RadioPoller:
                     await radio.set_freq(freq, receiver=rx)
                 else:
                     # No lower-layer equivalent for a VFO-aware MAIN write:
-                    # CoreRadio.set_freq(freq, receiver=0) sends a blind,
+                    # CoreRadio.set_freq(freq, receiver=0) sends a
                     # VFO-unaware 0x05 regardless of which VFO is selected.
                     # When SUB is active the poller must still switch to
                     # MAIN, write, and switch back — routed through the
@@ -2187,16 +2187,23 @@ class RadioPoller:
                                 "lacks select_receiver; skipping "
                                 "restore-to-MAIN switch",
                             )
-                    await radio.set_freq(freq)
-                    if current != "MAIN" and self._profile.vfo_sub_code is not None:
-                        if select_receiver is not None:
-                            await select_receiver(1)
-                        else:
-                            logger.warning(
-                                "radio-poller: set_freq receiver=0 — backend "
-                                "lacks select_receiver; skipping "
-                                "restore-to-SUB switch",
-                            )
+                    # The write waits for the radio's answer, so it can
+                    # raise (a NAK maps to CommandRejectedError, silence to
+                    # TimeoutError); the restore of the SUB selection must
+                    # run on every exit, with the write's own error
+                    # propagating.
+                    try:
+                        await radio.set_freq(freq)
+                    finally:
+                        if current != "MAIN" and self._profile.vfo_sub_code is not None:
+                            if select_receiver is not None:
+                                await select_receiver(1)
+                            else:
+                                logger.warning(
+                                    "radio-poller: set_freq receiver=0 — backend "
+                                    "lacks select_receiver; skipping "
+                                    "restore-to-SUB switch",
+                                )
                 # Compatibility mirror until web state delivery reads StateStore.
                 if self._radio_state:
                     target = (

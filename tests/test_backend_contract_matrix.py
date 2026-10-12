@@ -19,6 +19,7 @@ from rigplane.commands import (
 from rigplane.radio import IcomRadio
 from rigplane.types import Mode
 
+from _helpers import ack_response as _ack_response
 from _helpers import freq_response as _freq_response
 from _helpers import mode_response as _mode_response
 from _helpers import wrap_civ_in_udp as _wrap_civ_in_udp
@@ -116,6 +117,7 @@ class _BackendFixture:
     arrange_freq_response: callable
     arrange_mode_response: callable
     arrange_power_response: callable
+    arrange_write_ack: callable
     assert_ptt: callable
 
 
@@ -146,6 +148,10 @@ def backend_fixture(request: pytest.FixtureRequest) -> _BackendFixture:
                 transport.send_seq + 1, _power_response(level)
             )
 
+        def _arrange_write_ack() -> None:
+            # The LAN ``set_freq`` waits for the radio's ACK/NAK answer.
+            transport.queue_response_on_send(transport.send_seq + 1, _ack_response())
+
         def _assert_ptt(expected: bool) -> None:
             assert radio.state_cache.ptt is expected
 
@@ -155,6 +161,7 @@ def backend_fixture(request: pytest.FixtureRequest) -> _BackendFixture:
             arrange_freq_response=_arrange_freq,
             arrange_mode_response=_arrange_mode,
             arrange_power_response=_arrange_power,
+            arrange_write_ack=_arrange_write_ack,
             assert_ptt=_assert_ptt,
         )
 
@@ -169,6 +176,9 @@ def backend_fixture(request: pytest.FixtureRequest) -> _BackendFixture:
     def _noop_arrange_power(level: int) -> None:
         return None
 
+    def _noop_arrange_write_ack() -> None:
+        return None
+
     def _assert_serial_ptt(expected: bool) -> None:
         assert serial_radio.state_cache.ptt is expected
 
@@ -178,12 +188,14 @@ def backend_fixture(request: pytest.FixtureRequest) -> _BackendFixture:
         arrange_freq_response=_noop_arrange_freq,
         arrange_mode_response=_noop_arrange_mode,
         arrange_power_response=_noop_arrange_power,
+        arrange_write_ack=_noop_arrange_write_ack,
         assert_ptt=_assert_serial_ptt,
     )
 
 
 @pytest.mark.asyncio
 async def test_backend_contract_frequency(backend_fixture: _BackendFixture) -> None:
+    backend_fixture.arrange_write_ack()
     await backend_fixture.radio.set_freq(7_074_000)
     backend_fixture.arrange_freq_response(7_074_000)
     assert await backend_fixture.radio.get_freq() == 7_074_000

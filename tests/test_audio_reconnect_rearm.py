@@ -98,6 +98,7 @@ class _StaleFdHost(AudioRuntimeMixin):
         self._audio_port = audio_port
         self._audio_stream = None
         self._audio_transport = None
+        self._audio_ensure_lock = asyncio.Lock()
         self._audio_sock_pending: socket.socket | None = None
         self._audio_local_port = 0
         self._local_bind_host = "127.0.0.1"

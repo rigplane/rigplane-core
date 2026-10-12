@@ -18,7 +18,7 @@ from typing import ClassVar
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core._queue_pressure import PRESSURE_THRESHOLD
 from .exceptions import CommandError
-from .exceptions import TimeoutError as _TimeoutError
+from .exceptions import DiscoveryTimeout as _DiscoveryTimeout
 from .types import HEADER_SIZE, PacketType
 
 __all__ = [
@@ -217,7 +217,8 @@ class IcomTransport:
                 when *sock* is given.
 
         Raises:
-            TimeoutError: If the radio does not respond to discovery.
+            DiscoveryTimeout: If the radio does not respond to discovery
+                (a TimeoutError subclass).
         """
         # Start the sequence numbers at 0 and drop the buffered packets and
         # gap tracking of any earlier use of this instance. After a teardown
@@ -328,7 +329,8 @@ class IcomTransport:
         """Send 'Are You There' and wait for 'I Am Here' to learn remote_id.
 
         Raises:
-            TimeoutError: If radio does not respond after retries.
+            DiscoveryTimeout: If radio does not respond after retries (a
+                TimeoutError subclass; the message is unchanged).
         """
         for attempt in range(DISCOVERY_RETRIES):
             pkt = self._build_control(ptype=PacketType.ARE_YOU_THERE, seq=0)
@@ -355,7 +357,7 @@ class IcomTransport:
                     )
                     return
 
-        raise _TimeoutError(
+        raise _DiscoveryTimeout(
             f"Radio did not respond to discovery after {DISCOVERY_RETRIES} attempts"
         )
 

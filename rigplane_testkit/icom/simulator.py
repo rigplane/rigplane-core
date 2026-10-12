@@ -1,10 +1,15 @@
 """Mock UDP radio server for integration testing.
 
 Emulates an Icom IC-7610 over UDP so that transport/radio/CLI tests can run
-without real hardware.  Two asyncio datagram servers are started:
+without real hardware.  Two asyncio datagram servers are always started:
 
   * control port  – authentication handshake, pings, token renewal
   * CI-V port     – CI-V command / response exchange
+
+plus, only with ``enable_audio=True``, a third one:
+
+  * audio port    – the LAN audio port the status reply advertises
+    (RX stream, TX frame sink; ``simulator_audio.AudioPortMixin``)
 
 Usage::
 
@@ -25,6 +30,7 @@ from typing import Literal
 
 from rigplane_testkit.icom.faults import Direction, FaultPlan, Port
 from rigplane_testkit.icom.replay import RecordedAnswerTable
+from rigplane_testkit.icom.simulator_audio import AudioPortMixin
 
 logger = logging.getLogger(__name__)
 
@@ -278,13 +284,17 @@ def _missing_runs(missing: set[int]) -> list[tuple[int, int]]:
 # ---------------------------------------------------------------------------
 
 
-class MockIcomRadio:
+class MockIcomRadio(AudioPortMixin):
     """Asyncio UDP server emulating an IC-7610 for integration testing.
 
-    Handles the full connection lifecycle on two ports:
+    Handles the full connection lifecycle on two ports, plus the audio
+    port when ``enable_audio`` is True:
 
     * **Control port** – discovery (AYT/IAH), login, token exchange, pings
     * **CI-V port**    – discovery, open/close, CI-V commands, pings
+    * **Audio port**   – the LAN audio port the status reply advertises
+      (discovery, pings, the recorded RX stream and the client-frame TX
+      sink; see :class:`rigplane_testkit.icom.simulator_audio.AudioPortMixin`)
 
     After calling :meth:`start`, connect an :class:`~rigplane.radio.IcomRadio`
     to ``host:control_port`` and it will go through the full handshake.
@@ -305,6 +315,24 @@ class MockIcomRadio:
             corrupt/truncate rules on top of the legacy ``drop_rate`` /
             ``response_delay`` / ``stall_for`` knobs, which keep working
             unchanged.
+        enable_audio: bind the LAN audio-port listener (default False).
+            Off, the simulator behaves as before this listener existed:
+            the status reply still advertises an audio port but nothing
+            listens there and nothing answers. (Named ``enable_audio``
+            because ``audio_port`` is already the bound-port property.)
+        stateful_ptt: opt-in stateful PTT (default False keeps the
+            pre-hook behaviour byte-for-byte: ``1C 00`` GET always answers
+            OFF and every ``1C 00`` SET NAKs — the MOR-1217 note). When
+            True, SET ``1C 00 01`` / ``1C 00 00`` is acknowledged FB and
+            flips the simulated PTT state (readable as :attr:`ptt_on`),
+            GET answers the current state, and any other ``1C 00`` payload
+            still NAKs.
+        ptt_on_session_loss: what the simulated radio does with an active
+            PTT at every session end. ``"release"`` unkeys at that moment;
+            ``"hold"`` keeps PTT on until a client unkeys. The real IC-7610
+            behaviour is UNRECORDED (TX is never actuated on the bench),
+            so tests that depend on it cover both values
+            (``tests/integration/test_tx_under_fault_matrix.py``).
         recorded_answers: optional
             :class:`~rigplane_testkit.icom.replay.RecordedAnswerTable`
             answering requests the native CI-V handlers NAK — including
@@ -335,6 +363,9 @@ class MockIcomRadio:
         unsolicited_civ: bool = False,
         unsolicited_interval_s: float = 0.1,
         fault_plan: FaultPlan | None = None,
+        enable_audio: bool = False,
+        stateful_ptt: bool = False,
+        ptt_on_session_loss: Literal["hold", "release"] = "hold",
         recorded_answers: RecordedAnswerTable | None = None,
         capture_civ_frames: bool = False,
     ) -> None:
@@ -425,6 +456,9 @@ class MockIcomRadio:
         # ``keepalive_hold_s`` of silence.
         self.single_owner: bool = single_owner
         self.keepalive_hold_s: float = keepalive_hold_s
+        # Audio-port listener switch: default off, when the status reply
+        # advertises the dummy port and nothing listens.
+        self.enable_audio: bool = enable_audio
         # Owner identity = (remote_addr, my_id); None when no session is held.
         self._owner: tuple[tuple[str, int], int] | None = None
         self._keepalive_timer: asyncio.TimerHandle | None = None
@@ -432,6 +466,22 @@ class MockIcomRadio:
         # deadline — drives CONNECTING -> COOLDOWN -> CONNECTING without a
         # 0xFFFFFFFF reject. 0.0 means "always available".
         self._civ_unavailable_until: float = 0.0
+
+        # Opt-in stateful PTT (MOR-3251): default OFF keeps the pre-hook
+        # behaviour byte-for-byte (GET always OFF, every SET NAK). The new
+        # handling lives in the native CI-V dispatcher
+        # ``_dispatch_civ_native``, which ``_handle_civ_data`` reaches only
+        # after the sequence-gap gate and after the LAN echo — recorded
+        # IC-7610 order for every request.
+        self._stateful_ptt: bool = stateful_ptt
+        self._ptt_on_session_loss: Literal["hold", "release"] = ptt_on_session_loss
+        self._ptt_state: bool = False
+        # Every simulated PTT state change as (monotonic time, new state):
+        # wire SETs and the ptt_on_session_loss="release" unkey at session
+        # end. Wire SETs are additionally recorded in ``ptt_set_writes`` as
+        # (monotonic time, on).
+        self.ptt_transitions: list[tuple[float, bool]] = []
+        self.ptt_set_writes: list[tuple[float, bool]] = []
 
         # Fault injection
         self.drop_rate: float = drop_rate  # probability [0,1] of dropping a reply
@@ -537,13 +587,14 @@ class MockIcomRadio:
         self.last_release_reason: str | None = None
         self._login_count: int = 0  # accepted logins
         self._openclose_open_count: int = 0  # CI-V OpenClose(open) received
+        self._audio_init()  # audio-port state (RX streamer, TX sink)
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Bind both UDP servers and make the ports available."""
+        """Bind all three UDP servers and make the ports available."""
         loop = asyncio.get_running_loop()
 
         ctrl_transport, ctrl_proto = await loop.create_datagram_endpoint(
@@ -564,6 +615,13 @@ class MockIcomRadio:
         sockname = civ_transport.get_extra_info("sockname")
         self._actual_civ_port = sockname[1]
 
+        # The audio listener binds after the CI-V port so it can try the
+        # adjacent port (the status reply advertises the bound port).
+        # Off by default: nothing listens and nothing answers, while the
+        # status reply still advertises the dummy port as before.
+        if self.enable_audio:
+            await self._audio_start()
+
         if self.unsolicited_civ:
             self._unsolicited_task = asyncio.get_running_loop().create_task(
                 self._unsolicited_loop()
@@ -573,13 +631,15 @@ class MockIcomRadio:
         )
 
         logger.debug(
-            "MockIcomRadio started — ctrl=%d civ=%d",
+            "MockIcomRadio started — ctrl=%d civ=%d audio=%d",
             self._actual_ctrl_port,
             self._actual_civ_port,
+            self._actual_audio_port,
         )
 
     async def stop(self) -> None:
-        """Close both UDP servers and tear down background tasks/timers."""
+        """Close all UDP servers and tear down background tasks/timers."""
+        await self._audio_stop()
         if self._keepalive_timer is not None:
             self._keepalive_timer.cancel()
             self._keepalive_timer = None
@@ -645,6 +705,19 @@ class MockIcomRadio:
     def civ_gap_open(self) -> bool:
         """True while any client sequence number is missing on the CI-V port."""
         return any(t.missing for t in self._civ_gap.values())
+
+    @property
+    def ptt_on(self) -> bool:
+        """Simulated PTT state (only meaningful with ``stateful_ptt=True``)."""
+        return self._ptt_state
+
+    def _set_simulated_ptt(self, on: bool, *, wire_set: bool) -> None:
+        """Flip the simulated PTT state and record the transition."""
+        if wire_set:
+            self.ptt_set_writes.append((time.monotonic(), on))
+        if on != self._ptt_state:
+            self.ptt_transitions.append((time.monotonic(), on))
+        self._ptt_state = on
 
     # ------------------------------------------------------------------
     # Session-lifecycle test knobs
@@ -854,15 +927,32 @@ class MockIcomRadio:
     # ------------------------------------------------------------------
 
     def _release_session(self, reason: str) -> None:
-        """Free the held session and cancel its keepalive timer."""
+        """Free the held session and cancel its keepalive timer.
+
+        Ending the radio session also ends the audio stream epoch (every
+        path through here: token-remove/logout, CI-V OpenClose(close),
+        keepalive timeout, ``drop_session``, reboot).
+        """
         if self._keepalive_timer is not None:
             self._keepalive_timer.cancel()
             self._keepalive_timer = None
+        self._audio_end_session(reason)
         if self._owner is not None:
             logger.debug("Mock: session released (%s) owner=%s", reason, self._owner)
             self._owner = None
             self.released_count += 1
             self.last_release_reason = reason
+            # ptt_on_session_loss (opt-in, stateful PTT only): "release"
+            # unkeys the simulated radio at the moment the session ends.
+            # The real IC-7610 behaviour is UNRECORDED — TX is never
+            # actuated on the bench — which is why the TX-under-fault
+            # matrix covers both this and "hold".
+            if (
+                self._stateful_ptt
+                and self._ptt_on_session_loss == "release"
+                and self._ptt_state
+            ):
+                self._set_simulated_ptt(False, wire_set=False)
 
     def _retire_token(self) -> None:
         """End the current token epoch: retire the value, issue a fresh one.
@@ -910,8 +1000,10 @@ class MockIcomRadio:
         if self._owner != owner:
             # A newly claimed session starts sequence tracking over: the
             # previous session's CI-V numbering no longer applies
-            # (MOR-3361). A refresh by the current holder keeps it.
+            # (MOR-3361). A refresh by the current holder keeps it — and
+            # with it the audio stream (the recorded soft-reconnect shape).
             self._civ_gap.clear()
+            self._audio_end_session("session_reclaimed")
             # A newly claimed session has no CI-V stream owner until its
             # own OpenClose(open): a close from the previous session's
             # stream identity must not end it.
@@ -1124,6 +1216,12 @@ class MockIcomRadio:
             # Recorded power-off window (recording w2): right after the 0x90
             # notice only discovery and pings are still answered.
             return
+        if label == "audio":
+            # The fault plan covers control/CI-V only (``faults.py``:
+            # ``Port``); audio packets go straight to the handler, which
+            # applies its own silence gate.
+            self._receive(data, addr, label, proto)
+            return
         plan = self.fault_plan
         port = self._port_of(label)
         if plan is not None and not plan.is_noop(port, "from_client"):
@@ -1190,6 +1288,8 @@ class MockIcomRadio:
         elif label == "civ":
             self._civ_client_id = sender_id
             self._handle_civ(data, addr, ptype, sender_id, seq, proto)
+        elif label == "audio":
+            self._handle_audio_packet(data, addr, ptype, sender_id, seq, proto)
 
     # ------------------------------------------------------------------
     # Control port
@@ -1293,8 +1393,18 @@ class MockIcomRadio:
                 if self._owner == (addr, sender_id):
                     self._release_session("token_remove")
                     self._retire_token()
-            elif struct.unpack_from("<I", data, 0x1C)[0] == self.token:
-                self._retire_token()
+            else:
+                # No owned session here (default mode): the token is the
+                # credential, not the sender id — the production client
+                # derives each socket's id from its local port
+                # (``core/transport.py``: ``my_id``), so its control and
+                # audio ids differ and a sender-id match never fires for
+                # it. A remove carrying the live token retires the epoch
+                # and ends the audio stream with it; a remove naming no
+                # session is a no-op (main's rule from #4142).
+                if struct.unpack_from("<I", data, 0x1C)[0] == self.token:
+                    self._retire_token()
+                    self._audio_end_session("token_remove")
             return
 
         # Client conninfo (0x90 bytes, requesttype=0x03) → status with CI-V port
@@ -1322,6 +1432,15 @@ class MockIcomRadio:
             if self.single_owner and self._owner == (addr, sender_id):
                 self._release_session("disconnect")
                 self._retire_token()
+            elif not self.single_owner and (addr, sender_id) == self._last_login:
+                # Default mode: a disconnect carries no token, so the last
+                # login is the identity — the control disconnect of the
+                # client that logged in ends the audio stream (the
+                # production client sends one per socket on logout,
+                # ``core/transport.py``: ``disconnect``). A disconnect from
+                # any other identity changes nothing. This is a simulator
+                # choice; the recorded rule is the live-token remove above.
+                self._audio_end_session("disconnect")
             return
 
     # ------------------------------------------------------------------
@@ -1374,14 +1493,16 @@ class MockIcomRadio:
 
         # Are You There → I Am Here
         if n == _HEADER_SIZE and ptype == _PT_ARE_YOU_THERE:
-            self._send(proto, self._ctrl_pkt(_PT_I_AM_HERE, 0, sender_id), addr, "civ")
+            reply = self._handshake_reply(data, ptype, sender_id)
+            assert reply is not None  # matched above
+            self._send(proto, reply, addr, "civ")
             return
 
         # Are You Ready → echo
         if n == _HEADER_SIZE and ptype == _PT_ARE_YOU_READY:
-            self._send(
-                proto, self._ctrl_pkt(_PT_ARE_YOU_READY, 0, sender_id), addr, "civ"
-            )
+            reply = self._handshake_reply(data, ptype, sender_id)
+            assert reply is not None  # matched above
+            self._send(proto, reply, addr, "civ")
             return
 
         # Ping request → Ping reply
@@ -1390,7 +1511,9 @@ class MockIcomRadio:
                 return  # post-reboot: stale client until a fresh OpenClose(open)
             if time.monotonic() < self._keepalive_silent_until:
                 return  # keepalive_silence window: receive but never reply
-            self._send(proto, self._ping_reply(data, sender_id), addr, "civ")
+            reply = self._handshake_reply(data, ptype, sender_id)
+            assert reply is not None  # matched above
+            self._send(proto, reply, addr, "civ")
             return
 
         # OpenClose (0x16 bytes)
@@ -2007,10 +2130,19 @@ class MockIcomRadio:
                 # seed the authoritative observation. Always answer PTT OFF so
                 # a rig that can in fact be supervised is recognised as such
                 # (MOR-1217); a SET or an unrecognised sub-command NAKs, same
-                # as an unimplemented command.
+                # as an unimplemented command. With ``stateful_ptt`` the GET
+                # instead answers the current simulated state (MOR-3251).
+                state = 0x01 if self._ptt_state else 0x00
                 return self._civ_frame(
-                    to, frm, _CMD_PTT, sub=_SUB_PTT, data=bytes([0x00])
+                    to, frm, _CMD_PTT, sub=_SUB_PTT, data=bytes([state])
                 )
+            if self._stateful_ptt and sub == _SUB_PTT and rest in (b"\x00", b"\x01"):
+                # Opt-in stateful PTT (MOR-3251): SET on/off answers FB and
+                # flips the simulated state. Reached only after the
+                # sequence-gap gate and behind the LAN echo above, like any
+                # other CI-V request.
+                self._set_simulated_ptt(rest == b"\x01", wire_set=True)
+                return self._civ_ack(to, frm)
             return self._civ_nak(to, frm)
 
         # ACK / NAK from client — ignore
@@ -2155,6 +2287,25 @@ class MockIcomRadio:
     # Control packet builders
     # ------------------------------------------------------------------
 
+    def _handshake_reply(self, data: bytes, ptype: int, sender_id: int) -> bytes | None:
+        """Reply bytes for the transport-handshake packets both ports share.
+
+        Are-You-There → I-Am-Here, Are-You-Ready echo, ping-request reply
+        (timestamp echoed); None for anything else. The CI-V port and the
+        audio port call this with the same packet and each sends the reply
+        through its own funnel, so the per-port gates (reboot down-window,
+        fence, keepalive/audio silence) stay at the call sites and the
+        CI-V paths are unchanged.
+        """
+        n = len(data)
+        if n == _HEADER_SIZE and ptype == _PT_ARE_YOU_THERE:
+            return self._ctrl_pkt(_PT_I_AM_HERE, 0, sender_id)
+        if n == _HEADER_SIZE and ptype == _PT_ARE_YOU_READY:
+            return self._ctrl_pkt(_PT_ARE_YOU_READY, 0, sender_id)
+        if n == _PING_SIZE and ptype == _PT_PING and data[0x10] == 0x00:
+            return self._ping_reply(data, sender_id)
+        return None
+
     def _ctrl_pkt(self, ptype: int, seq: int, client_id: int) -> bytes:
         """Build a 0x10-byte control/discovery packet."""
         pkt = bytearray(_HEADER_SIZE)
@@ -2293,9 +2444,14 @@ class MockIcomRadio:
         struct.pack_into("<I", pkt, 0x30, error & 0xFFFFFFFF)
         port = self._actual_civ_port if civ_port is None else civ_port
         struct.pack_into(">H", pkt, 0x42, port)
-        # Dummy audio port: keep within uint16 range even if OS assigns civ_port=65535.
+        # The audio port is the bound listener when one is up; otherwise
+        # the dummy the simulator always advertised (CI-V port + 1, kept
+        # within uint16 range): with the listener off nothing answers
+        # there, exactly as before the listener existed.
         if port == 0:
             audio_port = 0
+        elif self._actual_audio_port:
+            audio_port = self._actual_audio_port
         else:
             audio_port = port + 1 if port < 65535 else 65534
         struct.pack_into(">H", pkt, 0x46, audio_port)
