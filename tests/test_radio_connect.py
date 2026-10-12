@@ -1277,7 +1277,7 @@ class TestStartupBusyHoldBudget:
     A web server killed with ``kill -9`` leaves its LAN session held by the
     radio; a restart 1 s later is busy-rejected (``civ_port=0,
     error=0xFFFFFFFF``) until the hold expires. The measured hold on the
-    IC-7610 after an unclean client death is 95-113 s (MOR-3349, bench
+    IC-7610 after an unclean client death is 69-113 s (MOR-3349, bench
     capture 2026-10-12) — longer than the old three-retry ~90 s window, so
     the restart used to die with ConnectionError and /readyz never answered.
     """
@@ -1459,6 +1459,59 @@ class TestStartupBusyHoldBudget:
                 await radio.connect()
 
         assert send_mock.await_count == 1
+        assert mt.disconnected is True
+
+    @pytest.mark.asyncio
+    async def test_reconnect_busy_rejects_keep_mains_three_tries(self) -> None:
+        """Row 4: a reconnect keeps main's fixed three busy attempts.
+
+        The budget is a start-up-only scope. ``_connect_once`` also serves
+        the resident reconnect loop and lifecycle recovery, where
+        ``_has_connected_once`` is already set; those callers keep main's
+        fixed three ~30 s attempts instead of waiting out the 120 s budget
+        on every busy attempt.
+        """
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
+        radio._has_connected_once = True
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        clock = _VirtualMonotonic()
+        send_mock = AsyncMock()
+
+        async def _reject_status() -> int:
+            clock.advance(_REJECT_STEP_S)
+            radio._last_status_error = 0xFFFFFFFF
+            return 0
+
+        with (
+            patch.object(radio._control_phase, "_status_retry_pause", return_value=0.0),
+            patch(
+                "rigplane.runtime._control_phase.time.monotonic", new=clock.monotonic
+            ),
+            patch.object(
+                radio._control_phase,
+                "_wait_for_packet",
+                new=AsyncMock(return_value=_build_login_response()),
+            ),
+            patch.object(radio._control_phase, "_send_token_ack", new=AsyncMock()),
+            patch.object(
+                radio._control_phase,
+                "_receive_guid",
+                new=AsyncMock(return_value=b"\x00" * 16),
+            ),
+            patch.object(radio._control_phase, "_send_conninfo", new=send_mock),
+            patch.object(
+                radio._control_phase,
+                "_receive_civ_port",
+                new=AsyncMock(side_effect=_reject_status),
+            ),
+        ):
+            with pytest.raises(ConnectionError, match="after retries"):
+                await radio.connect()
+
+        # Initial conninfo plus main's three retries: the budget must not
+        # add a fourth window to a reconnect.
+        assert send_mock.await_count == 4
         assert mt.disconnected is True
 
 
