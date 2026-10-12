@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Close and reconnect a silent control, scope or audio-scope WebSocket instead of showing a live link over a dead connection (MOR-1831, MOR-3276, #4043).** The Web UI now closes and reconnects the channel when the server goes silent for 30 s. A new Web UI talking to an older Core without the pong reply reconnects an idle control channel about every 31 s.
+
 ## [3.0.0b15] — 2026-10-11
 
 ### Added
