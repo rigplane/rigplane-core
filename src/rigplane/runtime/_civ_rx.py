@@ -965,7 +965,8 @@ class CivRuntime:
             self.unbind_ptt_observer()
         if self._host._civ_epoch == token.civ_source_generation:
             self.advance_generation("managed TX physical port retired")
-        if self._host._civ_transport is token.transport:
+        retired_live_transport = self._host._civ_transport is token.transport
+        if retired_live_transport:
             self._host._civ_transport = None
         barrier = self._managed_tx_retirements.get(provider_generation)
         if barrier is None or (
@@ -974,7 +975,8 @@ class CivRuntime:
             barrier = asyncio.create_task(token.transport.disconnect())
             self._managed_tx_retirements[provider_generation] = barrier
         await asyncio.shield(barrier)
-        self._host._civ_resume_seq = token.transport.send_seq
+        if retired_live_transport:
+            self._host._civ_resume_seq = token.transport.send_seq
 
     async def stop_pump(self) -> None:
         """Stop CI-V receive pump and fail pending request futures."""
