@@ -1,13 +1,19 @@
 # IC-7610 capture probe driver
 
 Read-only CI-V probe driver for the IC-7610 bench capture session
-(Linear MOR-3307, IC-7610 fidelity program). The LAN/USB link is recorded
-through `rigplane_testkit/icom/recorder.py: IcomSessionRecorder`; this
-driver connects the **production** client through that recorded link and
-asks the radio every read-only question the profile declares, once and
-paced, so the recording holds the radio's answer class per command —
-`data` / `ack` / `nak` / `silence`, with latency. That table is what the
-simulator must reproduce (MOR-3297).
+(Linear MOR-3307, IC-7610 fidelity program). The LAN session is recorded
+through `rigplane_testkit/icom/recorder.py: IcomSessionRecorder` (a UDP
+proxy writing JSONL); a serial run is recorded by the serial bridge
+(`rigplane_testkit.serial.recorder`, PR #4056) instead. This driver
+connects the **production** client through that recorded link and asks
+the radio the profile's GET requests, once and paced — every `get_*` the
+profile declares except the 0x07, 0x1C and 0x1A 00 families (the nine
+excluded reads are get_vfo, get_dual_watch, get_main_sub_band,
+get_transceiver_status, get_tx_target, get_xfc_status, get_civ_output_ant,
+get_tuner_status, get_memory_contents) — so the recording holds the
+radio's answer class per command — `data` / `ack` / `nak` / `silence`,
+with latency. That table is what the simulator must reproduce
+(MOR-3297).
 
 ## Layout
 
@@ -44,8 +50,13 @@ python scripts/ic7610_capture/probe.py --backend serial \
   --model IC-7610 --radio-addr 0x98 --out answers.json
 ```
 
-The password is read from `--pass-file`; the host, user and password are
-never printed or logged. Exit code 0 on completion, 3 when connect fails.
+The password is read from `--pass-file`; the script itself never prints
+the host, user or password. On UDP-open or CI-V discovery failures the
+runtime still logs the host at WARNING
+(`src/rigplane/runtime/_control_phase.py`, `src/rigplane/core/transport.py`),
+and the script configures no logging, so those records reach stderr
+through Python's fallback handler — redirect stderr when recording
+publicly. Exit code 0 on completion, 3 when connect fails.
 
 ## Output
 

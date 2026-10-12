@@ -124,6 +124,21 @@ def test_probe_list_covers_profile_gets_and_excludes_forbidden() -> None:
     assert "get_main_sub_band" not in names
 
 
+def test_refused_command_bytes_are_refused_even_when_in_allowed() -> None:
+    """The command-byte refusal fires even when the allowed set holds the body.
+
+    The allow-list alone must never be the only gate for the refused
+    families: deleting the ``_REFUSED_COMMANDS`` check in ``is_forbidden``
+    fails here long before any real profile puts these bodies in the
+    allowed set.
+    """
+
+    hex_bodies = ("1c00", "1c0001", "1800", "07", "07d0", "0e01")
+    allowed = frozenset(bytes.fromhex(hex_body) for hex_body in hex_bodies)
+    for hex_body in hex_bodies:
+        assert probe_list.is_forbidden(bytes.fromhex(hex_body), allowed), hex_body
+
+
 class _AckOneGetMock(MockIcomRadio):
     """Answers one GET (scope span, 0x27 0x15) with a bare ACK (0xFB)."""
 
