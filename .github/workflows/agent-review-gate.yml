@@ -22,7 +22,7 @@ concurrency:
   # nothing. cancel-in-progress stays true for qualifying runs because a
   # newer qualifying run re-lists and re-evaluates every PR comment, so the
   # superseded evaluation's verdict is recomputed from scratch.
-  # Per-run REST budget (measured 2026-10-12, run list in the PR body): 3
+  # Per-run REST calls, counted from the steps below: 3
   # fixed calls (pulls.get, repos.getCommit, repos.createCommitStatus) plus
   # one issues.listComments page per 100 comments.
   group: agent-review-gate-${{ github.event.issue.pull_request && github.event.issue.number || github.event.pull_request.number }}-${{ (github.event_name == 'pull_request' || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:')))) && 'eval' || github.run_id }}
