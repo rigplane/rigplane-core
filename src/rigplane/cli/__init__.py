@@ -103,6 +103,7 @@ from rigplane.cli._convert import (  # noqa: E402
 )
 from rigplane.core.exceptions import (  # noqa: E402
     ConnectionError as RigplaneConnectionError,
+    RadioSessionHeldError,
 )
 from rigplane.core.radio_protocol import (  # noqa: E402
     ManagedTxApi,
@@ -662,6 +663,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "  rigplane --model IC-7610 web --bridge           # web UI + audio bridge\n"
             "  rigplane --model IC-7610 serve                  # rigctld server only\n"
             "  rigplane discover                               # find radios on the network\n"
+            "exit codes:\n"
+            "  0  success\n"
+            "  1  runtime error (connection, auth, command failure)\n"
+            "  2  usage error (argument parsing)\n"
+            "  3  radio session held by a live owner (a deliberate stop, not a crash)\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -2366,7 +2372,8 @@ async def _serve_while_startup_connect_pending(
       then serving continues until shutdown;
     * the enter finishes first and fails (budget out, refused) — serving
       is torn down and the connect error propagates, so the process ends
-      with the same ``Error:`` text and return code 1;
+      with the same ``Error:`` text and return code 3 for a live-owner
+      hold, 1 otherwise;
     * the enter is cancelled by an operator disconnect during the hold —
       serving continues until shutdown, the same as a disconnect after a
       normal start (a later operator connect re-primes through the radio
@@ -2742,6 +2749,10 @@ async def _run(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         logger.debug("Traceback:", exc_info=True)
+        # A live owner holds the radio session: a deliberate stop, not a
+        # crash — exit 3 so a supervisor does not relaunch into it.
+        if isinstance(exc, RadioSessionHeldError):
+            return 3
         return 1
     finally:
         if isinstance(session, _ManagedTxRadioSession):

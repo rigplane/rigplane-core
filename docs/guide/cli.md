@@ -1102,7 +1102,9 @@ rigplane --model IC-7610 web --dx-cluster dxc.nc7j.com:7373 --callsign KN4KYD
 | Code | Meaning |
 |------|---------|
 | `0` | Success |
-| `1` | Error (connection, auth, command failure) |
+| `1` | Runtime error (connection, auth, command failure) |
+| `2` | Usage error (argument parsing) |
+| `3` | Radio session held by a live owner — a deliberate stop, not a crash |
 
 ## Examples
 

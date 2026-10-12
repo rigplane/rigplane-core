@@ -3542,9 +3542,7 @@ class TestLiveOwnerExitCode:
         assert "from this computer" in err
 
     @pytest.mark.asyncio
-    async def test_background_live_owner_stop_exits_three(
-        self, capsys: Any
-    ) -> None:
+    async def test_background_live_owner_stop_exits_three(self, capsys: Any) -> None:
         """The background connect during a busy hold maps the stop to 3."""
         import asyncio
 
