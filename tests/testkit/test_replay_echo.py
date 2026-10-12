@@ -1,4 +1,4 @@
-"""Replayer LAN CI-V echo skip (fix round 1, PR #4097).
+"""Replayer LAN CI-V echo skip.
 
 The real IC-7610 echoes every CI-V request frame back byte-identical on the
 LAN CI-V port immediately before its reply. A hand-built Recording below pins

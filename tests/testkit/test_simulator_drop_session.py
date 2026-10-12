@@ -227,9 +227,10 @@ async def test_stale_openclose_does_not_reopen_stream_and_counters(server, clien
 
 async def test_fence_permission_is_per_client_not_shared(server, client):
     """(d, two clients) The fence permission belongs to the client whose
-    fresh login was accepted: B (fresh login + OpenClose from its declared
-    CI-V port) is served, stale A (never re-logs) still gets nothing —
-    even though both clients sit on the same IP."""
+    fresh login's own conninfo was accepted: B (fresh login + accepted
+    conninfo + OpenClose from its declared CI-V port) is served, stale A
+    (never re-logs) still gets nothing — even though both clients sit on
+    the same IP."""
     await _login_and_claim(client, server)
     client.send(_openclose(), server.civ_port)
     await client.recv()  # unsolicited CI-V frame on open
@@ -388,8 +389,9 @@ async def test_busy_rejected_conninfo_does_not_steal_fence_permission(server, cl
 
 
 async def test_open_before_conninfo_stays_fenced(server, client):
-    """The conninfo-not-yet-arrived guard: a fresh login's OpenClose(open)
-    sent before its conninfo request lifts nothing from the fence."""
+    """A fresh login alone grants no fence permission — not even the
+    declared-port-0 IP fallback: an OpenClose(open) sent before the login's
+    own conninfo is accepted stays fenced, and so does CI-V data."""
     await _login_and_claim(client, server)
     server.drop_session(at=0.2, notice=False)
     await asyncio.sleep(0.5)  # past the drop
