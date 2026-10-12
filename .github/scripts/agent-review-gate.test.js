@@ -544,6 +544,7 @@ function v2Github({pullsGet, branchSha = BASE_SHA, comments = []}) {
     paginate: async () => comments,
     rest: {
       pulls: {get: pullsGet},
+      issues: {listComments() {}},
       repos: {
         getBranch: async () => ({data: {commit: {sha: branchSha}}}),
         getCommit: async () => ({data: {commit: {committer: {date: '2026-08-08T04:50:00Z'}}}}),
