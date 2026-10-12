@@ -27,6 +27,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
+from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime.radio import IcomRadio
 from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.scope import ScopeFrame
@@ -2343,11 +2344,18 @@ async def test_radio_disconnect_paths() -> None:
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
     assert msg["error"] == "no_radio"
 
-    radio = SimpleNamespace(connected=False, soft_disconnect=AsyncMock())
+    radio = SimpleNamespace(
+        connected=False,
+        conn_state=RadioConnectionState.DISCONNECTED,
+        disconnect=AsyncMock(),
+        soft_disconnect=AsyncMock(),
+    )
     h = _control_handler(ws=ws, radio=radio)
     await h._handle_radio_disconnect({"id": "d1"})
-    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["result"]["status"] == "already_disconnected"
+    msgs = [decode_json(c.args[0]) for c in ws.send_text.await_args_list[-2:]]
+    assert msgs[0]["result"]["status"] == "disconnected"
+    assert msgs[1]["event"] == "connection_state" and msgs[1]["connected"] is False
+    radio.disconnect.assert_awaited_once()
 
     radio = SimpleNamespace(
         connected=True,
