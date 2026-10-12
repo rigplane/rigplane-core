@@ -748,10 +748,12 @@ async def test_connection_error_attempt_drives_machine_to_disconnected() -> None
     assert mech.release_calls >= 1
     assert not mech.claimed
     assert lc.state is LifecycleState.DISCONNECTED
-    assert len(events) >= 2
-    assert events[-2].to_state is LifecycleState.CLOSING
-    assert events[-2].reason is LifecycleErrorReason.CANCELLED
-    assert events[-1].to_state is LifecycleState.DISCONNECTED
+    assert [e.to_state for e in events] == [
+        LifecycleState.CONNECTING,
+        LifecycleState.CLOSING,
+        LifecycleState.DISCONNECTED,
+    ]
+    assert events[1].reason is LifecycleErrorReason.CANCELLED
 
 
 async def test_auth_hard_fail_emits_disconnected_exactly_once() -> None:
