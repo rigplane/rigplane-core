@@ -58,6 +58,3 @@ shifts.
 |------------|------------------|-------|-------------------------------------------------|
 | RP-ML-013A | vitest + jsdom   | <2 s  | runtime transform, pseudo expansion ratio       |
 | RP-ML-006  | Playwright       | ~60 s | missing-key paint, glossary                     |
-
-The unit test is the cheap CI floor; the Playwright pack is the heavier
-end-to-end pass over the same surfaces in a real browser.
