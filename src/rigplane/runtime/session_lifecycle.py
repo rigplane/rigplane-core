@@ -832,8 +832,20 @@ class CoreRadioSessionLifecycle:
             # propagate so the awaiter sees the cancel.
             raise
         except (AuthenticationError, RigplaneConnectionError):
-            # Hard-fail / exhaustion paths already drove the machine to
-            # DISCONNECTED; just re-raise.
+            # The auth hard-fail and the attempt-exhaustion paths already drove
+            # the machine to DISCONNECTED before raising.  A
+            # RigplaneConnectionError escaping the attempt itself only released
+            # the claim, so drive the observable machine home when it is not
+            # already there, then re-raise.
+            self._connecting_started = None
+            if self._state not in (
+                LifecycleState.CLOSING,
+                LifecycleState.DISCONNECTED,
+            ):
+                self._emit(
+                    LifecycleState.CLOSING, reason=LifecycleErrorReason.CANCELLED
+                )
+                self._emit(LifecycleState.DISCONNECTED)
             raise
         except BaseException:
             # Any other post-claim exception: release ran inside
