@@ -87,6 +87,7 @@ from ..runtime.controller_authority import (
 )
 from ..runtime.managed_tx_authority import ManagedTxAuthority
 from ..runtime.managed_tx_state import ManagedTxIntentKind
+from ..runtime.tx_interlock import TxInterlockRefusal, is_tx_family_civ_command
 from ..sdr import IqSource, SdrConfig
 from ..sdr.runtime import SdrScopeRuntime
 from ..radio_state import RadioState
@@ -493,6 +494,22 @@ class _HttpCommandExecutor:
             if not isinstance(radio, CivTransactionCapable):
                 raise RuntimeError(
                     "active backend does not support raw CI-V transactions"
+                )
+            # In managed mode PTT and the tuner move only through the managed
+            # authority, so a TX-family raw transaction is refused by payload
+            # alone — regardless of the observed RF state, and without
+            # consulting the authority.
+            if self.server._managed_tx_authority() is not None and (
+                is_tx_family_civ_command(
+                    int(params["command"]),
+                    None if params.get("sub") is None else int(params["sub"]),
+                    bytes(params["data"]),
+                )
+            ):
+                raise TxInterlockRefusal(
+                    "raw CI-V TX-family transactions are refused while the "
+                    "radio is under managed TX authority",
+                    reason_code="managed_tx_refused",
                 )
             result = await radio.send_civ_transaction(
                 int(params["command"]),
@@ -5559,6 +5576,14 @@ class WebServer:
             )
             details = service_result.executor_result.details or {}
             result = details["transaction_result"]
+        except TxInterlockRefusal as exc:
+            await self._send_json(
+                writer,
+                403,
+                "Forbidden",
+                {"error": exc.reason_code, "message": str(exc)},
+            )
+            return
         except (RigplaneTimeoutError, TimeoutError):
             await self._send_json(
                 writer,
@@ -5924,6 +5949,13 @@ class WebServer:
             )
             details = service_result.executor_result.details or {}
             result = details["transaction_result"]
+        except TxInterlockRefusal as exc:
+            return self._failed_transaction_batch_result(
+                step,
+                status="refused",
+                error=exc.reason_code,
+                message=str(exc),
+            )
         except (RigplaneTimeoutError, TimeoutError):
             return self._failed_transaction_batch_result(
                 step,

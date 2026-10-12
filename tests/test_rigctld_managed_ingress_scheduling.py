@@ -185,10 +185,10 @@ async def test_managed_non_ptt_families_keep_exact_legacy_leaf_parameters(monkey
         _intent("set_freq", freq_hz=_FREQUENCY, receiver=1), _intent("set_mode", mode="USB", filter_width=2400, receiver=1, packet_mode=True),
         _intent("set_vfo", vfo="VFOB"), _intent("set_rit", hz=125), _intent("set_xit", hz=-75),
         _intent("set_level", level="AF", value=0.5, receiver=1, vfo_arg="VFOB"), _intent("set_func", func="NB", on=True, receiver=1, vfo_arg="VFOB"),
-        _intent("set_split_vfo", on=True, tx_vfo="VFOB"), _intent("send_raw", frame_bytes=b"\xfe\xfd"),
+        _intent("set_split_vfo", on=True, tx_vfo="VFOB"), _intent("send_raw", frame_bytes=bytes.fromhex("FEFE98E003FD")),
     ]
     results = [await executor.execute(intent) for intent in intents]
-    assert handler._radio.calls == [("freq", _FREQUENCY, 1), ("mode", "USB", 2400, 1), ("rit", 125), ("rit-on", True), ("rit", -75), ("xit-on", True), ("raw", b"\xfe\xfd")]
+    assert handler._radio.calls == [("freq", _FREQUENCY, 1), ("mode", "USB", 2400, 1), ("rit", 125), ("rit-on", True), ("rit", -75), ("xit-on", True), ("raw", bytes.fromhex("FEFE98E003FD"))]
     assert handler.calls == [("packet", 1), ("vfo", "VFOB"), ("level", "AF", .5, 1, "VFOB"), ("func", "NB", True, 1, "VFOB"), ("split", True, "VFOB")]
     assert results[-1].details == {"values": []}
 @pytest.mark.parametrize("intent", [_intent("set_vfo", vfo="VFOB"), _intent("set_level", level="AF", value=.5),

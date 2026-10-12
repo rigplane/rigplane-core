@@ -61,9 +61,12 @@ __all__ = [
     "TxInterlockDeferredResult",
     "TxInterlockDecision",
     "TxInterlockDisposition",
+    "TxInterlockRefusal",
+    "classify_raw_civ_frame_tx_family",
     "classify_tx_interlock",
     "evaluate_tx_interlock",
     "get_tx_interlock_command_family_metadata",
+    "is_tx_family_civ_command",
 ]
 
 
@@ -389,3 +392,74 @@ def evaluate_tx_interlock(
     return TxInterlockDecision(
         disposition, False, "RF state is TX; command is blocked."
     )
+
+
+# ---------------------------------------------------------------------------
+# Raw CI-V TX-family classification (byte level)
+# ---------------------------------------------------------------------------
+#
+# The typed policy above classifies command dataclasses.  Raw CI-V frames
+# (rigctld ``w`` frames, HTTP raw_civ_transaction requests) carry no typed
+# command, so managed-mode enforcement needs the same TX family at the byte
+# level.  The family is exactly what the typed policy already treats as a TX
+# actuation: the PTT command 0x1C sub 0x00 in both directions (PttOn is
+# ``_HARD_BLOCK_TYPES``; PttOff stays inside the family here because under a
+# managed authority PTT moves only through that authority) and the tuner
+# command 0x1C sub 0x01 (``SetTunerStatus`` values 1/2 are BLOCK).  Read
+# frames carry no data payload and are not actuations.
+
+_CIV_FRAME_HEAD = 0xFE
+_CIV_FRAME_TAIL = 0xFD
+_CIV_TX_FAMILY_COMMAND = 0x1C
+_CIV_TX_FAMILY_SUBS = (0x00, 0x01)  # PTT, tuner
+_CIV_RECEIVER_PREFIX_COMMAND = 0x29
+
+
+def is_tx_family_civ_command(command: int, sub: int | None, data: bytes) -> bool:
+    """True when a raw CI-V ``(command, sub, data)`` triple is a TX actuation.
+
+    A 0x29 receiver-prefix wrapper (``data = receiver + inner command +
+    inner sub + inner data``) is unwrapped one level.  Anything whose inner
+    command cannot be identified fails closed (True): a managed caller must
+    refuse what it cannot classify.
+    """
+
+    if command == _CIV_RECEIVER_PREFIX_COMMAND:
+        if len(data) < 2 or data[1] == _CIV_RECEIVER_PREFIX_COMMAND:
+            return True
+        inner = data[1]
+        if inner != _CIV_TX_FAMILY_COMMAND:
+            return False
+        if len(data) < 3:
+            return True
+        return data[2] in _CIV_TX_FAMILY_SUBS and bool(data[3:])
+    if command != _CIV_TX_FAMILY_COMMAND:
+        return False
+    if sub is None:
+        return True
+    return sub in _CIV_TX_FAMILY_SUBS and bool(data)
+
+
+def classify_raw_civ_frame_tx_family(frame: bytes) -> bool | None:
+    """Byte-level TX-family verdict for one whole CI-V frame.
+
+    Parses the ``FE FE to from cmd [sub] [data] FD`` envelope, then defers to
+    :func:`is_tx_family_civ_command`.  Returns None when the envelope cannot
+    be parsed; a managed caller must refuse on None as well as on True.
+    """
+
+    if (
+        len(frame) < 6
+        or frame[0] != _CIV_FRAME_HEAD
+        or frame[1] != _CIV_FRAME_HEAD
+        or frame[-1] != _CIV_FRAME_TAIL
+    ):
+        return None
+    command = frame[4]
+    if command == _CIV_TX_FAMILY_COMMAND:
+        if len(frame) < 7:
+            return None
+        return is_tx_family_civ_command(command, frame[5], frame[6:-1])
+    if command == _CIV_RECEIVER_PREFIX_COMMAND:
+        return is_tx_family_civ_command(command, None, frame[5:-1])
+    return False
