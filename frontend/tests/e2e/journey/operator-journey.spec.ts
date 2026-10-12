@@ -6,26 +6,65 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
  * control link is connected, then tune, change mode, narrow the filter.
  * Tune, mode and filter width are each read back three ways: the command frame
  * the page sent over the WebSocket, the server's /api/v1/state, and the DOM.
+ *
+ * A second scenario runs against a server started with --read-only (second
+ * webServer entry in playwright.journey.config.ts): the phone layout's PTT
+ * press sends ptt_on and the server refuses it. SerialMockRadio opens no
+ * device, and on this fake a ptt_on is refused with or without --read-only
+ * (no managed-transmit authority is composed).
  */
 
 interface WsCommandRecord {
+  id: string;
   name: string;
   params: Record<string, unknown>;
+}
+
+interface WsRefusalRecord {
+  id: string;
+  error: string;
+  message: string;
 }
 
 const JOURNEY_COMMANDS = ['set_freq', 'set_mode', 'set_filter_width'];
 
 // Adapted from installWebSocketInterceptor in v2-ui-interactive.impl.ts (not
-// imported: importing that file registers its tests); keeps only name and params.
+// imported: importing that file registers its tests); keeps the id, name and
+// params of each outgoing command frame, the id, error and message of each
+// incoming response frame with ok: false, and the path of each socket that opened.
 async function installWebSocketInterceptor(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    const win = window as Window & { __WS_COMMANDS__?: WsCommandRecord[] };
+    const win = window as Window & {
+      __WS_COMMANDS__?: WsCommandRecord[];
+      __WS_REFUSALS__?: WsRefusalRecord[];
+      __WS_OPENED__?: string[];
+    };
     win.__WS_COMMANDS__ = [];
+    win.__WS_REFUSALS__ = [];
+    win.__WS_OPENED__ = [];
     const OriginalWebSocket = window.WebSocket;
 
     class InterceptedWebSocket extends OriginalWebSocket {
       constructor(url: string | URL, protocols?: string | string[]) {
         super(url, protocols as never);
+        this.addEventListener('open', () => {
+          win.__WS_OPENED__?.push(new URL(String(url), window.location.href).pathname);
+        });
+        this.addEventListener('message', (event: MessageEvent) => {
+          if (typeof event.data !== 'string') return;
+          try {
+            const parsed = JSON.parse(event.data) as Record<string, unknown>;
+            if (parsed.type === 'response' && parsed.ok === false) {
+              win.__WS_REFUSALS__?.push({
+                id: String(parsed.id),
+                error: String(parsed.error),
+                message: String(parsed.message),
+              });
+            }
+          } catch {
+            // Ignore non-JSON frames.
+          }
+        });
         const originalSend = this.send.bind(this);
         this.send = (data: string | ArrayBufferLike | Blob | ArrayBufferView) => {
           if (typeof data === 'string') {
@@ -33,6 +72,7 @@ async function installWebSocketInterceptor(page: Page): Promise<void> {
               const parsed = JSON.parse(data) as Record<string, unknown>;
               if (parsed.type === 'cmd' || parsed.type === 'command') {
                 win.__WS_COMMANDS__?.push({
+                  id: String(parsed.id),
                   name: String(parsed.name),
                   params: (parsed.params ?? {}) as Record<string, unknown>,
                 });
@@ -55,12 +95,33 @@ async function installWebSocketInterceptor(page: Page): Promise<void> {
   });
 }
 
+/** Command frames with the given names the page has sent so far, in send order. */
+async function sentCommands(page: Page, names: string[]): Promise<WsCommandRecord[]> {
+  return page.evaluate((wanted) => {
+    const win = window as Window & { __WS_COMMANDS__?: WsCommandRecord[] };
+    return (win.__WS_COMMANDS__ ?? []).filter((command) => wanted.includes(command.name));
+  }, names);
+}
+
 /** Journey command frames the page has sent so far, in send order. */
 async function sentJourneyCommands(page: Page): Promise<WsCommandRecord[]> {
-  return page.evaluate((names) => {
-    const win = window as Window & { __WS_COMMANDS__?: WsCommandRecord[] };
-    return (win.__WS_COMMANDS__ ?? []).filter((command) => names.includes(command.name));
-  }, JOURNEY_COMMANDS);
+  return sentCommands(page, JOURNEY_COMMANDS);
+}
+
+/** Paths of the WebSockets that have opened so far, in open order. */
+async function openedSockets(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const win = window as Window & { __WS_OPENED__?: string[] };
+    return win.__WS_OPENED__ ?? [];
+  });
+}
+
+/** Error responses the server has sent to the page so far, in arrival order. */
+async function receivedRefusals(page: Page): Promise<WsRefusalRecord[]> {
+  return page.evaluate(() => {
+    const win = window as Window & { __WS_REFUSALS__?: WsRefusalRecord[] };
+    return win.__WS_REFUSALS__ ?? [];
+  });
 }
 
 async function sentParams(page: Page, name: string): Promise<Array<Record<string, unknown>>> {
@@ -131,4 +192,49 @@ test('operator journey: connect, tune, change mode, narrow the filter', async ({
     ['set_mode', { mode: 'LSB', receiver: 0 }],
     ['set_filter_width', { width: 1800, receiver: 0 }],
   ]);
+});
+
+// The second webServer entry in playwright.journey.config.ts, started with --read-only.
+const READ_ONLY_URL = 'http://127.0.0.1:18767';
+
+// Phone layout: its "Push to talk" button sends ptt_on although /api/v1/managed-transmit
+// reports unavailable on this fake; the desktop layout's PTT button is disabled in that state.
+test.describe('read-only server, phone layout', () => {
+  test.use({ baseURL: READ_ONLY_URL, viewport: { width: 430, height: 932 } });
+
+  test('operator journey: PTT is refused by the read-only gate', async ({ page, context }) => {
+    await context.grantPermissions(['microphone'], { origin: READ_ONLY_URL });
+    await installWebSocketInterceptor(page);
+    await page.goto('/?ui=v2', { waitUntil: 'domcontentloaded' });
+
+    const ptt = page.getByRole('button', { name: 'Push to talk' });
+    const reportedPtt = async () => ((await (await page.request.get('/api/v1/state')).json()) as { ptt?: unknown }).ptt;
+
+    // Idle before the press: the control socket is open, the button reads PTT and the server
+    // does not report PTT on.
+    await expect.poll(() => openedSockets(page)).toContain('/api/v1/ws');
+    await expect(ptt).toBeVisible();
+    await expect(ptt).toHaveText('PTT');
+    expect(await reportedPtt()).not.toBe(true);
+
+    // Press and hold: the page starts the microphone, then sends one ptt_on.
+    await ptt.hover();
+    await page.mouse.down();
+    await expect.poll(() => sentCommands(page, ['ptt_on'])).toHaveLength(1);
+    const [pttOn] = await sentCommands(page, ['ptt_on']);
+    expect(pttOn.params).toEqual({});
+
+    // The server answers that command id with the read-only gate's refusal. On a writable
+    // fake the same press is refused as radio_nak / "managed transmit authority unavailable".
+    await expect
+      .poll(async () => (await receivedRefusals(page)).filter((refusal) => refusal.id === pttOn.id))
+      .toEqual([{ id: pttOn.id, error: 'command_failed', message: 'read-only mode: ptt_on rejected' }]);
+
+    // After the refusal the button is idle and the server still does not report PTT on.
+    await expect(ptt).toHaveText('PTT');
+    await expect(ptt).not.toHaveClass(/ptt-fab-held|ptt-fab-latched/);
+    expect(await reportedPtt()).not.toBe(true);
+
+    await page.mouse.up();
+  });
 });

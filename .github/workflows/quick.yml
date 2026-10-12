@@ -348,9 +348,9 @@ jobs:
           path: .playwright-output
           if-no-files-found: ignore
 
-      # Operator journey (connect, tune, mode, filter width) against
-      # tests/e2e/journey_web_server.py, which the Playwright config starts
-      # through `uv run`. Serves the frontend/dist built above. Blocking.
+      # Operator journey against tests/e2e/journey_web_server.py, which the
+      # Playwright config starts through `uv run`. Serves the frontend/dist
+      # built above. Blocking.
       - name: Frontend operator-journey fake-server E2E
         if: needs.classify.outputs.frontend == 'true'
         working-directory: frontend

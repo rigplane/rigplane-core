@@ -48,6 +48,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=18766, type=int)
     parser.add_argument("--static-dir", default=ROOT / "frontend" / "dist", type=Path)
+    parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="start the WebServer with WebConfig.read_only=True",
+    )
     return parser.parse_args()
 
 
@@ -65,7 +70,7 @@ async def run() -> None:
             static_dir=args.static_dir,
             radio_model=radio.model,
             discovery=False,
-            read_only=False,
+            read_only=args.read_only,
         ),
     )
     await server.serve_forever(
