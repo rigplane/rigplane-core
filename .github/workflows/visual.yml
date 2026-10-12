@@ -9,7 +9,7 @@ name: Visual regression (pixel-diff)
 # MOR-1396: browser system dependencies are installed explicitly and the
 # approved baselines were re-pinned from real Linux runner output.
 #
-# MOR-3281 part 2: `push` to `main` runs the same pixel-diff under the
+# `push` to `main` runs the same pixel-diff under the
 # same paths filter as `pull_request`, so two individually-green PRs that
 # jointly redden the approved set are still caught on `main`. The
 # concurrency group is keyed on the workflow, the event name and
