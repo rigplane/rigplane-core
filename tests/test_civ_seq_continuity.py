@@ -10,6 +10,7 @@ the sequence asserted on a rebuilt transport is read from the header bytes
 
 from __future__ import annotations
 
+import errno
 import struct
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import ExitStack, contextmanager
@@ -84,6 +85,38 @@ class _FlakyDiscoveryCivTransport(_OfflineCivTransport):
     async def _discover(self) -> None:
         if self._ordinal < self.failures:
             raise TimeoutError("CI-V port did not answer discovery")
+
+
+class _BindFailureTransport(_OfflineCivTransport):
+    """Rebuild transport whose ``connect`` fails before any endpoint exists.
+
+    Mirrors ``create_datagram_endpoint`` refusing the bind of the fixed
+    local CI-V port: ``OSError`` is raised with ``_udp_transport`` still
+    ``None`` (``IcomTransport.connect`` sets it only once the datagram
+    endpoint exists), so the failed transport holds nothing to close.
+    Counts its ``disconnect()`` calls.
+    """
+
+    instances: ClassVar[list["_BindFailureTransport"]] = []
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.disconnect_calls = 0
+        self.instances.append(self)
+
+    async def connect(
+        self,
+        host: str,
+        port: int,
+        *,
+        local_host: str | None = None,
+        local_port: int = 0,
+    ) -> None:
+        raise OSError(errno.EADDRINUSE, "Address already in use")
+
+    async def disconnect(self) -> None:
+        self.disconnect_calls += 1
+        await super().disconnect()
 
 
 async def _fail_if_called() -> None:
@@ -378,5 +411,33 @@ async def test_a_failed_rebuild_is_closed_and_keeps_the_carried_numbering() -> N
         failed = flaky.instances[0]
         assert failed.wire == []
         assert failed.state is ConnectionState.DISCONNECTED
+        assert radio._civ_transport is None
+        assert radio._civ_resume_seq == _CARRIED_SEQ
+
+
+async def test_a_rebuild_failing_before_an_endpoint_is_left_unclosed() -> None:
+    """A rebuild whose bind fails before an endpoint is not disconnected.
+
+    ``IcomTransport.connect`` raises ``OSError`` out of
+    ``create_datagram_endpoint`` with ``_udp_transport`` still ``None``
+    when the fixed local CI-V port is already bound.  Nothing is open,
+    so the failure handling must drop the transport from the host
+    without calling ``disconnect()`` — a counted call here pins that —
+    and the carried numbering survives for the next attempt.
+    """
+    radio = _kept_session_radio()
+    old = _OfflineCivTransport()
+    old.send_seq = _CARRIED_SEQ
+    radio._civ_transport = old
+    refused = _BindFailureTransport
+    refused.instances.clear()
+    with _rebuild_stubs(radio, refused):
+        await radio._force_cleanup_civ()
+        assert radio._civ_resume_seq == _CARRIED_SEQ
+        with pytest.raises(ConnectionError):
+            await radio._control_phase.soft_reconnect()
+        assert len(refused.instances) == 1
+        failed = refused.instances[0]
+        assert failed.disconnect_calls == 0
         assert radio._civ_transport is None
         assert radio._civ_resume_seq == _CARRIED_SEQ
