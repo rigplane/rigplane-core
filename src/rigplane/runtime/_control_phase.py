@@ -888,7 +888,7 @@ class ControlPhaseRuntime:
 
         if h._civ_resume_seq is not None:
             # ``connect`` reset the numbering to 0; continue that of the CI-V
-            # transport torn down by ``soft_disconnect`` or ``_force_cleanup_civ``.
+            # transport torn down on this session.
             h._civ_transport.send_seq = h._civ_resume_seq
 
         h._civ_transport.start_ping_loop()

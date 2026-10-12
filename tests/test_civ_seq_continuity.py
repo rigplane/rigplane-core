@@ -27,6 +27,7 @@ from test_radio_connect import ConnectMockTransport, _build_conninfo, _ConnectOn
 _OPENCLOSE_OPEN = 0x04
 _SEQ_OFFSET = 6
 _OLD_NEXT_SEQ = 1015
+_NEWER_RECORDED_SEQ = 2000
 _RETRANSMIT_REQUEST = 0x01
 _IDLE = 0x00
 
@@ -142,6 +143,58 @@ async def test_rebuild_on_a_kept_session_resumes_the_old_numbering(
             assert _header_seq(open_packet) == expected_first_seq
         finally:
             await new.disconnect()
+
+
+async def test_retired_managed_tx_port_keeps_the_civ_numbering() -> None:
+    """A managed-TX port retirement records the retired numbering.
+
+    The retirement drops the CI-V transport while the control session stays
+    up, so the ``soft_reconnect`` rebuild that follows resumes the retired
+    transport's numbering instead of restarting at 0.
+    """
+    radio = _kept_session_radio()
+    old = _OfflineCivTransport()
+    old.send_seq = _OLD_NEXT_SEQ
+    radio._civ_transport = old
+    with _rebuild_stubs(radio):
+        assert radio._capture_managed_tx_port(7, lambda _obs: None) is True
+        await radio._retire_managed_tx_port(7)
+        assert radio._civ_resume_seq == _OLD_NEXT_SEQ
+        await radio._control_phase.soft_reconnect()
+        new = radio._civ_transport
+        assert isinstance(new, _OfflineCivTransport)
+        try:
+            assert new is not old
+            assert len(new.wire) == 1
+            open_packet = new.wire[0]
+            assert len(open_packet) == OPENCLOSE_SIZE
+            assert open_packet[0x15] == _OPENCLOSE_OPEN
+            assert _header_seq(open_packet) == _OLD_NEXT_SEQ
+        finally:
+            await new.disconnect()
+
+
+async def test_stale_port_retirement_keeps_the_newer_recorded_numbering() -> None:
+    """A retirement running after the replacement is live records nothing.
+
+    ``ManagedRadioRuntime._begin_retirement`` fires the retirement as a
+    task, so its body can run after CI-V recovery installed a
+    replacement transport and a newer teardown recorded that transport's
+    numbering. Recording the stale token's ``send_seq`` then would drag
+    the resume value back down to the retired transport's number.
+    """
+    radio = _kept_session_radio()
+    old = _OfflineCivTransport()
+    old.send_seq = _OLD_NEXT_SEQ
+    radio._civ_transport = old
+    with _rebuild_stubs(radio):
+        assert radio._capture_managed_tx_port(7, lambda _obs: None) is True
+        replacement = _OfflineCivTransport()
+        radio._civ_transport = replacement
+        radio._civ_resume_seq = _NEWER_RECORDED_SEQ
+        await radio._retire_managed_tx_port(7)
+        assert radio._civ_transport is replacement
+        assert radio._civ_resume_seq == _NEWER_RECORDED_SEQ
 
 
 async def test_fresh_login_starts_the_civ_numbering_at_zero() -> None:

@@ -48,10 +48,18 @@ async function until(deadlineMs: number, condition: () => Promise<boolean>): Pro
   return await condition();
 }
 
-export async function startJourneyServer(port: number, freqHz: number): Promise<JourneyServerHandle> {
+export async function startJourneyServer(
+  port: number,
+  freqHz: number,
+  extraArgs: string[] = [],
+): Promise<JourneyServerHandle> {
   const child = spawn(
     'uv',
-    ['run', 'python', 'tests/e2e/journey_web_server.py', '--port', String(port), '--freq', String(freqHz)],
+    [
+      'run', 'python', 'tests/e2e/journey_web_server.py',
+      '--port', String(port), '--freq', String(freqHz),
+      ...extraArgs,
+    ],
     { cwd: REPO_ROOT, detached: true, stdio: 'ignore' },
   );
   if (child.pid === undefined) {

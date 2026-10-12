@@ -459,13 +459,24 @@ def evaluate_tx_interlock(
 # tuner-off (``1C 01 00``) is refused too, which is stricter than the typed
 # policy: ``classify_tx_interlock`` lets ``SetTunerStatus`` value 0 through.
 # A PTT or tuner read (``1C 00`` / ``1C 01`` with no data byte) is not an actuation.
+#
+# The voice TX memory transmit command 0x28 sub 0x00 joins the family by
+# parity with a TX start: a non-zero data byte starts RF with no operator
+# key-down and has no typed counterpart, so unlike 0x1C every payload form
+# stays in the family (the stop ``28 00 00``, no data byte, and extra data
+# bytes included), and exactly one zero data byte is the de-key.  Raw CW
+# ``0x17`` is not family: the typed ``send_cw_text`` path is not interlocked.
 
 _CIV_FRAME_HEAD = 0xFE
 _CIV_FRAME_TAIL = 0xFD
 _CIV_FRAME_COLLISION = 0xFC
 _CIV_TX_FAMILY_COMMAND = 0x1C
 _CIV_TX_FAMILY_SUBS = (0x00, 0x01)  # PTT, tuner
+_CIV_VOICE_TX_MEMORY_COMMAND = 0x28
+_CIV_VOICE_TX_MEMORY_SUB = 0x00
 _CIV_RECEIVER_PREFIX_COMMAND = 0x29
+# Commands whose payload carries a sub byte right after the command byte.
+_CIV_SUB_BYTE_COMMANDS = (_CIV_TX_FAMILY_COMMAND, _CIV_VOICE_TX_MEMORY_COMMAND)
 
 
 def _is_tx_family_civ_command(command: int, sub: int | None, data: bytes) -> bool:
@@ -483,30 +494,36 @@ def _is_tx_family_civ_command(command: int, sub: int | None, data: bytes) -> boo
         if len(data) < 2 or data[1] == _CIV_RECEIVER_PREFIX_COMMAND:
             return True
         inner = data[1]
-        if inner != _CIV_TX_FAMILY_COMMAND:
-            return False
-        if len(data) < 3:
-            return True
-        return data[2] in _CIV_TX_FAMILY_SUBS and bool(data[3:])
-    if command != _CIV_TX_FAMILY_COMMAND:
+        if inner == _CIV_TX_FAMILY_COMMAND:
+            if len(data) < 3:
+                return True
+            return data[2] in _CIV_TX_FAMILY_SUBS and bool(data[3:])
+        if inner == _CIV_VOICE_TX_MEMORY_COMMAND:
+            if len(data) < 3:
+                return True
+            return data[2] == _CIV_VOICE_TX_MEMORY_SUB
         return False
-    return sub in _CIV_TX_FAMILY_SUBS and bool(data)
+    if command == _CIV_TX_FAMILY_COMMAND:
+        return sub in _CIV_TX_FAMILY_SUBS and bool(data)
+    if command == _CIV_VOICE_TX_MEMORY_COMMAND:
+        return sub == _CIV_VOICE_TX_MEMORY_SUB
+    return False
 
 
 def _unwrap_civ_frame(frame: bytes) -> tuple[int, int | None, bytes] | None:
     """Parse one whole CI-V envelope into its ``FE FE to from cmd [sub] data
     FD`` parts.
 
-    Returns ``(command, sub, data)``: for the TX-family command ``sub`` is
-    its sub byte and ``data`` the bytes after it up to the trailing ``FD``;
-    for the 0x29 receiver prefix ``sub`` is None and ``data`` is every byte
-    after the command up to the trailing ``FD``; for any other command
-    ``sub`` is None and ``data`` is empty.  Returns None when the envelope
-    cannot be parsed: a frame shorter than the minimum, a bad head or tail,
-    an ``FE``/``FD``/``FC`` byte between the leading ``FE FE`` and the
-    final ``FD``, or a TX-family command without its sub byte.  This is
-    the one envelope parser shared by
-    :func:`classify_raw_civ_frame_tx_family` and
+    Returns ``(command, sub, data)``: for a TX-family command (0x1C or the
+    voice TX memory 0x28) ``sub`` is its sub byte and ``data`` the bytes
+    after it up to the trailing ``FD``; for the 0x29 receiver prefix
+    ``sub`` is None and ``data`` is every byte after the command up to the
+    trailing ``FD``; for any other command ``sub`` is None and ``data`` is
+    empty.  Returns None when the envelope cannot be parsed: a frame
+    shorter than the minimum, a bad head or tail, an ``FE``/``FD``/``FC``
+    byte between the leading ``FE FE`` and the final ``FD``, or a
+    sub-byte command without its sub byte.  This is the one envelope
+    parser shared by :func:`classify_raw_civ_frame_tx_family` and
     :func:`is_exact_raw_dekey_frame`.
     """
 
@@ -523,7 +540,7 @@ def _unwrap_civ_frame(frame: bytes) -> tuple[int, int | None, bytes] | None:
     ):
         return None
     command = frame[4]
-    if command == _CIV_TX_FAMILY_COMMAND:
+    if command in _CIV_SUB_BYTE_COMMANDS:
         if len(frame) < 7:
             return None
         return command, frame[5], frame[6:-1]
@@ -548,16 +565,31 @@ def classify_raw_civ_frame_tx_family(frame: bytes) -> bool | None:
     return _is_tx_family_civ_command(*unwrapped)
 
 
+def _is_exact_dekey_triple(command: int, sub: int | None, data: bytes) -> bool:
+    """True when an unwrapped ``(command, sub, data)`` triple is a de-key.
+
+    Covers the PTT/tuner off actuation (``1C`` with sub 0x00/0x01 and a
+    single zero data byte) and the voice TX memory stop (``28 00 00``).
+    """
+
+    if command == _CIV_TX_FAMILY_COMMAND:
+        return sub in _CIV_TX_FAMILY_SUBS and data == b"\x00"
+    if command == _CIV_VOICE_TX_MEMORY_COMMAND:
+        return sub == _CIV_VOICE_TX_MEMORY_SUB and data == b"\x00"
+    return False
+
+
 def is_exact_raw_dekey_frame(frame: bytes) -> bool:
     """True when one whole well-formed frame is exactly a raw de-key.
 
     The frame must unwrap — through the same :func:`_unwrap_civ_frame`
     parser the TX-family classifier uses — to the PTT-off actuation
-    (``1C 00 00``) or the tuner-off actuation (``1C 01 00``), bare or inside
-    a 0x29 receiver prefix; the 0x29 form must be exactly receiver plus
-    inner actuation.  Anything with extra payload bytes, a different sub or
-    data value, or an unparseable envelope is not a de-key.  The unmanaged
-    HTTP raw seat, the unmanaged rigctld ``w`` seat, and the poller's
+    (``1C 00 00``), the tuner-off actuation (``1C 01 00``), or the voice
+    TX memory stop (``28 00 00``), bare or inside a 0x29 receiver prefix;
+    the 0x29 form must be exactly receiver plus inner actuation.
+    Anything with extra payload bytes, a different sub or data value, or
+    an unparseable envelope is not a de-key.  The unmanaged HTTP raw
+    seat, the unmanaged rigctld ``w`` seat, and the poller's
     ``send_civ`` seat exempt exactly these frames from their RF-state
     refusal so that a raw de-key stays as easy to execute as the typed
     one, which ``classify_tx_interlock`` never refuses (``PttOff`` and
@@ -568,13 +600,6 @@ def is_exact_raw_dekey_frame(frame: bytes) -> bool:
     if unwrapped is None:
         return False
     command, sub, data = unwrapped
-    if command == _CIV_TX_FAMILY_COMMAND:
-        return sub in _CIV_TX_FAMILY_SUBS and data == b"\x00"
     if command == _CIV_RECEIVER_PREFIX_COMMAND:
-        return (
-            len(data) == 4
-            and data[1] == _CIV_TX_FAMILY_COMMAND
-            and data[2] in _CIV_TX_FAMILY_SUBS
-            and data[3:] == b"\x00"
-        )
-    return False
+        return len(data) == 4 and _is_exact_dekey_triple(data[1], data[2], data[3:])
+    return _is_exact_dekey_triple(command, sub, data)

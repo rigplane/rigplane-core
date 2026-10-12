@@ -490,8 +490,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._audio_sock_pending: _socket.socket | None = None
         self._civ_send_seq: int = 0
         self._audio_send_seq: int = 0
-        # ``send_seq`` of the CI-V transport last torn down by
-        # ``soft_disconnect`` or ``_force_cleanup_civ``. ``soft_reconnect``
+        # ``send_seq`` of the CI-V transport last torn down. ``soft_reconnect``
         # resumes from it; ``_connect_once``, ``disconnect`` and ``release``
         # clear it.
         self._civ_resume_seq: int | None = None

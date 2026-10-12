@@ -148,6 +148,7 @@ async def _dispatch(poller: RadioPoller, cmd: object) -> None:
 
 _BLOCK_CASES = (
     (SendCiv(command=0x1A, data=b"\x01"), "send_civ"),
+    (SendCiv(command=0x28, sub=0x00, data=b"\x01"), "send_civ"),
     (ScanStart(scan_type=1), "scan_start"),
     (SetAntenna1(on=True), "set_antenna_1"),
     (SetTunerStatus(value=1), "set_tuner_status"),
@@ -203,11 +204,21 @@ _DEKEY_SEND_CIV_COMMANDS = (
     SendCiv(command=0x1C, sub=0x00, data=b"\x00"),
     SendCiv(command=0x29, sub=0x00, data=b"\x1c\x00\x00"),
     SendCiv(command=0x1C, sub=0x01, data=b"\x00"),
+    SendCiv(command=0x28, sub=0x00, data=b"\x00"),
+    SendCiv(command=0x29, sub=0x00, data=b"\x28\x00\x00"),
 )
 
 
 @pytest.mark.parametrize(
-    "cmd", _DEKEY_SEND_CIV_COMMANDS, ids=["ptt-off", "cmd29-ptt-off", "tuner-off"]
+    "cmd",
+    _DEKEY_SEND_CIV_COMMANDS,
+    ids=[
+        "ptt-off",
+        "cmd29-ptt-off",
+        "tuner-off",
+        "voice-memory-stop",
+        "cmd29-voice-memory-stop",
+    ],
 )
 @pytest.mark.parametrize("ptt", (True, None), ids=("tx", "unknown"))
 async def test_send_civ_exact_dekey_passes_rf_state_refusal(
@@ -229,8 +240,15 @@ async def test_send_civ_exact_dekey_passes_rf_state_refusal(
     (
         SendCiv(command=0x1C, sub=0x00, data=b"\x01"),
         SendCiv(command=0x1C, sub=0x00, data=b"\x00\x00"),
+        SendCiv(command=0x29, sub=0x00, data=b"\x28\x00\x01"),
+        SendCiv(command=0x28, sub=0x00, data=b"\x00\x00"),
     ),
-    ids=["raw-ptt-on", "dekey-with-extra-byte"],
+    ids=[
+        "raw-ptt-on",
+        "dekey-with-extra-byte",
+        "cmd29-voice-memory-tx",
+        "voice-stop-with-extra-byte",
+    ],
 )
 async def test_send_civ_non_dekey_still_refused_while_tx(cmd: SendCiv) -> None:
     poller, radio, store = _poller()

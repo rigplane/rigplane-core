@@ -149,7 +149,12 @@ def test_non_writes_and_future_material_intents_fail_closed() -> None:
             )
 
 
-_BLOCK_WIRES = (b"T 1", b"U TUNER 1", b"w FE FE 98 E0 03 FD")
+_BLOCK_WIRES = (
+    b"T 1",
+    b"U TUNER 1",
+    b"w FE FE 98 E0 03 FD",
+    b"w FE FE 98 E0 28 00 01 FD",
+)
 
 
 def _store(case: str) -> tuple[StateStore, object | None]:
@@ -231,7 +236,9 @@ async def test_hard_blocks_dispatch_once_with_fresh_rx(wire: bytes) -> None:
     assert response.ok
     _attempt(radio, routing, wire).assert_awaited_once()
     if wire.startswith(b"w"):
-        radio._send_civ_raw.assert_awaited_once_with(b"\xfe\xfe\x98\xe0\x03\xfd")
+        radio._send_civ_raw.assert_awaited_once_with(
+            bytes.fromhex(wire[2:].decode("ascii").replace(" ", ""))
+        )
 
 
 # ── MOR-3378: an unmanaged raw de-key must never be refused ─────────────────
@@ -247,6 +254,8 @@ _DEKEY_WIRES = (
     (b"w FE FE 98 E0 1C 00 00 FD", b"\xfe\xfe\x98\xe0\x1c\x00\x00\xfd"),
     (b"w FE FE 98 E0 29 00 1C 00 00 FD", b"\xfe\xfe\x98\xe0\x29\x00\x1c\x00\x00\xfd"),
     (b"w FE FE 98 E0 1C 01 00 FD", b"\xfe\xfe\x98\xe0\x1c\x01\x00\xfd"),
+    (b"w FE FE 98 E0 28 00 00 FD", b"\xfe\xfe\x98\xe0\x28\x00\x00\xfd"),
+    (b"w FE FE 98 E0 29 00 28 00 00 FD", b"\xfe\xfe\x98\xe0\x29\x00\x28\x00\x00\xfd"),
 )
 
 
@@ -255,7 +264,13 @@ _DEKEY_WIRES = (
 @pytest.mark.parametrize(
     ("wire", "frame"),
     _DEKEY_WIRES,
-    ids=["ptt-off", "cmd29-ptt-off", "tuner-off"],
+    ids=[
+        "ptt-off",
+        "cmd29-ptt-off",
+        "tuner-off",
+        "voice-memory-stop",
+        "cmd29-voice-memory-stop",
+    ],
 )
 async def test_unmanaged_raw_dekey_passes_rf_state_refusal(
     case: str, wire: bytes, frame: bytes, monkeypatch: pytest.MonkeyPatch
@@ -280,8 +295,16 @@ async def test_unmanaged_raw_dekey_passes_rf_state_refusal(
         b"w FE FE 98 E0 1C 00 01 FD",
         b"w FE FE 98 E0 1C 00 00 00 FD",
         b"w FE FE 98 E0 03 FD",
+        b"w FE FE 98 E0 29 00 28 00 01 FD",
+        b"w FE FE 98 E0 28 00 00 00 FD",
     ),
-    ids=["raw-ptt-on", "dekey-with-extra-byte", "non-tx-raw"],
+    ids=[
+        "raw-ptt-on",
+        "dekey-with-extra-byte",
+        "non-tx-raw",
+        "cmd29-voice-memory-tx",
+        "voice-stop-with-extra-byte",
+    ],
 )
 async def test_unmanaged_non_dekey_raw_still_refused_while_tx(wire: bytes) -> None:
     handler, radio, _routing = _handler(_store("tx")[0])
