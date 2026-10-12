@@ -233,6 +233,9 @@ async def test_managed_non_tuner_writes_bypass_legacy_rf_gates(
         b"w FE FE 98 E0 1C 01 01 FD",
         b"w FE FE 98 E0 1C 01 02 FD",
         b"w FE FE 98 E0 29 00 1C 00 01 FD",
+        b"w FE FE 98 E0 28 00 01 FD",
+        b"w FE FE 98 E0 28 00 00 FD",
+        b"w FE FE 98 E0 29 00 28 00 01 FD",
         b"w FE FE 98 E0 1C",
         b"w FE FE 94 E0 03 FD FE FE 94 E0 1C 00 01 FD",
         b"w FE FE 94 E0 03 FC FE FE 94 E0 1C 00 01 FD",
@@ -246,6 +249,9 @@ async def test_managed_non_tuner_writes_bypass_legacy_rf_gates(
         "tuner-engage",
         "tuner-tune",
         "cmd29-ptt-on",
+        "voice-memory-tx",
+        "voice-memory-stop",
+        "cmd29-voice-memory-tx",
         "unparseable",
         "concatenated-after-fd",
         "concatenated-after-fc",
@@ -256,13 +262,14 @@ async def test_managed_non_tuner_writes_bypass_legacy_rf_gates(
 )
 async def test_managed_raw_w_tx_family_frames_are_refused(context, wire, ptt_observed):
     """Managed mode refuses TX-family raw ``w`` frames by payload — PTT in
-    both directions, tuner actuation, a cmd29-wrapped PTT frame, any frame
-    whose envelope cannot be parsed, and any payload that smuggles a second
-    frame past a single-frame envelope check (an FE/FD/FC byte between the
-    leading FE FE and the final FD), and any payload shorter than a minimal
-    frame — unconditionally, regardless of the observed PTT state, without
-    consulting the managed TX authority and without anything reaching the
-    radio."""
+    both directions, tuner actuation, the voice TX memory transmit and its
+    stop form (MOR-3374), a cmd29-wrapped PTT or voice-memory frame, any
+    frame whose envelope cannot be parsed, and any payload that smuggles a
+    second frame past a single-frame envelope check (an FE/FD/FC byte
+    between the leading FE FE and the final FD), and any payload shorter
+    than a minimal frame — unconditionally, regardless of the observed PTT
+    state, without consulting the managed TX authority and without
+    anything reaching the radio."""
     authority = _AuthorityTouchProbe()
     refs = dict(context.refs, managed_tx_authority=authority)
     context.store.apply_current(

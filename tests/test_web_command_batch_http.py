@@ -589,6 +589,9 @@ def _managed_server(radio: MagicMock) -> tuple[WebServer, _AuthorityTouchProbe]:
         {"command": 0x29, "data": "001C0001", "expect": "none"},
         {"command": 0x29, "data": "00", "expect": "none"},
         {"command": 0x29, "sub": 0x00, "data": "1C0001", "expect": "none"},
+        {"command": 0x28, "sub": 0x00, "data": "01", "expect": "none"},
+        {"command": 0x28, "sub": 0x00, "data": "00", "expect": "none"},
+        {"command": 0x29, "sub": 0x00, "data": "280001", "expect": "none"},
         {"command": 0x03, "data": "FDFEFE94E01C0001", "expect": "none"},
         {"command": 0x03, "data": "FCFEFE94E01C0001", "expect": "none"},
         {"command": 0x03, "data": "FE1C0001", "expect": "none"},
@@ -602,6 +605,9 @@ def _managed_server(radio: MagicMock) -> tuple[WebServer, _AuthorityTouchProbe]:
         "cmd29-ptt-on",
         "cmd29-truncated",
         "cmd29-sub-form-ptt-on",
+        "voice-memory-tx",
+        "voice-memory-stop",
+        "cmd29-voice-memory-tx",
         "smuggled-frame-in-data",
         "fc-separator-smuggled-frame",
         "leading-extra-fe-in-data",
@@ -796,12 +802,26 @@ async def test_http_raw_civ_transaction_unmanaged_refuses_ptt_on() -> None:
             0.0,
             "rf_state_unknown",
         ),
+        (
+            {"command": 0x28, "sub": 0x00, "data": "01", "expect": "none"},
+            True,
+            0.0,
+            "radio_transmitting",
+        ),
+        (
+            {"command": 0x29, "sub": 0x00, "data": "280001", "expect": "none"},
+            True,
+            0.0,
+            "radio_transmitting",
+        ),
     ],
     ids=[
         "ptt-on-observed-tx",
         "ptt-on-stale-rx",
         "cmd29-ptt-on-unknown",
         "tuner-engage-unknown",
+        "voice-memory-tx-observed-tx",
+        "cmd29-voice-memory-tx-observed-tx",
     ],
 )
 async def test_http_raw_civ_transaction_unmanaged_refuses_tx_family_without_fresh_rx(
@@ -850,12 +870,22 @@ async def test_http_raw_civ_transaction_unmanaged_refuses_tx_family_without_fres
             {"command": 0x1C, "sub": 0x01, "data": "00", "expect": "none"},
             True,
         ),
+        (
+            {"command": 0x28, "sub": 0x00, "data": "00", "expect": "none"},
+            True,
+        ),
+        (
+            {"command": 0x29, "sub": 0x00, "data": "280000", "expect": "none"},
+            True,
+        ),
     ],
     ids=[
         "ptt-off-observed-tx",
         "ptt-off-unknown",
         "cmd29-ptt-off-observed-tx",
         "tuner-off-observed-tx",
+        "voice-memory-stop-observed-tx",
+        "cmd29-voice-memory-stop-observed-tx",
     ],
 )
 async def test_http_raw_civ_transaction_unmanaged_passes_exact_dekey(
@@ -943,6 +973,68 @@ async def test_http_raw_civ_transaction_unmanaged_passes_ptt_on_with_fresh_rx() 
         0x1C,
         sub=0x00,
         data=b"\x01",
+        expect="none",
+        timeout=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_http_raw_civ_transaction_unmanaged_passes_voice_tx_with_fresh_rx() -> (
+    None
+):
+    """MOR-3374: with a fresh-known RX observation the unmanaged HTTP raw
+    seat passes a voice TX memory transmit frame to the radio, exactly as
+    it passes a raw PTT-on in the same state."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv = _unmanaged_server(radio)
+    _observe_ptt(srv, False)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/civ/transaction",
+        {"command": 0x28, "sub": 0x00, "data": "01", "expect": "none"},
+    )
+
+    assert writer.response_status == 200
+    radio.send_civ_transaction.assert_awaited_once_with(
+        0x28,
+        sub=0x00,
+        data=b"\x01",
+        expect="none",
+        timeout=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_http_raw_civ_transaction_unmanaged_raw_cw_text_still_passes_while_tx() -> (
+    None
+):
+    """MOR-3374 parity pin: raw CW text ``0x17`` is not TX-family, so it
+    keeps passing this seat while TX is observed, exactly as before the
+    voice-memory frames joined the family — the typed ``send_cw_text``
+    path is not interlocked, so by parity the raw form stays unchanged.
+    A later decision to add 0x17 to the family makes this row fail."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv = _unmanaged_server(radio)
+    _observe_ptt(srv, True)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/civ/transaction",
+        {"command": 0x17, "data": "41", "expect": "none"},
+    )
+
+    assert writer.response_status == 200
+    radio.send_civ_transaction.assert_awaited_once_with(
+        0x17,
+        sub=None,
+        data=b"\x41",
         expect="none",
         timeout=None,
     )
