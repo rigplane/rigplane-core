@@ -262,6 +262,20 @@ and HTTP `503` while the process is alive but the station is not ready.
 }
 ```
 
+While the first LAN connect waits out a busy session reject, the probe
+returns HTTP `503` with a `session_busy` reason and the seconds until the
+next login retry (pinned by
+`test_web_serves_session_busy_during_startup_busy_hold`):
+
+```json
+{
+  "status": "not_ready",
+  "radioReady": false,
+  "reason": "session_busy",
+  "retryInSeconds": 30.0
+}
+```
+
 ## `GET /api/v1/runtime`
 
 Machine-readable runtime status for managed local supervisors and diagnostics.
@@ -1050,10 +1064,17 @@ Version, model, capability summary, and connection metadata.
     "rigConnected": true,
     "radioReady": true,
     "controlConnected": true,
+    "session": { "busy": false, "retryInSeconds": null },
     "wsClients": 2
   }
 }
 ```
+
+`connection.session` is always present: it reports a start-up busy hold
+(`busy` with the seconds until the next login retry in `retryInSeconds`)
+and reads `{"busy": false, "retryInSeconds": null}` otherwise (pinned by
+`test_web_serves_session_busy_during_startup_busy_hold` and
+`test_granted_busy_hold_becomes_ready_and_marks_transport_once`).
 
 ## `GET /api/v1/state`
 

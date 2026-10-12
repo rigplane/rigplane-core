@@ -730,6 +730,15 @@ class CoreRadioSessionLifecycle:
         self._cooldown_total_s: float | None = None
         self._connecting_started: float | None = None
         self._recovery_attempt: int | None = None
+        # Start-up busy-hold signal (MOR-3391 part 2): set while a
+        # first-connect SESSION_BUSY_REJECT cooldown owns the loop, cleared
+        # on CONNECTED/DISCONNECTED. Upper layers (CLI start-up, the web
+        # wire) wait on / read this instead of the private lifecycle, so a
+        # start-up hold can serve not-ready while the same connect keeps
+        # running. Never set for reconnect busy rejects (those keep the
+        # immediate attempts) — the set below lives only in the
+        # first-connect policy branch.
+        self.startup_busy_hold_event = asyncio.Event()
 
     # ------------------------------------------------------------------
     # Observable surface
@@ -738,6 +747,22 @@ class CoreRadioSessionLifecycle:
     @property
     def state(self) -> LifecycleState:
         return self._state
+
+    @property
+    def startup_busy_hold_retry_in_seconds(self) -> float | None:
+        """Seconds until the next first-connect busy re-login (MOR-3391).
+
+        The live cooldown remainder while one runs, else the hold's
+        cooldown between two busy passes (the state is CONNECTING there,
+        with no live deadline); ``None`` when no hold is active. Read by
+        the radio's public busy surface for the web wire.
+        """
+        if not self.startup_busy_hold_event.is_set():
+            return None
+        status = self.status
+        if status.cooldown_remaining_s is not None:
+            return status.cooldown_remaining_s
+        return self._cooldown_total_s
 
     @property
     def status(self) -> LifecycleStatus:
@@ -801,6 +826,14 @@ class CoreRadioSessionLifecycle:
         self._state = to_state
         if reason is not LifecycleErrorReason.NONE:
             self._last_error = reason
+        if (
+            to_state is LifecycleState.CONNECTED
+            or to_state is LifecycleState.DISCONNECTED
+        ):
+            # The hold is over either way: the grant landed, the budget ran
+            # out, or teardown released. Clearing here (rather than at each
+            # emit site) keeps the signal exact by construction.
+            self.startup_busy_hold_event.clear()
         event = LifecycleEvent(
             from_state=from_state,
             to_state=to_state,
@@ -940,11 +973,19 @@ class CoreRadioSessionLifecycle:
                     reason=LifecycleErrorReason.SESSION_BUSY_REJECT,
                     cooldown_remaining_s=cooldown,
                 )
+                # First-connect busy hold owns the loop now (MOR-3391 part
+                # 2); the same connect keeps running while upper layers
+                # serve not-ready off this signal.
+                self.startup_busy_hold_event.set()
                 try:
                     await asyncio.sleep(cooldown)
                 finally:
                     self._cooldown_deadline = None
-                    self._cooldown_total_s = None
+                    # Keep the total for the hold's duration: between two
+                    # busy passes the state is CONNECTING (no live
+                    # deadline), and the retry number the wire serves then
+                    # is this same cooldown. Terminal states clear the
+                    # event, which is what gates the number's readers.
                 continue
 
             # Transient: SESSION_NOT_READY (civ_port==0) or SESSION_BUSY_REJECT

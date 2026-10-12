@@ -187,7 +187,9 @@ class _BusyRadio:
     """
 
     backend_id = "rigplane"
-    model = "FAKE-BUSY"
+    # Borrows the IC-7610 profile so /api/v1/state serves; the hold
+    # behaviour itself is staged by hand below.
+    model = "IC-7610"
     capabilities: set[str] = set()
 
     def __init__(self, *, retry_in_seconds: float = 30.0) -> None:
@@ -267,7 +269,7 @@ async def _get_json(server: WebServer, path: str) -> tuple[int, dict[str, Any]]:
             f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".encode()
         )
         await writer.drain()
-        raw = await asyncio.wait_for(reader.read(65536), timeout=5.0)
+        raw = await asyncio.wait_for(reader.read(-1), timeout=10.0)
     finally:
         await _close_writer(writer)
     head, _, body = raw.partition(b"\r\n\r\n")

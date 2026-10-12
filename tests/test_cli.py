@@ -2341,9 +2341,7 @@ class _BusyHoldRadio:
     async def actuate(self, _token: Any, _operation: Any, *, is_current: Any) -> Any:
         from rigplane.runtime.managed_tx_state import ActuationResult
 
-        return (
-            ActuationResult.ACCEPTED if is_current() else ActuationResult.REJECTED
-        )
+        return ActuationResult.ACCEPTED if is_current() else ActuationResult.REJECTED
 
     async def set_ptt(self, _on: bool) -> None:
         raise AssertionError("raw PTT must be replaced before connect")
@@ -2481,8 +2479,10 @@ class TestStartupBusyHoldOrdering:
             assert _BusyHoldWebServer.instances == []
             radio._grant.set()
             await self._wait_for(
-                lambda: bool(_BusyHoldWebServer.instances)
-                and "serve-start" in _BusyHoldWebServer.instances[-1].events,
+                lambda: (
+                    bool(_BusyHoldWebServer.instances)
+                    and "serve-start" in _BusyHoldWebServer.instances[-1].events
+                ),
                 timeout=5.0,
             )
             server = _BusyHoldWebServer.instances[-1]
@@ -2514,8 +2514,10 @@ class TestStartupBusyHoldOrdering:
             run_task = asyncio.ensure_future(_run(args))
             try:
                 await self._wait_for(
-                    lambda: bool(_BusyHoldWebServer.instances)
-                    and "serve-start" in _BusyHoldWebServer.instances[-1].events,
+                    lambda: (
+                        bool(_BusyHoldWebServer.instances)
+                        and "serve-start" in _BusyHoldWebServer.instances[-1].events
+                    ),
                     timeout=2.0,
                 )
             except (asyncio.TimeoutError, TimeoutError):
@@ -2536,7 +2538,9 @@ class TestStartupBusyHoldOrdering:
         assert len(radio.exits) == 1
 
     @pytest.mark.asyncio
-    async def test_busy_hold_give_up_returns_one_closes_and_exits(self, capsys: Any) -> None:
+    async def test_busy_hold_give_up_returns_one_closes_and_exits(
+        self, capsys: Any
+    ) -> None:
         """Give-up during the background connect ends like today's failure."""
 
         import asyncio
@@ -2548,8 +2552,22 @@ class TestStartupBusyHoldOrdering:
         radio = _BusyHoldRadio()
         composition = _busy_hold_composition()
         _BusyHoldWebServer.instances.clear()
+        import socket
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            rigctld_port = probe.getsockname()[1]
         args = _build_parser().parse_args(
-            ["--host", "1.2.3.4", "web", "--managed", "--port", "8080", "--rigctld-port", "0"]
+            [
+                "--host",
+                "1.2.3.4",
+                "web",
+                "--managed",
+                "--port",
+                "8080",
+                "--rigctld-port",
+                str(rigctld_port),
+            ]
         )
         p1, p2, p3, p4 = self._patches(radio, composition)
         with p1, p2, p3, p4:
@@ -2562,8 +2580,10 @@ class TestStartupBusyHoldOrdering:
             run_task = asyncio.ensure_future(_run(args))
             try:
                 await self._wait_for(
-                    lambda: bool(_BusyHoldWebServer.instances)
-                    and "serve-start" in _BusyHoldWebServer.instances[-1].events,
+                    lambda: (
+                        bool(_BusyHoldWebServer.instances)
+                        and "serve-start" in _BusyHoldWebServer.instances[-1].events
+                    ),
                     timeout=2.0,
                 )
             except (asyncio.TimeoutError, TimeoutError):
@@ -2583,7 +2603,7 @@ class TestStartupBusyHoldOrdering:
         assert "serve-cancelled" in server.events
         composition.transport_ready.assert_not_awaited()
         assert len(radio.exits) == 1
-        rigctld_port = int(rigctld_addr.split(":")[1])
+        assert rigctld_addr == f"127.0.0.1:{rigctld_port}"
         with pytest.raises(ConnectionRefusedError):
             await asyncio.wait_for(
                 asyncio.open_connection("127.0.0.1", rigctld_port), timeout=5.0
@@ -2609,8 +2629,10 @@ class TestStartupBusyHoldOrdering:
             run_task = asyncio.ensure_future(_run(args))
             try:
                 await self._wait_for(
-                    lambda: bool(_BusyHoldWebServer.instances)
-                    and "serve-start" in _BusyHoldWebServer.instances[-1].events,
+                    lambda: (
+                        bool(_BusyHoldWebServer.instances)
+                        and "serve-start" in _BusyHoldWebServer.instances[-1].events
+                    ),
                     timeout=2.0,
                 )
             except (asyncio.TimeoutError, TimeoutError):
@@ -2619,6 +2641,7 @@ class TestStartupBusyHoldOrdering:
             run_task.cancel()
             result = await asyncio.wait_for(run_task, timeout=10.0)
 
+        assert result == 0
         assert radio.enter_cancelled is True
         assert len(radio.exits) == 1
         composition.transport_ready.assert_not_awaited()

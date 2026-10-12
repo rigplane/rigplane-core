@@ -863,6 +863,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         return self._connection_identity
 
     @property
+    def startup_busy_hold_event(self) -> asyncio.Event:
+        """Set while the first connect waits out a busy reject (MOR-3391).
+
+        Read-only for consumers: wait on it or probe ``is_set()``, never
+        set or clear it. The session lifecycle sets it when the first
+        connect enters the SESSION_BUSY_REJECT cooldown and clears it on
+        CONNECTED/DISCONNECTED; reconnect busy rejects never set it.
+        Lets start-up serve not-ready while the same connect keeps running.
+        """
+        return self._session_lifecycle.startup_busy_hold_event
+
+    @property
+    def startup_busy_hold_retry_in_seconds(self) -> float | None:
+        """Seconds until the next start-up busy re-login (MOR-3391).
+
+        The live cooldown remainder while one runs, else the hold's
+        cooldown between two busy passes; ``None`` when no hold is
+        active. Read through the private session lifecycle — this module
+        owns that layer, so no upper layer has to.
+        """
+        return self._session_lifecycle.startup_busy_hold_retry_in_seconds
+
+    @property
     def remote_control_unreachable(self) -> bool:
         """Whether the radio's host is reachable but its CI-V/remote-control
         network server is not accepting the session.

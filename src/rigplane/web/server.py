@@ -740,6 +740,17 @@ def _serialize_choices(
     return [{"value": value, "label": labels[str(value)]} for value in values]
 
 
+def _startup_busy_session_payload(
+    busy: bool, retry_in_seconds: float | None
+) -> dict[str, object]:
+    """The served ``connection.session`` object (MOR-3391 part 2).
+
+    Always present: ``busy`` false and ``retryInSeconds`` null outside a
+    start-up busy hold.
+    """
+    return {"busy": busy, "retryInSeconds": retry_in_seconds}
+
+
 def _serialize_keyboard_config(profile: "RadioProfile") -> dict[str, object] | None:
     keyboard = profile.keyboard
     if keyboard is None:
@@ -1225,6 +1236,10 @@ class WebServer:
         # could not be opened; ``_build_radio_health`` combines it with the
         # same no-radio-observation predicate.
         self._served_without_port: bool = False
+        # MOR-3391 part 2: set once the startup gate released for a
+        # start-up busy hold. Unlike the silent-link mark above it never
+        # feeds health: a held session is a busy radio, not a silent one.
+        self._served_with_startup_busy_hold: bool = False
         # Audio bridge (virtual device integration)
         self._audio_bridge: "AudioBridge | None" = None
         # MOR-3078: bridge kwargs armed by ``defer_audio_bridge_start``
@@ -1461,6 +1476,22 @@ class WebServer:
     def _radio_ready(self) -> bool:
         """Backend view of radio readiness (CI-V healthy)."""
         return bool(radio_ready(self._radio))
+
+    def _startup_busy_hold(self) -> tuple[bool, float | None]:
+        """Whether the first connect waits out a busy reject (MOR-3391).
+
+        Read through the radio's public busy surface only; a radio
+        without it is never busy. The retry number is the live cooldown
+        remainder while one runs, else the hold's cooldown between two
+        busy passes.
+        """
+        event = getattr(self._radio, "startup_busy_hold_event", None)
+        if not isinstance(event, asyncio.Event) or not event.is_set():
+            return False, None
+        retry = getattr(self._radio, "startup_busy_hold_retry_in_seconds", None)
+        if isinstance(retry, bool) or not isinstance(retry, (int, float)):
+            return True, None
+        return True, float(retry)
 
     def _connection_identity_payload(self) -> dict[str, object] | None:
         """The served ``connection.identity`` object (MOR-3071).
@@ -3118,8 +3149,8 @@ class WebServer:
                 # the OFF down.
                 logger.warning("reconnect: managed TX release failed", exc_info=True)
 
-    def _on_radio_reconnect(self) -> None:
-        """Called after soft_reconnect — refetch state and re-enable scope."""
+    def _begin_reconnect_reacquire(self) -> None:
+        """Reset epoch facts and reopen the readiness gate for a refetch."""
         # A/B identity and relative samples are connection-epoch facts.  Clear
         # them before any new-epoch read can arrive; the topology-derived MAIN
         # fact is independently valid and is reasserted without touching TX.
@@ -3130,79 +3161,93 @@ class WebServer:
         if self._radio_poller is not None:
             self._radio_poller._initial_fetch_done.clear()
 
-        async def _refetch_and_reenable() -> None:
-            """Release TX first, then refetch state, signal readiness and scope."""
-            try:
-                # Inside the guard, not above it (MOR-1187's shape, MOR-1196):
-                # servicing the release resolves the supervisor, which is
-                # backend code and free to raise anything.  Above the
-                # ``finally`` it escapes with the gate still clear, and since
-                # this closure is the only thing in ``src/`` that ever re-sets
-                # the gate, the poller defers and re-queues ``EnableScope`` for
-                # good.  The failure still propagates — the point is that
-                # cleanup runs first, not that anything is swallowed.
-                await self._service_managed_tx_release()
-                try:
-                    if self._radio is not None and hasattr(
-                        self._radio, "_fetch_initial_state"
-                    ):
-                        await self._radio._fetch_initial_state()
-                    if isinstance(self._radio_poller, RadioPoller):
-                        await self._radio_poller.select_vfo_a_on_connect(
-                            read_only=self._config.read_only
-                        )
-                except Exception:
-                    logger.warning("reconnect: refetch failed", exc_info=True)
-            finally:
-                # The readiness gate MUST reopen unconditionally for any
-                # attached poller-like object (MOR-1187/1196 invariant —
-                # ``_refetch_and_reenable`` is the only thing in ``src/``
-                # that ever re-sets it; ``test_web_recovery_durable_off``
-                # pins this with a non-RadioPoller stub).
-                if self._radio_poller is not None:
-                    self._radio_poller._initial_fetch_done.set()
-                if isinstance(self._radio_poller, RadioPoller):
-                    # MOR-1495 review R2: RadioPoller._run()'s one-time
-                    # startup section never re-fires after a soft-reconnect,
-                    # so re-seed scanning/scan_resume_mode here too — otherwise
-                    # a reconnect after any scan command would leave the web
-                    # trusting a possibly-stale pre-reconnect value forever.
-                    # This is a pure local seed and never writes to the radio.
-                    try:
-                        self._radio_poller._seed_scan_facts_at_connect()
-                    except Exception:
-                        logger.warning(
-                            "reconnect: scan facts seed failed",
-                            exc_info=True,
-                        )
-            # Re-enable scope after refetch completes.
-            # Do NOT gate on self._radio_ready(): that property waits for
-            # CI-V broadcast data, but on IC-7610 in the "deaf" firmware
-            # state broadcast may only resume once a scope-enable command
-            # is sent — creating a deadlock where scope re-enable waits
-            # for the very signal it would itself trigger.  The session
-            # is already up at this point (soft_reconnect completed auth +
-            # discovery), so queue EnableScope unconditionally; if the
-            # radio is genuinely unreachable the command will fail on its
-            # own, which is strictly better than a silent 30-second wait
-            # every reconnect cycle.
-            if (
-                self._scope_handlers
-                and self._radio is not None
-                and self._hardware_scope_available
-                and not self._scope_enable_failed
-            ):
-                self._set_scope_data_callback(self._on_hardware_scope_frame)
-                if await self._execute_scope_command(
-                    EnableScope(generation=self._scope_demand_generation)
-                ):
-                    self._scope_enabled = True
-                    logger.info(
-                        "scope: re-enable confirmed after reconnect (%d handlers)",
-                        len(self._scope_handlers),
-                    )
+    def _on_radio_reconnect(self) -> None:
+        """Called after soft_reconnect — refetch state and re-enable scope."""
+        self._begin_reconnect_reacquire()
+        self._spawn(self._refetch_and_reenable())
 
-        self._spawn(_refetch_and_reenable())
+    async def finish_startup_busy_hold(self) -> None:
+        """Complete web start-up after a start-up busy hold is granted.
+
+        Runs the post-connect half of start-up the busy branch skipped —
+        the same refetch, VFO-A select and re-prime a late ``connect()``
+        gets through ``_on_radio_reconnect`` — awaited (not spawned) so
+        the caller knows when the station is ready.
+        """
+        self._begin_reconnect_reacquire()
+        await self._refetch_and_reenable()
+
+    async def _refetch_and_reenable(self) -> None:
+        """Release TX first, then refetch state, signal readiness and scope."""
+        try:
+            # Inside the guard, not above it (MOR-1187's shape, MOR-1196):
+            # servicing the release resolves the supervisor, which is
+            # backend code and free to raise anything.  Above the
+            # ``finally`` it escapes with the gate still clear, and since
+            # this method is the only thing in ``src/`` that ever re-sets
+            # the gate, the poller defers and re-queues ``EnableScope`` for
+            # good.  The failure still propagates — the point is that
+            # cleanup runs first, not that anything is swallowed.
+            await self._service_managed_tx_release()
+            try:
+                if self._radio is not None and hasattr(
+                    self._radio, "_fetch_initial_state"
+                ):
+                    await self._radio._fetch_initial_state()
+                if isinstance(self._radio_poller, RadioPoller):
+                    await self._radio_poller.select_vfo_a_on_connect(
+                        read_only=self._config.read_only
+                    )
+            except Exception:
+                logger.warning("reconnect: refetch failed", exc_info=True)
+        finally:
+            # The readiness gate MUST reopen unconditionally for any
+            # attached poller-like object (MOR-1187/1196 invariant —
+            # ``_refetch_and_reenable`` is the only thing in ``src/``
+            # that ever re-sets it; ``test_web_recovery_durable_off``
+            # pins this with a non-RadioPoller stub).
+            if self._radio_poller is not None:
+                self._radio_poller._initial_fetch_done.set()
+            if isinstance(self._radio_poller, RadioPoller):
+                # MOR-1495 review R2: RadioPoller._run()'s one-time
+                # startup section never re-fires after a soft-reconnect,
+                # so re-seed scanning/scan_resume_mode here too — otherwise
+                # a reconnect after any scan command would leave the web
+                # trusting a possibly-stale pre-reconnect value forever.
+                # This is a pure local seed and never writes to the radio.
+                try:
+                    self._radio_poller._seed_scan_facts_at_connect()
+                except Exception:
+                    logger.warning(
+                        "reconnect: scan facts seed failed",
+                        exc_info=True,
+                    )
+        # Re-enable scope after refetch completes.
+        # Do NOT gate on self._radio_ready(): that property waits for
+        # CI-V broadcast data, but on IC-7610 in the "deaf" firmware
+        # state broadcast may only resume once a scope-enable command
+        # is sent — creating a deadlock where scope re-enable waits
+        # for the very signal it would itself trigger.  The session
+        # is already up at this point (soft_reconnect completed auth +
+        # discovery), so queue EnableScope unconditionally; if the
+        # radio is genuinely unreachable the command will fail on its
+        # own, which is strictly better than a silent 30-second wait
+        # every reconnect cycle.
+        if (
+            self._scope_handlers
+            and self._radio is not None
+            and self._hardware_scope_available
+            and not self._scope_enable_failed
+        ):
+            self._set_scope_data_callback(self._on_hardware_scope_frame)
+            if await self._execute_scope_command(
+                EnableScope(generation=self._scope_demand_generation)
+            ):
+                self._scope_enabled = True
+                logger.info(
+                    "scope: re-enable confirmed after reconnect (%d handlers)",
+                    len(self._scope_handlers),
+                )
 
     def _cancel_scope_reenable_task(self) -> None:
         """Cancel readiness work invalidated by a last-viewer transition."""
@@ -4038,6 +4083,9 @@ class WebServer:
                     "radioReady": self._radio_ready(),
                     "controlConnected": control_connected,
                     "identity": self._connection_identity_payload(),
+                    "session": _startup_busy_session_payload(
+                        *self._startup_busy_hold()
+                    ),
                     "wsClients": len(self._client_tasks),
                 },
             },
@@ -4062,6 +4110,31 @@ class WebServer:
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
         ready = self._radio_ready()
+        busy, retry = self._startup_busy_hold()
+        if busy and not ready:
+            # MOR-3391 part 2: the first connect is waiting out a busy
+            # reject while HTTP already serves. Every other not-ready body
+            # stays exactly {"status": "not_ready", "radioReady": false}.
+            # The 0.0 is unreachable with the production radio (its event
+            # is set only with a live cooldown); it guards doubles that
+            # set the event without a retry number.
+            body = json.dumps(
+                {
+                    "status": "not_ready",
+                    "radioReady": False,
+                    "reason": "session_busy",
+                    "retryInSeconds": retry if retry is not None else 0.0,
+                },
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer,
+                503,
+                "Service Unavailable",
+                body,
+                {"Content-Type": "application/json"},
+            )
+            return
         body = json.dumps(
             {
                 "status": "ready" if ready else "not_ready",
