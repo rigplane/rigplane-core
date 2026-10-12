@@ -99,9 +99,9 @@ class _RecordingQueue:
         self.commands.append(command)
 
 
-def _handler_with_legacy_queue() -> (
-    tuple[ControlHandler, _RecordingWebSocket, _RecordingQueue]
-):
+def _handler_with_legacy_queue() -> tuple[
+    ControlHandler, _RecordingWebSocket, _RecordingQueue
+]:
     """Handler whose server exposes a command queue, so legacy commands
     (``set_band``, ``set_nr_level``, ...) reach their executor-side
     coercion in the ``_enqueue_rc_*`` helpers."""
