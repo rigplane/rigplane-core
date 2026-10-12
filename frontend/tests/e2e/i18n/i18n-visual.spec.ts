@@ -4,7 +4,8 @@
  * Drives the built Core frontend with a stubbed backend (no live radio,
  * no live Tower) under three locales — `en-US`, `ja-JP`, `qps-ploc` — at
  * two viewports — desktop 1280×800 and mobile 390×844 — and captures a
- * screenshot of every P0 surface extracted in RP-ML-005.
+ * screenshot of every P0 surface extracted in RP-ML-005, except the
+ * disconnected overlay on mobile (skipped, see its case below).
  *
  * Locale switch path:
  *   - We do NOT click through `LanguageSelector` per locale (slow + flaky).
@@ -26,6 +27,13 @@
  *     markers in `aria-label`/`title`/`placeholder` attributes and in
  *     hidden containers that the visibility-filtered `innerText` pass
  *     never sees.
+ *   - The status-bar, disconnected and toast cases assert their own
+ *     surface rather than the app shell: the desktop `.status-bar` must
+ *     be visible and the mobile layout must not render one; the
+ *     disconnected case (skipped on mobile) expects the StatusBar radio
+ *     indicator to report `degraded`; the toast case requires the
+ *     `__i18nWsDispatch` hook, dispatches through it and expects a
+ *     visible toast.
  *   - Glossary tokens used by populated state — `MAIN`, `SUB`, `USB`,
  *     `LSB`, `RTTY`, `VFO` — MUST appear verbatim in EVERY locale,
  *     including `qps-ploc`, on the desktop app-shell. The radio model is
@@ -321,9 +329,11 @@ async function assertGlossaryTokens(
   surfaceLabel: string,
 ): Promise<void> {
   if (viewport.name !== 'desktop') return;
-  const bodyText = await page.locator('body').innerText();
   for (const token of GLOSSARY_TOKENS_DESKTOP) {
-    expect(bodyText, `${surfaceLabel}: glossary token "${token}" missing`).toContain(token);
+    await expect(
+      page.locator('body'),
+      `${surfaceLabel}: glossary token "${token}" missing`,
+    ).toContainText(token, { useInnerText: true });
   }
 }
 
@@ -339,11 +349,10 @@ async function assertPseudoMarkers(
   surfaceLabel: string,
 ): Promise<void> {
   if (locale !== 'qps-ploc') return;
-  const bodyText = await page.locator('body').innerText();
-  expect(
-    bodyText,
+  await expect(
+    page.locator('body'),
     `${surfaceLabel}: no pseudo-locale markers — did the locale fall back to English?`,
-  ).toMatch(PSEUDO_MARKERS);
+  ).toContainText(PSEUDO_MARKERS, { useInnerText: true });
 }
 
 async function waitForAppShell(page: Page): Promise<void> {
@@ -420,19 +429,39 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
         await preparePage(page, locale, viewport);
         await gotoApp(page, locale);
         await waitForAppShell(page);
-        // StatusBar lives at the top of the layout in both skins.
-        const statusBar = page.locator('.status-bar, [data-status-bar], header.status-bar');
-        if ((await statusBar.count()) > 0) {
-          await statusBar.first().scrollIntoViewIfNeeded();
+        // StatusBar.svelte renders the `.status-bar` element and
+        // RadioLayout.svelte mounts it; MobileRadioLayout.svelte does
+        // not reference StatusBar, so the mobile case pins its absence.
+        const statusBar = page.locator('.status-bar');
+        if (viewport.name === 'desktop') {
+          await expect(
+            statusBar,
+            `status-bar/${locale}/${viewport.name}: .status-bar not visible`,
+          ).toBeVisible();
+        } else {
+          await expect(
+            statusBar,
+            `status-bar/${locale}/${viewport.name}: the mobile skin must not render a status bar`,
+          ).toHaveCount(0);
         }
         await assertNoLookupMisses(page, `status-bar/${locale}/${viewport.name}`);
         await captureBaseline(page, 'status-bar', locale, viewport);
       });
 
       test(`connection-overlay disconnected — ${locale} @ ${viewport.name}`, async ({ page }) => {
+        test.skip(
+          viewport.name !== 'desktop',
+          'the phone layout shows no radio-link state for this fixture',
+        );
         await preparePage(page, locale, viewport, { state: mockDisconnectedState });
         await gotoApp(page, locale);
         await waitForAppShell(page);
+        // StatusBar.svelte interpolates the raw link state
+        // (`state: radioState`) into the radio indicator's title.
+        await expect(
+          page.locator('.status-bar .indicator[title*="degraded"]'),
+          `connection-overlay/${locale}/${viewport.name}: no StatusBar indicator reports the degraded radio link`,
+        ).toBeVisible();
         await assertNoLookupMisses(
           page,
           `connection-overlay/${locale}/${viewport.name}`,
@@ -505,23 +534,33 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
         await waitForAppShell(page);
         // Dispatch a notification through the stubbed WebSocket using
         // a code that is bundled in en-US.json (RP-ML-005 emits
-        // reasonCode + params from `broadcast_notification`).
+        // reasonCode + params from `broadcast_notification`). The hook
+        // is asserted before use so a missing stub fails with its own
+        // message.
+        const hookType = await page.evaluate(() =>
+          typeof (window as unknown as { __i18nWsDispatch?: unknown }).__i18nWsDispatch
+        );
+        expect(
+          hookType,
+          `toast/${locale}/${viewport.name}: window.__i18nWsDispatch is missing — the WS stub never installed it`,
+        ).toBe('function');
         await page.evaluate(() => {
-          const dispatch = (
-            window as unknown as {
-              __i18nWsDispatch?: (msg: unknown) => void;
-            }
-          ).__i18nWsDispatch;
-          if (dispatch) {
-            dispatch({
-              type: 'notification',
-              level: 'warning',
-              code: 'licenseExpired',
-              message: 'Your license has expired. Reactivate to continue.',
-              params: {},
-            });
-          }
+          (window as unknown as { __i18nWsDispatch: (msg: unknown) => void }).__i18nWsDispatch({
+            type: 'notification',
+            level: 'warning',
+            code: 'licenseExpired',
+            message: 'Your license has expired. Reactivate to continue.',
+            params: {},
+          });
         });
+        // Toast.svelte renders a notification as `button.toast` inside
+        // its own `.toast-container`; AppGlobalHost.svelte mounts it.
+        // The toast's `in:fly` transition lasts 200 ms; the wait below
+        // is 400 ms.
+        await expect(
+          page.locator('.toast-container .toast'),
+          `toast/${locale}/${viewport.name}: dispatched notification rendered no toast`,
+        ).toBeVisible();
         await page.waitForTimeout(400);
         await assertNoLookupMisses(page, `toast/${locale}/${viewport.name}`);
         await captureBaseline(page, 'toast', locale, viewport);
