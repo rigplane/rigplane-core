@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from rigplane.core.acquisition_scheduler import AcquisitionPriority, AcquisitionStatus
 from rigplane.core.command_dispatch import (
     _af_level_from_param as _af_level_from_param,
+    _int_param as _int_param,
     _raw_int_level_from_param as _raw_int_level_from_param,
     bind_command_intent,
     command_descriptor,
@@ -1244,21 +1245,6 @@ def _external_rigctld_main_alias(path: FieldPath) -> FieldPath:
     if path.family.value == "freq_mode" and path.slot is None:
         return FieldPath.active("main", path.family.value, path.name)
     return FieldPath.receiver("main", path.family.value, path.name)
-
-
-def _int_param(value: Any, field: str) -> int:
-    """Coerce one client-supplied command param to ``int``.
-
-    A value ``int()`` cannot convert (``None``, an object, a non-numeric
-    string) is a malformed client request, not a bug in the command path:
-    raise ``ValueError`` naming the field so the web ingress logs it as a
-    client error instead of leaking ``TypeError``/bare ``int()`` messages.
-    Pinned by tests/test_command_param_validation.py.
-    """
-    try:
-        return int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field} must be an integer, got {value!r}") from exc
 
 
 def command_intent_from_request(

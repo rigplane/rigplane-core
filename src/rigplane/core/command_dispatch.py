@@ -189,6 +189,21 @@ def _repeater_toggle_target(field: str, params: Mapping[str, Any]) -> FieldPath:
     return FieldPath.receiver(str(params["receiver"]), "operator_toggles", field)
 
 
+def _int_param(value: Any, field: str) -> int:
+    """Coerce one client-supplied command param to ``int``.
+
+    A value ``int()`` cannot convert (``None``, an object, a non-numeric
+    string) is a malformed client request, not a bug in the command path:
+    raise ``ValueError`` naming the field so the web ingress logs it as a
+    client error instead of leaking ``TypeError``/bare ``int()`` messages.
+    Pinned by tests/test_command_param_validation.py.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be an integer, got {value!r}") from exc
+
+
 def _raw_int_level_from_param(value: Any) -> int:
     """Coerce a raw-only level command param (MOR-1579).
 
@@ -249,7 +264,11 @@ def _bind_level(field: str, params: Mapping[str, Any]) -> dict[str, Any]:
         _af_level_from_param if field == "af_level" else _raw_int_level_from_param
     )
     level = normalize(params["level"])
-    return {"level": level, field: level, "receiver": int(params.get("receiver", 0))}
+    return {
+        "level": level,
+        field: level,
+        "receiver": _int_param(params.get("receiver", 0), "receiver"),
+    }
 
 
 def _level_target(field: str, params: Mapping[str, Any]) -> FieldPath:
@@ -258,11 +277,11 @@ def _level_target(field: str, params: Mapping[str, Any]) -> FieldPath:
 
 def _bind_attenuator(params: Mapping[str, Any]) -> dict[str, Any]:
     raw_db = params["level"] if "level" in params else params.get("db", 0)
-    db = int(raw_db)
+    db = _int_param(raw_db, "db")
     return {
         "db": db,
         "att": db,
-        "receiver": int(params.get("receiver", 0)),
+        "receiver": _int_param(params.get("receiver", 0), "receiver"),
     }
 
 
