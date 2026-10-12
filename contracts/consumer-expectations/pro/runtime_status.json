@@ -1,0 +1,40 @@
+{
+  "contract": "pro/runtime_status",
+  "source": "rigplane-pro",
+  "source_file": "src/rigplane_pro/companion/runtime.py",
+  "description": "Pro polls GET /api/v1/runtime on the managed core and reads `radio.radioReady` (a boolean), `rigctld.enabled` (a boolean) and `rigctld.address` (a string or null); those must be present. Pro also reads `station.health.likelyCause` with `station.health.lastError` defensively — missing and null are treated alike — so `station`, `health` and both fields are optional here and only typed when present (a string or null). Value checks Pro makes at run time (`rigctld.enabled` being true, `rigctld.address` naming the expected loopback port) are not schema constraints; only the field types are.",
+  "producer_artifact": "runtime",
+  "schema": {
+    "type": "object",
+    "required": ["radio", "rigctld"],
+    "properties": {
+      "radio": {
+        "type": "object",
+        "required": ["radioReady"],
+        "properties": {
+          "radioReady": { "type": "boolean" }
+        }
+      },
+      "station": {
+        "type": "object",
+        "properties": {
+          "health": {
+            "type": "object",
+            "properties": {
+              "likelyCause": { "type": ["string", "null"] },
+              "lastError": { "type": ["string", "null"] }
+            }
+          }
+        }
+      },
+      "rigctld": {
+        "type": "object",
+        "required": ["enabled", "address"],
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "address": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

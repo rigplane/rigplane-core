@@ -1,0 +1,29 @@
+{
+  "contract": "pro/startup_event",
+  "source": "rigplane-pro",
+  "source_file": "src/rigplane_pro/companion/station_runtime.py",
+  "description": "Pro reads the one-line JSON startup event that a managed core station process prints on stdout once its HTTP server is bound. Pro requires `type` to be \"rigplane.runtime.started\"; `baseUrl` and `runtimeUrl` to be non-empty loopback http(s) URLs (scheme http or https, matched in any case; host `localhost` in any case, a `127.x.x.x` address with each octet 0-255 and no leading zeros, or `[::1]`; an optional port; an optional tail starting with `/`, `?` or `#`); and `healthUrl`, when present, to be such a URL. `runtimeUrl` is required, not optional: Pro polls the runtime endpoint it names and verifies the rigctld listener through it on every managed start. `logPath` is read as a string or null (Core emits null when no log file is configured). `pid` is not read. The pattern covers the loopback forms a Core could plausibly emit and is otherwise narrower than Pro's own check.",
+  "producer_artifact": "startup_event",
+  "schema": {
+    "type": "object",
+    "required": ["type", "baseUrl", "runtimeUrl"],
+    "properties": {
+      "type": { "const": "rigplane.runtime.started" },
+      "baseUrl": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[Hh][Tt][Tt][Pp][Ss]?://([Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|\\[::1\\])(:[0-9]+)?([/?#].*)?$"
+      },
+      "healthUrl": {
+        "type": ["string", "null"],
+        "pattern": "^[Hh][Tt][Tt][Pp][Ss]?://([Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|\\[::1\\])(:[0-9]+)?([/?#].*)?$"
+      },
+      "runtimeUrl": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[Hh][Tt][Tt][Pp][Ss]?://([Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])|\\[::1\\])(:[0-9]+)?([/?#].*)?$"
+      },
+      "logPath": { "type": ["string", "null"] }
+    }
+  }
+}

@@ -888,7 +888,24 @@ class ControlPhaseRuntime:
                 local_host=getattr(h, "_local_bind_host", None),
                 local_port=requested_local_port,
             )
-        except OSError as exc:
+        except (OSError, TimeoutError) as exc:
+            # ``connect`` resets the numbering to 0 before discovery, and a
+            # rebuild that failed never carried this session's numbering:
+            # drop it without recording ``send_seq``, or a later attempt
+            # resumes 0 and the radio ignores the packets of the session it
+            # still holds.  Close it only when it actually holds an
+            # endpoint: ``IcomTransport.connect`` sets ``_udp_transport``
+            # only once the datagram endpoint exists, so a bind failure
+            # (nothing open) has no socket to close, while a discovery
+            # timeout is bound to the fixed local CI-V port the next
+            # attempt needs and must be closed.
+            failed = h._civ_transport
+            if (
+                failed is not None
+                and getattr(failed, "_udp_transport", None) is not None
+            ):
+                with _suppress(Exception):
+                    await failed.disconnect()
             h._civ_transport = None
             ctrl_alive = getattr(h, "control_connected", False)
             h._conn_state = (

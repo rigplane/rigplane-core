@@ -427,23 +427,25 @@ _IC705_MAPPING: dict[_Key, _ProductionCall] = {
 
 _NOT_DECLARED_705: dict[_Key, _NotDeclared] = {
     ("voice_tx_memory", "none", "set", "T1"): _NotDeclared(
-        "the profile's command map names set_voice_tx [0x28] "
-        "(rigs/ic705.toml), but rigplane.commands exports no set_voice_tx "
-        "builder and no runtime path sends it (voice_tx appears in src "
-        "only as core/capabilities.py: CAP_VOICE_TX); the 0x28 T1/stop "
+        "the profile's command map declares neither get_voice_tx nor "
+        "set_voice_tx (rigs/ic705.toml; pinned by this row's "
+        "absent_commands), rigplane.commands exports no set_voice_tx "
+        "builder and no runtime path sends 0x28; the 0x28 T1/stop "
         "frames exist only as raw TX-family frames gated by "
         "runtime/tx_interlock.py: classify_raw_civ_frame_tx_family — add "
         "a comparison row if a builder is ever exported",
+        absent_commands=("get_voice_tx", "set_voice_tx"),
         absent_builders=("set_voice_tx",),
     ),
     ("voice_tx_memory", "none", "set", "stop"): _NotDeclared(
-        "the profile's command map names set_voice_tx [0x28] "
-        "(rigs/ic705.toml), but rigplane.commands exports no set_voice_tx "
-        "builder and no runtime path sends it (voice_tx appears in src "
-        "only as core/capabilities.py: CAP_VOICE_TX); the 0x28 T1/stop "
+        "the profile's command map declares neither get_voice_tx nor "
+        "set_voice_tx (rigs/ic705.toml; pinned by this row's "
+        "absent_commands), rigplane.commands exports no set_voice_tx "
+        "builder and no runtime path sends 0x28; the 0x28 T1/stop "
         "frames exist only as raw TX-family frames gated by "
         "runtime/tx_interlock.py: classify_raw_civ_frame_tx_family — add "
         "a comparison row if a builder is ever exported",
+        absent_commands=("get_voice_tx", "set_voice_tx"),
         absent_builders=("set_voice_tx",),
     ),
 }
