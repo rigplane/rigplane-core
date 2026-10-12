@@ -21,6 +21,9 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import ctypes
+import ctypes.util
+import functools
 import gzip as _gzip
 import ipaddress
 import json
@@ -875,6 +878,73 @@ def _is_managed_tx_invalidation(event: dict[str, Any]) -> bool:
     return (
         event.get("type") == "event" and event.get("name") == "managed_transmit_changed"
     )
+
+
+# MOR-3317: macOS has no /proc/self/statm and resource.getrusage reports only
+# the peak RSS; the current resident size comes from libproc's proc_pidinfo
+# with PROC_PIDTASKINFO, in-process (no subprocess on the request path).
+_PROC_PIDTASKINFO = 4
+
+
+class _ProcTaskinfo(ctypes.Structure):
+    """Layout of libproc's ``proc_taskinfo`` (96 bytes)."""
+
+    _fields_ = [
+        ("pti_virtual_size", ctypes.c_uint64),
+        ("pti_resident_size", ctypes.c_uint64),
+        ("pti_total_user", ctypes.c_uint64),
+        ("pti_total_system", ctypes.c_uint64),
+        ("pti_threads_user", ctypes.c_uint64),
+        ("pti_threads_system", ctypes.c_uint64),
+        ("pti_policy", ctypes.c_int32),
+        ("pti_faults", ctypes.c_int32),
+        ("pti_pageins", ctypes.c_int32),
+        ("pti_cow_faults", ctypes.c_int32),
+        ("pti_messages_sent", ctypes.c_int32),
+        ("pti_messages_received", ctypes.c_int32),
+        ("pti_syscalls_mach", ctypes.c_int32),
+        ("pti_syscalls_unix", ctypes.c_int32),
+        ("pti_csw", ctypes.c_int32),
+        ("pti_threadnum", ctypes.c_int32),
+        ("pti_numrunning", ctypes.c_int32),
+        ("pti_priority", ctypes.c_int32),
+    ]
+
+
+_PidInfoFn = Callable[[int, int, int, Any, int], int]
+
+
+@functools.lru_cache(maxsize=1)
+def _libproc_pidinfo() -> _PidInfoFn | None:
+    """libproc's ``proc_pidinfo``, loaded once lazily; ``None`` if unavailable."""
+    try:
+        lib_path = ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib"
+        pidinfo: _PidInfoFn = ctypes.CDLL(lib_path).proc_pidinfo
+    except (OSError, AttributeError):
+        return None
+    return pidinfo
+
+
+def _macos_rss_bytes(pidinfo: _PidInfoFn | None) -> int | None:
+    """Current resident set size of this process via ``proc_pidinfo``.
+
+    ``proc_pidinfo`` returns the number of bytes written; the result is
+    accepted only when the whole ``proc_taskinfo`` struct came back. Any
+    failure — no library, a short count, ``OSError`` — yields ``None``;
+    the reader never raises into the endpoint.
+    """
+    if pidinfo is None:
+        return None
+    info = _ProcTaskinfo()
+    try:
+        written = pidinfo(
+            os.getpid(), _PROC_PIDTASKINFO, 0, ctypes.byref(info), ctypes.sizeof(info)
+        )
+    except OSError:
+        return None
+    if written != ctypes.sizeof(info):
+        return None
+    return int(info.pti_resident_size)
 
 
 class WebServer:
@@ -4202,6 +4272,8 @@ class WebServer:
                 rss_bytes = int(statm.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
         except (OSError, ValueError, IndexError):
             pass
+        if rss_bytes is None and sys.platform == "darwin":
+            rss_bytes = _macos_rss_bytes(_libproc_pidinfo())
         open_fds: int | None = None
         for fd_dir in ("/proc/self/fd", "/dev/fd"):
             try:

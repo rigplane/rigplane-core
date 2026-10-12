@@ -214,12 +214,12 @@ class ProcessMetricsSampler:
     Each field is filled independently: a value from the runtime
     document's ``process`` object (``rssBytes`` / ``openFds`` /
     ``asyncioTasks``, the names of PR #4044; ``rssBytes`` is null where
-    the platform has no ``/proc/self/statm``) wins when present, and any
-    field the runtime did not report is measured driver-side for this
-    process (the stack runs in-process): RSS via ``/proc`` or ``ps``,
-    FDs via ``/proc`` or ``/dev/fd``, tasks via
-    ``_server_asyncio_task_count``. The connection column comes from the
-    state document (``_state_connection_status``), not the runtime
+    neither ``/proc/self/statm`` nor macOS ``proc_pidinfo`` is available)
+    wins when present, and any field the runtime did not report is
+    measured driver-side for this process (the stack runs in-process):
+    RSS via ``/proc`` or ``ps``, FDs via ``/proc`` or ``/dev/fd``, tasks
+    via ``_server_asyncio_task_count``. The connection column comes from
+    the state document (``_state_connection_status``), not the runtime
     payload.
     """
 

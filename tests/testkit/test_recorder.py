@@ -198,6 +198,61 @@ class TestRedactDatagram:
             assert safe[0x40:0x60] == bytes(0x20)
             assert b"SHACK-IC7610" not in safe
 
+    def test_radio_conninfo_notice_name_and_ip_zeroed(self) -> None:
+        """The radio-originated conninfo notice (request type 0x00 at
+        0x15, r2c) has a different layout from 0x60 on than the
+        client-built packet (protocol.md § Conninfo Packet documents the
+        client layout only): busy flag u32 at 0x60 — read by
+        ``_control_phase.py`` ``_on_conninfo_notice`` and preserved —
+        then the connected client's computer name at 0x64..0x74 and IPv4
+        address at 0x84..0x88 (recorded IC-7610 structure, documented in
+        ``simulator.py`` ``_conninfo_notice``); name and IP are zeroed."""
+        pkt = bytearray(0x90)
+        struct.pack_into("<I", pkt, 0x00, 0x90)
+        pkt[0x14] = 0x02  # radio reply marker
+        pkt[0x15] = 0x00  # radio-originated notice
+        struct.pack_into("<I", pkt, 0x1C, 0x12345678)
+        struct.pack_into("<I", pkt, 0x60, 1)  # busy flag
+        name = b"SHACK-DESKTOP"
+        pkt[0x64 : 0x64 + len(name)] = name
+        ip = bytes((192, 0, 2, 42))  # TEST-NET-1 documentation address
+        pkt[0x84:0x88] = ip
+        safe, labels = redact_datagram("control", "r2c", bytes(pkt))
+        assert labels == ["token", "name", "ip"]
+        assert safe[0x64:0x74] == bytes(0x10)
+        assert safe[0x84:0x88] == bytes(4)
+        assert name not in safe
+        assert ip not in safe
+        # The busy flag is protocol state and must survive redaction.
+        assert safe[0x60:0x64] == struct.pack("<I", 1)
+
+    def test_client_conninfo_notice_spans_not_masked(self) -> None:
+        """The client-originated 0x90 (request type 0x03 at 0x15) keeps
+        its own layout: the TX buffer latency u32 at 0x84..0x88
+        (protocol.md § Conninfo Packet, ``build_conninfo_packet``
+        ``tx_buffer``) is preserved and no "ip" label appears."""
+        pkt = bytearray(0x90)
+        struct.pack_into("<I", pkt, 0x00, 0x90)
+        pkt[0x14] = 0x01  # request marker
+        pkt[0x15] = 0x03  # client conninfo
+        struct.pack_into("<I", pkt, 0x1C, 0x12345678)
+        struct.pack_into(">I", pkt, 0x84, 40)  # TX buffer latency, ms
+        safe, labels = redact_datagram("control", "c2r", bytes(pkt))
+        assert labels == ["token", "login", "name"]
+        assert struct.unpack_from(">I", safe, 0x84)[0] == 40
+
+    def test_power_off_notice_no_new_labels(self) -> None:
+        """The power-off notice shape — an all-zero 0x90 r2c with request
+        type 0x00 (``simulator.py`` ``_conninfo_notice`` sends every
+        field from 0x20 on zero) — gains no new labels: the zero name
+        and IP spans stay zero without an "ip" marker."""
+        pkt = bytearray(0x90)
+        struct.pack_into("<I", pkt, 0x00, 0x90)
+        safe, labels = redact_datagram("control", "r2c", bytes(pkt))
+        assert labels == ["token", "name"]
+        assert safe[0x64:0x74] == bytes(0x10)
+        assert safe[0x84:0x88] == bytes(4)
+
     def test_status_packet_token_slot_zeroed(self) -> None:
         """The 0x50 status packet shares the control header (§ Status Packet:
         error 0x30, CI-V port 0x42, audio port 0x46, read by

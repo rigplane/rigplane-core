@@ -17,13 +17,15 @@ Every datagram is appended as one JSON line::
 ``t`` is seconds (``time.monotonic``) since :meth:`IcomSessionRecorder.start`.
 Credentials never reach disk: the login packet's username/password/computer
 fields, the conninfo username field, the conninfo device-name field
-(0x40..0x60, user-configurable text on a real radio) and the session-token
+(0x40..0x60, user-configurable text on a real radio), the session-token
 slot (0x1C) of every control packet sized 0x40/0x50/0x60/0x90 — in both
-directions — are zeroed before writing, and the conninfo GUID/MAC area
+directions — and, in the radio-originated conninfo notice (request type
+0x00), the connected client's computer name (0x64..0x74) and IPv4 address
+(0x84..0x88), are zeroed before writing, and the conninfo GUID/MAC area
 (0x20..0x30) of every 0x90 packet is replaced with a deterministic sha256
 pseudonym (all-zero spans stay zero).  The record carries
-``"redacted": ["login"]`` / ``["token"]`` / ``["guid"]`` / ``["name"]``
-markers naming what was masked.  The bytes
+``"redacted": ["login"]`` / ``["token"]`` / ``["guid"]`` / ``["name"]`` /
+``["ip"]`` markers naming what was masked.  The bytes
 forwarded on the wire are never altered by redaction; the only transforms
 applied to forwarded traffic are the two port rewrites — the
 radio-advertised ports in a status packet and the client-declared ports in
@@ -84,6 +86,14 @@ _CONNINFO_DEVICE_NAME = slice(0x40, 0x60)
 # build_conninfo_packet packs them big-endian u32).
 _CONNINFO_CIV_PORT_OFF = 0x7C
 _CONNINFO_AUDIO_PORT_OFF = 0x80
+# Radio-originated conninfo notice (request type 0x00 at 0x15, r2c): the
+# connected client's computer name 0x64..0x74 and IPv4 address 0x84..0x88
+# (recorded IC-7610 layout, documented in simulator.py _conninfo_notice;
+# protocol.md § Conninfo Packet documents the client-built layout only).
+# The busy u32 at 0x60 is protocol state (read by runtime/_control_phase.py
+# _on_conninfo_notice) and is not masked.
+_NOTICE_CLIENT_NAME = slice(0x64, 0x74)
+_NOTICE_CLIENT_IP = slice(0x84, 0x88)
 
 
 def _guid_pseudonym(span: bytes) -> bytes:
@@ -94,11 +104,28 @@ def _guid_pseudonym(span: bytes) -> bytes:
 def redact_datagram(port: str, direction: str, data: bytes) -> tuple[bytes, list[str]]:
     """Return ``(safe_bytes, labels)`` with credential/token fields zeroed.
 
-    Pure function over one datagram; the caller writes ``safe_bytes`` to disk
-    and forwards the original.  ``labels`` names what was masked:
-    ``"login"`` for credential fields, ``"token"`` for session-token fields,
-    ``"guid"`` for the pseudonymised conninfo GUID/MAC area, ``"name"`` for
-    the zeroed conninfo device-name field.
+    Pure function over one datagram; the caller writes ``safe_bytes`` to
+    disk and forwards the original.  Masked spans, per packet kind and
+    direction (offsets per protocol.md § Auth / § Conninfo Packet; the
+    radio notice layout is the recorded IC-7610 structure, see
+    simulator.py ``_conninfo_notice``):
+
+    - any control packet sized 0x40/0x50/0x60/0x90, both directions:
+      the session-token slot 0x1C..0x20 → ``"token"``;
+    - client login (0x80, request type 0x00): username/password/computer
+      span 0x40..0x70 → ``"login"``;
+    - client conninfo (0x90, request type 0x03): the encoded username
+      copy 0x60..0x70 → ``"login"``;
+    - any 0x90, both directions: the GUID/MAC area 0x20..0x30 is
+      replaced with a deterministic pseudonym (an all-zero span stays
+      zero) → ``"guid"``; the device-name field 0x40..0x60 → ``"name"``;
+    - radio conninfo notice (0x90, request type 0x00, r2c): the
+      connected client's computer name 0x64..0x74 (under the ``"name"``
+      label every 0x90 already carries) and IPv4 address 0x84..0x88 →
+      ``"ip"`` when the span is nonzero; the busy flag 0x60..0x64 is
+      protocol state and is preserved.
+
+    All other bytes pass through untouched.
     """
     pkt = bytearray(data)
     labels: list[str] = []
@@ -135,6 +162,18 @@ def redact_datagram(port: str, direction: str, data: bytes) -> tuple[bytes, list
         # zero it in both directions.
         pkt[_CONNINFO_DEVICE_NAME] = bytes(0x20)
         labels.append("name")
+    # The radio-originated conninfo notice (request type 0x00 at 0x15)
+    # differs from 0x60 on from the client-built packet: after the busy
+    # flag u32 at 0x60 it carries the connected client's computer name
+    # at 0x64..0x74 and IPv4 address at 0x84..0x88.  The name span adds
+    # no label of its own (every 0x90 already carries "name" for the
+    # device-name field above); "ip" is added only when the span was
+    # nonzero, so an all-zero power-off notice gains no new labels.
+    if direction == "r2c" and len(data) == _CONNINFO_SIZE and data[0x15] == 0x00:
+        pkt[_NOTICE_CLIENT_NAME] = bytes(0x10)
+        if data[_NOTICE_CLIENT_IP] != bytes(4):
+            pkt[_NOTICE_CLIENT_IP] = bytes(4)
+            labels.append("ip")
     return bytes(pkt), labels
 
 

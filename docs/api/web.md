@@ -309,7 +309,7 @@ report is `null`.
 
 | Field | Source |
 |---|---|
-| `rssBytes` | Current resident set size from `/proc/self/statm`; `null` where that file does not exist (macOS, Windows). |
+| `rssBytes` | Current resident set size in bytes: from `/proc/self/statm` on Linux, from `proc_pidinfo` (`PROC_PIDTASKINFO`, `pti_resident_size`) on macOS; `null` where neither is available (for example Windows). |
 | `openFds` | Open file descriptors listed in `/proc/self/fd` or `/dev/fd`; `null` where neither can be listed (Windows). |
 | `threads` | Python threads, `threading.active_count()`. |
 | `asyncioTasks` | Unfinished tasks on the server's event loop, `asyncio.all_tasks()`. |
