@@ -196,11 +196,12 @@ class RigctldServer:
     Args:
         radio: Connected IcomRadio instance.
         config: Server configuration; defaults to RigctldConfig().
-        allow_not_ready: Start listening even when the radio is not
-            ready (the bundled web seat, whose own start-up gate
-            already serves a radio in its connect-time identity hold);
-            radio commands answer errors until the radio recovers.
-            Default False keeps the fail-hard check for standalone use.
+        allow_not_ready: Skip the start-up readiness check so the
+            listener binds while the radio is not ready (the bundled
+            seat shared by ``web`` and ``station``, whose own start-up
+            gate already serves a radio in its connect-time identity
+            hold). Default False keeps the fail-hard check for
+            standalone use.
         _protocol: Override the protocol module (for testing).
         _handler: Override the handler instance (for testing).
         _circuit_breaker: Override the circuit breaker (for testing).
@@ -863,8 +864,9 @@ class RigctldServer:
         """Start the TCP listener and initialise the command handler.
 
         With ``allow_not_ready`` a radio still in its connect-time
-        identity hold does not abort start-up: the listener binds and
-        radio commands answer errors until the radio recovers.
+        identity hold does not abort start-up: the start-up readiness
+        check is skipped so the listener binds while the radio is not
+        ready.
         """
         try:
             assert_radio_startup_ready(self._radio, component="rigctld startup")
@@ -874,8 +876,7 @@ class RigctldServer:
             connected, ready, control_connected = _radio_details(self._radio)
             logger.warning(
                 "rigctld starting while the radio is not ready "
-                "(connected=%s, radio_ready=%s, control_connected=%s); "
-                "radio commands answer errors until the radio recovers",
+                "(connected=%s, radio_ready=%s, control_connected=%s)",
                 connected,
                 ready,
                 control_connected,

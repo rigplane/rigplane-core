@@ -40,7 +40,7 @@ class _HoldRadio:
     gate already serves through (``web_startup: _serve_with_identity_pending``).
     """
 
-    backend_id = "icom_lan"
+    backend_id = "rigplane"
     model = "FAKE-HOLD"
     capabilities: set[str] = set()
 
@@ -153,13 +153,14 @@ async def test_web_and_bundled_rigctld_come_up_against_identity_hold() -> None:
         assert status == 503
         assert payload == {"status": "not_ready", "radioReady": False}
 
-        # The bundled rigctld listens and answers a radio command with an
-        # error RPRT while the radio is not ready.
+        # The bundled rigctld listens; the fake handler refuses `f` while
+        # the radio is not ready, which the server maps to an error RPRT.
         assert await _rigctld_line(rig, b"f\n") == b"RPRT -6\n"
 
-        # The hold resolves (auto-reconnect owns the recovery): the exact
-        # check that aborted start-up now passes, rigctld serves normally,
-        # and /readyz reports ready honestly.
+        # The hold resolves the way the LAN re-read does (an acceptable
+        # identity answer reaches `radio.py: _finish_lan_identity_completion`;
+        # staged here by hand): the exact check that aborted start-up now
+        # passes, rigctld serves normally, and /readyz reports ready honestly.
         radio.connected = True
         radio.radio_ready = True
         assert_radio_startup_ready(radio, component="rigctld startup")
