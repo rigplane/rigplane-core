@@ -12,7 +12,9 @@ import asyncio
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
+from rigplane.audio.bus import AudioBus
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -43,6 +45,35 @@ class JourneyRadio(SerialMockRadio):
         return (*super().baseline_observations(), active_receiver)
 
 
+class JourneyAudioRadio(JourneyRadio):
+    """JourneyRadio plus the minimum RX-audio stand-in the LIVE journey needs.
+
+    Exactly three members: ``has_usb_audio`` (class attribute, the
+    UsbAudioCapable sentinel) keeps the profile's ``audio`` tag through
+    web runtime_helpers.runtime_capabilities; ``audio_bus`` returns the real
+    AudioBus the web relay subscribes to, kept in the ``_audio_bus`` slot
+    web server._runtime_audio_bus_payload reads; ``start_audio_rx_opus``
+    accepts the ``jitter_depth`` keyword audio.bus.AudioBus._begin_rx passes
+    (the inherited SerialMockRadio signature does not) and emits nothing —
+    audio.bus.AudioSubscription.__anext__ returns None while active, so the
+    relay keeps running on an idle bus.
+    """
+
+    has_usb_audio = True
+    _audio_bus: AudioBus | None = None
+
+    @property
+    def audio_bus(self) -> AudioBus:
+        if self._audio_bus is None:
+            self._audio_bus = AudioBus(self)
+        return self._audio_bus
+
+    async def start_audio_rx_opus(
+        self, callback: Any, *, jitter_depth: int = 5
+    ) -> None:
+        return None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
@@ -59,6 +90,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="set the radio's MAIN frequency in Hz before serving (default: SerialMockRadio baseline)",
     )
+    parser.add_argument(
+        "--audio",
+        action="store_true",
+        help="serve with the RX-audio-capable JourneyAudioRadio instead of JourneyRadio",
+    )
     return parser.parse_args()
 
 
@@ -66,7 +102,7 @@ async def run() -> None:
     args = parse_args()
     if not args.static_dir.is_dir():
         raise SystemExit(f"frontend build is missing: {args.static_dir}")
-    radio = JourneyRadio()
+    radio: SerialMockRadio = JourneyAudioRadio() if args.audio else JourneyRadio()
     await radio.connect()
     if args.freq is not None:
         await radio.set_freq(args.freq)

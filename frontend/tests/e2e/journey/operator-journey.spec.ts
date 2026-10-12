@@ -13,6 +13,13 @@ import { startJourneyServer, type JourneyServerHandle } from './server-process';
  * press sends ptt_on and the server refuses it. SerialMockRadio opens no
  * device, and on this fake a ptt_on is refused with or without --read-only
  * (no managed-transmit authority is composed).
+ *
+ * The remaining two scenarios start their fakes (and the killed server's
+ * replacement) themselves via server-process.ts so they can SIGKILL the
+ * process group mid-session and restart on the same port: one asserts the
+ * control link and FRESH state, the other (started with --audio) asserts the
+ * rx-audio LIVE monitor choice and that RX audio is re-armed after the
+ * restart, proven by the audio_start wire frames and wsClients.audio.
  */
 
 interface WsCommandRecord {
@@ -27,29 +34,50 @@ interface WsRefusalRecord {
   message: string;
 }
 
+interface WsAudioStartRecord {
+  socket: string;
+  direction: string;
+}
+
+interface WsAudioFrameRecord {
+  socket: string;
+  type: string;
+  message?: string;
+}
+
 const JOURNEY_COMMANDS = ['set_freq', 'set_mode', 'set_filter_width'];
 
 // Adapted from installWebSocketInterceptor in v2-ui-interactive.impl.ts (not
 // imported: importing that file registers its tests); keeps the id, name and
 // params of each outgoing command frame, the id, error and message of each
-// incoming response frame with ok: false, and the path of each socket that opened.
+// incoming response frame with ok: false, and the path of each socket that
+// opened. For /api/v1/audio sockets it also keeps each outgoing audio_start
+// frame's direction and each incoming audio_format / error frame (audio_stats
+// and binary audio frames are filtered out by type).
+const AUDIO_SOCKET_PATH = '/api/v1/audio';
+
 async function installWebSocketInterceptor(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const win = window as Window & {
       __WS_COMMANDS__?: WsCommandRecord[];
       __WS_REFUSALS__?: WsRefusalRecord[];
       __WS_OPENED__?: string[];
+      __WS_AUDIO_STARTS__?: WsAudioStartRecord[];
+      __WS_AUDIO_FRAMES__?: WsAudioFrameRecord[];
     };
     win.__WS_COMMANDS__ = [];
     win.__WS_REFUSALS__ = [];
     win.__WS_OPENED__ = [];
+    win.__WS_AUDIO_STARTS__ = [];
+    win.__WS_AUDIO_FRAMES__ = [];
     const OriginalWebSocket = window.WebSocket;
 
     class InterceptedWebSocket extends OriginalWebSocket {
       constructor(url: string | URL, protocols?: string | string[]) {
         super(url, protocols as never);
+        const socketPath = new URL(String(url), window.location.href).pathname;
         this.addEventListener('open', () => {
-          win.__WS_OPENED__?.push(new URL(String(url), window.location.href).pathname);
+          win.__WS_OPENED__?.push(socketPath);
         });
         this.addEventListener('message', (event: MessageEvent) => {
           if (typeof event.data !== 'string') return;
@@ -61,6 +89,16 @@ async function installWebSocketInterceptor(page: Page): Promise<void> {
                 error: String(parsed.error),
                 message: String(parsed.message),
               });
+            }
+            if (
+              socketPath === '/api/v1/audio'
+              && (parsed.type === 'audio_format' || parsed.type === 'error')
+            ) {
+              win.__WS_AUDIO_FRAMES__?.push(
+                parsed.type === 'error'
+                  ? { socket: socketPath, type: 'error', message: String(parsed.message) }
+                  : { socket: socketPath, type: 'audio_format' },
+              );
             }
           } catch {
             // Ignore non-JSON frames.
@@ -76,6 +114,12 @@ async function installWebSocketInterceptor(page: Page): Promise<void> {
                   id: String(parsed.id),
                   name: String(parsed.name),
                   params: (parsed.params ?? {}) as Record<string, unknown>,
+                });
+              }
+              if (socketPath === '/api/v1/audio' && parsed.type === 'audio_start') {
+                win.__WS_AUDIO_STARTS__?.push({
+                  socket: socketPath,
+                  direction: String(parsed.direction),
                 });
               }
             } catch {
@@ -114,6 +158,22 @@ async function openedSockets(page: Page): Promise<string[]> {
   return page.evaluate(() => {
     const win = window as Window & { __WS_OPENED__?: string[] };
     return win.__WS_OPENED__ ?? [];
+  });
+}
+
+/** audio_start frames the page has sent on the audio socket, in send order. */
+async function audioStarts(page: Page): Promise<WsAudioStartRecord[]> {
+  return page.evaluate(() => {
+    const win = window as Window & { __WS_AUDIO_STARTS__?: WsAudioStartRecord[] };
+    return win.__WS_AUDIO_STARTS__ ?? [];
+  });
+}
+
+/** audio_format / error frames the audio socket has received, in arrival order. */
+async function audioFrames(page: Page): Promise<WsAudioFrameRecord[]> {
+  return page.evaluate(() => {
+    const win = window as Window & { __WS_AUDIO_FRAMES__?: WsAudioFrameRecord[] };
+    return win.__WS_AUDIO_FRAMES__ ?? [];
   });
 }
 
@@ -299,6 +359,98 @@ test.describe('server killed and restarted on the same port', () => {
       // FRESH state: the readout and /api/v1/state report B.
       await expectReadoutHz(readout, FREQ_B);
       await expectServerMain(page, { freqHz: FREQ_B });
+    } finally {
+      await first.kill().catch(() => undefined);
+    }
+  });
+});
+
+// The fourth fake is also spec-spawned, but with --audio: the server keeps the
+// profile's audio capability, so the page offers the rx-audio LIVE monitor
+// choice. The DOM alone cannot prove the re-arm (data-live-link turns true at
+// socket open, before audio_start is sent or accepted), so the pins also read
+// the wire frames and the server's wsClients.audio count.
+const AUDIO_PORT = 18769;
+const AUDIO_URL = `http://127.0.0.1:${AUDIO_PORT}`;
+const AUDIO_FREQ = 7_030_000;
+
+test.describe('audio server killed and restarted on the same port', () => {
+  test.use({ baseURL: AUDIO_URL });
+
+  const servers: JourneyServerHandle[] = [];
+  test.afterAll(async () => {
+    for (const server of servers) {
+      await server.kill();
+    }
+  });
+
+  test('operator journey: RX audio is re-armed after the server restart', async ({ page }) => {
+    test.setTimeout(120_000);
+    await installWebSocketInterceptor(page);
+    const monitor = page.locator('[data-testid="rx-audio-monitor"]');
+    const liveChoice = page.locator('[data-testid="rx-audio-monitor-live"]');
+    const audioSocketCount = async () =>
+      (await openedSockets(page)).filter((socketPath) => socketPath === AUDIO_SOCKET_PATH).length;
+    const rxStartCount = async () =>
+      (await audioStarts(page)).filter((frame) => frame.direction === 'rx').length;
+    const audioErrorFrames = async () =>
+      (await audioFrames(page)).filter((frame) => frame.type === 'error');
+    const reportedAudioClients = async () =>
+      ((await (await page.request.get('/api/v1/state')).json()) as {
+        wsClients?: { audio?: number };
+      }).wsClients?.audio;
+
+    const first = await startJourneyServer(AUDIO_PORT, AUDIO_FREQ, ['--audio']);
+    servers.push(first);
+    try {
+      await page.goto('/?ui=v2', { waitUntil: 'domcontentloaded' });
+
+      // Before: monitor mode is local, the LIVE choice is offered with the
+      // link down, no audio socket has opened and the server counts none.
+      await expect(page.locator('[role="status"][title="Control WebSocket: connected"]')).toBeVisible();
+      await expect(monitor).toHaveAttribute('data-monitor-mode', 'local');
+      await expect(liveChoice).toBeVisible();
+      await expect(liveChoice).toHaveAttribute('data-live-link', 'false');
+      expect(await audioSocketCount()).toBe(0);
+      await expect.poll(reportedAudioClients).toBe(0);
+
+      // Click LIVE: mode live, one /api/v1/audio socket, one outgoing
+      // audio_start rx frame on it, an audio_format frame back, one server
+      // audio client.
+      await liveChoice.click();
+      await expect(monitor).toHaveAttribute('data-monitor-mode', 'live');
+      await expect(liveChoice).toHaveAttribute('aria-checked', 'true');
+      await expect(liveChoice).toHaveAttribute('data-live-link', 'true');
+      await expect.poll(audioSocketCount).toBe(1);
+      await expect.poll(rxStartCount).toBe(1);
+      await expect
+        .poll(async () => (await audioFrames(page)).filter((frame) => frame.type === 'audio_format').length)
+        .toBeGreaterThanOrEqual(1);
+      await expect.poll(reportedAudioClients).toBe(1);
+
+      // SIGKILL the whole process group; the control link is lost. The
+      // rx-audio panel's capabilities are cleared on control loss, so its DOM
+      // is not asserted during the outage.
+      await first.kill();
+      await expect(page.locator('.control-link-lost')).toBeVisible();
+      await expect(page.locator('.control-link-lost')).toHaveText('Control link lost');
+      await expect(page.locator('[role="status"][title="Control WebSocket: disconnected"]')).toBeVisible();
+
+      // Restart with --audio on the same port: a second audio socket opens on
+      // its own and carries a second audio_start rx frame (the client's
+      // control reconnect restores capabilities and the still-held rx-audio
+      // lease re-arms startRx). Socket and frame counts are "at least two"
+      // because a reconnect attempt racing the outage teardown can open an
+      // extra socket. The NEW process reports exactly one audio client, the
+      // DOM is back to live with the link up, and no error frame arrived on
+      // any audio socket.
+      servers.push(await startJourneyServer(AUDIO_PORT, AUDIO_FREQ, ['--audio']));
+      await expect.poll(audioSocketCount, { timeout: 30_000 }).toBeGreaterThanOrEqual(2);
+      await expect.poll(rxStartCount, { timeout: 30_000 }).toBeGreaterThanOrEqual(2);
+      await expect.poll(reportedAudioClients, { timeout: 30_000 }).toBe(1);
+      await expect(monitor).toHaveAttribute('data-monitor-mode', 'live');
+      await expect(liveChoice).toHaveAttribute('data-live-link', 'true');
+      expect(await audioErrorFrames()).toEqual([]);
     } finally {
       await first.kill().catch(() => undefined);
     }
