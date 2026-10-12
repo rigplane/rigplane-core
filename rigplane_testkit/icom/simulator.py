@@ -24,6 +24,7 @@ import time
 from typing import Literal
 
 from rigplane_testkit.icom.faults import Direction, FaultPlan, Port
+from rigplane_testkit.icom.replay import RecordedAnswerTable
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +304,15 @@ class MockIcomRadio:
             corrupt/truncate rules on top of the legacy ``drop_rate`` /
             ``response_delay`` / ``stall_for`` knobs, which keep working
             unchanged.
+        recorded_answers: optional
+            :class:`~rigplane_testkit.icom.replay.RecordedAnswerTable`
+            answering requests the native CI-V handlers NAK — including
+            requests with no native handler — before the final NAK. A
+            native data/ACK answer is kept, and the opt-in
+            ``refused_civ_commands`` hook still NAKs first, never overridden
+            by the table (answer order in ``_dispatch_civ``). Default None
+            changes nothing. The LAN CI-V echo (``lan_civ_echo``) is not
+            affected by the table.
     """
 
     def __init__(
@@ -321,6 +331,7 @@ class MockIcomRadio:
         unsolicited_civ: bool = False,
         unsolicited_interval_s: float = 0.1,
         fault_plan: FaultPlan | None = None,
+        recorded_answers: RecordedAnswerTable | None = None,
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -420,6 +431,11 @@ class MockIcomRadio:
         # knobs above: it has its own seeded RNG and never touches their state).
         # None = no plan, every stream passes through untouched.
         self.fault_plan: FaultPlan | None = fault_plan
+        # Recorded answer table (opt-in, additive): a request the native
+        # CI-V handlers NAK — or that has no native handler — is answered
+        # from the recorded rows before the final NAK (``_dispatch_civ``).
+        # None = no table, the pre-mount behaviour.
+        self.recorded_answers: RecordedAnswerTable | None = recorded_answers
         # Opt-in CI-V refusal hook (default off, additive): (cmd, sub) pairs the
         # simulator answers with a bare NAK (0xFA) instead of dispatching — a
         # radio that refuses a command it would normally take. An entry
@@ -1617,7 +1633,16 @@ class MockIcomRadio:
     # ------------------------------------------------------------------
 
     def _dispatch_civ(self, cmd: int, payload: bytes, from_addr: int) -> bytes | None:
-        """Build a CI-V response frame for the given command."""
+        """Build a CI-V response frame for the given command.
+
+        Answer order: the opt-in refusal hook (:attr:`refused_civ_commands`)
+        NAKs first and is never overridden by the recorded table; a native
+        handler's data/ACK answer is kept unless it is a NAK; a native NAK —
+        and a request with no native handler — falls to
+        ``recorded_answers.answer`` with the request frame rebuilt from the
+        parsed parts; a miss (or no table mounted) keeps the NAK. A
+        controller's own ACK/NAK is never answered, table included.
+        """
         to = from_addr  # respond to whoever sent
         frm = self._radio_addr
 
@@ -1626,6 +1651,24 @@ class MockIcomRadio:
         if self.refused_civ_commands and self._civ_refused(cmd, payload):
             self.refused_count += 1
             return self._civ_nak(to, frm)
+
+        native = self._dispatch_civ_native(cmd, payload, from_addr)
+        if native is None or native[4] != _CMD_NAK:
+            return native
+        if self.recorded_answers is not None:
+            recorded = self.recorded_answers.answer(
+                self._civ_frame(frm, to, cmd, data=payload)
+            )
+            if recorded is not None:
+                return recorded
+        return native
+
+    def _dispatch_civ_native(
+        self, cmd: int, payload: bytes, from_addr: int
+    ) -> bytes | None:
+        """The modelled CI-V handlers; a NAK reply means "no native answer"."""
+        to = from_addr  # respond to whoever sent
+        frm = self._radio_addr
 
         # --- Command29 wrapper (ATT / PREAMP / DIGI-SEL) ---
         if cmd == _CMD_CMD29:

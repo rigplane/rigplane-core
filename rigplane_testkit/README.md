@@ -33,6 +33,15 @@ UDP code paths as production.
   on the CI-V port; `civ_gap_open` is true while any number is missing.
   A re-sent OpenClose still gets its stream-active marker; only
   tracked-packet processing follows the ignore rule.
+  A `recorded_answers=` keyword mounts a
+  `rigplane_testkit.icom.replay.RecordedAnswerTable`: a request the native
+  CI-V handlers NAK — including one with no native handler — is answered
+  from the recorded rows before the final NAK, while a native data/ACK
+  answer, the `refused_civ_commands` hook and the LAN CI-V echo keep
+  precedence (answer order pinned by
+  `tests/testkit/test_simulator_recorded_answers.py`).
+  `tests/testkit/ic7610_fakes.py: ic7610_lan_fake` builds the simulator
+  with the recorded `lan` rows mounted.
   The implementation lives in `rigplane_testkit/icom/simulator.py`.
 - `MockIcomRadio.refused_civ_commands` — an opt-in set of `(cmd, sub)` pairs
   answered with a bare NAK instead of dispatching (default off;
@@ -169,9 +178,10 @@ the legacy compatibility shim. It exists for development and testing only.
 ## Planned next
 
 - Audio (RTP) port simulation alongside control and CI-V ports.
-- Wiring the replayer into the simulator so recorded sessions answer through
-  the same simulator surface (the recorder and the pure `ReplayResponder`
-  are in place; the simulator mount is a separate task).
+- Wiring the replayer's unsolicited timeline into the simulator so recorded
+  sessions stream on their recorded cadence (the recorder, the pure
+  `ReplayResponder` and the `RecordedAnswerTable` mount — `recorded_answers=`
+  on both `CivSerialFake` and `MockIcomRadio` — are in place).
 - Extraction of the CI-V dispatcher into `civ_model.py`, deferred from the
   initial move because `_dispatch_civ` and the radio state it mutates are
   methods and attributes of the single `MockIcomRadio` class.
