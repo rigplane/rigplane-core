@@ -27,6 +27,7 @@ from rigplane.core.state_pipeline_contracts import (  # noqa: E402
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessClock, StateStore  # noqa: E402
+from rigplane.core.types import ToneSquelchType  # noqa: E402
 from rigplane.profiles import get_radio_profile  # noqa: E402
 from rigplane.web.runtime_helpers import (  # noqa: E402
     build_public_state_payload,
@@ -386,4 +387,81 @@ def test_profile_gated_field_status_conforms() -> None:
     assert field_status["driveGain"]["availability"] == "undeclared"
     assert field_status["vdMeter"]["availability"] == "missing"
 
+    ServerStatePublic.model_validate(payload)
+
+
+def _payload_with_observed_tone_squelch_types(
+    types_by_receiver: dict[str, str],
+) -> dict[str, Any]:
+    """Snapshot-path payload with ``tone_squelch_type`` observed per receiver.
+
+    The value is the plain ``ToneSquelchType`` member string the observation
+    adapters publish (``backends/yaesu_cat/observations.py:
+    poll_slow_controls`` for FTX-1, ``runtime/_civ_rx.py:
+    _observations_from_frame`` for IC-705 — both emit
+    ``tone_squelch_type.value``, or ``None`` for a selector code outside the
+    profile's ``[tone_squelch_types]`` table).
+    """
+    clock = FreshnessClock()
+    store = StateStore(freshness_clock=clock)
+    for receiver_id, tone_type in types_by_receiver.items():
+        store.apply(
+            _observation(
+                FieldPath.receiver(
+                    receiver_id, "operator_controls", "tone_squelch_type"
+                ),
+                tone_type,
+                at=clock.now(),
+            )
+        )
+    return build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None,
+        receiver_count=2 if "sub" in types_by_receiver else 1,
+    )
+
+
+@pytest.mark.parametrize(
+    ("profile_name", "expected_by_receiver"),
+    [
+        pytest.param("FTX-1", {"main": "tone", "sub": "dtcs"}, id="ftx1-main-sub"),
+        pytest.param("IC-705", {"main": "dtcs_t"}, id="ic705-main"),
+    ],
+)
+def test_observed_tone_squelch_type_conforms(
+    profile_name: str,
+    expected_by_receiver: dict[str, str],
+) -> None:
+    """An observed ``toneSquelchType`` validates against ``ServerStatePublic``.
+
+    FTX-1 declares ``operator_controls.tone_squelch_type`` on MAIN and SUB and
+    IC-705 on MAIN (``rigs/ftx1.toml`` / ``rigs/ic705.toml``
+    ``[state_acquisition]`` field policies); the projection carries the
+    observation into the public payload as ``toneSquelchType`` under each
+    receiver, so the strict schema must allow it.
+    """
+    table = get_radio_profile(profile_name).tone_squelch_types
+    assert table is not None
+    assert set(expected_by_receiver.values()) <= {t.value for t in table.values()}
+
+    payload = _payload_with_observed_tone_squelch_types(expected_by_receiver)
+
+    for receiver_key, expected in expected_by_receiver.items():
+        assert payload[receiver_key]["toneSquelchType"] == expected
+
+    ServerStatePublic.model_validate(payload)
+
+
+@pytest.mark.parametrize("tone_type", list(ToneSquelchType))
+def test_every_tone_squelch_type_value_conforms(tone_type: ToneSquelchType) -> None:
+    """Every ``ToneSquelchType`` member value validates as ``toneSquelchType``.
+
+    Pins the schema's ``toneSquelchType`` Literal to the enum
+    (``core/types.py: ToneSquelchType``): a member the schema Literal omits
+    fails here.
+    """
+
+    payload = _payload_with_observed_tone_squelch_types({"main": tone_type.value})
+
+    assert payload["main"]["toneSquelchType"] == tone_type.value
     ServerStatePublic.model_validate(payload)
