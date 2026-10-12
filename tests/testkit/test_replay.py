@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import struct
+from pathlib import Path
 
 from rigplane.radio import IcomRadio
 
@@ -19,7 +20,11 @@ from rigplane_testkit.icom import (
     Recording,
     ReplayResponder,
 )
-from rigplane_testkit.icom.replay import extract_civ_frame, request_key
+from rigplane_testkit.icom.replay import (
+    RecordedAnswerTable,
+    extract_civ_frame,
+    request_key,
+)
 
 from _perf_helpers import fast_connect
 
@@ -209,3 +214,148 @@ class TestReplayFromRecordedSession:
         # No unsolicited traffic was enabled, so only the open marker (cmd 0x00)
         # may appear on the timeline.
         assert all(f[4] == 0x00 for _, f in responder.unsolicited())
+
+
+# ---------------------------------------------------------------------------
+# RecordedAnswerTable: the recorded request -> reply facts of one transport
+# ---------------------------------------------------------------------------
+
+_FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "ic7610"
+
+# Frames of the hand-built row sets below: controller 0xE0 <-> radio 0x98.
+_READ = "fefe98e0140afd"  # body 14 0a: a level read
+_READ_REPLY = "fefee098140a0013fd"  # body 14 0a 00 13: starts with the request body
+_WRITE = "fefe98e0140a0020fd"  # body 14 0a 00 20: register key + value
+_WRITE_THEN_READ_REPLY = "fefee098140a0020fd"
+_ACK = "fefee098fbfd"
+_NAK = "fefee098fafd"
+_NAKED_REQUEST = "fefe98e01a01fd"
+_UNKNOWN_REQUEST = "fefe98e00700fd"
+_FIXED_REQUEST = "fefe98e02600fd"
+_FIXED_REPLY = "fefee098270000a5fd"  # body 27 00 00 a5: does not start with 26 00
+
+
+def _pair_rows(
+    pairs: list[tuple[str, str | None]], *, transport: str = "usb", echo: bool = False
+) -> list[dict]:
+    """civ_pairs-shaped rows: each request, its echo row when ``echo``, its reply."""
+    rows: list[dict] = []
+    t = 0.0
+    for request, reply in pairs:
+        t += 0.1
+        rows.append(
+            {
+                "window": "w",
+                "transport": transport,
+                "t": t,
+                "dir": "c2r",
+                "frame": request,
+            }
+        )
+        if echo:
+            t += 0.001
+            rows.append(
+                {
+                    "window": "w",
+                    "transport": transport,
+                    "t": t,
+                    "dir": "r2c",
+                    "frame": request,
+                }
+            )
+        if reply is not None:
+            t += 0.001
+            rows.append(
+                {
+                    "window": "w",
+                    "transport": transport,
+                    "t": t,
+                    "dir": "r2c",
+                    "frame": reply,
+                }
+            )
+    return rows
+
+
+class TestRecordedAnswerTable:
+    def test_recorded_read_answered_with_recorded_value(self) -> None:
+        table = RecordedAnswerTable.from_civ_pairs(
+            _pair_rows([(_READ, _READ_REPLY)]), "usb"
+        )
+        assert table.answer(bytes.fromhex(_READ)) == bytes.fromhex(_READ_REPLY)
+
+    def test_recorded_write_stores_value_and_next_read_returns_it(self) -> None:
+        table = RecordedAnswerTable.from_civ_pairs(
+            _pair_rows([(_READ, _READ_REPLY), (_WRITE, _ACK)]), "usb"
+        )
+        assert table.answer(bytes.fromhex(_WRITE)) == bytes.fromhex(_ACK)
+        assert table.answer(bytes.fromhex(_READ)) == bytes.fromhex(
+            _WRITE_THEN_READ_REPLY
+        )
+
+    def test_unknown_request_returns_none(self) -> None:
+        table = RecordedAnswerTable.from_civ_pairs(
+            _pair_rows([(_READ, _READ_REPLY)]), "usb"
+        )
+        assert table.answer(bytes.fromhex(_UNKNOWN_REQUEST)) is None
+
+    def test_recorded_nak_is_naked(self) -> None:
+        table = RecordedAnswerTable.from_civ_pairs(
+            _pair_rows([(_NAKED_REQUEST, _NAK)]), "usb"
+        )
+        assert table.answer(bytes.fromhex(_NAKED_REQUEST)) == bytes.fromhex(_NAK)
+
+    def test_data_reply_not_starting_with_the_request_body_is_a_fixed_answer(
+        self,
+    ) -> None:
+        table = RecordedAnswerTable.from_civ_pairs(
+            _pair_rows([(_FIXED_REQUEST, _FIXED_REPLY)]), "usb"
+        )
+        assert table.answer(bytes.fromhex(_FIXED_REQUEST)) == bytes.fromhex(
+            _FIXED_REPLY
+        )
+
+    def test_ack_without_a_register_prefix_is_a_plain_ack(self) -> None:
+        table = RecordedAnswerTable.from_civ_pairs(
+            _pair_rows([(_UNKNOWN_REQUEST, _ACK)]), "usb"
+        )
+        assert table.answer(bytes.fromhex(_UNKNOWN_REQUEST)) == bytes.fromhex(_ACK)
+
+    def test_answer_swaps_the_addresses_of_the_actual_request(self) -> None:
+        """The table keys on the frame body, so a request from another
+        controller address is answered back to that address."""
+        table = RecordedAnswerTable.from_civ_pairs(
+            _pair_rows([(_READ, _READ_REPLY)]), "usb"
+        )
+        assert table.answer(bytes.fromhex("fefe98e1140afd")) == bytes.fromhex(
+            "fefee198140a0013fd"
+        )
+
+    def test_echo_fact_comes_from_the_rows_not_the_transport_name(self) -> None:
+        """Mutation pin: deriving ``echo`` from the transport name flips both
+        halves of this test — the rows alone carry the fact."""
+        echoing = RecordedAnswerTable.from_civ_pairs(
+            _pair_rows([(_READ, _READ_REPLY)], transport="usb", echo=True), "usb"
+        )
+        assert echoing.echo is True
+        silent = RecordedAnswerTable.from_civ_pairs(
+            _pair_rows([(_READ, _READ_REPLY)], transport="lan", echo=False), "lan"
+        )
+        assert silent.echo is False
+
+    def test_echo_fact_from_the_ic7610_fixture_on_both_transports(self) -> None:
+        rows = [
+            json.loads(line)
+            for line in (_FIXTURES / "civ_pairs.jsonl").read_text().splitlines()
+            if line
+        ]
+        # tests/fixtures/ic7610/README.md: on LAN the radio echoes every
+        # request; on its USB CI-V port the echo is off.
+        assert RecordedAnswerTable.from_civ_pairs(rows, "lan").echo is True
+        assert RecordedAnswerTable.from_civ_pairs(rows, "usb").echo is False
+
+    def test_pairing_skips_the_echo_row_on_an_echoing_transport(self) -> None:
+        table = RecordedAnswerTable.from_civ_pairs(
+            _pair_rows([(_READ, _READ_REPLY)], transport="lan", echo=True), "lan"
+        )
+        assert table.answer(bytes.fromhex(_READ)) == bytes.fromhex(_READ_REPLY)
