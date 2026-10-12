@@ -4305,18 +4305,21 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             raise CommandError(f"Radio rejected split {'on' if on else 'off'}")
         self._last_split = on
 
-    async def get_split(self) -> bool:
+    async def get_split(self, *, strict: bool = False) -> bool:
         """Read split mode state (CI-V ``0x0F``).
 
         Returns ``True`` when split is enabled, ``False`` otherwise.  On a
         radio that does not respond, returns the cached last-known value
-        (defaulting to ``False``).
+        (defaulting to ``False``) — unless ``strict`` is set, in which case
+        a failed or empty read raises instead of returning the mirror.
         """
         self._check_connected()
         civ = self._commands.get_split(to_addr=self._radio_addr)
         try:
             resp = await self._send_civ_expect(civ, label="get_split")
         except (CommandError, TimeoutError):
+            if strict:
+                raise
             if self._last_split is not None:
                 logger.debug(
                     "get_split: no response, returning cached %s", self._last_split
@@ -4329,6 +4332,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             on = resp.data[0] == 0x01
             self._last_split = on
             return on
+        if strict:
+            raise CommandError("Radio returned empty split response")
         if self._last_split is not None:
             return self._last_split
         return False
@@ -4529,11 +4534,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             self._commands.set_quick_dual_watch(enabled, to_addr=self._radio_addr)
         )
 
-    async def get_attenuator_level(self, receiver: int = RECEIVER_MAIN) -> int:
+    async def get_attenuator_level(
+        self, receiver: int = RECEIVER_MAIN, *, strict: bool = False
+    ) -> int:
         """Read attenuator level in dB (Command29-aware).
 
         Args:
             receiver: RECEIVER_MAIN (0) or RECEIVER_SUB (1).
+            strict: re-raise on timeout and raise on an empty reply instead
+                of returning the setter-written ``_attenuator_state`` mirror.
         """
         self._check_connected()
         self._require_capability("attenuator", operation="get_attenuator_level")
@@ -4547,21 +4556,25 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         try:
             resp = await self._send_civ_expect(civ, label="get_attenuator_level")
+        except TimeoutError:
+            if strict:
+                raise
+        else:
             if resp.data:
                 raw = resp.data[0]
                 val = ((raw >> 4) & 0x0F) * 10 + (raw & 0x0F)
                 self._attenuator_state = val != 0
                 return val
-        except TimeoutError:
-            pass
+            if strict:
+                raise CommandError("Radio returned empty attenuator response")
 
         if self._attenuator_state is not None:
             return 18 if self._attenuator_state else 0
         raise CommandError("Radio returned empty attenuator response")
 
-    async def get_attenuator(self, receiver: int = 0) -> bool:
+    async def get_attenuator(self, receiver: int = 0, *, strict: bool = False) -> bool:
         """Read attenuator state (compat wrapper)."""
-        return (await self.get_attenuator_level(receiver)) > 0
+        return (await self.get_attenuator_level(receiver, strict=strict)) > 0
 
     def project_attenuator_observation_value(self, db: int) -> int:
         return db
@@ -4652,11 +4665,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             )
         await self.set_attenuator_level(non_zero[0], receiver=receiver)
 
-    async def get_preamp(self, receiver: int = RECEIVER_MAIN) -> int:
+    async def get_preamp(
+        self, receiver: int = RECEIVER_MAIN, *, strict: bool = False
+    ) -> int:
         """Read preamp level (0=off, 1=PREAMP1, 2=PREAMP2) (Command29-aware).
 
         Args:
             receiver: RECEIVER_MAIN (0) or RECEIVER_SUB (1).
+            strict: re-raise on timeout and raise on an empty reply instead
+                of returning the setter-written ``_preamp_level`` mirror.
         """
         self._check_connected()
         self._require_capability("preamp", operation="get_preamp")
@@ -4668,12 +4685,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         try:
             resp = await self._send_civ_expect(civ, label="get_preamp")
+        except TimeoutError:
+            if strict:
+                raise
+        else:
             if resp.data:
                 raw = resp.data[0]
                 self._preamp_level = ((raw >> 4) & 0x0F) * 10 + (raw & 0x0F)
                 return self._preamp_level
-        except TimeoutError:
-            pass
+            if strict:
+                raise CommandError("Radio returned empty preamp response")
 
         if self._preamp_level is not None:
             return self._preamp_level

@@ -2232,20 +2232,24 @@ async def test_snapshot_state_omits_filter_when_mode_read_fails(
 async def test_snapshot_state_omits_split_when_read_fails(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """A failed split read omits split, never the _last_split mirror."""
+    """A failed strict split read omits split, never the _last_split mirror."""
     radio._last_split = True
-    radio.get_split = AsyncMock(side_effect=TimeoutError("no response"))
+    # No queued reply: the real get_split(strict=True) raises, the default
+    # read still returns the mirror for every other caller.
+    with pytest.raises((CommandError, TimeoutError)):
+        await radio.get_split(strict=True)
+    assert await radio.get_split() is True
 
     snap = await radio.snapshot_state()
     assert "split" not in snap
 
 
-async def test_snapshot_state_omits_vfo_when_read_fails(
+async def test_snapshot_state_never_records_vfo(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """A failed VFO read omits vfo, never the _last_vfo mirror."""
+    """Snapshots carry no vfo key: no radio read exists for the VFO slot."""
     radio._last_vfo = "VFOB"
-    radio.get_vfo_slot = AsyncMock(side_effect=TimeoutError("no response"))
+    assert await radio.get_vfo_slot() == "A"  # optimistic, reads no radio
 
     snap = await radio.snapshot_state()
     assert "vfo" not in snap
@@ -2254,9 +2258,13 @@ async def test_snapshot_state_omits_vfo_when_read_fails(
 async def test_snapshot_state_omits_attenuator_when_read_fails(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """A failed attenuator read omits attenuator, never the mirror."""
+    """A failed strict attenuator read omits attenuator, never the mirror."""
     radio._attenuator_state = True
-    radio.get_attenuator = AsyncMock(side_effect=TimeoutError("no response"))
+    # No queued reply: the real get_attenuator(strict=True) raises, the
+    # default read still returns the mirror for every other caller.
+    with pytest.raises((CommandError, TimeoutError)):
+        await radio.get_attenuator(strict=True)
+    assert await radio.get_attenuator() is True
 
     snap = await radio.snapshot_state()
     assert "attenuator" not in snap
@@ -2265,9 +2273,13 @@ async def test_snapshot_state_omits_attenuator_when_read_fails(
 async def test_snapshot_state_omits_preamp_when_read_fails(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """A failed preamp read omits preamp, never the _preamp_level mirror."""
+    """A failed strict preamp read omits preamp, never the _preamp_level mirror."""
     radio._preamp_level = 1
-    radio.get_preamp = AsyncMock(side_effect=TimeoutError("no response"))
+    # No queued reply: the real get_preamp(strict=True) raises, the default
+    # read still returns the mirror for every other caller.
+    with pytest.raises((CommandError, TimeoutError)):
+        await radio.get_preamp(strict=True)
+    assert await radio.get_preamp() == 1
 
     snap = await radio.snapshot_state()
     assert "preamp" not in snap

@@ -29,6 +29,7 @@ class _SnapshotFakeRadio:
     def __init__(self, *, fail: tuple[str, ...] = ()) -> None:
         self.fail = set(fail)
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
+        self.strict_seen: dict[str, bool] = {}
         self._last_freq_hz: int | None = 7_074_000
         self._last_mode: Mode | None = Mode.LSB
         self._last_power: int | None = 100
@@ -57,7 +58,8 @@ class _SnapshotFakeRadio:
         self._maybe_fail("get_rf_power")
         return 25
 
-    async def get_split(self) -> bool:
+    async def get_split(self, *, strict: bool = False) -> bool:
+        self.strict_seen["get_split"] = strict
         self._maybe_fail("get_split")
         return True
 
@@ -65,11 +67,13 @@ class _SnapshotFakeRadio:
         self._maybe_fail("get_vfo_slot")
         return "B"
 
-    async def get_attenuator(self, receiver: int = 0) -> bool:
+    async def get_attenuator(self, receiver: int = 0, *, strict: bool = False) -> bool:
+        self.strict_seen["get_attenuator"] = strict
         self._maybe_fail("get_attenuator")
         return True
 
-    async def get_preamp(self, receiver: int = 0) -> int:
+    async def get_preamp(self, receiver: int = 0, *, strict: bool = False) -> int:
+        self.strict_seen["get_preamp"] = strict
         self._maybe_fail("get_preamp")
         return 2
 
@@ -135,27 +139,29 @@ async def test_snapshot_omits_freq_mode_filter_power_when_reads_fail() -> None:
     assert "power" not in snap
 
 
-async def test_snapshot_records_split_vfo_attenuator_preamp_from_getters() -> None:
-    """Split/VFO/attenuator/preamp come from the public getters."""
+async def test_snapshot_records_split_attenuator_preamp_from_strict_getters() -> None:
+    """Split/attenuator/preamp come from strict public-getter reads; vfo never."""
     radio = _SnapshotFakeRadio()
 
     snap = await snapshot_state(radio)  # type: ignore[arg-type]
 
     assert snap["split"] is True
-    assert snap["vfo"] == "B"
     assert snap["attenuator"] is True
     assert snap["preamp"] == 2
+    assert radio.strict_seen == {
+        "get_split": True,
+        "get_attenuator": True,
+        "get_preamp": True,
+    }
+    assert "vfo" not in snap
 
 
-@pytest.mark.parametrize(
-    "getter", ["get_split", "get_vfo_slot", "get_attenuator", "get_preamp"]
-)
+@pytest.mark.parametrize("getter", ["get_split", "get_attenuator", "get_preamp"])
 async def test_snapshot_omits_key_when_its_read_fails(getter: str) -> None:
-    """A failed split/VFO/attenuator/preamp read omits the key, not mirrors."""
+    """A failed split/attenuator/preamp read omits the key, not mirrors."""
     radio = _SnapshotFakeRadio(fail=(getter,))
     key = {
         "get_split": "split",
-        "get_vfo_slot": "vfo",
         "get_attenuator": "attenuator",
         "get_preamp": "preamp",
     }[getter]
@@ -165,11 +171,19 @@ async def test_snapshot_omits_key_when_its_read_fails(getter: str) -> None:
     assert key not in snap
 
 
+async def test_snapshot_never_records_vfo() -> None:
+    """No VFO read exists, so no ``vfo`` key even when the getter answers."""
+    radio = _SnapshotFakeRadio()
+
+    snap = await snapshot_state(radio)  # type: ignore[arg-type]
+
+    assert "vfo" not in snap
+
+
 @pytest.mark.parametrize(
     "getter,key",
     [
         ("get_split", "split"),
-        ("get_vfo_slot", "vfo"),
         ("get_attenuator", "attenuator"),
         ("get_preamp", "preamp"),
     ],
@@ -194,13 +208,13 @@ async def test_restore_skips_absent_keys_and_restores_present_ones() -> None:
             "get_mode_info",
             "get_rf_power",
             "get_split",
-            "get_vfo_slot",
             "get_attenuator",
             "get_preamp",
         )
     )
     snap = await snapshot_state(radio)  # type: ignore[arg-type]
     assert "frequency" not in snap
+    assert "vfo" not in snap
 
     radio.calls.clear()
     await restore_state(radio, snap)  # type: ignore[arg-type]
@@ -225,12 +239,23 @@ async def test_restore_skips_absent_keys_and_restores_present_ones() -> None:
 
     assert ("set_freq", (14_074_000,)) in full.calls
     assert ("set_split", (True,)) in full.calls
-    assert ("_set_vfo_wire", ("B",)) in full.calls
     assert ("set_attenuator", (True,)) in full.calls
     assert ("set_preamp", (2,)) in full.calls
+    assert not full.called("_set_vfo_wire")
 
 
-async def test_snapshot_with_real_radio_omits_unconfirmed_split_attenuator_preamp_and_vfo() -> None:
+async def test_restore_applies_vfo_key_from_older_snapshot() -> None:
+    """Restore keeps its ``vfo`` branch for snapshots that carry the key."""
+    radio = _SnapshotFakeRadio()
+
+    await restore_state(radio, {"vfo": "B"})  # type: ignore[arg-type]
+
+    assert ("_set_vfo_wire", ("B",)) in radio.calls
+
+
+async def test_snapshot_with_real_radio_omits_unconfirmed_split_attenuator_preamp_and_vfo() -> (
+    None
+):
     """Every read timing out on a real IcomRadio: no split/attenuator/preamp/vfo keys.
 
     The setter-written mirrors (``_last_split``, ``_attenuator_state``,
@@ -259,9 +284,7 @@ async def test_snapshot_with_real_radio_omits_unconfirmed_split_attenuator_pream
         with (
             patch.object(radio, "set_split", new=AsyncMock()) as set_split,
             patch.object(radio, "_set_vfo_wire", new=AsyncMock()) as set_vfo,
-            patch.object(
-                radio, "set_attenuator", new=AsyncMock()
-            ) as set_attenuator,
+            patch.object(radio, "set_attenuator", new=AsyncMock()) as set_attenuator,
             patch.object(radio, "set_preamp", new=AsyncMock()) as set_preamp,
         ):
             await restore_state(radio, snap)

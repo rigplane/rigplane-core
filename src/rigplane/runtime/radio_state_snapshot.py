@@ -6,13 +6,14 @@ instance using its public ``get_*``/``set_*`` API (plus ``_check_connected``
 and the wire-level helper ``_set_vfo_wire``).
 
 Snapshots record only confirmed readings: each key comes from a successful
-public-getter read, and a failed read omits the key — split, VFO, attenuator
-and preamp additionally require the radio to expose the matching getter
-(``get_split``, ``get_vfo_slot``, ``get_attenuator``, ``get_preamp``).
-Restore applies only the keys present in the snapshot. All per-field failures
-are best-effort, swallowed and logged at DEBUG level. The public
-``IcomRadio.snapshot_state`` / ``IcomRadio.restore_state`` methods delegate
-here.
+public-getter read, and a failed read omits the key. Split, attenuator and
+preamp are read strictly (``strict=True``), so a failed read raises instead
+of returning a setter-written mirror. The VFO slot is not snapshotted — no
+radio read exists for it. Restore applies only the keys present in the
+snapshot (it still applies a ``vfo`` key when a snapshot carries one). All
+per-field failures are best-effort, swallowed and logged at DEBUG level. The
+public ``IcomRadio.snapshot_state`` / ``IcomRadio.restore_state`` methods
+delegate here.
 """
 
 from __future__ import annotations
@@ -56,28 +57,21 @@ async def snapshot_state(radio: IcomRadio) -> dict[str, object]:
     get_split = getattr(radio, "get_split", None)
     if get_split is not None:
         try:
-            state["split"] = await get_split()
+            state["split"] = await get_split(strict=True)
         except Exception:
             logger.debug("snapshot: get_split failed", exc_info=True)
-
-    get_vfo_slot = getattr(radio, "get_vfo_slot", None)
-    if get_vfo_slot is not None:
-        try:
-            state["vfo"] = await get_vfo_slot()
-        except Exception:
-            logger.debug("snapshot: get_vfo_slot failed", exc_info=True)
 
     get_attenuator = getattr(radio, "get_attenuator", None)
     if get_attenuator is not None:
         try:
-            state["attenuator"] = await get_attenuator()
+            state["attenuator"] = await get_attenuator(strict=True)
         except Exception:
             logger.debug("snapshot: get_attenuator failed", exc_info=True)
 
     get_preamp = getattr(radio, "get_preamp", None)
     if get_preamp is not None:
         try:
-            state["preamp"] = await get_preamp()
+            state["preamp"] = await get_preamp(strict=True)
         except Exception:
             logger.debug("snapshot: get_preamp failed", exc_info=True)
     try:
