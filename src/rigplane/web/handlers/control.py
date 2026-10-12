@@ -1142,31 +1142,41 @@ class ControlHandler:
             if not self._radio.connected:
                 conn_state = getattr(self._radio, "conn_state", None)
                 state_value = getattr(conn_state, "value", conn_state)
-                if state_value in {"connecting", "reconnecting"}:
-                    # The backend is still logging back in after a dropped
-                    # link, so this disconnect must stop the reconnect loop
-                    # instead of being acked as a no-op. Owner-level
-                    # disconnect() cancels the identity re-read first, bumps
-                    # the owner-stop epoch and releases the session.
-                    await self._radio.disconnect()
+                if state_value == "disconnecting":
                     await self._send_json(
                         {
                             "type": "response",
                             "id": msg_id,
                             "ok": True,
-                            "result": {"status": "disconnected"},
+                            "result": {"status": "already_disconnected"},
                         }
                     )
-                    await self._broadcast_connection_state(False)
                     return
+                # Not connected and no teardown in flight: take the
+                # owner-level disconnect() path even when conn_state reads
+                # "disconnected" — during the lifecycle recovery's backoff
+                # wait between attempts it reads disconnected while
+                # _run_recover still owns another attempt, so only
+                # disconnect() (which cancels the recovery, bumps the
+                # owner-stop epoch and releases the session) stops the
+                # reconnect. disconnect() is idempotent, so a truly idle
+                # radio answers "disconnected" after a no-op teardown.
+                # MOR-2615: the same provider-epoch invalidation as the
+                # HTTP disconnect path, via the attached server when present.
+                await self._radio.disconnect()
+                store = getattr(self._server, "command_state_store", None)
+                begin_generation = getattr(store, "begin_provider_generation", None)
+                if callable(begin_generation):
+                    begin_generation()
                 await self._send_json(
                     {
                         "type": "response",
                         "id": msg_id,
                         "ok": True,
-                        "result": {"status": "already_disconnected"},
+                        "result": {"status": "disconnected"},
                     }
                 )
+                await self._broadcast_connection_state(False)
                 return
             from ...radio_protocol import RecoverableConnection
 
