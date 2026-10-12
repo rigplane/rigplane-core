@@ -2,9 +2,11 @@
 
 The four fixture files in ``tests/fixtures/ic7610/`` were extracted from
 private recordings of the real bench IC-7610 (2026-10-11/12).  These tests
-pin the recorded wire facts and measure ``MockIcomRadio`` (LAN/UDP) and
-``CivSerialFake(model="IC-7610")`` (serial) against them, classifying each
-request's reply from the wire rather than comparing state values.
+pin the recorded wire facts and measure ``MockIcomRadio`` (LAN/UDP) and the
+fake IC-7610 over USB — ``CivSerialFake`` with the recorded USB answer table
+mounted, built by ``tests/testkit/ic7610_fakes.py: ic7610_usb_fake`` —
+against them, classifying each request's reply from the wire rather than
+comparing state values.
 
 Known divergences live in ``conformance_ledger.json`` next to the fixtures.
 Every divergence a test still observes must have a ledger entry whose
@@ -63,9 +65,9 @@ from rigplane_testkit.icom import (
 )
 from rigplane_testkit.icom.fixtures import control_structure
 from rigplane_testkit.icom.replay import Recording, extract_civ_frame
-from rigplane_testkit.serial import CivSerialFake
 
 from _perf_helpers import fast_connect
+from testkit.ic7610_fakes import ic7610_usb_fake
 from testkit.test_simulator_drop_session import _login_and_claim
 from testkit.test_simulator_faults import (
     _UdpClient,
@@ -470,7 +472,7 @@ async def test_identity_answer_is_the_profile_id_everywhere() -> None:
                 continue
             assert frame == recorded_reply
             break
-    fake = CivSerialFake(model="IC-7610")
+    fake = ic7610_usb_fake()
     reader, writer = await fake.opener(url="socket://conformance", baudrate=19200)
     writer.write(_ID_REQUEST)
     await writer.drain()
@@ -529,7 +531,7 @@ async def test_lan_civ_echo_divergence() -> None:
 
 
 async def test_usb_replay_divergences_match_ledger() -> None:
-    fake = CivSerialFake(model="IC-7610")
+    fake = ic7610_usb_fake()
     reader, writer = await fake.opener(url="socket://conformance", baudrate=19200)
     observed: dict[str, tuple[str, str]] = {}
     echoed_any = False
