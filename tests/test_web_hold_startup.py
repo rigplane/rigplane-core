@@ -18,18 +18,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
-from rigplane.core.exceptions import ConnectionError as RigplaneConnectionError
 from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.radio_state import RadioState
 from rigplane.rigctld.contract import RigctldConfig, RigctldResponse
 from rigplane.rigctld.server import RigctldServer
-from rigplane.runtime._control_phase import _session_reject_hint
+from rigplane.runtime.managed_tx_composition import (
+    ManagedTxComposition,
+    install_managed_tx_composition,
+)
 from rigplane.runtime.startup_checks import assert_radio_startup_ready
+from rigplane.web.web_startup import (
+    attach_managed_tx_composition,
+    prepare_managed_tx_observation_generation,
+)
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import WebConfig, WebServer
 
@@ -196,7 +203,13 @@ class _BusyRadio:
         self.connected = False
         self.control_connected = False
         self.radio_ready = False
-        self.connection_identity = None
+        # Production ``CoreRadio.connect`` reports CHECKING before the
+        # lifecycle's first attempt, so a busy hold always reads CHECKING
+        # here until the grant lands.
+        self.connection_identity: RadioIdentity | None = RadioIdentity(
+            status=RadioIdentityStatus.CHECKING,
+            expected_model="IC-7610",
+        )
         self.radio_state = RadioState()
         self.startup_busy_hold_event = asyncio.Event()
         self.startup_busy_hold_event.set()
@@ -219,6 +232,16 @@ class _BusyRadio:
     async def _fetch_initial_state(self) -> None:
         self.fetch_initial_state_calls += 1
 
+    async def actuate(self, _token: Any, _operation: Any, *, is_current: Any) -> Any:
+        """Minimal managed-TX actuator surface (mirrors the CLI busy fake)."""
+
+        from rigplane.runtime.managed_tx_state import ActuationResult
+
+        return ActuationResult.ACCEPTED if is_current() else ActuationResult.REJECTED
+
+    async def set_ptt(self, _on: bool) -> None:
+        raise AssertionError("raw PTT must be replaced before connect")
+
     def grant(self) -> None:
         """Grant the session: the hold clears and the radio becomes ready."""
 
@@ -239,6 +262,11 @@ class _BusyRadio:
         self.connected = True
         self.control_connected = True
         self.radio_ready = True
+        self.connection_identity = RadioIdentity(
+            status=RadioIdentityStatus.VERIFIED,
+            expected_model="IC-7610",
+            answered_model="IC-7610",
+        )
         return self
 
     async def __aexit__(self, *exc: object) -> bool:
@@ -391,9 +419,7 @@ async def test_granted_busy_hold_becomes_ready_and_marks_transport_once() -> Non
     poller = _busy_poller()
     rig, server, _rig_port = await _start_busy_stack(radio, poller)
     poller.select_vfo_a_on_connect.reset_mock()
-    composition = MagicMock()
-    composition.transport_ready = AsyncMock()
-    composition.shutdown = AsyncMock()
+    composition = create_autospec(ManagedTxComposition, instance=True)
     session = _ManagedTxRadioSession(radio, composition)
     enter_task = asyncio.ensure_future(session.__aenter__())
     try:
@@ -441,20 +467,22 @@ async def test_granted_busy_hold_becomes_ready_and_marks_transport_once() -> Non
 
 
 @pytest.mark.asyncio
-async def test_busy_hold_give_up_carries_the_same_computer_hint() -> None:
-    """A give-up during the background connect keeps today's error text.
+async def test_busy_grant_identity_hold_and_answer_walk() -> None:
+    """Busy and identity holds stay distinguishable across both documents.
 
-    The managed-session enter raises the resident never-ready error with
-    the 0xFFFFFFFF same-computer hint, the busy signal clears, and no
-    transport is ever marked ready.
+    One walk asserting ``/readyz`` and ``/api/v1/info`` at every step:
+    busy → the busy body with a busy session and ``checking`` identity;
+    granted → ready with a quiet session; identity hold (``no_response``)
+    → exactly the reason-less not-ready body with a quiet session and
+    ``no_response`` identity; answered → ready again.
     """
 
     from rigplane.cli import _ManagedTxRadioSession
 
     radio = _BusyRadio()
-    composition = MagicMock()
-    composition.transport_ready = AsyncMock()
-    composition.shutdown = AsyncMock()
+    poller = _busy_poller()
+    rig, server, _rig_port = await _start_busy_stack(radio, poller)
+    composition = create_autospec(ManagedTxComposition, instance=True)
     session = _ManagedTxRadioSession(radio, composition)
     enter_task = asyncio.ensure_future(session.__aenter__())
     try:
@@ -464,18 +492,67 @@ async def test_busy_hold_give_up_carries_the_same_computer_hint() -> None:
             await asyncio.sleep(0.01)
         assert radio.enter_calls == 1
 
-        radio.give_up(
-            RigplaneConnectionError(
-                "Radio session never became ready: still busy after 19 "
-                "start-up re-logins against the 600s start-up busy budget. "
-                f"{_session_reject_hint(0xFFFFFFFF)}"
-            )
+        status, payload = await _get_json(server, "/readyz")
+        assert status == 503
+        assert payload == {
+            "status": "not_ready",
+            "radioReady": False,
+            "reason": "session_busy",
+            "retryInSeconds": 30.0,
+        }
+        status, payload = await _get_json(server, "/api/v1/info")
+        assert status == 200
+        assert payload["connection"]["session"] == {
+            "busy": True,
+            "retryInSeconds": 30.0,
+        }
+        assert payload["connection"]["identity"]["status"] == "checking"
+
+        radio.grant()
+        entered = await asyncio.wait_for(enter_task, timeout=5.0)
+        assert entered is radio
+        composition.transport_ready.assert_awaited_once_with(radio)
+        await server.finish_startup_busy_hold()
+        status, payload = await _get_json(server, "/readyz")
+        assert status == 200
+        assert payload == {"status": "ready", "radioReady": True}
+        status, payload = await _get_json(server, "/api/v1/info")
+        assert status == 200
+        assert payload["connection"]["session"] == {
+            "busy": False,
+            "retryInSeconds": None,
+        }
+
+        radio.connected = False
+        radio.radio_ready = False
+        radio.connection_identity = RadioIdentity(
+            status=RadioIdentityStatus.NO_RESPONSE,
+            expected_model="IC-7610",
         )
-        with pytest.raises(RigplaneConnectionError, match="never became ready"):
-            await asyncio.wait_for(enter_task, timeout=5.0)
-        composition.transport_ready.assert_not_awaited()
-        assert radio.startup_busy_hold_event.is_set() is False
-        assert radio.startup_busy_hold_retry_in_seconds is None
+        status, payload = await _get_json(server, "/readyz")
+        assert status == 503
+        assert payload == {"status": "not_ready", "radioReady": False}
+        status, payload = await _get_json(server, "/api/v1/info")
+        assert status == 200
+        assert payload["connection"]["session"] == {
+            "busy": False,
+            "retryInSeconds": None,
+        }
+        assert payload["connection"]["identity"]["status"] == "no_response"
+
+        radio.connected = True
+        radio.radio_ready = True
+        radio.connection_identity = RadioIdentity(
+            status=RadioIdentityStatus.VERIFIED,
+            expected_model="IC-7610",
+            answered_model="IC-7610",
+        )
+        status, payload = await _get_json(server, "/readyz")
+        assert status == 200
+        assert payload == {"status": "ready", "radioReady": True}
+        status, payload = await _get_json(server, "/api/v1/info")
+        assert status == 200
+        assert payload["connection"]["identity"]["status"] == "verified"
     finally:
         if not enter_task.done():
             enter_task.cancel()
@@ -483,6 +560,97 @@ async def test_busy_hold_give_up_carries_the_same_computer_hint() -> None:
                 await enter_task
             except asyncio.CancelledError:
                 pass
+        await session.shutdown()
+        await radio.__aexit__(None, None, None)
+        await server.stop()
+        await rig.stop()
+    assert radio.exit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_busy_hold_with_managed_tx_composition_starts_without_provider(
+    tmp_path: Path,
+) -> None:
+    """A busy-held radio with managed TX attached starts through the hold.
+
+    The composition binds the web store but has no current provider — no
+    transport exists for one to stand on yet — so ``web_startup:
+    _validate_managed_tx`` must take the transport-pending path (the busy
+    predicate names the hold the way the serial predicates name theirs)
+    instead of failing start-up with "managed TX provider is not
+    current". The negative probe below proves the row is not vacuous:
+    without the pending path the same composition raises.
+    """
+
+    radio = _BusyRadio()
+    poller = _busy_poller()
+    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
+    install_managed_tx_composition(radio, composition)
+    server = WebServer(radio, _web_config())
+    prepare_managed_tx_observation_generation(server)
+    await composition.bind_state_store(server.command_state_store)
+    attach_managed_tx_composition(server, composition)
+    with pytest.raises(RuntimeError, match="managed TX provider is not current"):
+        composition.validate_state_store(server.command_state_store)
+    try:
+        with patch("rigplane.web.web_startup.RadioPoller", return_value=poller):
+            await server.start()
+        assert server._served_with_silent_link is False
+        status, payload = await _get_json(server, "/readyz")
+        assert status == 503
+        assert payload["reason"] == "session_busy"
+    finally:
+        await server.stop()
+        await composition.shutdown(asyncio.Event())
+
+
+@pytest.mark.asyncio
+async def test_late_busy_completion_runs_the_one_time_fetches_after_grant() -> None:
+    """The granted hold reaches the same ready state as a normal start.
+
+    The poller's one-time start-up fetches ran against the disconnected
+    radio when the server started during the hold; the late completion
+    runs them once after the grant, against the connected radio.
+    """
+
+    from rigplane.cli import _ManagedTxRadioSession
+
+    radio = _BusyRadio()
+    poller = _busy_poller()
+    rig, server, _rig_port = await _start_busy_stack(radio, poller)
+    composition = create_autospec(ManagedTxComposition, instance=True)
+    session = _ManagedTxRadioSession(radio, composition)
+    enter_task = asyncio.ensure_future(session.__aenter__())
+    try:
+        for _ in range(100):
+            if radio.enter_calls:
+                break
+            await asyncio.sleep(0.01)
+        assert radio.enter_calls == 1
+
+        radio.grant()
+        entered = await asyncio.wait_for(enter_task, timeout=5.0)
+        assert entered is radio
+        assert radio.connected is True
+        await server.finish_startup_busy_hold()
+        assert radio.connected is True
+        poller._fetch_nb_controls.assert_awaited_once()
+        poller._fetch_mod_inputs.assert_awaited_once()
+        status, payload = await _get_json(server, "/readyz")
+        assert status == 200
+        assert payload == {"status": "ready", "radioReady": True}
+    finally:
+        if not enter_task.done():
+            enter_task.cancel()
+            try:
+                await enter_task
+            except asyncio.CancelledError:
+                pass
+        await session.shutdown()
+        await radio.__aexit__(None, None, None)
+        await server.stop()
+        await rig.stop()
+    assert radio.exit_calls == 1
 
 
 @pytest.mark.asyncio

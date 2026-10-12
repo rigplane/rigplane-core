@@ -6,7 +6,7 @@ import logging
 import signal
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import platformdirs
 import pytest
@@ -28,7 +28,9 @@ from rigplane.backends.config import (
     SerialBackendConfig,
     YaesuCatBackendConfig,
 )
+from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.runtime.managed_tx_authority import ManagedTxProjection, ShutdownResult
+from rigplane.runtime.managed_tx_composition import ManagedTxComposition
 from rigplane.runtime.managed_tx_state import (
     ActuationDiagnostic,
     ActuationOperation,
@@ -2300,9 +2302,7 @@ class TestProductionManagedTxComposition:
         radio = self._Radio()
         radio.__aenter__ = AsyncMock(side_effect=RuntimeError("connect failed"))  # type: ignore[method-assign]
         radio.__aexit__ = AsyncMock(return_value=False)  # type: ignore[method-assign]
-        candidate = MagicMock()
-        candidate.transport_ready = AsyncMock()
-        candidate.shutdown = AsyncMock()
+        candidate = create_autospec(ManagedTxComposition, instance=True)
         with (
             patch("rigplane.cli.create_radio", return_value=radio),
             patch("rigplane.cli.check_ports_available"),
@@ -2325,7 +2325,13 @@ class _BusyHoldRadio:
         self.connected = False
         self.control_connected = False
         self.radio_ready = False
-        self.connection_identity = None
+        # Production ``CoreRadio.connect`` reports CHECKING before the
+        # lifecycle's first attempt, so a busy hold always reads CHECKING
+        # here until the grant lands.
+        self.connection_identity: Any = RadioIdentity(
+            status=RadioIdentityStatus.CHECKING,
+            expected_model="FAKE-BUSY-CLI",
+        )
         self.startup_busy_hold_event: Any = None
         self._grant: Any = None
         self.fail_with: BaseException | None = None
@@ -2362,6 +2368,11 @@ class _BusyHoldRadio:
         self.connected = True
         self.control_connected = True
         self.radio_ready = True
+        self.connection_identity = RadioIdentity(
+            status=RadioIdentityStatus.VERIFIED,
+            expected_model="FAKE-BUSY-CLI",
+            answered_model="FAKE-BUSY-CLI",
+        )
         self.events.append("enter-done")
         return self
 
@@ -2398,6 +2409,9 @@ class _BusyHoldWebServer:
 
         raise LoopbackNotFoundError("no loopback in the busy-hold rows")
 
+    def defer_audio_bridge_start(self, **_kwargs: Any) -> None:
+        self.events.append("bridge-deferred")
+
     async def serve_forever(self, **kwargs: Any) -> None:
         import asyncio
 
@@ -2418,10 +2432,8 @@ class _BusyHoldWebServer:
         self.events.append("finish")
 
 
-def _busy_hold_composition() -> MagicMock:
-    composition = MagicMock()
-    composition.transport_ready = AsyncMock()
-    composition.shutdown = AsyncMock()
+def _busy_hold_composition() -> Any:
+    composition = create_autospec(ManagedTxComposition, instance=True)
     composition.bind_state_store = AsyncMock()
     composition.authority = MagicMock()
     return composition
