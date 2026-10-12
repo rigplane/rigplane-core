@@ -763,6 +763,9 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 logger.debug(
                     "audio teardown: transport disconnect failed", exc_info=True
                 )
+            # The radio session stays up across this teardown, so the next
+            # ``_ensure_audio_transport`` rebuild resumes this numbering.
+            self._audio_resume_seq = audio_transport.send_seq
             self._audio_transport = None
 
     async def _ensure_audio_transport(self) -> None:
@@ -821,6 +824,13 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         else:
             if audio_sock is not None:
                 self._audio_sock_pending = None
+
+        resume_seq = getattr(self, "_audio_resume_seq", None)
+        audio_transport = self._audio_transport
+        if resume_seq is not None and audio_transport is not None:
+            # ``connect`` reset the numbering to 0; continue that of the audio
+            # transport torn down on this session.
+            audio_transport.send_seq = resume_seq
 
         self._audio_transport.start_ping_loop()
         self._audio_transport.start_retransmit_loop()

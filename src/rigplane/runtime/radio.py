@@ -496,6 +496,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # resumes from it; ``_connect_once``, ``disconnect`` and ``release``
         # clear it.
         self._civ_resume_seq: int | None = None
+        # ``send_seq`` of the audio transport last torn down on a kept
+        # session. ``_ensure_audio_transport`` resumes from it; a fresh login
+        # (``_connect_once``), ``disconnect`` and ``release`` clear it.
+        self._audio_resume_seq: int | None = None
         self._last_civ_send_monotonic: float = 0.0
         # MOR-2595: 10 ms LAN gap. IC-7610 over LAN, 2026-09-25: 03 round
         # trip median 7.55 ms, p95 9.0 ms; 0 errors at a 0 ms post-reply gap.
@@ -1620,6 +1624,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             except Exception:
                 logger.debug("soft_disconnect: audio open/close failed", exc_info=True)
             await self._audio_transport.disconnect()
+            self._audio_resume_seq = self._audio_transport.send_seq
             self._audio_transport = None
 
         # Stop CI-V

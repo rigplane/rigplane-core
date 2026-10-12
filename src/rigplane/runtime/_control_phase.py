@@ -160,6 +160,7 @@ class ControlPhaseRuntime:
         h = self._host
         h._conn_state = RadioConnectionState.CONNECTING
         h._civ_resume_seq = None
+        h._audio_resume_seq = None
         h._civ_stream_ready = False
         h._civ_recovering = False
         h._last_status_error = 0
@@ -542,6 +543,7 @@ class ControlPhaseRuntime:
             return
         h._conn_state = RadioConnectionState.DISCONNECTING
         h._civ_resume_seq = None
+        h._audio_resume_seq = None
         civ_rt = getattr(h, "_civ_runtime", None)
         if civ_rt is not None:
             civ_rt.advance_generation("disconnect")
@@ -676,6 +678,7 @@ class ControlPhaseRuntime:
         self._deferred_retail = None
         self._renewal_waiter = None
         h._civ_resume_seq = None
+        h._audio_resume_seq = None
         # Best-effort teardown of any data/audio transports first (mirrors
         # disconnect ordering), then the always-sent token-remove.
         self._stop_watchdog()
