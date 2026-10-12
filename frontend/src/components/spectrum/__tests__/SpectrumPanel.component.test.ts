@@ -2531,6 +2531,18 @@ describe('silent raw scope refuses click-to-tune', () => {
     emitFrame({ mode: 1, startFreq: 14_000_000, endFreq: 14_100_000 });
     prepareGeometry(target);
 
+    // One in-span DX spot so the post-silence badge assertion can fail:
+    // DxOverlay renders only spots inside the frame span.
+    runtimeHarness.state.capturedDxMessage?.({
+      type: 'dx_spot',
+      spot: {
+        spotter: 'N0CALL', freq: 14_075_410, call: 'K1ABC', comment: 'test',
+        time_utc: '1200', timestamp: 1,
+      },
+    });
+    flushSync();
+    expect(target.querySelector('.dx-badge')).not.toBeNull();
+
     // Frames stop while the transport stays connected.
     runtimeHarness.state.mockScopeFrameLive = false;
     flushSync();
