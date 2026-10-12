@@ -3169,13 +3169,30 @@ class WebServer:
     async def finish_startup_busy_hold(self) -> None:
         """Complete web start-up after a start-up busy hold is granted.
 
-        Runs the post-connect half of start-up the busy branch skipped —
-        the same refetch, VFO-A select and re-prime a late ``connect()``
-        gets through ``_on_radio_reconnect`` — awaited (not spawned) so
-        the caller knows when the station is ready.
+        Runs the late-connect completion: the shared
+        ``_refetch_and_reenable`` (initial-state refetch, VFO-A select,
+        scan seeding and scope re-enable — the same body a late
+        ``connect()`` gets through ``_on_radio_reconnect``) plus the
+        poller's one-time start-up fetches, which ran against the
+        disconnected radio while the hold was pending. Awaited (not
+        spawned) so the caller knows when the station is ready.
         """
         self._begin_reconnect_reacquire()
         await self._refetch_and_reenable()
+        if isinstance(self._radio_poller, RadioPoller):
+            # The poller's one-time fetches from ``RadioPoller._run``
+            # already ran at server start, against the disconnected
+            # radio; run them once now that the grant landed.
+            try:
+                await self._radio_poller._fetch_nb_controls()
+            except Exception:
+                logger.debug(
+                    "radio-poller: NB controls late fetch failed", exc_info=True
+                )
+            try:
+                await self._radio_poller._fetch_mod_inputs()
+            except Exception:
+                logger.debug("radio-poller: MOD-input late fetch failed", exc_info=True)
 
     async def _refetch_and_reenable(self) -> None:
         """Release TX first, then refetch state, signal readiness and scope."""

@@ -1011,7 +1011,11 @@ class CoreRadioSessionLifecycle:
                 cooldown = self._not_ready_cooldown_s
 
             self._connecting_started = None
-            self._cooldown_total_s = cooldown
+            # A transient pass in the middle of a start-up hold must not
+            # clobber the hold's cooldown: the wire serves the hold's
+            # number until the grant lands.
+            if not self.startup_busy_hold_event.is_set():
+                self._cooldown_total_s = cooldown
             self._cooldown_deadline = time.monotonic() + cooldown
             self._emit(
                 LifecycleState.COOLDOWN,
@@ -1022,7 +1026,8 @@ class CoreRadioSessionLifecycle:
                 await asyncio.sleep(cooldown)
             finally:
                 self._cooldown_deadline = None
-                self._cooldown_total_s = None
+                if not self.startup_busy_hold_event.is_set():
+                    self._cooldown_total_s = None
             # loop → CONNECTING again, inside the same resident process.
 
     async def _attempt_with_release(self) -> AttemptOutcome:
