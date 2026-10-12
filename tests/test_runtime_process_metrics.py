@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import os
+import subprocess
+import sys
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from rigplane.radio import IcomRadio
+from rigplane.web import server as server_module
 from rigplane.web.server import WebConfig, WebServer
 from rigplane_testkit.icom.faults import FaultPlan, FaultRule
 
@@ -160,3 +166,61 @@ async def test_reconnects_total_increments_after_forced_reconnect(
         radio._control_phase._stop_watchdog()  # noqa: SLF001
         mock_radio.fault_plan = None
         await radio.disconnect()
+
+
+def _write_taskinfo(buf: Any, **fields: int) -> None:
+    info = ctypes.cast(
+        buf,
+        ctypes.POINTER(server_module._ProcTaskinfo),  # noqa: SLF001
+    ).contents
+    for name, value in fields.items():
+        setattr(info, name, value)
+
+
+def test_macos_rss_bytes_reads_resident_size_from_proc_taskinfo() -> None:
+    """A libproc fake filling ``pti_resident_size`` yields exactly that value."""
+
+    def fake_pidinfo(pid: int, flavor: int, arg: int, buf: Any, size: int) -> int:
+        _write_taskinfo(
+            buf, pti_virtual_size=999_999_999, pti_resident_size=123_456_789
+        )
+        return ctypes.sizeof(server_module._ProcTaskinfo)  # noqa: SLF001
+
+    assert server_module._macos_rss_bytes(fake_pidinfo) == 123_456_789  # noqa: SLF001
+
+
+def test_macos_rss_bytes_rejects_a_short_or_zero_write() -> None:
+    """A return count other than ``sizeof(proc_taskinfo)`` means ``None``."""
+    size = ctypes.sizeof(server_module._ProcTaskinfo)  # noqa: SLF001
+    for written in (0, size - 4, size + 4):
+        assert (
+            server_module._macos_rss_bytes(  # noqa: SLF001
+                lambda pid, flavor, arg, buf, bufsize, written=written: written
+            )
+            is None
+        )
+
+
+def test_macos_rss_bytes_swallows_oserror() -> None:
+    """A failing libproc call reports ``None`` instead of raising."""
+
+    def raising_pidinfo(pid: int, flavor: int, arg: int, buf: Any, size: int) -> int:
+        raise OSError("libproc unavailable")
+
+    assert server_module._macos_rss_bytes(raising_pidinfo) is None  # noqa: SLF001
+
+
+def test_macos_rss_bytes_none_without_a_pidinfo_function() -> None:
+    assert server_module._macos_rss_bytes(None) is None  # noqa: SLF001
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the libproc reader is macOS-only")
+async def test_rss_bytes_matches_ps_on_macos() -> None:
+    """The endpoint's rssBytes is the current RSS: within ±50 % of ``ps``."""
+    rss = (await _runtime(_stub_server()))["process"]["rssBytes"]
+    assert type(rss) is int
+    ps_out = subprocess.check_output(
+        ["ps", "-o", "rss=", "-p", str(os.getpid())], text=True
+    )
+    ps_bytes = int(ps_out.strip()) * 1024
+    assert abs(rss - ps_bytes) <= ps_bytes // 2

@@ -79,6 +79,7 @@ from rigplane.core.types import (
     ctcss_booleans_for_tone_squelch_type,
 )
 from rigplane.runtime._connection_state import RadioConnectionState
+from rigplane.runtime import radio_reconnect
 from rigplane.runtime._state_queries import tx_target_max_age
 from rigplane.runtime.meter_cal import interpolate_meter
 
@@ -1615,12 +1616,13 @@ class CivRuntime:
         except asyncio.CancelledError:
             cancelled = True
             raise
-        except (ConnectionError, TimeoutError, OSError):
+        except (ConnectionError, TimeoutError, OSError) as exc:
             logger.error(
                 "civ-data-watchdog: lifecycle recovery failed (exhausted or "
                 "transient); watchdog will re-arm if the session survives",
                 exc_info=True,
             )
+            self._hand_off_exhaustion_to_reconnect_loop(exc)
         except Exception:
             logger.error(
                 "civ-data-watchdog: unexpected error in lifecycle recovery",
@@ -1632,6 +1634,31 @@ class CivRuntime:
                     self._reconnect_task = None
             else:
                 self._rearm_data_watchdog_after_recovery()
+
+    def _hand_off_exhaustion_to_reconnect_loop(self, exc: Exception) -> None:
+        """Start the resident reconnect loop after lifecycle recovery exhausted.
+
+        The exhaustion is the ``RigplaneConnectionError`` that
+        ``CoreRadioSessionLifecycle._run_recover`` raises after its release.
+        """
+        host = self._host
+        if not isinstance(exc, ConnectionError):
+            return
+        if host._conn_state is not RadioConnectionState.DISCONNECTED:
+            return
+        if not getattr(host, "_auto_reconnect", False):
+            return
+        live = getattr(host, "_reconnect_task", None)
+        if live is not None and not live.done():
+            return
+        host._conn_state = RadioConnectionState.RECONNECTING
+        radio_reconnect._emit_reconnect_status(
+            host,
+            "reconnecting",
+            attempt=1,
+            next_retry_seconds=host._reconnect_delay,
+        )
+        host._reconnect_task = asyncio.create_task(host._reconnect_loop())
 
     def _rearm_data_watchdog_after_recovery(self) -> None:
         """Re-arm the CI-V data watchdog after a detached recovery attempt.
