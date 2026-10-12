@@ -375,11 +375,6 @@
       "declaration": "supported"
     },
     {
-      "check_id": "voice_tx.presence",
-      "status": "pass",
-      "declaration": "unsupported_pending_evidence"
-    },
-    {
       "check_id": "vox.read",
       "status": "skip",
       "declaration": "supported"
