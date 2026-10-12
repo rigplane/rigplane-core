@@ -126,9 +126,11 @@ class ControlPhaseRuntime:
     _RENEWAL_REJECT = 0xFFFFFFFF
     # Soft-reconnect audio-rebuild retry bound: a failed
     # ``_ensure_audio_transport`` re-arm is retried at most this many attempts
-    # with ``_SOFT_AUDIO_REBUILD_BACKOFF_S`` between them, and only while the
-    # reconnect snapshot still holds audio demand and the CI-V / owner-stop
-    # epochs say this session still owns the radio.
+    # with ``_SOFT_AUDIO_REBUILD_BACKOFF_S`` between them, and only while
+    # recovery is owed (the snapshot holds audio demand and
+    # ``_auto_recover_audio`` is set) and the CI-V / owner-stop epochs,
+    # re-checked immediately before every attempt, say this session still
+    # owns the radio.
     _SOFT_AUDIO_REBUILD_ATTEMPTS = 3
     _SOFT_AUDIO_REBUILD_BACKOFF_S = 0.1
 
@@ -1059,54 +1061,75 @@ class ControlPhaseRuntime:
                     "soft_reconnect: _on_reconnect callback failed", exc_info=True
                 )
 
-        # Re-arm the audio transport on a fresh FD and restore any live demand.
-        # A failed re-arm is reported (WARNING with the cause, plus FAILED to
-        # ``on_audio_recovery``) and retried with a bound, only while audio
-        # demand and this session's ownership hold (CI-V epoch / owner-stop
-        # epoch unchanged between attempts). Bounded/safe: failures are never
-        # raised, so a CI-V soft reconnect still succeeds even if audio cannot
-        # be re-established.
+        # Re-arm the audio transport on a fresh FD and restore any live
+        # demand. Each failed attempt logs a WARNING with the cause.
+        # ``AudioRecoveryState.FAILED`` reaches ``on_audio_recovery`` at most
+        # once — only after the retrying ends with the transport still not
+        # rebuilt, and only when recovery was owed: the reconnect snapshot
+        # holds audio demand and ``_auto_recover_audio`` is set, the same
+        # gate the hard path and the audio watchdog apply before running
+        # ``recover`` (radio_reconnect). With nothing owed, exactly one
+        # best-effort attempt runs and its failure stays a WARNING. On the
+        # identity-hold path this tail runs in a task ``disconnect()`` cannot
+        # cancel, so unchanged CI-V / owner-stop epochs are the only
+        # ownership guard: they are re-read after every backoff sleep,
+        # immediately before the attempt they authorize — no await sits
+        # between that check and the rebuild — and once more before the
+        # post-success ``recover``. Bounded/safe: failures are never raised,
+        # so a CI-V soft reconnect still succeeds even if audio cannot be
+        # re-established.
         ensure_audio = getattr(h, "_ensure_audio_transport", None)
         if ensure_audio is not None:
+            owed = audio_snapshot is not None and getattr(
+                h, "_auto_recover_audio", False
+            )
             civ_epoch = getattr(h, "_civ_epoch", None)
             owner_stop_epoch = getattr(h, "_owner_stop_epoch", None)
+
+            def _ownership_moved_on() -> bool:
+                return (
+                    getattr(h, "_civ_epoch", None) != civ_epoch
+                    or getattr(h, "_owner_stop_epoch", None) != owner_stop_epoch
+                )
+
             rearmed = False
             for attempt in range(1, self._SOFT_AUDIO_REBUILD_ATTEMPTS + 1):
+                if attempt > 1:
+                    await asyncio.sleep(self._SOFT_AUDIO_REBUILD_BACKOFF_S)
+                    if _ownership_moved_on():
+                        # An owner stop or a new CI-V generation landed
+                        # inside the backoff sleep: this session no longer
+                        # owns the radio, so no further rebuild attempt.
+                        break
                 try:
                     await ensure_audio()
                     rearmed = True
                     break
                 except Exception as exc:
-                    if (
-                        attempt >= self._SOFT_AUDIO_REBUILD_ATTEMPTS
-                        or audio_snapshot is None
-                        or getattr(h, "_civ_epoch", None) != civ_epoch
-                        or getattr(h, "_owner_stop_epoch", None) != owner_stop_epoch
-                    ):
+                    if not owed or attempt >= self._SOFT_AUDIO_REBUILD_ATTEMPTS:
                         logger.warning(
                             "soft_reconnect: audio re-arm failed on attempt %d/%d: %s",
                             attempt,
                             self._SOFT_AUDIO_REBUILD_ATTEMPTS,
                             exc,
                         )
-                        on_audio_recovery = getattr(h, "_on_audio_recovery", None)
-                        if on_audio_recovery is not None:
-                            on_audio_recovery(AudioRecoveryState.FAILED)
                         break
                     logger.warning(
                         "soft_reconnect: audio re-arm failed on attempt %d/%d: "
-                        "%s; retrying",
+                        "%s; retrying while this session owns the radio",
                         attempt,
                         self._SOFT_AUDIO_REBUILD_ATTEMPTS,
                         exc,
                     )
-                    await asyncio.sleep(self._SOFT_AUDIO_REBUILD_BACKOFF_S)
-            if (
-                rearmed
-                and audio_runtime is not None
-                and audio_snapshot is not None
-                and getattr(h, "_auto_recover_audio", False)
-            ):
+            if not rearmed and owed:
+                on_audio_recovery = getattr(h, "_on_audio_recovery", None)
+                if on_audio_recovery is not None:
+                    on_audio_recovery(AudioRecoveryState.FAILED)
+            elif rearmed and owed and not _ownership_moved_on():
+                # ``ensure_audio()`` is itself an await, so ownership may
+                # have moved on while the rebuild ran. Re-check before
+                # restoring demand, mirroring the hard path's post-connect
+                # owner-stop check.
                 recover = getattr(audio_runtime, "recover", None)
                 if recover is not None:
                     try:
