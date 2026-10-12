@@ -63,12 +63,13 @@ blackout (drop probability and window); by default no fault is injected.
 
 Each field is filled independently per sample: a value from the runtime
 document's `process` object wins when present (`rssBytes`, `openFds`,
-`asyncioTasks` — the names of PR #4044; `rssBytes` is null where the
-platform has no `/proc/self/statm`, e.g. macOS), and any field the
-runtime did not report is measured driver-side for this process (the
-stack runs in-process): RSS via `/proc/<pid>/statm` or `ps -o rss=`,
-FDs via `/proc/<pid>/fd` or `/dev/fd`, asyncio tasks as every task on
-the loop not named with the `soak-` prefix. The connection column comes
+`asyncioTasks` — the names of PR #4044; `rssBytes` is null only where
+neither `/proc/self/statm` nor macOS libproc can report it), and any
+field the runtime did not report is measured driver-side for this
+process (the stack runs in-process): RSS via `/proc/<pid>/statm` or
+`ps -o rss=`, FDs via `/proc/<pid>/fd` or `/dev/fd`, asyncio tasks as
+every task on the loop not named with the `soak-` prefix. The
+connection column comes
 from the state document's live `connection.rigConnected`
 (`server.py: WebServer._snapshot_for_delivery` reconciles it per
 request), not from the runtime payload's `connection` block, which
