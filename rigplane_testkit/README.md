@@ -34,8 +34,11 @@ UDP code paths as production.
   A re-sent OpenClose still gets its stream-active marker; only
   tracked-packet processing follows the ignore rule.
   The audio port advertised at 0x46 of the status reply is a real
-  listener (`MockIcomRadio.audio_port`, bound at the CI-V port + 1 when
-  free) with the same transport handshake as the CI-V port: AYT→IAH,
+  listener only with `MockIcomRadio(enable_audio=True)` (default off;
+  `MockIcomRadio.audio_port`, bound at the CI-V port + 1 when free).
+  With the default the reply still advertises the port but nothing
+  listens there and nothing answers. When on, the listener speaks the
+  same transport handshake as the CI-V port: AYT→IAH,
   AreYouReady echo, ping replies, tracked client numbering — never
   answered with retransmit requests (recorded: zero on the audio port).
   The client's audio OpenClose(open) — the packet
@@ -50,9 +53,12 @@ UDP code paths as production.
   arrival time; the client's format is the only reference — the TX path
   is unrecorded). The stream survives a CI-V-only soft reconnect
   (recorded) and stops when the session ends (token-remove/logout,
-  `drop_session`, reboot); `audio_stream_drop()` stops it keeping the
+  `drop_session`, reboot); without an owned session the audio opener's
+  own token-remove/control-disconnect still ends it, while a foreign one
+  changes nothing. `audio_stream_drop()` stops it keeping the
   session, `audio_port_silence(at, for_seconds)` blacks out only the
-  audio port, and `audio_last_client_seq` tracks the client numbering
+  audio port (`audio_rx_frames_sent` counts only packets actually sent),
+  and `audio_last_client_seq` tracks the client numbering
   per session.
   Wire-level examples live in `tests/testkit/test_simulator_faults.py`
   and `tests/testkit/test_simulator_drop_session.py`; the audio port is

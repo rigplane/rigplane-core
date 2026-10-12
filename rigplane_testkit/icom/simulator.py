@@ -1,10 +1,13 @@
 """Mock UDP radio server for integration testing.
 
 Emulates an Icom IC-7610 over UDP so that transport/radio/CLI tests can run
-without real hardware.  Three asyncio datagram servers are started:
+without real hardware.  Two asyncio datagram servers are always started:
 
   * control port  – authentication handshake, pings, token renewal
   * CI-V port     – CI-V command / response exchange
+
+plus, only with ``enable_audio=True``, a third one:
+
   * audio port    – the LAN audio port the status reply advertises
     (RX stream, TX frame sink; ``simulator_audio.AudioPortMixin``)
 
@@ -282,7 +285,8 @@ def _missing_runs(missing: set[int]) -> list[tuple[int, int]]:
 class MockIcomRadio(AudioPortMixin):
     """Asyncio UDP server emulating an IC-7610 for integration testing.
 
-    Handles the full connection lifecycle on three ports:
+    Handles the full connection lifecycle on two ports, plus the audio
+    port when ``enable_audio`` is True:
 
     * **Control port** – discovery (AYT/IAH), login, token exchange, pings
     * **CI-V port**    – discovery, open/close, CI-V commands, pings
@@ -309,6 +313,11 @@ class MockIcomRadio(AudioPortMixin):
             corrupt/truncate rules on top of the legacy ``drop_rate`` /
             ``response_delay`` / ``stall_for`` knobs, which keep working
             unchanged.
+        enable_audio: bind the LAN audio-port listener (default False).
+            Off, the simulator behaves as before this listener existed:
+            the status reply still advertises an audio port but nothing
+            listens there and nothing answers. (Named ``enable_audio``
+            because ``audio_port`` is already the bound-port property.)
     """
 
     def __init__(
@@ -327,6 +336,7 @@ class MockIcomRadio(AudioPortMixin):
         unsolicited_civ: bool = False,
         unsolicited_interval_s: float = 0.1,
         fault_plan: FaultPlan | None = None,
+        enable_audio: bool = False,
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -411,6 +421,9 @@ class MockIcomRadio(AudioPortMixin):
         # otherwise auto-released after ``keepalive_hold_s`` of silence.
         self.single_owner: bool = single_owner
         self.keepalive_hold_s: float = keepalive_hold_s
+        # Audio-port listener switch: default off, when the status reply
+        # advertises the dummy port and nothing listens.
+        self.enable_audio: bool = enable_audio
         # Owner identity = (remote_addr, my_id); None when no session is held.
         self._owner: tuple[tuple[str, int], int] | None = None
         self._keepalive_timer: asyncio.TimerHandle | None = None
@@ -533,7 +546,10 @@ class MockIcomRadio(AudioPortMixin):
 
         # The audio listener binds after the CI-V port so it can try the
         # adjacent port (the status reply advertises the bound port).
-        await self._audio_start()
+        # Off by default: nothing listens and nothing answers, while the
+        # status reply still advertises the dummy port as before.
+        if self.enable_audio:
+            await self._audio_start()
 
         if self.unsolicited_civ:
             self._unsolicited_task = asyncio.get_running_loop().create_task(
@@ -1197,6 +1213,13 @@ class MockIcomRadio(AudioPortMixin):
         if n == 0x40 and data[0x15] == _TOKEN_REMOVE:
             if self.single_owner and self._owner == (addr, sender_id):
                 self._release_session("token_remove")
+            elif self._audio_client is not None and sender_id == self._audio_client[1]:
+                # No owned session here (default mode): the logout of the
+                # client that opened the audio stream still ends the
+                # stream — matched by sender id, as the audio socket and
+                # the control socket differ. A foreign logout changes
+                # nothing.
+                self._audio_end_session("token_remove")
             return
 
         # Client conninfo (0x90 bytes, requesttype=0x03) → status with CI-V port
@@ -1222,6 +1245,10 @@ class MockIcomRadio(AudioPortMixin):
         if n == _HEADER_SIZE and ptype == _PT_DISCONNECT:
             if self.single_owner and self._owner == (addr, sender_id):
                 self._release_session("disconnect")
+            elif self._audio_client is not None and sender_id == self._audio_client[1]:
+                # Default mode, same as token-remove above: the control
+                # disconnect of the audio stream's own client ends it.
+                self._audio_end_session("disconnect")
             return
 
     # ------------------------------------------------------------------
@@ -1274,14 +1301,16 @@ class MockIcomRadio(AudioPortMixin):
 
         # Are You There → I Am Here
         if n == _HEADER_SIZE and ptype == _PT_ARE_YOU_THERE:
-            self._send(proto, self._ctrl_pkt(_PT_I_AM_HERE, 0, sender_id), addr, "civ")
+            reply = self._handshake_reply(data, ptype, sender_id)
+            assert reply is not None  # matched above
+            self._send(proto, reply, addr, "civ")
             return
 
         # Are You Ready → echo
         if n == _HEADER_SIZE and ptype == _PT_ARE_YOU_READY:
-            self._send(
-                proto, self._ctrl_pkt(_PT_ARE_YOU_READY, 0, sender_id), addr, "civ"
-            )
+            reply = self._handshake_reply(data, ptype, sender_id)
+            assert reply is not None  # matched above
+            self._send(proto, reply, addr, "civ")
             return
 
         # Ping request → Ping reply
@@ -1290,7 +1319,9 @@ class MockIcomRadio(AudioPortMixin):
                 return  # post-reboot: stale client until a fresh OpenClose(open)
             if time.monotonic() < self._keepalive_silent_until:
                 return  # keepalive_silence window: receive but never reply
-            self._send(proto, self._ping_reply(data, sender_id), addr, "civ")
+            reply = self._handshake_reply(data, ptype, sender_id)
+            assert reply is not None  # matched above
+            self._send(proto, reply, addr, "civ")
             return
 
         # OpenClose (0x16 bytes)
@@ -1990,6 +2021,25 @@ class MockIcomRadio(AudioPortMixin):
     # Control packet builders
     # ------------------------------------------------------------------
 
+    def _handshake_reply(self, data: bytes, ptype: int, sender_id: int) -> bytes | None:
+        """Reply bytes for the transport-handshake packets both ports share.
+
+        Are-You-There → I-Am-Here, Are-You-Ready echo, ping-request reply
+        (timestamp echoed); None for anything else. The CI-V port and the
+        audio port call this with the same packet and each sends the reply
+        through its own funnel, so the per-port gates (reboot down-window,
+        fence, keepalive/audio silence) stay at the call sites and the
+        CI-V paths are unchanged.
+        """
+        n = len(data)
+        if n == _HEADER_SIZE and ptype == _PT_ARE_YOU_THERE:
+            return self._ctrl_pkt(_PT_I_AM_HERE, 0, sender_id)
+        if n == _HEADER_SIZE and ptype == _PT_ARE_YOU_READY:
+            return self._ctrl_pkt(_PT_ARE_YOU_READY, 0, sender_id)
+        if n == _PING_SIZE and ptype == _PT_PING and data[0x10] == 0x00:
+            return self._ping_reply(data, sender_id)
+        return None
+
     def _ctrl_pkt(self, ptype: int, seq: int, client_id: int) -> bytes:
         """Build a 0x10-byte control/discovery packet."""
         pkt = bytearray(_HEADER_SIZE)
@@ -2118,8 +2168,15 @@ class MockIcomRadio(AudioPortMixin):
         struct.pack_into("<I", pkt, 0x30, error & 0xFFFFFFFF)
         port = self._actual_civ_port if civ_port is None else civ_port
         struct.pack_into(">H", pkt, 0x42, port)
-        # The audio port is the bound audio listener (0 before start() or
-        # when the CI-V port itself is withheld).
-        audio_port = self._actual_audio_port if port != 0 else 0
+        # The audio port is the bound listener when one is up; otherwise
+        # the dummy the simulator always advertised (CI-V port + 1, kept
+        # within uint16 range): with the listener off nothing answers
+        # there, exactly as before the listener existed.
+        if port == 0:
+            audio_port = 0
+        elif self._actual_audio_port:
+            audio_port = self._actual_audio_port
+        else:
+            audio_port = port + 1 if port < 65535 else 65534
         struct.pack_into(">H", pkt, 0x46, audio_port)
         return bytes(pkt)

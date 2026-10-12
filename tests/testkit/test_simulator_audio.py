@@ -23,7 +23,12 @@ import pytest
 from rigplane.audio import build_audio_packet
 
 from rigplane_testkit.icom import MockIcomRadio
-from rigplane_testkit.icom.simulator import _HEADER_SIZE, _PT_CONTROL, _PT_DATA
+from rigplane_testkit.icom.simulator import (
+    _HEADER_SIZE,
+    _PT_CONTROL,
+    _PT_DATA,
+    _PT_DISCONNECT,
+)
 from rigplane_testkit.icom.simulator_audio import AUDIO_HEADER_SIZE
 from testkit.test_simulator_faults import (
     _CLIENT_ID,
@@ -127,6 +132,11 @@ def _token_remove() -> bytes:
     return bytes(pkt)
 
 
+def _disconnect() -> bytes:
+    """Control-port disconnect (tracked by sender id, like every header)."""
+    return bytes(_header(_HEADER_SIZE, _PT_DISCONNECT))
+
+
 async def _udp() -> _UdpClient:
     c = _UdpClient()
     await asyncio.get_running_loop().create_datagram_endpoint(
@@ -209,6 +219,91 @@ def _u16be(pkt: bytes, off: int) -> int:
     return struct.unpack_from(">H", pkt, off)[0]
 
 
+async def _drain(
+    client: _UdpClient, quiet_s: float = 0.03, budget_s: float = 2.0
+) -> None:
+    """Read everything the client socket holds until a quiet window passes.
+
+    Packets already sent (in the socket buffer or in flight) before a stop
+    must not leak into the silence assertion that follows. The budget only
+    binds when the stream never stops (a regression): the drain gives up
+    after ``budget_s`` and the silence assertion that follows fails fast on
+    the still-flowing stream instead of draining forever.
+    """
+    start = time.monotonic()
+    while time.monotonic() - start < budget_s:
+        try:
+            await client.recv(timeout=quiet_s)
+        except TimeoutError:
+            return
+
+
+async def _await_rx_stop(server: MockIcomRadio, timeout: float = 2.0) -> int:
+    """Wait until ``audio_rx_frames_sent`` stops advancing; return the value.
+
+    A running stream advances the counter every burst (three packets per
+    20 ms), so two equal samples a burst period apart mean the stream
+    stopped. A mutation that keeps the stream running after the stop keeps
+    the counter moving and times this out, failing the test.
+    """
+    deadline = time.monotonic() + timeout
+    previous = server.audio_rx_frames_sent
+    while True:
+        await asyncio.sleep(0.03)
+        current = server.audio_rx_frames_sent
+        if current == previous:
+            await asyncio.sleep(0.03)
+            if server.audio_rx_frames_sent == current:
+                return current
+        previous = current
+        assert time.monotonic() < deadline, (
+            f"RX counter kept advancing past the stop: {current}"
+        )
+
+
+async def _await_client_seq(server: MockIcomRadio, timeout: float = 2.0) -> int:
+    """Wait until the open has registered its tracked seq; return it.
+
+    The client's open datagram is still in flight when the IAH reply to
+    the earlier AYT arrives, so the first assertion after ``_open_audio``
+    must wait for the server to process it rather than assume delivery.
+    """
+    deadline = time.monotonic() + timeout
+    while server.audio_last_client_seq is None:
+        await asyncio.sleep(0.01)
+        assert time.monotonic() < deadline, "audio open never registered"
+    return server.audio_last_client_seq
+
+
+async def _await_client_seq_value(
+    server: MockIcomRadio, value: int, timeout: float = 2.0
+) -> None:
+    """Wait until ``audio_last_client_seq`` reads ``value`` (delivery of
+    the client's datagram takes a loop tick; a fixed sleep would hope)."""
+    deadline = time.monotonic() + timeout
+    while server.audio_last_client_seq != value:
+        await asyncio.sleep(0.01)
+        assert time.monotonic() < deadline, (
+            f"client seq stuck at {server.audio_last_client_seq}, want {value}"
+        )
+
+
+async def _assert_rx_stopped(
+    server: MockIcomRadio, client: _UdpClient, quiet_s: float = 0.1
+) -> None:
+    """Pin a stopped RX stream: counter frozen, socket drained, then quiet.
+
+    After the stop trigger, waits for the simulator's own counter to stop
+    advancing, reads everything the client socket still holds, then asserts
+    no further packet arrives for ``quiet_s`` (at least two burst periods)
+    and the counter did not move.
+    """
+    frozen = await _await_rx_stop(server)
+    await _drain(client)
+    await client.expect_silence(quiet_s)
+    assert server.audio_rx_frames_sent == frozen
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -216,7 +311,7 @@ def _u16be(pkt: bytes, off: int) -> int:
 
 @pytest.fixture
 async def server() -> AsyncGenerator[MockIcomRadio]:
-    s = MockIcomRadio(single_owner=True, keepalive_hold_s=10.0)
+    s = MockIcomRadio(single_owner=True, keepalive_hold_s=10.0, enable_audio=True)
     await s.start()
     yield s
     await s.stop()
@@ -431,8 +526,9 @@ async def test_audio_port_silence_blacks_out_only_the_audio_port(
         await _open_audio(client, server)
         assert _rx_frames(await _collect_audio(client, 0.1))
 
-        server.audio_port_silence(at=0.0, for_seconds=0.3)
+        server.audio_port_silence(at=0.0, for_seconds=0.5)
         await asyncio.sleep(0.02)  # the window arms on the next loop tick
+        await _drain(client)  # pre-window packets still arriving
         client.send(_ayt(), server.audio_port)
         await client.expect_silence(0.12)
         client.send(_ping(), server.audio_port)
@@ -441,14 +537,15 @@ async def test_audio_port_silence_blacks_out_only_the_audio_port(
         ctrl.send(_ayt(), server.control_port)  # control port unaffected
         assert struct.unpack_from("<H", await ctrl.recv(), 4)[0] == _PT_I_AM_HERE
 
-        await asyncio.sleep(0.25)  # window expired
+        await asyncio.sleep(0.35)  # window expired
         client.send(_ayt(), server.audio_port)
         await _recv_type(client, _PT_I_AM_HERE)
 
         frames = _rx_frames(await _collect_audio(client, 0.2))
         assert frames  # RX resumed with the window
-        # Numbering advanced through the silence (the stream kept counting,
-        # modelling the recorded outage where the client saw lost packets).
+        # Both sequences keep stepping through the silence while nothing is
+        # sent, modelling the recorded outage where the client saw lost
+        # packets (`audio_rx_frames_sent` counts only sent packets).
         assert _u16be(frames[0][1], 0x12) > 24
     finally:
         ctrl.close()
@@ -468,7 +565,7 @@ async def test_audio_stream_drop_stops_rx_and_keeps_the_session(
         last_inner = _u16be(first[-1][1], 0x12)
 
         server.audio_stream_drop()
-        await client.expect_silence(0.15)
+        await _assert_rx_stopped(server, client)
         assert server.session_held
         sent = server.audio_rx_frames_sent
 
@@ -514,9 +611,8 @@ async def test_session_end_stops_rx(
             server.drop_session(at=0.0, notice=False)
         else:
             server.reboot(at=0.0, down_for=0.3)
-        await asyncio.sleep(0.05)
 
-        await client.expect_silence(0.2)
+        await _assert_rx_stopped(server, client)
         assert server.audio_last_client_seq is None  # per-session numbering
     finally:
         ctrl.close()
@@ -562,3 +658,250 @@ async def test_tx_sink_records_production_frames_until_the_session_ends(
         assert server.audio_last_client_seq is None
     finally:
         ctrl.close()
+
+
+# ---------------------------------------------------------------------------
+# Opt-in listener: default off, nothing answers
+# ---------------------------------------------------------------------------
+
+
+async def test_default_audio_port_answers_nothing() -> None:
+    """Default (listener off): the status reply still advertises an audio
+    port, but nothing answers there — AYT and ping draw silence."""
+    server = MockIcomRadio()
+    await server.start()
+    ctrl = await _udp()
+    try:
+        assert server.audio_port == 0  # no listener bound
+        ctrl.send(_login(), server.control_port)
+        await ctrl.recv()
+        ctrl.send(_conninfo(), server.control_port)
+        status = await ctrl.recv()
+        advertised = struct.unpack_from(">H", status, 0x46)[0]
+        assert advertised != 0  # still advertised, as before
+        assert advertised == server.civ_port + 1
+
+        probe = await _udp()
+        try:
+            probe.send(_ayt(), advertised)
+            await probe.expect_silence(0.2)
+            probe.send(_ping(), advertised)
+            await probe.expect_silence(0.1)
+        finally:
+            probe.close()
+    finally:
+        ctrl.close()
+        await server.stop()
+
+
+# ---------------------------------------------------------------------------
+# Tracked client numbering: open, idle, re-open, retarget
+# ---------------------------------------------------------------------------
+
+
+async def test_reopen_records_its_tracked_seq(
+    server: MockIcomRadio, client: _UdpClient
+) -> None:
+    """A re-open records its own tracked seq (old counter + 1): the open is
+    the first tracked packet of the (re)started stream, like the CI-V port."""
+    radio_id = await _open_audio(client, server)
+    assert await _await_client_seq(server) == 0
+    client.send(_tx_audio(1, 0, bytes(64), radio_id), server.audio_port)
+    client.send(_tx_audio(2, 1, bytes(64), radio_id), server.audio_port)
+    await _await_client_seq_value(server, 2)
+
+    client.send(_audio_openclose(seq=3), server.audio_port)  # re-open: 2 + 1
+    await _await_client_seq_value(server, 3)
+
+
+async def test_idle_advances_client_seq(
+    server: MockIcomRadio, client: _UdpClient
+) -> None:
+    """Tracked idle keepalives advance ``audio_last_client_seq`` while the
+    stream lives."""
+    await _open_audio(client, server)
+    assert await _await_client_seq(server) == 0
+    client.send(_idle(seq=4), server.audio_port)
+    await _await_client_seq_value(server, 4)
+
+
+async def test_reopen_from_new_address_retargets_rx(
+    server: MockIcomRadio, client: _UdpClient
+) -> None:
+    """A re-open from a new client address retargets the RX stream there."""
+    await _open_audio(client, server)
+    assert _rx_frames(await _collect_audio(client, 0.1))
+
+    moved = await _udp()
+    try:
+        moved.send(_ayt(), server.audio_port)
+        iah = await moved.recv()
+        assert struct.unpack_from("<H", iah, 4)[0] == _PT_I_AM_HERE
+        moved.send(_audio_openclose(seq=1), server.audio_port)
+        assert _rx_frames(await _collect_audio(moved, 0.2))
+    finally:
+        moved.close()
+
+
+async def test_rx_rate_matches_recorded_fixture(
+    server: MockIcomRadio, client: _UdpClient
+) -> None:
+    """The measured RX rate over >= 1 s is within +-10 % of the recorded
+    ``rx_packets_per_s`` from ``tests/fixtures/ic7610/audio_stream.json``."""
+    expected = float(
+        json.loads((_FIXTURES / "audio_stream.json").read_text())["rx_packets_per_s"]
+    )
+    await _open_audio(client, server)
+    frames = _rx_frames(await _collect_audio(client, 1.2))
+    assert len(frames) >= 100, f"only {len(frames)} RX frames in 1.2 s"
+    span = frames[-1][0] - frames[0][0]
+    assert span >= 1.0, f"RX span only {span:.3f} s"
+    rate = (len(frames) - 1) / span
+    assert rate == pytest.approx(expected, rel=0.10), (
+        f"{rate:.1f}/s vs recorded {expected}/s"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Default mode: the audio opener's own logout stops RX
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("trigger", ["token_remove", "disconnect"])
+async def test_own_logout_stops_rx_in_default_mode(trigger: str) -> None:
+    """Without an owned session the audio opener's own logout (token-remove
+    or control disconnect, matched by sender id) still ends the RX stream,
+    while a foreign logout changes nothing."""
+    server = MockIcomRadio(enable_audio=True)
+    await server.start()
+    audio = await _udp()
+    ctrl = await _udp()
+    try:
+        await _open_audio(audio, server)
+        assert _rx_frames(await _collect_audio(audio, 0.1))
+
+        logout = _token_remove() if trigger == "token_remove" else _disconnect()
+        foreign = bytearray(logout)
+        struct.pack_into("<I", foreign, 0x08, 0x0BADF00D)
+        ctrl.send(bytes(foreign), server.control_port)
+        await asyncio.sleep(0.1)
+        assert _rx_frames(await _collect_audio(audio, 0.08))  # still flowing
+
+        ctrl.send(logout, server.control_port)
+        await _assert_rx_stopped(server, audio)
+        assert server.audio_last_client_seq is None
+    finally:
+        audio.close()
+        ctrl.close()
+        await server.stop()
+
+
+# ---------------------------------------------------------------------------
+# Silence/start/stop details: close, delayed start, status port, CI-V alive
+# ---------------------------------------------------------------------------
+
+
+async def test_audio_openclose_close_stops_rx(
+    server: MockIcomRadio, client: _UdpClient
+) -> None:
+    """Audio-port OpenClose(close) stops the RX stream."""
+    await _open_audio(client, server)
+    assert _rx_frames(await _collect_audio(client, 0.1))
+
+    client.send(_audio_openclose(seq=1, open_stream=False), server.audio_port)
+    await _assert_rx_stopped(server, client)
+
+
+async def test_audio_port_silence_honours_delayed_start(
+    server: MockIcomRadio, client: _UdpClient
+) -> None:
+    """``audio_port_silence(at=...)`` with a non-zero ``at``: the port
+    still answers and streams during the delay, goes quiet for the window,
+    and answers again after."""
+    await _open_audio(client, server)
+    assert _rx_frames(await _collect_audio(client, 0.1))
+
+    t0 = time.monotonic()
+    server.audio_port_silence(at=0.3, for_seconds=0.6)
+    # The delay is honoured, not immediate: the port still answers and the
+    # stream still flows during it. A lone pre-window reply would also win
+    # a race against a broken immediate arming, so the stream's stop time
+    # is the pin: the last RX arrival lands just after `at`, not at the
+    # arming and not at the collection's end.
+    client.send(_ayt(), server.audio_port)
+    await _recv_type(client, _PT_I_AM_HERE)
+    pre_window = _rx_frames(await _collect_audio(client, 0.6))
+    assert pre_window, "no RX at all after arming a delayed silence"
+    last = pre_window[-1][0] - t0
+    assert 0.15 <= last <= 0.45, f"stream stopped at {last:.3f} s into the delay"
+
+    await _drain(client)  # pre-window packets still arriving
+    client.send(_ayt(), server.audio_port)
+    await client.expect_silence(0.1)  # during the window: nothing
+
+    await asyncio.sleep(0.3)  # window expired
+    client.send(_ayt(), server.audio_port)
+    await _recv_type(client, _PT_I_AM_HERE)  # answers again
+
+
+async def test_status_audio_port_equals_bound_port(
+    server: MockIcomRadio,
+) -> None:
+    """The status reply's audio port at 0x46 is the bound listener."""
+    ctrl = await _udp()
+    try:
+        ctrl.send(_login(), server.control_port)
+        await ctrl.recv()
+        ctrl.send(_conninfo(), server.control_port)
+        status = await ctrl.recv()
+        assert struct.unpack_from(">H", status, 0x46)[0] == server.audio_port != 0
+    finally:
+        ctrl.close()
+
+
+async def test_civ_answers_during_audio_silence(
+    server: MockIcomRadio, client: _UdpClient
+) -> None:
+    """``audio_port_silence`` blacks out only the audio port: the CI-V port
+    still answers discovery and pings."""
+    civ = await _udp()
+    try:
+        await _open_audio(client, server)
+        assert _rx_frames(await _collect_audio(client, 0.08))
+
+        server.audio_port_silence(at=0.0, for_seconds=0.4)
+        await asyncio.sleep(0.05)  # window armed
+        civ.send(_ayt(), server.civ_port)
+        assert struct.unpack_from("<H", await civ.recv(), 4)[0] == _PT_I_AM_HERE
+        civ.send(_ping(), server.civ_port)
+        reply = await civ.recv()
+        assert struct.unpack_from("<H", reply, 4)[0] == _PT_PING
+        assert reply[0x10] == 0x01  # reply flag
+        assert reply[0x11:0x15] == b"\x01\x02\x03\x04"  # timestamp echoed
+    finally:
+        civ.close()
+
+
+async def test_rx_counter_counts_only_sent_packets(
+    server: MockIcomRadio, client: _UdpClient
+) -> None:
+    """``audio_rx_frames_sent`` counts sends, not suppressed emissions: it is
+    frozen through a silence window (both sequences still step, so the
+    client sees the gap) and advances again after."""
+    await _open_audio(client, server)
+    assert _rx_frames(await _collect_audio(client, 0.1))
+
+    server.audio_port_silence(at=0.0, for_seconds=0.4)
+    await asyncio.sleep(0.05)  # window armed
+    frozen = server.audio_rx_frames_sent
+    await asyncio.sleep(0.2)  # mid-window: emissions suppressed
+    assert server.audio_rx_frames_sent == frozen
+
+    await asyncio.sleep(0.25)  # window expired
+    assert _rx_frames(await _collect_audio(client, 0.2))
+    assert server.audio_rx_frames_sent > frozen
+
+    # Reboot characterization: the session end stops the stream before the
+    # dark window, so nothing is emitted there to (mis)count either.
+    server.reboot(at=0.0, down_for=0.3)
+    await _assert_rx_stopped(server, client)

@@ -92,7 +92,7 @@ class AudioPortMixin:
     """The audio-port half of ``MockIcomRadio`` (mixed into it).
 
     The listener reuses the CI-V port's transport paths (the same
-    ``_MockProtocol``, ``_ctrl_pkt`` / ``_ping_reply`` builders and reboot
+    ``_MockProtocol``, the ``_handshake_reply`` replies and the reboot
     down-window gate) and adds the RX streamer, the TX sink and the
     silence/drop events. The declarative ``FaultPlan`` covers control and
     CI-V only (``faults.py``: ``Port``), so audio traffic bypasses it.
@@ -166,12 +166,17 @@ class AudioPortMixin:
 
     @property
     def audio_port(self) -> int:
-        """Actual bound audio port number (0 before :meth:`start`)."""
+        """Bound audio-port number (0 when the listener is off or before
+        :meth:`start`)."""
         return self._actual_audio_port
 
     @property
     def audio_rx_frames_sent(self) -> int:
-        """RX audio packets emitted on the audio port (cumulative)."""
+        """RX audio packets actually sent on the audio port (cumulative).
+
+        Emissions suppressed by a silence or reboot window step the
+        packet sequences but are not counted here.
+        """
         return self._audio_rx_frames_sent
 
     @property
@@ -207,9 +212,11 @@ class AudioPortMixin:
         """Schedule a window where the audio port answers NOTHING.
 
         No I-Am-Here, no ping reply, no RX audio, while the control and
-        CI-V ports answer as usual. The RX stream keeps counting through
-        the window, so the client sees lost packets when it ends — the
-        shape of the recorded 22 s outage. Call from inside the loop.
+        CI-V ports answer as usual. Both packet sequences keep stepping
+        through the window while nothing is sent, so the client sees lost
+        packets when it ends — the shape of the recorded 22 s outage
+        (``audio_rx_frames_sent`` counts only sent packets). Call from
+        inside the loop.
         """
         loop = asyncio.get_running_loop()
         loop.call_later(
@@ -273,9 +280,9 @@ class AudioPortMixin:
     ) -> None:
         """Parse and dispatch one inbound audio-port datagram.
 
-        The transport handshake mirrors the CI-V port's ``_handle_civ``
-        branches (same builders); type-0 packets carry the client's
-        tracked numbering; audio DATA frames land in the TX sink.
+        The transport handshake reuses the CI-V port's replies
+        (``MockIcomRadio._handshake_reply``); type-0 packets carry the
+        client's tracked numbering; audio DATA frames land in the TX sink.
         """
         # simulator.py imports this module for the mixin, so its wire
         # constants are imported here, not at module level.
@@ -285,19 +292,11 @@ class AudioPortMixin:
             return  # audio_port_silence: the port answers nothing
         n = len(data)
 
-        # Are You There → I Am Here (same reply the CI-V port gives).
-        if n == _sim._HEADER_SIZE and ptype == _sim._PT_ARE_YOU_THERE:
-            self._audio_send(self._ctrl_pkt(_sim._PT_I_AM_HERE, 0, sender_id), addr)
-            return
-
-        # Are You Ready → echo.
-        if n == _sim._HEADER_SIZE and ptype == _sim._PT_ARE_YOU_READY:
-            self._audio_send(self._ctrl_pkt(_sim._PT_ARE_YOU_READY, 0, sender_id), addr)
-            return
-
-        # Ping request → reply (the CI-V port's builder, timestamp echoed).
-        if n == _sim._PING_SIZE and ptype == _sim._PT_PING and data[0x10] == 0x00:
-            self._audio_send(self._ping_reply(data, sender_id), addr)
+        # Transport handshake: the CI-V port's own replies (same bytes),
+        # sent through this port's funnel with its silence gate.
+        reply = self._handshake_reply(data, ptype, sender_id)
+        if reply is not None:
+            self._audio_send(reply, addr)
             return
 
         # Client retransmit request: counted, never answered (see
@@ -366,21 +365,24 @@ class AudioPortMixin:
     # Outbound funnel and RX streamer
     # ------------------------------------------------------------------
 
-    def _audio_send(self, pkt: bytes, addr: tuple[str, int]) -> None:
+    def _audio_send(self, pkt: bytes, addr: tuple[str, int]) -> bool:
         """Single outbound funnel for audio-port datagrams.
 
         Applies the reboot down-window and the audio-port silence gate,
         then sends through the listener's transport. The declarative fault
         plan does not apply (control/CI-V ports only — ``faults.py``:
-        ``Port``).
+        ``Port``). Returns True only when the packet was actually sent,
+        so the RX counter counts sends, not suppressed emissions.
         """
         if time.monotonic() < self._down_until:
-            return  # reboot window: the radio is "powered off"
+            return False  # reboot window: the radio is "powered off"
         if time.monotonic() < self._audio_silent_until:
-            return  # audio_port_silence: the port answers nothing
+            return False  # audio_port_silence: the port answers nothing
         proto = self._audio_proto
         if proto is not None:
             proto.send(pkt, addr)
+            return True
+        return False
 
     async def _audio_rx_loop(self) -> None:
         """Emit the recorded RX stream: three packets every 20 ms."""
@@ -408,11 +410,17 @@ class AudioPortMixin:
     def _audio_emit_rx_packet(
         self, position: int, addr: tuple[str, int], client_id: int
     ) -> None:
-        """Build and send one RX packet (dropped unless the stream lives)."""
+        """Build and send one RX packet (dropped unless the stream lives).
+
+        The emission slot still steps both sequences when the packet is
+        suppressed (silence/reboot window), so the client sees the gap;
+        only actually-sent packets advance ``audio_rx_frames_sent``.
+        """
         if self._audio_client is None:
             return  # the stream stopped after this emission was scheduled
         pkt = self._audio_rx_packet(position, client_id)
-        self._audio_send(pkt, addr)
+        if self._audio_send(pkt, addr):
+            self._audio_rx_frames_sent += 1
 
     def _audio_rx_packet(self, position: int, client_id: int) -> bytes:
         """Build one RX packet with the recorded header layout.
@@ -420,7 +428,8 @@ class AudioPortMixin:
         ``position`` is the packet's place in its burst (0..2): the first
         packet of a burst carries the first-fragment ident. Both sequences
         step 1 per packet (wrap at 0xFFFF); the payload is the byte ramp
-        seeded by the inner sequence.
+        seeded by the inner sequence. Building never counts: the caller
+        counts only packets the funnel actually sent.
         """
         import rigplane_testkit.icom.simulator as _sim
 
@@ -443,5 +452,4 @@ class AudioPortMixin:
         ]
         self._audio_rx_seq = (self._audio_rx_seq + 1) & 0xFFFF
         self._audio_rx_inner_seq = (self._audio_rx_inner_seq + 1) & 0xFFFF
-        self._audio_rx_frames_sent += 1
         return bytes(pkt)
