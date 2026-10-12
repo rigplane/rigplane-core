@@ -28,6 +28,8 @@ UDP code paths as production.
   for one missing number, otherwise one ranges packet per contiguous
   missing run). `civ_retransmit_requests` counts the request packets sent
   on the CI-V port; `civ_gap_open` is true while any number is missing.
+  A re-sent OpenClose still gets its stream-active marker; only
+  tracked-packet processing follows the ignore rule.
   The implementation lives in `rigplane_testkit/icom/simulator.py`.
 - `rigplane_testkit.icom.faults` — `FaultPlan` / `FaultRule`: a declarative,
   seeded (deterministic) fault plan with one rule per port (`control`, `civ`)

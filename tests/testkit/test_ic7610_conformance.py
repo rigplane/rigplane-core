@@ -293,9 +293,17 @@ def _assert_ledger_exact(
 # ---------------------------------------------------------------------------
 
 
-def _civ_packet(frame: bytes) -> bytes:
-    """Wrap a CI-V frame in the 0x15-byte DATA header the CI-V port speaks."""
-    pkt = _header(0x15 + len(frame), _PT_DATA, seq=1)
+def _civ_packet(frame: bytes, *, seq: int = 1) -> bytes:
+    """Wrap a CI-V frame in the 0x15-byte DATA header the CI-V port speaks.
+
+    ``seq`` is the header sequence number. A real client numbers every
+    tracked packet consecutively per connection (``src/rigplane/core/
+    transport.py``: ``IcomTransport.send_tracked`` writes ``send_seq``
+    into the header and increments it), so replay loops pass consecutive
+    numbers from the first data seq 1 — the OpenClose consumed seq 0 —
+    and single-shot callers keep the default.
+    """
+    pkt = _header(0x15 + len(frame), _PT_DATA, seq=seq)
     pkt[0x10] = 0xC1
     struct.pack_into("<H", pkt, 0x11, len(frame))
     pkt[0x15:] = frame
@@ -332,10 +340,10 @@ async def _lan_sim():
 
 
 async def _ask_sim(
-    client: _UdpClient, port: int, frame: bytes, timeout: float = 0.3
+    client: _UdpClient, port: int, frame: bytes, timeout: float = 0.3, *, seq: int = 1
 ) -> tuple[tuple, bool]:
     """Send one request; classify its reply; skip a byte-identical echo."""
-    client.send(_civ_packet(frame), port)
+    client.send(_civ_packet(frame, seq=seq), port)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     echoed = False
@@ -388,8 +396,10 @@ async def _collect_lan_divergences() -> dict[str, tuple[str, str]]:
     """
     observed: dict[str, tuple[str, str]] = {}
     async with _lan_sim() as (server, client):
-        for request, recorded_class in _recorded_lan_requests():
-            sim_class, _ = await _ask_sim(client, server.civ_port, request)
+        for seq, (request, recorded_class) in enumerate(
+            _recorded_lan_requests(), start=1
+        ):
+            sim_class, _ = await _ask_sim(client, server.civ_port, request, seq=seq)
             if sim_class != recorded_class:
                 observed[request.hex()] = (
                     _describe(recorded_class),
@@ -507,8 +517,8 @@ async def test_lan_civ_echo_divergence() -> None:
     requests = [request for request, _ in _recorded_lan_requests()]
     missing = 0
     async with _lan_sim() as (server, client):
-        for request in requests:
-            _, echoed = await _ask_sim(client, server.civ_port, request)
+        for seq, request in enumerate(requests, start=1):
+            _, echoed = await _ask_sim(client, server.civ_port, request, seq=seq)
             if not echoed:
                 missing += 1
     total = len(requests)
@@ -750,8 +760,8 @@ async def test_scope_wave_decodes_and_cadence_matches_ledger() -> None:
     assert len(wave_on) == 2
     saw_wave = 0
     async with _lan_sim() as (server, client):
-        for request in wave_on:
-            client.send(_civ_packet(request), server.civ_port)
+        for seq, request in enumerate(wave_on, start=1):
+            client.send(_civ_packet(request, seq=seq), server.civ_port)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + 0.5
         while True:
