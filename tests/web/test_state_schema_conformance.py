@@ -13,7 +13,7 @@ core runtime install (which excludes pydantic) is unaffected.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
@@ -34,7 +34,10 @@ from rigplane.web.runtime_helpers import (  # noqa: E402
     build_public_state_payload_from_snapshot,
     snapshot_field_status_inputs,
 )
-from rigplane.web.state_schema import ServerStatePublic  # noqa: E402
+from rigplane.web.state_schema import (  # noqa: E402
+    ReceiverStatePublic,
+    ServerStatePublic,
+)
 
 
 def _source() -> SourceMetadata:
@@ -465,3 +468,17 @@ def test_every_tone_squelch_type_value_conforms(tone_type: ToneSquelchType) -> N
 
     assert payload["main"]["toneSquelchType"] == tone_type.value
     ServerStatePublic.model_validate(payload)
+
+
+def test_tone_squelch_type_literal_members_equal_the_enum() -> None:
+    """The schema Literal's members and the enum values are the same set.
+
+    The reverse direction of ``test_every_tone_squelch_type_value_conforms``:
+    a member the Literal omits fails that test, and a Literal member the
+    enum lacks fails this one.
+    """
+    annotation = ReceiverStatePublic.model_fields["toneSquelchType"].annotation
+    non_none = [arg for arg in get_args(annotation) if arg is not type(None)]
+    assert len(non_none) == 1
+
+    assert set(get_args(non_none[0])) == {member.value for member in ToneSquelchType}

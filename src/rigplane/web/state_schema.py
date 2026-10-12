@@ -148,8 +148,11 @@ class ReceiverStatePublic(_Strict):
     # ``None`` for a selector code outside the profile's
     # ``[tone_squelch_types]`` table (``backends/yaesu_cat/observations.py:
     # poll_slow_controls``; ``runtime/_civ_rx.py: _observations_from_frame``).
-    # Pinned to the enum members by ``tests/web/test_state_schema_conformance.
-    # py:: test_every_tone_squelch_type_value_conforms``.
+    # Pinned to the enum members both ways by ``tests/web/
+    # test_state_schema_conformance.py``: a member the Literal omits fails
+    # ``test_every_tone_squelch_type_value_conforms``, and a stale extra
+    # Literal member fails the set-equality test
+    # ``test_tone_squelch_type_literal_members_equal_the_enum``.
     toneSquelchType: (
         Literal[
             "off",
