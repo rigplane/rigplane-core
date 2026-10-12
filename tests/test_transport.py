@@ -572,6 +572,7 @@ class TestTrackedWriteGuard:
         assert struct.unpack_from("<H", sent[1], 6)[0] == 7
         transport._track_sent(7, b"unguarded")
         transport._handle_packet(self._request(7))
+        assert len(sent) == 3
         assert sent[2] == b"unguarded"
         assert transport.tx_buffer == {7: b"unguarded"}
         assert transport._tx_guards == {}

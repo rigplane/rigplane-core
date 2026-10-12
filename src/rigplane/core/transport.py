@@ -465,8 +465,9 @@ class IcomTransport:
             is_current: Optional caller-owned synchronous, nonblocking,
                 read-only predicate, checked before sending and retransmitting.
                 False raises CommandError before an initial send; an initial
-                predicate exception propagates. Retransmits skip on false or
-                ordinary exceptions.
+                predicate exception propagates. A false or raising guard
+                answers the retransmit request with an idle packet carrying
+                that sequence instead of the stored packet.
 
         This guards local submission only, not delivery or radio execution.
         """
