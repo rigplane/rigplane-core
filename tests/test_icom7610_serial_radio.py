@@ -2851,6 +2851,45 @@ async def test_dead_link_during_identity_hold_hands_over_to_recovery() -> None:
     await radio.disconnect()
 
 
+@pytest.mark.asyncio
+async def test_refused_identity_read_counts_as_no_answer() -> None:
+    """A refused (NAK) 19 00 read is silence, not a crashed gate (MOR-3297).
+
+    ``backends/_icom_serial_base.py: _read_serial_identity_payload``
+    counts a NAK as no answer; a ``CommandRejectedError`` escaping there
+    would become "Failed to read the radio identity" out of ``connect()``
+    and abandon the hold in ``_serial_identity_reread_loop`` (its edge
+    catches only ``Exception``), handing the link to the watchdog's
+    reopen — where the base behaviour held the refusal as silence.
+    """
+    link = _GateSerialLink(answer_identity=False)
+    radio = _gate_radio(link)
+    nak = build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0xFA)
+    # Send #1 is the connect-time gate read; later sends are the re-read's
+    # and the direct read below — refuse them all alike.
+    for send_no in range(1, 30):
+        link.queue_response_on_send(send_no, nak)
+
+    await radio.connect()  # must not raise: the NAK reads as no answer
+
+    assert radio.connected is False
+    identity = radio.connection_identity
+    assert identity is not None
+    assert identity.status is RadioIdentityStatus.NO_RESPONSE
+    assert (reread := radio._serial_identity_reread_task) is not None
+    assert not reread.done()
+
+    # The direct read under a live NAK returns silence, not an exception.
+    assert await radio._read_serial_identity_payload() is None
+
+    # A few re-read rounds later the hold still owns the link: exactly one
+    # port open, no watchdog reopen.
+    await asyncio.sleep(0.3)
+    assert link.connect_calls == 1
+    assert not reread.done()
+    await radio.disconnect()
+
+
 # ---------------------------------------------------------------------------
 # MOR-3071 round 4: one invariant — CONNECTED latches only when the identity
 # gate has an answer for the CURRENT link (the same CI-V generation). All of
