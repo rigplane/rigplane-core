@@ -4,6 +4,7 @@ export default {
   mutate: [
     'src/lib/runtime/adapters/radio-view-model-adapter.ts',
     'src/semantic/radio-view-model.ts',
+    'src/lib/runtime/adapters/ptt-restore-gate.ts',
   ],
   testRunner: 'vitest',
   vitest: {
