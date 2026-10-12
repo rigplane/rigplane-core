@@ -93,7 +93,9 @@ from ..runtime.tx_interlock import (
     TxInterlockRefusal,
     classify_raw_civ_frame_tx_family,
     is_exact_raw_dekey_frame,
+    is_exact_raw_transmission_end_frame,
     resolve_rf_state,
+    send_civ_frame,
 )
 from ..sdr import IqSource, SdrConfig
 from ..sdr.runtime import SdrScopeRuntime
@@ -483,6 +485,30 @@ def _command_error_code(exc: BaseException) -> str:
     return "command_failed"
 
 
+def _raw_civ_transaction_frame(params: Mapping[str, Any]) -> bytes | None:
+    """Build the exact frame a ``raw_civ_transaction`` intent would send.
+
+    Raise-free: anything that does not build — a missing key, a
+    non-numeric part, an out-of-range byte — returns None, so the
+    caller keeps today's capture behavior and the existing error
+    surfaces downstream.
+    """
+
+    try:
+        sub = params.get("sub")
+        # Annotated local: under the web-scoped mypy run the runtime
+        # import resolves to Any, and a bare return would trip
+        # no-any-return while the value is real bytes-or-None.
+        frame: bytes | None = send_civ_frame(
+            int(params["command"]),
+            None if sub is None else int(sub),
+            bytes(params["data"]),
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return frame
+
+
 @dataclass(slots=True)
 class _HttpCommandExecutor:
     server: "WebServer"
@@ -506,9 +532,20 @@ class _HttpCommandExecutor:
             raise RuntimeError("No radio configured")
         controller = getattr(self.server, "_controller", None)
         if isinstance(controller, ControllerAuthority):
-            ticket = controller.capture()
-            if ticket.remote:
-                raise ControllerError("controller_tx_unsupported")
+            # A raw transaction whose frame ends a transmission never
+            # takes a controller seat: the raw PTT off and voice TX
+            # memory stop unkey like the typed PTT-off, which never
+            # captures either.  Anything that does not build to
+            # exactly such a frame captures as before.
+            raw_frame = (
+                _raw_civ_transaction_frame(intent.params)
+                if intent.name == "raw_civ_transaction"
+                else None
+            )
+            if raw_frame is None or not is_exact_raw_transmission_end_frame(raw_frame):
+                ticket = controller.capture()
+                if ticket.remote:
+                    raise ControllerError("controller_tx_unsupported")
         params = intent.params
         if intent.name == "raw_civ_transaction":
             if not isinstance(radio, CivTransactionCapable):
@@ -5712,13 +5749,44 @@ class WebServer:
             )
             return
         try:
-            params = _consume_normalized_level_unit(raw_name, raw_params)
-            result = await self._control_handler_for()._enqueue_command(  # noqa: SLF001
-                raw_name,
-                params,
-                command_id=None if payload.get("id") is None else str(payload["id"]),
-                source="http",
-            )
+            if (
+                raw_name in ControlHandler._READ_ONLY_HANDLERS  # noqa: SLF001
+                or raw_name == "set_vfo_freq"
+            ):
+                # Queue-bypass commands (get_*, send_cw_text, ...) execute
+                # inline through _enqueue_command and already report their
+                # outcome; the batch rejects them, so they keep this path.
+                # set_vfo_freq already awaits its own completion (write plus
+                # readback under the bound connection generation) inside
+                # _enqueue_command, so it keeps this path too — the batch
+                # proxy collector cannot supply capture_connection_generation.
+                # It is the only such command: managed PTT awaits submission
+                # but refuses non-websocket sources, and every other queued
+                # command completes on the poller-settled ordered future.
+                params = _consume_normalized_level_unit(raw_name, raw_params)
+                result = await self._control_handler_for()._enqueue_command(  # noqa: SLF001
+                    raw_name,
+                    params,
+                    command_id=None
+                    if payload.get("id") is None
+                    else str(payload["id"]),
+                    source="http",
+                )
+            else:
+                # Every other command runs the batch step path — prepare,
+                # then execute to completion — so the reply reports the
+                # poller outcome (409 radio_nak, 504 timeout), not the
+                # enqueue ack.
+                raw_step: dict[str, Any] = {
+                    "name": raw_name,
+                    "params": raw_params,
+                }
+                if "id" in payload:
+                    raw_step["id"] = payload["id"]
+                step = await self._prepare_http_batch_step(0, raw_step)
+                result = await self._execute_http_prepared_step(
+                    step, use_executor_details=True
+                )
         except TxInterlockRefusal as exc:
             await self._send_json(
                 writer,
@@ -5781,6 +5849,22 @@ class WebServer:
                 status,
                 reason,
                 {"ok": False, "error": code, "message": message},
+            )
+            return
+        except Exception as exc:
+            # The batch's catch-all: a poller failure that is neither a
+            # CommandError nor a timeout (e.g. a lost radio link during an
+            # identity hold) still answers with the error envelope, never
+            # the routing layer's generic 500.
+            await self._send_json(
+                writer,
+                500,
+                "Internal Server Error",
+                {
+                    "ok": False,
+                    "error": "command_failed",
+                    "message": str(exc) or type(exc).__name__,
+                },
             )
             return
 
@@ -5879,6 +5963,48 @@ class WebServer:
             source=entry.source,
             command_service=entry.command_service,
         )
+
+    async def _execute_http_prepared_step(
+        self,
+        step: _HttpBatchStep,
+        *,
+        use_executor_details: bool = False,
+    ) -> dict[str, Any]:
+        """Run one prepared HTTP step to completion, batch and single alike.
+
+        Intent steps execute through the shared command service (which waits
+        for poller completion itself); queued steps wait on the poller-settled
+        ordered future under ``_COMMAND_BATCH_STEP_TIMEOUT``, failing the
+        lifecycle on timeout. Returns the step's acknowledgement result —
+        or, when *use_executor_details* is set (the single-command path), the
+        executor's details, which is the body ``_enqueue_command`` returns
+        (the ``admitted_level`` enrichment included).
+        """
+        if isinstance(step.command, CommandIntent):
+            service_result = await self.command_service.execute(step.command)
+            if use_executor_details:
+                return dict(service_result.executor_result.details or {})
+            return step.result
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._command_queue.put_ordered(
+            step.command,
+            future=future,
+            command_id=step.command_id,
+            source=step.source,
+            command_service=step.command_service,
+        )
+        try:
+            await asyncio.wait_for(future, timeout=_COMMAND_BATCH_STEP_TIMEOUT)
+        except (RigplaneTimeoutError, TimeoutError) as exc:
+            if step.command_service is not None and step.command_id is not None:
+                step.command_service.fail_command(
+                    step.command_id,
+                    message=str(exc) or type(exc).__name__,
+                    timed_out=True,
+                    source=step.source,
+                )
+            raise
+        return step.result
 
     def _prepare_http_batch_transaction_step(
         self,
@@ -6308,32 +6434,8 @@ class WebServer:
                 return
 
             try:
-                if isinstance(step.command, CommandIntent):
-                    await self.command_service.execute(step.command)
-                else:
-                    future: asyncio.Future[None] = (
-                        asyncio.get_running_loop().create_future()
-                    )
-                    self._command_queue.put_ordered(
-                        step.command,
-                        future=future,
-                        command_id=step.command_id,
-                        source=step.source,
-                        command_service=step.command_service,
-                    )
-                    await asyncio.wait_for(future, timeout=_COMMAND_BATCH_STEP_TIMEOUT)
+                step_result = await self._execute_http_prepared_step(step)
             except (RigplaneTimeoutError, TimeoutError) as exc:
-                if (
-                    not isinstance(step.command, CommandIntent)
-                    and step.command_service is not None
-                    and step.command_id is not None
-                ):
-                    step.command_service.fail_command(
-                        step.command_id,
-                        message=str(exc) or type(exc).__name__,
-                        timed_out=True,
-                        source=step.source,
-                    )
                 results.append(
                     {
                         "index": step.index,
@@ -6402,7 +6504,7 @@ class WebServer:
                         "name": step.name,
                         "ok": True,
                         "status": "executed",
-                        "result": step.result,
+                        "result": step_result,
                     }
                 )
 

@@ -108,6 +108,7 @@ async def test_full_reconnect_retires_then_services_pending_off_debt(tmp_path) -
     radio._lan_identity_completed_epoch = None
     radio._lan_identity_revalidate_origin = False
     radio._hard_reconnect_deferred_audio = None
+    radio._owner_stop_epoch = 0
     radio._token_task = None
     radio._auto_reconnect = False
     radio._start_civ_data_watchdog = lambda: None

@@ -10,10 +10,11 @@ metrics (RSS / FDs / asyncio tasks) are sampled periodically and
 evaluated against the ticket's pass criteria (see ``scripts/soak/
 README.md`` for the criteria and their known limits).
 
-Cadences are constants in this module, not CLI flags; the CLI takes only
-``--duration`` and ``--report``. Exit status is 0 on a PASS verdict and
-1 on FAIL. Run from the repository root (the simulator stack imports the
-top-level ``rigplane_testkit`` package)::
+Cadences are constants in this module, not CLI flags; the simulator soak
+takes only ``--duration`` and ``--report`` (``--observe-url``: observe.py).
+Exit status is 0 on a PASS verdict and 1 otherwise: FAIL, or INCOMPLETE (no
+FAIL, but not every criterion PASSed). Run from the repository root (the
+simulator stack imports the top-level ``rigplane_testkit`` package)::
 
     uv run python -m scripts.soak.soak_driver --duration 3600
 """
@@ -51,6 +52,9 @@ RSS_LIMIT_BYTES_PER_HOUR = 50 * 1024 * 1024
 # NOT_EVALUATED instead of guessing: 199 MiB/h over 9 fitted seconds is
 # noise, not a leak measurement.
 RSS_MIN_FIT_SPAN_S = 600.0
+# The verdict of a run with no error and no FAIL in which not every criterion
+# PASSed.
+VERDICT_INCOMPLETE = "INCOMPLETE"
 STABILITY_TOLERANCE = 5
 _STABILITY_PROBE_COUNT = 3
 _DRIVER_TASK_PREFIX = "soak-"
@@ -321,11 +325,11 @@ async def _start_simulator_stack() -> _SimulatorStack:
     the RigctldServer takes the same standalone wiring as `rigplane
     serve`, reusing the web seat's state services on the radio.
     """
-    # Simulator audio port left off on purpose (MOR-3415: Lane B audio is not restarted after an owner disconnect + connect; the soak turns the port on once that is fixed).
     sim = MockIcomRadio(
         single_owner=True,
         unsolicited_civ=True,
         unsolicited_interval_s=0.1,
+        enable_audio=True,
     )
     await sim.start()
     # timeout=1.0: the simulator does not answer a few menu reads the
@@ -470,12 +474,16 @@ def evaluate_report(
 
 
 def _verdict(criteria: dict[str, Any], error: str | None) -> str:
+    """FAIL on an error or any FAIL; PASS if criteria exist and all PASS; else
+    INCOMPLETE."""
     if error is not None:
         return "FAIL"
-    for criterion in criteria.values():
-        if criterion.get("status") == "FAIL":
-            return "FAIL"
-    return "PASS"
+    statuses = [criterion.get("status") for criterion in criteria.values()]
+    if "FAIL" in statuses:
+        return "FAIL"
+    if statuses and all(status == "PASS" for status in statuses):
+        return "PASS"
+    return VERDICT_INCOMPLETE
 
 
 def summary_line(report: dict[str, Any]) -> str:
@@ -1158,11 +1166,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    from scripts.soak import observe
+
+    parser = _build_parser()
+    observe.add_arguments(parser)
+    args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    if args.observe_url is not None:
+        return observe.main_from_args(args, parser)
     config = SoakConfig(duration_s=args.duration, report_path=args.report)
     report = asyncio.run(run_soak(config))
     print(summary_line(report))

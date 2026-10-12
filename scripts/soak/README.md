@@ -18,13 +18,14 @@ From the repository root (the simulator stack imports the top-level
 uv run python -m scripts.soak.soak_driver --duration 3600
 ```
 
-Exit status is 0 on a PASS verdict, 1 on FAIL. The JSON report goes to
-`--report` (default `soak-report.json`); one verdict line is printed to
-stdout. The driver logs through the logger named `soak` at WARNING; set
+Exit status is 0 on a PASS verdict, 1 on FAIL or INCOMPLETE. The JSON report
+goes to `--report` (default `soak-report.json`); one verdict line is printed
+to stdout. The driver logs through the logger named `soak` at WARNING; set
 `logging.basicConfig(level=logging.INFO)` in a manual run for the INFO
 cycle milestones.
 
-Cadences are constants in `scripts/soak/soak_driver.py`, not CLI flags:
+In the simulator soak, cadences are constants in `scripts/soak/soak_driver.py`,
+not CLI flags:
 `TUNE_INTERVAL_S` (2 s), `MODE_INTERVAL_S` (10 s), `RIGCTLD_INTERVAL_S`
 (15 s), `RECONNECT_INTERVAL_S` (300 s), `METRICS_INTERVAL_S` (30 s),
 `RECONNECT_BUDGET_S` (30 s), `FAULT_DROP` (0), `FAULT_DURATION_S` (3 s),
@@ -57,7 +58,9 @@ blackout (drop probability and window); by default no fault is injected.
   dead connect endpoint. A disconnect that never became observable is
   recorded (`disconnectObserved` false) and counts as unrecovered.
 
-`NOT_EVALUATED` never fails the verdict; only a measured `FAIL` does.
+The verdict is `FAIL` on a driver error or any criterion `FAIL`; `PASS` only
+when every criterion was evaluated and passed; otherwise `INCOMPLETE`. A
+`NOT_EVALUATED` criterion therefore keeps a run from `PASS`.
 
 ## Process metrics sampling
 
@@ -75,6 +78,35 @@ from the state document's live `connection.rigConnected`
 request), not from the runtime payload's `connection` block, which
 repeats the last reconnect-status callback payload until the next one
 arrives and can be stale in both directions.
+
+## Observe mode (GET-only, an already running server)
+
+`scripts/soak/observe.py` watches a `rigplane web` that is already running
+instead of starting the simulator stack. It sends `GET` to `/api/v1/runtime`
+and `/readyz` every `--interval-s` (default `METRICS_INTERVAL_S`) and nothing
+else; `GetOnlyClient` refuses any other path, and neither endpoint takes a
+credential (`web/api_contract.py: STABLE_HTTP_ENDPOINTS`):
+
+```bash
+uv run python -m scripts.soak.soak_driver \
+    --observe-url http://127.0.0.1:8098 --duration 28800 --report soak-observe.json
+```
+
+The report keeps the simulator report's criteria keys. `rssGrowth` is the
+same fit with no reconnect windows excluded. `fdsStability` and
+`tasksStability` compare within ±5 across each increase of
+`process.reconnectsTotal` and between the first and last up sample after
+warm-up. A field that is null throughout leaves its criterion
+`NOT_EVALUATED`. `recovery` is judged on the runs of down samples, all
+listed in `episodes`; a sample is down when the server did not answer,
+`/readyz` says not ready, `station.health.radioLink` is not `connected`, or
+neither endpoint reports the link. `--recovery-budget-s` (default 180) bounds an episode;
+start and end are sample times, accurate to one interval. PASS needs every
+criterion to be evaluated and to pass, as in the simulator soak
+(`criteriaEvaluated` lists the evaluated ones). A run with none evaluated
+carries an `error` and fails; one with some `NOT_EVALUATED`, no `FAIL` and no
+`error` is `INCOMPLETE`. SIGINT / SIGTERM write the report and fail it. A
+server restart is not separated out: the pid in each sample shows it.
 
 ## Repository note
 

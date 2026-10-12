@@ -27,6 +27,7 @@ import random
 import struct
 import time
 from collections import deque
+from collections.abc import Callable
 from typing import Literal
 
 from rigplane_testkit.icom.faults import Direction, FaultPlan, Port
@@ -389,6 +390,11 @@ class MockIcomRadio(AudioPortMixin):
             dropped from the requested set (default 0 = never, the #4141
             model). From one capture (MOR-3418 w50 b: dropped after
             ~17 rounds).
+        clock: monotonic clock the CI-V retransmit-request pacing reads
+            (round spacing in :meth:`_civ_gap_gate` and
+            :meth:`_civ_gap_send_round`, and the silent-client repeat in
+            :meth:`_civ_gap_loop`). Default ``time.monotonic``; tests pass
+            a hand-advanced clock to pin the round rate without wall time.
     """
 
     def __init__(
@@ -416,6 +422,7 @@ class MockIcomRadio(AudioPortMixin):
         orphan_civ_state_expiry_s: float = ORPHAN_CIV_STATE_EXPIRY_S,
         civ_inherited_fills_per_round: int = 0,
         civ_inherited_drop_unanswered_rounds: int = 0,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -649,6 +656,10 @@ class MockIcomRadio(AudioPortMixin):
         # a new session, ``drop_session`` or reboot.
         self._civ_gap: dict[tuple[tuple[str, int], int], _CivGapState] = {}
         self._civ_gap_task: asyncio.Task[None] | None = None
+        # The retransmit-request pacing reads only this clock; every other
+        # ``time.monotonic`` use in the simulator keeps the wall clock, so
+        # the default is behaviour-identical to a hardcoded call.
+        self.clock: Callable[[], float] = clock if clock is not None else time.monotonic
         # Counters / observability for simulator-fidelity tests
         self.busy_rejects: int = 0  # number of 0xFFFFFFFF rejects sent
         self.released_count: int = 0  # number of sessions freed (any path)
@@ -1900,7 +1911,7 @@ class MockIcomRadio(AudioPortMixin):
                 # (recorded rounds never come closer than 77 ms; row 143
                 # @1.005 draws no round 3 ms after one). The 0.1 s loop
                 # stays as the fallback for a silent client.
-                now = time.monotonic()
+                now = self.clock()
                 last = tracker.last_round_at
                 if last is None or now - last >= _CIV_GAP_ROUND_MIN_SPACING_S:
                     self._civ_gap_send_round(tracker, proto)
@@ -1975,7 +1986,7 @@ class MockIcomRadio(AudioPortMixin):
             proto = self._civ_proto
         if proto is None:
             return
-        tracker.last_round_at = time.monotonic()
+        tracker.last_round_at = self.clock()
         self.civ_retransmit_request_log.append(
             (tracker.last_round_at, tuple(_missing_runs(tracker.missing)))
         )
@@ -2028,7 +2039,7 @@ class MockIcomRadio(AudioPortMixin):
                                 if num not in tracker.missing:
                                     del counts[num]
                     if tracker.missing:
-                        now = time.monotonic()
+                        now = self.clock()
                         last = tracker.last_round_at
                         if last is None or now - last >= _CIV_GAP_RETRANSMIT_PERIOD_S:
                             self._civ_gap_send_round(tracker, proto)

@@ -5,8 +5,12 @@ Drives the full in-process production stack — ``MockIcomRadio`` +
 (``scripts/soak/soak_driver.py``) at 1-second cadences with one forced
 radio disconnect/connect, and pins:
 
-* the JSON report shape and a green verdict for the short run (the RSS
-  criterion correctly reports NOT_EVALUATED below its fit-span floor);
+* the JSON report shape and an INCOMPLETE verdict for the short run (the
+  RSS criterion correctly reports NOT_EVALUATED below its fit-span floor, so
+  the run cannot certify);
+* the verdict rule (``_verdict``): FAIL on an error or any FAIL, PASS only
+  when every criterion passed, INCOMPLETE otherwise, and an exit status of 0
+  for PASS alone;
 * the pass-criterion math itself, on synthetic one-hour samples
   (``evaluate_report``): a small slope passes, a steep one fails, and a
   reconnect-window allocation burst is excluded from the fit;
@@ -153,6 +157,114 @@ def test_evaluate_report_short_run_rss_not_evaluated() -> None:
     assert criteria["rssGrowth"]["status"] == "NOT_EVALUATED"
 
 
+_CRITERIA = ("rssGrowth", "fdsStability", "tasksStability", "recovery")
+
+
+def _statuses(**by_name: str) -> dict[str, Any]:
+    """Criteria carrying only a status; NOT_EVALUATED unless set."""
+    return {n: {"status": by_name.get(n, "NOT_EVALUATED")} for n in _CRITERIA}
+
+
+def test_verdict_is_incomplete_when_nothing_was_evaluated() -> None:
+    assert soak_driver._verdict(_statuses(), None) == soak_driver.VERDICT_INCOMPLETE
+    assert soak_driver._verdict({}, None) == soak_driver.VERDICT_INCOMPLETE
+
+
+@pytest.mark.parametrize("passed", _CRITERIA)
+def test_verdict_is_incomplete_when_only_one_criterion_passed(passed: str) -> None:
+    criteria = _statuses(**{passed: "PASS"})
+    assert soak_driver._verdict(criteria, None) == soak_driver.VERDICT_INCOMPLETE
+
+
+@pytest.mark.parametrize("unevaluated", _CRITERIA)
+def test_verdict_is_incomplete_when_one_criterion_was_not_evaluated(
+    unevaluated: str,
+) -> None:
+    criteria = _statuses(**{n: "PASS" for n in _CRITERIA if n != unevaluated})
+    assert soak_driver._verdict(criteria, None) == soak_driver.VERDICT_INCOMPLETE
+
+
+def test_verdict_passes_when_every_criterion_passed() -> None:
+    criteria = _statuses(**dict.fromkeys(_CRITERIA, "PASS"))
+    assert soak_driver._verdict(criteria, None) == "PASS"
+
+
+@pytest.mark.parametrize("failed", _CRITERIA)
+@pytest.mark.parametrize("others", ["PASS", "NOT_EVALUATED"])
+def test_verdict_fails_on_any_failed_criterion(failed: str, others: str) -> None:
+    criteria = _statuses(**(dict.fromkeys(_CRITERIA, others) | {failed: "FAIL"}))
+    assert soak_driver._verdict(criteria, None) == "FAIL"
+
+
+@pytest.mark.parametrize("status", ["PASS", "NOT_EVALUATED"])
+def test_verdict_fails_on_a_driver_error(status: str) -> None:
+    criteria = _statuses(**dict.fromkeys(_CRITERIA, status))
+    assert soak_driver._verdict(criteria, "RuntimeError: boom") == "FAIL"
+
+
+def test_a_run_that_evaluated_nothing_is_incomplete_not_pass() -> None:
+    """The reported defect: 120 s of NOT_EVALUATED used to print PASS."""
+    config = _smoke_config(duration_s=120.0)
+    criteria = soak_driver.evaluate_report(
+        config, _hour_of_samples(slope_bytes_per_s=1000.0)[:4], []
+    )
+    assert {c["status"] for c in criteria.values()} == {"NOT_EVALUATED"}
+    assert soak_driver._verdict(criteria, None) == soak_driver.VERDICT_INCOMPLETE
+
+
+def test_an_hour_with_a_recovered_reconnect_evaluates_all_four_and_passes() -> None:
+    config = _smoke_config(duration_s=3600.0)
+    criteria = soak_driver.evaluate_report(
+        config,
+        _hour_of_samples(slope_bytes_per_s=1000.0),
+        [_one_reconnect(1798.0, 1832.0)],
+    )
+    assert {c["status"] for c in criteria.values()} == {"PASS"}
+    assert soak_driver._verdict(criteria, None) == "PASS"
+
+
+def _fake_report(verdict: str) -> dict[str, Any]:
+    criteria = soak_driver.evaluate_report(
+        _smoke_config(duration_s=3600.0),
+        _hour_of_samples(slope_bytes_per_s=1000.0),
+        [_one_reconnect(1798.0, 1832.0)],
+    )
+    return {"verdict": verdict, "criteria": criteria, "samples": []}
+
+
+@pytest.mark.parametrize(
+    ("verdict", "status"),
+    [("PASS", 0), (soak_driver.VERDICT_INCOMPLETE, 1), ("FAIL", 1)],
+)
+def test_exit_status_is_zero_only_for_a_pass_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    verdict: str,
+    status: int,
+) -> None:
+    async def _run(config: soak_driver.SoakConfig) -> dict[str, Any]:
+        return _fake_report(verdict)
+
+    monkeypatch.setattr(soak_driver, "run_soak", _run)
+    assert soak_driver.main(["--report", str(tmp_path / "r.json")]) == status
+    assert capsys.readouterr().out.startswith(f"soak {verdict} ")
+
+
+def test_cli_exits_non_zero_for_a_run_too_short_to_evaluate_anything(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """The real stack for 3 s at the default cadences: no reconnect, no RSS fit."""
+    report_path = tmp_path / "r.json"
+    status = soak_driver.main(["--duration", "3", "--report", str(report_path)])
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert {c["status"] for c in report["criteria"].values()} == {"NOT_EVALUATED"}
+    assert report["error"] is None
+    assert report["verdict"] == soak_driver.VERDICT_INCOMPLETE
+    assert capsys.readouterr().out.startswith("soak INCOMPLETE ")
+    assert status == 1
+
+
 def test_state_connection_status_reads_live_rig_connected() -> None:
     body: dict[str, Any] = {"connection": {"rigConnected": True}}
     assert soak_driver._state_connection_status(body) == "connected"
@@ -251,10 +363,17 @@ async def test_driver_side_metrics_tolerate_a_missing_ps_sample(
     assert rss is None
 
 
-async def test_soak_smoke_green_verdict_and_report_shape() -> None:
+async def test_soak_smoke_report_shape_and_incomplete_verdict() -> None:
     report = await soak_driver.run_soak(_smoke_config())
 
-    assert report["verdict"] == "PASS"
+    # 20 s cannot fit the RSS slope (below), so the other three criteria
+    # pass and the run still does not certify.
+    assert report["verdict"] == soak_driver.VERDICT_INCOMPLETE
+    assert report["error"] is None
+    assert report["criteria"]["recovery"]["status"] == "PASS"
+    # The verdict follows from the report's own criteria and error.
+    verdict = soak_driver._verdict(report["criteria"], report["error"])
+    assert verdict == soak_driver.VERDICT_INCOMPLETE
     assert report["schemaVersion"] == 1
     assert report["durationConfiguredS"] == 20.0
     assert report["durationActualS"] >= 20.0
@@ -324,7 +443,7 @@ async def test_soak_completes_when_reconnect_cycle_outlives_the_run() -> None:
     )
 
     assert report["counts"]["forcedReconnects"] >= 1
-    assert report["verdict"] in ("PASS", "FAIL")
+    assert report["verdict"] in ("PASS", "FAIL", soak_driver.VERDICT_INCOMPLETE)
 
 
 async def test_soak_recovery_criterion_fails_when_connect_is_suppressed(
@@ -427,5 +546,6 @@ async def test_soak_report_written_when_a_stop_raises(
         )
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["verdict"] == "PASS"
+    # 6 s is below the first forced reconnect (8 s) and the RSS fit floor.
+    assert report["verdict"] == soak_driver.VERDICT_INCOMPLETE
     assert report["durationConfiguredS"] == 6.0
