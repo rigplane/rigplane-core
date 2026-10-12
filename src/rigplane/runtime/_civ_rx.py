@@ -974,6 +974,7 @@ class CivRuntime:
             barrier = asyncio.create_task(token.transport.disconnect())
             self._managed_tx_retirements[provider_generation] = barrier
         await asyncio.shield(barrier)
+        self._host._civ_resume_seq = token.transport.send_seq
 
     async def stop_pump(self) -> None:
         """Stop CI-V receive pump and fail pending request futures."""

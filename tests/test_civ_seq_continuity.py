@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from rigplane.core.exceptions import ConnectionError
 from rigplane.radio import IcomRadio
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime._control_phase import OPENCLOSE_SIZE
