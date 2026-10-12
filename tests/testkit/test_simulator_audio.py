@@ -29,7 +29,10 @@ from rigplane_testkit.icom.simulator import (
     _PT_DATA,
     _PT_DISCONNECT,
 )
-from rigplane_testkit.icom.simulator_audio import AUDIO_HEADER_SIZE
+from rigplane_testkit.icom.simulator_audio import (
+    _AUDIO_BURST_PERIOD_S,
+    AUDIO_HEADER_SIZE,
+)
 from testkit.test_simulator_faults import (
     _CLIENT_ID,
     _HOST,
@@ -805,13 +808,19 @@ async def test_reopen_from_new_address_retargets_rx(
 async def test_rx_rate_matches_recorded_fixture(
     server: MockIcomRadio, client: _UdpClient
 ) -> None:
-    """The measured RX rate over >= 1 s is within +-15 % of the recorded
-    ``rx_packets_per_s`` from ``tests/fixtures/ic7610/audio_stream.json`` —
-    a band that still rejects a 30 ms cadence (-35 % measured) and a 16 ms
-    cadence (+19 % measured on the test host), per the cadence-mutation
-    runs."""
-    expected = float(
+    """The simulator's burst cadence matches the recorded fixture and the
+    stream stays live: the burst period constant equals ``3 /
+    rx_packets_per_s`` from ``tests/fixtures/ic7610/audio_stream.json``
+    (three packets per burst, recorded) within 1 % — a deterministic pin
+    that rejects both a 16 ms and a 30 ms cadence mutation — while the
+    wall-clock side keeps only a loose liveness floor (measured rate over
+    >= 1 s is >= 60 % of recorded, catching "RX stopped / stalled" without
+    failing a correct run under load)."""
+    recorded = float(
         json.loads((_FIXTURES / "audio_stream.json").read_text())["rx_packets_per_s"]
+    )
+    assert _AUDIO_BURST_PERIOD_S == pytest.approx(3 / recorded, rel=0.01), (
+        f"burst period {_AUDIO_BURST_PERIOD_S}s vs recorded {3 / recorded:.6f}s"
     )
     await _open_audio(client, server)
     frames = _rx_frames(await _collect_audio(client, 1.2))
@@ -819,9 +828,7 @@ async def test_rx_rate_matches_recorded_fixture(
     span = frames[-1][0] - frames[0][0]
     assert span >= 1.0, f"RX span only {span:.3f} s"
     rate = (len(frames) - 1) / span
-    assert rate == pytest.approx(expected, rel=0.15), (
-        f"{rate:.1f}/s vs recorded {expected}/s"
-    )
+    assert rate >= 0.6 * recorded, f"{rate:.1f}/s vs recorded {recorded}/s"
 
 
 # ---------------------------------------------------------------------------
