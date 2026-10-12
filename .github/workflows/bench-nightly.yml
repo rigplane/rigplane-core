@@ -150,7 +150,7 @@ jobs:
           # $CONNECT and $read_only are split into words on purpose.
           # --output keeps the raw artifact (it records the endpoint) on the runner only;
           # --regen-golden writes the normalized artifact that is compared and uploaded.
-          uv run rigplane $CONNECT --timeout 6 \
+          bash scripts/bench/guard.sh run -- uv run rigplane $CONNECT --timeout 6 \
             validate --hardware --allow-hardware $read_only --provider "$PROVIDER" \
             --json --output "$STATE_DIR/current.raw.json" \
             --regen-golden "$STATE_DIR/current.json"
