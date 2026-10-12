@@ -1621,14 +1621,19 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._pcm_tx_fmt = None
         self._pcm_rx_user_callback = None
         self._opus_rx_user_callback = None
-        if self._audio_transport is not None:
+        audio_t = self._audio_transport
+        if audio_t is not None:
             try:
                 await self._send_audio_open_close(open_stream=False)
             except Exception:
                 logger.debug("soft_disconnect: audio open/close failed", exc_info=True)
-            await self._audio_transport.disconnect()
-            self._audio_resume_seq = self._audio_transport.send_seq
-            self._audio_transport = None
+            # A queued ensure's entry teardown can empty the slot during the
+            # awaits above: disconnect the local, record its numbering, and
+            # clear the slot only if it still holds this transport.
+            await audio_t.disconnect()
+            self._audio_resume_seq = audio_t.send_seq
+            if self._audio_transport is audio_t:
+                self._audio_transport = None
 
         # Stop CI-V
         if self._civ_transport:

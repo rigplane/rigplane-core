@@ -778,13 +778,18 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         ``_audio_ensure_lock``, so concurrent callers (``start_rx`` /
         ``start_tx``, the soft-reconnect audio tail, the audio-error
         watchdog) serialize instead of tearing down each other's
-        half-built transport. The transport is built in a local variable
-        and published to ``_audio_transport`` only after its ``connect``
-        succeeded and the CI-V / owner-stop epochs still name this
-        session — the slot never holds a half-built transport, so no
-        teardown can disconnect a rebuild mid-handshake or record its
-        reset ``send_seq`` over the session's carried
-        ``_audio_resume_seq``.
+        half-built transport. The CI-V / owner-stop epochs are captured
+        at entry — BEFORE waiting on the lock — and re-checked right
+        after the lock is acquired and again after ``connect()``: a
+        caller that waited on the lock while the owner stopped fails
+        before building anything, and a rebuild superseded during
+        ``connect()`` is closed without recording its seq. The transport
+        is built in a local variable and published to
+        ``_audio_transport`` only after its ``connect`` succeeded and the
+        epochs still name this session — the slot never holds a
+        half-built transport, so no teardown can disconnect a rebuild
+        mid-handshake or record its reset ``send_seq`` over the session's
+        carried ``_audio_resume_seq``.
 
         If a previous audio transport is still attached and either the stream
         was already torn down while the transport lingered, or the transport is
@@ -802,12 +807,23 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
 
         Raises:
             ConnectionError: Audio port unavailable; connect failed with an
-                ``OSError``; the rebuild was superseded (owner stop or new
-                CI-V generation) or undone (teardown) while it ran.
+                ``OSError``; or the rebuild was superseded (owner stop or
+                new CI-V generation) while waiting on the lock or during
+                ``connect``.
         """
+        civ_epoch = getattr(self, "_civ_epoch", None)
+        owner_stop_epoch = getattr(self, "_owner_stop_epoch", None)
         async with self._audio_ensure_lock:
-            civ_epoch = getattr(self, "_civ_epoch", None)
-            owner_stop_epoch = getattr(self, "_owner_stop_epoch", None)
+            if (
+                getattr(self, "_civ_epoch", None) != civ_epoch
+                or getattr(self, "_owner_stop_epoch", None) != owner_stop_epoch
+            ):
+                # Ownership moved on while this caller waited on the lock:
+                # nothing was built yet, so there is nothing to close.
+                raise ConnectionError(
+                    "Audio transport rebuild superseded: "
+                    "ownership moved on while waiting for the ensure lock"
+                )
 
             audio_transport = getattr(self, "_audio_transport", None)
             if audio_transport is not None and (
@@ -889,16 +905,10 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
             transport.start_idle_loop()
 
             # Per wfview, audio stream also uses OpenClose on its own UDP channel.
+            # The send chain (``_send_audio_open_close`` → ``send_tracked``)
+            # contains no await that can suspend, so nothing can run between
+            # the publish above and the stream construction below.
             await self._send_audio_open_close(open_stream=True)
-
-            if self._audio_transport is not transport:
-                # A teardown ran while the OpenClose send awaited: it already
-                # disconnected this transport and recorded its real
-                # ``send_seq`` (a correct recording). Do not build a stream
-                # on whatever the slot holds now.
-                raise ConnectionError(
-                    "Audio transport torn down during open/close send"
-                )
 
             self._audio_stream = AudioStream(transport)
             logger.info("Audio transport connected on port %d", self._audio_port)

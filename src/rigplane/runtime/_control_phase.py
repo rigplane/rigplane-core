@@ -1076,9 +1076,11 @@ class ControlPhaseRuntime:
         # identity-hold path this tail runs in a task ``disconnect()`` cannot
         # cancel, so unchanged CI-V / owner-stop epochs are the only
         # ownership guard: they are re-read after every backoff sleep,
-        # immediately before the attempt they authorize — no await sits
-        # between that check and the rebuild — and once more before the
-        # post-success ``recover`` and the FAILED report. Bounded/safe:
+        # immediately before the attempt they authorize, and once more
+        # before the post-success ``recover`` and the FAILED report.
+        # ``_ensure_audio_transport`` captures the same epochs at entry
+        # and re-checks them after acquiring its lock and after
+        # ``connect()``. Bounded/safe:
         # failures are never raised, so a CI-V soft reconnect still
         # succeeds even if audio cannot be re-established.
         ensure_audio = getattr(h, "_ensure_audio_transport", None)
