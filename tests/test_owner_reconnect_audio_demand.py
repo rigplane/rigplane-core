@@ -19,11 +19,12 @@ re-established exactly once, and under the LAN identity hold only after
 the hold completes. The loop tests run the resident hard-reconnect round
 with the real ``connect()`` and pin ``exactly once`` both without and
 with the hold — the not-the-reconnect-task guard in ``connect()`` is
-what keeps the loop's round single. The negative tests pin silence with
-no held demand and with ``auto_recover_audio=False``; the stash test
-pins that an owner ``disconnect()`` while the recovery is stashed drops
-it. The positive control runs the same recovery the reconnect loop runs
-and passes, proving the fixture can observe success.
+what keeps the loop's round single. The negative tests pin silence
+with no held demand, with ``auto_recover_audio=False``, and when the
+owner stops the radio while ``connect()`` fetches initial state; the
+stash test pins that an owner ``disconnect()`` while the recovery is
+stashed drops it. The positive control runs the same recovery the
+reconnect loop runs and passes, proving the fixture can observe success.
 """
 
 from __future__ import annotations
@@ -65,7 +66,7 @@ def _fake_audio_transport() -> MagicMock:
 def _owner_connect_radio(recovery_cb: MagicMock) -> IcomRadio:
     """A real CoreRadio whose owner connect/disconnect run for real.
 
-    Follows ``test_icom_lan_identity_gate.make_radio``: the real
+    Follows the identity-gate suite's ``make_radio`` fixture: the real
     ``CoreRadio.connect`` drives the LAN identity gate over a shared
     ctrl/CI-V double that answers token renewals, with a lifecycle double
     mirroring ``ControlPhaseSessionMechanism.release`` (graceful
@@ -399,4 +400,38 @@ async def test_owner_disconnect_while_recovery_stashed_drops_it() -> None:
     assert [c.args[0] for c in recovery_cb.call_args_list] == []
     assert radio._audio_stream is None
     assert radio._hard_reconnect_deferred_audio is None
+    await sub.release()
+
+
+async def test_owner_stop_during_connect_runs_no_recovery() -> None:
+    """Owner ``disconnect()`` landing while ``connect()`` is inside
+    ``_fetch_initial_state`` leaves no recovery behind: the owner-connect
+    tail must not run against the radio the owner just tore down."""
+    recovery_cb = MagicMock()
+    radio = _owner_connect_radio(recovery_cb)
+    radio._read_lan_identity_payload = AsyncMock(return_value=b"\x98")
+    session = radio.audio_session
+    sub = await session.subscribe_rx("web")
+
+    in_fetch = asyncio.Event()
+    release_fetch = asyncio.Event()
+
+    async def _gated_fetch() -> None:
+        in_fetch.set()
+        await release_fetch.wait()
+
+    radio._fetch_initial_state = AsyncMock(side_effect=_gated_fetch)
+
+    await radio.disconnect()
+    connect_task = asyncio.create_task(radio.connect())
+    assert await asyncio.wait_for(in_fetch.wait(), timeout=5.0)
+    await radio.disconnect()  # the owner stops the radio mid-connect
+    release_fetch.set()
+    await asyncio.wait_for(connect_task, timeout=5.0)
+
+    assert [c.args[0] for c in recovery_cb.call_args_list] == []
+    assert radio._audio_stream is None  # nothing re-armed on the dead link
+    assert radio._hard_reconnect_deferred_audio is None
+    assert radio._audio_runtime.capture_snapshot() is not None  # demand held
+    assert session.bus.subscriber_count == 1
     await sub.release()

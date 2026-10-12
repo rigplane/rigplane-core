@@ -1541,6 +1541,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 status=RadioIdentityStatus.CHECKING, expected_model=self.model
             )
             self._connection_identity = checking
+            # Per-attempt owner-stop epoch, captured before any await: the
+            # tail below skips recovery when the owner tore the radio down
+            # mid-connect (an owner disconnect during _fetch_initial_state
+            # would otherwise recover against the torn-down radio).
+            owner_stop_epoch = self._owner_stop_epoch
             try:
                 await self._session_lifecycle.connect()
                 gate_accepted = True
@@ -1562,12 +1567,17 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             # is excluded — ``radio_reconnect.reconnect_loop`` runs the same
             # recovery itself from its pre-teardown snapshot — via the same
             # ``_reconnect_task`` identity test as the escalation reset
-            # above.
+            # above. Skipped when the owner stopped the radio mid-connect:
+            # the epoch captured above moved, and recovering then would run
+            # into the teardown and report a spurious FAILED.
             if asyncio.current_task() is not getattr(self, "_reconnect_task", None):
                 audio_runtime = getattr(self, "_audio_runtime", None)
-                if audio_runtime is not None:
+                if (
+                    audio_runtime is not None
+                    and self._owner_stop_epoch == owner_stop_epoch
+                ):
                     await self._recover_audio_after_connect(
-                        audio_runtime.capture_snapshot(), self._owner_stop_epoch
+                        audio_runtime.capture_snapshot(), owner_stop_epoch
                     )
 
     async def __aenter__(self) -> "CoreRadio":
