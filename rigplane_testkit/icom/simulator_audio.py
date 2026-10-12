@@ -187,10 +187,12 @@ class AudioPortMixin:
         stream lives — idle, OpenClose, audio DATA — advances it (one
         numbering space, like the CI-V port's tracker; the audio
         OpenClose(open) itself is the first tracked number).
-        ``None`` before the open and after the stream stops (audio
-        OpenClose(close), ``audio_stream_drop``, session end); a client
-        that restarts its numbering (MOR-3366) shows as a lower or
-        wrapped value. No in-order rule is applied (unrecorded).
+        ``None`` before the open and after the session ends
+        (``_audio_end_session`` resets it; an audio OpenClose(close) or
+        ``audio_stream_drop`` stops the stream but keeps the last number
+        for assertions); a client that restarts its numbering (MOR-3366)
+        shows as a lower or wrapped value. No in-order rule is applied
+        (unrecorded).
         """
         return self._audio_last_client_seq
 
