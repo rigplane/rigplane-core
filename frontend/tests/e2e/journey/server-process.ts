@@ -18,7 +18,6 @@ const KILL_TIMEOUT_MS = 10_000;
 const POLL_INTERVAL_MS = 100;
 
 export interface JourneyServerHandle {
-  readonly pid: number | undefined;
   kill(): Promise<void>;
 }
 
@@ -53,6 +52,11 @@ export async function startJourneyServer(
   freqHz: number,
   extraArgs: string[] = [],
 ): Promise<JourneyServerHandle> {
+  // Without this check the readiness wait below could be answered by the
+  // process already on the port instead of the one spawned here.
+  if (await portAcceptsConnections(port)) {
+    throw new Error(`something already listens on port ${port}; not starting a journey server on it`);
+  }
   const child = spawn(
     'uv',
     [
@@ -80,12 +84,15 @@ export async function startJourneyServer(
     throw new Error(`journey server on port ${port} exited with code ${child.exitCode} before ${apiUrl} answered`);
   }
   if (!ready) {
-    process.kill(-child.pid, 'SIGKILL');
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== 'ESRCH') throw error;
+    }
     throw new Error(`${apiUrl} did not answer within ${START_TIMEOUT_MS} ms`);
   }
   let killed = false;
   return {
-    pid: child.pid,
     async kill(): Promise<void> {
       if (killed) return;
       killed = true;

@@ -207,4 +207,4 @@ jobs:
         with:
           name: regenerated-baselines
           path: frontend/fixtures/approved-baselines/
-          retention-days: 14
+          retention-days: 3

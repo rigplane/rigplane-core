@@ -34,6 +34,10 @@ UDP code paths as production.
   A re-sent OpenClose still gets its stream-active marker; only
   tracked-packet processing follows the ignore rule.
   The implementation lives in `rigplane_testkit/icom/simulator.py`.
+- `MockIcomRadio.refused_civ_commands` — an opt-in set of `(cmd, sub)` pairs
+  answered with a bare NAK instead of dispatching (default off;
+  `refused_count` counts the refused frames), for tests that drive a
+  radio-refused write end to end.
 - `rigplane_testkit.icom.faults` — `FaultPlan` / `FaultRule`: a declarative,
   seeded (deterministic) fault plan with one rule per port (`control`, `civ`)
   and direction (`to_client`, `from_client`). Each rule can drop (probability

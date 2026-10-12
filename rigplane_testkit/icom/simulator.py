@@ -432,6 +432,14 @@ class MockIcomRadio:
         # command builders.
         self.capture_civ_frames: bool = capture_civ_frames
         self.civ_frames_received: list[bytes] = []
+        # Opt-in CI-V refusal hook (default off, additive): (cmd, sub) pairs the
+        # simulator answers with a bare NAK (0xFA) instead of dispatching — a
+        # radio that refuses a command it would normally take. An entry
+        # ``(cmd, None)`` refuses every frame with that command byte; an entry
+        # ``(cmd, sub)`` refuses only frames whose first payload byte is
+        # ``sub``. The refused frame's state effect never applies.
+        self.refused_civ_commands: set[tuple[int, int | None]] = set()
+        self.refused_count: int = 0  # CI-V frames answered NAK by the hook
         # Scheduled events (reboot / keepalive silence / drop_session) —
         # absolute deadlines, 0.0 = inactive.
         self._down_until: float = 0.0  # reboot: radio "powered off" until then
@@ -1632,6 +1640,12 @@ class MockIcomRadio:
         to = from_addr  # respond to whoever sent
         frm = self._radio_addr
 
+        # Refusal hook first: a matched (cmd, sub) is answered with a bare
+        # NAK before any handler runs, so no state effect applies.
+        if self.refused_civ_commands and self._civ_refused(cmd, payload):
+            self.refused_count += 1
+            return self._civ_nak(to, frm)
+
         # --- Command29 wrapper (ATT / PREAMP / DIGI-SEL) ---
         if cmd == _CMD_CMD29:
             if len(payload) < 2:
@@ -1899,6 +1913,17 @@ class MockIcomRadio:
     # ------------------------------------------------------------------
     # CI-V frame builders
     # ------------------------------------------------------------------
+
+    def _civ_refused(self, cmd: int, payload: bytes) -> bool:
+        """True when the refusal hook matches this (cmd, payload).
+
+        ``(cmd, None)`` refuses every frame with that command byte;
+        ``(cmd, sub)`` refuses only frames whose first payload byte is
+        ``sub`` — the sub-command byte for commands that carry one.
+        """
+        if (cmd, None) in self.refused_civ_commands:
+            return True
+        return bool(payload) and (cmd, payload[0]) in self.refused_civ_commands
 
     def _civ_frame(
         self,

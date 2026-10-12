@@ -27,6 +27,7 @@ class _FakeTransport:
 
     def __init__(self, error_count: int = 0) -> None:
         self._udp_error_count = error_count
+        self.send_seq = 0
         self.rx_packet_count = 0
         self.disconnected = False
 
@@ -67,10 +68,15 @@ class _FakeRadio:
         self._audio_stream: _FakeAudioStream | None = None
         self._auto_recover_audio = True
         self._audio_runtime = _FakeAudioRuntime()
+        self._audio_resume_seq: int | None = None
+        self._rebuild_resume_seqs: list[int | None] = []
         self._ensure_audio_calls: int = 0
         self._ensure_audio_exception: Exception | None = None
 
     async def _ensure_audio_transport(self) -> None:
+        # The real rebuild restores ``_audio_resume_seq``; capture the
+        # number this rebuild saw.
+        self._rebuild_resume_seqs.append(self._audio_resume_seq)
         self._ensure_audio_calls += 1
         if self._ensure_audio_exception is not None:
             raise self._ensure_audio_exception
@@ -219,6 +225,27 @@ class TestAudioWatchdogRecovery:
         await _run_watchdog_n_ticks(radio, 2)
 
         assert radio._audio_runtime.recovered
+
+    @pytest.mark.asyncio
+    async def test_recovery_records_packet_numbering_for_rebuild(self) -> None:
+        """The rebuild sees the recorded packet number.
+
+        The audio transport torn down by the recovery ran on a session the
+        radio still holds, so the watchdog must record its ``send_seq``
+        before the ``_ensure_audio_transport`` rebuild: the fake captures
+        the value each rebuild saw, and the one rebuild of this recovery
+        must have seen the torn-down transport's number (mirrors the CI-V
+        continuity fix).
+        """
+        radio = _FakeRadio()
+        old_transport = _FakeTransport(error_count=_THRESHOLD)
+        old_transport.send_seq = 2543
+        radio._audio_transport = old_transport
+
+        await _run_watchdog_n_ticks(radio, 2)
+
+        assert radio._rebuild_resume_seqs == [2543]
+        assert radio._audio_resume_seq == 2543
 
     @pytest.mark.asyncio
     async def test_no_restore_when_auto_recover_disabled(self) -> None:

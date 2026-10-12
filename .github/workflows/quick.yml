@@ -342,11 +342,13 @@ jobs:
 
       - name: Upload FTX-1 RIT E2E report on failure
         if: failure() && needs.classify.outputs.frontend == 'true'
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: ftx1-rit-e2e-report
           path: .playwright-output
           if-no-files-found: ignore
+          retention-days: 3
 
       # Operator journey against tests/e2e/journey_web_server.py, which the
       # Playwright config starts through `uv run`. Serves the frontend/dist
@@ -359,11 +361,13 @@ jobs:
 
       - name: Upload operator-journey E2E report on failure
         if: failure() && needs.classify.outputs.frontend == 'true'
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: journey-e2e-report
           path: .playwright-output
           if-no-files-found: ignore
+          retention-days: 3
 
       - name: Type-check web boundary
         if: needs.classify.outputs.core == 'true' && needs.classify.outputs.frontend == 'true'
