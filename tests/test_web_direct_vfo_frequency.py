@@ -198,6 +198,7 @@ async def test_handler_waits_and_pins_connection_generation():
     handler._radio = radio
     handler._read_only = False
     handler._command_service = None
+    handler._clock = time.monotonic
     handler._server = SimpleNamespace(command_queue=queue, command_state_store=store)
     intent = command_intent_from_request(
         "set_vfo_freq", dataclasses.asdict(command(store)), source="websocket"
@@ -205,7 +206,8 @@ async def test_handler_waits_and_pins_connection_generation():
     task = asyncio.create_task(handler._execute_intent(intent))
     await asyncio.sleep(0)
     entry = queue.take_entry()
-    assert entry is not None and not task.done()
+    assert entry is not None, task.exception() if task.done() else "no queue entry"
+    assert not task.done()
     assert entry.provider_generation == store.provider_generation
     assert entry.connection_generation == 1
     await poller._execute_queued_entry(entry)
@@ -417,6 +419,7 @@ async def test_real_service_handler_queue_poller_completes_correlated_readback(
         queue.put_ordered = put_with_rebind
     handler = ControlHandler.__new__(ControlHandler)
     handler._radio, handler._read_only = radio, False
+    handler._clock = time.monotonic
     handler._server = SimpleNamespace(command_queue=queue, command_state_store=store)
     service = CommandService(
         executor=SimpleNamespace(execute=handler._execute_intent),
@@ -432,7 +435,7 @@ async def test_real_service_handler_queue_poller_completes_correlated_readback(
     task = asyncio.create_task(service.execute(intent))
     await queue.wait(timeout=1)
     entry = queue.take_entry()
-    assert entry is not None
+    assert entry is not None, task.exception() if task.done() else "no queue entry"
     dispatch = asyncio.create_task(poller._execute_queued_entry(entry))
     if outcome in ("disconnect", "cancel"):
         await entered.wait()
