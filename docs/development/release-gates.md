@@ -12,49 +12,55 @@ The required status contexts are the ones this command returns:
 gh api repos/rigplane/rigplane-core/branches/main/protection/required_status_checks
 ```
 
-On 2026-10-12 it returned two contexts, `quick` and `Agent Review Gate`; [base-controlled-required-gates.md](../internals/base-controlled-required-gates.md) describes how each is produced. **Required** below means one of those two; **informational** means branch protection does not require it. Re-run the command before relying on either word.
+On 2026-10-12 it returned two contexts, `quick` and `Agent Review Gate`; [base-controlled-required-gates.md](../internals/base-controlled-required-gates.md) describes how each is produced. **Required** below means one of those two, which branch protection requires before a pull request merges; **informational** means it does not. Re-run the command before relying on either word.
 
 ## Tiers
 
 | Tier | What runs | Runner labels | Trigger | Status |
 |---|---|---|---|---|
-| Development | Changed-scope checks chosen by the author; `focused.yml` runs pytest, Ruff and Vitest targets against one commit | `[self-hosted, linux, build]` (`focused.yml`) | The author; `workflow_dispatch` for `focused.yml` | Informational |
-| Integration | Per-pull-request and per-merge checks, and scheduled checks of `main` | `ubuntu-latest`, `[self-hosted, linux, build]`, `[self-hosted, macOS, ARM64, platform]`, `[self-hosted, macOS, ARM64, bench]` | `pull_request`, `push` to `main`, `schedule` | Required: `quick`, `Agent Review Gate`. All else informational |
+| Development | Every pull request to `main`, before merge: the two required contexts and the other per-pull-request checks; `focused.yml` is an optional author tool | `ubuntu-latest`, `[self-hosted, linux, build]` | `pull_request`, `pull_request_target`, `issue_comment`, `workflow_run`; `workflow_dispatch` for `focused.yml` and `visual.yml` | Required: `quick`, `Agent Review Gate`. All else informational |
+| Integration | After merge and on a schedule, on `main`: push-to-`main` runs and the scheduled runs | `ubuntu-latest`, `[self-hosted, linux, build]`, `[self-hosted, macOS, ARM64, platform]`, `[self-hosted, macOS, ARM64, bench]` | `push` to `main`, `schedule` | Informational |
 | Release Candidate | `full.yml` dispatched with `rc=true` | `[self-hosted, linux, build]` | `workflow_dispatch` | Informational |
 | Release (Stable) | `publish.yml`: `validate`, `build`, `publish` | `ubuntu-latest` | `release` `published`, pre-releases included | Not a status; the `needs` chain gates the PyPI upload |
 
 ## Development
 
-`AGENTS.md`, section "Delivery batching and CI cadence", sets which checks a change runs and when: changed-scope tests and lint while developing, then one natural `quick` run on the final candidate.
-
-`focused.yml` is a manual `workflow_dispatch` run that checks out the commit given as the `revision` input and runs only the pytest, Ruff and Vitest targets passed as JSON arrays. It is not a required status.
-
-While a pull request is a draft, the self-hosted jobs `quick` (`quick.yml`) and `visual` (`visual.yml`) are skipped by their `if:` conditions (`github.event.pull_request.draft == false`). They start when the pull request is marked ready for review.
-
-## Integration
-
-Pull request to `main`, and push to `main`:
+Every pull request to `main`, before it merges. `AGENTS.md`, section "Delivery batching and CI cadence", sets which checks a change runs and when: changed-scope tests and lint while developing, then one natural `quick` run on the final candidate.
 
 | Workflow | Trigger | Runner labels | What it runs | Status |
 |---|---|---|---|---|
-| `quick.yml` (job `quick`) | `pull_request` (opened, reopened, synchronize, ready_for_review) and `push`, both to `main`; documentation paths ignored | `quick`: `[self-hosted, linux, build]`; `classify`: `ubuntu-latest` | Path-selected: Ruff, import-linter, three `validate --dry-run` golden gates and `pytest tests/` on Python 3.11; frontend lint, i18n check, type-check, Vitest, build and Playwright steps; workflow-control tests | Required (`quick`) |
+| `quick.yml` (job `quick`) | `pull_request` to `main` (opened, reopened, synchronize, ready_for_review); documentation paths ignored | `quick`: `[self-hosted, linux, build]`; `classify`: `ubuntu-latest` | Path-selected: Ruff, import-linter, three `validate --dry-run` golden gates and `pytest tests/` on Python 3.11; frontend lint, i18n check, type-check, Vitest, build and Playwright steps; workflow-control tests | Required (`quick`) |
 | `docs-only-quick.yml` | `pull_request_target` to `main` (opened, reopened, synchronize, ready_for_review) | `ubuntu-latest` | No tests. Publishes the `quick` status as success when every changed file passes `.github/scripts/docs-only-paths.js: allDocumentationFiles` | Required (`quick`), for documentation-only heads |
 | `agent-review-gate.yml` | `pull_request` (opened, reopened, synchronize, ready_for_review) and `issue_comment` (created, edited, deleted) | `ubuntu-latest` | Publishes `Agent Review Gate` from the `Agent Review:` comments on the pull request; rules in `AGENTS.md`, "Protected main and review gate" | Required (`Agent Review Gate`) |
 | `agent-review-gate-v2.yml`, `quick-v2.yml` | `pull_request_target` to `main`, plus `issue_comment` and `workflow_run` of `Tests (quick)` respectively | `ubuntu-latest` | Publish the observation-only contexts `Agent Review Gate v2 observe` and `quick-v2-observe` | Informational; [base-controlled-required-gates.md](../internals/base-controlled-required-gates.md) says they must never be configured as required checks |
 | `freeze-gate.yml` | `pull_request` (opened, edited, synchronize, reopened, labeled, unlabeled, ready_for_review) | `ubuntu-latest` | Checks the pull request title, body and labels against the freeze contract in `AGENTS.md`, "Stabilization freeze" | Informational (its own comment says advisory) |
-| `visual.yml` | `pull_request` and `push` to `main` when a non-documentation file under `frontend/` changes; `workflow_dispatch` | `changes`: `ubuntu-latest`; `visual`: `[self-hosted, linux, build]` | Pixel-diff against the approved baselines; the `regenerate` dispatch input renders new baselines and uploads them as an artifact | Informational |
-| `consumer-contracts-gate.yml` | `pull_request` and `push` to `main`, path-filtered | `ubuntu-latest` | `scripts/run_consumer_contracts.py`: checks the expectations in `contracts/consumer-expectations/` against the producer surface | Informational |
-| `state-types-gate.yml` | `pull_request` and `push` to `main`, path-filtered | `ubuntu-latest` | `scripts/gen_state_types.py --check`: fails when the generated block of `frontend/src/lib/types/state.ts` is stale | Informational |
-| `rebrand-gate.yml` | `pull_request` and `push` to `main`, path-filtered | `ubuntu-latest` | `.github/scripts/check-rebrand-allowlist.sh` | Informational |
-| `doc-citation-gate.yml` | `pull_request` and `push` to `main`, only when `.github/scripts/check-doc-citations.sh` or the workflow file changes | `ubuntu-latest` | The citation, link and dangling-citation checks of `check-doc-citations.sh` | Informational |
+| `visual.yml` | `pull_request` to `main` when a non-documentation file under `frontend/` changes; `workflow_dispatch` | `changes`: `ubuntu-latest`; `visual`: `[self-hosted, linux, build]` | Pixel-diff against the approved baselines; the `regenerate` dispatch input renders new baselines and uploads them as an artifact | Informational |
+| `consumer-contracts-gate.yml` | `pull_request` to `main`, path-filtered | `ubuntu-latest` | `scripts/run_consumer_contracts.py`: checks the expectations in `contracts/consumer-expectations/` against the producer surface | Informational |
+| `state-types-gate.yml` | `pull_request` to `main`, path-filtered | `ubuntu-latest` | `scripts/gen_state_types.py --check`: fails when the generated block of `frontend/src/lib/types/state.ts` is stale | Informational |
+| `rebrand-gate.yml` | `pull_request` to `main`, path-filtered | `ubuntu-latest` | `.github/scripts/check-rebrand-allowlist.sh` | Informational |
+| `doc-citation-gate.yml` | `pull_request` to `main`, only when `.github/scripts/check-doc-citations.sh` or the workflow file changes | `ubuntu-latest` | The citation, link and dangling-citation checks of `check-doc-citations.sh` | Informational |
+| `focused.yml` (optional, run by the author) | `workflow_dispatch` | `[self-hosted, linux, build]` | Checks out the commit given as the `revision` input and runs only the pytest, Ruff and Vitest targets passed as JSON arrays | Informational; not a required status |
+
+While a pull request is a draft, the self-hosted jobs `quick` (`quick.yml`) and `visual` (`visual.yml`) are skipped by their `if:` conditions (`github.event.pull_request.draft == false`). They start when the pull request is marked ready for review.
 
 `quick.yml` passes no `-m` to pytest, so `addopts` in `pyproject.toml` (`-m 'not slow and not benchmark'`) deselects the `slow`-marked tests; `tests/test_ci_pytest_invocation.py: test_quick_passes_no_marker_selection` pins that. The ledger meta-tests described in [Test-quality gates](test-quality-gates.md) are ordinary files under `tests/`, so they run inside the `pytest tests/` step of `quick`.
 
+## Integration
+
+After the merge and on a schedule, against `main`. Every run here is informational. A push run follows the merge and cannot block it; a scheduled run is attached to no pull request. The push run of `quick.yml` also reports a check named `quick`, but it exists only after the merge.
+
+Push to `main`:
+
+| Workflow | Trigger | Runner labels | What it runs | Status |
+|---|---|---|---|---|
+| `quick.yml`, `visual.yml`, `consumer-contracts-gate.yml`, `state-types-gate.yml`, `rebrand-gate.yml`, `doc-citation-gate.yml` | `push` to `main`, with the same `paths` or `paths-ignore` entries as the workflow's `pull_request` trigger | As in the Development table | The jobs of the pull-request run, without the draft condition; `quick.yml` also runs the steps gated on `github.ref == 'refs/heads/main'` (version extraction and badge updates). `visual.yml` annotates a failed push run as informational | Informational |
+| `full.yml` | `push` to `main` when the head commit message contains `[full-ci]` | `[self-hosted, linux, build]` | The jobs of the scheduled run below | Informational |
+
 Scheduled against `main` (each also has `workflow_dispatch`):
 
-| Workflow | Trigger (times in UTC) | Runner labels | What it runs | Status |
+| Workflow | Schedule (UTC) | Runner labels | What it runs | Status |
 |---|---|---|---|---|
-| `full.yml` | Mon, Wed, Fri 03:00; also `push` to `main` when the head commit message contains `[full-ci]` | `[self-hosted, linux, build]` | Python 3.11, 3.12 and 3.13: frontend checks and build, Ruff on `src/rigplane/web`, mypy strict on the web boundary, import-linter, `pytest tests/` with `slow` deselected; plus the `capture-harness` job. Not path-selected | Informational |
+| `full.yml` | Mon, Wed, Fri 03:00 | `[self-hosted, linux, build]` | Python 3.11, 3.12 and 3.13: frontend checks and build, Ruff on `src/rigplane/web`, mypy strict on the web boundary, import-linter, `pytest tests/` with `slow` deselected; plus the `capture-harness` job. Not path-selected | Informational |
 | `platform-subset.yml` | Daily 01:30 | `[self-hosted, macOS, ARM64, platform]` | A fixed list of platform-sensitive test files; see [Platform subset workflow](../internals/ci-platform-subset.md) | Informational |
 | `bench-nightly.yml` | Daily 01:30 (weekday and weekend entries) | `[self-hosted, macOS, ARM64, bench]` | Checks of the bench radios; see [Bench nightly](../internals/bench-nightly.md) | Informational |
 | `soak-nightly.yml` | Daily 03:17 | `[self-hosted, linux, build]` | A soak of the web stack against the IC-7610 simulator, 3600 s unless the `duration` dispatch input says otherwise; see [Operated soak](../internals/soak.md) | Informational |
