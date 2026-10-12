@@ -109,9 +109,7 @@ def _rebuild_stubs(
 ) -> Iterator[None]:
     """Let ``soft_reconnect`` rebuild CI-V over an offline transport."""
     with ExitStack() as stack:
-        stack.enter_context(
-            patch("rigplane.transport.IcomTransport", transport_cls)
-        )
+        stack.enter_context(patch("rigplane.transport.IcomTransport", transport_cls))
         stack.enter_context(
             patch.object(radio._control_phase, "_after_reconnect", new=AsyncMock())
         )
