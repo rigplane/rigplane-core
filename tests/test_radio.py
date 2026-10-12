@@ -3319,25 +3319,30 @@ class TestGetFallbackCacheTTL:
 
 
 class TestSetCommandsUpdateCache:
-    """SET commands update the state cache without waiting for ACK."""
+    """SET commands leave the state cache alone.
+
+    The StateCache holds only radio readbacks, so fire-and-forget setters
+    must not write their commanded values into it; the ``_last_*`` mirrors
+    still track what was sent.
+    """
 
     @pytest.mark.asyncio
     async def test_set_frequency_updates_state_cache(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        """set_frequency updates the frequency cache immediately."""
+        """set_frequency leaves the frequency cache empty but tracks _last."""
         await radio.set_freq(21_074_000)
-        assert radio.state_cache.freq == 21_074_000
-        assert radio.state_cache.freq_ts > 0.0
+        assert radio.state_cache.freq_ts == 0.0
+        assert radio._last_freq_hz == 21_074_000
 
     @pytest.mark.asyncio
     async def test_set_mode_updates_state_cache(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        """set_mode updates the mode cache immediately."""
+        """set_mode leaves the mode cache empty but tracks _last_mode."""
         await radio.set_mode(Mode.CW)
-        assert radio.state_cache.mode == "CW"
-        assert radio.state_cache.mode_ts > 0.0
+        assert radio.state_cache.mode_ts == 0.0
+        assert radio._last_mode == Mode.CW
 
     @pytest.mark.asyncio
     async def test_rapid_set_frequency_does_not_block(
@@ -3346,8 +3351,9 @@ class TestSetCommandsUpdateCache:
         """Rapid consecutive set_frequency calls are all fire-and-forget."""
         for freq in [7_000_000, 7_100_000, 7_200_000]:
             await radio.set_freq(freq)
-        # Cache holds the last value sent.
-        assert radio.state_cache.freq == 7_200_000
+        # The mirror holds the last value sent; the cache stays empty.
+        assert radio._last_freq_hz == 7_200_000
+        assert radio.state_cache.freq_ts == 0.0
 
 
 class TestSetterTargetsNotCached:
