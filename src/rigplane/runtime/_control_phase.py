@@ -1260,11 +1260,8 @@ class ControlPhaseRuntime:
     def _stop_reconnect(self) -> None:
         h = self._host
         if h._reconnect_task is not None and not h._reconnect_task.done():
-            # The loop reaches this itself when it awaits
-            # ``CoreRadio.disconnect`` to finish an owner stop
-            # (``radio_reconnect.reconnect_loop``); cancelling here would
-            # cancel the caller.  Keep the handle so a later owner stop can
-            # still cancel the loop.
+            # Never cancel the calling task itself; keep the handle so a
+            # later owner stop can still cancel it.
             if h._reconnect_task is asyncio.current_task():
                 return
             h._reconnect_task.cancel()
