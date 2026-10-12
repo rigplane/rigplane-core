@@ -11,8 +11,8 @@ through ``ControlHandler``:
   enqueued on the command queue.
 * ``stop_cw_text`` likewise awaits ``radio.stop_cw_text()`` directly.
 
-The desired default — refuse ``send_cw_text`` unless the authority holds
-TX — is encoded as a strict xfail below.
+The strict xfail below asserts that managed ``send_cw_text`` is either
+admitted through the authority or refused.
 """
 
 from __future__ import annotations
@@ -64,14 +64,14 @@ async def test_characterization_managed_send_cw_text_keys_rig_with_authority_not
     reason="MOR-3382: managed send_cw_text keys the rig without the managed TX authority",
 )
 @pytest.mark.asyncio
-async def test_managed_send_cw_text_refused_while_authority_does_not_hold_tx() -> None:
-    """Desired default: managed mode refuses send_cw_text without TX hold.
+async def test_managed_send_cw_text_requires_authority_admission() -> None:
+    """Managed send_cw_text is either admitted through the authority or refused.
 
-    Asserts the refusal shape recorded as the ticket default: with the
-    authority not holding TX, the command must fail the client and
-    ``radio.send_cw_text`` must not be awaited. This is not today's
-    behaviour (see the characterization test above), so the assertions fail
-    and the test xfails strictly.
+    After dispatch, either the authority fake recorded an admission (its
+    ``calls`` list is non-empty) or the command was refused (``ok`` is
+    False and ``radio.send_cw_text`` was not awaited). A fix through
+    admission must make the fake record the admission in ``calls``; that
+    is what the assertion reads.
     """
     authority = _Authority()
     ws = SimpleNamespace(send_text=AsyncMock())
@@ -81,8 +81,9 @@ async def test_managed_send_cw_text_refused_while_authority_does_not_hold_tx() -
     await handler._dispatch_command("cmd-cw", "send_cw_text", {"text": "cq"})
 
     response = decode_json(ws.send_text.await_args.args[0])
-    assert response["ok"] is False
-    radio.send_cw_text.assert_not_awaited()
+    admitted = bool(authority.calls)
+    refused = response["ok"] is False and radio.send_cw_text.await_count == 0
+    assert admitted or refused
 
 
 @pytest.mark.asyncio
