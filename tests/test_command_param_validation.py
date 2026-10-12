@@ -33,6 +33,8 @@ the same way as any other bad integer param: ``_int_param`` raises the
 field-naming ``ValueError`` (unit row), the control WebSocket answers the
 client-error reply with nothing enqueued, and HTTP ``POST
 /api/v1/commands`` answers 400 ``invalid_request`` with nothing enqueued.
+An infinite ``receiver_count`` (``set_vfo``/``select_vfo``) keeps the
+``_receiver_count_value`` "treat as absent" behaviour instead of raising.
 """
 
 from __future__ import annotations
@@ -48,7 +50,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from rigplane.core.command_dispatch import _int_param
-from rigplane.core.command_service import CommandExecutionResult, CommandService
+from rigplane.core.command_service import (
+    CommandExecutionResult,
+    CommandService,
+    _receiver_count_value,
+)
+from rigplane.core.radio_protocol import Radio
 from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.core.state_store import StateStore
 from rigplane.profiles import resolve_radio_profile
@@ -382,6 +389,23 @@ def test_int_param_rejects_non_finite_floats_like_non_numeric_strings(
 
 
 @pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(1e400, id="positive-1e400"),
+        pytest.param(float("inf"), id="positive-inf"),
+        pytest.param(-1e400, id="negative-1e400"),
+    ],
+)
+def test_infinite_receiver_count_is_treated_as_absent(value: Any) -> None:
+    """An infinite ``receiver_count`` keeps the helper's existing "treat
+    as absent" behaviour (``None``), like any other non-convertible
+    value — ``set_vfo``/``select_vfo`` then fall back to the
+    single-receiver derivation instead of raising ``OverflowError``."""
+    assert _receiver_count_value({}) is None
+    assert _receiver_count_value({"receiver_count": value}) is None
+
+
+@pytest.mark.parametrize(
     "frame",
     [
         pytest.param(
@@ -473,8 +497,7 @@ async def test_http_single_command_rejects_infinite_integer_param() -> None:
     ``invalid_request`` naming the field — the same as any other bad
     integer param — and enqueues nothing."""
     profile = resolve_radio_profile(model="IC-9700")
-    radio = MagicMock()
-    radio.profile = profile
+    radio = MagicMock(spec=Radio)
     radio.model = profile.model
     radio.capabilities = set(profile.capabilities)
     radio.send_civ = AsyncMock()
