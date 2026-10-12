@@ -618,28 +618,25 @@ class ControlPhaseRuntime:
 
     def _record_civ_seq(self) -> None:
         """Timer tick: hand the CI-V transport's current number to the executor."""
-        h = self._host
-        loop = asyncio.get_running_loop()
-        self._civ_seq_timer = loop.call_later(
+        self._civ_seq_timer = asyncio.get_running_loop().call_later(
             civ_seq.WRITE_INTERVAL_S, self._record_civ_seq
         )
-        guid = self._civ_seq_guid
-        transport = h._civ_transport
+        guid, transport = self._civ_seq_guid, self._host._civ_transport
         pending = self._civ_seq_write
         if guid is None or transport is None:
             return
         if pending is not None and not pending.done():
             return
-        self._civ_seq_write = loop.run_in_executor(
-            None,
-            civ_seq.write_record,
-            h._host,
-            h._port,
-            guid,
-            transport.send_seq,
-            time.time(),
-        )
+        self._civ_seq_write = self._submit_civ_seq_write(guid, transport.send_seq)
         self._civ_seq_write.add_done_callback(self._civ_seq_write_done)
+
+    def _submit_civ_seq_write(
+        self, guid: bytes, send_seq: int
+    ) -> "asyncio.Future[None]":
+        h = self._host
+        return asyncio.get_running_loop().run_in_executor(
+            None, civ_seq.write_record, h._host, h._port, guid, send_seq, time.time()
+        )
 
     @staticmethod
     def _civ_seq_write_done(future: "asyncio.Future[None]") -> None:
@@ -651,19 +648,10 @@ class ControlPhaseRuntime:
         guid = self._civ_seq_guid
         if guid is None or send_seq is None:
             return
-        h = self._host
         try:
             if self._civ_seq_write is not None:
                 await asyncio.wait([self._civ_seq_write])
-            await asyncio.get_running_loop().run_in_executor(
-                None,
-                civ_seq.write_record,
-                h._host,
-                h._port,
-                guid,
-                send_seq,
-                time.time(),
-            )
+            await self._submit_civ_seq_write(guid, send_seq)
         except Exception:
             logger.debug("CI-V numbering record on exit failed", exc_info=True)
 

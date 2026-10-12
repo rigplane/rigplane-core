@@ -1,11 +1,8 @@
 """The recorded CI-V numbering and the fresh login that starts past it (MOR-3418).
 
-The record lives in ``runtime/_civ_seq_persistence.py``; the control phase
-writes it while the CI-V transport exists and reads it on a fresh login
-(``ControlPhaseRuntime._connect_once``). The CI-V transport under test is the
-real ``IcomTransport`` send path over an offline socket, as in
-``tests/test_civ_seq_continuity.py``, so the number asserted on a fresh login
-is read from the header of the OpenClose packet it sent.
+The CI-V transport under test is the real ``IcomTransport`` send path over an
+offline socket, as in ``tests/test_civ_seq_continuity.py``: a fresh login's
+number is read from the header of the OpenClose packet it sent.
 """
 
 from __future__ import annotations
