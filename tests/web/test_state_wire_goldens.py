@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
 
 from rigplane.profiles import get_radio_profile
 from rigplane.web.runtime_helpers import declared_field_paths
@@ -56,23 +55,9 @@ _ENVELOPE_CASES = [
     if case in entry
 ]
 
-# FTX-1 and IC-705 declare the tone_squelch_type receiver field; the server
-# publishes it as `toneSquelchType` once it is observed, and the schema has no
-# such field.
-_SCHEMA_GAP_CASES = frozenset({("FTX-1", "allObserved"), ("IC-705", "allObserved")})
-_SCHEMA_GAP = pytest.mark.xfail(
-    strict=True,
-    raises=ValidationError,
-    reason=(
-        "ReceiverStatePublic has no toneSquelchType field, but the server "
-        "publishes one once tone_squelch_type is observed"
-    ),
-)
-
 
 def _case_param(model: str, case: str) -> Any:
-    marks = [_SCHEMA_GAP] if (model, case) in _SCHEMA_GAP_CASES else []
-    return pytest.param(model, case, marks=marks, id=f"{model}-{case}")
+    return pytest.param(model, case, id=f"{model}-{case}")
 
 
 def _declared_store_paths(model: str) -> set[str]:
@@ -129,16 +114,6 @@ def test_envelope_matches_wire_schema(model: str, case: str) -> None:
     validated = StateUpdateEnvelope.model_validate(_GOLDENS[model][case])
 
     assert validated.type == "full"
-
-
-@pytest.mark.parametrize(("model", "case"), sorted(_SCHEMA_GAP_CASES))
-def test_schema_gap_is_only_tone_squelch_type(model: str, case: str) -> None:
-    """The strict xfail above must not hide a second schema violation."""
-    with pytest.raises(ValidationError) as caught:
-        StateUpdateEnvelope.model_validate(_GOLDENS[model][case])
-
-    failures = {(error["loc"][-1], error["type"]) for error in caught.value.errors()}
-    assert failures == {("toneSquelchType", "extra_forbidden")}
 
 
 @pytest.mark.parametrize(("model", "case"), _ENVELOPE_CASES)
