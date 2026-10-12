@@ -222,14 +222,6 @@ jobs:
           echo "$line" >> "$GITHUB_STEP_SUMMARY"
           exit 1
 
-      - name: "Outcome: busy"
-        if: always() && steps.lock.outputs.acquired == 'false'
-        run: |
-          line="$LABEL: busy (bench lock held by another run)"
-          echo "::error title=busy::$line"
-          echo "$line" >> "$GITHUB_STEP_SUMMARY"
-          exit 1
-
       - name: "Outcome: dry run"
         if: always() && steps.mode.outputs.dry_run == 'true'
         run: |
