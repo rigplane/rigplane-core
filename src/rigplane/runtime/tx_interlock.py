@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from math import isfinite
 
+from rigplane.commands._frame import build_civ_frame
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import FreshnessState, StateSnapshot
@@ -69,6 +70,7 @@ __all__ = [
     "classify_tx_interlock",
     "evaluate_tx_interlock",
     "get_tx_interlock_command_family_metadata",
+    "is_exact_dekey_send_civ",
     "is_exact_raw_dekey_frame",
     "resolve_rf_state",
 ]
@@ -603,3 +605,18 @@ def is_exact_raw_dekey_frame(frame: bytes) -> bool:
     if command == _CIV_RECEIVER_PREFIX_COMMAND:
         return len(data) == 4 and _is_exact_dekey_triple(data[1], data[2], data[3:])
     return _is_exact_dekey_triple(command, sub, data)
+
+
+def is_exact_dekey_send_civ(command: int, sub: int | None, data: bytes) -> bool:
+    """True when a ``SendCiv``'s parts build exactly a raw de-key frame.
+
+    Rebuilds the wire frame the seat would queue — the same
+    ``build_civ_frame(0x00, 0x00, command, sub, data)`` construction the
+    managed ingress refuses on — and answers
+    :func:`is_exact_raw_dekey_frame` for it.  Callers that owe the typed
+    ``PttOff`` an exemption (the poller's RF-state refusal, the web
+    ingress controller gate, the command queue's controlling seat) ask
+    this one question instead of re-deriving the frame shape.
+    """
+
+    return is_exact_raw_dekey_frame(build_civ_frame(0x00, 0x00, command, sub, data))

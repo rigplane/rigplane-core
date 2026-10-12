@@ -93,9 +93,9 @@ async def test_send_civ_dekey_from_non_controller_reaches_queue(
         await handler._enqueue_command("send_civ", dict(params))
         [entry] = queue.drain_entries()
         assert entry.command == SendCiv(
-            command=params["command"], sub=params["sub"], data=bytes.fromhex(
-                params["data"]
-            )
+            command=params["command"],
+            sub=params["sub"],
+            data=bytes.fromhex(params["data"]),
         )
         assert entry.controller_ticket is None
     finally:

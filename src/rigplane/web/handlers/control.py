@@ -43,6 +43,7 @@ from ...runtime.tx_interlock import (
     TxInterlockRefusal,
     classify_raw_civ_frame_tx_family,
     evaluate_tx_interlock,
+    is_exact_dekey_send_civ,
     resolve_rf_state,
 )
 from ...runtime.managed_tx_state import ManagedTxOutcome
@@ -532,6 +533,43 @@ def _consume_normalized_level_unit(name: str, params: dict[str, Any]) -> dict[st
 # is treated as a bug. Pinned by
 # tests/test_control_command_programmer_errors.py.
 _PROGRAMMER_ERRORS: tuple[type[Exception], ...] = (AttributeError, TypeError, NameError)
+
+
+def _send_civ_params_exact_dekey(params: Mapping[str, Any]) -> bool:
+    """True when ``send_civ`` params build exactly a raw de-key frame.
+
+    Re-runs, raise-free, the param checks ``_enqueue_rc_frequency``
+    applies before it builds the ``SendCiv``: anything malformed, out of
+    range, or requesting ``wait_response`` is not a de-key here, so the
+    controller gate captures exactly as before and the ``send_civ`` path
+    answers with its own error. Pinned by
+    tests/test_web_send_civ_dekey_capture.py.
+    """
+    if params.get("wait_response", False):
+        return False
+    try:
+        command = _int_param(params["command"], "command")
+        if not 0 <= command <= 0xFF:
+            return False
+        raw_sub = params.get("sub")
+        sub = None if raw_sub is None else _int_param(raw_sub, "sub")
+        if sub is not None and not 0 <= sub <= 0xFF:
+            return False
+        raw_data = params.get("data", "")
+        if (
+            not isinstance(raw_data, str)
+            or len(raw_data) % 2 != 0
+            or any(ch not in "0123456789abcdefABCDEF" for ch in raw_data)
+        ):
+            return False
+        data = bytes.fromhex(raw_data)
+    except (KeyError, TypeError, ValueError):
+        return False
+    # Annotated local: under the web-scoped mypy run the runtime import
+    # resolves to Any (follow_imports = "skip"), and a bare return would
+    # trip no-any-return while the value is a real bool.
+    verdict: bool = is_exact_dekey_send_civ(command, sub, data)
+    return verdict
 
 
 class ControlHandler:
@@ -1737,6 +1775,10 @@ class ControlHandler:
             name.startswith("get_")
             or name == "ptt_off"
             or (name == "ptt" and params.get("state") is False)
+            # An exact raw de-key over send_civ is the typed PTT-off's
+            # negative safety work in raw form (MOR-3384): it never
+            # captures, so no remote-ticket refusal can name it either.
+            or (name == "send_civ" and _send_civ_params_exact_dekey(params))
         ):
             return
         ticket = controller.capture()

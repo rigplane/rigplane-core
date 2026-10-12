@@ -1303,8 +1303,19 @@ class CommandQueue:
         self._controller = controller
 
     def _controller_ticket(self, cmd: Command | None) -> ControllerTicket | None:
-        # Negative safety work never grants a controlling seat.
+        # Negative safety work never grants a controlling seat. A raw
+        # de-key over send_civ is the same negative work as the typed
+        # PttOff (MOR-3384): the frame must end a transmission, so it
+        # may not be held hostage to the controller currency the typed
+        # unkey already skips. The import stays local: tx_interlock
+        # imports this module's command dataclasses at load time.
+        from rigplane.runtime.tx_interlock import is_exact_dekey_send_civ
+
         if self._controller is None or isinstance(cmd, PttOff):
+            return None
+        if isinstance(cmd, SendCiv) and is_exact_dekey_send_civ(
+            cmd.command, cmd.sub, cmd.data
+        ):
             return None
         return self._controller.capture()
 
