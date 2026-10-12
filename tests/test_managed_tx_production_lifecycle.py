@@ -294,12 +294,18 @@ async def test_terminal_shutdown_then_actual_core_disconnect_is_idempotent(
     radio._managed_tx_arm_lock = asyncio.Lock()
     radio._civ_transport = transport
     radio._session_lifecycle = SimpleNamespace(disconnect=AsyncMock())
+    stopped: list[str] = []
+    radio._control_phase = SimpleNamespace(
+        _stop_watchdog=lambda: stopped.append("watchdog"),
+        _stop_reconnect=lambda: stopped.append("reconnect"),
+    )
     radio._conn_state = RadioConnectionState.DISCONNECTED
     await radio.disconnect()
 
     assert result is ShutdownResult.TERMINATED
     assert composition._active_provider is None
     assert retired == [1]
+    assert stopped == ["watchdog", "reconnect"]
     radio._session_lifecycle.disconnect.assert_awaited_once()
 
 
