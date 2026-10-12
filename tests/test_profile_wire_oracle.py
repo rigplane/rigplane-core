@@ -22,6 +22,17 @@ rows, two ``dualwatch`` rows, and every dual-receiver control has a
 duplicate key so two rows can never silently collapse into one entry
 (MOR-3369 item 2).
 
+The FTX-1 section below compares ``tests/golden/wire_oracle/ftx1.toml``
+with the Yaesu ASCII CAT production path. Its rows key on ``side``
+(``"main"`` / ``"sub"`` / ``"none"``) where the CI-V rows key on
+``receiver``. Each row's expected string is rendered through the
+profile's own CAT template (``rigs/ftx1.toml``) with
+``backends/yaesu_cat/parser.py: format_command`` — the same encoder
+``backends/yaesu_cat/radio.py: YaesuCatRadio._write`` uses — with the
+command name the runtime method selects for the row's side and the
+value arguments that method passes. No CAT encoding (digit padding,
+side digit, terminator) is re-implemented here.
+
 Rules, per the MOR-3261 compare brief:
 
 - a row whose bytes differ from production is marked
@@ -46,6 +57,8 @@ from pathlib import Path
 
 import pytest
 
+from rigplane.backends.yaesu_cat.parser import format_command
+from rigplane.commands.command_spec import CatCommandSpec
 from rigplane.profiles.rig_loader import load_rig
 from rigplane.runtime.radio import CoreRadio
 from rigplane.types import AgcMode, BreakInMode, Mode
@@ -469,4 +482,269 @@ def test_oracle_bytes_match_production(label: str, key: _Key) -> None:
     )
     assert produced == expected, (
         f"{label} {key!r}: production {_hex(produced)} != oracle {_hex(expected)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# FTX-1 (Yaesu ASCII CAT) oracle comparison.
+#
+# Production path: ``rigs/ftx1.toml`` holds one CAT template per command
+# name; ``YaesuCatRadio._write`` renders ``spec.write`` through
+# ``format_command`` and sends the resulting string. This section renders
+# the same way: the mapping names the CAT command the runtime method
+# writes for the row's side, with the value arguments that method passes.
+# The ``receiver`` field records the side argument the runtime passes
+# (``main`` = 0, ``sub`` = 1, ``None`` = side ``"none"``); the command
+# name is the one the runtime selects for that side:
+#
+# - ``set_freq`` / ``set_freq_sub`` <- ``set_freq(freq, receiver)``
+#   (0 = VFO-A, 1 = VFO-B); ``get_freq`` <- the ``FA;`` read;
+# - ``set_mode`` <- ``set_mode("USB", receiver=0)`` after the profile
+#   ``[modes].codes`` lookup (USB -> code ``"2"``);
+# - ``set_split`` <- ``set_split(state)``; ``set_power`` <-
+#   ``set_power(watts, head=2)``; ``set_mic_gain`` <- ``set_mic_gain``;
+#   ``set_keyer_speed`` <- ``set_keyer_speed``;
+#   ``set_processor_level`` <- ``set_processor_level``;
+#   ``set_vox`` <- ``set_vox``; ``set_break_in`` <- ``set_break_in``
+#   (ON = 1); ``set_ptt`` <- ``set_ptt``;
+#   ``set_tuner`` <- ``set_tuner(state=1, src=0, typ=0)``;
+# - ``set_af_level`` / ``set_rf_gain`` / ``set_squelch`` and their
+#   ``_sub`` twins <- ``set_af_level`` / ``set_rf_gain`` /
+#   ``set_squelch`` with ``receiver`` 0 / 1;
+# - ``set_preamp`` <- ``set_preamp(level=1, band=0)`` (single path, the
+#   receiver argument is accepted but selects nothing);
+#   ``set_attenuator`` <- ``set_attenuator`` (single ``RA0`` path);
+# - ``set_agc`` / ``set_agc_sub`` <- ``set_agc(mode=1, receiver)``
+#   (FAST = 1); ``set_nb_level`` / ``set_nr_level`` and their ``_sub``
+#   twins <- ``set_nb_level`` / ``set_nr_level`` with ``receiver`` 0 / 1
+#   (level 5 also switches the function on: the NL/RL level doubles as
+#   the on/off switch, 000 = OFF).
+#
+# Rules, per the MOR-3261 compare brief: a row whose string differs from
+# production is marked ``pytest.mark.xfail(strict=True)``, never fixed by
+# editing the row or the code; a row with no production command goes in
+# ``_NOT_DECLARED_FTX1`` with its reason.
+# ---------------------------------------------------------------------------
+
+_FTX1_MIN_ROWS = 29
+
+_FTX1_CONFIG = load_rig(RIGS_DIR / "ftx1.toml")
+
+_FTX1_MAPPING: dict[_Key, _ProductionCall] = {
+    ("vfo_a_freq", "none", "set", "14.074 MHz (000030000-470000000 Hz)"): (
+        _ProductionCall("set_freq", {"freq": 14074000})
+    ),
+    ("vfo_a_freq", "none", "read", "14.074 MHz (000030000-470000000 Hz)"): (
+        _ProductionCall("get_freq", {})
+    ),
+    ("vfo_b_freq", "none", "set", "7.074 MHz (000030000-470000000 Hz)"): (
+        _ProductionCall("set_freq_sub", {"freq": 7074000}, receiver=1)
+    ),
+    ("mode", "main", "set", "USB 2 (modes 0-9,A-J)"): (
+        _ProductionCall("set_mode", {"mode": "2"}, receiver=0)
+    ),
+    ("split", "none", "set", "ON (0 OFF, 1 ON)"): (
+        _ProductionCall("set_split", {"state": "1"})
+    ),
+    ("split", "none", "set", "OFF (0 OFF, 1 ON)"): (
+        _ProductionCall("set_split", {"state": "0"})
+    ),
+    ("rf_power", "none", "set", "50 W (005-100 W, SPA-1)"): (
+        _ProductionCall("set_power", {"head": "2", "watts": 50})
+    ),
+    ("mic_gain", "none", "set", "50 (000-100)"): (
+        _ProductionCall("set_mic_gain", {"level": 50})
+    ),
+    ("cw_key_speed", "none", "set", "20 WPM (004-060)"): (
+        _ProductionCall("set_keyer_speed", {"wpm": 20})
+    ),
+    ("speech_proc_level", "none", "set", "50 (000 OFF, 001-100)"): (
+        _ProductionCall("set_processor_level", {"level": 50})
+    ),
+    ("vox", "none", "set", "ON (0 OFF, 1 ON)"): (
+        _ProductionCall("set_vox", {"state": "1"})
+    ),
+    ("break_in", "none", "set", "ON (0 OFF, 1 ON)"): (
+        _ProductionCall("set_break_in", {"state": "1"})
+    ),
+    ("ptt", "none", "set", "CAT TX ON (0 OFF, 1 ON; 2 answer)"): (
+        _ProductionCall("set_ptt", {"state": "1"})
+    ),
+    ("ptt", "none", "set", "TX OFF (0 OFF, 1 ON; 2 answer)"): (
+        _ProductionCall("set_ptt", {"state": "0"})
+    ),
+    ("tuner", "none", "set", "internal ON (P1 0, P2 0, P3 1)"): (
+        _ProductionCall("set_tuner", {"src": "0", "type": "0", "state": "1"})
+    ),
+    ("af_gain", "main", "set", "100 (000-255)"): (
+        _ProductionCall("set_af_level", {"level": 100}, receiver=0)
+    ),
+    ("af_gain", "sub", "set", "80 (000-255)"): (
+        _ProductionCall("set_af_level_sub", {"level": 80}, receiver=1)
+    ),
+    ("rf_gain", "main", "set", "100 (000-255)"): (
+        _ProductionCall("set_rf_gain", {"level": 100}, receiver=0)
+    ),
+    ("rf_gain", "sub", "set", "120 (000-255)"): (
+        _ProductionCall("set_rf_gain_sub", {"level": 120}, receiver=1)
+    ),
+    ("squelch", "main", "set", "100 (000-255)"): (
+        _ProductionCall("set_squelch", {"level": 100}, receiver=0)
+    ),
+    ("squelch", "sub", "set", "80 (000-255)"): (
+        _ProductionCall("set_squelch_sub", {"level": 80}, receiver=1)
+    ),
+    ("preamp", "none", "set", "HF AMP1 (0 IPO, 1 AMP1, 2 AMP2)"): (
+        _ProductionCall("set_preamp", {"band": "0", "value": "1"})
+    ),
+    ("attenuator", "none", "set", "ON (0 OFF, 1 ON)"): (
+        _ProductionCall("set_attenuator", {"state": "1"})
+    ),
+    ("agc", "main", "set", "FAST (0 OFF, 1 FAST, 2 MID, 3 SLOW, 4 AUTO)"): (
+        _ProductionCall("set_agc", {"mode": "1"}, receiver=0)
+    ),
+    ("agc", "sub", "set", "FAST (0 OFF, 1 FAST, 2 MID, 3 SLOW, 4 AUTO)"): (
+        _ProductionCall("set_agc_sub", {"mode": "1"}, receiver=1)
+    ),
+    ("noise_blanker", "main", "set", "5 (000 OFF, 001-010)"): (
+        _ProductionCall("set_nb_level", {"level": 5}, receiver=0)
+    ),
+    ("noise_blanker", "sub", "set", "5 (000 OFF, 001-010)"): (
+        _ProductionCall("set_nb_level_sub", {"level": 5}, receiver=1)
+    ),
+    ("noise_reduction", "main", "set", "05 (00 OFF, 01-10)"): (
+        _ProductionCall("set_nr_level", {"level": 5}, receiver=0)
+    ),
+    ("noise_reduction", "sub", "set", "05 (00 OFF, 01-10)"): (
+        _ProductionCall("set_nr_level_sub", {"level": 5}, receiver=1)
+    ),
+}
+
+_NOT_DECLARED_FTX1: dict[_Key, _NotDeclared] = {}
+
+_XFAIL_FTX1: dict[_Key, str] = {}
+
+
+def _load_ftx1_oracle() -> tuple[dict[_Key, str], dict[_Key, str], list[_Key]]:
+    """Load the FTX-1 oracle frames as CAT strings keyed like the CI-V rows.
+
+    FTX-1 rows carry ``side`` where CI-V rows carry ``receiver``; the key
+    maps it explicitly so the composite key and duplicate-key guard work
+    unchanged.
+    """
+    with open(ORACLE_DIR / "ftx1.toml", "rb") as handle:
+        rows = tomllib.load(handle)["row"]
+    frames: dict[_Key, str] = {}
+    manuals: dict[_Key, str] = {}
+    keys: list[_Key] = []
+    for row in rows:
+        key = (
+            row["control"],
+            row.get("receiver", row.get("side", "none")),
+            row["direction"],
+            row["value"],
+        )
+        keys.append(key)
+        frames[key] = row["frame"]
+        manuals[key] = row["manual"]
+    return frames, manuals, keys
+
+
+_FTX1_ORACLE, _FTX1_MANUAL, _FTX1_ROW_KEYS = _load_ftx1_oracle()
+
+
+def _ftx1_production_str(key: _Key) -> str:
+    """Render one FTX-1 row through the production CAT encoder.
+
+    The template comes from the loaded FTX-1 profile and the string is
+    formatted by ``format_command`` — the same template and encoder
+    ``YaesuCatRadio._write`` uses. Read rows render the read template;
+    set rows render the write template.
+    """
+    call = _FTX1_MAPPING[key]
+    spec = _FTX1_CONFIG.commands.get(call.builder)
+    assert isinstance(spec, CatCommandSpec), (
+        f"FTX-1 {key!r}: production command {call.builder!r} is not a CAT command spec"
+    )
+    template = spec.read if key[2] == "read" else spec.write
+    assert template is not None, (
+        f"FTX-1 {key!r}: production command {call.builder!r} "
+        "declares no template for this direction"
+    )
+    return format_command(template, **call.kwargs)
+
+
+def _ftx1_compare_params() -> list:
+    params: list = []
+    for key in sorted(_FTX1_MAPPING):
+        if key in _XFAIL_FTX1:
+            expected = _FTX1_ORACLE[key]
+            produced = _ftx1_production_str(key)
+            reason = (
+                f"FTX-1 manual p. {_page(_FTX1_MANUAL[key])} disagrees "
+                f"with the profile: {_XFAIL_FTX1[key]} "
+                f"(production {produced} != oracle {expected})"
+            )
+            params.append(
+                pytest.param(
+                    key,
+                    marks=pytest.mark.xfail(
+                        strict=True, raises=AssertionError, reason=reason
+                    ),
+                )
+            )
+        else:
+            params.append(pytest.param(key))
+    return params
+
+
+def test_ftx1_oracle_has_minimum_rows() -> None:
+    assert len(_FTX1_ORACLE) >= _FTX1_MIN_ROWS, (
+        f"FTX-1 oracle holds {len(_FTX1_ORACLE)} rows, "
+        f"below the {_FTX1_MIN_ROWS} ratchet"
+    )
+
+
+def test_ftx1_oracle_keys_unique() -> None:
+    """Every FTX-1 oracle row keys uniquely; a duplicate key fails instead of collapsing."""
+    counts = Counter(_FTX1_ROW_KEYS)
+    duplicates = sorted(str(key) for key, count in counts.items() if count > 1)
+    assert not duplicates, f"FTX-1 oracle has duplicate row keys: {duplicates}"
+    assert len(_FTX1_ORACLE) == len(_FTX1_ROW_KEYS), (
+        f"FTX-1 oracle rows collapse to fewer keys "
+        f"({len(_FTX1_ORACLE)} keys for {len(_FTX1_ROW_KEYS)} rows)"
+    )
+
+
+def test_ftx1_mapping_keys_exist_in_oracle() -> None:
+    for key in list(_FTX1_MAPPING) + list(_NOT_DECLARED_FTX1):
+        assert key in _FTX1_ORACLE, (
+            f"FTX-1: {key!r} is mapped but missing from the oracle"
+        )
+
+
+def test_ftx1_every_oracle_row_is_classified() -> None:
+    for key in _FTX1_ORACLE:
+        assert (key in _FTX1_MAPPING) != (key in _NOT_DECLARED_FTX1), (
+            f"FTX-1: {key!r} must sit in exactly one of mapping / not_declared"
+        )
+
+
+def test_ftx1_not_declared_stays_absent() -> None:
+    for key, entry in _NOT_DECLARED_FTX1.items():
+        assert entry.reason, f"FTX-1: {key!r} needs a reason, not an empty string"
+        for name in entry.absent_commands:
+            spec = _FTX1_CONFIG.commands.get(name)
+            assert not (isinstance(spec, CatCommandSpec) and spec.write), (
+                f"FTX-1: {key!r}: production command {name!r} now declares "
+                "a CAT write for the FTX-1 profile; add a comparison row for it"
+            )
+
+
+@pytest.mark.parametrize("key", _ftx1_compare_params())
+def test_ftx1_oracle_string_matches_production(key: _Key) -> None:
+    expected = _FTX1_ORACLE[key]
+    produced = _ftx1_production_str(key)
+    assert produced == expected, (
+        f"FTX-1 {key!r}: production {produced} != oracle {expected}"
     )
