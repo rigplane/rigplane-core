@@ -209,7 +209,7 @@ jobs:
           name: bench-nightly-${{ matrix.radio }}
           path: ${{ runner.temp }}/bench-out/${{ matrix.radio }}
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 3
 
       # Honest-verdict steps, last in the job. Each turns one silent green
       # ending red with its own step name; a night passes for a radio only

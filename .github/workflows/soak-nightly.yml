@@ -80,6 +80,7 @@ jobs:
           name: soak-report
           path: soak-report.json
           if-no-files-found: warn
+          retention-days: 3
 
   soak-24h:
     if: ${{ inputs.certification }}
@@ -123,3 +124,4 @@ jobs:
           name: soak-report
           path: soak-report.json
           if-no-files-found: warn
+          retention-days: 3
