@@ -5712,10 +5712,20 @@ class WebServer:
             )
             return
         try:
-            if raw_name in ControlHandler._READ_ONLY_HANDLERS:  # noqa: SLF001
+            if (
+                raw_name in ControlHandler._READ_ONLY_HANDLERS  # noqa: SLF001
+                or raw_name == "set_vfo_freq"
+            ):
                 # Queue-bypass commands (get_*, send_cw_text, ...) execute
                 # inline through _enqueue_command and already report their
                 # outcome; the batch rejects them, so they keep this path.
+                # set_vfo_freq already awaits its own completion (write plus
+                # readback under the bound connection generation) inside
+                # _enqueue_command, so it keeps this path too — the batch
+                # proxy collector cannot supply capture_connection_generation.
+                # It is the only such command: managed PTT awaits submission
+                # but refuses non-websocket sources, and every other queued
+                # command completes on the poller-settled ordered future.
                 params = _consume_normalized_level_unit(raw_name, raw_params)
                 result = await self._control_handler_for()._enqueue_command(  # noqa: SLF001
                     raw_name,
@@ -5737,7 +5747,9 @@ class WebServer:
                 if "id" in payload:
                     raw_step["id"] = payload["id"]
                 step = await self._prepare_http_batch_step(0, raw_step)
-                result = await self._execute_http_prepared_step(step)
+                result = await self._execute_http_prepared_step(
+                    step, use_executor_details=True
+                )
         except TxInterlockRefusal as exc:
             await self._send_json(
                 writer,
@@ -5800,6 +5812,22 @@ class WebServer:
                 status,
                 reason,
                 {"ok": False, "error": code, "message": message},
+            )
+            return
+        except Exception as exc:
+            # The batch's catch-all: a poller failure that is neither a
+            # CommandError nor a timeout (e.g. a lost radio link during an
+            # identity hold) still answers with the error envelope, never
+            # the routing layer's generic 500.
+            await self._send_json(
+                writer,
+                500,
+                "Internal Server Error",
+                {
+                    "ok": False,
+                    "error": "command_failed",
+                    "message": str(exc) or type(exc).__name__,
+                },
             )
             return
 
@@ -5902,16 +5930,23 @@ class WebServer:
     async def _execute_http_prepared_step(
         self,
         step: _HttpBatchStep,
+        *,
+        use_executor_details: bool = False,
     ) -> dict[str, Any]:
         """Run one prepared HTTP step to completion, batch and single alike.
 
         Intent steps execute through the shared command service (which waits
         for poller completion itself); queued steps wait on the poller-settled
         ordered future under ``_COMMAND_BATCH_STEP_TIMEOUT``, failing the
-        lifecycle on timeout. Returns the step's acknowledgement result.
+        lifecycle on timeout. Returns the step's acknowledgement result —
+        or, when *use_executor_details* is set (the single-command path), the
+        executor's details, which is the body ``_enqueue_command`` returns
+        (the ``admitted_level`` enrichment included).
         """
         if isinstance(step.command, CommandIntent):
-            await self.command_service.execute(step.command)
+            service_result = await self.command_service.execute(step.command)
+            if use_executor_details:
+                return dict(service_result.executor_result.details or {})
             return step.result
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._command_queue.put_ordered(

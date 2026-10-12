@@ -375,9 +375,7 @@ async def test_http_single_set_vfo_freq_reports_readback_body() -> None:
         send_civ=AsyncMock(
             side_effect=[
                 parse_civ_frame(bytes.fromhex("FE FE E0 94 FB FD")),
-                parse_civ_frame(
-                    bytes.fromhex("FE FE E0 94 25 01 00 40 07 14 00 FD")
-                ),
+                parse_civ_frame(bytes.fromhex("FE FE E0 94 25 01 00 40 07 14 00 FD")),
             ]
         ),
         set_freq=AsyncMock(),
@@ -390,9 +388,7 @@ async def test_http_single_set_vfo_freq_reports_readback_body() -> None:
         Observation(
             path=FieldPath.active_slot("0"),
             value="A",
-            source=SourceMetadata(
-                source="command_response", provider="vfo_binding"
-            ),
+            source=SourceMetadata(source="command_response", provider="vfo_binding"),
             timestamp_monotonic=time.monotonic(),
             max_age=5,
             provider_generation=store.provider_generation,

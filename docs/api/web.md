@@ -323,12 +323,15 @@ report is `null`.
 
 HTTP command envelope for automation clients that do not need WebSocket
 delivery. The command names and `params` match the `/api/v1/ws` command channel.
-The endpoint runs the command through the same `ControlHandler` path as the
-WebSocket command channel and answers only after the command executes,
-returning that path's `result` object in an `{ok, name, result}` envelope
-(plus `id` when the request has one). A command the radio refuses with a
-CI-V NAK answers HTTP `409` with `error: "radio_nak"`; a command the poller
-never settles answers HTTP `504` with `error: "command_timeout"`.
+The endpoint answers only after the command executes, returning the
+command's `result` object in an `{ok, name, result}` envelope (plus `id`
+when the request has one) — the same body `ControlHandler._enqueue_command`
+returns for that request. When the poller reports the write refused, the
+endpoint answers HTTP `409` with `error: "radio_nak"`; a command the poller
+never settles answers HTTP `504` with `error: "command_timeout"`. Writes the
+backend sends without waiting for a reply (such as the `CoreRadio` AF/RF
+level, mode and power writes in `runtime/radio.py`) still answer `200` when
+the radio NAKs them, because the NAK is never observed.
 
 Request:
 
@@ -1205,7 +1208,8 @@ like a command that was never rate-limited:
 {"type":"response","id":"42","ok":true,"result":{"freq":14074000,"receiver":0}}
 ```
 
-The `response` frame acknowledges enqueue only, never the outcome: a command
+For queued (legacy and coalesced) commands such as `set_freq`, the
+`response` frame acknowledges enqueue only, never the outcome: a command
 the radio later refuses still answers `ok: true` here. The outcome arrives as
 a `command_lifecycle` frame correlated by `commandId` — `failed` when the
 radio NAKs the write — delivered to clients subscribed to the `events` (or
