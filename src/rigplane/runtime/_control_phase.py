@@ -57,6 +57,18 @@ class _DataPortDiscoveryCooldown(Exception):
     """Recoverable startup failure after control auth advertised a CI-V port."""
 
 
+class _StatusBusyReject(Exception):
+    """First-connect status-stage busy reject (civ_port=0, 0xFFFFFFFF).
+
+    Raised by ``_connect_once`` on the profile-selected stereo codec path
+    (the path that used to enter the inline conninfo busy-retry loop) so
+    ``connect_attempt`` can surface it as the transient
+    ``AttemptOutcome.SESSION_BUSY_REJECT``: the lifecycle then releases the
+    busy-issued token and retries with a fresh login instead of re-sending
+    conninfo on the rejected token.
+    """
+
+
 def _session_reject_hint(error: int) -> str:
     """Operator hint for a refused session allocation (IC-7610 measurements, MOR-2618)."""
     if error == 0xFFFFFFFF:
@@ -107,14 +119,17 @@ class ControlPhaseRuntime:
     # owns CONNECTING↔COOLDOWN (it RELEASES before each cooldown wait).
     _STATUS_RETRY_PAUSE = 10.0
     _STATUS_REJECT_COOLDOWN = 30.0
-    # Budget for session-allocation retries after a busy reject (status
-    # error=0xFFFFFFFF: the radio still holds a dead client's session),
-    # first connect only, profile-selected stereo codec. IC-7610 holds
-    # after an unclean client death, with no token renewals for the dead
-    # session, ran about 69-113 s (MOR-3349, bench 2026-10-12); three
-    # ~30 s retries (~90 s) could give up first. Exhausting it raises the
-    # busy-retry loop's "after retries" ConnectionError in ``_connect_once``.
-    STARTUP_BUSY_HOLD_BUDGET_S: float = 120.0
+    # Cap for first-connect busy-hold retries after a busy reject (status
+    # error=0xFFFFFFFF: the radio still holds a dead client's session).
+    # Sizing bench (MOR-3391, 2026-10-12): proxy-recorded holds ran ~71 s
+    # independent of the waiting client's retry pause, and a fresh login
+    # was granted at +91 s without the proxy; a token issued during the
+    # hold is unusable afterwards, so each reject releases (token-remove)
+    # and the retry logs in again. This constant now sizes the lifecycle's
+    # fresh-login loop (``CoreRadioSessionLifecycle`` first-connect busy
+    # policy, wired in ``CoreRadio``); exhausting it raises that loop's
+    # resident never-ready ConnectionError.
+    STARTUP_BUSY_HOLD_BUDGET_S: float = 600.0
     # Token-renewal probe of a held session (``probe_control_session``). An
     # answer counts only with reply flag 0x02 at 0x14, request type 0x05 and
     # our token at 0x1C; the u32 at ``_RENEWAL_RESPONSE_OFFSET`` is the verdict.
@@ -345,6 +360,15 @@ class ControlPhaseRuntime:
                         # warming up after fallback. Fall through to the
                         # busy-retry loop with the now-mono codec.
                     elif profile_selected_stereo:
+                        if not _reconnect:
+                            # First connect: the busy-issued token is unusable
+                            # after the hold (MOR-3391 bench 2026-10-12), so
+                            # never re-send conninfo on it — surface the
+                            # transient busy reject and let the lifecycle
+                            # release it and log in again with a fresh token.
+                            raise _StatusBusyReject(
+                                "status busy reject on first connect"
+                            )
                         logger.warning(
                             "Status rejected session (error=0xFFFFFFFF) with "
                             "profile-selected stereo rx_codec=%s; preserving profile "
@@ -361,46 +385,30 @@ class ControlPhaseRuntime:
                             f"{_session_reject_hint(h._last_status_error)}"
                         )
 
-                # Busy-retry loop — runs when:
+                # Within-attempt retry loop — runs when:
                 #   (a) first status was civ_port=0 without 0xFFFFFFFF, or
                 #   (b) mono fallback above produced civ_port=0 without
                 #       0xFFFFFFFF, or
-                #   (c) the profile-selected stereo codec was busy-rejected
-                #       (0xFFFFFFFF) above (first connect only).
+                #   (c) a reconnect's profile-selected stereo codec was
+                #       busy-rejected (0xFFFFFFFF) above.
+                # A first-connect busy reject never reaches here — it raises
+                # ``_StatusBusyReject`` above so the retry logs in again with
+                # a fresh token instead of re-sending conninfo on the
+                # rejected one. What remains is a fixed three attempts.
                 if civ_port == 0:
                     retry_pause = self._status_retry_pause()
                     status_error = getattr(h, "_last_status_error", 0)
-                    # First connect only: the resident reconnect loop,
-                    # lifecycle recovery and owner reconnects reach this
-                    # code with ``_has_connected_once`` already set
-                    # (``_reconnect`` above) and keep main's fixed three
-                    # attempts.
-                    busy_reject = status_error == 0xFFFFFFFF and not _reconnect
                     logger.warning(
                         "Status returned civ_port=0 (error=0x%08X) — the radio "
                         "did not allocate a session. Retrying after %.0fs "
-                        "pause%s. %s",
+                        "pause. %s",
                         status_error,
                         retry_pause,
-                        (
-                            f" for up to {self.STARTUP_BUSY_HOLD_BUDGET_S:.0f}s"
-                            if busy_reject
-                            else ""
-                        ),
                         _session_reject_hint(status_error),
                     )
-                    # A first-connect busy reject is sized by the radio's
-                    # hold of a dead client's session: retry until the
-                    # start-up busy budget elapses. Reconnects and any
-                    # other civ_port=0 keep the fixed three attempts.
-                    busy_deadline = time.monotonic() + self.STARTUP_BUSY_HOLD_BUDGET_S
                     attempts = 0
                     while True:
-                        if busy_reject:
-                            exhausted = time.monotonic() >= busy_deadline
-                        else:
-                            exhausted = attempts >= 3
-                        if exhausted:
+                        if attempts >= 3:
                             self._close_pending_sockets()
                             await h._ctrl_transport.disconnect()
                             h._conn_state = RadioConnectionState.DISCONNECTED
@@ -662,12 +670,17 @@ class ControlPhaseRuntime:
 
         Classification rules (lifecycle Note 1; behaviour-preserving wiring):
 
-        * The ONLY transient signal ``_connect_once`` emits is
-          :class:`_DataPortDiscoveryCooldown` (CI-V data-port discovery timed out
-          after a successful auth/status) → ``SESSION_NOT_READY``.  This mirrors
-          the removed legacy ``connect()`` wrapper, which retried exactly this
-          case (its ``_DATA_PORT_COOLDOWN_RETRIES`` loop) and let every other
-          failure propagate.
+        * ``_connect_once`` emits two transient signals:
+          :class:`_DataPortDiscoveryCooldown` (CI-V data-port discovery timed
+          out after a successful auth/status) → ``SESSION_NOT_READY``.  This
+          mirrors the removed legacy ``connect()`` wrapper, which retried
+          exactly this case (its ``_DATA_PORT_COOLDOWN_RETRIES`` loop) and
+          let every other failure propagate.
+        * :class:`_StatusBusyReject` (first-connect status-stage busy reject
+          on the profile-selected stereo codec path) →
+          ``SESSION_BUSY_REJECT``.  The busy-issued token is unusable after
+          the hold (MOR-3391), so the attempt must not be retried on it —
+          the lifecycle releases it and logs in again.
         * **Note 1 (auth over-hard-fail fix):** ``_connect_once`` raises
           :class:`AuthenticationError` for ANY ``auth.success == False`` — which
           covers BOTH 0xFEFFFFFF (wrong credentials, hard) AND 0xFFFFFFFF
@@ -689,6 +702,8 @@ class ControlPhaseRuntime:
             await self._connect_once()
         except _DataPortDiscoveryCooldown:
             return AttemptResult(AttemptOutcome.SESSION_NOT_READY)
+        except _StatusBusyReject:
+            return AttemptResult(AttemptOutcome.SESSION_BUSY_REJECT)
         except AuthenticationError:
             # Note 1: ONLY 0xFEFFFFFF is a hard credential failure.  Any other
             # auth failure (e.g. 0xFFFFFFFF "previous session active" surfaced at

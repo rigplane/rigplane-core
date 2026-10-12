@@ -705,11 +705,21 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             # attempts is the radio's own keepalive window, and the lifecycle
             # already RELEASES the (partial) session before each retry, so no
             # client-side cooldown sleep is needed here.  The within-attempt
-            # conninfo busy-retry pacing still lives in ``_connect_once``
-            # (``_STATUS_RETRY_PAUSE``).  The longer-lived Pro service constructs
-            # the lifecycle with the default 10/30 s cooldowns.
+            # conninfo retry pacing for reconnects and not-ready sessions
+            # still lives in ``_connect_once`` (``_STATUS_RETRY_PAUSE``).  The
+            # longer-lived Pro service constructs the lifecycle with the
+            # default 10/30 s cooldowns.
             not_ready_cooldown_s=0.0,
             reject_cooldown_s=0.0,
+            # Start-up busy-hold policy (MOR-3391): a first connect that is
+            # busy-rejected releases the busy-issued token and retries with
+            # a fresh login after the reject cooldown, until the start-up
+            # budget elapses.  Later connects keep the immediate attempts
+            # above; their status-stage busy path stays in ``_connect_once``.
+            first_connect_busy_cooldown_s=(ControlPhaseRuntime._STATUS_REJECT_COOLDOWN),
+            first_connect_busy_budget_s=(
+                ControlPhaseRuntime.STARTUP_BUSY_HOLD_BUDGET_S
+            ),
             # Recovery backoff is ZERO for the in-process CoreRadio (A4): the
             # CI-V data watchdog already spends its patient OpenClose phase
             # (~``_OPENCLOSE_DEADLINE`` = 60 s) BEFORE handing off to this

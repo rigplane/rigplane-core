@@ -215,7 +215,9 @@ def _busy_hold_patch_stack(
         )
     )
     stack.enter_context(
-        patch.object(radio._control_phase, "_flush_queue", new=AsyncMock(return_value=0))
+        patch.object(
+            radio._control_phase, "_flush_queue", new=AsyncMock(return_value=0)
+        )
     )
     stack.enter_context(patch.object(radio._control_phase, "_start_token_renewal"))
     stack.enter_context(patch.object(radio._control_phase, "_start_watchdog"))
@@ -1436,9 +1438,7 @@ class TestStartupBusyHoldBudget:
         # removed BEFORE the next login, none lingers beside it.
         kinds = ["login" if len(p) == 0x80 else "remove" for p in mt.sent_packets]
         assert kinds == ["login", "remove"] * 4 + ["login"]
-        removes = _token_remove_tokens(
-            [p for p in mt.sent_packets if len(p) == 0x40]
-        )
+        removes = _token_remove_tokens([p for p in mt.sent_packets if len(p) == 0x40])
         assert removes == tokens[:4]
 
     @pytest.mark.asyncio
@@ -1481,9 +1481,7 @@ class TestStartupBusyHoldBudget:
         assert len(conninfo_tokens) == len(set(conninfo_tokens))
         kinds = ["login" if len(p) == 0x80 else "remove" for p in mt.sent_packets]
         assert kinds == ["login", "remove"] * 19
-        removes = _token_remove_tokens(
-            [p for p in mt.sent_packets if len(p) == 0x40]
-        )
+        removes = _token_remove_tokens([p for p in mt.sent_packets if len(p) == 0x40])
         assert removes == tokens[:19]
         assert mt.disconnected is True
 
