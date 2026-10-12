@@ -8,6 +8,7 @@ produce (a measured RSS slope, a failure) are set on a copy of that report.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import copy
 import json
@@ -130,3 +131,15 @@ def test_module_runs_as_a_script_from_the_repository_root_without_site_packages(
     )
     assert done.returncode == 1, done.stderr
     assert summary.read_text(encoding="utf-8").startswith("## Soak: NO REPORT")
+
+
+def test_script_imports_only_the_standard_library() -> None:
+    tree = ast.parse(Path(report_summary.__file__).read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            imported.add("." if node.level else (node.module or "").split(".")[0])
+    assert imported
+    assert imported <= set(sys.stdlib_module_names), imported
