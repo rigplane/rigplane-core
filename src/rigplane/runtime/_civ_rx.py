@@ -935,7 +935,7 @@ class CivRuntime:
         (a port whose close failed stays registered so the retirement can be
         retried). A retirement still in flight when this runs cannot undo it:
         everything it writes here happens before its one ``await``, the
-        transport close, and that close is all it has left to do.
+        transport close.
         """
         for tasks in self._managed_tx_sends.values():
             for task in tasks:
