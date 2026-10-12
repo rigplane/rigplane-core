@@ -10,8 +10,9 @@ metrics (RSS / FDs / asyncio tasks) are sampled periodically and
 evaluated against the ticket's pass criteria (see ``scripts/soak/
 README.md`` for the criteria and their known limits).
 
-Cadences are constants in this module, not CLI flags; the CLI takes only
-``--duration`` and ``--report``. Exit status is 0 on a PASS verdict and
+Cadences are constants in this module, not CLI flags; the simulator soak
+takes only ``--duration`` and ``--report`` (``--observe-url``: observe.py).
+Exit status is 0 on a PASS verdict and
 1 on FAIL. Run from the repository root (the simulator stack imports the
 top-level ``rigplane_testkit`` package)::
 
@@ -1157,11 +1158,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    from scripts.soak import observe
+
+    parser = _build_parser()
+    observe.add_arguments(parser)
+    args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    if args.observe_url is not None:
+        return observe.main_from_args(args, parser)
     config = SoakConfig(duration_s=args.duration, report_path=args.report)
     report = asyncio.run(run_soak(config))
     print(summary_line(report))
