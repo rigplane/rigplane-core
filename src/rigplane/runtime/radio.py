@@ -1539,6 +1539,17 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # Keep the identity hold until teardown finishes; stop its reader first.
         self._cancel_lan_identity_reread()
         await self._shutdown_managed_tx()
+        # Owner teardown stops the resident loops explicitly: during
+        # RECONNECTING after a failed attempt the lifecycle is already
+        # released and unclaimed, so the lifecycle disconnect below is a
+        # no-op and the CONNECTED-gated control-phase teardown never runs —
+        # without this the loop would log back in after the user left.
+        self._control_phase._stop_watchdog()
+        self._control_phase._stop_reconnect()
+        if self._conn_state is RadioConnectionState.RECONNECTING:
+            # Also ends the loop via its ``while`` guard if the cancel
+            # lands between awaits.
+            self._conn_state = RadioConnectionState.DISCONNECTED
         await self._session_lifecycle.disconnect()
         if self._conn_state == RadioConnectionState.CONNECTED:
             await self._control_phase.disconnect()

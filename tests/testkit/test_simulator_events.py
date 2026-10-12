@@ -188,6 +188,59 @@ async def test_keepalive_silence_longer_than_watchdog_fires_link_down() -> None:
         await server.stop()
 
 
+async def test_user_disconnect_during_reconnect_ends_loop(
+    sim: MockIcomRadio,
+) -> None:
+    """A user ``disconnect()`` during RECONNECTING ends the reconnect loop.
+
+    After an attempt fails with the discovery timeout (radio off) the
+    lifecycle is already released and unclaimed and ``conn_state`` is
+    RECONNECTING, so neither the lifecycle disconnect nor the
+    CONNECTED-gated control-phase teardown stops the loop —
+    ``disconnect()`` must stop it explicitly, or the client logs back in
+    after the user has disconnected.
+    """
+    radio = _client(sim, reconnect_delay=3.0, reconnect_max_delay=3.0)
+    statuses: list[dict] = []
+    radio.set_reconnect_status_callback(statuses.append)
+    with fast_connect():
+        await radio.connect()
+        try:
+            # Long outage: the attempt fails against a radio that is
+            # off, so the failure is a discovery timeout, not a busy
+            # reject, and by the time the second attempt announces
+            # itself the lifecycle is released and unclaimed.
+            sim.reboot(at=0.1, down_for=22.0, busy_for=0.0)
+            radio_back_at = time.monotonic() + 0.1 + 22.0
+
+            deadline = time.monotonic() + 40.0
+            while time.monotonic() < deadline:
+                if any(
+                    s["state"] == "reconnecting" and s["attempt"] >= 2
+                    for s in statuses
+                ):
+                    break
+                await asyncio.sleep(0.02)
+            assert any(
+                s["state"] == "reconnecting" and s["attempt"] >= 2 for s in statuses
+            ), statuses
+
+            await radio.disconnect()  # the user's disconnect, mid-reconnect
+
+            n_status = len(statuses)
+            # Watch past the radio's return: a loop that survived the
+            # user's disconnect logs back in as soon as the radio answers
+            # again, so the window must cover it.
+            await asyncio.sleep(max(0.0, radio_back_at - time.monotonic()) + 5.0)
+            assert statuses[n_status:] == [], statuses[n_status:]
+            assert radio.conn_state is RadioConnectionState.DISCONNECTED
+            assert radio._reconnect_task is None or radio._reconnect_task.done()
+            # No new login claimed the simulator's session.
+            assert sim.session_held is False
+        finally:
+            await radio.disconnect()
+
+
 async def test_reboot_busy_window_longer_than_reconnect_rounds_recovers(
     sim: MockIcomRadio,
 ) -> None:
@@ -197,6 +250,10 @@ async def test_reboot_busy_window_longer_than_reconnect_rounds_recovers(
     client died without a release, so the reconnect loop must keep backing
     off across a busy window longer than one connect() call instead of
     treating the reject as permanent.
+
+    The reconnect task is pinned to be the SAME task object across the
+    busy window: a per-attempt release that stopped the loop would end
+    reconnecting inside the window instead of recovering after it.
 
     Two deliberate differences from the bench shape, both forced by this
     simulator's model (verified with a probe against this stack):
@@ -227,6 +284,22 @@ async def test_reboot_busy_window_longer_than_reconnect_rounds_recovers(
 
             sim.reboot(at=0.1, down_for=3.0, busy_for=4.0)
 
+            # Capture the resident loop's task when the second attempt
+            # announces itself — the first attempt's release has already
+            # run by then, so the handle is only non-None if that release
+            # preserved it.
+            deadline = time.monotonic() + 20.0
+            while time.monotonic() < deadline and not any(
+                s["state"] == "reconnecting" and s["attempt"] >= 2 for s in statuses
+            ):
+                await asyncio.sleep(0.02)
+            assert any(
+                s["state"] == "reconnecting" and s["attempt"] >= 2 for s in statuses
+            ), statuses
+            loop_task = radio._reconnect_task
+            assert loop_task is not None
+            assert not loop_task.done()
+
             def recovered(seen: list[RadioConnectionState]) -> bool:
                 return (
                     seen[-1] is RadioConnectionState.CONNECTED
@@ -236,6 +309,8 @@ async def test_reboot_busy_window_longer_than_reconnect_rounds_recovers(
 
             seen = await _states_until(radio, 20.0, recovered)
             assert recovered(seen), seen
+            assert radio._reconnect_task is loop_task
+            await asyncio.wait_for(loop_task, timeout=5.0)
             assert sim.busy_rejects >= 2, sim.busy_rejects
             assert sum(1 for s in statuses if s["state"] == "reconnecting") >= 2, (
                 statuses

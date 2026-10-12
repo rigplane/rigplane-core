@@ -114,12 +114,14 @@ class TestReconnectLifecycleRelease:
     """The reconnect loop routes its release through the session lifecycle."""
 
     @pytest.mark.asyncio
-    async def test_stop_reconnect_from_inside_task_does_not_cancel(
+    async def test_stop_reconnect_from_inside_task_keeps_handle_for_external_stop(
         self, radio: IcomRadio
     ) -> None:
-        """_stop_reconnect called from the task it would cancel clears the
-        handle without cancelling that task (the release the reconnect loop
-        awaits reaches _stop_reconnect from inside the loop itself)."""
+        """_stop_reconnect from inside the task it would cancel neither
+        cancels the task nor clears the handle (the release the reconnect
+        loop awaits reaches _stop_reconnect from inside the loop itself);
+        the handle is cleared only on a real cancel, so a later external
+        stop — a user disconnect() — can still end the loop."""
         radio._connected = False
         radio._intentional_disconnect = False
 
@@ -129,8 +131,12 @@ class TestReconnectLifecycleRelease:
             await asyncio.sleep(0.05)
 
         task = asyncio.create_task(_body())
-        await asyncio.wait_for(task, timeout=5.0)
+        await asyncio.sleep(0.01)  # let _body reach its internal stop
         assert not task.cancelled()
+        assert radio._reconnect_task is task
+        radio._control_phase._stop_reconnect()  # external stop: cancels
+        with pytest.raises(asyncio.CancelledError):
+            await task
         assert radio._reconnect_task is None
 
     @pytest.mark.asyncio

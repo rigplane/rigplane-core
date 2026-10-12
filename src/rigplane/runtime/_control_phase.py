@@ -655,8 +655,14 @@ class ControlPhaseRuntime:
         self._deferred_retail = None
         # Best-effort teardown of any data/audio transports first (mirrors
         # disconnect ordering), then the always-sent token-remove.
+        # No ``_stop_reconnect`` here: the lifecycle runs this release per
+        # connect attempt from its own connect task
+        # (``CoreRadioSessionLifecycle._attempt_with_release``), which is not
+        # the resident reconnect loop — a release that belongs to a connect
+        # attempt must never stop that loop; only an owner teardown
+        # (``CoreRadio.disconnect`` / ``ControlPhaseRuntime.disconnect``)
+        # stops it.
         self._stop_watchdog()
-        self._stop_reconnect()
         self._stop_token_renewal()
         # An identity-held partial session can have live CI-V tasks. Retire
         # their generation before closing transports or accepting late replies.
@@ -1230,11 +1236,14 @@ class ControlPhaseRuntime:
     def _stop_reconnect(self) -> None:
         h = self._host
         if h._reconnect_task is not None and not h._reconnect_task.done():
-            # The reconnect loop reaches this through the lifecycle release
-            # it awaits; cancelling here would cancel the caller itself.
-            if h._reconnect_task is not asyncio.current_task():
-                h._reconnect_task.cancel()
-            h._reconnect_task = None
+            # The reconnect loop reaches this through a release it awaits;
+            # cancelling here would cancel the caller itself.  Keep the
+            # handle in that case: clearing it would leave a running loop
+            # that no later owner stop (a user disconnect()) can reach.
+            if h._reconnect_task is asyncio.current_task():
+                return
+            h._reconnect_task.cancel()
+        h._reconnect_task = None
 
 
 class ControlPhaseSessionMechanism:
