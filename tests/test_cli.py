@@ -2166,6 +2166,60 @@ class TestCheckPortsAvailable:
         assert str(occupied_rigctld_port) in captured.err
         assert "lsof" in captured.err.lower()
 
+    def test_second_resident_start_refuses_before_radio_open(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """MOR-3391: a second resident start for the same radio refuses with 1.
+
+        The guard is taken before the radio is constructed, the port
+        preflight probes, or any listener binds — the fake radio is never
+        created and the refusal message names the holding process's pid.
+        """
+        import asyncio
+        import os
+
+        from rigplane.cli import _run
+        from rigplane.cli._instance_guard import (
+            acquire_resident_lock,
+            radio_lock_identity,
+        )
+
+        monkeypatch.setattr(
+            platformdirs, "user_cache_path", lambda _appname: tmp_path
+        )
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
+        identity = radio_lock_identity(
+            LanBackendConfig(host="1.2.3.4", port=args.control_port)
+        )
+        first = acquire_resident_lock(identity, cache_dir=tmp_path)
+        assert first is not None
+        try:
+            mock_radio = MagicMock()
+            mock_radio.__aenter__ = AsyncMock(return_value=mock_radio)
+            mock_radio.__aexit__ = AsyncMock(return_value=False)
+            with (
+                patch(
+                    "rigplane.cli.create_radio",
+                    side_effect=AssertionError("radio must not be created"),
+                ),
+                patch(
+                    "rigplane.cli.check_ports_available",
+                    side_effect=AssertionError("no listener probe may bind"),
+                ),
+            ):
+                try:
+                    result = asyncio.run(_run(args))
+                except AssertionError:
+                    pytest.fail("second resident start touched the radio or ports")
+        finally:
+            first.close()
+
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "already serving this radio" in captured.err
+        assert str(os.getpid()) in captured.err
+
 
 class TestProductionManagedTxComposition:
     class _Radio:
