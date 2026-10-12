@@ -1140,6 +1140,25 @@ class ControlHandler:
             return
         try:
             if not self._radio.connected:
+                conn_state = getattr(self._radio, "conn_state", None)
+                state_value = getattr(conn_state, "value", conn_state)
+                if state_value in {"connecting", "reconnecting"}:
+                    # The backend is still logging back in after a dropped
+                    # link, so this disconnect must stop the reconnect loop
+                    # instead of being acked as a no-op. Owner-level
+                    # disconnect() cancels the identity re-read first, bumps
+                    # the owner-stop epoch and releases the session.
+                    await self._radio.disconnect()
+                    await self._send_json(
+                        {
+                            "type": "response",
+                            "id": msg_id,
+                            "ok": True,
+                            "result": {"status": "disconnected"},
+                        }
+                    )
+                    await self._broadcast_connection_state(False)
+                    return
                 await self._send_json(
                     {
                         "type": "response",
