@@ -777,10 +777,21 @@ class ControlPhaseRuntime:
                 # Defensive: _force_cleanup_civ normally nulls the transport.
                 # If a subclass/mock left it set, do not loop forever — bail.
                 return
-        if not h._ctrl_transport or not getattr(
-            h._ctrl_transport, "_udp_transport", None
+        # A control transport that never completed a login is no session to
+        # reuse: ``IcomTransport.connect``/``reconnect`` leave the transport
+        # CONNECTING and only the end of ``_connect_once`` marks it CONNECTED,
+        # so an open UDP socket alone must not select the CI-V-rebuild branch
+        # (MOR-3296).  Transport doubles without a ``state`` attribute model
+        # an established session and keep the pre-gate behaviour.
+        if (
+            not h._ctrl_transport
+            or not getattr(h._ctrl_transport, "_udp_transport", None)
+            or getattr(h._ctrl_transport, "state", ConnectionState.CONNECTED)
+            is not ConnectionState.CONNECTED
         ):
-            logger.info("soft_reconnect: control transport gone, doing full connect")
+            logger.info(
+                "soft_reconnect: control session not established, doing full connect"
+            )
             # The legacy ``connect()`` retry wrapper was removed in A3; the
             # lifecycle owns retry.  A full re-establish here is a single
             # mechanism attempt (``_connect_once``); the lifecycle's RECOVERING
