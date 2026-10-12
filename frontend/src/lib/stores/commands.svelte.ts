@@ -504,8 +504,8 @@ export const getStateBackedCommandDescriptor = (intentName: string): StateBacked
 
 /**
  * The `ServerState` receiver field each pending-marker intent is confirmed
- * against — the same `confirmedField` `panel-adapters.ts`'s pending
- * accessors pass to `latestPendingParam` for that intent. Used here only to
+ * against — the same `confirmedField` `pending-intent-table.ts`'s pending
+ * folds pass to `latestPendingParam` for that intent. Used here only to
  * capture that field's ack-time observation marker; an intent absent from
  * this table simply captures no marker.
  */
