@@ -2322,9 +2322,7 @@ class TestCheckPortsAvailable:
     @pytest.mark.parametrize(
         ("argv", "expect"),
         [
-            pytest.param(
-                ["--host", "1.2.3.4", "web"], "resident-refused", id="web"
-            ),
+            pytest.param(["--host", "1.2.3.4", "web"], "resident-refused", id="web"),
             pytest.param(
                 ["--host", "1.2.3.4", "station"],
                 "resident-refused",
@@ -2503,15 +2501,11 @@ class TestCheckPortsAvailable:
             )
             raise RuntimeError("run-marker")
 
-        with patch(
-            "rigplane.cli.create_radio", side_effect=_create_while_probed
-        ):
+        with patch("rigplane.cli.create_radio", side_effect=_create_while_probed):
             with pytest.raises(RuntimeError, match="run-marker"):
                 asyncio.run(asyncio.wait_for(_run(args), timeout=30.0))
 
-    def test_one_shot_serial_refuses_while_holder_serves_port(
-        self, capsys, tmp_path
-    ):
+    def test_one_shot_serial_refuses_while_holder_serves_port(self, capsys, tmp_path):
         """MOR-3431: a one-shot command refuses while another process holds the serial lock.
 
         The child holds the serial identity for `--serial-port <tmp path>`
@@ -2530,12 +2524,8 @@ class TestCheckPortsAvailable:
 
         device = tmp_path / "tty-fake"
         device.write_bytes(b"")
-        args = _build_parser().parse_args(
-            ["--serial-port", str(device), "status"]
-        )
-        identity = radio_lock_identity(
-            SerialBackendConfig(device=str(device))
-        )
+        args = _build_parser().parse_args(["--serial-port", str(device), "status"])
+        identity = radio_lock_identity(SerialBackendConfig(device=str(device)))
         child_script = (
             "import sys, time\n"
             "from rigplane.cli._instance_guard import acquire_resident_lock\n"
