@@ -3770,3 +3770,237 @@ class TestListenFlag:
             if line.strip().startswith("--host ") or line.strip().startswith("--host\t")
         )
         assert "deprecat" in host_line.lower()
+
+
+class _AlwaysBusyMechanism:
+    """A mechanism that busy-rejects every attempt (a live owner holds)."""
+
+    def __init__(self) -> None:
+        self.connect_calls = 0
+        self.release_calls = 0
+
+    async def connect_attempt(self) -> Any:
+        from rigplane.runtime.session_lifecycle import (
+            AttemptOutcome,
+            AttemptResult,
+        )
+
+        self.connect_calls += 1
+        return AttemptResult(AttemptOutcome.SESSION_BUSY_REJECT)
+
+    async def release(self) -> None:
+        self.release_calls += 1
+
+
+class _StartupClock:
+    """Virtual clock seam for the start-up busy-cap row.
+
+    The lifecycle sizes the start-up busy wait in its own clock seam
+    (``session_lifecycle.time.monotonic`` and ``session_lifecycle.asyncio.sleep``);
+    advancing it inside the fake cooldown sleep plays a full budget in
+    real milliseconds.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.now += delay
+
+
+class _RecordingCapRadio(_LifecycleBusyHoldRadio):
+    """A lifecycle radio that records the connect error before re-raising."""
+
+    def __init__(self, lifecycle: Any, mech: Any) -> None:
+        super().__init__(lifecycle, mech)
+        self.connect_error: BaseException | None = None
+
+    async def __aenter__(self) -> "_RecordingCapRadio":
+        try:
+            return await super().__aenter__()
+        except BaseException as exc:
+            self.connect_error = exc
+            raise
+
+
+class TestLiveOwnerExitCode:
+    """The live-owner stop exits 3 through the real exit path.
+
+    The rows drive ``_run`` itself (not only a mapping helper) with a
+    radio whose first connect runs a real lifecycle into the live-holder
+    stop: the awaited start-up path (``status``) and the background
+    start-up path (``web`` serving not-ready during the busy hold). An
+    ordinary connection error still exits 1.
+    """
+
+    @staticmethod
+    def _lifecycle_radio() -> Any:
+        from rigplane.runtime.session_lifecycle import CoreRadioSessionLifecycle
+
+        mech = _AlwaysBusyMechanism()
+        lifecycle = CoreRadioSessionLifecycle(
+            mech,
+            reject_cooldown_s=0.05,
+            not_ready_cooldown_s=0.05,
+            max_connect_attempts=100,
+            first_connect_busy_cooldown_s=0.05,
+            first_connect_busy_budget_s=600.0,
+            first_connect_busy_live_holder_after_s=0.1,
+        )
+        return _LifecycleBusyHoldRadio(lifecycle, mech)
+
+    @staticmethod
+    def _cap_lifecycle_radio() -> "_RecordingCapRadio":
+        from rigplane.runtime.session_lifecycle import CoreRadioSessionLifecycle
+
+        mech = _AlwaysBusyMechanism()
+        lifecycle = CoreRadioSessionLifecycle(
+            mech,
+            reject_cooldown_s=0.2,
+            not_ready_cooldown_s=0.2,
+            max_connect_attempts=100,
+            first_connect_busy_cooldown_s=0.2,
+            first_connect_busy_budget_s=1.0,
+            first_connect_busy_live_holder_after_s=None,
+        )
+        return _RecordingCapRadio(lifecycle, mech)
+
+    @staticmethod
+    def _patches(radio: Any, composition: Any) -> Any:
+        # Like ``TestStartupBusyHoldOrdering._patches`` but without assigning
+        # the hold event: the real lifecycle owns it here.
+        return (
+            patch("rigplane.cli.create_radio", return_value=radio),
+            patch("rigplane.cli.check_ports_available"),
+            patch("rigplane.cli.ManagedTxComposition", return_value=composition),
+            patch("rigplane.web.server.WebServer", _BusyHoldWebServer),
+        )
+
+    @staticmethod
+    async def _wait_for(predicate: Any, *, timeout: float = 10.0) -> None:
+        import asyncio
+
+        async def _poll() -> None:
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(_poll(), timeout=timeout)
+
+    @pytest.mark.asyncio
+    async def test_awaited_live_owner_stop_exits_three(self, capsys: Any) -> None:
+        """The awaited first connect maps the live-owner stop to 3."""
+        from rigplane.cli import _run
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "status"])
+        radio = self._lifecycle_radio()
+        with patch("rigplane.cli.create_radio", return_value=radio):
+            result = await _run(args)
+
+        assert result == 3
+        assert radio.enter_calls == 1
+        err = capsys.readouterr().err
+        assert "Error: radio busy: another client holds the session" in err
+        assert "from this computer" in err
+
+    @pytest.mark.asyncio
+    async def test_background_live_owner_stop_exits_three(self, capsys: Any) -> None:
+        """The background connect during a busy hold maps the stop to 3."""
+        import asyncio
+
+        from rigplane.cli import _run
+
+        radio = self._lifecycle_radio()
+        composition = _busy_hold_composition()
+        _BusyHoldWebServer.instances.clear()
+        args = TestStartupBusyHoldOrdering._args()
+        p1, p2, p3, p4 = self._patches(radio, composition)
+        with p1, p2, p3, p4:
+            run_task = asyncio.ensure_future(_run(args))
+            try:
+                await self._wait_for(
+                    lambda: (
+                        bool(_BusyHoldWebServer.instances)
+                        and "serve-start" in _BusyHoldWebServer.instances[-1].events
+                    ),
+                    timeout=10.0,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                run_task.cancel()
+                pytest.fail("serve did not start while the connect held busy")
+            result = await asyncio.wait_for(run_task, timeout=30.0)
+
+        assert result == 3
+        err = capsys.readouterr().err
+        assert "Error: radio busy: another client holds the session" in err
+        assert "from this computer" in err
+        composition.transport_ready.assert_not_awaited()
+        assert len(radio.exits) == 1
+
+    @pytest.mark.asyncio
+    async def test_ordinary_connection_error_exits_one(self, capsys: Any) -> None:
+        """An ordinary connection error on the same path still exits 1."""
+        from rigplane.cli import _run
+        from rigplane.core.exceptions import (
+            ConnectionError as RigplaneConnectionError,
+        )
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "status"])
+
+        class _RefusedRadio:
+            capabilities: set[str] = set()
+
+            async def __aenter__(self) -> "_RefusedRadio":
+                raise RigplaneConnectionError(
+                    "Radio session never became ready after 4 resident attempts; "
+                    "a foreign client may hold it."
+                )
+
+            async def __aexit__(self, *exc: Any) -> bool:
+                return False
+
+        with patch("rigplane.cli.create_radio", return_value=_RefusedRadio()):
+            result = await _run(args)
+
+        assert result == 1
+        err = capsys.readouterr().err
+        assert "Error: Radio session never became ready" in err
+
+    @pytest.mark.asyncio
+    async def test_busy_budget_cap_exits_one_not_held(
+        self, capsys: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The start-up busy-budget cap maps to 1, not to the held subclass.
+
+        Without the live-holder threshold the real lifecycle runs the busy
+        loop into its budget cap, which raises the base connection error —
+        so ``_run`` reports it as an ordinary runtime error (exit 1), and
+        the cap error is not a ``RadioSessionHeldError``.
+        """
+        from rigplane.cli import _run
+        from rigplane.core.exceptions import (
+            ConnectionError as RigplaneConnectionError,
+        )
+        from rigplane.core.exceptions import RadioSessionHeldError
+
+        clock = _StartupClock()
+        monkeypatch.setattr(
+            "rigplane.runtime.session_lifecycle.time.monotonic", clock.monotonic
+        )
+        monkeypatch.setattr(
+            "rigplane.runtime.session_lifecycle.asyncio.sleep", clock.sleep
+        )
+        radio = self._cap_lifecycle_radio()
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "status"])
+        with patch("rigplane.cli.create_radio", return_value=radio):
+            result = await _run(args)
+
+        assert result == 1
+        err = capsys.readouterr().err
+        assert "Error: Radio session never became ready: still busy" in err
+        assert radio.enter_calls == 1
+        assert radio.connect_error is not None
+        assert not isinstance(radio.connect_error, RadioSessionHeldError)
+        assert isinstance(radio.connect_error, RigplaneConnectionError)

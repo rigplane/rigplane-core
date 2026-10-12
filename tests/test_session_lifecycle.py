@@ -940,6 +940,37 @@ async def test_live_holder_stop_on_the_threshold_attempt(
     assert lc.state is LifecycleState.DISCONNECTED
 
 
+async def test_live_holder_stop_raises_held_subclass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live-owner stop raises RadioSessionHeldError.
+
+    The stop keeps raising the established connection error (every
+    existing ``except`` still catches it) through a dedicated subclass,
+    so the CLI can map it to exit code 3.
+    """
+    from rigplane.core.exceptions import (
+        ConnectionError as RigplaneConnectionError,
+    )
+    from rigplane.core.exceptions import RadioSessionHeldError
+
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    for _ in range(5):
+        mech.queue_busy_reject()
+
+    with pytest.raises(
+        RadioSessionHeldError, match="another client holds the session"
+    ) as excinfo:
+        await lc.connect()
+
+    assert isinstance(excinfo.value, RigplaneConnectionError)
+    assert mech.connect_calls == 4
+    assert mech.release_calls == 4
+    assert not mech.claimed
+    assert lc.state is LifecycleState.DISCONNECTED
+
+
 async def test_dead_hold_granted_before_the_threshold_connects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

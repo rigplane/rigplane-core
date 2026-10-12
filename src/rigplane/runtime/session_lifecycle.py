@@ -59,6 +59,7 @@ from rigplane.core.exceptions import (
     AuthenticationError,
     ConnectionError as RigplaneConnectionError,
     DiscoveryTimeout,
+    RadioSessionHeldError,
 )
 
 __all__ = [
@@ -1047,10 +1048,10 @@ class CoreRadioSessionLifecycle:
         updated ``(busy_attempts, busy_deadline)``.
 
         Raises:
-            RigplaneConnectionError: the pass started at or after the
-                live-holder threshold (a live session holds the radio), or
-                the start-up busy budget elapsed — both with the honest
-                busy reason, never the discovery message.
+            RadioSessionHeldError: the pass started at or after the
+                live-holder threshold (a live session holds the radio).
+            RigplaneConnectionError: the start-up busy budget elapsed —
+                with the honest busy reason, never the discovery message.
         """
         live_holder_after_s = self._first_connect_busy_live_holder_after_s
         if (
@@ -1070,7 +1071,7 @@ class CoreRadioSessionLifecycle:
 
             self._connecting_started = None
             self._emit(LifecycleState.DISCONNECTED)
-            raise RigplaneConnectionError(
+            raise RadioSessionHeldError(
                 "radio busy: another client holds the session. "
                 f"{_session_reject_hint(0xFFFFFFFF)}"
             )

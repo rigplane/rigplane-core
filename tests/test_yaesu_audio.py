@@ -30,6 +30,7 @@ class FakeAudioDriver:
         self._tx_task: asyncio.Task[None] | None = None
         self._rx_callback: Callable[[bytes], None] | None = None
         self._tx_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=64)
+        self.rx_starts = 0
 
     # -- properties expected by get_audio_stats ------------------------------
 
@@ -53,6 +54,7 @@ class FakeAudioDriver:
     ) -> None:
         self._rx_callback = callback
         self._rx_task = asyncio.ensure_future(asyncio.sleep(3600))
+        self.rx_starts += 1
 
     async def stop_rx(self) -> None:
         if self._rx_task is not None:

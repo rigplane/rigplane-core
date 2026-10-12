@@ -3,6 +3,7 @@
 __all__ = [
     "RigplaneError",
     "ConnectionError",
+    "RadioSessionHeldError",
     "AuthenticationError",
     "CommandError",
     "BackgroundSendDropped",
@@ -22,6 +23,16 @@ class RigplaneError(Exception):
 
 class ConnectionError(RigplaneError):
     """Raised when a connection to the radio fails or is lost."""
+
+
+class RadioSessionHeldError(ConnectionError):
+    """Raised only by the start-up live-holder stop in
+    ``CoreRadioSessionLifecycle._first_connect_busy_pass``.
+
+    A subclass of :class:`ConnectionError`, so every existing ``except``
+    still catches it; the CLI maps it to exit code 3 (a deliberate stop,
+    not a crash).
+    """
 
 
 class AuthenticationError(RigplaneError):
