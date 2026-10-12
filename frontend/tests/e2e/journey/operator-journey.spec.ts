@@ -296,7 +296,7 @@ test.describe('server killed and restarted on the same port', () => {
       await expect(page.locator('[role="status"][title="Control WebSocket: connected"]')).toBeVisible();
       await expect(page.locator('.control-link-lost')).toHaveCount(0);
 
-      // FRESH state: the readout and /api/v1/state report B, never A again.
+      // FRESH state: the readout and /api/v1/state report B.
       await expectReadoutHz(readout, FREQ_B);
       await expectServerMain(page, { freqHz: FREQ_B });
     } finally {
