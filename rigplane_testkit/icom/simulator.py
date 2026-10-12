@@ -57,11 +57,13 @@ _POWER_OFF_NOTICE_WINDOW_S = 0.02
 # (~45-60 s) can be passed for the one slow timing test.
 _DEFAULT_KEEPALIVE_HOLD_S = 0.5
 
-# Retransmit-request cadence while a CI-V sequence gap is open: the recorded
-# IC-7610 repeats the request about every 0.1 s, each round twice
-# (``tests/fixtures/ic7610/retransmit_gaps.jsonl`` windows gap_never_filled
-# and single_gap_filled_by_idle).
+# Retransmit-request cadence while a CI-V sequence gap is open: a round
+# (the request sent twice) follows a client tracked packet only when the
+# previous round is at least 0.075 s old, and otherwise the 0.1 s loop
+# repeats it for a silent client (recorded IC-7610, never closer than
+# 77 ms apart; ``tests/fixtures/ic7610/retransmit_gaps.jsonl``).
 _CIV_GAP_RETRANSMIT_PERIOD_S = 0.1
+_CIV_GAP_ROUND_MIN_SPACING_S = 0.075
 
 # ---------------------------------------------------------------------------
 # Protocol constants (duplicated here to keep mock self-contained)
@@ -256,6 +258,7 @@ class _CivGapState:
         self.next_expected: int | None = None
         self.missing: set[int] = set()
         self.held: dict[int, tuple[str, bytes, tuple[str, int], int]] = {}
+        self.last_round_at: float | None = None
 
 
 def _missing_runs(missing: set[int]) -> list[tuple[int, int]]:
@@ -1498,11 +1501,12 @@ class MockIcomRadio:
         Returns True when the caller should process the packet (and then
         drain held packets via :meth:`_civ_gap_drain`). A packet ahead of
         the expected number is held: the numbers in between become missing
-        when the gap opens (never re-marked afterwards), and every held
-        packet is answered with a retransmit-request round at once. A
-        packet carrying a missing number fills it — including the last
-        one, which drains the held packets in sequence order whatever the
-        fill order. A number at or below the last processed one is ignored
+        when the gap opens (a still-held number is never re-marked), and a
+        held packet draws one retransmit-request round unless the previous
+        round is less than 0.075 s old. A packet carrying a missing number
+        fills it — including the last one, which drains the held packets
+        in sequence order whatever the fill order. A number at or below
+        the last processed one is ignored
         — no echo, no reply — whether or not a gap is open (recorded real
         IC-7610, MOR-3361: after a re-sent OpenClose the radio answers
         again only once the client's new numbering passes the last
@@ -1535,17 +1539,22 @@ class MockIcomRadio:
                 tracker.missing.discard(seq)
             else:
                 for off in range(delta):
-                    tracker.missing.add((expected + off) & 0xFFFF)
+                    opened = (expected + off) & 0xFFFF
+                    if opened not in tracker.held:
+                        tracker.missing.add(opened)
             if seq not in tracker.held:
                 tracker.held[seq] = (kind, data, addr, sender_id)
             if tracker.missing:
                 # Still missing numbers — the gap just opened, stayed open
-                # or narrowed: answer this tracked packet with a request
-                # round at once. The recorded radio's rounds land 0–4 ms
-                # after each client tracked packet while a gap is open
-                # (``retransmit_gaps.jsonl``); the 0.1 s loop stays as the
-                # fallback for a silent client.
-                self._civ_gap_send_round(tracker, proto)
+                # or narrowed: answer this tracked packet with one request
+                # round, unless the previous round is less than 0.075 s old
+                # (recorded rounds never come closer than 77 ms; row 143
+                # @1.005 draws no round 3 ms after one). The 0.1 s loop
+                # stays as the fallback for a silent client.
+                now = time.monotonic()
+                last = tracker.last_round_at
+                if last is None or now - last >= _CIV_GAP_ROUND_MIN_SPACING_S:
+                    self._civ_gap_send_round(tracker, proto)
             else:
                 # The last missing number arrived ahead of the expected
                 # one: release everything held, in sequence order.
@@ -1609,6 +1618,7 @@ class MockIcomRadio:
             proto = self._civ_proto
         if proto is None:
             return
+        tracker.last_round_at = time.monotonic()
         pkt = self._civ_gap_request(tracker)
         for _ in range(2):
             # Through the same outbound funnel as replies, so a fault plan
@@ -1617,7 +1627,11 @@ class MockIcomRadio:
             self.civ_retransmit_requests += 1
 
     async def _civ_gap_loop(self) -> None:
-        """Repeat the retransmit request twice every 0.1 s per gapped owner."""
+        """Repeat the retransmit request twice every 0.1 s per gapped owner.
+
+        A fallback for a silent client: a round goes out only when the
+        previous round (packet-triggered or not) is at least 0.1 s old.
+        """
         try:
             while True:
                 await asyncio.sleep(_CIV_GAP_RETRANSMIT_PERIOD_S)
@@ -1626,7 +1640,10 @@ class MockIcomRadio:
                     continue
                 for tracker in list(self._civ_gap.values()):
                     if tracker.missing:
-                        self._civ_gap_send_round(tracker, proto)
+                        now = time.monotonic()
+                        last = tracker.last_round_at
+                        if last is None or now - last >= _CIV_GAP_RETRANSMIT_PERIOD_S:
+                            self._civ_gap_send_round(tracker, proto)
         except asyncio.CancelledError:
             raise
         except Exception:

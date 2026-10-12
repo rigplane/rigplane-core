@@ -25,10 +25,11 @@ UDP code paths as production.
   ignores numbers at or below the last processed one — a re-sent
   OpenClose never restarts tracking (MOR-3361), which ends only on a new
   accepted login, a newly claimed conninfo, `drop_session` or reboot —
-  while sending the retransmit request twice for every tracked packet
-  held with numbers still missing (single form for one missing number,
-  otherwise one ranges packet per contiguous missing run), plus a twice
-  every 0.1 s repeat as the fallback for a silent client. `civ_retransmit_requests` counts the request packets sent
+  while sending the retransmit request twice (one round) for a tracked
+  packet held with numbers still missing only when the previous round is
+  at least 75 ms old (single form for one missing number, otherwise one
+  ranges packet per contiguous missing run), plus a twice every 0.1 s
+  repeat, likewise paced, as the fallback for a silent client. `civ_retransmit_requests` counts the request packets sent
   on the CI-V port; `civ_gap_open` is true while any number is missing.
   A re-sent OpenClose still gets its stream-active marker; only
   tracked-packet processing follows the ignore rule.

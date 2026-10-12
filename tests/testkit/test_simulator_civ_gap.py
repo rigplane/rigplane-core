@@ -8,10 +8,9 @@ packets are held, and while any number is missing the radio sends the
 retransmit request twice per round — the single form (0x10-byte
 type-0x01, header seq = the missing number) when exactly one number is
 missing, otherwise one ranges packet (header seq 0, then little-endian u16
-``[first, last]`` pairs, one per contiguous missing run). A round goes out
-at once for every tracked packet held while a gap is open (the recording
-answers each client packet within 0–4 ms); the 0.1 s loop is the fallback
-for a silent client. A tracked packet carrying a missing number (any
+``[first, last]`` pairs, one per contiguous missing run). A tracked packet
+held while a gap is open draws a round only when the previous round is at
+least 75 ms old; the 0.1 s loop is the fallback for a silent client. A tracked packet carrying a missing number (any
 tracked kind, idle included) fills it; once nothing is missing the held
 packets are processed in sequence order, so a CI-V request held through
 the stall is answered after the fill and no CI-V answer goes out while
@@ -25,6 +24,10 @@ radio session: a later OpenClose(open) never restarts it, so a number at
 or below the last processed one is ignored (recorded real IC-7610,
 MOR-3361). Tracking restarts only on a new session (an accepted login, a
 conninfo claiming a new session) or after ``drop_session`` / reboot.
+Round pacing mirrors the recording: a tracked packet held while a gap is
+open draws a round only when the previous round is at least 75 ms old
+(recorded rounds are never closer than 77 ms; row 143 @1.005 draws no
+round 3 ms after one) — the 0.1 s loop only fills a silent client's gap.
 
 Every client-side sequence number, request kind and range asserted below
 comes from the fixture file (loaded by :func:`_fixture_rows`), never from
@@ -280,11 +283,11 @@ async def test_unfilled_gap_repeats_ranges_twice_per_round(
     first = [await client.recv() for _ in range(2)]
     assert all(_parse_retransmit(p) == ("ranges", expected_ranges) for p in first)
 
-    # A 0.55 s window holds the immediate pair plus ~5 fallback rounds of
-    # two: every packet is the same ranges request, never the held
-    # request's echo.
+    # A 0.55 s window holds the immediate pair plus ~3-5 paced fallback
+    # rounds of two (the first timer fire lands inside the pacing window):
+    # every packet is the same ranges request, never the held echo.
     window = await _collect(client, 0.55)
-    assert 10 <= len(window) <= 14
+    assert 6 <= len(window) <= 12
     assert len(window) % 2 == 0
     assert all(_parse_retransmit(p) == ("ranges", expected_ranges) for p in window)
     assert all(p != held for p in window)
@@ -717,35 +720,175 @@ async def test_new_claim_clears_gap_tracking() -> None:
 
 
 # ---------------------------------------------------------------------------
-# M2: a round answers every tracked packet held while a gap is open
+# B1: paced rounds match the recorded rate, per window
 # ---------------------------------------------------------------------------
 
 
-async def test_held_packets_draw_immediate_rounds(
+def _close(seq: int) -> bytes:
+    """Tracked OpenClose(close): same header as the open, close magic."""
+    pkt = bytearray(_openclose(seq=seq))
+    pkt[0x15] = 0x00
+    return bytes(pkt)
+
+
+async def _replay_rounds(window: str) -> tuple[int, list[float]]:
+    """Drive one window's recorded c2r timeline against a fresh simulator.
+
+    Returns the recorded round count (one per r2c retransmit row) and the
+    arrival times of each observed round's first packet.
+    """
+    rows = _fixture_rows(window)
+    script = [
+        (row["t"], row["seq"], row["kind"])
+        for row in rows
+        if row["dir"] == "c2r"
+        for _ in range(row.get("repeat", 1))
+    ]
+    recorded = sum(
+        1
+        for row in rows
+        if row["dir"] == "r2c" and row["kind"].startswith("retransmit")
+    )
+    sim = MockIcomRadio()
+    await sim.start()
+    loop = asyncio.get_running_loop()
+    proto = _UdpClient()
+    await loop.create_datagram_endpoint(lambda: proto, local_addr=(_HOST, 0))
+    try:
+        pre = window == "gap_filled_by_idle"
+        await _open_stream(proto, sim, 129 if pre else script[0][1] - 1)
+        if pre:  # the window's last processed number before the gap opens
+            req = _freq_get(seq=130)
+            proto.send(req, sim.civ_port)
+            assert await proto.recv() == req
+            assert _is_freq_reply(await proto.recv())
+        base = script[0][0]
+        t0 = time.monotonic()
+        hits: list[tuple[float, bytes]] = []
+        end = t0 + (script[-1][0] - base) + 0.15
+
+        async def _gather() -> None:
+            while time.monotonic() < end:
+                try:
+                    hits.append((time.monotonic(), await proto.recv(timeout=0.02)))
+                except TimeoutError:
+                    pass
+
+        job = asyncio.create_task(_gather())
+        for stamp, seq, kind in script:
+            await asyncio.sleep(max(0.0, t0 + (stamp - base) - time.monotonic()))
+            proto.send(
+                _idle(seq) if kind == "idle" else _freq_get(seq=seq), sim.civ_port
+            )
+        await job
+    finally:
+        proto.close()
+        await sim.stop()
+    starts = [t for t, pkt in hits if _parse_retransmit(pkt) is not None][0::2]
+    assert len(starts) * 2 == sum(
+        1 for _, pkt in hits if _parse_retransmit(pkt) is not None
+    ), (window, len(hits))
+    return recorded, starts
+
+
+async def test_round_rate_matches_recording(
     server: MockIcomRadio, client: _UdpClient
 ) -> None:
-    """Two back-to-back idles during a gap draw two request rounds at once.
+    """Each window's client timeline draws about its recorded rounds.
 
-    The 0.1 s timer cannot produce two rounds within 60 ms, so four
-    request packets that fast pin the packet-triggered round (the
-    recording answers each client packet within 0–4 ms).
+    Per window the observed round count is within ±20 % of the recorded
+    one and no two rounds are closer than 70 ms. The tail pins row 143
+    @1.005 of gap_filled_by_idle: fills 131/133 narrow the request to
+    single 132, and a packet 3 ms after that round draws no round, while
+    the next one past the pacing window does.
     """
-    rows = _fixture_rows("single_gap_filled_by_idle")
-    (req_kind, req_seq, _), *_ = _radio_requests(rows)
-    assert (req_kind, req_seq) == ("retransmit_single", 199)
+    for window in (
+        "gap_lost_buffered",
+        "gap_never_filled",
+        "single_gap_filled_by_idle",
+        "gap_filled_by_idle",
+    ):
+        recorded, starts = await _replay_rounds(window)
+        assert abs(len(starts) - recorded) * 5 <= recorded, (window, len(starts))
+        if len(starts) >= 2:
+            gaps = [after - before for before, after in zip(starts, starts[1:])]
+            assert min(gaps) >= 0.070, (window, min(gaps))
 
-    await _open_stream(client, server, 197)
-    client.send(_idle(198), server.civ_port)
-    client.send(_idle(200), server.civ_port)
-    opener = [await client.recv() for _ in range(2)]
-    assert all(_parse_retransmit(p) == ("single", req_seq) for p in opener)
-    await _collect(client, 0.05)
+    await _open_stream(client, server, 129)
+    req = _freq_get(seq=130)
+    client.send(req, server.civ_port)
+    assert await client.recv() == req
+    assert _is_freq_reply(await client.recv())
+    client.send(_idle(134), server.civ_port)
+    pair = [await client.recv() for _ in range(2)]
+    assert all(_parse_retransmit(p) == ("ranges", [(131, 133)]) for p in pair)
+    await asyncio.sleep(0.09)
+    client.send(_idle(131), server.civ_port)  # in order: fills, no round
+    client.send(_idle(133), server.civ_port)  # narrows to single 132: round
+    pair = [await client.recv() for _ in range(2)]
+    assert all(_parse_retransmit(p) == ("single", 132) for p in pair)
+    client.send(_idle(135), server.civ_port)  # ~3 ms after the round: silence
+    assert await _collect(client, 0.06) == []
+    await asyncio.sleep(0.1)
+    client.send(_idle(136), server.civ_port)
+    pair = [await client.recv() for _ in range(2)]
+    assert all(_parse_retransmit(p) == ("single", 132) for p in pair)
 
-    client.send(_idle(201), server.civ_port)
-    client.send(_idle(202), server.civ_port)
-    burst = await _collect(client, 0.06)
-    assert len(burst) >= 4
-    assert all(_parse_retransmit(p) == ("single", req_seq) for p in burst)
+
+async def test_tracked_openclose_close_consumes_its_number(
+    server: MockIcomRadio, client: _UdpClient
+) -> None:
+    """Data 1-3 answered, tracked OpenClose(close) 4, data 5: answered.
+
+    The close consumes its header number like any tracked packet, so 5
+    arrives in order: no gap, no request. Without the gate 5 opens
+    single 4 and is held forever.
+    """
+    await _open_stream(client, server, 0)
+    for seq in (1, 2, 3):
+        req = _freq_get(seq=seq)
+        client.send(req, server.civ_port)
+        assert await client.recv() == req
+        assert _is_freq_reply(await client.recv())
+    client.send(_close(4), server.civ_port)
+    req = _freq_get(seq=5)
+    client.send(req, server.civ_port)
+    assert await client.recv() == req
+    assert _is_freq_reply(await client.recv())
+    assert server.civ_gap_open is False
+    await _collect(client, 0.15)
+    assert server.civ_retransmit_requests == 0
+    assert await _collect(client, 0.3) == []
+
+
+async def test_new_gap_never_remarks_held_numbers(
+    server: MockIcomRadio, client: _UdpClient
+) -> None:
+    """Idle 141 after fills 131-133 requests only (135,139): 140 is held.
+
+    Open 129, data 130, idle 134 opens ranges [[131,133]], idle 140 is
+    held; once 131-133 fill in order, 141 opens a new gap that must skip
+    the still-held 140. Before the fix the radio asked for (135,140).
+    """
+    await _open_stream(client, server, 129)
+    req = _freq_get(seq=130)
+    client.send(req, server.civ_port)
+    assert await client.recv() == req
+    assert _is_freq_reply(await client.recv())
+    client.send(_idle(134), server.civ_port)
+    pair = [await client.recv() for _ in range(2)]
+    assert all(_parse_retransmit(p) == ("ranges", [(131, 133)]) for p in pair)
+    await asyncio.sleep(0.09)
+    client.send(_idle(140), server.civ_port)
+    pair = [await client.recv() for _ in range(2)]
+    assert all(_parse_retransmit(p) == ("ranges", [(131, 133)]) for p in pair)
+    for seq in (131, 132, 133):
+        client.send(_idle(seq), server.civ_port)
+    await asyncio.sleep(0.09)
+    client.send(_idle(141), server.civ_port)
+    pair = [await client.recv() for _ in range(2)]
+    assert all(_parse_retransmit(p) == ("ranges", [(135, 139)]) for p in pair)
+    assert server.civ_gap_open is True
 
 
 # ---------------------------------------------------------------------------
