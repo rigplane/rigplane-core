@@ -39,8 +39,10 @@ jobs:
     name: ${{ matrix.label }}
     runs-on: [self-hosted, macOS, ARM64, bench]
     timeout-minutes: 45
-    # One failing or busy radio must not hide the others.
-    continue-on-error: true
+    # No job-level continue-on-error: a night passes for a radio only when its
+    # job concludes success. Radios stay independent through fail-fast: false
+    # (one radio's failure never cancels the others) and run one at a time
+    # through max-parallel: 1.
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -187,6 +189,8 @@ jobs:
 
       - name: rigplane diagnose
         if: always() && steps.mode.outcome == 'success'
+        # Evidence only: a diagnose failure must not decide the night.
+        continue-on-error: true
         run: |
           # The bundle holds runner logs and configuration: it stays on the runner.
           bash scripts/bench/guard.sh run -- uv run rigplane diagnose \
@@ -198,9 +202,38 @@ jobs:
 
       - name: Upload normalized results
         if: always() && steps.mode.outcome == 'success'
+        # Evidence only: artifact storage must not decide the night.
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: bench-nightly-${{ matrix.radio }}
           path: ${{ runner.temp }}/bench-out/${{ matrix.radio }}
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 3
+
+      # Honest-verdict steps, last in the job. Each turns one silent green
+      # ending red with its own step name; a night passes for a radio only
+      # when its job concludes success.
+      - name: "Outcome: not configured"
+        if: always() && steps.config.outputs.configured == 'false'
+        run: |
+          line="$LABEL: not configured (repository secrets missing)"
+          echo "::error title=not configured::$line"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: "Outcome: busy"
+        if: always() && steps.lock.outputs.acquired == 'false'
+        run: |
+          line="$LABEL: busy (bench lock held by another run)"
+          echo "::error title=busy::$line"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: "Outcome: dry run"
+        if: always() && steps.mode.outputs.dry_run == 'true'
+        run: |
+          line="$LABEL: dry run (never a certification night)"
+          echo "::error title=dry run::$line"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          exit 1

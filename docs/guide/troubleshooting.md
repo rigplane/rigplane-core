@@ -118,6 +118,12 @@ the URL; Core no longer performs the application-token check
 (`src/rigplane/web/web_routing.py: dispatch_http_request`). Existing radio login
 failures still require the radio credentials described above.
 
+### Second resident start for the same radio is refused
+
+**Symptom:** `Error: another rigplane process (pid 1234) is already serving this radio on this computer; stop it first`, exit 1.
+
+Only one resident command (`web`, `station`, `serve`) may serve an explicitly named radio (`--host`/`--serial-port`) from one computer: once the backend config is built, each takes an exclusive OS file lock on a per-radio lock file before the radio is opened (`src/rigplane/cli/_instance_guard.py: acquire_resident_lock`), so a second start refuses instead of fighting over the radio's single session. Without `--host`/`--serial-port`, discovery broadcasts or serial probes run before the guard is taken. The rigctld backend is never guarded — an external rigctld accepts several clients. Stop the named process and start again. The OS releases the lock when the holder exits, including a kill, so a restart after a crash is never blocked. If the lock directory cannot be created, the start proceeds without the guard after one warning.
+
 ### `radio_connect` returns `backend_recovering`
 
 **Symptom:** WebSocket response:

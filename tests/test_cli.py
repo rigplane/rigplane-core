@@ -2168,6 +2168,320 @@ class TestCheckPortsAvailable:
         assert str(occupied_rigctld_port) in captured.err
         assert "lsof" in captured.err.lower()
 
+    def test_second_resident_start_refuses_before_radio_open(self, capsys, tmp_path):
+        """MOR-3391: a second resident start for the same radio refuses with 1.
+
+        The holder is a separate process, as in production. The guard is
+        taken before the radio is constructed, the port preflight probes,
+        or any listener binds — the fake radio is never created and the
+        refusal message names the holding process's pid. The conftest
+        fixture redirects the guard's default lock directory at this test's
+        tmp dir, so the child and `_run` below share one lock file.
+        """
+        import asyncio
+        import os
+        import subprocess
+        import sys
+
+        from rigplane.cli import _run
+        from rigplane.cli._instance_guard import radio_lock_identity
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
+        identity = radio_lock_identity(
+            LanBackendConfig(host="1.2.3.4", port=args.control_port)
+        )
+        child_script = (
+            "import sys, time\n"
+            "from rigplane.cli._instance_guard import acquire_resident_lock\n"
+            "acquire_resident_lock(sys.argv[1], cache_dir=sys.argv[2])\n"
+            "print('READY', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        src_dir = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(
+            os.environ,
+            PYTHONPATH=src_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        )
+        holder = subprocess.Popen(
+            [sys.executable, "-c", child_script, identity, str(tmp_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        assert holder.stdout is not None
+        ready = holder.stdout.readline()
+        assert ready.strip() == "READY", (
+            f"holder child failed: {holder.stderr.read() if holder.stderr else ''}"
+        )
+        try:
+            with (
+                patch(
+                    "rigplane.cli.create_radio",
+                    side_effect=AssertionError("radio must not be created"),
+                ),
+                patch(
+                    "rigplane.cli.check_ports_available",
+                    side_effect=AssertionError("no listener probe may bind"),
+                ),
+            ):
+                try:
+                    result = asyncio.run(asyncio.wait_for(_run(args), timeout=10.0))
+                except AssertionError:
+                    pytest.fail("second resident start touched the radio or ports")
+        finally:
+            holder.kill()
+            holder.wait(timeout=30)
+
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "already serving this radio" in captured.err
+        assert str(holder.pid) in captured.err
+
+    def test_second_resident_start_refuses_before_busy_hold_starts(
+        self, capsys, tmp_path
+    ):
+        """MOR-3391 R4: a second resident start refuses before the busy-hold machinery starts.
+
+        The guard in `_run` returns 1 before the radio is constructed, so
+        the start-up busy-hold path (`_run_web_station_with_busy_hold`,
+        which spawns the background connect task and serves not-ready) is
+        never entered, `_cmd_web` never runs, and no listener binds. The
+        holder is a separate process, as in production; the conftest
+        fixture redirects the guard's default lock directory at this test's
+        tmp dir, so the child and `_run` below share one lock file.
+        """
+        import asyncio
+        import os
+        import subprocess
+        import sys
+
+        from rigplane.cli import _run
+        from rigplane.cli._instance_guard import radio_lock_identity
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
+        identity = radio_lock_identity(
+            LanBackendConfig(host="1.2.3.4", port=args.control_port)
+        )
+        child_script = (
+            "import sys, time\n"
+            "from rigplane.cli._instance_guard import acquire_resident_lock\n"
+            "acquire_resident_lock(sys.argv[1], cache_dir=sys.argv[2])\n"
+            "print('READY', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        src_dir = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(
+            os.environ,
+            PYTHONPATH=src_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        )
+        holder = subprocess.Popen(
+            [sys.executable, "-c", child_script, identity, str(tmp_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        assert holder.stdout is not None
+        ready = holder.stdout.readline()
+        assert ready.strip() == "READY", (
+            f"holder child failed: {holder.stderr.read() if holder.stderr else ''}"
+        )
+        try:
+            with (
+                patch(
+                    "rigplane.cli.create_radio",
+                    side_effect=AssertionError("radio must not be created"),
+                ),
+                patch(
+                    "rigplane.cli.check_ports_available",
+                    side_effect=AssertionError("no listener probe may bind"),
+                ),
+                patch(
+                    "rigplane.cli._run_web_station_with_busy_hold",
+                    side_effect=AssertionError("busy-hold machinery must not start"),
+                ),
+                patch(
+                    "rigplane.cli._cmd_web",
+                    side_effect=AssertionError("_cmd_web must not run"),
+                ),
+            ):
+                try:
+                    result = asyncio.run(asyncio.wait_for(_run(args), timeout=10.0))
+                except AssertionError as exc:
+                    pytest.fail(f"second resident start went past the guard: {exc}")
+        finally:
+            holder.kill()
+            holder.wait(timeout=30)
+
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "already serving this radio" in captured.err
+        assert str(holder.pid) in captured.err
+
+    @pytest.mark.parametrize(
+        ("argv", "expect"),
+        [
+            pytest.param(["--host", "1.2.3.4", "web"], "refused", id="web"),
+            pytest.param(["--host", "1.2.3.4", "station"], "refused", id="station"),
+            pytest.param(["--host", "1.2.3.4", "serve"], "refused", id="serve"),
+            pytest.param(
+                ["--host", "1.2.3.4", "status"],
+                "one-shot-passes",
+                id="one-shot-status",
+            ),
+            pytest.param(
+                ["--backend", "rigctld", "--host", "127.0.0.1", "web"],
+                "rigctld-passes",
+                id="web-rigctld",
+            ),
+        ],
+    )
+    def test_run_guard_sits_behind_command_and_backend_filters(
+        self, argv, expect, capsys, tmp_path
+    ):
+        """MOR-3391 R3: `_run` guards only resident commands on guarded backends.
+
+        A child process holds the LAN lock for `--host 1.2.3.4` in the
+        per-test lock dir (conftest isolation active). Resident starts for
+        that radio refuse with 1 before the radio is constructed; the
+        one-shot `status` for the same radio and `web` on the rigctld
+        backend both pass the guard and reach `create_radio`. Mutations:
+        dropping the backend check turns the rigctld row into a `TypeError`
+        from `radio_lock_identity`; dropping the command check refuses the
+        one-shot row with 1 instead of reaching `create_radio`.
+        """
+        import asyncio
+        import os
+        import subprocess
+        import sys
+
+        from rigplane.cli import _run
+        from rigplane.cli._instance_guard import radio_lock_identity
+
+        lan_args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
+        identity = radio_lock_identity(
+            LanBackendConfig(host="1.2.3.4", port=lan_args.control_port)
+        )
+        child_script = (
+            "import sys, time\n"
+            "from rigplane.cli._instance_guard import acquire_resident_lock\n"
+            "acquire_resident_lock(sys.argv[1], cache_dir=sys.argv[2])\n"
+            "print('READY', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        src_dir = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(
+            os.environ,
+            PYTHONPATH=src_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        )
+        holder = subprocess.Popen(
+            [sys.executable, "-c", child_script, identity, str(tmp_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        assert holder.stdout is not None
+        ready = holder.stdout.readline()
+        assert ready.strip() == "READY", (
+            f"holder child failed: {holder.stderr.read() if holder.stderr else ''}"
+        )
+        try:
+            args = _build_parser().parse_args(argv)
+            if expect == "refused":
+                with patch("rigplane.cli.create_radio") as mock_create:
+                    result = asyncio.run(asyncio.wait_for(_run(args), timeout=10.0))
+                assert result == 1
+                mock_create.assert_not_called()
+                captured = capsys.readouterr()
+                assert "already serving this radio" in captured.err
+                assert str(holder.pid) in captured.err
+            else:
+                locks_dir = tmp_path / "locks"
+                before = set(locks_dir.glob("*.lock")) if locks_dir.is_dir() else set()
+                with patch(
+                    "rigplane.cli.create_radio",
+                    side_effect=RuntimeError("guard-passed-marker"),
+                ):
+                    with pytest.raises(RuntimeError, match="guard-passed-marker"):
+                        asyncio.run(asyncio.wait_for(_run(args), timeout=10.0))
+                if expect == "rigctld-passes":
+                    after = (
+                        set(locks_dir.glob("*.lock")) if locks_dir.is_dir() else set()
+                    )
+                    assert after == before
+        finally:
+            holder.kill()
+            holder.wait(timeout=30)
+
+    def test_default_location_holder_does_not_block_isolated_run(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """MOR-3391 R2/B1, R3: a default-location holder does not refuse this run.
+
+        The conftest fixture redirects the guard's default lock directory at
+        a per-test tmp dir, so a foreign holder in the default location must
+        not refuse this run: `_run` proceeds past the guard to radio
+        construction (probed here by a `create_radio` that raises). The
+        holder takes the lock through the default code path (no `cache_dir`),
+        with the default-directory seam pointed at a second tmp dir — so no
+        test touches the real user cache.
+        """
+        import asyncio
+        import os
+        import subprocess
+        import sys
+
+        from rigplane.cli import _run
+        from rigplane.cli import _instance_guard as _guard
+        from rigplane.cli._instance_guard import radio_lock_identity
+
+        fake_default = tmp_path / "fake-default-cache"
+        monkeypatch.setattr(_guard, "_default_lock_dir", lambda: fake_default)
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
+        identity = radio_lock_identity(
+            LanBackendConfig(host="1.2.3.4", port=args.control_port)
+        )
+        child_script = (
+            "import sys, time\n"
+            "from pathlib import Path\n"
+            "from rigplane.cli import _instance_guard as g\n"
+            "g._default_lock_dir = lambda: Path(sys.argv[2])\n"
+            "g.acquire_resident_lock(sys.argv[1])\n"
+            "print('READY', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        src_dir = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(
+            os.environ,
+            PYTHONPATH=src_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        )
+        holder = subprocess.Popen(
+            [sys.executable, "-c", child_script, identity, str(fake_default)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        assert holder.stdout is not None
+        ready = holder.stdout.readline()
+        assert ready.strip() == "READY", (
+            f"holder child failed: {holder.stderr.read() if holder.stderr else ''}"
+        )
+        # The isolated run under test keeps the conftest redirect.
+        monkeypatch.setattr(_guard, "_default_lock_dir", lambda: tmp_path)
+        try:
+            with patch(
+                "rigplane.cli.create_radio",
+                side_effect=RuntimeError("guard-passed"),
+            ):
+                with pytest.raises(RuntimeError, match="guard-passed"):
+                    asyncio.run(asyncio.wait_for(_run(args), timeout=10.0))
+        finally:
+            holder.kill()
+            holder.wait(timeout=30)
+
 
 class TestProductionManagedTxComposition:
     class _Radio:
