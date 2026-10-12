@@ -1,4 +1,4 @@
-"""Reference injection only; no managed admission or queue scheduling claim."""
+"""Managed-reference injection plus raw ``w`` frame routing, as built."""
 
 from __future__ import annotations
 
@@ -24,12 +24,29 @@ from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.handler import RigctldHandler
 from rigplane.rigctld.protocol import parse_line
 from rigplane.rigctld.server import RigctldServer
+from rigplane.runtime import tx_interlock
 from rigplane.runtime._poller_types import CommandQueue
 
 
 class _NoTruthProbe:
     def __bool__(self):
         raise AssertionError("managed references must be tested with is None")
+
+
+class _AuthorityTouchProbe:
+    """Managed TX authority fake that records every attribute reached for."""
+
+    def __init__(self):
+        self.touches = []
+
+    def __bool__(self):
+        raise AssertionError("managed references must be tested with is None")
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        self.touches.append(name)
+        raise AssertionError(f"managed TX authority was consulted: {name}")
 
 
 class _RecordingRadio(SerialMockRadio):
@@ -203,4 +220,48 @@ async def test_managed_non_tuner_writes_bypass_legacy_rf_gates(
     assert context.radio.write_calls[0][0] == expected_family
     legacy_defer.assert_not_called()
     legacy_rf.assert_not_called()
+    assert handler._command_service.lifecycle_events()[-1].state == "acknowledged"  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    ("wire", "frame_hex"),
+    [
+        (b"w FE FE 98 E0 1C 00 01 FD", "FEFE98E01C0001FD"),
+        (b"w FE FE 98 E0 1C 00 00 FD", "FEFE98E01C0000FD"),
+        (b"w FE FE 98 E0 03 FD", "FEFE98E003FD"),
+    ],
+    ids=["ptt-on", "ptt-off", "freq-read"],
+)
+async def test_managed_raw_w_frame_reaches_raw_write_without_authority(
+    context, wire, frame_hex
+):
+    """Characterization: under managed refs a raw ``w`` frame — including the
+    Icom PTT-ON frame — reaches ``_send_civ_raw`` verbatim even while the
+    store observes the radio transmitting, the managed TX authority is never
+    consulted, and the write is acknowledged. Unmanaged mode refuses the same
+    wire unless PTT is fresh-known RX (tests/test_rigctld_tx_interlock.py:
+    test_hard_blocks_require_fresh_known_rx).
+    """
+    authority = _AuthorityTouchProbe()
+    refs = dict(context.refs, managed_tx_authority=authority)
+    context.store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=True,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=asyncio.get_running_loop().time(),
+            max_age=1e9,
+        )
+    )
+    handler = RigctldHandler(context.radio, RigctldConfig(), **refs)
+    assert (
+        handler._resolve_rigctld_rf_state() is tx_interlock.RfState.TX  # noqa: SLF001
+    )
+
+    response = await handler.execute(parse_line(wire), session_id="client")
+
+    assert context.radio.write_calls == [("raw", bytes.fromhex(frame_hex))]
+    assert authority.touches == []
+    assert response.ok
+    assert response.values == []
     assert handler._command_service.lifecycle_events()[-1].state == "acknowledged"  # noqa: SLF001
