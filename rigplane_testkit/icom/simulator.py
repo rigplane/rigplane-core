@@ -1339,17 +1339,16 @@ class MockIcomRadio(AudioPortMixin):
                     self._release_session("token_remove")
                     self._retire_token()
             else:
+                # No owned session here (default mode): the token is the
+                # credential, not the sender id — the production client
+                # derives each socket's id from its local port
+                # (``core/transport.py``: ``my_id``), so its control and
+                # audio ids differ and a sender-id match never fires for
+                # it. A remove carrying the live token retires the epoch
+                # and ends the audio stream with it; a remove naming no
+                # session is a no-op (main's rule from #4142).
                 if struct.unpack_from("<I", data, 0x1C)[0] == self.token:
                     self._retire_token()
-                if (
-                    self._audio_client is not None
-                    and sender_id == self._audio_client[1]
-                ):
-                    # No owned session here (default mode): the logout of
-                    # the client that opened the audio stream still ends
-                    # the stream — matched by sender id, as the audio
-                    # socket and the control socket differ. A foreign
-                    # logout changes nothing.
                     self._audio_end_session("token_remove")
             return
 
@@ -1378,13 +1377,14 @@ class MockIcomRadio(AudioPortMixin):
             if self.single_owner and self._owner == (addr, sender_id):
                 self._release_session("disconnect")
                 self._retire_token()
-            elif (
-                not self.single_owner
-                and self._audio_client is not None
-                and sender_id == self._audio_client[1]
-            ):
-                # Default mode, same as token-remove above: the control
-                # disconnect of the audio stream's own client ends it.
+            elif not self.single_owner and (addr, sender_id) == self._last_login:
+                # Default mode: a disconnect carries no token, so the last
+                # login is the identity — the control disconnect of the
+                # client that logged in ends the audio stream (the
+                # production client sends one per socket on logout,
+                # ``core/transport.py``: ``disconnect``). A disconnect from
+                # any other identity changes nothing. This is a simulator
+                # choice; the recorded rule is the live-token remove above.
                 self._audio_end_session("disconnect")
             return
 
