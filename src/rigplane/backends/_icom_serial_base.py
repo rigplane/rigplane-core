@@ -538,12 +538,11 @@ class _IcomSerialRadioBase(CoreRadio):
         if not identity_answered:
             # MOR-3436: connect() returns into the identity hold — the
             # tail stashes the recovery for the hold's completion. The
-            # resident reconnect loop (``radio_reconnect.reconnect_loop``,
-            # reachable for this backend through the CI-V watchdog's
-            # exhaustion handoff) runs its own recovery after this
-            # connect returns, so it is excluded by the same
-            # ``_reconnect_task`` identity test ``CoreRadio.connect``
-            # uses for its reconnect-loop skip.
+            # resident reconnect loop (``radio_reconnect.reconnect_loop``)
+            # runs its own recovery after this connect returns, so it is
+            # excluded by the same ``_reconnect_task`` identity test
+            # ``CoreRadio.connect`` uses — the guard mirrors it
+            # defensively.
             if asyncio.current_task() is not getattr(self, "_reconnect_task", None):
                 await self._recover_serial_audio_after_connect(
                     owner_stop_epoch, attempt_epoch
@@ -631,11 +630,11 @@ class _IcomSerialRadioBase(CoreRadio):
             # before.
             return
 
-        if self._managed_tx_composition is not None:
-            await self._park_managed_tx()
         # MOR-3436: per-attempt owner-stop epoch, captured before the
         # first await, for the audio tail at this reconnect's completion.
         owner_stop_epoch = self._owner_stop_epoch
+        if self._managed_tx_composition is not None:
+            await self._park_managed_tx()
         self._conn_state = RadioConnectionState.RECONNECTING
         self._civ_stream_ready = False
         self._civ_recovering = True
