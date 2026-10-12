@@ -1,15 +1,15 @@
-"""Packaging guard: sounddevice held below 0.5 on Windows x64.
+"""Packaging guard: disjoint sounddevice ranges so the universal lock forks.
 
 The PortAudio build bundled with sounddevice 0.5.x crashed the Core process
 during initialisation on the Windows runner, so Windows x64 installs stay on
 the 0.4.x line. Windows ARM64 is excluded from the hold — no 0.4.x release
-ships a ``win_arm64`` wheel, so ARM64 resolves the unbounded requirement —
-and other platforms track sounddevice unpinned. This module pins the declared
-markers in ``pyproject.toml`` and the resolved 0.4.x entry in ``uv.lock``;
-both fail if the pin is widened or dropped. Note: the generated lock resolves
-the Windows fork on ``sys_platform`` alone, so ``uv.lock`` still assigns
-Windows ARM64 to 0.4.7; only installers that evaluate the markers per
-platform resolve ARM64 to the unbounded requirement.
+ships a ``win_arm64`` wheel, so ARM64 takes 0.5.x — and other platforms track
+0.5.x and later. The two ranges are disjoint (``>=0.4,<0.5`` vs ``>=0.5``)
+because the universal lock only forks one sounddevice version per platform
+when no version satisfies both ranges: with overlapping ranges the resolver
+picked a single 0.4.x for every platform. This module pins the declared
+markers in ``pyproject.toml`` and the forked 0.4.x/0.5.x entries in
+``uv.lock``; both fail if the pin is widened or dropped.
 """
 
 from __future__ import annotations
@@ -21,22 +21,36 @@ import tomllib
 try:
     from packaging.markers import Marker
     from packaging.requirements import Requirement
+    from packaging.specifiers import SpecifierSet
 except ImportError:  # pragma: no cover - test env provides packaging
     Marker = None  # type: ignore[assignment]
     Requirement = None  # type: ignore[assignment]
+    SpecifierSet = None  # type: ignore[assignment]
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 WIN_X64_MARKER = 'sys_platform == "win32" and platform_machine != "ARM64"'
 OTHER_MARKER = 'sys_platform != "win32" or platform_machine == "ARM64"'
 
 # (environment, requirement index that must apply): index 0 is the <0.5
-# hold, index 1 is the unbounded requirement. Each environment must match
+# hold, index 1 is the >=0.5 requirement. Each environment must match
 # exactly one of the two markers.
 MARKER_POINTS = [
     ({"sys_platform": "win32", "platform_machine": "AMD64"}, 0),
     ({"sys_platform": "win32", "platform_machine": "ARM64"}, 1),
     ({"sys_platform": "linux", "platform_machine": "x86_64"}, 1),
     ({"sys_platform": "darwin", "platform_machine": "arm64"}, 1),
+]
+
+# Probe versions spanning the 0.4/0.5 boundary; none may satisfy both ranges.
+PROBE_VERSIONS = [
+    "0.4.0",
+    "0.4.6",
+    "0.4.7",
+    "0.4.99",
+    "0.5.0",
+    "0.5.5",
+    "0.5.6",
+    "0.6.0",
 ]
 
 
@@ -68,6 +82,10 @@ def _marker_of(dep: str) -> str:
     return marker.replace("'", '"')
 
 
+def _specifier_of(dep: str) -> str:
+    return dep.split(";", maxsplit=1)[0][len("sounddevice") :].strip()
+
+
 def _admits(version: str, specifier: str) -> bool:
     if Requirement is not None:
         return version in Requirement(f"x{specifier}").specifier
@@ -88,6 +106,20 @@ def _ordered_reqs() -> tuple[str, str]:
     )
     by_marker = {_marker_of(dep): dep for dep in reqs}
     return by_marker[WIN_X64_MARKER], by_marker[OTHER_MARKER]
+
+
+def _sounddevice_lock_stanzas() -> list[tuple[str, str]]:
+    """Return (version, resolution-markers block) for each sounddevice package."""
+    lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
+    stanzas = []
+    for block in lock.split("[[package]]"):
+        if 'name = "sounddevice"' not in block:
+            continue
+        version = re.search(r'version = "([^"]+)"', block)
+        assert version is not None, f"sounddevice stanza without version: {block}"
+        markers = re.search(r"resolution-markers = \[(.*?)\]", block, re.DOTALL)
+        stanzas.append((version.group(1), markers.group(1) if markers else ""))
+    return stanzas
 
 
 def test_sounddevice_has_windows_x64_and_other_requirements() -> None:
@@ -124,12 +156,40 @@ def test_other_sounddevice_has_no_upper_bound() -> None:
     )
 
 
-def test_lock_contains_sounddevice_0_4() -> None:
-    lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
-    stanzas = re.findall(
-        r'\[\[package\]\]\nname = "sounddevice"\nversion = "([^"]+)"', lock
-    )
+def test_sounddevice_specifier_sets_are_disjoint() -> None:
+    assert SpecifierSet is not None, "packaging is required for specifier checks"
+    held, other = _ordered_reqs()
+    held_spec = SpecifierSet(_specifier_of(held))
+    other_spec = SpecifierSet(_specifier_of(other))
+    # Bounds directly: the hold caps below 0.5, the other line starts at 0.5.
+    assert "0.4.7" in held_spec, f"Windows pin must admit 0.4.7: {held}"
+    assert "0.5.0" not in held_spec, f"Windows pin must exclude 0.5.0: {held}"
+    assert "0.4.7" not in other_spec, f"other line must exclude 0.4.7: {other}"
+    assert "0.5.0" in other_spec, f"other line must admit 0.5.0: {other}"
+    for version in PROBE_VERSIONS:
+        assert not (version in held_spec and version in other_spec), (
+            f"sounddevice {version} satisfies both ranges; the lock would not fork"
+        )
+
+
+def test_lock_forks_sounddevice_by_platform() -> None:
+    stanzas = _sounddevice_lock_stanzas()
     assert stanzas, "uv.lock has no sounddevice package entry"
-    assert any(v.startswith("0.4.") for v in stanzas), (
-        f"uv.lock must resolve sounddevice 0.4.x for Windows x64, got {stanzas}"
-    )
+    fork_04 = [markers for version, markers in stanzas if version.startswith("0.4.")]
+    fork_05 = [markers for version, markers in stanzas if version.startswith("0.5.")]
+    assert fork_04, f"uv.lock must resolve sounddevice 0.4.x for Windows x64: {stanzas}"
+    assert fork_05, f"uv.lock must resolve sounddevice 0.5.x elsewhere: {stanzas}"
+    for markers in fork_04:
+        assert "sys_platform == 'win32'" in markers, (
+            f"0.4.x fork must be Windows-only: {markers}"
+        )
+        assert "== 'ARM64'" not in markers, (
+            f"0.4.x fork must exclude ARM64: {markers}"
+        )
+    for markers in fork_05:
+        assert "sys_platform != 'win32'" in markers, (
+            f"0.5.x fork must cover non-Windows: {markers}"
+        )
+        assert "platform_machine == 'ARM64'" in markers, (
+            f"0.5.x fork must cover Windows ARM64: {markers}"
+        )
