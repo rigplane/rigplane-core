@@ -490,6 +490,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._audio_sock_pending: _socket.socket | None = None
         self._civ_send_seq: int = 0
         self._audio_send_seq: int = 0
+        # ``send_seq`` of the CI-V transport last torn down by
+        # ``soft_disconnect`` or ``_force_cleanup_civ``. ``soft_reconnect``
+        # resumes from it; ``_connect_once``, ``disconnect`` and ``release``
+        # clear it.
+        self._civ_resume_seq: int | None = None
         self._last_civ_send_monotonic: float = 0.0
         # MOR-2595: 10 ms LAN gap. IC-7610 over LAN, 2026-09-25: 03 round
         # trip median 7.55 ms, p95 9.0 ms; 0 errors at a 0 ms post-reply gap.
@@ -1620,6 +1625,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             await self._civ_runtime.stop_worker()
             await self._civ_runtime.stop_pump()
             await self._civ_transport.disconnect()
+            self._civ_resume_seq = self._civ_transport.send_seq
             self._civ_transport = None
 
         # Teardown has finished; retire its identity.
@@ -1652,6 +1658,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 logger.debug(
                     "force_cleanup_civ: transport disconnect failed", exc_info=True
                 )
+            self._civ_resume_seq = self._civ_transport.send_seq
             self._civ_transport = None
         ctrl_alive = bool(
             self._ctrl_transport

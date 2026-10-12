@@ -231,6 +231,7 @@ class _SoftReconnectHost:
         self._civ_stream_ready = False
         self._civ_recovering = True
         self._civ_local_port = 0
+        self._civ_resume_seq = None
         self._local_bind_host = "127.0.0.1"
         self._last_civ_data_received = None
         self._civ_ready_idle_timeout = 3.0
