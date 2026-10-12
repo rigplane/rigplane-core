@@ -174,9 +174,7 @@ class TestRangeRequests:
         )
         assert sent == []
 
-    def test_max_missing_boundary(
-        self, transport: IcomTransport, sent: list
-    ) -> None:
+    def test_max_missing_boundary(self, transport: IcomTransport, sent: list) -> None:
         first = 2000
         for s in range(first, first + MAX_MISSING + 1):
             transport.tx_buffer[s] = b"b%04d" % s
