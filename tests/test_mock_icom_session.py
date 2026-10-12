@@ -327,17 +327,29 @@ async def test_ping_refreshes_keepalive(sim: MockIcomRadio) -> None:
         await owner.close()
 
 
-async def test_token_renew_refreshes_keepalive(sim: MockIcomRadio) -> None:
+async def test_token_renew_refreshes_keepalive() -> None:
+    # Deterministic: the hold (60 s) dwarfs the test time, so the release
+    # timer cannot fire mid-test; each renewal must re-arm its deadline.
+    sim = MockIcomRadio(single_owner=True, keepalive_hold_s=60.0)
+    await sim.start()
     owner = await _client(0x10001)
     try:
         await _claim(sim, owner)
-        for _ in range(6):
+        assert sim.session_held is True
+        assert sim._keepalive_timer is not None
+        for _ in range(3):
+            before = sim._keepalive_timer.when()
             owner.token(sim.control_port, _TOKEN_RENEW)
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
+            assert sim.session_held is True
+            assert sim.released_count == 0
+            assert sim._keepalive_timer is not None
+            assert sim._keepalive_timer.when() > before
         assert sim.session_held is True
         assert sim.released_count == 0
     finally:
         await owner.close()
+        await sim.stop()
 
 
 # ---------------------------------------------------------------------------
