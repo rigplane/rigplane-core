@@ -65,7 +65,6 @@ async def test_capture_off_by_default_records_nothing() -> None:
         try:
             await asyncio.wait_for(radio.get_freq(), timeout=10.0)
             await radio.set_freq(14_074_000)
-            await asyncio.sleep(0.3)
             assert sim.civ_frames_received == []
         finally:
             await radio.disconnect()

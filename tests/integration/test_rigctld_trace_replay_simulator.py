@@ -24,7 +24,7 @@ Per trace two tests share one checked replay:
   unsatisfiable source line with all checks green.
 * ``test_<client>_full`` replays the whole trace and strict-xfails with
   the first divergent line in its reason (``pytest.mark.xfail``,
-  ``strict=True``, ``raises=AssertionError``). Execution stops at the
+  ``strict=True``, ``raises=TraceDivergence``). Execution stops at the
   divergence, like the golden replay.
 
 Checked replay rules, per step kind:
@@ -41,14 +41,29 @@ Checked replay rules, per step kind:
   receiver, value), a frame captured by the simulator's opt-in
   ``capture_civ_frames`` equals that row's frame from the command byte
   on. ``S`` gets (ii) only: the simulator keeps no decoded split state.
-  ``T`` gets (ii), then check (i) raises: the simulator NAKs the
-  ``1C 00`` SET and answers the GET with OFF, so there is no decoded PTT
-  state to compare (another lane owns simulator TX behaviour; this lane
-  must not add it);
+  ``T`` gets (ii) first, then check (i) compares a real decoded
+  readback: the data byte of the simulator's own ``1C 00`` GET reply
+  must equal the value the ``T`` line set. The simulator has no PTT
+  state accessor, so the GET reply — built by its own
+  ``simulator.py: MockIcomRadio._dispatch_civ`` PTT branch — is the
+  readback. PTT writes are fire-and-forget (``radio.py: set_ptt``), so
+  check (i) polls the readback with a deadline and the final compare
+  fails BY VALUE while the simulator NAKs the SET (it always answers
+  OFF): ``T … 1`` fails today and passes once the simulator applies the
+  SET statefully;
 * after each ``>`` READ line (``f``, ``m``, ``t``) the reply equals the
   simulator's state for that control (frequency per receiver; mode name
   and passband from the simulator's mode byte and filter; PTT readback,
   which the simulator constantly reports OFF).
+
+Error contract (so a strict xfail can never hide a harness problem):
+harness waits (``_wait_until``, ``_poll_until_reply``) raise
+``TimeoutError`` and fixture/parse/oracle setup mistakes raise
+``RuntimeError`` — never ``AssertionError``. The ONLY ``AssertionError``
+a full-trace replay raises at its divergent line is re-raised by the
+test as ``TraceDivergence`` (matched on the trace line number and the
+``>`` line text); any other ``AssertionError`` becomes ``RuntimeError``
+and FAILS instead of xfailing.
 
 Today's divergences (traces never edited):
 
@@ -58,9 +73,11 @@ Today's divergences (traces never edited):
   itself matches the oracle split/on row — the gap is the simulator's
   missing handler, not the production bytes.
 * fldigi line 46 / js8call line 37 ``T VFOA 1``: replies are ``RPRT 0``
-  and the ``1C 00 01`` frame matches the oracle ptt/on row, but check (i)
-  cannot compare PTT state — no ``1C 00`` SET handler. The remainder of
-  each trace (from its first PTT line on) is the strict xfail.
+  and the ``1C 00 01`` frame matches the oracle ptt/on row, but check
+  (i) fails by value — set ON (``0x01``), the simulator's own ``1C 00``
+  GET readback stays OFF (``0x00``) because the SET is NAKed. The
+  remainder of each trace (from its first PTT line on) is the strict
+  xfail.
 
 All waits carry explicit deadlines; no bare sleeps. The simulator's
 unselected receiver is preset to 14074000 Hz: the wsjtx trace documents
@@ -124,6 +141,16 @@ _FILTER_OF_PASSBAND = {3000: 1, 2400: 2}
 _SIM_PTT_READBACK = "0"
 
 
+class TraceDivergence(AssertionError):
+    """The replay diverged exactly at the trace's known-unsatisfiable line.
+
+    A full-trace test strict-xfails only on this type, matched on the
+    trace line number and the ``>`` line text. Every other failure —
+    harness ``TimeoutError``/``RuntimeError`` or an ``AssertionError``
+    from any other line — propagates as a different type and FAILS.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class _TraceSpec:
     """One golden trace and its first unsatisfiable source line."""
@@ -131,6 +158,7 @@ class _TraceSpec:
     name: str
     filename: str
     diverge_line: int
+    diverge_send: str  # the `>` line text at diverge_line, for xfail matching
     xfail_reason: str
 
 
@@ -160,13 +188,13 @@ def _parse_send(payload: str, line_no: int) -> _SetOp | _ReadOp | None:
     tokens = payload.split()
     cmd, vfo = tokens[0], tokens[1]
     if vfo not in _VFO_RECEIVER:
-        raise AssertionError(f"line {line_no}: unknown VFO token {vfo!r}")
+        raise RuntimeError(f"line {line_no}: unknown VFO token {vfo!r}")
     receiver = _VFO_RECEIVER[vfo]
     if cmd in ("F", "M", "S", "T"):
         return _SetOp(cmd, receiver, tuple(tokens[2:]), line_no)
     if cmd in ("f", "m", "t"):
         return _ReadOp(cmd, receiver, line_no)
-    raise AssertionError(f"line {line_no}: unsupported client line {payload!r}")
+    raise RuntimeError(f"line {line_no}: unsupported client line {payload!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +217,8 @@ async def _stack() -> AsyncGenerator[tuple[RigctldServer, MockIcomRadio], None]:
     )
     with fast_connect():
         await asyncio.wait_for(radio.connect(), timeout=_CONNECT_TIMEOUT)
-    assert radio.connected
+    if not radio.connected:
+        raise RuntimeError("CoreRadio failed to connect to the LAN simulator")
     cfg = RigctldConfig(
         host="127.0.0.1",
         port=0,
@@ -203,7 +232,17 @@ async def _stack() -> AsyncGenerator[tuple[RigctldServer, MockIcomRadio], None]:
     await server.start()
     host, port = _addr(server)
     _keepalive_reader, keepalive_writer = await asyncio.open_connection(host, port)
-    await asyncio.wait_for(wait_for_known_rf_state(server), timeout=_RF_KNOWN_TIMEOUT)
+    # `wait_for_known_rf_state` raises AssertionError (via `_poll_rf_state`)
+    # when the RF state never leaves UNKNOWN; a setup failure must not be
+    # absorbable by a full-trace `raises=TraceDivergence` xfail, so wrap it.
+    # `asyncio.wait_for` already raises builtin TimeoutError past its own
+    # deadline, which propagates untouched.
+    try:
+        await asyncio.wait_for(
+            wait_for_known_rf_state(server), timeout=_RF_KNOWN_TIMEOUT
+        )
+    except AssertionError as exc:
+        raise RuntimeError(f"RF state never left UNKNOWN: {exc}") from exc
     # The trace preconditions both receivers at 14074000 Hz USB/FIL1.
     # ``CoreRadio`` starts with an empty state mirror and store projection
     # (the fixture skips the initial fetch like the other simulator tests),
@@ -255,7 +294,7 @@ async def _poll_until_reply(
             if got == want:
                 return
             if time.monotonic() >= deadline:
-                raise AssertionError(
+                raise TimeoutError(
                     f"`{send_line}` never settled to {want!r} within "
                     f"{timeout}s (got {got!r})"
                 )
@@ -306,7 +345,8 @@ def _row_value_matches(row_value: str, op: _SetOp) -> bool:
     if op.cmd == "F":
         # Row values read like "14.074 MHz".
         number, unit = row_value.split()
-        assert unit == "MHz", f"unexpected oracle frequency unit {unit!r}"
+        if unit != "MHz":
+            raise RuntimeError(f"unexpected oracle frequency unit {unit!r}")
         return int(op.args[0]) == int(float(number) * 1_000_000)
     if op.cmd == "M":
         # Row values read like "USB FIL1".
@@ -314,7 +354,7 @@ def _row_value_matches(row_value: str, op: _SetOp) -> bool:
         try:
             want_filter = _FILTER_OF_PASSBAND[int(op.args[1])]
         except (KeyError, ValueError):
-            raise AssertionError(
+            raise RuntimeError(
                 f"line {op.line_no}: no filter transcription for "
                 f"passband {op.args[1]!r}"
             ) from None
@@ -323,10 +363,10 @@ def _row_value_matches(row_value: str, op: _SetOp) -> bool:
         try:
             return {"1": "on", "0": "off"}[op.args[0]] == row_value
         except KeyError:
-            raise AssertionError(
+            raise RuntimeError(
                 f"line {op.line_no}: unexpected on/off value {op.args[0]!r}"
             ) from None
-    raise AssertionError(
+    raise RuntimeError(
         f"line {op.line_no}: no value rule for {op.cmd}"
     )  # pragma: no cover
 
@@ -339,11 +379,15 @@ def _row_value_matches(row_value: str, op: _SetOp) -> bool:
 async def _wait_until(
     description: str, line_no: int, predicate: Callable[[], bool], *, timeout: float
 ) -> None:
-    """Poll ``predicate`` until true, else raise with line context."""
+    """Poll ``predicate`` until true, else raise TimeoutError with context.
+
+    Deliberately NOT AssertionError: a stalled wait is a harness/timing
+    problem, and a full-trace strict xfail must never absorb it.
+    """
     deadline = time.monotonic() + timeout
     while not predicate():
         if time.monotonic() >= deadline:
-            raise AssertionError(
+            raise TimeoutError(
                 f"line {line_no}: {description} never landed within {timeout}s"
             )
         await asyncio.sleep(0.05)
@@ -359,6 +403,20 @@ def _sim_mode_filter(sim: MockIcomRadio, receiver: int) -> tuple[int, int]:
     if receiver == 0:
         return sim._mode, sim._filter  # noqa: SLF001
     return sim._unselected_mode, sim._unselected_filter  # noqa: SLF001
+
+
+def _sim_ptt_readback(sim: MockIcomRadio) -> int:
+    """The data byte of the simulator's own ``1C 00`` GET reply.
+
+    The simulator keeps no decoded PTT state attribute, so the GET reply
+    built by its own ``_dispatch_civ`` PTT branch is the readback: today
+    always ``0x00`` (the SET is NAKed), ``0x01`` once the simulator
+    applies the SET statefully. Uses no production command builder.
+    """
+    reply = sim._dispatch_civ(0x1C, bytes((0x00,)), 0xE0)  # noqa: SLF001
+    if reply is None or len(reply) != 8 or reply[4] != 0x1C or reply[5] != 0x00:
+        raise RuntimeError(f"simulator 1C 00 GET gave no decodable reply: {reply!r}")
+    return reply[6]
 
 
 async def _check_set_landed(
@@ -383,7 +441,7 @@ async def _check_set_landed(
             want_mode = _MODE_BYTE[op.args[0]]
             want_filter = _FILTER_OF_PASSBAND[int(op.args[1])]
         except (KeyError, ValueError):
-            raise AssertionError(
+            raise RuntimeError(
                 f"line {op.line_no}: no transcription for mode {op.args!r}"
             ) from None
         await _wait_until(
@@ -398,7 +456,7 @@ async def _check_set_landed(
         # back to the stale state mirror. The session overlay masks this on
         # the replay connection, so poll a throwaway session (no overlays)
         # until the canonical store reports the set value — like a polling
-        # client. Throws AssertionError past the deadline.
+        # client. Throws TimeoutError past the deadline.
         vfo = "VFOA" if op.receiver == 0 else "VFOB"
         await _poll_until_reply(
             host,
@@ -407,35 +465,49 @@ async def _check_set_landed(
             [op.args[0], op.args[1]],
             timeout=_POST_SET_READ_TIMEOUT,
         )
-    elif op.cmd == "T":
-        # No decoded PTT state exists to wait on (see below); the frame
-        # wait in check (ii) still proves the SET reached the radio.
-        pass
-    # ``S`` gets check (ii) only: the simulator keeps no decoded split
-    # state, and the reply check after this pins the divergence.
+    # ``T`` check (i) runs after the frame wait below; ``S`` gets check
+    # (ii) only (the simulator keeps no decoded split state).
 
     row = _match_oracle_row(op, rows)
-    if row is None:
-        return
-    want = bytes.fromhex(row["frame"])[4:]
+    if row is not None:
+        want = bytes.fromhex(row["frame"])[4:]
 
-    def _frame_seen() -> bool:
-        return any(frame[4:] == want for frame in sim.civ_frames_received[mark:])
+        def _frame_seen() -> bool:
+            return any(frame[4:] == want for frame in sim.civ_frames_received[mark:])
 
-    await _wait_until(
-        f"captured frame {want.hex().upper()}",
-        op.line_no,
-        _frame_seen,
-        timeout=_FRAME_TIMEOUT,
-    )
+        await _wait_until(
+            f"captured frame {want.hex().upper()}",
+            op.line_no,
+            _frame_seen,
+            timeout=_FRAME_TIMEOUT,
+        )
 
     if op.cmd == "T":
-        raise AssertionError(
-            f"line {op.line_no}: `T {'VFOA' if op.receiver == 0 else 'VFOB'} "
-            f"{op.args[0]}` matches oracle ptt/{row['value']} on the wire, "
-            "but MockIcomRadio has no 1C 00 SET handler (it NAKs the SET "
-            "and answers the GET with OFF), so PTT check (i) cannot "
-            "compare — another lane owns simulator TX behaviour"
+        vfo = "VFOA" if op.receiver == 0 else "VFOB"
+        try:
+            want_ptt = {"1": 0x01, "0": 0x00}[op.args[0]]
+        except KeyError:
+            raise RuntimeError(
+                f"line {op.line_no}: unexpected on/off value {op.args[0]!r}"
+            ) from None
+        # PTT writes are fire-and-forget, so poll the simulator's own
+        # ``1C 00`` GET readback with a deadline; the final compare fails
+        # BY VALUE while the simulator NAKs the SET. This poll never
+        # raises TimeoutError itself — it is the divergence assertion, not
+        # a harness wait — so an early harness timeout elsewhere still
+        # FAILS instead of xfailing.
+        deadline = time.monotonic() + _SETTLE_TIMEOUT
+        while _sim_ptt_readback(sim) != want_ptt:
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(0.05)
+        got_ptt = _sim_ptt_readback(sim)
+        assert got_ptt == want_ptt, (
+            f"line {op.line_no}: `T {vfo} {op.args[0]}` set "
+            f"{'ON' if want_ptt else 'OFF'} ({want_ptt:#04x}) but the "
+            f"simulator's own 1C 00 GET readback is "
+            f"{'ON' if got_ptt else 'OFF'} ({got_ptt:#04x}): the simulator "
+            "NAKs the 1C 00 SET and always answers OFF"
         )
 
 
@@ -499,8 +571,12 @@ async def _replay_checked(
                 j = i + 1
                 while j < len(steps) and steps[j].kind == "expect":
                     actual = await _read_line(reader, timeout=_READ_TIMEOUT)
+                    # Names the `>` line number and text: a divergence
+                    # here is the line-tied xfail signal for e.g. wsjtx
+                    # line 60 `S VFOA 1 VFOB` (`RPRT -7` for `RPRT 0`).
                     assert actual == steps[j].payload, (
-                        f"line {steps[j].line_no}: expected "
+                        f"line {step.line_no}: `{step.payload}` diverged "
+                        f"at reply line {steps[j].line_no}: expected "
                         f"{steps[j].payload!r}, got {actual!r}"
                     )
                     replies.append(actual)
@@ -514,7 +590,7 @@ async def _replay_checked(
                 await _drain_dump_state(reader, timeout=_READ_TIMEOUT)
                 i += 1
             else:  # pragma: no cover — guarded by _parse_golden
-                raise AssertionError(f"unknown step kind {step.kind!r}")
+                raise RuntimeError(f"unknown step kind {step.kind!r}")
     finally:
         writer.close()
         try:
@@ -533,6 +609,7 @@ _SPECS = [
         name="wsjtx",
         filename="wsjtx_dual_rx_session.txt",
         diverge_line=60,
+        diverge_send="S VFOA 1 VFOB",
         xfail_reason=(
             "MOR-3262: line 60 `S VFOA 1 VFOB` answers `RPRT -7`, want "
             "`RPRT 0`: MockIcomRadio NAKs the CI-V 0x0F split SET (no 0x0F "
@@ -543,25 +620,30 @@ _SPECS = [
         name="fldigi",
         filename="fldigi_dual_rx_session.txt",
         diverge_line=46,
+        diverge_send="T VFOA 1",
         xfail_reason=(
-            "MOR-3262: line 46 `T VFOA 1`: MockIcomRadio has no 1C 00 SET "
-            "handler (NAKs the SET, answers the GET with OFF), so PTT "
-            "check (i) cannot compare — another lane owns simulator TX "
-            "behaviour"
+            "MOR-3262: line 46 `T VFOA 1` fails PTT check (i) by value — "
+            "set ON (0x01), the simulator's own 1C 00 GET readback stays "
+            "OFF (0x00): no 1C 00 SET handler (the SET is NAKed)"
         ),
     ),
     _TraceSpec(
         name="js8call",
         filename="js8call_dual_rx_session.txt",
         diverge_line=37,
+        diverge_send="T VFOA 1",
         xfail_reason=(
-            "MOR-3262: line 37 `T VFOA 1`: MockIcomRadio has no 1C 00 SET "
-            "handler (NAKs the SET, answers the GET with OFF), so PTT "
-            "check (i) cannot compare — another lane owns simulator TX "
-            "behaviour"
+            "MOR-3262: line 37 `T VFOA 1` fails PTT check (i) by value — "
+            "set ON (0x01), the simulator's own 1C 00 GET readback stays "
+            "OFF (0x00): no 1C 00 SET handler (the SET is NAKed)"
         ),
     ),
 ]
+
+
+def _is_intended_divergence(spec: _TraceSpec, message: str) -> bool:
+    """True when a replay failure names exactly the spec's divergent line."""
+    return f"line {spec.diverge_line}:" in message and spec.diverge_send in message
 
 
 @pytest.mark.parametrize("spec", _SPECS, ids=[s.name for s in _SPECS])
@@ -575,7 +657,8 @@ async def test_prefix_passes(
         for s in _parse_golden(GOLDEN_DIR / spec.filename)
         if s.line_no < spec.diverge_line
     ]
-    assert steps, f"{spec.filename}: empty prefix"
+    if not steps:
+        raise RuntimeError(f"{spec.filename}: empty prefix")
     await _replay_checked(server, sim, steps, _oracle_rows())
 
 
@@ -585,19 +668,19 @@ async def test_prefix_passes(
         pytest.param(
             _SPECS[0],
             marks=pytest.mark.xfail(
-                strict=True, raises=AssertionError, reason=_SPECS[0].xfail_reason
+                strict=True, raises=TraceDivergence, reason=_SPECS[0].xfail_reason
             ),
         ),
         pytest.param(
             _SPECS[1],
             marks=pytest.mark.xfail(
-                strict=True, raises=AssertionError, reason=_SPECS[1].xfail_reason
+                strict=True, raises=TraceDivergence, reason=_SPECS[1].xfail_reason
             ),
         ),
         pytest.param(
             _SPECS[2],
             marks=pytest.mark.xfail(
-                strict=True, raises=AssertionError, reason=_SPECS[2].xfail_reason
+                strict=True, raises=TraceDivergence, reason=_SPECS[2].xfail_reason
             ),
         ),
     ],
@@ -606,8 +689,28 @@ async def test_prefix_passes(
 async def test_full_trace(
     stack: tuple[RigctldServer, MockIcomRadio], spec: _TraceSpec
 ) -> None:
-    """Whole-trace replay; fails at the first unsatisfiable line."""
+    """Whole-trace replay; xfails exactly at the known divergent line.
+
+    Only the divergent line maps to ``TraceDivergence``. A harness
+    ``TimeoutError``/``RuntimeError``, or an ``AssertionError`` from any
+    other line, becomes ``RuntimeError`` and FAILS. (``raises=`` with a
+    message match via ``pytest.RaisesExc`` is not used: the repo's
+    minimum pytest is 8.0 per pyproject, which predates ``RaisesExc``.)
+    """
     server, sim = stack
-    await _replay_checked(
-        server, sim, _parse_golden(GOLDEN_DIR / spec.filename), _oracle_rows()
-    )
+    try:
+        await _replay_checked(
+            server, sim, _parse_golden(GOLDEN_DIR / spec.filename), _oracle_rows()
+        )
+    except TraceDivergence:
+        raise
+    except AssertionError as exc:
+        message = str(exc)
+        if _is_intended_divergence(spec, message):
+            raise TraceDivergence(
+                f"diverged at trace line {spec.diverge_line} "
+                f"`{spec.diverge_send}`: {exc}"
+            ) from exc
+        raise RuntimeError(
+            f"full-trace replay failed off the divergent line: {exc}"
+        ) from exc
