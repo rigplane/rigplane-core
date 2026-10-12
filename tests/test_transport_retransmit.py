@@ -145,14 +145,51 @@ class TestRangeRequests:
         assert [_seq(p) for p in sent] == [0xFFFF, 0x0000, 0x0001]
         assert all(_ptype(p) == 0x00 for p in sent)
 
-    def test_over_wide_range_sends_nothing(
+    def test_wide_forward_range_serves_first_max_missing_in_order(
         self, transport: IcomTransport, sent: list
     ) -> None:
-        transport.tx_buffer[0] = b"pkt0"
+        first = 1000
+        expected: list = []
+        for s in range(first, first + 60):
+            pkt = b"pkt%04d" % s
+            transport.tx_buffer[s] = pkt
+            expected.append(pkt)
         transport._handle_retransmit_packet(
-            _build_range_request((0, MAX_MISSING + 5)), CONTROL_SIZE + 4, 0, 0
+            _build_range_request((first, first + 59)), CONTROL_SIZE + 4, 0, 0
         )
-        assert len(sent) == 0
+        assert len(sent) == MAX_MISSING
+        assert sent == expected[:MAX_MISSING]
+
+    def test_backward_range_sends_nothing(
+        self, transport: IcomTransport, sent: list
+    ) -> None:
+        transport.tx_buffer[155] = b"pkt155"
+        transport._handle_retransmit_packet(
+            _build_range_request((156, 154)), CONTROL_SIZE + 4, 0, 0
+        )
+        assert sent == []
+
+    def test_max_missing_boundary(
+        self, transport: IcomTransport, sent: list
+    ) -> None:
+        first = 2000
+        for s in range(first, first + MAX_MISSING + 1):
+            transport.tx_buffer[s] = b"b%04d" % s
+        transport._handle_retransmit_packet(
+            _build_range_request((first, first + MAX_MISSING - 1)),
+            CONTROL_SIZE + 4,
+            0,
+            0,
+        )
+        assert len(sent) == MAX_MISSING
+        sent.clear()
+        transport._handle_retransmit_packet(
+            _build_range_request((first, first + MAX_MISSING)),
+            CONTROL_SIZE + 4,
+            0,
+            0,
+        )
+        assert len(sent) == MAX_MISSING
 
     def test_trailing_partial_pair_ignored(
         self, transport: IcomTransport, sent: list

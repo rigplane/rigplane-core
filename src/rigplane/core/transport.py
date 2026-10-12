@@ -663,15 +663,24 @@ class IcomTransport:
         for i in range(CONTROL_SIZE, end, 4):
             first, last = struct.unpack_from("<HH", data, i)
             span = (last - first) & 0xFFFF
-            if span >= MAX_MISSING:
+            if span >= 0x8000:
                 logger.debug(
-                    "retransmit range %d..%d wider than %d; ignoring",
+                    "retransmit range %d..%d backward; ignoring",
+                    first,
+                    last,
+                )
+                continue
+            count = min(span + 1, MAX_MISSING)
+            if count < span + 1:
+                logger.debug(
+                    "retransmit range %d..%d wider than %d; serving first %d, "
+                    "rest left for the radio's next request",
                     first,
                     last,
                     MAX_MISSING,
+                    count,
                 )
-                continue
-            for offset in range(span + 1):
+            for offset in range(count):
                 self._retransmit((first + offset) & 0xFFFF)
         return True
 
