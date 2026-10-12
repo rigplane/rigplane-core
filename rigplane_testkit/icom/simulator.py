@@ -232,6 +232,10 @@ class MockIcomRadio:
         username: Expected username (any value accepted when ``auth_fail`` is False).
         password: Expected password (unused; see ``auth_fail``).
         radio_addr: CI-V address the mock claims to be (default 0x98 = IC-7610).
+        lan_civ_echo: Echo every CI-V DATA frame addressed to the radio back
+            byte-identical before its reply (recorded IC-7610 LAN behaviour).
+            Default True (fidelity); fault-injection tests that mangle the
+            reply itself set it False so the plan sees one packet, not two.
         fault_plan: optional :class:`~rigplane_testkit.icom.faults.FaultPlan`
             applying per-port/per-direction drop/duplicate/delay/reorder/
             corrupt/truncate rules on top of the legacy ``drop_rate`` /
@@ -251,6 +255,7 @@ class MockIcomRadio:
         single_owner: bool = False,
         keepalive_hold_s: float = _DEFAULT_KEEPALIVE_HOLD_S,
         drop_rate: float = 0.0,
+        lan_civ_echo: bool = True,
         unsolicited_civ: bool = False,
         unsolicited_interval_s: float = 0.1,
         fault_plan: FaultPlan | None = None,
@@ -319,6 +324,12 @@ class MockIcomRadio:
         # Behaviour flags for edge-case tests
         self.auth_fail: bool = False
         self.response_delay: float = 0.0  # extra sleep before sending a response
+        # LAN CI-V echo (recorded IC-7610 behaviour): every CI-V DATA frame
+        # addressed to the radio is sent back byte-identical before its
+        # reply. The production client drops it in ``_route_civ_frame``
+        # (``src/rigplane/runtime/_civ_rx.py``: a frame whose sender is not
+        # the radio address never routes), so it is invisible above UDP.
+        self.lan_civ_echo: bool = lan_civ_echo
 
         # ----------------------------------------------------------------
         # Session-lifecycle modelling (additive; all opt-in)
@@ -1198,6 +1209,13 @@ class MockIcomRadio:
         # Only handle commands addressed to this radio
         if to_addr != self._radio_addr:
             return
+
+        if self.lan_civ_echo:
+            # Recorded IC-7610 LAN behaviour: the request datagram comes
+            # back byte-identical immediately before the reply — including
+            # requests answered with NAK. Through the same outbound funnel
+            # as the reply, so a fault plan sees both packets.
+            self._send(proto, data, addr, "civ")
 
         response_civ = self._dispatch_civ(cmd, payload, from_addr)
         if response_civ is not None:

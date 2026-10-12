@@ -123,6 +123,21 @@ def _is_freq_reply(pkt: bytes) -> bool:
     return len(pkt) > 0x1A and pkt[0x15:0x17] == b"\xfe\xfe" and pkt[0x19] == 0x03
 
 
+async def _recv_reply(
+    client: _UdpClient, request: bytes, timeout: float = 2.0
+) -> bytes:
+    """Read the radio's reply to ``request``, skipping its LAN CI-V echo.
+
+    ``MockIcomRadio`` echoes every CI-V request packet back byte-identical
+    immediately before the reply, like the recorded IC-7610 on the LAN CI-V
+    port; raw-UDP tests that want "the reply" skip that echo here.
+    """
+    while True:
+        pkt = await client.recv(timeout)
+        if pkt != request:
+            return pkt
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -151,9 +166,24 @@ async def client():
 
 
 async def test_no_plan_behaves_as_before(server, client):
-    client.send(_freq_get(), server.civ_port)
-    reply = await client.recv()
+    request = _freq_get()
+    client.send(request, server.civ_port)
+    reply = await _recv_reply(client, request)
     assert _is_freq_reply(reply)
+
+
+async def test_echo_precedes_every_reply_by_default(server, client):
+    """The LAN CI-V echo: the request packet comes back byte-identical
+    first, the reply second (recorded IC-7610 behaviour; the conformance
+    suite replays all recorded requests against this)."""
+    request = _freq_get()
+    client.send(request, server.civ_port)
+    assert await client.recv() == request
+    assert _is_freq_reply(await client.recv())
+
+    server.lan_civ_echo = False
+    client.send(request, server.civ_port)
+    assert _is_freq_reply(await client.recv())
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +193,7 @@ async def test_no_plan_behaves_as_before(server, client):
 
 async def test_drop_bounded_to_next_packet(server, client):
     """'Lose the next civ reply': the first answer vanishes, the second lands."""
+    server.lan_civ_echo = False  # drop the reply itself, not its echo
     server.fault_plan = FaultPlan(
         civ_to_client=FaultRule(drop_probability=1.0, max_packets=1)
     )
@@ -174,11 +205,13 @@ async def test_drop_bounded_to_next_packet(server, client):
 
 
 async def test_duplicate_sends_two_identical_copies(server, client):
+    server.lan_civ_echo = False  # duplicate the reply itself, not its echo
     server.fault_plan = FaultPlan(
         civ_to_client=FaultRule(duplicate_probability=1.0, duplicate_delay_s=0.05)
     )
-    client.send(_freq_get(), server.civ_port)
-    first = await client.recv()
+    request = _freq_get()
+    client.send(request, server.civ_port)
+    first = await _recv_reply(client, request)
     second = await client.recv()
     assert _is_freq_reply(first)
     assert first == second
@@ -187,6 +220,7 @@ async def test_duplicate_sends_two_identical_copies(server, client):
 async def test_corrupt_flips_bytes_on_the_wire(server, client):
     # Flip every byte of the reply (corrupt_bytes above the packet length):
     # the length header no longer matches the datagram size.
+    server.lan_civ_echo = False  # corrupt the reply itself, not its echo
     server.fault_plan = FaultPlan(
         civ_to_client=FaultRule(corrupt_probability=1.0, corrupt_bytes=64)
     )
@@ -196,6 +230,7 @@ async def test_corrupt_flips_bytes_on_the_wire(server, client):
 
 
 async def test_truncate_cuts_reply_on_the_wire(server, client):
+    server.lan_civ_echo = False  # truncate the reply itself, not its echo
     server.fault_plan = FaultPlan(
         civ_to_client=FaultRule(truncate_probability=1.0, truncate_to=6)
     )
@@ -205,6 +240,7 @@ async def test_truncate_cuts_reply_on_the_wire(server, client):
 
 
 async def test_reorder_permutes_replies(server, client):
+    server.lan_civ_echo = False  # permute three replies, not echo+reply pairs
     server.fault_plan = FaultPlan(civ_to_client=FaultRule(reorder_window=3))
     for seq in (1, 2, 3):
         client.send(_freq_get(seq=seq), server.civ_port)
@@ -223,8 +259,9 @@ async def test_reorder_flush_releases_held_burst_on_idle(server, client, directi
     flush after FaultRule.reorder_flush_s seconds."""
     rule = FaultRule(reorder_window=4, reorder_flush_s=0.05)
     server.fault_plan = FaultPlan(**{f"civ_{direction}": rule})
-    client.send(_freq_get(), server.civ_port)
-    assert _is_freq_reply(await client.recv(timeout=1.0))
+    request = _freq_get()
+    client.send(request, server.civ_port)
+    assert _is_freq_reply(await _recv_reply(client, request, timeout=1.0))
     assert rule.held == 0
 
 
@@ -329,8 +366,9 @@ async def test_reboot_fences_stale_client_until_fresh_open(server, client):
     await client.recv()
     client.send(_openclose(), server.civ_port)
     await client.recv()  # unsolicited CI-V frame on open
-    client.send(_freq_get(), server.civ_port)
-    assert _is_freq_reply(await client.recv())
+    request = _freq_get()
+    client.send(request, server.civ_port)
+    assert _is_freq_reply(await _recv_reply(client, request))
 
     # Reboot: down [+0.2, +0.8], busy [+0.8, +1.6].
     server.reboot(at=0.2, down_for=0.6, busy_for=0.8)
@@ -359,8 +397,9 @@ async def test_reboot_fences_stale_client_until_fresh_open(server, client):
         assert struct.unpack_from(">H", status, 0x42)[0] == server.civ_port
         fresh.send(_openclose(), server.civ_port)
         await fresh.recv()
-        fresh.send(_freq_get(), server.civ_port)
-        assert _is_freq_reply(await fresh.recv())
+        fresh_request = _freq_get()
+        fresh.send(fresh_request, server.civ_port)
+        assert _is_freq_reply(await _recv_reply(fresh, fresh_request))
         # ...while the stale client is still fenced.
         client.send(_freq_get(), server.civ_port)
         await client.expect_silence(0.3)

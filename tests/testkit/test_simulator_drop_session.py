@@ -34,6 +34,7 @@ from testkit.test_simulator_faults import (
     _login,
     _openclose,
     _ping,
+    _recv_reply,
 )
 
 _HOST = "127.0.0.1"
@@ -177,7 +178,7 @@ async def test_civ_data_from_dropped_client_gets_no_answer(server, client):
     client.send(_openclose(), server.civ_port)
     await client.recv()  # unsolicited CI-V frame on open
     client.send(_freq_get(), server.civ_port)
-    assert _is_freq_reply(await client.recv())  # baseline: served
+    assert _is_freq_reply(await _recv_reply(client, _freq_get()))  # baseline: served
 
     server.drop_session(at=0.2, notice=False)
     await asyncio.sleep(0.5)  # past the drop
@@ -196,7 +197,7 @@ async def test_stale_openclose_does_not_reopen_stream_and_counters(server, clien
     await client.recv()  # unsolicited CI-V frame on open
     assert server.openclose_open_count == 1
     client.send(_freq_get(), server.civ_port)
-    assert _is_freq_reply(await client.recv())  # baseline: served
+    assert _is_freq_reply(await _recv_reply(client, _freq_get()))  # baseline: served
 
     server.drop_session(at=0.2, notice=False)
     await asyncio.sleep(0.5)  # past the drop
@@ -219,7 +220,7 @@ async def test_stale_openclose_does_not_reopen_stream_and_counters(server, clien
     await client.recv()  # unsolicited CI-V frame on open
     assert server.openclose_open_count == 3
     client.send(_freq_get(), server.civ_port)
-    assert _is_freq_reply(await client.recv())
+    assert _is_freq_reply(await _recv_reply(client, _freq_get()))
 
 
 async def test_fence_permission_is_per_client_not_shared(server, client):
@@ -231,7 +232,7 @@ async def test_fence_permission_is_per_client_not_shared(server, client):
     client.send(_openclose(), server.civ_port)
     await client.recv()  # unsolicited CI-V frame on open
     client.send(_freq_get(), server.civ_port)
-    assert _is_freq_reply(await client.recv())  # A baseline: served
+    assert _is_freq_reply(await _recv_reply(client, _freq_get()))  # A baseline: served
 
     server.drop_session(at=0.2, notice=False)
     await asyncio.sleep(0.5)  # past the drop
@@ -255,7 +256,7 @@ async def test_fence_permission_is_per_client_not_shared(server, client):
         client_b.send(_openclose(), server.civ_port)
         await client_b.recv()  # unsolicited CI-V frame on open
         client_b.send(_freq_get(), server.civ_port)
-        assert _is_freq_reply(await client_b.recv())  # B is served
+        assert _is_freq_reply(await _recv_reply(client_b, _freq_get()))  # B is served
 
         # A never re-logs: its OpenClose(open) still gets nothing — B's
         # accepted login did not open the gate for the shared IP.
@@ -308,7 +309,7 @@ async def test_reboot_fences_stale_openclose_until_fresh_login(server, client):
     client.send(_openclose(), server.civ_port)
     await client.recv()
     client.send(_freq_get(), server.civ_port)
-    assert _is_freq_reply(await client.recv())  # baseline: served
+    assert _is_freq_reply(await _recv_reply(client, _freq_get()))  # baseline: served
 
     server.reboot(at=0.2, down_for=0.4, busy_for=0.0)  # default notice=False
     await asyncio.sleep(1.0)  # radio back (down ended at ~+0.62)
