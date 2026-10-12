@@ -694,6 +694,7 @@ class CoreRadioSessionLifecycle:
         max_connect_attempts: int = _MAX_CONNECT_ATTEMPTS,
         first_connect_busy_cooldown_s: float | None = None,
         first_connect_busy_budget_s: float | None = None,
+        first_connect_busy_live_holder_after_s: float | None = None,
     ) -> None:
         self._mech = mechanism
         self._not_ready_cooldown_s = not_ready_cooldown_s
@@ -709,8 +710,17 @@ class CoreRadioSessionLifecycle:
         # transient outcomes.  Later connects and mechanisms without the
         # policy keep the constructed cooldown/attempt behaviour. ``None``
         # disables it.
+        # Live-holder stop (MOR-3391 part 1b): when ALSO set, a busy reject
+        # on an attempt that STARTS at or after the first busy attempt's
+        # start plus this threshold proves a LIVE session holds the radio
+        # (a dead hold would have expired by then), so the loop raises the
+        # honest busy error instead of retrying. ``None`` disables it,
+        # leaving the budget as the only backstop.
         self._first_connect_busy_cooldown_s = first_connect_busy_cooldown_s
         self._first_connect_busy_budget_s = first_connect_busy_budget_s
+        self._first_connect_busy_live_holder_after_s = (
+            first_connect_busy_live_holder_after_s
+        )
         self._connected_once = False
 
         self._state: LifecycleState = LifecycleState.DISCONNECTED
@@ -862,9 +872,11 @@ class CoreRadioSessionLifecycle:
         attempt = 0
         busy_attempts = 0
         busy_deadline: float | None = None
+        first_busy_started_at: float | None = None
         while True:
             attempt += 1
-            self._connecting_started = time.monotonic()
+            attempt_started_at = time.monotonic()
+            self._connecting_started = attempt_started_at
             self._emit(LifecycleState.CONNECTING)
             outcome = await self._attempt_with_release()
 
@@ -902,6 +914,31 @@ class CoreRadioSessionLifecycle:
                 # budget elapses; the busy passes do not count against
                 # ``max_connect_attempts`` — those retries stay reserved for
                 # the other transient outcomes.
+                if first_busy_started_at is None:
+                    first_busy_started_at = attempt_started_at
+                live_holder_after_s = self._first_connect_busy_live_holder_after_s
+                if (
+                    live_holder_after_s is not None
+                    and attempt_started_at
+                    >= first_busy_started_at + live_holder_after_s
+                ):
+                    # Live-holder stop (MOR-3391 part 1b): a busy reject on
+                    # an attempt that started at or after first-busy plus
+                    # the threshold proves a LIVE session holds the radio —
+                    # a dead hold would have expired by then.  Stop: another
+                    # same-computer login would make the radio drop that
+                    # live session.  The reject was already released inside
+                    # ``_attempt_with_release``.
+                    from rigplane.runtime._control_phase import (
+                        _session_reject_hint,
+                    )
+
+                    self._connecting_started = None
+                    self._emit(LifecycleState.DISCONNECTED)
+                    raise RigplaneConnectionError(
+                        "radio busy: another client holds the session. "
+                        f"{_session_reject_hint(0xFFFFFFFF)}"
+                    )
                 busy_attempts += 1
                 now = time.monotonic()
                 if busy_deadline is None:

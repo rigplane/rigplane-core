@@ -831,27 +831,37 @@ class TestConnectSessionRejection:
     async def test_persistent_busy_rejection_raises_never_ready(self) -> None:
         """Persistent first-connect busy rejects end in the resident
         never-ready error (MOR-3391): each reject is released and the retry
-        logs in again instead of spinning conninfo on the rejected token."""
-        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
-        mt = ConnectMockTransport()
-        radio._ctrl_transport = mt
-        clock = _VirtualMonotonic()
-        logins = [_build_login_response(token=0x4000 + i) for i in range(40)]
+        logs in again instead of spinning conninfo on the rejected token.
 
-        async def _reject_status() -> int:
-            clock.advance(_REJECT_STEP_S)
-            radio._last_status_error = 0xFFFFFFFF
-            return 0
-
-        with _busy_hold_patch_stack(
-            radio,
-            clock,
-            login_responses=logins,
-            status_flow=_reject_status,
-            send_mock=AsyncMock(),
+        The part-1b live-holder stop is disabled here (threshold ``None``):
+        with the production wiring a persistent busy stops at the 90 s
+        live-holder error first; this row pins the 600 s outer cap.
+        """
+        with patch.object(
+            ControlPhaseRuntime, "STARTUP_BUSY_LIVE_HOLDER_AFTER_S", None
         ):
-            with pytest.raises(ConnectionError, match="never became ready"):
-                await radio.connect()
+            radio = IcomRadio(
+                "192.168.1.100", username="u", password="p", model="IC-7610"
+            )
+            mt = ConnectMockTransport()
+            radio._ctrl_transport = mt
+            clock = _VirtualMonotonic()
+            logins = [_build_login_response(token=0x4000 + i) for i in range(40)]
+
+            async def _reject_status() -> int:
+                clock.advance(_REJECT_STEP_S)
+                radio._last_status_error = 0xFFFFFFFF
+                return 0
+
+            with _busy_hold_patch_stack(
+                radio,
+                clock,
+                login_responses=logins,
+                status_flow=_reject_status,
+                send_mock=AsyncMock(),
+            ):
+                with pytest.raises(ConnectionError, match="never became ready"):
+                    await radio.connect()
 
         # More than one fresh login went out: the retry re-logs in instead
         # of re-sending conninfo on the rejected token.

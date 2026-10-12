@@ -868,9 +868,7 @@ def _busy_lifecycle(
     monkeypatch.setattr(
         "rigplane.runtime.session_lifecycle.time.monotonic", clock.monotonic
     )
-    monkeypatch.setattr(
-        "rigplane.runtime.session_lifecycle.asyncio.sleep", clock.sleep
-    )
+    monkeypatch.setattr("rigplane.runtime.session_lifecycle.asyncio.sleep", clock.sleep)
     mech = FakeMechanism()
     lc = CoreRadioSessionLifecycle(
         mechanism=mech,
