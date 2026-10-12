@@ -1,14 +1,15 @@
-"""Rigctld raw ``w`` de-key parity with the typed ``T 0`` at the capture gate.
+"""Rigctld raw ``w`` capture-gate parity with the typed ``T 0`` unkey.
 
 A rigctld client that is not the current controller can unkey with the
 typed ``T 0`` (``RigctldHandler.execute`` skips ``controller.capture()``
-for it) but, before this change, an exact raw de-key sent through ``w``
-was refused with ``EACCESS`` at the same gate.  These rows pin the
-parity: an exact raw de-key frame reaches the radio's raw send with the
-controller held by another client, while every other raw payload still
-requires the controller seat.  The read-only gate and the managed-mode
-TX-family refusal are unchanged and refuse the raw de-key exactly as
-they refuse ``T 0``.
+for it).  These rows pin that the raw frames that end a transmission —
+PTT off (``1C 00 00``) and the voice TX memory stop (``28 00 00``),
+bare or 0x29-wrapped — reach the radio's raw send the same way, while
+every other raw payload, the raw tuner-off included, still requires the
+controller seat.  The read-only gate still refuses the raw unkey.  In
+managed mode the payload refusal still answers the raw PTT off with
+``ERJCTED``, while the raw tuner-off is answered with ``EACCESS`` at
+the ingress capture gate.
 """
 
 from __future__ import annotations
@@ -94,20 +95,26 @@ def _managed_handler(authority):
     return handler, radio
 
 
-_DEKEY_WIRES = (
+_TRANSMISSION_END_WIRES = (
     (b"w FE FE 98 E0 1C 00 00 FD", b"\xfe\xfe\x98\xe0\x1c\x00\x00\xfd"),
-    (b"w FE FE 98 E0 1C 01 00 FD", b"\xfe\xfe\x98\xe0\x1c\x01\x00\xfd"),
     (
         b"w FE FE 98 E0 29 00 1C 00 00 FD",
         b"\xfe\xfe\x98\xe0\x29\x00\x1c\x00\x00\xfd",
+    ),
+    (b"w FE FE 98 E0 28 00 00 FD", b"\xfe\xfe\x98\xe0\x28\x00\x00\xfd"),
+    (
+        b"w FE FE 98 E0 29 00 28 00 00 FD",
+        b"\xfe\xfe\x98\xe0\x29\x00\x28\x00\x00\xfd",
     ),
 )
 
 
 @pytest.mark.parametrize(
-    ("wire", "frame"), _DEKEY_WIRES, ids=["ptt-off", "tuner-off", "cmd29-ptt-off"]
+    ("wire", "frame"),
+    _TRANSMISSION_END_WIRES,
+    ids=["ptt-off", "cmd29-ptt-off", "voice-stop", "cmd29-voice-stop"],
 )
-async def test_unmanaged_raw_dekey_skips_controller_capture(
+async def test_unmanaged_raw_transmission_end_skips_controller_capture(
     held_controller, wire, frame
 ):
     handler, radio = _unmanaged_handler(held_controller)
@@ -115,8 +122,8 @@ async def test_unmanaged_raw_dekey_skips_controller_capture(
     response = await handler.execute(parse_line(wire))
 
     assert response.ok, (
-        "an exact raw de-key must reach the radio without holding the "
-        "controller seat, exactly as the typed T 0 does"
+        "a raw frame that ends a transmission must reach the radio "
+        "without holding the controller seat, exactly as the typed T 0 does"
     )
     radio._send_civ_raw.assert_awaited_once_with(frame)
 
@@ -127,11 +134,18 @@ async def test_unmanaged_raw_dekey_skips_controller_capture(
         b"w FE FE 98 E0 1C 00 01 FD",
         b"w FE FE 98 E0 03 FD",
         b"w FE FE 98 E0 1C 00 00 00 FD",
+        b"w FE FE 98 E0 1C 01 00 FD",
         b"w FE ZZ FD",
     ),
-    ids=["raw-ptt-on", "non-tx-raw", "non-exact-dekey", "unparseable-hex"],
+    ids=[
+        "raw-ptt-on",
+        "non-tx-raw",
+        "non-exact-dekey",
+        "raw-tuner-off",
+        "unparseable-hex",
+    ],
 )
-async def test_unmanaged_non_dekey_raw_still_requires_the_controller_seat(
+async def test_unmanaged_non_transmission_end_raw_still_requires_the_controller_seat(
     held_controller, wire
 ):
     handler, radio = _unmanaged_handler(held_controller)
@@ -163,4 +177,15 @@ async def test_managed_non_controller_raw_dekey_is_refused_by_payload(
     response = await handler.execute(parse_line(b"w FE FE 98 E0 1C 00 00 FD"))
 
     assert response.error is HamlibError.ERJCTED
+    radio._send_civ_raw.assert_not_awaited()
+
+
+async def test_managed_non_controller_raw_tuner_off_is_refused_at_ingress(
+    held_controller,
+):
+    handler, radio = _managed_handler(held_controller)
+
+    response = await handler.execute(parse_line(b"w FE FE 98 E0 1C 01 00 FD"))
+
+    assert response.error is HamlibError.EACCESS
     radio._send_civ_raw.assert_not_awaited()

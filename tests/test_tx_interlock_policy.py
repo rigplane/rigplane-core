@@ -64,6 +64,7 @@ from rigplane.runtime.tx_interlock import (
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
     is_exact_raw_dekey_frame,
+    is_exact_raw_transmission_end_frame,
     resolve_rf_state,
 )
 
@@ -597,3 +598,41 @@ def test_exact_raw_dekey_voice_tx_memory_rows(frame_hex: str, expected: bool) ->
     second data byte, no data byte, or another 0x28 sub is not a de-key.
     """
     assert is_exact_raw_dekey_frame(bytes.fromhex(frame_hex)) is expected
+
+
+@pytest.mark.parametrize(
+    ("frame_hex", "expected"),
+    (
+        ("FEFE98E01C0000FD", True),
+        ("FEFE98E029001C0000FD", True),
+        ("FEFE98E0280000FD", True),
+        ("FEFE98E02900280000FD", True),
+        ("FEFE98E01C0100FD", False),
+        ("FEFE98E029001C0100FD", False),
+        ("FEFE98E01C0001FD", False),
+        ("FEFE98E01C000000FD", False),
+        ("FEFE98E0280001FD", False),
+        ("FEFE98E01CFD", False),
+    ),
+    ids=(
+        "ptt-off",
+        "cmd29-ptt-off",
+        "voice-memory-stop",
+        "cmd29-voice-memory-stop",
+        "tuner-off-not-transmission-end",
+        "cmd29-tuner-off-not-transmission-end",
+        "ptt-on-not-transmission-end",
+        "ptt-off-extra-byte",
+        "voice-stop-tx-payload",
+        "short-1c-frame-unparseable",
+    ),
+)
+def test_exact_raw_transmission_end_rows(frame_hex: str, expected: bool) -> None:
+    """MOR-3380: the frames that end a transmission, exactly.
+
+    PTT off (``1C 00 00``) and the voice TX memory stop (``28 00 00``),
+    bare or cmd29-wrapped, end a transmission; the tuner-off actuation
+    (``1C 01 00``), any other payload, and an unparseable envelope do
+    not.
+    """
+    assert is_exact_raw_transmission_end_frame(bytes.fromhex(frame_hex)) is expected
