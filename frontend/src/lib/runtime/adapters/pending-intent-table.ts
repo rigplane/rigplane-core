@@ -3,10 +3,9 @@
  * `panel-adapters.ts`. Every function here is a function of its
  * arguments: the command lifecycle list, the server state (a captured
  * value for the armed folds, a lazily invoked reader for the pending
- * folds), a monotonic `nowMs`, and a supersession predicate. No store
+ * folds), a `nowMs` clock value, and a supersession predicate. No store
  * value, runtime singleton, or clock is read here; the `panel-adapters.ts`
- * wrappers own those reads, in the same order and under the same
- * conditions the pre-split inline code read them. The exported
+ * wrappers own those reads. The exported
  * `getPending*`/`get*Armed` accessors and their doc comments stay in
  * `panel-adapters.ts`; these are their pure bodies.
  */
@@ -33,7 +32,7 @@ function confirmedReceiverState(
 }
 
 /**
- * Grace backstop (review R2, timing revised R3) — retire an
+ * Grace backstop — retire an
  * acknowledged-pending command this long after its ack even with no
  * observation of the commanded field. Covers the never-answered-at-all
  * classes the observation rule below cannot, because none of them ever
@@ -50,9 +49,6 @@ function confirmedReceiverState(
  * `latestPendingParam` with a fresh `nowMs` (the next state push, or any
  * other `$derived` recompute), not the instant the clock crosses the
  * threshold.
- *
- * 3000ms: `tuning-accumulator.ts` records the observed `set_freq` confirm
- * round trip at 0.5–2s on live hardware.
  */
 const ACK_CONFIRM_GRACE_MS = 3_000;
 
@@ -278,7 +274,7 @@ export function pendingToneFreq(
  * switch in real time but is instead confirmed by polling (the radio's own
  * observed state, same as every accessor above) needs a generic "in flight"
  * marker, so an operator gets feedback the instant they act instead of the
- * multi-second silent lag the ticket was filed against (MODE buttons: click
+ * multi-second silent lag this fixes (MODE buttons: click
  * → nothing visible → the poll eventually confirms). `ArmedFact`/`armedFact`
  * below are a GENERIC READ over `latestPendingParam`'s decision table above
  * — not a second source of truth, not a reimplementation. Every honesty rule

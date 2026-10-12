@@ -17,7 +17,7 @@ export interface CommandLifecycle {
    * value actually changed (`core.state_store._apply_one` bumps it
    * unconditionally, before the semantic-change check that gates
    * `stateRevision`) — the "did a fresh poll cycle happen since ack" signal
-   * `panel-adapters.ts`'s `latestPendingParam` needs. `stateRevision` would
+   * `pending-intent-table.ts`'s `latestPendingParam` needs. `stateRevision` would
    * NOT serve this: a poll that re-confirms an unchanged value never bumps
    * it, which is exactly the case a fast double-toggle produces (the
    * superseded command's target coincides with the pre-existing confirmed

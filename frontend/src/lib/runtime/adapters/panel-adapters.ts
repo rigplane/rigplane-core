@@ -1374,9 +1374,8 @@ export function getAgcArmed(): ArmedFact<number> {
   return agcArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
-/** Filter-select (FIL1/2/3) armed fact (`set_filter`). This is the exact
- *  same `latestPendingParam('set_filter', 'filter', receiver, 'filter')`
- *  call `getPendingFilterSelection(receiver)` above already makes — this
+/** Filter-select (FIL1/2/3) armed fact (`set_filter`). This is the same
+ *  pending read `getPendingFilterSelection(receiver)` above makes — this
  *  wrapper only supplies the no-receiver-arg, `ArmedFact`-shaped read
  *  `FilterPanel.svelte` needs (parity with `getModeArmed`'s shape), not a
  *  second implementation. */
