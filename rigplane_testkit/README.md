@@ -68,11 +68,15 @@ UDP code paths as production.
   with the current token is answered `00000000` and extends the single-owner
   hold whatever its source (renewal traffic from the holder itself extends
   it too), while a renewal with a token from an ended epoch
-  (the owner's token-remove, disconnect, OpenClose close, `drop_session`,
-  reboot, or hold expiry — never a bare login) is answered `ffffffff`,
-  exactly once. `civ_standby(on)` is a test-only scenario, not recorded
+  (the owner's token-remove, disconnect, OpenClose close, `free_session`,
+  `drop_session`, reboot, or hold expiry — never a bare login) is answered
+  `ffffffff`, exactly once. In single-owner mode only the owner's
+  token-remove and OpenClose close end the session; in default mode a
+  token-remove retires only when it carries the live token.
+  `civ_standby(on)` is a test-only scenario, not recorded
   behaviour: while on, the CI-V port emits nothing for CI-V DATA (no echo,
-  no reply, no retransmit requests) but still advances sequence tracking,
+  no reply, no retransmit requests) but still advances sequence tracking
+  and consumes held gap packets without processing them,
   while CI-V-port pings and the control port keep answering.
   Wire-level examples live in `tests/testkit/test_simulator_faults.py`,
   `tests/testkit/test_simulator_drop_session.py` and

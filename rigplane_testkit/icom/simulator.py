@@ -403,8 +403,9 @@ class MockIcomRadio:
         # A conninfo from a different owner while a session is held is rejected
         # with civ_port=0 + error=0xFFFFFFFF (previous-session-active). The held
         # session is freed immediately on the owner's token-remove or
-        # OpenClose(close) — a token-remove from any other source is a no-op —
-        # and otherwise auto-released after ``keepalive_hold_s`` of silence.
+        # OpenClose(close) — a token-remove or close from any other source
+        # is a no-op — and otherwise auto-released after ``keepalive_hold_s``
+        # of silence.
         self.single_owner: bool = single_owner
         self.keepalive_hold_s: float = keepalive_hold_s
         # Owner identity = (remote_addr, my_id); None when no session is held.
@@ -430,7 +431,8 @@ class MockIcomRadio:
         # CI-V standby scenario (test knob, NOT recorded radio behaviour):
         # while True the CI-V port emits nothing for CI-V DATA (no echo, no
         # reply, no retransmit requests) but still advances sequence
-        # tracking, so turning standby off resumes cleanly; discovery,
+        # tracking and consumes held gap packets without processing them,
+        # so turning standby off resumes cleanly; discovery,
         # pings and OpenClose still work, and the control port is unaffected.
         self._civ_standby: bool = False
         # Power-off notice window (recording w2): after the 0x90 notice the
@@ -628,18 +630,27 @@ class MockIcomRadio:
         self._stall_until = time.monotonic() + max(0.0, seconds)
 
     def free_session(self, reason: str = "manual") -> None:
-        """Release the held session immediately (test helper)."""
+        """Release the held session immediately (test helper).
+
+        Like every other session end (owner token-remove, disconnect,
+        OpenClose close, hold expiry, ``drop_session``, reboot) this also
+        ends the token epoch, so later renewals with the old token are
+        rejected.
+        """
         self._release_session(reason)
+        self._retire_token()
 
     def civ_standby(self, on: bool) -> None:
         """Turn the CI-V standby scenario on or off (test helper).
 
         While on, the CI-V port emits nothing for CI-V DATA — no echo, no
         reply, no retransmit requests — but still advances sequence
-        tracking for tracked packets, so turning standby off resumes
-        cleanly. CI-V-port pings stay answered, and the control port keeps
-        answering pings and renewals. This is a simulator scenario for
-        tests, NOT recorded radio behaviour — network standby is unrecorded.
+        tracking for tracked packets, and the gap drain still consumes
+        held packets without processing them, so turning standby off
+        resumes cleanly. CI-V-port pings stay answered, and the control
+        port keeps answering pings and renewals. This is a simulator
+        scenario for tests, NOT recorded radio behaviour — network
+        standby is unrecorded.
         """
         self._civ_standby = bool(on)
 
@@ -1226,13 +1237,16 @@ class MockIcomRadio:
         # Token remove (0x40 bytes, requesttype=0x01) → graceful close: the
         # owner frees the session now and ends the token epoch, so later
         # renewals with it are rejected. In single-owner mode a remove from
-        # any other source is a no-op: it neither frees nor retires.
+        # any other source is a no-op: it neither frees nor retires. In
+        # default mode no owner is tracked, so a remove retires only when
+        # it carries the live token — a remove naming no session is a
+        # no-op (the production client always sends its own token).
         if n == 0x40 and data[0x15] == _TOKEN_REMOVE:
             if self.single_owner:
                 if self._owner == (addr, sender_id):
                     self._release_session("token_remove")
                     self._retire_token()
-            else:
+            elif struct.unpack_from("<I", data, 0x1C)[0] == self.token:
                 self._retire_token()
             return
 
@@ -1365,25 +1379,32 @@ class MockIcomRadio:
                 if self._civ_gap_gate(
                     key, "openclose", data, addr, sender_id, seq, proto
                 ):
-                    if not self._civ_standby:
-                        self._civ_gap_drain(key, proto)
+                    # The drain runs in standby too: it consumes held
+                    # packets without processing them (see
+                    # ``_civ_gap_drain``) — only the marker above is
+                    # suppressed.
+                    self._civ_gap_drain(key, proto)
             elif data[0x15] == _OPENCLOSE_CLOSE:  # graceful data-port close
-                # OpenClose(close) frees the single held session immediately
-                # and ends its token epoch. Tracking outlives the close: it
-                # ends only with a new session, drop_session or reboot
-                # (MOR-3361).
-                if self.single_owner and self._owner is not None:
+                # The owner's OpenClose(close) frees the single held session
+                # immediately and ends its token epoch — the only retirement
+                # under the production logout order (close, then token-remove
+                # and disconnect, which find no owner and are no-ops). A
+                # close from any other source is a no-op, like a foreign
+                # token-remove: it neither frees nor retires. Tracking
+                # outlives the close: it ends only with a new session,
+                # drop_session or reboot (MOR-3361).
+                if self.single_owner and self._owner == (addr, sender_id):
                     self._release_session("openclose_close")
                     self._retire_token()
                 # The close is still a tracked packet: its number goes
                 # through the gate (held and released in order like any
-                # other), without any stream marker.
+                # other), without any stream marker. The drain runs in
+                # standby too (consume without processing).
                 key = (addr, sender_id)
                 if self._civ_gap_gate(
                     key, "openclose", data, addr, sender_id, seq, proto
                 ):
-                    if not self._civ_standby:
-                        self._civ_gap_drain(key, proto)
+                    self._civ_gap_drain(key, proto)
             return
 
         # Disconnect
@@ -1392,12 +1413,12 @@ class MockIcomRadio:
 
         # Idle keepalive (0x10 type-0): tracked for gap purposes, never
         # answered — like the recorded radio, which keeps its own cadence.
+        # The drain runs in standby too (consume without processing).
         if n == _HEADER_SIZE and ptype == _PT_DATA:
             if self._civ_gap_gate(
                 (addr, sender_id), "idle", data, addr, sender_id, seq, proto
             ):
-                if not self._civ_standby:
-                    self._civ_gap_drain((addr, sender_id), proto)
+                self._civ_gap_drain((addr, sender_id), proto)
             return
 
         # CI-V data (DATA type, larger than header)
@@ -1405,16 +1426,15 @@ class MockIcomRadio:
             if self._civ_fenced(addr, sender_id):
                 return  # post-reboot: stale client until a fresh OpenClose(open)
             key = (addr, sender_id)
-            if (
-                self._civ_gap_gate(key, "data", data, addr, sender_id, seq, proto)
-                and not self._civ_standby
-            ):
+            if self._civ_gap_gate(key, "data", data, addr, sender_id, seq, proto):
                 # The LAN CI-V echo and the reply go out only when the
                 # request is actually processed — held packets stay silent
                 # until the fill releases them in sequence order. In
-                # standby the gate above still advances sequence tracking
-                # (no echo, no reply), so resuming is clean.
-                self._handle_civ_data(data, addr, sender_id, proto)
+                # standby nothing is processed, but the drain still
+                # consumes held packets (without echo or reply), so
+                # resuming is clean.
+                if not self._civ_standby:
+                    self._handle_civ_data(data, addr, sender_id, proto)
                 self._civ_gap_drain(key, proto)
 
     def _handle_civ_data(
@@ -1571,17 +1591,25 @@ class MockIcomRadio:
     def _civ_gap_drain(
         self, key: tuple[tuple[str, int], int], proto: _MockProtocol | None
     ) -> None:
-        """Process held packets in sequence order once nothing is missing."""
+        """Process held packets in sequence order once nothing is missing.
+
+        In standby the drain still consumes held packets — popping them and
+        advancing past them — but processes nothing (no ``_handle_civ_data``:
+        no echo, no reply). Packets held during standby are never answered,
+        so the first packet after standby resumes in order with no
+        retransmit request.
+        """
         tracker = self._civ_gap.get(key)
         if tracker is None or tracker.missing:
             return
         if proto is None:
             proto = self._civ_proto
+        standby = self._civ_standby
         while tracker.next_expected in tracker.held:
             expected = tracker.next_expected
             kind, data, addr, sender_id = tracker.held.pop(expected)
             tracker.next_expected = (expected + 1) & 0xFFFF
-            if kind == "data" and proto is not None:
+            if kind == "data" and proto is not None and not standby:
                 self._handle_civ_data(data, addr, sender_id, proto)
 
     def _civ_gap_request(self, tracker: _CivGapState) -> bytes:
