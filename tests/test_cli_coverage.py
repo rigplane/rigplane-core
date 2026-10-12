@@ -13,7 +13,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import pytest
 
 from _caps import FULL_ICOM_CAPS
-from rigplane.backends.config import SerialBackendConfig
+from rigplane.backends.config import LanBackendConfig, SerialBackendConfig
 from rigplane.cli import (
     _build_parser,
     _cmd_att,
@@ -318,6 +318,74 @@ async def test_run_serve_uses_serial_backend_factory_config() -> None:
         )
     )
     cmd_serve.assert_awaited_once_with(radio, args)
+
+
+def _lan_run_args(command: str) -> argparse.Namespace:
+    args = _run_args(command=command)
+    if command in {"web", "station"}:
+        args.web_host = "127.0.0.1"
+        args.web_port = 8080
+    if command == "serve":
+        args.serve_host = "127.0.0.1"
+        args.serve_port = 4532
+    return args
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "handler_name"),
+    [("web", "_cmd_web"), ("station", "_cmd_web"), ("serve", "_cmd_serve")],
+)
+async def test_run_resident_command_builds_lan_radio_with_auto_reconnect(
+    command: str, handler_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ICOM_PASS", raising=False)
+    _, radio = _mock_radio_ctx()
+    if command in {"web", "station"}:
+        _add_managed_tx_surface(radio)
+    with (
+        patch("rigplane.cli.create_radio", return_value=radio) as create_radio,
+        patch("rigplane.cli.check_ports_available"),
+        patch(f"rigplane.cli.{handler_name}", new_callable=AsyncMock) as handler,
+    ):
+        handler.return_value = 0
+        rc = await _run(_lan_run_args(command))
+
+    assert rc == 0
+    assert create_radio.call_count == 1
+    config = create_radio.call_args.args[0]
+    assert config == LanBackendConfig(
+        host="127.0.0.1", port=50001, timeout=1.0, auto_reconnect=True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "handler_name"),
+    [
+        ("status", "_cmd_status"),
+        ("freq", "_cmd_freq"),
+        ("mode", "_cmd_mode"),
+        ("meter", "_cmd_meter"),
+    ],
+)
+async def test_run_one_shot_command_builds_lan_radio_without_auto_reconnect(
+    command: str, handler_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ICOM_PASS", raising=False)
+    _, radio = _mock_radio_ctx()
+    with (
+        patch("rigplane.cli.create_radio", return_value=radio) as create_radio,
+        patch(f"rigplane.cli.{handler_name}", new_callable=AsyncMock) as handler,
+    ):
+        handler.return_value = 0
+        rc = await _run(_lan_run_args(command))
+
+    assert rc == 0
+    assert create_radio.call_count == 1
+    config = create_radio.call_args.args[0]
+    assert config.auto_reconnect is False
+    assert config == LanBackendConfig(host="127.0.0.1", port=50001, timeout=1.0)
 
 
 @pytest.mark.asyncio

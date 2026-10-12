@@ -2336,6 +2336,14 @@ async def _run(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+    # web, serve and station run for the life of the process on one radio, so
+    # a LAN radio gets the resident reconnect loop.
+    if isinstance(config, LanBackendConfig) and args.command in (
+        "web",
+        "serve",
+        "station",
+    ):
+        config = replace(config, auto_reconnect=True)
     if args.command == "audio" and args.audio_command == "probe":
         return await _cmd_audio_probe(config, args)
     try:

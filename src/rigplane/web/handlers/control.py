@@ -37,7 +37,7 @@ from ...profiles import RadioProfile, resolve_radio_profile
 from ...profiles.control_domain import encode_legacy_control, validate_control_raw_value
 from ...runtime._poller_types import SetNarrow
 from ...runtime._dual_rx_runtime import require_receiver_for_profile
-from ...runtime.tx_interlock import RfState, evaluate_tx_interlock
+from ...runtime.tx_interlock import RfState, evaluate_tx_interlock, resolve_rf_state
 from ...runtime.managed_tx_state import ManagedTxOutcome
 from ..protocol import (  # noqa: TID251
     decode_json,
@@ -2270,18 +2270,10 @@ class ControlHandler:
         return {"value": value, "label": label}
 
     def _observed_rf_state(self) -> RfState:
-        """Resolve current RF state from fresh, strictly boolean PTT evidence."""
+        """Resolve current RF state through the shared strict resolver."""
         state_store = getattr(self._server, "command_state_store", None)
         if isinstance(state_store, StateStore):
-            try:
-                ptt = state_store.snapshot().field(FieldPath.global_("tx_state", "ptt"))
-            except KeyError:
-                pass
-            else:
-                if ptt.freshness is FreshnessState.FRESH and ptt.value is False:
-                    return RfState.RX
-                elif ptt.freshness is FreshnessState.FRESH and ptt.value is True:
-                    return RfState.TX
+            return resolve_rf_state(state_store.snapshot())
         return RfState.UNKNOWN
 
     async def _ro_get_ref_adjust(
