@@ -28,8 +28,7 @@ UDP code paths as production.
   forever. Each stream draws from its own RNG derived from the plan seed
   (`f"{seed}:{port}:{direction}"`), so one stream's traffic cannot change
   another stream's decisions. The plan sits beside the legacy knobs
-  (`drop_rate`, `reorder_window`, `response_delay`, `stall_for`), which are
-  unchanged.
+  (`drop_rate`, `response_delay`, `stall_for`), which are unchanged.
   `MockIcomRadio` also offers scheduled events: `reboot(at, down_for,
   busy_for)` — stop answering, forget the session, rotate the token, restart
   CI-V sequence numbering, fence the stale client off the CI-V port until it

@@ -225,8 +225,8 @@ class MockIcomRadio:
         fault_plan: optional :class:`~rigplane_testkit.icom.faults.FaultPlan`
             applying per-port/per-direction drop/duplicate/delay/reorder/
             corrupt/truncate rules on top of the legacy ``drop_rate`` /
-            ``reorder_window`` / ``response_delay`` / ``stall_for`` knobs,
-            which keep working unchanged.
+            ``response_delay`` / ``stall_for`` knobs, which keep working
+            unchanged.
     """
 
     def __init__(
@@ -241,7 +241,6 @@ class MockIcomRadio:
         single_owner: bool = False,
         keepalive_hold_s: float = _DEFAULT_KEEPALIVE_HOLD_S,
         drop_rate: float = 0.0,
-        reorder_window: int = 0,
         unsolicited_civ: bool = False,
         unsolicited_interval_s: float = 0.1,
         fault_plan: FaultPlan | None = None,
@@ -330,7 +329,6 @@ class MockIcomRadio:
 
         # Fault injection
         self.drop_rate: float = drop_rate  # probability [0,1] of dropping a reply
-        self.reorder_window: int = reorder_window  # buffer N replies then flush
         self._stall_until: float = 0.0  # suppress unsolicited CI-V until this time
         # Declarative per-port/per-direction fault plan (sits BESIDE the legacy
         # knobs above: it has its own seeded RNG and never touches their state).
@@ -344,12 +342,6 @@ class MockIcomRadio:
         self.reboot_count: int = 0  # number of simulated reboots started
         # Tokens issued before a reboot; control packets carrying one are ignored.
         self._retired_tokens: set[int] = set()
-        self._reorder_buf: dict[
-            str, list[tuple[_MockProtocol, bytes, tuple[str, int]]]
-        ] = {
-            "ctrl": [],
-            "civ": [],
-        }
         self._rng = random.Random(0xC0FFEE)
 
         # Autonomous state + unsolicited CI-V streaming
@@ -749,35 +741,6 @@ class MockIcomRadio:
         self._deliver_planned(
             plan.flush(port, direction), direction, proto, addr, label
         )
-
-    def _emit(
-        self,
-        proto: _MockProtocol,
-        pkt: bytes,
-        addr: tuple[str, int],
-        label: str,
-    ) -> None:
-        """Send a reply through the fault-injection layer (drop/reorder).
-
-        Replies built by the handlers go through here instead of ``proto.send``
-        directly so that ``drop_rate`` and ``reorder_window`` apply. Discovery
-        and the session-critical handshake are never dropped — only data-plane
-        and post-handshake replies — to keep connect() deterministic while still
-        exercising the data watchdog and recovery paths.
-        """
-        if self.drop_rate > 0.0 and self._rng.random() < self.drop_rate:
-            logger.debug("Mock: dropped %s reply (%d bytes)", label, len(pkt))
-            return
-        if self.reorder_window > 1:
-            buf = self._reorder_buf[label]
-            buf.append((proto, pkt, addr))
-            if len(buf) >= self.reorder_window:
-                self._rng.shuffle(buf)
-                for p, b, a in buf:
-                    p.send(b, a)
-                buf.clear()
-            return
-        proto.send(pkt, addr)
 
     def _on_packet(
         self,

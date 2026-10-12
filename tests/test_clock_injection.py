@@ -52,12 +52,13 @@ async def test_radio_poller_tx_target_ttl_uses_injected_clock() -> None:
     crossing the half-TTL mark republishes stamped at the clock's now."""
     profile = resolve_radio_profile(model="IC-7300")
     assert profile.vfo_readback == "selected_unselected"
-    radio = MagicMock()
-    radio.profile = profile
-    radio.model = profile.model
-    radio.capabilities = set(profile.capabilities)
-    radio._radio_state = SimpleNamespace(active="MAIN")
-    radio.managed_tx = None
+    radio = SimpleNamespace(
+        profile=profile,
+        model=profile.model,
+        capabilities=set(profile.capabilities),
+        _radio_state=SimpleNamespace(active="MAIN"),
+        managed_tx=None,
+    )
     clock = FakeClock(1000.0)
     store = StateStore()
     poller = RadioPoller(radio, CommandQueue(), state_store=store, clock=clock)
