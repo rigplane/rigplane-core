@@ -70,9 +70,12 @@ UDP code paths as production.
   it too), while a renewal with a token from an ended epoch
   (the owner's token-remove, disconnect, OpenClose close, `free_session`,
   `drop_session`, reboot, or hold expiry — never a bare login) is answered
-  `ffffffff`, exactly once. In single-owner mode only the owner's
-  token-remove and OpenClose close end the session; in default mode a
-  token-remove retires only when it carries the live token.
+  `ffffffff`, exactly once. In single-owner mode only the session
+  owner's token-remove and the CI-V stream owner's OpenClose close end
+  the session (the production client opens and closes the stream from
+  its CI-V socket, a different identity from the control socket's
+  owner); in default mode a token-remove retires only when it carries
+  the live token.
   `civ_standby(on)` is a test-only scenario, not recorded
   behaviour: while on, the CI-V port emits nothing for CI-V DATA (no echo,
   no reply, no retransmit requests) but still advances sequence tracking

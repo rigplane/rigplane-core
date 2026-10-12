@@ -402,10 +402,12 @@ class MockIcomRadio:
         # it tracks ONE owning session keyed by (remote_addr, control my_id).
         # A conninfo from a different owner while a session is held is rejected
         # with civ_port=0 + error=0xFFFFFFFF (previous-session-active). The held
-        # session is freed immediately on the owner's token-remove or
-        # OpenClose(close) — a token-remove or close from any other source
-        # is a no-op — and otherwise auto-released after ``keepalive_hold_s``
-        # of silence.
+        # session is freed immediately on the session owner's token-remove or
+        # the CI-V stream owner's OpenClose(close) — the production client
+        # sends OpenClose from its CI-V socket, a different (addr, sender_id)
+        # from the control socket's owner — a token-remove or close from any
+        # other source is a no-op — and otherwise auto-released after
+        # ``keepalive_hold_s`` of silence.
         self.single_owner: bool = single_owner
         self.keepalive_hold_s: float = keepalive_hold_s
         # Owner identity = (remote_addr, my_id); None when no session is held.
@@ -827,9 +829,9 @@ class MockIcomRadio:
 
         Renewals carrying the retired value are answered with the recorded
         reject instead of being dropped. Every end of a held session starts
-        a new epoch — the owner's token-remove, disconnect, OpenClose
-        close, hold expiry, ``drop_session`` and reboot — while a bare login
-        never does.
+        a new epoch — the session owner's token-remove, control disconnect,
+        the CI-V stream owner's OpenClose close, hold expiry,
+        ``drop_session`` and reboot — while a bare login never does.
         """
         self._retired_tokens.add(self.token)
         self.token = (self.token + 0x9E3779B9) & 0xFFFFFFFF
@@ -870,6 +872,11 @@ class MockIcomRadio:
             # previous session's CI-V numbering no longer applies
             # (MOR-3361). A refresh by the current holder keeps it.
             self._civ_gap.clear()
+            # A newly claimed session has no CI-V stream owner until its
+            # own OpenClose(open): a close from the previous session's
+            # stream identity must not end it.
+            self._civ_owner_addr = None
+            self._civ_owner_id = 0
         self._owner = owner
         self._arm_keepalive()
 
@@ -1385,15 +1392,23 @@ class MockIcomRadio:
                     # suppressed.
                     self._civ_gap_drain(key, proto)
             elif data[0x15] == _OPENCLOSE_CLOSE:  # graceful data-port close
-                # The owner's OpenClose(close) frees the single held session
-                # immediately and ends its token epoch — the only retirement
-                # under the production logout order (close, then token-remove
-                # and disconnect, which find no owner and are no-ops). A
-                # close from any other source is a no-op, like a foreign
-                # token-remove: it neither frees nor retires. Tracking
-                # outlives the close: it ends only with a new session,
-                # drop_session or reboot (MOR-3361).
-                if self.single_owner and self._owner == (addr, sender_id):
+                # The CI-V stream owner's OpenClose(close) frees the single
+                # held session immediately and ends its token epoch — the
+                # only retirement under the production logout order (close,
+                # then token-remove and disconnect, which find no owner and
+                # are no-ops). The stream owner is the CI-V identity whose
+                # OpenClose(open) was accepted for the held session — the
+                # production client sends OpenClose from its CI-V socket,
+                # never from the control socket that owns the session. A
+                # close from any other CI-V identity is a no-op, like a
+                # foreign token-remove: it neither frees nor retires.
+                # Tracking outlives the close: it ends only with a new
+                # session, drop_session or reboot (MOR-3361).
+                if (
+                    self.single_owner
+                    and self._owner is not None
+                    and (addr, sender_id) == (self._civ_owner_addr, self._civ_owner_id)
+                ):
                     self._release_session("openclose_close")
                     self._retire_token()
                 # The close is still a tracked packet: its number goes

@@ -24,7 +24,9 @@ import struct
 
 import pytest
 
+from rigplane.radio import IcomRadio
 from rigplane_testkit.icom import MockIcomRadio
+from _perf_helpers import fast_connect
 from testkit.test_simulator_faults import (
     _CLIENT_ID,
     _freq_get,
@@ -386,54 +388,6 @@ async def test_session_turnover_retires_previous_token() -> None:
         await sim.stop()
 
 
-async def test_production_logout_order_retires_token() -> None:
-    """Single-owner production logout ends the token epoch exactly once.
-
-    The logout order on the wire is OpenClose(close), then token-remove,
-    then disconnect. The close frees the session and retires the token;
-    the owner-guarded remove and disconnect then find no owner and are
-    no-ops. A renewal with the old token is rejected, and the next login
-    is issued a different token.
-    """
-    sim = MockIcomRadio(single_owner=True, keepalive_hold_s=5.0)
-    await sim.start()
-    loop = asyncio.get_running_loop()
-    proto = _UdpClient()
-    await loop.create_datagram_endpoint(lambda: proto, local_addr=(_HOST, 0))
-    try:
-        token = await _login_get_token(proto, sim)
-        proto.send(_claim(), sim.control_port)
-        await proto.recv()  # status reply: session claimed
-        assert sim.session_held is True
-
-        proto.send(_openclose(seq=0), sim.civ_port)
-        await proto.recv()  # stream marker
-
-        # Production logout order: close, token-remove, disconnect.
-        proto.send(_close(seq=1), sim.civ_port)
-        await asyncio.sleep(0.05)
-        proto.send(_token_remove(), sim.control_port)
-        proto.send(_disconnect(), sim.control_port)
-        await asyncio.sleep(0.05)
-        assert sim.session_held is False
-
-        proto.send(_renewal(token), sim.control_port)
-        gone = await proto.recv()
-        _assert_renew_reply(
-            gone,
-            sim,
-            request_token=token,
-            inner_seq=0x0007,
-            response=_RESP_REJECT,
-        )
-
-        next_token = await _login_get_token(proto, sim)
-        assert next_token != token  # the next login starts a new epoch
-    finally:
-        proto.close()
-        await sim.stop()
-
-
 async def test_hold_expiry_retires_token() -> None:
     """Once the single-owner hold lapses, the token no longer names a session."""
     sim = MockIcomRadio(single_owner=True, keepalive_hold_s=0.2)
@@ -555,32 +509,54 @@ async def test_foreign_token_remove_is_noop() -> None:
         await sim.stop()
 
 
-async def test_non_owner_openclose_close_is_noop() -> None:
-    """Single-owner: an OpenClose(close) from a non-owner frees nothing.
+_CTRL_SENDER = 0x55667788
 
-    Consistent with the owner-only token-remove, a close from any other
-    source neither frees the holder's session nor retires its token.
+
+def _as_sender(pkt: bytes, sender_id: int) -> bytes:
+    """Re-stamp a built packet with a different sender id (a second socket)."""
+    out = bytearray(pkt)
+    struct.pack_into("<I", out, 0x08, sender_id)
+    return bytes(out)
+
+
+async def test_foreign_close_is_noop_two_sockets() -> None:
+    """Only the CI-V stream owner's close ends the session (two sockets).
+
+    The control socket claims the session while a separate CI-V socket
+    with its own sender id (like the production client) opens the
+    stream: a close from a third identity that never opened — and a
+    close from the control socket, the session owner but not the
+    stream owner — are both no-ops (session held, token live, renewal
+    answered 00000000). Dropping the CI-V-stream-owner check ends the
+    session on the foreign close; keying the guard on the control
+    identity instead ends it on the control socket's close.
     """
-    sim = MockIcomRadio(single_owner=True, keepalive_hold_s=5.0)
+    sim = MockIcomRadio(single_owner=True, keepalive_hold_s=30.0)
     await sim.start()
     loop = asyncio.get_running_loop()
-    first = _UdpClient()
-    await loop.create_datagram_endpoint(lambda: first, local_addr=(_HOST, 0))
-    second = await _second_client()
+    ctrl = _UdpClient()
+    await loop.create_datagram_endpoint(lambda: ctrl, local_addr=(_HOST, 0))
+    civ = _UdpClient()
+    await loop.create_datagram_endpoint(lambda: civ, local_addr=(_HOST, 0))
+    intruder = await _second_client()
     try:
-        await _login_get_token(first, sim)
-        first.send(_claim(), sim.control_port)
-        await first.recv()  # status reply: session claimed
-        assert sim.session_held is True
         token = sim.token
+        ctrl.send(_as_sender(_claim(), _CTRL_SENDER), sim.control_port)
+        await ctrl.recv()  # status reply: session claimed
+        assert sim.session_held is True
 
-        second.send(_close(seq=0), sim.civ_port)
+        civ.send(_openclose(seq=0), sim.civ_port)
+        await civ.recv()  # stream marker
+
+        intruder.send(_close(seq=0), sim.civ_port)
+        await asyncio.sleep(0.05)
+        ctrl.send(_as_sender(_close(seq=0), _CTRL_SENDER), sim.civ_port)
         await asyncio.sleep(0.05)
         assert sim.session_held is True  # the holder kept its session
         assert sim.token == token  # no new epoch
 
-        first.send(_renewal(token), sim.control_port)
-        reply = await first.recv()
+        intruder.send(_renewal(token), sim.control_port)
+        reply = await intruder.recv()
         _assert_renew_reply(
             reply,
             sim,
@@ -589,8 +565,9 @@ async def test_non_owner_openclose_close_is_noop() -> None:
             response=_RESP_OK,
         )
     finally:
-        first.close()
-        second.close()
+        ctrl.close()
+        civ.close()
+        intruder.close()
         await sim.stop()
 
 
@@ -747,3 +724,152 @@ async def test_standby_out_of_order_resume(server, client) -> None:
     await client.expect_silence(0.3)  # no stale held packet answered
     assert server.civ_retransmit_requests == before
     assert server.civ_gap_open is False
+
+
+# ---------------------------------------------------------------------------
+# Production client: the CI-V socket's close ends the session (MOR-3349)
+# ---------------------------------------------------------------------------
+
+
+def _make_production_radio(server: MockIcomRadio) -> IcomRadio:
+    """An IcomRadio aimed at ``server`` (same credentials as the default sim)."""
+    return IcomRadio(
+        host=_HOST,
+        port=server.control_port,
+        username="testuser",
+        password="testpass",
+        model="IC-7610",
+    )
+
+
+async def test_production_soft_disconnect_close_ends_session() -> None:
+    """Production soft_disconnect retires via the CI-V stream owner's close.
+
+    IcomRadio sends OpenClose(close) from its CI-V socket — a different
+    (addr, sender_id) from the control socket's session owner — so only
+    the CI-V-stream-owner guard ends the session: it is released, a
+    renewal with the old token is rejected, and the next login gets a
+    new token. Keying the guard on the control identity again leaves
+    the session held and the token live.
+    """
+    sim = MockIcomRadio(single_owner=True, keepalive_hold_s=30.0)
+    await sim.start()
+    probe = await _second_client()
+    try:
+        radio = _make_production_radio(sim)
+        with fast_connect():
+            await radio.connect()
+        assert sim.session_held is True
+        old_token = sim.token
+
+        await radio.soft_disconnect()
+        await asyncio.sleep(0.1)  # let the close land on the sim
+        assert sim.session_held is False
+        assert sim.last_release_reason == "openclose_close"
+
+        await _assert_token_retired(probe, sim, old_token)
+    finally:
+        probe.close()
+        await sim.stop()
+
+
+async def _assert_token_retired(
+    probe: _UdpClient, server: MockIcomRadio, old_token: int
+) -> None:
+    """A renewal with the old token is rejected; the next login is new."""
+    probe.send(_renewal(old_token), server.control_port)
+    gone = await probe.recv()
+    _assert_renew_reply(
+        gone,
+        server,
+        request_token=old_token,
+        inner_seq=0x0007,
+        response=_RESP_REJECT,
+    )
+    assert await _login_get_token(probe, server) != old_token
+
+
+async def test_production_disconnect_remove_ends_session() -> None:
+    """Production disconnect retires via the owner's token-remove row.
+
+    On the wire graceful disconnect() is a CI-V disconnect packet (no
+    session effect), the session owner's token-remove, then the control
+    disconnect: no OpenClose(close) goes out (the CI-V transport is
+    already down client-side), so the remove ends the session and its
+    token epoch. Making the owner's token-remove a no-op leaves the
+    session held and the token live.
+    """
+    sim = MockIcomRadio(single_owner=True, keepalive_hold_s=30.0)
+    await sim.start()
+    probe = await _second_client()
+    try:
+        radio = _make_production_radio(sim)
+        with fast_connect():
+            await radio.connect()
+        assert sim.session_held is True
+        old_token = sim.token
+
+        await radio.disconnect()
+        await asyncio.sleep(0.1)  # let the release packets land on the sim
+        assert radio.connected is False
+        assert sim.session_held is False
+        assert sim.last_release_reason == "token_remove"
+
+        await _assert_token_retired(probe, sim, old_token)
+    finally:
+        probe.close()
+        await sim.stop()
+
+
+# ---------------------------------------------------------------------------
+# Standby drain at the open, close and idle call sites (review M1)
+# ---------------------------------------------------------------------------
+
+
+async def _standby_fill_probe(server, client, filler: bytes) -> None:
+    """Gap opened in standby, filled by ``filler`` (seq 1), then resume.
+
+    Data seq 2 is held (the gap opens, silently — no retransmit request
+    in standby); ``filler`` carries the missing seq 1, so its call
+    site's drain consumes the held packet without processing it. After
+    standby the next request is answered with exactly its own echo and
+    reply: reinstating `if not standby` around that site's drain leaves
+    the held packet to be answered stale after standby.
+    """
+    before = server.civ_retransmit_requests
+    client.send(_openclose(seq=0), server.civ_port)
+    await client.recv()  # stream marker
+
+    server.civ_standby(True)
+    try:
+        client.send(_freq_get(seq=2), server.civ_port)  # held: gap opens
+        await asyncio.sleep(0.05)
+        assert server.civ_gap_open is True  # tracked, just never asked
+        client.send(filler, server.civ_port)  # fills seq 1: drain consumes
+        await client.expect_silence(0.35)  # packet round + two loop rounds
+        assert server.civ_retransmit_requests == before
+    finally:
+        server.civ_standby(False)
+
+    request = _freq_get(seq=3)
+    client.send(request, server.civ_port)
+    assert await client.recv() == request  # echo of seq 3 only, no stale echo
+    assert _is_freq_reply(await client.recv())  # its reply
+    await client.expect_silence(0.3)  # no stale held packet answered
+    assert server.civ_retransmit_requests == before
+    assert server.civ_gap_open is False
+
+
+async def test_standby_idle_fill_consumes_held(server, client) -> None:
+    """An idle packet filling a standby gap consumes held packets silently."""
+    await _standby_fill_probe(server, client, bytes(_header(0x10, _PT_DATA, seq=1)))
+
+
+async def test_standby_close_fill_consumes_held(server, client) -> None:
+    """An OpenClose(close) filling a standby gap consumes held packets."""
+    await _standby_fill_probe(server, client, _close(seq=1))
+
+
+async def test_standby_reopen_fill_consumes_held(server, client) -> None:
+    """A re-sent OpenClose(open) filling a gap in standby consumes held packets."""
+    await _standby_fill_probe(server, client, _openclose(seq=1))
