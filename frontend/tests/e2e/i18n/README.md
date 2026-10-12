@@ -12,8 +12,8 @@ locales and two viewports, captures one screenshot per surface.
   `[missing:<key>]`).
 - A reason-coded toast resolves to a raw template instead of the
   translated message (renders `${var}`).
-- A glossary token (MAIN/SUB/USB/LSB/CW/VFO/RTTY, brand names, radio
-  model identifiers) is accidentally translated away under `qps-ploc`.
+- A glossary token (MAIN/SUB/USB/LSB/VFO/RTTY, checked on the desktop
+  layout) is accidentally translated away under `qps-ploc`.
 
 ## What this does NOT do
 

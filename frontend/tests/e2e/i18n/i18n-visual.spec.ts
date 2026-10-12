@@ -296,8 +296,7 @@ async function ensureScreenshotDir(): Promise<void> {
  * The markup pass exists because `innerText` is visibility-filtered:
  * `aria-label`, `title` and `placeholder` attribute values and hidden
  * containers never reach it. Script and style blocks are stripped from
- * the markup first so an inline JS template literal can never fail this
- * check — only DOM copy and attribute values can.
+ * the markup first.
  */
 async function assertNoLookupMisses(page: Page, surfaceLabel: string): Promise<void> {
   const bodyText = await page.locator('body').innerText();
