@@ -13,13 +13,31 @@ permissions:
   statuses: write
 
 concurrency:
-  group: agent-review-gate-${{ github.event.issue.pull_request && github.event.issue.number || github.event.pull_request.number }}
+  # The group carries the same verdict-relevance predicate as the job `if:`
+  # below: a run skipped by that `if:` is still a workflow run in its group,
+  # so without the predicate here a plain comment posted within seconds of a
+  # directive would cancel the in-flight evaluation and publish nothing,
+  # leaving a stale status. Qualifying runs share the per-PR 'eval' group;
+  # every non-qualifying run lands in its own github.run_id group and cancels
+  # nothing. cancel-in-progress stays true for qualifying runs because a
+  # newer qualifying run re-lists and re-evaluates every PR comment, so the
+  # superseded evaluation's verdict is recomputed from scratch.
+  # Per-run REST calls, counted from the steps below: 3
+  # fixed calls (pulls.get, repos.getCommit, repos.createCommitStatus) plus
+  # one issues.listComments page per 100 comments.
+  group: agent-review-gate-${{ github.event.issue.pull_request && github.event.issue.number || github.event.pull_request.number }}-${{ (github.event_name == 'pull_request' || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:')))) && 'eval' || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   agent-review:
     name: Update Agent Review Gate status
-    if: github.event_name == 'pull_request' || github.event.issue.pull_request
+    # Only events that can change the verdict run the job. Every directive
+    # body contains the literal marker 'Agent Review:' (the parser requires
+    # it on the first non-blank line; contains() is case-insensitive, a
+    # superset). An edit that turns a directive into prose is caught through
+    # the pre-edit body github.event.changes.body.from; a deletion carries
+    # the deleted comment's body in github.event.comment.body.
+    if: github.event_name == 'pull_request' || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:')))
     # API-only workflow via actions/github-script -- no compile/test toolchain
     # needed. Keep this on GitHub-hosted runners so PR merges are not blocked
     # when self-hosted build runners are offline or occupied.

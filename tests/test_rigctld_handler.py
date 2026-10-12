@@ -26,6 +26,7 @@ from rigplane.core.state_acquisition_policy import (
     RadioAcquisitionProfile,
 )
 from rigplane.exceptions import CommandError as IcomCommandError
+from rigplane.exceptions import CommandRejectedError
 from rigplane.exceptions import ConnectionError as IcomConnectionError
 from rigplane.exceptions import TimeoutError as IcomTimeoutError
 from rigplane.radio import IcomRadio
@@ -2524,6 +2525,55 @@ async def test_unexpected_exception_becomes_einternal(
     mock_radio.get_freq.side_effect = RuntimeError("unexpected")
     resp = await handler.execute(get_cmd("get_freq"))
     assert resp.error == HamlibError.EINTERNAL
+
+
+@pytest.mark.asyncio
+async def test_radio_refused_get_freq_answers_erjcted(
+    handler: RigctldHandler,
+    mock_radio: AsyncMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A CI-V read the radio positively refuses (NAK) answers RPRT -9.
+
+    ``CommandRejectedError`` is the radio refusing the command — not an
+    internal failure — so the client must read ERJCTED and no ERROR-level
+    "Internal error" record may be emitted.
+    """
+    mock_radio.get_freq.side_effect = CommandRejectedError(
+        "CI-V command 0x03 refused (NAK)"
+    )
+    with caplog.at_level(logging.DEBUG, logger="rigplane.rigctld.handler"):
+        resp = await handler.execute(get_cmd("get_freq"))
+
+    assert resp.error == HamlibError.ERJCTED
+    assert format_response(get_cmd("get_freq"), resp, ClientSession()) == b"RPRT -9\n"
+    assert not any(
+        record.levelno >= logging.ERROR and "Internal error" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_unexpected_error_on_get_freq_still_answers_einternal(
+    handler: RigctldHandler,
+    mock_radio: AsyncMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Pin: an unexpected RuntimeError from the same read stays EINTERNAL.
+
+    The narrow ``CommandRejectedError`` mapping must not swallow genuine
+    bugs: a ``RuntimeError`` still answers RPRT -7 and still logs the
+    ERROR-level "Internal error" traceback record.
+    """
+    mock_radio.get_freq.side_effect = RuntimeError("unexpected")
+    with caplog.at_level(logging.DEBUG, logger="rigplane.rigctld.handler"):
+        resp = await handler.execute(get_cmd("get_freq"))
+
+    assert resp.error == HamlibError.EINTERNAL
+    assert any(
+        record.levelno >= logging.ERROR and "Internal error" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
@@ -5500,6 +5550,41 @@ async def test_set_split_vfo_rolls_back_split_on_unexpected_error(
         ((True,), {}),
         ((False,), {}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_set_split_vfo_rolls_back_split_on_radio_refusal(
+    dual_rx_handler: RigctldHandler,
+    dual_rx_radio: AsyncMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Radio refusal of the follow-up set_vfo → rollback + ERJCTED.
+
+    A ``CommandRejectedError`` from ``set_vfo`` is the radio refusing the
+    receiver select, not an internal failure: the rollback still runs and
+    the client reads RPRT -9 with no "Internal error" traceback.
+    """
+    dual_rx_radio.set_vfo.side_effect = CommandRejectedError(
+        "CI-V command 0x07 refused (NAK)"
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="rigplane.rigctld.handler"):
+        resp = await dual_rx_handler.execute(set_cmd("set_split_vfo", "1", "VFOB"))
+
+    assert resp.error == HamlibError.ERJCTED
+    assert (
+        format_response(set_cmd("set_split_vfo", "1", "VFOB"), resp, ClientSession())
+        == b"RPRT -9\n"
+    )
+    assert dual_rx_radio.set_split.await_args_list == [
+        ((True,), {}),
+        ((False,), {}),
+    ]
+    dual_rx_radio.set_vfo.assert_awaited_once_with("SUB")
+    assert not any(
+        record.levelno >= logging.ERROR and "Internal error" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
