@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Regenerate the golden wire payloads the frontend client chain is tested on.
 
-For every profile in ``rigs/*.toml`` except ``_EXCLUDED_MODELS``, a
-``WebServer`` built with no radio and ``WebConfig(radio_model=<model>)``
-produces:
+For every profile in ``rigs/*.toml``, a ``WebServer`` built with no radio and
+``WebConfig(radio_model=<model>)`` produces:
 
 - ``capabilities``: the body ``WebServer._serve_capabilities`` writes;
 - ``allUnobserved``: ``WebServer.build_state_update_envelope(force_full=True)``
@@ -11,6 +10,9 @@ produces:
 - ``allObserved``: the same call after every field path the profile's
   ``[state_acquisition]`` declares has been observed once. A profile with no
   ``[state_acquisition]`` block declares nothing, so it has no ``allObserved``.
+
+``_EXCLUDED_MODELS`` profiles contribute a ``capabilities`` entry only: their
+state payloads are left out to keep the committed file small.
 
 Observed values are fixed per field type, not calibrated readings. A declared
 str or object field this script has no value for raises instead of getting a
@@ -73,7 +75,8 @@ _JITTER_ENV_VARS = (
     "ICOM_AUDIO_RX_JITTER_CEILING_MS",
 )
 
-# Left out of the golden to keep the committed file small.
+# State payloads for these models stay out of the golden to keep the committed
+# file small; their capabilities entries are still written.
 _EXCLUDED_MODELS = frozenset({"IC-7300MK2", "X6100"})
 
 _INT_BY_NAME = {"filter_width": 2400, "receiver": 0}
@@ -188,6 +191,8 @@ def _build_profile_goldens(model: str) -> dict[str, Any]:
     profile = get_radio_profile(model)
     config = WebConfig(radio_model=model)
     empty = WebServer(None, config)
+    if model in _EXCLUDED_MODELS:
+        return {"capabilities": _capabilities(empty)}
     golden: dict[str, Any] = {
         "allUnobserved": _full_envelope(empty),
         "capabilities": _capabilities(empty),
@@ -200,7 +205,7 @@ def _build_profile_goldens(model: str) -> dict[str, Any]:
 
 
 def _build_goldens() -> dict[str, dict[str, Any]]:
-    models = sorted(set(discover_rigs(_REPO_ROOT / "rigs")) - _EXCLUDED_MODELS)
+    models = sorted(discover_rigs(_REPO_ROOT / "rigs"))
     with mock.patch.dict(os.environ):
         for name in _JITTER_ENV_VARS:
             os.environ.pop(name, None)
