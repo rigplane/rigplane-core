@@ -36,7 +36,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import StateStore
+from rigplane.core.state_store import FreshnessState, StateStore
 from rigplane.radio_state import RadioState
 from rigplane.rigctld.contract import (
     ClientSession,
@@ -332,16 +332,16 @@ async def test_get_freq_prefers_radio_state(
 
 
 @pytest.mark.asyncio
-async def test_get_freq_radio_state_fallback_records_state_store_observation(
+async def test_get_freq_radio_state_fallback_does_not_write_state_store(
     handler: RigctldHandler, mock_radio: AsyncMock
 ) -> None:
-    """The RadioState fallback must persist its readback into the StateStore.
+    """The RadioState fallback answers the client but never writes.
 
-    ``_cmd_get_freq`` calls ``_record_state_sample(..., source="state_poller")``
-    on the main-receiver compatibility branch (handler.py:1025-1033) before
-    returning, so the readback side-effect lands an observation that later
-    GETs can project. The sibling ``_prefers_radio_state`` test only checks the
-    returned value, not this write-back.
+    ``_cmd_get_freq`` returns the mirror frequency to the client and
+    leaves the canonical StateStore untouched: an untimestamped mirror
+    read must not be re-stamped as a fresh ``state_poller`` observation
+    that later GETs and other consumers then trust. The write-back this
+    test replaces used to pin the opposite behaviour.
     """
 
     state = RadioState()
@@ -351,12 +351,121 @@ async def test_get_freq_radio_state_fallback_records_state_store_observation(
     resp = await handler.execute(get_cmd("get_freq"))
 
     assert resp.values == ["14074000"]
-    field = handler._state_store.snapshot().field(  # noqa: SLF001
-        "receiver.main.active.freq_mode.freq_hz"
+    snapshot = handler._state_store.snapshot()  # noqa: SLF001
+    with pytest.raises(KeyError):
+        snapshot.field("receiver.main.active.freq_mode.freq_hz")
+    assert all(
+        field.source.source != "state_poller" for field in snapshot.fields
     )
-    assert field.value == 14_074_000
-    assert field.source.source == "state_poller"
-    assert field.provider_generation == handler._state_store.provider_generation  # noqa: SLF001
+
+
+_MIRROR_FALLBACK_SITES = (
+    "get_freq_main",
+    "get_freq_vfob_sub",
+    "get_level_strength_main",
+    "get_level_strength_vfob_sub",
+    "get_level_rfpower",
+    "get_split_vfo",
+)
+
+
+def _mirror_fallback_case(
+    site: str,
+) -> tuple[AsyncMock, RigctldCommand, list[str], str, object]:
+    """Build one mirror-fallback GET.
+
+    Returns ``(radio, cmd, expected_values, canonical_path, stale_seed)``
+    with the ``RadioState`` mirror populated and the canonical store left
+    to the caller (absent, or pre-seeded stale with ``stale_seed``).
+    """
+    radio = make_mock_radio()
+    radio.capabilities = set(FULL_ICOM_CAPS)
+    state = RadioState()
+    if site in ("get_freq_vfob_sub", "get_level_strength_vfob_sub"):
+        radio.profile = _FakeProfile(receiver_count=2, vfo_scheme="main_sub")
+    if site == "get_freq_main":
+        state.main.freq = 14_074_000
+        cmd = get_cmd("get_freq")
+        expected = ["14074000"]
+        path = "receiver.main.active.freq_mode.freq_hz"
+        stale_seed = 3_500_000
+    elif site == "get_freq_vfob_sub":
+        state.sub.freq = 7_100_000
+        cmd = _vfo_get_cmd("get_freq", "VFOB")
+        expected = ["7100000"]
+        path = "receiver.sub.active.freq_mode.freq_hz"
+        stale_seed = 3_500_000
+    elif site == "get_level_strength_main":
+        state.main.freq = 14_074_000
+        state.main.s_meter = 120
+        cmd = get_cmd("get_level", "STRENGTH")
+        expected = ["3"]  # round(120 / 241 * 114 - 54)
+        path = "receiver.main.meters.s_meter"
+        stale_seed = 60
+    elif site == "get_level_strength_vfob_sub":
+        state.sub.s_meter = 120
+        cmd = _vfo_get_cmd("get_level", "VFOB", "STRENGTH")
+        expected = ["3"]  # round(120 / 241 * 114 - 54)
+        path = "receiver.sub.meters.s_meter"
+        stale_seed = 60
+    elif site == "get_level_rfpower":
+        state.main.freq = 14_074_000
+        state.power_level = 128
+        cmd = get_cmd("get_level", "RFPOWER")
+        expected = [f"{128 / 255.0:.6f}"]
+        path = "global.operator_controls.power_level"
+        stale_seed = 255
+    else:
+        assert site == "get_split_vfo"
+        state.split = True
+        cmd = get_cmd("get_split_vfo")
+        expected = ["1", "VFOA"]
+        path = "global.tx_state.split"
+        stale_seed = False
+    radio.radio_state = state
+    return radio, cmd, expected, path, stale_seed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("canonical", ["missing", "stale"])
+@pytest.mark.parametrize("site", _MIRROR_FALLBACK_SITES)
+async def test_get_mirror_fallback_answers_client_without_store_write(
+    site: str, canonical: str
+) -> None:
+    """Every RadioState-mirror GET fallback answers the client but never writes.
+
+    When the canonical StateStore projection for a GET is missing or not
+    fresh, the handler falls back to the untimestamped ``RadioState``
+    mirror. The client keeps receiving the same answer the fallback
+    always produced, while the canonical store gains no fresh
+    ``state_poller`` observation of the mirror value: a read on this
+    ingress does not manufacture truth for other consumers.
+    """
+    radio, cmd, expected, path, stale_seed = _mirror_fallback_case(site)
+    store = StateStore()
+    if canonical == "stale":
+        _apply_store_value(store, path, stale_seed, max_age=0.25)
+        store.mark_stale_due(now=2.0)
+        before = store.snapshot().field(path)
+        assert before.freshness is FreshnessState.STALE
+
+    handler = RigctldHandler(radio, RigctldConfig(), state_store=store)
+    resp = await handler.execute(cmd)
+
+    assert resp.ok
+    assert resp.values == expected
+    snapshot = store.snapshot()
+    if canonical == "missing":
+        with pytest.raises(KeyError):
+            snapshot.field(path)
+    else:
+        after = snapshot.field(path)
+        assert after.freshness is FreshnessState.STALE
+        assert after.value == stale_seed
+        assert after.source.source == "test"
+    assert all(
+        field.source.source != "state_poller" for field in snapshot.fields
+    )
 
 
 @pytest.mark.asyncio
