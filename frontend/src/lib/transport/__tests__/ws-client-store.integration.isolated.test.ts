@@ -15,8 +15,9 @@ vi.mock('../http-client', async (importOriginal) => ({
 // control-channel ``_ctrl.onMessage`` handler feeds the real
 // ``setRadioState`` gate in ``radio.svelte.ts``. No store stand-in. The
 // assertions therefore only pass when the production
-// ``liveMetadataAdvanced`` / ``metadataAdvanced`` gate runs for real
-// (MOR-442 fidelity gap).
+// ``live-metadata.ts`` ``isStateAdvance`` predicate runs for real in both
+// ``ws-client.ts`` ``applyDeltaEnvelope`` and ``radio.svelte.ts``
+// ``setRadioState``.
 //
 // ``connection.svelte`` is also left REAL — its setters are plain ``$state``
 // assignments, harmless under jsdom.
@@ -330,9 +331,9 @@ describe('ws-client → real radio store gate (integration)', () => {
       ),
     );
 
-    // This is the core MOR-442 regression class: equal semantic revision but
-    // advancing observation metadata. Acceptance flows through the real
-    // store's ``observationAdvanced`` → ``metadataAdvanced`` branch, NOT a mock.
+    // Equal semantic revision but advancing observation metadata. Acceptance
+    // flows through the real store's ``setRadioState`` observation-sequence
+    // term of ``live-metadata.ts`` ``isStateAdvance``, NOT a mock.
     const s = store.getRadioState() as ServerStateWithObservation | null;
     expect(s?.stateRevision).toBe(5);
     expect(s?.observationSeq).toBe(2);
@@ -511,9 +512,10 @@ describe('ws-client → real radio store gate (integration)', () => {
       ),
     );
 
-    // ws-client's ``isRevisionAcceptable`` rejects at the accumulator
-    // (neither semanticAdvanced nor metadataAdvanced nor isReset), so
-    // ``setRadioState`` is never invoked and the real store cannot regress.
+    // ``ws-client.ts`` ``applyDeltaEnvelope`` returns null via
+    // ``live-metadata.ts`` ``isStateAdvance`` (lower semantic revision, so
+    // the revision-mismatch early return), so ``setRadioState`` is never
+    // invoked and the real store cannot regress.
     const s = store.getRadioState() as ServerStateWithObservation | null;
     expect(s?.stateRevision).toBe(6);
     expect(s?.observationSeq).toBe(6);
