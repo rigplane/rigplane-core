@@ -7,8 +7,7 @@ name: Visual regression (pixel-diff)
 # exists for.
 #
 # MOR-1396: browser system dependencies are installed explicitly and the
-# approved baselines were re-pinned from real Linux runner output. This job
-# is therefore a blocking visual regression gate.
+# approved baselines were re-pinned from real Linux runner output.
 #
 # MOR-3281 part 2: `push` to `main` runs the same pixel-diff under the
 # same paths filter as `pull_request`, so two individually-green PRs that
@@ -16,7 +15,7 @@ name: Visual regression (pixel-diff)
 # share the workflow's concurrency group (keyed on github.ref,
 # cancel-in-progress), so a burst of merges coalesces into one run. They
 # are informational: their failure annotation asks for a ticket, not a
-# revert; merge gating stays with the `pull_request` runs.
+# revert.
 
 on:
   pull_request:
@@ -176,7 +175,7 @@ jobs:
         if: always() && steps.visual.outcome == 'failure'
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
-            echo "::error::Visual pixel-diff failed on main. This push run is informational (merges are gated by the pull_request runs); open a ticket for the baseline drift instead of reverting the merge. See the Pixel-diff vs approved baselines step log."
+            echo "::error::Visual pixel-diff failed on main. This push run is informational; open a ticket for the baseline drift instead of reverting the merge. See the Pixel-diff vs approved baselines step log."
           else
             echo "::error::Visual pixel-diff failed. See the Pixel-diff vs approved baselines step log."
           fi
