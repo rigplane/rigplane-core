@@ -477,6 +477,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._ctrl_transport = IcomTransport()
         self._civ_transport: IcomTransport | None = None
         self._audio_transport: IcomTransport | None = None
+        # Single-flight lock for ``_ensure_audio_transport`` (MOR-3400): the
+        # whole rebuild runs under it; no teardown ever takes it.
+        self._audio_ensure_lock = asyncio.Lock()
         self._audio_stream: AudioStream | None = None
         self._pcm_transcoder: PcmOpusTranscoder | None = None
         self._pcm_transcoder_fmt: tuple[int, int, int] | None = None
