@@ -26,6 +26,7 @@ from ..core.serial_open import serial_open_diagnostic
 from ..exceptions import (
     AudioFormatError,
     CommandError,
+    CommandRejectedError,
     ConnectionError,
     TimeoutError as RigplaneTimeoutError,
 )
@@ -853,10 +854,16 @@ class _IcomSerialRadioBase(CoreRadio):
             return b""
         try:
             resp = await self._execute_civ_raw(request, wait_response=True)
-        except (RigplaneTimeoutError, asyncio.TimeoutError):
+        except (CommandRejectedError, RigplaneTimeoutError, asyncio.TimeoutError):
             # ``_execute_civ_raw`` raises rigplane's TimeoutError (not
             # asyncio's) when the answer window runs out — both are caught
             # so a silent link reads as silence, never as a connect crash.
+            # A refused 19 00 read counts as no answer the same way: a
+            # ``CommandRejectedError`` escaping here would become "Failed
+            # to read the radio identity" out of ``connect`` and abandon
+            # the hold in ``_serial_identity_reread_loop`` (its edge
+            # catches only ``Exception``), handing the link to the
+            # watchdog's port reopen.
             return None
         except ConnectionError:
             return None
