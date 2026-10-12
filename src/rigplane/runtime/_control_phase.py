@@ -792,12 +792,11 @@ class ControlPhaseRuntime:
                 # Defensive: _force_cleanup_civ normally nulls the transport.
                 # If a subclass/mock left it set, do not loop forever — bail.
                 return
-        # A control transport that never completed a login is no session to
-        # reuse: ``IcomTransport.connect``/``reconnect`` leave the transport
-        # CONNECTING and only the end of ``_connect_once`` marks it CONNECTED,
-        # so an open UDP socket alone must not select the CI-V-rebuild branch.
-        # Transport doubles without a ``state`` attribute model
-        # an established session and keep the pre-gate behaviour.
+        # A control transport that ``_connect_once`` never marked CONNECTED is
+        # no session to reuse: ``IcomTransport.connect``/``reconnect`` leave it
+        # CONNECTING, so an open UDP socket alone must not select the
+        # CI-V-rebuild branch.  Transport doubles without a ``state`` attribute
+        # keep the pre-gate behaviour.
         if (
             not h._ctrl_transport
             or not getattr(h._ctrl_transport, "_udp_transport", None)

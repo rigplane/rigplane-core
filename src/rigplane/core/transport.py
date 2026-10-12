@@ -132,10 +132,6 @@ class IcomTransport:
         self.rx_missing: dict[int, int] = {}  # seq -> retry count
         self._udp_transport: asyncio.DatagramTransport | None = None
         self._udp_peer_addr: tuple[str, int] | None = None
-        # Set by _UdpProtocol.connection_lost for the CURRENT endpoint; each
-        # connect()/reconnect() creates a fresh event with its endpoint, and
-        # disconnect() awaits it so the socket close cannot race a rebind of
-        # the same local port.
         self._udp_close_event: asyncio.Event | None = None
         self._ping_task: asyncio.Task[None] | None = None
         self._idle_task: asyncio.Task[None] | None = None
@@ -390,9 +386,10 @@ class IcomTransport:
         coroutine returns nothing from this transport is left pending in
         the event loop and a follow-up ``connect()`` on the same instance
         restarts the loops from a clean slate (MOR-595).  The UDP socket
-        close is likewise awaited (bounded at 1 s): asyncio defers the real
-        close to ``connection_lost``, and returning earlier let a reconnect
-        rebind the same local port and fail with EADDRINUSE.
+        close is likewise awaited (bounded at 1 s): asyncio closes the socket
+        in a deferred callback, right after ``connection_lost``, and returning
+        earlier let a reconnect rebind the same local port and fail with
+        EADDRINUSE.
         Idempotent — safe to call again after a partial start.
         """
         tasks = [

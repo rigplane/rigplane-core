@@ -1636,20 +1636,10 @@ class CivRuntime:
                 self._rearm_data_watchdog_after_recovery()
 
     def _hand_off_exhaustion_to_reconnect_loop(self, exc: Exception) -> None:
-        """Start the resident reconnect loop after recovery exhausted.
+        """Start the resident reconnect loop after lifecycle recovery exhausted.
 
-        ``RigplaneConnectionError`` out of ``host.soft_reconnect`` is raised
-        only by ``CoreRadioSessionLifecycle._run_recover`` after it released
-        the session and left the host DISCONNECTED; a user ``disconnect``
-        during recovery cancels this task instead, so the exception together
-        with the DISCONNECTED state identifies an exhausted, unintentional
-        recovery — nothing else restarts recovery there and the client stayed
-        down after a radio power-cycle.  The handoff mirrors
-        ``radio_reconnect.watchdog_loop``'s trip exactly: state RECONNECTING,
-        one ``reconnecting`` status, one resident loop.  A later user
-        ``disconnect`` stays in charge: the loop's own guard
-        (``radio_reconnect.reconnect_loop`` exits on DISCONNECTED) and
-        ``ControlPhaseRuntime.release`` → ``_stop_reconnect`` stop the loop.
+        The exhaustion is the ``RigplaneConnectionError`` that
+        ``CoreRadioSessionLifecycle._run_recover`` raises after its release.
         """
         host = self._host
         if not isinstance(exc, ConnectionError):

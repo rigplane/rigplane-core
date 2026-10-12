@@ -1,18 +1,8 @@
-"""Recovery after a full radio power-cycle (second PR of the defect family).
+"""Recovery after a full radio power-cycle.
 
-Pins the CI-V data watchdog's recovery handoff and the control-socket login
-gate in ``soft_reconnect``. The packet-count watchdog's own
-``reconnect_loop`` fix lives in a sibling PR; nothing here touches it.
-
-An end-to-end reboot test on ``MockIcomRadio`` is not deliverable here: the
-simulator answers discovery and OpenClose on the CI-V port for the stale
-pre-reboot client (``rigplane_testkit/icom/simulator.py: _handle_civ`` has
-no session gate for those, and ``_begin_reboot``'s fence lifts on any
-OpenClose(open)), so the data-watchdog recovery rebuilds a working CI-V
-stream without ever re-logging in and the lifecycle never exhausts — with
-or without these fixes the sim client ends CONNECTED holding the pre-reboot
-token. The real radio instead frees the session and reports it via the
-conninfo notice, which the simulator does not model.
+Pins the CI-V data watchdog's exhaustion handoff to the resident reconnect
+loop and the control-transport state gate in
+``ControlPhaseRuntime.soft_reconnect``.
 """
 
 from __future__ import annotations
@@ -75,7 +65,7 @@ async def test_handed_off_loop_survives_failed_attempts_until_user_disconnect(
 
     ``CoreRadioSessionLifecycle._attempt_with_release`` releases the session
     after every failed connect attempt; that release must not end the loop
-    that drives the attempts. Only the user's ``disconnect`` ends it."""
+    that drives the attempts, while the user's ``disconnect`` does."""
     radio, statuses = _exhaustion_radio()
     status_states: list[RadioConnectionState] = []
 
@@ -223,10 +213,11 @@ class _RefusedTransport:
 
 
 async def test_soft_reconnect_full_connect_when_ctrl_never_logged_in() -> None:
-    """A control transport that never completed a login is no session to reuse.
+    """A control transport ``_connect_once`` never marked CONNECTED is no
+    session to reuse.
 
     ``IcomTransport.connect``/``reconnect`` leave the transport CONNECTING;
-    only the end of ``_connect_once`` marks it CONNECTED. After a failed full
+    only ``_connect_once`` marks it CONNECTED. After a failed full
     connect the control UDP socket can still be open, and the CI-V-rebuild
     branch then declared a session that does not exist. With the
     login gate the rebuild branch requires a CONNECTED control transport and
