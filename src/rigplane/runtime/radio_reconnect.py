@@ -120,11 +120,21 @@ async def watchdog_loop(radio: IcomRadio) -> None:
 
 
 async def reconnect_loop(radio: IcomRadio) -> None:
-    """Attempt to reconnect with exponential backoff."""
+    """Attempt to reconnect with exponential backoff.
+
+    The loop also returns, at its next check, once ``CoreRadio.disconnect``
+    has incremented ``_owner_stop_epoch`` since the loop started: the
+    owner's cancel alone can be swallowed by an await inside a round
+    (``CivRuntime.stop_data_watchdog``).
+    """
+    owner_stop_epoch = radio._owner_stop_epoch
     delay = radio._reconnect_delay
     attempt = 0
     try:
-        while radio._conn_state != RadioConnectionState.DISCONNECTED:
+        while (
+            radio._conn_state != RadioConnectionState.DISCONNECTED
+            and radio._owner_stop_epoch == owner_stop_epoch
+        ):
             attempt += 1
             logger.info("Reconnect attempt %d (delay=%.1fs)", attempt, delay)
             _emit_reconnect_status(
@@ -139,10 +149,16 @@ async def reconnect_loop(radio: IcomRadio) -> None:
                 # lifecycle leaves it in CONNECTED, and connect() then skips
                 # the login while the CI-V transport is already gone.
                 await radio._session_lifecycle.disconnect()
+                if radio._owner_stop_epoch != owner_stop_epoch:
+                    return
 
                 # Re-initialize transport
                 radio._ctrl_transport = IcomTransport()
                 await radio.connect()
+                if radio._owner_stop_epoch != owner_stop_epoch:
+                    # Finish the owner's stop on the session this round opened.
+                    await radio.disconnect()
+                    return
                 logger.info("Reconnected successfully after %d attempts", attempt)
                 _emit_reconnect_status(
                     radio, "connected", attempt=attempt, next_retry_seconds=None
@@ -163,6 +179,8 @@ async def reconnect_loop(radio: IcomRadio) -> None:
                 )
                 return
             except Exception as exc:
+                if radio._owner_stop_epoch != owner_stop_epoch:
+                    return
                 radio._conn_state = RadioConnectionState.RECONNECTING
                 logger.warning("Reconnect attempt %d failed: %s", attempt, exc)
                 await asyncio.sleep(delay)

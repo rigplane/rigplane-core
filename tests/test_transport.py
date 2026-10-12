@@ -405,7 +405,8 @@ class TestTrackedWriteGuard:
         if len(seqs) == 1:
             return _build_control(ptype=0x01, seq=seqs[0])
         packet = bytearray(_build_control(ptype=0x01))
-        packet.extend(struct.pack(f"<{len(seqs)}H", *seqs))
+        for s in seqs:
+            packet.extend(struct.pack("<HH", s, s))
         struct.pack_into("<I", packet, 0, len(packet))
         return bytes(packet)
 
@@ -478,10 +479,18 @@ class TestTrackedWriteGuard:
         )
         off = sent[-1]
         transport._handle_packet(self._request(0, 1) if multi else self._request(0))
-        assert [packet[CONTROL_SIZE:] for packet in sent] == (
-            [b"ON", b"OFF", b"OFF"] if multi else [b"ON", b"OFF"]
-        )
-        assert sent[-1] == off
+        if multi:
+            # seq 0 is stale: idle reply, then the live OFF resend.
+            assert [packet[CONTROL_SIZE:] for packet in sent] == (
+                [b"ON", b"OFF", b"", b"OFF"]
+            )
+            assert sent[-1] == off
+        else:
+            # seq 0 is stale: one idle reply carrying 0, OFF is not resent.
+            assert [packet[CONTROL_SIZE:] for packet in sent] == ([b"ON", b"OFF", b""])
+            assert struct.unpack_from("<H", sent[-1], 4)[0] == 0x00
+            assert struct.unpack_from("<H", sent[-1], 6)[0] == 0
+            assert sent[-1] != off
 
     @pytest.mark.asyncio
     async def test_multi_replay_rechecks_each_entry(
@@ -502,7 +511,9 @@ class TestTrackedWriteGuard:
 
         transport._raw_send = write
         transport._handle_packet(self._request(0, 1))
-        assert [packet[CONTROL_SIZE:] for packet in sent] == [b"first"]
+        # seq 0 replays while the guard holds; seq 1 then finds the guard
+        # stale and answers with idle instead of resending.
+        assert [packet[CONTROL_SIZE:] for packet in sent] == [b"first", b""]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("multi", [False, True])
@@ -523,8 +534,9 @@ class TestTrackedWriteGuard:
         broken = True
         sent.clear()
         transport._handle_packet(self._request(0, 1) if multi else self._request(0))
+        # The failed guard answers with idle (b""); the unguarded seq resends.
         assert [packet[CONTROL_SIZE:] for packet in sent] == (
-            [b"unguarded"] if multi else []
+            [b"", b"unguarded"] if multi else [b""]
         )
 
     def test_guard_metadata_follows_fifo_eviction(
@@ -553,9 +565,15 @@ class TestTrackedWriteGuard:
         transport._track_sent(7, b"current", is_current=lambda: True)
         transport._handle_packet(self._request(7))
         assert sent == [b"current"]
+        transport._track_sent(7, b"stale", is_current=lambda: False)
+        transport._handle_packet(self._request(7))
+        assert len(sent) == 2
+        assert struct.unpack_from("<H", sent[1], 4)[0] == 0x00
+        assert struct.unpack_from("<H", sent[1], 6)[0] == 7
         transport._track_sent(7, b"unguarded")
         transport._handle_packet(self._request(7))
-        assert sent == [b"current", b"unguarded"]
+        assert len(sent) == 3
+        assert sent[2] == b"unguarded"
         assert transport.tx_buffer == {7: b"unguarded"}
         assert transport._tx_guards == {}
 
@@ -693,28 +711,36 @@ class TestHandlePacket:
     def test_retransmit_request_missing_seq(self, transport: IcomTransport) -> None:
         sent = []
         transport._raw_send = lambda data: sent.append(data)
-        # seq not in tx_buffer
+        # seq not in tx_buffer: answered with an untracked idle packet
         req = _build_control(ptype=0x01, seq=99)
         transport._handle_packet(req)
-        assert len(sent) == 0
+        assert len(sent) == 1
+        assert len(sent[0]) == CONTROL_SIZE
+        assert struct.unpack_from("<H", sent[0], 4)[0] == 0x00
+        assert struct.unpack_from("<H", sent[0], 6)[0] == 99
 
     def test_retransmit_multi(self, transport: IcomTransport) -> None:
         sent = []
         transport._raw_send = lambda data: sent.append(data)
         transport.tx_buffer[5] = b"pkt5"
         transport.tx_buffer[7] = b"pkt7"
-        # Multi retransmit: longer than CONTROL_SIZE, type=0x01
+        # Multi retransmit: longer than CONTROL_SIZE, type=0x01; the payload
+        # is one (first, last) inclusive range, so 6 answers with idle.
         pkt = bytearray(CONTROL_SIZE + 4)
         struct.pack_into("<I", pkt, 0, CONTROL_SIZE + 4)
         struct.pack_into("<H", pkt, 4, 0x01)
         struct.pack_into("<H", pkt, 6, 0)
         struct.pack_into("<I", pkt, 8, 0xAABBCCDD)
         struct.pack_into("<I", pkt, 0x0C, 0)
-        # Two seq entries
+        # One range pair (5, 7)
         struct.pack_into("<H", pkt, CONTROL_SIZE, 5)
         struct.pack_into("<H", pkt, CONTROL_SIZE + 2, 7)
         transport._handle_packet(bytes(pkt))
-        assert len(sent) == 2
+        assert len(sent) == 3
+        assert sent[0] == b"pkt5"
+        assert struct.unpack_from("<H", sent[1], 4)[0] == 0x00
+        assert struct.unpack_from("<H", sent[1], 6)[0] == 6
+        assert sent[2] == b"pkt7"
 
     def test_remote_id_learned(self) -> None:
         t = IcomTransport()

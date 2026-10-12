@@ -32,6 +32,17 @@ code observes that echo on a real IC-7300 (``backends/discovery.py`` —
 ``backends/_icom_serial_base.py: _read_serial_identity_payload`` — "the raw
 payload bytes after the 19 00 echo"). Pass ``echo=False`` to turn it off.
 
+A :class:`~rigplane_testkit.icom.replay.RecordedAnswerTable` mounts through
+the ``recorded_answers`` keyword. With a table mounted, a request addressed
+to the fake is handled in this order: a Command29-wrapped request is
+answered only from the table or NAKed — never unwrapped into a native
+handler; an UNWRAPPED request keeps its native handler if it has one
+(frequency, mode, PTT, S-meter and identity keep their state); a
+controller's own ACK/NAK gets no reply; any other request falls to the
+table, then to a NAK. The echo default then comes from the table's ``echo``
+fact unless ``echo=`` is passed explicitly; without a table the default
+stays on.
+
 Faults are scriptable and deterministic: ``delay_identity_answer``,
 ``answer_identity_after_reconnect_only``, ``wrong_model_id``, ``silence``
 (the MOR-2861 case: link open, nothing answers), ``usb_vanish`` /
@@ -56,6 +67,7 @@ from rigplane_testkit.icom import (
     _bcd_encode_freq,
     _level_bcd_encode,
 )
+from rigplane_testkit.icom.replay import RecordedAnswerTable
 
 _BROADCAST_ADDR = 0x00  # CI-V broadcast: every radio hears it, none NAKs it
 
@@ -82,9 +94,8 @@ class CivSerialFake:
     """A stateful Icom radio on the far end of an in-memory serial duplex.
 
     State (frequency, mode, filter, PTT, S-meter) changes only through the
-    wire or the explicit test-setup property setters. Refusals (the ``0xFA``
-    NAK) follow from the personality alone; every fault is scripted through
-    the methods below, never hidden in an answer table.
+    wire or the explicit test-setup property setters. Every fault is
+    scripted through the methods below, never hidden in an answer table.
     """
 
     def __init__(
@@ -93,7 +104,8 @@ class CivSerialFake:
         *,
         civ_addr: int | None = None,
         model_id: bytes | None = None,
-        echo: bool = True,
+        echo: bool | None = None,
+        recorded_answers: RecordedAnswerTable | None = None,
         frequency_hz: int = 14_074_000,
         mode: int = 0x01,  # USB (§19 mode table)
         filter_width: int = 1,
@@ -111,7 +123,13 @@ class CivSerialFake:
                 )
             model_id = bytes.fromhex(profile.expected_identity_ids[0])
         self._model_id = bytes(model_id)
-        self.echo = echo
+        self._recorded_answers = recorded_answers
+        if echo is not None:
+            self.echo = echo
+        elif recorded_answers is not None:
+            self.echo = recorded_answers.echo
+        else:
+            self.echo = True
         self._frequency_hz = frequency_hz
         self._mode = mode
         self._filter_width = filter_width
@@ -292,7 +310,7 @@ class CivSerialFake:
         self._commands.append(parsed)
         if parsed.to_addr not in (self._civ_addr, _BROADCAST_ADDR):
             return
-        reply = self._answer(parsed, connection)
+        reply = self._answer(parsed, connection, frame)
         if reply is None:
             return
         delay = self._identity_delay_s if parsed.command == _CMD_TRANSCEIVER_ID else 0.0
@@ -301,8 +319,15 @@ class CivSerialFake:
         else:
             connection.deliver(reply)
 
-    def _answer(self, parsed: CivFrame, connection: "_Connection") -> bytes | None:
+    def _answer(
+        self, parsed: CivFrame, connection: "_Connection", frame: bytes
+    ) -> bytes | None:
         cmd = parsed.command
+        if self._recorded_answers is not None and parsed.receiver is not None:
+            # Command29-wrapped: answered from the recording or NAKed, never
+            # unwrapped into a native handler.
+            recorded = self._recorded_answers.answer(frame)
+            return recorded if recorded is not None else self._nak()
         if cmd == _CMD_TRANSCEIVER_ID and parsed.sub == _SUB_TRANSCEIVER_ID:
             if self._identity_after_reconnect_only and connection.ordinal < 2:
                 return None
@@ -364,6 +389,10 @@ class CivSerialFake:
             return None  # a controller's own ACK/NAK is not answered
         if parsed.to_addr == _BROADCAST_ADDR:
             return None  # unknown broadcast: silence, as on a real bus
+        if self._recorded_answers is not None:
+            recorded = self._recorded_answers.answer(frame)
+            if recorded is not None:
+                return recorded
         return self._nak()
 
     def _ack(self) -> bytes:

@@ -198,7 +198,7 @@ Pings are sent every 500ms. The radio drops connections that stop pinging.
 If a sequence gap is detected, the receiver sends a retransmit request:
 
 - **Single missing:** 0x10-byte control packet with type=0x01 and the missing seq in the seq field
-- **Multiple missing:** 0x10+ byte packet with type=0x01, followed by pairs of (seq, seq) for each missing packet
+- **Multiple missing:** 0x10+ byte packet with type=0x01, followed by a list of 4-byte (first, last) inclusive ranges. The client sends (s, s) per missing sequence, and the IC-7610 was recorded sending (131, 133) for the missing 131..133 (MOR-3358 bench window). Handled in `core/transport.py: IcomTransport._handle_retransmit_packet`.
 
 ## CI-V Frame Format
 

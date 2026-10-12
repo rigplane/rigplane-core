@@ -556,11 +556,13 @@ def _observation_max_age(
     non-selected receiver (MOR-2599) and ``observed_active`` carries the
     observed value, the demoted path stamps its DEMOTED class's TTL —
     the same value the demoted poll itself carries — so it never ages to
-    stale between demoted polls (PR #3643 finding 2). Everything else —
-    paths the profile does not poll at all — falls back to
-    :data:`_OBSERVATION_MAX_AGE_SECONDS`: ``policy_for`` would answer the
-    profile default there, which applies to every path in the rig,
-    including the ones no author considered when writing it.
+    stale between demoted polls (PR #3643 finding 2). A path the profile
+    does not poll at all keeps the rig-blind
+    :data:`_OBSERVATION_MAX_AGE_SECONDS` entry where one exists; with
+    neither a declaration, a pollable capability, nor a table entry, the
+    stamp is the profile's ``default_policy`` TTL
+    (MOR-1815 residual: ``policy_for`` already answers that default for
+    such a path).
     """
 
     acquisition = getattr(profile, "state_acquisition", None)
@@ -573,6 +575,12 @@ def _observation_max_age(
                 profile_path, observed_active=observed_active
             ).freshness_ttl_seconds
             return ttl
+        table_ttl = _OBSERVATION_MAX_AGE_SECONDS.get(
+            (path.scope.value, path.family.value, path.name)
+        )
+        if table_ttl is not None:
+            return table_ttl
+        return acquisition.policy_for(profile_path).freshness_ttl_seconds
     return _OBSERVATION_MAX_AGE_SECONDS.get(
         (path.scope.value, path.family.value, path.name)
     )
@@ -1587,6 +1595,7 @@ class CivRuntime:
         hold keeps it paused until acceptance; a released control session has
         no stream to watch.
         """
+        owner_stop_epoch = self._host._owner_stop_epoch
         escalate = full_reconnect_reason is not None or (
             self._soft_recovery_epoch is not None
             and self._soft_recovery_epoch == self._host._civ_epoch
@@ -1622,7 +1631,7 @@ class CivRuntime:
                 "transient); watchdog will re-arm if the session survives",
                 exc_info=True,
             )
-            self._hand_off_exhaustion_to_reconnect_loop(exc)
+            self._hand_off_exhaustion_to_reconnect_loop(exc, owner_stop_epoch)
         except Exception:
             logger.error(
                 "civ-data-watchdog: unexpected error in lifecycle recovery",
@@ -1635,14 +1644,20 @@ class CivRuntime:
             else:
                 self._rearm_data_watchdog_after_recovery()
 
-    def _hand_off_exhaustion_to_reconnect_loop(self, exc: Exception) -> None:
+    def _hand_off_exhaustion_to_reconnect_loop(
+        self, exc: Exception, owner_stop_epoch: int
+    ) -> None:
         """Start the resident reconnect loop after lifecycle recovery exhausted.
 
         The exhaustion is the ``RigplaneConnectionError`` that
         ``CoreRadioSessionLifecycle._run_recover`` raises after its release.
+        ``owner_stop_epoch`` is the host's ``_owner_stop_epoch`` when the
+        recovery started; an owner stop since then starts no loop.
         """
         host = self._host
         if not isinstance(exc, ConnectionError):
+            return
+        if host._owner_stop_epoch != owner_stop_epoch:
             return
         if host._conn_state is not RadioConnectionState.DISCONNECTED:
             return
