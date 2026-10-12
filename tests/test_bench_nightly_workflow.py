@@ -112,13 +112,15 @@ def test_evidence_steps_do_not_decide_the_verdict() -> None:
 
 def test_radio_commands_go_through_the_guard() -> None:
     steps = _steps_by_name(_radio_job())
-    unguarded = [
-        name
-        for name, step in steps.items()
-        if isinstance(step.get("run"), str)
-        and ("uv run rigplane" in step["run"] or "uv run pytest" in step["run"])
-        and "scripts/bench/guard.sh run --" not in step["run"]
-    ]
+    unguarded: list[str] = []
+    for name, step in steps.items():
+        run = step.get("run")
+        if not isinstance(run, str):
+            continue
+        if "uv run rigplane" not in run and "uv run pytest" not in run:
+            continue
+        if "scripts/bench/guard.sh run --" not in run:
+            unguarded.append(name)
     assert not unguarded, (
         f"steps invoking rigplane or the hardware pytest subset outside "
         f"guard.sh run --: {unguarded} — TX and the tuner are never actuated"
