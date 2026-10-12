@@ -15,6 +15,16 @@ receiver (``main`` = 0, ``sub`` = 1); both are the same arguments the
 runtime's own ``CoreRadio.set_*`` methods pass before sending. No CI-V
 encoding is re-implemented here.
 
+The two ``cw_key_speed_wpm`` rows call no builder directly: their bytes
+are the frame the runtime coroutine ``runtime/radio.py:
+CoreRadio.set_key_speed`` puts on the wire for the WPM number parsed
+from the row's ``value``, captured on the recording fake CI-V
+transport of ``tests/test_radio.py: MockTransport``. That coroutine
+runs the WPM-to-level conversion (``profiles/control_domain.py:
+encode_legacy_control`` over the profile's ``[controls.key_speed]``
+band) before the builder renders the frame, so the conversion itself
+is inside the compared path.
+
 Rows are keyed by ``(control, receiver, direction, value)`` for both
 profiles: the IC-7610 table is not unique by ``control`` (two ``ptt``
 rows, two ``dualwatch`` rows, and every dual-receiver control has a
@@ -49,6 +59,7 @@ Rules, per the MOR-3261 compare brief:
 
 from __future__ import annotations
 
+import asyncio
 import re
 import tomllib
 from collections import Counter
@@ -56,10 +67,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+from test_radio import MockTransport
 
 from rigplane.backends.yaesu_cat.parser import format_command
 from rigplane.commands.command_spec import CatCommandSpec
 from rigplane.profiles.rig_loader import load_rig
+from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
 from rigplane.runtime.radio import CoreRadio
 from rigplane.types import AgcMode, BreakInMode, Mode
 
@@ -67,7 +80,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RIGS_DIR = REPO_ROOT / "rigs"
 ORACLE_DIR = REPO_ROOT / "tests" / "golden" / "wire_oracle"
 
-_IC7300_MIN_ROWS = 27
+_IC7300_MIN_ROWS = 29
 _IC7610_MIN_ROWS = 34
 
 #: Oracle row key: (control, receiver, direction, value). Rows without a
@@ -88,12 +101,18 @@ class _ProductionCall:
     ``(opcode, sub)`` pair the runtime passes to
     ``RadioProfile.supports_cmd29`` for builders that take a
     ``command29`` flag, or ``None`` for builders without one.
+
+    Rows with ``runtime_wpm`` set carry empty ``kwargs``: their bytes are
+    captured from the ``CoreRadio`` coroutine named by ``builder``, with
+    the WPM number parsed from the row's ``value``, so the runtime's
+    WPM-to-level conversion is part of the compared path.
     """
 
     builder: str
     kwargs: dict[str, object]
     cmd29_route: tuple[int, ...] | None = None
     receiver: int | None = None
+    runtime_wpm: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +204,12 @@ _IC7300_MAPPING: dict[_Key, _ProductionCall] = {
     ),
     ("cw_key_speed", "none", "set", "120 of 0..255"): _ProductionCall(
         "set_key_speed", {"level": 120}
+    ),
+    ("cw_key_speed_wpm", "none", "set", "6 wpm (manual endpoint)"): _ProductionCall(
+        "set_key_speed", {}, runtime_wpm=True
+    ),
+    ("cw_key_speed_wpm", "none", "set", "48 wpm (manual endpoint)"): _ProductionCall(
+        "set_key_speed", {}, runtime_wpm=True
     ),
     ("comp_level", "none", "set", "150 of 0..255"): _ProductionCall(
         "set_compressor_level", {"level": 150}
@@ -376,8 +401,39 @@ def _hex(frame: bytes) -> str:
     return " ".join(f"{byte:02X}" for byte in frame)
 
 
-def _production_bytes(setup: _ProfileSetup, key: _Key) -> bytes:
+async def _runtime_wpm_frame(setup: _ProfileSetup, key: _Key) -> bytes:
+    """Capture the frame the runtime WPM coroutine puts on the wire.
+
+    The radio is the row's profile over ``MockTransport`` (injected the way
+    ``tests/test_radio.py`` builds a radio under test: both transports
+    replaced, connected flag set), the WPM number is parsed from the row's
+    ``value``, and the returned bytes are the CI-V frame inside the single
+    tracked packet the coroutine sends — UDP header stripped. The
+    WPM-to-level conversion happens inside the coroutine; this helper
+    never re-implements it or the CI-V encoding.
+    """
+    match = re.match(r"(\d+) wpm", key[3])
+    assert match is not None, f"{setup.label} {key!r}: value names no WPM"
+    transport = MockTransport()
+    radio = CoreRadio("127.0.0.1", profile=setup.profile)  # type: ignore[arg-type]
+    radio._civ_transport = transport
+    radio._ctrl_transport = transport
+    radio._connected = True
+    try:
+        await getattr(radio, setup.mapping[key].builder)(int(match.group(1)))
+        assert len(transport.sent_packets) == 1, (
+            f"{setup.label} {key!r}: runtime sent "
+            f"{len(transport.sent_packets)} packets, expected exactly one"
+        )
+        return transport.sent_packets[0][CIV_HEADER_SIZE:]
+    finally:
+        radio._connected = False
+
+
+async def _production_bytes(setup: _ProfileSetup, key: _Key) -> bytes:
     spec = setup.mapping[key]
+    if spec.runtime_wpm:
+        return await _runtime_wpm_frame(setup, key)
     builder = getattr(setup.commands, spec.builder)
     kwargs: dict[str, object] = {"to_addr": setup.to_addr, **spec.kwargs}
     if spec.receiver is not None:
@@ -398,7 +454,7 @@ def _compare_params() -> list:
         for key in sorted(setup.mapping):
             if label == "IC-7610" and key in _XFAIL_7610:
                 expected = setup.oracle[key]
-                produced = _production_bytes(setup, key)
+                produced = asyncio.run(_production_bytes(setup, key))
                 reason = (
                     f"IC-7610 reference p. {_page(setup.manual[key])} disagrees "
                     f"with the profile: {_XFAIL_7610[key]} "
@@ -472,10 +528,10 @@ def test_not_declared_stays_absent(label: str) -> None:
 
 
 @pytest.mark.parametrize("label,key", _compare_params())
-def test_oracle_bytes_match_production(label: str, key: _Key) -> None:
+async def test_oracle_bytes_match_production(label: str, key: _Key) -> None:
     setup = _SETUPS[label]
     expected = setup.oracle[key]
-    produced = _production_bytes(setup, key)
+    produced = await _production_bytes(setup, key)
     assert produced[:4] == bytes((0xFE, 0xFE, setup.to_addr, 0xE0)), (
         f"{label} {key!r}: production frame does not run controller E0 to "
         f"profile address {setup.to_addr:#04x}: {_hex(produced)}"
