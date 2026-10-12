@@ -160,6 +160,42 @@ async def test_send_civ_tuner_off_with_remote_ticket_is_captured() -> None:
         await _settle(authority)
 
 
+async def test_send_civ_infinite_command_from_non_controller_is_captured() -> None:
+    """``float("inf")`` as ``command`` reaches the gate, not an exception.
+
+    ``decode_json`` (``json.loads``) turns ``1e400`` into
+    ``float("inf")``, on which ``int()`` raises ``OverflowError``; the
+    transmission-end check stays raise-free and treats it as malformed,
+    so the non-controller still gets ``controller_invalid`` from the
+    capture, never an escaping ``OverflowError``.
+    """
+
+    safety, authority, _ticket = await _remote_controller()
+    try:
+        queue, handler = _unmanaged_handler(authority)
+        with pytest.raises(ControllerError, match="controller_invalid"):
+            await handler._enqueue_command("send_civ", {"command": float("inf")})
+        assert queue.drain_entries() == []
+    finally:
+        await _settle(authority)
+
+
+async def test_send_civ_infinite_command_with_remote_ticket_is_refused() -> None:
+    """The same infinite ``command``: the remote-ticket refusal answers."""
+
+    safety, authority, ticket = await _remote_controller()
+    try:
+        queue, handler = _unmanaged_handler(authority)
+        with (
+            authority.bind(ticket),
+            pytest.raises(ControllerError, match="controller_tx_unsupported"),
+        ):
+            await handler._enqueue_command("send_civ", {"command": float("inf")})
+        assert queue.drain_entries() == []
+    finally:
+        await _settle(authority)
+
+
 @pytest.mark.parametrize("cmd", _TRANSMISSION_END_SEND_CIV)
 async def test_queue_gives_transmission_end_send_civ_no_ticket(cmd: SendCiv) -> None:
     """A transmission-ending ``SendCiv`` is accepted with no controlling seat.
