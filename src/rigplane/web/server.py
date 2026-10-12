@@ -91,6 +91,7 @@ from ..runtime.managed_tx_state import ManagedTxIntentKind
 from ..runtime.tx_interlock import (
     RfState,
     TxInterlockRefusal,
+    _is_exact_raw_dekey_frame,
     classify_raw_civ_frame_tx_family,
     resolve_rf_state,
 )
@@ -490,7 +491,8 @@ class _HttpCommandExecutor:
         """Resolve RF state from the server's state store snapshot.
 
         Mirrors ``ControlHandler._observed_rf_state``: no usable store
-        reads as UNKNOWN, and a TX-family raw frame then refuses.
+        reads as UNKNOWN, and a TX-family raw frame that is not an exact
+        de-key then refuses.
         """
 
         state_store = getattr(self.server, "command_state_store", None)
@@ -515,29 +517,37 @@ class _HttpCommandExecutor:
                 )
             # The TX-family verdict is computed on the exact frame the
             # transaction below would send — addresses play no part in it.
-            tx_family_verdict = classify_raw_civ_frame_tx_family(
-                build_civ_frame(
-                    0x00,
-                    0x00,
-                    int(params["command"]),
-                    sub=None if params.get("sub") is None else int(params["sub"]),
-                    data=bytes(params["data"]),
-                )
+            frame = build_civ_frame(
+                0x00,
+                0x00,
+                int(params["command"]),
+                sub=None if params.get("sub") is None else int(params["sub"]),
+                data=bytes(params["data"]),
             )
+            tx_family_verdict = classify_raw_civ_frame_tx_family(frame)
             if self.server._managed_tx_authority() is not None:
                 # Managed mode refuses a TX-family raw transaction by
                 # payload alone — regardless of the observed RF state,
-                # and without consulting the authority.
+                # and without consulting the authority.  An exact raw
+                # de-key is refused with it: in managed mode PTT moves
+                # only through the authority.
                 if tx_family_verdict is not False:
                     raise TxInterlockRefusal(
                         "raw CI-V TX-family transactions are refused while the "
                         "radio is under managed TX authority",
                         reason_code="managed_tx_refused",
                     )
-            elif tx_family_verdict is not False:
-                # Unmanaged parity with rigctld raw ``w``: a TX-family
-                # frame (or one that cannot be parsed) requires the
-                # observed PTT to resolve to fresh-known RX.
+            elif tx_family_verdict is not False and not _is_exact_raw_dekey_frame(
+                frame
+            ):
+                # Unmanaged seat: a TX-family frame, or one that cannot
+                # be parsed as a single whole CI-V frame, is refused
+                # unless the observed PTT resolves to fresh-known RX;
+                # any other non-TX frame passes regardless of the
+                # observed RF state.  An exact de-key frame (PTT off or
+                # tuner off, bare or inside a cmd29 prefix) is exempt
+                # from that refusal, as ``classify_tx_interlock`` never
+                # refuses the typed PTT-off and tuner-off either.
                 rf_state = self._observed_rf_state()
                 if rf_state is not RfState.RX:
                     raise TxInterlockRefusal(

@@ -492,14 +492,18 @@ def _is_tx_family_civ_command(command: int, sub: int | None, data: bytes) -> boo
     return sub in _CIV_TX_FAMILY_SUBS and bool(data)
 
 
-def classify_raw_civ_frame_tx_family(frame: bytes) -> bool | None:
-    """Byte-level TX-family verdict for one whole CI-V frame.
+def _unwrap_civ_frame(frame: bytes) -> tuple[int, int | None, bytes] | None:
+    """Parse one whole CI-V envelope into its ``FE FE to from cmd [sub] data
+    FD`` parts.
 
-    Parses the ``FE FE to from cmd [sub] [data] FD`` envelope, then defers to
-    :func:`_is_tx_family_civ_command`.  A payload holds exactly one frame: any
-    ``FE``, ``FD``, or ``FC`` byte between the leading ``FE FE`` and the
-    final ``FD`` is unparseable.  Returns None when the envelope cannot be
-    parsed; a managed caller must refuse on None as well as on True.
+    Returns ``(command, sub, data)`` with ``data`` excluding the trailing
+    ``FD``; ``sub`` is a byte only for the TX-family command, None for every
+    other command.  Returns None when the envelope cannot be parsed: a frame
+    shorter than the minimum, a bad head or tail, an ``FE``/``FD``/``FC``
+    byte between the leading ``FE FE`` and the final ``FD``, or a TX-family
+    command without its sub byte.  This is the one envelope parser shared by
+    :func:`classify_raw_civ_frame_tx_family` and
+    :func:`_is_exact_raw_dekey_frame`.
     """
 
     if (
@@ -518,7 +522,54 @@ def classify_raw_civ_frame_tx_family(frame: bytes) -> bool | None:
     if command == _CIV_TX_FAMILY_COMMAND:
         if len(frame) < 7:
             return None
-        return _is_tx_family_civ_command(command, frame[5], frame[6:-1])
+        return command, frame[5], frame[6:-1]
     if command == _CIV_RECEIVER_PREFIX_COMMAND:
-        return _is_tx_family_civ_command(command, None, frame[5:-1])
+        return command, None, frame[5:-1]
+    return command, None, b""
+
+
+def classify_raw_civ_frame_tx_family(frame: bytes) -> bool | None:
+    """Byte-level TX-family verdict for one whole CI-V frame.
+
+    Parses the envelope with :func:`_unwrap_civ_frame`, then defers to
+    :func:`_is_tx_family_civ_command`.  A payload holds exactly one frame:
+    any ``FE``, ``FD``, or ``FC`` byte between the leading ``FE FE`` and the
+    final ``FD`` is unparseable.  Returns None when the envelope cannot be
+    parsed; a managed caller must refuse on None as well as on True.
+    """
+
+    unwrapped = _unwrap_civ_frame(frame)
+    if unwrapped is None:
+        return None
+    return _is_tx_family_civ_command(*unwrapped)
+
+
+def _is_exact_raw_dekey_frame(frame: bytes) -> bool:
+    """True when one whole well-formed frame is exactly a raw de-key.
+
+    The frame must unwrap — through the same :func:`_unwrap_civ_frame`
+    parser the TX-family classifier uses — to the PTT-off actuation
+    (``1C 00 00``) or the tuner-off actuation (``1C 01 00``), bare or inside
+    a 0x29 receiver prefix; the 0x29 form must be exactly receiver plus
+    inner actuation.  Anything with extra payload bytes, a different sub or
+    data value, or an unparseable envelope is not a de-key.  The unmanaged
+    HTTP raw seat exempts exactly these frames from its RF-state refusal so
+    that a raw de-key stays as easy to execute as the typed one, which
+    ``classify_tx_interlock`` never refuses (``PttOff`` and tuner-off are
+    ALWAYS_PASS).
+    """
+
+    unwrapped = _unwrap_civ_frame(frame)
+    if unwrapped is None:
+        return False
+    command, sub, data = unwrapped
+    if command == _CIV_TX_FAMILY_COMMAND:
+        return sub in _CIV_TX_FAMILY_SUBS and data == b"\x00"
+    if command == _CIV_RECEIVER_PREFIX_COMMAND:
+        return (
+            len(data) == 4
+            and data[1] == _CIV_TX_FAMILY_COMMAND
+            and data[2] in _CIV_TX_FAMILY_SUBS
+            and data[3:] == b"\x00"
+        )
     return False

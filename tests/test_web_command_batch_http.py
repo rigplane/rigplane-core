@@ -810,10 +810,11 @@ async def test_http_raw_civ_transaction_unmanaged_refuses_tx_family_without_fres
     age_seconds: float,
     expected_error: str,
 ) -> None:
-    """Parity with unmanaged rigctld raw ``w``
-    (``_RigctldCommandExecutor.execute``): a TX-family raw frame is
-    refused unless the observed PTT resolves to fresh-known RX — observed
-    TX refuses, and so does a stale or absent observation."""
+    """A TX-family raw frame that is not an exact de-key is refused
+    unless the observed PTT resolves to fresh-known RX, matching what
+    unmanaged rigctld raw ``w`` does to TX-family frames
+    (``_RigctldCommandExecutor.execute``): observed TX refuses, and so
+    does a stale or absent observation."""
     radio = _radio()
     radio.send_civ_transaction = AsyncMock(
         return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
