@@ -2553,12 +2553,16 @@ describe('silent raw scope refuses click-to-tune', () => {
     runtimeHarness.state.mockScopeFrameLive = true;
     flushSync();
     emitFrame({ mode: 1, startFreq: 7_000_000, endFreq: 7_100_000 });
-    prepareGeometry(target);
-    const revived = target.querySelector('.waterfall-content canvas')!;
-    pointer(revived, 'pointerdown', 4, 150);
-    pointer(revived, 'pointerup', 4, 150);
+    // A second waterfall tap at the same point would fall inside the
+    // recognizer's double-tap window, so the recovery leg clicks the
+    // spectrum release path instead — the same x the neighbouring
+    // below-threshold release test uses (104/200 of the 100 kHz span).
+    const { spectrum: revivedSpectrum } = prepareGeometry(target);
+    pointer(revivedSpectrum, 'pointerdown', 9, 100);
+    pointer(revivedSpectrum, 'pointermove', 9, 104);
+    pointer(revivedSpectrum, 'pointerup', 9, 104);
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
-    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(7_050_000, 0);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(7_052_000, 0);
     expect(mockRuntime.send).not.toHaveBeenCalled();
   });
 });
