@@ -17,7 +17,7 @@ export interface CommandLifecycle {
    * value actually changed (`core.state_store._apply_one` bumps it
    * unconditionally, before the semantic-change check that gates
    * `stateRevision`) — the "did a fresh poll cycle happen since ack" signal
-   * `panel-adapters.ts`'s `latestPendingParam` needs. `stateRevision` would
+   * `pending-intent-table.ts`'s `latestPendingParam` needs. `stateRevision` would
    * NOT serve this: a poll that re-confirms an unchanged value never bumps
    * it, which is exactly the case a fast double-toggle produces (the
    * superseded command's target coincides with the pre-existing confirmed
@@ -504,8 +504,8 @@ export const getStateBackedCommandDescriptor = (intentName: string): StateBacked
 
 /**
  * The `ServerState` receiver field each pending-marker intent is confirmed
- * against — the same `confirmedField` `panel-adapters.ts`'s pending
- * accessors pass to `latestPendingParam` for that intent. Used here only to
+ * against — the same `confirmedField` `pending-intent-table.ts`'s pending
+ * folds pass to `latestPendingParam` for that intent. Used here only to
  * capture that field's ack-time observation marker; an intent absent from
  * this table simply captures no marker.
  */
