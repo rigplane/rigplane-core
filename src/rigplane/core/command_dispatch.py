@@ -200,7 +200,7 @@ def _int_param(value: Any, field: str) -> int:
     """
     try:
         return int(value)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{field} must be an integer, got {value!r}") from exc
 
 

@@ -717,12 +717,18 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             # Start-up busy-hold policy (MOR-3391): on the first connect a
             # profile-selected stereo status-stage busy reject and an
             # auth-stage busy reject retry with a fresh login after the
-            # reject cooldown, until the start-up budget elapses.  Later
-            # connects keep the immediate attempts above; their
+            # reject cooldown, until the start-up budget elapses — unless
+            # a busy reject on an attempt starting at or after first-busy
+            # plus the live-holder threshold proves a LIVE session holds
+            # the radio (part 1b), which stops with the honest busy error.
+            # Later connects keep the immediate attempts above; their
             # status-stage busy path stays in ``_connect_once``.
             first_connect_busy_cooldown_s=(ControlPhaseRuntime._STATUS_REJECT_COOLDOWN),
             first_connect_busy_budget_s=(
                 ControlPhaseRuntime.STARTUP_BUSY_HOLD_BUDGET_S
+            ),
+            first_connect_busy_live_holder_after_s=(
+                ControlPhaseRuntime.STARTUP_BUSY_LIVE_HOLDER_AFTER_S
             ),
             # Recovery backoff is ZERO for the in-process CoreRadio (A4): the
             # CI-V data watchdog already spends its patient OpenClose phase
@@ -768,9 +774,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # Recovery completion runs the deferred tail instead of a fresh fetch.
         self._lan_identity_revalidate_origin: bool = False
         self._lan_identity_escalated_at: float | None = None
-        # (audio runtime, snapshot, CI-V epoch, owner stop epoch) — the audio
-        # recovery a hard reconnect deferred while the identity hold owned
-        # the link; hold completion consumes it.
+        # (audio runtime, snapshot, CI-V epoch, owner stop epoch) — audio
+        # recovery deferred while the identity hold owned the link (a hard
+        # reconnect round or an owner connect that returned into the hold);
+        # hold completion consumes it.
         self._hard_reconnect_deferred_audio: (
             tuple[AudioRecoveryRuntime, object, int, int] | None
         ) = None
@@ -1540,21 +1547,44 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 status=RadioIdentityStatus.CHECKING, expected_model=self.model
             )
             self._connection_identity = checking
+            # Per-attempt owner-stop epoch, captured before any await: the
+            # tail below skips recovery when the owner tore the radio down
+            # mid-connect (an owner disconnect during _fetch_initial_state
+            # would otherwise recover against the torn-down radio).
+            owner_stop_epoch = self._owner_stop_epoch
             try:
                 await self._session_lifecycle.connect()
+                gate_accepted = True
                 if self._lan_identity_owned_epoch != self._civ_epoch or (
                     self._lan_identity_unanswered_for_current_epoch()
                     and not self._lan_identity_phase_owns_open_link()
                 ):
-                    if not await self._gate_lan_identity():
+                    gate_accepted = await self._gate_lan_identity()
+                if gate_accepted:
+                    if self._lan_identity_unanswered_for_current_epoch():
                         return
-                if self._lan_identity_unanswered_for_current_epoch():
-                    return
-                await self._finish_lan_identity_completion()
+                    await self._finish_lan_identity_completion()
             except BaseException:
                 if self._connection_identity is checking:
                     self._connection_identity = None
                 raise
+            # An owner connect re-establishes session audio demand that
+            # survived its teardown (MOR-3415). The resident reconnect loop
+            # is excluded — ``radio_reconnect.reconnect_loop`` runs the same
+            # recovery itself from its pre-teardown snapshot — via the same
+            # ``_reconnect_task`` identity test as the escalation reset
+            # above. Skipped when the owner stopped the radio mid-connect:
+            # the epoch captured above moved, and recovering then would run
+            # into the teardown and report a spurious FAILED.
+            if asyncio.current_task() is not getattr(self, "_reconnect_task", None):
+                audio_runtime = getattr(self, "_audio_runtime", None)
+                if (
+                    audio_runtime is not None
+                    and self._owner_stop_epoch == owner_stop_epoch
+                ):
+                    await self._recover_audio_after_connect(
+                        audio_runtime.capture_snapshot(), owner_stop_epoch
+                    )
 
     async def __aenter__(self) -> "CoreRadio":
         # Route through the lifecycle's guaranteed-release context manager so a
@@ -2060,6 +2090,32 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return
         await self._arm_managed_tx()
         await self._run_hard_reconnect_deferred_audio(epoch)
+
+    async def _recover_audio_after_connect(
+        self, snapshot: object, owner_stop_epoch: int
+    ) -> None:
+        """Recover audio after ``connect()`` returned: now, or past the hold.
+
+        ``radio_reconnect.reconnect_loop`` and the owner-connect tail of
+        ``connect()`` call this with the snapshot they captured. connect()
+        can return while the LAN identity hold owns the link: recovering
+        then would run start_rx into ``_check_connected``'s hold refusal
+        and report FAILED, so the recovery is stashed with the epoch and
+        owner-stop counter instead; the hold's completion
+        (``_finish_lan_identity_completion``) runs it once and drops it
+        when the epoch changed or the owner stopped the radio.
+        """
+        if not (self._auto_recover_audio and snapshot is not None):
+            return
+        if self._lan_identity_unanswered_for_current_epoch():
+            self._hard_reconnect_deferred_audio = (
+                self._audio_runtime,
+                snapshot,
+                self._civ_epoch,
+                owner_stop_epoch,
+            )
+        else:
+            await self._audio_runtime.recover(snapshot)
 
     async def _run_hard_reconnect_deferred_audio(self, epoch: int) -> None:
         """Recover audio a held hard reconnect deferred, exactly once.

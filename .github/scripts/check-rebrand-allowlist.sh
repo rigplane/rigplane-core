@@ -78,6 +78,9 @@ ALLOWLIST=(
     'tests/test_backend_factory.py'                   # cosmetic test fn name (PR-2A)
     'tests/test_diagnostics_logging.py'               # cosmetic test fn name
     'tests/test_compat_v211_witnesses.py'             # asserts the preserved icom-lan console-script alias (2.11 compat witness)
+    # Imports helpers from the existing test_icom_lan_identity_gate module;
+    # the import line is the only brand reference in the file.
+    'tests/test_owner_reconnect_audio_demand.py'
     # This script itself: contains literal pattern in its grep regex and
     # docstring.
     '.github/scripts/check-rebrand-allowlist.sh'

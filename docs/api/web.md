@@ -134,7 +134,7 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `GET` | `/api/v1/bridge` | Audio bridge status |
 | `POST` | `/api/v1/bridge` | Start audio bridge |
 | `DELETE` | `/api/v1/bridge` | Stop audio bridge |
-| `POST` | `/api/v1/commands` | Enqueue one structured radio command |
+| `POST` | `/api/v1/commands` | Apply one structured radio command and answer with its outcome |
 | `POST` | `/api/v1/commands/batch` | Apply a stateless ordered command batch |
 
 ### Other Web UI Endpoints
@@ -160,7 +160,7 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `POST` | `/api/v1/radio/connect` | Connect/reconnect radio control path |
 | `POST` | `/api/v1/radio/disconnect` | Disconnect radio control path |
 | `POST` | `/api/v1/radio/power` | Power on/off (body `{"state": "on"}` or `{"state": "off"}`) through the backend's `set_powerstat` |
-| `POST` | `/api/v1/commands` | Enqueue one structured radio command |
+| `POST` | `/api/v1/commands` | Apply one structured radio command and answer with its outcome |
 | `POST` | `/api/v1/commands/batch` | Apply a stateless ordered command batch |
 | `POST` | `/api/v1/civ/transaction` | Send one scoped raw CI-V transaction |
 | `POST` | `/api/v1/band-plan/config` | Change active region and reload band plans (only when running from a source checkout: the wheel does not include `band-plans/`) |
@@ -323,9 +323,15 @@ report is `null`.
 
 HTTP command envelope for automation clients that do not need WebSocket
 delivery. The command names and `params` match the `/api/v1/ws` command channel.
-The endpoint runs the command through the same `ControlHandler` path as the
-WebSocket command channel and returns that path's `result` object in an
-`{ok, name, result}` envelope (plus `id` when the request has one).
+The endpoint answers only after the command executes, returning the
+command's `result` object in an `{ok, name, result}` envelope (plus `id`
+when the request has one) — the same body `ControlHandler._enqueue_command`
+returns for that request. When the poller reports the write refused, the
+endpoint answers HTTP `409` with `error: "radio_nak"`; a command the poller
+never settles answers HTTP `504` with `error: "command_timeout"`. Writes the
+backend sends without waiting for a reply (such as the `CoreRadio` AF/RF
+level, mode and power writes in `runtime/radio.py`) still answer `200` when
+the radio NAKs them, because the NAK is never observed.
 
 Request:
 
@@ -369,7 +375,7 @@ Low-level CI-V escape hatch:
 `send_civ` is for Icom/vendor-specific commands that are not yet exposed as
 structured RigPlane commands. `command` and `sub` are byte values from `0` to
 `255`; `sub` may be omitted. `data` is an even-length hexadecimal string. The
-HTTP command is fire-and-forget: RigPlane enqueues the CI-V write through the
+HTTP command waits for the poller to execute the CI-V write through the
 same single-owner command queue, but does not return CI-V response bytes or
 claim readback verification. `wait_response` is rejected when `true`; use
 `POST /api/v1/civ/transaction` when the caller needs an ACK, NAK, or data
@@ -1200,6 +1206,17 @@ like a command that was never rate-limited:
 
 ```json
 {"type":"response","id":"42","ok":true,"result":{"freq":14074000,"receiver":0}}
+```
+
+For queued (legacy and coalesced) commands such as `set_freq`, the
+`response` frame acknowledges enqueue only, never the outcome: a command
+the radio later refuses still answers `ok: true` here. The outcome arrives as
+a `command_lifecycle` frame correlated by `commandId` — `failed` when the
+radio NAKs the write — delivered to clients subscribed to the `events` (or
+`state`) stream:
+
+```json
+{"type":"command_lifecycle","commandId":"42","state":"failed","message":"..."}
 ```
 
 ### State update stream (`/api/v1/ws`)

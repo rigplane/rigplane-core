@@ -9,14 +9,19 @@ serves, without its unsolicited CI-V stream so the radio's frequency
 stays deterministic) — and each surface the caller reads is pinned.
 
 The run recorded in MOR-3263 showed two separate causes. (a) The WS/HTTP
-reply is produced at ENQUEUE: ``web/handlers/control.py:
+reply used to be produced at ENQUEUE: ``web/handlers/control.py:
 ControlHandler._enqueue_rc_frequency`` handles ``set_freq`` with
 ``q.put(SetFreq(...))`` and returns before ``RadioPoller`` runs anything,
 and ``core/command_service.py: CommandService.execute`` acknowledges at
-that point — so a fix must make the reply wait for poller execution
-(MOR-3004 part 1, still open). That is why the WS response and the HTTP
-reply below answer ``ok: true`` (HTTP 200) immediately, and the two reply
-tests stay ``xfail(strict=True)`` citing (a). (b) The MAIN-receiver
+that point — so the reply answered ``ok: true`` (HTTP 200) immediately
+(MOR-3004 part 1). The HTTP reply now waits for poller execution through
+the batch step path (``web/server.py: WebServer._execute_http_prepared_step``),
+so the HTTP reply test below pins ``409`` ``radio_nak`` plainly. The WS
+``response`` frame stays the enqueue acknowledgement — awaiting in the WS
+read loop would block a later ``ptt_off`` from the same client and break
+last-value-wins tuning — and the outcome arrives as the existing
+``command_lifecycle`` frame correlated by ``commandId``, which the renamed
+WS test pins plainly. (b) The MAIN-receiver
 ``0x05`` write itself used to be dispatched blind
 (``runtime/_dual_rx_runtime.py: _set_frequency_main`` →
 ``_send_civ_raw(wait_response=False)``), so the NAK settled an ACK sink
@@ -301,7 +306,7 @@ async def _require_freq_observation_advance(port: int, after: float) -> None:
 
 @contextlib.asynccontextmanager
 async def _ws_set_freq_refused(
-    stack: _Stack, command_id: str
+    stack: _Stack, command_id: str, *, subscribe: bool = False
 ) -> AsyncIterator[asyncio.StreamReader]:
     """Send one WebSocket set_freq the radio will NAK, over a live session."""
     reader, writer, _ = await _ws_connect_loud(
@@ -309,6 +314,14 @@ async def _ws_set_freq_refused(
     )
     try:
         with _refusing_set_frequency(stack.sim):
+            if subscribe:
+                # The sender loop forwards non-notification, non-state
+                # payloads (including command_lifecycle) only to subscribed
+                # streams — subscribe first, like the frontend does.
+                await _ws_send_text(
+                    writer,
+                    json.dumps({"type": "subscribe", "streams": ["events"]}),
+                )
             await _ws_send_text(
                 writer,
                 json.dumps(
@@ -352,30 +365,35 @@ async def test_ws_refused_write_ends_lifecycle_failed(stack: _Stack) -> None:
     assert events[-1].source == "websocket"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "MOR-3004 cause (a): the WS response is produced at enqueue "
-        "(q.put(SetFreq(...)) returns before the poller runs), so it answers "
-        "ok: true immediately"
-    ),
-)
-async def test_ws_refused_write_reply_reports_failure(stack: _Stack) -> None:
+async def test_ws_refused_write_outcome_frame_reports_failure(
+    stack: _Stack,
+) -> None:
+    command_id = "polygon-ws-nak-outcome"
     refused_before = stack.sim.refused_count
-    async with _ws_set_freq_refused(stack, "polygon-ws-nak-reply") as reader:
-        await _require_refusal(stack.sim, refused_before)
-        # The reply is always sent (it went out at enqueue); a missing frame
-        # is harness noise, raised as TimeoutError above.
+    async with _ws_set_freq_refused(stack, command_id, subscribe=True) as reader:
+        # The reply acknowledges enqueue only: the command has not executed
+        # yet, so it still answers ok: true here by contract.
         response = await _ws_read(
             reader,
             lambda message: (
-                message.get("type") == "response"
-                and message.get("id") == "polygon-ws-nak-reply"
+                message.get("type") == "response" and message.get("id") == command_id
             ),
         )
-    assert response["ok"] is False
-    assert response["error"] == "radio_nak"
+        assert response["ok"] is True
+        await _require_refusal(stack.sim, refused_before)
+        # The outcome arrives as the lifecycle frame correlated by
+        # commandId. A missing frame raises TimeoutError (loud), never hangs.
+        outcome = await _ws_read(
+            reader,
+            lambda message: (
+                message.get("type") == "command_lifecycle"
+                and message.get("commandId") == command_id
+                and message.get("state") == "failed"
+            ),
+            timeout=10.0,
+        )
+    assert outcome["commandId"] == command_id
+    assert outcome["state"] == "failed"
 
 
 async def test_http_refused_write_ends_lifecycle_failed(stack: _Stack) -> None:
@@ -398,23 +416,18 @@ async def test_http_refused_write_ends_lifecycle_failed(stack: _Stack) -> None:
             stack.web.port, await _freq_observed_at(stack.web.port)
         )
 
+    # The single command runs the batch step path, which tracks queued
+    # (non-descriptor) commands under a generated lifecycle id — the
+    # request id is only echoed in the reply. This test posts exactly one
+    # HTTP command, so its outcome is the last http-source event.
     events = [
         event
         for event in stack.web.command_service.lifecycle_events()
-        if event.command_id == "polygon-http-nak"
+        if event.source == "http"
     ]
     assert events[-1].state == "failed"
-    assert events[-1].source == "http"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "MOR-3004 cause (a): the HTTP reply is produced at enqueue, so it "
-        "answers 200 with ok: true immediately"
-    ),
-)
 async def test_http_refused_write_reply_reports_failure(stack: _Stack) -> None:
     refused_before = stack.sim.refused_count
     with _refusing_set_frequency(stack.sim):

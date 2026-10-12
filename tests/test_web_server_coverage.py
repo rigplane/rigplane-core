@@ -40,7 +40,12 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.web import server as server_module
 from rigplane.web.handlers.control import ControlHandler
-from rigplane.web.radio_poller import CommandQueue, EnableScope, RadioPoller
+from rigplane.web.radio_poller import (
+    CommandQueue,
+    CommandQueueEntry,
+    EnableScope,
+    RadioPoller,
+)
 from rigplane.web.server import WebConfig, WebServer, _send_response, run_web_server
 from rigplane.web.web_startup import attach_managed_tx_composition
 from test_radio_poller_coverage import (
@@ -1073,34 +1078,31 @@ async def test_handle_http_routes_and_405_404() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_single_command_uses_http_command_service_source(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    seen: dict[str, object] = {}
+async def test_http_single_command_uses_http_command_service_source() -> None:
+    """POST /api/v1/commands queues with the http source and answers after execution.
 
-    async def fake_enqueue(
-        self: ControlHandler,
-        name: str,
-        params: dict[str, object],
-        *,
-        command_id: str | None = None,
-        source: str = "websocket",
-    ) -> dict[str, object]:
-        del self
-        seen.update(
-            {
-                "name": name,
-                "params": params,
-                "command_id": command_id,
-                "source": source,
-            }
-        )
-        return {"freq": params["freq"], "receiver": params["receiver"]}
-
-    monkeypatch.setattr(ControlHandler, "_enqueue_command", fake_enqueue)
-    srv = WebServer(SimpleNamespace(connected=True, capabilities=set()), WebConfig())
+    The single command runs the batch step path: the queued entry carries
+    source "http" (never the websocket default), and the 200 reply goes out
+    only after a poller-like drain settles the ordered future.
+    """
+    profile = resolve_radio_profile(model="IC-9700")
+    radio = MagicMock()
+    radio.profile = profile
+    radio.model = profile.model
+    radio.capabilities = set(profile.capabilities)
+    radio.send_civ = AsyncMock()
+    srv = WebServer(radio, WebConfig())
     writer = _FakeWriter()
+    settled: list[CommandQueueEntry] = []
 
+    async def _settle_one() -> None:
+        await srv.command_queue.wait(timeout=5.0)
+        for entry in srv.command_queue.drain_entries():
+            settled.append(entry)
+            if entry.future is not None and not entry.future.done():
+                entry.future.set_result(None)
+
+    consumer = asyncio.create_task(_settle_one())
     await srv._handle_http_single_command(  # noqa: SLF001
         writer,
         {
@@ -1109,16 +1111,14 @@ async def test_http_single_command_uses_http_command_service_source(
             "params": {"freq": 14_074_000, "receiver": 0},
         },
     )
+    await asyncio.wait_for(consumer, timeout=5.0)
 
     status, body = _response_json(writer)
     assert status == 200
     assert body["ok"] is True
-    assert seen == {
-        "name": "set_freq",
-        "params": {"freq": 14_074_000, "receiver": 0},
-        "command_id": "http-set-freq",
-        "source": "http",
-    }
+    assert body["id"] == "http-set-freq"
+    assert len(settled) == 1
+    assert settled[0].source == "http"
 
 
 @pytest.mark.asyncio
