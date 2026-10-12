@@ -17,6 +17,7 @@ from _audio_stream_fake import FakeAudioStream
 
 from rigplane.audio import AudioState
 from rigplane.radio import AudioRecoveryState, IcomRadio
+from rigplane.runtime.session_lifecycle import LifecycleState
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +401,47 @@ class TestAudioRecoveryAfterReconnect:
             await radio._reconnect_loop()
 
         recovery_cb.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_release_clears_stale_stream_and_recovery_restarts(self) -> None:
+        """The reconnect release clears the stale audio stream.
+
+        A stream left in RECEIVING by the release makes
+        ``_ensure_audio_transport`` return early, so the post-reconnect
+        recovery would report FAILED ("Cannot start RX in state receiving")
+        instead of restarting audio.  The lifecycle is placed into a claimed
+        CONNECTED session directly — a bare fixture radio never logged in,
+        so the loop's lifecycle disconnect would be an idempotent no-op and
+        never reach ``ControlPhaseRuntime.release``.
+        """
+        radio = _make_radio()
+        stream = _install_audio_stream(radio)
+        stream.state = AudioState.RECEIVING
+        radio._session_lifecycle._state = LifecycleState.CONNECTED
+        radio._session_lifecycle._claimed = True
+
+        rx_cb = MagicMock()
+        radio._pcm_rx_user_callback = rx_cb
+        radio._pcm_rx_jitter_depth = 5
+        radio._pcm_transcoder = _DummyTranscoder()  # type: ignore[assignment]
+        radio._pcm_transcoder_fmt = (48000, 1, 20)
+
+        with (
+            patch.object(radio, "connect", new_callable=AsyncMock),
+            patch.object(
+                radio, "start_audio_rx_pcm", new_callable=AsyncMock
+            ) as mock_start,
+        ):
+            await radio._reconnect_loop()
+
+        assert radio._audio_stream is None
+        mock_start.assert_awaited_once_with(
+            rx_cb,
+            sample_rate=48000,
+            channels=1,
+            frame_ms=20,
+            jitter_depth=5,
+        )
 
     @pytest.mark.asyncio
     async def test_intentional_disconnect_clears_callbacks(self) -> None:

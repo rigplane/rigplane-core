@@ -682,6 +682,16 @@ class ControlPhaseRuntime:
             with _suppress(asyncio.CancelledError, Exception):
                 await identity_reader
         self._close_pending_sockets()
+        # Stop the stream before the transport teardown, mirroring
+        # ``disconnect``: a stale stream left in RECEIVING makes
+        # ``_ensure_audio_transport`` return early, so the post-reconnect
+        # audio recovery fails with "Cannot start RX in state receiving".
+        if h._audio_stream is not None:
+            with _suppress(Exception):
+                await h._audio_stream.stop_rx()
+            with _suppress(Exception):
+                await h._audio_stream.stop_tx()
+            h._audio_stream = None
         audio_t = getattr(h, "_audio_transport", None)
         if audio_t is not None:
             with _suppress(Exception):
