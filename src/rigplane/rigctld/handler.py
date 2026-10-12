@@ -543,12 +543,15 @@ class _RigctldCommandExecutor:
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
         controller = getattr(self.handler._radio, "_controller_authority", None)
         # The unkey exemption mirrors the ingress gate: neither the typed
-        # PttOff nor an exact raw de-key frame takes a controller ticket.
+        # PttOff nor a raw frame that ends a transmission takes a
+        # controller ticket.
         safety_off = (
             intent.name == "set_ptt" and intent.params.get("ptt") is False
         ) or (
             intent.name == "send_raw"
-            and tx_interlock.is_exact_raw_dekey_frame(intent.params["frame_bytes"])
+            and tx_interlock.is_exact_raw_transmission_end_frame(
+                intent.params["frame_bytes"]
+            )
         )
         ticket = (
             controller.capture()
@@ -770,18 +773,19 @@ def _parse_raw_hex(args: tuple[str, ...]) -> bytes:
     return bytes(int(h, 16) for h in args)
 
 
-def _is_exact_raw_dekey_args(args: tuple[str, ...]) -> bool:
-    """True when ``w`` command args parse to exactly one raw de-key frame.
+def _is_raw_transmission_end_args(args: tuple[str, ...]) -> bool:
+    """True when ``w`` command args parse to exactly one transmission-end frame.
 
     Parses with the same :func:`_parse_raw_hex` the ``w`` handler uses.
-    An argument that does not parse is not a de-key, so the controller
-    gate keeps capturing it and ``_cmd_send_raw`` still answers EINVAL.
+    An argument that does not parse does not end a transmission, so the
+    controller gate keeps capturing it and ``_cmd_send_raw`` still
+    answers EINVAL.
     """
     try:
         frame_bytes = _parse_raw_hex(args)
     except (ValueError, IndexError):
         return False
-    return tx_interlock.is_exact_raw_dekey_frame(frame_bytes)
+    return tx_interlock.is_exact_raw_transmission_end_frame(frame_bytes)
 
 
 def _civ_frame_to_bytes(frame: Any) -> bytes:
@@ -1410,11 +1414,14 @@ class RigctldHandler:
                 cmd.is_set or cmd.long_cmd == "send_raw"
             ):
                 # ``safety_off`` is the unkey exemption: the typed ``T 0``
-                # and an exact raw de-key frame only end a transmission,
-                # so neither may require the controller seat.
+                # and a raw frame that ends a transmission (PTT off,
+                # voice TX memory stop) need no controller seat.
                 safety_off = (
                     cmd.long_cmd == "set_ptt" and cmd.args and cmd.args[0] == "0"
-                ) or (cmd.long_cmd == "send_raw" and _is_exact_raw_dekey_args(cmd.args))
+                ) or (
+                    cmd.long_cmd == "send_raw"
+                    and _is_raw_transmission_end_args(cmd.args)
+                )
                 if not safety_off:
                     try:
                         controller.capture()
