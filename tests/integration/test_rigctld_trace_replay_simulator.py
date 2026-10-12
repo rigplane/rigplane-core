@@ -69,9 +69,7 @@ Today's divergences (traces never edited):
 
 * wsjtx line 60 ``S VFOA 1 VFOB`` answers ``RPRT -7``, want ``RPRT 0``:
   the simulator NAKs the CI-V ``0x0F`` split SET (no ``0x0F`` handler),
-  so ``CoreRadio.set_split`` raises ``CommandError``. The ``0F 01`` frame
-  itself matches the oracle split/on row — the gap is the simulator's
-  missing handler, not the production bytes.
+  so ``CoreRadio.set_split`` raises ``CommandError``.
 * fldigi line 46 / js8call line 37 ``T VFOA 1``: replies are ``RPRT 0``
   and the ``1C 00 01`` frame matches the oracle ptt/on row, but check
   (i) fails by value — set ON (``0x01``), the simulator's own ``1C 00``
