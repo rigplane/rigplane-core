@@ -18,8 +18,17 @@ fix ticket MOR-3310.
 Recorded reply classes: ``nak`` (0xFA), ``ack`` (0xFB), ``none`` (the
 fixture keeps no reply row for that request — the recording shows no radio
 answer before the next client request), or ``data`` with the
-``(cmd, sub, payload_len)`` signature; a simulator that answers nothing
-within 0.3 s is ``silence``.
+``(receiver, cmd, sub, payload_len)`` signature, where ``receiver`` is the
+0x29 Command29 receiver byte (``None`` for plain frames); a simulator that
+answers nothing within 0.3 s is ``silence``. Classification runs through
+the production ``rigplane.commands.parse_civ_frame`` — the same unwrap the
+radio stack routes on — so a 0x29 frame yields its receiver and inner
+command, and a simulator answer for the wrong receiver or the wrong inner
+command no longer matches.
+
+The scope wave-on/off SETs (``27 10``/``27 11`` with a value byte) are
+excluded from the answer-class check: their answer is the wave stream
+itself, which the ``scope_wave`` cadence check covers.
 """
 
 from __future__ import annotations
@@ -37,7 +46,6 @@ import pytest
 from rigplane.commands import (
     CONTROLLER_ADDR,
     build_civ_frame,
-    command_carries_sub,
     parse_civ_frame,
 )
 from rigplane.profiles import resolve_radio_profile
@@ -52,7 +60,6 @@ from rigplane_testkit.icom import (
     _TOKEN_RENEW,
     IcomSessionRecorder,
     MockIcomRadio,
-    _bcd_byte,
 )
 from rigplane_testkit.icom.fixtures import control_structure
 from rigplane_testkit.icom.replay import Recording, extract_civ_frame
@@ -75,7 +82,6 @@ _HOST = "127.0.0.1"
 _LAN_WINDOWS = ("probe", "readonly_session", "rx_write_restore", "scope")
 _USB_WINDOW = "usb_session"
 _ID_REQUEST = bytes.fromhex("fefe98e01900fd")
-_ID_REPLY = bytes.fromhex("fefee098190098fd")
 
 
 # ---------------------------------------------------------------------------
@@ -140,20 +146,21 @@ def _recorded_pairs(window: str, *, echo: bool) -> list[tuple[bytes, bytes | Non
 
 
 def _classify(frame: bytes) -> tuple:
-    """Reply class from the wire: nak / ack / data (cmd, sub, payload_len).
+    """Reply class from the wire: nak / ack / data (receiver, cmd, sub, len).
 
-    ``sub`` is the first payload byte only for commands that carry one
-    (``rigplane.commands.command_carries_sub``, the same predicate
-    ``parse_civ_frame`` splits frames with).
+    Runs through the production ``rigplane.commands.parse_civ_frame``: a
+    0x29 Command29 frame unwraps to its receiver and inner command (with
+    the inner sub split by the same ``command_carries_sub`` predicate the
+    parser uses), so a simulator that answers a cmd29 request for the wrong
+    receiver or with the wrong inner command classifies differently from
+    the recording. ``receiver`` is ``None`` for plain frames.
     """
-    cmd = frame[4]
-    payload = frame[5:-1]
-    if cmd == _CMD_NAK:
+    parsed = parse_civ_frame(frame)
+    if parsed.command == _CMD_NAK:
         return ("nak",)
-    if cmd == _CMD_ACK:
+    if parsed.command == _CMD_ACK:
         return ("ack",)
-    sub = payload[0] if payload and command_carries_sub(cmd) else None
-    return ("data", cmd, sub, len(payload))
+    return ("data", parsed.receiver, parsed.command, parsed.sub, len(parsed.data))
 
 
 def _recorded_class(reply: bytes | None) -> tuple:
@@ -164,20 +171,41 @@ def _describe(cls: tuple) -> str:
     kind = cls[0]
     if kind != "data":
         return kind
-    _, cmd, sub, length = cls
+    _, receiver, cmd, sub, length = cls
+    rx_text = "-" if receiver is None else f"0x{receiver:02x}"
     sub_text = "-" if sub is None else f"0x{sub:02x}"
-    return f"data cmd=0x{cmd:02x} sub={sub_text} len={length}"
+    return f"data rx={rx_text} cmd=0x{cmd:02x} sub={sub_text} len={length}"
+
+
+def _is_scope_wave_switch(request: bytes) -> bool:
+    """Scope wave-on/off SETs (``27 10``/``27 11`` with a value byte).
+
+    Answered by the wave stream itself, not by a discrete reply: the
+    ``scope`` window pairs ``27 10 01`` with no reply at all and
+    ``27 11 01`` with the first ``27 00`` wave frame. They are excluded
+    from the answer-class check; ``test_scope_wave_...`` covers them.
+    """
+    return (
+        len(request) == 8
+        and request[4] == 0x27
+        and request[5] in (0x10, 0x11)
+        and request[6] in (0x00, 0x01)
+    )
 
 
 def _recorded_lan_requests() -> list[tuple[bytes, tuple]]:
-    """Distinct recorded LAN requests across the LAN windows, file order."""
+    """Distinct recorded LAN requests across the LAN windows, file order.
+
+    Scope wave-on/off SETs are excluded (see :func:`_is_scope_wave_switch`).
+    """
     out: list[tuple[bytes, tuple]] = []
     seen: set[bytes] = set()
     for window in _LAN_WINDOWS:
         for request, reply in _recorded_pairs(window, echo=True):
-            if request not in seen:
-                seen.add(request)
-                out.append((request, _recorded_class(reply)))
+            if request in seen or _is_scope_wave_switch(request):
+                continue
+            seen.add(request)
+            out.append((request, _recorded_class(reply)))
     return out
 
 
@@ -403,6 +431,19 @@ async def test_fixture_recorded_echo_and_framing_facts() -> None:
 
 
 async def test_identity_answer_is_the_profile_id_everywhere() -> None:
+    recorded = {
+        transport: next(
+            reply
+            for request, reply in _recorded_pairs(window, echo=(transport == "lan"))
+            if request == _ID_REQUEST
+        )
+        for transport, window in (("lan", "probe"), ("usb", _USB_WINDOW))
+    }
+    assert recorded["lan"] is not None and recorded["usb"] is not None
+    assert recorded["lan"] == recorded["usb"], (
+        "both transports answer the 19 00 read identically"
+    )
+    recorded_reply = recorded["lan"]
     profile = resolve_radio_profile(model="IC-7610")
     assert profile.expected_identity_ids == ("98",)
     model_id = bytes.fromhex(profile.expected_identity_ids[0])
@@ -410,13 +451,13 @@ async def test_identity_answer_is_the_profile_id_everywhere() -> None:
         build_civ_frame(
             CONTROLLER_ADDR, profile.civ_addr, 0x19, sub=0x00, data=model_id
         )
-        == _ID_REPLY
+        == recorded_reply
     )
     assert MockIcomRadio().model_id == model_id
     async with _lan_sim() as (server, client):
         client.send(_civ_packet(_ID_REQUEST), server.civ_port)
         pkt = await client.recv()
-        assert extract_civ_frame(pkt) == _ID_REPLY
+        assert extract_civ_frame(pkt) == recorded_reply
     fake = CivSerialFake(model="IC-7610")
     reader, writer = await fake.opener(url="socket://conformance", baudrate=19200)
     writer.write(_ID_REQUEST)
@@ -424,7 +465,9 @@ async def test_identity_answer_is_the_profile_id_everywhere() -> None:
     assert bytes(await asyncio.wait_for(reader.readuntil(b"\xfd"), 0.3)) == (
         _ID_REQUEST
     )
-    assert bytes(await asyncio.wait_for(reader.readuntil(b"\xfd"), 0.3)) == _ID_REPLY
+    assert (
+        bytes(await asyncio.wait_for(reader.readuntil(b"\xfd"), 0.3)) == recorded_reply
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -443,18 +486,21 @@ async def test_lan_answer_classes_match_ledger() -> None:
 
 
 async def test_lan_civ_echo_divergence() -> None:
-    echoed_any = False
+    requests = [request for request, _ in _recorded_lan_requests()]
+    missing = 0
     async with _lan_sim() as (server, client):
-        for request, _ in _recorded_lan_requests():
+        for request in requests:
             _, echoed = await _ask_sim(client, server.civ_port, request)
-            echoed_any = echoed_any or echoed
+            if not echoed:
+                missing += 1
+    total = len(requests)
     observed = (
         {}
-        if echoed_any
+        if missing == 0
         else {
             "lan_civ_echo": (
-                "every c2r request echoed byte-identical",
-                "no request echoed",
+                f"all {total} replayed requests echoed byte-identical",
+                f"{missing} of {total} replayed requests not echoed",
             )
         }
     )
@@ -501,10 +547,14 @@ async def test_usb_replay_divergences_match_ledger() -> None:
 def _control_steps(rows: list[dict]) -> list[tuple]:
     """Ordered (dir, len, type, reqtype) control steps, pings/idle dropped.
 
-    Drops exactly what the fixture dropped (ping: type 0x07 len 0x15; idle:
+    The same rule shapes both sides of the handshake comparison: drops
+    exactly what the fixture dropped (ping: type 0x07 len 0x15; idle:
     type 0x00 len 0x10) and cuts before the first client token renewal
-    (c2r, 0x40 bytes, reqtype 0x05) — on the wire the renewals follow the
-    first CI-V data.
+    (c2r, 0x40 bytes, reqtype 0x05). On the wire the renewals follow the
+    first CI-V data, and the recorded window keeps no other post-data
+    control rows, so this cut is the recorded session's first-CI-V-data
+    boundary — the same event the simulator side is cut at (see
+    :func:`test_handshake_structure_matches_ledger`).
     """
     steps = []
     for row in rows:
@@ -569,6 +619,13 @@ async def test_handshake_structure_matches_ledger(tmp_path) -> None:
         for record in records
         if record.port == "civ" and extract_civ_frame(record.data) is not None
     )
+    # Both sides are cut at the same event: the session's first CI-V data
+    # frame. The simulator side is cut here, at civ_start; the recorded
+    # side is cut by _control_steps at the first token renewal, which is
+    # the same boundary — on the wire the renewals follow the first CI-V
+    # data, and the recorded window keeps no other post-data control rows.
+    # The t-cut below also drops this session's own post-data rows (the
+    # disconnect exchange); pings/idle are dropped by _control_steps.
     sim_rows = [row for row in control_structure(records) if row["t"] < civ_start]
     recorded_rows = [
         row for row in _load_control_windows() if row["window"] == "handshake"
@@ -586,33 +643,46 @@ async def test_token_renew_reply_divergence() -> None:
     cadence = json.loads((FIXTURES / "idle_cadence.json").read_text())
     renewals = cadence["token_renewals"]
     assert renewals, "idle_cadence.json records token renewals"
-    # Recorded fact: the radio answered every renew, fast.
+    # Recorded fact: the radio answered every renew with a 0x40-byte
+    # control packet of request type 0x05. No time bound is asserted —
+    # timings were recorded on a loaded host.
     assert all(entry["answered_after_s"] is not None for entry in renewals)
-    assert max(entry["answered_after_s"] for entry in renewals) <= 0.05
+    count = len(renewals)
+    recorded_text = (
+        f"every token renew answered with a 0x40/0x05 control packet ({count}/{count})"
+    )
 
     async with _lan_sim() as (server, client):
         client.send(_token_renew(), server.control_port)
-        answered = True
         try:
-            await client.recv(0.5)
+            pkt = await client.recv(0.5)
         except TimeoutError:
-            answered = False
-    observed = (
-        {}
-        if answered
-        else {
+            pkt = None
+    if pkt is not None and len(pkt) == 0x40 and pkt[0x15] == _TOKEN_RENEW:
+        observed: dict[str, tuple[str, str]] = {}
+    elif pkt is None:
+        observed = {"token_renew_reply": (recorded_text, "renew answered with silence")}
+    else:
+        reqtype = pkt[0x15] if len(pkt) > 0x15 else None
+        reqtype_text = "-" if reqtype is None else f"0x{reqtype:02x}"
+        observed = {
             "token_renew_reply": (
-                "every token renew answered (10/10 within 0.009 s)",
-                "renew answered with silence",
+                recorded_text,
+                f"renew answered with len=0x{len(pkt):02x} reqtype={reqtype_text}",
             )
         }
-    )
     _assert_ledger_exact(observed, _is_token_renew_key)
 
 
 # ---------------------------------------------------------------------------
 # (g) Scope wave
 # ---------------------------------------------------------------------------
+
+
+def _bcd_decode_byte(byte: int) -> int:
+    """Decode one BCD byte to decimal; mirrors the production scope
+    parser's own decoder (``rigplane.scope._bcd_byte_decode``)."""
+    return ((byte >> 4) & 0x0F) * 10 + (byte & 0x0F)
 
 
 async def test_scope_wave_decodes_and_simulator_sends_none() -> None:
@@ -624,23 +694,23 @@ async def test_scope_wave_decodes_and_simulator_sends_none() -> None:
     for frame in wave_frames:
         parsed = parse_civ_frame(frame)
         receiver = parsed.data[0]
-        assert _bcd_byte(parsed.data[1]) >= 1
-        assert _bcd_byte(parsed.data[1]) <= bounds["seq_max"]
-        assert _bcd_byte(parsed.data[2]) <= bounds["seq_max"]
+        seq = _bcd_decode_byte(parsed.data[1])
+        seq_max = _bcd_decode_byte(parsed.data[2])
+        assert 1 <= seq <= bounds["seq_max"]
+        assert seq <= seq_max <= bounds["seq_max"]
         scope_frame = assembler.feed(parsed.data[1:], receiver)
         assert scope_frame is not None
         assert len(scope_frame.pixels) <= bounds["data_len_max"]
         assert max(scope_frame.pixels) <= bounds["amp_max"]
 
+    expected = len(wave_frames)
     wave_on = [
         request
         for request, _reply in _recorded_pairs("scope", echo=True)
-        if request[4] == 0x27
-        and request[5] in (0x10, 0x11)
-        and request[6:-1] == b"\x01"
+        if _is_scope_wave_switch(request)
     ]
     assert len(wave_on) == 2
-    saw_wave = False
+    saw_wave = 0
     async with _lan_sim() as (server, client):
         for request in wave_on:
             client.send(_civ_packet(request), server.civ_port)
@@ -655,21 +725,22 @@ async def test_scope_wave_decodes_and_simulator_sends_none() -> None:
             except TimeoutError:
                 break
             frame = extract_civ_frame(pkt)
-            if (
-                frame is not None
-                and len(frame) > 5
-                and frame[4] == 0x27
-                and (frame[5] == 0x00)
-            ):
-                saw_wave = True
+            if frame is None:
+                continue
+            try:
+                parsed_wave = parse_civ_frame(frame)
+            except ValueError:
+                continue
+            if parsed_wave.command == 0x27 and parsed_wave.sub == 0x00:
+                saw_wave += 1
     observed = (
         {
             "scope_wave": (
-                "5 wave frames (27 00) follow the wave-on requests",
-                "no 27 00 frame after wave-on",
+                f"{expected} complete 27 00 wave frames follow the wave-on requests",
+                f"{saw_wave} complete 27 00 wave frames after wave-on",
             )
         }
-        if not saw_wave
+        if saw_wave < expected
         else {}
     )
     _assert_ledger_exact(observed, _is_scope_wave_key)
@@ -772,13 +843,18 @@ def test_ratchet_fails_on_a_bogus_ledger_entry() -> None:
 
 async def test_ratchet_fails_on_a_corrupted_recorded_reply(monkeypatch) -> None:
     rows = [dict(row) for row in _load_civ_pairs()]
+    recorded_reply = next(
+        reply.hex()
+        for request, reply in _recorded_pairs("probe", echo=True)
+        if request == _ID_REQUEST and reply is not None
+    )
     # Corrupt the recorded reply to the identity read: a NAK instead of the
     # model-id answer, in memory only — the fixture file is never edited.
     for row in rows:
         if (
             row["window"] == "probe"
             and row["dir"] == "r2c"
-            and (row["frame"] == _ID_REPLY.hex())
+            and (row["frame"] == recorded_reply)
         ):
             row["frame"] = "fefee098fafd"
     monkeypatch.setattr(sys.modules[__name__], "_load_civ_pairs", lambda: rows)

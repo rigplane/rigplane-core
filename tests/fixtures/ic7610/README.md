@@ -11,21 +11,25 @@ no longer diverges (the ratchet).
 
 ## Provenance and pipeline
 
-Recorded on the bench radio over LAN and over the radio's USB CI-V port
-(19200 baud) through `rigplane_testkit/icom/recorder.py:
-IcomSessionRecorder` (LAN) and `rigplane_testkit/serial/recorder.py:
-SerialCivRecorder` (USB), then reduced with
-`python -m rigplane_testkit.icom.fixtures extract` and trimmed by the
-coordinator: LAN windows keep, per window, the first occurrence of every
-distinct client request, the radio's byte-identical echo of it and the
-reply that closes it; control windows keep every control-port packet that
-is not a ping or idle. Every file passed
+LAN windows were extracted with
+`python -m rigplane_testkit.icom.fixtures extract`, then trimmed by the
+coordinator to: per window, the first occurrence of every distinct client
+request, the radio's byte-identical echo of it and the reply that closes
+it; control windows keep every control-port packet that is not a ping or
+idle. The USB window (`transport: "usb"`) comes from the serial bridge
+recording via `rigplane_testkit.serial.recorder.civ_frames`, then trimmed
+to the same first-occurrence pairing rule (on USB the radio does NOT echo
+requests, so there is no echo row). Every file passed
 `python -m rigplane_testkit.redaction_gate` with a private deny list
-(credentials, host names, IPs, radio MAC) before it landed here.
+(credentials, host names, IPs, radio MAC) before it landed here — the gate
+ran over all four files.
 
 Timing figures (`t`, the cadence statistics in `idle_cadence.json`) were
 recorded on a loaded host and are not asserted as values anywhere; the
-tests assert order, structure and reply classes only.
+tests assert order, structure and reply classes only. In particular the
+token-renew check asserts only that every recorded renew was answered
+(`answered_after_s` is not null) and that the simulator's answer is a
+0x40-byte control packet of request type 0x05 — it asserts no time bound.
 
 ## Files
 
@@ -47,9 +51,10 @@ One JSON object per line with keys `window`, `transport`, `t`, `dir`,
 - `t` — seconds since recording start (rounded; not asserted).
 
 On LAN every `c2r` row is followed by the radio's byte-identical echo row;
-the `r2c` row after that is the reply that closes the request (absent for
-the scope wave-on requests, whose answer is the wave stream itself). On
-USB no `r2c` frame ever equals a client request.
+the `r2c` row after that is the reply that closes the request. The scope
+wave-on/off SETs (`27 10 01`, `27 11 01`) are excluded from that pairing:
+their answer is the wave stream itself, which the `scope_wave` cadence
+check covers. On USB no `r2c` frame ever equals a client request.
 
 ### `control_windows.jsonl`
 
@@ -64,8 +69,9 @@ busy-rejected for ~90 s).
 
 ### `audio_headers.jsonl`
 
-The first 20 audio packets per direction, header bytes only (0x18 bytes):
-keys `t`, `dir`, `hex`.
+The first 20 audio packets per direction: keys `t`, `dir`, `hex`, where
+`hex` holds the first 0x18 bytes of the audio-port packet, or the whole
+packet when it is shorter (pings 0x15, idle 0x10).
 
 ### `idle_cadence.json`
 
@@ -82,16 +88,24 @@ keyed by a stable id:
 - LAN answer-class divergences: the request frame hex;
 - serial-fake divergences: `usb:` + the request frame hex, plus
   `usb_echo_default` (the fake echoes by default; the radio does not on
-  USB);
-- `lan_civ_echo` (the radio echoes every LAN request; the simulator does
-  not);
+  USB). The fake takes its CI-V address and `19 00` model id from the
+  resolved profile (`rigplane_testkit/serial/civ_serial.py: CivSerialFake`)
+  but answers only a handful of commands (frequency 03/05, mode 04/06,
+  PTT 1C 00, S-meter 15 02, identity 19 00, ACK/NAK) and NAKs everything
+  else;
+- `lan_civ_echo` (the radio echoes every LAN request; the simulator must
+  echo every replayed request too and currently echoes none);
 - `handshake_<n>` — positional handshake divergences, `n` counting from 1
-  over the recorded handshake sequence (pings/idle dropped, cut before the
-  first token renewal);
-- `token_renew_reply`, `scope_wave`.
+  over the recorded handshake sequence (pings/idle dropped, cut at the
+  first CI-V data); the simulator side is cut at the same event, its own
+  first CI-V data frame;
+- `token_renew_reply` (the radio answers every renew with a 0x40/0x05
+  control packet; the simulator stays silent), `scope_wave` (the
+  recording holds 5 complete `27 00` wave frames after wave-on; the
+  simulator must send at least as many and sends none).
 
 Each value is `{"recorded": ..., "simulator": ..., "ticket": "MOR-3310"}`
 with the reply-class spelling documented in the test module
 (`nak`, `ack`, `none`, `silence`, or
-`data cmd=0x.. sub=0x..- len=..` where `sub` is `-` when the command
-carries none).
+`data rx=0x..- cmd=0x.. sub=0x..- len=..` where `rx` is `-` for plain
+frames and `sub` is `-` when the command carries none).
