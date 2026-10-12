@@ -10,6 +10,7 @@ the session token it holds).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import AsyncGenerator, Callable
@@ -241,6 +242,73 @@ async def test_user_disconnect_during_reconnect_ends_loop(
             assert sim.session_held is False
         finally:
             await radio.disconnect()
+
+
+async def test_user_disconnect_inside_loop_release_ends_loop() -> None:
+    """A user ``disconnect()`` landing inside the loop's own release ends it.
+
+    The reconnect loop awaits ``CoreRadioSessionLifecycle.disconnect()`` at
+    the start of every round.  Inside that release, the CI-V helper stops
+    (``CivRuntime.stop_data_watchdog``) cancel their helper tasks and await
+    them, and those awaits absorb a ``CancelledError`` aimed at the loop
+    task itself — so a ``CoreRadio.disconnect`` cancel that lands there
+    never reaches the loop as an exception.  The loop must notice the
+    pending cancellation after the release await returns, or it calls
+    ``connect()`` and emits ``connected`` after the user disconnected.
+    """
+    server = MockIcomRadio(single_owner=True, keepalive_hold_s=2.0)
+    await server.start()
+    try:
+        radio = _client(server)
+        statuses: list[dict] = []
+        radio.set_reconnect_status_callback(statuses.append)
+        user_task: asyncio.Task[None] | None = None
+        loop_task: asyncio.Task[None] | None = None
+        with fast_connect():
+            await radio.connect()
+            civ = radio._civ_runtime
+            orig_stop = civ.stop_data_watchdog
+
+            async def stop_spy() -> None:
+                nonlocal user_task, loop_task
+                current = asyncio.current_task()
+                if user_task is None and current is radio._reconnect_task:
+                    loop_task = current
+                    user_task = asyncio.ensure_future(radio.disconnect())
+                await orig_stop()
+
+            civ.stop_data_watchdog = stop_spy
+            try:
+                server.keepalive_silence(at=0.1, for_seconds=3.0)
+                deadline = time.monotonic() + 15.0
+                while user_task is None and time.monotonic() < deadline:
+                    await asyncio.sleep(0.02)
+                assert user_task is not None, (
+                    "disconnect never injected inside the loop's release",
+                    statuses,
+                )
+                await asyncio.wait_for(user_task, timeout=10.0)
+                n_status = len(statuses)
+                # Watch past the silence window: a loop that survived the
+                # user's disconnect logs back in as soon as the radio
+                # answers again, so the window must cover it.
+                await asyncio.sleep(7.0)
+                assert statuses[n_status:] == [], statuses[n_status:]
+                assert radio.conn_state is RadioConnectionState.DISCONNECTED
+                assert loop_task is not None
+                assert loop_task.done()
+                # No new login claimed the simulator's session.
+                assert server.session_held is False
+            finally:
+                civ.stop_data_watchdog = orig_stop
+                if loop_task is not None and not loop_task.done():
+                    loop_task.cancel()
+                    with contextlib.suppress(BaseException):
+                        await loop_task
+                with contextlib.suppress(Exception):
+                    await radio.disconnect()
+    finally:
+        await server.stop()
 
 
 async def test_reboot_busy_window_longer_than_reconnect_rounds_recovers(
