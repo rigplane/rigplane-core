@@ -120,13 +120,9 @@ async def test_malformed_command_params_fail_as_client_error(
     assert reply["error"] == "command_failed"
     assert expected_message_part in reply["message"]
 
-    records = [
-        record for record in caplog.records if record.name == _CONTROL_LOGGER
-    ]
+    records = [record for record in caplog.records if record.name == _CONTROL_LOGGER]
     errors = [record for record in records if record.levelno >= logging.ERROR]
-    warnings = [
-        record for record in records if record.levelno == logging.WARNING
-    ]
+    warnings = [record for record in records if record.levelno == logging.WARNING]
     assert errors == []
     assert len(warnings) == 1
     assert warnings[0].exc_info is None

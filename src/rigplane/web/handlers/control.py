@@ -519,9 +519,12 @@ def _consume_normalized_level_unit(name: str, params: dict[str, Any]) -> dict[st
 # ERROR with a traceback and every other failure as one WARNING line; the
 # client reply is the same for both. They are what a bug in the command
 # path raises (a missing attribute, a wrong call signature, an undefined
-# name); malformed client parameters can raise TypeError or AttributeError
-# too (``int(None)`` in ``command_intent_from_request``) and are logged the
-# same way. Pinned by tests/test_control_command_programmer_errors.py.
+# name); malformed client parameters are refused as ``ValueError`` before
+# any executor runs (``_handle_command`` rejects a non-object ``params``,
+# ``command_intent_from_request`` coerces numeric fields through
+# ``_int_param``) and logged as WARNINGs. Pinned by
+# tests/test_control_command_programmer_errors.py and
+# tests/test_command_param_validation.py.
 _PROGRAMMER_ERRORS: tuple[type[Exception], ...] = (AttributeError, TypeError, NameError)
 
 
@@ -1271,6 +1274,19 @@ class ControlHandler:
         cmd_id = msg.get("id", "")
         name = msg.get("name", "")
         params = msg.get("params", {})
+
+        # A non-object ``params`` is malformed client input, not a programmer
+        # error: refuse it here, before the MOD-input interception, rate
+        # limiting and coalescing, so it can never reach a coercion site
+        # (``dict(params)``, ``params.get``) as a TypeError/AttributeError.
+        # Same refusal wording as the HTTP single-command ingress
+        # (``server.py: WebServer._handle_http_single_command``). Pinned by
+        # tests/test_command_param_validation.py.
+        if not isinstance(params, dict):
+            await self._send_command_failure(
+                cmd_id, name, ValueError("params must be an object")
+            )
+            return
 
         # MOR-624: session-local arm/disarm of the teardown MOD-input restore.
         # Bookkeeping only (never a radio command) — intercepted before the
