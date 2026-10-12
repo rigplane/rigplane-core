@@ -396,16 +396,9 @@ class TestFrequency:
     async def test_set_frequency(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
+        mock_transport.queue_response(_ack_response())
         await radio.set_freq(7_074_000)
         assert len(mock_transport.sent_packets) > 0
-
-    @pytest.mark.asyncio
-    async def test_set_frequency_no_response_needed(
-        self, radio: IcomRadio, mock_transport: MockTransport
-    ) -> None:
-        """set_frequency is fire-and-forget — completes without any radio response."""
-        await radio.set_freq(14_074_000)
-        assert radio._last_freq_hz == 14_074_000
 
 
 class TestMode:
@@ -1518,7 +1511,10 @@ class TestAckSinkRobustness:
         )
         await radio._execute_civ_raw(ff, wait_response=False)
 
-        # set_frequency is fire-and-forget — completes without any response.
+        # The set waits for its own ACK; the missing answer above must
+        # not make this waiter claim anything stale (the drain drops the
+        # leftover sink before this registers).
+        mock_transport.queue_response(_ack_response())
         await radio.set_freq(7_074_000)
 
     @pytest.mark.asyncio
@@ -2477,7 +2473,9 @@ class TestScopeCallbackSafety:
         assert resp is not None
         assert resp.command == _CMD_ACK
 
-        # set_frequency is fire-and-forget — RX pump unaffected.
+        # The set completes on its own ACK even with the pump's bad
+        # callback in place.
+        mock_transport.queue_response(_ack_response())
         await radio.set_freq(7_074_000)
 
 
@@ -2868,7 +2866,9 @@ class TestCivTimeoutIsolation:
 
         assert radio._civ_request_tracker.pending_count == 0
 
-        # set_frequency is fire-and-forget — succeeds without a response
+        # The timed-out read does not block a subsequent set_frequency:
+        # its waiter is gone and the set completes on its own ACK.
+        mock_transport.queue_response(_ack_response())
         await radio.set_freq(14_074_000)  # must not raise
 
 
@@ -3321,7 +3321,7 @@ class TestGetFallbackCacheTTL:
 class TestSetCommandsLeaveStateCacheToReadbacks:
     """SET commands leave the state cache alone.
 
-    The StateCache holds only radio readbacks, so fire-and-forget setters
+    The StateCache holds only radio readbacks, so the setters
     must not write their commanded values into it; the ``_last_*`` mirrors
     still track what was sent.
     """
@@ -3331,6 +3331,7 @@ class TestSetCommandsLeaveStateCacheToReadbacks:
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
         """set_frequency leaves the frequency cache empty but tracks _last."""
+        mock_transport.queue_response(_ack_response())
         await radio.set_freq(21_074_000)
         assert radio.state_cache.freq_ts == 0.0
         assert radio._last_freq_hz == 21_074_000
@@ -3348,8 +3349,9 @@ class TestSetCommandsLeaveStateCacheToReadbacks:
     async def test_rapid_set_frequency_does_not_block(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        """Rapid consecutive set_frequency calls are all fire-and-forget."""
+        """Rapid consecutive set_frequency calls all complete on their ACKs."""
         for freq in [7_000_000, 7_100_000, 7_200_000]:
+            mock_transport.queue_response(_ack_response())
             await radio.set_freq(freq)
         # The mirror holds the last value sent; the cache stays empty.
         assert radio._last_freq_hz == 7_200_000
@@ -3388,6 +3390,7 @@ class TestSetterTargetsNotCached:
         radio = self._make_radio(mock_transport, {"freq": 10.0})
         mock_transport.queue_response(_freq_response(14_074_000))
         assert await radio.get_freq() == 14_074_000
+        mock_transport.queue_response(_ack_response())
         await radio.set_freq(14_200_000)
         assert await radio.get_freq() == 14_074_000
 
@@ -3397,6 +3400,7 @@ class TestSetterTargetsNotCached:
     ) -> None:
         """With no readback, set(F2) then a timed-out read raises TimeoutError."""
         radio = self._make_radio(mock_transport, {"freq": 10.0})
+        mock_transport.queue_response(_ack_response())
         await radio.set_freq(14_200_000)
         with pytest.raises(TimeoutError):
             await radio.get_freq()
@@ -3439,6 +3443,7 @@ class TestSetterTargetsNotCached:
     ) -> None:
         """A successful readback after a set is cached as before."""
         radio = self._make_radio(mock_transport, {"freq": 10.0})
+        mock_transport.queue_response(_ack_response())
         await radio.set_freq(14_200_000)
         assert radio.state_cache.freq_ts == 0.0
         mock_transport.queue_response(_freq_response(14_074_000))

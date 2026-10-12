@@ -8,28 +8,27 @@ stack — ``WebServer`` / ``ControlHandler`` / ``RadioPoller`` /
 serves, without its unsolicited CI-V stream so the radio's frequency
 stays deterministic) — and each surface the caller reads is pinned.
 
-Today's observed behaviour (the run recorded in MOR-3263) has two
-separate causes. (a) The WS/HTTP reply is produced at ENQUEUE:
-``web/handlers/control.py: ControlHandler._enqueue_rc_frequency``
-handles ``set_freq`` with ``q.put(SetFreq(...))`` and returns before
-``RadioPoller`` runs anything, and ``core/command_service.py:
-CommandService.execute`` acknowledges at that point — so a fix must make
-the reply wait for poller execution. That is why the WS response and the
-HTTP reply answer ``ok: true`` (HTTP 200) immediately. (b) The
-MAIN-receiver ``0x05`` write itself is dispatched blind
+The run recorded in MOR-3263 showed two separate causes. (a) The WS/HTTP
+reply is produced at ENQUEUE: ``web/handlers/control.py:
+ControlHandler._enqueue_rc_frequency`` handles ``set_freq`` with
+``q.put(SetFreq(...))`` and returns before ``RadioPoller`` runs anything,
+and ``core/command_service.py: CommandService.execute`` acknowledges at
+that point — so a fix must make the reply wait for poller execution
+(MOR-3004 part 1, still open). That is why the WS response and the HTTP
+reply below answer ``ok: true`` (HTTP 200) immediately, and the two reply
+tests stay ``xfail(strict=True)`` citing (a). (b) The MAIN-receiver
+``0x05`` write itself used to be dispatched blind
 (``runtime/_dual_rx_runtime.py: _set_frequency_main`` →
-``_send_civ_raw(wait_response=False)``), so the NAK settles an ACK sink
-and never fails the command — that is what the command lifecycle
-(stops at ``acknowledged``) and the rigctld ``RPRT 0`` show. Every
-assertion of the correct refusal reporting below is therefore
-``xfail(strict=True)`` with ticket MOR-3004 (beta known limitation: "A
-write the radio refuses can still answer ``ok`` to the caller. The
-refusal shows only in the server log."); each xfail's reason names its
-cause — the two reply tests cite (a), the lifecycle and rigctld tests
-cite (b). What holds today and is pinned plainly: the browser-visible
-state snapshot keeps the radio's frequency, and the optimistic overlay
-outlives the NAK only up to its bounded pending TTL, after which the
-rigctld read-back answers the radio's frequency again.
+``_send_civ_raw(wait_response=False)``), so the NAK settled an ACK sink
+and never failed the command; it now waits for the radio's answer and
+raises ``CommandRejectedError`` on a NAK, which is why the lifecycle,
+``RPRT -9`` and overlay-expiry tests below pass plainly: the command
+lifecycle reaches ``failed`` and expires the pending overlay, and
+``RigctldHandler.execute`` maps ``CommandRejectedError`` to ``RPRT -9``.
+What also holds and is pinned plainly: the browser-visible state snapshot
+keeps the radio's frequency, and the optimistic overlay outlives the NAK
+only up to its bounded pending TTL, after which the rigctld read-back
+answers the radio's frequency again.
 
 The NAK itself comes from the simulator's opt-in refusal hook
 (``rigplane_testkit/icom/simulator.py: MockIcomRadio
@@ -333,15 +332,6 @@ async def _ws_set_freq_refused(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "MOR-3004 cause (b): the MAIN-receiver 0x05 write is dispatched blind "
-        "(_send_civ_raw(wait_response=False)), the NAK settles an ACK sink "
-        "and nothing fails the command — the lifecycle stops at acknowledged"
-    ),
-)
 async def test_ws_refused_write_ends_lifecycle_failed(stack: _Stack) -> None:
     command_id = "polygon-ws-nak"
     refused_before = stack.sim.refused_count
@@ -388,15 +378,6 @@ async def test_ws_refused_write_reply_reports_failure(stack: _Stack) -> None:
     assert response["error"] == "radio_nak"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "MOR-3004 cause (b): the blind 0x05 write never fails the command on "
-        "the NAK, so the lifecycle stops at acknowledged for the "
-        "HTTP-sourced command too"
-    ),
-)
 async def test_http_refused_write_ends_lifecycle_failed(stack: _Stack) -> None:
     refused_before = stack.sim.refused_count
     with _refusing_set_frequency(stack.sim):
@@ -496,15 +477,6 @@ async def _open_rigctld_client(stack: _Stack) -> RigctldClient:
     return RigctldClient(reader, writer)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "MOR-3004 cause (b): the blind 0x05 write is dispatched without "
-        "waiting for the response, so the NAK never fails it and the set "
-        "answers sent-uncontested RPRT 0"
-    ),
-)
 async def test_rigctld_refused_set_freq_answers_negative_rprt(
     stack: _Stack,
 ) -> None:
@@ -520,15 +492,6 @@ async def test_rigctld_refused_set_freq_answers_negative_rprt(
         await client.close()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "MOR-3004 cause (b): nothing fails the command on the NAK, so the "
-        "pending overlay keeps projecting the refused target (observed: f "
-        "answers the refused 21074000) until its TTL lapses"
-    ),
-)
 async def test_rigctld_refused_write_overlay_expires_on_nak(stack: _Stack) -> None:
     client = await _open_rigctld_client(stack)
     try:
