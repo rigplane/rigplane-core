@@ -68,14 +68,11 @@ import { getTuningBurstTargetHz } from '../commands/tuning-accumulator';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 import { modInputCommand, modInputStateKey, type ModInputStateKey } from '$lib/radio/mod-input';
-import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import {
   deriveIfShift, measuredPbtRawToHz, pbtRangeFromCaps,
 } from '$lib/radio/filter-controls';
 import {
-  hasUsableObservation,
   projectControlFeedback,
-  unavailableControlFeedback,
   type ControlFeedback,
   type ControlFeedbackOutcome,
   type ControlFeedbackPhase,
