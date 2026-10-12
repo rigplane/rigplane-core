@@ -45,8 +45,7 @@ def _eligible_get_names(profile_toml: dict) -> set[str]:
     """Eligible GET names computed straight from the raw profile TOML.
 
     Eligible: wire-declared (a list of command bytes, not an ``absent``
-    marker), command byte not 0x1C, and not the 0x1A 0x00
-    memory-contents pair.
+    marker), command byte not 0x1C / 0x1A 00 / 0x07.
     """
     commands = dict(profile_toml["commands"])
     overrides = commands.pop("overrides", {})
@@ -56,7 +55,7 @@ def _eligible_get_names(profile_toml: dict) -> set[str]:
         for key, value in effective.items()
         if key.startswith("get_")
         and isinstance(value, list)
-        and value[0] != 0x1C
+        and value[0] not in (0x07, 0x1C)
         and not (value[0] == 0x1A and len(value) > 1 and value[1] == 0x00)
     }
 
@@ -84,11 +83,20 @@ def test_probe_list_covers_profile_gets_and_excludes_forbidden() -> None:
         "1a000001",
         "0e01",
         "1701",
+        "07",
+        "07d0",
     )
     for hex_body in refused:
         assert probe_list.is_forbidden(bytes.fromhex(hex_body), allowed), hex_body
     for hex_body in ("03", "2500", "1a050092"):
         assert not probe_list.is_forbidden(bytes.fromhex(hex_body), allowed), hex_body
+
+    # The 0x07 VFO-selection family is absent everywhere: not in the
+    # allow-list, and no probe body (wrapped or bare) starts with 0x07.
+    assert bytes.fromhex("07") not in allowed
+    assert bytes.fromhex("07d0") not in allowed
+    assert not any(p.frame_body[0] == 0x07 for p in probes)
+    assert not any(body[0] == 0x07 for body in allowed)
 
     bodies = {p.frame_body for p in probes}
     for hex_body in ("2500", "2501", "2600", "2601", "1900"):
@@ -106,11 +114,14 @@ def test_probe_list_covers_profile_gets_and_excludes_forbidden() -> None:
     )[4:-1]
     assert sub_wrapped.frame_body == expected
 
-    # The 0x1C / 0x1A 0x00 profile GETs are excluded from the list.
+    # The 0x1C / 0x1A 0x00 / 0x07 profile GETs are excluded from the list.
     names = {p.name for p in probes}
     assert "get_transceiver_status" not in names
     assert "get_tx_target" not in names
     assert "get_memory_contents" not in names
+    assert "get_vfo" not in names
+    assert "get_dual_watch" not in names
+    assert "get_main_sub_band" not in names
 
 
 class _AckOneGetMock(MockIcomRadio):

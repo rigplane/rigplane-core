@@ -13,7 +13,9 @@ a frame only when ``is_forbidden`` accepts its body — after unwrapping
 one leading ``0x29 <rx>`` — as byte-for-byte one of the bodies
 ``build_probe_list`` itself produces (``build_allowed_bodies`` collects
 them once per profile). A SET therefore never passes: a SET carries a
-value, so its body is never equal to a declared GET body.
+value, so its body is never equal to a declared GET body. Command 0x07
+is excluded from both the probe list and the allow-list because its
+bare and sub-command forms change VFO/receiver selection.
 """
 
 from __future__ import annotations
@@ -33,16 +35,15 @@ _CMD29 = 0x29
 #: the body after unwrapping cmd29 so the wrapped forms are refused too:
 #: the send/set-only commands (send freq/mode 0x00/0x01, set freq/mode
 #: 0x05/0x06, MEM select/write/clear 0x08/0x09/0x0B, scan 0x0E, CW send
-#: 0x17) plus the power and PTT/tuner families (0x18/0x1C) whose read
-#: forms the capture also never sends. This is the second, independent
-#: refusal behind the allow-list: a mistake there cannot key anything on
-#: these commands. Command 0x07 (VFO / dual-watch / main-sub band select)
-#: is deliberately not in the set: rigs/ic7610.toml declares bare-form
-#: GETs on it (get_vfo, get_dual_watch, get_main_sub_band), and their
-#: payload-carrying SET forms are refused by the allow-list's
-#: byte-for-byte comparison.
+#: 0x17) plus the power, PTT/tuner and VFO-selection families
+#: (0x18/0x1C/0x07) whose read forms the capture also never sends. This
+#: is the second, independent refusal behind the allow-list: a mistake
+#: there cannot key anything on these commands. 0x07 is in the set
+#: because the family is not read-only on Icom radios: a bare ``07``
+#: selects VFO mode (leaving memory mode), ``07 D0/D1`` select MAIN/SUB,
+#: and ``07 A0/B0/B1`` exchange or equalise VFOs.
 _REFUSED_COMMANDS = frozenset(
-    (0x00, 0x01, 0x05, 0x06, 0x08, 0x09, 0x0B, 0x0E, 0x17, 0x18, 0x1C)
+    (0x00, 0x01, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0B, 0x0E, 0x17, 0x18, 0x1C)
 )
 
 #: Memory contents read/write, forbidden by its (command, sub) pair.

@@ -23,7 +23,9 @@ simulator must reproduce (MOR-3297).
   body — or whose command byte is a refused family outright (power
   0x18, PTT/tuner 0x1C, memory write/clear 0x09/0x0B, CW 0x17, scan
   0x0E, set freq/mode 0x05/0x06, send freq/mode 0x00/0x01, MEM select
-  0x08), so a mistake in the allow-list cannot key anything.
+  0x08), so a mistake in the allow-list cannot key anything. Command
+  0x07 is excluded from the probe list and the allow-list because its
+  bare and sub-command forms change VFO/receiver selection.
 - `probe.py` — the driver. `run_probes(radio, probes, allowed, pace,
   timeout)` is the tested coroutine; the CLI only parses arguments.
 
