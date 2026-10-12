@@ -1511,10 +1511,10 @@ class TestAckSinkRobustness:
         )
         await radio._execute_civ_raw(ff, wait_response=False)
 
-        # The set waits for its own ACK; the missing answer above must
-        # not make this waiter claim anything stale (the drain drops the
-        # leftover sink before this registers).
-        mock_transport.queue_response(_ack_response())
+        # The set waits for its own ACK, delivered when its frame leaves
+        # (send 2): the missing answer above must not make this waiter
+        # claim anything stale — the drain drops the leftover sink first.
+        mock_transport.queue_response_on_send(2, _ack_response())
         await radio.set_freq(7_074_000)
 
     @pytest.mark.asyncio
