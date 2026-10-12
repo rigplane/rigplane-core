@@ -252,13 +252,6 @@ async def test_session_drop_with_notice_recovers_with_one_login(
     assert run.freq == _FREQ_HZ, run.report()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "MOR-3349: after a silent session drop the soft reconnect leaves the "
-        "identity hold on a dead session and no re-login follows"
-    ),
-)
 async def test_session_drop_without_notice_recovers_within_the_watchdog_budget(
     sim: MockIcomRadio,
     caplog: pytest.LogCaptureFixture,
