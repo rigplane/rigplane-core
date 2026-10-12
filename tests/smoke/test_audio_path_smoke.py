@@ -278,10 +278,42 @@ def _make_usb_serial_rig() -> _UsbSerialRig:
     return _UsbSerialRig(radio=radio, backend=backend)
 
 
+_IDENTITY_HOLD_CLEAR_TIMEOUT_S = 10.0
+
+
+async def _wait_for_identity_hold_clear(radio: Icom7610SerialRadio) -> None:
+    """Wait until the connect-time serial identity hold clears.
+
+    ``connect()`` returns while the hold is active when the link's answer
+    misses the gate's answer window; production then refuses every command
+    (``CoreRadio._check_connected``) until the background re-read
+    (``_IcomSerialRadioBase._SERIAL_IDENTITY_REREAD_BACKOFF_S``) gets an
+    answer. Poll that same production signal instead of starting
+    bridge/web consumers on a held radio.
+    """
+
+    def _commands_accepted() -> bool:
+        try:
+            radio._check_connected()
+        except Exception:
+            return False
+        return True
+
+    cleared = await _wait_for(
+        _commands_accepted, deadline_s=_IDENTITY_HOLD_CLEAR_TIMEOUT_S
+    )
+    assert cleared, (
+        "radio identity hold still active "
+        f"{_IDENTITY_HOLD_CLEAR_TIMEOUT_S:.0f} s after connect(); "
+        "commands are refused until the radio answers 19 00"
+    )
+
+
 @pytest.fixture
 async def usb_rig() -> Any:
     rig = _make_usb_serial_rig()
     await rig.radio.connect()
+    await _wait_for_identity_hold_clear(rig.radio)
     yield rig
     await rig.radio.disconnect()
 
@@ -338,6 +370,7 @@ async def _make_bridge_shape(case: str) -> _BridgeShape:
     if case == "usb-serial-full":
         rig = _make_usb_serial_rig()
         await rig.radio.connect()
+        await _wait_for_identity_hold_clear(rig.radio)
         driver = rig.radio._serial_audio_driver
         return _BridgeShape(
             radio=rig.radio,
