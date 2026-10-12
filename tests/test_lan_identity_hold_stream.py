@@ -87,7 +87,7 @@ class _RenewalAnswers:
                     _renewal_answer(radio._token, self.result),
                 )
 
-        transport.send_tracked = send_tracked  # type: ignore[method-assign]
+        transport.send_tracked = send_tracked
 
 
 def make_radio(
@@ -102,6 +102,7 @@ def make_radio(
     radio._ctrl_transport = transport
     radio._token = _TOKEN
     return radio, transport, _RenewalAnswers(radio, transport, renewal_result)
+
 
 def _park_hold(radio: IcomRadio) -> None:
     """An owned ``no_response`` hold on the current epoch, without a gate."""
@@ -272,7 +273,7 @@ def _held_radio(
 
     radio._read_lan_identity_payload = AsyncMock(side_effect=read)
     requests: list[str] = []
-    radio._civ_runtime.request_recovery_now = requests.append  # type: ignore[method-assign]
+    radio._civ_runtime.request_recovery_now = requests.append
     return radio, answers, reads, requests
 
 
@@ -306,7 +307,9 @@ async def test_three_silent_renewals_one_second_apart_escalate() -> None:
         await _stop_reread(radio)
     assert requests == ["control session dead: no renewal answer"]
     assert len(answers.sent_at) == 3
-    gaps = [later - earlier for earlier, later in zip(answers.sent_at, answers.sent_at[1:])]
+    gaps = [
+        later - earlier for earlier, later in zip(answers.sent_at, answers.sent_at[1:])
+    ]
     assert all(gap >= 0.95 for gap in gaps), gaps
     assert reads == []
 

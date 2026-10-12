@@ -805,9 +805,7 @@ def _token_packet() -> bytes:
 
 
 class TestTokenReplyCallback:
-    def _route_both(
-        self, transport: IcomTransport
-    ) -> tuple[list[bytes], list[bytes]]:
+    def _route_both(self, transport: IcomTransport) -> tuple[list[bytes], list[bytes]]:
         replies: list[bytes] = []
         notices: list[bytes] = []
         transport._discard_data_packets = True
