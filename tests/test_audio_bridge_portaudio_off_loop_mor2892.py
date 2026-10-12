@@ -30,10 +30,9 @@ import pytest
 from rigplane.audio._bridge_state import BridgeState
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
 from rigplane.audio.bridge import AudioBridge
-from rigplane.audio.usb_driver import (
-    AudioCaptureOpenTimeoutError,
-    bounded_portaudio_pool,
-)
+from rigplane.audio.usb_driver import AudioCaptureOpenTimeoutError
+
+from _portaudio_pool_helpers import drain_pool
 
 # The pool lives in usb_driver, so its warnings carry that logger name —
 # the shared pool's voice, whichever consumer submitted the stuck call.
@@ -85,23 +84,6 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
         for r in caplog.records
         if r.name == _LOGGER_NAME and r.levelno >= logging.WARNING
     ]
-
-
-async def _drain_pool() -> None:
-    """Wait until the shared pool has settled every tracked operation.
-
-    Releasing a blocking gate and then sleeping a fixed 0.05 s races the
-    loop-side settle of the pool future: the worker may have finished while
-    the done-callbacks that uncount ``inflight`` and drop the retained
-    stream have not run yet, leaking state bound to this test's closing
-    event loop into the module singleton where the next test inherits it.
-    ``submit_tracked`` registers the ``inflight`` uncount as the first
-    done-callback of every submission, so reaching zero here means the
-    pool's bookkeeping callbacks have run too.
-    """
-    async with asyncio.timeout(5):
-        while bounded_portaudio_pool.inflight:
-            await asyncio.sleep(0.005)
 
 
 class _Ticker:
@@ -157,7 +139,7 @@ async def test_enumeration_timeout_keeps_loop_free_and_fails_start(
         await ticker.stop()
         await ticker_task
         gate.set()  # release the stuck background listing
-        await _drain_pool()
+        await drain_pool()
 
     assert ticker.progressed >= 3, (
         "event loop should keep making progress while enumeration is stuck"
@@ -213,7 +195,7 @@ async def test_playback_start_timeout_keeps_loop_free_and_fails_start(
     # Release LAST: the abandoned open's late-handle close logs its own
     # warning, which must land after the assertions above (mor1438 shape).
     gate.set()
-    await _drain_pool()
+    await drain_pool()
 
 
 @pytest.mark.timeout(10)
@@ -251,7 +233,7 @@ async def test_capture_start_timeout_keeps_loop_free_and_fails_start(
     # Release LAST: the abandoned open's late-handle close logs its own
     # warning, which must land after the assertions above (mor1438 shape).
     gate.set()
-    await _drain_pool()
+    await drain_pool()
 
 
 @pytest.mark.timeout(10)
@@ -282,7 +264,7 @@ async def test_stop_timeout_keeps_loop_free_and_completes_teardown(
         await ticker.stop()
         await ticker_task
         gate.set()  # release the stuck background stop
-        await _drain_pool()
+        await drain_pool()
 
     assert ticker.progressed >= 3, (
         "event loop should keep making progress while the stop is stuck"

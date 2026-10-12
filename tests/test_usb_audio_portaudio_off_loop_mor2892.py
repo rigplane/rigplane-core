@@ -30,8 +30,9 @@ from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBack
 from rigplane.audio.usb_driver import (
     AudioCaptureOpenTimeoutError,
     UsbAudioDriver,
-    bounded_portaudio_pool,
 )
+
+from _portaudio_pool_helpers import drain_pool
 
 _LOGGER_NAME = "rigplane.audio.usb_driver"
 # Tiny relative to the production default — keeps this suite fast while
@@ -67,23 +68,6 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
         for r in caplog.records
         if r.name == _LOGGER_NAME and r.levelno >= logging.WARNING
     ]
-
-
-async def _drain_pool() -> None:
-    """Wait until the shared pool has settled every tracked operation.
-
-    Releasing a blocking gate and then sleeping a fixed 0.05 s races the
-    loop-side settle of the pool future: the worker may have finished while
-    the done-callbacks that uncount ``inflight`` and drop the retained
-    stream have not run yet, leaking state bound to this test's closing
-    event loop into the module singleton where the next test inherits it.
-    ``submit_tracked`` registers the ``inflight`` uncount as the first
-    done-callback of every submission, so reaching zero here means the
-    pool's bookkeeping callbacks have run too.
-    """
-    async with asyncio.timeout(5):
-        while bounded_portaudio_pool.inflight:
-            await asyncio.sleep(0.005)
 
 
 @pytest.fixture(autouse=True)
@@ -142,7 +126,7 @@ async def test_probe_timeout_keeps_loop_free_and_fails_request(
         await ticker.stop()
         await ticker_task
         gate.set()  # release the stuck background probe so the worker exits
-        await _drain_pool()
+        await drain_pool()
 
     assert ticker.progressed >= 3, (
         "event loop should keep making progress while the probe is stuck"
@@ -239,7 +223,7 @@ async def test_probe_timeout_keeps_http_and_ws_answering(
         await ws.close()
         await session.close()
         await server.close()
-        await _drain_pool()
+        await drain_pool()
 
 
 @pytest.mark.timeout(10)
@@ -254,7 +238,7 @@ async def test_probe_recovers_after_permission_granted() -> None:
     assert driver.rx_running is False
 
     gate.set()
-    await _drain_pool()  # let the abandoned probe settle
+    await drain_pool()  # let the abandoned probe settle
     backend.block_probe = None  # simulate the permission granted
 
     await driver.start_rx(lambda _frame: None)
@@ -301,7 +285,7 @@ async def test_stop_rx_off_loop_and_bounded(
     )
 
     gate.set()  # let the abandoned background stop finally complete
-    await _drain_pool()
+    await drain_pool()
     assert stream.stopped_count == 1, "background stop must still complete"
 
 
@@ -332,7 +316,7 @@ async def test_enumeration_timeout_bounded(
         await ticker.stop()
         await ticker_task
         gate.set()
-        await _drain_pool()
+        await drain_pool()
 
     assert ticker.progressed >= 3
     assert driver.rx_running is False
@@ -513,7 +497,7 @@ async def test_optional_pnp_timeout_refuses_indistinguishable_radios(
         assert driver.selected_rx_device is None
     finally:
         gate.set()
-        await _drain_pool()
+        await drain_pool()
 
 
 @pytest.mark.timeout(10)
@@ -549,7 +533,7 @@ async def test_windows_selection_has_one_deadline_and_no_late_cache(
         assert driver.selected_rx_device is None
     finally:
         gate.set()
-        await _drain_pool()
+        await drain_pool()
     assert driver.selected_rx_device is None
 
 
@@ -591,7 +575,7 @@ async def test_windows_cancelled_or_rebound_pnp_cannot_publish_selection(
             assert not backend.rx_streams
         finally:
             gate.set()
-            await _drain_pool()
+            await drain_pool()
         assert driver.selected_rx_device is None
 
 
