@@ -475,7 +475,14 @@ class ControlPhaseRuntime:
                 component="radio connect",
             )
         except RuntimeError as exc:
-            await h.disconnect()
+            # End this attempt only: ``CoreRadio.disconnect`` is the owner's
+            # stop.  Retire the identity this attempt's gate recorded, as
+            # that teardown does.
+            await self.disconnect()
+            h._connection_identity = None
+            h._lan_identity_answer_epoch = None
+            h._lan_identity_owned_epoch = None
+            h._lan_identity_revalidate_origin = False
             raise ConnectionError(str(exc)) from exc
 
         h._has_connected_once = True
@@ -526,7 +533,6 @@ class ControlPhaseRuntime:
         else:
             h._advance_civ_generation("disconnect")
         self._stop_watchdog()
-        self._stop_reconnect()
         self._stop_token_renewal()
         stop_audio_wd = getattr(h, "_stop_audio_watchdog", None)
         if stop_audio_wd is not None:
@@ -655,12 +661,6 @@ class ControlPhaseRuntime:
         self._deferred_retail = None
         # Best-effort teardown of any data/audio transports first (mirrors
         # disconnect ordering), then the always-sent token-remove.
-        # No ``_stop_reconnect`` here: ``release()`` itself does not stop
-        # the reconnect loop.  This is the partial-claim branch — when
-        # ``conn_state`` is CONNECTED, ``ControlPhaseSessionMechanism.
-        # release`` routes the per-attempt release to
-        # ``ControlPhaseRuntime.disconnect`` instead, whose
-        # ``_stop_reconnect()`` does cancel the loop.
         self._stop_watchdog()
         self._stop_token_renewal()
         # An identity-held partial session can have live CI-V tasks. Retire
@@ -1260,10 +1260,8 @@ class ControlPhaseRuntime:
     def _stop_reconnect(self) -> None:
         h = self._host
         if h._reconnect_task is not None and not h._reconnect_task.done():
-            # The reconnect loop reaches this through a release it awaits;
-            # cancelling here would cancel the caller itself.  Keep the
-            # handle in that case: clearing it would leave a running loop
-            # that no later owner stop (a user disconnect()) can reach.
+            # Never cancel the calling task itself; keep the handle so a
+            # later owner stop can still cancel it.
             if h._reconnect_task is asyncio.current_task():
                 return
             h._reconnect_task.cancel()

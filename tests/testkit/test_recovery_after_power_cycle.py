@@ -180,6 +180,60 @@ async def test_user_disconnect_during_lifecycle_recovery_starts_no_loop() -> Non
         radio._conn_state = RadioConnectionState.DISCONNECTED
 
 
+async def _stop_handed_off_loop(radio: IcomRadio) -> None:
+    radio._conn_state = RadioConnectionState.DISCONNECTED
+    loop_task = radio._reconnect_task
+    if loop_task is not None and not loop_task.done():
+        loop_task.cancel()
+        await asyncio.gather(loop_task, return_exceptions=True)
+
+
+async def test_exhaustion_after_an_owner_stop_starts_no_loop() -> None:
+    """Recovery that exhausts after an owner stop (``CoreRadio.disconnect``
+    increments ``_owner_stop_epoch``) hands nothing to the reconnect loop."""
+    radio, statuses = _exhaustion_radio()
+
+    async def owner_stop_then_fail() -> None:
+        radio._owner_stop_epoch += 1
+        raise RigplaneConnectionError("injected per-attempt failure")
+
+    radio._session_lifecycle._mech.soft_reconnect_once = owner_stop_then_fail  # type: ignore[method-assign]
+    try:
+        with patch.object(radio._civ_runtime, "start_data_watchdog", lambda: None):
+            await radio._civ_runtime._watchdog_recover()
+        assert radio._conn_state is RadioConnectionState.DISCONNECTED
+        assert radio._reconnect_task is None
+        assert statuses == []
+    finally:
+        await _stop_handed_off_loop(radio)
+
+
+async def test_user_disconnect_during_recovery_cleanup_starts_no_loop() -> None:
+    """A user ``disconnect`` that lands while ``_watchdog_recover`` is in
+    ``_force_cleanup_civ`` — before the lifecycle recovery exists for the
+    disconnect to cancel — starts no reconnect loop when that recovery
+    later exhausts."""
+    radio, statuses = _exhaustion_radio()
+    user_disconnects: list[asyncio.Task[None]] = []
+
+    async def cleanup_with_user_disconnect() -> None:
+        user = asyncio.ensure_future(radio.disconnect())
+        user_disconnects.append(user)
+        await asyncio.wait({user})
+
+    radio._force_cleanup_civ = cleanup_with_user_disconnect  # type: ignore[method-assign]
+    try:
+        with patch.object(radio._civ_runtime, "start_data_watchdog", lambda: None):
+            await radio._civ_runtime._watchdog_recover()
+        assert len(user_disconnects) == 1
+        assert user_disconnects[0].exception() is None
+        assert radio._conn_state is RadioConnectionState.DISCONNECTED
+        assert radio._reconnect_task is None
+        assert statuses == []
+    finally:
+        await _stop_handed_off_loop(radio)
+
+
 async def test_exhaustion_handoff_does_not_stack_loops() -> None:
     """A handoff while the resident loop is alive leaves that loop in place."""
     radio, _statuses = _exhaustion_radio()
@@ -196,7 +250,8 @@ async def test_exhaustion_handoff_does_not_stack_loops() -> None:
         await started.wait()
         radio._reconnect_task = alive
         radio._civ_runtime._hand_off_exhaustion_to_reconnect_loop(
-            RigplaneConnectionError("Soft reconnect exhausted after 1 attempts")
+            RigplaneConnectionError("Soft reconnect exhausted after 1 attempts"),
+            radio._owner_stop_epoch,
         )
         assert radio._reconnect_task is alive
         assert radio._conn_state is RadioConnectionState.DISCONNECTED
