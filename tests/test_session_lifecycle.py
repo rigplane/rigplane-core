@@ -723,3 +723,85 @@ async def test_release_raising_does_not_crash_disconnect() -> None:
     await lc.disconnect()
     assert lc.state is LifecycleState.DISCONNECTED
     assert mech.release_calls >= 1
+
+
+# ---------------------------------------------------------------------------
+# MOR-3355 — a connect attempt failing with a connection error leaves the
+# lifecycle DISCONNECTED (not stuck at CONNECTING)
+# ---------------------------------------------------------------------------
+
+
+async def test_connection_error_attempt_drives_machine_to_disconnected() -> None:
+    """MOR-3355: RigplaneConnectionError from the attempt ends CLOSING→DISCONNECTED.
+
+    Models the startup-readiness abort inside ``ControlPhaseRuntime._connect_once``
+    (or any other ConnectionError from the attempt): ``_attempt_with_release``
+    already released the claim, so ``_run_connect`` must drive the observable
+    machine home before re-raising instead of leaving it at CONNECTING.
+    """
+    lc, mech, events = make_lifecycle()
+    mech.queue_exception(ConnectionError("startup-readiness abort (fake)"))
+
+    with pytest.raises(ConnectionError, match="startup-readiness abort"):
+        await lc.connect()
+
+    assert mech.release_calls >= 1
+    assert not mech.claimed
+    assert lc.state is LifecycleState.DISCONNECTED
+    assert len(events) >= 2
+    assert events[-2].to_state is LifecycleState.CLOSING
+    assert events[-2].reason is LifecycleErrorReason.CANCELLED
+    assert events[-1].to_state is LifecycleState.DISCONNECTED
+
+
+async def test_auth_hard_fail_emits_disconnected_exactly_once() -> None:
+    """MOR-3355: the auth hard-fail path still emits DISCONNECTED exactly once."""
+    lc, mech, events = make_lifecycle()
+    mech.queue_auth_fail()
+
+    with pytest.raises(AuthenticationError):
+        await lc.connect()
+
+    assert lc.state is LifecycleState.DISCONNECTED
+    assert sum(1 for e in events if e.to_state is LifecycleState.CLOSING) == 1
+    assert sum(1 for e in events if e.to_state is LifecycleState.DISCONNECTED) == 1
+
+
+async def test_exhaustion_emits_disconnected_exactly_once() -> None:
+    """MOR-3355: the attempt-exhaustion path still emits DISCONNECTED exactly once."""
+    lc, mech, events = make_lifecycle(max_connect_attempts=3)
+    for _ in range(3):
+        mech.queue_busy_reject()
+
+    with pytest.raises(ConnectionError, match="never became ready"):
+        await lc.connect()
+
+    assert lc.state is LifecycleState.DISCONNECTED
+    assert sum(1 for e in events if e.to_state is LifecycleState.DISCONNECTED) == 1
+
+
+async def test_cancel_during_attempt_reraises_without_extra_emits() -> None:
+    """MOR-3355: CancelledError still propagates with no CLOSING/DISCONNECTED emits."""
+
+    class CancelMech(FakeMechanism):
+        async def connect_attempt(self) -> AttemptResult:
+            self.connect_calls += 1
+            self.ops.append("connect_attempt")
+            self.claimed = True
+            raise asyncio.CancelledError()
+
+    mech = CancelMech()
+    lc, _m, events = make_lifecycle(mech=mech)
+
+    with pytest.raises(asyncio.CancelledError):
+        await lc.connect()
+
+    assert mech.release_calls >= 1
+    assert not mech.claimed
+    assert events
+    assert events[-1].to_state is LifecycleState.CONNECTING
+    assert all(
+        e.to_state is not LifecycleState.CLOSING
+        and e.to_state is not LifecycleState.DISCONNECTED
+        for e in events
+    )
