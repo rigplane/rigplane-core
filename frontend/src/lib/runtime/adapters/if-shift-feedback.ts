@@ -184,8 +184,7 @@ export function deriveIfShiftFeedback(
   const { phase, outcome } = busy
     ? { phase: mergeBusyPhase(inner, outer), outcome: null }
     : mergeTerminalOutcome(inner, outer);
-  // Idle carries no ids anywhere else in this module
-  // (`unavailableIfShiftFeedback`) — including here, so that
+  // Idle carries no ids here, so that
   // `mergeTerminalOutcome`'s idle-on-a-retired-confirmation case (case B
   // above) does not compose a fresh id out of the surviving side's live
   // outcome and trigger a one-shot announcement for a phase nobody reports.
