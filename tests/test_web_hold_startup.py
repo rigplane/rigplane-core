@@ -29,12 +29,14 @@ from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.radio_state import RadioState
 from rigplane.rigctld.contract import RigctldConfig, RigctldResponse
 from rigplane.rigctld.server import RigctldServer
+from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime.session_lifecycle import (
     AttemptOutcome,
     AttemptResult,
     CoreRadioSessionLifecycle,
     LifecycleState,
 )
+from rigplane.web.state_schema import RadioHealthPublic
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
@@ -408,6 +410,138 @@ async def test_web_serves_session_busy_during_startup_busy_hold() -> None:
     finally:
         await server.stop()
         await rig.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_reports_busy_session_during_startup_busy_hold() -> None:
+    """MOR-3450: /api/v1/runtime names the held session, not a missing radio.
+
+    During the hold the runtime must report the held session honestly:
+    ``station.readiness`` and the health ``likelyCause`` are
+    ``radio_session_busy``, the health readiness is the bounded-wait
+    literal (``recovering``, not ``stalled``), and the station message
+    names another client. /readyz and /api/v1/info stay exactly as
+    #4176 left them.
+    """
+
+    radio = _BusyRadio()
+    poller = _busy_poller()
+    rig, server, _rig_port = await _start_busy_stack(radio, poller)
+    try:
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert status == 200
+        station = payload["station"]
+        assert station["readiness"] == "radio_session_busy"
+        assert station["health"]["likelyCause"] == "radio_session_busy"
+        assert station["health"]["readiness"] == "recovering"
+        assert "another client" in station["message"]
+
+        status, payload = await _get_json(server, "/readyz")
+        assert status == 503
+        assert payload == {
+            "status": "not_ready",
+            "radioReady": False,
+            "reason": "session_busy",
+            "retryInSeconds": 30.0,
+        }
+
+        status, payload = await _get_json(server, "/api/v1/info")
+        assert status == 200
+        assert payload["connection"]["session"] == {
+            "busy": True,
+            "retryInSeconds": 30.0,
+        }
+    finally:
+        await server.stop()
+        await rig.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_returns_to_ready_after_busy_grant() -> None:
+    """MOR-3450: the runtime returns to the normal ready values after the grant."""
+
+    from rigplane.cli import _ManagedTxRadioSession
+
+    radio = _BusyRadio()
+    poller = _busy_poller()
+    rig, server, _rig_port = await _start_busy_stack(radio, poller)
+    composition = create_autospec(ManagedTxComposition, instance=True)
+    session = _ManagedTxRadioSession(radio, composition)
+    enter_task = asyncio.ensure_future(session.__aenter__())
+    try:
+        for _ in range(100):
+            if radio.enter_calls:
+                break
+            await asyncio.sleep(0.01)
+        assert radio.enter_calls == 1
+
+        radio.grant()
+        entered = await asyncio.wait_for(enter_task, timeout=5.0)
+        assert entered is radio
+        await server.finish_startup_busy_hold()
+
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert status == 200
+        station = payload["station"]
+        assert station["readiness"] == "ready_with_radio"
+        assert station["health"]["readiness"] == "ready"
+        assert station["health"]["likelyCause"] == "unknown"
+    finally:
+        if not enter_task.done():
+            enter_task.cancel()
+            try:
+                await enter_task
+            except asyncio.CancelledError:
+                pass
+        await session.shutdown()
+        await radio.__aexit__(None, None, None)
+        await server.stop()
+        await rig.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_after_operator_disconnect_during_hold() -> None:
+    """MOR-3450: the busy override clears when the operator disconnects.
+
+    Disconnecting during the hold ends the hold (the busy surface clears
+    and the radio rests DISCONNECTED without ever having connected), so
+    the runtime must stop reporting ``radio_session_busy`` and fall back
+    to the normal operator-disconnect classification — the same values a
+    disconnect after a normal start produces.
+    """
+
+    radio = _BusyRadio()
+    poller = _busy_poller()
+    rig, server, _rig_port = await _start_busy_stack(radio, poller)
+    try:
+        radio.startup_busy_hold_event.clear()
+        radio.conn_state = RadioConnectionState.DISCONNECTED
+
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert status == 200
+        station = payload["station"]
+        assert station["readiness"] != "radio_session_busy"
+        assert station["health"]["likelyCause"] != "radio_session_busy"
+        assert station["health"]["likelyCause"] == "radio_network_lost"
+        assert station["health"]["readiness"] == "stalled"
+        assert station["readiness"] == "lan_radio_unsupported_or_not_found"
+    finally:
+        await server.stop()
+        await rig.stop()
+
+
+def test_radio_session_busy_validates_in_radio_health_public() -> None:
+    """MOR-3450: the new cause is a member of the public health schema."""
+
+    health = RadioHealthPublic(
+        serverReachable=True,
+        radioLink="disconnected",
+        readiness="recovering",
+        likelyCause="radio_session_busy",
+        sinceMs=0,
+        lastError=None,
+    )
+    assert health.likelyCause == "radio_session_busy"
 
 
 class _DiscoveryPassMechanism:
