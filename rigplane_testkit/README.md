@@ -50,8 +50,8 @@ UDP code paths as production.
   the CI-V port until the client whose fresh login's own conninfo was
   accepted opens from the CI-V port its conninfo declared (its IP alone
   when it declared none),
-  ignore token and conninfo packets carrying the pre-reboot
-  token, answer busy, then accept a fresh login; with `notice=True` the
+  ignore token packets other than renewals and conninfo packets carrying
+  the pre-reboot token, answer busy, then accept a fresh login; with `notice=True` the
   recorded power-off order is replayed first — one unsolicited 0x90 conninfo
   notice (busy=0, "session free"), then ~0.02 s in which discovery and
   control-port pings are still answered (CI-V-port pings from the pre-reboot
@@ -61,8 +61,16 @@ UDP code paths as production.
   unsolicited 0x90 notice ~0.1 s after the drop, and apply the same
   per-client fresh-login OpenClose fence — and
   `keepalive_silence(at, for_seconds)` — pings are received but not answered.
-  Wire-level examples live in `tests/testkit/test_simulator_faults.py` and
-  `tests/testkit/test_simulator_drop_session.py`.
+  Token renewals follow the recorded layout (`_token_renew_reply`): the held
+  token is answered `00000000` and extends the single-owner hold, while a
+  renewal with a token from an ended epoch (token-remove, `drop_session`,
+  reboot, hold expiry, or a newer login) is answered `ffffffff`, exactly
+  once. `civ_standby(on)` is a test-only scenario, not recorded behaviour:
+  while on, the CI-V port processes no CI-V DATA (no echo, no reply) while
+  CI-V-port pings and the control port keep answering.
+  Wire-level examples live in `tests/testkit/test_simulator_faults.py`,
+  `tests/testkit/test_simulator_drop_session.py` and
+  `tests/testkit/test_simulator_renew_standby.py`.
 - `rigplane_testkit.serial` — `CivSerialFake`, a stateful IC-7300 personality
   on an in-memory serial duplex (frequency, mode, filter, PTT, S-meter,
   profile-derived identity, USB CI-V echo). It mounts behind the production

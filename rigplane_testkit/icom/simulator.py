@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 _ERR_OK = 0x00000000
 _ERR_AUTH_FAIL = 0xFEFFFFFF  # credential failure (login)
 _ERR_PREV_SESSION_ACTIVE = 0xFFFFFFFF  # busy / previous session still held
+_ERR_TOKEN_REJECT = 0xFFFFFFFF  # renewal for a token naming no live session
 
 # Token request-type magics carried at pkt[0x15] of a 0x40-byte control packet.
 _TOKEN_REMOVE = 0x01  # graceful withdraw — frees the held session immediately
@@ -421,6 +422,11 @@ class MockIcomRadio:
         self._down_until: float = 0.0  # reboot: radio "powered off" until then
         self._busy_until: float = 0.0  # post-reboot busy-reject window
         self._keepalive_silent_until: float = 0.0  # pings received, not answered
+        # CI-V standby scenario (test knob, NOT recorded radio behaviour):
+        # while True the CI-V port processes no CI-V DATA (no echo, no
+        # reply); discovery, pings and OpenClose still work, and the
+        # control port is unaffected.
+        self._civ_standby: bool = False
         # Power-off notice window (recording w2): after the 0x90 notice the
         # radio still answers discovery/pings until this deadline, then goes dark.
         self._poweroff_notice_until: float = 0.0
@@ -619,6 +625,17 @@ class MockIcomRadio:
         """Release the held session immediately (test helper)."""
         self._release_session(reason)
 
+    def civ_standby(self, on: bool) -> None:
+        """Turn the CI-V standby scenario on or off (test helper).
+
+        While on, the CI-V port processes no CI-V DATA: requests get no
+        echo and no reply. CI-V-port pings stay answered, and the control
+        port keeps answering pings and renewals. This is a simulator
+        scenario for tests, NOT recorded radio behaviour — network
+        standby is unrecorded.
+        """
+        self._civ_standby = bool(on)
+
     # ------------------------------------------------------------------
     # Scheduled events (reboot / keepalive silence / drop_session)
     # ------------------------------------------------------------------
@@ -643,8 +660,9 @@ class MockIcomRadio:
         pre-reboot clients are ignored — a rebooted radio does
         not serve a stale client that never logs in again (MOR-3315);
         control-port pings are still answered. Token
-        packets (0x40) and conninfo (0x90) carrying
-        a pre-reboot token are ignored as well;
+        packets (0x40) other than renewals, and conninfo (0x90),
+        carrying a pre-reboot token are ignored as well; renewals
+        with a retired token are answered with the recorded reject;
         ``docs/internals/protocol.md`` does not describe what an IC-7610 does
         with a stale token, so "ignored" is this simulator's assumption, not
         a recorded radio behaviour. It then answers conninfo
@@ -692,8 +710,7 @@ class MockIcomRadio:
         self._civ_owner_addr = None
         self._civ_owner_id = 0
         self._civ_gap.clear()  # the stream epoch ends with the reboot
-        self._retired_tokens.add(self.token)
-        self.token = (self.token + 0x9E3779B9) & 0xFFFFFFFF
+        self._retire_token()
         self._civ_seq = 1
         # Shut out the pre-reboot clients until the one that logs in afresh
         # opens from the CI-V port its conninfo declared — a rebooted radio
@@ -740,8 +757,7 @@ class MockIcomRadio:
         self._civ_owner_addr = None
         self._civ_owner_id = 0
         self._civ_gap.clear()  # the stream epoch ends with the drop
-        self._retired_tokens.add(self.token)
-        self.token = (self.token + 0x9E3779B9) & 0xFFFFFFFF
+        self._retire_token()
         self._fence_civ_until_open = True
         self._fence_blocks_pings = False  # recorded: pings keep being answered
         # The fence permission resets with the event: only an accepted
@@ -788,6 +804,28 @@ class MockIcomRadio:
             self.released_count += 1
             self.last_release_reason = reason
 
+    def _retire_token(self) -> None:
+        """End the current token epoch: retire the value, issue a fresh one.
+
+        Renewals carrying the retired value are answered with the recorded
+        reject instead of being dropped. New logins, token-remove,
+        hold expiry, ``drop_session`` and reboot all start a new epoch.
+        """
+        self._retired_tokens.add(self.token)
+        self.token = (self.token + 0x9E3779B9) & 0xFFFFFFFF
+
+    def _renewal_live(self, token: int) -> bool:
+        """True when a renewal token names the currently held session.
+
+        The value must be the current token (never a retired one); in
+        single-owner mode a session must also be held right now, so a
+        renewal that arrives with no session held — e.g. after a release
+        path that frees without rotating — is rejected too.
+        """
+        if token != self.token or token in self._retired_tokens:
+            return False
+        return not self.single_owner or self._owner is not None
+
     def _arm_keepalive(self) -> None:
         """(Re)start the keepalive auto-release timer for the held session."""
         if self._owner is None:
@@ -797,8 +835,15 @@ class MockIcomRadio:
         loop = asyncio.get_running_loop()
         self._keepalive_timer = loop.call_later(
             self.keepalive_hold_s,
-            lambda: self._release_session("keepalive_timeout"),
+            self._expire_hold,
         )
+
+    def _expire_hold(self) -> None:
+        """Release an un-renewed session and end its token epoch."""
+        if self._owner is None:
+            return
+        self._release_session("keepalive_timeout")
+        self._retire_token()
 
     def _claim_session(self, owner: tuple[tuple[str, int], int]) -> None:
         """Mark ``owner`` as the holder and arm the keepalive timer."""
@@ -1096,7 +1141,22 @@ class MockIcomRadio:
     ) -> None:
         n = len(data)
 
-        # Token packets and conninfo carrying a pre-reboot token: ignored.
+        # Token renewal (0x40, requesttype=0x05): answered even when the
+        # token names no live session — 00000000 for the held token, the
+        # recorded ffffffff reject otherwise, exactly one reply. The
+        # keepalive refresh stays owner-keyed, so a renewal from the holder
+        # extends the hold window either way.
+        if n == 0x40 and data[0x15] == _TOKEN_RENEW:
+            self._refresh_keepalive((addr, sender_id))
+            token = struct.unpack_from("<I", data, 0x1C)[0]
+            response = _ERR_OK if self._renewal_live(token) else _ERR_TOKEN_REJECT
+            self._send(
+                proto, self._token_renew_reply(data, sender_id, response), addr, "ctrl"
+            )
+            return
+
+        # Token packets (other than renewals, answered above) and conninfo
+        # carrying a retired token: ignored.
         if n in (0x40, 0x90) and struct.unpack_from("<I", data, 0x1C)[0] in (
             self._retired_tokens
         ):
@@ -1124,6 +1184,10 @@ class MockIcomRadio:
 
         # Login (0x80 bytes)
         if n == 0x80:
+            if not self.auth_fail:
+                # A newer login starts a new token epoch: the previous
+                # token is retired, so renewals carrying it are rejected.
+                self._retire_token()
             self._send(proto, self._login_response(data, sender_id), addr, "ctrl")
             if not self.auth_fail:
                 self._login_count += 1
@@ -1144,18 +1208,12 @@ class MockIcomRadio:
             self._send(proto, self._guid_conninfo(sender_id), addr, "ctrl")
             return
 
-        # Token renewal (0x40 bytes, requesttype=0x05) → refresh keepalive
-        # and answer with a 0x40/0x05 control packet (recorded: the radio
-        # answered 10/10 renews in the idle window, ``idle_cadence.json``).
-        if n == 0x40 and data[0x15] == _TOKEN_RENEW:
-            self._refresh_keepalive((addr, sender_id))
-            self._send(proto, self._token_renew_reply(data, sender_id), addr, "ctrl")
-            return
-
-        # Token remove (0x40 bytes, requesttype=0x01) → graceful close: free now
+        # Token remove (0x40 bytes, requesttype=0x01) → graceful close: free
+        # now and end the token epoch, so later renewals with it are rejected.
         if n == 0x40 and data[0x15] == _TOKEN_REMOVE:
             if self.single_owner and self._owner == (addr, sender_id):
                 self._release_session("token_remove")
+            self._retire_token()
             return
 
         # Client conninfo (0x90 bytes, requesttype=0x03) → status with CI-V port
@@ -1293,6 +1351,8 @@ class MockIcomRadio:
         # Idle keepalive (0x10 type-0): tracked for gap purposes, never
         # answered — like the recorded radio, which keeps its own cadence.
         if n == _HEADER_SIZE and ptype == _PT_DATA:
+            if self._civ_standby:
+                return  # standby scenario: no CI-V DATA processing
             if self._civ_gap_gate(
                 (addr, sender_id), "idle", data, addr, sender_id, seq, proto
             ):
@@ -1301,6 +1361,8 @@ class MockIcomRadio:
 
         # CI-V data (DATA type, larger than header)
         if ptype == _PT_DATA and n > _CIV_HEADER_SIZE:
+            if self._civ_standby:
+                return  # standby scenario: no echo, no reply
             if self._civ_fenced(addr, sender_id):
                 return  # post-reboot: stale client until a fresh OpenClose(open)
             key = (addr, sender_id)
@@ -1930,20 +1992,30 @@ class MockIcomRadio:
             pkt[0x40:0x44] = b"FTTH"
         return bytes(pkt)
 
-    def _token_renew_reply(self, data: bytes, sender_id: int) -> bytes:
-        """Build the 0x40 renew answer from the client's renew packet.
+    def _token_renew_reply(self, data: bytes, sender_id: int, response: int) -> bytes:
+        """Build the recorded 0x40 renew answer to a client renew packet.
 
-        Copies the client's renew packet and writes the endpoint IDs (radio
-        as sender, client as receiver), keeping request type 0x05.
-        ``_login_response`` instead builds a fresh packet, so the two share
-        no mirror helper. Only the length and request type are recorded
-        radio behaviour; the remaining bytes round-trip the client's own
-        values.
+        Recorded IC-7610 layout (MOR-3349 evidence): type 0, [0x14]=0x02,
+        [0x15]=0x05, the request's token echoed at 0x1C, its inner
+        sequence echoed at 0x16..0x17, [0x24..0x25]=07 98, sender/receiver
+        ids swapped, every other byte in 0x10..0x3f zero except [0x13]=0x30,
+        and the response at 0x30..0x33 (``_ERR_OK`` for the held token,
+        ``_ERR_TOKEN_REJECT`` otherwise). The header sequence echoes the
+        request's; that echo is a simulator choice, not a recorded fact.
         """
-        pkt = bytearray(data[:0x40])
+        pkt = bytearray(0x40)
+        struct.pack_into("<I", pkt, 0x00, 0x40)
+        struct.pack_into("<H", pkt, 0x04, _PT_DATA)
+        struct.pack_into("<H", pkt, 0x06, struct.unpack_from("<H", data, 0x06)[0])
         struct.pack_into("<I", pkt, 0x08, self.radio_id)
         struct.pack_into("<I", pkt, 0x0C, sender_id)
+        pkt[0x13] = 0x30
+        pkt[0x14] = 0x02
         pkt[0x15] = _TOKEN_RENEW
+        pkt[0x16:0x18] = data[0x16:0x18]
+        struct.pack_into("<I", pkt, 0x1C, struct.unpack_from("<I", data, 0x1C)[0])
+        pkt[0x24:0x26] = b"\x07\x98"
+        struct.pack_into("<I", pkt, 0x30, response & 0xFFFFFFFF)
         return bytes(pkt)
 
     def _guid_conninfo(self, sender_id: int) -> bytes:
