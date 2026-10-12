@@ -496,11 +496,10 @@ class _HttpCommandExecutor:
                 raise RuntimeError(
                     "active backend does not support raw CI-V transactions"
                 )
-            # In managed mode PTT and the tuner move only through the managed
-            # authority, so a TX-family raw transaction is refused by payload
-            # alone — regardless of the observed RF state, and without
-            # consulting the authority.  The verdict is computed on the exact
-            # frame the transaction below would send — addresses play no part
+            # A TX-family raw transaction is refused by payload alone —
+            # regardless of the observed RF state, and without consulting
+            # the authority.  The verdict is computed on the exact frame
+            # the transaction below would send — addresses play no part
             # in it — so both surfaces share the one raw classifier.
             if self.server._managed_tx_authority() is not None and (
                 classify_raw_civ_frame_tx_family(

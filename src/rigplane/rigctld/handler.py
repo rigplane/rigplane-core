@@ -559,9 +559,8 @@ class _RigctldCommandExecutor:
         ):
             return await self._execute_managed_tuner(intent)
         if managed and intent.name == "send_raw":
-            # In managed mode PTT and the tuner move only through the managed
-            # authority, so a raw TX-family frame is refused by payload alone
-            # — regardless of the observed RF state, and without consulting
+            # A raw TX-family frame is refused by payload alone —
+            # regardless of the observed RF state, and without consulting
             # the authority.  An unparseable frame fails closed.
             if (
                 tx_interlock.classify_raw_civ_frame_tx_family(
