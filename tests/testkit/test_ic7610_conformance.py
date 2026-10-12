@@ -2,11 +2,13 @@
 
 The four fixture files in ``tests/fixtures/ic7610/`` were extracted from
 private recordings of the real bench IC-7610 (2026-10-11/12).  These tests
-pin the recorded wire facts and measure ``MockIcomRadio`` (LAN/UDP) and the
-fake IC-7610 over USB — ``CivSerialFake`` with the recorded USB answer table
-mounted, built by ``tests/testkit/ic7610_fakes.py: ic7610_usb_fake`` —
-against them, classifying each request's reply from the wire rather than
-comparing state values.
+pin the recorded wire facts and measure ``MockIcomRadio`` (LAN/UDP, with the
+recorded LAN answer table mounted through
+``tests/testkit/ic7610_fakes.py: ic7610_lan_fake``) and the fake IC-7610
+over USB — ``CivSerialFake`` with the recorded USB answer table mounted,
+built by ``tests/testkit/ic7610_fakes.py: ic7610_usb_fake`` — against them,
+classifying each request's reply from the wire rather than comparing state
+values.
 
 Known divergences live in ``conformance_ledger.json`` next to the fixtures.
 Every divergence a test still observes must have a ledger entry whose
@@ -67,7 +69,7 @@ from rigplane_testkit.icom.fixtures import control_structure
 from rigplane_testkit.icom.replay import Recording, extract_civ_frame
 
 from _perf_helpers import fast_connect
-from testkit.ic7610_fakes import ic7610_usb_fake
+from testkit.ic7610_fakes import ic7610_lan_fake, ic7610_usb_fake
 from testkit.test_simulator_drop_session import _login_and_claim
 from testkit.test_simulator_faults import (
     _UdpClient,
@@ -318,9 +320,11 @@ def _token_renew() -> bytes:
 
 
 @asynccontextmanager
-async def _lan_sim():
-    """A fresh MockIcomRadio plus a logged-in, stream-opened raw client."""
-    server = MockIcomRadio()
+async def _lan_sim(server: MockIcomRadio | None = None):
+    """A fresh simulator (default: a plain ``MockIcomRadio``) plus a
+    logged-in, stream-opened raw client."""
+    if server is None:
+        server = MockIcomRadio()
     await server.start()
     client = _UdpClient()
     await asyncio.get_running_loop().create_datagram_endpoint(
@@ -387,7 +391,11 @@ async def _ask_serial_fake(
 
 
 async def _collect_lan_divergences() -> dict[str, tuple[str, str]]:
-    """Replay the recorded LAN requests against a fresh simulator.
+    """Replay the recorded LAN requests against the recorded-answers LAN fake.
+
+    The simulator is ``ic7610_lan_fake()`` — ``MockIcomRadio`` with the
+    recorded LAN answer table mounted — so the divergences below measure
+    what the mount still misses, not what a plain simulator would NAK.
 
     Returns the request-keyed divergences between the recorded classes and
     the simulator's live classes.  Recorded classes are built through
@@ -395,7 +403,7 @@ async def _collect_lan_divergences() -> dict[str, tuple[str, str]]:
     side without touching the fixture file.
     """
     observed: dict[str, tuple[str, str]] = {}
-    async with _lan_sim() as (server, client):
+    async with _lan_sim(ic7610_lan_fake()) as (server, client):
         for seq, (request, recorded_class) in enumerate(
             _recorded_lan_requests(), start=1
         ):
