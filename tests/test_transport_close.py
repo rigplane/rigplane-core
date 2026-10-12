@@ -127,3 +127,32 @@ async def test_full_connect_recovery_closes_the_session_less_control_endpoint(
         radio._conn_state = RadioConnectionState.DISCONNECTED
         await ctrl.disconnect()
         stale.close()
+
+
+class _UnconfirmedClose:
+    """Datagram-transport stand-in whose ``close()`` never reaches
+    ``connection_lost``, so ``disconnect()`` stays in its bounded wait."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+async def test_cancel_during_close_wait_still_ends_disconnected() -> None:
+    """A cancellation that lands in ``disconnect()``'s close wait propagates
+    and still leaves the transport DISCONNECTED."""
+    t = IcomTransport()
+    endpoint = _UnconfirmedClose()
+    t.state = ConnectionState.CONNECTING
+    t._udp_transport = endpoint  # type: ignore[assignment]
+    t._udp_close_event = asyncio.Event()
+    task = asyncio.create_task(t.disconnect())
+    await asyncio.sleep(0)
+    assert endpoint.closed
+    assert not task.done()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert t.state is ConnectionState.DISCONNECTED

@@ -409,6 +409,7 @@ class IcomTransport:
             pkt = self._build_control(ptype=PacketType.DISCONNECT, seq=0)
             self._raw_send(pkt)
 
+        close_wait_cancelled: asyncio.CancelledError | None = None
         if self._udp_transport is not None:
             close_event = self._udp_close_event
             self._udp_transport.close()
@@ -418,6 +419,8 @@ class IcomTransport:
                     await asyncio.wait_for(close_event.wait(), 1.0)
                 except asyncio.TimeoutError:
                     logger.debug("UDP socket close not confirmed within 1s; continuing")
+                except asyncio.CancelledError as exc:
+                    close_wait_cancelled = exc
 
         self.state = ConnectionState.DISCONNECTED
 
@@ -429,6 +432,8 @@ class IcomTransport:
             except Exception:
                 logger.debug("keepalive task raised during disconnect", exc_info=True)
         logger.info("Disconnected")
+        if close_wait_cancelled is not None:
+            raise close_wait_cancelled
 
     def start_ping_loop(self) -> None:
         """Start the periodic ping task."""
