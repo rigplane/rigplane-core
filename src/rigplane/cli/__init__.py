@@ -89,6 +89,12 @@ from rigplane.cli._diagnose import (  # noqa: E402
     add_subparser as _add_diagnose_subparser,
     run as _run_diagnose,
 )
+from rigplane.cli._instance_guard import (  # noqa: E402
+    RESIDENT_COMMANDS,
+    ResidentAlreadyRunningError,
+    acquire_resident_lock,
+    radio_lock_identity,
+)
 from rigplane.cli._validate import (  # noqa: E402
     add_subparser as _add_validate_subparser,
     run as _run_validate,
@@ -2344,6 +2350,17 @@ async def _run(args: argparse.Namespace) -> int:
         "station",
     ):
         config = replace(config, auto_reconnect=True)
+    # MOR-3391: one resident process per radio per computer. The guard is
+    # taken before the radio is opened and before any listener binds; the
+    # acquired lock is held for the process lifetime (the OS releases it on
+    # exit, including SIGKILL). Re-entering _run in the same process reuses
+    # the held lock — only another process is refused.
+    if args.command in RESIDENT_COMMANDS:
+        try:
+            acquire_resident_lock(radio_lock_identity(config))
+        except ResidentAlreadyRunningError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
     if args.command == "audio" and args.audio_command == "probe":
         return await _cmd_audio_probe(config, args)
     try:

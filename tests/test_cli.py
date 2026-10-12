@@ -2171,29 +2171,49 @@ class TestCheckPortsAvailable:
     ):
         """MOR-3391: a second resident start for the same radio refuses with 1.
 
-        The guard is taken before the radio is constructed, the port
-        preflight probes, or any listener binds — the fake radio is never
-        created and the refusal message names the holding process's pid.
+        The holder is a separate process, as in production. The guard is
+        taken before the radio is constructed, the port preflight probes,
+        or any listener binds — the fake radio is never created and the
+        refusal message names the holding process's pid.
         """
         import asyncio
         import os
+        import subprocess
+        import sys
 
         from rigplane.cli import _run
-        from rigplane.cli._instance_guard import (
-            acquire_resident_lock,
-            radio_lock_identity,
-        )
+        from rigplane.cli._instance_guard import radio_lock_identity
 
-        monkeypatch.setattr(
-            platformdirs, "user_cache_path", lambda _appname: tmp_path
-        )
+        monkeypatch.setattr(platformdirs, "user_cache_path", lambda _appname: tmp_path)
 
         args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
         identity = radio_lock_identity(
             LanBackendConfig(host="1.2.3.4", port=args.control_port)
         )
-        first = acquire_resident_lock(identity, cache_dir=tmp_path)
-        assert first is not None
+        child_script = (
+            "import sys, time\n"
+            "from rigplane.cli._instance_guard import acquire_resident_lock\n"
+            "acquire_resident_lock(sys.argv[1], cache_dir=sys.argv[2])\n"
+            "print('READY', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        src_dir = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(
+            os.environ,
+            PYTHONPATH=src_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        )
+        holder = subprocess.Popen(
+            [sys.executable, "-c", child_script, identity, str(tmp_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        assert holder.stdout is not None
+        ready = holder.stdout.readline()
+        assert ready.strip() == "READY", (
+            f"holder child failed: {holder.stderr.read() if holder.stderr else ''}"
+        )
         try:
             mock_radio = MagicMock()
             mock_radio.__aenter__ = AsyncMock(return_value=mock_radio)
@@ -2213,12 +2233,13 @@ class TestCheckPortsAvailable:
                 except AssertionError:
                     pytest.fail("second resident start touched the radio or ports")
         finally:
-            first.close()
+            holder.kill()
+            holder.wait(timeout=30)
 
         assert result == 1
         captured = capsys.readouterr()
         assert "already serving this radio" in captured.err
-        assert str(os.getpid()) in captured.err
+        assert str(holder.pid) in captured.err
 
 
 class TestProductionManagedTxComposition:
