@@ -20,6 +20,7 @@ from ...core.command_service import (
 )
 from ...core.command_dispatch import (
     CommandUnsupportedError,
+    _int_param,
     _raw_int_level_from_param,
     command_descriptor,
     command_descriptors,
@@ -378,7 +379,7 @@ def _refuse_off_domain_control(
     if isinstance(radio, ControlDomainCapable) and (
         radio.control_display_bounds(control) is not None
     ):
-        raw = int(value)
+        raw = _int_param(value, param)
         if radio.decode_control_raw(control, raw) is None:
             raise ValueError(
                 f"{control} value {raw!r} is outside the radio's published "
@@ -390,10 +391,10 @@ def _refuse_off_domain_control(
         return
     controls = _published_controls(radio)
     if entry.get("quantization") == "reject":
-        validate_control_raw_value(controls, control, int(value))
+        validate_control_raw_value(controls, control, _int_param(value, param))
         return
     if all(key in entry for key in _LEGACY_DOMAIN_KEYS):
-        encode_legacy_control(controls, control, int(value))
+        encode_legacy_control(controls, control, _int_param(value, param))
 
 
 def _notch_position_from_param(radio: "Radio | None", params: dict[str, Any]) -> int:
@@ -409,7 +410,8 @@ def _notch_position_from_param(radio: "Radio | None", params: dict[str, Any]) ->
     """
     value = params["value"]
     if _published_control_entry(radio, "manual_notch_freq") is not None:
-        return int(value)
+        position: int = _int_param(value, "value")
+        return position
     wire_level: int = _raw_int_level_from_param(value)
     return wire_level
 
@@ -517,11 +519,11 @@ def _consume_normalized_level_unit(name: str, params: dict[str, Any]) -> dict[st
 
 # ``ControlHandler._send_command_failure`` logs these exception types at
 # ERROR with a traceback and every other failure as one WARNING line; the
-# client reply is the same for both. They are what a bug in the command
-# path raises (a missing attribute, a wrong call signature, an undefined
-# name); malformed client parameters can raise TypeError or AttributeError
-# too (``int(None)`` in ``command_intent_from_request``) and are logged the
-# same way. Pinned by tests/test_control_command_programmer_errors.py.
+# client reply is the same for both. Client command parameters are
+# validated before they can raise these types on the paths pinned by
+# tests/test_command_param_validation.py; anything else that raises them
+# is treated as a bug. Pinned by
+# tests/test_control_command_programmer_errors.py.
 _PROGRAMMER_ERRORS: tuple[type[Exception], ...] = (AttributeError, TypeError, NameError)
 
 
@@ -1272,6 +1274,36 @@ class ControlHandler:
         name = msg.get("name", "")
         params = msg.get("params", {})
 
+        # A non-string ``name`` is malformed client input: answer it with
+        # the same ``unknown_command`` reply an unknown string gets, logged
+        # at WARNING, before the params refusal below — that refusal calls
+        # ``command_descriptor(name)``, which raises TypeError on an
+        # unhashable list/dict name and would end the control session
+        # instead of answering it. Pinned by
+        # tests/test_command_param_validation.py.
+        if not isinstance(name, str):
+            logger.warning("control: command with a non-string name refused: %r", name)
+            await self._send_unknown_command(cmd_id, name)
+            return
+
+        # ``params: null`` is a client spelling of "no params" and behaves
+        # exactly like an omitted ``params``. Any other non-object ``params``
+        # (a list, a string, a number) is malformed client input, not a
+        # programmer error: refuse it here, before the MOD-input
+        # interception, rate limiting and coalescing, so it can never reach
+        # a coercion site (``dict(params)``, ``params.get``) as a
+        # TypeError/AttributeError. Same refusal wording as the HTTP
+        # single-command ingress (``server.py:
+        # WebServer._handle_http_single_command``). Pinned by
+        # tests/test_command_param_validation.py.
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            await self._send_command_failure(
+                cmd_id, name, ValueError("params must be an object")
+            )
+            return
+
         # MOR-624: session-local arm/disarm of the teardown MOD-input restore.
         # Bookkeeping only (never a radio command) — intercepted before the
         # _COMMANDS gate so the command catalog stays untouched.
@@ -1488,17 +1520,7 @@ class ControlHandler:
         validation/enqueue/ack behavior.
         """
         if name not in self._COMMANDS:
-            await self._ws.send_text(
-                encode_json(
-                    {
-                        "type": "response",
-                        "id": cmd_id,
-                        "ok": False,
-                        "error": "unknown_command",
-                        "message": f"unknown command: {name!r}",
-                    }
-                )
-            )
+            await self._send_unknown_command(cmd_id, name)
             return
 
         if self._radio is None:
@@ -1534,6 +1556,20 @@ class ControlHandler:
             )
         except Exception as exc:
             await self._send_command_failure(cmd_id, name, exc)
+
+    async def _send_unknown_command(self, cmd_id: Any, name: Any) -> None:
+        """Answer a command whose name is unknown (or not a string at all)."""
+        await self._ws.send_text(
+            encode_json(
+                {
+                    "type": "response",
+                    "id": cmd_id,
+                    "ok": False,
+                    "error": "unknown_command",
+                    "message": f"unknown command: {name!r}",
+                }
+            )
+        )
 
     async def _send_command_failure(
         self, cmd_id: Any, name: str, exc: Exception
@@ -2285,7 +2321,7 @@ class ControlHandler:
             raise RuntimeError("radio connection not available")
         if CAP_AF_LEVEL not in radio.capabilities:
             raise RuntimeError("radio does not support this command")
-        rx = int(params.get("receiver", 0))
+        rx = _int_param(params.get("receiver", 0), "receiver")
         _refuse_unsupported_receiver(self._radio, rx, operation="get_af_mute")
         on = await radio.get_af_mute(receiver=rx)
         return {"on": on, "receiver": rx}
@@ -2508,11 +2544,11 @@ class ControlHandler:
                     raise RuntimeError("radio does not support send_civ")
                 if "command" not in params:
                     raise ValueError("missing required 'command' parameter")
-                command = int(params["command"])
+                command = _int_param(params["command"], "command")
                 if not 0 <= command <= 0xFF:
                     raise ValueError(f"command must be 0-255, got {command}")
                 raw_sub = params.get("sub")
-                sub = None if raw_sub is None else int(raw_sub)
+                sub = None if raw_sub is None else _int_param(raw_sub, "sub")
                 if sub is not None and not 0 <= sub <= 0xFF:
                     raise ValueError(f"sub must be 0-255, got {sub}")
                 wait_response = bool(params.get("wait_response", False))
@@ -2541,25 +2577,25 @@ class ControlHandler:
                     "wait_response": False,
                 }
             case "set_band":
-                band = int(params["band"])
+                band = _int_param(params["band"], "band")
                 q.put(SetBand(band))
                 return {"band": band}
             case "set_freq":
-                freq = int(params["freq"])
-                rx = int(params.get("receiver", 0))
+                freq = _int_param(params["freq"], "freq")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_freq")
                 q.put(SetFreq(freq, receiver=rx))
                 return {"freq": freq, "receiver": rx}
             case "set_mode":
                 mode = str(params["mode"])
-                rx = int(params.get("receiver", 0))
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_mode")
                 # MOR-495: an optional filter (1-3) recalls the destination
                 # mode's remembered filter, mirroring the radio front panel.
                 # Accept either `filter` or `filter_num`; absent → mode-only
                 # (radio applies its mode-default filter).
                 fil_raw = params.get("filter", params.get("filter_num"))
-                fil_num = None if fil_raw is None else int(fil_raw)
+                fil_num = None if fil_raw is None else _int_param(fil_raw, "filter")
                 q.put(SetMode(mode, filter_width=fil_num, receiver=rx))
                 result: dict[str, Any] = {"mode": mode, "receiver": rx}
                 if fil_num is not None:
@@ -2568,13 +2604,13 @@ class ControlHandler:
             case "set_filter":
                 fil_str = str(params.get("filter", "FIL1"))
                 fil_num = int(fil_str[-1]) if fil_str[-1].isdigit() else 1
-                rx = int(params.get("receiver", 0))
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_filter")
                 q.put(SetFilter(fil_num, receiver=rx))
                 return {"filter": fil_str, "receiver": rx}
             case "set_filter_width":
-                width = int(params["width"])
-                rx = int(params.get("receiver", 0))
+                width = _int_param(params["width"], "width")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 _refuse_unsupported_receiver(
                     self._radio, rx, operation="set_filter_width"
                 )
@@ -2599,8 +2635,8 @@ class ControlHandler:
                 q.put(ResetFilterWidth(receiver=rx))
                 return {"receiver": rx}
             case "set_filter_shape":
-                shape = int(params["shape"])
-                rx = int(params.get("receiver", 0))
+                shape = _int_param(params["shape"], "shape")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("filter_shape", "set_filter_shape")
                 _refuse_unsupported_receiver(
                     self._radio, rx, operation="set_filter_shape"
@@ -2608,8 +2644,8 @@ class ControlHandler:
                 q.put(SetFilterShape(shape, receiver=rx))
                 return {"shape": shape, "receiver": rx}
             case "set_if_shift":
-                offset = int(params["offset"])
-                rx = int(params.get("receiver", 0))
+                offset = _int_param(params["offset"], "offset")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("if_shift", "set_if_shift")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_if_shift")
                 q.put(SetIfShift(offset, receiver=rx))
@@ -2625,7 +2661,7 @@ class ControlHandler:
                 q.put(SetRitTxStatus(on))
                 return {"on": on}
             case "set_rit_frequency":
-                freq = int(params.get("freq", 0))
+                freq = _int_param(params.get("freq", 0), "freq")
                 self._ensure_capability("rit", "set_rit_frequency")
                 q.put(SetRitFrequency(freq))
                 return {"freq": freq}
@@ -2677,8 +2713,8 @@ class ControlHandler:
                 q.put(VfoSwap() if name == "vfo_swap" else VfoEqualize())
                 return {}
             case "set_data_mode":
-                dm = int(params["mode"])
-                rx = int(params.get("receiver", 0))
+                dm = _int_param(params["mode"], "mode")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("data_mode", "set_data_mode")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_data_mode")
                 q.put(SetDataMode(dm, receiver=rx))
@@ -2729,7 +2765,7 @@ class ControlHandler:
                 q.put(SetPowerstat(on))
                 return {"on": on}
             case "set_drive_gain":
-                level = int(params["level"])
+                level = _int_param(params["level"], "level")
                 self._ensure_capability("drive_gain", "set_drive_gain")
                 q.put(SetDriveGain(level))
                 return {"level": level}
@@ -2750,49 +2786,49 @@ class ControlHandler:
         match name:
             case "set_nb":
                 on = bool(params.get("on", False))
-                rx = int(params.get("receiver", 0))
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("nb", "set_nb")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_nb")
                 q.put(SetNB(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_nr":
                 on = bool(params.get("on", False))
-                rx = int(params.get("receiver", 0))
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("nr", "set_nr")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_nr")
                 q.put(SetNR(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_nr_level":
-                level = int(params["level"])
-                rx = int(params.get("receiver", 0))
+                level = _int_param(params["level"], "level")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("nr", "set_nr_level")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_nr_level")
                 q.put(SetNRLevel(level, receiver=rx))
                 return {"level": level, "receiver": rx}
             case "set_nb_level":
-                level = int(params["level"])
-                rx = int(params.get("receiver", 0))
+                level = _int_param(params["level"], "level")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("nb", "set_nb_level")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_nb_level")
                 q.put(SetNBLevel(level, receiver=rx))
                 return {"level": level, "receiver": rx}
             case "set_nb_depth":
-                level = int(params["level"])
-                rx = int(params.get("receiver", 0))
+                level = _int_param(params["level"], "level")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("nb", "set_nb_depth")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_nb_depth")
                 q.put(SetNbDepth(level, receiver=rx))
                 return {"level": level, "receiver": rx}
             case "set_nb_width":
-                level = int(params["level"])
-                rx = int(params.get("receiver", 0))
+                level = _int_param(params["level"], "level")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("nb", "set_nb_width")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_nb_width")
                 q.put(SetNbWidth(level, receiver=rx))
                 return {"level": level, "receiver": rx}
             case "set_auto_notch":
                 on = bool(params.get("on", False))
-                rx = int(params.get("receiver", 0))
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("notch", "set_auto_notch")
                 _refuse_unsupported_receiver(
                     self._radio, rx, operation="set_auto_notch"
@@ -2801,7 +2837,7 @@ class ControlHandler:
                 return {"on": on, "receiver": rx}
             case "set_manual_notch":
                 on = bool(params.get("on", False))
-                rx = int(params.get("receiver", 0))
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("notch", "set_manual_notch")
                 _refuse_unsupported_receiver(
                     self._radio, rx, operation="set_manual_notch"
@@ -2810,13 +2846,13 @@ class ControlHandler:
                 return {"on": on, "receiver": rx}
             case "set_narrow":
                 on = bool(params.get("on", False))
-                rx = int(params.get("receiver", 0))
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("narrow", "set_narrow")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_narrow")
                 q.put(SetNarrow(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_notch_filter":
-                rx = int(params.get("receiver", 0))
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 level = _notch_position_from_param(radio, params)
                 self._ensure_capability("notch", "set_notch_filter")
                 _refuse_unsupported_receiver(
@@ -2825,8 +2861,8 @@ class ControlHandler:
                 q.put(SetNotchFilter(level, receiver=rx))
                 return {"value": level, "receiver": rx}
             case "set_manual_notch_width":
-                value = int(params["value"])
-                rx = int(params.get("receiver", 0))
+                value = _int_param(params["value"], "value")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("notch", "set_manual_notch_width")
                 _refuse_unsupported_receiver(
                     self._radio, rx, operation="set_manual_notch_width"
@@ -2835,14 +2871,14 @@ class ControlHandler:
                 return {"value": value, "receiver": rx}
             case "set_digisel":
                 on = bool(params.get("on", False))
-                rx = int(params.get("receiver", 0))
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("digisel", "set_digisel")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_digisel")
                 q.put(SetDigiSel(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_digisel_shift":
-                level = int(params["level"])
-                rx = int(params.get("receiver", 0))
+                level = _int_param(params["level"], "level")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 # Distinct from "digisel" (0x16/0x4E toggle): DIGI-SEL Shift
                 # is 0x14/0x13 (MOR-1544).
                 self._ensure_capability("digisel_shift", "set_digisel_shift")
@@ -2853,49 +2889,49 @@ class ControlHandler:
                 return {"level": level, "receiver": rx}
             case "set_ip_plus" | "set_ipplus":
                 on = bool(params.get("on", False))
-                rx = int(params.get("receiver", 0))
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("ip_plus", "set_ip_plus")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_ip_plus")
                 q.put(SetIpPlus(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_pbt_inner":
-                level = int(params["value"])
-                rx = int(params.get("receiver", 0))
+                level = _int_param(params["value"], "value")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("pbt", "set_pbt_inner")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_pbt_inner")
                 q.put(SetPbtInner(level, receiver=rx))
                 return {"value": level, "receiver": rx}
             case "set_pbt_outer":
-                level = int(params["value"])
-                rx = int(params.get("receiver", 0))
+                level = _int_param(params["value"], "value")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("pbt", "set_pbt_outer")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_pbt_outer")
                 q.put(SetPbtOuter(level, receiver=rx))
                 return {"value": level, "receiver": rx}
             case "set_agc_time_constant":
-                value = int(params["value"])
-                rx = int(params.get("receiver", 0))
+                value = _int_param(params["value"], "value")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 _refuse_unsupported_receiver(
                     self._radio, rx, operation="set_agc_time_constant"
                 )
                 q.put(SetAgcTimeConstant(value, receiver=rx))
                 return {"value": value, "receiver": rx}
             case "set_agc":
-                agc_mode = int(params["mode"])
-                rx = int(params.get("receiver", 0))
+                agc_mode = _int_param(params["mode"], "mode")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_agc")
                 q.put(SetAgc(agc_mode, receiver=rx))
                 return {"mode": agc_mode, "receiver": rx}
             case "set_apf":
-                apf_mode = int(params["mode"])
-                rx = int(params.get("receiver", 0))
+                apf_mode = _int_param(params["mode"], "mode")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("apf", "set_apf")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_apf")
                 q.put(SetApf(apf_mode, receiver=rx))
                 return {"mode": apf_mode, "receiver": rx}
             case "set_audio_peak_filter":
                 on = bool(params.get("on", False))
-                rx = int(params.get("receiver", 0))
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("apf", "set_audio_peak_filter")
                 _refuse_unsupported_receiver(
                     self._radio, rx, operation="set_audio_peak_filter"
@@ -2904,7 +2940,7 @@ class ControlHandler:
                 return {"on": on, "receiver": rx}
             case "set_twin_peak":
                 on = bool(params.get("on", False))
-                rx = int(params.get("receiver", 0))
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("twin_peak", "set_twin_peak")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_twin_peak")
                 q.put(SetTwinPeak(on, receiver=rx))
@@ -2925,11 +2961,11 @@ class ControlHandler:
     ) -> dict[str, Any] | None:
         match name:
             case "set_mic_gain":
-                level = int(params["level"])
+                level = _int_param(params["level"], "level")
                 q.put(SetMicGain(level))
                 return {"level": level}
             case "set_compressor_level":
-                level = int(params["level"])
+                level = _int_param(params["level"], "level")
                 self._ensure_capability("compressor", "set_compressor_level")
                 q.put(SetCompressorLevel(level))
                 return {"level": level}
@@ -2943,46 +2979,46 @@ class ControlHandler:
                 q.put(SetMonitor(on))
                 return {"on": on}
             case "set_monitor_gain":
-                level = int(params["level"])
+                level = _int_param(params["level"], "level")
                 self._ensure_capability("monitor", "set_monitor_gain")
                 q.put(SetMonitorGain(level))
                 return {"level": level}
             case "set_af_mute":
                 on = bool(params["on"])
-                rx = int(params.get("receiver", 0))
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_af_mute")
                 q.put(SetAfMute(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_acc1_mod_level":
-                level = int(params["level"])
+                level = _int_param(params["level"], "level")
                 q.put(SetAcc1ModLevel(level))
                 return {"level": level}
             case "set_usb_mod_level":
-                level = int(params["level"])
+                level = _int_param(params["level"], "level")
                 q.put(SetUsbModLevel(level))
                 return {"level": level}
             case "set_lan_mod_level":
-                level = int(params["level"])
+                level = _int_param(params["level"], "level")
                 q.put(SetLanModLevel(level))
                 return {"level": level}
             case "set_data_off_mod_input":
-                source = int(params["source"])
+                source = _int_param(params["source"], "source")
                 q.put(SetDataOffModInput(source))
                 return {"source": source}
             case "set_data1_mod_input":
-                source = int(params["source"])
+                source = _int_param(params["source"], "source")
                 q.put(SetData1ModInput(source))
                 return {"source": source}
             case "set_data2_mod_input":
-                source = int(params["source"])
+                source = _int_param(params["source"], "source")
                 q.put(SetData2ModInput(source))
                 return {"source": source}
             case "set_data3_mod_input":
-                source = int(params["source"])
+                source = _int_param(params["source"], "source")
                 q.put(SetData3ModInput(source))
                 return {"source": source}
             case "set_ssb_tx_bw":
-                value = int(params["value"])
+                value = _int_param(params["value"], "value")
                 self._ensure_capability("ssb_tx_bw", "set_ssb_tx_bw")
                 q.put(SetSsbTxBandwidth(value))
                 return {"value": value}
@@ -3002,7 +3038,7 @@ class ControlHandler:
     ) -> dict[str, Any] | None:
         match name:
             case "switch_scope_receiver":
-                receiver = int(params.get("receiver", 0))
+                receiver = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("scope", "switch_scope_receiver")
                 _refuse_unsupported_receiver(
                     self._radio, receiver, operation="switch_scope_receiver"
@@ -3015,19 +3051,19 @@ class ControlHandler:
                 q.put(SetScopeDuringTx(on))
                 return {"on": on}
             case "set_scope_center_type":
-                center_type = int(params["center_type"])
+                center_type = _int_param(params["center_type"], "center_type")
                 self._ensure_capability("scope", "set_scope_center_type")
                 q.put(SetScopeCenterType(center_type))
                 return {"center_type": center_type}
             case "set_scope_edge":
-                edge = int(params["edge"])
+                edge = _int_param(params["edge"], "edge")
                 self._ensure_capability("scope", "set_scope_edge")
                 q.put(SetScopeEdge(edge))
                 return {"edge": edge}
             case "set_scope_fixed_edge":
-                edge = int(params["edge"])
-                start_hz = int(params["start_hz"])
-                end_hz = int(params["end_hz"])
+                edge = _int_param(params["edge"], "edge")
+                start_hz = _int_param(params["start_hz"], "start_hz")
+                end_hz = _int_param(params["end_hz"], "end_hz")
                 self._ensure_capability("scope", "set_scope_fixed_edge")
                 q.put(SetScopeFixedEdge(edge, start_hz, end_hz))
                 return {"edge": edge, "start_hz": start_hz, "end_hz": end_hz}
@@ -3037,7 +3073,7 @@ class ControlHandler:
                 q.put(SetScopeVbw(narrow))
                 return {"narrow": narrow}
             case "set_scope_rbw":
-                rbw = int(params.get("rbw", 0))
+                rbw = _int_param(params.get("rbw", 0), "rbw")
                 self._ensure_capability("scope", "set_scope_rbw")
                 q.put(SetScopeRbw(rbw))
                 return {"rbw": rbw}
@@ -3047,22 +3083,22 @@ class ControlHandler:
                 q.put(SetScopeDual(dual))
                 return {"dual": dual}
             case "set_scope_mode":
-                scope_mode = int(params["mode"])
+                scope_mode = _int_param(params["mode"], "mode")
                 self._ensure_capability("scope", "set_scope_mode")
                 q.put(SetScopeMode(scope_mode))
                 return {"mode": scope_mode}
             case "set_scope_span":
-                span = int(params["span"])
+                span = _int_param(params["span"], "span")
                 self._ensure_capability("scope", "set_scope_span")
                 q.put(SetScopeSpan(span))
                 return {"span": span}
             case "set_scope_speed":
-                speed = int(params["speed"])
+                speed = _int_param(params["speed"], "speed")
                 self._ensure_capability("scope", "set_scope_speed")
                 q.put(SetScopeSpeed(speed))
                 return {"speed": speed}
             case "set_scope_ref":
-                ref = int(params["ref"])
+                ref = _int_param(params["ref"], "ref")
                 self._ensure_capability("scope", "set_scope_ref")
                 q.put(SetScopeRef(ref))
                 return {"ref": ref}
@@ -3087,8 +3123,8 @@ class ControlHandler:
     ) -> dict[str, Any] | None:
         match name:
             case "set_preamp":
-                level = int(params["level"])
-                rx = int(params.get("receiver", 0))
+                level = _int_param(params["level"], "level")
+                rx = _int_param(params.get("receiver", 0), "receiver")
                 self._ensure_capability("preamp", "set_preamp")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_preamp")
                 q.put(SetPreamp(level, receiver=rx))
@@ -3110,7 +3146,7 @@ class ControlHandler:
                 q.put(SetRxAntennaAnt2(on))
                 return {"on": on}
             case "set_rx_antenna":
-                antenna = int(params["antenna"])
+                antenna = _int_param(params["antenna"], "antenna")
                 on = bool(params.get("on", False))
                 self._ensure_capability("rx_antenna", "set_rx_antenna")
                 q.put(SetRxAntenna(antenna, on))
@@ -3135,38 +3171,38 @@ class ControlHandler:
     ) -> dict[str, Any] | None:
         match name:
             case "set_system_date":
-                year = int(params["year"])
-                month = int(params["month"])
-                day = int(params["day"])
+                year = _int_param(params["year"], "year")
+                month = _int_param(params["month"], "month")
+                day = _int_param(params["day"], "day")
                 q.put(SetSystemDate(year, month, day))
                 return {"year": year, "month": month, "day": day}
             case "set_system_time":
-                hour = int(params["hour"])
-                minute = int(params["minute"])
+                hour = _int_param(params["hour"], "hour")
+                minute = _int_param(params["minute"], "minute")
                 q.put(SetSystemTime(hour, minute))
                 return {"hour": hour, "minute": minute}
             case "set_cw_pitch":
-                value = int(params["value"])
+                value = _int_param(params["value"], "value")
                 self._ensure_capability("cw", "set_cw_pitch")
                 q.put(SetCwPitch(value))
                 return {"value": value}
             case "set_key_speed":
-                speed = int(params["speed"])
+                speed = _int_param(params["speed"], "speed")
                 self._ensure_capability("cw", "set_key_speed")
                 q.put(SetKeySpeed(speed))
                 return {"speed": speed}
             case "set_break_in":
-                break_in_mode = int(params["mode"])
+                break_in_mode = _int_param(params["mode"], "mode")
                 self._ensure_capability("break_in", "set_break_in")
                 q.put(SetBreakIn(break_in_mode))
                 return {"mode": break_in_mode}
             case "set_break_in_delay":
-                level = int(params["level"])
+                level = _int_param(params["level"], "level")
                 self._ensure_capability("break_in", "set_break_in_delay")
                 q.put(SetBreakInDelay(level))
                 return {"level": level}
             case "set_dash_ratio":
-                value = int(params["value"])
+                value = _int_param(params["value"], "value")
                 self._ensure_capability("cw", "set_dash_ratio")
                 q.put(SetDashRatio(value))
                 return {"value": value}
@@ -3176,22 +3212,22 @@ class ControlHandler:
                 q.put(SetVox(on))
                 return {"on": on}
             case "set_vox_gain":
-                level = int(params["level"])
+                level = _int_param(params["level"], "level")
                 self._ensure_capability("vox", "set_vox_gain")
                 q.put(SetVoxGain(level))
                 return {"level": level}
             case "set_anti_vox_gain":
-                level = int(params["level"])
+                level = _int_param(params["level"], "level")
                 self._ensure_capability("vox", "set_anti_vox_gain")
                 q.put(SetAntiVoxGain(level))
                 return {"level": level}
             case "set_vox_delay":
-                level = int(params["level"])
+                level = _int_param(params["level"], "level")
                 self._ensure_capability("vox", "set_vox_delay")
                 q.put(SetVoxDelay(level))
                 return {"level": level}
             case "speak":
-                mode = int(params.get("mode", 0))
+                mode = _int_param(params.get("mode", 0), "mode")
                 self._ensure_capability("speech", "speak")
                 q.put(Speak(mode))
                 return {"mode": mode}
@@ -3211,7 +3247,7 @@ class ControlHandler:
                 return {"on": on}
             case "scan_start":
                 self._ensure_capability("scan", "scan_start")
-                scan_type = int(params.get("type", 0x01))
+                scan_type = _int_param(params.get("type", 0x01), "type")
                 q.put(ScanStart(scan_type=scan_type))
                 return {"type": scan_type}
             case "scan_stop":
@@ -3220,7 +3256,7 @@ class ControlHandler:
                 return {}
             case "scan_set_df_span":
                 self._ensure_capability("scan", "scan_set_df_span")
-                span = int(params["span"])
+                span = _int_param(params["span"], "span")
                 if span not in range(0xA1, 0xA8):
                     raise ValueError(
                         f"scan_set_df_span: span must be 0xA1-0xA7, got {span:#x}"
@@ -3229,7 +3265,7 @@ class ControlHandler:
                 return {"span": span}
             case "scan_set_resume":
                 self._ensure_capability("scan", "scan_set_resume")
-                resume_mode = int(params["mode"])
+                resume_mode = _int_param(params["mode"], "mode")
                 if resume_mode not in range(0xD0, 0xD4):
                     raise ValueError(
                         f"scan_set_resume: mode must be 0xD0-0xD3, got {resume_mode:#x}"
@@ -3237,7 +3273,7 @@ class ControlHandler:
                 q.put(ScanSetResume(mode=resume_mode))
                 return {"mode": resume_mode}
             case "set_ref_adjust":
-                value = int(params["value"])
+                value = _int_param(params["value"], "value")
                 q.put(SetRefAdjust(value))
                 return {"value": value}
             case "set_civ_transceive":
@@ -3245,12 +3281,12 @@ class ControlHandler:
                 q.put(SetCivTransceive(on))
                 return {"on": on}
             case "set_tuning_step":
-                step = int(params["step"])
+                step = _int_param(params["step"], "step")
                 q.put(SetTuningStep(step))
                 return {"step": step}
             case "set_utc_offset":
-                hours = int(params["hours"])
-                minutes = int(params["minutes"])
+                hours = _int_param(params["hours"], "hours")
+                minutes = _int_param(params["minutes"], "minutes")
                 is_negative = bool(params["is_negative"])
                 q.put(SetUtcOffset(hours, minutes, is_negative))
                 return {"hours": hours, "minutes": minutes, "is_negative": is_negative}
@@ -3275,7 +3311,7 @@ class ControlHandler:
                         "command set_memory_mode is not supported by this radio "
                         "(missing MemoryCapable)"
                     )
-                channel = int(params["channel"])
+                channel = _int_param(params["channel"], "channel")
                 if not 1 <= channel <= 101:
                     raise ValueError(f"channel must be 1-101, got {channel}")
                 q.put(SetMemoryMode(channel))
@@ -3294,7 +3330,7 @@ class ControlHandler:
                         "command memory_to_vfo is not supported by this radio "
                         "(missing MemoryCapable)"
                     )
-                channel = int(params["channel"])
+                channel = _int_param(params["channel"], "channel")
                 if not 1 <= channel <= 101:
                     raise ValueError(f"channel must be 1-101, got {channel}")
                 q.put(MemoryToVfo(channel))
@@ -3305,7 +3341,7 @@ class ControlHandler:
                         "command memory_clear is not supported by this radio "
                         "(missing MemoryCapable)"
                     )
-                channel = int(params["channel"])
+                channel = _int_param(params["channel"], "channel")
                 if not 1 <= channel <= 101:
                     raise ValueError(f"channel must be 1-101, got {channel}")
                 q.put(MemoryClear(channel))

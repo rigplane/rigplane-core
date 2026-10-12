@@ -1107,7 +1107,7 @@ async def test_att_web_explicit_none_receiver_fails_before_enqueue() -> None:
         radio=_AttenuatorIngressRadio(), server=SimpleNamespace(command_queue=queue)
     )
 
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueError, match="receiver"):
         await handler._enqueue_command("set_att", {"db": 20, "receiver": None})
 
     assert queue.items == []

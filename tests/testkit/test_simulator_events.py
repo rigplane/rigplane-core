@@ -14,6 +14,7 @@ import contextlib
 import logging
 import time
 from collections.abc import AsyncGenerator, Callable
+from unittest.mock import patch
 
 import pytest
 
@@ -244,25 +245,10 @@ async def test_user_disconnect_during_reconnect_ends_loop(
             await radio.disconnect()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "MOR-3335: a user disconnect landing inside the loop's per-round "
-        "release is absorbed by CivRuntime helper awaits; the loop logs in "
-        "again"
-    ),
-)
-async def test_user_disconnect_inside_loop_release_ends_loop() -> None:
-    """A user ``disconnect()`` landing inside the loop's own release ends it.
-
-    The reconnect loop awaits ``CoreRadioSessionLifecycle.disconnect()`` at
-    the start of every round.  Inside that release, the CI-V helper stops
-    (``CivRuntime.stop_data_watchdog``) cancel their helper tasks and await
-    them, and those awaits absorb a ``CancelledError`` aimed at the loop
-    task itself — so a ``CoreRadio.disconnect`` cancel that lands there
-    never reaches the loop as an exception.  The loop must notice the
-    pending cancellation after the release await returns, or it calls
-    ``connect()`` and emits ``connected`` after the user disconnected.
+async def _assert_user_disconnect_ends_loop(inject_at: str) -> None:
+    """Start the user's ``disconnect()`` from inside the reconnect loop task
+    the first time the loop calls ``inject_at`` (a ``CivRuntime`` method, or
+    ``connect`` on the radio), then assert the loop ends with no new login.
     """
     server = MockIcomRadio(single_owner=True, keepalive_hold_s=2.0)
     await server.start()
@@ -272,47 +258,175 @@ async def test_user_disconnect_inside_loop_release_ends_loop() -> None:
         radio.set_reconnect_status_callback(statuses.append)
         user_task: asyncio.Task[None] | None = None
         loop_task: asyncio.Task[None] | None = None
+        logins_at_stop = -1
         with fast_connect():
             await radio.connect()
-            civ = radio._civ_runtime
-            orig_stop = civ.stop_data_watchdog
+            target: object = radio if inject_at == "connect" else radio._civ_runtime
+            original = getattr(target, inject_at)
 
-            async def stop_spy() -> None:
-                nonlocal user_task, loop_task
+            async def spy(*args: object, **kwargs: object) -> object:
+                nonlocal user_task, loop_task, logins_at_stop
                 current = asyncio.current_task()
                 if user_task is None and current is radio._reconnect_task:
                     loop_task = current
+                    logins_at_stop = server.login_count
                     user_task = asyncio.ensure_future(radio.disconnect())
-                await orig_stop()
+                return await original(*args, **kwargs)
 
-            civ.stop_data_watchdog = stop_spy
             try:
-                server.keepalive_silence(at=0.1, for_seconds=3.0)
-                deadline = time.monotonic() + 15.0
-                while user_task is None and time.monotonic() < deadline:
-                    await asyncio.sleep(0.02)
-                assert user_task is not None, (
-                    "disconnect never injected inside the loop's release",
-                    statuses,
-                )
-                await asyncio.wait_for(user_task, timeout=10.0)
-                n_status = len(statuses)
-                # Watch past the silence window: a loop that survived the
-                # user's disconnect logs back in as soon as the radio
-                # answers again, so the window must cover it.
-                await asyncio.sleep(7.0)
+                with patch.object(target, inject_at, spy):
+                    server.keepalive_silence(at=0.1, for_seconds=3.0)
+                    deadline = time.monotonic() + 15.0
+                    while user_task is None and time.monotonic() < deadline:
+                        await asyncio.sleep(0.02)
+                    assert user_task is not None, (
+                        f"disconnect never injected at the loop's {inject_at}",
+                        statuses,
+                    )
+                    await asyncio.wait_for(user_task, timeout=10.0)
+                    n_status = len(statuses)
+                    # Watch past the silence window: a loop that survived
+                    # the user's disconnect logs back in as soon as the
+                    # radio answers again, so the window must cover it.
+                    await asyncio.sleep(7.0)
                 assert statuses[n_status:] == [], statuses[n_status:]
                 assert radio.conn_state is RadioConnectionState.DISCONNECTED
                 assert loop_task is not None
                 assert loop_task.done()
-                # No new login claimed the simulator's session.
+                # No new login after the user's stop, and none holds the
+                # simulator's session.
+                assert server.login_count == logins_at_stop
                 assert server.session_held is False
             finally:
-                civ.stop_data_watchdog = orig_stop
                 if loop_task is not None and not loop_task.done():
                     loop_task.cancel()
                     with contextlib.suppress(BaseException):
                         await loop_task
+                with contextlib.suppress(Exception):
+                    await radio.disconnect()
+    finally:
+        await server.stop()
+
+
+@pytest.mark.parametrize("helper", ["stop_data_watchdog", "stop_pump"])
+async def test_user_disconnect_inside_loop_release_ends_loop(helper: str) -> None:
+    """A user ``disconnect()`` landing inside the loop's own release ends it.
+
+    The reconnect loop awaits ``CoreRadioSessionLifecycle.disconnect()`` at
+    the start of every round.  Inside that release the CI-V helper stops
+    cancel their helper tasks and await them; ``stop_data_watchdog``
+    swallows the ``CancelledError`` of that await, which is also how the
+    ``CoreRadio.disconnect`` cancel aimed at the loop task arrives there.
+    The owner stop still reaches the loop through
+    ``CoreRadio._owner_stop_epoch``, which the loop re-reads when the
+    release returns.
+    """
+    await _assert_user_disconnect_ends_loop(helper)
+
+
+async def test_user_disconnect_at_loop_connect_entry_ends_loop() -> None:
+    """A user ``disconnect()`` started as the loop enters ``connect()``
+    ends the loop with no new login."""
+    await _assert_user_disconnect_ends_loop("connect")
+
+
+@pytest.mark.parametrize("failure_point", ["identity_gate", "startup_readiness"])
+async def test_failed_attempt_inside_loop_connect_keeps_the_loop(
+    failure_point: str,
+) -> None:
+    """A failure inside the loop's own connect attempt is one failed round.
+
+    The attempt's teardown runs inside the lifecycle connect task the loop
+    awaits.  It must not stop the loop: the loop retries, logs in, and the
+    handle still names the same, never-cancelled task.  The identity of the
+    failed attempt is retired before the next round.
+    """
+    server = MockIcomRadio(single_owner=True, keepalive_hold_s=2.0)
+    await server.start()
+    try:
+        radio = _client(server)
+        statuses: list[dict] = []
+        radio.set_reconnect_status_callback(statuses.append)
+        failed_in: list[asyncio.Task[None]] = []
+        identity_after_failure: list[object] = []
+
+        def take_injection() -> bool:
+            loop = radio._reconnect_task
+            if failed_in or loop is None or loop.done():
+                return False
+            if asyncio.current_task() is not radio._session_lifecycle._connect_task:
+                return False
+            failed_in.append(loop)
+            return True
+
+        class _FailedRound(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                msg = record.getMessage()
+                if (
+                    failed_in
+                    and not identity_after_failure
+                    and "Reconnect attempt" in msg
+                    and "failed" in msg
+                ):
+                    identity_after_failure.append(radio.connection_identity)
+
+        handler = _FailedRound(level=logging.WARNING)
+        with fast_connect():
+            await radio.connect()
+            orig_gate = radio._gate_lan_identity
+
+            async def gate(*, revalidate_origin: bool = False) -> bool:
+                if failure_point == "identity_gate" and take_injection():
+                    raise RuntimeError("injected identity-gate failure")
+                return await orig_gate(revalidate_origin=revalidate_origin)
+
+            async def readiness(*args: object, **kwargs: object) -> None:
+                if failure_point == "startup_readiness" and take_injection():
+                    raise RuntimeError("injected startup-readiness failure")
+
+            radio_reconnect.logger.addHandler(handler)
+            try:
+                with (
+                    patch.object(radio, "_gate_lan_identity", gate),
+                    patch(
+                        "rigplane.runtime._control_phase.wait_for_radio_startup_ready",
+                        readiness,
+                    ),
+                ):
+                    server.keepalive_silence(at=0.1, for_seconds=3.0)
+                    deadline = time.monotonic() + 15.0
+                    while not failed_in and time.monotonic() < deadline:
+                        await asyncio.sleep(0.02)
+                    assert failed_in, ("no failure injected in the loop", statuses)
+                    loop_task = failed_in[0]
+
+                    def recovered(seen: list[RadioConnectionState]) -> bool:
+                        return (
+                            seen[-1] is RadioConnectionState.CONNECTED
+                            and bool(statuses)
+                            and statuses[-1]["state"] == "connected"
+                        )
+
+                    seen = await _states_until(radio, 10.0, recovered)
+                    assert recovered(seen), (seen, statuses)
+                    assert radio._reconnect_task is loop_task
+                    await asyncio.wait_for(loop_task, timeout=5.0)
+                    assert not loop_task.cancelled()
+                    assert loop_task.cancelling() == 0
+                    assert identity_after_failure == [None]
+                    await _wait_usable(radio, 5.0)
+                    assert radio.connected
+                    assert server.session_held is True
+                    assert radio._token == server.token
+                await radio.disconnect()
+                assert server.session_held is False
+            finally:
+                radio_reconnect.logger.removeHandler(handler)
+                for task in failed_in:
+                    if not task.done():
+                        task.cancel()
+                        with contextlib.suppress(BaseException):
+                            await task
                 with contextlib.suppress(Exception):
                     await radio.disconnect()
     finally:
