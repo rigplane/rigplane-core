@@ -615,7 +615,7 @@ def send_civ_frame(command: int, sub: int | None, data: bytes) -> bytes | None:
     construction the managed ingress refuses on.  Returns None when
     the frame cannot be built (a command or sub byte outside 0-0xFF);
     each gate then treats the command as not exempt and captures or
-    refuses it as before.
+    refuses it.
     """
 
     try:

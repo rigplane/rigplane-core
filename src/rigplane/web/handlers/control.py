@@ -564,7 +564,7 @@ def _send_civ_params_end_transmission(params: Mapping[str, Any]) -> bool:
         ):
             return False
         data = bytes.fromhex(raw_data)
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, OverflowError):
         return False
     frame = send_civ_frame(command, sub, data)
     # Annotated local: under the web-scoped mypy run the runtime import
