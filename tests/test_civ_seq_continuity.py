@@ -144,6 +144,51 @@ async def test_rebuild_on_a_kept_session_resumes_the_old_numbering(
             await new.disconnect()
 
 
+async def test_retired_managed_tx_port_keeps_the_civ_numbering() -> None:
+    """A managed-TX port retirement records the retired numbering.
+
+    The retirement drops the CI-V transport while the control session stays
+    up, so the ``soft_reconnect`` rebuild that follows resumes the retired
+    transport's numbering instead of restarting at 0.
+    """
+    radio = _kept_session_radio()
+    old = _OfflineCivTransport()
+    old.send_seq = _OLD_NEXT_SEQ
+    radio._civ_transport = old
+    with _rebuild_stubs(radio):
+        assert radio._capture_managed_tx_port(7, lambda _obs: None) is True
+        await radio._retire_managed_tx_port(7)
+        assert radio._civ_resume_seq == _OLD_NEXT_SEQ
+        await radio._control_phase.soft_reconnect()
+        new = radio._civ_transport
+        assert isinstance(new, _OfflineCivTransport)
+        try:
+            assert new is not old
+            assert len(new.wire) == 1
+            open_packet = new.wire[0]
+            assert len(open_packet) == OPENCLOSE_SIZE
+            assert open_packet[0x15] == _OPENCLOSE_OPEN
+            assert _header_seq(open_packet) == _OLD_NEXT_SEQ
+        finally:
+            await new.disconnect()
+
+
+async def test_retried_retirement_without_a_known_port_records_nothing() -> None:
+    """A retirement that no longer sees its port leaves the recording alone."""
+    radio = _kept_session_radio()
+    old = _OfflineCivTransport()
+    old.send_seq = _OLD_NEXT_SEQ
+    radio._civ_transport = old
+    with _rebuild_stubs(radio):
+        assert radio._capture_managed_tx_port(7, lambda _obs: None) is True
+        await radio._retire_managed_tx_port(7)
+        assert radio._civ_resume_seq == _OLD_NEXT_SEQ
+        radio._civ_runtime.reset_managed_tx_generations()
+        with pytest.raises(ConnectionError):
+            await radio._retire_managed_tx_port(7)
+        assert radio._civ_resume_seq == _OLD_NEXT_SEQ
+
+
 async def test_fresh_login_starts_the_civ_numbering_at_zero() -> None:
     radio = IcomRadio(
         "127.0.0.1", username="u", password="p", model="IC-7610", timeout=0.5
