@@ -52,14 +52,13 @@ class TimeoutError(RigplaneError):
 
 
 class DiscoveryTimeout(TimeoutError):
-    """Control-channel discovery got no answer before any login.
+    """Discovery got no answer.
 
     Raised by ``IcomTransport._discover`` when the radio answers none of
     the "Are You There" probes.  A subclass of :class:`TimeoutError`, so
     every existing ``except TimeoutError`` handler and message assertion
     behaves exactly as before; the start-up busy loop catches exactly
-    this subclass to tell a pre-login discovery timeout apart from later
-    timeouts without parsing the message.
+    this subclass without parsing the message.
     """
 
 
