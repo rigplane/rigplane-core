@@ -2856,15 +2856,19 @@ def _public_value_control_expected(public_path: str, value: object) -> object:
 
 
 def _expected_observation_max_age(radio: IcomRadio, store_path: str) -> float | None:
-    """What ``_observation`` stamps: the resolved policy TTL, else the table.
+    """What ``_observation`` stamps: the resolved policy TTL, else the table,
+    else the profile default.
 
     Written out here rather than delegated to ``_civ_rx``'s own resolver: the
     store spells receivers ``0``/``1`` and ``[state_acquisition.field_policies]``
     spells them ``main``/``sub``, and that translation is the part worth
     restating independently. The rule is ``_observation_max_age``'s
-    (MOR-2576): a declared entry or a pollable capability resolves through
-    ``policy_for``; a path the profile does not poll keeps the rig-blind
-    table.
+    (MOR-2576, MOR-1815 residual fix): a declared entry or a pollable
+    capability resolves through ``policy_for``; a path the profile does not
+    poll keeps the rig-blind table entry where one exists, and otherwise the
+    profile default TTL — so only an explicit ``"never"`` (or a pollable
+    class resolving to the MOR-2615 deliberate ``None``) still stamps
+    ``None``.
     """
 
     from rigplane.runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
@@ -2884,6 +2888,12 @@ def _expected_observation_max_age(radio: IcomRadio, store_path: str) -> float | 
                 acquisition.capability_for(candidate).can_poll
             ):
                 return acquisition.policy_for(candidate).freshness_ttl_seconds
+        table_ttl = _OBSERVATION_MAX_AGE_SECONDS.get(
+            (path.scope.value, path.family.value, path.name)
+        )
+        if table_ttl is not None:
+            return table_ttl
+        return acquisition.policy_for(spellings[0]).freshness_ttl_seconds
     return _OBSERVATION_MAX_AGE_SECONDS.get(
         (path.scope.value, path.family.value, path.name)
     )
