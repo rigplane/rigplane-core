@@ -1,7 +1,9 @@
 """Compare IC-7300, IC-7610, IC-705 and FTX-1 profile wire bytes with their manual oracles.
 
 Each oracle (``tests/golden/wire_oracle/ic7300.toml``,
-``tests/golden/wire_oracle/ic7610.toml``) is transcribed from the radio
+``tests/golden/wire_oracle/ic7610.toml``,
+``tests/golden/wire_oracle/ic705.toml``,
+``tests/golden/wire_oracle/ftx1.toml``) is transcribed from the radio
 manual and never edited here. Each row's expected bytes are recomputed
 through the production path the runtime uses to send that command:
 ``profiles/rig_loader.py: load_rig`` loads ``rigs/<model>.toml``,
@@ -25,8 +27,8 @@ encode_legacy_control`` over the profile's ``[controls.key_speed]``
 band) before the builder renders the frame, so the conversion itself
 is inside the compared path.
 
-Rows are keyed by ``(control, receiver, direction, value)`` for both
-profiles: the IC-7610 table is not unique by ``control`` (two ``ptt``
+Rows are keyed by ``(control, receiver, direction, value)`` for all
+three CI-V profiles: the IC-7610 table is not unique by ``control`` (two ``ptt``
 rows, two ``dualwatch`` rows, and every dual-receiver control has a
 ``main`` and a ``sub`` row), and ``test_oracle_keys_unique`` fails on a
 duplicate key so two rows can never silently collapse into one entry
@@ -112,8 +114,9 @@ class _ProductionCall:
     in ``kwargs``: their bytes are captured from the ``CoreRadio``
     coroutine named by ``builder`` on the recording fake transport, so a
     profile-dependent builder choice inside the coroutine
-    (``runtime/radio.py: CoreRadio.set_mode`` picks per ``profiles:
-    RadioProfile.set_mode_via_selected``) is part of the compared path.
+    (``runtime/_dual_rx_runtime.py: DualRxRuntimeMixin._set_mode_main``
+    picks per ``profiles: RadioProfile.set_mode_via_selected``) is part
+    of the compared path.
     """
 
     builder: str
@@ -126,16 +129,21 @@ class _ProductionCall:
 
 @dataclass(frozen=True, slots=True)
 class _NotDeclared:
-    """An oracle row with no production command for its profile.
+    """An oracle row with no production rendering for its profile.
 
-    ``reason`` says why nothing is declared; ``absent_commands`` names
-    the production commands that must stay absent from the profile map,
-    so that declaring any of them later fails
-    ``test_not_declared_stays_absent`` and forces a comparison row.
+    ``reason`` says why nothing is compared; ``absent_commands`` names
+    the profile-map commands that must stay undeclared, and
+    ``absent_builders`` names the ``BoundCommands`` builders that must
+    stay unexported from ``rigplane.commands`` (``commands/bound.py:
+    BoundCommands.__getattr__`` raises ``AttributeError`` for those, so
+    ``hasattr`` on the bound set is ``False``), so that adding either
+    later fails ``test_not_declared_stays_absent`` and forces a
+    comparison row.
     """
 
     reason: str
     absent_commands: tuple[str, ...] = ()
+    absent_builders: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -419,20 +427,24 @@ _IC705_MAPPING: dict[_Key, _ProductionCall] = {
 
 _NOT_DECLARED_705: dict[_Key, _NotDeclared] = {
     ("voice_tx_memory", "none", "set", "T1"): _NotDeclared(
-        "the profile declares set_voice_tx [0x28] but no runtime path "
-        "sends voice-memory playback (no caller of the bound set_voice_tx "
-        "builder exists in src); 0x28 T1/stop frames exist only as raw "
-        "TX-family frames gated by runtime/tx_interlock.py: "
-        "classify_raw_civ_frame_tx_family — add a comparison row if a "
-        "runtime sender is ever added"
+        "the profile's command map names set_voice_tx [0x28] "
+        "(rigs/ic705.toml), but rigplane.commands exports no set_voice_tx "
+        "builder and no runtime path sends it (voice_tx appears in src "
+        "only as core/capabilities.py: CAP_VOICE_TX); the 0x28 T1/stop "
+        "frames exist only as raw TX-family frames gated by "
+        "runtime/tx_interlock.py: classify_raw_civ_frame_tx_family — add "
+        "a comparison row if a builder is ever exported",
+        absent_builders=("set_voice_tx",),
     ),
     ("voice_tx_memory", "none", "set", "stop"): _NotDeclared(
-        "the profile declares set_voice_tx [0x28] but no runtime path "
-        "sends voice-memory playback (no caller of the bound set_voice_tx "
-        "builder exists in src); 0x28 T1/stop frames exist only as raw "
-        "TX-family frames gated by runtime/tx_interlock.py: "
-        "classify_raw_civ_frame_tx_family — add a comparison row if a "
-        "runtime sender is ever added"
+        "the profile's command map names set_voice_tx [0x28] "
+        "(rigs/ic705.toml), but rigplane.commands exports no set_voice_tx "
+        "builder and no runtime path sends it (voice_tx appears in src "
+        "only as core/capabilities.py: CAP_VOICE_TX); the 0x28 T1/stop "
+        "frames exist only as raw TX-family frames gated by "
+        "runtime/tx_interlock.py: classify_raw_civ_frame_tx_family — add "
+        "a comparison row if a builder is ever exported",
+        absent_builders=("set_voice_tx",),
     ),
 }
 
@@ -510,8 +522,10 @@ _XFAIL_7610: dict[_Key, str] = {}
 
 _XFAIL_705: dict[_Key, str] = {
     ("operating_mode", "none", "set", "USB FIL1"): (
-        "runtime routes set_mode through 0x26 0x00 (set_selected_mode) "
-        "while the row prints the bare 0x06 frame"
+        "production sets mode with command 0x26 00 through set_selected_mode "
+        "(selected VFO: mode, data mode, filter; reference p. 27); the oracle "
+        "row uses command 0x06 (mode, filter; reference p. 17); the reference "
+        "documents both"
     ),
 }
 
@@ -606,8 +620,8 @@ def _compare_params() -> list:
                 expected = setup.oracle[key]
                 produced = asyncio.run(_production_bytes(setup, key))
                 reason = (
-                    f"{label} reference p. {_page(setup.manual[key])} disagrees "
-                    f"with the profile: {xfail[key]} "
+                    f"{label} oracle row (reference p. {_page(setup.manual[key])}) "
+                    f"differs from production: {xfail[key]} "
                     f"(production {_hex(produced)} != oracle {_hex(expected)})"
                 )
                 params.append(
@@ -674,6 +688,11 @@ def test_not_declared_stays_absent(label: str) -> None:
             assert not setup.profile.command_map.has(name), (  # type: ignore[union-attr]
                 f"{label}: {key!r}: production command {name!r} is now declared "
                 f"for the {label} profile; add a comparison row for it"
+            )
+        for name in entry.absent_builders:
+            assert not hasattr(setup.commands, name), (
+                f"{label}: {key!r}: builder {name!r} is now available on the "
+                f"bound command set; add a comparison row for it"
             )
 
 
