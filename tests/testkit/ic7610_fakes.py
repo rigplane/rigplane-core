@@ -52,5 +52,11 @@ def ic7610_usb_fake(**kw) -> CivSerialFake:
 
 
 def ic7610_lan_fake(**kw) -> MockIcomRadio:
-    """``MockIcomRadio()`` with the recorded LAN table mounted."""
+    """``MockIcomRadio()`` with the recorded LAN table mounted.
+
+    ``dual_receiver`` defaults True (native MAIN/SUB receiver select, the
+    recorded ``vfo_select`` window) so the LAN fake models receiver select
+    by default; a caller still overrides it by passing the keyword.
+    """
+    kw.setdefault("dual_receiver", True)
     return MockIcomRadio(recorded_answers=_answer_table("lan"), **kw)

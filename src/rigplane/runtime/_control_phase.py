@@ -139,6 +139,8 @@ class ControlPhaseRuntime:
     # (2026-10-12): (70.7, 85.9] s with separate client ports; about 71 s
     # in proxy-recorded windows.
     STARTUP_BUSY_LIVE_HOLDER_AFTER_S: float = 90.0
+    # Unanswered-first-discovery retries: the bench saw 1-in-3 restarts answer no first discovery.
+    STARTUP_DISCOVERY_RETRIES: int = 2
     # Token-renewal probe of a held session (``probe_control_session``). An
     # answer counts only with reply flag 0x02 at 0x14, request type 0x05 and
     # our token at 0x1C; the u32 at ``_RENEWAL_RESPONSE_OFFSET`` is the verdict.
