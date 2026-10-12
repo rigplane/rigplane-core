@@ -1,5 +1,5 @@
 import type { ServerState, ReceiverState } from '../types/state';
-import { hasOnlyLiveMetadataChanges } from './live-metadata';
+import { isStateAdvance, type StateAdvanceBaseline } from './live-metadata';
 import { setRadioPowerOn, setRigConnected, setRadioReady, setControlConnected, setRadioHealth } from './connection.svelte';
 import { getFieldStatus, isFieldAvailable } from '../state/field-status';
 import { capabilitiesMatchGeneration, getCapabilities } from './capabilities.svelte';
@@ -233,27 +233,16 @@ export function setRadioState(state: ServerState): boolean {
   const nextStateRevision = stateRevision(nextState);
   const nextFreshnessRevision = freshnessRevision(nextState);
   const nextObservationSeq = observationSeq(nextState);
-  const isInitial = radio.current === null;
   const nextHealthRevision = nextState.healthRevision ?? 0;
-  const healthAdvanced = nextHealthRevision > lastHealthRevision;
-  const freshnessAdvanced = nextFreshnessRevision > lastFreshnessRevision;
-  const observationAdvanced = nextObservationSeq > lastObservationSeq;
-  const semanticAdvanced = nextStateRevision > lastRevision;
-  const semanticCurrent = nextStateRevision === lastRevision;
-  const metadataAdvanced = semanticCurrent && (
-    freshnessAdvanced
-    || observationAdvanced
-    || healthAdvanced
-    || (
-      deliverySeq(nextState) > deliverySeq(radio.current)
-      && hasOnlyLiveMetadataChanges(radio.current, nextState)
-    )
-  );
-  if (
-    isInitial
-    || semanticAdvanced
-    || metadataAdvanced
-  ) {
+  const baseline: StateAdvanceBaseline | null = radio.current === null ? null : {
+    stateRevision: lastRevision,
+    freshnessRevision: lastFreshnessRevision,
+    observationSeq: lastObservationSeq,
+    healthRevision: lastHealthRevision,
+    deliverySeq: deliverySeq(radio.current),
+    state: radio.current,
+  };
+  if (isStateAdvance(baseline, nextState)) {
     lastRevision = nextStateRevision;
     lastFreshnessRevision = nextFreshnessRevision;
     lastObservationSeq = nextObservationSeq;
