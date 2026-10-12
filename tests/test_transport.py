@@ -1176,6 +1176,5 @@ async def test_unanswered_discovery_raises_discovery_timeout(
         await IcomTransport()._discover()
 
     assert isinstance(excinfo.value, TimeoutError)
-    assert (
-        str(excinfo.value) == "Radio did not respond to discovery after 2 attempts"
-    )
+    message = str(excinfo.value)
+    assert message == "Radio did not respond to discovery after 2 attempts"
