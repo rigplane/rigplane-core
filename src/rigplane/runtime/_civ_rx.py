@@ -51,7 +51,7 @@ from rigplane.commands import (
     parse_scope_vbw_response,
 )
 from rigplane.commands.scope import _span_index_for_hz
-from rigplane.core.exceptions import ConnectionError, TimeoutError
+from rigplane.core.exceptions import CommandRejectedError, ConnectionError, TimeoutError
 from rigplane.core.tx_safety import ProviderPttObservation, RadioTx
 from rigplane.core.tx_target import (
     KnownTxTarget,
@@ -4141,7 +4141,20 @@ class CivRuntime:
         *,
         is_current: Callable[[], bool] | None = None,
     ) -> "CivFrame | None":
-        """Execute one CI-V command via request tracker (serialized by worker)."""
+        """Execute one CI-V command via request tracker (serialized by worker).
+
+        A response-expecting read settles on the first of its data response
+        or its NAK-only ACK waiter (``CivRequestTracker.register_ack`` with
+        ``nak_only=True``): a refusal logs ``CI-V command 0x%02X refused
+        (NAK)`` and raises
+        :class:`~rigplane.core.exceptions.CommandRejectedError` instead of
+        waiting out ``_civ_get_timeout`` and reporting a timeout. A refusal
+        names no command, so a late ``0xFA`` to an earlier
+        ``wait_response=False`` write whose ACK sink was already dropped can
+        settle this read — the same exposure the write branch
+        (``register_ack(wait=True)``) and the raw transaction path's
+        ``nak_terminal=True`` default already carry.
+        """
         assert self._host._civ_transport is not None
         self._ensure_civ_runtime()
         transport = self._host._civ_transport
@@ -4217,10 +4230,27 @@ class CivRuntime:
         check_current()
 
         pending: "asyncio.Future[CivFrame] | None" = None
+        nak_pending: "asyncio.Future[CivFrame] | None" = None
         sent = False
         try:
             if expects_response:
                 pending = tracker.register_response(request_key)
+                # A refusal is a bare 0xFA that names no command, and
+                # ``CivRequestTracker.resolve`` hands ACK/NAK frames to ACK
+                # waiters only, so without a waiter here the refusal parked
+                # in the orphan backlog while the read waited out the whole
+                # answer window (MOR-3297). Same call shape as the raw
+                # transaction path's ``nak_terminal=True`` default
+                # (``_register_civ_data_transaction``); ``consume_backlog=False``
+                # because anything already parked belongs to another command.
+                nak_or_token = tracker.register_ack(
+                    wait=True,
+                    consume_backlog=False,
+                    nak_only=True,
+                )
+                if isinstance(nak_or_token, int):
+                    raise RuntimeError("ACK waiter registration returned sink token")
+                nak_pending = nak_or_token
             else:
                 # ``consume_backlog=False``: this waiter is registered before
                 # the frame is sent, so anything already in the orphan ACK/NAK
@@ -4259,11 +4289,15 @@ class CivRuntime:
             # of it whenever the pacing sleep overshot the remainder --
             # ``tests/test_radio.py:
             # TestResponseDeadlineOpensAtSend`` fails on that mis-charge.
-            try:
-                response = await asyncio.wait_for(
-                    pending, timeout=self._host._civ_get_timeout
-                )
-            except asyncio.TimeoutError:
+            waiters: tuple[asyncio.Future[CivFrame], ...] = (
+                (pending, nak_pending) if nak_pending is not None else (pending,)
+            )
+            done, _ = await asyncio.wait(
+                waiters,
+                timeout=self._host._civ_get_timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
                 check_current()
                 tracker.note_timeout()
                 logger.debug(
@@ -4271,8 +4305,21 @@ class CivRuntime:
                     request_key.command,
                 )
                 raise TimeoutError("CI-V response timed out")
-            check_current()
-            return response
+            if pending in done:
+                check_current()
+                return pending.result()
+            assert nak_pending is not None
+            # A future settled with a *result* carries the 0xFA frame; one
+            # settled by a generation advance or stale cleanup carries an
+            # exception that ``result()`` re-raises here.
+            nak_pending.result()
+            logger.debug(
+                "CI-V command 0x%02X refused (NAK)",
+                request_key.command,
+            )
+            raise CommandRejectedError(
+                f"CI-V command 0x{request_key.command:02X} refused (NAK)"
+            )
         except Exception:
             check_current()
             raise
@@ -4290,3 +4337,9 @@ class CivRuntime:
                     and (pending.cancelled() or pending.exception() is not None)
                 ):
                     tracker.note_ack_unclaimed()
+            if nak_pending is not None:
+                tracker.unregister(nak_pending)
+                if not nak_pending.done():
+                    nak_pending.cancel()
+                elif not nak_pending.cancelled():
+                    nak_pending.exception()

@@ -16,19 +16,17 @@
  * same compatibility gate as the ModePanel control applies (data_mode
  * capability + `isFieldRead`): it rejects the three explicit absence values
  * while preserving the legacy no-entry fallback.
+ *
+ * The projection decisions are pure and live in `./mod-input-gates.ts`;
+ * this wrapper owns the `armed` latch, the live-state reads and the
+ * one-click dispatch.
  */
 
 import { getRadioState } from '$lib/stores/radio.svelte';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
-import { isFieldRead } from '$lib/state/field-status';
-import {
-  LAN_MOD_INPUT_SOURCE,
-  modInputSourceLabel,
-  modInputStateKey,
-} from '$lib/radio/mod-input';
+import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
 import { makeModeHandlers } from '../commands/panel-commands';
-import type { ServerState } from '$lib/types/state';
-import type { Capabilities } from '$lib/types/capabilities';
+import { offendingSource, toModInputTxGuardProps } from './mod-input-gates';
 
 export interface ModInputTxGuardProps {
   /** True while the armed warning should be shown. */
@@ -39,28 +37,6 @@ export interface ModInputTxGuardProps {
 
 /** Latched at TX start; cleared on dismiss or a clean TX start. */
 let armed = $state(false);
-
-/**
- * The active receiver group's MOD-input source when a declared LAN route
- * warrants a warning, or null when the guard must stay quiet.
- */
-function offendingSource(
-  state: ServerState | null,
-  caps: Capabilities | null,
-): number | null {
-  if (!state) return null;
-  if (!(caps?.capabilities?.includes('data_mode') ?? false)) return null;
-  if (
-    caps?.audioTxRoute !== 'lan'
-    || caps.audioTxRequiredModInputSource !== LAN_MOD_INPUT_SOURCE
-  ) return null;
-  const rx = state.active === 'SUB' ? state.sub : state.main;
-  const key = modInputStateKey(rx?.dataMode ?? 0);
-  if (!isFieldRead(state, key)) return null;
-  const source = state[key] ?? null;
-  if (source === null || source === LAN_MOD_INPUT_SOURCE) return null;
-  return source;
-}
 
 /**
  * Evaluate the preflight at browser-audio-TX start. Arms the warning when
@@ -76,13 +52,15 @@ export function dismissModInputTxGuard(): void {
   armed = false;
 }
 
-/** Reactive props for the warning banner (call inside `$derived`). */
+/**
+ * Reactive props for the warning banner (call inside `$derived`). Reads
+ * the stores only while armed, so a disarmed banner does not depend on
+ * radio state and does not recompute on every state update.
+ */
 export function deriveModInputTxGuardProps(): ModInputTxGuardProps {
-  const source = armed ? offendingSource(getRadioState(), getCapabilities()) : null;
-  return {
-    visible: source !== null,
-    sourceLabel: modInputSourceLabel(source),
-  };
+  return armed
+    ? toModInputTxGuardProps(true, getRadioState(), getCapabilities())
+    : toModInputTxGuardProps(false, null, null);
 }
 
 // Reuse the existing ModePanel command path (MOR-616): optimistic patch of

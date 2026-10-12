@@ -1199,6 +1199,53 @@ describe('WsChannel', () => {
     expect(instances).toHaveLength(1);
   });
 
+  it("a stale socket's frame does not re-arm or close the newer socket", async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+
+    ch.connect('ws://test');
+    const stale = instances[0];
+    stale.simulateOpen();
+    stale.simulateClose();
+    vi.advanceTimersByTime(1_300); // first backoff is at most 1.2 s (calcBackoff jitter)
+    expect(instances).toHaveLength(2);
+    expect(instances[1].readyState).toBe(MockWebSocket.CONNECTING);
+    expect(ch.state).toBe('reconnecting');
+
+    stale.simulateMessage('{}');
+    vi.advanceTimersByTime(30_000);
+
+    expect(instances).toHaveLength(2);
+    expect(instances[1].readyState).toBe(MockWebSocket.CONNECTING);
+    expect(ch.state).toBe('reconnecting');
+  });
+
+  it('binary and malformed text frames re-arm the heartbeat', async () => {
+    const { WsChannel } = await import('../ws-client');
+
+    const framesKeepTheSocketAlive = (deliver: (socket: MockWebSocket) => void) => {
+      const base = instances.length;
+      const ch = new WsChannel();
+      ch.connect('ws://test');
+      const socket = instances[base];
+      socket.answersPings = false;
+      socket.simulateOpen();
+      for (let i = 0; i < 4; i++) {
+        vi.advanceTimersByTime(20_000);
+        deliver(socket);
+      }
+      expect(ch.state).toBe('connected');
+      expect(instances).toHaveLength(base + 1);
+      vi.advanceTimersByTime(30_000);
+      expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+      expect(ch.state).toBe('disconnected');
+      ch.disconnect();
+    };
+
+    framesKeepTheSocketAlive((socket) => socket.simulateMessage(new ArrayBuffer(1)));
+    framesKeepTheSocketAlive((socket) => socket.simulateMessage('not json'));
+  });
+
   it('resets heartbeat timer on each incoming message', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
@@ -1206,14 +1253,58 @@ describe('WsChannel', () => {
     ch.connect('ws://test');
     instances[0].simulateOpen();
 
-    // keep feeding messages — should not disconnect
+    // Five frames 20 s apart: each gap is under the 30 s timeout, but the
+    // 100 s total far exceeds one timeout — only re-arming on every frame
+    // keeps the connection alive.
     for (let i = 0; i < 5; i++) {
-      vi.advanceTimersByTime(5000);
+      vi.advanceTimersByTime(20_000);
       instances[0].simulateMessage(JSON.stringify({ type: 'ack', id: `${i}` }));
     }
-
     expect(ch.state).toBe('connected');
     expect(instances).toHaveLength(1);
+
+    vi.advanceTimersByTime(30_000);
+    expect(instances[0].readyState).toBe(MockWebSocket.CLOSED);
+    expect(ch.state).toBe('disconnected');
+    // Cleanup: the close left a reconnect timer armed; disconnect() stops
+    // this channel's still-live visibilitychange listener (document
+    // listeners outlive the `it` block) from reconnecting during a later
+    // test's visibilitychange dispatch.
+    ch.disconnect();
+  });
+
+  it('disconnect stops the keepalive and no ping is sent afterwards', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    ch.disconnect();
+
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(60_000);
+    expect(instances[0].sent).toEqual([]);
+  });
+
+  it('no ping is sent while reconnecting after a server-side close', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    instances[0].simulateClose();
+    vi.advanceTimersByTime(120_000);
+
+    // The keepalive interval survives a server-side close (only the next
+    // onopen or disconnect() stops it), so it is the one timer left.
+    expect(vi.getTimerCount()).toBe(1);
+    expect(instances).toHaveLength(2);
+    for (const socket of instances) {
+      const pingFrames = socket.sent
+        .map((data) => JSON.parse(data))
+        .filter((msg) => msg.type === 'ping');
+      expect(pingFrames).toHaveLength(0);
+    }
   });
 
   it('removes message handler via returned cleanup fn', async () => {

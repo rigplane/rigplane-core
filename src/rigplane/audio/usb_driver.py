@@ -979,11 +979,18 @@ def resolve_usb_duplex_mode(
     Everything else — separate devices, virtual loopbacks, non-macOS
     platforms — supports the two-stream path: ``"full"``.
 
+    The platform identity is read through ``platform.system()`` on this
+    module's ``platform`` attribute — the same seam
+    ``UsbAudioDriver._ensure_selected_devices`` and
+    ``UsbAudioDriver._select_devices_bounded`` already consult — so one
+    monkeypatch on ``usb_driver.platform.system`` steers the selection
+    branches and this policy together.
+
     Pure read-only policy (MOR-534, AudioTransport 1/12). Consumed via
     :attr:`UsbAudioDriver.duplex_mode`, which the backends expose as
     ``audio_duplex_mode`` for the AudioSession's setup-order sequencing.
     """
-    if sys.platform != "darwin":
+    if platform.system() != "Darwin":
         return "full"
     if rx_dev.index != tx_dev.index:
         return "full"

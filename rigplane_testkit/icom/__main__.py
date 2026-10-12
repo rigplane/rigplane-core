@@ -9,7 +9,15 @@ from rigplane_testkit.icom.recorder import IcomSessionRecorder
 
 
 async def _record(args: argparse.Namespace) -> None:
-    rec = IcomSessionRecorder(args.radio, args.port, args.out)
+    rec = IcomSessionRecorder(
+        args.radio,
+        args.port,
+        args.out,
+        listen_host=args.listen_host,
+        listen_port=args.listen_port,
+        upstream_port=args.upstream_port,
+        upstream_host=args.upstream_host,
+    )
     await rec.start()
     print(
         f"proxy up: control={rec.control_port} civ={rec.civ_port} "
@@ -30,6 +38,34 @@ def main() -> None:
     rec.add_argument("--radio", required=True, help="radio host")
     rec.add_argument("--port", type=int, default=50001, help="radio control port")
     rec.add_argument("--out", required=True, help="output JSONL path")
+    rec.add_argument(
+        "--listen-host",
+        default="127.0.0.1",
+        help="bind address for the client-facing listeners only "
+        "(default: 127.0.0.1)",
+    )
+    rec.add_argument(
+        "--listen-port",
+        type=int,
+        default=0,
+        help="fixed client-facing control port; CI-V and audio listeners "
+        "bind +1/+2 when nonzero (default: 0 = ephemeral)",
+    )
+    rec.add_argument(
+        "--upstream-port",
+        type=int,
+        default=0,
+        help="fixed local port of the CI-V upstream socket, declared to the "
+        "radio in the rewritten conninfo; the audio upstream binds +1 when "
+        "nonzero (default: 0 = ephemeral, bound at start)",
+    )
+    rec.add_argument(
+        "--upstream-host",
+        default="0.0.0.0",
+        help="bind address for the radio-facing upstream sockets, separate "
+        "from --listen-host so a loopback listener bind never pins the "
+        "upstream source address (default: 0.0.0.0 wildcard)",
+    )
     args = parser.parse_args()
     if args.command == "record":
         try:

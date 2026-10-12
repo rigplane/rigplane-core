@@ -15,8 +15,6 @@ import {
   toFilterProps, toBandSelectorProps,
   toAudioSpectrumProps, toMemoryPanelProps,
   toAmberTelemetryProps, toVfoControlProps,
-  resolveFilterModeConfig,
-  manualNotchReading,
 } from '../props/panel-props';
 import {
   makeAgcHandlers, makeModeHandlers, makeAntennaHandlers,
@@ -52,7 +50,6 @@ import {
   TX_AUX_COMMAND_DESCRIPTORS,
   getCommandLifecycles,
   isCommandLifecycleSuperseded,
-  type ControlFeedbackScope,
   type DspCommandFeedbackField,
   type StateBackedCommandDescriptor,
   type TxAuxCommandFeedbackField,
@@ -64,15 +61,9 @@ import type { Capabilities } from '$lib/types/capabilities';
 import { modInputCommand, modInputStateKey, type ModInputStateKey } from '$lib/radio/mod-input';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import {
-  measuredPbtRawToHz, pbtRangeFromCaps,
-  resolveControlContract,
-} from '$lib/radio/filter-controls';
-import {
   hasUsableObservation,
   normalizedUsableObservation,
   projectControlFeedback,
-  projectControlFeedbackToDisplay,
-  projectPendingTargetToDisplay,
   unavailableControlFeedback,
   type ControlFeedback,
   type FilterWidthCommandLifecycleView,
@@ -82,6 +73,15 @@ import {
   toFilterWidthCommandLifecycle,
   type IfShiftControlFeedback,
 } from './if-shift-feedback';
+import {
+  dspControlFeedback,
+  measuredPbtLatticeHz,
+  pbtFeedbackOnMeasuredLattice,
+  pbtStructural,
+  receiverEchoControlFeedback,
+  rfSqlControlFeedback,
+  type RfSqlFeedbackLane,
+} from './receiver-feedback';
 
 // Re-export the control-feedback projection core (moved verbatim into
 // './control-feedback-projection') so every existing importer of this
@@ -459,12 +459,6 @@ export function getTxAuxControlFeedback(
 }
 
 export type DspControlFeedbackField = DspCommandFeedbackField;
-const DSP_FEEDBACK_CAPABILITIES: Readonly<Record<
-  Exclude<DspControlFeedbackField, 'nbWidth' | 'nbDepth'>, string
->> = Object.freeze({
-  nbLevel: 'nb', nrLevel: 'nr',
-  notchFilter: 'notch', manualNotchWidth: 'notch', agcTimeConstant: 'agc',
-});
 
 /** Qualified raw DSP feedback; NB Width and NB Depth have stable radio-global identity. */
 export function getDspControlFeedback(
@@ -475,85 +469,11 @@ export function getDspControlFeedback(
   const caps = runtime.caps;
   const commands = getCommandLifecycles();
   const session = currentControlSession ?? runtime.controlSession;
-  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
-  const descriptor = DSP_COMMAND_DESCRIPTORS[field];
-  // MOR-1680: on the FTX-1 the poll feeds `manualNotchFreq` while
-  // `notchFilter` is only written by `set_notch_filter`'s post-write
-  // readback, so the confirmed echo must follow the SAME source selection
-  // the value side reads — `manualNotchReading`'s choice, never a second
-  // one here. The store-registered descriptor identity is untouched; this
-  // local variant only repoints the state-backed confirmation field.
-  const notchReading = field === 'notchFilter' ? manualNotchReading(state, caps) : null;
-  const echoDescriptor = notchReading !== null && notchReading.source === 'manualNotchFreq'
-    ? Object.freeze({
-      ...descriptor,
-      fieldPath: (scope: ControlFeedbackScope) => `${scope.receiver === 1 ? 'sub' : 'main'}.manualNotchFreq`,
-      confirmed: () => Number.isSafeInteger(notchReading.notchFreq) ? notchReading.notchFreq : null,
-    })
-    : descriptor;
-  const receiver: 0 | 1 = state?.active === 'SUB' ? 1 : 0;
-  const scope = Object.freeze({
-    control: field === 'nbLevel' ? 'nb-level'
-      : field === 'nbWidth' ? 'nb-width'
-        : field === 'nrLevel' ? 'nr-level'
-          : field === 'nbDepth' ? 'nb-depth'
-            : field === 'notchFilter' ? 'notch-position'
-              : field === 'manualNotchWidth' ? 'manual-notch-width' : 'agc-time',
-    receiver: field === 'nbWidth' || field === 'nbDepth' ? 0 as const : receiver,
-  });
-  const rawFeedback = projectControlFeedback(
-    echoDescriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+  return dspControlFeedback(
+    field, session, state, caps, commands,
+    DSP_COMMAND_DESCRIPTORS[field], isCommandLifecycleSuperseded,
   );
-  // MOR-2635: the pending target is the raw CAT code the command dispatched.
-  // Decode it through the SAME resolved contract and the SAME source decision
-  // the confirmed reading uses. A reading that fell back to the raw field
-  // (no published domain, or the domain's field unusable) keeps the target raw.
-  const feedback = notchReading?.source === 'manualNotchFreq'
-    ? projectPendingTargetToDisplay(rawFeedback, (raw) =>
-      resolveControlContract(caps, 'manual_notch_freq').rawToDisplay(raw))
-    : rawFeedback;
-  try {
-    const view = toRadioViewModel(state, caps);
-    if (session.state !== 'connected' || epoch < 0
-      || view === null || view.activeReceiver.status !== 'known') {
-      return unavailableControlFeedback(feedback);
-    }
-    const activeReceiver = view.activeReceiver.receiver;
-    const receiverEntries = view.receiverIndicators?.filter(
-      entry => entry.receiver === activeReceiver,
-    ) ?? [];
-    if (receiverEntries.length !== 1 || !receiverEntries[0].availability.operational) {
-      return unavailableControlFeedback(feedback);
-    }
-    if (field === 'nbWidth' || field === 'nbDepth') {
-      const observation = qualifyRadioDisplayObservation({
-        state, caps, path: field, structural: caps?.controls?.nb_depth != null,
-        value: state?.[field],
-      });
-      return hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
-        ? feedback : unavailableControlFeedback(feedback);
-    }
-    const receiverId = activeReceiver;
-    const receiverState = receiverId === 'SUB' ? state?.sub : state?.main;
-    const base = receiverId === 'SUB' ? 'sub' : 'main';
-    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
-    const echoField = notchReading?.source === 'manualNotchFreq' ? 'manualNotchFreq' : field;
-    const observation = qualifyDisplayObservation({
-      state, caps, receiver: receiverId, path: `${base}.${echoField}`,
-      structural: tags.includes(DSP_FEEDBACK_CAPABILITIES[field]),
-      value: receiverState?.[echoField],
-    });
-    return hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
-      ? feedback : unavailableControlFeedback(feedback);
-  } catch {
-    return unavailableControlFeedback(feedback);
-  }
 }
-
-type RfSqlFeedbackLane = Readonly<{
-  command: string;
-  feedback: Readonly<ControlFeedback<number>>;
-}>;
 
 /** One qualified receiver/session snapshot for the two-lane RF/SQL owner. */
 export function getRfSqlControlFeedback(
@@ -563,58 +483,10 @@ export function getRfSqlControlFeedback(
   const caps = runtime.caps;
   const commands = getCommandLifecycles();
   const session = currentControlSession ?? runtime.controlSession;
-  const sessionState = session.state;
-  const sessionEpoch = session.epoch;
-  const stateGeneration = state?.providerGeneration;
-  if (sessionState !== 'connected'
-    || !Number.isSafeInteger(sessionEpoch) || sessionEpoch < 0
-    || state === null || caps === null
-    || state.stateContractVersion !== 1 || caps.stateContractVersion !== 1
-    || !Number.isSafeInteger(stateGeneration) || (stateGeneration as number) < 0
-    || caps.providerGeneration !== stateGeneration) return null;
-
-  const view = toRadioViewModel(state, caps);
-  if (view === null || view.activeReceiver.status !== 'known') return null;
-  const receiver = view.activeReceiver.receiver;
-  const receiverEntries = view.receiverIndicators?.filter((entry) => entry.receiver === receiver) ?? [];
-  if (receiverEntries.length !== 1 || !receiverEntries[0].availability.operational) return null;
-  const receiverIndex: 0 | 1 = receiver === 'SUB' ? 1 : 0;
-  const receiverState = receiver === 'SUB' ? state.sub : state.main;
-  const base = receiver === 'SUB' ? 'sub' : 'main';
-  const tags = Array.isArray(caps.capabilities) ? caps.capabilities : [];
-
-  const lane = (
-    command: 'set_rf_gain' | 'set_squelch',
-    descriptor: StateBackedCommandDescriptor<number>,
-    control: 'rf-gain' | 'squelch',
-    leaf: 'rfGain' | 'squelch',
-    structural: boolean,
-  ): RfSqlFeedbackLane => {
-    const scope = { control, receiver: receiverIndex } as const;
-    const feedback = projectControlFeedback(
-      descriptor, state, commands, scope, sessionEpoch, isCommandLifecycleSuperseded,
-    );
-    const observation = qualifyDisplayObservation({
-      state, caps, receiver, path: `${base}.${leaf}`, structural,
-      value: receiverState?.[leaf],
-    });
-    const qualified = hasUsableObservation(observation) ? feedback : Object.freeze({
-      ...feedback,
-      confirmed: null, target: null, requestedTarget: null,
-      phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
-      outcome: null, lifecycleId: null, transitionId: null,
-    });
-    return Object.freeze({ command, feedback: qualified });
-  };
-
-  return Object.freeze({
-    rf: lane(
-      'set_rf_gain', RF_GAIN_COMMAND_DESCRIPTOR, 'rf-gain', 'rfGain', tags.includes('rf_gain'),
-    ),
-    sql: lane(
-      'set_squelch', SQUELCH_COMMAND_DESCRIPTOR, 'squelch', 'squelch', tags.includes('squelch'),
-    ),
-  });
+  return rfSqlControlFeedback(
+    session, state, caps, commands,
+    RF_GAIN_COMMAND_DESCRIPTOR, SQUELCH_COMMAND_DESCRIPTOR, isCommandLifecycleSuperseded,
+  );
 }
 
 /** Qualified AF-level command feedback for `receiver` (MOR-2579), or for the
@@ -684,15 +556,6 @@ export function getRfPowerControlFeedback(
   }
 }
 
-/**
- * Shared qualification for a single raw receiver-scoped "echo" control
- * (MOR-2425): PBT inner/outer, and the real `if_shift` command on a radio
- * that has one. Mirrors `getDspControlFeedback`'s active-receiver/
- * operational/observation gating; `structuralFor` supplies the one thing
- * that differs per field (PBT needs both the `pbt` capability tag AND a
- * usable `pbt_inner` range — MOR-1291 — while `if_shift` needs only its own
- * capability tag).
- */
 function getReceiverEchoControlFeedback(
   currentControlSession: ControlSessionSnapshot | undefined,
   descriptor: StateBackedCommandDescriptor<number>,
@@ -704,41 +567,11 @@ function getReceiverEchoControlFeedback(
   const caps = runtime.caps;
   const commands = getCommandLifecycles();
   const session = currentControlSession ?? runtime.controlSession;
-  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
-  const receiver: 0 | 1 = state?.active === 'SUB' ? 1 : 0;
-  const scope = Object.freeze({ control, receiver });
-  const feedback = projectControlFeedback(
-    descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+  return receiverEchoControlFeedback(
+    session, state, caps, commands, descriptor, control, field, structuralFor,
+    isCommandLifecycleSuperseded,
   );
-  try {
-    const view = toRadioViewModel(state, caps);
-    if (session.state !== 'connected' || epoch < 0
-      || view === null || view.activeReceiver.status !== 'known') {
-      return unavailableControlFeedback(feedback);
-    }
-    const activeReceiver = view.activeReceiver.receiver;
-    const receiverEntries = view.receiverIndicators?.filter(
-      entry => entry.receiver === activeReceiver,
-    ) ?? [];
-    if (receiverEntries.length !== 1 || !receiverEntries[0].availability.operational) {
-      return unavailableControlFeedback(feedback);
-    }
-    const receiverState = activeReceiver === 'SUB' ? state?.sub : state?.main;
-    const base = activeReceiver === 'SUB' ? 'sub' : 'main';
-    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
-    const observation = qualifyDisplayObservation({
-      state, caps, receiver: activeReceiver, path: `${base}.${field}`,
-      structural: structuralFor(caps, tags), value: receiverState?.[field],
-    });
-    return observation.state === 'current' && Number.isSafeInteger(observation.value)
-      ? feedback : unavailableControlFeedback(feedback);
-  } catch {
-    return unavailableControlFeedback(feedback);
-  }
 }
-
-const pbtStructural = (caps: Capabilities | null | undefined, tags: readonly string[]): boolean =>
-  tags.includes('pbt') && pbtRangeFromCaps(caps) !== undefined;
 
 /** Qualified raw PBT Inner feedback (MOR-2425); receiver derives from active-receiver truth. */
 export function getPbtInnerControlFeedback(
@@ -755,44 +588,6 @@ export function getPbtOuterControlFeedback(
 ): Readonly<ControlFeedback<number>> {
   return getReceiverEchoControlFeedback(
     currentControlSession, PBT_OUTER_COMMAND_DESCRIPTOR, 'pbt-outer', 'pbtOuter', pbtStructural,
-  );
-}
-
-/**
- * The measured twin-PBT lattice for the ACTIVE receiver — the mode's
- * declared `pbtStepHz` at the observed filter width — or `null` when no
- * lattice forms (no step for the mode, unobserved width, legacy payload).
- * The same three reads `toFilterProps` and `getIfShiftControlFeedback`
- * base their conversions on.
- */
-function measuredPbtLatticeHz(
-  state: ServerState | null, caps: Capabilities | null | undefined,
-): Readonly<{ filterWidthHz: number; stepHz: number }> | null {
-  const rx = state ? (state.active === 'SUB' ? state.sub : state.main) : undefined;
-  const pbtStepHz = resolveFilterModeConfig(caps ?? null, rx?.mode ?? undefined, rx?.dataMode ?? undefined)?.pbtStepHz;
-  const pbtWidthHz = rx?.filterWidth;
-  return pbtStepHz !== undefined && typeof pbtWidthHz === 'number'
-    ? { filterWidthHz: pbtWidthHz, stepHz: pbtStepHz } : null;
-}
-
-/**
- * Converts a raw-domain PBT feedback onto the measured lattice's Hz — the
- * unit the displayed value and the write path (`onPbtInnerChange` and
- * friends) already share. A feedback that is already unavailable, or a
- * mode with no lattice (FM), fails the whole projection closed; on the
- * lattice every non-null value of `confirmed`, `target` and
- * `requestedTarget` must convert, so one unconvertible raw fails the
- * whole feedback closed instead of mixing a raw target into an Hz echo.
- */
-function pbtFeedbackOnMeasuredLattice(
-  raw: Readonly<ControlFeedback<number>>,
-  lattice: Readonly<{ filterWidthHz: number; stepHz: number }> | null,
-): Readonly<ControlFeedback<number>> {
-  if (raw.availability !== 'available' || lattice === null) {
-    return unavailableControlFeedback(raw);
-  }
-  return projectControlFeedbackToDisplay(
-    raw, (value) => measuredPbtRawToHz(value, lattice.filterWidthHz, lattice.stepHz),
   );
 }
 
