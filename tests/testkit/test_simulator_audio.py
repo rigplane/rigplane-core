@@ -167,16 +167,34 @@ def _rx_frames(
     return [(t, p) for t, p in packets if len(p) > AUDIO_HEADER_SIZE]
 
 
-def _complete_bursts(packets: list[tuple[float, bytes]]):
-    """Group RX frames into bursts (inter-arrival under 5 ms); complete
-    three-packet bursts only, as (arrival, packet) tuples."""
+def _complete_bursts(
+    packets: list[tuple[float, bytes]], shape: tuple[tuple[int, int], ...]
+):
+    """Group RX frames into bursts by CONSECUTIVE tracked header seq
+    (0x06), not arrival timing — robust to jitter and reordering on a
+    loaded host. Keeps complete three-packet runs whose packet lengths
+    match the recorded ``shape`` (a run broken by a lost packet does not
+    match and is dropped); returns (arrival, packet) tuples in sequence
+    order."""
+    frames = sorted(
+        _rx_frames(packets), key=lambda tp: struct.unpack_from("<H", tp[1], 6)[0]
+    )
+    lengths = tuple(n for n, _ in shape)
     bursts: list[list[tuple[float, bytes]]] = []
-    for item in _rx_frames(packets):
-        if bursts and item[0] - bursts[-1][0][0] < 0.005:
-            bursts[-1].append(item)
+    run: list[tuple[float, bytes]] = []
+    prev_seq: int | None = None
+    for item in frames:
+        seq = struct.unpack_from("<H", item[1], 6)[0]
+        if run and prev_seq is not None and (seq - prev_seq) & 0xFFFF == 1:
+            run.append(item)
         else:
-            bursts.append([item])
-    return [b for b in bursts if len(b) == 3]
+            run = [item]
+        prev_seq = seq
+        if len(run) == 3:
+            if tuple(len(p) for _, p in run) == lengths:
+                bursts.append(run)
+            run = []
+    return bursts
 
 
 async def _recv_type(client: _UdpClient, ptype: int, timeout: float = 2.0) -> bytes:
@@ -229,9 +247,7 @@ async def _claim(server: MockIcomRadio, ctrl: _UdpClient) -> None:
     await ctrl.recv()
 
 
-async def _declare_civ_port(
-    server: MockIcomRadio, ctrl: _UdpClient, port: int
-) -> None:
+async def _declare_civ_port(server: MockIcomRadio, ctrl: _UdpClient, port: int) -> None:
     """Conninfo declaring a CI-V local port (BE u32 at 0x7C), like the
     production client (``core/auth.py``: ``build_conninfo_packet``)."""
     declared = bytearray(_conninfo())
@@ -256,7 +272,7 @@ async def test_rx_stream_matches_recorded_layout_and_cadence(
     assert sum(n - AUDIO_HEADER_SIZE for n, _ in shape) == 3840  # 20 ms stereo s16
 
     radio_id = await _open_audio(client, server)
-    bursts = _complete_bursts(await _collect_audio(client, 0.5))
+    bursts = _complete_bursts(await _collect_audio(client, 0.5), shape)
     assert len(bursts) >= 8, f"only {len(bursts)} complete bursts in 0.5 s"
 
     for burst in bursts:
@@ -328,7 +344,9 @@ async def test_rx_keeps_flowing_across_civ_soft_reconnect(
     ctrl, civ, audio = await _udp(), await _udp(), await _udp()
     try:
         await _claim(server, ctrl)
-        await _declare_civ_port(server, ctrl, civ.transport.get_extra_info("sockname")[1])
+        await _declare_civ_port(
+            server, ctrl, civ.transport.get_extra_info("sockname")[1]
+        )
         civ.send(_openclose(seq=0), server.civ_port)
         await civ.recv()  # stream-active marker
 
@@ -348,7 +366,7 @@ async def test_rx_keeps_flowing_across_civ_soft_reconnect(
             civ2.close()
         window = await task
 
-        bursts = _complete_bursts(window)
+        bursts = _complete_bursts(window, _recorded_burst_shape())
         assert len(bursts) >= 30, f"{len(bursts)} bursts in 1.0 s"
         starts = [b[0][0] for b in bursts]
         worst = max(c - p for p, c in zip(starts, starts[1:]))
