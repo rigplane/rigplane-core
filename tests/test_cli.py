@@ -2553,7 +2553,7 @@ class TestStartupBusyHoldOrdering:
     async def test_busy_hold_give_up_returns_one_closes_and_exits(
         self, capsys: Any
     ) -> None:
-        """Give-up during the background connect ends like today's failure."""
+        """The live-holder give-up ends like today's failure: same text, rc 1."""
 
         import asyncio
 
@@ -2585,8 +2585,7 @@ class TestStartupBusyHoldOrdering:
         with p1, p2, p3, p4:
             radio.startup_busy_hold_event.set()
             radio.fail_with = RigplaneConnectionError(
-                "Radio session never became ready: still busy after 19 "
-                "start-up re-logins against the 600s start-up busy budget. "
+                "radio busy: another client holds the session. "
                 f"{_session_reject_hint(0xFFFFFFFF)}"
             )
             run_task = asyncio.ensure_future(_run(args))
@@ -2609,7 +2608,7 @@ class TestStartupBusyHoldOrdering:
 
         assert result == 1
         err = capsys.readouterr().err
-        assert "Error: Radio session never became ready" in err
+        assert "Error: radio busy: another client holds the session" in err
         assert "from this computer" in err
         assert "One RigPlane server per radio" in err
         assert "serve-cancelled" in server.events

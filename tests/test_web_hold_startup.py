@@ -24,10 +24,17 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
+from rigplane.core.exceptions import DiscoveryTimeout
 from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.radio_state import RadioState
 from rigplane.rigctld.contract import RigctldConfig, RigctldResponse
 from rigplane.rigctld.server import RigctldServer
+from rigplane.runtime.session_lifecycle import (
+    AttemptOutcome,
+    AttemptResult,
+    CoreRadioSessionLifecycle,
+    LifecycleState,
+)
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
@@ -399,6 +406,179 @@ async def test_web_serves_session_busy_during_startup_busy_hold() -> None:
         assert status == 200
         assert payload["radioHealth"]["likelyCause"] != "radio_powered_off_likely"
     finally:
+        await server.stop()
+        await rig.stop()
+
+
+class _DiscoveryPassMechanism:
+    """Scripted first-connect attempts: busy, then a gated discovery timeout.
+
+    The first attempt busy-rejects; the second (discovery) waits until the
+    test releases it, then times out, so the wire can be read while the
+    loop is inside the discovery-timeout pass; the third waits for the
+    grant. ``release`` mirrors the production release obligation.
+    """
+
+    def __init__(self) -> None:
+        self.connect_calls = 0
+        self.release_calls = 0
+        self.claimed = False
+        self.allow_discovery = asyncio.Event()
+        self.grant = asyncio.Event()
+
+    async def connect_attempt(self) -> AttemptResult:
+        self.connect_calls += 1
+        if self.connect_calls == 1:
+            self.claimed = True
+            return AttemptResult(AttemptOutcome.SESSION_BUSY_REJECT)
+        if self.connect_calls == 2:
+            await self.allow_discovery.wait()
+            raise DiscoveryTimeout(
+                "Radio did not respond to discovery after 10 attempts"
+            )
+        await self.grant.wait()
+        self.claimed = True
+        return AttemptResult(AttemptOutcome.CONNECTED)
+
+    async def release(self) -> None:
+        self.release_calls += 1
+        self.claimed = False
+
+
+class _DiscoveryPassRadio(_BusyRadio):
+    """A busy-held radio whose hold state is a real lifecycle mid-loop.
+
+    The public busy surface delegates to the lifecycle, so the wire reads
+    exactly what the merged loop reports on each pass — including the
+    discovery-timeout pass. The session enter is never used; the test
+    drives ``lifecycle.connect()`` directly.
+    """
+
+    def __init__(
+        self, lifecycle: CoreRadioSessionLifecycle, mech: _DiscoveryPassMechanism
+    ) -> None:
+        self._lifecycle = lifecycle
+        self._mech = mech
+        self.connected = False
+        self.control_connected = False
+        self.radio_ready = False
+        self.connection_identity: RadioIdentity | None = RadioIdentity(
+            status=RadioIdentityStatus.CHECKING,
+            expected_model="IC-7610",
+        )
+        self.radio_state = RadioState()
+        self.enter_calls = 0
+        self.exit_calls = 0
+        self.fetch_initial_state_calls = 0
+
+    @property
+    def startup_busy_hold_event(self) -> asyncio.Event:
+        return self._lifecycle.startup_busy_hold_event
+
+    @property
+    def startup_busy_hold_retry_in_seconds(self) -> float | None:
+        return self._lifecycle.startup_busy_hold_retry_in_seconds
+
+    def grant(self) -> None:
+        """Grant the session: the loop's third attempt connects."""
+
+        self._mech.grant.set()
+
+    async def __aenter__(self) -> "_DiscoveryPassRadio":
+        raise AssertionError("the test drives lifecycle.connect() directly")
+
+
+async def _wait_for_lifecycle(
+    lifecycle: CoreRadioSessionLifecycle,
+    mech: _DiscoveryPassMechanism,
+    *,
+    connect_calls: int,
+    state: LifecycleState,
+    timeout: float = 10.0,
+) -> None:
+    """Poll until the loop reaches an attempt count in a cooldown."""
+
+    async def _poll() -> None:
+        while not (mech.connect_calls >= connect_calls and lifecycle.state is state):
+            await asyncio.sleep(0.02)
+
+    await asyncio.wait_for(_poll(), timeout=timeout)
+
+
+@pytest.mark.asyncio
+async def test_wire_reports_the_busy_hold_during_a_discovery_timeout_pass() -> None:
+    """MOR-3391 part 2 round 3: a discovery pass serves the busy hold.
+
+    The loop's second attempt is a discovery timeout: while it waits out
+    the pass cooldown, /readyz is the 503 busy body and
+    connection.session is busy with a retry number — exactly like a
+    busy-reject pass — and the grant afterwards clears the hold.
+    """
+
+    busy_cooldown = 1.0
+    mech = _DiscoveryPassMechanism()
+    lifecycle = CoreRadioSessionLifecycle(
+        mech,
+        reject_cooldown_s=busy_cooldown,
+        not_ready_cooldown_s=busy_cooldown,
+        max_connect_attempts=5,
+        first_connect_busy_cooldown_s=busy_cooldown,
+        first_connect_busy_budget_s=600.0,
+        first_connect_busy_live_holder_after_s=None,
+    )
+    radio = _DiscoveryPassRadio(lifecycle, mech)
+    poller = _busy_poller()
+    rig, server, _rig_port = await _start_busy_stack(radio, poller)
+    connect_task = asyncio.ensure_future(lifecycle.connect())
+    try:
+        # First pass (busy reject): the exact busy bodies.
+        await _wait_for_lifecycle(
+            lifecycle, mech, connect_calls=1, state=LifecycleState.COOLDOWN
+        )
+        status, payload = await _get_json(server, "/readyz")
+        assert status == 503
+        assert payload["reason"] == "session_busy"
+        assert isinstance(payload["retryInSeconds"], (int, float))
+        status, payload = await _get_json(server, "/api/v1/info")
+        session = payload["connection"]["session"]
+        assert session["busy"] is True
+        assert isinstance(session["retryInSeconds"], (int, float))
+
+        # Second attempt (discovery) in flight: the hold keeps serving
+        # the cooldown total between the passes.
+        await _wait_for_lifecycle(
+            lifecycle, mech, connect_calls=2, state=LifecycleState.CONNECTING
+        )
+        assert radio.startup_busy_hold_retry_in_seconds == busy_cooldown
+
+        # Inside the discovery-timeout pass: the same busy hold as above.
+        mech.allow_discovery.set()
+        await _wait_for_lifecycle(
+            lifecycle, mech, connect_calls=2, state=LifecycleState.COOLDOWN
+        )
+        status, payload = await _get_json(server, "/readyz")
+        assert status == 503
+        assert payload["reason"] == "session_busy"
+        assert isinstance(payload["retryInSeconds"], (int, float))
+        assert payload["retryInSeconds"] > 0
+        status, payload = await _get_json(server, "/api/v1/info")
+        session = payload["connection"]["session"]
+        assert session["busy"] is True
+        assert isinstance(session["retryInSeconds"], (int, float))
+        assert session["retryInSeconds"] > 0
+
+        radio.grant()
+        await asyncio.wait_for(connect_task, timeout=10.0)
+        assert lifecycle.state is LifecycleState.CONNECTED
+        assert radio.startup_busy_hold_event.is_set() is False
+        assert radio.startup_busy_hold_retry_in_seconds is None
+    finally:
+        if not connect_task.done():
+            connect_task.cancel()
+            try:
+                await connect_task
+            except (asyncio.CancelledError, Exception):
+                pass
         await server.stop()
         await rig.stop()
 
