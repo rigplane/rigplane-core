@@ -1,0 +1,236 @@
+# Transcribed by hand from the IC-705 CI-V Reference Guide. Never regenerate from code.
+# Frames run controller E0 to default address, wrapped FE FE .. FD.
+
+[[row]]
+control = "operating_frequency"
+receiver = "none"
+direction = "set"
+value = "14.074 MHz"
+frame = "FE FE A4 E0 05 00 40 07 14 00 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 3; frequency format, p. 17"
+note = "14.074 MHz mid-band HF pick"
+
+[[row]]
+control = "operating_frequency"
+receiver = "none"
+direction = "read"
+value = ""
+frame = "FE FE A4 E0 03 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 3"
+note = "poll carries no data"
+
+[[row]]
+control = "operating_mode"
+receiver = "none"
+direction = "set"
+value = "USB FIL1"
+frame = "FE FE A4 E0 06 01 01 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 3; mode format, p. 17"
+note = "USB with first filter"
+
+[[row]]
+control = "vfo_select"
+receiver = "none"
+direction = "set"
+value = "A"
+frame = "FE FE A4 E0 07 00 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 3"
+note = "selects VFO A"
+
+[[row]]
+control = "vfo_select"
+receiver = "none"
+direction = "set"
+value = "B"
+frame = "FE FE A4 E0 07 01 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 3"
+note = "selects VFO B"
+
+[[row]]
+control = "split"
+receiver = "none"
+direction = "set"
+value = "on"
+frame = "FE FE A4 E0 0F 01 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 3"
+note = "enables split operation"
+
+[[row]]
+control = "split"
+receiver = "none"
+direction = "set"
+value = "off"
+frame = "FE FE A4 E0 0F 00 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 3"
+note = "disables split operation"
+
+[[row]]
+control = "rf_power"
+receiver = "none"
+direction = "set"
+value = "128 of 0..255"
+frame = "FE FE A4 E0 14 0A 01 28 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 4"
+note = "mid-scale in-range pick"
+
+[[row]]
+control = "mic_gain"
+receiver = "none"
+direction = "set"
+value = "100 of 0..255"
+frame = "FE FE A4 E0 14 0B 01 00 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 4"
+note = "mid-scale in-range pick"
+
+[[row]]
+control = "cw_key_speed"
+receiver = "none"
+direction = "set"
+value = "128 of 0..255"
+frame = "FE FE A4 E0 14 0C 01 28 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 4"
+note = "mid-scale data number pick"
+
+[[row]]
+control = "comp_level"
+receiver = "none"
+direction = "set"
+value = "128 of 0..255"
+frame = "FE FE A4 E0 14 0E 01 28 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 4"
+note = "mid-scale data number pick"
+
+[[row]]
+control = "vox"
+receiver = "none"
+direction = "set"
+value = "on"
+frame = "FE FE A4 E0 16 46 01 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 4"
+note = "enables VOX"
+
+[[row]]
+control = "break_in"
+receiver = "none"
+direction = "set"
+value = "semi on"
+frame = "FE FE A4 E0 16 47 01 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 4"
+note = "semi break-in pick"
+
+[[row]]
+control = "transmit"
+receiver = "none"
+direction = "set"
+value = "on"
+frame = "FE FE A4 E0 1C 00 01 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 14"
+note = "keys the transmitter"
+
+[[row]]
+control = "transmit"
+receiver = "none"
+direction = "set"
+value = "off"
+frame = "FE FE A4 E0 1C 00 00 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 14"
+note = "unkeys the transmitter"
+
+[[row]]
+control = "af_level"
+receiver = "none"
+direction = "set"
+value = "128 of 0..255"
+frame = "FE FE A4 E0 14 01 01 28 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 3"
+note = "mid-scale in-range pick"
+
+[[row]]
+control = "rf_gain"
+receiver = "none"
+direction = "set"
+value = "200 of 0..255"
+frame = "FE FE A4 E0 14 02 02 00 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 3"
+note = "high in-range pick"
+
+[[row]]
+control = "squelch_level"
+receiver = "none"
+direction = "set"
+value = "30 of 0..255"
+frame = "FE FE A4 E0 14 03 00 30 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 3"
+note = "low in-range pick"
+
+[[row]]
+control = "attenuator"
+receiver = "none"
+direction = "set"
+value = "on (20 dB)"
+frame = "FE FE A4 E0 11 20 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 3"
+note = "fixed 20 dB code"
+
+[[row]]
+control = "preamp"
+receiver = "none"
+direction = "set"
+value = "P.AMP1"
+frame = "FE FE A4 E0 16 02 01 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 4"
+note = "first preamp stage"
+
+[[row]]
+control = "agc"
+receiver = "none"
+direction = "set"
+value = "MID"
+frame = "FE FE A4 E0 16 12 02 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 4"
+note = "mid time constant"
+
+[[row]]
+control = "noise_blanker"
+receiver = "none"
+direction = "set"
+value = "on"
+frame = "FE FE A4 E0 16 22 01 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 4"
+note = "enables noise blanker"
+
+[[row]]
+control = "noise_reduction"
+receiver = "none"
+direction = "set"
+value = "on"
+frame = "FE FE A4 E0 16 40 01 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 4"
+note = "enables noise reduction"
+
+[[row]]
+control = "voice_tx_memory"
+receiver = "none"
+direction = "set"
+value = "T1"
+frame = "FE FE A4 E0 28 00 01 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 16"
+note = "plays first voice memory"
+
+[[row]]
+control = "voice_tx_memory"
+receiver = "none"
+direction = "set"
+value = "stop"
+frame = "FE FE A4 E0 28 00 00 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 16"
+note = "stops voice memory playback"
+
+[[row]]
+control = "antenna_tuner"
+receiver = "none"
+direction = "set"
+value = "on"
+frame = "FE FE A4 E0 1C 01 01 FD"
+manual = "IC-705 CI-V Reference Guide, command table, p. 14"
+note = "switches tuner on"
