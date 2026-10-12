@@ -93,7 +93,9 @@ from ..runtime.tx_interlock import (
     TxInterlockRefusal,
     classify_raw_civ_frame_tx_family,
     is_exact_raw_dekey_frame,
+    is_exact_raw_transmission_end_frame,
     resolve_rf_state,
+    send_civ_frame,
 )
 from ..sdr import IqSource, SdrConfig
 from ..sdr.runtime import SdrScopeRuntime
@@ -483,6 +485,30 @@ def _command_error_code(exc: BaseException) -> str:
     return "command_failed"
 
 
+def _raw_civ_transaction_frame(params: Mapping[str, Any]) -> bytes | None:
+    """Build the exact frame a ``raw_civ_transaction`` intent would send.
+
+    Raise-free: anything that does not build — a missing key, a
+    non-numeric part, an out-of-range byte — returns None, so the
+    caller keeps today's capture behavior and the existing error
+    surfaces downstream.
+    """
+
+    try:
+        sub = params.get("sub")
+        # Annotated local: under the web-scoped mypy run the runtime
+        # import resolves to Any, and a bare return would trip
+        # no-any-return while the value is real bytes-or-None.
+        frame: bytes | None = send_civ_frame(
+            int(params["command"]),
+            None if sub is None else int(sub),
+            bytes(params["data"]),
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return frame
+
+
 @dataclass(slots=True)
 class _HttpCommandExecutor:
     server: "WebServer"
@@ -506,9 +532,20 @@ class _HttpCommandExecutor:
             raise RuntimeError("No radio configured")
         controller = getattr(self.server, "_controller", None)
         if isinstance(controller, ControllerAuthority):
-            ticket = controller.capture()
-            if ticket.remote:
-                raise ControllerError("controller_tx_unsupported")
+            # A raw transaction whose frame ends a transmission never
+            # takes a controller seat: the raw PTT off and voice TX
+            # memory stop unkey like the typed PTT-off, which never
+            # captures either.  Anything that does not build to
+            # exactly such a frame captures as before.
+            raw_frame = (
+                _raw_civ_transaction_frame(intent.params)
+                if intent.name == "raw_civ_transaction"
+                else None
+            )
+            if raw_frame is None or not is_exact_raw_transmission_end_frame(raw_frame):
+                ticket = controller.capture()
+                if ticket.remote:
+                    raise ControllerError("controller_tx_unsupported")
         params = intent.params
         if intent.name == "raw_civ_transaction":
             if not isinstance(radio, CivTransactionCapable):
