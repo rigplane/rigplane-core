@@ -247,7 +247,9 @@ def test_radio_commands_go_through_the_guard() -> None:
             if logical[: match.start()].endswith(GUARD_PREFIX):
                 guarded_steps.add(_step_name(block) or "<unnamed>")
             else:
-                unguarded.append(f"{_step_name(block)!r}: {invocation!r} bypasses the guard")
+                unguarded.append(
+                    f"{_step_name(block)!r}: {invocation!r} bypasses the guard"
+                )
     assert not unguarded, (
         "radio-touching commands bypassing guard.sh run -- : " + "; ".join(unguarded)
     )
