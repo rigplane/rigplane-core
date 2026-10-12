@@ -1747,6 +1747,115 @@ class TestSessionRejectHint:
         assert mt.disconnected is True
 
 
+class TestStartupBusyHoldSignal:
+    """MOR-3391 part 2: the public busy-hold surface on the radio.
+
+    The start-up gate in ``cli`` and the web wire read the hold through
+    ``startup_busy_hold_event`` / ``startup_busy_hold_retry_in_seconds``
+    instead of the private session lifecycle: the signal is set while a
+    first-connect busy cooldown owns the loop, never on a reconnect, and
+    clears when the grant lands.
+    """
+
+    @pytest.mark.asyncio
+    async def test_busy_signal_set_during_first_connect_hold(self) -> None:
+        """Two busy rejects then acceptance: the signal owns the hold."""
+
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        clock = _VirtualMonotonic()
+        tokens = [0x5000 + i for i in range(4)]
+        logins = [_build_login_response(token=t) for t in tokens]
+        busy_left = [2]
+        observed: list[tuple[bool, object]] = []
+
+        async def _status_flow() -> int:
+            observed.append(
+                (
+                    radio.startup_busy_hold_event.is_set(),
+                    radio.startup_busy_hold_retry_in_seconds,
+                )
+            )
+            if busy_left[0] > 0:
+                busy_left[0] -= 1
+                clock.advance(_REJECT_STEP_S)
+                radio._last_status_error = 0xFFFFFFFF
+                return 0
+            radio._last_status_error = 0
+            return 50001
+
+        send_mock = AsyncMock()
+        with _busy_hold_patch_stack(
+            radio,
+            clock,
+            login_responses=logins,
+            status_flow=_status_flow,
+            send_mock=send_mock,
+        ):
+            await radio.connect()
+
+        assert radio._civ_port == 50001
+        # The first sample runs before any reject (no hold yet); every
+        # sample after a reject runs inside the busy cooldown.
+        assert observed[0] == (False, None)
+        assert len(observed) == 3
+        for held, retry in observed[1:]:
+            assert held is True
+            assert isinstance(retry, (int, float)) and not isinstance(retry, bool)
+            assert retry >= 0
+        # The grant clears the signal and the retry number with it.
+        assert radio.startup_busy_hold_event.is_set() is False
+        assert radio.startup_busy_hold_retry_in_seconds is None
+
+    @pytest.mark.asyncio
+    async def test_reconnect_busy_reject_never_sets_the_busy_signal(self) -> None:
+        """A reconnect keeps main's inline retries: no hold signal."""
+
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
+        radio._has_connected_once = True
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        clock = _VirtualMonotonic()
+        observed: list[bool] = []
+
+        async def _reject_status() -> int:
+            observed.append(radio.startup_busy_hold_event.is_set())
+            clock.advance(_REJECT_STEP_S)
+            radio._last_status_error = 0xFFFFFFFF
+            return 0
+
+        with (
+            patch.object(radio._control_phase, "_status_retry_pause", return_value=0.0),
+            patch(
+                "rigplane.runtime._control_phase.time.monotonic", new=clock.monotonic
+            ),
+            patch.object(
+                radio._control_phase,
+                "_wait_for_packet",
+                new=AsyncMock(return_value=_build_login_response()),
+            ),
+            patch.object(radio._control_phase, "_send_token_ack", new=AsyncMock()),
+            patch.object(
+                radio._control_phase,
+                "_receive_guid",
+                new=AsyncMock(return_value=b"\x00" * 16),
+            ),
+            patch.object(radio._control_phase, "_send_conninfo", new=AsyncMock()),
+            patch.object(
+                radio._control_phase,
+                "_receive_civ_port",
+                new=AsyncMock(side_effect=_reject_status),
+            ),
+        ):
+            with pytest.raises(ConnectionError, match="after retries"):
+                await radio.connect()
+
+        assert observed and not any(observed)
+        assert radio.startup_busy_hold_event.is_set() is False
+        assert radio.startup_busy_hold_retry_in_seconds is None
+
+
 class _FakeSocket:
     def __init__(self, sockname: tuple[str, int]) -> None:
         self.sockname = sockname

@@ -2314,6 +2314,316 @@ class TestProductionManagedTxComposition:
         radio.__aexit__.assert_not_awaited()
 
 
+class _BusyHoldRadio:
+    """A first connect that parks in the start-up busy hold until granted."""
+
+    backend_id = "rigplane"
+    model = "FAKE-BUSY-CLI"
+    capabilities: set[str] = set()
+
+    def __init__(self) -> None:
+        self.connected = False
+        self.control_connected = False
+        self.radio_ready = False
+        self.connection_identity = None
+        self.startup_busy_hold_event: Any = None
+        self._grant: Any = None
+        self.fail_with: BaseException | None = None
+        self.enter_calls = 0
+        self.enter_cancelled = False
+        self.exits: list[tuple[Any, ...]] = []
+        self.events: list[str] = []
+        self._managed_tx_composition = None
+
+    def install_managed_tx_composition(self, composition: Any) -> None:
+        self._managed_tx_composition = composition
+
+    async def actuate(self, _token: Any, _operation: Any, *, is_current: Any) -> Any:
+        from rigplane.runtime.managed_tx_state import ActuationResult
+
+        return (
+            ActuationResult.ACCEPTED if is_current() else ActuationResult.REJECTED
+        )
+
+    async def set_ptt(self, _on: bool) -> None:
+        raise AssertionError("raw PTT must be replaced before connect")
+
+    async def __aenter__(self) -> "_BusyHoldRadio":
+        import asyncio
+
+        self.enter_calls += 1
+        self.events.append("enter-start")
+        try:
+            await self._grant.wait()
+        except asyncio.CancelledError:
+            self.enter_cancelled = True
+            raise
+        self.startup_busy_hold_event.clear()
+        if self.fail_with is not None:
+            raise self.fail_with
+        self.connected = True
+        self.control_connected = True
+        self.radio_ready = True
+        self.events.append("enter-done")
+        return self
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        self.exits.append(exc)
+        self.events.append("radio-exit")
+        return False
+
+
+class _BusyHoldWebServer:
+    """Stand-in for WebServer: records serve/finish without binding."""
+
+    instances: list["_BusyHoldWebServer"] = []
+
+    def __init__(self, radio: Any, _config: Any) -> None:
+        self._radio = radio
+        self.events: list[str] = []
+        self._runtime_rigctld_addr: str | None = None
+        self._runtime_last_error: str | None = None
+        self._runtime_log_path: str | None = None
+        self.command_state_store = MagicMock(
+            provider_generation=3,
+            begin_provider_generation=MagicMock(return_value=4),
+        )
+        self.command_queue = MagicMock()
+        self.command_service = MagicMock()
+        self._production_managed_tx_port: Any = None
+        self.finish_calls = 0
+        self._serve_done: Any = None
+        type(self).instances.append(self)
+
+    async def start_audio_bridge(self, **_kwargs: Any) -> None:
+        from rigplane.audio.bridge import LoopbackNotFoundError
+
+        raise LoopbackNotFoundError("no loopback in the busy-hold rows")
+
+    async def serve_forever(self, **kwargs: Any) -> None:
+        import asyncio
+
+        self.events.append("serve-start")
+        assert callable(kwargs.get("on_started"))
+        kwargs["on_started"]()
+        if self._serve_done is None:
+            self._serve_done = asyncio.Event()
+        try:
+            await self._serve_done.wait()
+        except asyncio.CancelledError:
+            self.events.append("serve-cancelled")
+            raise
+        self.events.append("serve-returned")
+
+    async def finish_startup_busy_hold(self) -> None:
+        self.finish_calls += 1
+        self.events.append("finish")
+
+
+def _busy_hold_composition() -> MagicMock:
+    composition = MagicMock()
+    composition.transport_ready = AsyncMock()
+    composition.shutdown = AsyncMock()
+    composition.bind_state_store = AsyncMock()
+    composition.authority = MagicMock()
+    return composition
+
+
+class TestStartupBusyHoldOrdering:
+    """MOR-3391 part 2: web/station serves not-ready during a busy hold."""
+
+    @staticmethod
+    def _args(*extra: str) -> Any:
+        return _build_parser().parse_args(
+            ["--host", "1.2.3.4", "web", "--no-rigctld", *extra]
+        )
+
+    @staticmethod
+    def _patches(radio: _BusyHoldRadio, composition: Any) -> Any:
+        import asyncio
+
+        radio.startup_busy_hold_event = asyncio.Event()
+        radio._grant = asyncio.Event()
+        return (
+            patch("rigplane.cli.create_radio", return_value=radio),
+            patch("rigplane.cli.check_ports_available"),
+            patch("rigplane.cli.ManagedTxComposition", return_value=composition),
+            patch("rigplane.web.server.WebServer", _BusyHoldWebServer),
+        )
+
+    @staticmethod
+    async def _wait_for(predicate: Any, *, timeout: float = 2.0) -> None:
+        import asyncio
+
+        async def _poll() -> None:
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(_poll(), timeout=timeout)
+
+    @pytest.mark.asyncio
+    async def test_normal_first_connect_is_awaited_before_cmd_web(self) -> None:
+        """Without a busy hold the first connect still completes first."""
+
+        import asyncio
+
+        from rigplane.cli import _run
+
+        radio = _BusyHoldRadio()
+        composition = _busy_hold_composition()
+        _BusyHoldWebServer.instances.clear()
+        args = self._args()
+        p1, p2, p3, p4 = self._patches(radio, composition)
+        with p1, p2, p3, p4:
+            run_task = asyncio.ensure_future(_run(args))
+            await self._wait_for(lambda: radio.enter_calls == 1, timeout=2.0)
+            await asyncio.sleep(0.2)
+            assert _BusyHoldWebServer.instances == []
+            radio._grant.set()
+            await self._wait_for(
+                lambda: bool(_BusyHoldWebServer.instances)
+                and "serve-start" in _BusyHoldWebServer.instances[-1].events,
+                timeout=5.0,
+            )
+            server = _BusyHoldWebServer.instances[-1]
+            server._serve_done.set()
+            result = await asyncio.wait_for(run_task, timeout=10.0)
+
+        assert result == 0
+        assert radio.events == ["enter-start", "enter-done", "radio-exit"]
+        assert server.events[0] == "serve-start"
+        assert server.finish_calls == 0
+        composition.transport_ready.assert_awaited_once_with(radio)
+        assert len(radio.exits) == 1
+
+    @pytest.mark.asyncio
+    async def test_busy_first_connect_starts_cmd_web_before_the_grant(self) -> None:
+        """A busy first connect lets _cmd_web start while it keeps running."""
+
+        import asyncio
+
+        from rigplane.cli import _run
+
+        radio = _BusyHoldRadio()
+        composition = _busy_hold_composition()
+        _BusyHoldWebServer.instances.clear()
+        args = self._args()
+        p1, p2, p3, p4 = self._patches(radio, composition)
+        with p1, p2, p3, p4:
+            radio.startup_busy_hold_event.set()
+            run_task = asyncio.ensure_future(_run(args))
+            try:
+                await self._wait_for(
+                    lambda: bool(_BusyHoldWebServer.instances)
+                    and "serve-start" in _BusyHoldWebServer.instances[-1].events,
+                    timeout=2.0,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                run_task.cancel()
+                pytest.fail("serve did not start while the connect held busy")
+            server = _BusyHoldWebServer.instances[-1]
+            assert not radio._grant.is_set()
+            assert radio.connected is False
+            assert server.finish_calls == 0
+
+            radio._grant.set()
+            await self._wait_for(lambda: server.finish_calls == 1, timeout=5.0)
+            composition.transport_ready.assert_awaited_once_with(radio)
+            server._serve_done.set()
+            result = await asyncio.wait_for(run_task, timeout=10.0)
+
+        assert result == 0
+        assert len(radio.exits) == 1
+
+    @pytest.mark.asyncio
+    async def test_busy_hold_give_up_returns_one_closes_and_exits(self, capsys: Any) -> None:
+        """Give-up during the background connect ends like today's failure."""
+
+        import asyncio
+
+        from rigplane.cli import _run
+        from rigplane.core.exceptions import ConnectionError as RigplaneConnectionError
+        from rigplane.runtime._control_phase import _session_reject_hint
+
+        radio = _BusyHoldRadio()
+        composition = _busy_hold_composition()
+        _BusyHoldWebServer.instances.clear()
+        args = _build_parser().parse_args(
+            ["--host", "1.2.3.4", "web", "--managed", "--port", "8080", "--rigctld-port", "0"]
+        )
+        p1, p2, p3, p4 = self._patches(radio, composition)
+        with p1, p2, p3, p4:
+            radio.startup_busy_hold_event.set()
+            radio.fail_with = RigplaneConnectionError(
+                "Radio session never became ready: still busy after 19 "
+                "start-up re-logins against the 600s start-up busy budget. "
+                f"{_session_reject_hint(0xFFFFFFFF)}"
+            )
+            run_task = asyncio.ensure_future(_run(args))
+            try:
+                await self._wait_for(
+                    lambda: bool(_BusyHoldWebServer.instances)
+                    and "serve-start" in _BusyHoldWebServer.instances[-1].events,
+                    timeout=2.0,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                run_task.cancel()
+                pytest.fail("serve did not start while the connect held busy")
+            server = _BusyHoldWebServer.instances[-1]
+            rigctld_addr = server._runtime_rigctld_addr
+            assert rigctld_addr is not None and rigctld_addr.startswith("127.0.0.1:")
+            radio._grant.set()
+            result = await asyncio.wait_for(run_task, timeout=10.0)
+
+        assert result == 1
+        err = capsys.readouterr().err
+        assert "Error: Radio session never became ready" in err
+        assert "from this computer" in err
+        assert "One RigPlane server per radio" in err
+        assert "serve-cancelled" in server.events
+        composition.transport_ready.assert_not_awaited()
+        assert len(radio.exits) == 1
+        rigctld_port = int(rigctld_addr.split(":")[1])
+        with pytest.raises(ConnectionRefusedError):
+            await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", rigctld_port), timeout=5.0
+            )
+
+    @pytest.mark.asyncio
+    async def test_shutdown_during_busy_hold_cancels_connect_and_exits_radio(
+        self,
+    ) -> None:
+        """Ctrl-C during the hold cancels the connect but still exits."""
+
+        import asyncio
+
+        from rigplane.cli import _run
+
+        radio = _BusyHoldRadio()
+        composition = _busy_hold_composition()
+        _BusyHoldWebServer.instances.clear()
+        args = self._args()
+        p1, p2, p3, p4 = self._patches(radio, composition)
+        with p1, p2, p3, p4:
+            radio.startup_busy_hold_event.set()
+            run_task = asyncio.ensure_future(_run(args))
+            try:
+                await self._wait_for(
+                    lambda: bool(_BusyHoldWebServer.instances)
+                    and "serve-start" in _BusyHoldWebServer.instances[-1].events,
+                    timeout=2.0,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                run_task.cancel()
+                pytest.fail("serve did not start while the connect held busy")
+            run_task.cancel()
+            result = await asyncio.wait_for(run_task, timeout=10.0)
+
+        assert radio.enter_cancelled is True
+        assert len(radio.exits) == 1
+        composition.transport_ready.assert_not_awaited()
+
+
 class TestFirstSignalShutdownBound:
     """MOR-2875: the bound on a web/station shutdown after its first signal."""
 
