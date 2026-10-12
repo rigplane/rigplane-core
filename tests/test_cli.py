@@ -2240,9 +2240,7 @@ class TestCheckPortsAvailable:
         ("argv", "expect"),
         [
             pytest.param(["--host", "1.2.3.4", "web"], "refused", id="web"),
-            pytest.param(
-                ["--host", "1.2.3.4", "station"], "refused", id="station"
-            ),
+            pytest.param(["--host", "1.2.3.4", "station"], "refused", id="station"),
             pytest.param(["--host", "1.2.3.4", "serve"], "refused", id="serve"),
             pytest.param(
                 ["--host", "1.2.3.4", "status"],
@@ -2310,9 +2308,7 @@ class TestCheckPortsAvailable:
             args = _build_parser().parse_args(argv)
             if expect == "refused":
                 with patch("rigplane.cli.create_radio") as mock_create:
-                    result = asyncio.run(
-                        asyncio.wait_for(_run(args), timeout=10.0)
-                    )
+                    result = asyncio.run(asyncio.wait_for(_run(args), timeout=10.0))
                 assert result == 1
                 mock_create.assert_not_called()
                 captured = capsys.readouterr()
@@ -2320,9 +2316,7 @@ class TestCheckPortsAvailable:
                 assert str(holder.pid) in captured.err
             else:
                 locks_dir = tmp_path / "locks"
-                before = (
-                    set(locks_dir.glob("*.lock")) if locks_dir.is_dir() else set()
-                )
+                before = set(locks_dir.glob("*.lock")) if locks_dir.is_dir() else set()
                 with patch(
                     "rigplane.cli.create_radio",
                     side_effect=RuntimeError("guard-passed-marker"),
@@ -2331,22 +2325,25 @@ class TestCheckPortsAvailable:
                         asyncio.run(asyncio.wait_for(_run(args), timeout=10.0))
                 if expect == "rigctld-passes":
                     after = (
-                        set(locks_dir.glob("*.lock"))
-                        if locks_dir.is_dir()
-                        else set()
+                        set(locks_dir.glob("*.lock")) if locks_dir.is_dir() else set()
                     )
                     assert after == before
         finally:
             holder.kill()
             holder.wait(timeout=30)
 
-    def test_default_location_holder_does_not_block_isolated_run(self, capsys):
-        """MOR-3391 R2/B1: a default-location holder does not refuse this run.
+    def test_default_location_holder_does_not_block_isolated_run(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """MOR-3391 R2/B1, R3: a default-location holder does not refuse this run.
 
         The conftest fixture redirects the guard's default lock directory at
-        a per-test tmp dir, so a foreign holder in the real default location
-        must not refuse this run: `_run` proceeds past the guard to radio
-        construction (probed here by a `create_radio` that raises).
+        a per-test tmp dir, so a foreign holder in the default location must
+        not refuse this run: `_run` proceeds past the guard to radio
+        construction (probed here by a `create_radio` that raises). The
+        holder takes the lock through the default code path (no `cache_dir`),
+        with the default-directory seam pointed at a second tmp dir — so no
+        test touches the real user cache.
         """
         import asyncio
         import os
@@ -2354,21 +2351,21 @@ class TestCheckPortsAvailable:
         import sys
 
         from rigplane.cli import _run
-        from rigplane.cli._instance_guard import (
-            lock_file_for_identity,
-            radio_lock_identity,
-        )
+        from rigplane.cli import _instance_guard as _guard
+        from rigplane.cli._instance_guard import radio_lock_identity
 
+        fake_default = tmp_path / "fake-default-cache"
+        monkeypatch.setattr(_guard, "_default_lock_dir", lambda: fake_default)
         args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
         identity = radio_lock_identity(
             LanBackendConfig(host="1.2.3.4", port=args.control_port)
         )
-        real_cache = Path(platformdirs.user_cache_path("rigplane"))
-        lock_path = lock_file_for_identity(identity, cache_dir=real_cache)
         child_script = (
             "import sys, time\n"
-            "from rigplane.cli._instance_guard import acquire_resident_lock\n"
-            "acquire_resident_lock(sys.argv[1], cache_dir=sys.argv[2])\n"
+            "from pathlib import Path\n"
+            "from rigplane.cli import _instance_guard as g\n"
+            "g._default_lock_dir = lambda: Path(sys.argv[2])\n"
+            "g.acquire_resident_lock(sys.argv[1])\n"
             "print('READY', flush=True)\n"
             "time.sleep(60)\n"
         )
@@ -2378,7 +2375,7 @@ class TestCheckPortsAvailable:
             PYTHONPATH=src_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
         )
         holder = subprocess.Popen(
-            [sys.executable, "-c", child_script, identity, str(real_cache)],
+            [sys.executable, "-c", child_script, identity, str(fake_default)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -2389,6 +2386,8 @@ class TestCheckPortsAvailable:
         assert ready.strip() == "READY", (
             f"holder child failed: {holder.stderr.read() if holder.stderr else ''}"
         )
+        # The isolated run under test keeps the conftest redirect.
+        monkeypatch.setattr(_guard, "_default_lock_dir", lambda: tmp_path)
         try:
             with patch(
                 "rigplane.cli.create_radio",
@@ -2399,11 +2398,6 @@ class TestCheckPortsAvailable:
         finally:
             holder.kill()
             holder.wait(timeout=30)
-            lock_path.unlink(missing_ok=True)
-            try:
-                lock_path.parent.rmdir()
-            except OSError:
-                pass
 
 
 class TestProductionManagedTxComposition:

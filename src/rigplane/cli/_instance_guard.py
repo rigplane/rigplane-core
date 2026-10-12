@@ -213,25 +213,25 @@ def acquire_resident_lock(
         return held
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Never append mode: on Windows CPython positions at end-of-file and
-        # the byte lock below would guard a moving offset.
+        # O_CREAT without O_TRUNC (never "w+b"): when two processes start
+        # against a radio for the first time at once, the loser must open
+        # the winner's just-created file — not truncate it. No placeholder
+        # byte is written before locking: the fixed lock byte is guarded
+        # first, and locking past end-of-file is allowed (on Windows the
+        # locked region may extend beyond EOF).
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o666)
         try:
-            handle: BinaryIO = open(path, "r+b")
-        except FileNotFoundError:
-            handle = open(path, "w+b")
+            handle: BinaryIO = os.fdopen(fd, "r+b")
+        except OSError:
+            os.close(fd)
+            raise
     except OSError as exc:
         logger.warning(
             "single-instance guard unavailable (%s); starting without it", exc
         )
         return None
     try:
-        if sys.platform == "win32":
-            # The locked byte must exist at its fixed offset before locking.
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write(b"\x00")
-                handle.flush()
-        _lock_nonblocking(handle)
+        _lock_nonblocking(handle, path)
     except ResidentAlreadyRunningError:
         try:
             handle.close()
@@ -266,7 +266,10 @@ def acquire_resident_lock(
     return lock
 
 
-def _lock_nonblocking(handle: BinaryIO) -> None:
+def _lock_nonblocking(handle: BinaryIO, path: Path) -> None:
+    # The lock-file path is passed explicitly: a handle opened with
+    # os.fdopen reports an integer fd as its name, not the path, so the
+    # holder pid is read from the known path instead.
     if sys.platform == "win32":
         # Lock one byte at a FIXED offset: every process guards the same
         # byte however long the pid hint after it grows.
@@ -275,22 +278,12 @@ def _lock_nonblocking(handle: BinaryIO) -> None:
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError as exc:
             if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
-                raise ResidentAlreadyRunningError(_read_holder_pid_for(handle)) from exc
+                raise ResidentAlreadyRunningError(_read_holder_pid(path)) from exc
             raise
         return
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
         if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
-            raise ResidentAlreadyRunningError(_read_holder_pid_for(handle)) from exc
+            raise ResidentAlreadyRunningError(_read_holder_pid(path)) from exc
         raise
-
-
-def _read_holder_pid_for(handle: BinaryIO) -> int | None:
-    try:
-        name = getattr(handle, "name", None)
-        if name is None:
-            return None
-        return _read_holder_pid(Path(str(name)))
-    except (OSError, ValueError):
-        return None
