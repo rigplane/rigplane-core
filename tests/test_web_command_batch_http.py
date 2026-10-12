@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
 import pytest
 
-from rigplane.core.state_pipeline_contracts import CommandIntent
+from rigplane.core.state_pipeline_contracts import (
+    CommandIntent,
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from rigplane.profiles import resolve_radio_profile
 from rigplane.web import server as web_server
 from rigplane.web.radio_poller import (
@@ -718,20 +724,36 @@ async def test_http_command_batch_raw_civ_transaction_managed_refuses_tx_family(
     assert probe.touches == []
 
 
+def _unmanaged_server(radio: MagicMock) -> WebServer:
+    return WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+
+
+_PTT_PATH = FieldPath.global_("tx_state", "ptt")
+_TEST_SOURCE = SourceMetadata(source="test", provider="tests")
+
+
+def _observe_ptt(srv: WebServer, value: bool, *, age_seconds: float = 0.0) -> None:
+    srv.command_state_store.apply_current(
+        Observation(
+            path=_PTT_PATH,
+            value=value,
+            source=_TEST_SOURCE,
+            timestamp_monotonic=time.monotonic() - age_seconds,
+            max_age=60.0,
+        )
+    )
+
+
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="MOR-3364: unmanaged HTTP raw PTT-on must be refused, not sent",
-)
 async def test_http_raw_civ_transaction_unmanaged_refuses_ptt_on() -> None:
-    """Desired post-MOR-3364 behavior: the unmanaged HTTP raw path refuses
-    PTT-on instead of keying the rig with no interlock at all."""
+    """The unmanaged HTTP raw path refuses PTT-on when RF state
+    is UNKNOWN (no PTT observation at all) instead of keying the rig with
+    no interlock at all."""
     radio = _radio()
     radio.send_civ_transaction = AsyncMock(
         return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
     )
-    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    srv = _unmanaged_server(radio)
 
     writer = await _post_json(
         srv,
@@ -742,7 +764,126 @@ async def test_http_raw_civ_transaction_unmanaged_refuses_ptt_on() -> None:
     assert writer.response_status == 403, (
         "MOR-3364: unmanaged HTTP raw PTT-on still reaches the radio"
     )
+    assert writer.response_body["error"] == "rf_state_unknown"
     radio.send_civ_transaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "ptt_value", "age_seconds", "expected_error"),
+    [
+        (
+            {"command": 0x1C, "sub": 0x00, "data": "01", "expect": "none"},
+            True,
+            0.0,
+            "radio_transmitting",
+        ),
+        (
+            {"command": 0x1C, "sub": 0x00, "data": "01", "expect": "none"},
+            False,
+            120.0,
+            "rf_state_unknown",
+        ),
+        (
+            {"command": 0x29, "sub": 0x00, "data": "1C0001", "expect": "none"},
+            None,
+            0.0,
+            "rf_state_unknown",
+        ),
+        (
+            {"command": 0x1C, "sub": 0x01, "data": "01", "expect": "none"},
+            None,
+            0.0,
+            "rf_state_unknown",
+        ),
+    ],
+    ids=[
+        "ptt-on-observed-tx",
+        "ptt-on-stale-rx",
+        "cmd29-ptt-on-unknown",
+        "tuner-engage-unknown",
+    ],
+)
+async def test_http_raw_civ_transaction_unmanaged_refuses_tx_family_without_fresh_rx(
+    payload: dict,
+    ptt_value: bool | None,
+    age_seconds: float,
+    expected_error: str,
+) -> None:
+    """Parity with unmanaged rigctld raw ``w``
+    (``_RigctldCommandExecutor.execute``): a TX-family raw frame is
+    refused unless the observed PTT resolves to fresh-known RX — observed
+    TX refuses, and so does a stale or absent observation."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv = _unmanaged_server(radio)
+    if ptt_value is not None:
+        _observe_ptt(srv, ptt_value, age_seconds=age_seconds)
+
+    writer = await _post_json(srv, "/api/v1/civ/transaction", payload)
+
+    assert writer.response_status == 403
+    assert writer.response_body["error"] == expected_error
+    radio.send_civ_transaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_http_raw_civ_transaction_unmanaged_passes_ptt_on_with_fresh_rx() -> None:
+    """With a fresh-known RX observation the unmanaged HTTP raw
+    seat passes a TX-family frame to the radio, exactly as unmanaged
+    rigctld raw ``w`` and the typed ``T 1`` do."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv = _unmanaged_server(radio)
+    _observe_ptt(srv, False)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/civ/transaction",
+        {"command": 0x1C, "sub": 0x00, "data": "01", "expect": "none"},
+    )
+
+    assert writer.response_status == 200
+    radio.send_civ_transaction.assert_awaited_once_with(
+        0x1C,
+        sub=0x00,
+        data=b"\x01",
+        expect="none",
+        timeout=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_http_raw_civ_transaction_unmanaged_passes_non_tx_while_observed_tx() -> (
+    None
+):
+    """A non-TX frame (set frequency) passes regardless of the observed RF
+    state, observed TX included: it is not a TX actuation."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv = _unmanaged_server(radio)
+    _observe_ptt(srv, True)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/civ/transaction",
+        {"command": 0x05, "data": "0000101400", "expect": "none"},
+    )
+
+    assert writer.response_status == 200
+    radio.send_civ_transaction.assert_awaited_once_with(
+        0x05,
+        sub=None,
+        data=bytes.fromhex("0000101400"),
+        expect="none",
+        timeout=None,
+    )
 
 
 @pytest.mark.asyncio
