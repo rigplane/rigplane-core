@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from typing import Callable
 from unittest.mock import AsyncMock
 
 import pytest
 
-from rigplane.audio import AudioPacket
+from rigplane.audio import AudioPacket, usb_driver
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
 from rigplane.audio.lan_stream import SYNTHETIC_RX_IDENT
 from rigplane.audio.usb_driver import UsbAudioDriver
@@ -172,7 +171,7 @@ class TestAudioDescriptors:
     async def test_duplex_mode_same_device_macos_is_exclusive(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(usb_driver.platform, "system", lambda: "Darwin")
         backend = FakeAudioBackend(
             [
                 AudioDeviceInfo(
