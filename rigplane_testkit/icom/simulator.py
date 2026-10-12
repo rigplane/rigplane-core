@@ -61,7 +61,8 @@ _DROP_NOTICE_DELAY_S = 0.1
 # answers discovery and pings for ~0.02 s before going dark.
 _POWER_OFF_NOTICE_WINDOW_S = 0.02
 
-# Default accelerated keepalive hold (D7). Real radios hold ~40-60 s; the fast
+# Default accelerated keepalive hold (D7). The IC-7610 holds a dead client's
+# session for 83.4-85.9 s (MOR-3391, fresh logins from separate ports); the fast
 # suite uses ~0.5 s so a dropped session frees quickly. A near-real value
 # (~45-60 s) can be passed for the one slow timing test.
 _DEFAULT_KEEPALIVE_HOLD_S = 0.5

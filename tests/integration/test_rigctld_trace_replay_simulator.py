@@ -214,9 +214,7 @@ def _parse_send(payload: str, line_no: int) -> _SetOp | _ReadOp | None:
 
 async def _stack() -> AsyncGenerator[tuple[RigctldServer, MockIcomRadio], None]:
     """Live RigctldServer on a CoreRadio connected to the LAN simulator."""
-    sim = ic7610_lan_fake(
-        capture_civ_frames=True, stateful_ptt=True, dual_receiver=True
-    )
+    sim = ic7610_lan_fake(capture_civ_frames=True, stateful_ptt=True)
     await sim.start()
     # Trace precondition (wsjtx §4): both receivers start at 14074000 Hz.
     sim._unselected_frequency = 14_074_000  # noqa: SLF001
@@ -442,6 +440,32 @@ def _sim_ptt_readback(sim: MockIcomRadio) -> int:
     if reply is None or len(reply) != 8 or reply[4] != 0x1C or reply[5] != 0x00:
         raise RuntimeError(f"simulator 1C 00 GET gave no decodable reply: {reply!r}")
     return reply[6]
+
+
+def test_sub_selected_accessors_map_to_absolute_receivers() -> None:
+    """_sim_freq/_sim_mode_filter resolve MAIN/SUB while SUB is selected.
+
+    The traces never leave SUB selected (the client re-selects MAIN after
+    each SUB operation), so the SUB-selected branch of the accessors is
+    never reached in a replay. This pins it directly through the
+    simulator's in-process ``_dispatch_civ``, with no rigctld stack and no
+    network. With the pre-mapping accessors (receiver 0 = the selected
+    fields) the MAIN/SUB values swap and the test fails.
+    """
+    sim = MockIcomRadio(dual_receiver=True, recorded_answers=None)
+    main_hz, sub_hz = 14_074_000, 7_074_000
+    sim._frequency = main_hz  # noqa: SLF001
+    sim._unselected_frequency = sub_hz  # noqa: SLF001
+    sim._mode, sim._filter = 0x01, 1  # noqa: SLF001
+    sim._unselected_mode, sim._unselected_filter = 0x03, 2  # noqa: SLF001
+    assert sim._dispatch_civ(0x07, b"\xd1", 0xE0) == bytes.fromhex(  # noqa: SLF001
+        "fefee098fbfd"
+    )
+    assert sim._selected_receiver == 1  # noqa: SLF001
+    assert _sim_freq(sim, 0) == main_hz
+    assert _sim_freq(sim, 1) == sub_hz
+    assert _sim_mode_filter(sim, 0) == (0x01, 1)
+    assert _sim_mode_filter(sim, 1) == (0x03, 2)
 
 
 async def _check_set_landed(

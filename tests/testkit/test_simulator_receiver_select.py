@@ -21,6 +21,8 @@ from rigplane_testkit.icom import (
     _bcd_encode_freq,
 )
 
+from testkit.ic7610_fakes import ic7610_lan_fake
+
 _FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "ic7610"
 
 _FROM_CONTROLLER = 0xE0
@@ -155,3 +157,69 @@ def test_receiver_select_off_by_default() -> None:
     before = sim._dispatch_civ(0x03, b"", _FROM_CONTROLLER)  # noqa: SLF001
     assert sim._dispatch_civ(0x07, b"\xd1", _FROM_CONTROLLER) == _NAK  # noqa: SLF001
     assert sim._dispatch_civ(0x03, b"", _FROM_CONTROLLER) == before  # noqa: SLF001
+
+
+def test_data_mode_flag_follows_receiver_select() -> None:
+    """07 D1 swaps the DATA-mode flag: 26 01 reports MAIN's flag, 26 00 SUB's."""
+    sim = MockIcomRadio(dual_receiver=True, recorded_answers=None)
+    # MAIN (the selected receiver) DATA flag 01; SUB stays 00.
+    assert (
+        sim._dispatch_civ(0x26, bytes((0x00, 0x01, 0x01, 1)), _FROM_CONTROLLER)  # noqa: SLF001
+        == _ACK
+    )
+    assert sim._dispatch_civ(0x07, b"\xd1", _FROM_CONTROLLER) == _ACK  # noqa: SLF001
+    # SUB is now selected: 26 00 (selected) reports SUB's old flag (00) ...
+    assert sim._dispatch_civ(0x26, b"\x00", _FROM_CONTROLLER) == (  # noqa: SLF001
+        b"\xfe\xfe\xe0\x98\x26\x00\x01\x00\x01\xfd"
+    )
+    # ... and 26 01 (MAIN, now unselected) reports the flag we set on MAIN (01).
+    assert sim._dispatch_civ(0x26, b"\x01", _FROM_CONTROLLER) == (  # noqa: SLF001
+        b"\xfe\xfe\xe0\x98\x26\x01\x01\x01\x01\xfd"
+    )
+
+
+def _recorded_c2_reply() -> bytes:
+    """The recorded radio reply to ``07 C2`` from the vfo_select window.
+
+    ``07 C2`` has no native handler, so only the recorded table answers it;
+    the expected bytes are read from the same rows the table is built from,
+    never hard-coded.
+    """
+    for request, reply in _request_reply_pairs():
+        if request[4] == 0x07 and request[5:-1] == b"\xc2":
+            return reply
+    raise AssertionError("the vfo_select window has no 07 C2 pair")
+
+
+def test_c2_answered_from_recorded_table() -> None:
+    """07 C2 has no native handler: the LAN fake's table answers it."""
+    sim = ic7610_lan_fake(dual_receiver=True)
+    assert sim._dispatch_civ(0x07, b"\xc2", _FROM_CONTROLLER) == _recorded_c2_reply()  # noqa: SLF001
+
+
+def test_c2_naks_without_table() -> None:
+    """07 C2 has no native handler: without a table it NAKs."""
+    sim = MockIcomRadio(dual_receiver=True, recorded_answers=None)
+    assert sim._dispatch_civ(0x07, b"\xc2", _FROM_CONTROLLER) == _NAK  # noqa: SLF001
+
+
+def test_extra_receiver_select_byte_naks_and_changes_nothing() -> None:
+    """07 D0/D1/D2 with a trailing byte NAKs and changes no state."""
+    sim = MockIcomRadio(dual_receiver=True, recorded_answers=None)
+    freq_before = sim._frequency  # noqa: SLF001
+    unselected_before = sim._unselected_frequency  # noqa: SLF001
+    for payload in (b"\xd0\x00", b"\xd1\x00", b"\xd2\x00"):
+        assert sim._dispatch_civ(0x07, payload, _FROM_CONTROLLER) == _NAK  # noqa: SLF001
+    assert sim._selected_receiver == 0  # noqa: SLF001
+    assert sim._frequency == freq_before  # noqa: SLF001
+    assert sim._unselected_frequency == unselected_before  # noqa: SLF001
+
+
+def test_lan_fake_dual_receiver_default() -> None:
+    """ic7610_lan_fake() models receiver select by default: 07 D2 reads 01."""
+    sim = ic7610_lan_fake()
+    assert sim._dual_receiver is True  # noqa: SLF001
+    assert sim._dispatch_civ(0x07, b"\xd1", _FROM_CONTROLLER) == _ACK  # noqa: SLF001
+    assert sim._dispatch_civ(0x07, b"\xd2", _FROM_CONTROLLER) == (  # noqa: SLF001
+        b"\xfe\xfe\xe0\x98\x07\xd2\x01\xfd"
+    )
