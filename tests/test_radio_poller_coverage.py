@@ -46,6 +46,7 @@ from rigplane.core.command_service import (
     CommandService,
     command_intent_from_request,
 )
+from rigplane.core.exceptions import CommandRejectedError
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.exceptions import CommandError
@@ -2460,6 +2461,31 @@ async def test_current_active_defaults_and_setfreq_setmode_branches() -> None:
 
     await poller._execute(SetMode("USB", filter_width=2, receiver=1))  # noqa: SLF001
     radio.set_mode.assert_awaited_once_with("USB", 2, receiver=1)
+
+
+@pytest.mark.asyncio
+async def test_setfreq_main_write_rejection_while_sub_active_restores_sub() -> None:
+    """A refused MAIN 0x05 while SUB is active must still restore SUB.
+
+    The MAIN frequency write waits for the radio's answer
+    (``DualRxRuntimeMixin._set_frequency_main``), so it can raise — a NAK
+    maps to ``CommandRejectedError``. The restore of the SUB selection runs
+    on that exit too, and the error still propagates to the caller.
+    """
+    radio = _make_radio(active="SUB")
+    poller = RadioPoller(radio, StateCache(), CommandQueue())
+    order: list[str] = []
+    radio.select_receiver = AsyncMock(
+        side_effect=lambda which: order.append(f"select_receiver({which})")
+    )
+    radio.set_freq = AsyncMock(
+        side_effect=CommandRejectedError("radio NAKed the MAIN 0x05")
+    )
+
+    with pytest.raises(CommandRejectedError, match="radio NAKed the MAIN 0x05"):
+        await poller._execute(SetFreq(7_074_000, receiver=0))  # noqa: SLF001
+
+    assert order == ["select_receiver(0)", "select_receiver(1)"]
 
 
 @pytest.mark.asyncio
