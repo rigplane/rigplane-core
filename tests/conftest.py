@@ -8,7 +8,7 @@ _os.environ.setdefault("RIGPLANE_DISABLE_DIAGNOSTIC_LOGGING", "1")
 del _os
 
 import struct  # noqa: E402
-from collections.abc import AsyncGenerator  # noqa: E402
+from collections.abc import AsyncGenerator, Iterator  # noqa: E402
 
 import pytest  # noqa: E402
 
@@ -242,3 +242,37 @@ def observed_rx_dispatch_premise(monkeypatch: pytest.MonkeyPatch) -> None:
         "_current_rf_state",
         lambda self, snapshot=None: RfState.RX,
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_shared_portaudio_pool() -> Iterator[None]:
+    """Restore the shared bounded PortAudio pool to a pristine state in place.
+
+    ``rigplane.audio.usb_driver.bounded_portaudio_pool`` is a module
+    singleton that ``audio/bridge.py`` and ``web/server.py`` import by name,
+    so swapping in a fresh object would not isolate anything — the reset has
+    to happen on the object itself. A test whose wedged PortAudio operation
+    outlives its (function-scoped) event loop otherwise leaves retained
+    streams and pending futures bound to that closed loop in the pool, and a
+    later test reusing the same fake device ids inherits them: its open waits
+    the full ``capture_open_timeout`` on a future that can never settle (the
+    cascade pinned by tests/test_usb_audio_pool_isolation.py). Tests that
+    never touched the pool pay only the five attribute checks below.
+    """
+    yield
+    from rigplane.audio import usb_driver
+
+    pool = usb_driver.bounded_portaudio_pool
+    if (
+        pool.inflight == 0
+        and not pool._opens
+        and not pool._stops
+        and not pool._cleanup_streams
+        and not pool._stream_resources
+    ):
+        return
+    # The old executor may still host a wedged worker; retire it without
+    # waiting and re-run the initialiser so every field (executor, inflight,
+    # _opens, _stops, _cleanup_streams, _stream_resources) is pristine.
+    pool._executor.shutdown(wait=False)
+    pool.__init__()

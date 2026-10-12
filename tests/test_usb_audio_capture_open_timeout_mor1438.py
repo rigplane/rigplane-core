@@ -39,6 +39,8 @@ import pytest
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
 from rigplane.audio.usb_driver import AudioCaptureOpenTimeoutError, UsbAudioDriver
 
+from _portaudio_pool_helpers import drain_pool
+
 _LOGGER_NAME = "rigplane.audio.usb_driver"
 # Tiny relative to the production default -- keeps this suite fast while
 # still exercising the real asyncio.wait()-based bound.
@@ -132,7 +134,7 @@ async def test_rx_open_timeout_keeps_event_loop_free(
     assert "consent" in message.lower()
 
     gate.set()  # release the stuck background open so the thread can exit
-    await asyncio.sleep(0.05)
+    await drain_pool()
 
 
 @pytest.mark.timeout(10)
@@ -176,7 +178,7 @@ async def test_rx_open_recovers_on_next_subscriber(
     assert driver.rx_running is False
 
     gate.set()
-    await asyncio.sleep(0.05)  # let the abandoned attempt's cleanup settle
+    await drain_pool()  # let the abandoned attempt's cleanup settle
 
     backend.block_rx_open = None  # simulate consent granted for the retry
     await driver.start_rx(lambda _frame: None)
@@ -221,7 +223,7 @@ async def test_tx_open_timeout_shares_the_same_treatment(
     assert len(_warnings(caplog)) == 1
 
     gate.set()
-    await asyncio.sleep(0.05)
+    await drain_pool()
 
 
 @pytest.mark.timeout(10)
@@ -374,7 +376,7 @@ async def test_timeout_warning_reports_sub_second_timeout_with_one_decimal(
         # process exit forever (the exact failure mode this ticket exists
         # to prevent in production).
         gate.set()
-        await asyncio.sleep(0.05)
+        await drain_pool()
 
 
 @pytest.mark.timeout(15)
@@ -554,7 +556,7 @@ async def test_duplex_open_routes_off_loop_and_times_out(
         stop.set()
         await ticker
         gate.set()
-        await asyncio.sleep(0.05)
+        await drain_pool()
 
     assert progressed >= 3, (
         "event loop should keep making progress while the duplex open is stuck"

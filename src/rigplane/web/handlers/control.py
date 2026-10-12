@@ -517,11 +517,11 @@ def _consume_normalized_level_unit(name: str, params: dict[str, Any]) -> dict[st
 
 # ``ControlHandler._send_command_failure`` logs these exception types at
 # ERROR with a traceback and every other failure as one WARNING line; the
-# client reply is the same for both. They are what a bug in the command
-# path raises (a missing attribute, a wrong call signature, an undefined
-# name); malformed client parameters can raise TypeError or AttributeError
-# too (``int(None)`` in ``command_intent_from_request``) and are logged the
-# same way. Pinned by tests/test_control_command_programmer_errors.py.
+# client reply is the same for both. Client command parameters are
+# validated before they can raise these types on the paths pinned by
+# tests/test_command_param_validation.py; anything else that raises them
+# is treated as a bug. Pinned by
+# tests/test_control_command_programmer_errors.py.
 _PROGRAMMER_ERRORS: tuple[type[Exception], ...] = (AttributeError, TypeError, NameError)
 
 
@@ -1272,6 +1272,33 @@ class ControlHandler:
         name = msg.get("name", "")
         params = msg.get("params", {})
 
+        # ``params: null`` is a client spelling of "no params" and behaves
+        # exactly like an omitted ``params``. Any other non-object ``params``
+        # (a list, a string, a number) is malformed client input, not a
+        # programmer error: refuse it here, before the MOD-input
+        # interception, rate limiting and coalescing, so it can never reach
+        # a coercion site (``dict(params)``, ``params.get``) as a
+        # TypeError/AttributeError. Same refusal wording as the HTTP
+        # single-command ingress (``server.py:
+        # WebServer._handle_http_single_command``). Pinned by
+        # tests/test_command_param_validation.py.
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            await self._send_command_failure(
+                cmd_id, name, ValueError("params must be an object")
+            )
+            return
+
+        # A non-string ``name`` is malformed client input: answer it with the
+        # same ``unknown_command`` reply an unknown string gets, logged at
+        # WARNING, before anything below calls string methods on it. Pinned
+        # by tests/test_command_param_validation.py.
+        if not isinstance(name, str):
+            logger.warning("control: command with a non-string name refused: %r", name)
+            await self._send_unknown_command(cmd_id, name)
+            return
+
         # MOR-624: session-local arm/disarm of the teardown MOD-input restore.
         # Bookkeeping only (never a radio command) — intercepted before the
         # _COMMANDS gate so the command catalog stays untouched.
@@ -1488,17 +1515,7 @@ class ControlHandler:
         validation/enqueue/ack behavior.
         """
         if name not in self._COMMANDS:
-            await self._ws.send_text(
-                encode_json(
-                    {
-                        "type": "response",
-                        "id": cmd_id,
-                        "ok": False,
-                        "error": "unknown_command",
-                        "message": f"unknown command: {name!r}",
-                    }
-                )
-            )
+            await self._send_unknown_command(cmd_id, name)
             return
 
         if self._radio is None:
@@ -1534,6 +1551,20 @@ class ControlHandler:
             )
         except Exception as exc:
             await self._send_command_failure(cmd_id, name, exc)
+
+    async def _send_unknown_command(self, cmd_id: Any, name: Any) -> None:
+        """Answer a command whose name is unknown (or not a string at all)."""
+        await self._ws.send_text(
+            encode_json(
+                {
+                    "type": "response",
+                    "id": cmd_id,
+                    "ok": False,
+                    "error": "unknown_command",
+                    "message": f"unknown command: {name!r}",
+                }
+            )
+        )
 
     async def _send_command_failure(
         self, cmd_id: Any, name: str, exc: Exception
