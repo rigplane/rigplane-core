@@ -399,8 +399,9 @@ class MockIcomRadio:
         # it tracks ONE owning session keyed by (remote_addr, control my_id).
         # A conninfo from a different owner while a session is held is rejected
         # with civ_port=0 + error=0xFFFFFFFF (previous-session-active). The held
-        # session is freed immediately on token-remove or OpenClose(close), and
-        # otherwise auto-released after ``keepalive_hold_s`` of silence.
+        # session is freed immediately on the owner's token-remove or
+        # OpenClose(close) — a token-remove from any other source is a no-op —
+        # and otherwise auto-released after ``keepalive_hold_s`` of silence.
         self.single_owner: bool = single_owner
         self.keepalive_hold_s: float = keepalive_hold_s
         # Owner identity = (remote_addr, my_id); None when no session is held.
@@ -424,9 +425,10 @@ class MockIcomRadio:
         self._busy_until: float = 0.0  # post-reboot busy-reject window
         self._keepalive_silent_until: float = 0.0  # pings received, not answered
         # CI-V standby scenario (test knob, NOT recorded radio behaviour):
-        # while True the CI-V port processes no CI-V DATA (no echo, no
-        # reply); discovery, pings and OpenClose still work, and the
-        # control port is unaffected.
+        # while True the CI-V port emits nothing for CI-V DATA (no echo, no
+        # reply, no retransmit requests) but still advances sequence
+        # tracking, so turning standby off resumes cleanly; discovery,
+        # pings and OpenClose still work, and the control port is unaffected.
         self._civ_standby: bool = False
         # Power-off notice window (recording w2): after the 0x90 notice the
         # radio still answers discovery/pings until this deadline, then goes dark.
@@ -629,11 +631,12 @@ class MockIcomRadio:
     def civ_standby(self, on: bool) -> None:
         """Turn the CI-V standby scenario on or off (test helper).
 
-        While on, the CI-V port processes no CI-V DATA: requests get no
-        echo and no reply. CI-V-port pings stay answered, and the control
-        port keeps answering pings and renewals. This is a simulator
-        scenario for tests, NOT recorded radio behaviour — network
-        standby is unrecorded.
+        While on, the CI-V port emits nothing for CI-V DATA — no echo, no
+        reply, no retransmit requests — but still advances sequence
+        tracking for tracked packets, so turning standby off resumes
+        cleanly. CI-V-port pings stay answered, and the control port keeps
+        answering pings and renewals. This is a simulator scenario for
+        tests, NOT recorded radio behaviour — network standby is unrecorded.
         """
         self._civ_standby = bool(on)
 
@@ -809,23 +812,23 @@ class MockIcomRadio:
         """End the current token epoch: retire the value, issue a fresh one.
 
         Renewals carrying the retired value are answered with the recorded
-        reject instead of being dropped. New logins, token-remove,
-        hold expiry, ``drop_session`` and reboot all start a new epoch.
+        reject instead of being dropped. Every end of a held session starts
+        a new epoch — the owner's token-remove, disconnect, OpenClose
+        close, hold expiry, ``drop_session`` and reboot — while a bare login
+        never does.
         """
         self._retired_tokens.add(self.token)
         self.token = (self.token + 0x9E3779B9) & 0xFFFFFFFF
 
     def _renewal_live(self, token: int) -> bool:
-        """True when a renewal token names the currently held session.
+        """True when a renewal token names the current token epoch.
 
-        The value must be the current token (never a retired one); in
-        single-owner mode a session must also be held right now, so a
-        renewal that arrives with no session held — e.g. after a release
-        path that frees without rotating — is rejected too.
+        Every end of a held session on the wire retires the token (see
+        ``_retire_token``), so equality with the current token is the whole
+        check — no session-held guard: the rotation in ``_expire_hold``
+        already rejects post-expiry renewals.
         """
-        if token != self.token or token in self._retired_tokens:
-            return False
-        return not self.single_owner or self._owner is not None
+        return token == self.token
 
     def _arm_keepalive(self) -> None:
         """(Re)start the keepalive auto-release timer for the held session."""
@@ -1143,14 +1146,20 @@ class MockIcomRadio:
         n = len(data)
 
         # Token renewal (0x40, requesttype=0x05): answered even when the
-        # token names no live session — 00000000 for the held token, the
+        # token names no live session — 00000000 for the current token, the
         # recorded ffffffff reject otherwise, exactly one reply. The
-        # keepalive refresh stays owner-keyed, so a renewal from the holder
-        # extends the hold window either way.
+        # keepalive refresh is token-keyed: a renewal carrying the live
+        # token extends the hold whatever its source (MOR-3349: the recorded
+        # fact is about the token, not the socket). Renewal traffic from
+        # the holder itself also extends the hold, as before.
         if n == 0x40 and data[0x15] == _TOKEN_RENEW:
-            self._refresh_keepalive((addr, sender_id))
             token = struct.unpack_from("<I", data, 0x1C)[0]
-            response = _ERR_OK if self._renewal_live(token) else _ERR_TOKEN_REJECT
+            if self._renewal_live(token):
+                self._arm_keepalive()
+                response = _ERR_OK
+            else:
+                self._refresh_keepalive((addr, sender_id))
+                response = _ERR_TOKEN_REJECT
             self._send(
                 proto, self._token_renew_reply(data, sender_id, response), addr, "ctrl"
             )
@@ -1185,10 +1194,12 @@ class MockIcomRadio:
 
         # Login (0x80 bytes)
         if n == 0x80:
-            if not self.auth_fail:
-                # A newer login starts a new token epoch: the previous
-                # token is retired, so renewals carrying it are rejected.
-                self._retire_token()
+            # A login never starts a new token epoch by itself: the previous
+            # token is retired only when the previous session actually ends
+            # (owner token-remove, disconnect, OpenClose close, hold expiry,
+            # drop_session, reboot) — never at login receipt. The radio
+            # busy-rejects a second client while a session is held instead
+            # of retiring the holder on the second login.
             self._send(proto, self._login_response(data, sender_id), addr, "ctrl")
             if not self.auth_fail:
                 self._login_count += 1
@@ -1209,12 +1220,17 @@ class MockIcomRadio:
             self._send(proto, self._guid_conninfo(sender_id), addr, "ctrl")
             return
 
-        # Token remove (0x40 bytes, requesttype=0x01) → graceful close: free
-        # now and end the token epoch, so later renewals with it are rejected.
+        # Token remove (0x40 bytes, requesttype=0x01) → graceful close: the
+        # owner frees the session now and ends the token epoch, so later
+        # renewals with it are rejected. In single-owner mode a remove from
+        # any other source is a no-op: it neither frees nor retires.
         if n == 0x40 and data[0x15] == _TOKEN_REMOVE:
-            if self.single_owner and self._owner == (addr, sender_id):
-                self._release_session("token_remove")
-            self._retire_token()
+            if self.single_owner:
+                if self._owner == (addr, sender_id):
+                    self._release_session("token_remove")
+                    self._retire_token()
+            else:
+                self._retire_token()
             return
 
         # Client conninfo (0x90 bytes, requesttype=0x03) → status with CI-V port
@@ -1236,10 +1252,12 @@ class MockIcomRadio:
             self._send(proto, reply, addr, "ctrl")
             return
 
-        # Disconnect → free a held session for this owner
+        # Disconnect → free a held session for this owner and end its token
+        # epoch, so later renewals with it are rejected.
         if n == _HEADER_SIZE and ptype == _PT_DISCONNECT:
             if self.single_owner and self._owner == (addr, sender_id):
                 self._release_session("disconnect")
+                self._retire_token()
             return
 
     # ------------------------------------------------------------------
@@ -1337,19 +1355,23 @@ class MockIcomRadio:
                 # belongs to the radio session: a re-sent open never
                 # restarts it (MOR-3361).
                 self._civ_gap_ensure((addr, sender_id))
-                civ = self._civ_frame(to=0x00, frm=self._radio_addr, cmd=0x00)
-                self._send(proto, self._wrap_civ(civ, sender_id), addr, "civ")
+                if not self._civ_standby:
+                    civ = self._civ_frame(to=0x00, frm=self._radio_addr, cmd=0x00)
+                    self._send(proto, self._wrap_civ(civ, sender_id), addr, "civ")
                 key = (addr, sender_id)
                 if self._civ_gap_gate(
                     key, "openclose", data, addr, sender_id, seq, proto
                 ):
-                    self._civ_gap_drain(key, proto)
+                    if not self._civ_standby:
+                        self._civ_gap_drain(key, proto)
             elif data[0x15] == _OPENCLOSE_CLOSE:  # graceful data-port close
-                # OpenClose(close) frees the single held session immediately.
-                # Tracking outlives the close: it ends only with a new
-                # session, drop_session or reboot (MOR-3361).
+                # OpenClose(close) frees the single held session immediately
+                # and ends its token epoch. Tracking outlives the close: it
+                # ends only with a new session, drop_session or reboot
+                # (MOR-3361).
                 if self.single_owner and self._owner is not None:
                     self._release_session("openclose_close")
+                    self._retire_token()
                 # The close is still a tracked packet: its number goes
                 # through the gate (held and released in order like any
                 # other), without any stream marker.
@@ -1357,7 +1379,8 @@ class MockIcomRadio:
                 if self._civ_gap_gate(
                     key, "openclose", data, addr, sender_id, seq, proto
                 ):
-                    self._civ_gap_drain(key, proto)
+                    if not self._civ_standby:
+                        self._civ_gap_drain(key, proto)
             return
 
         # Disconnect
@@ -1367,25 +1390,27 @@ class MockIcomRadio:
         # Idle keepalive (0x10 type-0): tracked for gap purposes, never
         # answered — like the recorded radio, which keeps its own cadence.
         if n == _HEADER_SIZE and ptype == _PT_DATA:
-            if self._civ_standby:
-                return  # standby scenario: no CI-V DATA processing
             if self._civ_gap_gate(
                 (addr, sender_id), "idle", data, addr, sender_id, seq, proto
             ):
-                self._civ_gap_drain((addr, sender_id), proto)
+                if not self._civ_standby:
+                    self._civ_gap_drain((addr, sender_id), proto)
             return
 
         # CI-V data (DATA type, larger than header)
         if ptype == _PT_DATA and n > _CIV_HEADER_SIZE:
-            if self._civ_standby:
-                return  # standby scenario: no echo, no reply
             if self._civ_fenced(addr, sender_id):
                 return  # post-reboot: stale client until a fresh OpenClose(open)
             key = (addr, sender_id)
-            if self._civ_gap_gate(key, "data", data, addr, sender_id, seq, proto):
+            if (
+                self._civ_gap_gate(key, "data", data, addr, sender_id, seq, proto)
+                and not self._civ_standby
+            ):
                 # The LAN CI-V echo and the reply go out only when the
                 # request is actually processed — held packets stay silent
-                # until the fill releases them in sequence order.
+                # until the fill releases them in sequence order. In
+                # standby the gate above still advances sequence tracking
+                # (no echo, no reply), so resuming is clean.
                 self._handle_civ_data(data, addr, sender_id, proto)
                 self._civ_gap_drain(key, proto)
 
@@ -1578,6 +1603,8 @@ class MockIcomRadio:
         self, tracker: _CivGapState, proto: _MockProtocol | None
     ) -> None:
         """Send the current retransmit request twice to one gapped owner."""
+        if self._civ_standby:
+            return  # standby: track, never ask — the 0.1 s loop retries later
         if proto is None:
             proto = self._civ_proto
         if proto is None:

@@ -63,13 +63,16 @@ UDP code paths as production.
   unsolicited 0x90 notice ~0.1 s after the drop, and apply the same
   per-client fresh-login OpenClose fence — and
   `keepalive_silence(at, for_seconds)` — pings are received but not answered.
-  Token renewals follow the recorded layout (`_token_renew_reply`): the held
-  token is answered `00000000` and extends the single-owner hold, while a
-  renewal with a token from an ended epoch (token-remove, `drop_session`,
-  reboot, hold expiry, or a newer login) is answered `ffffffff`, exactly
-  once. `civ_standby(on)` is a test-only scenario, not recorded behaviour:
-  while on, the CI-V port processes no CI-V DATA (no echo, no reply) while
-  CI-V-port pings and the control port keep answering.
+  Token renewals follow the recorded layout (`_token_renew_reply`): a renewal
+  with the current token is answered `00000000` and extends the single-owner
+  hold whatever its source (renewal traffic from the holder itself extends
+  it too), while a renewal with a token from an ended epoch
+  (the owner's token-remove, disconnect, OpenClose close, `drop_session`,
+  reboot, or hold expiry — never a bare login) is answered `ffffffff`,
+  exactly once. `civ_standby(on)` is a test-only scenario, not recorded
+  behaviour: while on, the CI-V port emits nothing for CI-V DATA (no echo,
+  no reply, no retransmit requests) but still advances sequence tracking,
+  while CI-V-port pings and the control port keep answering.
   Wire-level examples live in `tests/testkit/test_simulator_faults.py`,
   `tests/testkit/test_simulator_drop_session.py` and
   `tests/testkit/test_simulator_renew_standby.py`.
