@@ -2,10 +2,12 @@
 
 Bare asyncio UDP clients against a real ``MockIcomRadio`` — no production
 client involved — reusing the ``_UdpClient`` and packet builders of
-``tests/testkit/test_simulator_faults.py``. The one exception is the notice
-itself, which is additionally fed through the PRODUCTION parser
-``ControlPhaseRuntime._on_conninfo_notice`` to pin its classification as
-"session free" (busy=0), per MOR-3315.
+``tests/testkit/test_simulator_faults.py``. The notice itself is
+additionally driven through the production packet path: an
+``IcomTransport`` wired the way ``ControlPhaseRuntime`` leaves the control
+transport after connect must forward the notice bytes it received to
+``_on_conninfo_notice``, which classifies them as "session free" (busy=0),
+per MOR-3315.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from rigplane.core.transport import IcomTransport
 from rigplane.radio import IcomRadio
 
 from rigplane_testkit.icom import MockIcomRadio
@@ -53,11 +56,46 @@ async def _login_and_claim(client: _UdpClient, server: MockIcomRadio) -> None:
     await client.recv()
 
 
-def _assert_notice_classified_session_free(notice: bytes) -> None:
-    """Feed the notice through the PRODUCTION conninfo-notice parser."""
+def _conninfo_declaring(civ_local_port: int) -> bytes:
+    """Client conninfo declaring its local CI-V port.
+
+    The big-endian u32 at 0x7C is exactly where ``core/auth.py``:
+    ``build_conninfo_packet`` packs ``civ_local_port``, and the production
+    client then opens its CI-V stream from that port
+    (``runtime/_control_phase.py``: ``_send_conninfo``).
+    """
+    pkt = bytearray(_conninfo())
+    struct.pack_into(">I", pkt, 0x7C, civ_local_port)
+    return bytes(pkt)
+
+
+def _assert_notice_reaches_production_callback(notice: bytes) -> None:
+    """Drive the notice through the production packet path, not just the parser.
+
+    Wires an ``IcomTransport`` the way ``ControlPhaseRuntime`` leaves the
+    control transport after connect — ``_discard_data_packets = True`` and
+    ``_conninfo_notice_callback = self._on_conninfo_notice``
+    (``runtime/_control_phase.py``) — then feeds the bytes received from
+    the simulator to ``IcomTransport._handle_packet``: only a ptype-0x00
+    packet of this length reaches the notice callback
+    (``_handle_data_packet``), so a mistyped notice fails here. The
+    production parser must then read busy=0 ("session free") and request
+    CI-V recovery.
+    """
     radio = IcomRadio("127.0.0.1", username="u", password="p", model="IC-7610")
     radio._civ_runtime.request_recovery_now = MagicMock()
-    radio._control_phase._on_conninfo_notice(notice)
+    forwarded: list[bytes] = []
+
+    def notice_callback(data: bytes) -> None:
+        forwarded.append(data)
+        radio._control_phase._on_conninfo_notice(data)
+
+    transport = IcomTransport()
+    transport._discard_data_packets = True
+    transport._conninfo_notice_callback = notice_callback
+    transport._handle_packet(notice)
+
+    assert forwarded == [notice]  # the transport routed it to the callback
     radio._civ_runtime.request_recovery_now.assert_called_once_with(
         "radio reported the LAN session free (conninfo busy=0)"
     )
@@ -100,11 +138,11 @@ async def test_drop_session_sends_one_notice_classified_session_free(server, cli
     assert notice[0x15] == 0x00  # radio-originated request type
     assert struct.unpack_from("<I", notice, 0x60)[0] == 0  # busy=0 → free
     # The drop fires at +0.2 s and the notice follows ~0.1 s later.
-    assert 0.25 <= dt <= 0.7
+    assert 0.25 <= dt <= 0.4
     # Exactly one notice.
     await client.expect_silence(0.4)
 
-    _assert_notice_classified_session_free(notice)
+    _assert_notice_reaches_production_callback(notice)
     assert not server.session_held
     assert server.last_release_reason == "drop_session"
 
@@ -184,6 +222,53 @@ async def test_stale_openclose_does_not_reopen_stream_and_counters(server, clien
     assert _is_freq_reply(await client.recv())
 
 
+async def test_fence_permission_is_per_client_not_shared(server, client):
+    """(d, two clients) The fence permission belongs to the client whose
+    fresh login was accepted: B (fresh login + OpenClose from its declared
+    CI-V port) is served, stale A (never re-logs) still gets nothing —
+    even though both clients sit on the same IP."""
+    await _login_and_claim(client, server)
+    client.send(_openclose(), server.civ_port)
+    await client.recv()  # unsolicited CI-V frame on open
+    client.send(_freq_get(), server.civ_port)
+    assert _is_freq_reply(await client.recv())  # A baseline: served
+
+    server.drop_session(at=0.2, notice=False)
+    await asyncio.sleep(0.5)  # past the drop
+
+    loop = asyncio.get_running_loop()
+    client_b = _UdpClient()
+    await loop.create_datagram_endpoint(lambda: client_b, local_addr=(_HOST, 0))
+    try:
+        b_civ_port = client_b.transport.get_extra_info("sockname")[1]
+
+        # B logs in afresh and declares the CI-V port it will open from.
+        client_b.send(_login(), server.control_port)
+        login_b = await client_b.recv()
+        assert struct.unpack_from("<I", login_b, 0x30)[0] == 0  # error OK
+        assert server.login_count == 2
+        client_b.send(_conninfo_declaring(b_civ_port), server.control_port)
+        status_b = await client_b.recv()
+        assert struct.unpack_from(">H", status_b, 0x42)[0] == server.civ_port
+
+        # B's OpenClose(open) comes from the declared port → fence lifts.
+        client_b.send(_openclose(), server.civ_port)
+        await client_b.recv()  # unsolicited CI-V frame on open
+        client_b.send(_freq_get(), server.civ_port)
+        assert _is_freq_reply(await client_b.recv())  # B is served
+
+        # A never re-logs: its OpenClose(open) still gets nothing — B's
+        # accepted login did not open the gate for the shared IP.
+        client.send(_openclose(), server.civ_port)
+        await client.expect_silence(0.3)
+        client.send(_freq_get(), server.civ_port)
+        await client.expect_silence(0.3)
+        # A baseline, B's accepted open, A's fenced open.
+        assert server.openclose_open_count == 3
+    finally:
+        client_b.close()
+
+
 async def test_reboot_notice_then_discovery_grace_then_silence(server, client):
     """(f) Recorded power-off order: the 0x90 notice first, then ~0.02 s in
     which AreYouThere/AreYouReady are still answered, then total silence."""
@@ -199,7 +284,7 @@ async def test_reboot_notice_then_discovery_grace_then_silence(server, client):
     assert notice[0x15] == 0x00
     assert struct.unpack_from("<I", notice, 0x60)[0] == 0
     assert dt <= 0.4  # well inside the pre-dark window
-    _assert_notice_classified_session_free(notice)
+    _assert_notice_reaches_production_callback(notice)
 
     # Inside the ~0.02 s grace window discovery is still answered.
     client.send(_ayt(), server.control_port)

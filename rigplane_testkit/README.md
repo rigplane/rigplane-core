@@ -31,17 +31,19 @@ UDP code paths as production.
   (`drop_rate`, `response_delay`, `stall_for`), which are unchanged.
   `MockIcomRadio` also offers scheduled events: `reboot(at, down_for,
   busy_for, notice=False)` — stop answering, forget the session, rotate the
-  token, restart CI-V sequence numbering, fence the stale client off the CI-V
-  port until a fresh login has been accepted and it completes a fresh
-  OpenClose(open), ignore token and conninfo packets carrying the pre-reboot
+  token, restart CI-V sequence numbering, fence every pre-reboot client off
+  the CI-V port until the client whose fresh login was accepted opens from
+  the CI-V port its conninfo declared (its IP alone when it declared none),
+  ignore token and conninfo packets carrying the pre-reboot
   token, answer busy, then accept a fresh login; with `notice=True` the
   recorded power-off order is replayed first — one unsolicited 0x90 conninfo
-  notice (busy=0, "session free"), then ~0.02 s in which discovery and pings
-  are still answered, then silence — `drop_session(at, notice=True)` — free
+  notice (busy=0, "session free"), then ~0.02 s in which discovery and
+  control-port pings are still answered (CI-V-port pings from the pre-reboot
+  client stay fenced), then silence — `drop_session(at, notice=True)` — free
   the held session, rotate the token, stop unsolicited CI-V, ignore CI-V DATA
   from the dropped client while still answering pings on both ports, send one
   unsolicited 0x90 notice ~0.1 s after the drop, and apply the same
-  fresh-login OpenClose fence — and
+  per-client fresh-login OpenClose fence — and
   `keepalive_silence(at, for_seconds)` — pings are received but not answered.
   Wire-level examples live in `tests/testkit/test_simulator_faults.py` and
   `tests/testkit/test_simulator_drop_session.py`.
