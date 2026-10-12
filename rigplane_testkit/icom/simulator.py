@@ -56,6 +56,12 @@ _POWER_OFF_NOTICE_WINDOW_S = 0.02
 # (~45-60 s) can be passed for the one slow timing test.
 _DEFAULT_KEEPALIVE_HOLD_S = 0.5
 
+# Retransmit-request cadence while a CI-V sequence gap is open: the recorded
+# IC-7610 repeats the request about every 0.1 s, each round twice
+# (``tests/fixtures/ic7610/retransmit_gaps.jsonl`` windows gap_never_filled
+# and single_gap_filled_by_idle).
+_CIV_GAP_RETRANSMIT_PERIOD_S = 0.1
+
 # ---------------------------------------------------------------------------
 # Protocol constants (duplicated here to keep mock self-contained)
 # ---------------------------------------------------------------------------
@@ -224,6 +230,44 @@ class _MockProtocol(asyncio.DatagramProtocol):
 
 
 # ---------------------------------------------------------------------------
+# CI-V sequence-gap tracking (recorded IC-7610 behaviour)
+# ---------------------------------------------------------------------------
+
+
+class _CivGapState:
+    """Per-session tracking of one CI-V client's tracked sequence numbers.
+
+    ``next_expected`` is None until the first tracked packet after
+    OpenClose(open); ``missing`` holds the numbers skipped so far and
+    ``held`` the ahead-of-gap packets waiting for the fill, keyed by seq
+    as ``(kind, data, addr, sender_id)`` with kind ``"idle"`` or ``"data"``.
+    The tracker outlives OpenClose(open): a re-sent open never restarts
+    it, so a number at or below the last processed one is ignored
+    (recorded real IC-7610, MOR-3361). It ends only with the radio
+    session — a new accepted login, a conninfo claiming a new session,
+    ``drop_session`` or reboot — which clear the whole map.
+    """
+
+    def __init__(self, addr: tuple[str, int], sender_id: int) -> None:
+        self.addr = addr
+        self.sender_id = sender_id
+        self.next_expected: int | None = None
+        self.missing: set[int] = set()
+        self.held: dict[int, tuple[str, bytes, tuple[str, int], int]] = {}
+
+
+def _missing_runs(missing: set[int]) -> list[tuple[int, int]]:
+    """Group missing numbers into contiguous ``(first, last)`` runs, sorted."""
+    runs: list[tuple[int, int]] = []
+    for seq in sorted(missing):
+        if runs and seq == runs[-1][1] + 1:
+            runs[-1] = (runs[-1][0], seq)
+        else:
+            runs.append((seq, seq))
+    return runs
+
+
+# ---------------------------------------------------------------------------
 # MockIcomRadio
 # ---------------------------------------------------------------------------
 
@@ -381,6 +425,9 @@ class MockIcomRadio:
         # radio still answers discovery/pings until this deadline, then goes dark.
         self._poweroff_notice_until: float = 0.0
         self.reboot_count: int = 0  # number of simulated reboots started
+        # Retransmit-request packets sent on the CI-V port so far (each
+        # round sends two while a sequence gap is open).
+        self.civ_retransmit_requests: int = 0
         # Tokens issued before a reboot or drop; control packets carrying one
         # are ignored.
         self._retired_tokens: set[int] = set()
@@ -420,6 +467,17 @@ class MockIcomRadio:
         # unsolicited conninfo notice when no session is held.
         self._last_login: tuple[tuple[str, int], int] | None = None
         self.unsolicited_sent: int = 0  # count of autonomous frames emitted
+        # CI-V sequence-gap tracking, per CI-V client keyed by
+        # ((host, port), sender_id): missing client numbers stall
+        # tracked-packet processing until the fill arrives, while the radio
+        # repeats the retransmit request twice every 0.1 s (recorded IC-7610
+        # behaviour, ``tests/fixtures/ic7610/retransmit_gaps.jsonl``).
+        # Tracker lifetime is the radio session, not the OpenClose: a
+        # re-sent OpenClose(open) never restarts tracking (MOR-3361); the
+        # map is cleared only by a new accepted login, a conninfo claiming
+        # a new session, ``drop_session`` or reboot.
+        self._civ_gap: dict[tuple[tuple[str, int], int], _CivGapState] = {}
+        self._civ_gap_task: asyncio.Task[None] | None = None
         # Counters / observability for simulator-fidelity tests
         self.busy_rejects: int = 0  # number of 0xFFFFFFFF rejects sent
         self.released_count: int = 0  # number of sessions freed (any path)
@@ -457,6 +515,9 @@ class MockIcomRadio:
             self._unsolicited_task = asyncio.get_running_loop().create_task(
                 self._unsolicited_loop()
             )
+        self._civ_gap_task = asyncio.get_running_loop().create_task(
+            self._civ_gap_loop()
+        )
 
         logger.debug(
             "MockIcomRadio started — ctrl=%d civ=%d",
@@ -476,6 +537,13 @@ class MockIcomRadio:
             except (asyncio.CancelledError, Exception):
                 pass
             self._unsolicited_task = None
+        if self._civ_gap_task is not None:
+            self._civ_gap_task.cancel()
+            try:
+                await self._civ_gap_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._civ_gap_task = None
         if self._ctrl_udp is not None:
             self._ctrl_udp.close()
             self._ctrl_udp = None
@@ -519,6 +587,11 @@ class MockIcomRadio:
     def openclose_open_count(self) -> int:
         """CI-V OpenClose(open) packets received, accepted or fenced."""
         return self._openclose_open_count
+
+    @property
+    def civ_gap_open(self) -> bool:
+        """True while any client sequence number is missing on the CI-V port."""
+        return any(t.missing for t in self._civ_gap.values())
 
     # ------------------------------------------------------------------
     # Session-lifecycle test knobs
@@ -617,6 +690,7 @@ class MockIcomRadio:
         self._release_session("reboot")
         self._civ_owner_addr = None
         self._civ_owner_id = 0
+        self._civ_gap.clear()  # the stream epoch ends with the reboot
         self._retired_tokens.add(self.token)
         self.token = (self.token + 0x9E3779B9) & 0xFFFFFFFF
         self._civ_seq = 1
@@ -664,6 +738,7 @@ class MockIcomRadio:
         self._release_session("drop_session")
         self._civ_owner_addr = None
         self._civ_owner_id = 0
+        self._civ_gap.clear()  # the stream epoch ends with the drop
         self._retired_tokens.add(self.token)
         self.token = (self.token + 0x9E3779B9) & 0xFFFFFFFF
         self._fence_civ_until_open = True
@@ -726,6 +801,11 @@ class MockIcomRadio:
 
     def _claim_session(self, owner: tuple[tuple[str, int], int]) -> None:
         """Mark ``owner`` as the holder and arm the keepalive timer."""
+        if self._owner != owner:
+            # A newly claimed session starts sequence tracking over: the
+            # previous session's CI-V numbering no longer applies
+            # (MOR-3361). A refresh by the current holder keeps it.
+            self._civ_gap.clear()
         self._owner = owner
         self._arm_keepalive()
 
@@ -1047,6 +1127,9 @@ class MockIcomRadio:
             if not self.auth_fail:
                 self._login_count += 1
                 self._last_login = (addr, sender_id)
+                # An accepted login starts a new radio session: past
+                # CI-V numbering no longer applies (MOR-3361).
+                self._civ_gap.clear()
                 # The fence permission is NOT granted here: it is recorded
                 # when this login's own conninfo request is accepted below
                 # (MOR-3340) — otherwise a second login whose conninfo is
@@ -1191,10 +1274,16 @@ class MockIcomRadio:
                     return
                 self._civ_owner_addr = addr
                 self._civ_owner_id = sender_id
+                # The open only ensures a tracker exists: sequence tracking
+                # belongs to the radio session and a re-sent open never
+                # restarts it (MOR-3361).
+                self._civ_gap_ensure((addr, sender_id))
                 civ = self._civ_frame(to=0x00, frm=self._radio_addr, cmd=0x00)
                 self._send(proto, self._wrap_civ(civ, sender_id), addr, "civ")
             elif data[0x15] == _OPENCLOSE_CLOSE:  # graceful data-port close
                 # OpenClose(close) frees the single held session immediately.
+                # Tracking outlives the close: it ends only with a new
+                # session, drop_session or reboot (MOR-3361).
                 if self.single_owner and self._owner is not None:
                     self._release_session("openclose_close")
             return
@@ -1203,11 +1292,26 @@ class MockIcomRadio:
         if n == _HEADER_SIZE and ptype == _PT_DISCONNECT:
             return
 
+        # Idle keepalive (0x10 type-0): tracked for gap purposes, never
+        # answered — like the recorded radio, which keeps its own cadence.
+        if n == _HEADER_SIZE and ptype == _PT_DATA:
+            if self._civ_gap_gate(
+                (addr, sender_id), "idle", data, addr, sender_id, seq, proto
+            ):
+                self._civ_gap_drain((addr, sender_id), proto)
+            return
+
         # CI-V data (DATA type, larger than header)
         if ptype == _PT_DATA and n > _CIV_HEADER_SIZE:
             if self._civ_fenced(addr, sender_id):
                 return  # post-reboot: stale client until a fresh OpenClose(open)
-            self._handle_civ_data(data, addr, sender_id, proto)
+            key = (addr, sender_id)
+            if self._civ_gap_gate(key, "data", data, addr, sender_id, seq, proto):
+                # The LAN CI-V echo and the reply go out only when the
+                # request is actually processed — held packets stay silent
+                # until the fill releases them in sequence order.
+                self._handle_civ_data(data, addr, sender_id, proto)
+                self._civ_gap_drain(key, proto)
 
     def _handle_civ_data(
         self,
@@ -1249,6 +1353,163 @@ class MockIcomRadio:
         response_civ = self._dispatch_civ(cmd, payload, from_addr)
         if response_civ is not None:
             self._send(proto, self._wrap_civ(response_civ, sender_id), addr, "civ")
+
+    # ------------------------------------------------------------------
+    # CI-V sequence-gap tracking (recorded IC-7610 behaviour)
+    # ------------------------------------------------------------------
+
+    def _civ_gap_ensure(self, key: tuple[tuple[str, int], int]) -> None:
+        """Ensure a gap tracker exists for one CI-V client (OpenClose(open)).
+
+        Never wipes an existing tracker: a re-sent open within the same
+        radio session keeps the numbering (MOR-3361). Tracking begins at
+        the first tracked packet after the open; the open's own sequence
+        number is not consumed.
+        """
+        if key in self._civ_gap:
+            return
+        self._civ_gap[key] = _CivGapState(key[0], key[1])
+        if len(self._civ_gap) > 32:
+            # Bound memory: drop owners with nothing outstanding, oldest first.
+            for old in list(self._civ_gap):
+                if (
+                    old != key
+                    and not self._civ_gap[old].missing
+                    and not self._civ_gap[old].held
+                ):
+                    del self._civ_gap[old]
+                if len(self._civ_gap) <= 32:
+                    break
+
+    def _civ_gap_gate(
+        self,
+        key: tuple[tuple[str, int], int],
+        kind: str,
+        data: bytes,
+        addr: tuple[str, int],
+        sender_id: int,
+        seq: int,
+        proto: _MockProtocol,
+    ) -> bool:
+        """Decide whether a tracked packet is processed now.
+
+        Returns True when the caller should process the packet (and then
+        drain held packets via :meth:`_civ_gap_drain`). A packet ahead of
+        the expected number opens a gap: it is held, the numbers in between
+        become missing, and the first round of retransmit requests goes out
+        immediately. A packet carrying a missing number fills it. A number
+        at or below the last processed one is ignored — no echo, no reply
+        — whether or not a gap is open (recorded real IC-7610, MOR-3361:
+        after a re-sent OpenClose the radio answers again only once the
+        client's new numbering passes the last processed number).
+        """
+        tracker = self._civ_gap.get(key)
+        if tracker is None:
+            return True  # stream never opened: pre-gap behaviour
+        expected = tracker.next_expected
+        if expected is None:
+            tracker.next_expected = (seq + 1) & 0xFFFF
+            return True
+        delta = (seq - expected) & 0xFFFF
+        if delta == 0:
+            # In order — or the fill of the expected number itself.
+            tracker.missing.discard(seq)
+            tracker.next_expected = (expected + 1) & 0xFFFF
+            return True
+        if 1 <= delta <= 0x7FFF:
+            if tracker.missing:
+                # Gap already open: hold for later in-order processing. A
+                # missing number arriving ahead of the expected one still
+                # fills (recorded gap_filled_by_idle: 133 accepted while
+                # 131 was expected). The missing set does NOT grow: the
+                # recorded radio keeps requesting the original gap while
+                # later packets arrive (gap_filled_by_idle stays
+                # ``[[131, 133]]`` through 134..178).
+                tracker.missing.discard(seq)
+            else:
+                for off in range(delta):
+                    tracker.missing.add((expected + off) & 0xFFFF)
+                self._civ_gap_send_round(tracker, proto)
+            if seq not in tracker.held:
+                tracker.held[seq] = (kind, data, addr, sender_id)
+            return False
+        if seq in tracker.missing:
+            tracker.missing.discard(seq)
+            return True
+        # Behind the frontier with nothing missing: already processed, so
+        # ignored — no echo, no reply (MOR-3361).
+        return False
+
+    def _civ_gap_drain(
+        self, key: tuple[tuple[str, int], int], proto: _MockProtocol | None
+    ) -> None:
+        """Process held packets in sequence order once nothing is missing."""
+        tracker = self._civ_gap.get(key)
+        if tracker is None or tracker.missing:
+            return
+        if proto is None:
+            proto = self._civ_proto
+        while tracker.next_expected in tracker.held:
+            expected = tracker.next_expected
+            kind, data, addr, sender_id = tracker.held.pop(expected)
+            tracker.next_expected = (expected + 1) & 0xFFFF
+            if kind == "data" and proto is not None:
+                self._handle_civ_data(data, addr, sender_id, proto)
+
+    def _civ_gap_request(self, tracker: _CivGapState) -> bytes:
+        """Build one retransmit-request packet for the current missing set.
+
+        The single form (0x10-byte type-0x01, header seq = the missing
+        number) when exactly one number is missing, otherwise one ranges
+        packet (header seq 0, then little-endian u16 ``[first, last]``
+        pairs, inclusive, one per contiguous missing run).
+        """
+        if len(tracker.missing) == 1:
+            (only,) = tracker.missing
+            return self._ctrl_pkt(_PT_CONTROL, only, tracker.sender_id)
+        runs = _missing_runs(tracker.missing)
+        pkt = bytearray(_HEADER_SIZE + 4 * len(runs))
+        struct.pack_into("<I", pkt, 0x00, len(pkt))
+        struct.pack_into("<H", pkt, 0x04, _PT_CONTROL)
+        struct.pack_into("<H", pkt, 0x06, 0)
+        struct.pack_into("<I", pkt, 0x08, self.radio_id)
+        struct.pack_into("<I", pkt, 0x0C, tracker.sender_id)
+        off = _HEADER_SIZE
+        for first, last in runs:
+            struct.pack_into("<HH", pkt, off, first, last)
+            off += 4
+        return bytes(pkt)
+
+    def _civ_gap_send_round(
+        self, tracker: _CivGapState, proto: _MockProtocol | None
+    ) -> None:
+        """Send the current retransmit request twice to one gapped owner."""
+        if proto is None:
+            proto = self._civ_proto
+        if proto is None:
+            return
+        pkt = self._civ_gap_request(tracker)
+        for _ in range(2):
+            # Through the same outbound funnel as replies, so a fault plan
+            # sees the requests like any other radio-to-client packet.
+            self._send(proto, pkt, tracker.addr, "civ")
+            self.civ_retransmit_requests += 1
+
+    async def _civ_gap_loop(self) -> None:
+        """Repeat the retransmit request twice every 0.1 s per gapped owner."""
+        try:
+            while True:
+                await asyncio.sleep(_CIV_GAP_RETRANSMIT_PERIOD_S)
+                proto = self._civ_proto
+                if proto is None:
+                    continue
+                for tracker in list(self._civ_gap.values()):
+                    if tracker.missing:
+                        self._civ_gap_send_round(tracker, proto)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Mock: CI-V gap loop error")
 
     # ------------------------------------------------------------------
     # Autonomous state + unsolicited CI-V streaming
