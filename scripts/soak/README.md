@@ -18,9 +18,9 @@ From the repository root (the simulator stack imports the top-level
 uv run python -m scripts.soak.soak_driver --duration 3600
 ```
 
-Exit status is 0 on a PASS verdict, 1 on FAIL. The JSON report goes to
-`--report` (default `soak-report.json`); one verdict line is printed to
-stdout. The driver logs through the logger named `soak` at WARNING; set
+Exit status is 0 on a PASS verdict, 1 on FAIL or INCOMPLETE. The JSON report
+goes to `--report` (default `soak-report.json`); one verdict line is printed
+to stdout. The driver logs through the logger named `soak` at WARNING; set
 `logging.basicConfig(level=logging.INFO)` in a manual run for the INFO
 cycle milestones.
 
@@ -58,7 +58,9 @@ blackout (drop probability and window); by default no fault is injected.
   dead connect endpoint. A disconnect that never became observable is
   recorded (`disconnectObserved` false) and counts as unrecovered.
 
-`NOT_EVALUATED` never fails the verdict; only a measured `FAIL` does.
+The verdict is `FAIL` on a driver error or any criterion `FAIL`; `PASS` only
+when every criterion was evaluated and passed; otherwise `INCOMPLETE`. A
+`NOT_EVALUATED` criterion therefore keeps a run from `PASS`.
 
 ## Process metrics sampling
 
@@ -100,8 +102,10 @@ listed in `episodes`; a sample is down when the server did not answer,
 `/readyz` says not ready, `station.health.radioLink` is not `connected`, or
 neither endpoint reports the link. `--recovery-budget-s` (default 180) bounds an episode;
 start and end are sample times, accurate to one interval. PASS needs every
-evaluated criterion to pass and at least one evaluated
-(`criteriaEvaluated`); SIGINT / SIGTERM write the report and fail it. A
+criterion to be evaluated and to pass, as in the simulator soak
+(`criteriaEvaluated` lists the evaluated ones). A run with none evaluated
+carries an `error` and fails; one with some `NOT_EVALUATED`, no `FAIL` and no
+`error` is `INCOMPLETE`. SIGINT / SIGTERM write the report and fail it. A
 server restart is not separated out: the pid in each sample shows it.
 
 ## Repository note

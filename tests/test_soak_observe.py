@@ -404,6 +404,10 @@ async def test_null_process_fields_are_recorded_null_and_not_evaluated(
         "recovery": "PASS",
     }
     assert report["criteriaEvaluated"] == ["recovery"]
+    assert report["error"] is None
+    assert report["verdict"] == soak_driver.VERDICT_INCOMPLETE
+    verdict = soak_driver._verdict(report["criteria"], report["error"])
+    assert verdict == report["verdict"]
 
 
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
@@ -462,9 +466,23 @@ def test_cli_rejects_unusable_observe_arguments(argv: list[str]) -> None:
     assert exc.value.code == 2
 
 
+def test_cli_exits_1_when_an_observe_run_left_a_criterion_not_evaluated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def _fake_run(cfg: observe.ObserveConfig) -> dict[str, Any]:
+        return observe.build_report(cfg, _series(3), 60.0, "t", None)
+
+    monkeypatch.setattr(observe, "run_observe", _fake_run)
+    argv = ["--observe-url", "http://127.0.0.1:8098", "--report", str(tmp_path / "r")]
+    # 60 s of samples is under the RSS fit floor: INCOMPLETE, not PASS.
+    assert soak_driver.main(argv) == 1
+
+
 def test_cli_dispatches_observe_mode_with_the_documented_defaults(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # Lower the RSS fit floor so the 60 s series evaluates all four criteria.
+    monkeypatch.setattr(soak_driver, "RSS_MIN_FIT_SPAN_S", 0.5)
     seen: list[observe.ObserveConfig] = []
 
     async def _fake_run(cfg: observe.ObserveConfig) -> dict[str, Any]:

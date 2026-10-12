@@ -12,9 +12,9 @@ README.md`` for the criteria and their known limits).
 
 Cadences are constants in this module, not CLI flags; the simulator soak
 takes only ``--duration`` and ``--report`` (``--observe-url``: observe.py).
-Exit status is 0 on a PASS verdict and
-1 on FAIL. Run from the repository root (the simulator stack imports the
-top-level ``rigplane_testkit`` package)::
+Exit status is 0 on a PASS verdict and 1 otherwise: FAIL, or INCOMPLETE (no
+FAIL, but not every criterion PASSed). Run from the repository root (the
+simulator stack imports the top-level ``rigplane_testkit`` package)::
 
     uv run python -m scripts.soak.soak_driver --duration 3600
 """
@@ -52,6 +52,9 @@ RSS_LIMIT_BYTES_PER_HOUR = 50 * 1024 * 1024
 # NOT_EVALUATED instead of guessing: 199 MiB/h over 9 fitted seconds is
 # noise, not a leak measurement.
 RSS_MIN_FIT_SPAN_S = 600.0
+# The verdict of a run with no error and no FAIL in which not every criterion
+# PASSed.
+VERDICT_INCOMPLETE = "INCOMPLETE"
 STABILITY_TOLERANCE = 5
 _STABILITY_PROBE_COUNT = 3
 _DRIVER_TASK_PREFIX = "soak-"
@@ -471,12 +474,16 @@ def evaluate_report(
 
 
 def _verdict(criteria: dict[str, Any], error: str | None) -> str:
+    """FAIL on an error or any FAIL; PASS if criteria exist and all PASS; else
+    INCOMPLETE."""
     if error is not None:
         return "FAIL"
-    for criterion in criteria.values():
-        if criterion.get("status") == "FAIL":
-            return "FAIL"
-    return "PASS"
+    statuses = [criterion.get("status") for criterion in criteria.values()]
+    if "FAIL" in statuses:
+        return "FAIL"
+    if statuses and all(status == "PASS" for status in statuses):
+        return "PASS"
+    return VERDICT_INCOMPLETE
 
 
 def summary_line(report: dict[str, Any]) -> str:
