@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock, MagicMock
 from rigplane.audio import AudioPacket, AudioState
 from rigplane.audio.session import AudioSession, AudioSessionState, RxSubscription
 from rigplane.core.radio_protocol import RadioIdentityStatus
+from rigplane.core.transport import IcomTransport
 from rigplane.runtime._audio_recovery import AudioRecoveryState
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime.radio import IcomRadio
@@ -54,7 +55,7 @@ def _fake_audio_transport() -> MagicMock:
     so a bare ``MagicMock`` fails there; this one carries the int fields
     the packet builders read.
     """
-    transport = MagicMock()
+    transport = MagicMock(spec=IcomTransport)
     transport.my_id = 0x00010001
     transport.remote_id = 0xDEADBEEF
     transport.send_seq = 0
