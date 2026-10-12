@@ -33,7 +33,7 @@ from ..core.command_service import (
     command_intent_from_request,
 )
 from ..core.command_dispatch import prepare_command_intent
-from ..core.exceptions import CommandError
+from ..core.exceptions import CommandError, CommandRejectedError
 from ..runtime.controller_authority import ControllerAuthority, ControllerError
 from ..core.radio_protocol import AttenuatorStepsCapable
 from ..core.state_diagnostics import StateDiagnosticsRecorder
@@ -1445,6 +1445,13 @@ class RigctldHandler:
             except ValueError:
                 logger.warning("Invalid value in %s", cmd.long_cmd)
                 return _err(HamlibError.EINVAL)
+            except CommandRejectedError:
+                # The radio positively refused the command (e.g. a CI-V NAK)
+                # — a real terminal outcome, not a bug in this seat. Mapped
+                # narrowly: other CommandError subclasses (e.g.
+                # BackgroundSendDropped, a local cap) stay on EINTERNAL.
+                logger.warning("rigctld: %s refused by the radio", cmd.long_cmd)
+                return _err(HamlibError.ERJCTED)
             except Exception:
                 logger.exception("Internal error executing %s", cmd.long_cmd)
                 return _err(HamlibError.EINTERNAL)
@@ -2952,6 +2959,15 @@ class RigctldHandler:
                     )
                     await self._rollback_split(set_split)
                     return HamlibError.ETIMEOUT
+                except CommandRejectedError as exc:
+                    logger.warning(
+                        "set_split_vfo: set_vfo(%s) refused by the radio (%s); "
+                        "rolling back split",
+                        target,
+                        exc,
+                    )
+                    await self._rollback_split(set_split)
+                    return HamlibError.ERJCTED
                 except Exception:
                     logger.exception(
                         "set_split_vfo: set_vfo(%s) failed unexpectedly; "

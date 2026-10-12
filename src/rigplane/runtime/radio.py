@@ -1870,6 +1870,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def _lan_identity_reread_loop(self) -> None:
         """Re-read on the same link at 1/2/4/8/15 s, fencing replaced epochs."""
         attempts = 0
+        hold_started = time.monotonic()
         try:
             while True:
                 backoff = self._LAN_IDENTITY_REREAD_BACKOFF_S
@@ -1882,6 +1883,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 await asyncio.sleep(delay)
                 if not self._lan_identity_phase_owns_open_link():
                     return
+                await self._nudge_lan_identity_stream(hold_started)
                 owned_epoch = self._lan_identity_owned_epoch
                 payload = await self._read_lan_identity_payload()
                 if (
@@ -1910,6 +1912,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         except Exception:
             logger.error(
                 "rigplane (%s): identity re-read failed; abandoning the hold",
+                self.model,
+                exc_info=True,
+            )
+
+    async def _nudge_lan_identity_stream(self, hold_started: float) -> None:
+        """Re-request the CI-V data stream while the hold has seen no payload.
+
+        The hold stops the data watchdog (``_gate_lan_identity``), so nothing
+        else sends OpenClose(open) while it owns the link; a radio that did
+        not restart its CI-V DATA stream after the soft reconnect stays
+        silent. ``_last_civ_data_received`` is stamped by the receive loop
+        on any payload and by ``soft_reconnect`` at the end of a CI-V
+        rebuild, before the gate starts the hold, so a stamp older than
+        ``hold_started`` means no payload has arrived within this hold.
+        """
+        last = self._last_civ_data_received
+        if last is not None and last >= hold_started:
+            return
+        try:
+            await self._send_open_close(open_stream=True)
+        except Exception:
+            logger.debug(
+                "rigplane (%s): identity hold stream re-request failed",
                 self.model,
                 exc_info=True,
             )

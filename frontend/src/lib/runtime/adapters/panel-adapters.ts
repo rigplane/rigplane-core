@@ -59,7 +59,16 @@ import { currentControlSessionEpoch } from '../commands/radio-intents';
 import { getTuningBurstTargetHz } from '../commands/tuning-accumulator';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
-import { modInputCommand, modInputStateKey, type ModInputStateKey } from '$lib/radio/mod-input';
+import {
+  activeReceiverOrNull,
+  agcArmed, attenuatorArmed, autoNotchArmed, dataModeArmed, filterArmed, filterShapeArmed,
+  manualNotchArmed, modeArmed, modInputArmed, preampArmed,
+  pendingFilterSelection, pendingFrequencyHz, pendingManualNotchWidth, pendingNbOn,
+  pendingNarrow, pendingNotchMode, pendingNrOn, pendingPreampLevel,
+  pendingRepeaterShift, pendingRepeaterTone, pendingToneFreq,
+  type ArmedFact,
+  type SupersededPredicate,
+} from './pending-intent-table';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import {
   deriveIfShift, measuredPbtRawToHz, pbtRangeFromCaps,
@@ -283,6 +292,9 @@ export function getActiveFrequencyHz(): number | null {
   return view?.vfos.find((candidate) => candidate.isActive)?.frequencyHz ?? null;
 }
 
+const readRuntimeState = (): ServerState | null => runtime.state;
+const lifecycleSuperseded: SupersededPredicate = (command) => isCommandLifecycleSuperseded(command);
+
 // ── Pending frequency target (MOR-1441, MOR-1478) ──
 /**
  * The freshest still-in-flight `set_freq` target for `receiver` (`0` =
@@ -305,13 +317,12 @@ export function getActiveFrequencyHz(): number | null {
  * readout crawl through the burst and then, on the LAST command's ack,
  * briefly present the STALE pre-spin confirmed value as though it were
  * current for the ~500ms until the next poll actually caught up — the
- * reported symptom. Routed through `latestPendingParam` (below) — the same
+ * reported symptom. Routed through `latestPendingParam` — the same
  * decision table leg 2's four discrete accessors use — so a command now
  * stays pending through ack.
  */
 export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
-  const value = latestPendingParam('set_freq', 'freq', receiver, 'freqHz');
-  return typeof value === 'number' ? value : null;
+  return pendingFrequencyHz(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 // ── Tuning burst target (MOR-2464) ──
@@ -846,161 +857,29 @@ export function getFilterWidthCommandLifecycle(): FilterWidthCommandLifecycleVie
 }
 
 // ── Pending discrete-control targets (MOR-1441 leg 2) ──
-/**
- * The receiver's confirmed (radio-observed) state slice, or `undefined`
- * while unobserved — `runtime.state.main`/`.sub`, the same per-receiver
- * split `getPendingFrequencyHz`'s sibling accessors read.
- */
-function confirmedReceiverState(receiver: 0 | 1): ServerState['main'] | undefined {
-  const state = runtime.state;
-  if (!state) return undefined;
-  return receiver === 0 ? state.main : state.sub;
-}
-
-/**
- * Grace backstop (MOR-1488 review R2, timing revised R3) — retire an
- * acknowledged-pending command this long after its ack even with no
- * observation of the commanded field. Covers the never-answered-at-all
- * classes the observation rule below cannot, because none of them ever
- * produce a post-ack read-back to end on: (1) MOR-1445 post-ack
- * execution failure — the server acks `ok:true` at enqueue time, and a
- * later failure reaches only a session notification (`server.py`
- * `commandExecutionFailed`) that `ws-client.ts`'s `_emitCommandResult`
- * never maps back to this command id; (2) MOR-1427 coalescing —
- * `_cmd_pending` keys a 50ms coalescing window by command NAME only, so a
- * superseded frame acks `ok:true`+`superseded` and never reaches the radio
- * at all; (3) link death after ack. Without this backstop, any of the three
- * leaves the marker claiming "in flight" forever. `Date.now()` itself is
- * not reactive — this only takes effect the next time something re-invokes
- * `latestPendingParam` (the next state push, or any other `$derived`
- * recompute), not the instant the clock crosses the threshold.
- *
- * 3000ms (MOR-1478): `tuning-accumulator.ts:6,44` records the observed
- * `set_freq` confirm round trip at 0.5–2s on live hardware.
- */
-const ACK_CONFIRM_GRACE_MS = 3_000;
-
-/**
- * Shared by `getPendingFrequencyHz` above (leg 1, MOR-1478) and the four
- * discrete accessors below (leg 2, MOR-1488): the freshest command matching
- * `intentName`/`receiver` that has not reached a terminal failure/expiry
- * status, or `undefined`. Same `>=` freshest-wins tie-break as leg 1's
- * original implementation (review B3) — no second, parallel pending-state
- * path, and now one decision table for both legs instead of two.
- *
- * MOR-1488 (live-bench finding): a transport `'acknowledged'` (the WS ack)
- * is NOT a confirming observation — it only proves the radio received the
- * command, typically within milliseconds, well before the next state poll
- * echoes the new value back (~500ms keep-alive, CLAUDE.md). Treating ack as
- * "no longer pending" (the pre-fix behavior) collapsed the italic pending
- * window to something imperceptible live, presenting an unconfirmed value
- * as confirmed.
- *
- * An acknowledged record ends on the commanded field's own post-ack
- * observation, whatever value that observation carries — the core
- * re-reads the written field at USER priority after every write
- * (`radio_poller.py: RadioPoller._request_post_write_readback`), and the
- * server publishes that read's own `lastObservedMonotonic` per field
- * (`runtime_helpers.py: _observed_field_status`). `ackFieldObservationTimes`
- * (`commands.svelte.ts: transition`) captures that marker at ack; a marker
- * strictly above it is the answer. Pinned by
- * `semantic-discrete-pending-wiring.component.test.ts`'s "clears the marker
- * when main.nb is re-observed after the ack still holding the old value"
- * and "does not clear the marker on a post-ack push that observed another
- * field".
- *
- * Without both markers (no boundary captured, or the field carries none)
- * there is no per-field evidence to read, and the record falls back to the
- * older rule: the `ackObservationSeq` sequence guard, then a direct
- * match against the current confirmed reading, bounded by the grace
- * backstop above.
- */
-function latestPendingParam(
-  intentName: string, paramKey: string, receiver: 0 | 1 | null,
-  confirmedField: keyof ServerState['main'] | ModInputStateKey,
-): unknown {
-  let latest: {
-    createdAt: number; value: unknown; status: string;
-    updatedAt: number; ackObservationSeq: number | undefined;
-    ackFieldObservationTimes: Readonly<Record<string, number>> | undefined;
-  } | null = null;
-  for (const command of getCommandLifecycles()) {
-    if (command.name !== intentName) continue;
-    if (receiver !== null && command.params.receiver !== receiver) continue;
-    // Supersession is durable for the older record even after the newer
-    // terminal record's bounded presentation retention expires. Never let a
-    // superseded lifecycle become the newest selectable pending command.
-    // Identity-less legacy/test-double records have no supersession key.
-    if (command.id !== undefined && command.originalEpoch !== undefined
-      && isCommandLifecycleSuperseded(command)) continue;
-    const value = command.params[paramKey];
-    if (value === undefined) continue;
-    if (!latest || command.createdAt >= latest.createdAt) {
-      latest = {
-        createdAt: command.createdAt, value, status: command.status,
-        updatedAt: command.updatedAt, ackObservationSeq: command.ackObservationSeq,
-        ackFieldObservationTimes: command.ackFieldObservationTimes,
-      };
-    }
-  }
-  // Select chronologically first, then inspect liveness. A newer terminal
-  // same-key record is a barrier: filtering terminal records during the scan
-  // would let an older superseded pending record resurface after the newer
-  // command fails, times out, confirms, or is cancelled (MOR-1672).
-  if (!latest || (latest.status !== 'pending' && latest.status !== 'acknowledged')) return undefined;
-  if (latest.status !== 'acknowledged') return latest.value;
-
-  // Grace backstop: bounds the no-answer case (NAK, or nothing at all).
-  if (Date.now() - latest.updatedAt > ACK_CONFIRM_GRACE_MS) return undefined;
-
-  const fieldPath = receiver === null
-    ? String(confirmedField) : `${receiver === 1 ? 'sub' : 'main'}.${String(confirmedField)}`;
-  const boundary = latest.ackFieldObservationTimes?.[fieldPath];
-  const observedAt = runtime.state?.fieldStatus?.[fieldPath]?.lastObservedMonotonic;
-  if (typeof boundary === 'number' && Number.isFinite(boundary)
-    && typeof observedAt === 'number' && Number.isFinite(observedAt)) {
-    return observedAt > boundary ? undefined : latest.value;
-  }
-
-  const ackObservationSeq = latest.ackObservationSeq;
-  const currentObservationSeq = runtime.state?.observationSeq;
-  if (ackObservationSeq !== undefined && currentObservationSeq !== undefined
-    && currentObservationSeq <= ackObservationSeq) {
-    return latest.value;
-  }
-  const confirmed = receiver === null
-    ? runtime.state?.[confirmedField as ModInputStateKey]
-    : confirmedReceiverState(receiver)?.[confirmedField as keyof ServerState['main']];
-  return confirmed === latest.value ? undefined : latest.value;
-}
-
 /** Freshest unconfirmed `set_filter` target for `receiver`, or `null`.
  *  `FilterSurface` renders this as a marker on the targeted choice only —
  *  the confirmed reading stays the group's sole selection source (leg-1
  *  lesson: pending is display-only). */
 export function getPendingFilterSelection(receiver: 0 | 1): number | null {
-  const value = latestPendingParam('set_filter', 'filter', receiver, 'filter');
-  return typeof value === 'number' ? value : null;
+  return pendingFilterSelection(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /** Freshest unconfirmed `set_preamp` target for `receiver`, or `null`. Never
  *  touches the MOR-1447 combined-knob/change-guard machinery, which reads
  *  only confirmed fields. */
 export function getPendingPreampLevel(receiver: 0 | 1): number | null {
-  const value = latestPendingParam('set_preamp', 'level', receiver, 'preamp');
-  return typeof value === 'number' ? value : null;
+  return pendingPreampLevel(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /** Freshest unconfirmed `set_nb` target for `receiver`, or `null`. */
 export function getPendingNbOn(receiver: 0 | 1): boolean | null {
-  const value = latestPendingParam('set_nb', 'on', receiver, 'nb');
-  return typeof value === 'boolean' ? value : null;
+  return pendingNbOn(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /** Freshest unconfirmed `set_nr` target for `receiver`, or `null`. */
 export function getPendingNrOn(receiver: 0 | 1): boolean | null {
-  const value = latestPendingParam('set_nr', 'on', receiver, 'nr');
-  return typeof value === 'boolean' ? value : null;
+  return pendingNrOn(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /** Freshest unconfirmed `set_narrow` target for `receiver`, or `null`
@@ -1008,8 +887,7 @@ export function getPendingNrOn(receiver: 0 | 1): boolean | null {
  *  `getPendingNrOn` above — the same decision table, so confirmation,
  *  failure and supersession clear it by the same rule. */
 export function getPendingNarrow(receiver: 0 | 1): boolean | null {
-  const value = latestPendingParam('set_narrow', 'on', receiver, 'narrow');
-  return typeof value === 'boolean' ? value : null;
+  return pendingNarrow(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /**
@@ -1027,17 +905,7 @@ export function getPendingNarrow(receiver: 0 | 1): boolean | null {
  *    (latest-target-wins, same tie-break `latestPendingParam` uses).
  */
 export function getPendingNotchMode(receiver: 0 | 1): 'off' | 'auto' | 'manual' | null {
-  const auto = latestPendingParam('set_auto_notch', 'on', receiver, 'autoNotch');
-  const manual = latestPendingParam('set_manual_notch', 'on', receiver, 'manualNotch');
-  const autoBool = typeof auto === 'boolean' ? auto : null;
-  const manualBool = typeof manual === 'boolean' ? manual : null;
-  if (autoBool === true && manualBool === true) {
-    return freshestNotchStrand(receiver) === 'auto' ? 'auto' : 'manual';
-  }
-  if (autoBool === true) return 'auto';
-  if (manualBool === true) return 'manual';
-  if (autoBool === false && manualBool === false) return 'off';
-  return null;
+  return pendingNotchMode(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /** Freshest unconfirmed `set_manual_notch_width` target for `receiver`, or
@@ -1045,24 +913,7 @@ export function getPendingNotchMode(receiver: 0 | 1): 'off' | 'auto' | 'manual' 
  *  `manualNotchWidth` — the same decision table the sibling accessors use,
  *  so confirmation, failure and supersession clear it by the same rule. */
 export function getPendingManualNotchWidth(receiver: 0 | 1): number | null {
-  const value = latestPendingParam('set_manual_notch_width', 'value', receiver, 'manualNotchWidth');
-  return typeof value === 'number' ? value : null;
-}
-
-/** Which of the two notch strands holds the freshest non-terminal record. */
-function freshestNotchStrand(receiver: 0 | 1): 'auto' | 'manual' {
-  let autoAt = Number.NEGATIVE_INFINITY;
-  let manualAt = Number.NEGATIVE_INFINITY;
-  for (const command of getCommandLifecycles()) {
-    if (command.params.receiver !== receiver) continue;
-    if (command.id !== undefined && command.originalEpoch !== undefined
-      && isCommandLifecycleSuperseded(command)) continue;
-    if (typeof command.params.on !== 'boolean' || command.params.on !== true) continue;
-    if (command.status !== 'pending' && command.status !== 'acknowledged') continue;
-    if (command.name === 'set_auto_notch' && command.createdAt >= autoAt) autoAt = command.createdAt;
-    else if (command.name === 'set_manual_notch' && command.createdAt >= manualAt) manualAt = command.createdAt;
-  }
-  return autoAt >= manualAt ? 'auto' : 'manual';
+  return pendingManualNotchWidth(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 // ── Repeater panel pending targets (MOR-2111) ──
@@ -1073,108 +924,23 @@ function freshestNotchStrand(receiver: 0 | 1): 'auto' | 'manual' {
  * TSQL on means TSQL, then TSQL off or tone on means TONE.
  */
 export function getPendingRepeaterTone(receiver: 0 | 1): 'off' | 'tone' | 'tsql' | null {
-  const tsql = latestPendingParam('set_repeater_tsql', 'on', receiver, 'repeaterTsql');
-  const tone = latestPendingParam('set_repeater_tone', 'on', receiver, 'repeaterTone');
-  if (tone === false) return 'off';
-  if (tsql === true) return 'tsql';
-  if (tsql === false || tone === true) return 'tone';
-  return null;
+  return pendingRepeaterTone(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /** Freshest unconfirmed repeater shift direction for `receiver`, or `null`. */
 export function getPendingRepeaterShift(receiver: 0 | 1): number | null {
-  const value = latestPendingParam('set_repeater_shift', 'direction', receiver, 'repeaterShift');
-  return typeof value === 'number' ? value : null;
+  return pendingRepeaterShift(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /** Freshest unconfirmed CTCSS tone frequency (centiHz) for `receiver`, or
  *  `null`. The panel writes `set_tone_freq` in OFF/TONE and `set_tsql_freq`
  *  in TSQL, so both in-flight names count. */
 export function getPendingToneFreq(receiver: 0 | 1): number | null {
-  const tone = latestPendingParam('set_tone_freq', 'freq', receiver, 'toneFreq');
-  if (typeof tone === 'number') return tone;
-  const tsql = latestPendingParam('set_tsql_freq', 'freq', receiver, 'tsqlFreq');
-  return typeof tsql === 'number' ? tsql : null;
+  return pendingToneFreq(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 // ── Generic armed/pending signal (MOR-1519) ──
-/**
- * ARMED-SIGNAL CONTRACT — owner ruling MOR-1519: any control that does not
- * switch in real time but is instead confirmed by polling (the radio's own
- * observed state, same as every accessor above) needs a generic "in flight"
- * marker, so an operator gets feedback the instant they act instead of the
- * multi-second silent lag the ticket was filed against (MODE buttons: click
- * → nothing visible → the poll eventually confirms). `ArmedFact`/`armedFact`
- * below are a GENERIC READ over `latestPendingParam`'s decision table above
- * — not a second source of truth, not a reimplementation. Every honesty rule
- * documented on `latestPendingParam` and `ACK_CONFIRM_GRACE_MS` applies
- * unchanged:
- *  - `armed` goes true the instant a command dispatches (`status ===
- *    'pending'`), stays true through the transport ack (`'acknowledged'`),
- *    and goes false when `latestPendingParam` releases the record.
- *  - A re-click while armed re-arms at the new target: `latestPendingParam`'s
- *    freshest-`createdAt`-wins tie-break already handles this, no separate
- *    "already armed" state to fight.
- *  - `armed` NEVER survives a terminal outcome. `latestPendingParam` first
- *    selects the newest same-key record chronologically, then requires that
- *    exact record to be pending/acknowledged. Thus a newer failed, cancelled,
- *    timed-out, or confirmed record clears armed immediately and cannot let an
- *    older superseded command resurface as if it were still in flight.
- *
- * Contract for skins consuming this signal:
- *  - MAY style `armed` however fits: desktop-v2 renders it as a `data-armed`
- *    attribute on the actual `<button>` element (`ControlButton.svelte`,
- *    parity with `DspSurface.svelte`'s `data-pending-status` marker for
- *    NB/NR) with `opacity: 0.75` as the primary, font-independent visual
- *    channel plus an underline structural backstop (`ModePanel.svelte`); an
- *    LCD skin may prefer a glow or blink — that is a presentation choice,
- *    not part of this contract. NOTE (review F1/F2): the marker MUST sit on
- *    the actual interactive element, never a wrapper — a wrapper is not
- *    reachable by an attribute selector, and relying on CSS inheritance
- *    (e.g. `font-style`) is unsafe: the UA `<button>` stylesheet supplies
- *    its own `font-style: normal` that beats an inherited value, and this
- *    codebase's vendored font + `font-synthesis: none` (`app.css`) means an
- *    italic-only affordance can compute without ever rendering — verify any
- *    font-dependent channel AS RENDERED, not just as computed.
- *  - MUST NOT suppress the confirmed-vs-armed distinction, and MUST NOT ever
- *    present an armed (unconfirmed) value as confirmed — same doctrine as
- *    `data-freq-status='pending'` (`FrequencyDisplayInteractive.svelte`) and
- *    `data-pending-status='pending'` (`DspSurface.svelte`): a structural
- *    marker on the element, never a color-only tell.
- *  - `data-*` carries NO accessibility semantics on its own (review F3) — it
- *    is a hook for CSS and tests, not for assistive tech. A skin exposing
- *    `armed` MUST also pair the marked control with an `aria-describedby`
- *    announcement (a `.sr-only` element, same pattern as
- *    `DspSurface.svelte`'s pending-toggle announcement) so AT users get the
- *    same "still in flight" information sighted users get from the visual
- *    channel. `ModePanel.svelte` does this via `HardwareButton`'s
- *    `describedBy` prop.
- *
- * KNOWN DUPLICATION (MOR-1541): the `.sr-only` rule itself is copy-pasted
- * verbatim into all five consumer panels (`ModePanel.svelte`,
- * `AgcPanel.svelte`, `FilterPanel.svelte`, `RfFrontEnd.svelte`,
- * `DspPanel.svelte`) rather than living in one shared file, unlike the
- * `data-armed` visual rule above which was consolidated into
- * `control-button-armed.css`. Accepted, not an oversight: Svelte's
- * `<style>` scoping makes a genuinely shared `.sr-only` class awkward to
- * factor out (either an unscoped `:global()` leak, or a shared import every
- * panel needs just for one utility class) for a one-line rule unlikely to
- * drift. Left as-is; do not refactor without a concrete reason.
- */
-export interface ArmedFact<T> {
-  armed: boolean;
-  /** The in-flight target while `armed`; `null` otherwise. Pending is
-   *  display-only (leg-1 doctrine) — never read this as an arithmetic base
-   *  for a "toggle from pending" computation. */
-  value: T | null;
-}
-
-function armedFact<T>(
-  intentName: string, paramKey: string, receiver: 0 | 1, confirmedField: keyof ServerState['main'],
-): ArmedFact<T> {
-  const value = latestPendingParam(intentName, paramKey, receiver, confirmedField);
-  return value === undefined ? { armed: false, value: null } : { armed: true, value: value as T };
-}
+export type { ArmedFact } from './pending-intent-table';
 
 /**
  * MODE buttons' armed fact (MOR-1519, first consumer of the generic signal
@@ -1192,52 +958,27 @@ function armedFact<T>(
 export function getModeArmed(): ArmedFact<string> {
   const state = runtime.state;
   if (!state) return { armed: false, value: null };
-  const receiver: 0 | 1 = state.active === 'SUB' ? 1 : 0;
-  return armedFact<string>('set_mode', 'mode', receiver, 'mode');
+  return modeArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 // ── Armed-signal adoption long tail (MOR-1536) ──
-/**
- * Shared active-receiver split for the accessors below — the exact same
- * `state.active === 'SUB'` read `getModeArmed` above performs inline, and
- * the same one every `activeRx(state)`-based prop mapper in `panel-props.ts`
- * uses for AGC/filter/preamp/attenuator/data-mode/notch. `null` only when
- * there is no state yet (cold start).
- *
- * KNOWN BOUND (same class `getModeArmed` already documents): a handler that
- * targets a receiver other than `state.active` at dispatch time (the
- * focus-echo window, `consumePendingFocus()`) makes an accessor built on
- * this helper degrade to no-feedback for that one click. None of the
- * handlers this helper serves (`onAgcModeChange`, `onFilterChange`,
- * `onPreChange`, `onAttChange`, `onDataModeChange`, `onNotchModeChange`)
- * consume the focus-echo pending target the way `onModeChange` does, so in
- * practice they are not exposed to it today — noted for completeness, not
- * because a live gap is known.
- */
-function activeReceiverOrNull(): 0 | 1 | null {
-  const state = runtime.state;
-  if (!state) return null;
-  return state.active === 'SUB' ? 1 : 0;
-}
-
 /** AGC mode buttons' armed fact (`set_agc`). No `receiver` param — same
  *  single-active-receiver read `toAgcProps`'s `activeRx(state)` uses. */
 export function getAgcArmed(): ArmedFact<number> {
-  const receiver = activeReceiverOrNull();
-  if (receiver === null) return { armed: false, value: null };
-  return armedFact<number>('set_agc', 'mode', receiver, 'agc');
+  const state = runtime.state;
+  if (activeReceiverOrNull(state) === null) return { armed: false, value: null };
+  return agcArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
-/** Filter-select (FIL1/2/3) armed fact (`set_filter`). This is the exact
- *  same `latestPendingParam('set_filter', 'filter', receiver, 'filter')`
- *  call `getPendingFilterSelection(receiver)` above already makes — this
+/** Filter-select (FIL1/2/3) armed fact (`set_filter`). This is the same
+ *  pending read `getPendingFilterSelection(receiver)` above makes — this
  *  wrapper only supplies the no-receiver-arg, `ArmedFact`-shaped read
  *  `FilterPanel.svelte` needs (parity with `getModeArmed`'s shape), not a
  *  second implementation. */
 export function getFilterArmed(): ArmedFact<number> {
-  const receiver = activeReceiverOrNull();
-  if (receiver === null) return { armed: false, value: null };
-  return armedFact<number>('set_filter', 'filter', receiver, 'filter');
+  const state = runtime.state;
+  if (activeReceiverOrNull(state) === null) return { armed: false, value: null };
+  return filterArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 /** Filter-shape (SHARP/SOFT) armed fact (`set_filter_shape`, param `shape`,
@@ -1246,17 +987,17 @@ export function getFilterArmed(): ArmedFact<number> {
  *  flight at the same time and must not be conflated — same separation as
  *  `getDataModeArmed` from `getModeArmed`. */
 export function getFilterShapeArmed(): ArmedFact<number> {
-  const receiver = activeReceiverOrNull();
-  if (receiver === null) return { armed: false, value: null };
-  return armedFact<number>('set_filter_shape', 'shape', receiver, 'filterShape');
+  const state = runtime.state;
+  if (activeReceiverOrNull(state) === null) return { armed: false, value: null };
+  return filterShapeArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 /** Preamp-level armed fact (`set_preamp`). Same underlying primitive as
  *  `getPendingPreampLevel(receiver)` above, `ArmedFact`-shaped. */
 export function getPreampArmed(): ArmedFact<number> {
-  const receiver = activeReceiverOrNull();
-  if (receiver === null) return { armed: false, value: null };
-  return armedFact<number>('set_preamp', 'level', receiver, 'preamp');
+  const state = runtime.state;
+  if (activeReceiverOrNull(state) === null) return { armed: false, value: null };
+  return preampArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 /** Attenuator armed fact (`set_attenuator`, param `db`, confirmed field
@@ -1266,9 +1007,9 @@ export function getPreampArmed(): ArmedFact<number> {
  *  2`, `rigs/ic7300.toml`/`rigs/ftx1.toml`); the `>2`-value
  *  `AttenuatorControl.svelte` branch is unwired (see PR body). */
 export function getAttenuatorArmed(): ArmedFact<number> {
-  const receiver = activeReceiverOrNull();
-  if (receiver === null) return { armed: false, value: null };
-  return armedFact<number>('set_attenuator', 'db', receiver, 'att');
+  const state = runtime.state;
+  if (activeReceiverOrNull(state) === null) return { armed: false, value: null };
+  return attenuatorArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 /** Data-mode armed fact (`set_data_mode`) — `ModePanel.svelte`'s DATA
@@ -1276,13 +1017,13 @@ export function getAttenuatorArmed(): ArmedFact<number> {
  *  entirely; a mode change and a data-mode change can be in flight at the
  *  same time and must not be conflated). */
 export function getDataModeArmed(): ArmedFact<number> {
-  const receiver = activeReceiverOrNull();
-  if (receiver === null) return { armed: false, value: null };
-  return armedFact<number>('set_data_mode', 'mode', receiver, 'dataMode');
+  const state = runtime.state;
+  if (activeReceiverOrNull(state) === null) return { armed: false, value: null };
+  return dataModeArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 /** Active DATA group's MOD-input source pending over the same lifecycle
- * decision table, using its top-level readback rather than a receiver field. */
+ *  decision table, using its top-level readback rather than a receiver field. */
 export function getModInputArmed(): ArmedFact<number> {
   const state = runtime.state;
   const rx = state?.active === 'SUB' ? state.sub : state?.main;
@@ -1290,9 +1031,7 @@ export function getModInputArmed(): ArmedFact<number> {
   if (!Number.isSafeInteger(dataMode) || (dataMode as number) < 0 || (dataMode as number) > 3) {
     return { armed: false, value: null };
   }
-  const key = modInputStateKey(dataMode as number);
-  const value = latestPendingParam(modInputCommand(dataMode as number), 'source', null, key);
-  return typeof value === 'number' ? { armed: true, value } : { armed: false, value: null };
+  return modInputArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 /** Auto-notch armed fact (`set_auto_notch`). Notch mode is written as TWO
@@ -1303,17 +1042,17 @@ export function getModInputArmed(): ArmedFact<number> {
  *  accessors, one per real command, same as the two real buttons
  *  (`DspPanel.svelte`'s NOTCH and A-NOTCH). */
 export function getAutoNotchArmed(): ArmedFact<boolean> {
-  const receiver = activeReceiverOrNull();
-  if (receiver === null) return { armed: false, value: null };
-  return armedFact<boolean>('set_auto_notch', 'on', receiver, 'autoNotch');
+  const state = runtime.state;
+  if (activeReceiverOrNull(state) === null) return { armed: false, value: null };
+  return autoNotchArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 /** Manual-notch armed fact (`set_manual_notch`) — see `getAutoNotchArmed`'s
  *  doc comment for why this is a separate accessor, not a combined one. */
 export function getManualNotchArmed(): ArmedFact<boolean> {
-  const receiver = activeReceiverOrNull();
-  if (receiver === null) return { armed: false, value: null };
-  return armedFact<boolean>('set_manual_notch', 'on', receiver, 'manualNotch');
+  const state = runtime.state;
+  if (activeReceiverOrNull(state) === null) return { armed: false, value: null };
+  return manualNotchArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 export function deriveAudioRoutingConfig() { return runtime.audioRouting; }
