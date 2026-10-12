@@ -8,11 +8,14 @@ and ``restore_state`` then touches no setter for the absent keys.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from rigplane.radio import IcomRadio
 from rigplane.runtime.radio_state_snapshot import restore_state, snapshot_state
 from rigplane.types import Mode
+from test_radio import MockTransport
 
 
 class _SnapshotFakeRadio:
@@ -225,3 +228,47 @@ async def test_restore_skips_absent_keys_and_restores_present_ones() -> None:
     assert ("_set_vfo_wire", ("B",)) in full.calls
     assert ("set_attenuator", (True,)) in full.calls
     assert ("set_preamp", (2,)) in full.calls
+
+
+async def test_snapshot_with_real_radio_omits_unconfirmed_split_attenuator_preamp_and_vfo() -> None:
+    """Every read timing out on a real IcomRadio: no split/attenuator/preamp/vfo keys.
+
+    The setter-written mirrors (``_last_split``, ``_attenuator_state``,
+    ``_preamp_level``) are set, and no reply is queued, so each read times
+    out. The snapshot must record none of them — and no ``vfo`` key, since
+    no radio read exists for the VFO slot — and restoring it must call none
+    of their setters.
+    """
+    transport = MockTransport()
+    radio = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
+    radio._civ_transport = transport
+    radio._ctrl_transport = transport
+    radio._connected = True
+    try:
+        radio._last_split = True
+        radio._attenuator_state = True
+        radio._preamp_level = 2
+
+        snap = await snapshot_state(radio)
+
+        assert "split" not in snap
+        assert "attenuator" not in snap
+        assert "preamp" not in snap
+        assert "vfo" not in snap
+
+        with (
+            patch.object(radio, "set_split", new=AsyncMock()) as set_split,
+            patch.object(radio, "_set_vfo_wire", new=AsyncMock()) as set_vfo,
+            patch.object(
+                radio, "set_attenuator", new=AsyncMock()
+            ) as set_attenuator,
+            patch.object(radio, "set_preamp", new=AsyncMock()) as set_preamp,
+        ):
+            await restore_state(radio, snap)
+
+        set_split.assert_not_awaited()
+        set_vfo.assert_not_awaited()
+        set_attenuator.assert_not_awaited()
+        set_preamp.assert_not_awaited()
+    finally:
+        radio._connected = False
