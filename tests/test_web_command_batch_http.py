@@ -830,6 +830,96 @@ async def test_http_raw_civ_transaction_unmanaged_refuses_tx_family_without_fres
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "ptt_value"),
+    [
+        (
+            {"command": 0x1C, "sub": 0x00, "data": "00", "expect": "none"},
+            True,
+        ),
+        (
+            {"command": 0x1C, "sub": 0x00, "data": "00", "expect": "none"},
+            None,
+        ),
+        (
+            {"command": 0x29, "sub": 0x00, "data": "1C0000", "expect": "none"},
+            True,
+        ),
+        (
+            {"command": 0x1C, "sub": 0x01, "data": "00", "expect": "none"},
+            True,
+        ),
+    ],
+    ids=[
+        "ptt-off-observed-tx",
+        "ptt-off-unknown",
+        "cmd29-ptt-off-observed-tx",
+        "tuner-off-observed-tx",
+    ],
+)
+async def test_http_raw_civ_transaction_unmanaged_passes_exact_dekey(
+    payload: dict,
+    ptt_value: bool | None,
+) -> None:
+    """An exact raw de-key frame — PTT off ``1C 00 00`` or tuner off
+    ``1C 01 00``, bare or inside a cmd29 prefix — always reaches the radio
+    on the unmanaged HTTP raw seat, observed TX or unknown RF state
+    included, exactly as the typed PTT-off command always passes: a de-key
+    must never get harder to execute."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv = _unmanaged_server(radio)
+    if ptt_value is not None:
+        _observe_ptt(srv, ptt_value)
+
+    writer = await _post_json(srv, "/api/v1/civ/transaction", payload)
+
+    assert writer.response_status == 200, (
+        "MOR-3364: a raw de-key must not be refused by the RF-state check"
+    )
+    radio.send_civ_transaction.assert_awaited_once_with(
+        payload["command"],
+        sub=payload["sub"],
+        data=bytes.fromhex(payload["data"]),
+        expect="none",
+        timeout=None,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"command": 0x03, "data": "FDFEFE94E01C0001", "expect": "none"},
+        {"command": 0x03, "data": "FCFEFE94E01C0001", "expect": "none"},
+    ],
+    ids=["smuggled-frame-in-data", "fc-separator-smuggled-frame"],
+)
+async def test_http_raw_civ_transaction_unmanaged_refuses_smuggled_while_tx(
+    payload: dict,
+) -> None:
+    """A payload that cannot be parsed as one whole CI-V frame — a PTT-on
+    smuggled in the data field past an FD, or an FC collision byte standing
+    in for the separator — is refused while TX is observed, exactly as a
+    parsed TX-family frame is: the refusal covers the cannot-parse verdict,
+    not only an explicit True."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv = _unmanaged_server(radio)
+    _observe_ptt(srv, True)
+
+    writer = await _post_json(srv, "/api/v1/civ/transaction", payload)
+
+    assert writer.response_status == 403
+    assert writer.response_body["error"] == "radio_transmitting"
+    radio.send_civ_transaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_http_raw_civ_transaction_unmanaged_passes_ptt_on_with_fresh_rx() -> None:
     """With a fresh-known RX observation the unmanaged HTTP raw
     seat passes a TX-family frame to the radio, exactly as unmanaged
