@@ -4,6 +4,7 @@ import { refusalBlockedReason, type KeyBlockedReason } from '../../semantic/rx-t
 import { isLiveRadioAvailable, setWsConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
 import { setRxSilent } from '../stores/rx-silence.svelte';
 import { isValidServerState, matchesCurrentCapabilityTopology, resetRadioState, setRadioState } from '../stores/radio.svelte';
+import { hasOnlyLiveMetadataChanges } from '../stores/live-metadata';
 import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
 import { fetchCapabilities } from './http-client';
 import { authenticatedWsUrl, withoutWsAuthToken } from './ws-url';
@@ -972,25 +973,9 @@ function deliverySeqOf(state: Record<string, unknown> | null): number {
   return Math.max(publicStateSeq, transportSeq);
 }
 
-const LIVE_METADATA_KEYS = new Set([
-  'connection',
-  'fieldStatus',
-  'healthRevision',
-  'publicStateSeq',
-  'radioHealth',
-  'transportSeq',
-  'updatedAt',
-  'wsClients',
-]);
-
-function hasOnlyLiveMetadataKeys(keys: string[]): boolean {
-  return keys.length > 0 && keys.every((key) => LIVE_METADATA_KEYS.has(key));
-}
-
 function isRevisionAcceptable(
   currentState: Record<string, unknown> | null,
   nextState: Record<string, unknown>,
-  changedKeys: string[] = [],
 ): boolean {
   if (!currentState) return true;
 
@@ -1004,7 +989,7 @@ function isRevisionAcceptable(
     || observationSeqOf(nextState) > observationSeqOf(currentState)
     || (
       deliverySeqOf(nextState) > deliverySeqOf(currentState)
-      && hasOnlyLiveMetadataKeys(changedKeys)
+      && hasOnlyLiveMetadataChanges(currentState, nextState)
     )
   );
 
@@ -1037,7 +1022,7 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
       && (
         stateRevisionOf(nextState) < stateRevisionOf(_fullState)
         || deliverySeqOf(nextState) < deliverySeqOf(_fullState)
-        || !isRevisionAcceptable(_fullState, nextState, Object.keys(nextState))
+        || !isRevisionAcceptable(_fullState, nextState)
       )
     ) return null;
     if (_acceptedProviderGeneration !== generation || !_hasReceivedFullState) {
@@ -1083,7 +1068,7 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
     return null;
   }
   const nextState = candidate!;
-  if (!isRevisionAcceptable(currentState, nextState, Object.keys(changed))) return null;
+  if (!isRevisionAcceptable(currentState, nextState)) return null;
   _fullState = nextState;
   return commitCurrentState() ? _fullState : null;
 }
