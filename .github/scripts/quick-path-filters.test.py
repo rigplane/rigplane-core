@@ -371,6 +371,23 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertIn('      - "!frontend/**/*.md"', visual)
         self.assertIn('      - "!frontend/**/*.rst"', visual)
         self.assertNotIn('      - ".github/workflows/visual.yml"', visual)
+        # MOR-3281 part 2: the push-to-main trigger carries the same paths
+        # list as pull_request, entry for entry, and targets only main.
+        pull_request_paths = [
+            line
+            for line in visual[
+                visual.index("  pull_request:") : visual.index("  push:")
+            ].splitlines()
+            if line.startswith('      - "')
+        ]
+        self.assertEqual(
+            "\n".join(
+                ["  push:", "    branches: [main]", "    paths:", *pull_request_paths]
+            ),
+            visual[
+                visual.index("  push:") : visual.index("  workflow_dispatch:")
+            ].strip("\n"),
+        )
 
     def test_component_kit_api_proof_is_frontend_selected_and_mirrored(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")

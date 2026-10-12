@@ -10,16 +10,46 @@ name: Visual regression (pixel-diff)
 # approved baselines were re-pinned from real Linux runner output. This job
 # is therefore a blocking visual regression gate.
 #
-# PR-ONLY GAP: this workflow triggers on `pull_request` only, not `push`, so
-# it never runs on `main` — two individually-green PRs that each touch
-# different baselines could jointly redden the approved set without either
-# PR's own run catching it. Still accepted post-flip: unchanged by
-# MOR-1386, tracked separately from the blocking-gate decision.
+# MOR-3281 part 2: `push` to `main` runs the same pixel-diff under the
+# same paths filter as `pull_request`, so two individually-green PRs that
+# jointly redden the approved set are still caught on `main`. Push runs
+# share the workflow's concurrency group (keyed on github.ref,
+# cancel-in-progress), so a burst of merges coalesces into one run. They
+# are informational: their failure annotation asks for a ticket, not a
+# revert; merge gating stays with the `pull_request` runs.
 
 on:
   pull_request:
     branches: [main]
     types: [opened, reopened, synchronize, ready_for_review]
+    paths:
+      - "frontend/**"
+      - "!frontend/*.md"
+      - "!frontend/*.mD"
+      - "!frontend/*.Md"
+      - "!frontend/*.MD"
+      - "!frontend/*.rst"
+      - "!frontend/*.rsT"
+      - "!frontend/*.rSt"
+      - "!frontend/*.rST"
+      - "!frontend/*.RsT"
+      - "!frontend/*.Rst"
+      - "!frontend/*.RSt"
+      - "!frontend/*.RST"
+      - "!frontend/**/*.md"
+      - "!frontend/**/*.mD"
+      - "!frontend/**/*.Md"
+      - "!frontend/**/*.MD"
+      - "!frontend/**/*.rst"
+      - "!frontend/**/*.rsT"
+      - "!frontend/**/*.rSt"
+      - "!frontend/**/*.rST"
+      - "!frontend/**/*.RsT"
+      - "!frontend/**/*.Rst"
+      - "!frontend/**/*.RSt"
+      - "!frontend/**/*.RST"
+  push:
+    branches: [main]
     paths:
       - "frontend/**"
       - "!frontend/*.md"
@@ -65,7 +95,7 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
-      frontend: ${{ steps.filter.outputs.frontend || steps.manual.outputs.frontend }}
+      frontend: ${{ steps.filter.outputs.frontend || steps.manual.outputs.frontend || steps.push.outputs.frontend }}
     steps:
       - name: Select product frontend changes
         id: filter
@@ -93,6 +123,12 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         run: echo "frontend=true" >> "$GITHUB_OUTPUT"
 
+      - name: Select push main run
+        id: push
+        # The push trigger's own paths filter already gated this run.
+        if: github.event_name == 'push'
+        run: echo "frontend=true" >> "$GITHUB_OUTPUT"
+
   visual:
     needs: changes
     # Draft pushes do not consume the shared Mac mini. ready_for_review starts
@@ -101,6 +137,7 @@ jobs:
     if: >-
       needs.changes.outputs.frontend == 'true' &&
       (github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
       github.event.pull_request.draft == false)
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 10
@@ -137,7 +174,12 @@ jobs:
 
       - name: Annotate failure
         if: always() && steps.visual.outcome == 'failure'
-        run: echo "::error::Visual pixel-diff failed. See the Pixel-diff vs approved baselines step log."
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "::error::Visual pixel-diff failed on main. This push run is informational (merges are gated by the pull_request runs); open a ticket for the baseline drift instead of reverting the merge. See the Pixel-diff vs approved baselines step log."
+          else
+            echo "::error::Visual pixel-diff failed. See the Pixel-diff vs approved baselines step log."
+          fi
 
       # MOR-2296 — manual re-pin route. A visual change small enough to stay
       # under the comparator floor (`COMPARATOR` in
