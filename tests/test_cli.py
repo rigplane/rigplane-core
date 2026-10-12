@@ -2322,12 +2322,20 @@ class TestCheckPortsAvailable:
     @pytest.mark.parametrize(
         ("argv", "expect"),
         [
-            pytest.param(["--host", "1.2.3.4", "web"], "refused", id="web"),
-            pytest.param(["--host", "1.2.3.4", "station"], "refused", id="station"),
-            pytest.param(["--host", "1.2.3.4", "serve"], "refused", id="serve"),
+            pytest.param(
+                ["--host", "1.2.3.4", "web"], "resident-refused", id="web"
+            ),
+            pytest.param(
+                ["--host", "1.2.3.4", "station"],
+                "resident-refused",
+                id="station",
+            ),
+            pytest.param(
+                ["--host", "1.2.3.4", "serve"], "resident-refused", id="serve"
+            ),
             pytest.param(
                 ["--host", "1.2.3.4", "status"],
-                "one-shot-passes",
+                "one-shot-refused",
                 id="one-shot-status",
             ),
             pytest.param(
@@ -2340,16 +2348,22 @@ class TestCheckPortsAvailable:
     def test_run_guard_sits_behind_command_and_backend_filters(
         self, argv, expect, capsys, tmp_path
     ):
-        """MOR-3391 R3: `_run` guards only resident commands on guarded backends.
+        """MOR-3431: `_run` guards every command on guarded backends.
 
         A child process holds the LAN lock for `--host 1.2.3.4` in the
         per-test lock dir (conftest isolation active). Resident starts for
-        that radio refuse with 1 before the radio is constructed; the
-        one-shot `status` for the same radio and `web` on the rigctld
-        backend both pass the guard and reach `create_radio`. Mutations:
-        dropping the backend check turns the rigctld row into a `TypeError`
-        from `radio_lock_identity`; dropping the command check refuses the
-        one-shot row with 1 instead of reaching `create_radio`.
+        that radio refuse with 1 and the byte-identical resident message
+        before the radio is constructed; the one-shot `status` for the same
+        radio refuses with 1 and the one-shot message, also before
+        `create_radio`; `web` on the rigctld backend passes the guard and
+        reaches `create_radio` without creating a lock file. Mutations:
+        (m1) restoring the `args.command in RESIDENT_COMMANDS` filter on
+        the lock call site makes the one-shot row reach `create_radio`
+        instead of refusing; (m2) closing the lock right after acquiring
+        it for one-shot commands lets a rival holder in during the run
+        (pinned by `test_one_shot_holds_lock_for_its_run`); (m3) printing
+        the resident message for one-shot commands fails the one-shot
+        exact-message assertion below.
         """
         import asyncio
         import os
@@ -2389,14 +2403,27 @@ class TestCheckPortsAvailable:
         )
         try:
             args = _build_parser().parse_args(argv)
-            if expect == "refused":
+            if expect in ("resident-refused", "one-shot-refused"):
                 with patch("rigplane.cli.create_radio") as mock_create:
                     result = asyncio.run(asyncio.wait_for(_run(args), timeout=10.0))
                 assert result == 1
                 mock_create.assert_not_called()
                 captured = capsys.readouterr()
-                assert "already serving this radio" in captured.err
-                assert str(holder.pid) in captured.err
+                if expect == "resident-refused":
+                    assert captured.err.strip() == (
+                        f"Error: another rigplane process (pid {holder.pid}) "
+                        "is already serving this radio on this computer; "
+                        "stop it first"
+                    )
+                else:
+                    assert captured.err.strip() == (
+                        f"Error: another rigplane process (pid {holder.pid}) "
+                        "is already using this radio on this computer; a "
+                        "second login from this computer makes the radio drop "
+                        "that process's session. Send commands to the running "
+                        "server instead (its HTTP API or rigctld; for a "
+                        "readiness check, GET /readyz), or stop it first."
+                    )
             else:
                 locks_dir = tmp_path / "locks"
                 before = set(locks_dir.glob("*.lock")) if locks_dir.is_dir() else set()
@@ -2411,6 +2438,142 @@ class TestCheckPortsAvailable:
                         set(locks_dir.glob("*.lock")) if locks_dir.is_dir() else set()
                     )
                     assert after == before
+        finally:
+            holder.kill()
+            holder.wait(timeout=30)
+
+    def test_one_shot_holds_lock_for_its_run(self, capsys, tmp_path):
+        """MOR-3431: a one-shot command with no holder takes the lock for its run.
+
+        While `_run` for one-shot `status` is inside the patched
+        `create_radio`, a child process calling `acquire_resident_lock` on
+        the same identity is refused — the lock is held for the life of
+        the process, exactly as for resident commands, so a resident start
+        for the same radio during the run refuses too. Reuses the
+        subprocess holder pattern above, inverted: here the child probes
+        while the test process holds. Mutation (m2): closing the lock
+        right after acquiring it for one-shot commands lets the probe
+        child acquire it, printing ACQUIRED instead of REFUSED.
+        """
+        import asyncio
+        import os
+        import subprocess
+        import sys
+
+        from rigplane.cli import _run
+        from rigplane.cli._instance_guard import radio_lock_identity
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "status"])
+        identity = radio_lock_identity(
+            LanBackendConfig(host="1.2.3.4", port=args.control_port)
+        )
+        src_dir = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(
+            os.environ,
+            PYTHONPATH=src_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        )
+        probe_script = (
+            "import sys\n"
+            "from rigplane.cli._instance_guard import (\n"
+            "    ResidentAlreadyRunningError,\n"
+            "    acquire_resident_lock,\n"
+            ")\n"
+            "try:\n"
+            "    acquire_resident_lock(sys.argv[1], cache_dir=sys.argv[2])\n"
+            "except ResidentAlreadyRunningError:\n"
+            "    print('REFUSED', flush=True)\n"
+            "else:\n"
+            "    print('ACQUIRED', flush=True)\n"
+        )
+
+        def _create_while_probed(config):
+            probe = subprocess.Popen(
+                [sys.executable, "-c", probe_script, identity, str(tmp_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            assert probe.stdout is not None
+            verdict = probe.stdout.readline().strip()
+            probe.wait(timeout=30)
+            assert verdict == "REFUSED", (
+                "rival probe acquired the lock during a one-shot run: "
+                f"{probe.stderr.read() if probe.stderr else ''}"
+            )
+            raise RuntimeError("run-marker")
+
+        with patch(
+            "rigplane.cli.create_radio", side_effect=_create_while_probed
+        ):
+            with pytest.raises(RuntimeError, match="run-marker"):
+                asyncio.run(asyncio.wait_for(_run(args), timeout=30.0))
+
+    def test_one_shot_serial_refuses_while_holder_serves_port(
+        self, capsys, tmp_path
+    ):
+        """MOR-3431: a one-shot command refuses while another process holds the serial lock.
+
+        The child holds the serial identity for `--serial-port <tmp path>`
+        in the per-test lock dir; one-shot `status` for that port refuses
+        with 1 and the one-shot message before `create_radio`. Serial is
+        guarded by reasoning — two processes interleaving CI-V on one port
+        would corrupt each other's exchanges — not by bench evidence.
+        """
+        import asyncio
+        import os
+        import subprocess
+        import sys
+
+        from rigplane.cli import _run
+        from rigplane.cli._instance_guard import radio_lock_identity
+
+        device = tmp_path / "tty-fake"
+        device.write_bytes(b"")
+        args = _build_parser().parse_args(
+            ["--serial-port", str(device), "status"]
+        )
+        identity = radio_lock_identity(
+            SerialBackendConfig(device=str(device))
+        )
+        child_script = (
+            "import sys, time\n"
+            "from rigplane.cli._instance_guard import acquire_resident_lock\n"
+            "acquire_resident_lock(sys.argv[1], cache_dir=sys.argv[2])\n"
+            "print('READY', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        src_dir = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(
+            os.environ,
+            PYTHONPATH=src_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        )
+        holder = subprocess.Popen(
+            [sys.executable, "-c", child_script, identity, str(tmp_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        assert holder.stdout is not None
+        ready = holder.stdout.readline()
+        assert ready.strip() == "READY", (
+            f"holder child failed: {holder.stderr.read() if holder.stderr else ''}"
+        )
+        try:
+            with patch("rigplane.cli.create_radio") as mock_create:
+                result = asyncio.run(asyncio.wait_for(_run(args), timeout=10.0))
+            assert result == 1
+            mock_create.assert_not_called()
+            captured = capsys.readouterr()
+            assert captured.err.strip() == (
+                f"Error: another rigplane process (pid {holder.pid}) "
+                "is already using this radio on this computer; a "
+                "second login from this computer makes the radio drop "
+                "that process's session. Send commands to the running "
+                "server instead (its HTTP API or rigctld; for a "
+                "readiness check, GET /readyz), or stop it first."
+            )
         finally:
             holder.kill()
             holder.wait(timeout=30)
