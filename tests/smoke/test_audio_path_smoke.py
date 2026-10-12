@@ -285,7 +285,7 @@ async def _wait_for_identity_hold_clear(radio: Icom7610SerialRadio) -> None:
     """Wait until the connect-time serial identity hold clears.
 
     ``connect()`` returns while the hold is active when the link's answer
-    misses the gate's answer window; production then refuses every command
+    misses the gate's answer window; production then refuses commands
     (``CoreRadio._check_connected``) until the background re-read
     (``_IcomSerialRadioBase._SERIAL_IDENTITY_REREAD_BACKOFF_S``) gets an
     answer. Poll that same production signal instead of starting
