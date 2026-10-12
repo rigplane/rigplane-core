@@ -1296,8 +1296,6 @@ describe('WsChannel', () => {
 
     // After the close only the reconnect timer should remain: onclose
     // clears the heartbeat timeout and stops the keepalive interval.
-    // (document is undefined in this env, so the tab-hidden branch never
-    // applies and the reconnect backoff timer is always scheduled.)
     expect(vi.getTimerCount()).toBe(1);
     ch.disconnect();
   });
