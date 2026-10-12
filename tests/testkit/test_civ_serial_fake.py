@@ -15,6 +15,7 @@ import pytest
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.profiles import resolve_radio_profile
 
+from rigplane_testkit.icom.replay import RecordedAnswerTable
 from rigplane_testkit.serial import CivSerialFake
 
 
@@ -257,3 +258,144 @@ async def test_usb_vanish_and_reappear() -> None:
     writer2.write(build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x19, sub=0x00))
     echo, reply = await _read_frames(reader2, 2)
     assert parse_civ_frame(reply).data == fake.model_id
+
+
+# ---------------------------------------------------------------------------
+# recorded_answers: a RecordedAnswerTable mounted on the fake
+# ---------------------------------------------------------------------------
+
+# Hand-built rows (radio 0x98, controller 0xE0, no echo rows -> echo fact
+# False). The table keys on the frame body, so its rows answer requests to
+# any radio address; the fake still answers only its own address.
+_TABLE_ROWS = [
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.1,
+        "dir": "c2r",
+        "frame": "fefe98e003fd",
+    },
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.101,
+        "dir": "r2c",
+        "frame": "fefee098030060281400fd",  # a recorded 03 read: 14 282 600 Hz
+    },
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.2,
+        "dir": "c2r",
+        "frame": "fefe98e0290003fd",
+    },
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.201,
+        "dir": "r2c",
+        "frame": "fefee098fafd",  # the radio NAKs the cmd29-wrapped 03 read
+    },
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.3,
+        "dir": "c2r",
+        "frame": "fefe98e029001502fd",
+    },
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.301,
+        "dir": "r2c",
+        "frame": "fefee098290015020000fd",  # the wrapped S-meter read, answered wrapped
+    },
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.4,
+        "dir": "c2r",
+        "frame": "fefe98e0140afd",
+    },
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.401,
+        "dir": "r2c",
+        "frame": "fefee098140a0013fd",  # a level read the fake has no native handler for
+    },
+]
+
+
+def _recorded_table() -> RecordedAnswerTable:
+    return RecordedAnswerTable.from_civ_pairs(_TABLE_ROWS, "usb")
+
+
+def _to_fake(fake: CivSerialFake, body_hex: str) -> bytes:
+    """A request frame to the fake's own address carrying ``body_hex``."""
+    return bytes.fromhex(f"fefe{fake.civ_addr:02x}e0{body_hex}fd")
+
+
+async def test_native_frequency_read_keeps_precedence_over_the_table() -> None:
+    fake = CivSerialFake(recorded_answers=_recorded_table())
+    (reply,) = await _roundtrip(fake, _to_fake(fake, "03"), replies=1)
+    # The native state (default 14 074 000 Hz), not the recorded 14 282 600.
+    assert parse_civ_frame(reply).data == b"\x00\x40\x07\x14\x00"
+
+
+async def test_cmd29_wrapped_frequency_read_is_naked_from_the_table() -> None:
+    fake = CivSerialFake(recorded_answers=_recorded_table())
+    (reply,) = await _roundtrip(fake, _to_fake(fake, "290003"), replies=1)
+    assert parse_civ_frame(reply).command == 0xFA  # NAK, never the native 03
+
+
+async def test_cmd29_request_absent_from_the_table_is_naked() -> None:
+    fake = CivSerialFake(recorded_answers=_recorded_table())
+    (reply,) = await _roundtrip(fake, _to_fake(fake, "29001c00"), replies=1)
+    # A wrapped PTT read: unwrapping into the native 1C 00 handler is forbidden.
+    assert parse_civ_frame(reply).command == 0xFA
+
+
+async def test_cmd29_wrapped_read_answered_wrapped_from_the_table() -> None:
+    fake = CivSerialFake(recorded_answers=_recorded_table())
+    (reply,) = await _roundtrip(fake, _to_fake(fake, "29001502"), replies=1)
+    parsed = parse_civ_frame(reply)
+    assert parsed.receiver == 0x00  # still wrapped: 29 00 15 02 ...
+    assert parsed.command == 0x15
+    assert parsed.sub == 0x02
+    assert parsed.data == b"\x00\x00"
+
+
+async def test_unwrapped_unknown_request_answered_from_the_table() -> None:
+    fake = CivSerialFake(recorded_answers=_recorded_table())
+    (reply,) = await _roundtrip(fake, _to_fake(fake, "140a"), replies=1)
+    parsed = parse_civ_frame(reply)
+    assert (parsed.command, parsed.sub) == (0x14, 0x0A)
+    assert parsed.data == b"\x00\x13"
+
+
+async def test_unwrapped_unknown_request_missing_from_the_table_naks() -> None:
+    fake = CivSerialFake(recorded_answers=_recorded_table())
+    (reply,) = await _roundtrip(fake, _to_fake(fake, "140b"), replies=1)
+    assert parse_civ_frame(reply).command == 0xFA
+
+
+async def test_echo_default_comes_from_the_table() -> None:
+    fake = CivSerialFake(recorded_answers=_recorded_table())
+    assert fake.echo is False  # the hand-built rows carry no echo row
+    (reply,) = await _roundtrip(fake, _to_fake(fake, "03"), replies=1)
+    assert parse_civ_frame(reply).command == 0x03  # the only frame back
+
+    echoing = CivSerialFake(recorded_answers=_recorded_table(), echo=True)
+    echo, reply2 = await _roundtrip(echoing, _to_fake(echoing, "03"), replies=2)
+    assert echo == _to_fake(echoing, "03")  # an explicit echo= still wins
+    assert parse_civ_frame(reply2).command == 0x03
+
+
+async def test_without_a_table_the_fake_is_unchanged() -> None:
+    fake = CivSerialFake()
+    assert fake.echo is True
+    request = build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x03)
+    echo, reply = await _roundtrip(fake, request)
+    assert echo == request
+    assert parse_civ_frame(reply).data == b"\x00\x40\x07\x14\x00"

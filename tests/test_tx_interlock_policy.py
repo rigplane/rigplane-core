@@ -16,6 +16,12 @@ from rigplane.core.tx_interlock_contract import (
 from rigplane.core.tx_interlock_contract import (
     TxInterlockDisposition as CoreTxInterlockDisposition,
 )
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
 from rigplane.runtime._poller_types import (
     MemoryToVfo,
     PttOff,
@@ -56,6 +62,7 @@ from rigplane.runtime.tx_interlock import (
     classify_tx_interlock,
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
+    resolve_rf_state,
 )
 
 
@@ -412,3 +419,76 @@ def test_deferred_lane_rejects_non_deferred_commands() -> None:
         assert "DEFER" in str(error)
     else:
         raise AssertionError("only DEFER commands may enter the deferred lane")
+
+
+def _ptt_store(
+    *, value: object = False, max_age: float | None = 1.0
+) -> tuple[StateStore, FreshnessClock]:
+    """Store holding one tx_state.ptt observation at t0=10.0 (manual clock)."""
+
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=value,
+            source=SourceMetadata(
+                source="poll_response",
+                provider="test",
+                transport="fake",
+                native_id="test",
+            ),
+            timestamp_monotonic=clock.now(),
+            max_age=max_age,
+        )
+    )
+    return store, clock
+
+
+def test_resolve_rf_state_reads_known_rx_inside_ttl() -> None:
+    store, _clock = _ptt_store(value=False, max_age=1.0)
+
+    assert resolve_rf_state(store.snapshot()) is RfState.RX
+
+
+def test_resolve_rf_state_reads_known_tx_inside_ttl() -> None:
+    store, _clock = _ptt_store(value=True, max_age=1.0)
+
+    assert resolve_rf_state(store.snapshot()) is RfState.TX
+
+
+def test_resolve_rf_state_recomputes_age_past_ttl_despite_fresh_flag() -> None:
+    store, clock = _ptt_store(value=False, max_age=1.0)
+    clock.advance(1.03)
+    snapshot = store.snapshot()
+    assert (
+        snapshot.field(FieldPath.global_("tx_state", "ptt")).freshness
+        is FreshnessState.FRESH
+    )
+
+    assert resolve_rf_state(snapshot) is RfState.UNKNOWN
+
+
+def test_resolve_rf_state_treats_ttl_boundary_as_expired() -> None:
+    store, clock = _ptt_store(value=False, max_age=1.0)
+    clock.advance(1.0)
+
+    assert resolve_rf_state(store.snapshot()) is RfState.UNKNOWN
+
+
+def test_resolve_rf_state_without_ptt_field_is_unknown() -> None:
+    store = StateStore(freshness_clock=FreshnessClock(start=10.0))
+
+    assert resolve_rf_state(store.snapshot()) is RfState.UNKNOWN
+
+
+def test_resolve_rf_state_without_max_age_is_unknown() -> None:
+    store, _clock = _ptt_store(value=False, max_age=None)
+
+    assert resolve_rf_state(store.snapshot()) is RfState.UNKNOWN
+
+
+def test_resolve_rf_state_with_non_bool_value_is_unknown() -> None:
+    store, _clock = _ptt_store(value=1, max_age=1.0)
+
+    assert resolve_rf_state(store.snapshot()) is RfState.UNKNOWN

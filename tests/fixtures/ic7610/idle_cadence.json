@@ -1,0 +1,146 @@
+{
+ "audio_lengths": {
+  "c2r": {
+   "16": 5989,
+   "21": 7309,
+   "22": 1
+  },
+  "r2c": {
+   "1136": 30471,
+   "1388": 60947,
+   "16": 2,
+   "21": 7309
+  }
+ },
+ "pings": {
+  "audio:c2r:reply": {
+   "count": 6094,
+   "max_s": 0.355,
+   "median_s": 0.1,
+   "p95_s": 0.109,
+   "seconds": 609.33
+  },
+  "audio:c2r:request": {
+   "count": 1215,
+   "max_s": 0.626,
+   "median_s": 0.501,
+   "p95_s": 0.509,
+   "seconds": 609.273
+  },
+  "audio:r2c:reply": {
+   "count": 1215,
+   "max_s": 0.629,
+   "median_s": 0.501,
+   "p95_s": 0.509,
+   "seconds": 609.273
+  },
+  "audio:r2c:request": {
+   "count": 6094,
+   "max_s": 0.348,
+   "median_s": 0.1,
+   "p95_s": 0.104,
+   "seconds": 609.33
+  },
+  "civ:c2r:reply": {
+   "count": 6113,
+   "max_s": 0.355,
+   "median_s": 0.1,
+   "p95_s": 0.109,
+   "seconds": 611.229
+  },
+  "civ:c2r:request": {
+   "count": 1218,
+   "max_s": 0.667,
+   "median_s": 0.501,
+   "p95_s": 0.508,
+   "seconds": 610.818
+  },
+  "civ:r2c:reply": {
+   "count": 1218,
+   "max_s": 0.67,
+   "median_s": 0.501,
+   "p95_s": 0.509,
+   "seconds": 610.818
+  },
+  "civ:r2c:request": {
+   "count": 6113,
+   "max_s": 0.355,
+   "median_s": 0.1,
+   "p95_s": 0.105,
+   "seconds": 611.23
+  },
+  "control:c2r:reply": {
+   "count": 6117,
+   "max_s": 0.355,
+   "median_s": 0.1,
+   "p95_s": 0.108,
+   "seconds": 611.63
+  },
+  "control:c2r:request": {
+   "count": 1219,
+   "max_s": 0.647,
+   "median_s": 0.501,
+   "p95_s": 0.509,
+   "seconds": 611.27
+  },
+  "control:r2c:reply": {
+   "count": 1219,
+   "max_s": 0.647,
+   "median_s": 0.501,
+   "p95_s": 0.51,
+   "seconds": 611.27
+  },
+  "control:r2c:request": {
+   "count": 6117,
+   "max_s": 0.274,
+   "median_s": 0.1,
+   "p95_s": 0.104,
+   "seconds": 611.63
+  }
+ },
+ "retransmit_requests": {
+  "audio:c2r": 5
+ },
+ "token_renewals": [
+  {
+   "answered_after_s": 0.002,
+   "t": 65.282
+  },
+  {
+   "answered_after_s": 0.001,
+   "t": 125.283
+  },
+  {
+   "answered_after_s": 0.002,
+   "t": 185.284
+  },
+  {
+   "answered_after_s": 0.001,
+   "t": 245.285
+  },
+  {
+   "answered_after_s": 0.001,
+   "t": 305.289
+  },
+  {
+   "answered_after_s": 0.009,
+   "t": 365.445
+  },
+  {
+   "answered_after_s": 0.002,
+   "t": 425.292
+  },
+  {
+   "answered_after_s": 0.002,
+   "t": 485.292
+  },
+  {
+   "answered_after_s": 0.002,
+   "t": 545.293
+  },
+  {
+   "answered_after_s": 0.001,
+   "t": 605.294
+  }
+ ]
+}

@@ -101,6 +101,9 @@ class _UdpProtocol(asyncio.DatagramProtocol):
 
     def connection_lost(self, exc: Exception | None) -> None:
         logger.info("UDP connection lost [peer=%s]: %s", self._peer, exc)
+        close_event = self._owner._udp_close_event
+        if close_event is not None:
+            close_event.set()
 
 
 class IcomTransport:
@@ -129,6 +132,7 @@ class IcomTransport:
         self.rx_missing: dict[int, int] = {}  # seq -> retry count
         self._udp_transport: asyncio.DatagramTransport | None = None
         self._udp_peer_addr: tuple[str, int] | None = None
+        self._udp_close_event: asyncio.Event | None = None
         self._ping_task: asyncio.Task[None] | None = None
         self._idle_task: asyncio.Task[None] | None = None
         self._retransmit_task: asyncio.Task[None] | None = None
@@ -227,6 +231,7 @@ class IcomTransport:
                 break
         self.state = ConnectionState.CONNECTING
         loop = asyncio.get_running_loop()
+        self._udp_close_event = asyncio.Event()
         if sock is not None:
             # Caller reserved this socket earlier; connect + hand off.
             sock.connect((host, port))
@@ -282,6 +287,7 @@ class IcomTransport:
         self.state = ConnectionState.CONNECTING
         loop = asyncio.get_running_loop()
         local_addr = (local_host, 0) if local_host else None
+        self._udp_close_event = asyncio.Event()
         await loop.create_datagram_endpoint(
             lambda: _UdpProtocol(self),
             remote_addr=(host, port),
@@ -379,8 +385,12 @@ class IcomTransport:
         Keepalive tasks are cancelled AND awaited so that when this
         coroutine returns nothing from this transport is left pending in
         the event loop and a follow-up ``connect()`` on the same instance
-        restarts the loops from a clean slate (MOR-595).  Idempotent —
-        safe to call again after a partial start.
+        restarts the loops from a clean slate (MOR-595).  The UDP socket
+        close is likewise awaited (bounded at 1 s): asyncio closes the socket
+        in a deferred callback, right after ``connection_lost``, and returning
+        earlier let a reconnect rebind the same local port and fail with
+        EADDRINUSE.
+        Idempotent — safe to call again after a partial start.
         """
         tasks = [
             task
@@ -396,9 +406,18 @@ class IcomTransport:
             pkt = self._build_control(ptype=PacketType.DISCONNECT, seq=0)
             self._raw_send(pkt)
 
+        close_wait_cancelled: asyncio.CancelledError | None = None
         if self._udp_transport is not None:
+            close_event = self._udp_close_event
             self._udp_transport.close()
             self._udp_transport = None
+            if close_event is not None:
+                try:
+                    await asyncio.wait_for(close_event.wait(), 1.0)
+                except asyncio.TimeoutError:
+                    logger.debug("UDP socket close not confirmed within 1s; continuing")
+                except asyncio.CancelledError as exc:
+                    close_wait_cancelled = exc
 
         self.state = ConnectionState.DISCONNECTED
 
@@ -410,6 +429,8 @@ class IcomTransport:
             except Exception:
                 logger.debug("keepalive task raised during disconnect", exc_info=True)
         logger.info("Disconnected")
+        if close_wait_cancelled is not None:
+            raise close_wait_cancelled
 
     def start_ping_loop(self) -> None:
         """Start the periodic ping task."""
@@ -444,8 +465,9 @@ class IcomTransport:
             is_current: Optional caller-owned synchronous, nonblocking,
                 read-only predicate, checked before sending and retransmitting.
                 False raises CommandError before an initial send; an initial
-                predicate exception propagates. Retransmits skip on false or
-                ordinary exceptions.
+                predicate exception propagates. A false or raising guard
+                answers the retransmit request with an idle packet carrying
+                that sequence instead of the stored packet.
 
         This guards local submission only, not delivery or radio execution.
         """
@@ -603,16 +625,26 @@ class IcomTransport:
         self._handle_data_packet(data, ptype, seq, sender_id)
 
     def _retransmit(self, seq: int) -> None:
+        seq &= 0xFFFF
         data = self.tx_buffer.get(seq)
         if data is None:
+            logger.debug("retransmit #%d not buffered; answering with idle", seq)
+            self._raw_send(self._build_control(ptype=0x00, seq=seq))
             return
         is_current = self._tx_guards.get(seq)
         if is_current is not None:
             try:
                 if not is_current():
+                    logger.debug("retransmit #%d stale; answering with idle", seq)
+                    self._raw_send(self._build_control(ptype=0x00, seq=seq))
                     return
             except Exception:
-                logger.debug("Skipping retransmit with failed guard", exc_info=True)
+                logger.debug(
+                    "retransmit #%d guard failed; answering with idle",
+                    seq,
+                    exc_info=True,
+                )
+                self._raw_send(self._build_control(ptype=0x00, seq=seq))
                 return
         self._raw_send(data)
 
@@ -625,11 +657,32 @@ class IcomTransport:
             self._retransmit(seq)
             return True
 
-        # Multi retransmit request
-        for i in range(CONTROL_SIZE, len(data), 2):
-            if i + 2 <= len(data):
-                rseq = struct.unpack_from("<H", data, i)[0]
-                self._retransmit(rseq)
+        # Multi retransmit request: the payload past the header holds
+        # consecutive 4-byte (first, last) inclusive ranges in the 16-bit
+        # sequence space. A trailing partial pair carries no range.
+        end = CONTROL_SIZE + (len(data) - CONTROL_SIZE) // 4 * 4
+        for i in range(CONTROL_SIZE, end, 4):
+            first, last = struct.unpack_from("<HH", data, i)
+            span = (last - first) & 0xFFFF
+            if span >= 0x8000:
+                logger.debug(
+                    "retransmit range %d..%d backward; ignoring",
+                    first,
+                    last,
+                )
+                continue
+            count = min(span + 1, MAX_MISSING)
+            if count < span + 1:
+                logger.debug(
+                    "retransmit range %d..%d wider than %d; serving first %d, "
+                    "rest left for the radio's next request",
+                    first,
+                    last,
+                    MAX_MISSING,
+                    count,
+                )
+            for offset in range(count):
+                self._retransmit((first + offset) & 0xFFFF)
         return True
 
     def _handle_ping_packet(
