@@ -174,7 +174,12 @@ from rigplane.commands import get_main_sub_tracking as _get_main_sub_tracking_cm
 from rigplane.commands import get_repeater_tone as _get_repeater_tone_cmd
 from rigplane.commands import get_repeater_tsql as _get_repeater_tsql_cmd
 from rigplane.core.env_config import get_managed_tx_enabled
-from rigplane.core.exceptions import CommandError, ConnectionError, TimeoutError
+from rigplane.core.exceptions import (
+    CommandError,
+    CommandRejectedError,
+    ConnectionError,
+    TimeoutError,
+)
 from rigplane.core.radio_protocol import (
     ManagedTxSupervisor,
     RadioIdentity,
@@ -1732,7 +1737,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return b""
         try:
             resp = await self._execute_civ_raw(request, wait_response=True)
-        except (TimeoutError, asyncio.TimeoutError):
+        except (CommandRejectedError, TimeoutError, asyncio.TimeoutError):
+            # A refused 19 00 read counts as no answer: the hold's re-read
+            # loop (``_lan_identity_reread_loop``) retries on silence, and a
+            # ``CommandRejectedError`` escaping here would abandon the hold
+            # instead (its edge catches only ``Exception``).
             return None
         except (ConnectionError, OSError):
             return None

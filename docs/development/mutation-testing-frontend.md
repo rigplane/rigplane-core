@@ -1,9 +1,9 @@
 # Frontend mutation testing (Stryker)
 
-Stryker mutates two pure view-model modules and checks whether their own
-tests notice each change. The run is informational: it is not a required
-check, has no threshold that fails it, and runs only nightly or by hand
-(`.github/workflows/stryker-nightly.yml`).
+Stryker mutates two pure view-model modules and the pure PTT restore gate,
+and checks whether their own tests notice each change. The run is
+informational: it is not a required check, has no threshold that fails it,
+and runs only nightly or by hand (`.github/workflows/stryker-nightly.yml`).
 
 ## What is mutated, and by which tests
 
@@ -11,12 +11,15 @@ check, has no threshold that fails it, and runs only nightly or by hand
 
 - `frontend/src/lib/runtime/adapters/radio-view-model-adapter.ts`
 - `frontend/src/semantic/radio-view-model.ts`
+- `frontend/src/lib/runtime/adapters/ptt-restore-gate.ts`
 
 `frontend/vitest.stryker.config.ts` names the tests that run against each
 mutant in `test.include`:
 
 - `frontend/src/lib/runtime/adapters/__tests__/radio-view-model-adapter.test.ts`
 - `frontend/src/semantic/__tests__/radio-view-model.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/mod-input-auto.isolated.test.ts`
+- `frontend/src/lib/runtime/adapters/__tests__/mod-input-tx-guard.isolated.test.ts`
 
 Other test files in the suite also import these modules. They are not in
 the Stryker test set, so a mutant reported as survived or without coverage
@@ -63,14 +66,14 @@ Open `mutation.html` and select a file. Each mutant has a status:
 The following files in `frontend/src/lib/runtime/adapters/` import a store
 module (`$lib/stores/*`) or the runtime singleton (`../frontend-runtime`)
 and call into it, so what they return or do depends on module-level state,
-not only on their arguments. They are not mutated; splitting their pure parts out is follow-up
-work.
+not only on their arguments. A row names the pure module that is mutated in
+its place where one exists; the rest of each file is not mutated.
 
 | File | Imports |
 |---|---|
 | `audio-adapter.ts` | `runtime` from `../frontend-runtime` |
-| `panel-adapters.ts` | `runtime` from `../frontend-runtime`; `$lib/stores/capabilities.svelte`; `$lib/stores/commands.svelte`. Its control-feedback projection lives in `control-feedback-projection.ts`, which imports no store values; that module is not yet in `stryker.config.mjs`'s mutation targets |
-| `tx-adapter.ts` | `runtime` from `../frontend-runtime` |
+| `panel-adapters.ts` | `runtime` from `../frontend-runtime`; `$lib/stores/capabilities.svelte`; `$lib/stores/commands.svelte` |
+| `tx-adapter.ts` | `runtime` from `../frontend-runtime`. Its restore-gate helpers (`markerIsStrictlyNewer`, `canRestoreModAfterConfirmedOff`) are the pure `ptt-restore-gate.ts`, which is mutated; the local-audio attempt lifecycle over module state is not |
 | `vfo-adapter.ts` | `runtime` from `../frontend-runtime` |
 | `mod-input-auto.svelte.ts` | `getRadioState` from `$lib/stores/radio.svelte`; `getCapabilities` from `$lib/stores/capabilities.svelte` |
 | `mod-input-tx-guard.svelte.ts` | `getRadioState` from `$lib/stores/radio.svelte`; `getCapabilities` from `$lib/stores/capabilities.svelte` |
