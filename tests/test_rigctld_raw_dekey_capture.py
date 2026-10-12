@@ -22,7 +22,11 @@ from test_rigctld_handler import make_mock_radio
 from test_rigctld_managed_context import _AuthorityTouchProbe, _DefaultExecutor
 
 from rigplane.core.command_service import CommandService
-from rigplane.core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from rigplane.core.state_store import StateStore
 from rigplane.rigctld.contract import HamlibError, RigctldConfig
 from rigplane.rigctld.handler import RigctldHandler
@@ -70,9 +74,7 @@ def _unmanaged_handler(authority, **config_kwargs):
     radio._controller_authority = authority
     radio._send_civ_raw = AsyncMock(return_value=None)
     store = _rx_store()
-    handler = RigctldHandler(
-        radio, RigctldConfig(**config_kwargs), state_store=store
-    )
+    handler = RigctldHandler(radio, RigctldConfig(**config_kwargs), state_store=store)
     return handler, radio
 
 
@@ -87,9 +89,7 @@ def _managed_handler(authority):
         state_store=store,
         managed_tx_authority=_AuthorityTouchProbe(),
         command_queue=CommandQueue(),
-        command_service=CommandService(
-            executor=_DefaultExecutor(), state_store=store
-        ),
+        command_service=CommandService(executor=_DefaultExecutor(), state_store=store),
     )
     return handler, radio
 
