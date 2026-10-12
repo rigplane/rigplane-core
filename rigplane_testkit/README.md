@@ -9,9 +9,13 @@ UDP code paths as production.
 - `rigplane_testkit.icom` — `MockIcomRadio`, an asyncio UDP simulator of an
   Icom IC-7610 LAN interface: control-port discovery/login/token/ping, a CI-V
   command port, single-owner session holding with keepalive renewal, and
-  fault injection (drop, reorder, stall, delay). The implementation lives in
-  `rigplane_testkit/icom/simulator.py` and was moved unchanged from
-  `tests/mock_server.py`.
+  fault injection (drop, reorder, stall, delay). The CI-V dispatcher answers
+  0x03/0x04/0x05/0x06 plus the selected/unselected receiver vocabulary
+  0x25/0x26 (both subcommands; the selected VFO shares the 0x03-0x06 state,
+  the unselected VFO has its own fields) and the 0x1A 05 MOD-input and NB
+  menu reads the product's startup reader issues (wire-pinned by
+  `tests/testkit/test_simulator_civ_vocab.py`). The implementation lives in
+  `rigplane_testkit/icom/simulator.py`.
 - `rigplane_testkit.icom.faults` — `FaultPlan` / `FaultRule`: a declarative,
   seeded (deterministic) fault plan with one rule per port (`control`, `civ`)
   and direction (`to_client`, `from_client`). Each rule can drop (probability
@@ -80,10 +84,20 @@ UDP code paths as production.
   proxy that sits between a client and a radio (real or simulated) and writes
   every datagram on the control/CI-V/audio ports to JSONL with direction,
   port and monotonic time. The radio-advertised CI-V/audio ports in the
-  status packet are rewritten to the proxy's listeners; login credentials and
-  the session-token slot of every control packet (0x40/0x50/0x60/0x90, both
-  directions) are zeroed before anything hits disk. CLI:
-  `python -m rigplane_testkit.icom record --radio HOST --out FILE`.
+  status packet are rewritten to the proxy's listeners, and the
+  client-declared ports in its conninfo packet are rewritten to the proxy's
+  pre-bound upstream sockets, which receive the CI-V/audio datagrams a radio
+  sends to those declared ports and relay them to the client; login
+  credentials, the conninfo device name and the session-token slot of every
+  control packet (0x40/0x50/0x60/0x90, both directions) are zeroed before
+  anything hits disk and the conninfo GUID/MAC area is replaced with a
+  deterministic pseudonym. Listen ports can be pinned for harnesses that
+  need known targets (`listen_port` binds control=N, CI-V=N+1, audio=N+2),
+  and the radio-facing upstream sockets bind `upstream_port` (+1 for audio)
+  on `upstream_host` (default the wildcard), never `listen_host`. CLI:
+  `python -m rigplane_testkit.icom record --radio HOST --out FILE
+  [--listen-host H] [--listen-port P] [--upstream-port P]
+  [--upstream-host H]`.
 - `rigplane_testkit.icom.replay` — `Recording.load` plus `ReplayResponder`,
   a pure (socket-free) replayer that answers CI-V requests with the recorded
   reply bytes (latest wins, misses land in `unanswered`) and yields the
