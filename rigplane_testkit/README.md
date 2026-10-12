@@ -33,6 +33,19 @@ UDP code paths as production.
   on the CI-V port; `civ_gap_open` is true while any number is missing.
   A re-sent OpenClose still gets its stream-active marker; only
   tracked-packet processing follows the ignore rule.
+  With `civ_state_survives_unclean_end=True` (default off) a keepalive hold
+  that expires on its own keeps the stream owner's frontier and gap list as
+  orphan state for `orphan_civ_state_expiry_s` seconds (default 140.0): the
+  next opener inherits both and consumes the orphan (an inherited tracker
+  sends no retransmit requests until one of its packets arrives past the
+  inherited frontier), a clean logout (owner
+  token-remove, disconnect, the stream owner's OpenClose close) and `reboot`
+  clear it, and two opt-in knobs pace inherited fills
+  (`civ_inherited_fills_per_round`, `civ_inherited_drop_unanswered_rounds`,
+  both defaulting to the unlimited gap-model behaviour; each models one
+  inherited-state capture). Every round's requested ranges land in
+  `civ_retransmit_request_log` (bounded to the last 4096 rounds), pinned by
+  `tests/testkit/test_simulator_civ_orphan.py`.
   The audio port advertised at 0x46 of the status reply is a real
   listener only with `MockIcomRadio(enable_audio=True)` (default off;
   `MockIcomRadio.audio_port`, bound at the CI-V port + 1 when free).
