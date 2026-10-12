@@ -174,6 +174,31 @@ class TestRangeRequests:
         )
         assert sent == []
 
+    def test_forward_threshold_span_7fff_serves_first_max_missing(
+        self, transport: IcomTransport, sent: list
+    ) -> None:
+        first, last = 0x0100, 0x80FF
+        assert (last - first) & 0xFFFF == 0x7FFF
+        transport._handle_retransmit_packet(
+            _build_range_request((first, last)), CONTROL_SIZE + 4, 0, 0
+        )
+        assert len(sent) == MAX_MISSING
+        assert [_seq(p) for p in sent] == [first + i for i in range(MAX_MISSING)]
+        for pkt, seq in zip(sent, range(first, first + MAX_MISSING)):
+            _assert_idle(pkt, transport, seq)
+
+    def test_backward_threshold_span_8000_sends_nothing(
+        self, transport: IcomTransport, sent: list
+    ) -> None:
+        first, last = 0x0100, 0x8100
+        assert (last - first) & 0xFFFF == 0x8000
+        transport.tx_buffer[first] = b"pkt0100"
+        transport.tx_buffer[last] = b"pkt8100"
+        transport._handle_retransmit_packet(
+            _build_range_request((first, last)), CONTROL_SIZE + 4, 0, 0
+        )
+        assert sent == []
+
     def test_max_missing_boundary(self, transport: IcomTransport, sent: list) -> None:
         first = 2000
         for s in range(first, first + MAX_MISSING + 1):
