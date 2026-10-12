@@ -515,6 +515,14 @@ def _consume_normalized_level_unit(name: str, params: dict[str, Any]) -> dict[st
     return normalized
 
 
+# Executor failures that mean the command path itself is broken (a missing
+# attribute, a wrong call signature, an undefined name), not that the radio
+# refused a command. ``ControlHandler._send_command_failure`` logs these as
+# ERROR with a traceback so they cannot masquerade as an ordinary
+# ``command_failed``. Pinned by tests/test_control_command_programmer_errors.py.
+_PROGRAMMER_ERRORS: tuple[type[Exception], ...] = (AttributeError, TypeError, NameError)
+
+
 class ControlHandler:
     """Handles the /api/v1/ws control WebSocket channel.
 
@@ -1534,7 +1542,15 @@ class ControlHandler:
     async def _send_command_failure(
         self, cmd_id: Any, name: str, exc: Exception
     ) -> None:
-        logger.warning("control: command %r failed: %s", name, exc)
+        if isinstance(exc, _PROGRAMMER_ERRORS):
+            logger.error(
+                "control: command %r failed with a programmer error: %s",
+                name,
+                exc,
+                exc_info=exc,
+            )
+        else:
+            logger.warning("control: command %r failed: %s", name, exc)
         message = str(exc)
         if isinstance(exc, CommandUnsupportedError):
             error = "unsupported_command"
