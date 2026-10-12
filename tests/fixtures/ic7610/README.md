@@ -73,6 +73,24 @@ The first 20 audio packets per direction: keys `t`, `dir`, `hex`, where
 `hex` holds the first 0x18 bytes of the audio-port packet, or the whole
 packet when it is shorter.
 
+### `audio_stream.json` and `audio_rx_headers.jsonl`
+
+The RX half of the LAN audio port from the same recordings: a 10-minute
+idle receive window (RX only, `rigplane web`). `audio_stream.json` holds
+the aggregate statistics — 150.01 packets/s as bursts of three packets
+every 20 ms (two of 1388 bytes, one of 1136; 0x18-byte header + 1364/1112
+payload bytes = 3840 per burst, i.e. 20 ms of 48 kHz stereo 16-bit PCM),
+the header-sequence step histograms, the inter-arrival distribution
+(median 0.33 ms inside a burst, ~20 ms between bursts) and a field survey
+of the BE u16 header slots. `audio_rx_headers.jsonl` holds the first 50
+RX packet headers verbatim (`t`, `len`, `hex` of the full 0x18 bytes) —
+the per-packet evidence the statistics summarize: the tracked sequence at
+0x06 and a second sequence at 0x12 both step 1, the BE u16 at 0x10 is
+0x8126 on the first packet of each burst and 0x8026 on the continuations,
+0x14 is always 0 and 0x16 carries the payload length. No samples are
+committed (on-air voices); `tests/testkit/test_simulator_audio.py` pins
+`MockIcomRadio`'s simulated stream against these two files.
+
 ### `idle_cadence.json`
 
 10-minute idle window statistics: `pings` (per `port:dir:kind`, interval
