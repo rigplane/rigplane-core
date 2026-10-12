@@ -31,8 +31,10 @@ The two mod-input test files import the `.svelte.ts` wrappers, not
 each gate decision except the opt-in check (`if (!enabled) return`) and
 the empty-pending check (`if (!p) return`), which stay in the wrappers.
 
-Other test files in the suite also import the two view-model modules; no
-test imports `mod-input-gates.ts` (only the wrappers do). Those files are
+Other test files in the suite also import `radio-view-model-adapter.ts`,
+`radio-view-model.ts` and `panel-props.ts`; `ptt-restore-gate.ts` is
+imported only by `tx-adapter.ts`, and `mod-input-gates.ts` only by the two
+mod-input wrappers. Those other test files are
 not in the Stryker test set, so a mutant reported as survived or without
 coverage may still be killed by the full suite.
 
