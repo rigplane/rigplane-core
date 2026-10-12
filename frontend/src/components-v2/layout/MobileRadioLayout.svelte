@@ -66,6 +66,10 @@
     bindSemanticSurfaceHandlers, getPresetHandlers, getKeyboardHandlers, getPendingFrequencyHz,
   } from '$lib/runtime/adapters/panel-adapters';
   import { getKeyboardConfig } from '$lib/stores/capabilities.svelte';
+  import {
+    getRadioHealth, getRadioLinkState, getRadioPowerOn, getRadioReady, getRigConnected,
+  } from '$lib/stores/connection.svelte';
+  import { deriveRadioHealthLabel } from '$lib/runtime/adapters/radio-health-label';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import {
     createManagedMobilePttSurface, type ManagedMobilePttBinding,
@@ -78,6 +82,14 @@
   let keyboardConfig = $derived(getKeyboardConfig());
   let audioState = $derived(runtime.audio);
   let txCapable = $derived(hasTx());
+  // The reason text the desktop status bar adds to its radio indicator's
+  // title; '' while no reason applies, which hides the line.
+  let radioLinkLine = $derived(deriveRadioHealthLabel({
+    health: getRadioHealth(),
+    rigConnected: getRigConnected(),
+    radioReady: getRadioReady(),
+    radioState: getRadioPowerOn() === false ? 'disconnected' : getRadioLinkState(),
+  }));
 
   // MOR-2442 — the PORTRAIT mount's managed scope region: the bare
   // `scopeManaged` SRS instance below binds it out here, and the portrait
@@ -653,6 +665,9 @@
         {/if}
       {/if}
     </div>
+    {#if radioLinkLine}
+      <p class="m-radio-link-line m-radio-link-line-ls" data-testid="radio-link-line" role="status">{radioLinkLine}</p>
+    {/if}
   </div>
   {#if stepPickerOpen}
     <div
@@ -777,6 +792,12 @@
           {@render instruments.receiverInstruments.mainSMeter(hoistedMeterFrame)}
         {/if}
       </div>
+
+      <!-- Radio-link reason line: outside the scrolling .m-content, directly
+           under the S-meter bar. -->
+      {#if radioLinkLine}
+        <p class="m-radio-link-line" data-testid="radio-link-line" role="status">{radioLinkLine}</p>
+      {/if}
 
       <!-- ═══ SCROLLABLE CONTENT ═══ -->
       <main class="m-content">
@@ -1594,6 +1615,28 @@
     padding: 0 4px;
     background: var(--v2-bg-darker, #0a0a14);
     border-bottom: 1px solid var(--v2-border-darker, #1a1a2e);
+  }
+
+  /* ── Radio-link reason line: plain text, no icon, no animation ── */
+  .m-radio-link-line {
+    flex-shrink: 0;
+    margin: 0;
+    padding: 6px 10px;
+    background: #7f1d1d;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.3;
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+
+  /* Landscape: out of the overlay's flex row, placed under the bar. */
+  .m-radio-link-line-ls {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
   }
 
   /* ── Scrollable content ── */

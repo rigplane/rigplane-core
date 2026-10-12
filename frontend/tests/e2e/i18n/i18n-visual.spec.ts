@@ -28,9 +28,10 @@
  *   - The status-bar, disconnected and toast cases assert their own
  *     surface rather than the app shell: the desktop `.status-bar` must
  *     be visible and the mobile layout must not render one; the
- *     disconnected case (skipped on mobile) expects the StatusBar radio
- *     indicator to report `degraded`; the toast case requires the
- *     `__i18nWsDispatch` hook, dispatches through it and expects a
+ *     disconnected case expects the StatusBar radio indicator to report
+ *     `degraded` on desktop and the phone's radio-link line to be visible
+ *     with the localized lost-link text on mobile; the toast case requires
+ *     the `__i18nWsDispatch` hook, dispatches through it and expects a
  *     visible toast.
  *   - Glossary tokens used by populated state — `MAIN`, `SUB`, `USB`,
  *     `LSB`, `RTTY`, `VFO` — MUST appear verbatim in EVERY locale,
@@ -101,6 +102,18 @@ const GLOSSARY_TOKENS_DESKTOP = ['MAIN', 'SUB', 'USB', 'LSB', 'RTTY', 'VFO'];
  */
 const PSEUDO_MARKERS =
   /[⟦⟧áƀçđéƒğĥíĵķłɱñóþǫŕšťúṽŵẋýžÁƁÇĐÉƑĞĤÍĴĶŁⱮÑÓÞǪŔŠŤÚṼŴẊÝŽ]/;
+
+/**
+ * What the phone's radio-link line must read for `mockDisconnectedState`
+ * (`likelyCause: 'radio_network_lost'`): the catalog entry
+ * `core.statusbar.health.radioLinkLost` in each locale. `qps-ploc` has no
+ * catalog file, so it is matched by the pseudo-locale wrappers.
+ */
+const RADIO_LINK_LOST_TEXT: Record<SupportedLocale, string | RegExp> = {
+  'en-US': 'radio link lost',
+  'ja-JP': 'トランシーバーとの通信が切断されました',
+  'qps-ploc': /^⟦.+⟧$/,
+};
 
 function locStorageInit(locale: SupportedLocale) {
   // Stamp both keys: the explicit Core selector (LanguageSelector path)
@@ -383,6 +396,14 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
         await gotoApp(page, locale);
         await waitForAppShell(page);
         await assertNoLookupMisses(page, `app-shell/${locale}/${viewport.name}`);
+        if (viewport.name === 'mobile') {
+          // Control for the disconnected case below: the connected fixture
+          // must not raise the phone's radio-link line.
+          await expect(
+            page.getByTestId('radio-link-line'),
+            `app-shell/${locale}/${viewport.name}: radio-link line shown while the link is healthy`,
+          ).toHaveCount(0);
+        }
         await assertGlossaryTokens(page, viewport, `app-shell/${locale}/${viewport.name}`);
         await assertPseudoMarkers(page, locale, `app-shell/${locale}/${viewport.name}`);
       });
@@ -410,19 +431,39 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
       });
 
       test(`connection-overlay disconnected — ${locale} @ ${viewport.name}`, async ({ page }) => {
-        test.skip(
-          viewport.name !== 'desktop',
-          'the phone layout shows no radio-link state for this fixture',
-        );
         await preparePage(page, locale, viewport, { state: mockDisconnectedState });
         await gotoApp(page, locale);
         await waitForAppShell(page);
-        // StatusBar.svelte interpolates the raw link state
-        // (`state: radioState`) into the radio indicator's title.
-        await expect(
-          page.locator('.status-bar .indicator[title*="degraded"]'),
-          `connection-overlay/${locale}/${viewport.name}: no StatusBar indicator reports the degraded radio link`,
-        ).toBeVisible();
+        if (viewport.name === 'desktop') {
+          // StatusBar.svelte interpolates the raw link state
+          // (`state: radioState`) into the radio indicator's title.
+          await expect(
+            page.locator('.status-bar .indicator[title*="degraded"]'),
+            `connection-overlay/${locale}/${viewport.name}: no StatusBar indicator reports the degraded radio link`,
+          ).toBeVisible();
+        } else {
+          // The phone has no status bar; its radio-link line carries the
+          // same localized reason, readable (16 px or larger) and inside
+          // the first screen without scrolling.
+          const line = page.getByTestId('radio-link-line');
+          await expect(
+            line,
+            `connection-overlay/${locale}/${viewport.name}: no radio-link line on the phone`,
+          ).toBeVisible();
+          await expect(
+            line,
+            `connection-overlay/${locale}/${viewport.name}: radio-link line text`,
+          ).toHaveText(RADIO_LINK_LOST_TEXT[locale]);
+          const fontSize = await line.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+          expect(fontSize, `connection-overlay/${locale}/${viewport.name}: line font size`)
+            .toBeGreaterThanOrEqual(16);
+          const box = await line.boundingBox();
+          expect(box, `connection-overlay/${locale}/${viewport.name}: line has no box`).not.toBeNull();
+          expect(box!.y, `connection-overlay/${locale}/${viewport.name}: line above the viewport`)
+            .toBeGreaterThanOrEqual(0);
+          expect(box!.y + box!.height, `connection-overlay/${locale}/${viewport.name}: line below the first screen`)
+            .toBeLessThanOrEqual(viewport.height);
+        }
         await assertNoLookupMisses(
           page,
           `connection-overlay/${locale}/${viewport.name}`,
