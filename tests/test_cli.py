@@ -3478,6 +3478,40 @@ class _AlwaysBusyMechanism:
         self.release_calls += 1
 
 
+class _StartupClock:
+    """Virtual clock seam for the start-up busy-cap row.
+
+    The lifecycle sizes the start-up busy wait in its own clock seam
+    (``session_lifecycle.time.monotonic`` and ``session_lifecycle.asyncio.sleep``);
+    advancing it inside the fake cooldown sleep plays a full budget in
+    real milliseconds.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.now += delay
+
+
+class _RecordingCapRadio(_LifecycleBusyHoldRadio):
+    """A lifecycle radio that records the connect error before re-raising."""
+
+    def __init__(self, lifecycle: Any, mech: Any) -> None:
+        super().__init__(lifecycle, mech)
+        self.connect_error: BaseException | None = None
+
+    async def __aenter__(self) -> "_RecordingCapRadio":
+        try:
+            return await super().__aenter__()
+        except BaseException as exc:
+            self.connect_error = exc
+            raise
+
+
 class TestLiveOwnerExitCode:
     """The live-owner stop exits 3 through the real exit path.
 
@@ -3503,6 +3537,22 @@ class TestLiveOwnerExitCode:
             first_connect_busy_live_holder_after_s=0.1,
         )
         return _LifecycleBusyHoldRadio(lifecycle, mech)
+
+    @staticmethod
+    def _cap_lifecycle_radio() -> "_RecordingCapRadio":
+        from rigplane.runtime.session_lifecycle import CoreRadioSessionLifecycle
+
+        mech = _AlwaysBusyMechanism()
+        lifecycle = CoreRadioSessionLifecycle(
+            mech,
+            reject_cooldown_s=0.2,
+            not_ready_cooldown_s=0.2,
+            max_connect_attempts=100,
+            first_connect_busy_cooldown_s=0.2,
+            first_connect_busy_budget_s=1.0,
+            first_connect_busy_live_holder_after_s=None,
+        )
+        return _RecordingCapRadio(lifecycle, mech)
 
     @staticmethod
     def _patches(radio: Any, composition: Any) -> Any:
@@ -3603,3 +3653,40 @@ class TestLiveOwnerExitCode:
         assert result == 1
         err = capsys.readouterr().err
         assert "Error: Radio session never became ready" in err
+
+    @pytest.mark.asyncio
+    async def test_busy_budget_cap_exits_one_not_held(
+        self, capsys: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The start-up busy-budget cap maps to 1, not to the held subclass.
+
+        Without the live-holder threshold the real lifecycle runs the busy
+        loop into its budget cap, which raises the base connection error —
+        so ``_run`` reports it as an ordinary runtime error (exit 1), and
+        the cap error is not a ``RadioSessionHeldError``.
+        """
+        from rigplane.cli import _run
+        from rigplane.core.exceptions import (
+            ConnectionError as RigplaneConnectionError,
+        )
+        from rigplane.core.exceptions import RadioSessionHeldError
+
+        clock = _StartupClock()
+        monkeypatch.setattr(
+            "rigplane.runtime.session_lifecycle.time.monotonic", clock.monotonic
+        )
+        monkeypatch.setattr(
+            "rigplane.runtime.session_lifecycle.asyncio.sleep", clock.sleep
+        )
+        radio = self._cap_lifecycle_radio()
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "status"])
+        with patch("rigplane.cli.create_radio", return_value=radio):
+            result = await _run(args)
+
+        assert result == 1
+        err = capsys.readouterr().err
+        assert "Error: Radio session never became ready: still busy" in err
+        assert radio.enter_calls == 1
+        assert radio.connect_error is not None
+        assert not isinstance(radio.connect_error, RadioSessionHeldError)
+        assert isinstance(radio.connect_error, RigplaneConnectionError)
