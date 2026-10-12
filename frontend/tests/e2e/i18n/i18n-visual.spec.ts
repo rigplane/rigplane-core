@@ -3,9 +3,7 @@
  *
  * Drives the built Core frontend with a stubbed backend (no live radio,
  * no live Tower) under three locales — `en-US`, `ja-JP`, `qps-ploc` — at
- * two viewports — desktop 1280×800 and mobile 390×844 — and captures a
- * screenshot of every P0 surface extracted in RP-ML-005, except the
- * disconnected overlay on mobile (skipped, see its case below).
+ * two viewports — desktop 1280×800 and mobile 390×844.
  *
  * Locale switch path:
  *   - We do NOT click through `LanguageSelector` per locale (slow + flaky).
@@ -21,7 +19,7 @@
  *     `__i18nWsDispatch(msg)` hook for pushing fake `notification` frames
  *     (used for the Toast surface).
  *
- * Assertion floor (no screenshot diffs are forced — see README):
+ * Assertion floor:
  *   - Page text AND page markup MUST NOT contain `[missing:` (lookup-miss
  *     marker) or `${` (raw template leak). The markup pass catches
  *     markers in `aria-label`/`title`/`placeholder` attributes and in
@@ -48,15 +46,11 @@
  * Scope split with RP-ML-013A:
  *   - RP-ML-013A is the cheap unit-test floor (vitest + jsdom) that runs
  *     in <2s with no browser. It validates the runtime transform.
- *   - RP-ML-006 (this file) is the heavier full-page visual smoke. It
- *     catches layout regressions (clipped buttons, overflow, broken
- *     mobile sheets) that a string-level test cannot see.
+ *   - RP-ML-006 (this file) is the heavier full-page smoke driven in a
+ *     real browser.
  */
 
 import { test, expect, type Page, type Route } from '@playwright/test';
-import { mkdir } from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import {
   mockCapabilities,
@@ -65,9 +59,6 @@ import {
   mockLocalControllerStatus,
   mockState,
 } from './fixtures';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BASELINE_DIR = path.join(__dirname, '__screenshots__', 'i18n');
 
 type SupportedLocale = 'en-US' | 'ja-JP' | 'qps-ploc';
 const LOCALES: SupportedLocale[] = ['en-US', 'ja-JP', 'qps-ploc'];
@@ -279,20 +270,6 @@ async function preparePage(
   await routeMockBackend(page, selectedState);
 }
 
-function screenshotPath(
-  surface: string,
-  locale: SupportedLocale,
-  viewport: ViewportSpec,
-): string {
-  return path.join(BASELINE_DIR, locale, `${surface}-${viewport.name}.png`);
-}
-
-async function ensureScreenshotDir(): Promise<void> {
-  for (const locale of LOCALES) {
-    await mkdir(path.join(BASELINE_DIR, locale), { recursive: true });
-  }
-}
-
 /**
  * Inspect the rendered body text and the full page markup for forbidden
  * markers.
@@ -363,7 +340,7 @@ async function waitForAppShell(page: Page): Promise<void> {
     .first()
     .waitFor({ state: 'visible', timeout: 15_000 });
   // Settle layout: small idle window so transitions and Svelte 5
-  // effects flush before the screenshot.
+  // effects flush before the assertions.
   await page.waitForTimeout(400);
 }
 
@@ -373,16 +350,6 @@ async function gotoApp(page: Page, locale: SupportedLocale): Promise<void> {
     response?.ok(),
     `app navigation for ${locale} returned ${response?.status() ?? 'no response'}`,
   ).toBe(true);
-}
-
-async function captureBaseline(
-  page: Page,
-  surface: string,
-  locale: SupportedLocale,
-  viewport: ViewportSpec,
-): Promise<void> {
-  const dest = screenshotPath(surface, locale, viewport);
-  await page.screenshot({ path: dest, fullPage: false });
 }
 
 // MOR-1549: this file used to force `mode: 'serial'` here, which made the
@@ -409,10 +376,6 @@ async function captureBaseline(
 test.describe.configure({ mode: 'default' });
 
 test.describe('i18n visual smoke (RP-ML-006)', () => {
-  test.beforeAll(async () => {
-    await ensureScreenshotDir();
-  });
-
   for (const locale of LOCALES) {
     for (const viewport of VIEWPORTS) {
       test(`app-shell loaded — ${locale} @ ${viewport.name}`, async ({ page }) => {
@@ -422,7 +385,6 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
         await assertNoLookupMisses(page, `app-shell/${locale}/${viewport.name}`);
         await assertGlossaryTokens(page, viewport, `app-shell/${locale}/${viewport.name}`);
         await assertPseudoMarkers(page, locale, `app-shell/${locale}/${viewport.name}`);
-        await captureBaseline(page, 'app-shell', locale, viewport);
       });
 
       test(`status-bar populated — ${locale} @ ${viewport.name}`, async ({ page }) => {
@@ -445,7 +407,6 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
           ).toHaveCount(0);
         }
         await assertNoLookupMisses(page, `status-bar/${locale}/${viewport.name}`);
-        await captureBaseline(page, 'status-bar', locale, viewport);
       });
 
       test(`connection-overlay disconnected — ${locale} @ ${viewport.name}`, async ({ page }) => {
@@ -466,7 +427,6 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
           page,
           `connection-overlay/${locale}/${viewport.name}`,
         );
-        await captureBaseline(page, 'connection-overlay', locale, viewport);
       });
 
       test(`settings modal open — ${locale} @ ${viewport.name}`, async ({ page }) => {
@@ -498,7 +458,6 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
           page,
           `settings-modal/${locale}/${viewport.name}`,
         );
-        await captureBaseline(page, 'settings-modal', locale, viewport);
       });
 
       test(`send-report dialog open — ${locale} @ ${viewport.name}`, async ({ page }) => {
@@ -525,7 +484,6 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
           page,
           `send-report-dialog/${locale}/${viewport.name}`,
         );
-        await captureBaseline(page, 'send-report-dialog', locale, viewport);
       });
 
       test(`toast notification — ${locale} @ ${viewport.name}`, async ({ page }) => {
@@ -563,7 +521,6 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
         ).toBeVisible();
         await page.waitForTimeout(400);
         await assertNoLookupMisses(page, `toast/${locale}/${viewport.name}`);
-        await captureBaseline(page, 'toast', locale, viewport);
       });
     }
   }

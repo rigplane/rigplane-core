@@ -7,6 +7,7 @@ Part of the radio.py decomposition (#505). All methods are accessed via
 from __future__ import annotations
 
 import logging
+from contextlib import suppress as _suppress
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
@@ -812,10 +813,27 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 sock=audio_sock,
             )
         except BaseException as exc:
-            if audio_sock is not None:
+            failed = self._audio_transport
+            self._audio_transport = None
+            if (
+                failed is not None
+                and getattr(failed, "_udp_transport", None) is not None
+            ):
+                # The endpoint exists only once ``_UdpProtocol.connection_made``
+                # ran, so this failure happened past the bind: the transport
+                # still holds the session's fixed ``_audio_local_port`` and
+                # every later rebuild would fail with EADDRINUSE. Close it, and
+                # drop it without recording its ``send_seq`` — a rebuild that
+                # never carried this session's numbering must not overwrite
+                # ``_audio_resume_seq``. The socket is asyncio's now; closing
+                # ``audio_sock`` here would close its fd twice. CancelledError
+                # is not suppressed, so a cancellation still propagates.
+                with _suppress(Exception):
+                    await failed.disconnect()
+                self._audio_sock_pending = None
+            elif audio_sock is not None:
                 audio_sock.close()
                 self._audio_sock_pending = None
-            self._audio_transport = None
             if isinstance(exc, OSError):
                 raise ConnectionError(
                     f"Failed to connect audio port {self._audio_port}: {exc}"
