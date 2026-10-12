@@ -1303,20 +1303,24 @@ class CommandQueue:
         self._controller = controller
 
     def _controller_ticket(self, cmd: Command | None) -> ControllerTicket | None:
-        # Negative safety work never grants a controlling seat. A raw
-        # de-key over send_civ is the same negative work as the typed
-        # PttOff (MOR-3384): the frame must end a transmission, so it
-        # may not be held hostage to the controller currency the typed
-        # unkey already skips. The import stays local: tx_interlock
+        # Negative safety work never grants a controlling seat.  A raw
+        # frame that ends a transmission over send_civ — PTT off
+        # (``1C 00 00``) or the voice TX memory stop (``28 00 00``) —
+        # is the same negative work as the typed PttOff (MOR-3384);
+        # the raw tuner off stays captured, like the typed
+        # set_tuner_status 0.  The import stays local: tx_interlock
         # imports this module's command dataclasses at load time.
-        from rigplane.runtime.tx_interlock import is_exact_dekey_send_civ
+        from rigplane.runtime.tx_interlock import (
+            is_exact_raw_transmission_end_frame,
+            send_civ_frame,
+        )
 
         if self._controller is None or isinstance(cmd, PttOff):
             return None
-        if isinstance(cmd, SendCiv) and is_exact_dekey_send_civ(
-            cmd.command, cmd.sub, cmd.data
-        ):
-            return None
+        if isinstance(cmd, SendCiv):
+            frame = send_civ_frame(cmd.command, cmd.sub, cmd.data)
+            if frame is not None and is_exact_raw_transmission_end_frame(frame):
+                return None
         return self._controller.capture()
 
     def bind_connection_generation(self, capture: Callable[[], object | None]) -> None:

@@ -70,10 +70,10 @@ __all__ = [
     "classify_tx_interlock",
     "evaluate_tx_interlock",
     "get_tx_interlock_command_family_metadata",
-    "is_exact_dekey_send_civ",
     "is_exact_raw_dekey_frame",
     "is_exact_raw_transmission_end_frame",
     "resolve_rf_state",
+    "send_civ_frame",
 ]
 
 
@@ -608,19 +608,20 @@ def is_exact_raw_dekey_frame(frame: bytes) -> bool:
     return _is_exact_dekey_triple(command, sub, data)
 
 
-def is_exact_dekey_send_civ(command: int, sub: int | None, data: bytes) -> bool:
-    """True when a ``SendCiv``'s parts build exactly a raw de-key frame.
+def send_civ_frame(command: int, sub: int | None, data: bytes) -> bytes | None:
+    """Build the wire frame a ``send_civ`` / ``SendCiv`` would send.
 
-    Rebuilds the wire frame the seat would queue — the same
-    ``build_civ_frame(0x00, 0x00, command, sub, data)`` construction the
-    managed ingress refuses on — and answers
-    :func:`is_exact_raw_dekey_frame` for it.  Callers that owe the typed
-    ``PttOff`` an exemption (the poller's RF-state refusal, the web
-    ingress controller gate, the command queue's controlling seat) ask
-    this one question instead of re-deriving the frame shape.
+    The same ``build_civ_frame(0x00, 0x00, command, sub, data)``
+    construction the managed ingress refuses on.  Returns None when
+    the frame cannot be built (a command or sub byte outside 0-0xFF);
+    each gate then treats the command as not exempt and captures or
+    refuses it as before.
     """
 
-    return is_exact_raw_dekey_frame(build_civ_frame(0x00, 0x00, command, sub, data))
+    try:
+        return build_civ_frame(0x00, 0x00, command, sub, data)
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_transmission_end_triple(command: int, sub: int | None, data: bytes) -> bool:

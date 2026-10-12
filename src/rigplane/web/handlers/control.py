@@ -43,8 +43,9 @@ from ...runtime.tx_interlock import (
     TxInterlockRefusal,
     classify_raw_civ_frame_tx_family,
     evaluate_tx_interlock,
-    is_exact_dekey_send_civ,
+    is_exact_raw_transmission_end_frame,
     resolve_rf_state,
+    send_civ_frame,
 )
 from ...runtime.managed_tx_state import ManagedTxOutcome
 from ..protocol import (  # noqa: TID251
@@ -535,14 +536,14 @@ def _consume_normalized_level_unit(name: str, params: dict[str, Any]) -> dict[st
 _PROGRAMMER_ERRORS: tuple[type[Exception], ...] = (AttributeError, TypeError, NameError)
 
 
-def _send_civ_params_exact_dekey(params: Mapping[str, Any]) -> bool:
-    """True when ``send_civ`` params build exactly a raw de-key frame.
+def _send_civ_params_end_transmission(params: Mapping[str, Any]) -> bool:
+    """True when ``send_civ`` params build a frame that ends a transmission.
 
     Re-runs, raise-free, the param checks ``_enqueue_rc_frequency``
     applies before it builds the ``SendCiv``: anything malformed, out of
-    range, or requesting ``wait_response`` is not a de-key here, so the
-    controller gate captures exactly as before and the ``send_civ`` path
-    answers with its own error. Pinned by
+    range, or requesting ``wait_response`` does not end a transmission
+    here, so the controller gate captures exactly as before and the
+    ``send_civ`` path answers with its own error.  Pinned by
     tests/test_web_send_civ_dekey_capture.py.
     """
     if params.get("wait_response", False):
@@ -565,10 +566,11 @@ def _send_civ_params_exact_dekey(params: Mapping[str, Any]) -> bool:
         data = bytes.fromhex(raw_data)
     except (KeyError, TypeError, ValueError):
         return False
+    frame = send_civ_frame(command, sub, data)
     # Annotated local: under the web-scoped mypy run the runtime import
     # resolves to Any (follow_imports = "skip"), and a bare return would
     # trip no-any-return while the value is a real bool.
-    verdict: bool = is_exact_dekey_send_civ(command, sub, data)
+    verdict: bool = frame is not None and is_exact_raw_transmission_end_frame(frame)
     return verdict
 
 
@@ -1775,10 +1777,12 @@ class ControlHandler:
             name.startswith("get_")
             or name == "ptt_off"
             or (name == "ptt" and params.get("state") is False)
-            # An exact raw de-key over send_civ is the typed PTT-off's
-            # negative safety work in raw form (MOR-3384): it never
-            # captures, so no remote-ticket refusal can name it either.
-            or (name == "send_civ" and _send_civ_params_exact_dekey(params))
+            # A send_civ whose frame ends a transmission — PTT off
+            # (``1C 00 00``) or the voice TX memory stop (``28 00 00``)
+            # — never captures (MOR-3384), so no remote-ticket refusal
+            # can name it either.  The raw tuner off captures, like the
+            # typed set_tuner_status 0.
+            or (name == "send_civ" and _send_civ_params_end_transmission(params))
         ):
             return
         ticket = controller.capture()

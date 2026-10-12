@@ -208,7 +208,9 @@ async def test_queue_takes_a_ticket_for_tuner_off_send_civ() -> None:
     await authority.settle()
 
 
-async def test_queue_still_refuses_non_controller_non_transmission_end_send_civ() -> None:
+async def test_queue_still_refuses_non_controller_non_transmission_end_send_civ() -> (
+    None
+):
     safety = Safety()
     authority = safety.authority()
     queue = CommandQueue()
