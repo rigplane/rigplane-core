@@ -4,19 +4,19 @@
  * Each row loads the REAL built app against the in-page fake socket
  * (`skin-reach-fixture.ts`), asserts the skin's OWN root selector is
  * visible (a topology fallback mounts a different skin and must fail
- * here), then interacts with one non-TX control per control family the
- * skin legitimately has and asserts the exact outgoing
- * `{type:'cmd', name, params}` frame. A skin that renders but is wired to
- * nothing fails on the frame. This PR covers desktop-v2, sdr-test,
- * flagship-probe and dual-receiver-cockpit; the five LCD skins, mobile and
- * dual-sdr-face belong to PR B.
+ * here), then interacts with a fixed set of the skin's non-TX controls
+ * and asserts the exact outgoing `{type:'cmd', name, params}` frame for
+ * each. A skin that renders but is wired to nothing fails on the frame.
+ * This is not exhaustive per-skin coverage: each row pins the families
+ * its probes name, nothing more. This PR covers desktop-v2, sdr-test,
+ * flagship-probe and dual-receiver-cockpit; the five LCD skins, mobile
+ * and dual-sdr-face belong to PR B.
  *
  * Selectors below were verified against the built app (inventory run on
  * the i18n preview server): desktop-v2 paints `standard-mode-*`,
- * `filter-width` and `dsp-compact-*` and reaches tuning only through the
- * frequency-entry dialog (its band row is `band-choices-compact`, whose
- * HardwareButtons carry no per-band testid); sdr-test and flagship-probe
- * paint `filter-mode-*`, `dsp-nrActive` and `band-choice-*`.
+ * `filter-width`, `dsp-compact-*` and the compact band row
+ * `band-choices-compact`; sdr-test and flagship-probe paint
+ * `filter-mode-*`, `dsp-nrActive` and `band-choice-*`.
  */
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import {
@@ -24,17 +24,22 @@ import {
 } from './skin-reach-fixture';
 
 /**
- * Transmit commands this matrix must never emit — clicked or not, a frame
- * with one of these names fails the row. `ptt_on`/`ptt_off` are the only
- * PTT wire names (`ws-client.ts: pttIntent`); `cw_auto_tune` is the CW
- * keyer's auto-tune, `set_tuner_status` the ATU tune path (values 1 and 2
- * start a tuning cycle) and `set_vox` arms VOX — all dispatched through
- * `panel-commands.ts` (`makeCwLevelHandlers`, `makeTxHandlers`,
- * `makeVoxHandlers`). The probed controls are exclusively receive-side:
- * mode, filter width, DSP, band/tune and VFO select; no PTT key, no
+ * Transmit command names this matrix must never emit — clicked or not, a
+ * frame with one of these names fails the row. `ws-client.ts: pttIntent`
+ * treats `ptt_on`, `ptt_off` AND `{name:'ptt', params:{state}}` as PTT;
+ * `ptt_on`/`ptt_off` leave through the managed TX controller
+ * (`tx-controller/browser-dependencies.ts: sendPtt`). `set_tuner_status`
+ * is the ATU path (`panel-commands.ts: makeTxHandlers` sends it for
+ * `onAtuToggle`/`onAtuTune`) and `set_vox` arms VOX (`panel-commands.ts:
+ * toggleVox`, exposed by `makeTxHandlers`/`makeVoxHandlers` as
+ * `onVoxToggle`). `cw_auto_tune` is deliberately NOT listed: the server
+ * handler (`web/handlers/control.py: _cw_auto_tune`) taps RX audio FFT
+ * and at most queues a `SetFreq` zero-beat shift — it never keys the
+ * transmitter. The probed controls are exclusively receive-side: mode,
+ * filter width, DSP, band/tune and VFO select; no PTT key, no
  * TxAux/ATU/VOX control, no CW keyer control and no keyboard input.
  */
-const TRANSMIT_COMMANDS = new Set(['ptt_on', 'ptt_off', 'cw_auto_tune', 'set_tuner_status', 'set_vox']);
+const TRANSMIT_COMMANDS = new Set(['ptt_on', 'ptt_off', 'ptt', 'set_tuner_status', 'set_vox']);
 
 interface ReachProbe {
   /** The interaction, including its own `toBeEnabled` on the actionable element. */
@@ -84,8 +89,19 @@ const ROWS: ReachRow[] = [
         frame: { name: 'set_nr', params: { on: true, receiver: 0 } },
       },
       {
-        // desktop-v2 has no per-band buttons (compact band row); its tune
-        // family is the frequency-entry dialog the readout opens.
+        // The compact band row renders one HardwareButton per band with no
+        // per-band testid (`BandInstrumentHost.svelte: bandChoice(compact)`),
+        // so the 40m key is targeted by its accessible name.
+        run: async page => {
+          const band = page.getByTestId('band-choices-compact').getByRole('button', { name: '40m' });
+          await expect(band).toBeEnabled();
+          await band.click();
+        },
+        frame: { name: 'set_freq', params: { freq: 7_100_000, receiver: 0 } },
+      },
+      {
+        // desktop-v2's direct frequency path: the frequency-entry dialog
+        // the readout opens.
         run: async page => {
           await page.locator('.receiver-instrument [data-vfo-freq]').first().click();
           // The submit key stays disabled until the draft parses.
@@ -164,10 +180,13 @@ const ROWS: ReachRow[] = [
     ],
   },
   {
-    // dual-receiver-cockpit legitimately has no mode/filter/DSP/band
-    // surfaces: `presentation/layouts/dual-receiver-cockpit.ts` declares
-    // only the primary-vfo, secondary-vfo, global, rx-tx and tx-aux zones,
-    // so the SUB VFO select is the whole non-TX matrix for this skin.
+    // `presentation/layouts/dual-receiver-cockpit.ts` declares only
+    // primary-vfo/secondary-vfo/global/rx-tx/tx-aux zones mounting the
+    // vfo, rxTx and txAux surfaces, so the cockpit has no mode, filter,
+    // DSP or band controls. This row probes ONLY the SUB VFO select; the
+    // other non-TX controls the vfo surface gives this skin — the global
+    // zone's split / dual-watch / VFO operations and the strips'
+    // frequency entry — are not probed here.
     skin: 'dual-receiver-cockpit',
     boot: { qaLayout: 'dual-receiver-cockpit' },
     root: '[data-testid="dual-receiver-cockpit"]',
@@ -197,7 +216,11 @@ test.describe('MOR-3280 per-skin reachability matrix', () => {
           .toEqual(probe.frame);
         emitted.push(...(await skinReachCommands(page)).map(command => command.name));
       }
-      const transmitted = emitted.filter(name => TRANSMIT_COMMANDS.has(name));
+      // Per-probe reads stop at the poll match; read the recorder once
+      // more after the last probe so a frame emitted late in the row —
+      // outside any probe's window — still reaches the guard.
+      const trailing = (await skinReachCommands(page)).map(command => command.name);
+      const transmitted = [...emitted, ...trailing].filter(name => TRANSMIT_COMMANDS.has(name));
       expect(transmitted, 'no transmit command left the page').toEqual([]);
     });
   }

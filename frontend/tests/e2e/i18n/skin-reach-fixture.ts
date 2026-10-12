@@ -113,7 +113,14 @@ export async function bootSkinReach(page: Page, boot: SkinReachBoot): Promise<vo
     }
     const name = pathname.split('/').pop();
     const body = name === 'state' ? state : name === 'capabilities' ? caps : name === 'info' ? mockInfo
-      : name === 'managed-transmit' ? { managedTransmit: { status: 'available', intent: { kind: 'rx' }, releaseRequired: false, lastError: null, lastActuation: null, abortErrors: [], tot: { configuredSeconds: 180, active: false, remainingMs: null, expiresAt: null } }, txObservation: { observedPtt: 'off' } } : {};
+      // Same document shape `desktop-geometry.spec.ts` serves: the client
+      // rejects anything missing schemaVersion/sampledAt
+      // (`managed-transmit.ts: validateManagedTransmitDocument`).
+      : name === 'managed-transmit' ? { schemaVersion: 1, sampledAt: new Date().toISOString(),
+        managedTransmit: { status: 'available', intent: { kind: 'rx' }, releaseRequired: false,
+          lastError: null, lastActuation: null, abortErrors: [],
+          tot: { configuredSeconds: 180, active: false, remainingMs: null, expiresAt: null } },
+        txObservation: { observedPtt: 'off' } } : {};
     return route.fulfill({ json: body });
   });
   await page.goto(`/?locale=en-US${boot.qaLayout ? `&layout=${boot.qaLayout}` : ''}`, { waitUntil: 'networkidle' });
