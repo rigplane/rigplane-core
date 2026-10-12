@@ -31,6 +31,10 @@ export interface SkinReachBoot {
   /** QA-only skins selected by the exact `?layout=` query param
    * (`lib/stores/qa-cockpit-override.ts`); wins over the workspace. */
   qaLayout?: 'flagship-probe' | 'dual-receiver-cockpit';
+  /** Viewport for this row. Default 1440x1000 (desktop); a phone-sized
+   * viewport (e.g. 390x844) makes `App.svelte`'s `isMobile`
+   * (min(innerWidth, innerHeight) < 640) select the mobile skin. */
+  viewport?: { width: number; height: number };
 }
 
 /** One outgoing frame exactly as the app serialises it (`ws-client.ts`). */
@@ -72,7 +76,7 @@ export function skinReachFixture(): { state: ServerState; caps: Capabilities } {
 
 export async function bootSkinReach(page: Page, boot: SkinReachBoot): Promise<void> {
   const { state, caps } = skinReachFixture();
-  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.setViewportSize(boot.viewport ?? { width: 1440, height: 1000 });
   await page.addInitScript(({ state, layout }) => {
     localStorage.setItem('rigplane:workspace', JSON.stringify({ version: 2, layout,
       designLanguageBySkin: {}, theme: 'nord' }));
