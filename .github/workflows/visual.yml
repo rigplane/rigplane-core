@@ -11,11 +11,11 @@ name: Visual regression (pixel-diff)
 #
 # MOR-3281 part 2: `push` to `main` runs the same pixel-diff under the
 # same paths filter as `pull_request`, so two individually-green PRs that
-# jointly redden the approved set are still caught on `main`. Push runs
-# share the workflow's concurrency group (keyed on github.ref,
-# cancel-in-progress), so a burst of merges coalesces into one run. They
-# are informational: their failure annotation asks for a ticket, not a
-# revert.
+# jointly redden the approved set are still caught on `main`. The
+# concurrency group is keyed on the workflow, the event name and
+# github.ref, so a push run on main and a workflow_dispatch run on main
+# are in different groups. Push runs are informational: their failure
+# annotation asks for a ticket, not a revert.
 
 on:
   pull_request:
@@ -83,7 +83,7 @@ on:
         default: false
 
 concurrency:
-  group: visual-${{ github.workflow }}-${{ github.ref }}
+  group: visual-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -164,8 +164,6 @@ jobs:
         working-directory: frontend
         run: sudo -E env "PATH=$PATH" npx playwright install-deps chromium
 
-      # Blocking after MOR-1396's explicit dependency provisioning and
-      # Linux baseline re-pin.
       - name: Pixel-diff vs approved baselines
         id: visual
         if: github.event.inputs.regenerate != 'true'
