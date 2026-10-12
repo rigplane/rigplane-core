@@ -171,3 +171,136 @@ class ReplayResponder:
     def unsolicited(self) -> Iterator[tuple[float, bytes]]:
         """Yield ``(t, frame)`` for radio frames with no matching request."""
         yield from self._unsolicited
+
+
+def _frame_body(frame: bytes) -> bytes:
+    """The CI-V body: from the command byte to before the FD terminator."""
+    return frame[4:-1]
+
+
+def _longest_prefix(
+    keys: Iterator[bytes] | set[bytes] | dict[bytes, bytes], body: bytes
+) -> bytes | None:
+    """The longest key that is a proper prefix of ``body``, else None."""
+    matches = [key for key in keys if len(body) > len(key) and body.startswith(key)]
+    return max(matches, key=len) if matches else None
+
+
+class RecordedAnswerTable:
+    """The recorded request → reply facts of one transport, as an answer table.
+
+    Pure and socket-free, like :class:`ReplayResponder`, but keyed on the
+    CI-V body (the bytes from the command byte to before ``FD`` — addresses
+    excluded) so one table serves any controller/radio address pair, and
+    stateful: a recorded write updates the register its read selector keys.
+
+    Built by :meth:`from_civ_pairs` from the rows of one transport:
+
+    - a recorded **data** reply whose body starts with the request body
+      registers: the request body (the read selector) keys the rest of the
+      reply body.  A data reply that does not start with its request body is
+      a fixed answer for that exact request body.
+    - a recorded **ACK** marks a write: the request body is the longest
+      register key that prefixes it plus the value.  Answering a later write
+      (any request body that extends a written register key) stores the value
+      into that register and ACKs.  An ACK whose request body no register
+      key prefixes is a plain ACK for that exact body.
+    - a recorded **NAK** NAKs that exact request body.
+    - ``echo`` is true when the transport's rows show the radio echoing
+      requests (an ``r2c`` row equal to the ``c2r`` row before it), read
+      from the rows — never from the transport name.
+
+    :meth:`answer` returns the reply frame addressed back to the requester
+    (to/from swapped), or None when the request is not in the recording.
+    """
+
+    def __init__(self) -> None:
+        self.echo = False
+        self._registers: dict[bytes, bytes] = {}  # read selector -> value
+        self._fixed: dict[bytes, bytes] = {}  # exact body -> reply body
+        self._writes: set[bytes] = set()  # register keys a recorded ACK wrote
+        self._acks: set[bytes] = set()  # exact bodies with a plain recorded ACK
+        self._naks: set[bytes] = set()  # exact bodies with a recorded NAK
+
+    @classmethod
+    def from_civ_pairs(
+        cls, rows: Iterator[dict] | list[dict], transport: str
+    ) -> RecordedAnswerTable:
+        """Build the table from the civ_pairs rows of one ``transport``.
+
+        Pairing walks the selected rows in order: each ``c2r`` row, its echo
+        row when the transport echoes, and the next ``r2c`` row — the reply
+        that closes the request, or None when no radio answer preceded the
+        next client request.
+        """
+        frames = [
+            (row["dir"], bytes.fromhex(row["frame"]))
+            for row in rows
+            if row["transport"] == transport
+        ]
+        table = cls()
+        table.echo = any(
+            direction == "r2c" and index > 0 and frames[index - 1] == ("c2r", frame)
+            for index, (direction, frame) in enumerate(frames)
+        )
+        index = 0
+        while index < len(frames):
+            direction, request = frames[index]
+            index += 1
+            if direction != "c2r":
+                continue
+            if table.echo and index < len(frames) and frames[index] == ("r2c", request):
+                index += 1  # the radio's echo of the request, not its reply
+            reply = None
+            if index < len(frames) and frames[index][0] == "r2c":
+                reply = frames[index][1]
+                index += 1
+            table._learn(request, reply)
+        return table
+
+    def _learn(self, request: bytes, reply: bytes | None) -> None:
+        if reply is None:
+            return
+        body = _frame_body(request)
+        reply_body = _frame_body(reply)
+        if reply_body == bytes([_CIV_ACK]):
+            key = _longest_prefix(self._registers, body)
+            if key is None:
+                self._acks.add(body)
+            else:
+                self._writes.add(key)
+        elif reply_body == bytes([_CIV_NAK]):
+            self._naks.add(body)
+        elif reply_body.startswith(body):
+            self._registers[body] = reply_body[len(body) :]
+        else:
+            self._fixed[body] = reply_body
+
+    def answer(self, frame: bytes) -> bytes | None:
+        """The recorded reply to one request frame, else None.
+
+        A write (a request body extending a written register key) stores its
+        value into that register before ACKing, so the next read of the
+        register answers with the written value.
+        """
+        body = _frame_body(frame)
+        if body in self._naks:
+            return self._reply(frame, bytes([_CIV_NAK]))
+        if body in self._fixed:
+            return self._reply(frame, self._fixed[body])
+        if body in self._registers:
+            return self._reply(frame, body + self._registers[body])
+        if body in self._acks:
+            return self._reply(frame, bytes([_CIV_ACK]))
+        key = _longest_prefix(self._writes, body)
+        if key is not None:
+            self._registers[key] = body[len(key) :]
+            return self._reply(frame, bytes([_CIV_ACK]))
+        return None
+
+    @staticmethod
+    def _reply(request: bytes, body: bytes) -> bytes:
+        """The reply frame: addresses swapped, ``body`` as the CI-V body."""
+        return (
+            _CIV_PREAMBLE + bytes([request[3], request[2]]) + body + bytes([_CIV_TERM])
+        )
