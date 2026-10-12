@@ -49,7 +49,7 @@ def _radio_job_text() -> str:
     assert start is not None, "the radio job is missing from bench-nightly.yml"
     rest = text[start.end() :]
     following = _NEXT_JOB_RE.search(rest)
-    return rest[:following.start()] if following else rest
+    return rest[: following.start()] if following else rest
 
 
 def _step_blocks(job_text: str) -> list[str]:
