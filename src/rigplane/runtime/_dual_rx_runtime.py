@@ -186,9 +186,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         )
         resp = await self._send_civ_expect(civ, label="set_frequency_main")
         if parse_ack_nak(resp) is False:
-            raise CommandRejectedError(
-                f"Radio rejected MAIN set_frequency({freq_hz})"
-            )
+            raise CommandRejectedError(f"Radio rejected MAIN set_frequency({freq_hz})")
         if update_cache:
             self._last_freq_hz = freq_hz
 

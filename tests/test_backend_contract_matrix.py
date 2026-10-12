@@ -150,9 +150,7 @@ def backend_fixture(request: pytest.FixtureRequest) -> _BackendFixture:
 
         def _arrange_write_ack() -> None:
             # The LAN ``set_freq`` waits for the radio's ACK/NAK answer.
-            transport.queue_response_on_send(
-                transport.send_seq + 1, _ack_response()
-            )
+            transport.queue_response_on_send(transport.send_seq + 1, _ack_response())
 
         def _assert_ptt(expected: bool) -> None:
             assert radio.state_cache.ptt is expected
