@@ -721,6 +721,7 @@ async def test_http_command_batch_raw_civ_transaction_managed_refuses_tx_family(
 @pytest.mark.asyncio
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="MOR-3364: unmanaged HTTP raw PTT-on must be refused, not sent",
 )
 async def test_http_raw_civ_transaction_unmanaged_refuses_ptt_on() -> None:
