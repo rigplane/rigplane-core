@@ -860,6 +860,46 @@ describe('ws-client → real radio store gate (integration)', () => {
       expect(fetchCapabilities).toHaveBeenCalledTimes(2);
     });
 
+    it('a capability retry that publishes held state clears the stale signal', async () => {
+      fetchCapabilities
+        .mockResolvedValueOnce(makeCapabilities(1))
+        .mockRejectedValueOnce(new Error('HTTP 503'))
+        .mockResolvedValue(makeCapabilities(1));
+      const connection = await import('../../stores/connection.svelte');
+      // Ten fake ms pass before the first push so the store's
+      // ``lastStateUpdate`` lands above zero whatever epoch the fake clock
+      // starts from; the staleness interval's ``lastStateUpdate > 0`` arm
+      // can then engage.
+      await vi.advanceTimersByTimeAsync(10);
+      // Session 1: capabilities already match, so the full publishes on the
+      // normal push path and marks the state fresh.
+      modules.capabilities.setCapabilities(makeCapabilities(1));
+      sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(modules.store.getRadioState()?.revision).toBe(1);
+      expect(connection.isStale()).toBe(false);
+
+      // No further accepted pushes: past the 5 s threshold the store's 1 s
+      // staleness interval must report the link stale.
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(connection.isStale()).toBe(true);
+
+      instances[0].simulateClose();
+      await vi.advanceTimersByTimeAsync(1000);
+      instances[1].answersPings = true;
+      instances[1].simulateOpen();
+      sendStateUpdate(instances[1], fullEnvelope(makeState({ providerGeneration: 1, revision: 2 })));
+      await vi.advanceTimersByTimeAsync(0);
+      // Capabilities were cleared on the drop, so the full is held until the
+      // session-owned capability retry publishes it.
+      expect(modules.store.getRadioState()).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetchCapabilities).toHaveBeenCalledTimes(3);
+      expect(modules.store.getRadioState()?.revision).toBe(2);
+      expect(connection.isStale()).toBe(false);
+    });
+
     it.each(['explicit stop', 'socket close'] as const)('cancels retry backoff on %s', async (ending) => {
       const callStacks: string[] = [];
       fetchCapabilities.mockImplementation(() => {
