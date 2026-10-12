@@ -83,13 +83,14 @@
   let audioState = $derived(runtime.audio);
   let txCapable = $derived(hasTx());
   // The reason text the desktop status bar adds to its radio indicator's
-  // title; '' while no reason applies, which hides the line.
-  let radioLinkLine = $derived(deriveRadioHealthLabel({
+  // title; '' while no reason applies, which hides the line. While
+  // `runtime.state` is null (no state has arrived) no reason is shown.
+  let radioLinkLine = $derived(radioState ? deriveRadioHealthLabel({
     health: getRadioHealth(),
     rigConnected: getRigConnected(),
     radioReady: getRadioReady(),
     radioState: getRadioPowerOn() === false ? 'disconnected' : getRadioLinkState(),
-  }));
+  }) : '');
 
   // MOR-2442 — the PORTRAIT mount's managed scope region: the bare
   // `scopeManaged` SRS instance below binds it out here, and the portrait
@@ -582,8 +583,14 @@
 <!-- ═══ LANDSCAPE: fullscreen spectrum + VFO overlay ═══ -->
 <div class="m-landscape">
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
+  <!-- Radio-link reason line: in the layout flow, so .m-ls-body (spectrum and
+       overlay bar) starts below it. -->
+  {#if radioLinkLine}
+    <p class="m-radio-link-line" data-testid="radio-link-line" role="status">{radioLinkLine}</p>
+  {/if}
+  <div class="m-ls-body">
   <!-- MOR-2511 — a radio without a spectrum renders no stage at all; the
-       overlay below is absolutely positioned inside .m-landscape and does not
+       overlay below is absolutely positioned inside .m-ls-body and does not
        depend on this element. Pinned by the no-spectrum orientation tests in
        MobileRadioLayout.component.svelte.test.ts. -->
   {#if hasSpectrum()}
@@ -665,9 +672,7 @@
         {/if}
       {/if}
     </div>
-    {#if radioLinkLine}
-      <p class="m-radio-link-line m-radio-link-line-ls" data-testid="radio-link-line" role="status">{radioLinkLine}</p>
-    {/if}
+  </div>
   </div>
   {#if stepPickerOpen}
     <div
@@ -1204,6 +1209,16 @@
     flex-direction: column;
   }
 
+  /* Everything below the radio-link line: the spectrum and, absolutely
+     positioned inside it, the overlay bar. */
+  .m-ls-body {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+
   .m-ls-spectrum {
     flex: 1;
     min-height: 0;
@@ -1617,13 +1632,16 @@
     border-bottom: 1px solid var(--v2-border-darker, #1a1a2e);
   }
 
-  /* ── Radio-link reason line: plain text, no icon, no animation ── */
+  /* ── Radio-link reason line: plain text, no icon, no animation ──
+     One class in both orientations. The first letter is capitalized by CSS
+     only; the text stays the catalog string. */
   .m-radio-link-line {
     flex-shrink: 0;
     margin: 0;
     padding: 6px 10px;
     background: #7f1d1d;
     color: #fff;
+    font-family: 'Roboto Mono', monospace;
     font-size: 16px;
     font-weight: 700;
     line-height: 1.3;
@@ -1631,12 +1649,8 @@
     overflow-wrap: anywhere;
   }
 
-  /* Landscape: out of the overlay's flex row, placed under the bar. */
-  .m-radio-link-line-ls {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
+  .m-radio-link-line::first-letter {
+    text-transform: uppercase;
   }
 
   /* ── Scrollable content ── */

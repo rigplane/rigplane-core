@@ -1732,6 +1732,14 @@ describe('MobileRadioLayout radio-link line', () => {
     });
   }
 
+  // The store mock is not reactive, so "a state arrives" is modelled by
+  // setting `radio.current` before the next mount.
+  function receiveState() {
+    (radio as unknown as { current: ServerState | null }).current = {
+      active: 'MAIN', main: { mode: 'USB', dataMode: 0 }, fieldStatus: {},
+    } as unknown as ServerState;
+  }
+
   afterEach(() => {
     vi.mocked(getRadioHealth).mockReturnValue(null);
     vi.mocked(getRadioLinkState).mockReturnValue('connected');
@@ -1740,8 +1748,17 @@ describe('MobileRadioLayout radio-link line', () => {
     vi.mocked(getRadioPowerOn).mockReturnValue(null);
   });
 
-  it('shows the lost-link text in portrait, between the S-meter bar and the scrolling content', () => {
+  it('shows no line before the first state, in either orientation, whatever the link facts say', () => {
     loseRadioLink();
+    vi.mocked(getRigConnected).mockReturnValue(false);
+    vi.mocked(getRadioLinkState).mockReturnValue('degraded');
+    expect(lineIn(mountMobile())).toBeNull();
+    expect(lineIn(mountLandscape())).toBeNull();
+  });
+
+  it('shows the lost-link text in portrait once a disconnected state has arrived, between the S-meter bar and the scrolling content', () => {
+    loseRadioLink();
+    receiveState();
     const root = mountMobile();
     const line = lineIn(root)!;
     expect(line.textContent).toBe('radio link lost');
@@ -1752,35 +1769,44 @@ describe('MobileRadioLayout radio-link line', () => {
     expect(line.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('shows the same text in landscape, inside the overlay bar', () => {
+  it('shows the same text in landscape, in the layout flow ahead of the overlay body', () => {
     loseRadioLink();
+    receiveState();
     const line = lineIn(mountLandscape())!;
     expect(line.textContent).toBe('radio link lost');
-    expect(line.closest('.m-ls-overlay')).not.toBeNull();
+    expect(line.parentElement!.classList.contains('m-landscape')).toBe(true);
+    const stage = line.nextElementSibling!;
+    expect(stage.classList.contains('m-ls-body')).toBe(true);
+    expect(stage.querySelector('.m-ls-overlay')).not.toBeNull();
+    expect(line.closest('.m-ls-overlay')).toBeNull();
   });
 
   it('keeps the line across a rotation', () => {
     loseRadioLink();
+    receiveState();
     const root = mountMobile();
-    expect(lineIn(root)).not.toBeNull();
+    expect(lineIn(root)!.closest('.m-landscape')).toBeNull();
     rotate(true);
-    expect(lineIn(root)!.closest('.m-ls-overlay')).not.toBeNull();
+    expect(lineIn(root)!.closest('.m-landscape')).not.toBeNull();
     rotate(false);
-    expect(lineIn(root)!.closest('.m-ls-overlay')).toBeNull();
+    expect(lineIn(root)!.closest('.m-landscape')).toBeNull();
   });
 
   it('renders no line while the link is healthy, in either orientation', () => {
+    receiveState();
     expect(lineIn(mountMobile())).toBeNull();
     expect(lineIn(mountLandscape())).toBeNull();
   });
 
   it('reads the status bar fallback text when only the rig is missing', () => {
+    receiveState();
     vi.mocked(getRigConnected).mockReturnValue(false);
     vi.mocked(getRadioLinkState).mockReturnValue('degraded');
     expect(lineIn(mountMobile())!.textContent).toBe('rig offline');
   });
 
   it('treats the link state as disconnected while the radio is powered off', () => {
+    receiveState();
     vi.mocked(getRadioPowerOn).mockReturnValue(false);
     vi.mocked(getRigConnected).mockReturnValue(false);
     vi.mocked(getRadioLinkState).mockReturnValue('degraded');
