@@ -826,7 +826,7 @@ async def test_production_disconnect_remove_ends_session() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _standby_fill_probe(server, client, filler: bytes) -> None:
+async def _assert_standby_fill_consumed(server, client, filler: bytes) -> None:
     """Gap opened in standby, filled by ``filler`` (seq 1), then resume.
 
     Data seq 2 is held (the gap opens, silently — no retransmit request
@@ -862,14 +862,137 @@ async def _standby_fill_probe(server, client, filler: bytes) -> None:
 
 async def test_standby_idle_fill_consumes_held(server, client) -> None:
     """An idle packet filling a standby gap consumes held packets silently."""
-    await _standby_fill_probe(server, client, bytes(_header(0x10, _PT_DATA, seq=1)))
+    await _assert_standby_fill_consumed(
+        server, client, bytes(_header(0x10, _PT_DATA, seq=1))
+    )
 
 
 async def test_standby_close_fill_consumes_held(server, client) -> None:
     """An OpenClose(close) filling a standby gap consumes held packets."""
-    await _standby_fill_probe(server, client, _close(seq=1))
+    await _assert_standby_fill_consumed(server, client, _close(seq=1))
 
 
 async def test_standby_reopen_fill_consumes_held(server, client) -> None:
     """A re-sent OpenClose(open) filling a gap in standby consumes held packets."""
-    await _standby_fill_probe(server, client, _openclose(seq=1))
+    await _assert_standby_fill_consumed(server, client, _openclose(seq=1))
+
+
+# ---------------------------------------------------------------------------
+# Late close from a previous session (claim reset / no-session guard)
+# ---------------------------------------------------------------------------
+
+
+async def test_late_close_after_reclaim_does_not_end_new_session() -> None:
+    """A previous session's late close cannot end the reclaimed session.
+
+    Session A is held and opened, ends via its owner's token-remove, then
+    client B logs in and claims the session: the claim resets the CI-V
+    stream owner, so A's old CI-V socket sending OpenClose(close) late is
+    a no-op — B's session stays held and B's token still renews 00000000.
+    Removing the reset in ``_claim_session`` leaves A's stream identity in
+    place and the late close ends B's session instead.
+    """
+    sim = MockIcomRadio(single_owner=True, keepalive_hold_s=30.0)
+    await sim.start()
+    loop = asyncio.get_running_loop()
+    a_ctrl = _UdpClient()
+    await loop.create_datagram_endpoint(lambda: a_ctrl, local_addr=(_HOST, 0))
+    a_civ = _UdpClient()
+    await loop.create_datagram_endpoint(lambda: a_civ, local_addr=(_HOST, 0))
+    b_ctrl = await _second_client()
+    try:
+        a_ctrl.send(_claim(), sim.control_port)
+        await a_ctrl.recv()  # status reply: session claimed by A
+        assert sim.session_held is True
+
+        a_civ.send(_openclose(seq=0), sim.civ_port)
+        await a_civ.recv()  # stream marker
+        old_token = sim.token
+
+        a_ctrl.send(_token_remove(), sim.control_port)
+        await asyncio.sleep(0.1)
+        assert sim.session_held is False
+        assert sim.token != old_token  # A's epoch ended
+        fresh_token = sim.token
+
+        assert await _login_get_token(b_ctrl, sim) == fresh_token
+        b_ctrl.send(_claim(), sim.control_port)
+        await b_ctrl.recv()  # status reply: session granted to B
+        assert sim.session_held is True
+
+        a_civ.send(_close(seq=0), sim.civ_port)  # A's late close
+        await asyncio.sleep(0.1)
+        assert sim.session_held is True  # B kept its session
+        assert sim.token == fresh_token  # no new epoch
+
+        b_ctrl.send(_renewal(fresh_token), sim.control_port)
+        reply = await b_ctrl.recv()
+        _assert_renew_reply(
+            reply,
+            sim,
+            request_token=fresh_token,
+            inner_seq=0x0007,
+            response=_RESP_OK,
+        )
+    finally:
+        a_ctrl.close()
+        a_civ.close()
+        b_ctrl.close()
+        await sim.stop()
+
+
+async def test_late_close_with_no_session_does_not_retire_fresh_token() -> None:
+    """A late close with no session held retires nothing.
+
+    Session A is held and opened, then ends via its owner's token-remove:
+    the token epoch turns over and a fresh login is issued the new token
+    without claiming a session. A's old CI-V socket sending OpenClose(close)
+    late still matches the stale stream owner, but no session is held, so
+    the ``self._owner is not None`` guard keeps it a no-op — the fresh
+    token is not retired and still renews 00000000. Removing the guard
+    retires the fresh token on the late close.
+    """
+    sim = MockIcomRadio(single_owner=True, keepalive_hold_s=30.0)
+    await sim.start()
+    loop = asyncio.get_running_loop()
+    a_ctrl = _UdpClient()
+    await loop.create_datagram_endpoint(lambda: a_ctrl, local_addr=(_HOST, 0))
+    a_civ = _UdpClient()
+    await loop.create_datagram_endpoint(lambda: a_civ, local_addr=(_HOST, 0))
+    probe = await _second_client()
+    try:
+        a_ctrl.send(_claim(), sim.control_port)
+        await a_ctrl.recv()  # status reply: session claimed by A
+        assert sim.session_held is True
+
+        a_civ.send(_openclose(seq=0), sim.civ_port)
+        await a_civ.recv()  # stream marker
+        old_token = sim.token
+
+        a_ctrl.send(_token_remove(), sim.control_port)
+        await asyncio.sleep(0.1)
+        assert sim.session_held is False
+        assert sim.token != old_token  # A's epoch ended
+
+        fresh_token = await _login_get_token(probe, sim)
+        assert fresh_token == sim.token  # issued, not yet granted
+
+        a_civ.send(_close(seq=0), sim.civ_port)  # A's late close
+        await asyncio.sleep(0.1)
+        assert sim.session_held is False  # still no session
+        assert sim.token == fresh_token  # the fresh epoch survived
+
+        probe.send(_renewal(fresh_token), sim.control_port)
+        reply = await probe.recv()
+        _assert_renew_reply(
+            reply,
+            sim,
+            request_token=fresh_token,
+            inner_seq=0x0007,
+            response=_RESP_OK,
+        )
+    finally:
+        a_ctrl.close()
+        a_civ.close()
+        probe.close()
+        await sim.stop()
