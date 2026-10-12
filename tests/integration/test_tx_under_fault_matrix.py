@@ -8,8 +8,7 @@ one of the two real ingress lanes and then a fault is injected on the
 simulator (or the keying client). Every cell asserts the TX-safety
 contract:
 
-1. the simulator's PTT returns to 0 within a budget (terms cited at
-   each definition below);
+1. the simulator's PTT returns to 0 within a budget;
 2. unkey ownership: the authority's lease ends released (intent RX, no
    owed release, no pending effect) and nothing re-keys the radio after
    recovery — PTT stays 0 across a settle window.
