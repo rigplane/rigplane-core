@@ -160,6 +160,26 @@ async def _claim(sim: MockIcomRadio, client: _RawClient) -> tuple[int, int]:
     return await client.conninfo(sim.control_port)
 
 
+async def _wait_release_deadline_moved(
+    sim: MockIcomRadio, before: float, timeout: float = 2.0
+) -> float:
+    """Bounded wait for the re-armed keepalive deadline to move past ``before``.
+
+    Polls the held session's release-timer deadline; a missing refresh fails
+    at the bound instead of racing a fixed sleep on a loaded runner.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        timer = sim._keepalive_timer
+        assert timer is not None
+        current = timer.when()
+        if current > before:
+            return current
+        assert loop.time() < deadline, "keepalive deadline did not move within bound"
+        await asyncio.sleep(0.01)
+
+
 # ---------------------------------------------------------------------------
 # 1. Held single-owner session -> busy reject (0xFFFFFFFF)
 # ---------------------------------------------------------------------------
@@ -314,17 +334,27 @@ async def test_busy_reject_while_inside_keepalive_hold(sim: MockIcomRadio) -> No
         await newcomer.close()
 
 
-async def test_ping_refreshes_keepalive(sim: MockIcomRadio) -> None:
+async def test_ping_refreshes_keepalive() -> None:
+    # Deterministic: the hold (60 s) dwarfs the test time, so the release
+    # timer cannot fire mid-test; each ping must re-arm its deadline.
+    sim = MockIcomRadio(single_owner=True, keepalive_hold_s=60.0)
+    await sim.start()
     owner = await _client(0x10001)
     try:
         await _claim(sim, owner)
-        # Ping repeatedly within the hold to keep the session alive past it.
+        assert sim.session_held is True
+        assert sim._keepalive_timer is not None
         for _ in range(6):
+            before = sim._keepalive_timer.when()
             owner.ping(sim.control_port)
-            await asyncio.sleep(0.1)
-        assert sim.session_held is True  # would have timed out at 0.3 without pings
+            await _wait_release_deadline_moved(sim, before)
+            assert sim.session_held is True
+            assert sim.released_count == 0
+        assert sim.session_held is True
+        assert sim.released_count == 0
     finally:
         await owner.close()
+        await sim.stop()
 
 
 async def test_token_renew_refreshes_keepalive() -> None:
@@ -340,11 +370,10 @@ async def test_token_renew_refreshes_keepalive() -> None:
         for _ in range(3):
             before = sim._keepalive_timer.when()
             owner.token(sim.control_port, _TOKEN_RENEW)
-            await asyncio.sleep(0.05)
+            await _wait_release_deadline_moved(sim, before)
             assert sim.session_held is True
             assert sim.released_count == 0
             assert sim._keepalive_timer is not None
-            assert sim._keepalive_timer.when() > before
         assert sim.session_held is True
         assert sim.released_count == 0
     finally:
