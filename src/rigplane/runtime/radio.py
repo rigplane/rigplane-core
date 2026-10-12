@@ -174,7 +174,12 @@ from rigplane.commands import get_main_sub_tracking as _get_main_sub_tracking_cm
 from rigplane.commands import get_repeater_tone as _get_repeater_tone_cmd
 from rigplane.commands import get_repeater_tsql as _get_repeater_tsql_cmd
 from rigplane.core.env_config import get_managed_tx_enabled
-from rigplane.core.exceptions import CommandError, ConnectionError, TimeoutError
+from rigplane.core.exceptions import (
+    CommandError,
+    CommandRejectedError,
+    ConnectionError,
+    TimeoutError,
+)
 from rigplane.core.radio_protocol import (
     ManagedTxSupervisor,
     RadioIdentity,
@@ -1539,6 +1544,17 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # Keep the identity hold until teardown finishes; stop its reader first.
         self._cancel_lan_identity_reread()
         await self._shutdown_managed_tx()
+        # Owner teardown stops the resident loops explicitly: during
+        # RECONNECTING after a failed attempt the lifecycle is already
+        # released and unclaimed, so the lifecycle disconnect below is a
+        # no-op and the CONNECTED-gated control-phase teardown never runs —
+        # without this the loop would log back in after the user left.
+        self._control_phase._stop_watchdog()
+        self._control_phase._stop_reconnect()
+        if self._conn_state is RadioConnectionState.RECONNECTING:
+            # Make conn_state read DISCONNECTED when the lifecycle
+            # teardown below has nothing to release.
+            self._conn_state = RadioConnectionState.DISCONNECTED
         await self._session_lifecycle.disconnect()
         if self._conn_state == RadioConnectionState.CONNECTED:
             await self._control_phase.disconnect()
@@ -1732,7 +1748,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return b""
         try:
             resp = await self._execute_civ_raw(request, wait_response=True)
-        except (TimeoutError, asyncio.TimeoutError):
+        except (CommandRejectedError, TimeoutError, asyncio.TimeoutError):
+            # A refused 19 00 read counts as no answer: the hold's re-read
+            # loop (``_lan_identity_reread_loop``) retries on silence, and a
+            # ``CommandRejectedError`` escaping here would abandon the hold
+            # instead (its edge catches only ``Exception``).
             return None
         except (ConnectionError, OSError):
             return None
@@ -1850,6 +1870,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def _lan_identity_reread_loop(self) -> None:
         """Re-read on the same link at 1/2/4/8/15 s, fencing replaced epochs."""
         attempts = 0
+        hold_started = time.monotonic()
         try:
             while True:
                 backoff = self._LAN_IDENTITY_REREAD_BACKOFF_S
@@ -1862,6 +1883,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 await asyncio.sleep(delay)
                 if not self._lan_identity_phase_owns_open_link():
                     return
+                await self._nudge_lan_identity_stream(hold_started)
                 owned_epoch = self._lan_identity_owned_epoch
                 payload = await self._read_lan_identity_payload()
                 if (
@@ -1890,6 +1912,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         except Exception:
             logger.error(
                 "rigplane (%s): identity re-read failed; abandoning the hold",
+                self.model,
+                exc_info=True,
+            )
+
+    async def _nudge_lan_identity_stream(self, hold_started: float) -> None:
+        """Re-request the CI-V data stream while the hold has seen no payload.
+
+        The hold stops the data watchdog (``_gate_lan_identity``), so nothing
+        else sends OpenClose(open) while it owns the link; a radio that did
+        not restart its CI-V DATA stream after the soft reconnect stays
+        silent. ``_last_civ_data_received`` is stamped by the receive loop
+        on any payload and by ``soft_reconnect`` at the end of a CI-V
+        rebuild, before the gate starts the hold, so a stamp older than
+        ``hold_started`` means no payload has arrived within this hold.
+        """
+        last = self._last_civ_data_received
+        if last is not None and last >= hold_started:
+            return
+        try:
+            await self._send_open_close(open_stream=True)
+        except Exception:
+            logger.debug(
+                "rigplane (%s): identity hold stream re-request failed",
                 self.model,
                 exc_info=True,
             )

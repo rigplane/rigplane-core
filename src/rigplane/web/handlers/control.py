@@ -515,6 +515,16 @@ def _consume_normalized_level_unit(name: str, params: dict[str, Any]) -> dict[st
     return normalized
 
 
+# ``ControlHandler._send_command_failure`` logs these exception types at
+# ERROR with a traceback and every other failure as one WARNING line; the
+# client reply is the same for both. They are what a bug in the command
+# path raises (a missing attribute, a wrong call signature, an undefined
+# name); malformed client parameters can raise TypeError or AttributeError
+# too (``int(None)`` in ``command_intent_from_request``) and are logged the
+# same way. Pinned by tests/test_control_command_programmer_errors.py.
+_PROGRAMMER_ERRORS: tuple[type[Exception], ...] = (AttributeError, TypeError, NameError)
+
+
 class ControlHandler:
     """Handles the /api/v1/ws control WebSocket channel.
 
@@ -729,12 +739,6 @@ class ControlHandler:
         "select_vfo": "vfo",
         "set_band": "band",
     }
-
-    # Monotonic clock for handler doubles built via __new__ without running
-    # __init__ (tests/test_web_direct_vfo_frequency.py,
-    # tests/test_web_capability_guards.py); __init__ overwrites it with the
-    # injected clock pinned by tests/test_clock_injection.py.
-    _clock: Callable[[], float] = staticmethod(time.monotonic)
 
     def __init__(
         self,
@@ -1534,7 +1538,15 @@ class ControlHandler:
     async def _send_command_failure(
         self, cmd_id: Any, name: str, exc: Exception
     ) -> None:
-        logger.warning("control: command %r failed: %s", name, exc)
+        if isinstance(exc, _PROGRAMMER_ERRORS):
+            logger.error(
+                "control: command %r failed with a programmer error: %s",
+                name,
+                exc,
+                exc_info=exc,
+            )
+        else:
+            logger.warning("control: command %r failed: %s", name, exc)
         message = str(exc)
         if isinstance(exc, CommandUnsupportedError):
             error = "unsupported_command"

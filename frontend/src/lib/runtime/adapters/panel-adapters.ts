@@ -15,8 +15,6 @@ import {
   toFilterProps, toBandSelectorProps,
   toAudioSpectrumProps, toMemoryPanelProps,
   toAmberTelemetryProps, toVfoControlProps,
-  resolveFilterModeConfig,
-  manualNotchReading,
 } from '../props/panel-props';
 import {
   makeAgcHandlers, makeModeHandlers, makeAntennaHandlers,
@@ -28,7 +26,6 @@ import {
   makeKeyboardHandlers, makeSystemHandlers, makeRepeaterHandlers,
 } from '../commands/panel-commands';
 import { toRadioViewModel } from './radio-view-model-adapter';
-import { blockedReasonLabel } from '$lib/i18n/blocked-reasons';
 import {
   getManagedAppTxController, type ManagedAppTxController,
 } from '../tx-controller/managed-app-host';
@@ -53,24 +50,71 @@ import {
   TX_AUX_COMMAND_DESCRIPTORS,
   getCommandLifecycles,
   isCommandLifecycleSuperseded,
-  type CommandLifecycle,
   type ControlFeedbackScope,
   type DspCommandFeedbackField,
   type StateBackedCommandDescriptor,
-  type StateBackedRepeatPolicy,
-  type TxAuxCommandFeedbackField,
 } from '$lib/stores/commands.svelte';
+import {
+  projectAfLevelControlFeedback,
+  projectGlobalCwControlFeedback,
+  projectRfPowerControlFeedback,
+  projectTxAuxControlFeedback,
+  type GlobalCwControl,
+  type GlobalCwField,
+  type TxAuxControlFeedbackField,
+} from './level-feedback';
 import { currentControlSessionEpoch } from '../commands/radio-intents';
 import { getTuningBurstTargetHz } from '../commands/tuning-accumulator';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
-import type { DisplayObservation } from '../../../semantic/radio-view-model';
-import { modInputCommand, modInputStateKey, type ModInputStateKey } from '$lib/radio/mod-input';
-import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import {
-  deriveIfShift, measuredPbtRawToHz, pbtRangeFromCaps, projectNrLevel,
-  resolveControlContract,
+  activeReceiverOrNull,
+  agcArmed, attenuatorArmed, autoNotchArmed, dataModeArmed, filterArmed, filterShapeArmed,
+  manualNotchArmed, modeArmed, modInputArmed, preampArmed,
+  pendingFilterSelection, pendingFrequencyHz, pendingManualNotchWidth, pendingNbOn,
+  pendingNarrow, pendingNotchMode, pendingNrOn, pendingPreampLevel,
+  pendingRepeaterShift, pendingRepeaterTone, pendingToneFreq,
+  type ArmedFact,
+  type SupersededPredicate,
+} from './pending-intent-table';
+import {
+  deriveIfShift, measuredPbtRawToHz, pbtRangeFromCaps,
 } from '$lib/radio/filter-controls';
+import {
+  projectControlFeedback,
+  type ControlFeedback,
+  type ControlFeedbackOutcome,
+  type ControlFeedbackPhase,
+  type FilterWidthCommandLifecycleView,
+  type FilterWidthLifecyclePresentation,
+} from './control-feedback-projection';
+import {
+  dspControlFeedback,
+  measuredPbtLatticeHz,
+  pbtFeedbackOnMeasuredLattice,
+  pbtStructural,
+  receiverEchoControlFeedback,
+  rfSqlControlFeedback,
+  type RfSqlFeedbackLane,
+} from './receiver-feedback';
+
+// Re-export the control-feedback projection core (moved verbatim into
+// './control-feedback-projection') so every existing importer of this
+// module is unchanged.
+export {
+  projectControlFeedback,
+  projectControlFeedbackToDisplay,
+  projectDspControlFeedbackToDisplay,
+} from './control-feedback-projection';
+export type {
+  ControlFeedback,
+  ControlFeedbackOutcome,
+  ControlFeedbackPhase,
+  FilterWidthCommandLifecycleView,
+  FilterWidthCommandOutcome,
+  FilterWidthCommandPhase,
+  FilterWidthLifecyclePresentation,
+} from './control-feedback-projection';
 
 // Re-export types for panel imports
 export type {
@@ -252,6 +296,9 @@ export function getActiveFrequencyHz(): number | null {
   return view?.vfos.find((candidate) => candidate.isActive)?.frequencyHz ?? null;
 }
 
+const readRuntimeState = (): ServerState | null => runtime.state;
+const lifecycleSuperseded: SupersededPredicate = (command) => isCommandLifecycleSuperseded(command);
+
 // ── Pending frequency target (MOR-1441, MOR-1478) ──
 /**
  * The freshest still-in-flight `set_freq` target for `receiver` (`0` =
@@ -274,13 +321,12 @@ export function getActiveFrequencyHz(): number | null {
  * readout crawl through the burst and then, on the LAST command's ack,
  * briefly present the STALE pre-spin confirmed value as though it were
  * current for the ~500ms until the next poll actually caught up — the
- * reported symptom. Routed through `latestPendingParam` (below) — the same
+ * reported symptom. Routed through `latestPendingParam` — the same
  * decision table leg 2's four discrete accessors use — so a command now
  * stays pending through ack.
  */
 export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
-  const value = latestPendingParam('set_freq', 'freq', receiver, 'freqHz');
-  return typeof value === 'number' ? value : null;
+  return pendingFrequencyHz(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 // ── Tuning burst target (MOR-2464) ──
@@ -298,132 +344,8 @@ export function getTuningBurstFrequencyHz(receiver: 0 | 1): number | null {
   return getTuningBurstTargetHz(receiver);
 }
 
-export type FilterWidthCommandPhase = 'unavailable' | 'idle' | 'pending' | 'acknowledged' | 'confirmed';
-export type FilterWidthCommandOutcome = 'confirmed' | 'failed' | 'timed-out' | 'cancelled' | 'superseded';
-export interface FilterWidthLifecyclePresentation {
-  /** Opaque correlation value; consumers must compare it, never parse it. */
-  readonly lifecycleId: string;
-  /** Opaque correlation value for this lifecycle status transition. */
-  readonly transitionId: string;
-  readonly receiver: 0 | 1;
-  readonly sessionEpoch: number;
-  readonly target: number;
-  readonly status: 'pending' | 'acknowledged' | FilterWidthCommandOutcome;
-  readonly error?: string;
-}
-export interface FilterWidthCommandLifecycleView {
-  confirmed: number | null; target: number | null; phase: FilterWidthCommandPhase; busy: boolean;
-  outcome: { phase: FilterWidthCommandOutcome; error?: string } | null;
-  presentation: Readonly<FilterWidthLifecyclePresentation> | null;
-}
-
-export type ControlFeedbackPhase = 'unavailable' | 'idle' | 'submitted' | 'queued' | 'dispatched'
-  | 'awaiting-confirmation' | 'confirmed' | 'failed' | 'timed-out' | 'cancelled' | 'superseded';
-export type ControlFeedbackOutcome = 'confirmed' | 'failed' | 'timed-out' | 'cancelled' | 'superseded';
-export interface ControlFeedback<T> {
-  readonly confirmed: T | null;
-  readonly target: T | null;
-  readonly requestedTarget: T | null;
-  readonly phase: ControlFeedbackPhase;
-  readonly busy: boolean;
-  readonly availability: 'available' | 'unavailable';
-  readonly outcome: Readonly<{ phase: ControlFeedbackOutcome; error?: string }> | null;
-  readonly lifecycleId: string | null;
-  readonly transitionId: string | null;
-  readonly providerGeneration?: number | null;
-  readonly sessionEpoch: number;
-  readonly scope: Readonly<ControlFeedbackScope>;
-  readonly repeatPolicy: StateBackedRepeatPolicy;
-}
-
 /** Compatibility name; identity is the sole store-registered descriptor. */
 export { FILTER_WIDTH_COMMAND_DESCRIPTOR as FILTER_WIDTH_FEEDBACK_DESCRIPTOR } from '$lib/stores/commands.svelte';
-
-const sameFeedbackScope = (left: ControlFeedbackScope | null, right: ControlFeedbackScope): boolean =>
-  left !== null && left.control === right.control && left.receiver === right.receiver
-    && (left.slot ?? null) === (right.slot ?? null);
-
-/** Pure projection of explicit lifecycle input plus canonical StateStore truth. */
-export function projectControlFeedback<T>(
-  descriptor: StateBackedCommandDescriptor<T>, state: ServerState | null,
-  commands: readonly CommandLifecycle[], scope: ControlFeedbackScope, currentSessionEpoch: number,
-  superseded: (command: CommandLifecycle) => boolean,
-): Readonly<ControlFeedback<T>> {
-  const candidateProviderGeneration = state?.providerGeneration;
-  const currentProviderGeneration = typeof candidateProviderGeneration === 'number'
-    && Number.isSafeInteger(candidateProviderGeneration) && candidateProviderGeneration >= 0
-    ? candidateProviderGeneration : null;
-  const empty = (availability: 'available' | 'unavailable', confirmed: T | null): Readonly<ControlFeedback<T>> => Object.freeze({
-    confirmed, target: null, requestedTarget: null,
-    phase: availability === 'available' ? 'idle' : 'unavailable', busy: false, availability,
-    outcome: null, lifecycleId: null, transitionId: null,
-    providerGeneration: currentProviderGeneration, sessionEpoch: currentSessionEpoch,
-    scope: Object.freeze({ ...scope }), repeatPolicy: descriptor.repeatPolicy,
-  });
-  if (state === null) return empty('unavailable', null);
-  const field = state.fieldStatus?.[descriptor.fieldPath(scope)];
-  const confirmed = descriptor.confirmed(state, scope);
-  // R29(1): a field that has been observed and carries a value stays
-  // available even once it goes stale — only a field the server has never
-  // resolved (`availability: 'missing'`, or any other non-evidentiary
-  // value) gates the control unavailable. Freshness alone is deliberately
-  // not consulted here: `availability` already folds it in 1:1 on the wire
-  // (`_freshness_availability`, `src/rigplane/web/runtime_helpers.py`).
-  if (confirmed === null || field?.observed !== true
-    || (field.availability !== 'available' && field.availability !== 'stale')
-    || typeof field.lastObservedMonotonic !== 'number'
-    || !Number.isFinite(field.lastObservedMonotonic)) return empty('unavailable', null);
-
-  let latest: CommandLifecycle | null = null;
-  for (const command of commands) {
-    const commandProviderGeneration = command.providerGeneration;
-    const remoteSuperseded = command.terminalOutcome === 'superseded';
-    if (currentProviderGeneration === null
-      || typeof commandProviderGeneration !== 'number'
-      || !Number.isSafeInteger(commandProviderGeneration) || commandProviderGeneration < 0
-      || commandProviderGeneration !== currentProviderGeneration
-      || command.originalEpoch !== currentSessionEpoch || command.name !== descriptor.intentName
-      || !sameFeedbackScope(descriptor.scope(command), scope) || descriptor.target(command) === null
-      || command.locallyObsolete === true || (superseded(command) && !remoteSuperseded)) continue;
-    if (latest === null || command.createdAt >= latest.createdAt) latest = command;
-  }
-  if (latest === null) return empty('available', confirmed);
-  const requestedTarget = descriptor.target(latest)!;
-  const terminal = latest.terminalOutcome === 'superseded' || latest.status === 'confirmed' || latest.status === 'failed'
-    || latest.status === 'timed-out' || latest.status === 'cancelled';
-  const phase: ControlFeedbackPhase = latest.terminalOutcome === 'superseded' ? 'superseded'
-    : latest.status === 'confirmed' || latest.status === 'failed'
-      || latest.status === 'timed-out' || latest.status === 'cancelled' ? latest.status
-    : latest.hold !== undefined ? 'queued'
-    : latest.status === 'acknowledged' ? 'awaiting-confirmation'
-    : latest.dispatchedEventEpoch !== undefined ? 'dispatched' : 'submitted';
-  const outcomePhase: ControlFeedbackOutcome = latest.terminalOutcome === 'superseded'
-    ? 'superseded' : latest.status as ControlFeedbackOutcome;
-  // MOR-1890: a TX-interlock refusal stores its reason as the kebab-case
-  // semantic code (ws-client mapped it on the wire); resolve that code to
-  // the operator-legible sentence here, at the one outcome-build point, so
-  // every renderer (scalar renderers, per-panel issued-status formatters,
-  // polite announcements) reads the SAME text. Unrecognised text — a raw
-  // server message — falls back verbatim, sliced as before.
-  const error = terminal && typeof latest.error === 'string' && latest.error.length > 0
-    ? (blockedReasonLabel(latest.error) ?? latest.error.slice(0, 256)) : undefined;
-  const transitionId = phase === 'dispatched'
-    ? JSON.stringify([latest.originalEpoch, latest.id, phase, latest.dispatchedEventEpoch])
-    : phase === 'queued'
-      ? JSON.stringify([latest.originalEpoch, latest.id, phase, latest.hold?.eventEpoch, latest.hold?.expiresAt])
-      : phase === 'superseded'
-        ? JSON.stringify([latest.originalEpoch, latest.id, phase, latest.eventEpoch])
-        : JSON.stringify([latest.originalEpoch, latest.id, latest.status]);
-  return Object.freeze({
-    confirmed, target: terminal ? null : requestedTarget, requestedTarget, phase, busy: !terminal,
-    availability: 'available', outcome: terminal ? Object.freeze({ phase: outcomePhase,
-      ...(error === undefined ? {} : { error }) }) : null,
-    lifecycleId: JSON.stringify([latest.originalEpoch, latest.id]),
-    transitionId,
-    providerGeneration: currentProviderGeneration, sessionEpoch: currentSessionEpoch,
-    scope: Object.freeze({ ...scope }), repeatPolicy: descriptor.repeatPolicy,
-  });
-}
 
 /** Read-only Break-in Delay projection; StateStore remains confirmed truth. */
 export function getBreakInDelayControlFeedback(): Readonly<ControlFeedback<number>> {
@@ -458,62 +380,22 @@ export function getFilterShapeControlFeedback(): Readonly<ControlFeedback<number
   );
 }
 
-type GlobalCwControl = 'cw-pitch' | 'keyer-speed';
-type GlobalCwField = 'cwPitch' | 'keySpeed';
-
-/**
- * R29(1): a `'stale'` `DisplayObservation` still carries a real last-observed
- * value (`display-observation.ts: qualifyEvidence`) — only `'unknown'`/
- * `'unsupported'` mean the field was never resolved. Used by every accessor
- * below that qualifies a `DisplayObservation` before trusting
- * `projectControlFeedback`'s result. A type predicate (not a plain boolean
- * over `.state`) so callers keep type-narrowed access to `.value`.
- */
-function hasUsableObservation<T extends number | string | boolean>(
-  observation: DisplayObservation<T>,
-): observation is Extract<DisplayObservation<T>, { state: 'current' | 'stale' }> {
-  return observation.state === 'current' || observation.state === 'stale';
-}
-
-function unavailableControlFeedback(
-  feedback: Readonly<ControlFeedback<number>>,
-): Readonly<ControlFeedback<number>> {
-  return Object.freeze({
-    ...feedback, confirmed: null, target: null, requestedTarget: null,
-    phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
-    outcome: null, lifecycleId: null, transitionId: null,
-  });
-}
-
 function getGlobalCwControlFeedback(
   currentControlSession: ControlSessionSnapshot | undefined,
   descriptor: StateBackedCommandDescriptor<number>,
   control: GlobalCwControl,
   field: GlobalCwField,
 ): Readonly<ControlFeedback<number>> {
-  // These canonical-store reads must precede every unavailable/session return:
-  // they are the legacy panel's reactive invalidation across a WS replacement.
   const state = runtime.state;
   const caps = runtime.caps;
   const commands = getCommandLifecycles();
   const session = currentControlSession ?? runtime.controlSession;
   const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
-  const scope = { control, receiver: 0 } as const;
-  const feedback = projectControlFeedback(
-    descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+  return projectGlobalCwControlFeedback(
+    descriptor, state, caps, commands, epoch,
+    (command) => isCommandLifecycleSuperseded(command),
+    session.state === 'connected', control, field,
   );
-  try {
-    const observation = qualifyRadioDisplayObservation({
-      state, caps, path: field,
-      structural: caps?.capabilities.includes('cw') === true,
-      value: state?.[field],
-    });
-    return session.state === 'connected' && epoch >= 0
-      && hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
-      ? feedback : unavailableControlFeedback(feedback);
-  } catch {
-    return unavailableControlFeedback(feedback);
-  }
 }
 
 /** Radio-global CW Pitch projection; receiver 0 is only a stable scope encoding. */
@@ -534,18 +416,7 @@ export function getKeySpeedControlFeedback(
   );
 }
 
-export type TxAuxControlFeedbackField = TxAuxCommandFeedbackField;
-const TX_AUX_FEEDBACK_CAPABILITIES: Readonly<Record<
-  TxAuxControlFeedbackField, readonly string[]
->> = Object.freeze({
-  micGain: Object.freeze(['tx']),
-  driveGain: Object.freeze(['tx', 'drive_gain']),
-  voxGain: Object.freeze(['tx', 'vox']),
-  antiVoxGain: Object.freeze(['tx', 'vox']),
-  voxDelay: Object.freeze(['tx', 'vox']),
-  compressorLevel: Object.freeze(['tx', 'compressor']),
-  monitorGain: Object.freeze(['tx', 'monitor']),
-});
+export type { TxAuxControlFeedbackField };
 
 /** Qualified radio-global TX/VOX feedback; receiver 0 is only stable identity. */
 export function getTxAuxControlFeedback(
@@ -558,31 +429,14 @@ export function getTxAuxControlFeedback(
   const session = currentControlSession ?? runtime.controlSession;
   const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
   const descriptor = TX_AUX_COMMAND_DESCRIPTORS[field];
-  const scope = descriptor.scope({ params: { level: 0 } })!;
-  const feedback = projectControlFeedback(
-    descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+  return projectTxAuxControlFeedback(
+    descriptor, state, caps, commands, epoch,
+    (command) => isCommandLifecycleSuperseded(command),
+    session.state === 'connected', field,
   );
-  try {
-    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
-    const structural = TX_AUX_FEEDBACK_CAPABILITIES[field].every(tag => tags.includes(tag));
-    const observation = qualifyRadioDisplayObservation({
-      state, caps, path: field, structural, value: state?.[field],
-    });
-    return session.state === 'connected' && epoch >= 0
-      && hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
-      ? feedback : unavailableControlFeedback(feedback);
-  } catch {
-    return unavailableControlFeedback(feedback);
-  }
 }
 
 export type DspControlFeedbackField = DspCommandFeedbackField;
-const DSP_FEEDBACK_CAPABILITIES: Readonly<Record<
-  Exclude<DspControlFeedbackField, 'nbWidth' | 'nbDepth'>, string
->> = Object.freeze({
-  nbLevel: 'nb', nrLevel: 'nr',
-  notchFilter: 'notch', manualNotchWidth: 'notch', agcTimeConstant: 'agc',
-});
 
 /** Qualified raw DSP feedback; NB Width and NB Depth have stable radio-global identity. */
 export function getDspControlFeedback(
@@ -593,158 +447,11 @@ export function getDspControlFeedback(
   const caps = runtime.caps;
   const commands = getCommandLifecycles();
   const session = currentControlSession ?? runtime.controlSession;
-  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
-  const descriptor = DSP_COMMAND_DESCRIPTORS[field];
-  // MOR-1680: on the FTX-1 the poll feeds `manualNotchFreq` while
-  // `notchFilter` is only written by `set_notch_filter`'s post-write
-  // readback, so the confirmed echo must follow the SAME source selection
-  // the value side reads — `manualNotchReading`'s choice, never a second
-  // one here. The store-registered descriptor identity is untouched; this
-  // local variant only repoints the state-backed confirmation field.
-  const notchReading = field === 'notchFilter' ? manualNotchReading(state, caps) : null;
-  const echoDescriptor = notchReading !== null && notchReading.source === 'manualNotchFreq'
-    ? Object.freeze({
-      ...descriptor,
-      fieldPath: (scope: ControlFeedbackScope) => `${scope.receiver === 1 ? 'sub' : 'main'}.manualNotchFreq`,
-      confirmed: () => Number.isSafeInteger(notchReading.notchFreq) ? notchReading.notchFreq : null,
-    })
-    : descriptor;
-  const receiver: 0 | 1 = state?.active === 'SUB' ? 1 : 0;
-  const scope = Object.freeze({
-    control: field === 'nbLevel' ? 'nb-level'
-      : field === 'nbWidth' ? 'nb-width'
-        : field === 'nrLevel' ? 'nr-level'
-          : field === 'nbDepth' ? 'nb-depth'
-            : field === 'notchFilter' ? 'notch-position'
-              : field === 'manualNotchWidth' ? 'manual-notch-width' : 'agc-time',
-    receiver: field === 'nbWidth' || field === 'nbDepth' ? 0 as const : receiver,
-  });
-  const rawFeedback = projectControlFeedback(
-    echoDescriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
-  );
-  // MOR-2635: the pending target is the raw CAT code the command dispatched.
-  // Decode it through the SAME resolved contract and the SAME source decision
-  // the confirmed reading uses. A reading that fell back to the raw field
-  // (no published domain, or the domain's field unusable) keeps the target raw.
-  const feedback = notchReading?.source === 'manualNotchFreq'
-    ? projectPendingTargetToDisplay(rawFeedback, (raw) =>
-      resolveControlContract(caps, 'manual_notch_freq').rawToDisplay(raw))
-    : rawFeedback;
-  try {
-    const view = toRadioViewModel(state, caps);
-    if (session.state !== 'connected' || epoch < 0
-      || view === null || view.activeReceiver.status !== 'known') {
-      return unavailableControlFeedback(feedback);
-    }
-    const activeReceiver = view.activeReceiver.receiver;
-    const receiverEntries = view.receiverIndicators?.filter(
-      entry => entry.receiver === activeReceiver,
-    ) ?? [];
-    if (receiverEntries.length !== 1 || !receiverEntries[0].availability.operational) {
-      return unavailableControlFeedback(feedback);
-    }
-    if (field === 'nbWidth' || field === 'nbDepth') {
-      const observation = qualifyRadioDisplayObservation({
-        state, caps, path: field, structural: caps?.controls?.nb_depth != null,
-        value: state?.[field],
-      });
-      return hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
-        ? feedback : unavailableControlFeedback(feedback);
-    }
-    const receiverId = activeReceiver;
-    const receiverState = receiverId === 'SUB' ? state?.sub : state?.main;
-    const base = receiverId === 'SUB' ? 'sub' : 'main';
-    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
-    const echoField = notchReading?.source === 'manualNotchFreq' ? 'manualNotchFreq' : field;
-    const observation = qualifyDisplayObservation({
-      state, caps, receiver: receiverId, path: `${base}.${echoField}`,
-      structural: tags.includes(DSP_FEEDBACK_CAPABILITIES[field]),
-      value: receiverState?.[echoField],
-    });
-    return hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
-      ? feedback : unavailableControlFeedback(feedback);
-  } catch {
-    return unavailableControlFeedback(feedback);
-  }
-}
-
-type TransformedDspControlFeedbackField = 'nrLevel' | 'nbDepth';
-
-function projectDspRawValueToDisplay(
-  field: TransformedDspControlFeedbackField,
-  raw: number,
-  caps: Capabilities | null | undefined,
-): number | null {
-  if (field === 'nrLevel') {
-    const value = projectNrLevel(caps, raw, true).value;
-    return value !== null && Number.isFinite(value) ? value : null;
-  }
-  // nb_depth has no legacy default: a radio publishing no usable
-  // `controls.nb_depth` domain resolves to the empty contract, whose
-  // `acceptsRaw`/`rawToDisplay` fail closed instead of fabricating a
-  // 1..10 display value.
-  const contract = resolveControlContract(caps, 'nb_depth');
-  if (!contract.acceptsRaw(raw)) return null;
-  const display = contract.rawToDisplay(raw);
-  return display !== null && Number.isFinite(display) ? display : null;
-}
-
-/**
- * Projects a raw feedback's `confirmed`/`target`/`requestedTarget` through
- * `project` into the display unit. A null raw stays null; any non-null raw
- * whose projection is null fails the whole feedback closed
- * (`unavailableControlFeedback`). Every other field passes through into a
- * frozen copy, so an unavailable input stays unavailable.
- */
-export function projectControlFeedbackToDisplay(
-  feedback: Readonly<ControlFeedback<number>>,
-  project: (raw: number) => number | null,
-): Readonly<ControlFeedback<number>> {
-  const confirmed = feedback.confirmed === null ? null : project(feedback.confirmed);
-  const target = feedback.target === null ? null : project(feedback.target);
-  const requestedTarget = feedback.requestedTarget === null
-    ? null : project(feedback.requestedTarget);
-  if ((feedback.confirmed !== null && confirmed === null)
-    || (feedback.target !== null && target === null)
-    || (feedback.requestedTarget !== null && requestedTarget === null)) {
-    return unavailableControlFeedback(feedback);
-  }
-  return Object.freeze({ ...feedback, confirmed, target, requestedTarget });
-}
-
-/** MOR-2635: the confirmed slot is already display units (the echo above
- *  decoded it). Only the pending target and its requested echo are still the
- *  raw CAT code, so only those two are decoded. A null stays null; a raw the
- *  contract rejects fails the whole feedback closed. */
-function projectPendingTargetToDisplay(
-  feedback: Readonly<ControlFeedback<number>>,
-  project: (raw: number) => number | null,
-): Readonly<ControlFeedback<number>> {
-  const target = feedback.target === null ? null : project(feedback.target);
-  const requestedTarget = feedback.requestedTarget === null
-    ? null : project(feedback.requestedTarget);
-  if ((feedback.target !== null && target === null)
-    || (feedback.requestedTarget !== null && requestedTarget === null)) {
-    return unavailableControlFeedback(feedback);
-  }
-  return Object.freeze({ ...feedback, target, requestedTarget });
-}
-
-/** Pure raw-to-display projection; descriptor-unit confirmation remains untouched. */
-export function projectDspControlFeedbackToDisplay(
-  field: TransformedDspControlFeedbackField,
-  rawFeedback: Readonly<ControlFeedback<number>>,
-  caps: Capabilities | null | undefined,
-): Readonly<ControlFeedback<number>> {
-  return projectControlFeedbackToDisplay(
-    rawFeedback, (raw) => projectDspRawValueToDisplay(field, raw, caps),
+  return dspControlFeedback(
+    field, session, state, caps, commands,
+    DSP_COMMAND_DESCRIPTORS[field], isCommandLifecycleSuperseded,
   );
 }
-
-type RfSqlFeedbackLane = Readonly<{
-  command: string;
-  feedback: Readonly<ControlFeedback<number>>;
-}>;
 
 /** One qualified receiver/session snapshot for the two-lane RF/SQL owner. */
 export function getRfSqlControlFeedback(
@@ -754,70 +461,13 @@ export function getRfSqlControlFeedback(
   const caps = runtime.caps;
   const commands = getCommandLifecycles();
   const session = currentControlSession ?? runtime.controlSession;
-  const sessionState = session.state;
-  const sessionEpoch = session.epoch;
-  const stateGeneration = state?.providerGeneration;
-  if (sessionState !== 'connected'
-    || !Number.isSafeInteger(sessionEpoch) || sessionEpoch < 0
-    || state === null || caps === null
-    || state.stateContractVersion !== 1 || caps.stateContractVersion !== 1
-    || !Number.isSafeInteger(stateGeneration) || (stateGeneration as number) < 0
-    || caps.providerGeneration !== stateGeneration) return null;
-
-  const view = toRadioViewModel(state, caps);
-  if (view === null || view.activeReceiver.status !== 'known') return null;
-  const receiver = view.activeReceiver.receiver;
-  const receiverEntries = view.receiverIndicators?.filter((entry) => entry.receiver === receiver) ?? [];
-  if (receiverEntries.length !== 1 || !receiverEntries[0].availability.operational) return null;
-  const receiverIndex: 0 | 1 = receiver === 'SUB' ? 1 : 0;
-  const receiverState = receiver === 'SUB' ? state.sub : state.main;
-  const base = receiver === 'SUB' ? 'sub' : 'main';
-  const tags = Array.isArray(caps.capabilities) ? caps.capabilities : [];
-
-  const lane = (
-    command: 'set_rf_gain' | 'set_squelch',
-    descriptor: StateBackedCommandDescriptor<number>,
-    control: 'rf-gain' | 'squelch',
-    leaf: 'rfGain' | 'squelch',
-    structural: boolean,
-  ): RfSqlFeedbackLane => {
-    const scope = { control, receiver: receiverIndex } as const;
-    const feedback = projectControlFeedback(
-      descriptor, state, commands, scope, sessionEpoch, isCommandLifecycleSuperseded,
-    );
-    const observation = qualifyDisplayObservation({
-      state, caps, receiver, path: `${base}.${leaf}`, structural,
-      value: receiverState?.[leaf],
-    });
-    const qualified = hasUsableObservation(observation) ? feedback : Object.freeze({
-      ...feedback,
-      confirmed: null, target: null, requestedTarget: null,
-      phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
-      outcome: null, lifecycleId: null, transitionId: null,
-    });
-    return Object.freeze({ command, feedback: qualified });
-  };
-
-  return Object.freeze({
-    rf: lane(
-      'set_rf_gain', RF_GAIN_COMMAND_DESCRIPTOR, 'rf-gain', 'rfGain', tags.includes('rf_gain'),
-    ),
-    sql: lane(
-      'set_squelch', SQUELCH_COMMAND_DESCRIPTOR, 'squelch', 'squelch', tags.includes('squelch'),
-    ),
-  });
+  return rfSqlControlFeedback(
+    session, state, caps, commands,
+    RF_GAIN_COMMAND_DESCRIPTOR, SQUELCH_COMMAND_DESCRIPTOR, isCommandLifecycleSuperseded,
+  );
 }
 
-function normalizedUsableObservation(
-  observation: DisplayObservation<number>,
-): number | null {
-  if (!hasUsableObservation(observation)) return null;
-  const value = observation.value;
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
-    ? value : null;
-}
-
-/** Qualified AF-level command feedback for `receiver` (MOR-2579), or for the
+/** Qualified AF-level command feedback for `receiver`, or for the
  *  active receiver when none is named. */
 export function getAfLevelControlFeedback(
   currentControlSession?: ControlSessionSnapshot,
@@ -827,35 +477,11 @@ export function getAfLevelControlFeedback(
   const commands = getCommandLifecycles();
   const session = currentControlSession ?? runtime.controlSession;
   const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
-  const scopeOnSub = receiver === undefined ? state?.active === 'SUB' : receiver === 'SUB';
-  const feedback = projectControlFeedback(
-    AF_LEVEL_COMMAND_DESCRIPTOR, state, commands,
-    { control: 'af-level', receiver: scopeOnSub ? 1 : 0 }, epoch,
-    isCommandLifecycleSuperseded,
+  return projectAfLevelControlFeedback(
+    AF_LEVEL_COMMAND_DESCRIPTOR, state, caps, commands, epoch,
+    (command) => isCommandLifecycleSuperseded(command),
+    session.state === 'connected', receiver,
   );
-  try {
-    const view = toRadioViewModel(state, caps);
-    const laneReceiver = receiver ?? (view === null || view.activeReceiver.status !== 'known'
-      ? null : view.activeReceiver.receiver);
-    const receiverEntries = view?.receiverIndicators?.filter(
-      entry => entry.receiver === laneReceiver,
-    ) ?? [];
-    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
-    const observation = qualifyDisplayObservation({
-      state, caps, receiver: laneReceiver ?? 'MAIN',
-      path: laneReceiver === 'SUB' ? 'sub.afLevel' : 'main.afLevel',
-      structural: tags.includes('af_level'),
-      value: (laneReceiver === 'SUB' ? state?.sub : state?.main)?.afLevel,
-    });
-    if (session.state !== 'connected' || epoch < 0 || laneReceiver === null
-      || receiverEntries.length !== 1 || !receiverEntries[0].availability.operational
-      || normalizedUsableObservation(observation) === null) {
-      return unavailableControlFeedback(feedback);
-    }
-    return feedback;
-  } catch {
-    return unavailableControlFeedback(feedback);
-  }
 }
 
 /** Qualified RF-power command feedback on the normalized `powerLevel` scale. */
@@ -866,33 +492,13 @@ export function getRfPowerControlFeedback(
   const commands = getCommandLifecycles();
   const session = currentControlSession ?? runtime.controlSession;
   const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
-  const feedback = projectControlFeedback(
-    RF_POWER_COMMAND_DESCRIPTOR, state, commands,
-    { control: 'rf-power', receiver: 0 }, epoch, isCommandLifecycleSuperseded,
+  return projectRfPowerControlFeedback(
+    RF_POWER_COMMAND_DESCRIPTOR, state, caps, commands, epoch,
+    (command) => isCommandLifecycleSuperseded(command),
+    session.state === 'connected',
   );
-  try {
-    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
-    const observation = qualifyRadioDisplayObservation({
-      state, caps, path: 'powerLevel', structural: tags.includes('tx'),
-      value: state?.powerLevel,
-    });
-    return session.state === 'connected' && epoch >= 0
-      && normalizedUsableObservation(observation) !== null
-      ? feedback : unavailableControlFeedback(feedback);
-  } catch {
-    return unavailableControlFeedback(feedback);
-  }
 }
 
-/**
- * Shared qualification for a single raw receiver-scoped "echo" control
- * (MOR-2425): PBT inner/outer, and the real `if_shift` command on a radio
- * that has one. Mirrors `getDspControlFeedback`'s active-receiver/
- * operational/observation gating; `structuralFor` supplies the one thing
- * that differs per field (PBT needs both the `pbt` capability tag AND a
- * usable `pbt_inner` range — MOR-1291 — while `if_shift` needs only its own
- * capability tag).
- */
 function getReceiverEchoControlFeedback(
   currentControlSession: ControlSessionSnapshot | undefined,
   descriptor: StateBackedCommandDescriptor<number>,
@@ -904,41 +510,11 @@ function getReceiverEchoControlFeedback(
   const caps = runtime.caps;
   const commands = getCommandLifecycles();
   const session = currentControlSession ?? runtime.controlSession;
-  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
-  const receiver: 0 | 1 = state?.active === 'SUB' ? 1 : 0;
-  const scope = Object.freeze({ control, receiver });
-  const feedback = projectControlFeedback(
-    descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+  return receiverEchoControlFeedback(
+    session, state, caps, commands, descriptor, control, field, structuralFor,
+    isCommandLifecycleSuperseded,
   );
-  try {
-    const view = toRadioViewModel(state, caps);
-    if (session.state !== 'connected' || epoch < 0
-      || view === null || view.activeReceiver.status !== 'known') {
-      return unavailableControlFeedback(feedback);
-    }
-    const activeReceiver = view.activeReceiver.receiver;
-    const receiverEntries = view.receiverIndicators?.filter(
-      entry => entry.receiver === activeReceiver,
-    ) ?? [];
-    if (receiverEntries.length !== 1 || !receiverEntries[0].availability.operational) {
-      return unavailableControlFeedback(feedback);
-    }
-    const receiverState = activeReceiver === 'SUB' ? state?.sub : state?.main;
-    const base = activeReceiver === 'SUB' ? 'sub' : 'main';
-    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
-    const observation = qualifyDisplayObservation({
-      state, caps, receiver: activeReceiver, path: `${base}.${field}`,
-      structural: structuralFor(caps, tags), value: receiverState?.[field],
-    });
-    return observation.state === 'current' && Number.isSafeInteger(observation.value)
-      ? feedback : unavailableControlFeedback(feedback);
-  } catch {
-    return unavailableControlFeedback(feedback);
-  }
 }
-
-const pbtStructural = (caps: Capabilities | null | undefined, tags: readonly string[]): boolean =>
-  tags.includes('pbt') && pbtRangeFromCaps(caps) !== undefined;
 
 /** Qualified raw PBT Inner feedback (MOR-2425); receiver derives from active-receiver truth. */
 export function getPbtInnerControlFeedback(
@@ -955,44 +531,6 @@ export function getPbtOuterControlFeedback(
 ): Readonly<ControlFeedback<number>> {
   return getReceiverEchoControlFeedback(
     currentControlSession, PBT_OUTER_COMMAND_DESCRIPTOR, 'pbt-outer', 'pbtOuter', pbtStructural,
-  );
-}
-
-/**
- * The measured twin-PBT lattice for the ACTIVE receiver — the mode's
- * declared `pbtStepHz` at the observed filter width — or `null` when no
- * lattice forms (no step for the mode, unobserved width, legacy payload).
- * The same three reads `toFilterProps` and `getIfShiftControlFeedback`
- * base their conversions on.
- */
-function measuredPbtLatticeHz(
-  state: ServerState | null, caps: Capabilities | null | undefined,
-): Readonly<{ filterWidthHz: number; stepHz: number }> | null {
-  const rx = state ? (state.active === 'SUB' ? state.sub : state.main) : undefined;
-  const pbtStepHz = resolveFilterModeConfig(caps ?? null, rx?.mode ?? undefined, rx?.dataMode ?? undefined)?.pbtStepHz;
-  const pbtWidthHz = rx?.filterWidth;
-  return pbtStepHz !== undefined && typeof pbtWidthHz === 'number'
-    ? { filterWidthHz: pbtWidthHz, stepHz: pbtStepHz } : null;
-}
-
-/**
- * Converts a raw-domain PBT feedback onto the measured lattice's Hz — the
- * unit the displayed value and the write path (`onPbtInnerChange` and
- * friends) already share. A feedback that is already unavailable, or a
- * mode with no lattice (FM), fails the whole projection closed; on the
- * lattice every non-null value of `confirmed`, `target` and
- * `requestedTarget` must convert, so one unconvertible raw fails the
- * whole feedback closed instead of mixing a raw target into an Hz echo.
- */
-function pbtFeedbackOnMeasuredLattice(
-  raw: Readonly<ControlFeedback<number>>,
-  lattice: Readonly<{ filterWidthHz: number; stepHz: number }> | null,
-): Readonly<ControlFeedback<number>> {
-  if (raw.availability !== 'available' || lattice === null) {
-    return unavailableControlFeedback(raw);
-  }
-  return projectControlFeedbackToDisplay(
-    raw, (value) => measuredPbtRawToHz(value, lattice.filterWidthHz, lattice.stepHz),
   );
 }
 
@@ -1250,161 +788,29 @@ export function getFilterWidthCommandLifecycle(): FilterWidthCommandLifecycleVie
 }
 
 // ── Pending discrete-control targets (MOR-1441 leg 2) ──
-/**
- * The receiver's confirmed (radio-observed) state slice, or `undefined`
- * while unobserved — `runtime.state.main`/`.sub`, the same per-receiver
- * split `getPendingFrequencyHz`'s sibling accessors read.
- */
-function confirmedReceiverState(receiver: 0 | 1): ServerState['main'] | undefined {
-  const state = runtime.state;
-  if (!state) return undefined;
-  return receiver === 0 ? state.main : state.sub;
-}
-
-/**
- * Grace backstop (MOR-1488 review R2, timing revised R3) — retire an
- * acknowledged-pending command this long after its ack even with no
- * observation of the commanded field. Covers the never-answered-at-all
- * classes the observation rule below cannot, because none of them ever
- * produce a post-ack read-back to end on: (1) MOR-1445 post-ack
- * execution failure — the server acks `ok:true` at enqueue time, and a
- * later failure reaches only a session notification (`server.py`
- * `commandExecutionFailed`) that `ws-client.ts`'s `_emitCommandResult`
- * never maps back to this command id; (2) MOR-1427 coalescing —
- * `_cmd_pending` keys a 50ms coalescing window by command NAME only, so a
- * superseded frame acks `ok:true`+`superseded` and never reaches the radio
- * at all; (3) link death after ack. Without this backstop, any of the three
- * leaves the marker claiming "in flight" forever. `Date.now()` itself is
- * not reactive — this only takes effect the next time something re-invokes
- * `latestPendingParam` (the next state push, or any other `$derived`
- * recompute), not the instant the clock crosses the threshold.
- *
- * 3000ms (MOR-1478): `tuning-accumulator.ts:6,44` records the observed
- * `set_freq` confirm round trip at 0.5–2s on live hardware.
- */
-const ACK_CONFIRM_GRACE_MS = 3_000;
-
-/**
- * Shared by `getPendingFrequencyHz` above (leg 1, MOR-1478) and the four
- * discrete accessors below (leg 2, MOR-1488): the freshest command matching
- * `intentName`/`receiver` that has not reached a terminal failure/expiry
- * status, or `undefined`. Same `>=` freshest-wins tie-break as leg 1's
- * original implementation (review B3) — no second, parallel pending-state
- * path, and now one decision table for both legs instead of two.
- *
- * MOR-1488 (live-bench finding): a transport `'acknowledged'` (the WS ack)
- * is NOT a confirming observation — it only proves the radio received the
- * command, typically within milliseconds, well before the next state poll
- * echoes the new value back (~500ms keep-alive, CLAUDE.md). Treating ack as
- * "no longer pending" (the pre-fix behavior) collapsed the italic pending
- * window to something imperceptible live, presenting an unconfirmed value
- * as confirmed.
- *
- * An acknowledged record ends on the commanded field's own post-ack
- * observation, whatever value that observation carries — the core
- * re-reads the written field at USER priority after every write
- * (`radio_poller.py: RadioPoller._request_post_write_readback`), and the
- * server publishes that read's own `lastObservedMonotonic` per field
- * (`runtime_helpers.py: _observed_field_status`). `ackFieldObservationTimes`
- * (`commands.svelte.ts: transition`) captures that marker at ack; a marker
- * strictly above it is the answer. Pinned by
- * `semantic-discrete-pending-wiring.component.test.ts`'s "clears the marker
- * when main.nb is re-observed after the ack still holding the old value"
- * and "does not clear the marker on a post-ack push that observed another
- * field".
- *
- * Without both markers (no boundary captured, or the field carries none)
- * there is no per-field evidence to read, and the record falls back to the
- * older rule: the `ackObservationSeq` sequence guard, then a direct
- * match against the current confirmed reading, bounded by the grace
- * backstop above.
- */
-function latestPendingParam(
-  intentName: string, paramKey: string, receiver: 0 | 1 | null,
-  confirmedField: keyof ServerState['main'] | ModInputStateKey,
-): unknown {
-  let latest: {
-    createdAt: number; value: unknown; status: string;
-    updatedAt: number; ackObservationSeq: number | undefined;
-    ackFieldObservationTimes: Readonly<Record<string, number>> | undefined;
-  } | null = null;
-  for (const command of getCommandLifecycles()) {
-    if (command.name !== intentName) continue;
-    if (receiver !== null && command.params.receiver !== receiver) continue;
-    // Supersession is durable for the older record even after the newer
-    // terminal record's bounded presentation retention expires. Never let a
-    // superseded lifecycle become the newest selectable pending command.
-    // Identity-less legacy/test-double records have no supersession key.
-    if (command.id !== undefined && command.originalEpoch !== undefined
-      && isCommandLifecycleSuperseded(command)) continue;
-    const value = command.params[paramKey];
-    if (value === undefined) continue;
-    if (!latest || command.createdAt >= latest.createdAt) {
-      latest = {
-        createdAt: command.createdAt, value, status: command.status,
-        updatedAt: command.updatedAt, ackObservationSeq: command.ackObservationSeq,
-        ackFieldObservationTimes: command.ackFieldObservationTimes,
-      };
-    }
-  }
-  // Select chronologically first, then inspect liveness. A newer terminal
-  // same-key record is a barrier: filtering terminal records during the scan
-  // would let an older superseded pending record resurface after the newer
-  // command fails, times out, confirms, or is cancelled (MOR-1672).
-  if (!latest || (latest.status !== 'pending' && latest.status !== 'acknowledged')) return undefined;
-  if (latest.status !== 'acknowledged') return latest.value;
-
-  // Grace backstop: bounds the no-answer case (NAK, or nothing at all).
-  if (Date.now() - latest.updatedAt > ACK_CONFIRM_GRACE_MS) return undefined;
-
-  const fieldPath = receiver === null
-    ? String(confirmedField) : `${receiver === 1 ? 'sub' : 'main'}.${String(confirmedField)}`;
-  const boundary = latest.ackFieldObservationTimes?.[fieldPath];
-  const observedAt = runtime.state?.fieldStatus?.[fieldPath]?.lastObservedMonotonic;
-  if (typeof boundary === 'number' && Number.isFinite(boundary)
-    && typeof observedAt === 'number' && Number.isFinite(observedAt)) {
-    return observedAt > boundary ? undefined : latest.value;
-  }
-
-  const ackObservationSeq = latest.ackObservationSeq;
-  const currentObservationSeq = runtime.state?.observationSeq;
-  if (ackObservationSeq !== undefined && currentObservationSeq !== undefined
-    && currentObservationSeq <= ackObservationSeq) {
-    return latest.value;
-  }
-  const confirmed = receiver === null
-    ? runtime.state?.[confirmedField as ModInputStateKey]
-    : confirmedReceiverState(receiver)?.[confirmedField as keyof ServerState['main']];
-  return confirmed === latest.value ? undefined : latest.value;
-}
-
 /** Freshest unconfirmed `set_filter` target for `receiver`, or `null`.
  *  `FilterSurface` renders this as a marker on the targeted choice only —
  *  the confirmed reading stays the group's sole selection source (leg-1
  *  lesson: pending is display-only). */
 export function getPendingFilterSelection(receiver: 0 | 1): number | null {
-  const value = latestPendingParam('set_filter', 'filter', receiver, 'filter');
-  return typeof value === 'number' ? value : null;
+  return pendingFilterSelection(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /** Freshest unconfirmed `set_preamp` target for `receiver`, or `null`. Never
  *  touches the MOR-1447 combined-knob/change-guard machinery, which reads
  *  only confirmed fields. */
 export function getPendingPreampLevel(receiver: 0 | 1): number | null {
-  const value = latestPendingParam('set_preamp', 'level', receiver, 'preamp');
-  return typeof value === 'number' ? value : null;
+  return pendingPreampLevel(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /** Freshest unconfirmed `set_nb` target for `receiver`, or `null`. */
 export function getPendingNbOn(receiver: 0 | 1): boolean | null {
-  const value = latestPendingParam('set_nb', 'on', receiver, 'nb');
-  return typeof value === 'boolean' ? value : null;
+  return pendingNbOn(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /** Freshest unconfirmed `set_nr` target for `receiver`, or `null`. */
 export function getPendingNrOn(receiver: 0 | 1): boolean | null {
-  const value = latestPendingParam('set_nr', 'on', receiver, 'nr');
-  return typeof value === 'boolean' ? value : null;
+  return pendingNrOn(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /** Freshest unconfirmed `set_narrow` target for `receiver`, or `null`
@@ -1412,8 +818,7 @@ export function getPendingNrOn(receiver: 0 | 1): boolean | null {
  *  `getPendingNrOn` above — the same decision table, so confirmation,
  *  failure and supersession clear it by the same rule. */
 export function getPendingNarrow(receiver: 0 | 1): boolean | null {
-  const value = latestPendingParam('set_narrow', 'on', receiver, 'narrow');
-  return typeof value === 'boolean' ? value : null;
+  return pendingNarrow(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /**
@@ -1431,17 +836,7 @@ export function getPendingNarrow(receiver: 0 | 1): boolean | null {
  *    (latest-target-wins, same tie-break `latestPendingParam` uses).
  */
 export function getPendingNotchMode(receiver: 0 | 1): 'off' | 'auto' | 'manual' | null {
-  const auto = latestPendingParam('set_auto_notch', 'on', receiver, 'autoNotch');
-  const manual = latestPendingParam('set_manual_notch', 'on', receiver, 'manualNotch');
-  const autoBool = typeof auto === 'boolean' ? auto : null;
-  const manualBool = typeof manual === 'boolean' ? manual : null;
-  if (autoBool === true && manualBool === true) {
-    return freshestNotchStrand(receiver) === 'auto' ? 'auto' : 'manual';
-  }
-  if (autoBool === true) return 'auto';
-  if (manualBool === true) return 'manual';
-  if (autoBool === false && manualBool === false) return 'off';
-  return null;
+  return pendingNotchMode(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /** Freshest unconfirmed `set_manual_notch_width` target for `receiver`, or
@@ -1449,24 +844,7 @@ export function getPendingNotchMode(receiver: 0 | 1): 'off' | 'auto' | 'manual' 
  *  `manualNotchWidth` — the same decision table the sibling accessors use,
  *  so confirmation, failure and supersession clear it by the same rule. */
 export function getPendingManualNotchWidth(receiver: 0 | 1): number | null {
-  const value = latestPendingParam('set_manual_notch_width', 'value', receiver, 'manualNotchWidth');
-  return typeof value === 'number' ? value : null;
-}
-
-/** Which of the two notch strands holds the freshest non-terminal record. */
-function freshestNotchStrand(receiver: 0 | 1): 'auto' | 'manual' {
-  let autoAt = Number.NEGATIVE_INFINITY;
-  let manualAt = Number.NEGATIVE_INFINITY;
-  for (const command of getCommandLifecycles()) {
-    if (command.params.receiver !== receiver) continue;
-    if (command.id !== undefined && command.originalEpoch !== undefined
-      && isCommandLifecycleSuperseded(command)) continue;
-    if (typeof command.params.on !== 'boolean' || command.params.on !== true) continue;
-    if (command.status !== 'pending' && command.status !== 'acknowledged') continue;
-    if (command.name === 'set_auto_notch' && command.createdAt >= autoAt) autoAt = command.createdAt;
-    else if (command.name === 'set_manual_notch' && command.createdAt >= manualAt) manualAt = command.createdAt;
-  }
-  return autoAt >= manualAt ? 'auto' : 'manual';
+  return pendingManualNotchWidth(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 // ── Repeater panel pending targets (MOR-2111) ──
@@ -1477,108 +855,23 @@ function freshestNotchStrand(receiver: 0 | 1): 'auto' | 'manual' {
  * TSQL on means TSQL, then TSQL off or tone on means TONE.
  */
 export function getPendingRepeaterTone(receiver: 0 | 1): 'off' | 'tone' | 'tsql' | null {
-  const tsql = latestPendingParam('set_repeater_tsql', 'on', receiver, 'repeaterTsql');
-  const tone = latestPendingParam('set_repeater_tone', 'on', receiver, 'repeaterTone');
-  if (tone === false) return 'off';
-  if (tsql === true) return 'tsql';
-  if (tsql === false || tone === true) return 'tone';
-  return null;
+  return pendingRepeaterTone(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /** Freshest unconfirmed repeater shift direction for `receiver`, or `null`. */
 export function getPendingRepeaterShift(receiver: 0 | 1): number | null {
-  const value = latestPendingParam('set_repeater_shift', 'direction', receiver, 'repeaterShift');
-  return typeof value === 'number' ? value : null;
+  return pendingRepeaterShift(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /** Freshest unconfirmed CTCSS tone frequency (centiHz) for `receiver`, or
  *  `null`. The panel writes `set_tone_freq` in OFF/TONE and `set_tsql_freq`
  *  in TSQL, so both in-flight names count. */
 export function getPendingToneFreq(receiver: 0 | 1): number | null {
-  const tone = latestPendingParam('set_tone_freq', 'freq', receiver, 'toneFreq');
-  if (typeof tone === 'number') return tone;
-  const tsql = latestPendingParam('set_tsql_freq', 'freq', receiver, 'tsqlFreq');
-  return typeof tsql === 'number' ? tsql : null;
+  return pendingToneFreq(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 // ── Generic armed/pending signal (MOR-1519) ──
-/**
- * ARMED-SIGNAL CONTRACT — owner ruling MOR-1519: any control that does not
- * switch in real time but is instead confirmed by polling (the radio's own
- * observed state, same as every accessor above) needs a generic "in flight"
- * marker, so an operator gets feedback the instant they act instead of the
- * multi-second silent lag the ticket was filed against (MODE buttons: click
- * → nothing visible → the poll eventually confirms). `ArmedFact`/`armedFact`
- * below are a GENERIC READ over `latestPendingParam`'s decision table above
- * — not a second source of truth, not a reimplementation. Every honesty rule
- * documented on `latestPendingParam` and `ACK_CONFIRM_GRACE_MS` applies
- * unchanged:
- *  - `armed` goes true the instant a command dispatches (`status ===
- *    'pending'`), stays true through the transport ack (`'acknowledged'`),
- *    and goes false when `latestPendingParam` releases the record.
- *  - A re-click while armed re-arms at the new target: `latestPendingParam`'s
- *    freshest-`createdAt`-wins tie-break already handles this, no separate
- *    "already armed" state to fight.
- *  - `armed` NEVER survives a terminal outcome. `latestPendingParam` first
- *    selects the newest same-key record chronologically, then requires that
- *    exact record to be pending/acknowledged. Thus a newer failed, cancelled,
- *    timed-out, or confirmed record clears armed immediately and cannot let an
- *    older superseded command resurface as if it were still in flight.
- *
- * Contract for skins consuming this signal:
- *  - MAY style `armed` however fits: desktop-v2 renders it as a `data-armed`
- *    attribute on the actual `<button>` element (`ControlButton.svelte`,
- *    parity with `DspSurface.svelte`'s `data-pending-status` marker for
- *    NB/NR) with `opacity: 0.75` as the primary, font-independent visual
- *    channel plus an underline structural backstop (`ModePanel.svelte`); an
- *    LCD skin may prefer a glow or blink — that is a presentation choice,
- *    not part of this contract. NOTE (review F1/F2): the marker MUST sit on
- *    the actual interactive element, never a wrapper — a wrapper is not
- *    reachable by an attribute selector, and relying on CSS inheritance
- *    (e.g. `font-style`) is unsafe: the UA `<button>` stylesheet supplies
- *    its own `font-style: normal` that beats an inherited value, and this
- *    codebase's vendored font + `font-synthesis: none` (`app.css`) means an
- *    italic-only affordance can compute without ever rendering — verify any
- *    font-dependent channel AS RENDERED, not just as computed.
- *  - MUST NOT suppress the confirmed-vs-armed distinction, and MUST NOT ever
- *    present an armed (unconfirmed) value as confirmed — same doctrine as
- *    `data-freq-status='pending'` (`FrequencyDisplayInteractive.svelte`) and
- *    `data-pending-status='pending'` (`DspSurface.svelte`): a structural
- *    marker on the element, never a color-only tell.
- *  - `data-*` carries NO accessibility semantics on its own (review F3) — it
- *    is a hook for CSS and tests, not for assistive tech. A skin exposing
- *    `armed` MUST also pair the marked control with an `aria-describedby`
- *    announcement (a `.sr-only` element, same pattern as
- *    `DspSurface.svelte`'s pending-toggle announcement) so AT users get the
- *    same "still in flight" information sighted users get from the visual
- *    channel. `ModePanel.svelte` does this via `HardwareButton`'s
- *    `describedBy` prop.
- *
- * KNOWN DUPLICATION (MOR-1541): the `.sr-only` rule itself is copy-pasted
- * verbatim into all five consumer panels (`ModePanel.svelte`,
- * `AgcPanel.svelte`, `FilterPanel.svelte`, `RfFrontEnd.svelte`,
- * `DspPanel.svelte`) rather than living in one shared file, unlike the
- * `data-armed` visual rule above which was consolidated into
- * `control-button-armed.css`. Accepted, not an oversight: Svelte's
- * `<style>` scoping makes a genuinely shared `.sr-only` class awkward to
- * factor out (either an unscoped `:global()` leak, or a shared import every
- * panel needs just for one utility class) for a one-line rule unlikely to
- * drift. Left as-is; do not refactor without a concrete reason.
- */
-export interface ArmedFact<T> {
-  armed: boolean;
-  /** The in-flight target while `armed`; `null` otherwise. Pending is
-   *  display-only (leg-1 doctrine) — never read this as an arithmetic base
-   *  for a "toggle from pending" computation. */
-  value: T | null;
-}
-
-function armedFact<T>(
-  intentName: string, paramKey: string, receiver: 0 | 1, confirmedField: keyof ServerState['main'],
-): ArmedFact<T> {
-  const value = latestPendingParam(intentName, paramKey, receiver, confirmedField);
-  return value === undefined ? { armed: false, value: null } : { armed: true, value: value as T };
-}
+export type { ArmedFact } from './pending-intent-table';
 
 /**
  * MODE buttons' armed fact (MOR-1519, first consumer of the generic signal
@@ -1596,52 +889,27 @@ function armedFact<T>(
 export function getModeArmed(): ArmedFact<string> {
   const state = runtime.state;
   if (!state) return { armed: false, value: null };
-  const receiver: 0 | 1 = state.active === 'SUB' ? 1 : 0;
-  return armedFact<string>('set_mode', 'mode', receiver, 'mode');
+  return modeArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 // ── Armed-signal adoption long tail (MOR-1536) ──
-/**
- * Shared active-receiver split for the accessors below — the exact same
- * `state.active === 'SUB'` read `getModeArmed` above performs inline, and
- * the same one every `activeRx(state)`-based prop mapper in `panel-props.ts`
- * uses for AGC/filter/preamp/attenuator/data-mode/notch. `null` only when
- * there is no state yet (cold start).
- *
- * KNOWN BOUND (same class `getModeArmed` already documents): a handler that
- * targets a receiver other than `state.active` at dispatch time (the
- * focus-echo window, `consumePendingFocus()`) makes an accessor built on
- * this helper degrade to no-feedback for that one click. None of the
- * handlers this helper serves (`onAgcModeChange`, `onFilterChange`,
- * `onPreChange`, `onAttChange`, `onDataModeChange`, `onNotchModeChange`)
- * consume the focus-echo pending target the way `onModeChange` does, so in
- * practice they are not exposed to it today — noted for completeness, not
- * because a live gap is known.
- */
-function activeReceiverOrNull(): 0 | 1 | null {
-  const state = runtime.state;
-  if (!state) return null;
-  return state.active === 'SUB' ? 1 : 0;
-}
-
 /** AGC mode buttons' armed fact (`set_agc`). No `receiver` param — same
  *  single-active-receiver read `toAgcProps`'s `activeRx(state)` uses. */
 export function getAgcArmed(): ArmedFact<number> {
-  const receiver = activeReceiverOrNull();
-  if (receiver === null) return { armed: false, value: null };
-  return armedFact<number>('set_agc', 'mode', receiver, 'agc');
+  const state = runtime.state;
+  if (activeReceiverOrNull(state) === null) return { armed: false, value: null };
+  return agcArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
-/** Filter-select (FIL1/2/3) armed fact (`set_filter`). This is the exact
- *  same `latestPendingParam('set_filter', 'filter', receiver, 'filter')`
- *  call `getPendingFilterSelection(receiver)` above already makes — this
+/** Filter-select (FIL1/2/3) armed fact (`set_filter`). This is the same
+ *  pending read `getPendingFilterSelection(receiver)` above makes — this
  *  wrapper only supplies the no-receiver-arg, `ArmedFact`-shaped read
  *  `FilterPanel.svelte` needs (parity with `getModeArmed`'s shape), not a
  *  second implementation. */
 export function getFilterArmed(): ArmedFact<number> {
-  const receiver = activeReceiverOrNull();
-  if (receiver === null) return { armed: false, value: null };
-  return armedFact<number>('set_filter', 'filter', receiver, 'filter');
+  const state = runtime.state;
+  if (activeReceiverOrNull(state) === null) return { armed: false, value: null };
+  return filterArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 /** Filter-shape (SHARP/SOFT) armed fact (`set_filter_shape`, param `shape`,
@@ -1650,17 +918,17 @@ export function getFilterArmed(): ArmedFact<number> {
  *  flight at the same time and must not be conflated — same separation as
  *  `getDataModeArmed` from `getModeArmed`. */
 export function getFilterShapeArmed(): ArmedFact<number> {
-  const receiver = activeReceiverOrNull();
-  if (receiver === null) return { armed: false, value: null };
-  return armedFact<number>('set_filter_shape', 'shape', receiver, 'filterShape');
+  const state = runtime.state;
+  if (activeReceiverOrNull(state) === null) return { armed: false, value: null };
+  return filterShapeArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 /** Preamp-level armed fact (`set_preamp`). Same underlying primitive as
  *  `getPendingPreampLevel(receiver)` above, `ArmedFact`-shaped. */
 export function getPreampArmed(): ArmedFact<number> {
-  const receiver = activeReceiverOrNull();
-  if (receiver === null) return { armed: false, value: null };
-  return armedFact<number>('set_preamp', 'level', receiver, 'preamp');
+  const state = runtime.state;
+  if (activeReceiverOrNull(state) === null) return { armed: false, value: null };
+  return preampArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 /** Attenuator armed fact (`set_attenuator`, param `db`, confirmed field
@@ -1670,9 +938,9 @@ export function getPreampArmed(): ArmedFact<number> {
  *  2`, `rigs/ic7300.toml`/`rigs/ftx1.toml`); the `>2`-value
  *  `AttenuatorControl.svelte` branch is unwired (see PR body). */
 export function getAttenuatorArmed(): ArmedFact<number> {
-  const receiver = activeReceiverOrNull();
-  if (receiver === null) return { armed: false, value: null };
-  return armedFact<number>('set_attenuator', 'db', receiver, 'att');
+  const state = runtime.state;
+  if (activeReceiverOrNull(state) === null) return { armed: false, value: null };
+  return attenuatorArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 /** Data-mode armed fact (`set_data_mode`) — `ModePanel.svelte`'s DATA
@@ -1680,13 +948,13 @@ export function getAttenuatorArmed(): ArmedFact<number> {
  *  entirely; a mode change and a data-mode change can be in flight at the
  *  same time and must not be conflated). */
 export function getDataModeArmed(): ArmedFact<number> {
-  const receiver = activeReceiverOrNull();
-  if (receiver === null) return { armed: false, value: null };
-  return armedFact<number>('set_data_mode', 'mode', receiver, 'dataMode');
+  const state = runtime.state;
+  if (activeReceiverOrNull(state) === null) return { armed: false, value: null };
+  return dataModeArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 /** Active DATA group's MOD-input source pending over the same lifecycle
- * decision table, using its top-level readback rather than a receiver field. */
+ *  decision table, using its top-level readback rather than a receiver field. */
 export function getModInputArmed(): ArmedFact<number> {
   const state = runtime.state;
   const rx = state?.active === 'SUB' ? state.sub : state?.main;
@@ -1694,9 +962,7 @@ export function getModInputArmed(): ArmedFact<number> {
   if (!Number.isSafeInteger(dataMode) || (dataMode as number) < 0 || (dataMode as number) > 3) {
     return { armed: false, value: null };
   }
-  const key = modInputStateKey(dataMode as number);
-  const value = latestPendingParam(modInputCommand(dataMode as number), 'source', null, key);
-  return typeof value === 'number' ? { armed: true, value } : { armed: false, value: null };
+  return modInputArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 /** Auto-notch armed fact (`set_auto_notch`). Notch mode is written as TWO
@@ -1707,17 +973,17 @@ export function getModInputArmed(): ArmedFact<number> {
  *  accessors, one per real command, same as the two real buttons
  *  (`DspPanel.svelte`'s NOTCH and A-NOTCH). */
 export function getAutoNotchArmed(): ArmedFact<boolean> {
-  const receiver = activeReceiverOrNull();
-  if (receiver === null) return { armed: false, value: null };
-  return armedFact<boolean>('set_auto_notch', 'on', receiver, 'autoNotch');
+  const state = runtime.state;
+  if (activeReceiverOrNull(state) === null) return { armed: false, value: null };
+  return autoNotchArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 /** Manual-notch armed fact (`set_manual_notch`) — see `getAutoNotchArmed`'s
  *  doc comment for why this is a separate accessor, not a combined one. */
 export function getManualNotchArmed(): ArmedFact<boolean> {
-  const receiver = activeReceiverOrNull();
-  if (receiver === null) return { armed: false, value: null };
-  return armedFact<boolean>('set_manual_notch', 'on', receiver, 'manualNotch');
+  const state = runtime.state;
+  if (activeReceiverOrNull(state) === null) return { armed: false, value: null };
+  return manualNotchArmed(getCommandLifecycles(), state, Date.now(), lifecycleSuperseded);
 }
 
 export function deriveAudioRoutingConfig() { return runtime.audioRouting; }
