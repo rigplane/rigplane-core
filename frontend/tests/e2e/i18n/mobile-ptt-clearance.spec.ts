@@ -166,10 +166,15 @@ test('no visible interactive element ever sits under the PTT button (MOR-2874)',
     await page.goto('/');
     await settled(page);
     const scroller = page.locator('.m-content');
-    const scrollRange = await scroller.evaluate((el) => el.scrollHeight - el.clientHeight);
     // The phone is one scroller (MOR-2816/2851): without real scroll range
     // the middle and bottom stages would silently degenerate to the top.
-    expect(scrollRange, `${size}: the phone content must actually scroll`).toBeGreaterThan(0);
+    // The dense panel may still be laying out right after settled(), so
+    // the range is polled until it is positive instead of read once.
+    await expect.poll(() => scroller.evaluate((el) => el.scrollHeight - el.clientHeight), {
+      message: `${size}: the phone content must actually scroll`,
+      timeout: 10_000,
+    }).toBeGreaterThan(0);
+    const scrollRange = await scroller.evaluate((el) => el.scrollHeight - el.clientHeight);
     const stages: [string, number][] = [
       ['top', 0],
       ['middle', Math.round(scrollRange / 2)],
