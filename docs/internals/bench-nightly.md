@@ -81,8 +81,13 @@ uploaded, because workflow artifacts of this public repository are public.
 from artifacts) and writes a summary table to the log and the run page.
 
 ```bash
-gh workflow run certification-status.yml --ref main -f nights=3
+gh workflow run certification-status.yml --ref main -f radios=IC-7610 -f nights=3 \
+  -f 'no_verdict=<YYYY-MM-DD>:IC-7610'
 ```
+
+The inputs are `radios` (the scope, default `IC-7610`), `nights` (default 3) and
+`no_verdict` (default empty); the script takes them as `--radios`, `--nights` and
+`--no-verdict`.
 
 - **Night.** A UTC date, taken from the run's `created_at`. Its run is the
   newest completed `schedule` run created that day; manual dispatches and older
@@ -98,11 +103,23 @@ gh workflow run certification-status.yml --ref main -f nights=3
   radio), `missing night` (no run that day), `job <conclusion>`, or
   `validate not run` (the job concluded `success` but its `Validate` step did
   not).
-- **Streak.** PASS nights from the newest backwards to the first non-PASS. A
-  radio is certified when its streak reaches `nights` (default 3) and contains
-  a write-and-restore night anywhere in it, not only among the last `nights`.
-- **Verdict.** CERTIFIED only if every listed radio is certified. `radios` is a
-  comma-separated list of labels; empty means every radio with a job in the
-  newest completed scheduled run. Exit status 1 means not certified, 2 that the run
-  history could not be read or is not newest first. At most the 30 newest
-  nights are read.
+- **No verdict.** A night on which another certification item held the bench
+  lease. It is never inferred from logs: it is only what `no_verdict` names, a
+  comma-separated list of `YYYY-MM-DD:RADIO` entries, or `YYYY-MM-DD` for every
+  radio in scope, recorded by hand. It replaces whatever the night's job did,
+  shows as `no verdict (bench lease held by another certification item)`, and
+  neither counts toward the streak nor ends it. It is not a write-and-restore
+  night, whatever the weekday. Any busy night that is not listed stays `busy`
+  and ends the streak.
+- **Streak.** PASS nights from the newest backwards, walking over no verdict
+  nights, to the first night that is neither. A radio is certified when its
+  streak reaches `nights` (default 3) and contains a write-and-restore night
+  anywhere in it, not only among the last `nights`.
+- **Scope and verdict.** Only the radios named by `radios` (comma-separated job
+  labels) are judged; the script has no default scope and refuses an empty
+  one. Other radios with a job on the newest night are listed as `out of scope`
+  with their nights and never change the verdict. CERTIFIED needs every radio in
+  scope certified, and the first line of the summary names them: `CERTIFIED for
+  IC-7610` or `NOT CERTIFIED for IC-7610: <reason>`. Exit status 1 means not
+  certified; 2 means the run history could not be read or is not newest first,
+  or an argument is invalid. At most the 30 newest nights are read.

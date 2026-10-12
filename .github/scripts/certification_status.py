@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Report whether the bench radios have enough consecutive PASS nights.
+"""Report whether the radios in scope have enough consecutive PASS nights.
 
 Reads the scheduled runs of bench-nightly.yml on main from the Actions API and
-prints a Markdown summary. Exit status: 0 certified, 1 not certified, 2 the run
-history could not be read.
+prints a Markdown summary. Only the radios named by --radios are judged; the others
+seen in the newest run are listed as out of scope. Exit status: 0 certified, 1 not
+certified, 2 the run history could not be read or an argument is invalid.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ PER_PAGE = 100
 MAX_NIGHTS = 30
 PASS = "PASS"
 MISSING_NIGHT = "missing night"
+NO_VERDICT = "no verdict (bench lease held by another certification item)"
 READ_ONLY, WRITE_RESTORE = "read-only", "write-and-restore"
 SATURDAY, SUNDAY = 5, 6  # datetime.weekday(); the cron "30 1 * * 0,6" of the workflow
 VALIDATE_STEP = "Validate"
@@ -29,6 +31,7 @@ DIFF_STEP = "Night-to-night diff"
 OUTCOME_PREFIX = "Outcome: "
 Run = dict[str, Any]
 Job = dict[str, Any]
+NoVerdict = frozenset[tuple[str, str | None]]  # (YYYY-MM-DD, radio label or None)
 
 
 class Night(NamedTuple):
@@ -79,14 +82,24 @@ def night_kind(day: date) -> str:
 
 
 def streak(nights: Sequence[Night]) -> tuple[int, bool]:
-    """Leading PASS nights (newest first) and whether one is write-and-restore."""
+    """Leading PASS nights (newest first) and whether one is write-and-restore.
+
+    A no verdict night is walked over: it adds nothing and does not end the streak.
+    """
     count, write_restore = 0, False
     for night in nights:
+        if night.outcome == NO_VERDICT:
+            continue
         if night.outcome != PASS:
             break
         count += 1
         write_restore = write_restore or night.kind == WRITE_RESTORE
     return count, write_restore
+
+
+def stopper(nights: Sequence[Night]) -> Night | None:
+    """The night that ends the streak: the first that is neither PASS nor no verdict."""
+    return next((n for n in nights if n.outcome not in (PASS, NO_VERDICT)), None)
 
 
 def judge(history: Mapping[str, Sequence[Night]], nights: int) -> dict[str, str]:
@@ -100,9 +113,10 @@ def judge(history: Mapping[str, Sequence[Night]], nights: int) -> dict[str, str]
     for radio, rows in history.items():
         count, write_restore = streak(rows)
         if count < nights:
+            end = stopper(rows)
             stop = (
-                f"stopped by {rows[count].outcome} on {rows[count].date}"
-                if count < len(rows)
+                f"stopped by {end.outcome} on {end.date}"
+                if end
                 else "no earlier night inspected"
             )
             reasons[radio] = f"streak {count} of {nights} nights; {stop}"
@@ -135,61 +149,76 @@ def night_slots(runs: Iterable[Run]) -> Iterator[tuple[date, Run | None]]:
 def collect(
     runs: Iterable[Run],
     fetch_jobs: Callable[[int], list[Job]],
-    radios: Sequence[str],
+    scope: Sequence[str],
     nights: int,
+    no_verdict: NoVerdict = frozenset(),
 ) -> dict[str, list[Night]]:
-    """Per radio its nights, newest first. Radios default to the newest run's jobs.
+    """Per radio its nights, newest first: the radios in scope, then any other radio
+    that has a job on the newest night (out of scope, shown but not judged).
 
-    Runs are read lazily. Reading stops after MAX_NIGHTS nights, once `nights` nights
-    are in and every radio's streak has ended, or when no radio is known after the first.
+    A night of a radio in scope that `no_verdict` names, or names for every radio,
+    is NO_VERDICT whatever its job did. Runs are read lazily. Reading stops after
+    MAX_NIGHTS nights, or once `nights` nights are in and the streak of every radio
+    in scope has ended.
     """
-    history: dict[str, list[Night]] = {radio: [] for radio in radios}
+    history: dict[str, list[Night]] = {radio: [] for radio in scope}
     for count, (day, run) in enumerate(night_slots(runs), 1):
         jobs = {job["name"]: job for job in fetch_jobs(run["id"])} if run else {}
-        if count == 1 and not history:
-            history = {name: [] for name in jobs}
+        if count == 1:
+            for name in jobs:
+                history.setdefault(name, [])
+        iso = day.isoformat()
         for radio, rows in history.items():
             outcome = classify_job(jobs.get(radio)) if run else MISSING_NIGHT
-            rows.append(Night(day.isoformat(), night_kind(day), outcome))
-        ended = all(streak(rows)[0] < len(rows) for rows in history.values())
-        if not history or count >= MAX_NIGHTS or (ended and count >= nights):
+            if radio in scope and {(iso, radio), (iso, None)} & no_verdict:
+                outcome = NO_VERDICT
+            rows.append(Night(iso, night_kind(day), outcome))
+        ended = all(stopper(history[radio]) is not None for radio in scope)
+        if count >= MAX_NIGHTS or (ended and count >= nights):
             break
     return history
 
 
 def render(
-    history: Mapping[str, Sequence[Night]], nights: int, reasons: Mapping[str, str]
+    history: Mapping[str, Sequence[Night]],
+    scope: Sequence[str],
+    nights: int,
+    reasons: Mapping[str, str],
 ) -> str:
-    verdict = "NOT CERTIFIED" if reasons or not history else "CERTIFIED"
+    names = ", ".join(scope)
+    why = "; ".join(
+        reason if len(scope) == 1 else f"{radio}: {reason}"
+        for radio, reason in reasons.items()
+    )
+    verdict = f"CERTIFIED for {names}"
+    if reasons:
+        verdict = f"NOT CERTIFIED for {names}: {why}"
     lines = [
         f"### Bench certification: {verdict}",
         "",
-        f"Rule: {nights} consecutive PASS nights per radio, newest backwards, with a "
-        f"{WRITE_RESTORE} night (Saturday or Sunday UTC) in the streak. A night is a "
-        f"UTC date: its newest completed scheduled run of {WORKFLOW} on main, or "
-        f"{MISSING_NIGHT} if it has none. At most {MAX_NIGHTS} nights are read.",
+        f"Rule: {nights} consecutive PASS nights per radio in scope, newest backwards, "
+        f"with a {WRITE_RESTORE} night (Saturday or Sunday UTC) in the streak. A night "
+        f"is a UTC date: its newest completed scheduled run of {WORKFLOW} on main, or "
+        f"{MISSING_NIGHT} if it has none. A no verdict night neither counts nor ends "
+        f"the streak. At most {MAX_NIGHTS} nights are read.",
         "",
-    ]
-    if not history:
-        lines.append(
-            "No radio to certify: the newest completed scheduled run has no radio "
-            "job, or there is no such run."
-        )
-        return "\n".join(lines)
-    lines += [
         "| Radio | Streak | Write-and-restore in streak | Result |",
         "| --- | ---: | --- | --- |",
     ]
     for radio, rows in history.items():
+        if radio not in scope:
+            lines.append(f"| {radio} |  |  | out of scope |")
+            continue
         count, write_restore = streak(rows)
         result = f"not certified: {reasons[radio]}" if radio in reasons else "certified"
         lines.append(
             f"| {radio} | {count} | {'yes' if write_restore else 'no'} | {result} |"
         )
     for radio, rows in history.items():
+        scoped = "" if radio in scope else " (out of scope)"
         lines += [
             "",
-            f"#### {radio}: last {nights} nights",
+            f"#### {radio}{scoped}: last {nights} nights",
             "",
             "| Night (UTC) | Type | Outcome |",
             "| --- | --- | --- |",
@@ -201,13 +230,35 @@ def render(
 def certify(
     runs: Iterable[Run],
     fetch_jobs: Callable[[int], list[Job]],
-    radios: Sequence[str],
+    scope: Sequence[str],
     nights: int,
+    no_verdict: NoVerdict = frozenset(),
 ) -> tuple[int, str]:
-    """Exit status (0 certified, 1 not) and the Markdown summary."""
-    history = collect(runs, fetch_jobs, radios, nights)
-    reasons = judge(history, nights)
-    return (0 if history and not reasons else 1), render(history, nights, reasons)
+    """Exit status (0 certified, 1 not) for the radios in scope, and the summary."""
+    history = collect(runs, fetch_jobs, scope, nights, no_verdict)
+    reasons = judge({radio: history[radio] for radio in scope}, nights)
+    return (1 if reasons else 0), render(history, scope, nights, reasons)
+
+
+def parse_radios(text: str) -> list[str]:
+    radios = [radio.strip() for radio in text.split(",") if radio.strip()]
+    if not radios:
+        raise argparse.ArgumentTypeError("the radio scope is empty")
+    return radios
+
+
+def parse_no_verdict(text: str) -> NoVerdict:
+    """Entries `YYYY-MM-DD:RADIO`, or `YYYY-MM-DD` for every radio, comma-separated."""
+    entries: set[tuple[str, str | None]] = set()
+    for item in filter(None, (part.strip() for part in text.split(","))):
+        day, _, radio = item.partition(":")
+        try:
+            entries.add((date.fromisoformat(day).isoformat(), radio.strip() or None))
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"bad no verdict entry {item!r}, expected YYYY-MM-DD or YYYY-MM-DD:RADIO"
+            ) from None
+    return frozenset(entries)
 
 
 def _get_json(url: str, token: str) -> Any:
@@ -245,20 +296,32 @@ def list_jobs(api: str, repo: str, token: str, run_id: int) -> list[Job]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--radios", default="", help="comma-separated radio labels")
+    parser.add_argument(
+        "--radios",
+        required=True,
+        type=parse_radios,
+        help="comma-separated labels of the radios in scope",
+    )
     parser.add_argument("--nights", type=int, default=3)
+    parser.add_argument(
+        "--no-verdict",
+        type=parse_no_verdict,
+        default="",
+        help="comma-separated YYYY-MM-DD:RADIO (or YYYY-MM-DD, every radio) nights "
+        "that are neither a pass nor a failure",
+    )
     args = parser.parse_args(argv)
     if args.nights < 1:
         parser.error("--nights must be at least 1")
     api = os.environ.get("GITHUB_API_URL", "https://api.github.com")
     repo, token = os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_TOKEN"]
-    radios = [radio.strip() for radio in args.radios.split(",") if radio.strip()]
     try:
         status, summary = certify(
             list_runs(api, repo, token),
             lambda run_id: list_jobs(api, repo, token, run_id),
-            radios,
+            args.radios,
             args.nights,
+            args.no_verdict,
         )
     except (OSError, ValueError) as error:
         print(
