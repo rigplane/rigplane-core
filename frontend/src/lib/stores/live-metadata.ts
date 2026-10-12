@@ -45,6 +45,7 @@ export function isStateAdvance(baseline: StateAdvanceBaseline | null, next: obje
     ?? (record.revision as number | undefined);
   if (nextRevision === undefined) return false;
   if (nextRevision > baseline.stateRevision) return true;
+  if (nextRevision !== baseline.stateRevision) return false;
   const nextFreshness = (record.freshnessRevision as number | undefined) ?? 0;
   const nextObservation = (record.observationSeq as number | undefined) ?? 0;
   const nextHealth = (record.healthRevision as number | undefined) ?? 0;
