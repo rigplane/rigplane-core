@@ -2238,6 +2238,87 @@ class TestCheckPortsAvailable:
         assert "already serving this radio" in captured.err
         assert str(holder.pid) in captured.err
 
+    def test_second_resident_start_refuses_before_busy_hold_starts(
+        self, capsys, tmp_path
+    ):
+        """MOR-3391 R4: a second resident start refuses before the busy-hold machinery starts.
+
+        The guard in `_run` returns 1 before the radio is constructed, so
+        the start-up busy-hold path (`_run_web_station_with_busy_hold`,
+        which spawns the background connect task and serves not-ready) is
+        never entered, `_cmd_web` never runs, and no listener binds. The
+        holder is a separate process, as in production; the conftest
+        fixture redirects the guard's default lock directory at this test's
+        tmp dir, so the child and `_run` below share one lock file.
+        """
+        import asyncio
+        import os
+        import subprocess
+        import sys
+
+        from rigplane.cli import _run
+        from rigplane.cli._instance_guard import radio_lock_identity
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
+        identity = radio_lock_identity(
+            LanBackendConfig(host="1.2.3.4", port=args.control_port)
+        )
+        child_script = (
+            "import sys, time\n"
+            "from rigplane.cli._instance_guard import acquire_resident_lock\n"
+            "acquire_resident_lock(sys.argv[1], cache_dir=sys.argv[2])\n"
+            "print('READY', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        src_dir = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(
+            os.environ,
+            PYTHONPATH=src_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        )
+        holder = subprocess.Popen(
+            [sys.executable, "-c", child_script, identity, str(tmp_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        assert holder.stdout is not None
+        ready = holder.stdout.readline()
+        assert ready.strip() == "READY", (
+            f"holder child failed: {holder.stderr.read() if holder.stderr else ''}"
+        )
+        try:
+            with (
+                patch(
+                    "rigplane.cli.create_radio",
+                    side_effect=AssertionError("radio must not be created"),
+                ),
+                patch(
+                    "rigplane.cli.check_ports_available",
+                    side_effect=AssertionError("no listener probe may bind"),
+                ),
+                patch(
+                    "rigplane.cli._run_web_station_with_busy_hold",
+                    side_effect=AssertionError("busy-hold machinery must not start"),
+                ),
+                patch(
+                    "rigplane.cli._cmd_web",
+                    side_effect=AssertionError("_cmd_web must not run"),
+                ),
+            ):
+                try:
+                    result = asyncio.run(asyncio.wait_for(_run(args), timeout=10.0))
+                except AssertionError as exc:
+                    pytest.fail(f"second resident start went past the guard: {exc}")
+        finally:
+            holder.kill()
+            holder.wait(timeout=30)
+
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "already serving this radio" in captured.err
+        assert str(holder.pid) in captured.err
+
     @pytest.mark.parametrize(
         ("argv", "expect"),
         [
