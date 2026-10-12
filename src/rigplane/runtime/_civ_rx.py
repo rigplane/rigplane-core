@@ -1560,10 +1560,14 @@ class CivRuntime:
         """Start the detached recovery now, unless one is already under way.
 
         A radio "session free" notice calls this from the datagram callback.
-        It is a no-op unless the session is CONNECTED, no recovery is already
+        It is a no-op unless the session is CONNECTED or held by the identity
+        phase (``_lan_identity_phase_owns_open_link``), no recovery is already
         flagged, and no recovery task is still running.
         """
-        if self._host._conn_state != RadioConnectionState.CONNECTED:
+        owns_hold = getattr(self._host, "_lan_identity_phase_owns_open_link", None)
+        if self._host._conn_state != RadioConnectionState.CONNECTED and not (
+            owns_hold is not None and owns_hold()
+        ):
             return
         if self._host._civ_recovering:
             return

@@ -107,11 +107,22 @@ class ControlPhaseRuntime:
     # owns CONNECTING↔COOLDOWN (it RELEASES before each cooldown wait).
     _STATUS_RETRY_PAUSE = 10.0
     _STATUS_REJECT_COOLDOWN = 30.0
+    # Token-renewal probe of a held session (``probe_control_session``). An
+    # answer counts only for request type 0x05 and our token at 0x1C; the u32
+    # at ``_RENEWAL_RESPONSE_OFFSET`` is the verdict.
+    _RENEWAL_PROBE_TIMEOUT_S = 1.0
+    _RENEWAL_PROBE_ATTEMPTS = 3
+    _RENEWAL_RESPONSE_OFFSET = 0x30
+    _RENEWAL_OK = 0x00000000
+    _RENEWAL_REJECT = 0xFFFFFFFF
 
     def __init__(self, host: ControlPhaseHost) -> None:
         self._host = host
         # A held identity defers this audio snapshot until its late answer.
         self._deferred_retail: "tuple[object, object] | None" = None
+        self._renewal_waiter: asyncio.Future[bool] | None = None
+        self._renewal_sent_at: float | None = None
+        self._renewal_answered_at: float | None = None
 
     def _resolve_local_bind_host(self) -> str:
         """Resolve the routed local interface IP used to reach the radio."""
@@ -158,6 +169,7 @@ class ControlPhaseRuntime:
         # first 0x90 from the queue.
         h._ctrl_transport._discard_data_packets = False
         h._ctrl_transport._conninfo_notice_callback = None
+        h._ctrl_transport._token_reply_callback = None
         local_bind_host = self._resolve_local_bind_host()
         h._local_bind_host = local_bind_host
 
@@ -453,10 +465,10 @@ class ControlPhaseRuntime:
         h._ctrl_transport.state = ConnectionState.CONNECTED
         # Control transport queue has no consumer after setup — discard
         # incoming data packets to prevent unbounded queue growth. A 0x90
-        # conninfo notice is the exception: it reports whether the radio
-        # still holds our session.
+        # conninfo notice and a 0x40 token answer are the exceptions.
         h._ctrl_transport._discard_data_packets = True
         h._ctrl_transport._conninfo_notice_callback = self._on_conninfo_notice
+        h._ctrl_transport._token_reply_callback = self._on_token_reply
         self._start_token_renewal()
         if h._auto_reconnect:
             self._start_watchdog()
@@ -524,6 +536,7 @@ class ControlPhaseRuntime:
         """Cleanly disconnect from the radio."""
         h = self._host
         self._deferred_retail = None
+        self._renewal_waiter = None
         if h._conn_state != RadioConnectionState.CONNECTED:
             return
         h._conn_state = RadioConnectionState.DISCONNECTING
@@ -659,6 +672,7 @@ class ControlPhaseRuntime:
         """
         h = self._host
         self._deferred_retail = None
+        self._renewal_waiter = None
         # Best-effort teardown of any data/audio transports first (mirrors
         # disconnect ordering), then the always-sent token-remove.
         self._stop_watchdog()
@@ -1030,6 +1044,62 @@ class ControlPhaseRuntime:
             "radio reported the LAN session free (conninfo busy=0)"
         )
 
+    def _on_token_reply(self, data: bytes) -> None:
+        """A 0x40 packet on the control port; settles a pending renewal probe.
+
+        Runs inside the datagram callback. Only a renewal answer carrying our
+        token counts; OK also stamps ``_renewal_answered_at``.
+        """
+        h = self._host
+        if data[0x15] != 0x05 or struct.unpack_from("<I", data, 0x1C)[0] != h._token:
+            return
+        result = struct.unpack_from("<I", data, self._RENEWAL_RESPONSE_OFFSET)[0]
+        if result == self._RENEWAL_OK:
+            self._renewal_answered_at = time.monotonic()
+            holds = True
+        elif result == self._RENEWAL_REJECT:
+            holds = False
+        else:
+            return
+        waiter = self._renewal_waiter
+        if waiter is not None and not waiter.done():
+            waiter.set_result(holds)
+
+    async def probe_control_session(self) -> str | None:
+        """Ask the radio, by token renewal, whether it still holds our session.
+
+        Returns None on an OK answer; otherwise why the session is dead:
+        ``"reject"`` on a rejected renewal, ``"no renewal answer"`` when
+        ``_RENEWAL_PROBE_ATTEMPTS`` renewals each go unanswered for
+        ``_RENEWAL_PROBE_TIMEOUT_S``.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            for _ in range(self._RENEWAL_PROBE_ATTEMPTS):
+                waiter: asyncio.Future[bool] = loop.create_future()
+                self._renewal_waiter = waiter
+                await self._send_token(0x05)
+                try:
+                    holds = await asyncio.wait_for(
+                        waiter, self._RENEWAL_PROBE_TIMEOUT_S
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                return None if holds else "reject"
+            return "no renewal answer"
+        finally:
+            self._renewal_waiter = None
+
+    def renewal_unanswered(self) -> bool:
+        """The last renewal sent has had no OK answer for over the probe timeout."""
+        sent = self._renewal_sent_at
+        if sent is None:
+            return False
+        answered = self._renewal_answered_at
+        if answered is not None and answered >= sent:
+            return False
+        return time.monotonic() - sent > self._RENEWAL_PROBE_TIMEOUT_S
+
     async def _receive_guid(self) -> bytes | None:
         await asyncio.sleep(0.3)
         guid = None
@@ -1244,6 +1314,8 @@ class ControlPhaseRuntime:
         struct.pack_into("<H", pkt, 0x1A, h._tok_request)
         struct.pack_into(">H", pkt, 0x24, 0x0798)
         struct.pack_into("<I", pkt, 0x1C, h._token)
+        if magic == 0x05:
+            self._renewal_sent_at = time.monotonic()
         await h._ctrl_transport.send_tracked(bytes(pkt))
 
     def _start_watchdog(self) -> None:

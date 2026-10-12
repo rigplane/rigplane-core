@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 CONTROL_SIZE = 0x10
 CONNINFO_NOTICE_SIZE = 0x90
+TOKEN_PACKET_SIZE = 0x40
 PING_SIZE = 0x15
 PING_PERIOD = 0.5  # seconds
 IDLE_PERIOD = 0.1
@@ -162,8 +163,11 @@ class IcomTransport:
         self._discard_data_packets: bool = False
         # Optional callback for a 0x90 conninfo notice (ptype 0x00). Runs
         # before the discard branch so a "radio free" notice can start
-        # recovery while every other data packet is still dropped.
+        # recovery.
         self._conninfo_notice_callback: Callable[[bytes], None] | None = None
+        # Optional callback for a 0x40 token packet (ptype 0x00), also routed
+        # before the discard branch.
+        self._token_reply_callback: Callable[[bytes], None] | None = None
 
     @property
     def queue_pressure(self) -> float:
@@ -731,6 +735,13 @@ class IcomTransport:
             and self._conninfo_notice_callback is not None
         ):
             self._conninfo_notice_callback(data)
+            return
+        if (
+            ptype == 0x00
+            and len(data) == TOKEN_PACKET_SIZE
+            and self._token_reply_callback is not None
+        ):
+            self._token_reply_callback(data)
             return
 
         # Discard data packets when queue consumer is absent (control transport

@@ -348,6 +348,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     # Retry identity on the same control session.
     _LAN_IDENTITY_REREAD_BACKOFF_S: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0)
     _LAN_IDENTITY_REREAD_STEADY_S: float = 15.0
+    # Least time between two dead-session escalations from the hold.
+    _LAN_IDENTITY_ESCALATION_SPACING_S: float = 60.0
 
     # CoreRadio publishes the exact CI-V transport identity at arm/rearm and
     # withdraws that same identity before the transport closes. Mounted session
@@ -743,6 +745,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._lan_identity_connect_lock = asyncio.Lock()
         # Recovery completion runs the deferred tail instead of a fresh fetch.
         self._lan_identity_revalidate_origin: bool = False
+        self._lan_identity_escalated_at: float | None = None
 
     # Host shims for ControlPhaseRuntime and Icom7610SerialRadio (delegate to civ_runtime)
     def _advance_civ_generation(self, reason: str) -> None:
@@ -1500,6 +1503,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         async with self._lan_identity_connect_lock:
             if self.connected or self._lan_identity_phase_owns_open_link():
                 return
+            self._lan_identity_escalated_at = None
             self._reset_external_cat_session()
             checking = RadioIdentity(
                 status=RadioIdentityStatus.CHECKING, expected_model=self.model
@@ -1556,6 +1560,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # no-op and the CONNECTED-gated control-phase teardown never runs —
         # without this the loop would log back in after the user left.
         self._owner_stop_epoch += 1
+        self._lan_identity_escalated_at = None
         self._control_phase._stop_watchdog()
         self._control_phase._stop_reconnect()
         if self._conn_state is RadioConnectionState.RECONNECTING:
@@ -1891,6 +1896,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 if not self._lan_identity_phase_owns_open_link():
                     return
                 await self._nudge_lan_identity_stream(hold_started)
+                if (
+                    attempts == 1 or self._control_phase.renewal_unanswered()
+                ) and await self._escalate_lan_identity_hold_if_dead():
+                    return
                 owned_epoch = self._lan_identity_owned_epoch
                 payload = await self._read_lan_identity_payload()
                 if (
@@ -1946,6 +1955,46 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 exc_info=True,
             )
 
+    async def _escalate_lan_identity_hold_if_dead(self) -> bool:
+        """Probe the held control session; request a re-login if it is dead.
+
+        True when the re-read must stop: recovery was requested, or the hold,
+        its CI-V epoch or the owner's session changed while the probe ran.
+        A dead verdict within ``_LAN_IDENTITY_ESCALATION_SPACING_S`` of the
+        previous escalation keeps holding.
+        """
+        civ_epoch = self._civ_epoch
+        owner_stop_epoch = self._owner_stop_epoch
+        dead = await self._control_phase.probe_control_session()
+        if dead is None:
+            return False
+        if (
+            not self._lan_identity_phase_owns_open_link()
+            or self._civ_epoch != civ_epoch
+            or self._owner_stop_epoch != owner_stop_epoch
+        ):
+            return True
+        now = time.monotonic()
+        last = self._lan_identity_escalated_at
+        if last is not None and now - last < self._LAN_IDENTITY_ESCALATION_SPACING_S:
+            logger.info(
+                "rigplane (%s): control session dead (%s) during the identity "
+                "hold; last escalation %.0f s ago, still holding",
+                self.model,
+                dead,
+                now - last,
+            )
+            return False
+        self._lan_identity_escalated_at = now
+        logger.warning(
+            "rigplane (%s): control session dead (%s) during the identity hold; "
+            "requesting a re-login",
+            self.model,
+            dead,
+        )
+        self._civ_runtime.request_recovery_now(f"control session dead: {dead}")
+        return True
+
     async def _finish_lan_identity_completion(self) -> None:
         """Complete a held connect from a recorded acceptable answer."""
         epoch = self._lan_identity_answer_epoch
@@ -1953,6 +2002,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return
         self._lan_identity_completed_epoch = epoch
         self._cancel_lan_identity_reread()
+        self._lan_identity_escalated_at = None
         revalidate_origin = self._lan_identity_revalidate_origin
         self._lan_identity_revalidate_origin = False
         # The acceptable answer restarts the data watchdog exactly once.
