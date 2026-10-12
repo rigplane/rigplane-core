@@ -178,7 +178,7 @@ async def test_stale_port_retirement_keeps_the_newer_recorded_numbering() -> Non
     """A retirement running after the replacement is live records nothing.
 
     ``ManagedRadioRuntime._begin_retirement`` fires the retirement as a
-    task, so its body can run only after CI-V recovery installed a
+    task, so its body can run after CI-V recovery installed a
     replacement transport and a newer teardown recorded that transport's
     numbering. Recording the stale token's ``send_seq`` then would drag
     the resume value back down to the retired transport's number.
