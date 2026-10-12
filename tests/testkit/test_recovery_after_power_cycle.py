@@ -19,12 +19,16 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from rigplane.core.exceptions import ConnectionError as RigplaneConnectionError
+from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.transport import ConnectionState
 from rigplane.radio import IcomRadio
 from rigplane.runtime._connection_state import RadioConnectionState
+from rigplane.runtime.session_lifecycle import AttemptOutcome, AttemptResult
 
 
 def _exhaustion_radio() -> tuple[IcomRadio, list[dict]]:
@@ -63,45 +67,126 @@ def _exhaustion_radio() -> tuple[IcomRadio, list[dict]]:
     return radio, statuses
 
 
-async def test_watchdog_recover_hands_exhaustion_to_resident_reconnect_loop() -> None:
-    """Lifecycle recovery exhaustion must start the resident reconnect loop.
+@pytest.mark.parametrize("failure", ["timeout", "busy_reject"])
+async def test_handed_off_loop_survives_failed_attempts_until_user_disconnect(
+    failure: str,
+) -> None:
+    """Recovery exhaustion hands off to the real resident reconnect loop.
 
-    ``CoreRadioSessionLifecycle._run_recover`` raises its exhaustion
-    ``ConnectionError`` only after releasing the session and leaving the host
-    DISCONNECTED. Without the handoff nothing restarts recovery there, so the
-    client stayed down after a radio power-cycle."""
+    ``CoreRadioSessionLifecycle._attempt_with_release`` releases the session
+    after every failed connect attempt; that release must not end the loop
+    that drives the attempts. Only the user's ``disconnect`` ends it."""
     radio, statuses = _exhaustion_radio()
+    status_states: list[RadioConnectionState] = []
 
-    loop_entries: list[RadioConnectionState] = []
-    release_loop = asyncio.Event()
+    def record_status(status: dict) -> None:
+        statuses.append(status)
+        status_states.append(radio._conn_state)
 
-    async def resident_loop() -> None:
-        loop_entries.append(radio._conn_state)
-        radio._conn_state = RadioConnectionState.DISCONNECTED
-        await release_loop.wait()
+    radio._on_reconnect_status = record_status
+    lifecycle = radio._session_lifecycle
+    # One mechanism attempt per loop round, so each busy reject ends the
+    # round instead of entering the lifecycle's own resident retry.
+    lifecycle._max_connect_attempts = 1
+    entry_states: list[RadioConnectionState] = []
+    parked = asyncio.Event()
+    unpark = asyncio.Event()
 
-    radio._reconnect_loop = resident_loop  # type: ignore[method-assign]
+    async def connect_attempt() -> AttemptResult:
+        entry_states.append(radio._conn_state)
+        if len(entry_states) >= 3:
+            parked.set()
+            await unpark.wait()
+        if failure == "timeout":
+            raise RigplaneTimeoutError("radio still booting")
+        return AttemptResult(AttemptOutcome.SESSION_BUSY_REJECT)
 
+    loop_task: asyncio.Task[None] | None = None
     try:
-        with patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()):
+        with (
+            patch.object(lifecycle._mech, "connect_attempt", connect_attempt),
+            patch.object(radio._civ_runtime, "start_data_watchdog", lambda: None),
+        ):
             await radio._civ_runtime._watchdog_recover()
-        task = radio._reconnect_task
-        assert task is not None, "exhaustion must start the resident loop"
-        assert statuses == [
-            {
-                "state": "reconnecting",
-                "attempt": 1,
-                "next_retry_seconds": radio._reconnect_delay,
-            }
-        ]
-        release_loop.set()
-        await task
-        assert loop_entries == [RadioConnectionState.RECONNECTING]
+            loop_task = radio._reconnect_task
+            assert loop_task is not None, "exhaustion must start the resident loop"
+            assert statuses == [
+                {
+                    "state": "reconnecting",
+                    "attempt": 1,
+                    "next_retry_seconds": radio._reconnect_delay,
+                }
+            ]
+            parked_wait = asyncio.create_task(parked.wait())
+            await asyncio.wait(
+                {parked_wait, loop_task},
+                timeout=5.0,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            parked_wait.cancel()
+            assert not loop_task.done(), "a failed attempt ended the loop"
+            assert radio._reconnect_task is loop_task
+            assert len(entry_states) == 3
+            assert entry_states == [RadioConnectionState.RECONNECTING] * 3
+            assert radio._conn_state is RadioConnectionState.RECONNECTING
+            assert [s["attempt"] for s in statuses] == [1, 1, 2, 3]
+            assert status_states == [RadioConnectionState.RECONNECTING] * 4
+
+            await radio.disconnect()
+            await asyncio.wait({loop_task}, timeout=2.0)
+            assert loop_task.done()
+            assert radio._conn_state is RadioConnectionState.DISCONNECTED
+            await asyncio.sleep(0.3)
+            assert len(entry_states) == 3
+            assert len(statuses) == 4
     finally:
-        release_loop.set()
-        task = radio._reconnect_task
-        if task is not None and not task.done():
-            await task
+        unpark.set()
+        if loop_task is not None and not loop_task.done():
+            radio._conn_state = RadioConnectionState.DISCONNECTED
+            loop_task.cancel()
+            await asyncio.gather(loop_task, return_exceptions=True)
+        radio._conn_state = RadioConnectionState.DISCONNECTED
+
+
+async def test_user_disconnect_during_lifecycle_recovery_starts_no_loop() -> None:
+    """A user ``disconnect`` while the escalated recovery's lifecycle attempt
+    is in flight cancels that recovery; the cancellation is not taken for
+    exhaustion, so no reconnect loop starts afterwards."""
+    radio, statuses = _exhaustion_radio()
+    entered = asyncio.Event()
+    unpark = asyncio.Event()
+
+    async def parked_attempt() -> None:
+        entered.set()
+        await unpark.wait()
+
+    radio._session_lifecycle._mech.soft_reconnect_once = parked_attempt  # type: ignore[method-assign]
+    radio._conn_state = RadioConnectionState.CONNECTED
+    radio._civ_runtime.request_recovery_now(
+        "radio reported the LAN session free (busy=0)"
+    )
+    recovery = radio._civ_runtime._reconnect_task
+    assert recovery is not None
+    try:
+        await asyncio.wait_for(entered.wait(), 5.0)
+        await radio.disconnect()
+        await asyncio.wait({recovery}, timeout=2.0)
+        assert recovery.cancelled()
+        assert radio._reconnect_task is None
+        assert radio._conn_state is RadioConnectionState.DISCONNECTED
+        await asyncio.sleep(0.3)
+        assert radio._reconnect_task is None
+        assert statuses == []
+    finally:
+        unpark.set()
+        if not recovery.done():
+            recovery.cancel()
+            await asyncio.gather(recovery, return_exceptions=True)
+        loop_task = radio._reconnect_task
+        if loop_task is not None and not loop_task.done():
+            radio._conn_state = RadioConnectionState.DISCONNECTED
+            loop_task.cancel()
+            await asyncio.gather(loop_task, return_exceptions=True)
         radio._conn_state = RadioConnectionState.DISCONNECTED
 
 
