@@ -427,6 +427,7 @@ class MockIcomRadio:
         # ``(cmd, sub)`` refuses only frames whose first payload byte is
         # ``sub``. The refused frame's state effect never applies.
         self.refused_civ_commands: set[tuple[int, int | None]] = set()
+        self.refused_count: int = 0  # CI-V frames answered NAK by the hook
         # Scheduled events (reboot / keepalive silence / drop_session) —
         # absolute deadlines, 0.0 = inactive.
         self._down_until: float = 0.0  # reboot: radio "powered off" until then
@@ -1623,6 +1624,7 @@ class MockIcomRadio:
         # Refusal hook first: a matched (cmd, sub) is answered with a bare
         # NAK before any handler runs, so no state effect applies.
         if self.refused_civ_commands and self._civ_refused(cmd, payload):
+            self.refused_count += 1
             return self._civ_nak(to, frm)
 
         # --- Command29 wrapper (ATT / PREAMP / DIGI-SEL) ---
