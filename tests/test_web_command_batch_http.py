@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from rigplane.core.exceptions import CommandRejectedError
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
     FieldPath,
@@ -137,15 +138,48 @@ async def _complete_ordered_entries(
                 entry.future.set_result(None)
 
 
+async def _fail_ordered_commands(
+    queue: CommandQueue,
+    count: int,
+    captured: list[object],
+    error: BaseException,
+) -> None:
+    """Drain ordered entries the way the poller settles a failed command.
+
+    Fails the entry's command lifecycle, then settles its future with the
+    same error — the two signals the real ``RadioPoller`` produces after
+    executing the command against the radio.
+    """
+    while len(captured) < count:
+        await queue.wait(timeout=1.0)
+        for entry in queue.drain_entries():
+            captured.append(entry.command)
+            if entry.command_service is not None and entry.command_id is not None:
+                entry.command_service.fail_command(
+                    entry.command_id,
+                    message=str(error),
+                    source=entry.source,
+                    session_id=entry.session_id,
+                )
+            if entry.future is not None and not entry.future.done():
+                entry.future.set_exception(error)
+
+
 @pytest.mark.asyncio
 async def test_http_command_enqueues_single_structured_command() -> None:
     srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
-
-    writer = await _post_json(
-        srv,
-        "/api/v1/commands",
-        {"id": "single-1", "name": "set_freq", "params": {"freq": 144_030_000}},
+    captured: list[object] = []
+    consumer = asyncio.create_task(
+        _complete_ordered_commands(srv.command_queue, 1, captured)
     )
+    try:
+        writer = await _post_json(
+            srv,
+            "/api/v1/commands",
+            {"id": "single-1", "name": "set_freq", "params": {"freq": 144_030_000}},
+        )
+    finally:
+        await asyncio.wait_for(consumer, timeout=5.0)
 
     assert writer.response_status == 200
     assert writer.response_body == {
@@ -154,22 +188,101 @@ async def test_http_command_enqueues_single_structured_command() -> None:
         "name": "set_freq",
         "result": {"freq": 144_030_000, "receiver": 0},
     }
-    assert srv.command_queue.drain() == [SetFreq(144_030_000, receiver=0)]
+    assert captured == [SetFreq(144_030_000, receiver=0)]
 
 
 @pytest.mark.asyncio
-async def test_http_command_enqueues_raw_civ_command() -> None:
+async def test_http_single_set_freq_nak_reports_409_radio_nak() -> None:
+    """POST /api/v1/commands answers a refused write with the execution outcome.
+
+    The stand-in drains the ordered entry the way the poller does — failing
+    the command lifecycle, then settling the future with the NAK — so the
+    reply below observes the execution outcome, not the enqueue ack.
+    """
+    srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
+    captured: list[object] = []
+    consumer = asyncio.create_task(
+        _fail_ordered_commands(
+            srv.command_queue,
+            1,
+            captured,
+            CommandRejectedError("radio returned NAK"),
+        )
+    )
+    try:
+        writer = await _post_json(
+            srv,
+            "/api/v1/commands",
+            {"id": "single-nak", "name": "set_freq", "params": {"freq": 7_074_000}},
+        )
+    finally:
+        await asyncio.wait_for(consumer, timeout=5.0)
+
+    assert writer.response_status == 409
+    assert writer.response_body["ok"] is False
+    assert writer.response_body["error"] == "radio_nak"
+    assert captured == [SetFreq(7_074_000, receiver=0)]
+    failed = [
+        event
+        for event in srv.command_service.lifecycle_events()
+        if event.state == "failed"
+    ]
+    assert failed and failed[-1].source == "http"
+
+
+@pytest.mark.asyncio
+async def test_http_single_set_freq_timeout_reports_504(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST /api/v1/commands answers 504 when the poller never settles the command.
+
+    No consumer drains the queue: the step still runs through put_ordered
+    plus the bounded wait, with only the bound shortened, so the 504 below
+    comes from the real timeout path, not a mocked wait.
+    """
+    monkeypatch.setattr(web_server, "_COMMAND_BATCH_STEP_TIMEOUT", 0.05)
     srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
 
     writer = await _post_json(
         srv,
         "/api/v1/commands",
-        {
-            "id": "display-type-b",
-            "name": "send_civ",
-            "params": {"command": 0x1A, "sub": 0x05, "data": "015301"},
-        },
+        {"id": "single-timeout", "name": "set_freq", "params": {"freq": 7_074_000}},
     )
+
+    assert writer.response_status == 504
+    assert writer.response_body["ok"] is False
+    assert writer.response_body["error"] == "command_timeout"
+    # The bounded wait cancels the ordered future on timeout, and the
+    # queue's cancellation hook drops the entry — the timed-out command
+    # does not linger for a later drain, exactly as in the batch path.
+    assert srv.command_queue.drain() == []
+    timed_out = [
+        event
+        for event in srv.command_service.lifecycle_events()
+        if event.state == "timed_out"
+    ]
+    assert timed_out and timed_out[-1].source == "http"
+
+
+@pytest.mark.asyncio
+async def test_http_command_enqueues_raw_civ_command() -> None:
+    srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
+    captured: list[object] = []
+    consumer = asyncio.create_task(
+        _complete_ordered_commands(srv.command_queue, 1, captured)
+    )
+    try:
+        writer = await _post_json(
+            srv,
+            "/api/v1/commands",
+            {
+                "id": "display-type-b",
+                "name": "send_civ",
+                "params": {"command": 0x1A, "sub": 0x05, "data": "015301"},
+            },
+        )
+    finally:
+        await asyncio.wait_for(consumer, timeout=5.0)
 
     assert writer.response_status == 200
     assert writer.response_body == {
@@ -183,9 +296,7 @@ async def test_http_command_enqueues_raw_civ_command() -> None:
             "wait_response": False,
         },
     }
-    assert srv.command_queue.drain() == [
-        SendCiv(command=0x1A, sub=0x05, data=b"\x01\x53\x01")
-    ]
+    assert captured == [SendCiv(command=0x1A, sub=0x05, data=b"\x01\x53\x01")]
 
 
 @pytest.mark.asyncio
@@ -759,16 +870,22 @@ async def test_http_command_managed_passes_set_frequency_send_civ() -> None:
     HTTP command route and queues its SendCiv unchanged."""
     radio = _radio()
     srv, probe = _managed_server(radio)
-
-    writer = await _post_json(
-        srv,
-        "/api/v1/commands",
-        {"name": "send_civ", "params": {"command": 0x05, "data": "0000101400"}},
+    captured: list[object] = []
+    consumer = asyncio.create_task(
+        _complete_ordered_commands(srv.command_queue, 1, captured)
     )
+    try:
+        writer = await _post_json(
+            srv,
+            "/api/v1/commands",
+            {"name": "send_civ", "params": {"command": 0x05, "data": "0000101400"}},
+        )
+    finally:
+        await asyncio.wait_for(consumer, timeout=5.0)
 
     assert writer.response_status == 200
     assert writer.response_body["ok"] is True
-    assert srv.command_queue.drain() == [
+    assert captured == [
         SendCiv(command=0x05, sub=None, data=bytes.fromhex("0000101400"))
     ]
     radio.send_civ.assert_not_awaited()
@@ -1148,21 +1265,27 @@ async def test_http_raw_civ_transaction_unmanaged_passes_non_tx_while_observed_t
 @pytest.mark.asyncio
 async def test_http_raw_civ_single_commands_preserve_repeated_steps() -> None:
     srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
-
-    writer1 = await _post_json(
-        srv,
-        "/api/v1/commands",
-        {"name": "send_civ", "params": {"command": 0x1A, "data": "0001"}},
+    captured: list[object] = []
+    consumer = asyncio.create_task(
+        _complete_ordered_commands(srv.command_queue, 2, captured)
     )
-    writer2 = await _post_json(
-        srv,
-        "/api/v1/commands",
-        {"name": "send_civ", "params": {"command": 0x1A, "data": "0002"}},
-    )
+    try:
+        writer1 = await _post_json(
+            srv,
+            "/api/v1/commands",
+            {"name": "send_civ", "params": {"command": 0x1A, "data": "0001"}},
+        )
+        writer2 = await _post_json(
+            srv,
+            "/api/v1/commands",
+            {"name": "send_civ", "params": {"command": 0x1A, "data": "0002"}},
+        )
+    finally:
+        await asyncio.wait_for(consumer, timeout=5.0)
 
     assert writer1.response_status == 200
     assert writer2.response_status == 200
-    assert srv.command_queue.drain() == [
+    assert captured == [
         SendCiv(command=0x1A, data=b"\x00\x01"),
         SendCiv(command=0x1A, data=b"\x00\x02"),
     ]
@@ -2239,12 +2362,19 @@ async def _post_level_series(
         ] * len(steps)
         return [writer], captured
 
+    # The single command now answers after the poller settles it, so each
+    # post needs the same poller-like completion the batch branch runs.
     writers: list[_FakeWriter] = []
-    captured = []
-    for step in steps:
-        writer = await _post_json(srv, path, step)
-        writers.append(writer)
-        captured.extend(srv.command_queue.drain())
+    captured: list[object] = []
+    consumer = asyncio.create_task(
+        _complete_ordered_commands(srv.command_queue, len(steps), captured)
+    )
+    try:
+        for step in steps:
+            writer = await _post_json(srv, path, step)
+            writers.append(writer)
+    finally:
+        await asyncio.wait_for(consumer, timeout=5.0)
     return writers, captured
 
 
