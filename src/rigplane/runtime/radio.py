@@ -1911,10 +1911,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         The hold stops the data watchdog (``_gate_lan_identity``), so nothing
         else sends OpenClose(open) while it owns the link; a radio that did
         not restart its CI-V DATA stream after the soft reconnect stays
-        silent until this nudge. ``_last_civ_data_received`` is stamped by
-        the receive loop on any payload and by ``soft_reconnect`` at the end
-        of a CI-V rebuild, before the gate starts the hold, so a stamp older
-        than ``hold_started`` means no payload has arrived within this hold.
+        silent. ``_last_civ_data_received`` is stamped by the receive loop
+        on any payload and by ``soft_reconnect`` at the end of a CI-V
+        rebuild, before the gate starts the hold, so a stamp older than
+        ``hold_started`` means no payload has arrived within this hold.
         """
         last = self._last_civ_data_received
         if last is not None and last >= hold_started:

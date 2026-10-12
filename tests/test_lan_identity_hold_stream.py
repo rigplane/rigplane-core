@@ -72,6 +72,9 @@ async def test_hold_re_requests_stream_before_every_reread() -> None:
     radio, _transport = make_radio()
     _park_hold(radio)
     _fast_reread(radio)
+    # Production never enters the hold with None here: soft_reconnect stamps
+    # _last_civ_data_received before the gate starts the hold.
+    radio._last_civ_data_received = time.monotonic() - 1.0
     order: list[str] = []
 
     async def open_close(*, open_stream: bool) -> None:
@@ -100,6 +103,9 @@ async def test_payload_since_hold_start_stops_the_stream_nudge() -> None:
     radio, _transport = make_radio()
     _park_hold(radio)
     _fast_reread(radio)
+    # A stamp older than the hold start (as soft_reconnect leaves it) must
+    # not stop the nudge; only a payload stamped within the hold may.
+    radio._last_civ_data_received = time.monotonic() - 1.0
     reads = 0
     first_read_started = asyncio.Event()
     release_first_read = asyncio.Event()
