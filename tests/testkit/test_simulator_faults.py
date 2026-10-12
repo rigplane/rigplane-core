@@ -118,9 +118,13 @@ def _freq_get(seq: int = 1) -> bytes:
     return bytes(pkt)
 
 
-def _openclose() -> bytes:
-    """OpenClose(open) on the CI-V port — starts the client's data stream."""
-    pkt = _header(0x16, _PT_DATA)
+def _openclose(seq: int = 0) -> bytes:
+    """OpenClose(open) on the CI-V port — starts the client's data stream.
+
+    A real client sends it through ``IcomTransport.send_tracked``, so it
+    carries a header sequence number like any tracked packet.
+    """
+    pkt = _header(0x16, _PT_DATA, seq=seq)
     pkt[0x15] = 0x04  # open_stream
     return bytes(pkt)
 

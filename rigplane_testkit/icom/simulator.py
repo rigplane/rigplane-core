@@ -238,10 +238,11 @@ class _MockProtocol(asyncio.DatagramProtocol):
 class _CivGapState:
     """Per-session tracking of one CI-V client's tracked sequence numbers.
 
-    ``next_expected`` is None until the first tracked packet after
-    OpenClose(open); ``missing`` holds the numbers skipped so far and
-    ``held`` the ahead-of-gap packets waiting for the fill, keyed by seq
-    as ``(kind, data, addr, sender_id)`` with kind ``"idle"`` or ``"data"``.
+    ``next_expected`` is None until the first tracked packet, which is
+    the OpenClose(open) itself; ``missing`` holds the numbers skipped so
+    far and ``held`` the ahead-of-gap packets waiting for the fill, keyed
+    by seq as ``(kind, data, addr, sender_id)`` with kind ``"idle"``,
+    ``"openclose"`` or ``"data"``.
     The tracker outlives OpenClose(open): a re-sent open never restarts
     it, so a number at or below the last processed one is ignored
     (recorded real IC-7610, MOR-3361). It ends only with the radio
@@ -1330,18 +1331,33 @@ class MockIcomRadio:
                     return
                 self._civ_owner_addr = addr
                 self._civ_owner_id = sender_id
-                # The open only ensures a tracker exists: sequence tracking
-                # belongs to the radio session and a re-sent open never
+                # The open consumes its header sequence number like any
+                # tracked packet (the production client sends it through
+                # ``send_tracked``), while sequence tracking itself
+                # belongs to the radio session: a re-sent open never
                 # restarts it (MOR-3361).
                 self._civ_gap_ensure((addr, sender_id))
                 civ = self._civ_frame(to=0x00, frm=self._radio_addr, cmd=0x00)
                 self._send(proto, self._wrap_civ(civ, sender_id), addr, "civ")
+                key = (addr, sender_id)
+                if self._civ_gap_gate(
+                    key, "openclose", data, addr, sender_id, seq, proto
+                ):
+                    self._civ_gap_drain(key, proto)
             elif data[0x15] == _OPENCLOSE_CLOSE:  # graceful data-port close
                 # OpenClose(close) frees the single held session immediately.
                 # Tracking outlives the close: it ends only with a new
                 # session, drop_session or reboot (MOR-3361).
                 if self.single_owner and self._owner is not None:
                     self._release_session("openclose_close")
+                # The close is still a tracked packet: its number goes
+                # through the gate (held and released in order like any
+                # other), without any stream marker.
+                key = (addr, sender_id)
+                if self._civ_gap_gate(
+                    key, "openclose", data, addr, sender_id, seq, proto
+                ):
+                    self._civ_gap_drain(key, proto)
             return
 
         # Disconnect
@@ -1423,9 +1439,9 @@ class MockIcomRadio:
         """Ensure a gap tracker exists for one CI-V client (OpenClose(open)).
 
         Never wipes an existing tracker: a re-sent open within the same
-        radio session keeps the numbering (MOR-3361). Tracking begins at
-        the first tracked packet after the open; the open's own sequence
-        number is not consumed.
+        radio session keeps the numbering (MOR-3361). The open itself is
+        the first tracked packet: its header sequence number is consumed
+        by :meth:`_civ_gap_gate` like any other tracked number.
         """
         if key in self._civ_gap:
             return
@@ -1456,13 +1472,17 @@ class MockIcomRadio:
 
         Returns True when the caller should process the packet (and then
         drain held packets via :meth:`_civ_gap_drain`). A packet ahead of
-        the expected number opens a gap: it is held, the numbers in between
-        become missing, and the first round of retransmit requests goes out
-        immediately. A packet carrying a missing number fills it. A number
-        at or below the last processed one is ignored — no echo, no reply
-        — whether or not a gap is open (recorded real IC-7610, MOR-3361:
-        after a re-sent OpenClose the radio answers again only once the
-        client's new numbering passes the last processed number).
+        the expected number is held: the numbers in between become missing
+        when the gap opens (never re-marked afterwards), and every held
+        packet is answered with a retransmit-request round at once. A
+        packet carrying a missing number fills it — including the last
+        one, which drains the held packets in sequence order whatever the
+        fill order. A number at or below the last processed one is ignored
+        — no echo, no reply — whether or not a gap is open (recorded real
+        IC-7610, MOR-3361: after a re-sent OpenClose the radio answers
+        again only once the client's new numbering passes the last
+        processed number). ``kind`` is ``"idle"``, ``"openclose"`` or
+        ``"data"``; only ``"data"`` held packets produce replies on drain.
         """
         tracker = self._civ_gap.get(key)
         if tracker is None:
@@ -1482,23 +1502,36 @@ class MockIcomRadio:
                 # Gap already open: hold for later in-order processing. A
                 # missing number arriving ahead of the expected one still
                 # fills (recorded gap_filled_by_idle: 133 accepted while
-                # 131 was expected). The missing set does NOT grow: the
-                # recorded radio keeps requesting the original gap while
-                # later packets arrive (gap_filled_by_idle stays
+                # 131 was expected). The missing set does NOT grow, and a
+                # held or already received number is never re-marked as
+                # missing: the recorded radio keeps requesting the original
+                # gap while later packets arrive (gap_filled_by_idle stays
                 # ``[[131, 133]]`` through 134..178).
                 tracker.missing.discard(seq)
             else:
                 for off in range(delta):
                     tracker.missing.add((expected + off) & 0xFFFF)
-                self._civ_gap_send_round(tracker, proto)
             if seq not in tracker.held:
                 tracker.held[seq] = (kind, data, addr, sender_id)
+            if tracker.missing:
+                # Still missing numbers — the gap just opened, stayed open
+                # or narrowed: answer this tracked packet with a request
+                # round at once. The recorded radio's rounds land 0–4 ms
+                # after each client tracked packet while a gap is open
+                # (``retransmit_gaps.jsonl``); the 0.1 s loop stays as the
+                # fallback for a silent client.
+                self._civ_gap_send_round(tracker, proto)
+            else:
+                # The last missing number arrived ahead of the expected
+                # one: release everything held, in sequence order.
+                self._civ_gap_drain(key, proto)
             return False
-        if seq in tracker.missing:
-            tracker.missing.discard(seq)
-            return True
-        # Behind the frontier with nothing missing: already processed, so
-        # ignored — no echo, no reply (MOR-3361).
+        # Behind the frontier: already processed, so ignored — no echo, no
+        # reply (MOR-3361). A missing number can never arrive from behind:
+        # every member of ``missing`` is ahead of ``next_expected`` (added
+        # there by the branch above, removed only by a fill), so the
+        # above branches already handled every number the tracker waits
+        # for.
         return False
 
     def _civ_gap_drain(

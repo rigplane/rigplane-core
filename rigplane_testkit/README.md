@@ -18,15 +18,17 @@ UDP code paths as production.
   it models the recorded gap behaviour
   (`tests/fixtures/ic7610/retransmit_gaps.jsonl`, pinned by
   `tests/testkit/test_simulator_civ_gap.py`): per radio session it tracks
-  the client's tracked numbers (idle, OpenClose, CI-V DATA), holds packets
-  past a gap, fills on an idle or CI-V DATA packet carrying a missing
-  number, processes held packets in order once nothing is missing, and
+  the client's tracked numbers (idle, OpenClose, CI-V DATA) from the
+  OpenClose's own header number, holds packets past a gap, fills on an
+  idle, OpenClose or CI-V DATA packet carrying a missing number,
+  processes held packets in order once nothing is missing, and
   ignores numbers at or below the last processed one — a re-sent
   OpenClose never restarts tracking (MOR-3361), which ends only on a new
   accepted login, a newly claimed conninfo, `drop_session` or reboot —
-  while repeating the retransmit request twice every 0.1 s (single form
-  for one missing number, otherwise one ranges packet per contiguous
-  missing run). `civ_retransmit_requests` counts the request packets sent
+  while sending the retransmit request twice for every tracked packet
+  held with numbers still missing (single form for one missing number,
+  otherwise one ranges packet per contiguous missing run), plus a twice
+  every 0.1 s repeat as the fallback for a silent client. `civ_retransmit_requests` counts the request packets sent
   on the CI-V port; `civ_gap_open` is true while any number is missing.
   A re-sent OpenClose still gets its stream-active marker; only
   tracked-packet processing follows the ignore rule.
