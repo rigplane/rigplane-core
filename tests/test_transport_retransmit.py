@@ -43,6 +43,18 @@ def _seq(packet: bytes) -> int:
     return struct.unpack_from("<H", packet, 6)[0]
 
 
+def _assert_idle(packet: bytes, transport: IcomTransport, seq: int) -> None:
+    """Pin the idle reply shape: type, seq, ids, and builder equality."""
+    assert len(packet) == CONTROL_SIZE
+    assert _ptype(packet) == 0x00
+    assert _seq(packet) == seq
+    assert struct.unpack_from("<II", packet, 8) == (
+        transport.my_id,
+        transport.remote_id,
+    )
+    assert packet == transport._build_control(ptype=0x00, seq=seq)
+
+
 @pytest.fixture
 def transport() -> IcomTransport:
     t = IcomTransport()
@@ -75,9 +87,7 @@ class TestIdleReply:
         transport.send_seq = 42
         transport._retransmit(99)
         assert len(sent) == 1
-        assert len(sent[0]) == CONTROL_SIZE
-        assert _ptype(sent[0]) == 0x00
-        assert _seq(sent[0]) == 99
+        _assert_idle(sent[0], transport, 99)
         assert dict(transport.tx_buffer) == before_buffer
         assert transport.send_seq == 42
 
@@ -88,9 +98,7 @@ class TestIdleReply:
         transport._track_sent(7, stored, is_current=lambda: False)
         transport._retransmit(7)
         assert len(sent) == 1
-        assert len(sent[0]) == CONTROL_SIZE
-        assert _ptype(sent[0]) == 0x00
-        assert _seq(sent[0]) == 7
+        _assert_idle(sent[0], transport, 7)
         assert sent[0] != stored
 
     def test_raising_guard_gets_idle_without_resend(
@@ -100,9 +108,7 @@ class TestIdleReply:
         transport._track_sent(8, stored, is_current=_boom)
         transport._retransmit(8)
         assert len(sent) == 1
-        assert len(sent[0]) == CONTROL_SIZE
-        assert _ptype(sent[0]) == 0x00
-        assert _seq(sent[0]) == 8
+        _assert_idle(sent[0], transport, 8)
         assert sent[0] != stored
 
 
@@ -120,11 +126,9 @@ class TestRangeRequests:
             _build_range_request((154, 156)), CONTROL_SIZE + 4, 0, 0
         )
         assert len(sent) == 3
-        assert _seq(sent[0]) == 154
-        assert _ptype(sent[0]) == 0x00
+        _assert_idle(sent[0], transport, 154)
         assert sent[1] == resent
-        assert _seq(sent[2]) == 156
-        assert _ptype(sent[2]) == 0x00
+        _assert_idle(sent[2], transport, 156)
 
     def test_singleton_pair_resends_exactly_that_sequence(
         self, transport: IcomTransport, sent: list
@@ -143,7 +147,8 @@ class TestRangeRequests:
         )
         assert len(sent) == 3
         assert [_seq(p) for p in sent] == [0xFFFF, 0x0000, 0x0001]
-        assert all(_ptype(p) == 0x00 for p in sent)
+        for pkt, seq in zip(sent, (0xFFFF, 0x0000, 0x0001)):
+            _assert_idle(pkt, transport, seq)
 
     def test_wide_forward_range_serves_first_max_missing_in_order(
         self, transport: IcomTransport, sent: list
@@ -216,6 +221,6 @@ class TestRangeRequests:
         assert _ptype(req) == 0x01
         transport._handle_packet(req)
         assert len(sent) == 3
-        assert _seq(sent[0]) == 154
+        _assert_idle(sent[0], transport, 154)
         assert sent[1] == resent
-        assert _seq(sent[2]) == 156
+        _assert_idle(sent[2], transport, 156)
