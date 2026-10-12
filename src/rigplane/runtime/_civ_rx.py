@@ -560,10 +560,9 @@ def _observation_max_age(
     does not poll at all keeps the rig-blind
     :data:`_OBSERVATION_MAX_AGE_SECONDS` entry where one exists; with
     neither a declaration, a pollable capability, nor a table entry, the
-    stamp is the profile's ``default_policy`` TTL (MOR-1815 residual:
-    ``policy_for`` already answers that default for such a path, so no
-    observation enters the store with ``max_age=None`` unless the profile
-    asked for ``"never"``).
+    stamp is the profile's ``default_policy`` TTL
+    (MOR-1815 residual: ``policy_for`` already answers that default for
+    such a path).
     """
 
     acquisition = getattr(profile, "state_acquisition", None)
