@@ -119,14 +119,11 @@ def write_record(host: str, port: int, guid: bytes, send_seq: int, now: float) -
 
 
 def remove_record(host: str, port: int, guid: bytes) -> None:
-    """Delete this radio's record; a record of another GUID is left alone.
-
-    An absent file is not an error.
-    """
+    """Delete this radio's record; another GUID's is left, an absent file is fine."""
     path = _record_path(host, port)
     try:
-        other = json.loads(path.read_text(encoding="utf-8")).get("guid") != guid.hex()
+        if json.loads(path.read_text(encoding="utf-8")).get("guid") != guid.hex():
+            return
     except (OSError, ValueError, AttributeError):
-        other = False
-    if not other:
-        path.unlink(missing_ok=True)
+        pass
+    path.unlink(missing_ok=True)
