@@ -454,20 +454,36 @@ async def test_identity_answer_is_the_profile_id_everywhere() -> None:
         == recorded_reply
     )
     assert MockIcomRadio().model_id == model_id
+    # Both reads skip a byte-identical echo the same way _ask_sim /
+    # _ask_serial_fake do: echo presence or absence is pinned only by the
+    # ledger-backed echo checks, so this test stays green whether or not
+    # the simulator or the fake echoes.
     async with _lan_sim() as (server, client):
         client.send(_civ_packet(_ID_REQUEST), server.civ_port)
-        pkt = await client.recv()
-        assert extract_civ_frame(pkt) == recorded_reply
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 2.0
+        while True:
+            remaining = deadline - loop.time()
+            assert remaining > 0, "no reply to the 19 00 read on LAN"
+            frame = extract_civ_frame(await client.recv(remaining))
+            if frame is None or frame == _ID_REQUEST:
+                continue
+            assert frame == recorded_reply
+            break
     fake = CivSerialFake(model="IC-7610")
     reader, writer = await fake.opener(url="socket://conformance", baudrate=19200)
     writer.write(_ID_REQUEST)
     await writer.drain()
-    assert bytes(await asyncio.wait_for(reader.readuntil(b"\xfd"), 0.3)) == (
-        _ID_REQUEST
-    )
-    assert (
-        bytes(await asyncio.wait_for(reader.readuntil(b"\xfd"), 0.3)) == recorded_reply
-    )
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 2.0
+    while True:
+        remaining = deadline - loop.time()
+        assert remaining > 0, "no reply to the 19 00 read on the serial fake"
+        frame = bytes(await asyncio.wait_for(reader.readuntil(b"\xfd"), remaining))
+        if frame == _ID_REQUEST:
+            continue
+        assert frame == recorded_reply
+        break
 
 
 # ---------------------------------------------------------------------------
@@ -550,11 +566,12 @@ def _control_steps(rows: list[dict]) -> list[tuple]:
     The same rule shapes both sides of the handshake comparison: drops
     exactly what the fixture dropped (ping: type 0x07 len 0x15; idle:
     type 0x00 len 0x10) and cuts before the first client token renewal
-    (c2r, 0x40 bytes, reqtype 0x05). On the wire the renewals follow the
-    first CI-V data, and the recorded window keeps no other post-data
-    control rows, so this cut is the recorded session's first-CI-V-data
-    boundary — the same event the simulator side is cut at (see
-    :func:`test_handshake_structure_matches_ledger`).
+    (c2r, 0x40 bytes, reqtype 0x05). The recorded handshake rows show the
+    opening exchange (t≈4.5–4.965, ending in the radio 0x90 notice) followed
+    by token renewals from t≈65.3; the cut keeps the opening exchange. The
+    fixture holds no CI-V timing for this window, so the rows alone do not
+    place the first CI-V data — the simulator side is cut at its own first
+    CI-V data frame (see :func:`test_handshake_structure_matches_ledger`).
     """
     steps = []
     for row in rows:
@@ -619,13 +636,14 @@ async def test_handshake_structure_matches_ledger(tmp_path) -> None:
         for record in records
         if record.port == "civ" and extract_civ_frame(record.data) is not None
     )
-    # Both sides are cut at the same event: the session's first CI-V data
-    # frame. The simulator side is cut here, at civ_start; the recorded
-    # side is cut by _control_steps at the first token renewal, which is
-    # the same boundary — on the wire the renewals follow the first CI-V
-    # data, and the recorded window keeps no other post-data control rows.
-    # The t-cut below also drops this session's own post-data rows (the
-    # disconnect exchange); pings/idle are dropped by _control_steps.
+    # The simulator side is cut here, at civ_start (its own first CI-V
+    # data frame); the recorded side is cut by _control_steps at the first
+    # token renewal. The recorded handshake rows show the opening exchange
+    # through the radio 0x90 row at t≈4.965, then renewals from t≈65.3 —
+    # the fixture holds no CI-V timing for this window, so the rows alone
+    # do not place the first CI-V data. The t-cut below also drops this
+    # session's own rows at/after civ_start (the disconnect exchange);
+    # pings/idle are dropped by _control_steps.
     sim_rows = [row for row in control_structure(records) if row["t"] < civ_start]
     recorded_rows = [
         row for row in _load_control_windows() if row["window"] == "handshake"
@@ -654,10 +672,28 @@ async def test_token_renew_reply_divergence() -> None:
 
     async with _lan_sim() as (server, client):
         client.send(_token_renew(), server.control_port)
-        try:
-            pkt = await client.recv(0.5)
-        except TimeoutError:
-            pkt = None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 0.5
+        pkt = None
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            try:
+                candidate = await client.recv(remaining)
+            except TimeoutError:
+                break
+            ptype = (
+                struct.unpack_from("<H", candidate, 0x04)[0]
+                if len(candidate) >= 0x06
+                else None
+            )
+            if (len(candidate) == 0x15 and ptype == 0x07) or (
+                len(candidate) == 0x10 and ptype == 0x00
+            ):
+                continue  # ping/idle: the same drop rule as _control_steps
+            pkt = candidate
+            break
     if pkt is not None and len(pkt) == 0x40 and pkt[0x15] == _TOKEN_RENEW:
         observed: dict[str, tuple[str, str]] = {}
     elif pkt is None:
@@ -685,7 +721,7 @@ def _bcd_decode_byte(byte: int) -> int:
     return ((byte >> 4) & 0x0F) * 10 + (byte & 0x0F)
 
 
-async def test_scope_wave_decodes_and_simulator_sends_none() -> None:
+async def test_scope_wave_decodes_and_cadence_matches_ledger() -> None:
     bounds = load_rig(REPO_ROOT / "rigs" / "ic7610.toml").spectrum
     assert set(bounds) == {"seq_max", "amp_max", "data_len_max"}
     wave_frames = [frame for _t, _direction, frame in _scope_radio_frames("scope")]

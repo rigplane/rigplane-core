@@ -58,7 +58,7 @@ check covers. On USB no `r2c` frame ever equals a client request.
 
 ### `control_windows.jsonl`
 
-One JSON object per line with keys `window`, `t`, `dir`, `len`, `type`,
+One JSON object per line with keys `window`, `transport`, `t`, `dir`, `len`, `type`,
 `reqtype`: control-port packets other than pings (type 0x07, len 0x15) and
 idle (type 0x00, len 0x10). `type` is the u16 LE at offset 0x04, `reqtype`
 the byte at 0x15 when `len > 0x15`, else null. No payload bytes are kept.
@@ -71,7 +71,7 @@ busy-rejected for ~90 s).
 
 The first 20 audio packets per direction: keys `t`, `dir`, `hex`, where
 `hex` holds the first 0x18 bytes of the audio-port packet, or the whole
-packet when it is shorter (pings 0x15, idle 0x10).
+packet when it is shorter.
 
 ### `idle_cadence.json`
 
@@ -91,8 +91,9 @@ keyed by a stable id:
   USB). The fake takes its CI-V address and `19 00` model id from the
   resolved profile (`rigplane_testkit/serial/civ_serial.py: CivSerialFake`)
   but answers only a handful of commands (frequency 03/05, mode 04/06,
-  PTT 1C 00, S-meter 15 02, identity 19 00, ACK/NAK) and NAKs everything
-  else;
+  PTT 1C 00, S-meter 15 02, identity 19 00) and NAKs any other frame
+  addressed to it (a controller's own ACK/NAK, unknown broadcasts and
+  frames addressed elsewhere get no answer);
 - `lan_civ_echo` (the radio echoes every LAN request; the simulator must
   echo every replayed request too and currently echoes none);
 - `handshake_<n>` — positional handshake divergences, `n` counting from 1
