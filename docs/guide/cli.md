@@ -1099,12 +1099,17 @@ rigplane --model IC-7610 web --dx-cluster dxc.nc7j.com:7373 --callsign KN4KYD
 
 ## Exit Codes
 
+The table below applies to `web`, `station`, `serve` and the radio commands.
+
 | Code | Meaning |
 |------|---------|
 | `0` | Success |
 | `1` | Runtime error (connection, auth, command failure) |
 | `2` | Usage error (argument parsing) |
 | `3` | Radio session held by a live owner — a deliberate stop, not a crash |
+
+`validate`, `radio-validate`, `convert` and `diagnose` use their own exit codes;
+`2` and `3` mean something else there.
 
 ## Examples
 

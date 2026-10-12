@@ -663,11 +663,13 @@ def _build_parser() -> argparse.ArgumentParser:
             "  rigplane --model IC-7610 web --bridge           # web UI + audio bridge\n"
             "  rigplane --model IC-7610 serve                  # rigctld server only\n"
             "  rigplane discover                               # find radios on the network\n"
-            "exit codes:\n"
+            "exit codes (web, station, serve and the radio commands):\n"
             "  0  success\n"
             "  1  runtime error (connection, auth, command failure)\n"
             "  2  usage error (argument parsing)\n"
             "  3  radio session held by a live owner (a deliberate stop, not a crash)\n"
+            "validate, radio-validate, convert and diagnose use their own exit codes;\n"
+            "2 and 3 mean something else there.\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

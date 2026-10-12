@@ -26,13 +26,12 @@ class ConnectionError(RigplaneError):
 
 
 class RadioSessionHeldError(ConnectionError):
-    """The radio's session is held by a live owner.
+    """Raised only by the start-up live-holder stop in
+    ``CoreRadioSessionLifecycle._first_connect_busy_pass``.
 
-    Raised by the start-up busy-hold stop when a busy reject on an
-    attempt started long after the first busy attempt proves another
-    live client holds the session. A subclass of :class:`ConnectionError`,
-    so every existing ``except`` still catches it; the CLI maps it to
-    exit code 3 (a deliberate stop, not a crash).
+    A subclass of :class:`ConnectionError`, so every existing ``except``
+    still catches it; the CLI maps it to exit code 3 (a deliberate stop,
+    not a crash).
     """
 
 
