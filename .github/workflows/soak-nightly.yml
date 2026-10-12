@@ -70,44 +70,7 @@ jobs:
 
       - name: Write soak verdict to the job summary
         if: always()
-        run: |
-          uv run --no-project python - >> "$GITHUB_STEP_SUMMARY" <<'PY'
-          import json
-          import sys
-
-          MIB = 1024 * 1024
-          try:
-              with open("soak-report.json", encoding="utf-8") as fh:
-                  r = json.load(fh)
-              c = r["criteria"]
-              rss, rec = c["rssGrowth"], c["recovery"]
-              slope = rss["slopeBytesPerHour"]
-              lines = [
-                  f"## Soak {r['verdict']}: {r['durationActualS']:.0f} s of {r['durationConfiguredS']:.0f} s",
-                  f"- RSS growth {rss['status']}: "
-                  + ("n/a" if slope is None else f"{slope / MIB:+.1f} MiB/h")
-                  + f" (limit {rss['limitBytesPerHour'] / MIB:.0f} MiB/h)",
-              ]
-              for label, key in (("FDs", "fdsStability"), ("Tasks", "tasksStability")):
-                  checks = c[key]["checks"]
-                  worst = max((abs(k["delta"]) for k in checks), default=0)
-                  lines.append(
-                      f"- {label} {c[key]['status']}: max abs delta {worst}"
-                      f" ({len(checks)} checked, tolerance {c[key]['tolerance']})"
-                  )
-              lines.append(
-                  f"- Unrecovered disconnects {rec['status']}: {rec['unrecovered']}"
-                  f" of {rec['forced']} (budget {rec['budgetS']:.0f} s)"
-              )
-              if r["error"]:
-                  lines.append(f"- Driver error: `{r['error']}`")
-          except (OSError, ValueError, KeyError, TypeError) as exc:
-              print("## Soak: NO REPORT")
-              print()
-              print(f"`soak-report.json` is missing or unusable ({type(exc).__name__}).")
-              sys.exit(1)
-          print("\n".join(lines))
-          PY
+        run: uv run --no-project python -m scripts.soak.report_summary soak-report.json
 
       - name: Upload soak report
         if: always()
@@ -150,44 +113,7 @@ jobs:
 
       - name: Write soak verdict to the job summary
         if: always()
-        run: |
-          uv run --no-project python - >> "$GITHUB_STEP_SUMMARY" <<'PY'
-          import json
-          import sys
-
-          MIB = 1024 * 1024
-          try:
-              with open("soak-report.json", encoding="utf-8") as fh:
-                  r = json.load(fh)
-              c = r["criteria"]
-              rss, rec = c["rssGrowth"], c["recovery"]
-              slope = rss["slopeBytesPerHour"]
-              lines = [
-                  f"## Soak {r['verdict']}: {r['durationActualS']:.0f} s of {r['durationConfiguredS']:.0f} s",
-                  f"- RSS growth {rss['status']}: "
-                  + ("n/a" if slope is None else f"{slope / MIB:+.1f} MiB/h")
-                  + f" (limit {rss['limitBytesPerHour'] / MIB:.0f} MiB/h)",
-              ]
-              for label, key in (("FDs", "fdsStability"), ("Tasks", "tasksStability")):
-                  checks = c[key]["checks"]
-                  worst = max((abs(k["delta"]) for k in checks), default=0)
-                  lines.append(
-                      f"- {label} {c[key]['status']}: max abs delta {worst}"
-                      f" ({len(checks)} checked, tolerance {c[key]['tolerance']})"
-                  )
-              lines.append(
-                  f"- Unrecovered disconnects {rec['status']}: {rec['unrecovered']}"
-                  f" of {rec['forced']} (budget {rec['budgetS']:.0f} s)"
-              )
-              if r["error"]:
-                  lines.append(f"- Driver error: `{r['error']}`")
-          except (OSError, ValueError, KeyError, TypeError) as exc:
-              print("## Soak: NO REPORT")
-              print()
-              print(f"`soak-report.json` is missing or unusable ({type(exc).__name__}).")
-              sys.exit(1)
-          print("\n".join(lines))
-          PY
+        run: uv run --no-project python -m scripts.soak.report_summary soak-report.json
 
       - name: Upload soak report
         if: always()

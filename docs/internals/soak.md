@@ -15,8 +15,8 @@ for those. The workflow is `.github/workflows/soak-nightly.yml`,
 informational and not a required check, with a `workflow_dispatch`
 duration input for smoke runs and a `certification` input that runs the
 24 h job `soak-24h` instead; each job writes its verdict and measured
-numbers to the job summary, and the report artifact is a best-effort
-upload.
+numbers to the job summary with `scripts/soak/report_summary.py`, and the
+report artifact is a best-effort upload.
 
 `tests/test_soak_driver.py` pins the smoke, the criterion math, the
 sampler merge, the teardown-time report write, and the mutation teeth
