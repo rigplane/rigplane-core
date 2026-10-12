@@ -55,6 +55,7 @@ export function isStateAdvance(baseline: StateAdvanceBaseline | null, next: obje
   );
   return nextFreshness > baseline.freshnessRevision
     || nextObservation > baseline.observationSeq
+    || nextHealth > baseline.healthRevision
     || (nextDelivery > baseline.deliverySeq && hasOnlyLiveMetadataChanges(baseline.state, next));
 }
 
