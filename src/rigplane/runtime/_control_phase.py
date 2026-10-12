@@ -655,13 +655,12 @@ class ControlPhaseRuntime:
         self._deferred_retail = None
         # Best-effort teardown of any data/audio transports first (mirrors
         # disconnect ordering), then the always-sent token-remove.
-        # No ``_stop_reconnect`` here: the lifecycle runs this release per
-        # connect attempt from its own connect task
-        # (``CoreRadioSessionLifecycle._attempt_with_release``), which is not
-        # the resident reconnect loop — a release that belongs to a connect
-        # attempt must never stop that loop; only an owner teardown
-        # (``CoreRadio.disconnect`` / ``ControlPhaseRuntime.disconnect``)
-        # stops it.
+        # No ``_stop_reconnect`` here: ``release()`` itself does not stop
+        # the reconnect loop.  This is the partial-claim branch — when
+        # ``conn_state`` is CONNECTED, ``ControlPhaseSessionMechanism.
+        # release`` routes the per-attempt release to
+        # ``ControlPhaseRuntime.disconnect`` instead, whose
+        # ``_stop_reconnect()`` does cancel the loop.
         self._stop_watchdog()
         self._stop_token_renewal()
         # An identity-held partial session can have live CI-V tasks. Retire

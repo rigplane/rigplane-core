@@ -118,10 +118,9 @@ class TestReconnectLifecycleRelease:
         self, radio: IcomRadio
     ) -> None:
         """_stop_reconnect from inside the task it would cancel neither
-        cancels the task nor clears the handle (the release the reconnect
-        loop awaits reaches _stop_reconnect from inside the loop itself);
-        the handle is cleared only on a real cancel, so a later external
-        stop — a user disconnect() — can still end the loop."""
+        cancels the task nor clears the handle; the handle is cleared
+        only on a real cancel, so a later external stop — a user
+        disconnect() — can still end the loop."""
         radio._connected = False
         radio._intentional_disconnect = False
 

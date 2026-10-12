@@ -316,17 +316,12 @@ async def test_reboot_busy_window_longer_than_reconnect_rounds_recovers(
 ) -> None:
     """A busy window spanning several reconnect rounds still recovers.
 
-    A real IC-7610 busy-rejected new logins after the previous client
-    died without a release, so the reconnect loop must keep backing
-    off across a busy window longer than one connect() call instead of
-    treating the reject as permanent.
-
     The reconnect task is pinned to be the SAME task object across the
     busy window: a per-attempt release that stopped the loop would end
     reconnecting inside the window instead of recovering after it.
 
     Two deliberate differences from the bench shape, both forced by this
-    simulator's model (verified with a probe against this stack):
+    simulator's model:
     ``down_for`` is 3.0 s, not 0.5 s — the simulator answers control pings
     from any client outside the down window, so a 0.5 s outage (0.5 s of
     ping silence) never trips the 1.5 s packet watchdog and no reconnect

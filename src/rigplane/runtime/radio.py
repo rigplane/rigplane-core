@@ -1552,8 +1552,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._control_phase._stop_watchdog()
         self._control_phase._stop_reconnect()
         if self._conn_state is RadioConnectionState.RECONNECTING:
-            # Also ends the loop via its ``while`` guard if the cancel
-            # lands between awaits.
+            # Make conn_state read DISCONNECTED when the lifecycle
+            # teardown below has nothing to release.
             self._conn_state = RadioConnectionState.DISCONNECTED
         await self._session_lifecycle.disconnect()
         if self._conn_state == RadioConnectionState.CONNECTED:
