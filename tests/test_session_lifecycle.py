@@ -1111,9 +1111,9 @@ async def test_discovery_timeout_before_any_busy_stays_fatal(
         if rec.name == "rigplane.runtime.session_lifecycle"
     ]
     assert mech.connect_calls == 3
-    assert [
-        f"discovery attempt {n}/3 got no answer" for n in (1, 2, 3)
-    ] == [line for line in message_lines if line.startswith("discovery attempt")]
+    assert [f"discovery attempt {n}/3 got no answer" for n in (1, 2, 3)] == [
+        line for line in message_lines if line.startswith("discovery attempt")
+    ]
     assert not any("busy" in line.lower() for line in message_lines)
     assert clock.now - 1_000.0 == pytest.approx(2 * 30.0)
     assert lc.state is LifecycleState.DISCONNECTED
@@ -1192,8 +1192,11 @@ async def test_silent_first_discovery_then_grant_connects(
         if rec.name == "rigplane.runtime.session_lifecycle"
     ]
     assert lines.count("discovery attempt 1/3 got no answer") == 1
-    assert not any(line.startswith("discovery attempt") and line !=
-                   "discovery attempt 1/3 got no answer" for line in lines)
+    assert not any(
+        line.startswith("discovery attempt")
+        and line != "discovery attempt 1/3 got no answer"
+        for line in lines
+    )
     assert not any("busy" in line.lower() for line in lines)
     assert clock.now - 1_000.0 == pytest.approx(30.0)
 
