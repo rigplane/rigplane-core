@@ -1,0 +1,8 @@
+{
+  "contract": "pro/readyz",
+  "source": "rigplane-pro",
+  "source_file": "src/rigplane_pro/companion/core/fleet_client.py",
+  "description": "Pro polls GET /readyz and only the HTTP status decides: 200 means ready, anything else keeps Pro waiting. The response body is never parsed, so Pro expects no field from it.",
+  "producer_artifact": "ready",
+  "schema": {}
+}

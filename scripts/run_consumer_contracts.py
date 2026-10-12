@@ -87,6 +87,46 @@ def _build_discovery() -> dict[str, Any]:
     return json.loads(responder.build_response("127.0.0.1").decode("utf-8"))
 
 
+def _build_startup_event() -> dict[str, Any]:
+    """Build the real startup event line WebServer.emit_startup_event prints."""
+    import io
+
+    from rigplane.web.server import WebConfig, WebServer
+
+    server = WebServer(
+        None, WebConfig(host="127.0.0.1", port=0, emit_startup_event=True)
+    )
+    stream = io.StringIO()
+    server.emit_startup_event(stream=stream)
+    return json.loads(stream.getvalue())
+
+
+def _build_runtime() -> dict[str, Any]:
+    """Build the real GET /api/v1/runtime body with no radio attached."""
+    from rigplane.web.server import WebConfig, WebServer
+
+    async def _run() -> dict[str, Any]:
+        server = WebServer(None, WebConfig(host="127.0.0.1", port=0))
+        writer = _CaptureWriter()
+        await server._handle_http(writer, "GET", "/api/v1/runtime", headers={})
+        return writer.body_json()
+
+    return asyncio.run(_run())
+
+
+def _build_ready() -> dict[str, Any]:
+    """Build the real GET /readyz body with no radio attached."""
+    from rigplane.web.server import WebConfig, WebServer
+
+    async def _run() -> dict[str, Any]:
+        server = WebServer(None, WebConfig(host="127.0.0.1", port=0))
+        writer = _CaptureWriter()
+        await server._handle_http(writer, "GET", "/readyz")
+        return writer.body_json()
+
+    return asyncio.run(_run())
+
+
 def _build_web_surface() -> dict[str, Any]:
     """Build the web command/route surface from the public web modules."""
     from rigplane.web.api_contract import STABLE_HTTP_ENDPOINTS, STABLE_WEBSOCKET_ROUTES
@@ -106,6 +146,9 @@ ARTIFACT_BUILDERS: dict[str, Callable[[], dict[str, Any]]] = {
     "info": _build_info,
     "discovery": _build_discovery,
     "web_surface": _build_web_surface,
+    "startup_event": _build_startup_event,
+    "runtime": _build_runtime,
+    "ready": _build_ready,
 }
 
 
