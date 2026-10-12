@@ -683,6 +683,7 @@ async def test_watchdog_recovering_surfaces_in_runtime_payload() -> None:
     """
     rig = _make_usb_serial_rig()
     await rig.radio.connect()
+    await _wait_for_identity_hold_clear(rig.radio)
     rig.radio._audio_session = AudioSession(
         rig.radio, watchdog_interval=_WD_INTERVAL, rx_liveness_timeout=_WD_TIMEOUT
     )
