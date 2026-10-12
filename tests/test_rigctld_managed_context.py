@@ -234,6 +234,11 @@ async def test_managed_non_tuner_writes_bypass_legacy_rf_gates(
         b"w FE FE 98 E0 1C 01 02 FD",
         b"w FE FE 98 E0 29 00 1C 00 01 FD",
         b"w FE FE 98 E0 1C",
+        b"w FE FE 94 E0 03 FD FE FE 94 E0 1C 00 01 FD",
+        b"w FE FE 94 E0 03 FC FE FE 94 E0 1C 00 01 FD",
+        b"w FE FE FE 98 E0 1C 00 01 FD",
+        b"w FE FE 98 E0 FD",
+        b"w FE FE 98",
     ],
     ids=[
         "ptt-on",
@@ -242,14 +247,22 @@ async def test_managed_non_tuner_writes_bypass_legacy_rf_gates(
         "tuner-tune",
         "cmd29-ptt-on",
         "unparseable",
+        "concatenated-after-fd",
+        "concatenated-after-fc",
+        "leading-extra-fe",
+        "short-frame",
+        "truncated-frame",
     ],
 )
 async def test_managed_raw_w_tx_family_frames_are_refused(context, wire, ptt_observed):
     """Managed mode refuses TX-family raw ``w`` frames by payload — PTT in
-    both directions, tuner actuation, a cmd29-wrapped PTT frame, and any
-    frame whose envelope cannot be parsed — unconditionally, regardless of
-    the observed PTT state, without consulting the managed TX authority and
-    without anything reaching the radio."""
+    both directions, tuner actuation, a cmd29-wrapped PTT frame, any frame
+    whose envelope cannot be parsed, and any payload that smuggles a second
+    frame past a single-frame envelope check (an FE/FD/FC byte between the
+    leading FE FE and the final FD), and any payload shorter than a minimal
+    frame — unconditionally, regardless of the observed PTT state, without
+    consulting the managed TX authority and without anything reaching the
+    radio."""
     authority = _AuthorityTouchProbe()
     refs = dict(context.refs, managed_tx_authority=authority)
     context.store.apply_current(
@@ -267,6 +280,37 @@ async def test_managed_raw_w_tx_family_frames_are_refused(context, wire, ptt_obs
 
     assert response.error is HamlibError.ERJCTED
     assert context.radio.write_calls == []
+    assert authority.touches == []
+
+
+@pytest.mark.parametrize(
+    "ptt_observed", [True, False], ids=["tx-observed", "rx-observed"]
+)
+async def test_managed_raw_w_non_tx_write_frames_pass(context, ptt_observed):
+    """A non-TX raw write (set frequency) passes in managed mode and reaches
+    the radio unchanged — at observed TX as well as observed RX — still
+    without consulting the managed TX authority."""
+    authority = _AuthorityTouchProbe()
+    refs = dict(context.refs, managed_tx_authority=authority)
+    context.store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=ptt_observed,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=asyncio.get_running_loop().time(),
+            max_age=1e9,
+        )
+    )
+    handler = RigctldHandler(context.radio, RigctldConfig(), **refs)
+
+    response = await handler.execute(
+        parse_line(b"w FE FE 98 E0 05 00 00 10 14 00 FD"), session_id="client"
+    )
+
+    assert response.ok
+    assert context.radio.write_calls == [
+        ("raw", bytes.fromhex("FEFE98E0050000101400FD"))
+    ]
     assert authority.touches == []
 
 

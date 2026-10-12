@@ -582,6 +582,11 @@ def _managed_server(radio: MagicMock) -> tuple[WebServer, _AuthorityTouchProbe]:
         {"command": 0x1C, "sub": 0x01, "data": "02", "expect": "none"},
         {"command": 0x29, "data": "001C0001", "expect": "none"},
         {"command": 0x29, "data": "00", "expect": "none"},
+        {"command": 0x29, "sub": 0x00, "data": "1C0001", "expect": "none"},
+        {"command": 0x03, "data": "FDFEFE94E01C0001", "expect": "none"},
+        {"command": 0x03, "data": "FCFEFE94E01C0001", "expect": "none"},
+        {"command": 0x03, "data": "FE1C0001", "expect": "none"},
+        {"command": 0x29, "expect": "none"},
     ],
     ids=[
         "ptt-on",
@@ -590,13 +595,23 @@ def _managed_server(radio: MagicMock) -> tuple[WebServer, _AuthorityTouchProbe]:
         "tuner-tune",
         "cmd29-ptt-on",
         "cmd29-truncated",
+        "cmd29-sub-form-ptt-on",
+        "smuggled-frame-in-data",
+        "fc-separator-smuggled-frame",
+        "leading-extra-fe-in-data",
+        "cmd29-empty",
     ],
 )
 async def test_http_raw_civ_transaction_managed_refuses_tx_family(
     payload: dict,
 ) -> None:
     """Managed mode refuses TX-family raw CI-V transactions by payload,
-    before anything reaches the radio or the managed TX authority."""
+    before anything reaches the radio or the managed TX authority.  The
+    verdict is computed on the exact frame the transaction would send, so a
+    cmd29 wrapper split as (sub, data), a frame smuggled inside the data
+    field past an FD, FC, or stray FE delimiter, and a cmd29 wrapper shorter
+    than receiver plus inner command are refused exactly as their wire form
+    is."""
     radio = _radio()
     radio.send_civ_transaction = AsyncMock()
     srv, probe = _managed_server(radio)
@@ -642,6 +657,33 @@ async def test_http_raw_civ_transaction_managed_passes_reads(
 
 
 @pytest.mark.asyncio
+async def test_http_raw_civ_transaction_managed_passes_non_tx_write() -> None:
+    """A non-TX raw write (set frequency) passes in managed mode and reaches
+    the radio's transaction entry point unchanged."""
+    radio = _radio()
+    radio.send_civ_transaction = AsyncMock(
+        return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
+    )
+    srv, probe = _managed_server(radio)
+
+    writer = await _post_json(
+        srv,
+        "/api/v1/civ/transaction",
+        {"command": 0x05, "data": "0000101400", "expect": "none"},
+    )
+
+    assert writer.response_status == 200
+    radio.send_civ_transaction.assert_awaited_once_with(
+        0x05,
+        sub=None,
+        data=bytes.fromhex("0000101400"),
+        expect="none",
+        timeout=None,
+    )
+    assert probe.touches == []
+
+
+@pytest.mark.asyncio
 async def test_http_command_batch_raw_civ_transaction_managed_refuses_tx_family() -> (
     None
 ):
@@ -677,8 +719,13 @@ async def test_http_command_batch_raw_civ_transaction_managed_refuses_tx_family(
 
 
 @pytest.mark.asyncio
-async def test_http_raw_civ_transaction_unmanaged_passes_ptt_on() -> None:
-    """The unmanaged HTTP raw path keys the rig with no interlock at all."""
+@pytest.mark.xfail(
+    strict=True,
+    reason="MOR-3364: unmanaged HTTP raw PTT-on must be refused, not sent",
+)
+async def test_http_raw_civ_transaction_unmanaged_refuses_ptt_on() -> None:
+    """Desired post-MOR-3364 behavior: the unmanaged HTTP raw path refuses
+    PTT-on instead of keying the rig with no interlock at all."""
     radio = _radio()
     radio.send_civ_transaction = AsyncMock(
         return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
@@ -691,10 +738,10 @@ async def test_http_raw_civ_transaction_unmanaged_passes_ptt_on() -> None:
         {"command": 0x1C, "sub": 0x00, "data": "01", "expect": "none"},
     )
 
-    assert writer.response_status == 200
-    radio.send_civ_transaction.assert_awaited_once_with(
-        0x1C, sub=0x00, data=b"\x01", expect="none", timeout=None
+    assert writer.response_status == 403, (
+        "MOR-3364: unmanaged HTTP raw PTT-on still reaches the radio"
     )
+    radio.send_civ_transaction.assert_not_awaited()
 
 
 @pytest.mark.asyncio
