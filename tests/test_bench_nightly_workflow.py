@@ -49,16 +49,14 @@ def _radio_job_text() -> str:
     assert start is not None, "the radio job is missing from bench-nightly.yml"
     rest = text[start.end() :]
     following = _NEXT_JOB_RE.search(rest)
-    return rest[: following.start()] if following else rest
+    return rest[:following.start()] if following else rest
 
 
 def _step_blocks(job_text: str) -> list[str]:
     starts = [match.start() for match in _STEP_START_RE.finditer(job_text)]
     assert starts, "the radio job has no steps"
-    return [
-        job_text[starts[i] : starts[i + 1] if i + 1 < len(starts) else len(job_text)]
-        for i in range(len(starts))
-    ]
+    ends = [*starts[1:], len(job_text)]
+    return [job_text[start:end] for start, end in zip(starts, ends)]
 
 
 def _step_name(block: str) -> str | None:
@@ -183,7 +181,7 @@ def test_radio_commands_go_through_the_guard() -> None:
         if not run:
             continue
         for match in _UV_RUN_RE.finditer(run):
-            if not run[: match.start()].endswith(GUARD_PREFIX):
+            if not run[:match.start()].endswith(GUARD_PREFIX):
                 unguarded.append(
                     f"{_step_name(block)!r}: {match.group('cmd')} "
                     f"invocation not guarded: {match.group(0)!r}"
