@@ -542,10 +542,8 @@ class _HttpCommandExecutor:
                 # be parsed as a single whole CI-V frame, is refused
                 # unless the observed PTT resolves to fresh-known RX;
                 # any other non-TX frame passes regardless of the
-                # observed RF state.  An exact de-key frame (PTT off or
-                # tuner off, bare or inside a cmd29 prefix) is exempt
-                # from that refusal, as ``classify_tx_interlock`` never
-                # refuses the typed PTT-off and tuner-off either.
+                # observed RF state.  An exact de-key frame is exempt
+                # from that refusal.
                 rf_state = self._observed_rf_state()
                 if rf_state is not RfState.RX:
                     raise TxInterlockRefusal(

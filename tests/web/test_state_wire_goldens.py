@@ -6,7 +6,9 @@ the web server's own producers. The vitest suite
 ``state-wire-goldens.integration.isolated.test.ts`` feeds the same file through
 the frontend websocket client, stores and view-model adapter. These tests keep
 the file equal to what the producers emit today and check each payload
-against ``StateUpdateEnvelope``. A producer change fails them until the file
+against ``StateUpdateEnvelope``. Every profile in ``rigs/*.toml`` must have a
+capabilities entry; the generator's excluded models contribute capabilities
+only. A producer change fails them until the file
 is regenerated and the diff reviewed:
 
     uv run python scripts/gen_state_wire_goldens.py
@@ -27,6 +29,7 @@ from unittest import mock
 import pytest
 
 from rigplane.profiles import get_radio_profile
+from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.web.runtime_helpers import declared_field_paths
 from rigplane.web.state_schema import StateUpdateEnvelope
 
@@ -61,6 +64,11 @@ _ENVELOPE_CASES = [
     for case in ("allObserved", "allUnobserved")
     if case in entry
 ]
+_ALL_RIG_MODELS = sorted(discover_rigs(_ROOT / "rigs"))
+# The generator keeps these profiles' state payloads out of the golden; their
+# capabilities entries must still be there.
+_EXCLUDED_MODELS = _GENERATOR._EXCLUDED_MODELS
+_INCLUDED_MODELS = [model for model in _ALL_RIG_MODELS if model not in _EXCLUDED_MODELS]
 
 
 def _case_param(model: str, case: str) -> Any:
@@ -129,7 +137,24 @@ def test_monotonic_progress_does_not_drift_the_render() -> None:
     )
 
 
-@pytest.mark.parametrize("model", sorted(_GOLDENS))
+@pytest.mark.parametrize("model", sorted(_EXCLUDED_MODELS))
+def test_excluded_models_contribute_capabilities_only(model: str) -> None:
+    assert sorted(_GOLDENS[model]) == ["capabilities"]
+
+
+def test_every_rig_profile_has_a_capabilities_entry() -> None:
+    """Every ``rigs/*.toml`` profile must have a capabilities entry."""
+    assert _EXCLUDED_MODELS <= set(_ALL_RIG_MODELS)
+    missing = [
+        model
+        for model in _ALL_RIG_MODELS
+        if "capabilities" not in _GOLDENS.get(model, {})
+    ]
+
+    assert missing == []
+
+
+@pytest.mark.parametrize("model", _INCLUDED_MODELS)
 def test_all_observed_exists_only_for_profiles_with_acquisition(model: str) -> None:
     has_acquisition = get_radio_profile(model).state_acquisition is not None
 
@@ -168,7 +193,7 @@ def test_all_observed_observes_every_declared_path(model: str) -> None:
     assert declared - observed == set()
 
 
-@pytest.mark.parametrize("model", sorted(_GOLDENS))
+@pytest.mark.parametrize("model", _INCLUDED_MODELS)
 def test_all_unobserved_observes_only_lifecycle_paths(model: str) -> None:
     observed = _observed_store_paths(_GOLDENS[model]["allUnobserved"])
 

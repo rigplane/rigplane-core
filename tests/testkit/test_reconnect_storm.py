@@ -252,13 +252,6 @@ async def test_session_drop_with_notice_recovers_with_one_login(
     assert run.freq == _FREQ_HZ, run.report()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "MOR-3349: after a silent session drop the soft reconnect leaves the "
-        "identity hold on a dead session and no re-login follows"
-    ),
-)
 async def test_session_drop_without_notice_recovers_within_the_watchdog_budget(
     sim: MockIcomRadio,
     caplog: pytest.LogCaptureFixture,
@@ -281,8 +274,25 @@ async def test_session_drop_without_notice_recovers_within_the_watchdog_budget(
 
 
 async def test_power_off_with_notice_recovers_with_one_login(
-    sim: MockIcomRadio, caplog: pytest.LogCaptureFixture
+    sim: MockIcomRadio,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # A post-reboot login that lands while the simulator is up but still inside
+    # its busy window (``reboot(down_for=…, busy_for=…)``: ``_conninfo_status``
+    # answers conninfo with civ_port=0 error=0xFFFFFFFF until down_for +
+    # busy_for) drives ``_connect_once`` into the within-attempt reject pause,
+    # ``ControlPhaseRuntime._STATUS_REJECT_COOLDOWN`` (30 s). This test pins
+    # the one-login recovery, not that pause, and 30 s exceeds every budget
+    # here. A busy
+    # reject is only generated for a conninfo that arrived at or after the
+    # radio came back, so pausing exactly ``busy_for`` lands the retry at or
+    # after the busy window ends — whatever runner load did to the login's
+    # position inside the window.
+    monkeypatch.setattr(
+        "rigplane.runtime._control_phase.ControlPhaseRuntime._STATUS_REJECT_COOLDOWN",
+        _BUSY_FOR_S,
+    )
     run = await _ride_out(
         sim,
         caplog,

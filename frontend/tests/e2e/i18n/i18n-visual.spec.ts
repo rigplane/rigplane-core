@@ -21,15 +21,21 @@
  *     (used for the Toast surface).
  *
  * Assertion floor (no screenshot diffs are forced — see README):
- *   - Page text MUST NOT contain `[missing:` (lookup-miss marker).
- *   - Page text MUST NOT contain `${` (raw template leak).
+ *   - Page text AND page markup MUST NOT contain `[missing:` (lookup-miss
+ *     marker) or `${` (raw template leak). The markup pass catches
+ *     markers in `aria-label`/`title`/`placeholder` attributes and in
+ *     hidden containers that the visibility-filtered `innerText` pass
+ *     never sees.
  *   - Glossary tokens used by populated state — `MAIN`, `SUB`, `USB`,
- *     `LSB`, `RTTY`, the radio model `IC-7300` — MUST appear verbatim
- *     in EVERY locale, including `qps-ploc`.
- *   - On `qps-ploc` we DO NOT also check for diacritics in the page,
- *     because some unsubstituted English glyphs are intentional
- *     (interpolated radio model, mode tokens). The component-level
- *     pseudo smoke (RP-ML-013A) already covers the runtime transform.
+ *     `LSB`, `RTTY`, `VFO` — MUST appear verbatim in EVERY locale,
+ *     including `qps-ploc`, on the desktop app-shell. The radio model is
+ *     not asserted: no surface this suite drives renders it. Mobile is
+ *     excluded: the portrait phone renders only the active receiver.
+ *   - On `qps-ploc` the body text MUST carry pseudo-locale markers
+ *     (`⟦⟧` wrappers / diacritic substitutions, `pseudo.ts`), so a
+ *     silent fall-back to English fails the run. Unsubstituted English
+ *     glyphs elsewhere are still expected — interpolated radio values
+ *     and mode tokens are passed through verbatim by design.
  *
  * Scope split with RP-ML-013A:
  *   - RP-ML-013A is the cheap unit-test floor (vitest + jsdom) that runs
@@ -76,12 +82,26 @@ const VIEWPORTS: ViewportSpec[] = [
  * by composing them as interpolation values at the call site
  * (see `frontend/src/lib/i18n/pseudo.ts` header).
  *
- * Note: We assert the tokens MAIN/SUB/USB/LSB and the radio model
- * "IC-7300" appear in the rendered DOM somewhere. Visibility per
- * surface is not required — the layout naturally hides some on mobile.
- * The smoke is: glossary survives the locale switch at all.
+ * All six render on the desktop app-shell under every supported locale,
+ * `qps-ploc` included. The radio model is deliberately NOT asserted:
+ * no surface this suite drives renders the model string at all (the
+ * fixtures publish `mockCapabilities.model` and it never reaches the
+ * DOM), so there is no verbatim model text to guard. Mobile is excluded
+ * because the portrait phone renders only the active receiver — its DOM
+ * carries no SUB/RTTY/VFO text at all, so the desktop-wide token set
+ * cannot honestly apply there.
  */
-const GLOSSARY_TOKENS_DESKTOP = ['USB', 'VFO'];
+const GLOSSARY_TOKENS_DESKTOP = ['MAIN', 'SUB', 'USB', 'LSB', 'RTTY', 'VFO'];
+
+/**
+ * Characters that can only come from the `qps-ploc` transform in
+ * `frontend/src/lib/i18n/pseudo.ts`: the `⟦`/`⟧` wrappers it puts around
+ * every catalog string plus its DIACRITIC_MAP letter substitutions.
+ * Plain English copy — the state the page falls back to when the
+ * pseudo-locale never applied — contains none of them.
+ */
+const PSEUDO_MARKERS =
+  /[⟦⟧áƀçđéƒğĥíĵķłɱñóþǫŕšťúṽŵẋýžÁƁÇĐÉƑĞĤÍĴĶŁⱮÑÓÞǪŔŠŤÚṼŴẊÝŽ]/;
 
 function locStorageInit(locale: SupportedLocale) {
   // Stamp both keys: the explicit Core selector (LanguageSelector path)
@@ -266,22 +286,34 @@ async function ensureScreenshotDir(): Promise<void> {
 }
 
 /**
- * Inspect the rendered body text for forbidden markers.
+ * Inspect the rendered body text and the full page markup for forbidden
+ * markers.
  *
  * `[missing:` is what the runtime emits when a key is absent from the
  * active locale catalog (see `runtime.ts`). It MUST NOT appear in a
  * shipped surface. `${` is the raw template-literal leak; same story.
+ *
+ * The markup pass exists because `innerText` is visibility-filtered:
+ * `aria-label`, `title` and `placeholder` attribute values and hidden
+ * containers never reach it. Script and style blocks are stripped from
+ * the markup first.
  */
 async function assertNoLookupMisses(page: Page, surfaceLabel: string): Promise<void> {
   const bodyText = await page.locator('body').innerText();
   expect(bodyText, `${surfaceLabel}: lookup-miss marker present`).not.toMatch(/\[missing:/);
   expect(bodyText, `${surfaceLabel}: raw template leak present`).not.toMatch(/\$\{[a-zA-Z]/);
+  const markup = (await page.content())
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '');
+  expect(markup, `${surfaceLabel}: lookup-miss marker in markup`).not.toMatch(/\[missing:/);
+  expect(markup, `${surfaceLabel}: raw template leak in markup`).not.toMatch(/\$\{[a-zA-Z]/);
 }
 
 /**
  * Confirm glossary tokens survive the active locale, including
- * `qps-ploc`. Restricted to desktop because some panels collapse on
- * mobile and may not surface every token.
+ * `qps-ploc`. Restricted to desktop: the mobile portrait layout renders
+ * only the active receiver, and its DOM carries no SUB/RTTY/VFO text at
+ * all, so the desktop token set cannot apply there.
  */
 async function assertGlossaryTokens(
   page: Page,
@@ -293,6 +325,25 @@ async function assertGlossaryTokens(
   for (const token of GLOSSARY_TOKENS_DESKTOP) {
     expect(bodyText, `${surfaceLabel}: glossary token "${token}" missing`).toContain(token);
   }
+}
+
+/**
+ * Under `qps-ploc` the page must actually carry the pseudo-locale
+ * transform. Without this, a run that silently fell back to English
+ * would pass every other check: glossary tokens and mode readouts are
+ * interpolation values the transform deliberately leaves verbatim.
+ */
+async function assertPseudoMarkers(
+  page: Page,
+  locale: SupportedLocale,
+  surfaceLabel: string,
+): Promise<void> {
+  if (locale !== 'qps-ploc') return;
+  const bodyText = await page.locator('body').innerText();
+  expect(
+    bodyText,
+    `${surfaceLabel}: no pseudo-locale markers — did the locale fall back to English?`,
+  ).toMatch(PSEUDO_MARKERS);
 }
 
 async function waitForAppShell(page: Page): Promise<void> {
@@ -361,6 +412,7 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
         await waitForAppShell(page);
         await assertNoLookupMisses(page, `app-shell/${locale}/${viewport.name}`);
         await assertGlossaryTokens(page, viewport, `app-shell/${locale}/${viewport.name}`);
+        await assertPseudoMarkers(page, locale, `app-shell/${locale}/${viewport.name}`);
         await captureBaseline(page, 'app-shell', locale, viewport);
       });
 
@@ -392,20 +444,27 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
         await preparePage(page, locale, viewport);
         await gotoApp(page, locale);
         await waitForAppShell(page);
-        // The settings button lives in StatusBar. Its aria-label is
-        // localized; instead of looking up the translated string per
-        // locale, use the CSS class hook the component already exposes.
-        const settingsBtn = page.locator('.control-btn.settings-btn');
-        if ((await settingsBtn.count()) > 0) {
-          await settingsBtn.first().click();
-          // Wait for the modal dialog.
-          await page
-            .locator('[role="dialog"][aria-modal="true"]')
-            .first()
-            .waitFor({ state: 'visible', timeout: 4_000 })
-            .catch(() => undefined);
-          await page.waitForTimeout(250);
+        // The opener depends on the responsive skin: the desktop
+        // StatusBar carries `.control-btn.settings-btn`; the mobile
+        // skin's header carries `.m-settings-btn` (MobileRadioLayout),
+        // which opens the setup BottomSheet. Each viewport must open a
+        // real dialog — a renamed selector or a dialog that never
+        // appears fails here instead of degrading this case into
+        // another app-shell pass.
+        const desktopOpener = page.locator('.control-btn.settings-btn');
+        if (viewport.name === 'desktop') {
+          await expect(desktopOpener).toHaveCount(1);
+          await desktopOpener.click();
+        } else {
+          await expect(desktopOpener).toHaveCount(0);
+          const mobileOpener = page.locator('.m-settings-btn');
+          await expect(mobileOpener).toHaveCount(1);
+          await mobileOpener.click();
         }
+        await expect(
+          page.locator('[role="dialog"][aria-modal="true"]').first(),
+          `settings-modal/${locale}/${viewport.name}: dialog never opened`,
+        ).toBeVisible();
         await assertNoLookupMisses(
           page,
           `settings-modal/${locale}/${viewport.name}`,
@@ -417,15 +476,21 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
         await preparePage(page, locale, viewport);
         await gotoApp(page, locale);
         await waitForAppShell(page);
+        // The report opener is desktop chrome: StatusBar renders it,
+        // the mobile skin does not. Desktop must open the dialog; the
+        // mobile case pins the desktop opener's absence so a selector
+        // rename or a layout regression fails here loudly instead of
+        // degrading this case into another app-shell pass.
         const reportBtn = page.locator('.control-btn.report-btn');
-        if ((await reportBtn.count()) > 0) {
-          await reportBtn.first().click();
-          await page
-            .locator('[role="dialog"][aria-modal="true"]')
-            .first()
-            .waitFor({ state: 'visible', timeout: 4_000 })
-            .catch(() => undefined);
-          await page.waitForTimeout(250);
+        if (viewport.name === 'desktop') {
+          await expect(reportBtn).toHaveCount(1);
+          await reportBtn.click();
+          await expect(
+            page.locator('[role="dialog"][aria-modal="true"]').first(),
+            `send-report-dialog/${locale}/${viewport.name}: dialog never opened`,
+          ).toBeVisible();
+        } else {
+          await expect(reportBtn).toHaveCount(0);
         }
         await assertNoLookupMisses(
           page,

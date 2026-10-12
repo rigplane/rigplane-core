@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from math import isfinite
 
+from rigplane.commands._frame import build_civ_frame
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import FreshnessState, StateSnapshot
@@ -70,7 +71,9 @@ __all__ = [
     "evaluate_tx_interlock",
     "get_tx_interlock_command_family_metadata",
     "is_exact_raw_dekey_frame",
+    "is_exact_raw_transmission_end_frame",
     "resolve_rf_state",
+    "send_civ_frame",
 ]
 
 
@@ -603,3 +606,58 @@ def is_exact_raw_dekey_frame(frame: bytes) -> bool:
     if command == _CIV_RECEIVER_PREFIX_COMMAND:
         return len(data) == 4 and _is_exact_dekey_triple(data[1], data[2], data[3:])
     return _is_exact_dekey_triple(command, sub, data)
+
+
+def send_civ_frame(command: int, sub: int | None, data: bytes) -> bytes | None:
+    """Build the wire frame a ``send_civ`` / ``SendCiv`` would send.
+
+    The same ``build_civ_frame(0x00, 0x00, command, sub, data)``
+    construction the managed ingress refuses on.  Returns None when
+    the frame cannot be built (a command or sub byte outside 0-0xFF);
+    each gate then treats the command as not exempt and captures or
+    refuses it.
+    """
+
+    try:
+        return build_civ_frame(0x00, 0x00, command, sub, data)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_transmission_end_triple(command: int, sub: int | None, data: bytes) -> bool:
+    """True when an unwrapped ``(command, sub, data)`` triple ends a transmission.
+
+    The PTT-off actuation (``1C 00 00``) and the voice TX memory stop
+    (``28 00 00``) end one; the tuner-off actuation (``1C 01 00``) does
+    not.
+    """
+
+    if command == _CIV_TX_FAMILY_COMMAND:
+        return sub == 0x00 and data == b"\x00"  # the PTT sub only
+    if command == _CIV_VOICE_TX_MEMORY_COMMAND:
+        return sub == _CIV_VOICE_TX_MEMORY_SUB and data == b"\x00"
+    return False
+
+
+def is_exact_raw_transmission_end_frame(frame: bytes) -> bool:
+    """True when one whole well-formed frame exactly ends a transmission.
+
+    The frame must unwrap — through the same :func:`_unwrap_civ_frame`
+    parser the TX-family classifier uses — to the PTT-off actuation
+    (``1C 00 00``) or the voice TX memory stop (``28 00 00``), bare or
+    inside a 0x29 receiver prefix; the 0x29 form must be exactly
+    receiver plus inner actuation.  The tuner-off actuation
+    (``1C 01 00``) does not end a transmission here, and neither does
+    anything with extra payload bytes, a different sub or data value,
+    or an unparseable envelope.
+    """
+
+    unwrapped = _unwrap_civ_frame(frame)
+    if unwrapped is None:
+        return False
+    command, sub, data = unwrapped
+    if command == _CIV_RECEIVER_PREFIX_COMMAND:
+        return len(data) == 4 and _is_transmission_end_triple(
+            data[1], data[2], data[3:]
+        )
+    return _is_transmission_end_triple(command, sub, data)

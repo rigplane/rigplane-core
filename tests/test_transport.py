@@ -795,6 +795,63 @@ class TestConninfoNoticeCallback:
         assert transport._packet_queue.empty()
 
 
+def _token_packet() -> bytes:
+    """A 0x40-byte ptype-0 packet, the size of a token renewal answer."""
+    pkt = bytearray(0x40)
+    struct.pack_into("<I", pkt, 0, 0x40)
+    struct.pack_into("<H", pkt, 4, 0x00)
+    struct.pack_into("<H", pkt, 6, 2)
+    return bytes(pkt)
+
+
+class TestTokenReplyCallback:
+    def _route_both(self, transport: IcomTransport) -> tuple[list[bytes], list[bytes]]:
+        replies: list[bytes] = []
+        notices: list[bytes] = []
+        transport._discard_data_packets = True
+        transport._token_reply_callback = replies.append
+        transport._conninfo_notice_callback = notices.append
+        return replies, notices
+
+    def test_token_packet_reaches_its_callback_once_and_is_not_queued(
+        self, transport: IcomTransport
+    ) -> None:
+        replies, notices = self._route_both(transport)
+        pkt = _token_packet()
+        transport._handle_packet(pkt)
+        assert replies == [pkt]
+        assert notices == []
+        assert transport._packet_queue.empty()
+
+    def test_conninfo_still_reaches_only_its_own_callback(
+        self, transport: IcomTransport
+    ) -> None:
+        replies, notices = self._route_both(transport)
+        pkt = _conninfo_notice()
+        transport._handle_packet(pkt)
+        assert notices == [pkt]
+        assert replies == []
+        assert transport._packet_queue.empty()
+
+    def test_token_packet_discarded_when_callback_is_none(
+        self, transport: IcomTransport
+    ) -> None:
+        transport._discard_data_packets = True
+        transport._token_reply_callback = None
+        transport._handle_packet(_token_packet())
+        assert transport._packet_queue.empty()
+
+    def test_token_packet_is_queued_during_setup(
+        self, transport: IcomTransport
+    ) -> None:
+        transport._discard_data_packets = False
+        transport._token_reply_callback = None
+        pkt = _token_packet()
+        transport._handle_packet(pkt)
+        assert transport._packet_queue.qsize() == 1
+        assert transport._packet_queue.get_nowait() == pkt
+
+
 # ---------------------------------------------------------------------------
 # Packet queue capacity / overflow
 # ---------------------------------------------------------------------------

@@ -15,11 +15,14 @@ vi.mock('../http-client', async (importOriginal) => ({
 // `scripts/gen_state_wire_goldens.py` from the Python producers: per profile,
 // the capabilities body and the `full` state-update envelope the web server
 // builds, for an empty store (`allUnobserved`) and for every declared field
-// observed (`allObserved`). `tests/web/test_state_wire_goldens.py` keeps the
-// file equal to the producers' output. Each payload goes here through the real
+// observed (`allObserved`). The generator's `_EXCLUDED_MODELS` (IC-7300MK2,
+// X6100) contribute a capabilities entry only, which still goes through
+// `validateCapabilities` in the `capabilities pass validateCapabilities` case
+// below. `tests/web/test_state_wire_goldens.py` keeps the file equal to the
+// producers' output. Each payload goes here through the real
 // ws-client → radio store → `toRadioViewModel`, so a payload the client's
 // validators reject fails this suite.
-//
+
 // Named `*.isolated.test.ts` for the same reason as
 // `ws-client-store.integration.isolated.test.ts`: it mocks `http-client` and
 // needs a fresh module graph per test.
@@ -28,7 +31,7 @@ type CaseName = 'allUnobserved' | 'allObserved';
 
 interface GoldenEntry {
   capabilities: Record<string, unknown>;
-  allUnobserved: Record<string, unknown>;
+  allUnobserved?: Record<string, unknown>;
   allObserved?: Record<string, unknown>;
 }
 

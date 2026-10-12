@@ -65,6 +65,7 @@ from rigplane.core.state_acquisition_policy import (
     RadioAcquisitionProfile,
     acquisition_policy_for_class,
 )
+from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.core.tx_target import KnownTxTarget, TxReceiver, UnknownTxTarget
 from rigplane.core.tx_observation import (
@@ -978,18 +979,58 @@ async def test_request_recovery_now_starts_one_full_reconnect(
     )
 
 
+def _park_owned_identity_hold(radio: IcomRadio) -> None:
+    """An identity hold that owns the open link (CONNECTING, gate running)."""
+    radio._conn_state = RadioConnectionState.CONNECTING
+    radio._connection_identity = RadioIdentity(
+        status=RadioIdentityStatus.NO_RESPONSE, expected_model=radio.model
+    )
+    radio._lan_identity_owned_epoch = radio._civ_epoch
+    radio._lan_identity_gate_running = True
+    radio._ctrl_transport._udp_transport = object()  # control session open
+
+
+@pytest.mark.parametrize("trigger", ["direct_request", "busy_zero_notice"])
+async def test_owned_identity_hold_admits_the_full_reconnect(
+    radio: IcomRadio,
+    trigger: str,
+) -> None:
+    """A hold on the open link is not CONNECTED, yet a dead-session verdict
+    or a busy=0 notice during it must reach the same recovery."""
+    order, _released = _arm_notice_recovery(radio)
+    _park_owned_identity_hold(radio)
+    assert radio._lan_identity_phase_owns_open_link() is True
+
+    with patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()):
+        if trigger == "direct_request":
+            radio._civ_runtime.request_recovery_now("control session dead: reject")
+        else:
+            # All-zero 0x90 notice: busy at 0x60 reads 0.
+            radio._control_phase._on_conninfo_notice(bytes(0x90))
+        task = radio._civ_runtime._reconnect_task
+        assert task is not None
+        await task
+
+    assert order == ["force_cleanup", "release", "soft_reconnect", "remote_id=0"]
+
+
 @pytest.mark.parametrize(
     "blocker",
-    ["not_connected", "recovering", "live_task"],
+    ["not_connected", "connecting_without_hold", "recovering", "live_task"],
 )
 async def test_request_recovery_now_is_a_no_op_when_blocked(
     radio: IcomRadio,
     blocker: str,
 ) -> None:
-    """Not CONNECTED, already recovering, or a live recovery task: do nothing."""
+    """Not CONNECTED and no owned identity hold, already recovering, or a live
+    recovery task: do nothing."""
     _order, released = _arm_notice_recovery(radio)
     if blocker == "not_connected":
         radio._conn_state = RadioConnectionState.DISCONNECTED
+    elif blocker == "connecting_without_hold":
+        radio._conn_state = RadioConnectionState.CONNECTING
+        radio._ctrl_transport._udp_transport = object()
+        assert radio._lan_identity_phase_owns_open_link() is False
     elif blocker == "recovering":
         radio._civ_recovering = True
     else:
