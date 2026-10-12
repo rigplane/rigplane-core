@@ -92,6 +92,11 @@ vi.mock('$lib/stores/connection.svelte', () => ({
   isReconnecting: vi.fn(() => false),
   getRadioStatus: vi.fn(() => 'ok'),
   isAudioConnected: vi.fn(() => false),
+  // The radio-link line's inputs; the defaults describe a healthy link.
+  getRadioLinkState: vi.fn(() => 'connected'),
+  getRigConnected: vi.fn(() => true),
+  getRadioReady: vi.fn(() => true),
+  getRadioHealth: vi.fn(() => null),
 }));
 vi.mock('$lib/stores/audio.svelte', () => ({
   getAudioState: vi.fn(() => ({
