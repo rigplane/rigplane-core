@@ -1636,7 +1636,7 @@ class CivRuntime:
                 self._rearm_data_watchdog_after_recovery()
 
     def _hand_off_exhaustion_to_reconnect_loop(self, exc: Exception) -> None:
-        """Start the resident reconnect loop after recovery exhausted (MOR-3296).
+        """Start the resident reconnect loop after recovery exhausted.
 
         ``RigplaneConnectionError`` out of ``host.soft_reconnect`` is raised
         only by ``CoreRadioSessionLifecycle._run_recover`` after it released

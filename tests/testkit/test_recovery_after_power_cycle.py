@@ -1,4 +1,4 @@
-"""Recovery after a full radio power-cycle (MOR-3296, second PR).
+"""Recovery after a full radio power-cycle (second PR of the defect family).
 
 Pins the CI-V data watchdog's recovery handoff and the control-socket login
 gate in ``soft_reconnect``. The packet-count watchdog's own
@@ -69,7 +69,7 @@ async def test_watchdog_recover_hands_exhaustion_to_resident_reconnect_loop() ->
     ``CoreRadioSessionLifecycle._run_recover`` raises its exhaustion
     ``ConnectionError`` only after releasing the session and leaving the host
     DISCONNECTED. Without the handoff nothing restarts recovery there, so the
-    client stayed down after a radio power-cycle (MOR-3296)."""
+    client stayed down after a radio power-cycle."""
     radio, statuses = _exhaustion_radio()
 
     loop_entries: list[RadioConnectionState] = []
@@ -143,7 +143,7 @@ async def test_soft_reconnect_full_connect_when_ctrl_never_logged_in() -> None:
     ``IcomTransport.connect``/``reconnect`` leave the transport CONNECTING;
     only the end of ``_connect_once`` marks it CONNECTED. After a failed full
     connect the control UDP socket can still be open, and the CI-V-rebuild
-    branch then declared a session that does not exist (MOR-3296). With the
+    branch then declared a session that does not exist. With the
     login gate the rebuild branch requires a CONNECTED control transport and
     this recovery takes the full-connect branch."""
     radio = IcomRadio("127.0.0.1", model="IC-7610")

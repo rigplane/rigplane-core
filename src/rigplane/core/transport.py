@@ -135,7 +135,7 @@ class IcomTransport:
         # Set by _UdpProtocol.connection_lost for the CURRENT endpoint; each
         # connect()/reconnect() creates a fresh event with its endpoint, and
         # disconnect() awaits it so the socket close cannot race a rebind of
-        # the same local port (MOR-3296).
+        # the same local port.
         self._udp_close_event: asyncio.Event | None = None
         self._ping_task: asyncio.Task[None] | None = None
         self._idle_task: asyncio.Task[None] | None = None
@@ -392,7 +392,7 @@ class IcomTransport:
         restarts the loops from a clean slate (MOR-595).  The UDP socket
         close is likewise awaited (bounded at 1 s): asyncio defers the real
         close to ``connection_lost``, and returning earlier let a reconnect
-        rebind the same local port and fail with EADDRINUSE (MOR-3296).
+        rebind the same local port and fail with EADDRINUSE.
         Idempotent — safe to call again after a partial start.
         """
         tasks = [

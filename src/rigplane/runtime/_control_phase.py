@@ -780,8 +780,8 @@ class ControlPhaseRuntime:
         # A control transport that never completed a login is no session to
         # reuse: ``IcomTransport.connect``/``reconnect`` leave the transport
         # CONNECTING and only the end of ``_connect_once`` marks it CONNECTED,
-        # so an open UDP socket alone must not select the CI-V-rebuild branch
-        # (MOR-3296).  Transport doubles without a ``state`` attribute model
+        # so an open UDP socket alone must not select the CI-V-rebuild branch.
+        # Transport doubles without a ``state`` attribute model
         # an established session and keep the pre-gate behaviour.
         if (
             not h._ctrl_transport

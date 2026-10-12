@@ -1,7 +1,7 @@
 """IcomTransport.disconnect must not return before the UDP socket is closed.
 
 After a radio power-cycle the CI-V rebuild path disconnects one transport and
-immediately binds the same advertised local port on a fresh one (MOR-3296).
+immediately binds the same advertised local port on a fresh one.
 asyncio's ``DatagramTransport.close()`` defers the real socket close to a
 ``call_soon`` callback, so a ``disconnect()`` that returns without yielding
 leaves the port bound and the follow-up bind fails with EADDRINUSE.
@@ -77,7 +77,7 @@ async def test_disconnect_releases_the_local_udp_port_before_returning(
     echo_port: int,
 ) -> None:
     """A reconnecting bind of the same local port must succeed immediately
-    after ``disconnect()`` returns, with no intervening await (MOR-3296)."""
+    after ``disconnect()`` returns, with no intervening await."""
     local_port = _free_local_port()
 
     t1 = IcomTransport()
