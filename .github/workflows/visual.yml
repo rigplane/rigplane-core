@@ -130,8 +130,8 @@ jobs:
 
   visual:
     needs: changes
-    # Draft pushes do not consume the shared Mac mini. ready_for_review starts
-    # the blocking visual run for the final candidate; manual regeneration is
+    # Draft pushes do not consume the shared self-hosted runner. ready_for_review
+    # starts the visual run for the final candidate; manual regeneration is
     # still available through workflow_dispatch.
     if: >-
       needs.changes.outputs.frontend == 'true' &&
