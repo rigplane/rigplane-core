@@ -183,9 +183,7 @@ def test_lock_forks_sounddevice_by_platform() -> None:
         assert "sys_platform == 'win32'" in markers, (
             f"0.4.x fork must be Windows-only: {markers}"
         )
-        assert "== 'ARM64'" not in markers, (
-            f"0.4.x fork must exclude ARM64: {markers}"
-        )
+        assert "== 'ARM64'" not in markers, f"0.4.x fork must exclude ARM64: {markers}"
     for markers in fork_05:
         assert "sys_platform != 'win32'" in markers, (
             f"0.5.x fork must cover non-Windows: {markers}"
