@@ -52,8 +52,16 @@ import {
   isCommandLifecycleSuperseded,
   type DspCommandFeedbackField,
   type StateBackedCommandDescriptor,
-  type TxAuxCommandFeedbackField,
 } from '$lib/stores/commands.svelte';
+import {
+  projectAfLevelControlFeedback,
+  projectGlobalCwControlFeedback,
+  projectRfPowerControlFeedback,
+  projectTxAuxControlFeedback,
+  type GlobalCwControl,
+  type GlobalCwField,
+  type TxAuxControlFeedbackField,
+} from './level-feedback';
 import { currentControlSessionEpoch } from '../commands/radio-intents';
 import { getTuningBurstTargetHz } from '../commands/tuning-accumulator';
 import type { ServerState } from '$lib/types/state';
@@ -68,12 +76,8 @@ import {
   type ArmedFact,
   type SupersededPredicate,
 } from './pending-intent-table';
-import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import {
-  hasUsableObservation,
-  normalizedUsableObservation,
   projectControlFeedback,
-  unavailableControlFeedback,
   type ControlFeedback,
   type FilterWidthCommandLifecycleView,
 } from './control-feedback-projection';
@@ -375,38 +379,22 @@ export function getFilterShapeControlFeedback(): Readonly<ControlFeedback<number
   );
 }
 
-type GlobalCwControl = 'cw-pitch' | 'keyer-speed';
-type GlobalCwField = 'cwPitch' | 'keySpeed';
-
 function getGlobalCwControlFeedback(
   currentControlSession: ControlSessionSnapshot | undefined,
   descriptor: StateBackedCommandDescriptor<number>,
   control: GlobalCwControl,
   field: GlobalCwField,
 ): Readonly<ControlFeedback<number>> {
-  // These canonical-store reads must precede every unavailable/session return:
-  // they are the legacy panel's reactive invalidation across a WS replacement.
   const state = runtime.state;
   const caps = runtime.caps;
   const commands = getCommandLifecycles();
   const session = currentControlSession ?? runtime.controlSession;
   const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
-  const scope = { control, receiver: 0 } as const;
-  const feedback = projectControlFeedback(
-    descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+  return projectGlobalCwControlFeedback(
+    descriptor, state, caps, commands, epoch,
+    (command) => isCommandLifecycleSuperseded(command),
+    session.state === 'connected', control, field,
   );
-  try {
-    const observation = qualifyRadioDisplayObservation({
-      state, caps, path: field,
-      structural: caps?.capabilities.includes('cw') === true,
-      value: state?.[field],
-    });
-    return session.state === 'connected' && epoch >= 0
-      && hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
-      ? feedback : unavailableControlFeedback(feedback);
-  } catch {
-    return unavailableControlFeedback(feedback);
-  }
 }
 
 /** Radio-global CW Pitch projection; receiver 0 is only a stable scope encoding. */
@@ -427,18 +415,7 @@ export function getKeySpeedControlFeedback(
   );
 }
 
-export type TxAuxControlFeedbackField = TxAuxCommandFeedbackField;
-const TX_AUX_FEEDBACK_CAPABILITIES: Readonly<Record<
-  TxAuxControlFeedbackField, readonly string[]
->> = Object.freeze({
-  micGain: Object.freeze(['tx']),
-  driveGain: Object.freeze(['tx', 'drive_gain']),
-  voxGain: Object.freeze(['tx', 'vox']),
-  antiVoxGain: Object.freeze(['tx', 'vox']),
-  voxDelay: Object.freeze(['tx', 'vox']),
-  compressorLevel: Object.freeze(['tx', 'compressor']),
-  monitorGain: Object.freeze(['tx', 'monitor']),
-});
+export type { TxAuxControlFeedbackField };
 
 /** Qualified radio-global TX/VOX feedback; receiver 0 is only stable identity. */
 export function getTxAuxControlFeedback(
@@ -451,22 +428,11 @@ export function getTxAuxControlFeedback(
   const session = currentControlSession ?? runtime.controlSession;
   const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
   const descriptor = TX_AUX_COMMAND_DESCRIPTORS[field];
-  const scope = descriptor.scope({ params: { level: 0 } })!;
-  const feedback = projectControlFeedback(
-    descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+  return projectTxAuxControlFeedback(
+    descriptor, state, caps, commands, epoch,
+    (command) => isCommandLifecycleSuperseded(command),
+    session.state === 'connected', field,
   );
-  try {
-    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
-    const structural = TX_AUX_FEEDBACK_CAPABILITIES[field].every(tag => tags.includes(tag));
-    const observation = qualifyRadioDisplayObservation({
-      state, caps, path: field, structural, value: state?.[field],
-    });
-    return session.state === 'connected' && epoch >= 0
-      && hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
-      ? feedback : unavailableControlFeedback(feedback);
-  } catch {
-    return unavailableControlFeedback(feedback);
-  }
 }
 
 export type DspControlFeedbackField = DspCommandFeedbackField;
@@ -500,7 +466,7 @@ export function getRfSqlControlFeedback(
   );
 }
 
-/** Qualified AF-level command feedback for `receiver` (MOR-2579), or for the
+/** Qualified AF-level command feedback for `receiver`, or for the
  *  active receiver when none is named. */
 export function getAfLevelControlFeedback(
   currentControlSession?: ControlSessionSnapshot,
@@ -510,35 +476,11 @@ export function getAfLevelControlFeedback(
   const commands = getCommandLifecycles();
   const session = currentControlSession ?? runtime.controlSession;
   const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
-  const scopeOnSub = receiver === undefined ? state?.active === 'SUB' : receiver === 'SUB';
-  const feedback = projectControlFeedback(
-    AF_LEVEL_COMMAND_DESCRIPTOR, state, commands,
-    { control: 'af-level', receiver: scopeOnSub ? 1 : 0 }, epoch,
-    isCommandLifecycleSuperseded,
+  return projectAfLevelControlFeedback(
+    AF_LEVEL_COMMAND_DESCRIPTOR, state, caps, commands, epoch,
+    (command) => isCommandLifecycleSuperseded(command),
+    session.state === 'connected', receiver,
   );
-  try {
-    const view = toRadioViewModel(state, caps);
-    const laneReceiver = receiver ?? (view === null || view.activeReceiver.status !== 'known'
-      ? null : view.activeReceiver.receiver);
-    const receiverEntries = view?.receiverIndicators?.filter(
-      entry => entry.receiver === laneReceiver,
-    ) ?? [];
-    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
-    const observation = qualifyDisplayObservation({
-      state, caps, receiver: laneReceiver ?? 'MAIN',
-      path: laneReceiver === 'SUB' ? 'sub.afLevel' : 'main.afLevel',
-      structural: tags.includes('af_level'),
-      value: (laneReceiver === 'SUB' ? state?.sub : state?.main)?.afLevel,
-    });
-    if (session.state !== 'connected' || epoch < 0 || laneReceiver === null
-      || receiverEntries.length !== 1 || !receiverEntries[0].availability.operational
-      || normalizedUsableObservation(observation) === null) {
-      return unavailableControlFeedback(feedback);
-    }
-    return feedback;
-  } catch {
-    return unavailableControlFeedback(feedback);
-  }
 }
 
 /** Qualified RF-power command feedback on the normalized `powerLevel` scale. */
@@ -549,22 +491,11 @@ export function getRfPowerControlFeedback(
   const commands = getCommandLifecycles();
   const session = currentControlSession ?? runtime.controlSession;
   const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
-  const feedback = projectControlFeedback(
-    RF_POWER_COMMAND_DESCRIPTOR, state, commands,
-    { control: 'rf-power', receiver: 0 }, epoch, isCommandLifecycleSuperseded,
+  return projectRfPowerControlFeedback(
+    RF_POWER_COMMAND_DESCRIPTOR, state, caps, commands, epoch,
+    (command) => isCommandLifecycleSuperseded(command),
+    session.state === 'connected',
   );
-  try {
-    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
-    const observation = qualifyRadioDisplayObservation({
-      state, caps, path: 'powerLevel', structural: tags.includes('tx'),
-      value: state?.powerLevel,
-    });
-    return session.state === 'connected' && epoch >= 0
-      && normalizedUsableObservation(observation) !== null
-      ? feedback : unavailableControlFeedback(feedback);
-  } catch {
-    return unavailableControlFeedback(feedback);
-  }
 }
 
 function getReceiverEchoControlFeedback(
