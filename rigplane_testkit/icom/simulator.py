@@ -1042,8 +1042,11 @@ class MockIcomRadio:
             return
 
         # Token renewal (0x40 bytes, requesttype=0x05) → refresh keepalive
+        # and answer with a 0x40/0x05 control packet (recorded: the radio
+        # answers every renew within one ping period).
         if n == 0x40 and data[0x15] == _TOKEN_RENEW:
             self._refresh_keepalive((addr, sender_id))
+            self._send(proto, self._token_renew_reply(data, sender_id), addr, "ctrl")
             return
 
         # Token remove (0x40 bytes, requesttype=0x01) → graceful close: free now
@@ -1639,6 +1642,21 @@ class MockIcomRadio:
             struct.pack_into("<I", pkt, 0x1C, self.token)
             # error at 0x30 stays 0x00000000 → success
             pkt[0x40:0x44] = b"FTTH"
+        return bytes(pkt)
+
+    def _token_renew_reply(self, data: bytes, sender_id: int) -> bytes:
+        """Build the 0x40 renew answer by mirroring the client's packet layout.
+
+        Copies the client's renew packet and swaps the endpoint IDs (radio
+        as sender, client as receiver), keeping request type 0x05 — the
+        same mirror the login response (``_login_response``) applies to its
+        request fields. Only the length and request type are recorded radio
+        behaviour; the remaining bytes round-trip the client's own values.
+        """
+        pkt = bytearray(data[:0x40])
+        struct.pack_into("<I", pkt, 0x08, self.radio_id)
+        struct.pack_into("<I", pkt, 0x0C, sender_id)
+        pkt[0x15] = _TOKEN_RENEW
         return bytes(pkt)
 
     def _guid_conninfo(self, sender_id: int) -> bytes:
