@@ -252,6 +252,6 @@ async def test_soft_reconnect_full_connect_when_ctrl_never_logged_in() -> None:
             ),
         ):
             await radio._control_phase.soft_reconnect()
-        connect.assert_awaited_once()
+        assert connect.await_count == 1
     finally:
         radio._conn_state = RadioConnectionState.DISCONNECTED
