@@ -274,6 +274,13 @@ class _CivGapState:
         # True when seeded from the previous session's orphan state
         # (MOR-3418 slice G); only inherited trackers use the w50 knobs.
         self.inherited: bool = False
+        # The frontier value inherited at seed; an inherited tracker sends
+        # no retransmit requests until one of its packets arrives past it
+        # (MOR-3418 fix1, recorded w50 a/b). None for fresh trackers.
+        self.inherited_frontier: int | None = None
+        # Set once a packet arrives past inherited_frontier; only then do
+        # the 0.1 s loop rounds ask for the inherited gap.
+        self.inherited_armed: bool = False
         # Fills accepted since the last 0.1 s round (the fill-budget window).
         self.fills_this_round: int = 0
         # Consecutive 0.1 s rounds each missing number went without a fill.
@@ -362,9 +369,11 @@ class MockIcomRadio(AudioPortMixin):
             its own as orphan state for the next opener (recorded IC-7610,
             MOR-3418; pinned by
             ``tests/testkit/test_simulator_civ_orphan.py``). Default False
-            keeps the previous behaviour. Modelled globally, not per IP
-            (unestablished); no expiry of a claimed state is modelled
-            (unmeasured).
+            keeps the previous behaviour. An inherited tracker sends no
+            retransmit requests until one of its packets arrives past the
+            inherited frontier (recorded w50 a/b). Modelled globally, not
+            per IP (unestablished); no expiry of a claimed state is
+            modelled (unmeasured).
         orphan_civ_state_expiry_s: how long an unclaimed orphan waits for
             the next opener before it is dropped (default
             ``ORPHAN_CIV_STATE_EXPIRY_S``). A clean logout (owner
@@ -1102,6 +1111,7 @@ class MockIcomRadio(AudioPortMixin):
             tracker.next_expected = orphan[0]
             tracker.missing = set(orphan[1])
             tracker.inherited = True
+            tracker.inherited_frontier = orphan[0]
             self._civ_gap[key] = tracker
             self._civ_orphan = None
             return
@@ -1836,6 +1846,16 @@ class MockIcomRadio(AudioPortMixin):
         if expected is None:
             tracker.next_expected = (seq + 1) & 0xFFFF
             return True
+        if (
+            tracker.inherited
+            and not tracker.inherited_armed
+            and tracker.inherited_frontier is not None
+            and 1 <= ((seq - tracker.inherited_frontier) & 0xFFFF) <= 0x7FFF
+        ):
+            # First packet past the inherited frontier (MOR-3418 fix1,
+            # recorded w50 b): from here the loop rounds may ask for the
+            # inherited gap. Packets at/behind the frontier never arm.
+            tracker.inherited_armed = True
         delta = (seq - expected) & 0xFFFF
         if delta == 0:
             # In order — or the fill of the expected number itself.
@@ -1971,6 +1991,8 @@ class MockIcomRadio(AudioPortMixin):
 
         A fallback for a silent client: a round goes out only when the
         previous round (packet-triggered or not) is at least 0.1 s old.
+        An inherited tracker whose client sent nothing past the inherited
+        frontier yet stays silent (MOR-3418 fix1, recorded w50 a).
         Each tick is also the pacing window of an inherited tracker: its
         per-round fill budget resets, and missing numbers with no accepted
         fill for ``civ_inherited_drop_unanswered_rounds`` ticks are dropped
@@ -1983,6 +2005,11 @@ class MockIcomRadio(AudioPortMixin):
                 if proto is None:
                     continue
                 for tracker in list(self._civ_gap.values()):
+                    if tracker.inherited and not tracker.inherited_armed:
+                        # No packet past the inherited frontier yet: stay
+                        # silent — no fill-budget reset, no drop counting,
+                        # no round.
+                        continue
                     if tracker.inherited:
                         tracker.fills_this_round = 0
                         drop_after = self.civ_inherited_drop_unanswered_rounds

@@ -195,8 +195,9 @@ def _orphan_sim(**kwargs) -> MockIcomRadio:
 async def test_inherited_gap_ignores_behind_and_requests_missing() -> None:
     """Dead frontier 105 with gap 106-109 seeds the next opener (case a).
 
-    Packets at/below 105 draw no echo, reply or triggered round; the jump
-    to 110 draws requests naming exactly 106-109; after the fills the held
+    Over a second of behind-frontier traffic draws nothing — no echo,
+    reply, triggered round or loop round (recorded w50 a); the jump to
+    110 draws requests naming exactly 106-109; after the fills the held
     110 and later traffic are answered in order and the loop goes silent.
     """
     sim = _orphan_sim()
@@ -206,20 +207,20 @@ async def test_inherited_gap_ignores_behind_and_requests_missing() -> None:
         await _wait_hold_released(sim)
         fresh = await _fresh_stream(sim, open_seq=50)
         try:
-            # The loop already asks for the inherited gap, naming only it.
-            inherited = await _collect(fresh, 0.25)
-            assert len(inherited) >= 2
-            assert all(r == [(106, 109)] for r in _request_runs(inherited))
-
-            # Behind the frontier: sync on a just-sent round, then silence
-            # for well under the loop period (a triggered round is instant).
-            for _ in range(2):
-                assert _parse_retransmit(await fresh.recv()) is not None
+            # Behind the frontier for over a second: behind packets draw
+            # no triggered round, and the 0.1 s loop must not ask for the
+            # inherited gap before any packet past the frontier (w50 a).
             sent = sim.civ_retransmit_requests
-            for seq in (51, 52):
+            logged = len(sim.civ_retransmit_request_log)
+            end = time.monotonic() + 1.1
+            seq = 51
+            while time.monotonic() < end:
                 fresh.send(_freq_get(seq=seq), sim.civ_port)
-            await fresh.expect_silence(0.06)
+                seq += 1
+                await asyncio.sleep(0.1)
+            assert await _collect(fresh, 0.2) == []
             assert sim.civ_retransmit_requests == sent
+            assert len(sim.civ_retransmit_request_log) == logged
 
             jumped = _freq_get(seq=110)
             fresh.send(jumped, sim.civ_port)
@@ -323,16 +324,18 @@ async def test_default_off_starts_clean() -> None:
 
 
 async def test_production_client_identity_unanswered_behind_frontier() -> None:
-    """Production client after an unclean death: connect returns (f).
+    """Production client after an unclean death: connect returns, deaf (f).
 
     The dead raw client leaves (5001, {5001-5009}); the fresh client's
     numbering starts near zero, so its identity read (CI-V 0x19 0x00)
-    arrives behind the frontier and goes unanswered. Pinned behaviour:
-    ``connect()`` returns but the radio is not connected (NO_RESPONSE);
-    the session is held and the open seeded a tracker; the radio asked for
-    exactly 5001-5009 (see ``civ_retransmit_request_log``); the client
-    filled them with idles, reaching frontier 5010, while its own reads
-    stay behind it, unanswered.
+    arrives behind the frontier and goes unanswered — and, the inherited
+    tracker never seeing a packet past the frontier, the radio never asks
+    for the gap either. Pinned behaviour: ``connect()`` returns but the
+    radio is not connected (NO_RESPONSE); the session is held and the open
+    seeded one disarmed inherited tracker; no retransmit request goes out
+    while the client keeps retrying behind the frontier, so the frontier
+    stays 5001 and the missing set stays 5001-5009: the client stays deaf
+    and sends no fills.
     """
     from rigplane.core.radio_protocol import RadioIdentityStatus
 
@@ -360,13 +363,20 @@ async def test_production_client_identity_unanswered_behind_frontier() -> None:
             assert identity.status == RadioIdentityStatus.NO_RESPONSE
             assert sim.session_held  # the fresh login claimed a new session
             assert sim.openclose_open_count >= 1  # its open seeded a tracker
-            # Only an inherited tracker the client filled with idles can
-            # sit at 5010: the fresh numbering alone cannot reach that far.
-            assert any(
-                runs == ((5001, 5009),) for _, runs in sim.civ_retransmit_request_log
-            )
-            frontiers = [t.next_expected or 0 for t in sim._civ_gap.values()]
-            assert max(frontiers, default=0) >= 5010
+            trackers = [t for t in sim._civ_gap.values() if t.inherited]
+            assert len(trackers) == 1
+            tracker = trackers[0]
+            assert tracker.inherited_armed is False
+            assert tracker.next_expected == 5001
+            assert tracker.missing == set(range(5001, 5010))
+            # The client keeps retrying behind the frontier for a while;
+            # none of it may arm the inherited tracker or draw a request.
+            sent = sim.civ_retransmit_requests
+            logged = len(sim.civ_retransmit_request_log)
+            await asyncio.sleep(0.5)
+            assert sim.civ_retransmit_requests == sent
+            assert len(sim.civ_retransmit_request_log) == logged
+            assert tracker.inherited_armed is False
         finally:
             await asyncio.wait_for(radio.disconnect(), 10.0)
     finally:
@@ -436,6 +446,10 @@ async def test_inherited_drop_unanswered_range() -> None:
         await _wait_hold_released(sim)
         fresh = await _fresh_stream(sim, open_seq=50)
         try:
+            # Arm the inherited tracker with one packet past the frontier
+            # (the loop stays silent until then); the held idle sits past
+            # everything the walk below sends, so it never interferes.
+            fresh.send(_idle(200), sim.civ_port)
             first = await _collect(fresh, 0.15)
             assert len(first) >= 2
             assert all(r == [(106, 109)] for r in _request_runs(first))

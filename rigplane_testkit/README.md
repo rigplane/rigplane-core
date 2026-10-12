@@ -36,7 +36,9 @@ UDP code paths as production.
   With `civ_state_survives_unclean_end=True` (default off) a keepalive hold
   that expires on its own keeps the stream owner's frontier and gap list as
   orphan state for `orphan_civ_state_expiry_s` seconds (default 140.0): the
-  next opener inherits both and consumes the orphan, a clean logout (owner
+  next opener inherits both and consumes the orphan (an inherited tracker
+  sends no retransmit requests until one of its packets arrives past the
+  inherited frontier), a clean logout (owner
   token-remove, disconnect, the stream owner's OpenClose close) and `reboot`
   clear it, and two opt-in knobs pace inherited fills
   (`civ_inherited_fills_per_round`, `civ_inherited_drop_unanswered_rounds`,
