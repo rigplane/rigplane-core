@@ -704,9 +704,11 @@ class CoreRadioSessionLifecycle:
         # Start-up busy-hold policy (MOR-3391): when set, a SESSION_BUSY_REJECT
         # on the first connect (before any connect through this loop has
         # reached CONNECTED) retries with a real cooldown until the wall-clock
-        # budget elapses, instead of counting against ``max_connect_attempts``.
-        # Later connects and mechanisms without the policy keep the
-        # constructed cooldown/attempt behaviour. ``None`` disables it.
+        # budget elapses, and those busy passes do not count against
+        # ``max_connect_attempts`` — its retries stay reserved for the other
+        # transient outcomes.  Later connects and mechanisms without the
+        # policy keep the constructed cooldown/attempt behaviour. ``None``
+        # disables it.
         self._first_connect_busy_cooldown_s = first_connect_busy_cooldown_s
         self._first_connect_busy_budget_s = first_connect_busy_budget_s
         self._connected_once = False
@@ -897,26 +899,35 @@ class CoreRadioSessionLifecycle:
                 # unusable afterwards, so the reject was already released
                 # inside ``_attempt_with_release`` and the next attempt logs
                 # in again.  Retry with a real cooldown until the start-up
-                # budget elapses instead of counting against
-                # ``max_connect_attempts``.
+                # budget elapses; the busy passes do not count against
+                # ``max_connect_attempts`` — those retries stay reserved for
+                # the other transient outcomes.
                 busy_attempts += 1
                 now = time.monotonic()
                 if busy_deadline is None:
                     busy_deadline = now + self._first_connect_busy_budget_s
                 if now >= busy_deadline:
+                    # Deferred import: ``_control_phase`` imports this module
+                    # at its own call sites, and the public contract module
+                    # stays importable without the control-phase machinery.
+                    from rigplane.runtime._control_phase import (
+                        _session_reject_hint,
+                    )
+
                     self._connecting_started = None
                     self._emit(LifecycleState.DISCONNECTED)
                     raise RigplaneConnectionError(
-                        "Radio session never became ready after "
-                        f"{attempt} resident attempts; a foreign client may hold it."
+                        "Radio session never became ready: still busy after "
+                        f"{busy_attempts} start-up re-logins against the "
+                        f"{self._first_connect_busy_budget_s:.0f}s start-up "
+                        f"busy budget. {_session_reject_hint(0xFFFFFFFF)}"
                     )
                 cooldown = self._first_connect_busy_cooldown_s
                 if cooldown is None:
                     cooldown = self._reject_cooldown_s
                 _logger.warning(
-                    "Radio session busy (startup attempt %d): released the "
-                    "busy-issued token; retrying with a fresh login after "
-                    "%.0fs (startup busy budget %.0fs).",
+                    "Radio session busy (startup attempt %d): retrying with "
+                    "a fresh login after %.0fs (startup busy budget %.0fs).",
                     busy_attempts,
                     cooldown,
                     self._first_connect_busy_budget_s,
@@ -940,7 +951,10 @@ class CoreRadioSessionLifecycle:
             # (0xFFFFFFFF).  The session was already released inside
             # ``_attempt_with_release`` (release BEFORE the wait — Hole 4 / Cause
             # A inversion).  Now enter COOLDOWN and wait in-process.
-            if attempt >= self._max_connect_attempts:
+            # Busy passes that retried under the first-connect policy above
+            # must not consume these retries; busy passes on later connects
+            # (``busy_attempts`` stays 0 there) still count.
+            if attempt - busy_attempts >= self._max_connect_attempts:
                 self._connecting_started = None
                 self._emit(LifecycleState.DISCONNECTED)
                 raise RigplaneConnectionError(

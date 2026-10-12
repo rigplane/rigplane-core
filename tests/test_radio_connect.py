@@ -1374,13 +1374,13 @@ class TestConnectSessionRejection:
 class TestStartupBusyHoldBudget:
     """MOR-3391: a start-up busy reject re-logs in with a FRESH token.
 
-    A web server killed with ``kill -9`` leaves its LAN session held by the
-    radio; a restart 1 s later is busy-rejected (``civ_port=0,
-    error=0xFFFFFFFF``) until the hold expires. Bench capture 2026-10-12:
-    the hold is ~71 s (proxy-recorded, independent of the retry pause) and
-    at most ~91 s without the proxy; a token issued during the hold is
-    unusable afterwards (conninfo and renewals on it get ``0xFFFFFFFF``),
-    while a fresh login + conninfo after a release was granted in 0.85 s.
+    A web server killed with ``kill -9`` leaves its LAN session held by
+    the radio; a restart 1 s later is busy-rejected (``civ_port=0,
+    error=0xFFFFFFFF``) until the hold expires. Bench (2026-10-12): a
+    hold bounded at (70.7, 85.9] s with separate client ports; a token
+    issued during the hold is unusable afterwards (conninfo and renewals
+    on it get ``0xFFFFFFFF``), while a fresh login + conninfo after a
+    release was granted in 0.85 s.
     So each busy reject RELEASES the busy-issued token and the retry logs
     in again — conninfo is never re-sent on the rejected token — until the
     600 s start-up cap, after which start-up ends in the resident
@@ -1487,7 +1487,8 @@ class TestStartupBusyHoldBudget:
 
     def test_startup_busy_hold_budget_is_600_s(self) -> None:
         """Row 3: the first-connect busy cap is 600 s sizing the lifecycle's
-        fresh-login retry loop (bench 2026-10-12: ~71 s hold, ≤ ~91 s)."""
+        fresh-login retry loop (bench 2026-10-12: a hold bounded at
+        (70.7, 85.9] s with separate client ports)."""
         assert ControlPhaseRuntime.STARTUP_BUSY_HOLD_BUDGET_S == 600.0
 
     @pytest.mark.asyncio
@@ -1707,6 +1708,41 @@ class TestSessionRejectHint:
         assert message.startswith("Radio rejected session allocation")
         assert "from this computer" in message
         assert "Wait 30-60s" not in message
+        assert mt.disconnected is True
+
+    @pytest.mark.asyncio
+    async def test_default_codec_give_up_message_names_same_computer(self) -> None:
+        """DEFAULT codec + persistent 0xFFFFFFFF → the start-up busy
+        budget's give-up error explains the code: on an IC-7610 the held
+        session is from this computer, so the error must not claim a
+        foreign client holds it."""
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        clock = _VirtualMonotonic()
+        tokens = [0x4000 + i for i in range(40)]
+        logins = [_build_login_response(token=t) for t in tokens]
+
+        async def _reject_status() -> int:
+            clock.advance(_REJECT_STEP_S)
+            radio._last_status_error = 0xFFFFFFFF
+            return 0
+
+        with _busy_hold_patch_stack(
+            radio,
+            clock,
+            login_responses=logins,
+            status_flow=_reject_status,
+            send_mock=AsyncMock(),
+        ):
+            with pytest.raises(ConnectionError) as excinfo:
+                await radio.connect()
+
+        message = str(excinfo.value)
+        assert "never became ready" in message
+        assert "from this computer" in message
+        assert "One RigPlane server per radio" in message
+        assert "a foreign client may hold it" not in message
 
         assert mt.disconnected is True
 

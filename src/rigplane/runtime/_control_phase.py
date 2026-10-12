@@ -121,14 +121,13 @@ class ControlPhaseRuntime:
     _STATUS_REJECT_COOLDOWN = 30.0
     # Cap for first-connect busy-hold retries after a busy reject (status
     # error=0xFFFFFFFF: the radio still holds a dead client's session).
-    # Sizing bench (MOR-3391, 2026-10-12): proxy-recorded holds ran ~71 s
-    # independent of the waiting client's retry pause, and a fresh login
-    # was granted at +91 s without the proxy; a token issued during the
-    # hold is unusable afterwards, so each reject releases (token-remove)
-    # and the retry logs in again. This constant now sizes the lifecycle's
-    # fresh-login loop (``CoreRadioSessionLifecycle`` first-connect busy
-    # policy, wired in ``CoreRadio``); exhausting it raises that loop's
-    # resident never-ready ConnectionError.
+    # Sizing bench (MOR-3391, 2026-10-12): a hold bounded at
+    # (70.7, 85.9] s with separate client ports; a token issued during
+    # the hold is unusable afterwards, so each reject releases
+    # (token-remove) and the retry logs in again. This constant now sizes
+    # the lifecycle's fresh-login loop (``CoreRadioSessionLifecycle``
+    # first-connect busy policy, wired in ``CoreRadio``); exhausting it
+    # raises that loop's resident never-ready ConnectionError.
     STARTUP_BUSY_HOLD_BUDGET_S: float = 600.0
     # Token-renewal probe of a held session (``probe_control_session``). An
     # answer counts only with reply flag 0x02 at 0x14, request type 0x05 and
