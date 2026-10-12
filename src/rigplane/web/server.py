@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 from .. import __version__
 from .._bounded_queue import BoundedQueue
 from ..audio.route import resolve_audio_route
+from ..commands._frame import build_civ_frame
 from ..core.acquisition_scheduler import (
     AcquisitionScheduler,
     MeterObservationCoalescer,
@@ -87,7 +88,7 @@ from ..runtime.controller_authority import (
 )
 from ..runtime.managed_tx_authority import ManagedTxAuthority
 from ..runtime.managed_tx_state import ManagedTxIntentKind
-from ..runtime.tx_interlock import TxInterlockRefusal, is_tx_family_civ_command
+from ..runtime.tx_interlock import TxInterlockRefusal, classify_raw_civ_frame_tx_family
 from ..sdr import IqSource, SdrConfig
 from ..sdr.runtime import SdrScopeRuntime
 from ..radio_state import RadioState
@@ -498,13 +499,20 @@ class _HttpCommandExecutor:
             # In managed mode PTT and the tuner move only through the managed
             # authority, so a TX-family raw transaction is refused by payload
             # alone — regardless of the observed RF state, and without
-            # consulting the authority.
+            # consulting the authority.  The verdict is computed on the exact
+            # frame the transaction below would send — addresses play no part
+            # in it — so both surfaces share the one raw classifier.
             if self.server._managed_tx_authority() is not None and (
-                is_tx_family_civ_command(
-                    int(params["command"]),
-                    None if params.get("sub") is None else int(params["sub"]),
-                    bytes(params["data"]),
+                classify_raw_civ_frame_tx_family(
+                    build_civ_frame(
+                        0x00,
+                        0x00,
+                        int(params["command"]),
+                        sub=None if params.get("sub") is None else int(params["sub"]),
+                        data=bytes(params["data"]),
+                    )
                 )
+                is not False
             ):
                 raise TxInterlockRefusal(
                     "raw CI-V TX-family transactions are refused while the "
