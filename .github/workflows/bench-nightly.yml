@@ -39,8 +39,10 @@ jobs:
     name: ${{ matrix.label }}
     runs-on: [self-hosted, macOS, ARM64, bench]
     timeout-minutes: 45
-    # One failing or busy radio must not hide the others.
-    continue-on-error: true
+    # No job-level continue-on-error: a night passes for a radio only when its
+    # job concludes success. Radios stay independent through fail-fast: false
+    # (one radio's failure never cancels the others) and run one at a time
+    # through max-parallel: 1.
     strategy:
       fail-fast: false
       max-parallel: 1
