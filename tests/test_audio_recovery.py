@@ -17,6 +17,7 @@ from _audio_stream_fake import FakeAudioStream
 
 from rigplane.audio import AudioState
 from rigplane.radio import AudioRecoveryState, IcomRadio
+from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime.session_lifecycle import LifecycleState
 
 
@@ -417,6 +418,10 @@ class TestAudioRecoveryAfterReconnect:
         radio = _make_radio()
         stream = _install_audio_stream(radio)
         stream.state = AudioState.RECEIVING
+        # RECONNECTING routes the lifecycle release to the partial-claim
+        # ControlPhaseRuntime.release (a CONNECTED conn_state would take
+        # the graceful disconnect path, which already clears the stream).
+        radio._conn_state = RadioConnectionState.RECONNECTING
         radio._session_lifecycle._state = LifecycleState.CONNECTED
         radio._session_lifecycle._claimed = True
 
