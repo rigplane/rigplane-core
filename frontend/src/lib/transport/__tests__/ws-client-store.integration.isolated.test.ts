@@ -366,6 +366,34 @@ describe('ws-client → real radio store gate (integration)', () => {
     expect(connection.getRigConnected()).toBe(false);
   });
 
+  it('accepts a full with a lower delivery sequence when the semantic revision advances', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    sendStateUpdate(
+      instances[0],
+      fullEnvelope(makeState({ revision: 5, stateRevision: 5, transportSeq: 10 })),
+    );
+    expect(store.getRadioState()?.stateRevision).toBe(5);
+
+    // Newer semantic revision (6 > 5) with a changed semantic field, but a
+    // delivery sequence that went back (9 < 10).
+    sendStateUpdate(
+      instances[0],
+      fullEnvelope(makeState({
+        revision: 6, stateRevision: 6, transportSeq: 9,
+        main: { freqHz: 7_100_000 },
+      })),
+    );
+
+    const s = store.getRadioState() as ServerStateWithObservation | null;
+    expect(s?.stateRevision).toBe(6);
+    expect(s?.main.freqHz).toBe(7_100_000);
+    expect(store.getLastRevision()).toBe(6);
+  });
+
   it('rejects a metadata delta that removes a non-metadata key in both layers', async () => {
     const { wsClient, store, capabilities } = await loadModules();
     capabilities.setCapabilities(makeCapabilities());
