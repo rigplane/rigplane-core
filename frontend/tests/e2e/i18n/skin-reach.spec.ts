@@ -69,17 +69,13 @@ async function pressModeKey(page: Page, key: Locator): Promise<void> {
 /**
  * The five LCD skins are thin wrappers over `LcdLayout.svelte` (its
  * `variant` prop: cockpit | scope | peer-split | unified-instrument |
- * panadapter-first); every interactive control this family exposes is the
- * legacy sidebar panels `LcdLayout.svelte` mounts (`LeftSidebar.svelte`,
- * `RightSidebar.svelte`). The segmentline glass of peer-split,
- * unified-instrument and panadapter-first is read-only
- * (`PeerSplitLayout.svelte` renders it through `SemanticRadioSurfaces`'
- * `readonlyDisplay` snippet), so these probes touch the shared sidebars
- * only. The LCD TUNE key (`VfoControlPanel.svelte`'s `requestAtuTune`,
- * transmitter ATU) and every TX/PTT/VOX/keyer control are excluded like
- * the other rows' TX paths. `LeftSidebar.svelte`'s default panel order
- * has no 'dsp' entry, so the DSP panel lives in the right column only —
- * hence the `.content-right` scope on the NR probe.
+ * panadapter-first). These probes touch the shared sidebars it mounts
+ * (`LeftSidebar.svelte`, `RightSidebar.svelte`). The LCD TUNE key
+ * (`VfoControlPanel.svelte`'s `requestAtuTune`, transmitter ATU) and every
+ * TX/PTT/VOX/keyer control are excluded like the other rows' TX paths.
+ * `LeftSidebar.svelte`'s default panel order has no 'dsp' entry, so the
+ * DSP panel lives in the right column only — hence the `.content-right`
+ * scope on the NR probe.
  */
 const lcdSidebarProbes: ReachProbe[] = [
   {
@@ -277,9 +273,10 @@ const ROWS: ReachRow[] = [
     probes: lcdSidebarProbes,
   })),
   {
-    // The 390x844 viewport makes `App.svelte`'s `isMobile`
-    // (min(innerWidth, innerHeight) < 640) select the mobile skin over any
-    // layout preference. Probes stay in the default ESSENTIALS chip and
+    // At 390x844 `App.svelte`'s `isMobile` is true (its
+    // `Math.min(windowWidth, windowHeight) < 640` branch), and
+    // `registry.ts: resolveSkinId` returns 'mobile' for it before reading
+    // any layout preference. Probes stay in the default ESSENTIALS chip and
     // the tuning strip; the PTT FAB, the landscape PTT/unkey buttons and
     // the TX chip are never clicked.
     skin: 'mobile',
@@ -303,14 +300,10 @@ const ROWS: ReachRow[] = [
       {
         // 'Tune up one step' is the en-US aria-label of the tuning
         // strip's step-up key (`en-US.json`'s `core.mobile.tune.upStep`).
-        // The step rides the paced accumulator (`panel-commands.ts`:
-        // `onFreqChange(..., 'step')` -> `tuningAccumulator().step`), so
-        // the frame may land after the click — the row's `expect.poll`
-        // waits for it. The target is the fixture's MAIN frequency
-        // 14 250 000 plus the initial 1000 Hz step
-        // (`MobileRadioLayout.svelte`'s `tuningStep` starts at 1000 and
-        // keeps it: USB's `SSB_STEPS` in `mobile-layout-logic.ts`
-        // includes 1000).
+        // The target is the fixture's MAIN frequency 14 250 000 plus the
+        // initial 1000 Hz step (`MobileRadioLayout.svelte`'s `tuningStep`
+        // starts at 1000 and keeps it: USB's `SSB_STEPS` in
+        // `mobile-layout-logic.ts` includes 1000).
         run: async page => {
           const up = page.getByRole('button', { name: 'Tune up one step' });
           await expect(up).toBeEnabled();
@@ -321,6 +314,11 @@ const ROWS: ReachRow[] = [
     ],
   },
 ];
+
+/** `DualSdrFace.svelte` paints 8 rail buttons (ant, pre, att, ip, agc, vox,
+ * comp, mode) and 7 softkeys (menu1, edge, hold, cent-fix, main-sub, dual,
+ * expd-set), all `[data-control]`. */
+const FACE_CONTROL_COUNT = 15;
 
 test.describe('MOR-3280 per-skin reachability matrix', () => {
   for (const row of ROWS) {
@@ -349,24 +347,26 @@ test.describe('MOR-3280 per-skin reachability matrix', () => {
 
   // The negative row. `DualSdrFaceSkin.svelte` renders `DualSdrFace`
   // through `SemanticRadioSurfaces`' `readonlyDisplay` snippet and passes
-  // no `onPreChange` command callback (its own comment declares the
-  // entrypoint display-only), and `DualSdrFace.svelte`'s `preEnabled`
-  // gates the one data-dependent key on `onPreChange !== undefined` while
-  // every other `[data-control]` button is hard-disabled. This row pins
-  // exactly that: no enabled control, and no cmd frame without a click.
+  // no `onPreChange` callback; `DualSdrFace.svelte` enables its one
+  // data-dependent key (`preEnabled`) only when `onPreChange` is defined
+  // and gives every other `[data-control]` button a literal `disabled`.
+  // The row clicks nothing and asserts: exactly FACE_CONTROL_COUNT
+  // `[data-control]` buttons, each disabled, and no `cmd` frame recorded
+  // from page start to the end of the row (the recorder is not cleared
+  // after boot, so a command dispatched while the skin mounts counts).
+  // `digisel: false` is reported because an unknown DIGI-SEL reading
+  // activates the PREAMP mutex (`radio-view-model-adapter.ts:
+  // deriveRfFrontEndMutex`), which keeps the PRE key disabled even with
+  // `onPreChange` passed; with it reported, only the missing callback
+  // keeps PRE disabled.
   test('dual-sdr-face stays display-only: controls disabled, no command', async ({ page }) => {
-    await bootSkinReach(page, { layout: 'dual-sdr-face' });
+    await bootSkinReach(page, { layout: 'dual-sdr-face', receiverOverrides: { digisel: false } });
     await expect(page.locator('[data-testid="dual-sdr-face"]'), 'dual-sdr-face mounts').toBeVisible();
     const controls = page.locator('[data-testid="dual-sdr-face"] [data-control]');
-    const count = await controls.count();
-    expect(count, 'the face paints its control set').toBeGreaterThan(0);
-    for (let index = 0; index < count; index += 1) {
+    await expect(controls, 'the face paints its fixed control set').toHaveCount(FACE_CONTROL_COUNT);
+    for (let index = 0; index < FACE_CONTROL_COUNT; index += 1) {
       await expect(controls.nth(index)).toBeDisabled();
     }
-    // Idle baseline: skin load may emit frames on some skins, so — the
-    // same way the row loop clears between probes — the recorder is
-    // emptied after settle and must stay empty with no interaction.
-    await clearSkinReachFrames(page);
     await page.waitForTimeout(300);
     expect(await skinReachCommands(page), 'display-only skin emits no command').toEqual([]);
   });
