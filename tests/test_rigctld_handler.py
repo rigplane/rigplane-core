@@ -354,9 +354,7 @@ async def test_get_freq_radio_state_fallback_does_not_write_state_store(
     snapshot = handler._state_store.snapshot()  # noqa: SLF001
     with pytest.raises(KeyError):
         snapshot.field("receiver.main.active.freq_mode.freq_hz")
-    assert all(
-        field.source.source != "state_poller" for field in snapshot.fields
-    )
+    assert all(field.source.source != "state_poller" for field in snapshot.fields)
 
 
 _MIRROR_FALLBACK_SITES = (
@@ -463,9 +461,7 @@ async def test_get_mirror_fallback_answers_client_without_store_write(
         assert after.freshness is FreshnessState.STALE
         assert after.value == stale_seed
         assert after.source.source == "test"
-    assert all(
-        field.source.source != "state_poller" for field in snapshot.fields
-    )
+    assert all(field.source.source != "state_poller" for field in snapshot.fields)
 
 
 @pytest.mark.asyncio
