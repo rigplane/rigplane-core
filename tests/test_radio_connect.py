@@ -127,6 +127,31 @@ def _build_conninfo() -> bytes:
     return bytes(pkt)
 
 
+class _VirtualMonotonic:
+    """Fake ``time.monotonic`` for the busy-retry budget tests.
+
+    The production loop sizes a busy hold in ``ControlPhaseRuntime``'s
+    start-up budget constant; these tests advance the virtual clock by one
+    reject cooldown's worth of time per scripted busy exchange so a hold
+    spanning minutes plays out in real seconds.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+#: Virtual seconds one scripted busy exchange advances the clock: slightly
+#: more than one ``_STATUS_REJECT_COOLDOWN`` (30 s in production), so four
+#: rejections span past the old three-retry ~90 s window.
+_REJECT_STEP_S = 35.0
+
+
 def _build_status(
     civ_port: int = 50002,
     audio_port: int = 50003,
@@ -694,13 +719,18 @@ class TestConnectSessionRejection:
         radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
+        clock = _VirtualMonotonic()
 
         async def _reject_status() -> int:
+            clock.advance(_REJECT_STEP_S)
             radio._last_status_error = 0xFFFFFFFF
             return 0
 
         with (
             patch.object(radio._control_phase, "_status_retry_pause", return_value=0.0),
+            patch(
+                "rigplane.runtime._control_phase.time.monotonic", new=clock.monotonic
+            ),
             patch.object(
                 radio._control_phase,
                 "_wait_for_packet",
@@ -1241,6 +1271,250 @@ class TestConnectSessionRejection:
         assert mt.disconnected is True
 
 
+class TestStartupBusyHoldBudget:
+    """MOR-3391: start-up survives a busy hold sized to the measured one.
+
+    A web server killed with ``kill -9`` leaves its LAN session held by the
+    radio; a restart 1 s later is busy-rejected (``civ_port=0,
+    error=0xFFFFFFFF``) until the hold expires. The measured hold on the
+    IC-7610 after an unclean client death is 69-113 s (MOR-3349, bench
+    capture 2026-10-12) — longer than the old three-retry ~90 s window, so
+    the restart used to die with ConnectionError and /readyz never answered.
+    """
+
+    @pytest.mark.asyncio
+    async def test_busy_hold_past_the_old_window_still_connects(self) -> None:
+        """Row 1: four busy rejections (~105 virtual seconds) then acceptance.
+
+        The fourth rejection lands past the old three-retry window, so the
+        base raises ConnectionError here; the budget-sized loop must still be
+        retrying when the radio frees the dead client's session.
+        """
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        clock = _VirtualMonotonic()
+        send_mock = AsyncMock()
+        busy_left = [4]
+
+        async def _status_flow() -> int:
+            if busy_left[0] > 0:
+                busy_left[0] -= 1
+                clock.advance(_REJECT_STEP_S)
+                radio._last_status_error = 0xFFFFFFFF
+                return 0
+            radio._last_status_error = 0
+            return 50001
+
+        with (
+            patch.object(radio._control_phase, "_status_retry_pause", return_value=0.0),
+            patch(
+                "rigplane.runtime._control_phase.time.monotonic", new=clock.monotonic
+            ),
+            patch.object(
+                radio._control_phase,
+                "_wait_for_packet",
+                new=AsyncMock(return_value=_build_login_response()),
+            ),
+            patch.object(radio._control_phase, "_send_token_ack", new=AsyncMock()),
+            patch.object(
+                radio._control_phase,
+                "_receive_guid",
+                new=AsyncMock(return_value=b"\x00" * 16),
+            ),
+            patch.object(radio._control_phase, "_send_conninfo", new=send_mock),
+            patch.object(
+                radio._control_phase,
+                "_receive_civ_port",
+                new=AsyncMock(side_effect=_status_flow),
+            ),
+            patch.object(
+                radio._control_phase, "_flush_queue", new=AsyncMock(return_value=0)
+            ),
+            patch.object(radio._control_phase, "_start_token_renewal"),
+            patch.object(radio._control_phase, "_start_watchdog"),
+            patch.object(radio._civ_runtime, "start_pump"),
+            patch.object(radio._civ_runtime, "start_data_watchdog"),
+            patch.object(radio._civ_runtime, "start_worker"),
+            patch(
+                "rigplane.transport.IcomTransport",
+                return_value=ConnectMockTransport(),
+            ),
+            patch("rigplane._control_phase.asyncio.sleep", new=AsyncMock()),
+            patch(
+                "rigplane.runtime._control_phase.wait_for_radio_startup_ready",
+                new=AsyncMock(),
+            ),
+            patch.object(radio, "_fetch_initial_state", new=AsyncMock()),
+            # MOR-3064 seam: the fake CI-V transport runs no rx pump, so the
+            # identity read is answered directly with the IC-7610 token 0x98.
+            patch.object(
+                radio,
+                "_read_lan_identity_payload",
+                new=AsyncMock(return_value=b"\x98"),
+            ),
+        ):
+            # The start-up connect returns instead of raising: the busy
+            # window was survived inside ONE connect attempt (the identity
+            # gate's hold on these fake transports is MOR-3363 territory,
+            # not this loop's).
+            await radio.connect()
+
+        assert radio._civ_port == 50001
+        # Initial conninfo plus four busy retries — one more retry window
+        # than the old fixed three.
+        assert send_mock.await_count == 5
+        assert mt.connect_count == 1
+
+    @pytest.mark.asyncio
+    async def test_busy_hold_longer_than_the_budget_raises_after_retries(self) -> None:
+        """Row 2: a hold that outlives the budget keeps the explicit error.
+
+        The virtual rejections run past the start-up busy budget; start-up
+        must end in today's ConnectionError, not spin forever.
+        """
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        clock = _VirtualMonotonic()
+        send_mock = AsyncMock()
+
+        async def _reject_status() -> int:
+            clock.advance(_REJECT_STEP_S)
+            radio._last_status_error = 0xFFFFFFFF
+            return 0
+
+        with (
+            patch.object(radio._control_phase, "_status_retry_pause", return_value=0.0),
+            patch(
+                "rigplane.runtime._control_phase.time.monotonic", new=clock.monotonic
+            ),
+            patch.object(
+                radio._control_phase,
+                "_wait_for_packet",
+                new=AsyncMock(return_value=_build_login_response()),
+            ),
+            patch.object(radio._control_phase, "_send_token_ack", new=AsyncMock()),
+            patch.object(
+                radio._control_phase,
+                "_receive_guid",
+                new=AsyncMock(return_value=b"\x00" * 16),
+            ),
+            patch.object(radio._control_phase, "_send_conninfo", new=send_mock),
+            patch.object(
+                radio._control_phase,
+                "_receive_civ_port",
+                new=AsyncMock(side_effect=_reject_status),
+            ),
+        ):
+            with pytest.raises(ConnectionError, match="after retries"):
+                await radio.connect()
+
+        assert send_mock.await_count == 5
+        assert mt.disconnected is True
+
+    @pytest.mark.asyncio
+    async def test_mono_rejection_still_raises_immediately(self) -> None:
+        """Row 3 (control): a mono rejection never enters the budget loop."""
+        radio = IcomRadio(
+            "192.168.1.100",
+            username="u",
+            password="p",
+            audio_codec=AudioCodec.PCM_1CH_16BIT,
+            model="IC-7610",
+        )
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        clock = _VirtualMonotonic()
+        send_mock = AsyncMock()
+
+        async def _reject_status() -> int:
+            radio._last_status_error = 0xFFFFFFFF
+            return 0
+
+        with (
+            patch.object(radio._control_phase, "_status_retry_pause", return_value=0.0),
+            patch(
+                "rigplane.runtime._control_phase.time.monotonic", new=clock.monotonic
+            ),
+            patch.object(
+                radio._control_phase,
+                "_wait_for_packet",
+                new=AsyncMock(return_value=_build_login_response()),
+            ),
+            patch.object(radio._control_phase, "_send_token_ack", new=AsyncMock()),
+            patch.object(
+                radio._control_phase,
+                "_receive_guid",
+                new=AsyncMock(return_value=b"\x00" * 16),
+            ),
+            patch.object(radio._control_phase, "_send_conninfo", new=send_mock),
+            patch.object(
+                radio._control_phase,
+                "_receive_civ_port",
+                new=AsyncMock(side_effect=_reject_status),
+            ),
+        ):
+            with pytest.raises(ConnectionError, match="rejected session allocation"):
+                await radio.connect()
+
+        assert send_mock.await_count == 1
+        assert mt.disconnected is True
+
+    @pytest.mark.asyncio
+    async def test_reconnect_busy_rejects_keep_mains_three_tries(self) -> None:
+        """Row 4: a reconnect keeps main's fixed three busy attempts.
+
+        The budget is a start-up-only scope. ``_connect_once`` also serves
+        the resident reconnect loop and lifecycle recovery, where
+        ``_has_connected_once`` is already set; those callers keep main's
+        fixed three ~30 s attempts instead of waiting out the 120 s budget
+        on every busy attempt.
+        """
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
+        radio._has_connected_once = True
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        clock = _VirtualMonotonic()
+        send_mock = AsyncMock()
+
+        async def _reject_status() -> int:
+            clock.advance(_REJECT_STEP_S)
+            radio._last_status_error = 0xFFFFFFFF
+            return 0
+
+        with (
+            patch.object(radio._control_phase, "_status_retry_pause", return_value=0.0),
+            patch(
+                "rigplane.runtime._control_phase.time.monotonic", new=clock.monotonic
+            ),
+            patch.object(
+                radio._control_phase,
+                "_wait_for_packet",
+                new=AsyncMock(return_value=_build_login_response()),
+            ),
+            patch.object(radio._control_phase, "_send_token_ack", new=AsyncMock()),
+            patch.object(
+                radio._control_phase,
+                "_receive_guid",
+                new=AsyncMock(return_value=b"\x00" * 16),
+            ),
+            patch.object(radio._control_phase, "_send_conninfo", new=send_mock),
+            patch.object(
+                radio._control_phase,
+                "_receive_civ_port",
+                new=AsyncMock(side_effect=_reject_status),
+            ),
+        ):
+            with pytest.raises(ConnectionError, match="after retries"):
+                await radio.connect()
+
+        # Initial conninfo plus main's three retries: the budget must not
+        # add a fourth window to a reconnect.
+        assert send_mock.await_count == 4
+        assert mt.disconnected is True
+
+
 class TestSessionRejectHint:
     """MOR-2630: rejection messages must say what the error code means."""
 
@@ -1264,13 +1538,18 @@ class TestSessionRejectHint:
         radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
         mt = ConnectMockTransport()
         radio._ctrl_transport = mt
+        clock = _VirtualMonotonic()
 
         async def _reject_status() -> int:
+            clock.advance(_REJECT_STEP_S)
             radio._last_status_error = 0xFFFFFFFF
             return 0
 
         with (
             patch.object(radio._control_phase, "_status_retry_pause", return_value=0.0),
+            patch(
+                "rigplane.runtime._control_phase.time.monotonic", new=clock.monotonic
+            ),
             patch.object(
                 radio._control_phase,
                 "_wait_for_packet",

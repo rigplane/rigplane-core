@@ -48,6 +48,7 @@ jobs:
 
       - name: Upload mutation reports
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: stryker-report-${{ github.run_id }}-${{ github.run_attempt }}
@@ -55,4 +56,4 @@ jobs:
             frontend/reports/mutation/mutation.html
             frontend/reports/mutation/mutation.json
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 3

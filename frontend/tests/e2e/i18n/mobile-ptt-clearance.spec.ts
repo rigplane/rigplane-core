@@ -174,6 +174,10 @@ test('no visible interactive element ever sits under the PTT button (MOR-2874)',
       timeout: 10_000,
     }).toBeGreaterThan(0);
     const scrollRange = await scroller.evaluate((el) => el.scrollHeight - el.clientHeight);
+    // This is a second read, so the poll above does not cover it: a range
+    // that is not positive here would make all three stages measure the top.
+    expect(scrollRange, `${size}: the scroll range read for the stages must be positive`)
+      .toBeGreaterThan(0);
     const stages: [string, number][] = [
       ['top', 0],
       ['middle', Math.round(scrollRange / 2)],
@@ -185,6 +189,11 @@ test('no visible interactive element ever sits under the PTT button (MOR-2874)',
       const measured = await page.evaluate(clearanceScript);
       writeFileSync(info.outputPath(`mor-2874-${viewport.width}-${stage}.json`),
         JSON.stringify(measured, null, 2));
+      // A scrollTop write that does not take leaves the scroller where it
+      // was, and the stage would be measured there under its own name.
+      expect(Math.abs(measured.scrollTop - top),
+        `${size} ${stage}: scrollTop ${measured.scrollTop} must be within 1px of the target ${top}`)
+        .toBeLessThanOrEqual(1);
       // An empty measurement must not pass: a stale element query would
       // find zero candidates and therefore trivially zero offenders.
       // The fixed chrome alone keeps six candidates at every stage and

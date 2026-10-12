@@ -496,6 +496,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # resumes from it; ``_connect_once``, ``disconnect`` and ``release``
         # clear it.
         self._civ_resume_seq: int | None = None
+        # ``send_seq`` of the audio transport last torn down on a kept
+        # session. ``_ensure_audio_transport`` resumes from it; a fresh login
+        # (``_connect_once``), ``disconnect`` and ``release`` clear it.
+        self._audio_resume_seq: int | None = None
         self._last_civ_send_monotonic: float = 0.0
         # MOR-2595: 10 ms LAN gap. IC-7610 over LAN, 2026-09-25: 03 round
         # trip median 7.55 ms, p95 9.0 ms; 0 errors at a 0 ms post-reply gap.
@@ -750,6 +754,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # Recovery completion runs the deferred tail instead of a fresh fetch.
         self._lan_identity_revalidate_origin: bool = False
         self._lan_identity_escalated_at: float | None = None
+        # (audio runtime, snapshot, CI-V epoch, owner stop epoch) — the audio
+        # recovery a hard reconnect deferred while the identity hold owned
+        # the link; hold completion consumes it.
+        self._hard_reconnect_deferred_audio: (
+            tuple[AudioRecoveryRuntime, object, int, int] | None
+        ) = None
 
     # Host shims for ControlPhaseRuntime and Icom7610SerialRadio (delegate to civ_runtime)
     def _advance_civ_generation(self, reason: str) -> None:
@@ -1620,6 +1630,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             except Exception:
                 logger.debug("soft_disconnect: audio open/close failed", exc_info=True)
             await self._audio_transport.disconnect()
+            self._audio_resume_seq = self._audio_transport.send_seq
             self._audio_transport = None
 
         # Stop CI-V
@@ -2029,6 +2040,40 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if self._civ_epoch != epoch:
             return
         await self._arm_managed_tx()
+        await self._run_hard_reconnect_deferred_audio(epoch)
+
+    async def _run_hard_reconnect_deferred_audio(self, epoch: int) -> None:
+        """Recover audio a held hard reconnect deferred, exactly once.
+
+        ``radio_reconnect.reconnect_loop`` stashed it because ``connect()``
+        had returned while the identity hold refused commands. It runs only
+        when the hold completed on the epoch the stash recorded with no
+        owner stop since; anything else drops it. The stash's epoch is
+        compared against the live ``_civ_epoch``, not only the completion's
+        ``epoch`` argument (captured before the ``_arm_managed_tx`` await,
+        during which the epoch can move), immediately before ``recover()``
+        with no await in between.
+        """
+        tail = self._hard_reconnect_deferred_audio
+        if tail is None:
+            return
+        self._hard_reconnect_deferred_audio = None
+        audio_runtime, audio_snapshot, tail_epoch, owner_stop_epoch = tail
+        if (
+            tail_epoch != epoch
+            or self._civ_epoch != tail_epoch
+            or self._owner_stop_epoch != owner_stop_epoch
+        ):
+            return
+        try:
+            await audio_runtime.recover(audio_snapshot)
+        except Exception:
+            # recover() reports its own failures through on_audio_recovery;
+            # this keeps a raising callback from failing the hold completion
+            # it runs inside.
+            logger.warning(
+                "hard-reconnect deferred audio recovery failed", exc_info=True
+            )
 
     async def _send_open_close(self, *, open_stream: bool) -> None:
         """Delegate to control-phase runtime (for soft_disconnect, _force_cleanup_civ, etc.)."""

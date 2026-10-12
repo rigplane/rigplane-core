@@ -23,7 +23,7 @@ import type { Page } from '@playwright/test';
 import { fixtureById } from '../../../fixtures/catalog';
 import { mockCapabilities, mockInfo, mockLocalControllerStatus, mockState } from './fixtures';
 import type { Capabilities } from '../../../src/lib/types/capabilities';
-import type { ServerState } from '../../../src/lib/types/state';
+import type { ReceiverState, ServerState } from '../../../src/lib/types/state';
 
 export interface SkinReachBoot {
   /** `rigplane:workspace` v2 `layout` value (a CanonicalLayoutMode). */
@@ -31,6 +31,13 @@ export interface SkinReachBoot {
   /** QA-only skins selected by the exact `?layout=` query param
    * (`lib/stores/qa-cockpit-override.ts`); wins over the workspace. */
   qaLayout?: 'flagship-probe' | 'dual-receiver-cockpit';
+  /** Viewport for this row. Default 1440x1000 (desktop); a viewport with
+   * min(width, height) < 640 (e.g. 390x844) makes `App.svelte`'s `isMobile`
+   * true, which `registry.ts: resolveSkinId` maps to the mobile skin. */
+  viewport?: { width: number; height: number };
+  /** Fields merged over BOTH receivers of the fixture state, before every
+   * leaf is marked observed. */
+  receiverOverrides?: Partial<ReceiverState>;
 }
 
 /** One outgoing frame exactly as the app serialises it (`ws-client.ts`). */
@@ -40,7 +47,9 @@ export interface SkinReachFrame {
   params: Record<string, unknown>;
 }
 
-export function skinReachFixture(): { state: ServerState; caps: Capabilities } {
+export function skinReachFixture(
+  receiverOverrides: Partial<ReceiverState> = {},
+): { state: ServerState; caps: Capabilities } {
   const fixture = fixtureById('topology-2-main-sub');
   const topologyState = fixture?.state();
   const topologyCaps = fixture?.caps();
@@ -48,8 +57,8 @@ export function skinReachFixture(): { state: ServerState; caps: Capabilities } {
   const state = {
     ...structuredClone(mockState),
     ...structuredClone(topologyState),
-    main: { ...structuredClone(mockState.main), ...structuredClone(topologyState.main) },
-    sub: { ...structuredClone(mockState.sub), ...structuredClone(topologyState.sub) },
+    main: { ...structuredClone(mockState.main), ...structuredClone(topologyState.main), ...receiverOverrides },
+    sub: { ...structuredClone(mockState.sub), ...structuredClone(topologyState.sub), ...receiverOverrides },
   } as ServerState;
   state.updatedAt = new Date().toISOString();
   // Synthetic observation provenance for this harness, not a radio
@@ -71,8 +80,8 @@ export function skinReachFixture(): { state: ServerState; caps: Capabilities } {
 }
 
 export async function bootSkinReach(page: Page, boot: SkinReachBoot): Promise<void> {
-  const { state, caps } = skinReachFixture();
-  await page.setViewportSize({ width: 1440, height: 1000 });
+  const { state, caps } = skinReachFixture(boot.receiverOverrides);
+  await page.setViewportSize(boot.viewport ?? { width: 1440, height: 1000 });
   await page.addInitScript(({ state, layout }) => {
     localStorage.setItem('rigplane:workspace', JSON.stringify({ version: 2, layout,
       designLanguageBySkin: {}, theme: 'nord' }));

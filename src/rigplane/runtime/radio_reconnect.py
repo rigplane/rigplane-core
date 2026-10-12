@@ -164,7 +164,23 @@ async def reconnect_loop(radio: IcomRadio) -> None:
                     radio, "connected", attempt=attempt, next_retry_seconds=None
                 )
                 if radio._auto_recover_audio and audio_snapshot is not None:
-                    await radio._audio_runtime.recover(audio_snapshot)
+                    if radio._lan_identity_unanswered_for_current_epoch():
+                        # connect() returned while the LAN identity hold
+                        # owns the link: recovering now would run start_rx
+                        # into _check_connected's hold refusal and report
+                        # FAILED. Stash it with the epoch and owner-stop
+                        # counter; the hold's completion
+                        # (CoreRadio._finish_lan_identity_completion) runs
+                        # this recovery once and drops it when the epoch
+                        # changed or the owner stopped the radio.
+                        radio._hard_reconnect_deferred_audio = (
+                            radio._audio_runtime,
+                            audio_snapshot,
+                            radio._civ_epoch,
+                            owner_stop_epoch,
+                        )
+                    else:
+                        await radio._audio_runtime.recover(audio_snapshot)
                 return
             except (AuthenticationError, ValueError, TypeError) as exc:
                 logger.error(
@@ -250,6 +266,10 @@ async def audio_error_watchdog_loop(radio: "IcomRadio") -> None:
                 logger.debug(
                     "audio-watchdog: transport disconnect failed", exc_info=True
                 )
+            # Audio-only recovery keeps the radio session (control and CI-V
+            # stay up): record the numbering; the ``_ensure_audio_transport``
+            # rebuild below resumes it, and a new login clears it.
+            radio._audio_resume_seq = audio_t.send_seq
             radio._audio_transport = None
 
             if not radio._connected:
