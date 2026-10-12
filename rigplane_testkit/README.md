@@ -14,8 +14,21 @@ UDP code paths as production.
   0x25/0x26 (both subcommands; the selected VFO shares the 0x03-0x06 state,
   the unselected VFO has its own fields) and the 0x1A 05 MOD-input and NB
   menu reads the product's startup reader issues (wire-pinned by
-  `tests/testkit/test_simulator_civ_vocab.py`). The implementation lives in
-  `rigplane_testkit/icom/simulator.py`.
+  `tests/testkit/test_simulator_civ_vocab.py`). For CI-V sequence numbers
+  it models the recorded gap behaviour
+  (`tests/fixtures/ic7610/retransmit_gaps.jsonl`, pinned by
+  `tests/testkit/test_simulator_civ_gap.py`): per radio session it tracks
+  the client's tracked numbers (idle, OpenClose, CI-V DATA), holds packets
+  past a gap, fills on an idle or CI-V DATA packet carrying a missing
+  number, processes held packets in order once nothing is missing, and
+  ignores numbers at or below the last processed one — a re-sent
+  OpenClose never restarts tracking (MOR-3361), which ends only on a new
+  accepted login, a newly claimed conninfo, `drop_session` or reboot —
+  while repeating the retransmit request twice every 0.1 s (single form
+  for one missing number, otherwise one ranges packet per contiguous
+  missing run). `civ_retransmit_requests` counts the request packets sent
+  on the CI-V port; `civ_gap_open` is true while any number is missing.
+  The implementation lives in `rigplane_testkit/icom/simulator.py`.
 - `rigplane_testkit.icom.faults` — `FaultPlan` / `FaultRule`: a declarative,
   seeded (deterministic) fault plan with one rule per port (`control`, `civ`)
   and direction (`to_client`, `from_client`). Each rule can drop (probability

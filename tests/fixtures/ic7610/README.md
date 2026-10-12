@@ -109,3 +109,27 @@ with the reply-class spelling documented in the test module
 (`nak`, `ack`, `none`, `silence`, or
 `data rx=0x..- cmd=0x.. sub=0x..- len=..` where `rx` is `-` for plain
 frames and `sub` is `-` when the command carries none).
+
+### `retransmit_gaps.jsonl`
+
+192 rows of the real IC-7610's LAN CI-V sequence-gap behaviour
+(recorded 2026-10-12; the evidence behind the simulator's gap tracking
+in `MockIcomRadio` and `tests/testkit/test_simulator_civ_gap.py`). One
+JSON object per line with keys `window`, `t` (seconds into the window),
+`dir` (`c2r` / `r2c`), `kind`, `seq` and `repeat` — consecutive
+identical rows are collapsed into one row with a count — plus `frame`
+(the CI-V frame hex) on every `civ_data` row, `ranges` (the missing
+`[first, last]` pairs, inclusive) on every `retransmit_ranges` row, and
+`t_last` on rows that span time. `kind` is `civ_data` (a tracked CI-V
+request), `idle` (a tracked 0x10-byte type-0 keepalive),
+`retransmit_single` (a 0x10-byte type-0x01 control asking for `seq`) or
+`retransmit_ranges` (a longer type-0x01 control with header seq 0 whose
+body is little-endian u16 pairs, one per contiguous missing run).
+Windows: `gap_lost_buffered` (packet 133 lost, asked twice in single
+form at the next tracked packet, resent, answered),
+`gap_never_filled` (154–156 never resent: `ranges [[154, 156]]`
+repeated about every 0.1 s, each twice, no CI-V answers after),
+`gap_filled_by_idle` (131–133 refilled by idle packets carrying those
+numbers, narrowing the request to single 132, then the request stalled
+through the gap answered after the fill) and
+`single_gap_filled_by_idle` (one skipped number refilled by idle).
