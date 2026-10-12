@@ -157,6 +157,7 @@ class _TraceSpec:
     filename: str
     diverge_line: int
     diverge_send: str  # the `>` line text at diverge_line, for xfail matching
+    prefix_steps: int  # steps with line_no < diverge_line (parser-verified)
     xfail_reason: str
 
 
@@ -553,10 +554,15 @@ async def _replay_checked(
     sim: MockIcomRadio,
     steps: list[_Step],
     rows: list[dict],
-) -> None:
-    """Drive steps against the server, asserting replies and radio side."""
+) -> tuple[int, int]:
+    """Drive steps against the server, asserting replies and radio side.
+
+    Returns the number of steps replayed and the last step's source
+    line number, so callers can assert the whole script was consumed.
+    """
     host, port = _addr(server)
     reader, writer = await asyncio.open_connection(host, port)
+    replayed = 0
     try:
         i = 0
         while i < len(steps):
@@ -583,9 +589,11 @@ async def _replay_checked(
                     await _check_set_landed(sim, op, rows, mark, host, port)
                 elif isinstance(op, _ReadOp):
                     _check_read_matches_sim(sim, op, replies)
+                replayed += j - i
                 i = j
             elif step.kind == "dump_state":
                 await _drain_dump_state(reader, timeout=_READ_TIMEOUT)
+                replayed += 1
                 i += 1
             else:  # pragma: no cover — guarded by _parse_golden
                 raise RuntimeError(f"unknown step kind {step.kind!r}")
@@ -595,6 +603,8 @@ async def _replay_checked(
             await writer.wait_closed()
         except Exception:
             pass
+    last_line = steps[-1].line_no if steps else 0
+    return replayed, last_line
 
 
 # ---------------------------------------------------------------------------
@@ -608,6 +618,7 @@ _SPECS = [
         filename="wsjtx_dual_rx_session.txt",
         diverge_line=60,
         diverge_send="S VFOA 1 VFOB",
+        prefix_steps=20,
         xfail_reason=(
             "MOR-3262: line 60 `S VFOA 1 VFOB` answers `RPRT -7`, want "
             "`RPRT 0`: MockIcomRadio NAKs the CI-V 0x0F split SET (no 0x0F "
@@ -619,6 +630,7 @@ _SPECS = [
         filename="fldigi_dual_rx_session.txt",
         diverge_line=46,
         diverge_send="T VFOA 1",
+        prefix_steps=18,
         xfail_reason=(
             "MOR-3262: line 46 `T VFOA 1` fails PTT check (i) by value — "
             "set ON (0x01), the simulator's own 1C 00 GET readback stays "
@@ -630,6 +642,7 @@ _SPECS = [
         filename="js8call_dual_rx_session.txt",
         diverge_line=37,
         diverge_send="T VFOA 1",
+        prefix_steps=15,
         xfail_reason=(
             "MOR-3262: line 37 `T VFOA 1` fails PTT check (i) by value — "
             "set ON (0x01), the simulator's own 1C 00 GET readback stays "
@@ -657,7 +670,9 @@ async def test_prefix_passes(
     ]
     if not steps:
         raise RuntimeError(f"{spec.filename}: empty prefix")
-    await _replay_checked(server, sim, steps, _oracle_rows())
+    replayed, last_line = await _replay_checked(server, sim, steps, _oracle_rows())
+    assert replayed == spec.prefix_steps == len(steps)
+    assert last_line == steps[-1].line_no < spec.diverge_line
 
 
 @pytest.mark.parametrize(
@@ -696,10 +711,11 @@ async def test_full_trace(
     minimum pytest is 8.0 per pyproject, which predates ``RaisesExc``.)
     """
     server, sim = stack
+    steps = _parse_golden(GOLDEN_DIR / spec.filename)
+    divergent = [s for s in steps if s.line_no == spec.diverge_line]
+    assert len(divergent) == 1 and divergent[0].payload == spec.diverge_send
     try:
-        await _replay_checked(
-            server, sim, _parse_golden(GOLDEN_DIR / spec.filename), _oracle_rows()
-        )
+        await _replay_checked(server, sim, steps, _oracle_rows())
     except TraceDivergence:
         raise
     except AssertionError as exc:
