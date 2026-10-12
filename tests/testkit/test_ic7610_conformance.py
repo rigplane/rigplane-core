@@ -83,7 +83,7 @@ FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "ic7610"
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _HOST = "127.0.0.1"
 
-_LAN_WINDOWS = ("probe", "readonly_session", "rx_write_restore", "scope")
+_LAN_WINDOWS = ("probe", "readonly_session", "rx_write_restore", "scope", "vfo_select")
 _USB_WINDOW = "usb_session"
 _ID_REQUEST = bytes.fromhex("fefe98e01900fd")
 

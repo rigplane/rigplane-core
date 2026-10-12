@@ -42,7 +42,9 @@ One JSON object per line with keys `window`, `transport`, `t`, `dir`,
   forms, unknown commands), `readonly_session` (`rigplane validate
   --read-only`), `rx_write_restore` (`rigplane validate` receive-side
   write-and-restore: SET + ACK/NAK pairs), `scope` (scope setting reads +
-  5 wave sweeps), all with `transport: "lan"`; and `usb_session`
+  5 wave sweeps), `vfo_select` (`07 D1` / `07 D0` five times, each answered
+  FB, with `07 D2` and `03` reads after the first two; the window ends with
+  `07 D0`), all with `transport: "lan"`; and `usb_session`
   (`transport: "usb"`: the same status reads, probe list and read-only
   validate over the radio's USB CI-V port — on USB the radio does NOT
   echo requests).
