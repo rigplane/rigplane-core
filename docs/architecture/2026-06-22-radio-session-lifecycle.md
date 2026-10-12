@@ -312,9 +312,11 @@ state setters, and `auth_fail`/`response_delay` flags. Reuse all of that.
    configurable rate, independent of polled commands — exercises the pump
    (`_civ_rx.py` worker) and the "data flowing" watchdog reset.
 4. **Packet loss / stall / reorder.** Configurable knobs:
-   `drop_rate`, `reorder_window`, and a `stall_for(seconds)` injector that
-   stops emitting CI-V to trip the data watchdog
-   (`_CIV_DATA_WATCHDOG_TIMEOUT=2.0`, `_civ_rx.py:515-516`/`822-924`).
+   `drop_rate` and a `stall_for(seconds)` injector that stops emitting CI-V
+   to trip the data watchdog
+   (`_CIV_DATA_WATCHDOG_TIMEOUT=2.0`, `_civ_rx.py:515-516`/`822-924`);
+   reordering is a FaultPlan rule now
+   (`rigplane_testkit/icom/faults.py: FaultPlan`).
 5. **Cooldown trigger knob.** `civ_port_unavailable_until(t)` to force
    `civ_port=0` (not-ready, no `0xFFFFFFFF`) for a window, distinct from the
    busy-reject, so tests can drive CONNECTING→COOLDOWN→CONNECTING.

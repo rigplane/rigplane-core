@@ -80,6 +80,9 @@ _CMD_ATT = 0x11
 _CMD_PREAMP = 0x16
 _CMD_CMD29 = 0x29
 _CMD_PTT = 0x1C
+_CMD_CTL_MEM_MENU = 0x1A  # 0x1A 0x05 <item-hi> <item-lo> menu reads/writes
+_CMD_SELECTED_FREQ = 0x25  # Selected/unselected receiver frequency
+_CMD_SELECTED_MODE = 0x26  # Selected/unselected receiver mode
 _CMD_ACK = 0xFB
 _CMD_NAK = 0xFA
 _SUB_RF_POWER = 0x0A
@@ -89,6 +92,29 @@ _SUB_ALC_METER = 0x13
 _SUB_PREAMP_STATUS = 0x02
 _SUB_DIGISEL_STATUS = 0x4E
 _SUB_PTT = 0x00
+
+# CI-V 0x1A 05 menu items modelled by the simulator, as
+# ``(item, (default, bcd_bytes))``. The four MOD-input sources (0x0091-
+# 0x0094, ``rigs/ic7610.toml`` [commands.overrides]: get/set_data*_mod_input)
+# are read at connect by ``src/rigplane/web/radio_poller.py``:
+# ``_fetch_mod_inputs``; the two NB items (0x0290/0x0291, ``rigs/ic7610.toml``:
+# get/set_nb_depth and get/set_nb_width) by ``_fetch_nb_controls`` on radios
+# with the "nb" capability (IC-7610 declares it). MOD-input values follow the
+# MOD-input source enum 0=MIC .. 5=LAN (``frontend/src/lib/radio/mod-input.ts``):
+# DATA OFF answers ACC (1) and the DATA groups answer LAN (5). NB depth is one
+# BCD digit 0-9 and NB width two BCD digits 0-255 — the wire shapes
+# ``src/rigplane/commands/levels.py`` set_nb_depth / set_nb_width build — and
+# both default to 0 like ``src/rigplane/core/radio_state.py``
+# (RadioState.nb_depth / nb_width). All defaults are simulator choices, not
+# recorded factory settings. Items outside this table still NAK.
+_CTL_MEM_MENU_STARTUP_ITEMS: dict[bytes, tuple[int, int]] = {
+    b"\x00\x91": (1, 1),  # DATA OFF mod input -> ACC
+    b"\x00\x92": (5, 1),  # DATA1 mod input -> LAN
+    b"\x00\x93": (5, 1),  # DATA2 mod input -> LAN
+    b"\x00\x94": (5, 1),  # DATA3 mod input -> LAN
+    b"\x02\x90": (0, 1),  # NB depth (0-9, one BCD digit)
+    b"\x02\x91": (0, 2),  # NB width (0-255, two BCD digits)
+}
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +142,18 @@ def _bcd_encode_freq(freq_hz: int) -> bytes:
         high = int(digits[9 - 2 * i - 1])
         result[i] = (high << 4) | low
     return bytes(result)
+
+
+def _bcd_decode_value(data: bytes) -> int:
+    """Decode packed BCD digits, most significant pair first (120 → b'\\x01\\x20').
+
+    Same layout as ``src/rigplane/commands/_codec.py``: ``_bcd_decode_value``
+    (menu/level values), unlike the little-endian-by-byte frequency codec.
+    """
+    value = 0
+    for byte in data:
+        value = value * 100 + (byte >> 4) * 10 + (byte & 0x0F)
+    return value
 
 
 def _bcd_decode_freq(data: bytes) -> int:
@@ -187,8 +225,8 @@ class MockIcomRadio:
         fault_plan: optional :class:`~rigplane_testkit.icom.faults.FaultPlan`
             applying per-port/per-direction drop/duplicate/delay/reorder/
             corrupt/truncate rules on top of the legacy ``drop_rate`` /
-            ``reorder_window`` / ``response_delay`` / ``stall_for`` knobs,
-            which keep working unchanged.
+            ``response_delay`` / ``stall_for`` knobs, which keep working
+            unchanged.
     """
 
     def __init__(
@@ -203,7 +241,6 @@ class MockIcomRadio:
         single_owner: bool = False,
         keepalive_hold_s: float = _DEFAULT_KEEPALIVE_HOLD_S,
         drop_rate: float = 0.0,
-        reorder_window: int = 0,
         unsolicited_civ: bool = False,
         unsolicited_interval_s: float = 0.1,
         fault_plan: FaultPlan | None = None,
@@ -249,6 +286,24 @@ class MockIcomRadio:
         self._preamp: int = 0  # 0=off, 1=PREAMP1, 2=PREAMP2
         self._digisel: int = 0  # 0=off, 1=on
 
+        # Selected/unselected receiver vocabulary (CI-V 0x25/0x26, subcommand
+        # 00=selected, 01=unselected). The selected receiver shares the
+        # 0x03/0x05/0x04/0x06 state above (plus ``_data_mode`` for the 0x26
+        # reply's DATA-mode flag byte); the unselected receiver carries its
+        # own fields with the defaults below — a valid fresh-band setup, not
+        # a recorded factory state.
+        self._data_mode: int = 0  # selected receiver DATA-mode flag: 0=OFF
+        self._unselected_frequency: int = 7_074_000  # Hz
+        self._unselected_mode: int = 0x01  # USB
+        self._unselected_data_mode: int = 0  # 0=OFF
+        self._unselected_filter: int = 1  # FIL1
+        # Modelling of the 0x1A 05 menu items the startup reader reads;
+        # current values (defaults and byte widths live in the table above).
+        self._ctl_mem_menu: dict[bytes, int] = {
+            item: default
+            for item, (default, _width) in _CTL_MEM_MENU_STARTUP_ITEMS.items()
+        }
+
         # Behaviour flags for edge-case tests
         self.auth_fail: bool = False
         self.response_delay: float = 0.0  # extra sleep before sending a response
@@ -274,7 +329,6 @@ class MockIcomRadio:
 
         # Fault injection
         self.drop_rate: float = drop_rate  # probability [0,1] of dropping a reply
-        self.reorder_window: int = reorder_window  # buffer N replies then flush
         self._stall_until: float = 0.0  # suppress unsolicited CI-V until this time
         # Declarative per-port/per-direction fault plan (sits BESIDE the legacy
         # knobs above: it has its own seeded RNG and never touches their state).
@@ -288,12 +342,6 @@ class MockIcomRadio:
         self.reboot_count: int = 0  # number of simulated reboots started
         # Tokens issued before a reboot; control packets carrying one are ignored.
         self._retired_tokens: set[int] = set()
-        self._reorder_buf: dict[
-            str, list[tuple[_MockProtocol, bytes, tuple[str, int]]]
-        ] = {
-            "ctrl": [],
-            "civ": [],
-        }
         self._rng = random.Random(0xC0FFEE)
 
         # Autonomous state + unsolicited CI-V streaming
@@ -694,35 +742,6 @@ class MockIcomRadio:
             plan.flush(port, direction), direction, proto, addr, label
         )
 
-    def _emit(
-        self,
-        proto: _MockProtocol,
-        pkt: bytes,
-        addr: tuple[str, int],
-        label: str,
-    ) -> None:
-        """Send a reply through the fault-injection layer (drop/reorder).
-
-        Replies built by the handlers go through here instead of ``proto.send``
-        directly so that ``drop_rate`` and ``reorder_window`` apply. Discovery
-        and the session-critical handshake are never dropped — only data-plane
-        and post-handshake replies — to keep connect() deterministic while still
-        exercising the data watchdog and recovery paths.
-        """
-        if self.drop_rate > 0.0 and self._rng.random() < self.drop_rate:
-            logger.debug("Mock: dropped %s reply (%d bytes)", label, len(pkt))
-            return
-        if self.reorder_window > 1:
-            buf = self._reorder_buf[label]
-            buf.append((proto, pkt, addr))
-            if len(buf) >= self.reorder_window:
-                self._rng.shuffle(buf)
-                for p, b, a in buf:
-                    p.send(b, a)
-                buf.clear()
-            return
-        proto.send(pkt, addr)
-
     def _on_packet(
         self,
         data: bytes,
@@ -1068,7 +1087,7 @@ class MockIcomRadio:
             rest = payload[1:]
             if sub == _SUB_RF_POWER:  # 0x0A RF power
                 if rest:  # set
-                    self._power = self._decode_level_bcd(rest)
+                    self._power = _bcd_decode_value(rest)
                     return self._civ_ack(to, frm)
                 else:  # get
                     return self._civ_frame(
@@ -1114,6 +1133,91 @@ class MockIcomRadio:
         # --- Transceiver ID (0x19 0x00) — the connect-time identity read ---
         if cmd == 0x19 and payload == b"\x00":
             return self._civ_frame(to, frm, 0x19, sub=0x00, data=self.model_id)
+
+        # --- Selected/Unselected receiver frequency (0x25) ---
+        # Payload's first byte is the receiver selector (00=selected,
+        # 01=unselected) — a data byte, not a sub-command: 0x25 does not
+        # carry one (commands/_frame.py: command_carries_sub), so the GET is
+        # one byte and the SET is selector + 5-byte BCD.
+        if cmd == _CMD_SELECTED_FREQ:
+            if len(payload) == 1 and payload[0] in (0x00, 0x01):  # GET
+                selector = payload[0]
+                freq = (
+                    self._frequency if selector == 0x00 else self._unselected_frequency
+                )
+                return self._civ_frame(
+                    to,
+                    frm,
+                    _CMD_SELECTED_FREQ,
+                    data=bytes([selector]) + _bcd_encode_freq(freq),
+                )
+            if len(payload) == 6 and payload[0] in (0x00, 0x01):  # SET
+                freq = _bcd_decode_freq(payload[1:6])
+                if payload[0] == 0x00:
+                    self._frequency = freq  # shared with 0x03/0x05
+                else:
+                    self._unselected_frequency = freq
+                return self._civ_ack(to, frm)
+            return self._civ_nak(to, frm)
+
+        # --- Selected/Unselected receiver mode (0x26) ---
+        # GET replies carry receiver, mode, DATA-mode flag, filter — the
+        # layout commands/freq.py: parse_selected_mode_response reads. The
+        # selected state is shared with 0x04/0x06 (plus the DATA-mode flag,
+        # which 0x06 does not carry).
+        if cmd == _CMD_SELECTED_MODE:
+            if len(payload) == 1 and payload[0] in (0x00, 0x01):  # GET
+                selector = payload[0]
+                if selector == 0x00:
+                    body = bytes([self._mode, self._data_mode, self._filter])
+                else:
+                    body = bytes(
+                        [
+                            self._unselected_mode,
+                            self._unselected_data_mode,
+                            self._unselected_filter,
+                        ]
+                    )
+                return self._civ_frame(
+                    to, frm, _CMD_SELECTED_MODE, data=bytes([selector]) + body
+                )
+            if len(payload) == 4 and payload[0] in (0x00, 0x01):  # SET
+                mode, data_mode, filt = payload[1], payload[2], payload[3]
+                if payload[0] == 0x00:
+                    self._mode = mode  # shared with 0x04/0x06
+                    self._data_mode = data_mode
+                    self._filter = filt
+                else:
+                    self._unselected_mode = mode
+                    self._unselected_data_mode = data_mode
+                    self._unselected_filter = filt
+                return self._civ_ack(to, frm)
+            return self._civ_nak(to, frm)
+
+        # --- 0x1A 05 menu items (the startup MOD-input and NB reads) ---
+        if cmd == _CMD_CTL_MEM_MENU and payload[:1] == b"\x05":
+            rest = payload[1:]
+            if len(rest) >= 2 and rest[:2] in self._ctl_mem_menu:
+                item = rest[:2]
+                width = _CTL_MEM_MENU_STARTUP_ITEMS[item][1]
+                if len(rest) == 2:  # GET: item echo + BCD value, item width
+                    value = self._ctl_mem_menu[item]
+                    encoded = (
+                        bytes([_bcd_byte(value)])
+                        if width == 1
+                        else _level_bcd_encode(value)
+                    )
+                    return self._civ_frame(
+                        to,
+                        frm,
+                        _CMD_CTL_MEM_MENU,
+                        sub=0x05,
+                        data=item + encoded,
+                    )
+                if len(rest) == 2 + width:  # SET: BCD value bytes, item width
+                    self._ctl_mem_menu[item] = _bcd_decode_value(rest[2:])
+                    return self._civ_ack(to, frm)
+            return self._civ_nak(to, frm)
 
         # --- PTT / Transceiver status (0x1C) ---
         if cmd == _CMD_PTT:
@@ -1253,12 +1357,13 @@ class MockIcomRadio:
 
     @staticmethod
     def _decode_level_bcd(data: bytes) -> int:
-        """Decode 2-byte BCD level (e.g. b'\\x01\\x28' → 128)."""
-        d0 = (data[0] >> 4) & 0x0F
-        d1 = data[0] & 0x0F
-        d2 = (data[1] >> 4) & 0x0F
-        d3 = data[1] & 0x0F
-        return d0 * 1000 + d1 * 100 + d2 * 10 + d3
+        """Decode a 2-byte BCD level (e.g. b'\\x01\\x28' → 128).
+
+        Kept for test-local ``MockIcomRadio`` subclasses (see
+        ``tests/integration/test_dsp_levels_integration.py``); the dispatcher
+        itself uses the module-level ``_bcd_decode_value``.
+        """
+        return _bcd_decode_value(data[:2])
 
     # ------------------------------------------------------------------
     # Control packet builders

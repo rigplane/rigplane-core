@@ -10,24 +10,16 @@ import {
   autoSetLanModInputForTx,
   restoreModInputAfterTx,
 } from './mod-input-auto.svelte';
+import {
+  canRestoreModAfterConfirmedOff,
+  type ConfirmedOffRestoreInput,
+} from './ptt-restore-gate';
 
-export interface PttObservationMarker {
-  authorityEpoch: number;
-  pttObservationSeq: number | null;
-  pttLastObservedMonotonic: number | null;
-}
-
-export interface AuthoritativePttObservation extends PttObservationMarker {
-  ptt: boolean;
-  pttObserved: boolean;
-  pttFreshness: 'fresh' | 'stale' | 'expired' | 'unknown';
-  pttSource: string;
-}
-
-export interface ConfirmedOffRestoreInput {
-  barrier: PttObservationMarker;
-  observation: AuthoritativePttObservation;
-}
+export type {
+  PttObservationMarker,
+  AuthoritativePttObservation,
+  ConfirmedOffRestoreInput,
+} from './ptt-restore-gate';
 
 interface LocalAudioAttempt {
   generation: number;
@@ -37,45 +29,6 @@ interface LocalAudioAttempt {
 
 let nextLocalAudioGeneration = 0;
 let activeLocalAudioAttempt: LocalAudioAttempt | null = null;
-
-function markerIsStrictlyNewer(
-  barrier: PttObservationMarker,
-  observation: AuthoritativePttObservation,
-): boolean {
-  if (observation.authorityEpoch !== barrier.authorityEpoch) return false;
-
-  if (
-    barrier.pttObservationSeq !== null ||
-    observation.pttObservationSeq !== null
-  ) {
-    return (
-      barrier.pttObservationSeq !== null &&
-      observation.pttObservationSeq !== null &&
-      observation.pttObservationSeq > barrier.pttObservationSeq
-    );
-  }
-
-  return (
-    barrier.pttLastObservedMonotonic !== null &&
-    observation.pttLastObservedMonotonic !== null &&
-    observation.pttLastObservedMonotonic >
-      barrier.pttLastObservedMonotonic
-  );
-}
-
-function canRestoreModAfterConfirmedOff({
-  barrier,
-  observation,
-}: ConfirmedOffRestoreInput): boolean {
-  return (
-    observation.ptt === false &&
-    observation.pttObserved &&
-    observation.pttFreshness === 'fresh' &&
-    (observation.pttSource === 'radio-readback' ||
-      observation.pttSource === 'backend-observation') &&
-    markerIsStrictlyNewer(barrier, observation)
-  );
-}
 
 async function startTx(autoSwitchModInput = true): Promise<string | null> {
   if (activeLocalAudioAttempt?.lifecycle === 'starting') {

@@ -7,10 +7,13 @@ local mock server, verifying the connection lifecycle and CI-V commands end-to-e
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
-from rigplane.exceptions import AuthenticationError, CommandError
+from rigplane import IC_7610_ADDR
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+from rigplane.exceptions import AuthenticationError, CommandError, CommandRejectedError
 from rigplane.radio import IcomRadio
 from rigplane.types import Mode
 
@@ -284,6 +287,57 @@ class TestKeepalive:
         assert connected_radio.connected
         await asyncio.sleep(0.3)  # > half ping interval — enough to verify keepalive
         assert connected_radio.connected
+
+
+# ---------------------------------------------------------------------------
+# Refused reads (MOR-3297)
+# ---------------------------------------------------------------------------
+
+
+class TestRefusedReadsDoNotBlockTheQueue:
+    async def test_refused_menu_reads_settle_fast_and_do_not_delay_set_freq(
+        self, mock_radio: MockIcomRadio
+    ) -> None:
+        """Six NAKed menu reads must not make the queued set_freq wait.
+
+        ``_civ_rx.py: CivRuntime._execute_civ_raw`` waited out the whole
+        ``_civ_get_timeout`` window per refused read (a NAK parked in the
+        tracker's orphan backlog), so a set queued behind six refusals at
+        ``Priority.NORMAL`` reached the wire seconds late. The frames read
+        menu item 0x99 0x99 via 0x1A 05 — an item no Icom radio defines, so
+        ``MockIcomRadio._dispatch`` answers NAK (unknown command → NAK).
+        """
+        radio = IcomRadio(
+            host="127.0.0.1",
+            port=mock_radio.control_port,
+            username="testuser",
+            password="testpass",
+            model="IC-7610",
+        )
+        try:
+            with fast_connect():
+                await radio.connect()
+            assert radio.connected
+            frames = [
+                build_civ_frame(
+                    IC_7610_ADDR, CONTROLLER_ADDR, 0x1A, sub=0x05, data=b"\x99\x99"
+                )
+                for _ in range(6)
+            ]
+            started = time.monotonic()
+            results = await asyncio.gather(
+                *(radio._send_civ_raw(frame) for frame in frames),
+                radio.set_freq(14_074_000),
+                return_exceptions=True,
+            )
+            elapsed = time.monotonic() - started
+        finally:
+            await radio.disconnect()
+
+        reads, set_result = results[:6], results[6]
+        assert all(isinstance(result, CommandRejectedError) for result in reads), reads
+        assert set_result is None, set_result
+        assert elapsed < 2.0, f"elapsed={elapsed:.3f}s"
 
 
 # ---------------------------------------------------------------------------
