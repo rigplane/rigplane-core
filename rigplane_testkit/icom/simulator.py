@@ -80,6 +80,9 @@ _CMD_ATT = 0x11
 _CMD_PREAMP = 0x16
 _CMD_CMD29 = 0x29
 _CMD_PTT = 0x1C
+_CMD_CTL_MEM_MENU = 0x1A  # 0x1A 0x05 <item-hi> <item-lo> menu reads/writes
+_CMD_SELECTED_FREQ = 0x25  # Selected/unselected receiver frequency
+_CMD_SELECTED_MODE = 0x26  # Selected/unselected receiver mode
 _CMD_ACK = 0xFB
 _CMD_NAK = 0xFA
 _SUB_RF_POWER = 0x0A
@@ -89,6 +92,22 @@ _SUB_ALC_METER = 0x13
 _SUB_PREAMP_STATUS = 0x02
 _SUB_DIGISEL_STATUS = 0x4E
 _SUB_PTT = 0x00
+
+# CI-V 0x1A 05 menu items modelled by the simulator, as ``(item, default)``.
+# These four MOD-input sources (0x0091-0x0094, declared in
+# ``rigs/ic7610.toml`` [commands.overrides]) are what the product's startup
+# reader asks for at connect (``src/rigplane/web/radio_poller.py``:
+# ``_fetch_mod_inputs``; observed on the wire against this simulator).
+# Values follow the MOD-input source enum 0=MIC .. 5=LAN
+# (``frontend/src/lib/radio/mod-input.ts``): DATA OFF answers ACC (1) and
+# the DATA groups answer LAN (5) — a simulator default, not a recorded
+# factory setting. Items outside this table still NAK.
+_CTL_MEM_MENU_STARTUP_ITEMS: dict[bytes, int] = {
+    b"\x00\x91": 1,  # DATA OFF mod input -> ACC
+    b"\x00\x92": 5,  # DATA1 mod input -> LAN
+    b"\x00\x93": 5,  # DATA2 mod input -> LAN
+    b"\x00\x94": 5,  # DATA3 mod input -> LAN
+}
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +267,20 @@ class MockIcomRadio:
         self._attenuator: int = 0  # dB (0, 3, 6, ... 45)
         self._preamp: int = 0  # 0=off, 1=PREAMP1, 2=PREAMP2
         self._digisel: int = 0  # 0=off, 1=on
+
+        # Selected/unselected receiver vocabulary (CI-V 0x25/0x26, subcommand
+        # 00=selected, 01=unselected). The selected receiver shares the
+        # 0x03/0x05/0x04/0x06 state above (plus ``_data_mode`` for the 0x26
+        # reply's DATA-mode flag byte); the unselected receiver carries its
+        # own fields with the defaults below — a valid fresh-band setup, not
+        # a recorded factory state.
+        self._data_mode: int = 0  # selected receiver DATA-mode flag: 0=OFF
+        self._unselected_frequency: int = 7_074_000  # Hz
+        self._unselected_mode: int = 0x01  # USB
+        self._unselected_data_mode: int = 0  # 0=OFF
+        self._unselected_filter: int = 1  # FIL1
+        # Modelling of the 0x1A 05 menu items the startup reader reads.
+        self._ctl_mem_menu: dict[bytes, int] = dict(_CTL_MEM_MENU_STARTUP_ITEMS)
 
         # Behaviour flags for edge-case tests
         self.auth_fail: bool = False
@@ -1114,6 +1147,86 @@ class MockIcomRadio:
         # --- Transceiver ID (0x19 0x00) — the connect-time identity read ---
         if cmd == 0x19 and payload == b"\x00":
             return self._civ_frame(to, frm, 0x19, sub=0x00, data=self.model_id)
+
+        # --- Selected/Unselected receiver frequency (0x25) ---
+        # Payload's first byte is the receiver selector (00=selected,
+        # 01=unselected) — a data byte, not a sub-command: 0x25 does not
+        # carry one (commands/_frame.py: command_carries_sub), so the GET is
+        # one byte and the SET is selector + 5-byte BCD.
+        if cmd == _CMD_SELECTED_FREQ:
+            if len(payload) == 1 and payload[0] in (0x00, 0x01):  # GET
+                selector = payload[0]
+                freq = (
+                    self._frequency if selector == 0x00 else self._unselected_frequency
+                )
+                return self._civ_frame(
+                    to,
+                    frm,
+                    _CMD_SELECTED_FREQ,
+                    data=bytes([selector]) + _bcd_encode_freq(freq),
+                )
+            if len(payload) == 6 and payload[0] in (0x00, 0x01):  # SET
+                freq = _bcd_decode_freq(payload[1:6])
+                if payload[0] == 0x00:
+                    self._frequency = freq  # shared with 0x03/0x05
+                else:
+                    self._unselected_frequency = freq
+                return self._civ_ack(to, frm)
+            return self._civ_nak(to, frm)
+
+        # --- Selected/Unselected receiver mode (0x26) ---
+        # GET replies carry receiver, mode, DATA-mode flag, filter — the
+        # layout commands/freq.py: parse_selected_mode_response reads. The
+        # selected state is shared with 0x04/0x06 (plus the DATA-mode flag,
+        # which 0x06 does not carry).
+        if cmd == _CMD_SELECTED_MODE:
+            if len(payload) == 1 and payload[0] in (0x00, 0x01):  # GET
+                selector = payload[0]
+                if selector == 0x00:
+                    body = bytes([self._mode, self._data_mode, self._filter])
+                else:
+                    body = bytes(
+                        [
+                            self._unselected_mode,
+                            self._unselected_data_mode,
+                            self._unselected_filter,
+                        ]
+                    )
+                return self._civ_frame(
+                    to, frm, _CMD_SELECTED_MODE, data=bytes([selector]) + body
+                )
+            if len(payload) == 4 and payload[0] in (0x00, 0x01):  # SET
+                mode, data_mode, filt = payload[1], payload[2], payload[3]
+                if payload[0] == 0x00:
+                    self._mode = mode  # shared with 0x04/0x06
+                    self._data_mode = data_mode
+                    self._filter = filt
+                else:
+                    self._unselected_mode = mode
+                    self._unselected_data_mode = data_mode
+                    self._unselected_filter = filt
+                return self._civ_ack(to, frm)
+            return self._civ_nak(to, frm)
+
+        # --- 0x1A 05 menu items (the startup MOD-input reads) ---
+        if cmd == _CMD_CTL_MEM_MENU and payload[:1] == b"\x05":
+            rest = payload[1:]
+            if len(rest) >= 2 and rest[:2] in self._ctl_mem_menu:
+                item = rest[:2]
+                if len(rest) == 2:  # GET: item echo + 1-byte BCD value
+                    value = self._ctl_mem_menu[item]
+                    return self._civ_frame(
+                        to,
+                        frm,
+                        _CMD_CTL_MEM_MENU,
+                        sub=0x05,
+                        data=item + bytes([_bcd_byte(value)]),
+                    )
+                if len(rest) == 3:  # SET: one BCD data byte
+                    raw = rest[2]
+                    self._ctl_mem_menu[item] = ((raw >> 4) & 0x0F) * 10 + (raw & 0x0F)
+                    return self._civ_ack(to, frm)
+            return self._civ_nak(to, frm)
 
         # --- PTT / Transceiver status (0x1C) ---
         if cmd == _CMD_PTT:
