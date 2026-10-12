@@ -1066,37 +1066,38 @@ def _corrupt_snapshot(snapshot: StateSnapshot, case: str) -> StateSnapshot:
     if case == "generation-mismatch":
         moved = replace(field, provider_generation=field.provider_generation + 1)
         return replace(snapshot, fields=(moved,))
+    if case == "negative-generation":
+        negative = replace(field, provider_generation=-1)
+        return replace(snapshot, fields=(negative,), provider_generation=-1)
     raise AssertionError(f"unknown corruption case: {case}")
 
 
 _CORRUPT_CASES = (
-    ("missing", True),
-    ("stale-flag", True),
-    ("non-bool", True),
-    ("max-age-none", True),
-    ("max-age-zero", True),
-    # Non-finite timings: the legacy poller answers RX here (seen red), so
+    "missing",
+    "stale-flag",
+    "non-bool",
+    "max-age-none",
+    "max-age-zero",
+    # Non-finite timings: the pre-delegation poller answered RX here, so
     # delegation through the shared resolver is strictly tighter, never
-    # looser. The shared answer is what the table pins for these rows.
-    ("nan-observed", False),
-    ("inf-max-age", False),
-    ("nan-generated", False),
-    ("age-at-ttl", True),
-    ("age-over-ttl", True),
-    ("future", True),
-    ("generation-mismatch", True),
+    # looser. Every row pins the delegating poller's answer, not the old one.
+    "nan-observed",
+    "inf-max-age",
+    "nan-generated",
+    "age-at-ttl",
+    "age-over-ttl",
+    "future",
+    "generation-mismatch",
+    "negative-generation",
 )
 
 
-@pytest.mark.parametrize(("case", "legacy_refuses"), _CORRUPT_CASES)
-def test_delegated_answer_never_permits_where_poller_refuses(
-    case: str, legacy_refuses: bool
-) -> None:
+@pytest.mark.parametrize("case", _CORRUPT_CASES)
+def test_delegated_answer_never_permits_where_poller_refuses(case: str) -> None:
     """Delegation must lose none of the poller's refusals.
 
-    Every corrupt shape must read UNKNOWN through the shared resolver the
-    poller is about to delegate to; shapes today's poller already refuses
-    must read UNKNOWN through it too.
+    Every corrupt shape must read UNKNOWN through the poller and through
+    the shared resolver it delegates to.
     """
 
     clock, store, poller = _manual_snapshot_base()
@@ -1111,6 +1112,5 @@ def test_delegated_answer_never_permits_where_poller_refuses(
         snapshot = store.snapshot()
     else:
         snapshot = _corrupt_snapshot(store.snapshot(), case)
-    if legacy_refuses:
-        assert poller._current_rf_state(snapshot) is RfState.UNKNOWN  # noqa: SLF001
+    assert poller._current_rf_state(snapshot) is RfState.UNKNOWN  # noqa: SLF001
     assert resolve_rf_state(snapshot) is RfState.UNKNOWN

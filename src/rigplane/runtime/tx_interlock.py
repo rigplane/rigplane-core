@@ -252,7 +252,8 @@ def resolve_rf_state(snapshot: StateSnapshot) -> RfState:
     """Resolve RF state from the bool ``tx_state.ptt`` observation.
 
     Applies the predicate set of ``core.tx_observation.project_observed_ptt``,
-    adapted to a bool value: the age is recomputed from the snapshot instead
+    adapted to a bool value, and additionally refuses a negative snapshot
+    provider generation: the age is recomputed from the snapshot instead
     of trusting the FRESH flag, so an observation past its TTL reads UNKNOWN
     even when no freshness tick has cleared the flag yet.
     """
