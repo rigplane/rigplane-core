@@ -15,11 +15,14 @@ is regenerated and the diff reviewed:
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
 from pydantic import ValidationError
@@ -32,6 +35,10 @@ _ROOT = Path(__file__).resolve().parents[2]
 _GENERATOR_PATH = _ROOT / "scripts" / "gen_state_wire_goldens.py"
 _REGEN_COMMAND = "uv run python scripts/gen_state_wire_goldens.py"
 _LIFECYCLE_PREFIXES = ("connection.connection.", "health.health.")
+# Each ``time.monotonic`` call the web server makes advances the fake clock
+# by this much, so any value derived from elapsed monotonic time (the radio
+# health age) grows by whole seconds instead of staying below 1 ms.
+_MONOTONIC_JUMP_S = 5.0
 
 
 def _load_generator() -> Any:
@@ -112,6 +119,28 @@ def test_generator_check_reports_no_drift() -> None:
     assert result.returncode == 0, (
         f"--check reported drift; regenerate and commit it: {_REGEN_COMMAND}\n"
         f"{result.stdout}{result.stderr}"
+    )
+
+
+def test_monotonic_progress_does_not_drift_the_render() -> None:
+    """The render still equals the committed file under a running clock.
+
+    ``WebServer`` derives ``radioHealth.sinceMs`` from the monotonic clock,
+    twice per envelope build (``server.py: _snapshot_for_delivery`` and
+    ``_build_public_state_from_snapshot`` both call ``_build_radio_health``,
+    and the second call sees the same health signature). Advancing the clock
+    several seconds per call therefore turns an unpinned health age into a
+    large ``sinceMs`` while the committed golden says 0.
+    """
+    committed = _GENERATOR.GOLDEN_PATH.read_text(encoding="utf-8")
+    clock = itertools.count(time.monotonic(), _MONOTONIC_JUMP_S)
+
+    with mock.patch("rigplane.web.server.time.monotonic", side_effect=clock.__next__):
+        rendered = _GENERATOR.render_goldens()
+
+    assert rendered == committed, (
+        "the render varies with the monotonic clock; pin the health age "
+        f"(radioHealth.sinceMs) in the generator: {_REGEN_COMMAND}"
     )
 
 

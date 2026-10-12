@@ -14,9 +14,10 @@ produces:
 
 Observed values are fixed per field type, not calibrated readings. A declared
 str or object field this script has no value for raises instead of getting a
-placeholder. ``updatedAt``, every ``lastObservedMonotonic``, ``webrtc.available``
-and the audio-jitter environment variables are pinned, so a run does not vary
-with the clock, with aiortc being installed, or with those variables.
+placeholder. ``updatedAt``, every ``lastObservedMonotonic``,
+``radioHealth.sinceMs``, ``webrtc.available`` and the audio-jitter environment
+variables are pinned, so a run does not vary with the clock, with aiortc being
+installed, or with those variables.
 
 Usage:
     python scripts/gen_state_wire_goldens.py           # write the golden
@@ -65,6 +66,7 @@ GOLDEN_PATH = (
 
 _PINNED_UPDATED_AT = "2026-01-01T00:00:00+00:00"
 _PINNED_MONOTONIC = 1000.0
+_PINNED_SINCE_MS = 0
 # Read by ``get_audio_rx_jitter_floor_ms`` / ``get_audio_rx_jitter_ceiling_ms``.
 _JITTER_ENV_VARS = (
     "ICOM_AUDIO_RX_JITTER_FLOOR_MS",
@@ -159,6 +161,11 @@ def _full_envelope(server: WebServer) -> dict[str, Any]:
     envelope = server.build_state_update_envelope(force_full=True)
     data = envelope["data"]
     data["updatedAt"] = _PINNED_UPDATED_AT
+    # The server derives the health age from the monotonic clock on every
+    # build, so pin it or the golden varies with machine speed.
+    radio_health = data.get("radioHealth")
+    if radio_health is not None and "sinceMs" in radio_health:
+        radio_health["sinceMs"] = _PINNED_SINCE_MS
     for status in data["fieldStatus"].values():
         if "lastObservedMonotonic" in status:
             status["lastObservedMonotonic"] = _PINNED_MONOTONIC
