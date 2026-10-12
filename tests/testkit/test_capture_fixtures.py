@@ -35,11 +35,23 @@ def _rec(t: float, direction: str, port: str, data: bytes) -> Record:
     return Record(t=t, direction=direction, port=port, data=data)
 
 
-def _packet(size: int, ptype: int = 0, reqtype: int | None = None) -> bytes:
+def _packet(
+    size: int, ptype: int = 0, reqtype: int | None = None, flag: int | None = None
+) -> bytes:
     pkt = bytearray(size)
     pkt[0x04] = ptype  # u16 LE packet type
+    if flag is not None:
+        pkt[0x10] = flag  # ping request/reply flag byte
     if reqtype is not None:
         pkt[0x15] = reqtype
+    return bytes(pkt)
+
+
+def _civ_packet(frame: bytes) -> bytes:
+    """A DATA datagram carrying ``frame`` after the 0x15-byte LAN header."""
+    pkt = bytearray(0x15 + len(frame))
+    pkt[0x11:0x13] = len(frame).to_bytes(2, "little")
+    pkt[0x15:] = frame
     return bytes(pkt)
 
 
@@ -82,10 +94,13 @@ class TestRecordedSession:
         await _record_session(tmp_path, unsolicited=False)
         result = cadence(load_records(tmp_path / "session.jsonl"))
         pings = result["pings"]
-        # At least one ping request and its reply passed through the proxy.
+        # At least one ping request and its reply passed through the proxy;
+        # each key also records which side initiated (request vs reply).
         assert sum(p["count"] for p in pings.values()) >= 2
-        assert any(key.endswith(":c2r") for key in pings)
-        assert any(key.endswith(":r2c") for key in pings)
+        assert any(":c2r:" in key for key in pings)
+        assert any(":r2c:" in key for key in pings)
+        assert any(key.endswith(":request") for key in pings)
+        assert any(key.endswith(":reply") for key in pings)
         assert isinstance(result["token_renewals"], list)
         assert set(result["audio_lengths"]) == {"c2r", "r2c"}
 
@@ -112,6 +127,20 @@ class TestRecordedSession:
 class TestCadenceAndAudio:
     """Cadence statistics and audio headers over fabricated records."""
 
+    def test_ping_stats_split_by_request_and_reply(self) -> None:
+        # 0.5 s client requests and 0.5 s radio replies offset by 0.2 s:
+        # merged into one stream the median collapses to 0.25 s.
+        request = _packet(0x15, 0x07, flag=0x00)
+        reply = _packet(0x15, 0x07, flag=0x01)
+        records = [
+            *[_rec(t, "c2r", "control", request) for t in (0.0, 0.5, 1.0, 1.5)],
+            *[_rec(t, "r2c", "control", reply) for t in (0.2, 0.7, 1.2, 1.7)],
+        ]
+        pings = cadence(records)["pings"]
+        assert set(pings) == {"control:c2r:request", "control:r2c:reply"}
+        assert pings["control:c2r:request"]["median_s"] == 0.5
+        assert pings["control:r2c:reply"]["median_s"] == 0.5
+
     def test_pings_renews_retransmits_histogram(self) -> None:
         ping = _packet(0x15, 0x07)
         records = [
@@ -122,15 +151,15 @@ class TestCadenceAndAudio:
             _rec(0.1, "c2r", "civ", _packet(0x10, 0x01)),
             _rec(0.2, "r2c", "audio", bytes(0x500)),
             _rec(0.3, "r2c", "audio", bytes(0x500)),
-            _rec(5.0, "r2c", "civ", ping),
+            _rec(5.0, "r2c", "civ", _packet(0x15, 0x07, flag=0x01)),
         ]
         result = cadence(records)
-        stats = result["pings"]["control:c2r"]
+        stats = result["pings"]["control:c2r:request"]
         # Intervals [0.5, 0.5, 1.0]: linear-interpolated p95 = 0.95.
         assert (stats["count"], stats["median_s"]) == (4, 0.5)
         assert (stats["p95_s"], stats["max_s"], stats["seconds"]) == (0.95, 1.0, 2.0)
-        # A single ping has no interval statistics.
-        lone = result["pings"]["civ:r2c"]
+        # A single reply ping has no interval statistics.
+        lone = result["pings"]["civ:r2c:reply"]
         assert lone["count"] == 1 and lone["median_s"] is None
         assert result["token_renewals"] == [
             {"t": 3.0, "answered_after_s": 0.2},
@@ -138,6 +167,15 @@ class TestCadenceAndAudio:
         ]
         assert result["retransmit_requests"] == {"civ:c2r": 1}
         assert result["audio_lengths"] == {"c2r": {}, "r2c": {"1280": 2}}
+
+    def test_civ_window_bounds_are_inclusive(self) -> None:
+        # Both bounds are inclusive: a record exactly at t_from or t_to
+        # stays in the window (pinned here; the docstring states it).
+        records = [
+            _rec(t, "c2r", "civ", _civ_packet(b"\xfe\xfe\xe0\x98\x19\x00\xfd"))
+            for t in (1.0, 2.0, 3.0)
+        ]
+        assert [f["t"] for f in civ_frames(records, t_from=2.0, t_to=3.0)] == [2.0, 3.0]
 
     def test_audio_headers_truncated_and_limited_per_direction(self) -> None:
         data = bytes(range(0x40))

@@ -1,13 +1,15 @@
-"""Extract commit-safe fixtures from a recorded Icom LAN session.
+"""Extract reduced fixtures from a recorded Icom LAN session.
 
 Input is the JSONL written by
 :class:`~rigplane_testkit.icom.recorder.IcomSessionRecorder` (one datagram
 per line: ``{"t", "dir", "port", "hex", "redacted"?}``).  The extractor
-keeps only what conformance fixtures need and nothing that identifies the
-radio or the client computer: :func:`civ_frames` (LAN header dropped),
-:func:`control_structure` (who sent what kind of control packet when —
-never payload bytes), :func:`cadence` (ping / token-renew / retransmit /
-audio-length statistics), :func:`audio_headers` (samples truncated).
+keeps what conformance fixtures need: :func:`civ_frames` (LAN header
+dropped), :func:`control_structure` (who sent what kind of control packet
+when — never payload bytes), :func:`cadence` (ping / token-renew /
+retransmit / audio-length statistics), :func:`audio_headers` (samples
+truncated).  Before committing the output, run ``python -m
+rigplane_testkit.redaction_gate`` over it and hand-check the leaks that
+gate does not cover (its docstring lists them).
 
 CLI::
 
@@ -16,9 +18,7 @@ CLI::
 
 writes ``civ_frames.jsonl``, ``control_structure.jsonl``, ``cadence.json``
 and ``audio_headers.jsonl`` (sorted keys, one record per line, trailing
-newline; the same input produces byte-identical output).  Gate the result
-before committing: ``python -m rigplane_testkit.redaction_gate
---deny-file SECRETS.txt DIR/*``.
+newline; the same input produces byte-identical output).
 """
 
 from __future__ import annotations
@@ -34,6 +34,8 @@ from rigplane_testkit.icom.replay import Record, extract_civ_frame
 
 _PING_SIZE = 0x15  # ping packet length (request and reply)
 _PING_TYPE = 0x07  # u16 LE packet type at offset 0x04
+_PING_REPLY_FLAG_OFF = 0x10  # flag byte: 0x00 request, 0x01 reply
+_PING_REPLY_FLAG = 0x01
 _RETRANSMIT_TYPE = 0x01  # retransmit-request packet type
 _TOKEN_SIZE = 0x40  # token ack / renew / remove packet length
 _TOKEN_RENEW = 0x05  # reqtype byte (0x15) of a token-renew request
@@ -134,14 +136,18 @@ def cadence(records: list[Record]) -> dict:
 
     Returns ``{"pings", "token_renewals", "retransmit_requests",
     "audio_lengths"}``: pings (0x15-byte type-0x07 packets) keyed
-    ``"port:dir"`` with ``count`` / ``median_s`` / ``p95_s`` / ``max_s``
-    interval statistics (null when fewer than two pings) and the
-    first-to-last ``seconds`` span; token renewals as ``[{"t",
-    "answered_after_s"|None}]`` — a c2r 0x40-byte control packet with
-    reqtype 0x05, answered when an r2c 0x40-byte control packet follows
-    within 0.5 s; retransmit-request (type-0x01) counts per ``"port:dir"``;
-    audio packet length histograms per direction.  Floats are rounded to
-    3 decimals.
+    ``"port:dir:kind"`` — kind is ``"request"`` (flag byte 0x10 == 0x00)
+    or ``"reply"`` (0x01), the same split the production client makes in
+    ``rigplane/core/transport.py: _build_ping`` / ``_handle_ping_packet``,
+    so radio-originated pings the client answers never blend into the
+    client's own ping rhythm — each entry with ``count`` / ``median_s`` /
+    ``p95_s`` / ``max_s`` interval statistics (null when fewer than two
+    pings) and the first-to-last ``seconds`` span; token renewals as
+    ``[{"t", "answered_after_s"|None}]`` — a c2r 0x40-byte control packet
+    with reqtype 0x05, answered when an r2c 0x40-byte control packet
+    follows within 0.5 s; retransmit-request (type-0x01) counts per
+    ``"port:dir"``; audio packet length histograms per direction.  Floats
+    are rounded to 3 decimals.
     """
     pings: dict[str, list[float]] = {}
     retransmits: dict[str, int] = {}
@@ -153,7 +159,9 @@ def cadence(records: list[Record]) -> dict:
         key = f"{rec.port}:{rec.direction}"
         ptype = struct.unpack_from("<H", data, 0x04)[0] if len(data) >= 0x06 else None
         if len(data) == _PING_SIZE and ptype == _PING_TYPE:
-            pings.setdefault(key, []).append(rec.t)
+            is_reply = data[_PING_REPLY_FLAG_OFF] == _PING_REPLY_FLAG
+            kind = "reply" if is_reply else "request"
+            pings.setdefault(f"{key}:{kind}", []).append(rec.t)
         if ptype == _RETRANSMIT_TYPE:
             retransmits[key] = retransmits.get(key, 0) + 1
         if rec.port == "control" and len(data) == _TOKEN_SIZE:
@@ -227,7 +235,7 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="python -m rigplane_testkit.icom.fixtures")
     sub = parser.add_subparsers(dest="command", required=True)
-    ext = sub.add_parser("extract", help="extract commit-safe fixtures")
+    ext = sub.add_parser("extract", help="extract reduced fixtures")
     ext.add_argument("--in", dest="in_path", required=True, help="input .jsonl[.gz]")
     ext.add_argument("--out-dir", required=True, help="output directory")
     ext.add_argument("--civ-from", type=float, default=None, help="CI-V from (s)")

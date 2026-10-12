@@ -62,6 +62,14 @@ class TestScopeWaveExemption:
         _write_jsonl(target, [{"hex": blob.hex()}])
         assert [f.kind for f in scan([str(target)])] == ["ascii-run"]
 
+    def test_wave_prefix_without_terminator_flagged(self, tmp_path) -> None:
+        # A "27 00" prefix with no FD terminator is not a scope wave frame;
+        # the printable run after it must stay flagged.
+        blob = b"\xfe\xfe\xe0\x98\x27\x00" + b"SHACKPC1"
+        target = tmp_path / "leak.jsonl"
+        _write_jsonl(target, [{"hex": blob.hex()}])
+        assert [f.kind for f in scan([str(target)])] == ["ascii-run"]
+
 
 class TestTextFindings:
     def test_deny_string_in_plain_text(self, tmp_path) -> None:
@@ -102,6 +110,34 @@ class TestCleanExtraction:
 
 
 class TestCli:
+    def test_repeatable_flags_do_not_swallow_paths(self, tmp_path, capsys) -> None:
+        f1 = tmp_path / "one.jsonl"
+        f2 = tmp_path / "two.jsonl"
+        _write_jsonl(f1, [{"hex": bytes([10, 9, 8, 7]).hex()}])
+        _write_jsonl(f2, [{"note": "peer 10.1.2.3"}])
+        # One value per flag: a value directly before the positional paths
+        # must not swallow them, and repeating a flag keeps every entry.
+        code = gate_main(
+            ["--ipv4", _IP, "--ipv4", "10.1.2.3", "--mac", _MAC, str(f1), str(f2)]
+        )
+        out = capsys.readouterr()
+        assert code == 1
+        assert f"{f1}:1 ipv4-bytes#0" in out.out
+        # Index 1 is the repeated --ipv4 entry, proving both were kept.
+        assert f"{f2}:1 ipv4-text#1" in out.out
+        assert f"{f2}:1 dotted-quad#0" in out.out
+
+    def test_paths_printed_relative_to_cwd(self, tmp_path, monkeypatch, capsys) -> None:
+        dirty = tmp_path / "dirty.jsonl"
+        _write_jsonl(dirty, [{"note": f"host {_SECRET}"}])
+        deny_file = tmp_path / "deny.txt"
+        deny_file.write_text(_SECRET + "\n")
+        monkeypatch.chdir(tmp_path)
+        assert gate_main(["--deny-file", str(deny_file), str(dirty)]) == 1
+        # The scanned path is printed relative to the CWD, not verbatim:
+        # a deny entry inside a directory name must not surface.
+        assert capsys.readouterr().out.splitlines()[0] == "dirty.jsonl:1 deny-text#0"
+
     def test_exit_codes_and_no_secret_echo(self, tmp_path, capsys) -> None:
         dirty = tmp_path / "dirty.jsonl"
         _write_jsonl(

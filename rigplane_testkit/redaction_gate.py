@@ -1,16 +1,23 @@
-"""Redaction gate: refuse extracted fixtures that leak identities.
+"""Redaction gate: flag the identity leaks it knows how to detect.
 
-Scans JSON/JSONL files — e.g. the output of ``python -m
-rigplane_testkit.icom.fixtures extract`` — before they are committed.  A
-hex string value (even length, >= 8 chars) is decoded and searched for
-each ``--ipv4`` address (4 bytes, both byte orders), each ``--mac``
-address (6 bytes) and each deny string (UTF-8 bytes); printable-ASCII runs
-of >= 6 bytes are reported too, EXCEPT runs fully inside a CI-V scope wave
-frame (``FE FE xx xx 27 00 .. FD``), whose amplitude bytes are
-legitimately printable.  A non-hex string value is searched for the deny
-strings and ``--ipv4`` addresses as text, and for dotted quads other than
-127.0.0.1, 0.0.0.0 and the RFC 5737 documentation ranges (192.0.2.0/24,
-198.51.100.0/24, 203.0.113.0/24).
+Scans the string VALUES of JSON/JSONL files — e.g. the output of
+``python -m rigplane_testkit.icom.fixtures extract`` — before they are
+committed.  A hex string value (even length, >= 8 chars) is decoded and
+searched for each ``--ipv4`` address (4 bytes, both byte orders), each
+``--mac`` address (6 bytes) and each deny string (UTF-8 bytes);
+printable-ASCII runs of >= 6 bytes are reported too, EXCEPT runs fully
+inside a COMPLETE CI-V scope wave frame (``FE FE xx xx 27 00 .. FD`` —
+a prefix with no ``FD`` terminator is not a frame and exempts nothing),
+whose amplitude bytes are legitimately printable.  A non-hex string
+value is searched for the deny strings and ``--ipv4`` addresses as
+text, and for dotted quads other than 127.0.0.1, 0.0.0.0 and the
+RFC 5737 documentation ranges (192.0.2.0/24, 198.51.100.0/24,
+203.0.113.0/24).
+
+Not covered — check these by hand before committing: IPv4 addresses
+encoded as BCD inside CI-V payloads (e.g. the IC-7610 ``1A 05`` network
+items), JSON object keys, JSON numbers, and MAC addresses written as
+text.
 
 A :class:`Finding` never carries the matched value — only path, line, kind
 and an index: the matching ``ipv4`` / ``mac`` / ``deny`` list entry, the
@@ -20,17 +27,19 @@ for ``dotted-quad``.
 CLI::
 
     python -m rigplane_testkit.redaction_gate [--deny-file F] \
-        [--ipv4 A.B.C.D ...] [--mac aa:bb:cc:dd:ee:ff ...] PATH...
+        [--ipv4 A.B.C.D]... [--mac aa:bb:cc:dd:ee:ff]... PATH...
 
-prints ``path:line kind#index`` per finding and exits 1 on any finding,
-0 when clean.  The deny file holds one secret per line (user, password,
-host name, computer name); its content is never printed or logged.
+prints ``path:line kind#index`` per finding (paths relative to the
+current directory when inside it) and exits 1 on any finding, 0 when
+clean.  The deny file holds one secret per line (user, password, host
+name, computer name); its content is never printed or logged.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -111,11 +120,16 @@ def _iter_strings(path: str) -> Iterator[tuple[int, str]]:
 
 
 def _scope_wave_spans(blob: bytes) -> list[tuple[int, int]]:
-    """Byte spans of CI-V scope wave frames (start .. terminator inclusive)."""
+    """Byte spans of COMPLETE scope wave frames (prefix .. FD terminator).
+
+    A ``FE FE .. 27 00`` prefix with no ``FD`` terminator after it is not
+    a frame and yields no span, so the bytes after it stay scanned.
+    """
     spans = []
     for match in _SCOPE_WAVE_RE.finditer(blob):
         end = blob.find(bytes([_CIV_TERM]), match.end())
-        spans.append((match.start(), len(blob) if end == -1 else end + 1))
+        if end != -1:
+            spans.append((match.start(), end + 1))
     return spans
 
 
@@ -174,7 +188,11 @@ def scan(
     mac: tuple[str, ...] = (),
     deny: tuple[str, ...] = (),
 ) -> list[Finding]:
-    """Scan JSON/JSONL files for leaked identities; never stores values."""
+    """Scan JSON/JSONL string values for the deny lists and ASCII runs.
+
+    Never stores matched values; see the module docstring for exactly what
+    is and is not covered.
+    """
     ipv4_bytes = [_parse_ipv4(address) for address in ipv4]
     mac_bytes = [_parse_mac(address) for address in mac]
     deny_bytes = [secret.encode("utf-8") for secret in deny]
@@ -197,11 +215,22 @@ def scan(
     return findings
 
 
+def _display(path: str) -> str:
+    """Scanned path as printed: relative to the CWD when inside it."""
+    absolute = os.path.abspath(path)
+    prefix = os.getcwd().rstrip(os.sep) + os.sep
+    return os.path.relpath(absolute) if absolute.startswith(prefix) else path
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m rigplane_testkit.redaction_gate")
     parser.add_argument("--deny-file", help="one secret per line (never printed)")
-    parser.add_argument("--ipv4", nargs="*", default=[], help="IPv4 addresses to deny")
-    parser.add_argument("--mac", nargs="*", default=[], help="MAC addresses to deny")
+    parser.add_argument(
+        "--ipv4", action="append", default=[], help="IPv4 address to deny (repeatable)"
+    )
+    parser.add_argument(
+        "--mac", action="append", default=[], help="MAC address to deny (repeatable)"
+    )
     parser.add_argument("paths", nargs="+", help="JSON/JSONL files to scan")
     args = parser.parse_args(argv)
     deny: list[str] = []
@@ -215,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         args.paths, ipv4=tuple(args.ipv4), mac=tuple(args.mac), deny=tuple(deny)
     )
     for finding in findings:
-        print(f"{finding.path}:{finding.line} {finding.kind}#{finding.index}")
+        print(f"{_display(finding.path)}:{finding.line} {finding.kind}#{finding.index}")
     return 1 if findings else 0
 
 
