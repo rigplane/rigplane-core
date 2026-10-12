@@ -832,3 +832,151 @@ async def test_cancel_during_attempt_reraises_without_extra_emits() -> None:
         and e.to_state is not LifecycleState.DISCONNECTED
         for e in events
     )
+
+
+# ---------------------------------------------------------------------------
+# MOR-3391 part 1b — stop the start-up busy retry on a proven LIVE holder
+# ---------------------------------------------------------------------------
+
+
+class _VirtualClock:
+    """Controllable clock seam for the start-up busy-cadence tests.
+
+    The lifecycle sizes the start-up busy wait in its own clock seam
+    (``session_lifecycle.time.monotonic``); advancing it inside the fake
+    cooldown sleep plays a 0/30/60/90 s cadence in real milliseconds.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.now += delay
+
+
+def _busy_lifecycle(
+    clock: _VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    busy_cooldown_s: float = 30.0,
+    live_holder_after_s: float | None = 90.0,
+) -> tuple[CoreRadioSessionLifecycle, FakeMechanism, list[LifecycleEvent]]:
+    """Lifecycle with the production start-up busy wiring on a virtual clock."""
+    monkeypatch.setattr(
+        "rigplane.runtime.session_lifecycle.time.monotonic", clock.monotonic
+    )
+    monkeypatch.setattr(
+        "rigplane.runtime.session_lifecycle.asyncio.sleep", clock.sleep
+    )
+    mech = FakeMechanism()
+    lc = CoreRadioSessionLifecycle(
+        mechanism=mech,
+        not_ready_cooldown_s=busy_cooldown_s,
+        reject_cooldown_s=busy_cooldown_s,
+        max_connect_attempts=4,
+        first_connect_busy_cooldown_s=busy_cooldown_s,
+        first_connect_busy_budget_s=600.0,
+        first_connect_busy_live_holder_after_s=live_holder_after_s,
+    )
+    events: list[LifecycleEvent] = []
+    lc.add_event_listener(events.append)
+    return lc, mech, events
+
+
+async def test_live_holder_stop_on_the_threshold_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 part 1b: busy at 0/30/60 then at the 90 s threshold stops.
+
+    A busy reject on an attempt that starts at or after first-busy + 90 s
+    proves a LIVE session holds the radio, so the loop raises the honest
+    error instead of retrying into the 600 s budget. Exactly four logins,
+    each released, none after the stop.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    for _ in range(5):
+        mech.queue_busy_reject()
+
+    with pytest.raises(ConnectionError) as excinfo:
+        await lc.connect()
+
+    message = str(excinfo.value)
+    assert "another client holds the session" in message
+    assert "from this computer" in message
+    assert "a foreign client may hold it" not in message
+    assert mech.connect_calls == 4
+    assert mech.release_calls == 4
+    assert not mech.claimed
+    assert lc.state is LifecycleState.DISCONNECTED
+
+
+async def test_dead_hold_granted_before_the_threshold_connects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 part 1b: a hold that ends between attempts grants in time.
+
+    Two busy passes, then the radio grants on the third attempt (started at
+    +60 s, before the +90 s threshold): the loop connects and never trips
+    the live-holder stop.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    mech.queue_busy_reject()
+    mech.queue_busy_reject()
+    mech.queue_ok()
+
+    await lc.connect()
+
+    assert lc.state is LifecycleState.CONNECTED
+    assert mech.connect_calls == 3
+
+
+async def test_live_holder_boundary_just_before_threshold_continues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 part 1b: an attempt starting just before +90 s does not stop.
+
+    With a 29 s cadence the fourth attempt starts at +87 s — still a dead
+    hold as far as the rule knows — so only the fifth attempt (at +116 s)
+    trips the stop.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(
+        clock, monkeypatch, busy_cooldown_s=29.0, live_holder_after_s=90.0
+    )
+    for _ in range(6):
+        mech.queue_busy_reject()
+
+    with pytest.raises(ConnectionError, match="another client holds the session"):
+        await lc.connect()
+
+    assert mech.connect_calls == 5
+    assert mech.release_calls == 5
+
+
+async def test_startup_busy_budget_cap_without_live_holder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 part 1b: with the live-holder stop unset the 600 s cap stays.
+
+    The outer budget is the backstop for lifecycles constructed without the
+    threshold: a persistent busy still ends in the resident never-ready
+    error, every pass released.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch, live_holder_after_s=None)
+    for _ in range(22):
+        mech.queue_busy_reject()
+
+    with pytest.raises(ConnectionError, match="never became ready"):
+        await lc.connect()
+
+    # Attempts start at +0/+30/...; the first start at or past the +600 s
+    # deadline is the 21st.
+    assert mech.connect_calls == 21
+    assert mech.release_calls == 21
+    assert not mech.claimed
