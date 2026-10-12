@@ -2048,14 +2048,22 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         ``radio_reconnect.reconnect_loop`` stashed it because ``connect()``
         had returned while the identity hold refused commands. It runs only
         when the hold completed on the epoch the stash recorded with no
-        owner stop since; anything else drops it.
+        owner stop since; anything else drops it. The stash's epoch is
+        compared against the live ``_civ_epoch``, not only the completion's
+        ``epoch`` argument (captured before the ``_arm_managed_tx`` await,
+        during which the epoch can move), immediately before ``recover()``
+        with no await in between.
         """
         tail = self._hard_reconnect_deferred_audio
         if tail is None:
             return
         self._hard_reconnect_deferred_audio = None
         audio_runtime, audio_snapshot, tail_epoch, owner_stop_epoch = tail
-        if tail_epoch != epoch or self._owner_stop_epoch != owner_stop_epoch:
+        if (
+            tail_epoch != epoch
+            or self._civ_epoch != tail_epoch
+            or self._owner_stop_epoch != owner_stop_epoch
+        ):
             return
         try:
             await audio_runtime.recover(audio_snapshot)

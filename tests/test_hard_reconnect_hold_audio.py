@@ -11,9 +11,10 @@ managed TX only — audio was never re-armed and RX stayed silent.
 
 The tests pin the deferral: during the hold no recovery is attempted; the
 hold's completion on the same epoch recovers exactly once from the snapshot
-the reconnect captured; an owner stop or a new epoch before the completion
-drops the deferred recovery; and without a hold the recovery runs at once,
-exactly once, as before.
+the reconnect captured; an owner stop, or a new epoch — before the
+completion or moving under its ``_arm_managed_tx`` await — drops the
+deferred recovery; and without a hold the recovery runs at once, exactly
+once, as before.
 """
 
 from __future__ import annotations
@@ -61,13 +62,15 @@ async def _run_hard_reconnect(radio: IcomRadio, connect: object) -> None:
         await asyncio.wait_for(radio._reconnect_loop(), timeout=5.0)
 
 
-async def _complete_hold(radio: IcomRadio) -> None:
+async def _complete_hold(radio: IcomRadio, arm: AsyncMock | None = None) -> None:
     """Accept the hold's identity answer on the current epoch and finish.
 
     Mirrors what ``_lan_identity_reread_loop`` does when the radio answers.
+    ``arm`` overrides the default ``_arm_managed_tx`` mock so a test can
+    move the CI-V epoch inside the completion's arming await.
     """
     radio._fetch_initial_state = AsyncMock()
-    radio._arm_managed_tx = AsyncMock()
+    radio._arm_managed_tx = AsyncMock() if arm is None else arm
     radio._connection_identity = RadioIdentity(
         status=RadioIdentityStatus.VERIFIED, expected_model=radio.model
     )
@@ -166,4 +169,36 @@ async def test_epoch_change_before_completion_drops_deferred_recovery() -> None:
     await _complete_hold(radio)
 
     assert fresh.start_rx_count == 0  # dropped: the link was replaced
+    await sub.release()
+
+
+async def test_epoch_move_during_arming_drops_deferred_recovery() -> None:
+    """(4) A CI-V epoch move while the completion awaits ``_arm_managed_tx``
+    — after the completion's last live-epoch check — drops the deferred
+    recovery: the stash belongs to the replaced link even when the identity
+    answers on the new epoch and nothing refuses the recovery."""
+    recovery_cb = MagicMock()
+    radio = _make_radio(on_audio_recovery=recovery_cb)
+    _install_stream(radio)
+    sub = await radio.audio_session.subscribe_rx("web")
+
+    async def connect_into_hold() -> None:
+        _hold_link(radio)
+
+    await _run_hard_reconnect(radio, connect_into_hold)
+    fresh = _install_stream(radio)
+
+    async def arm_moves_epoch() -> None:
+        # The link is replaced while the completion awaits arming: the
+        # epoch moves and the identity answers on the new one, so a
+        # recovery that still runs would meet no hold refusal.
+        radio._civ_runtime.advance_generation("superseded-during-arming")
+        radio._lan_identity_answer_epoch = radio._civ_epoch
+
+    await _complete_hold(radio, arm=AsyncMock(side_effect=arm_moves_epoch))
+
+    states = [c.args[0] for c in recovery_cb.call_args_list]
+    assert states == []  # dropped: the stash belongs to the replaced link
+    assert fresh.start_rx_count == 0
+    assert getattr(radio, "_hard_reconnect_deferred_audio", None) is None
     await sub.release()
