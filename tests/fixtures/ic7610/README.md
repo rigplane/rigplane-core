@@ -89,11 +89,16 @@ keyed by a stable id:
 - serial-fake divergences: `usb:` + the request frame hex, plus
   `usb_echo_default` (the fake echoes by default; the radio does not on
   USB). The fake takes its CI-V address and `19 00` model id from the
-  resolved profile (`rigplane_testkit/serial/civ_serial.py: CivSerialFake`)
-  but answers only a handful of commands (frequency 03/05, mode 04/06,
-  PTT 1C 00, S-meter 15 02, identity 19 00) and NAKs any other frame
-  addressed to it (a controller's own ACK/NAK, unknown broadcasts and
-  frames addressed elsewhere get no answer);
+  resolved profile (`rigplane_testkit/serial/civ_serial.py: CivSerialFake`).
+  Without a recorded table it answers only a handful of commands (frequency
+  03/05, mode 04/06, PTT 1C 00, S-meter 15 02, identity 19 00) and NAKs any
+  other frame addressed to it (a controller's own ACK/NAK, unknown
+  broadcasts and frames addressed elsewhere get no answer). With the
+  recorded USB table mounted
+  (`tests/testkit/ic7610_fakes.py: ic7610_usb_fake`), a Command29-wrapped
+  request addressed to it is answered from the table or NAKed, never by
+  those commands, and so is an unwrapped one those commands do not handle
+  (a controller's own ACK/NAK still gets no answer);
 - `lan_civ_echo` (the radio echoes every LAN request; the simulator must
   echo every replayed request too and currently echoes none);
 - `handshake_<n>` — positional handshake divergences, `n` counting from 1

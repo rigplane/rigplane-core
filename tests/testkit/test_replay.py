@@ -293,6 +293,34 @@ class TestRecordedAnswerTable:
             _WRITE_THEN_READ_REPLY
         )
 
+    def test_a_write_is_stored_in_the_longest_register_key_that_prefixes_it(
+        self,
+    ) -> None:
+        """Two nested register keys: body 14 0a (the outer) and 14 0a 01 (the
+        inner).  A write extending the inner key must land in the inner
+        register; choosing the shortest prefix stores it in the outer one."""
+        inner_read = "fefe98e0140a01fd"
+        inner_read_reply = "fefee098140a010020fd"
+        outer_write = "fefe98e0140a0055fd"  # extends 14 0a only
+        inner_write = "fefe98e0140a010077fd"  # extends 14 0a and 14 0a 01
+        table = RecordedAnswerTable.from_civ_pairs(
+            _pair_rows(
+                [
+                    (_READ, _READ_REPLY),
+                    (inner_read, inner_read_reply),
+                    (outer_write, _ACK),
+                    (inner_write, _ACK),
+                ]
+            ),
+            "usb",
+        )
+        new_inner_write = "fefe98e0140a010088fd"  # same inner key, a new value
+        assert table.answer(bytes.fromhex(new_inner_write)) == bytes.fromhex(_ACK)
+        assert table.answer(bytes.fromhex(inner_read)) == bytes.fromhex(
+            "fefee098140a010088fd"
+        )
+        assert table.answer(bytes.fromhex(_READ)) == bytes.fromhex(_READ_REPLY)
+
     def test_unknown_request_returns_none(self) -> None:
         table = RecordedAnswerTable.from_civ_pairs(
             _pair_rows([(_READ, _READ_REPLY)]), "usb"

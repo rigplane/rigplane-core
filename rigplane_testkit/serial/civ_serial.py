@@ -33,13 +33,15 @@ code observes that echo on a real IC-7300 (``backends/discovery.py`` —
 payload bytes after the 19 00 echo"). Pass ``echo=False`` to turn it off.
 
 A :class:`~rigplane_testkit.icom.replay.RecordedAnswerTable` mounts through
-the ``recorded_answers`` keyword. With a table mounted, the native handlers
-keep precedence for UNWRAPPED requests (frequency, mode, PTT, S-meter and
-identity keep their state), a Command29-wrapped request is answered only
-from the table or NAKed — never unwrapped into a native handler — and any
-other request the native handlers do not know falls to the table, then to a
-NAK. The echo default then comes from the table's ``echo`` fact unless
-``echo=`` is passed explicitly; without a table the default stays on.
+the ``recorded_answers`` keyword. With a table mounted, a request addressed
+to the fake is handled in this order: a Command29-wrapped request is
+answered only from the table or NAKed — never unwrapped into a native
+handler; an UNWRAPPED request keeps its native handler if it has one
+(frequency, mode, PTT, S-meter and identity keep their state); a
+controller's own ACK/NAK gets no reply; any other request falls to the
+table, then to a NAK. The echo default then comes from the table's ``echo``
+fact unless ``echo=`` is passed explicitly; without a table the default
+stays on.
 
 Faults are scriptable and deterministic: ``delay_identity_answer``,
 ``answer_identity_after_reconnect_only``, ``wrong_model_id``, ``silence``

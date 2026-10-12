@@ -5,6 +5,8 @@ Pure, socket-free.  :class:`Recording` loads the JSONL written by
 :class:`ReplayResponder` keys recorded CI-V request → reply pairs and answers
 lookups, and reports the frames the radio sent without a matching request as
 the unsolicited timeline.  MOR-3217 mounts this in the simulator.
+:class:`RecordedAnswerTable` answers CI-V requests from the civ_pairs rows of
+one transport.
 """
 
 from __future__ import annotations
