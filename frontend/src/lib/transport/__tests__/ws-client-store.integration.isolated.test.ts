@@ -385,7 +385,7 @@ describe('ws-client → real radio store gate (integration)', () => {
       instances[0],
       fullEnvelope(makeState({
         revision: 6, stateRevision: 6, transportSeq: 9,
-        main: { freqHz: 7_100_000 },
+        main: makeReceiver({ freqHz: 7_100_000 }),
       })),
     );
 
