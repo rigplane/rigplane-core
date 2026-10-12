@@ -32,6 +32,7 @@ import pytest
 from rigplane.core.exceptions import (
     AuthenticationError,
     ConnectionError,
+    DiscoveryTimeout,
     TimeoutError,
 )
 from rigplane.runtime.session_lifecycle import (
@@ -94,17 +95,17 @@ class FakeMechanism:
         self.queue_outcome(AttemptResult(AttemptOutcome.CONNECTED, raises=exc))
 
     def queue_discovery_timeout(self) -> None:
-        """Pre-login discovery timeout, as production raises it today.
+        """Pre-login discovery timeout, as production raises it.
 
         An unanswered control-channel discovery surfaces as a
-        ``TimeoutError`` from the transport: auth never ran, so the
+        ``DiscoveryTimeout`` from the transport: auth never ran, so the
         attempt sent no login and claimed nothing.  The fake mirrors
         that by raising instead of returning an outcome.
         """
         self.queue_outcome(
             AttemptResult(
                 AttemptOutcome.CONNECTED,
-                raises=TimeoutError(
+                raises=DiscoveryTimeout(
                     "Radio did not respond to discovery after 10 attempts"
                 ),
             )

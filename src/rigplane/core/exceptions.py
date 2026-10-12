@@ -8,6 +8,7 @@ __all__ = [
     "BackgroundSendDropped",
     "CommandRejectedError",
     "TimeoutError",
+    "DiscoveryTimeout",
     "AudioError",
     "AudioCodecBackendError",
     "AudioFormatError",
@@ -48,6 +49,18 @@ class CommandRejectedError(CommandError):
 
 class TimeoutError(RigplaneError):
     """Raised when an operation times out."""
+
+
+class DiscoveryTimeout(TimeoutError):
+    """Control-channel discovery got no answer before any login.
+
+    Raised by ``IcomTransport._discover`` when the radio answers none of
+    the "Are You There" probes.  A subclass of :class:`TimeoutError`, so
+    every existing ``except TimeoutError`` handler and message assertion
+    behaves exactly as before; the start-up busy loop catches exactly
+    this subclass to tell a pre-login discovery timeout apart from later
+    timeouts without parsing the message.
+    """
 
 
 class AudioError(RigplaneError):

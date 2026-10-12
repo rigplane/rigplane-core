@@ -17,7 +17,7 @@ from rigplane.transport import (
     PRESSURE_THRESHOLD,
 )
 from rigplane.core.transport import _UdpProtocol
-from rigplane.core.exceptions import CommandError
+from rigplane.core.exceptions import CommandError, DiscoveryTimeout, TimeoutError
 from rigplane.types import HEADER_SIZE, PacketType
 
 
@@ -1155,3 +1155,27 @@ class TestUdpErrorThrottling:
         assert "(#100, suppressed 96)" in records[3].message
         # The n=200 line accounts for 101..199 not logged: 99 suppressed.
         assert "(#200, suppressed 99)" in records[4].message
+
+
+async def test_unanswered_discovery_raises_discovery_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 round 2: unanswered discovery raises DiscoveryTimeout.
+
+    The marker is a TimeoutError subclass with today's message, so every
+    existing handler behaves as before; the start-up busy loop catches
+    exactly this type to count the attempt as a busy pass without parsing
+    the message.
+    """
+    import rigplane.core.transport as _core_transport
+
+    monkeypatch.setattr(_core_transport, "DISCOVERY_RETRIES", 2)
+    monkeypatch.setattr(_core_transport, "DISCOVERY_TIMEOUT", 0.05)
+
+    with pytest.raises(DiscoveryTimeout) as excinfo:
+        await IcomTransport()._discover()
+
+    assert isinstance(excinfo.value, TimeoutError)
+    assert (
+        str(excinfo.value) == "Radio did not respond to discovery after 2 attempts"
+    )

@@ -53,11 +53,12 @@ from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from rigplane.core.exceptions import (
     AuthenticationError,
     ConnectionError as RigplaneConnectionError,
+    DiscoveryTimeout,
 )
 
 __all__ = [
@@ -878,7 +879,33 @@ class CoreRadioSessionLifecycle:
             attempt_started_at = time.monotonic()
             self._connecting_started = attempt_started_at
             self._emit(LifecycleState.CONNECTING)
-            outcome = await self._attempt_with_release()
+            try:
+                outcome = await self._attempt_with_release()
+            except DiscoveryTimeout:
+                # MOR-3391 round 2: after at least one busy reject on the
+                # first connect, an unanswered discovery is one more busy
+                # pass — the radio is holding a session and not answering
+                # us — with the same cadence and live-holder stop as a busy
+                # reject.  A discovery attempt sent no login, so it schedules
+                # no same-computer drop.  Before any busy reject (or on a
+                # reconnect, or with the policy off) it stays fatal with
+                # today's message, exactly as before.
+                budget_s = self._first_connect_busy_budget_s
+                if (
+                    first_busy_started_at is None
+                    or self._connected_once
+                    or budget_s is None
+                ):
+                    raise
+                busy_attempts, busy_deadline = await self._first_connect_busy_pass(
+                    attempt_started_at=attempt_started_at,
+                    first_busy_started_at=first_busy_started_at,
+                    busy_attempts=busy_attempts,
+                    busy_deadline=busy_deadline,
+                    budget_s=budget_s,
+                    kind="discovery timeout",
+                )
+                continue
 
             if outcome is AttemptOutcome.CONNECTED:
                 self._connecting_started = None
@@ -916,72 +943,14 @@ class CoreRadioSessionLifecycle:
                 # the other transient outcomes.
                 if first_busy_started_at is None:
                     first_busy_started_at = attempt_started_at
-                live_holder_after_s = self._first_connect_busy_live_holder_after_s
-                if (
-                    live_holder_after_s is not None
-                    and attempt_started_at
-                    >= first_busy_started_at + live_holder_after_s
-                ):
-                    # Live-holder stop (MOR-3391 part 1b): a busy reject on
-                    # an attempt that started at or after first-busy plus
-                    # the threshold proves a LIVE session holds the radio —
-                    # a dead hold would have expired by then.  Stop: another
-                    # same-computer login would make the radio drop that
-                    # live session.  The reject was already released inside
-                    # ``_attempt_with_release``.
-                    from rigplane.runtime._control_phase import (
-                        _session_reject_hint,
-                    )
-
-                    self._connecting_started = None
-                    self._emit(LifecycleState.DISCONNECTED)
-                    raise RigplaneConnectionError(
-                        "radio busy: another client holds the session. "
-                        f"{_session_reject_hint(0xFFFFFFFF)}"
-                    )
-                busy_attempts += 1
-                now = time.monotonic()
-                if busy_deadline is None:
-                    busy_deadline = now + self._first_connect_busy_budget_s
-                if now >= busy_deadline:
-                    # Deferred import: ``_control_phase`` imports this module
-                    # at its own call sites, and the public contract module
-                    # stays importable without the control-phase machinery.
-                    from rigplane.runtime._control_phase import (
-                        _session_reject_hint,
-                    )
-
-                    self._connecting_started = None
-                    self._emit(LifecycleState.DISCONNECTED)
-                    raise RigplaneConnectionError(
-                        "Radio session never became ready: still busy after "
-                        f"{busy_attempts} start-up re-logins against the "
-                        f"{self._first_connect_busy_budget_s:.0f}s start-up "
-                        f"busy budget. {_session_reject_hint(0xFFFFFFFF)}"
-                    )
-                cooldown = self._first_connect_busy_cooldown_s
-                if cooldown is None:
-                    cooldown = self._reject_cooldown_s
-                _logger.warning(
-                    "Radio session busy (startup attempt %d): retrying with "
-                    "a fresh login after %.0fs (startup busy budget %.0fs).",
-                    busy_attempts,
-                    cooldown,
-                    self._first_connect_busy_budget_s,
+                busy_attempts, busy_deadline = await self._first_connect_busy_pass(
+                    attempt_started_at=attempt_started_at,
+                    first_busy_started_at=first_busy_started_at,
+                    busy_attempts=busy_attempts,
+                    busy_deadline=busy_deadline,
+                    budget_s=self._first_connect_busy_budget_s,
+                    kind="busy reject",
                 )
-                self._connecting_started = None
-                self._cooldown_total_s = cooldown
-                self._cooldown_deadline = time.monotonic() + cooldown
-                self._emit(
-                    LifecycleState.COOLDOWN,
-                    reason=LifecycleErrorReason.SESSION_BUSY_REJECT,
-                    cooldown_remaining_s=cooldown,
-                )
-                try:
-                    await asyncio.sleep(cooldown)
-                finally:
-                    self._cooldown_deadline = None
-                    self._cooldown_total_s = None
                 continue
 
             # Transient: SESSION_NOT_READY (civ_port==0) or SESSION_BUSY_REJECT
@@ -1020,6 +989,109 @@ class CoreRadioSessionLifecycle:
                 self._cooldown_deadline = None
                 self._cooldown_total_s = None
             # loop → CONNECTING again, inside the same resident process.
+
+    async def _first_connect_busy_pass(
+        self,
+        *,
+        attempt_started_at: float,
+        first_busy_started_at: float,
+        busy_attempts: int,
+        busy_deadline: float | None,
+        budget_s: float,
+        kind: Literal["busy reject", "discovery timeout"],
+    ) -> tuple[int, float | None]:
+        """Count one start-up busy-loop pass and wait out its cooldown.
+
+        Shared by busy rejects and mid-loop discovery timeouts (MOR-3391
+        round 2): both mean the radio is granting no session right now, so
+        both ride the same cooldown cadence and the same live-holder stop,
+        and neither consumes ``max_connect_attempts``.  A discovery pass
+        sent no login, so it schedules no same-computer drop.  Returns the
+        updated ``(busy_attempts, busy_deadline)``.
+
+        Raises:
+            RigplaneConnectionError: the pass started at or after the
+                live-holder threshold (a live session holds the radio), or
+                the start-up busy budget elapsed — both with the honest
+                busy reason, never the discovery message.
+        """
+        live_holder_after_s = self._first_connect_busy_live_holder_after_s
+        if (
+            live_holder_after_s is not None
+            and attempt_started_at >= first_busy_started_at + live_holder_after_s
+        ):
+            # Live-holder stop (MOR-3391 part 1b): no grant on an attempt
+            # that started at or after first-busy plus the threshold proves
+            # a LIVE session holds the radio — a dead hold would have
+            # expired by then.  Stop: another same-computer login would make
+            # the radio drop that live session.  The reject was already
+            # released inside ``_attempt_with_release``; a discovery attempt
+            # never claimed anything.
+            from rigplane.runtime._control_phase import (
+                _session_reject_hint,
+            )
+
+            self._connecting_started = None
+            self._emit(LifecycleState.DISCONNECTED)
+            raise RigplaneConnectionError(
+                "radio busy: another client holds the session. "
+                f"{_session_reject_hint(0xFFFFFFFF)}"
+            )
+        busy_attempts += 1
+        now = time.monotonic()
+        if busy_deadline is None:
+            busy_deadline = now + budget_s
+        if now >= busy_deadline:
+            # Deferred import: ``_control_phase`` imports this module
+            # at its own call sites, and the public contract module
+            # stays importable without the control-phase machinery.
+            from rigplane.runtime._control_phase import (
+                _session_reject_hint,
+            )
+
+            self._connecting_started = None
+            self._emit(LifecycleState.DISCONNECTED)
+            raise RigplaneConnectionError(
+                "Radio session never became ready: still busy after "
+                f"{busy_attempts} start-up re-logins against the "
+                f"{budget_s:.0f}s start-up "
+                f"busy budget. {_session_reject_hint(0xFFFFFFFF)}"
+            )
+        cooldown = self._first_connect_busy_cooldown_s
+        if cooldown is None:
+            cooldown = self._reject_cooldown_s
+        if kind == "busy reject":
+            _logger.warning(
+                "Radio session busy (startup attempt %d): retrying with "
+                "a fresh login after %.0fs (startup busy budget %.0fs).",
+                busy_attempts,
+                cooldown,
+                budget_s,
+            )
+        else:
+            _logger.warning(
+                "Radio discovery unanswered (startup attempt %d): retrying "
+                "after %.0fs (startup busy budget %.0fs); "
+                "counted as a busy pass.",
+                busy_attempts,
+                cooldown,
+                budget_s,
+            )
+        self._connecting_started = None
+        self._cooldown_total_s = cooldown
+        self._cooldown_deadline = time.monotonic() + cooldown
+        self._emit(
+            LifecycleState.COOLDOWN,
+            # A discovery pass counts as a busy pass, hence the reason.
+            reason=LifecycleErrorReason.SESSION_BUSY_REJECT,
+            cooldown_remaining_s=cooldown,
+        )
+        try:
+            await asyncio.sleep(cooldown)
+        finally:
+            self._cooldown_deadline = None
+            self._cooldown_total_s = None
+        return busy_attempts, busy_deadline
 
     async def _attempt_with_release(self) -> AttemptOutcome:
         """One connect attempt; on any non-CONNECTED outcome RELEASE first.
