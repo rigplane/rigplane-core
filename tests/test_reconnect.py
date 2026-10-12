@@ -11,10 +11,12 @@ from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.exceptions import AuthenticationError
 from rigplane.radio import IcomRadio
+from rigplane.runtime.session_lifecycle import LifecycleEvent, LifecycleState
 from rigplane.web.server import WebConfig, WebServer
 
 from test_audio_session_health import _FakeWriter, _response_json
 from test_radio import MockTransport
+from test_radio_connect import ConnectMockTransport, _ConnectOnceStubs, _build_conninfo
 
 
 @pytest.fixture
@@ -165,6 +167,171 @@ class TestReconnectLifecycleRelease:
             await asyncio.wait_for(radio._reconnect_task, timeout=5.0)
         assert lifecycle_disconnect.await_count == 1
         assert calls == ["lifecycle", "connect"]
+
+
+class TestReconnectOwnerStop:
+    """An owner stop (``CoreRadio.disconnect`` increments
+    ``_owner_stop_epoch``) inside the round's release, inside a connect that
+    returns or fails with a retryable error, or during the backoff ends the
+    loop with no status after the round's ``reconnecting``."""
+
+    @pytest.mark.asyncio
+    async def test_owner_stop_inside_release_skips_connect(
+        self, radio: IcomRadio
+    ) -> None:
+        radio._connected = False
+        radio._intentional_disconnect = False
+        statuses: list[dict[str, Any]] = []
+        radio._on_reconnect_status = statuses.append
+
+        async def owner_stop_during_release() -> None:
+            radio._owner_stop_epoch += 1
+
+        with (
+            patch.object(
+                radio._session_lifecycle,
+                "disconnect",
+                new=AsyncMock(side_effect=owner_stop_during_release),
+            ),
+            patch.object(radio, "connect", new=AsyncMock()) as connect,
+        ):
+            await asyncio.wait_for(radio._reconnect_loop(), timeout=2.0)
+        assert connect.await_count == 0
+        assert [s["state"] for s in statuses] == ["reconnecting"]
+
+    @pytest.mark.asyncio
+    async def test_owner_stop_inside_connect_finishes_the_stop(
+        self, radio: IcomRadio
+    ) -> None:
+        radio._connected = False
+        radio._intentional_disconnect = False
+        statuses: list[dict[str, Any]] = []
+        radio._on_reconnect_status = statuses.append
+
+        async def connect_with_owner_stop() -> None:
+            radio._owner_stop_epoch += 1
+
+        with (
+            patch.object(radio._session_lifecycle, "disconnect", new=AsyncMock()),
+            patch.object(
+                radio, "connect", new=AsyncMock(side_effect=connect_with_owner_stop)
+            ),
+            patch.object(radio, "disconnect", new=AsyncMock()) as disconnect,
+        ):
+            await asyncio.wait_for(radio._reconnect_loop(), timeout=2.0)
+        assert disconnect.await_count == 1
+        assert [s["state"] for s in statuses] == ["reconnecting"]
+
+    @pytest.mark.asyncio
+    async def test_owner_stop_then_failed_connect_stays_disconnected(
+        self, radio: IcomRadio
+    ) -> None:
+        radio._connected = False
+        radio._intentional_disconnect = False
+        statuses: list[dict[str, Any]] = []
+        radio._on_reconnect_status = statuses.append
+
+        async def connect_fails_after_owner_stop() -> None:
+            radio._owner_stop_epoch += 1
+            radio._conn_state = RadioConnectionState.DISCONNECTED
+            raise ConnectionError("radio gone")
+
+        with (
+            patch.object(radio._session_lifecycle, "disconnect", new=AsyncMock()),
+            patch.object(
+                radio,
+                "connect",
+                new=AsyncMock(side_effect=connect_fails_after_owner_stop),
+            ) as connect,
+        ):
+            await asyncio.wait_for(radio._reconnect_loop(), timeout=2.0)
+        assert connect.await_count == 1
+        assert radio._conn_state is RadioConnectionState.DISCONNECTED
+        assert [s["state"] for s in statuses] == ["reconnecting"]
+
+    @pytest.mark.asyncio
+    async def test_owner_stop_during_backoff_starts_no_round(
+        self, radio: IcomRadio
+    ) -> None:
+        radio._connected = False
+        radio._intentional_disconnect = False
+        statuses: list[dict[str, Any]] = []
+        radio._on_reconnect_status = statuses.append
+
+        async def owner_stop_during_backoff(delay: float) -> None:
+            radio._owner_stop_epoch += 1
+
+        with (
+            patch.object(
+                radio._session_lifecycle, "disconnect", new=AsyncMock()
+            ) as release,
+            patch.object(
+                radio, "connect", new=AsyncMock(side_effect=OSError("radio gone"))
+            ),
+            patch(
+                "asyncio.sleep",
+                new=AsyncMock(side_effect=owner_stop_during_backoff),
+            ),
+        ):
+            await asyncio.wait_for(radio._reconnect_loop(), timeout=2.0)
+        assert release.await_count == 1
+        assert [s["state"] for s in statuses] == ["reconnecting"]
+
+
+class TestReadinessAbortInsideRecovery:
+    @pytest.mark.asyncio
+    async def test_readiness_abort_in_full_connect_recovery_keeps_recovering(
+        self,
+    ) -> None:
+        """A startup-readiness abort in ``soft_reconnect``'s full-connect
+        branch fails that recovery attempt only: no owner stop, no
+        cancellation of the recovery task, and the next attempt connects."""
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        mt.queue_response(_build_conninfo())
+        mt.queue_response(_build_conninfo())
+        lifecycle = radio._session_lifecycle
+        lifecycle._recovery_backoff_s = (0.0,)
+        events: list[LifecycleEvent] = []
+        lifecycle.add_event_listener(events.append)
+        aborted_in: list[asyncio.Task[Any]] = []
+        readiness_calls = 0
+
+        async def readiness_fails_once(*args: object, **kwargs: object) -> None:
+            nonlocal readiness_calls
+            readiness_calls += 1
+            if not aborted_in:
+                task = asyncio.current_task()
+                assert task is not None
+                aborted_in.append(task)
+                raise RuntimeError("injected startup-readiness failure")
+
+        try:
+            with (
+                _ConnectOnceStubs(radio),
+                patch.object(
+                    radio, "_gate_lan_identity", new=AsyncMock(return_value=True)
+                ),
+                patch(
+                    "rigplane.runtime._control_phase.wait_for_radio_startup_ready",
+                    new=readiness_fails_once,
+                ),
+                patch.object(radio, "rearm_managed_tx", new=AsyncMock()),
+                patch.object(radio, "_ensure_audio_transport", new=AsyncMock()),
+            ):
+                await asyncio.wait_for(radio.soft_reconnect(), timeout=5.0)
+            assert readiness_calls == 2
+            assert aborted_in[0].cancelling() == 0
+            assert [e.to_state for e in events] == [
+                LifecycleState.RECOVERING,
+                LifecycleState.RECOVERING,
+                LifecycleState.CONNECTED,
+            ]
+            assert radio._conn_state is RadioConnectionState.CONNECTED
+            assert radio._owner_stop_epoch == 0
+        finally:
+            radio._conn_state = RadioConnectionState.DISCONNECTED
 
 
 class TestAutoReconnectConfig:
