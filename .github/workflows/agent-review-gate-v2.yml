@@ -15,7 +15,11 @@ concurrency:
   # calls (pulls.get + repos.getBranch + repos.getCommit + repos.getContent +
   # one issues.listComments page per 100 comments + the post-check pulls.get
   # and repos.getBranch + repos.createCommitStatus).
-  # A run that stops because the base is not the current main head makes 2.
+  # A run that stops because the base is not the current main head makes 3
+  # (pulls.get + repos.getBranch + the pending repos.createCommitStatus).
+  # A run that stops because the head or main moved during the run makes 8
+  # (the same 7 reads as a full evaluation plus the pending
+  # repos.createCommitStatus).
   group: agent-review-gate-v2-${{ github.event.issue.pull_request && github.event.issue.number || github.event.pull_request.number }}-${{ (github.event_name == 'pull_request_target' && (github.event.action != 'edited' || github.event.changes.base) || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:')))) && 'eval' || github.run_id }}
   cancel-in-progress: true
 
@@ -68,8 +72,15 @@ jobs:
               });
               if (baseBranch.commit.sha !== baseSha) {
                 // The observer evaluates exact-current-base trust only: a PR
-                // behind main is outside its domain, not a failure. Publish
-                // no status and end the job successfully.
+                // behind main is outside its domain, not a failure. Publish a
+                // pending observation so an earlier success for this head
+                // cannot stay green while the PR sits on a stale base.
+                await github.rest.repos.createCommitStatus({
+                  owner, repo, sha: headSha, state: 'pending',
+                  context: 'Agent Review Gate v2 observe',
+                  description: 'Not observed: PR base is not the current main head.',
+                  target_url: targetUrl,
+                });
                 core.notice('Agent Review Gate v2 observation skipped: pull request base is not the current main head.');
                 return;
               }
@@ -120,8 +131,15 @@ jobs:
                 currentBase.commit.sha !== baseSha
               ) {
                 // main or the PR head moved during the run, so the evaluated
-                // snapshot no longer binds the exact current base: publish no
-                // status and end the job successfully, as above.
+                // snapshot no longer binds the exact current base: publish a
+                // pending observation so an earlier success for this head
+                // cannot stay green, and end the job successfully, as above.
+                await github.rest.repos.createCommitStatus({
+                  owner, repo, sha: headSha, state: 'pending',
+                  context: 'Agent Review Gate v2 observe',
+                  description: 'Not observed: PR head or main moved during the observation.',
+                  target_url: targetUrl,
+                });
                 core.notice('Agent Review Gate v2 observation skipped: PR head or current main changed during review observation.');
                 return;
               }
