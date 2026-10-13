@@ -110,8 +110,11 @@ def scope_wave_templates(
     ``rigplane.commands.parse_civ_frame`` and completeness through
     ``rigplane.scope.ScopeAssembler.feed`` — the same calls the
     conformance suite uses for recorded 27 00 frames — with a fresh
-    assembler per frame, so each returned frame is complete on its own;
-    multi-packet sequence assembly belongs to a later streaming slice.
+    assembler per frame. Only raw-wire 27 00 frames qualify
+    (parser-unwrapped command29 forms are excluded); each must be a
+    standalone single-packet frame (sequence 01 of 01) carrying actual
+    wave payload. Multi-packet sequence assembly belongs to a later
+    streaming slice and is not accepted here.
     ``c2r`` rows are skipped before decoding; LAN controller echoes
     (controller-source ``r2c`` rows, excluded by the source-address
     check), frames from another source address, and non-wave replies are
@@ -132,12 +135,23 @@ def scope_wave_templates(
             ) from exc
         if parsed.from_addr != radio_addr:
             continue  # not radio-origin
-        if parsed.command != _SCOPE_CMD or parsed.sub != _SCOPE_WAVE_SUB:
+        if frame[4] != _SCOPE_CMD or parsed.command != _SCOPE_CMD:
+            continue  # wrapped (e.g. command29) or non-scope command
+        if parsed.sub != _SCOPE_WAVE_SUB:
             continue  # non-wave reply
         if not parsed.data:
             raise ValueError("scope_wave_templates: 27 00 frame without receiver byte")
+        # Standalone single-packet structure: sequence 01 of 01 (the only
+        # BCD encoding of 1). Orphan terminals and zero counts fail here
+        # instead of reaching the assembler's terminal continuation branch,
+        # which would emit from default metadata with no seq-01 behind it.
+        if parsed.data[1:3] != b"\x01\x01":
+            raise ValueError(
+                "scope_wave_templates: not a standalone single-packet wave frame"
+            )
         receiver = parsed.data[0]
-        if ScopeAssembler().feed(parsed.data[1:], receiver) is None:
+        assembled = ScopeAssembler().feed(parsed.data[1:], receiver)
+        if assembled is None or not assembled.pixels:
             raise ValueError("scope_wave_templates: incomplete 27 00 wave frame")
         templates.setdefault(receiver, []).append(frame)
     return templates

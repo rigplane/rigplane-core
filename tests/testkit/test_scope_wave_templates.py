@@ -115,3 +115,38 @@ def test_malformed_and_truncated_wave_rows_raise() -> None:
     for frame in bad:
         with pytest.raises(ValueError):
             scope_wave_templates([{"t": 0.0, "dir": "r2c", "frame": frame.hex()}])
+
+
+def test_orphan_terminal_wave_rejected() -> None:
+    """Sequence 02 of 02 with no seq-01 assembly behind it: rejected."""
+    row = {"t": 0.0, "dir": "r2c", "frame": "fefee0982700010202fd"}
+    with pytest.raises(ValueError):
+        scope_wave_templates([row])
+
+
+def test_zero_sequence_count_rejected() -> None:
+    """Zero sequence/count: rejected."""
+    row = {"t": 0.0, "dir": "r2c", "frame": "fefee0982700010000fd"}
+    with pytest.raises(ValueError):
+        scope_wave_templates([row])
+
+
+def test_header_only_wave_without_payload_rejected() -> None:
+    """Recorded header bytes with no pixel payload: rejected."""
+    rows = _scope_rows()
+    wave = _recorded_wave_frames(rows)[0x01][0]
+    data = parse_civ_frame(wave).data[:15]  # receiver + 14 header bytes
+    frame = wave[:6] + bytes(data) + b"\xfd"
+    with pytest.raises(ValueError):
+        scope_wave_templates([{"t": 0.0, "dir": "r2c", "frame": frame.hex()}])
+
+
+def test_wrapped_command29_wave_excluded() -> None:
+    """Recorded wave bytes under a command29 wrapper: excluded, not an error."""
+    rows = _scope_rows()
+    wave = _recorded_wave_frames(rows)[0x01][0]
+    body = wave[4:-1]  # 27 00 plus the recorded wave data
+    wrapped = wave[:2] + bytes([wave[2], wave[3], 0x29, 0x01]) + body + b"\xfd"
+    assert (
+        scope_wave_templates([{"t": 0.0, "dir": "r2c", "frame": wrapped.hex()}]) == {}
+    )
