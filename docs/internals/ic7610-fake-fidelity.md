@@ -60,7 +60,7 @@ MockIcomRadio.__init__`. Each defaults off (or `None`), so a plain
   `tests/testkit/test_simulator_faults.py::test_no_plan_behaves_as_before`
   (off) and the fault tests below (on).
 - `drop_rate=0.0` — probability of dropping each unsolicited frame (only
-  with unsolicited_civ) (a simulator knob). Pinned by
+  with `unsolicited_civ`) (a simulator knob). Pinned by
   `tests/test_mock_icom_session.py::test_drop_rate_suppresses_unsolicited_frames`.
 - `civ_inherited_fills_per_round=0` / `civ_inherited_drop_unanswered_rounds=0`
   — pace an inherited orphan's fills, from one capture (MOR-3418 w50 b).
@@ -109,7 +109,7 @@ bench evidence; the pinning test fails if the behaviour stops being true.
 
 | Behaviour | Source | Pinning test |
 |---|---|---|
-| LAN handshake: discovery/login/token exchange matches the recording through step 7; the entries in the ledger diverge (see the ledger) | `control_windows.jsonl` `handshake` | `tests/testkit/test_ic7610_conformance.py::test_handshake_structure_matches_ledger` |
+| LAN handshake: discovery/login/token exchange matches the recording; the entries in the ledger diverge (see the ledger) | `control_windows.jsonl` `handshake` | `tests/testkit/test_ic7610_conformance.py::test_handshake_structure_matches_ledger` |
 | Token renew answered with the recorded 0x40/0x05 layout; live token `00000000`, retired token `ffffffff`, exactly once | `idle_cadence.json` + MOR-3349 | `tests/testkit/test_simulator_renew_standby.py::test_live_renewal_reply_layout`, `::test_retired_token_renewal_rejected_exactly_once` |
 | CI-V echo on LAN (byte-identical before every reply), none on USB | `civ_pairs.jsonl` (echo rows) | `tests/testkit/test_ic7610_conformance.py::test_lan_civ_echo_divergence`, `::test_usb_replay_divergences_match_ledger` |
 | Recorded reply classes (NAK / data / ACK) per recorded request, on LAN and USB | `civ_pairs.jsonl` | `tests/testkit/test_ic7610_conformance.py::test_lan_answer_classes_match_ledger`, `::test_usb_replay_divergences_match_ledger` |
@@ -147,9 +147,8 @@ replayed request's reply and ratchets against `conformance_ledger.json`.
 - The RX audio payload is synthetic: a byte ramp (`simulator_audio.py:
   _PCM_RAMP`; no on-air samples are committed), pinned by
   `tests/testkit/test_simulator_audio.py::test_rx_stream_matches_recorded_layout_and_cadence`.
-- Writes to the selected/unselected frequency/mode commands
-  (`05`/`06`) land on the currently selected receiver —
-  native, not in the recorded `vfo_select` window. Pinned by
+- `05`/`06` writes while SUB is selected land on SUB — native, not in the
+  recorded `vfo_select` window. Pinned by
   `tests/testkit/test_simulator_receiver_select.py::test_frequency_write_while_sub_selected_lands_on_sub`,
   `::test_mode_write_while_sub_selected_lands_on_sub`,
   `::test_data_mode_flag_follows_receiver_select`.
@@ -169,7 +168,7 @@ real radio's hold.
 
 The remaining timing constants are not speed-ups, but they are simulator
 constants that approximate a recorded timing (named in each one's comment),
-recorded values: the ~0.1 s drop-notice delay
+the ~0.1 s drop-notice delay
 (`_DROP_NOTICE_DELAY_S`), the CI-V gap round period and round spacing
 (`_CIV_GAP_RETRANSMIT_PERIOD_S`, `_CIV_GAP_ROUND_MIN_SPACING_S` — 75 ms,
 slightly under the recorded 77 ms minimum), the power-off grace
@@ -182,7 +181,7 @@ MOR-3418).
 
 - **Scope wave and per-receiver scope cadence.** There is no native scope
   handler: `0x27` NAKs natively (`simulator.py: MockIcomRadio._dispatch_civ_native`,
-  scope TODO), and the simulator sends no scope wave (plain MockIcomRadio()) — the recording holds 5
+  scope TODO), and the simulator sends no scope wave (plain `MockIcomRadio()`) — the recording holds 5
   complete `27 00` wave frames after wave-on, the simulator none (`scope_wave`
   ledger entry, ratcheted by
   `tests/testkit/test_ic7610_conformance.py::test_scope_wave_decodes_and_cadence_matches_ledger`).
@@ -202,8 +201,7 @@ MOR-3418).
   the native `14 0A` RF-power SET and static SWR/ALC readbacks — are
   simulator choices.
 - **The ledger.** The known divergences are the entries in the ledger in
-  `tests/fixtures/ic7610/conformance_ledger.json` (`handshake_8` through
-  `handshake_12`, plus `scope_wave`); see the file and the ratcheting test
+  `tests/fixtures/ic7610/conformance_ledger.json`; see the file and the ratcheting test
   `tests/testkit/test_ic7610_conformance.py`. The fix belongs to the
   simulator under MOR-3310.
 
