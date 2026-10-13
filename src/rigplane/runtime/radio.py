@@ -1629,13 +1629,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         ``_audio_ensure_lock`` inside ``_ensure_audio_transport``), with the
         ``_LAN_AUDIO_SILENCE_REPAIR_BACKOFF_S`` sleeps between rounds. Every
         precondition is re-checked after each await. Every round consumes
-        one attempt — a round that re-establishes demand ends this task but
-        does NOT reset the budget: only real RX frames (or a new CI-V
-        epoch) close the episode, so a leg that re-arms yet stays frameless
+        one attempt. Re-establishing demand does NOT reset the budget:
+        only real RX frames (or a new CI-V epoch) close the episode, so a
+        leg that re-arms yet stays frameless
         consumes the shared budget and reports FAILED once through
         ``_on_audio_recovery`` instead of looping with a fresh budget per
-        task. Before every round (after the backoff sleep) the task stops
-        quietly when frames have resumed and are still flowing: the
+        task. A successful final round observes frames for at most
+        ``RX_LIVENESS_TIMEOUT_S`` before reporting FAILED. Before every
+        round (after the backoff sleep) the task stops quietly when frames
+        have resumed and are still flowing: the
         silence is over, nothing to tear down. Never raises — cancellation
         from owner ``disconnect()`` propagates so the stop takes effect.
         """
@@ -1675,8 +1677,30 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                     self._audio_silence_repair_attempts += 1
                     continue
                 self._audio_silence_repair_attempts += 1
+                if self._silence_repair_budget_spent():
+                    from rigplane.audio.session import RX_LIVENESS_TIMEOUT_S
+
+                    deadline = time.monotonic() + RX_LIVENESS_TIMEOUT_S
+                    while self._silence_repair_preconditions_ok(
+                        civ_epoch, owner_stop_epoch
+                    ):
+                        if self._silence_repair_silence_over():
+                            return
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        await asyncio.sleep(min(0.05, remaining))
+                    else:
+                        return
                 break
             if self._silence_repair_budget_spent():
+                if (
+                    not self._silence_repair_preconditions_ok(
+                        civ_epoch, owner_stop_epoch
+                    )
+                    or self._silence_repair_silence_over()
+                ):
+                    return
                 report = self._on_audio_recovery
                 if report is not None:
                     try:

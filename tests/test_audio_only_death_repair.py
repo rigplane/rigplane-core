@@ -26,6 +26,8 @@ import asyncio
 import time
 from collections.abc import Callable
 
+import pytest
+
 from rigplane.audio import AudioPacket
 from rigplane.audio.session import AudioSessionEvent
 from rigplane.core.exceptions import ConnectionError as CoreConnectionError
@@ -493,6 +495,84 @@ async def test_successful_round_consumes_budget_and_frames_reopen_episode() -> N
         await stack.aclose()
 
 
+@pytest.mark.parametrize("frames_before_return", [False, True])
+async def test_third_successful_round_waits_for_real_frames(
+    frames_before_return: bool,
+) -> None:
+    """Real frames on the third round prevent FAILED across the return edge."""
+    stack = await soak_driver._start_simulator_stack()
+    try:
+        radio = stack.radio
+        recovery: list[AudioRecoveryState] = []
+        radio._on_audio_recovery = recovery.append
+        session = radio.audio_session
+        sub = await session.subscribe_rx("web-audio")
+        assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
+
+        teardown_calls, restore_teardown = _spy_method(
+            radio, "_teardown_audio_transport"
+        )
+        orig_ensure = radio._ensure_audio_transport
+        orig_reestablish = session.reestablish
+        bus = radio.audio_bus
+        orig_callback = bus._on_opus_packet
+        allow_frames = asyncio.Event()
+        delivered_at: list[float] = []
+        returned_at: list[float] = []
+        ensure_calls: list[int] = []
+        release_frames: asyncio.TimerHandle | None = None
+
+        def _gate_real_frames(packet: AudioPacket | None) -> None:
+            if allow_frames.is_set() and packet is not None:
+                delivered_at.append(time.monotonic())
+                orig_callback(packet)
+
+        async def _fail_first_two_ensures() -> None:
+            ensure_calls.append(1)
+            if len(ensure_calls) <= 2:
+                raise CoreConnectionError("first two rounds fail")
+            await orig_ensure()
+
+        async def _reestablish_with_frame_gate() -> None:
+            nonlocal release_frames
+            await orig_reestablish()
+            if frames_before_return:
+                allow_frames.set()
+                assert await _wait_until(lambda: bool(delivered_at), timeout_s=2.0)
+            else:
+                release_frames = asyncio.get_running_loop().call_later(
+                    0.3, allow_frames.set
+                )
+            returned_at.append(time.monotonic())
+
+        radio._ensure_audio_transport = _fail_first_two_ensures  # type: ignore[method-assign]
+        session.reestablish = _reestablish_with_frame_gate  # type: ignore[method-assign]
+        bus._on_opus_packet = _gate_real_frames  # type: ignore[method-assign]
+        try:
+            _kill_client_audio_only(radio)
+            _drain(sub)
+            assert await _wait_until(lambda: bool(returned_at), timeout_s=12.0)
+            assert await _next_frame_or_none(sub, 2.0) is not None
+            assert await _wait_until(
+                lambda: radio._audio_silence_repair_task is None, timeout_s=5.0
+            ), "third-round frame observation did not finish"
+            assert len(teardown_calls) == 3
+            assert radio._audio_silence_repair_attempts == 3
+            assert recovery == [], "healthy third round falsely reported FAILED"
+            assert (delivered_at[0] < returned_at[0]) is frames_before_return
+            assert delivered_at[0] > radio._audio_silence_repair_teardown_completed
+        finally:
+            if release_frames is not None:
+                release_frames.cancel()
+            radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
+            session.reestablish = orig_reestablish  # type: ignore[method-assign]
+            bus._on_opus_packet = orig_callback  # type: ignore[method-assign]
+            restore_teardown()
+        await sub.release()
+    finally:
+        await stack.aclose()
+
+
 async def test_genuine_rx_resumed_reopens_episode() -> None:
     """After FAILED, audio healed by another path WITHOUT reestablish lets
     the session watchdog emit a genuine ``rx_resumed`` (not a test emit):
@@ -523,8 +603,9 @@ async def test_genuine_rx_resumed_reopens_episode() -> None:
             # Spend the whole budget: 3 failed attempts, FAILED once.
             _kill_client_audio_only(radio)
             assert await _wait_until(
-                lambda: radio._audio_silence_repair_task is None
-                and len(ensure_calls) == 3,
+                lambda: (
+                    radio._audio_silence_repair_task is None and len(ensure_calls) == 3
+                ),
                 timeout_s=15.0,
             ), f"expected 3 attempts and a finished task, got {len(ensure_calls)}"
             assert recovery == [AudioRecoveryState.FAILED]
@@ -539,8 +620,9 @@ async def test_genuine_rx_resumed_reopens_episode() -> None:
             await radio._ensure_audio_transport()
             await radio.audio_bus.restart_rx()
             assert await _wait_until(
-                lambda: sum(1 for e in events if e.reason == "rx_resumed")
-                > resumed_before,
+                lambda: (
+                    sum(1 for e in events if e.reason == "rx_resumed") > resumed_before
+                ),
                 timeout_s=8.0,
             ), "the session watchdog never emitted a genuine rx_resumed"
             assert radio._audio_silence_repair_attempts == 0
@@ -669,8 +751,9 @@ async def test_spent_budget_reopens_after_audio_fixed_by_another_path() -> None:
             # Spend the whole budget: 3 failed attempts, FAILED once.
             _kill_client_audio_only(radio)
             assert await _wait_until(
-                lambda: radio._audio_silence_repair_task is None
-                and len(ensure_calls) == 3,
+                lambda: (
+                    radio._audio_silence_repair_task is None and len(ensure_calls) == 3
+                ),
                 timeout_s=15.0,
             ), f"expected 3 attempts and a finished task, got {len(ensure_calls)}"
             assert recovery == [AudioRecoveryState.FAILED]
