@@ -322,6 +322,11 @@ class _IcomSerialRadioBase(CoreRadio):
         # tail. Cleared everywhere a new attempt, a teardown or an
         # abandonment retires the hold it was recorded for.
         self._serial_identity_hold_reconnect_origin = False
+        # MOR-3436: (audio snapshot, CI-V epoch, owner-stop epoch) — audio
+        # recovery deferred while the identity hold owned the open link (a
+        # connect or soft_reconnect that returned into the hold); the
+        # hold's completion (``_serial_identity_reread_loop``) consumes it.
+        self._serial_deferred_audio: tuple[object, int, int] | None = None
 
     # ------------------------------------------------------------------
     # Backend identity
@@ -448,12 +453,18 @@ class _IcomSerialRadioBase(CoreRadio):
         self._cancel_serial_identity_reread()
         self._serial_identity_answer_epoch = None
         self._serial_identity_hold_reconnect_origin = False
+        self._serial_deferred_audio = None
         self._conn_state = RadioConnectionState.CONNECTING
         self._civ_stream_ready = False
         self._civ_recovering = False
         self._last_status_error = 0
         self._last_status_disconnected = False
         attempt_epoch = self._civ_epoch
+        # MOR-3436: per-attempt owner-stop epoch, captured before any
+        # await — the audio tail below skips recovery when the owner tore
+        # the radio down mid-connect (``disconnect`` moves it on every
+        # teardown branch).
+        owner_stop_epoch = self._owner_stop_epoch
         try:
             await self._serial_session.connect()
         except Exception as exc:
@@ -525,6 +536,17 @@ class _IcomSerialRadioBase(CoreRadio):
             if self._civ_epoch == attempt_epoch:
                 self._serial_identity_gate_running = False
         if not identity_answered:
+            # MOR-3436: connect() returns into the identity hold — the
+            # tail stashes the recovery for the hold's completion. The
+            # resident reconnect loop (``radio_reconnect.reconnect_loop``)
+            # runs its own recovery after this connect returns, so it is
+            # excluded by the same ``_reconnect_task`` identity test
+            # ``CoreRadio.connect`` uses — the guard mirrors it
+            # defensively.
+            if asyncio.current_task() is not getattr(self, "_reconnect_task", None):
+                await self._recover_serial_audio_after_connect(
+                    owner_stop_epoch, attempt_epoch
+                )
             return
         self._latch_serial_connected()
         if (
@@ -533,17 +555,30 @@ class _IcomSerialRadioBase(CoreRadio):
             and self._civ_transport is not None
         ):
             await self._arm_managed_tx()
+        # MOR-3436: an owner connect re-establishes session audio demand
+        # that survived its teardown, unless the resident reconnect loop
+        # — which recovers from its own snapshot — is the caller.
+        if asyncio.current_task() is not getattr(self, "_reconnect_task", None):
+            await self._recover_serial_audio_after_connect(
+                owner_stop_epoch, attempt_epoch
+            )
 
     async def soft_disconnect(self) -> None:
         await self.disconnect()
 
     async def disconnect(self) -> None:
         self.serial_open_error = None
+        # MOR-3436: move the owner-stop counter on EVERY teardown branch.
+        # The two early returns below never reach ``CoreRadio.disconnect``
+        # (which increments it itself), and the connect/soft_reconnect
+        # audio tails read it to skip recovery against a torn-down radio.
+        self._owner_stop_epoch += 1
         # Always stop watchdog first to avoid orphan retry loops on failed reconnects.
         self._cancel_serial_identity_reread()
         self._connection_identity = None
         self._serial_identity_answer_epoch = None
         self._serial_identity_hold_reconnect_origin = False
+        self._serial_deferred_audio = None
         await self._stop_civ_data_watchdog()
         await self._stop_serial_audio_driver()
         if (
@@ -595,6 +630,9 @@ class _IcomSerialRadioBase(CoreRadio):
             # before.
             return
 
+        # MOR-3436: per-attempt owner-stop epoch, captured before the
+        # first await, for the audio tail at this reconnect's completion.
+        owner_stop_epoch = self._owner_stop_epoch
         if self._managed_tx_composition is not None:
             await self._park_managed_tx()
         self._conn_state = RadioConnectionState.RECONNECTING
@@ -606,6 +644,7 @@ class _IcomSerialRadioBase(CoreRadio):
         self._cancel_serial_identity_reread()
         self._serial_identity_answer_epoch = None
         self._serial_identity_hold_reconnect_origin = True
+        self._serial_deferred_audio = None
         self._advance_civ_generation("serial-soft-reconnect")
         # MOR-3064: the generation this attempt committed to. A gate or
         # open that comes back retired (a ``disconnect`` or teardown ran
@@ -685,6 +724,11 @@ class _IcomSerialRadioBase(CoreRadio):
                 # (``disconnect``'s DISCONNECTED, a successor's latched
                 # CONNECTED), which left a hold nobody drives.
                 self._conn_state = RadioConnectionState.CONNECTING
+                # MOR-3436: this reconnect returned into the identity
+                # hold — stash the recovery for the hold's completion.
+                await self._recover_serial_audio_after_connect(
+                    owner_stop_epoch, attempt_epoch
+                )
             return
         self._latch_serial_connected()
         # MOR-1440 review round 2 (B1 item 2): this is the RECONNECTING ->
@@ -709,6 +753,10 @@ class _IcomSerialRadioBase(CoreRadio):
                     "serial soft_reconnect: _on_reconnect callback failed",
                     exc_info=True,
                 )
+        # MOR-3436: the backend's own reconnect path re-establishes the
+        # session audio demand that survived the link-down teardown (the
+        # watchdog's ``_declare_serial_link_down`` stopped the driver).
+        await self._recover_serial_audio_after_connect(owner_stop_epoch, attempt_epoch)
 
     def start_reconnect_recovery(self) -> None:
         """Keep retrying the port after :meth:`connect` failed to open it.
@@ -1010,6 +1058,7 @@ class _IcomSerialRadioBase(CoreRadio):
         self._connection_identity = None
         self._serial_identity_answer_epoch = None
         self._serial_identity_hold_reconnect_origin = False
+        self._serial_deferred_audio = None
         self._conn_state = RadioConnectionState.RECONNECTING
         self._civ_stream_ready = False
         self._civ_recovering = True
@@ -1115,6 +1164,10 @@ class _IcomSerialRadioBase(CoreRadio):
                             self._serial_device,
                             exc_info=True,
                         )
+                # MOR-3436: the hold completed — run the audio recovery a
+                # connect/soft_reconnect deferred here, once, if the link
+                # and the owner are unchanged.
+                await self._run_serial_deferred_audio()
                 return
         except asyncio.CancelledError:
             pass
@@ -1126,6 +1179,70 @@ class _IcomSerialRadioBase(CoreRadio):
             self._abandon_serial_identity_hold(
                 f"the identity re-read failed: {exc}", exc=exc
             )
+
+    # ------------------------------------------------------------------
+    # Audio tail of a completed (re)connect (MOR-3436)
+    # ------------------------------------------------------------------
+
+    async def _recover_serial_audio_after_connect(
+        self, owner_stop_epoch: int, attempt_epoch: int
+    ) -> None:
+        """Re-establish audio demand an owner teardown left held (MOR-3436).
+
+        ``disconnect()`` stops the USB audio driver while ``AudioSession``
+        demand survives it, and before this tail neither ``connect()`` nor
+        ``soft_reconnect()`` re-armed it. Runs the same recovery the LAN
+        tail of ``CoreRadio.connect`` runs — ``_audio_runtime.recover``
+        with a live-demand snapshot, which reports through
+        ``on_audio_recovery`` — and, when the identity hold owns the open
+        link, defers it to the hold's completion exactly like
+        ``CoreRadio._recover_audio_after_connect``: recovering into the
+        hold would run ``start_rx`` into ``_check_connected``'s hold
+        refusal and report FAILED. Skipped when the attempt was retired
+        (a new CI-V generation owns the link) or the owner stopped the
+        radio mid-attempt (the owner-stop counter moved).
+        """
+        if not self._auto_recover_audio:
+            return
+        if (
+            self._civ_epoch != attempt_epoch
+            or self._owner_stop_epoch != owner_stop_epoch
+        ):
+            return
+        snapshot = self._audio_runtime.capture_snapshot()
+        if snapshot is None:
+            return
+        if self._identity_phase_owns_open_link():
+            self._serial_deferred_audio = (
+                snapshot,
+                self._civ_epoch,
+                owner_stop_epoch,
+            )
+            return
+        await self._audio_runtime.recover(snapshot)
+
+    async def _run_serial_deferred_audio(self) -> None:
+        """Recover audio a connect/soft_reconnect deferred, exactly once.
+
+        They stashed it because they returned while the identity hold
+        owned the open link; the hold's completion (the re-read loop)
+        runs it. Dropped — never run — when the link moved on (a new
+        CI-V generation) or the owner stopped the radio. ``recover``
+        reports its own failures through ``on_audio_recovery``; the guard
+        below only keeps a raising callback from failing the hold
+        completion it runs inside.
+        """
+        tail = self._serial_deferred_audio
+        if tail is None:
+            return
+        self._serial_deferred_audio = None
+        snapshot, tail_epoch, owner_stop_epoch = tail
+        if tail_epoch != self._civ_epoch or self._owner_stop_epoch != owner_stop_epoch:
+            return
+        try:
+            await self._audio_runtime.recover(snapshot)
+        except Exception:
+            logger.warning("serial deferred audio recovery failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Renumbered-node rediscovery (MOR-1453)

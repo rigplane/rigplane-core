@@ -61,7 +61,8 @@ _DROP_NOTICE_DELAY_S = 0.1
 # answers discovery and pings for ~0.02 s before going dark.
 _POWER_OFF_NOTICE_WINDOW_S = 0.02
 
-# Default accelerated keepalive hold (D7). Real radios hold ~40-60 s; the fast
+# Default accelerated keepalive hold (D7). The IC-7610 holds a dead client's
+# session for 83.4-85.9 s (MOR-3391, fresh logins from separate ports); the fast
 # suite uses ~0.5 s so a dropped session frees quickly. A near-real value
 # (~45-60 s) can be passed for the one slow timing test.
 _DEFAULT_KEEPALIVE_HOLD_S = 0.5
@@ -115,6 +116,7 @@ _CMD_PTT = 0x1C
 _CMD_CTL_MEM_MENU = 0x1A  # 0x1A 0x05 <item-hi> <item-lo> menu reads/writes
 _CMD_SELECTED_FREQ = 0x25  # Selected/unselected receiver frequency
 _CMD_SELECTED_MODE = 0x26  # Selected/unselected receiver mode
+_CMD_VFO_SELECT = 0x07  # MAIN/SUB receiver select (D0/D1) and read (D2)
 _CMD_ACK = 0xFB
 _CMD_NAK = 0xFA
 _SUB_RF_POWER = 0x0A
@@ -395,6 +397,13 @@ class MockIcomRadio(AudioPortMixin):
             :meth:`_civ_gap_send_round`, and the silent-client repeat in
             :meth:`_civ_gap_loop`). Default ``time.monotonic``; tests pass
             a hand-advanced clock to pin the round rate without wall time.
+        dual_receiver: opt-in native MAIN/SUB receiver select (default
+            False keeps the previous behaviour: ``07 D0``/``D1``/``D2``
+            fall through to ``recorded_answers`` or the final NAK and no
+            selection state is kept). When True, ``07 D0``/``D1`` swap
+            the selected and unselected receiver fields (frequency, mode,
+            DATA-mode flag, filter) and ``07 D2`` reads the selection
+            (recorded IC-7610 ``vfo_select`` window).
     """
 
     def __init__(
@@ -423,6 +432,7 @@ class MockIcomRadio(AudioPortMixin):
         civ_inherited_fills_per_round: int = 0,
         civ_inherited_drop_unanswered_rounds: int = 0,
         clock: Callable[[], float] | None = None,
+        dual_receiver: bool = False,
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -479,6 +489,10 @@ class MockIcomRadio(AudioPortMixin):
         self._unselected_mode: int = 0x01  # USB
         self._unselected_data_mode: int = 0  # 0=OFF
         self._unselected_filter: int = 1  # FIL1
+        # Native receiver select (opt-in via dual_receiver): 0 = MAIN is
+        # the selected receiver, 1 = SUB is (recorded vfo_select window).
+        self._dual_receiver: bool = dual_receiver
+        self._selected_receiver: int = 0
         # Modelling of the 0x1A 05 menu items the startup reader reads;
         # current values (defaults and byte widths live in the table above).
         self._ctl_mem_menu: dict[bytes, int] = {
@@ -2281,6 +2295,39 @@ class MockIcomRadio(AudioPortMixin):
                     self._unselected_filter = filt
                 return self._civ_ack(to, frm)
             return self._civ_nak(to, frm)
+
+        # --- Receiver select (0x07 D0/D1/D2, recorded vfo_select window) ---
+        # D0 selects MAIN, D1 selects SUB (ACK either way; re-selecting the
+        # current receiver swaps nothing), bare D2 reads the selection.
+        if cmd == _CMD_VFO_SELECT and self._dual_receiver:
+            if len(payload) == 1 and payload[0] in (0xD0, 0xD1):
+                target = payload[0] - 0xD0  # D0 -> MAIN (0), D1 -> SUB (1)
+                if target != self._selected_receiver:
+                    self._frequency, self._unselected_frequency = (
+                        self._unselected_frequency,
+                        self._frequency,
+                    )
+                    self._mode, self._unselected_mode = (
+                        self._unselected_mode,
+                        self._mode,
+                    )
+                    self._data_mode, self._unselected_data_mode = (
+                        self._unselected_data_mode,
+                        self._data_mode,
+                    )
+                    self._filter, self._unselected_filter = (
+                        self._unselected_filter,
+                        self._filter,
+                    )
+                    self._selected_receiver = target
+                return self._civ_ack(to, frm)
+            if len(payload) == 1 and payload[0] == 0xD2:
+                return self._civ_frame(
+                    to,
+                    frm,
+                    _CMD_VFO_SELECT,
+                    data=bytes((0xD2, self._selected_receiver)),
+                )
 
         # --- 0x1A 05 menu items (the startup MOD-input and NB reads) ---
         if cmd == _CMD_CTL_MEM_MENU and payload[:1] == b"\x05":

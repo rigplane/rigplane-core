@@ -4,6 +4,8 @@ Test utilities for rigplane-core and downstream projects: real-socket radio
 simulators that speak the actual wire protocols, so tests exercise the same
 UDP code paths as production.
 
+What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fake-fidelity.md`.
+
 ## Contents
 
 - `rigplane_testkit.icom` — `MockIcomRadio`, an asyncio UDP simulator of an

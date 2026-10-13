@@ -24,11 +24,9 @@ Per trace two tests share one checked replay:
 
 * ``test_<client>_prefix`` replays every step before the spec's prefix
   cutoff with all checks green.
-* ``test_<client>_full`` replays the whole trace: the wsjtx row
-  strict-xfails with the first divergent line in its reason
-  (``pytest.mark.xfail``, ``strict=True``,
-  ``raises=TraceDivergence``); the fldigi and js8call rows pass
-  outright. Execution stops at the divergence, like the golden replay.
+* ``test_<client>_full`` replays the whole trace; all three rows
+  pass outright. A divergence would stop the replay and surface as
+  ``TraceDivergence`` naming the trace line, like the golden replay.
 
 Checked replay rules, per step kind:
 
@@ -58,27 +56,25 @@ Checked replay rules, per step kind:
   and passband from the simulator's mode byte and filter; PTT readback,
   which the simulator constantly reports OFF).
 
-Error contract (so a strict xfail can never hide a harness problem):
+Error contract (so a divergence can never hide a harness problem):
 harness waits (``_wait_until``, ``_poll_until_reply``) raise
 ``TimeoutError`` and fixture/parse/oracle setup mistakes raise
 ``RuntimeError`` — never ``AssertionError``. A SET's landed check
 (``F`` as for ``T``) polls the simulated radio with a deadline but
 never raises ``TimeoutError`` itself; its final compare is the
 divergence assertion. The ONLY ``AssertionError``
-a full-trace replay raises at its divergent line is re-raised by the
+a full-trace replay raises at a divergent line is re-raised by the
 test as ``TraceDivergence`` (matched on the trace line number and the
 ``>`` line text); any other ``AssertionError`` becomes ``RuntimeError``
-and FAILS instead of xfailing.
+and FAILS.
 
-Remaining divergence (traces never edited):
+Receiver select (traces never edited, MOR-3310):
 
-* wsjtx line 62 ``F VFOB 14076000`` answers ``RPRT 0`` but never
-  lands on the SUB receiver: the recorded table ACKs the CI-V ``0x07``
-  select (so line 60 passes and the SET is accepted), but
-  ``simulator.py: MockIcomRadio`` keeps no per-receiver frequency
-  behind a ``0x07`` select while its native ``0x05`` handler writes
-  MAIN, so the landed check diverges. The remainder of the trace
-  (from line 62 on) is the strict xfail (MOR-3310).
+* wsjtx line 62 ``F VFOB 14076000`` lands on SUB through the native
+  ``07 D0``/``D1`` handling: ``simulator.py: MockIcomRadio`` swaps the
+  selected and unselected receiver fields behind the select (opt-in
+  ``dual_receiver``), so the landed check converges and the whole trace
+  passes. The spec keeps line 62 as its formerly-divergent anchor.
 * fldigi and js8call pass whole: their single PTT cycle (``T … 1`` /
   ``T … 0``) converges through the stateful PTT hook, and every ``t``
   read in all three traces happens while PTT is off.
@@ -408,15 +404,27 @@ async def _wait_until(
 
 
 def _sim_freq(sim: MockIcomRadio, receiver: int) -> int:
-    if receiver == 0:
-        return sim._frequency  # noqa: SLF001
-    return sim._unselected_frequency  # noqa: SLF001
+    """The absolute receiver's frequency through the 07 D0/D1 selection."""
+    main_selected = sim._selected_receiver == 0  # noqa: SLF001
+    if receiver == 0:  # MAIN is the selected fields iff SUB is not selected
+        if main_selected:
+            return sim._frequency  # noqa: SLF001
+        return sim._unselected_frequency  # noqa: SLF001
+    if main_selected:
+        return sim._unselected_frequency  # noqa: SLF001
+    return sim._frequency  # noqa: SLF001
 
 
 def _sim_mode_filter(sim: MockIcomRadio, receiver: int) -> tuple[int, int]:
-    if receiver == 0:
-        return sim._mode, sim._filter  # noqa: SLF001
-    return sim._unselected_mode, sim._unselected_filter  # noqa: SLF001
+    """The absolute receiver's (mode, filter) through the 07 D0/D1 selection."""
+    main_selected = sim._selected_receiver == 0  # noqa: SLF001
+    if receiver == 0:  # MAIN is the selected fields iff SUB is not selected
+        if main_selected:
+            return sim._mode, sim._filter  # noqa: SLF001
+        return sim._unselected_mode, sim._unselected_filter  # noqa: SLF001
+    if main_selected:
+        return sim._unselected_mode, sim._unselected_filter  # noqa: SLF001
+    return sim._mode, sim._filter  # noqa: SLF001
 
 
 def _sim_ptt_readback(sim: MockIcomRadio) -> int:
@@ -432,6 +440,32 @@ def _sim_ptt_readback(sim: MockIcomRadio) -> int:
     if reply is None or len(reply) != 8 or reply[4] != 0x1C or reply[5] != 0x00:
         raise RuntimeError(f"simulator 1C 00 GET gave no decodable reply: {reply!r}")
     return reply[6]
+
+
+def test_sub_selected_accessors_map_to_absolute_receivers() -> None:
+    """_sim_freq/_sim_mode_filter resolve MAIN/SUB while SUB is selected.
+
+    The traces never leave SUB selected (the client re-selects MAIN after
+    each SUB operation), so the SUB-selected branch of the accessors is
+    never reached in a replay. This pins it directly through the
+    simulator's in-process ``_dispatch_civ``, with no rigctld stack and no
+    network. With the pre-mapping accessors (receiver 0 = the selected
+    fields) the MAIN/SUB values swap and the test fails.
+    """
+    sim = MockIcomRadio(dual_receiver=True, recorded_answers=None)
+    main_hz, sub_hz = 14_074_000, 7_074_000
+    sim._frequency = main_hz  # noqa: SLF001
+    sim._unselected_frequency = sub_hz  # noqa: SLF001
+    sim._mode, sim._filter = 0x01, 1  # noqa: SLF001
+    sim._unselected_mode, sim._unselected_filter = 0x03, 2  # noqa: SLF001
+    assert sim._dispatch_civ(0x07, b"\xd1", 0xE0) == bytes.fromhex(  # noqa: SLF001
+        "fefee098fbfd"
+    )
+    assert sim._selected_receiver == 1  # noqa: SLF001
+    assert _sim_freq(sim, 0) == main_hz
+    assert _sim_freq(sim, 1) == sub_hz
+    assert _sim_mode_filter(sim, 0) == (0x01, 1)
+    assert _sim_mode_filter(sim, 1) == (0x03, 2)
 
 
 async def _check_set_landed(
@@ -638,13 +672,6 @@ async def _replay_checked(
 # ---------------------------------------------------------------------------
 
 
-_WSJTX_XFAIL_REASON = (
-    "MOR-3310: line 62 `F VFOB 14076000` never lands on the SUB "
-    "receiver: the recorded table ACKs the 07 D1 select, but "
-    "MockIcomRadio keeps no per-receiver frequency behind it and the "
-    "native 05 handler writes MAIN"
-)
-
 _SPECS = [
     _TraceSpec(
         name="wsjtx",
@@ -696,27 +723,14 @@ async def test_prefix_passes(
     assert last_line == steps[-1].line_no < spec.prefix_before_line
 
 
-@pytest.mark.parametrize(
-    "spec",
-    [
-        pytest.param(
-            _SPECS[0],
-            marks=pytest.mark.xfail(
-                strict=True, raises=TraceDivergence, reason=_WSJTX_XFAIL_REASON
-            ),
-        ),
-        _SPECS[1],
-        _SPECS[2],
-    ],
-    ids=[s.name for s in _SPECS],
-)
+@pytest.mark.parametrize("spec", _SPECS, ids=[s.name for s in _SPECS])
 async def test_full_trace(
     stack: tuple[RigctldServer, MockIcomRadio], spec: _TraceSpec
 ) -> None:
-    """Whole-trace replay; the wsjtx row xfails exactly at the known
-    divergent line.
+    """Whole-trace replay; all three rows pass outright.
 
-    Only the divergent line maps to ``TraceDivergence``. A harness
+    Only a divergent line maps to ``TraceDivergence`` (the wsjtx spec
+    keeps line 62 as its formerly-divergent anchor). A harness
     ``TimeoutError``/``RuntimeError``, or an ``AssertionError`` from any
     other line, becomes ``RuntimeError`` and FAILS. (``raises=`` with a
     message match via ``pytest.RaisesExc`` is not used: the repo's

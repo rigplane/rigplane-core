@@ -59,6 +59,7 @@ from rigplane.core.exceptions import (
     AuthenticationError,
     ConnectionError as RigplaneConnectionError,
     DiscoveryTimeout,
+    RadioSessionHeldError,
 )
 
 __all__ = [
@@ -696,6 +697,7 @@ class CoreRadioSessionLifecycle:
         first_connect_busy_cooldown_s: float | None = None,
         first_connect_busy_budget_s: float | None = None,
         first_connect_busy_live_holder_after_s: float | None = None,
+        first_connect_discovery_retries: int | None = None,
     ) -> None:
         self._mech = mechanism
         self._not_ready_cooldown_s = not_ready_cooldown_s
@@ -722,6 +724,16 @@ class CoreRadioSessionLifecycle:
         self._first_connect_busy_live_holder_after_s = (
             first_connect_busy_live_holder_after_s
         )
+        # Silent first-discovery retries (MOR-3391 part 1b(c)): ``None``
+        # resolves to the packet layer's STARTUP_DISCOVERY_RETRIES (deferred
+        # import: that module reaches back into this one at its call sites).
+        if first_connect_discovery_retries is None:
+            from rigplane.runtime._control_phase import ControlPhaseRuntime
+
+            first_connect_discovery_retries = (
+                ControlPhaseRuntime.STARTUP_DISCOVERY_RETRIES
+            )
+        self._first_connect_discovery_retries = first_connect_discovery_retries
         self._connected_once = False
 
         self._state: LifecycleState = LifecycleState.DISCONNECTED
@@ -906,6 +918,7 @@ class CoreRadioSessionLifecycle:
         busy_attempts = 0
         busy_deadline: float | None = None
         first_busy_started_at: float | None = None
+        silent_discovery_attempts = 0
         while True:
             attempt += 1
             attempt_started_at = time.monotonic()
@@ -919,25 +932,51 @@ class CoreRadioSessionLifecycle:
                 # pass — the radio is holding a session and not answering
                 # us — with the same cadence and live-holder stop as a busy
                 # reject.  A discovery attempt sent no login, so it schedules
-                # no same-computer drop.  Before any busy reject (or on a
-                # reconnect, or with the policy off) it stays fatal with
-                # today's message, exactly as before.
+                # no same-computer drop.
                 budget_s = self._first_connect_busy_budget_s
                 if (
-                    first_busy_started_at is None
-                    or self._connected_once
-                    or budget_s is None
+                    first_busy_started_at is not None
+                    and not self._connected_once
+                    and budget_s is not None
                 ):
-                    raise
-                busy_attempts, busy_deadline = await self._first_connect_busy_pass(
-                    attempt_started_at=attempt_started_at,
-                    first_busy_started_at=first_busy_started_at,
-                    busy_attempts=busy_attempts,
-                    busy_deadline=busy_deadline,
-                    budget_s=budget_s,
-                    kind="discovery timeout",
-                )
-                continue
+                    busy_attempts, busy_deadline = await self._first_connect_busy_pass(
+                        attempt_started_at=attempt_started_at,
+                        first_busy_started_at=first_busy_started_at,
+                        busy_attempts=busy_attempts,
+                        busy_deadline=busy_deadline,
+                        budget_s=budget_s,
+                        kind="discovery timeout",
+                    )
+                    continue
+                # MOR-3391 part 1b(c): on the FIRST connect (policy on) a
+                # discovery timeout before any busy reject retries at the
+                # first-connect busy cadence — at most
+                # ``_first_connect_discovery_retries`` retries — then stays
+                # fatal with today's message.  A busy reject on any retry
+                # hands back to the busy rules above; reconnects (or the
+                # policy off) stay fatal, exactly as before.
+                if (
+                    first_busy_started_at is None
+                    and not self._connected_once
+                    and budget_s is not None
+                ):
+                    silent_discovery_attempts += 1
+                    total = self._first_connect_discovery_retries + 1
+                    _logger.warning(
+                        "discovery attempt %d/%d got no answer",
+                        silent_discovery_attempts,
+                        total,
+                    )
+                    if (
+                        silent_discovery_attempts
+                        <= self._first_connect_discovery_retries
+                    ):
+                        cooldown = self._first_connect_busy_cooldown_s
+                        if cooldown is None:
+                            cooldown = self._reject_cooldown_s
+                        await asyncio.sleep(cooldown)
+                        continue
+                raise
 
             if outcome is AttemptOutcome.CONNECTED:
                 self._connecting_started = None
@@ -991,8 +1030,12 @@ class CoreRadioSessionLifecycle:
             # A inversion).  Now enter COOLDOWN and wait in-process.
             # Busy passes that retried under the first-connect policy above
             # must not consume these retries; busy passes on later connects
-            # (``busy_attempts`` stays 0 there) still count.
-            if attempt - busy_attempts >= self._max_connect_attempts:
+            # (``busy_attempts`` stays 0 there) still count.  Silent
+            # first-discovery retries are the same kind of policy-loop pass.
+            if (
+                attempt - busy_attempts - silent_discovery_attempts
+                >= self._max_connect_attempts
+            ):
                 self._connecting_started = None
                 self._emit(LifecycleState.DISCONNECTED)
                 raise RigplaneConnectionError(
@@ -1047,10 +1090,10 @@ class CoreRadioSessionLifecycle:
         updated ``(busy_attempts, busy_deadline)``.
 
         Raises:
-            RigplaneConnectionError: the pass started at or after the
-                live-holder threshold (a live session holds the radio), or
-                the start-up busy budget elapsed — both with the honest
-                busy reason, never the discovery message.
+            RadioSessionHeldError: the pass started at or after the
+                live-holder threshold (a live session holds the radio).
+            RigplaneConnectionError: the start-up busy budget elapsed —
+                with the honest busy reason, never the discovery message.
         """
         live_holder_after_s = self._first_connect_busy_live_holder_after_s
         if (
@@ -1070,7 +1113,7 @@ class CoreRadioSessionLifecycle:
 
             self._connecting_started = None
             self._emit(LifecycleState.DISCONNECTED)
-            raise RigplaneConnectionError(
+            raise RadioSessionHeldError(
                 "radio busy: another client holds the session. "
                 f"{_session_reject_hint(0xFFFFFFFF)}"
             )
