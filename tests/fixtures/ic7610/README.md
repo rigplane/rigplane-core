@@ -58,6 +58,17 @@ wave-on/off SETs (`27 10 01`, `27 11 01`) are excluded from that pairing:
 their answer is the wave stream itself, which the `scope_wave` cadence
 check covers. On USB no `r2c` frame ever equals a client request.
 
+### `scope_cadence.json`
+
+Wave-frame cadence from the same recordings as the `scope` window above
+(2026-10-12, recordings w55 — dual, then single SUB — and w55b — single
+MAIN — receive only): `frame_len` 711 bytes per `27 00` sweep and, per
+scope speed, the receiver, frame count and gap median/p10/p90. Only mid
+(MAIN, 0.12 s) and fast (SUB, 0.0344 s) were recorded; slow is absent.
+`MockIcomRadio(scope_stream=True)` streams each receiver's first recorded
+`27 00` frame at its speed's median gap
+(`tests/testkit/test_simulator_scope_stream.py`).
+
 ### `control_windows.jsonl`
 
 One JSON object per line with keys `window`, `transport`, `t`, `dir`, `len`, `type`,
