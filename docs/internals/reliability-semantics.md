@@ -95,6 +95,7 @@ The public health model separates:
 - **`radio_not_responding`** — radio link exists, but CI-V/control data is delayed or stalled.
 - **`radio_powered_off_likely`** — the radio is probably off or unreachable: prior radio availability plus repeated timeout/recovery evidence, or a server start with no answer from the radio since, on a link that answered nothing or on a serial port that opened only after startup (`src/rigplane/web/runtime_helpers.py: classify_radio_health`).
 - **`radio_not_connected`** — the server started while the radio's serial port could not be opened, the latest attempt to open it failed, and the radio has not answered since (`src/rigplane/web/runtime_helpers.py: classify_radio_health`).
+- **`radio_session_busy`** — reported during a start-up busy hold while the first connect retries, with readiness `recovering` (`src/rigplane/web/server.py: _build_radio_health`).
 - **`unknown`** — healthy/ready state or insufficient evidence.
 
 Temporary CI-V gaps are classified as `readiness: "delayed"` before they become

@@ -255,6 +255,7 @@ export interface RadioHealthPublic {
     | "radio_not_responding"
     | "radio_powered_off_likely"
     | "radio_not_connected"
+    | "radio_session_busy"
     | "unknown";
   sinceMs: number;
   lastError: string | null;

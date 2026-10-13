@@ -497,6 +497,8 @@ a backend name. Direct hardware or external keying is not an owned browser
 PTT intent. Final operator/hardware acceptance is separate from these API
 contracts.
 
+Typed `send_cw_text` keys the rig without managed-authority admission by owner decision (2026-10-12), because its frames run through the abort fence (`src/rigplane/runtime/managed_tx_fence.py`: `TxAbortFence`) that a managed force-off cancels, as pinned by `test_icom_force_off_suppresses_late_cw_write_and_remaining_chunks` in `tests/test_fenced_local_tx_providers.py`.
+
 ## Frontend Runtime Workflow (Current Implementation)
 
 The browser app startup path is implemented in `frontend/src/App.svelte`

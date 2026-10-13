@@ -971,6 +971,7 @@ Current readiness values are:
 - `no_usb_radio_connected`
 - `lan_radio_unsupported_or_not_found`
 - `requires_configuration_or_auth`
+- `radio_session_busy`
 
 `requires_configuration_or_auth` retains its compatibility spelling and refers
 to radio target configuration, not an application credential prompt
@@ -1140,6 +1141,7 @@ Canonical full state payload for web consumers (camelCase keys).
 | `radio_not_responding` | Radio link still exists, but CI-V/control data is delayed or stalled. |
 | `radio_powered_off_likely` | Server is reachable and either the radio was previously available and repeated timeout/recovery evidence suggests it is off or unreachable, or the server started against a radio that has not answered at all. |
 | `radio_not_connected` | Server is reachable. It started while the radio's serial port could not be opened, the latest attempt to open the port failed, and the radio has not answered since. |
+| `radio_session_busy` | The radio's LAN session is held by another client during a start-up busy hold; the first connect keeps retrying. |
 | `unknown` | Insufficient evidence or healthy/ready state. |
 
 ## `GET /api/v1/capabilities`

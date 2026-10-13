@@ -8,11 +8,18 @@ through ``ControlHandler``:
 * ``send_cw_text`` is served by ``ControlHandler._ro_send_cw_text``, which
   awaits ``radio.send_cw_text(text)`` with no managed-authority admission:
   the authority records no submission and no force-off, and nothing is
-  enqueued on the command queue.
+  enqueued on the command queue. This is the accepted behaviour by owner
+  decision (MOR-3382, 2026-10-12): typed ``send_cw_text`` keys the rig
+  without managed-authority admission because its frames run through the
+  abort fence that a managed force-off cancels.
 * ``stop_cw_text`` likewise awaits ``radio.stop_cw_text()`` directly.
 
-The strict xfail below asserts that managed ``send_cw_text`` is either
-admitted through the authority or refused.
+The abort-fence half is proved by
+``tests/test_fenced_local_tx_providers.py``:
+``test_icom_force_off_suppresses_late_cw_write_and_remaining_chunks``
+starts a long ``send_cw_text`` under the managed composition, forces the
+composition's abort fence off, and shows the in-flight send ends while
+later chunks never reach the fake wire.
 """
 
 from __future__ import annotations
@@ -31,14 +38,17 @@ from test_web_managed_tx_ingress import _Authority, _handler
 async def test_characterization_managed_send_cw_text_keys_rig_with_authority_not_holding_tx() -> (
     None
 ):
-    """Characterization: managed send_cw_text awaits the radio unadmitted.
+    """Characterization: managed send_cw_text keys the rig unadmitted.
 
     A non-read-only WebSocket client sends the typed ``send_cw_text``
     command while the managed TX authority is installed and idle (intent
-    ``rx``) and observed PTT is False. Today the command is acknowledged
-    and awaits ``radio.send_cw_text`` with no managed-authority admission:
+    ``rx``) and observed PTT is False. The command is acknowledged and
+    awaits ``radio.send_cw_text`` with no managed-authority admission:
     the authority records no submission and no force-off, and nothing is
-    enqueued on the command queue.
+    enqueued on the command queue. This is the accepted behaviour by
+    owner decision (MOR-3382, 2026-10-12): typed ``send_cw_text`` keys
+    the rig without managed-authority admission because its frames run
+    through the abort fence that a managed force-off cancels.
     """
     authority = _Authority()
     ws = SimpleNamespace(send_text=AsyncMock())
@@ -56,34 +66,6 @@ async def test_characterization_managed_send_cw_text_keys_rig_with_authority_not
     assert authority.calls == []
     assert authority.force_off_calls == 0
     assert authority.intent == "rx"
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="MOR-3382: managed send_cw_text keys the rig without the managed TX authority",
-)
-@pytest.mark.asyncio
-async def test_managed_send_cw_text_requires_authority_admission() -> None:
-    """Managed send_cw_text is either admitted through the authority or refused.
-
-    After dispatch, either the authority fake recorded an admission (its
-    ``calls`` list is non-empty) or the command was refused (``ok`` is
-    False and ``radio.send_cw_text`` was not awaited). A fix through
-    admission must make the fake record the admission in ``calls``; that
-    is what the assertion reads.
-    """
-    authority = _Authority()
-    ws = SimpleNamespace(send_text=AsyncMock())
-    handler, _, radio = _handler(authority, ws=ws, observed=False)
-    radio.send_cw_text = AsyncMock()
-
-    await handler._dispatch_command("cmd-cw", "send_cw_text", {"text": "cq"})
-
-    response = decode_json(ws.send_text.await_args.args[0])
-    admitted = bool(authority.calls)
-    refused = response["ok"] is False and radio.send_cw_text.await_count == 0
-    assert admitted or refused
 
 
 @pytest.mark.asyncio
