@@ -972,6 +972,7 @@ Current readiness values are:
 - `lan_radio_unsupported_or_not_found`
 - `requires_configuration_or_auth`
 - `radio_session_busy`
+- `operator_disconnected`
 
 `requires_configuration_or_auth` retains its compatibility spelling and refers
 to radio target configuration, not an application credential prompt
@@ -1142,6 +1143,7 @@ Canonical full state payload for web consumers (camelCase keys).
 | `radio_powered_off_likely` | Server is reachable and either the radio was previously available and repeated timeout/recovery evidence suggests it is off or unreachable, or the server started against a radio that has not answered at all. |
 | `radio_not_connected` | Server is reachable. It started while the radio's serial port could not be opened, the latest attempt to open the port failed, and the radio has not answered since. |
 | `radio_session_busy` | The radio's LAN session is held by another client during a start-up busy hold; the first connect keeps retrying. |
+| `operator_disconnected` | The operator disconnected the radio on purpose; health readiness is `idle`, which appears only with this cause (`src/rigplane/web/runtime_helpers.py: classify_radio_health`). |
 | `unknown` | Insufficient evidence or healthy/ready state. |
 
 ## `GET /api/v1/capabilities`

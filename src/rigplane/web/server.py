@@ -1534,9 +1534,9 @@ class WebServer:
         """Whether the radio is down after an operator disconnect (MOR-3452).
 
         Reads only the radio's public ``connected`` / readiness surface,
-        never private lifecycle state. The mark heals the moment the
-        radio reports connected again, so a backend-side reconnect needs
-        no explicit clearing.
+        never private lifecycle state. The mark heals on the next
+        evaluation while connected, so a backend-side reconnect needs no
+        explicit clearing.
         """
 
         if not self._operator_disconnected:
@@ -6724,6 +6724,12 @@ class WebServer:
                 if self._control_handler_for()._backend_recovering():  # noqa: SLF001
                     await refuse_while_recovering()
                     return
+                # MOR-3452: the operator asked back in — clear the
+                # disconnect mark when the connect starts, not after it
+                # returns, so an in-flight or failed connect never reads
+                # as an operator disconnect. A later operator disconnect
+                # sets the mark again, so the last action still wins.
+                self.note_operator_connect()
                 poller = self._radio_poller
                 generation = (
                     poller._vfo_connection_generation()
@@ -6736,9 +6742,6 @@ class WebServer:
                     and generation != poller._vfo_connection_generation()
                 ):
                     self._on_radio_reconnect()
-                # MOR-3452: the operator asked back in — the disconnect
-                # mark no longer describes the station.
-                self.note_operator_connect()
                 resp = {"status": "connecting"}
             elif path == "/api/v1/radio/power":
                 # Read JSON body for power state
@@ -6810,6 +6813,10 @@ class WebServer:
                         return
                     # Radio is off → reconnect transport first, then send power-on CI-V
                     logger.info("power-on: radio disconnected, reconnecting first")
+                    # MOR-3452: a power-on is an operator connect — clear the
+                    # disconnect mark when it starts, as above, so an
+                    # in-flight or failed reconnect never reads as operator.
+                    self.note_operator_connect()
                     try:
                         await radio.connect()
                         # Give transport a moment to establish

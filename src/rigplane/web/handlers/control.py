@@ -1152,6 +1152,10 @@ class ControlHandler:
             return
         try:
             if self._radio.connected:
+                # MOR-3452: the operator asked back in — clear the mark
+                # when the connect starts; the stale mark must not survive
+                # even this no-op path.
+                self._note_operator_connect()
                 await self._send_json(
                     {
                         "type": "response",
@@ -1160,9 +1164,11 @@ class ControlHandler:
                         "result": {"status": "already_connected"},
                     }
                 )
-                # MOR-3452: connected again — the disconnect mark is stale.
-                self._note_operator_connect()
                 return
+            # MOR-3452: clear the disconnect mark when the connect starts,
+            # before any await, so an in-flight or failed connect never
+            # reads as an operator disconnect.
+            self._note_operator_connect()
             from ...radio_protocol import RecoverableConnection
 
             if isinstance(self._radio, RecoverableConnection):
@@ -1182,8 +1188,6 @@ class ControlHandler:
                     "result": {"status": "connected"},
                 }
             )
-            # MOR-3452: the operator asked back in — clear the mark.
-            self._note_operator_connect()
             await self._broadcast_connection_state(True)
         except Exception as exc:
             logger.warning("radio_connect failed: %s", exc)

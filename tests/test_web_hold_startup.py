@@ -438,6 +438,40 @@ class _OperableRadio:
         self.conn_state = RadioConnectionState.DISCONNECTED
 
 
+class _BlockingConnectRadio(_OperableRadio):
+    """An operable radio whose next connect blocks until released (MOR-3452).
+
+    Reports ``conn_state`` CONNECTING while parked, the way a resident
+    ``CoreRadio.connect()`` looks during its retry/cooldown wait, so a
+    test can read the runtime while an operator connect is in flight.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.connect_entered = asyncio.Event()
+        self.release_connect = asyncio.Event()
+
+    async def connect(self) -> None:
+        self.connected = False
+        self.control_connected = False
+        self.radio_ready = False
+        self.conn_state = RadioConnectionState.CONNECTING
+        self.connect_entered.set()
+        await self.release_connect.wait()
+        await super().connect()
+
+
+class _RefusingConnectRadio(_OperableRadio):
+    """An operable radio whose connect always fails (MOR-3452 round 2).
+
+    Stays down with ``conn_state`` DISCONNECTED, the way a refused login
+    leaves the radio after ``CoreRadio.connect()`` raises.
+    """
+
+    async def connect(self) -> None:
+        raise RuntimeError("login refused")
+
+
 async def _start_operable_stack(
     radio: _OperableRadio,
 ) -> tuple[RigctldServer, WebServer, int]:
@@ -480,6 +514,32 @@ async def _post_empty(server: WebServer, path: str) -> tuple[int, dict[str, Any]
             "Host: 127.0.0.1\r\n"
             "Content-Length: 0\r\n"
             "Connection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        raw = await asyncio.wait_for(reader.read(-1), timeout=10.0)
+    finally:
+        await _close_writer(writer)
+    head, _, body = raw.partition(b"\r\n\r\n")
+    return int(head.split(b" ")[1]), json.loads(body.decode())
+
+
+async def _post_json(
+    server: WebServer, path: str, payload: dict[str, Any]
+) -> tuple[int, dict[str, Any]]:
+    """POST a JSON body over a real socket: status plus JSON body."""
+
+    assert server._server is not None
+    data = json.dumps(payload).encode()
+    host, port = server._server.sockets[0].getsockname()[:2]
+    reader, writer = await asyncio.open_connection(host, port)
+    try:
+        writer.write(
+            f"POST {path} HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Content-Type: application/json\r\n"
+            f"Content-Length: {len(data)}\r\n"
+            "Connection: close\r\n\r\n".encode()
+            + data
         )
         await writer.drain()
         raw = await asyncio.wait_for(reader.read(-1), timeout=10.0)
@@ -774,6 +834,135 @@ async def test_operator_connect_restores_ready_values() -> None:
         assert station["readiness"] == "ready_with_radio"
         assert station["health"]["readiness"] == "ready"
         assert station["health"]["likelyCause"] == "unknown"
+    finally:
+        await server.stop()
+        await rig.stop()
+
+
+@pytest.mark.asyncio
+async def test_operator_connect_in_flight_reports_connecting_not_operator() -> None:
+    """MOR-3452 round 2: an operator connect in flight is not an operator idle.
+
+    After an operator disconnect, an operator connect parked inside
+    ``connect()`` with ``conn_state`` CONNECTING must read the ordinary
+    connecting values — ``radioLink`` ``reconnecting``, readiness
+    ``recovering`` — because the mark clears when the connect starts
+    (``WebServer.note_operator_connect``), not when it returns.
+    """
+
+    radio = _BlockingConnectRadio()
+    rig, server, _rig_port = await _start_operable_stack(radio)
+    try:
+        status, body = await _post_empty(server, "/api/v1/radio/disconnect")
+        assert status == 200
+
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert status == 200
+        assert payload["station"]["health"]["likelyCause"] == "operator_disconnected"
+
+        connect_task = asyncio.ensure_future(
+            _post_empty(server, "/api/v1/radio/connect")
+        )
+        try:
+            await asyncio.wait_for(radio.connect_entered.wait(), timeout=10.0)
+            assert radio.conn_state is RadioConnectionState.CONNECTING
+
+            status, payload = await _get_json(server, "/api/v1/runtime")
+            assert status == 200
+            station = payload["station"]
+            health = station["health"]
+            assert health["radioLink"] == "reconnecting"
+            assert health["readiness"] == "recovering"
+            assert health["likelyCause"] == "radio_network_lost"
+            assert station["readiness"] == "lan_radio_unsupported_or_not_found"
+            assert station["message"] != "Disconnected by the operator."
+        finally:
+            radio.release_connect.set()
+            status, body = await asyncio.wait_for(connect_task, timeout=10.0)
+            assert status == 200
+            assert body == {"status": "connecting"}
+
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert status == 200
+        assert payload["station"]["readiness"] == "ready_with_radio"
+    finally:
+        await server.stop()
+        await rig.stop()
+
+
+@pytest.mark.asyncio
+async def test_operator_connect_failure_reports_network_loss_not_operator() -> None:
+    """MOR-3452 round 2: a failed operator connect leaves no operator mark.
+
+    After an operator disconnect, an operator connect that raises must
+    leave the runtime on the ordinary down values — ``likelyCause``
+    ``radio_network_lost``, health readiness ``stalled``, station
+    readiness ``lan_radio_unsupported_or_not_found`` — because the mark
+    clears when the connect starts, so a later real fault is never
+    misread as operator intent.
+    """
+
+    radio = _RefusingConnectRadio()
+    rig, server, _rig_port = await _start_operable_stack(radio)
+    try:
+        status, body = await _post_empty(server, "/api/v1/radio/disconnect")
+        assert status == 200
+
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert status == 200
+        assert payload["station"]["health"]["likelyCause"] == "operator_disconnected"
+
+        status, _body = await _post_empty(server, "/api/v1/radio/connect")
+        assert status == 500
+
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert status == 200
+        station = payload["station"]
+        health = station["health"]
+        assert health["radioLink"] == "disconnected"
+        assert health["likelyCause"] == "radio_network_lost"
+        assert health["readiness"] == "stalled"
+        assert station["readiness"] == "lan_radio_unsupported_or_not_found"
+        assert station["message"] != "Disconnected by the operator."
+    finally:
+        await server.stop()
+        await rig.stop()
+
+
+@pytest.mark.asyncio
+async def test_operator_power_on_clears_disconnect_mark() -> None:
+    """MOR-3452 round 2: a power-on reconnect is an operator connect.
+
+    After an operator disconnect, ``POST /api/v1/radio/power
+    {"state": "on"}`` reconnects the transport, so the disconnect mark
+    must clear when that connect starts — read here while the connect
+    is still in flight, where no heal-while-connected could have run
+    yet. The power command itself is beyond this fake (no power-control
+    capability), so the POST status is not pinned.
+    """
+
+    radio = _BlockingConnectRadio()
+    rig, server, _rig_port = await _start_operable_stack(radio)
+    try:
+        status, body = await _post_empty(server, "/api/v1/radio/disconnect")
+        assert status == 200
+        assert server._operator_disconnected is True
+
+        power_task = asyncio.ensure_future(
+            _post_json(server, "/api/v1/radio/power", {"state": "on"})
+        )
+        try:
+            await asyncio.wait_for(radio.connect_entered.wait(), timeout=10.0)
+            assert server._operator_disconnected is False
+
+            status, payload = await _get_json(server, "/api/v1/runtime")
+            assert status == 200
+            assert (
+                payload["station"]["health"]["likelyCause"] != "operator_disconnected"
+            )
+        finally:
+            radio.release_connect.set()
+            await asyncio.wait_for(power_task, timeout=30.0)
     finally:
         await server.stop()
         await rig.stop()
