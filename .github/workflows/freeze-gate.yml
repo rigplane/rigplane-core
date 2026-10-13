@@ -19,8 +19,6 @@ permissions:
 jobs:
   freeze-gate:
     name: Evaluate stabilization-freeze PR contract
-    # Advisory gate: intentionally NOT added to branch protection. It surfaces
-    # freeze-contract violations on the PR without blocking merges.
     runs-on: ubuntu-latest
     timeout-minutes: 3
 
