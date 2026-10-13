@@ -334,7 +334,7 @@ report is `null`.
 | `openFds` | Open file descriptors listed in `/proc/self/fd` or `/dev/fd`; `null` where neither can be listed (Windows). |
 | `threads` | Python threads, `threading.active_count()`. |
 | `asyncioTasks` | Unfinished tasks on the server's event loop, `asyncio.all_tasks()`. |
-| `reconnectsTotal` | `reconnecting` edges reported to `WebServer._on_reconnect_status` since the web server was created; `null` when the radio never emits reconnect status — only the LAN watchdog/reconnect loops emit it, so serial CI-V radios (whose own watchdog reconnects silently) and radios whose LAN watchdog has not been started report `null`. |
+| `reconnectsTotal` | Link-loss episodes since the relevant component was created. LAN radios count `reconnecting` edges reported to `WebServer._on_reconnect_status`. Serial CI-V radios count CONNECTED-to-RECONNECTING edges in `_IcomSerialRadioBase._count_serial_link_episode` (called from `_declare_serial_link_down` and `soft_reconnect`). Yaesu CAT radios count the first reconnect after the last successful exchange in `TransportStats.record_reconnect_attempt` (exposed as `YaesuCatRadio.serial_reconnects_total`). `null` when the radio has neither source — no started LAN watchdog and no serial episode counter. |
 
 ## `POST /api/v1/commands`
 

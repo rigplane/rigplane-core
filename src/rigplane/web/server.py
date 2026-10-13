@@ -4482,21 +4482,30 @@ class WebServer:
         # Reconnect status is emitted only by the LAN watchdog/reconnect
         # loops (``runtime/radio_reconnect.py``), started solely by
         # ``ControlPhase._start_watchdog`` — recorded in ``_watchdog_task``.
-        # Serial CI-V radios inherit ``set_reconnect_status_callback`` yet
-        # their own watchdog never emits, so only a started watchdog makes
-        # the count measured; anything else reports null ("not counted").
+        # Serial CI-V and Yaesu CAT radios count their own link-loss
+        # episodes instead (``serial_reconnects_total``); a radio with
+        # neither source reports null ("not counted").
         watchdog_task = (
             getattr(radio, "_watchdog_task", None) if radio is not None else None
         )
         reconnects_observable = watchdog_task is not None
+        serial_reconnects = (
+            getattr(radio, "serial_reconnects_total", None)
+            if radio is not None
+            else None
+        )
+        if reconnects_observable:
+            reconnects_total: int | None = self._reconnects_total
+        elif type(serial_reconnects) is int:
+            reconnects_total = serial_reconnects
+        else:
+            reconnects_total = None
         return {
             "rssBytes": rss_bytes,
             "openFds": open_fds,
             "threads": threading.active_count(),
             "asyncioTasks": len(asyncio.all_tasks()),
-            "reconnectsTotal": self._reconnects_total
-            if reconnects_observable
-            else None,
+            "reconnectsTotal": reconnects_total,
         }
 
     async def _serve_runtime(

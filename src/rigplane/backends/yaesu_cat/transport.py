@@ -118,14 +118,26 @@ class TransportStats:
     errors: int = 0
     timeouts: int = 0
     reconnects: int = 0
+    reconnect_episodes: int = 0
     stale_lines_skipped: int = 0
     bytes_flushed: int = 0
     last_error: str = ""
     last_error_time: float = 0.0
     _consecutive_errors: int = field(default=0, repr=False)
+    _reconnect_episode_counted: bool = field(default=False, repr=False)
 
     def record_success(self) -> None:
         self._consecutive_errors = 0
+        self._reconnect_episode_counted = False
+
+    def record_reconnect_attempt(self) -> None:
+        """Count one reconnect attempt; the first attempt of a loss episode
+        also opens the episode. A successful exchange (``record_success``)
+        closes it, so retries inside one episode never recount."""
+        self.reconnects += 1
+        if not self._reconnect_episode_counted:
+            self._reconnect_episode_counted = True
+            self.reconnect_episodes += 1
 
     def record_error(self, msg: str) -> None:
         self.errors += 1
@@ -246,7 +258,7 @@ class YaesuCatTransport:
             return
 
         self._last_reconnect = now
-        self._stats.reconnects += 1
+        self._stats.record_reconnect_attempt()
         logger.warning(
             "CAT: reconnecting serial port (consecutive errors: %d)",
             self._stats.consecutive_errors,

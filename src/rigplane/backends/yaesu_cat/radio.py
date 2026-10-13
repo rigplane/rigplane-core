@@ -400,6 +400,17 @@ class YaesuCatRadio:
         return self.connected
 
     @property
+    def serial_reconnects_total(self) -> int:
+        """Link-loss episodes since this radio was created.
+
+        The first reconnect after the last successful exchange opens an
+        episode; retries inside it do not recount.
+        """
+        stats = getattr(getattr(self, "_transport", None), "stats", None)
+        episodes = getattr(stats, "reconnect_episodes", 0)
+        return episodes if type(episodes) is int else 0
+
+    @property
     def connection_identity(self) -> RadioIdentity | None:
         """Typed identity of the radio on the open port (MOR-3064).
 
