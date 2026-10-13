@@ -303,6 +303,7 @@ async def test_terminal_shutdown_then_actual_core_disconnect_is_idempotent(
     )
     radio._conn_state = RadioConnectionState.DISCONNECTED
     radio._owner_stop_epoch = 0
+    radio._audio_silence_repair_task = None
     await radio.disconnect()
 
     assert result is ShutdownResult.TERMINATED

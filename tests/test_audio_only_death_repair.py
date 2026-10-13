@@ -1,41 +1,37 @@
-"""MOR-3401 phase 1: characterize "audio-only death with CI-V alive is never repaired".
+"""MOR-3401: repair an audio-only death from the existing ``rx_silent`` signal.
 
-Characterization only — NO production change. Three tests against the real
-``IcomRadio`` + ``MockIcomRadio(enable_audio=True)`` stack from
-``scripts/soak/soak_driver.py::_start_simulator_stack`` (the same fixture
-``tests/test_web_owner_reconnect_audio.py`` uses):
+Phase 1 characterized the defect: killing only the client's LAN audio leg
+(``radio._audio_transport._udp_transport.close()``) while CI-V keeps answering
+is never repaired — the session surfaces ``rx_silent``, but
+``audio_error_watchdog_loop`` needs ≥ 50 UDP errors and ``soft_reconnect`` is
+a no-op while CI-V flows. Phase 2 (this file) lands the fix and pins it.
 
-- ``test_audio_only_death_never_repaired`` — RED on main: killing only the
-  client's audio leg never heals; RX frames do not reach the held
-  subscription within the bound although CI-V answers throughout.
-- ``test_manual_audio_rebuild_repairs_audio_only_death`` — GREEN on main
-  positive control: the repair a fix would trigger
-  (``CoreRadio._teardown_audio_transport`` →
-  ``CoreRadio._ensure_audio_transport`` → ``AudioSession.reestablish``,
-  the same path ``ControlPhaseRuntime._after_reconnect_parts`` runs)
-  makes frames resume.
-- ``test_detectors_observe_but_do_not_repair`` — GREEN on main: pins what
-  the existing detectors did during the death (``rx_silent`` fires,
-  ``audio_error_watchdog_loop`` does not act, nothing calls
-  ``soft_reconnect``).
-
-Client-side death model: the test closes the UNDERLYING asyncio UDP
-endpoint of the client's audio transport
-(``radio._audio_transport._udp_transport.close()``) and touches nothing
-else. This models a dead client socket/FD: the simulator (like the real
-IC-7610 per Lane A w31, which keeps streaming RX across short outages)
-keeps sending, CI-V stays healthy, but no audio packet can reach the
-client. A silent socket raises no UDP errors, so ``_udp_error_count``
-stays low — exactly the gap ``audio_error_watchdog_loop`` leaves.
+The fix: ``CoreRadio`` registers a local ``AudioSession`` listener that
+schedules ONE bounded repair task per ``rx_silent`` episode. Each round runs
+the positive-control calls — ``_teardown_audio_transport`` →
+``_ensure_audio_transport`` → ``AudioSession.reestablish`` — up to three
+rounds (1 s then 2 s backoff); after the cap it reports FAILED once through
+the existing ``on_audio_recovery`` callback. (``AudioRecoveryRuntime.recover``
+is deliberately NOT called per round: it would report FAILED on every failed
+round instead of once at the cap.) Serial Icom and Yaesu backends are
+excluded (``backend_id`` is not ``"rigplane"``). The tests below use the same
+``IcomRadio`` + ``MockIcomRadio`` stack as
+``tests/test_web_owner_reconnect_audio.py``
+(``scripts/soak/soak_driver.py::_start_simulator_stack``).
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 
 from rigplane.audio import AudioPacket
-from rigplane.audio.session import AudioSessionEvent, AudioSessionState
+from rigplane.audio.session import AudioSessionEvent
+from rigplane.core.exceptions import ConnectionError as CoreConnectionError
+from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
+from rigplane.runtime._audio_recovery import AudioRecoveryState
+from rigplane.runtime._connection_state import RadioConnectionState
 from scripts.soak import soak_driver
 
 #: Bound for "frames reach the subscription again" (the property a fix must give).
@@ -51,6 +47,16 @@ async def _next_frame_or_none(sub: object, timeout_s: float) -> AudioPacket | No
         return await sub.get(timeout=timeout_s)  # type: ignore[union-attr]
     except asyncio.TimeoutError:
         return None
+
+
+async def _wait_until(predicate: Callable[[], bool], timeout_s: float) -> bool:
+    """Poll *predicate* until it holds or *timeout_s* elapses."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.05)
+    return bool(predicate())
 
 
 def _kill_client_audio_only(radio: object) -> object:
@@ -86,8 +92,25 @@ def _drain(sub: object) -> None:
             break
 
 
+def _spy_method(radio: object, name: str) -> tuple[list[int], Callable[[], object]]:
+    """Wrap ``radio.<name>`` to count calls; returns ``(calls, restore)``."""
+    calls: list[int] = []
+    original = getattr(radio, name)
+
+    async def wrapper(*args: object, **kwargs: object) -> object:
+        calls.append(1)
+        return await original(*args, **kwargs)
+
+    setattr(radio, name, wrapper)
+
+    def restore() -> None:
+        setattr(radio, name, original)
+
+    return calls, restore
+
+
 async def test_audio_only_death_never_repaired() -> None:
-    """RED on main: an audio-only death with live CI-V is never repaired."""
+    """GREEN: an audio-only death with live CI-V is repaired by the fix."""
     stack = await soak_driver._start_simulator_stack()
     events: list[AudioSessionEvent] = []
     try:
@@ -121,12 +144,11 @@ async def test_audio_only_death_never_repaired() -> None:
         print(f"[MOR-3401] rx_silent delays after death: {silent_at}")
         print(f"[MOR-3401] session state at bound: {radio.audio_session.state}")
 
-        # THE RED LINE (MOR-3401): on main nothing rebuilds the dead audio
-        # leg, so no frame arrives within the bound.
+        # The fix rebuilds the dead audio leg, so a frame arrives in the bound.
         assert packet is not None, (
             "MOR-3401: RX frames never resumed on the held subscription within "
             f"{RESUME_BOUND_S}s after a client-side audio death while CI-V "
-            "kept answering — the audio-only death is never repaired"
+            "kept answering — the audio-only death was not repaired"
         )
         await sub.release()
     finally:
@@ -176,13 +198,13 @@ async def test_manual_audio_rebuild_repairs_audio_only_death() -> None:
         await stack.aclose()
 
 
-async def test_detectors_observe_but_do_not_repair() -> None:
-    """GREEN on main: existing detectors surface the death but repair nothing."""
+async def test_rx_silent_repairs_but_soft_reconnect_and_error_watchdog_do_not() -> None:
+    """The repair is rx_silent-driven: soft_reconnect never runs and the
+    error-count watchdog never trips, yet the transport is rebuilt."""
     stack = await soak_driver._start_simulator_stack()
     events: list[AudioSessionEvent] = []
     try:
         radio = stack.radio
-        sim = stack.sim
         radio.audio_session.add_listener(events.append)
 
         soft_calls: list[str] = []
@@ -200,38 +222,268 @@ async def test_detectors_observe_but_do_not_repair() -> None:
             )
 
             _drain(sub)
-            sent_before = sim.audio_rx_frames_sent
             t_death = time.monotonic()
             audio_t = _kill_client_audio_only(radio)
 
-            # Past the 3.0 s RX liveness timeout plus watchdog-cadence slack.
-            await asyncio.sleep(6.0)
+            # The rx_silent-driven repair (teardown → ensure → reestablish).
+            packet = await _next_frame_or_none(sub, RESUME_BOUND_S)
+            assert packet is not None, (
+                "the rx_silent-driven repair never restored RX frames"
+            )
 
             silent = [e for e in events if e.reason == "rx_silent"]
             assert silent, "rx_silent never fired during the audio-only death"
             delay = silent[0].timestamp - t_death
             assert 2.9 <= delay < 10.0, f"rx_silent fired after {delay:.1f}s"
-            assert radio.audio_session.state is AudioSessionState.RECOVERING, (
-                f"session left RECOVERING without any repair: {radio.audio_session.state}"
-            )
+            assert not soft_calls, "soft_reconnect ran during healthy CI-V"
             assert audio_t._udp_error_count < 50, (  # noqa: SLF001
                 "UDP error storm — audio_error_watchdog_loop territory, "
                 "not a silent death"
             )
-            assert radio._audio_transport is audio_t, (  # noqa: SLF001
-                "audio transport was rebuilt with no repair caller"
-            )
-            assert not soft_calls, "soft_reconnect ran during healthy CI-V"
-            assert sim.audio_rx_frames_sent > sent_before, (
-                "simulator stopped sending — the death was not client-side"
+            assert radio._audio_transport is not audio_t, (  # noqa: SLF001
+                "audio transport was never rebuilt after the rx_silent trigger"
             )
             assert await _civ_answers(radio) > 0, "CI-V stopped answering"
-            assert await _next_frame_or_none(sub, 1.0) is None, (
-                "frames arrived with no repair — the death was not sustained"
-            )
             await sub.release()
         finally:
             radio.soft_reconnect = orig_soft  # type: ignore[method-assign]
     finally:
         radio.audio_session.remove_listener(events.append)
         await stack.aclose()
+
+
+async def test_no_repair_without_rx_demand() -> None:
+    """No RX demand → the rx_silent listener schedules no repair task."""
+    stack = await soak_driver._start_simulator_stack()
+    try:
+        radio = stack.radio
+        session = radio.audio_session  # registers the runtime listener
+        assert session.rx_demand == 0
+
+        calls, restore = _spy_method(radio, "_teardown_audio_transport")
+        try:
+            session._emit("rx_silent")  # noqa: SLF001
+            await asyncio.sleep(0.5)
+            assert calls == []
+            assert radio._audio_silence_repair_task is None
+        finally:
+            restore()
+    finally:
+        await stack.aclose()
+
+
+async def test_no_repair_when_civ_not_healthy() -> None:
+    """A soft-reconnect-in-progress (``RECONNECTING``) blocks the repair."""
+    stack = await soak_driver._start_simulator_stack()
+    try:
+        radio = stack.radio
+        sub = await radio.audio_session.subscribe_rx("web-audio")
+        assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
+
+        calls, restore = _spy_method(radio, "_teardown_audio_transport")
+        try:
+            radio._conn_state = RadioConnectionState.RECONNECTING
+            radio.audio_session._emit("rx_silent")  # noqa: SLF001
+            await asyncio.sleep(0.5)
+            assert calls == []
+            assert radio._audio_silence_repair_task is None
+        finally:
+            radio._conn_state = RadioConnectionState.CONNECTED
+            restore()
+        await sub.release()
+    finally:
+        await stack.aclose()
+
+
+async def test_no_repair_when_identity_hold_owns_link() -> None:
+    """A LAN identity hold owning the open link blocks the repair."""
+    stack = await soak_driver._start_simulator_stack()
+    try:
+        radio = stack.radio
+        sub = await radio.audio_session.subscribe_rx("web-audio")
+        assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
+
+        calls, restore = _spy_method(radio, "_teardown_audio_transport")
+        try:
+            radio._connection_identity = RadioIdentity(
+                status=RadioIdentityStatus.NO_RESPONSE, expected_model=radio.model
+            )
+            radio._lan_identity_owned_epoch = radio._civ_epoch
+            radio._lan_identity_gate_running = True
+            try:
+                assert radio._lan_identity_phase_owns_open_link()
+                radio.audio_session._emit("rx_silent")  # noqa: SLF001
+                await asyncio.sleep(0.5)
+                assert calls == []
+                assert radio._audio_silence_repair_task is None
+            finally:
+                radio._lan_identity_gate_running = False
+                radio._connection_identity = None
+        finally:
+            restore()
+        await sub.release()
+    finally:
+        await stack.aclose()
+
+
+async def test_owner_stop_during_backoff_cancels_pending_repair() -> None:
+    """Owner ``disconnect()`` during the backoff cancels the pending repair."""
+    stack = await soak_driver._start_simulator_stack()
+    try:
+        radio = stack.radio
+        sub = await radio.audio_session.subscribe_rx("web-audio")
+        assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
+
+        ensure_calls: list[int] = []
+        orig_ensure = radio._ensure_audio_transport
+
+        async def _fail_ensure() -> None:
+            ensure_calls.append(1)
+            raise CoreConnectionError("audio leg never returns")
+
+        radio._ensure_audio_transport = _fail_ensure  # type: ignore[method-assign]
+        try:
+            _kill_client_audio_only(radio)
+            # Wait for the first attempt to fail and the task to enter backoff.
+            assert await _wait_until(lambda: len(ensure_calls) >= 1, timeout_s=8.0)
+            await radio.disconnect()  # owner stops during the backoff sleep
+            await asyncio.sleep(3.0)  # past every backoff window
+            assert len(ensure_calls) == 1, "a stopped owner still got another attempt"
+        finally:
+            radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
+        await sub.release()
+    finally:
+        await stack.aclose()
+
+
+async def test_silence_repair_caps_at_three_attempts_and_reports_failed_once() -> None:
+    """An audio leg that never returns: exactly 3 attempts, one FAILED, then
+    nothing for ≥ 5 s."""
+    stack = await soak_driver._start_simulator_stack()
+    try:
+        radio = stack.radio
+        recovery: list[AudioRecoveryState] = []
+        radio._on_audio_recovery = recovery.append
+
+        sub = await radio.audio_session.subscribe_rx("web-audio")
+        assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
+
+        ensure_calls: list[int] = []
+        orig_ensure = radio._ensure_audio_transport
+
+        async def _fail_ensure() -> None:
+            ensure_calls.append(1)
+            raise CoreConnectionError("audio leg never returns")
+
+        radio._ensure_audio_transport = _fail_ensure  # type: ignore[method-assign]
+        try:
+            _kill_client_audio_only(radio)
+
+            # 3 attempts with 1 s + 2 s backoff, then FAILED once.
+            assert await _wait_until(
+                lambda: len(ensure_calls) == 3
+                and radio._audio_silence_repair_task is None,
+                timeout_s=15.0,
+            ), f"expected 3 attempts and a finished task, got {len(ensure_calls)}"
+            assert recovery == [AudioRecoveryState.FAILED]
+
+            # No further attempts for ≥ 5 s after the cap.
+            await asyncio.sleep(5.0)
+            assert len(ensure_calls) == 3
+            assert recovery == [AudioRecoveryState.FAILED]
+        finally:
+            radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
+        await sub.release()
+    finally:
+        await stack.aclose()
+
+
+async def test_rx_resumed_resets_attempt_budget() -> None:
+    """After a successful repair, a later silence gets a fresh budget."""
+    stack = await soak_driver._start_simulator_stack()
+    try:
+        radio = stack.radio
+        sub = await radio.audio_session.subscribe_rx("web-audio")
+        assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
+
+        # First silence episode: repaired.
+        _drain(sub)
+        _kill_client_audio_only(radio)
+        assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
+        assert await _wait_until(
+            lambda: radio._audio_silence_repair_task is None, timeout_s=5.0
+        ), "the first repair never finished"
+
+        # Second silence episode: repaired again (a fresh budget).
+        _drain(sub)
+        _kill_client_audio_only(radio)
+        assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
+        await sub.release()
+    finally:
+        await stack.aclose()
+
+
+async def test_two_rx_silent_start_one_repair_task() -> None:
+    """Two rx_silent in quick succession schedule exactly one repair task."""
+    stack = await soak_driver._start_simulator_stack()
+    try:
+        radio = stack.radio
+        sub = await radio.audio_session.subscribe_rx("web-audio")
+        assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
+
+        calls, restore = _spy_method(radio, "_teardown_audio_transport")
+        try:
+            radio.audio_session._emit("rx_silent")  # noqa: SLF001
+            radio.audio_session._emit("rx_silent")  # noqa: SLF001
+
+            # The single repair task still re-establishes RX.
+            assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
+            assert await _wait_until(
+                lambda: radio._audio_silence_repair_task is None, timeout_s=5.0
+            )
+            assert len(calls) == 1, "a second rx_silent started a second repair"
+        finally:
+            restore()
+        await sub.release()
+    finally:
+        await stack.aclose()
+
+
+async def test_serial_backend_does_not_run_lan_repair(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A serial Icom backend with RX demand and an rx_silent does not run the
+    LAN repair (``backend_id`` is ``"icom_serial"``, not ``"rigplane"``)."""
+    from rigplane.backends._icom_serial_base import _IcomSerialRadioBase
+    from rigplane.backends.icom7610 import Icom7610SerialRadio
+    from test_icom7610_serial_radio import _FakeSerialCivLink, _FakeUsbAudioDriver
+
+    monkeypatch.setattr(
+        _IcomSerialRadioBase, "_default_enumerate_serial_ports", lambda self: []
+    )
+
+    async def _no_probe(self: object, port: str) -> int | None:
+        raise AssertionError(f"unexpected real serial I/O on {port!r}")
+
+    monkeypatch.setattr(_IcomSerialRadioBase, "_default_civ_identity_probe", _no_probe)
+
+    link = _FakeSerialCivLink()
+    usb_audio = _FakeUsbAudioDriver()
+    radio = Icom7610SerialRadio(
+        device="/dev/ttyUSB0", civ_link=link, audio_driver=usb_audio
+    )
+    await radio.connect()
+    try:
+        session = radio.audio_session
+        sub = await session.subscribe_rx("web-audio")
+        assert session.rx_demand == 1
+
+        calls, restore = _spy_method(radio, "_teardown_audio_transport")
+        try:
+            session._emit("rx_silent")  # noqa: SLF001
+            await asyncio.sleep(0.5)
+            assert calls == []
+            assert radio._audio_silence_repair_task is None
+        finally:
+            restore()
+        await sub.release()
+    finally:
+        await radio.disconnect()

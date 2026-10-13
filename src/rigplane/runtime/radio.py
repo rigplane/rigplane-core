@@ -345,6 +345,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     WATCHDOG_CHECK_INTERVAL = 0.5
     _WATCHDOG_HEALTH_LOG_INTERVAL = 30.0
 
+    # Audio-only silence repair (MOR-3401): rebuild the LAN audio transport
+    # when the existing ``rx_silent`` liveness signal fires while CI-V stays
+    # healthy. Bounded per silence episode, with these backoff delays between
+    # the attempts (1 s before attempt 2, 2 s before attempt 3).
+    _LAN_AUDIO_SILENCE_REPAIR_ATTEMPTS: int = 3
+    _LAN_AUDIO_SILENCE_REPAIR_BACKOFF_S: tuple[float, ...] = (1.0, 2.0)
+
     # Retry identity on the same control session.
     _LAN_IDENTITY_REREAD_BACKOFF_S: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0)
     _LAN_IDENTITY_REREAD_STEADY_S: float = 15.0
@@ -555,6 +562,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._audio_bus: Any = None
         # AudioSession — lazy-initialized radio-owned singleton (MOR-579)
         self._audio_session: Any = None
+        # Single-flight audio-silence repair task (MOR-3401); None when idle.
+        self._audio_silence_repair_task: asyncio.Task[None] | None = None
+        # Failed silence-repair attempts in the current episode (MOR-3401);
+        # reset on ``rx_resumed`` and on a new connect.
+        self._audio_silence_repair_attempts: int = 0
         self._scope_assembler: ScopeAssembler = ScopeAssembler()
         self._scope_callback: Callable[[ScopeFrame], Any] | None = None
         # MOR-2222: last scope-display mode published from the waveform
@@ -1444,7 +1456,141 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             from rigplane.audio.session import AudioSession
 
             self._audio_session = AudioSession(self)
+            self._audio_session.add_listener(self._on_audio_session_event)
         return self._audio_session
+
+    def _on_audio_session_event(self, event: Any) -> None:
+        """AudioSession listener: repair a LAN audio-only death (MOR-3401).
+
+        Schedules ONE bounded repair task per ``rx_silent`` episode; a second
+        ``rx_silent`` while the task runs — or after the episode budget is
+        spent — schedules nothing. ``rx_resumed`` resets the episode budget.
+        Non-LAN backends never schedule: serial Icom inherits this listener
+        but owns USB audio (``backend_id`` ``"icom_serial"``), while Yaesu
+        and rigctld are separate classes outside this path entirely.
+        """
+        reason = event.reason
+        if reason == "rx_resumed":
+            self._audio_silence_repair_attempts = 0
+            return
+        if reason != "rx_silent":
+            return
+        if self.backend_id != "rigplane":
+            return
+        task = self._audio_silence_repair_task
+        if task is not None and not task.done():
+            return
+        if (
+            self._audio_silence_repair_attempts
+            >= self._LAN_AUDIO_SILENCE_REPAIR_ATTEMPTS
+        ):
+            return
+        if not self._silence_repair_preconditions_ok(
+            self._civ_epoch, self._owner_stop_epoch
+        ):
+            return
+        self._audio_silence_repair_task = asyncio.get_running_loop().create_task(
+            self._run_audio_silence_repair(
+                civ_epoch=self._civ_epoch,
+                owner_stop_epoch=self._owner_stop_epoch,
+            ),
+            name="audio-silence-repair",
+        )
+
+    def _silence_repair_preconditions_ok(
+        self, civ_epoch: int, owner_stop_epoch: int
+    ) -> bool:
+        """Whether the silence repair may (still) run for a trigger episode.
+
+        RX demand must still be held, the radio must be CONNECTED (not
+        RECONNECTING or mid soft-reconnect), the LAN identity hold must not
+        own the link, and the CI-V / owner-stop epochs must still name the
+        trigger generation — any reconnect or owner stop since then aborts.
+        """
+        session = self._audio_session
+        return (
+            session is not None
+            and session.rx_demand > 0
+            and self._conn_state is RadioConnectionState.CONNECTED
+            and not self._lan_identity_phase_owns_open_link()
+            and self._civ_epoch == civ_epoch
+            and self._owner_stop_epoch == owner_stop_epoch
+        )
+
+    async def _run_audio_silence_repair(
+        self, *, civ_epoch: int, owner_stop_epoch: int
+    ) -> None:
+        """Rebuild the LAN audio transport for one ``rx_silent`` episode.
+
+        Up to ``_LAN_AUDIO_SILENCE_REPAIR_ATTEMPTS`` teardown → ensure →
+        reestablish rounds (the phase-1 positive-control path, serialized on
+        ``_audio_ensure_lock`` inside ``_ensure_audio_transport``), with the
+        ``_LAN_AUDIO_SILENCE_REPAIR_BACKOFF_S`` sleeps between rounds. Every
+        precondition is re-checked after each await; after the cap it reports
+        FAILED once through ``_on_audio_recovery``. Never raises —
+        cancellation from owner ``disconnect()`` propagates so the stop
+        takes effect.
+        """
+        try:
+            while (
+                self._audio_silence_repair_attempts
+                < self._LAN_AUDIO_SILENCE_REPAIR_ATTEMPTS
+            ):
+                if self._audio_silence_repair_attempts:
+                    backoff = self._LAN_AUDIO_SILENCE_REPAIR_BACKOFF_S
+                    await asyncio.sleep(
+                        backoff[
+                            min(
+                                self._audio_silence_repair_attempts - 1,
+                                len(backoff) - 1,
+                            )
+                        ]
+                    )
+                if not self._silence_repair_preconditions_ok(
+                    civ_epoch, owner_stop_epoch
+                ):
+                    return
+                try:
+                    await self._teardown_audio_transport()
+                    if not self._silence_repair_preconditions_ok(
+                        civ_epoch, owner_stop_epoch
+                    ):
+                        return
+                    await self._ensure_audio_transport()
+                    if not self._silence_repair_preconditions_ok(
+                        civ_epoch, owner_stop_epoch
+                    ):
+                        return
+                    await self._audio_session.reestablish()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning(
+                        "audio-silence repair attempt failed", exc_info=True
+                    )
+                    self._audio_silence_repair_attempts += 1
+                    continue
+                return
+            if (
+                self._audio_silence_repair_attempts
+                >= self._LAN_AUDIO_SILENCE_REPAIR_ATTEMPTS
+            ):
+                report = self._on_audio_recovery
+                if report is not None:
+                    try:
+                        report(AudioRecoveryState.FAILED)
+                    except Exception:
+                        logger.warning(
+                            "audio-silence repair FAILED report failed",
+                            exc_info=True,
+                        )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("audio-silence repair task failed", exc_info=True)
+        finally:
+            if self._audio_silence_repair_task is asyncio.current_task():
+                self._audio_silence_repair_task = None
 
     @property
     def profile(self) -> RadioProfile:
@@ -1563,6 +1709,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             # connect() keeps the escalation spacing, an owner connect resets it.
             if asyncio.current_task() is not getattr(self, "_reconnect_task", None):
                 self._lan_identity_escalated_at = None
+            # A new connect starts a fresh audio-silence episode (MOR-3401):
+            # a repair budget exhausted on the old connection is forgotten.
+            self._audio_silence_repair_attempts = 0
             self._reset_external_cat_session()
             checking = RadioIdentity(
                 status=RadioIdentityStatus.CHECKING, expected_model=self.model
@@ -1635,6 +1784,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """
         # Keep the identity hold until teardown finishes; stop its reader first.
         self._cancel_lan_identity_reread()
+        # An owner stop supersedes any audio-silence repair still in flight
+        # (MOR-3401): cancel it first so a backoff sleep cannot fire another
+        # attempt while the teardown below runs.
+        repair_task = self._audio_silence_repair_task
+        if repair_task is not None and not repair_task.done():
+            repair_task.cancel()
+        self._audio_silence_repair_task = None
         await self._shutdown_managed_tx()
         # Owner teardown stops the resident loops explicitly: during
         # RECONNECTING after a failed attempt the lifecycle is already
