@@ -44,7 +44,9 @@ One JSON object per line with keys `window`, `transport`, `t`, `dir`,
   write-and-restore: SET + ACK/NAK pairs), `scope` (scope setting reads +
   5 wave sweeps), `vfo_select` (`07 D1` / `07 D0` five times, each answered
   FB, with `07 D2` and `03` reads after the first two; the window ends with
-  `07 D0`), all with `transport: "lan"`; and `usb_session`
+  `07 D0`), `scope_control` (scope reads a starting `rigplane` client makes, then the scope panel /
+  wave-output reads and SETs, single/dual and scope-receiver SETs — every SET answered `FB` — and per-receiver
+  scope setting reads with the receiver byte; two recordings joined on one timeline), all with `transport: "lan"`; and `usb_session`
   (`transport: "usb"`: the same status reads, probe list and read-only
   validate over the radio's USB CI-V port — on USB the radio does NOT
   echo requests).
