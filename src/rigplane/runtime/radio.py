@@ -1464,14 +1464,18 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
         Schedules ONE bounded repair task per ``rx_silent`` episode; a second
         ``rx_silent`` while the task runs — or after the episode budget is
-        spent — schedules nothing. ``rx_resumed`` resets the episode budget.
+        spent — schedules nothing. ``rx_resumed`` resets the episode budget,
+        but only once its repair task is done: a stray resumed edge (e.g. a
+        buffered frame landing mid-repair) must not fund an extra round.
         Non-LAN backends never schedule: serial Icom inherits this listener
         but owns USB audio (``backend_id`` ``"icom_serial"``), while Yaesu
         and rigctld are separate classes outside this path entirely.
         """
         reason = event.reason
         if reason == "rx_resumed":
-            self._audio_silence_repair_attempts = 0
+            task = self._audio_silence_repair_task
+            if task is None or task.done():
+                self._audio_silence_repair_attempts = 0
             return
         if reason != "rx_silent":
             return
@@ -1535,10 +1539,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         reestablish rounds (the phase-1 positive-control path, serialized on
         ``_audio_ensure_lock`` inside ``_ensure_audio_transport``), with the
         ``_LAN_AUDIO_SILENCE_REPAIR_BACKOFF_S`` sleeps between rounds. Every
-        precondition is re-checked after each await; after the cap it reports
-        FAILED once through ``_on_audio_recovery``. Never raises —
-        cancellation from owner ``disconnect()`` propagates so the stop
-        takes effect.
+        precondition is re-checked after each await; a round that
+        re-establishes demand closes the episode with a fresh budget, while
+        after the cap it reports FAILED once through ``_on_audio_recovery``.
+        Never raises — cancellation from owner ``disconnect()`` propagates
+        so the stop takes effect.
         """
         try:
             while not self._silence_repair_budget_spent():
@@ -1572,6 +1577,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                     )
                     self._audio_silence_repair_attempts += 1
                     continue
+                self._audio_silence_repair_attempts = 0
                 return
             if self._silence_repair_budget_spent():
                 report = self._on_audio_recovery
