@@ -10,10 +10,14 @@ from types import SimpleNamespace
 
 import pytest
 import serial
-import serial.serialposix as serialposix
-import serial_asyncio
 
 from rigplane.core.serial_open import _open_with_idle_lines, open_serial_port
+
+if os.name != "posix":
+    pytest.skip("serial POSIX lifecycle test", allow_module_level=True)
+
+serialposix = pytest.importorskip("serial.serialposix")
+serial_asyncio = pytest.importorskip("serial_asyncio")
 
 
 class _TerminalIO:
@@ -28,6 +32,8 @@ class _TerminalIO:
         self.line_writes = []
         self.readers = set()
         self.fail_configuration = None
+        self.close_failure = None
+        self.close_observed = {}
         self.error = serialposix.termios.error(errno.EIO, "injected terminal failure")
         self.attributes = [
             0,
@@ -77,6 +83,16 @@ class _TerminalIO:
             )
         )
         if len(self.configurations) == self.fail_configuration:
+            if self.close_failure is not None:
+                original_close = self.instance.close
+                self.close_observed["original_close"] = original_close
+
+                def close_then_fail():
+                    self.close_observed["original_error"] = sys.exc_info()[1]
+                    original_close()
+                    raise self.close_failure
+
+                self.instance.close = close_then_fail
             raise self.error
         return self.attributes[:6] + [self.attributes[6][:]]
 
@@ -207,6 +223,32 @@ async def test_wrap_reconfiguration_failure_closes_before_error_return(terminal)
     ]
     # The exception and serial remain retained; no yield precedes these checks.
     assert not terminal.owned, "serial fds remain open when wrap failure returns"
+    assert sorted(terminal.closed) == terminal.opened
+    assert not terminal.instance.is_open
+
+
+@pytest.mark.asyncio
+async def test_wrap_failure_keeps_original_error_when_close_also_fails(terminal):
+    terminal.fail_configuration = 3
+    close_error = RuntimeError("injected close failure")
+    terminal.close_failure = close_error
+    try:
+        with pytest.raises(serial.SerialException) as raised:
+            await open_serial_port(
+                terminal.port, baudrate=9600, timeout=0.5, write_timeout=0.5
+            )
+    finally:
+        if (
+            terminal.instance is not None
+            and "original_close" in terminal.close_observed
+        ):
+            terminal.instance.close = terminal.close_observed["original_close"]
+
+    assert raised.value is terminal.close_observed["original_error"]
+    assert raised.value.__context__ is terminal.error
+    assert close_error not in (raised.value, raised.value.__context__)
+    assert terminal.configurations[-1] == (True, 0, 0, 5)
+    assert not terminal.owned
     assert sorted(terminal.closed) == terminal.opened
     assert not terminal.instance.is_open
 
