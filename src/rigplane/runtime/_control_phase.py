@@ -462,6 +462,14 @@ class ControlPhaseRuntime:
                         )
                         try:
                             civ_port = await self._receive_civ_port()
+                            if getattr(h, "_last_status_error", 0) == 0xFDFFFFFF:
+                                # Late foreign-holder reject (a not-ready
+                                # status, or a post-fallback warming status,
+                                # followed by FD): transient busy, never
+                                # another conninfo retry.
+                                raise _StatusBusyReject(
+                                    "status busy reject (foreign holder)"
+                                )
                             if civ_port > 0:
                                 logger.info("Radio now reports civ_port=%d", civ_port)
                                 h._civ_port = civ_port

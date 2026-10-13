@@ -1100,42 +1100,30 @@ class CoreRadioSessionLifecycle:
             live_holder_after_s is not None
             and attempt_started_at >= first_busy_started_at + live_holder_after_s
         ):
-            # Live-holder stop (MOR-3391 part 1b): no grant on an attempt
-            # that started at or after first-busy plus the threshold proves
-            # a LIVE session holds the radio — a dead hold would have
-            # expired by then.  Stop: another same-computer login would make
-            # the radio drop that live session.  The reject was already
+            # Live-holder stop: the start-up busy threshold elapsed
+            # with no grant.  The reject was already
             # released inside ``_attempt_with_release``; a discovery attempt
-            # never claimed anything.
-            from rigplane.runtime._control_phase import (
-                _session_reject_hint,
-            )
-
+            # never claimed anything.  These branches carry no holder
+            # location metadata, so the terminal wording stays neutral.
             self._connecting_started = None
             self._emit(LifecycleState.DISCONNECTED)
             raise RadioSessionHeldError(
                 "radio busy: another client holds the session. "
-                f"{_session_reject_hint(0xFFFFFFFF)}"
+                "Check for another active radio client before retrying."
             )
         busy_attempts += 1
         now = time.monotonic()
         if busy_deadline is None:
             busy_deadline = now + budget_s
         if now >= busy_deadline:
-            # Deferred import: ``_control_phase`` imports this module
-            # at its own call sites, and the public contract module
-            # stays importable without the control-phase machinery.
-            from rigplane.runtime._control_phase import (
-                _session_reject_hint,
-            )
-
             self._connecting_started = None
             self._emit(LifecycleState.DISCONNECTED)
             raise RigplaneConnectionError(
                 "Radio session never became ready: still busy after "
                 f"{busy_attempts} start-up re-logins against the "
                 f"{budget_s:.0f}s start-up "
-                f"busy budget. {_session_reject_hint(0xFFFFFFFF)}"
+                "busy budget. Check for another active radio client "
+                "before retrying."
             )
         cooldown = self._first_connect_busy_cooldown_s
         if cooldown is None:

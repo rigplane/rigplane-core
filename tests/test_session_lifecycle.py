@@ -932,8 +932,10 @@ async def test_live_holder_stop_on_the_threshold_attempt(
 
     message = str(excinfo.value)
     assert "another client holds the session" in message
-    assert "from this computer" in message
-    assert "a foreign client may hold it" not in message
+    assert "Check for another active radio client before retrying." in message
+    assert "this computer" not in message
+    assert "runs here" not in message
+    assert "stop one of them" not in message
     assert mech.connect_calls == 4
     assert mech.release_calls == 4
     assert not mech.claimed
@@ -1108,7 +1110,10 @@ async def test_discovery_timeouts_until_threshold_stop_with_busy_reason(
 
     message = str(excinfo.value)
     assert "another client holds the session" in message
-    assert "from this computer" in message
+    assert "Check for another active radio client before retrying." in message
+    assert "this computer" not in message
+    assert "runs here" not in message
+    assert "stop one of them" not in message
     assert "did not respond to discovery" not in message
     # Attempts start at +0/+30/+60/+90 s; the fourth is at the threshold.
     assert mech.connect_calls == 4
