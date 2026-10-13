@@ -581,6 +581,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._audio_silence_repair_episode_epoch: int | None = None
         self._audio_silence_repair_episode_start_heartbeat: float | None = None
         self._audio_silence_repair_baseline_heartbeat: float | None = None
+        # Monotonic time the last repair-round teardown completed (MOR-3401
+        # r3): the teardown itself flushes jitter-buffered pre-death frames
+        # into the bus, so only heartbeats NEWER than this prove audio
+        # really flows again.
+        self._audio_silence_repair_teardown_completed: float | None = None
         self._scope_assembler: ScopeAssembler = ScopeAssembler()
         self._scope_callback: Callable[[ScopeFrame], Any] | None = None
         # MOR-2222: last scope-display mode published from the waveform
@@ -1507,6 +1512,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 heartbeat = self._silence_repair_rx_heartbeat()
                 self._audio_silence_repair_episode_start_heartbeat = heartbeat
                 self._audio_silence_repair_baseline_heartbeat = heartbeat
+                self._audio_silence_repair_teardown_completed = None
             return
         if reason != "rx_silent":
             return
@@ -1560,9 +1566,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     def _silence_repair_silence_over(self) -> bool:
         """RX frames resumed and are still flowing: stop without teardown.
 
-        A frame newer than the episode start is not enough — one buffered
-        pre-death frame landing mid-task must not stop the repair. Only a
-        heartbeat fresher than the session's own silence definition
+        Newer than the episode start is not enough — one buffered
+        pre-death frame landing mid-task, or the teardown's own
+        jitter-buffer flush, must not stop the repair. Only a heartbeat
+        that is both newer than the last teardown completion and fresher
+        than the session's own silence definition
         (``RX_LIVENESS_TIMEOUT_S``, the same threshold
         ``AudioSession._check_liveness_locked`` applies) proves audio
         really flows again.
@@ -1570,8 +1578,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         from rigplane.audio.session import RX_LIVENESS_TIMEOUT_S
 
         heartbeat = self._silence_repair_rx_heartbeat()
-        start = self._audio_silence_repair_episode_start_heartbeat
-        if heartbeat is None or heartbeat == start:
+        if heartbeat is None:
+            return False
+        reference = self._audio_silence_repair_episode_start_heartbeat
+        completed = self._audio_silence_repair_teardown_completed
+        if completed is not None and (
+            reference is None or completed > reference
+        ):
+            reference = completed
+        if reference is None or heartbeat <= reference:
             return False
         return time.monotonic() - heartbeat < RX_LIVENESS_TIMEOUT_S
 
@@ -1639,6 +1654,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                     return
                 try:
                     await self._teardown_audio_transport()
+                    self._audio_silence_repair_teardown_completed = (
+                        time.monotonic()
+                    )
                     if not self._silence_repair_preconditions_ok(
                         civ_epoch,
                         owner_stop_epoch,
@@ -1809,6 +1827,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             self._audio_silence_repair_episode_epoch = None
             self._audio_silence_repair_episode_start_heartbeat = None
             self._audio_silence_repair_baseline_heartbeat = None
+            self._audio_silence_repair_teardown_completed = None
             self._reset_external_cat_session()
             checking = RadioIdentity(
                 status=RadioIdentityStatus.CHECKING, expected_model=self.model
