@@ -2520,18 +2520,51 @@ async def _run(args: argparse.Namespace) -> int:
         "station",
     ):
         config = replace(config, auto_reconnect=True)
-    # MOR-3391: one resident process per radio per computer. The guard is
-    # taken before the radio is opened and before any listener binds; the
+    # MOR-3391: one process per radio per computer. The guard is taken
+    # before the radio is opened and before any listener binds; the
     # acquired lock is held for the process lifetime (the OS releases it on
     # exit, including SIGKILL). Re-entering _run in the same process reuses
     # the held lock — only another process is refused. Only backends holding
     # an exclusive radio session are guarded (LAN, local serial); the
     # rigctld backend talks to an external rigctld and is never guarded.
-    if args.command in RESIDENT_COMMANDS and guards_backend(config):
+    # MOR-3431: one-shot commands take the same lock and hold it for the
+    # run. A second login from this computer makes the radio drop the
+    # resident holder's live session about 90 s later, and releasing the
+    # second token does not prevent it — so a refused one-shot never
+    # reaches the radio. A resident start refused while a one-shot holds
+    # the lock keeps the resident message (accepted cost).
+    if guards_backend(config):
         try:
             acquire_resident_lock(radio_lock_identity(config))
         except ResidentAlreadyRunningError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            if args.command in RESIDENT_COMMANDS:
+                print(f"Error: {exc}", file=sys.stderr)
+            else:
+                pid_hint = (
+                    f" (pid {exc.holder_pid})" if exc.holder_pid is not None else ""
+                )
+                # The same-computer drop rule is a property of the Icom
+                # LAN session; serial radios have no login, so they name
+                # the unshareable port instead.
+                if isinstance(config, LanBackendConfig):
+                    reason = (
+                        "a second login from this computer makes "
+                        "the radio drop that process's session"
+                    )
+                else:
+                    reason = (
+                        "the radio's serial port cannot be shared "
+                        "safely between two processes"
+                    )
+                print(
+                    "Error: another rigplane process"
+                    f"{pid_hint} is already using this radio on this "
+                    f"computer; {reason}. Send commands "
+                    "to the running server instead (its HTTP API or "
+                    "rigctld; for a readiness check, GET /readyz), or stop "
+                    "it first.",
+                    file=sys.stderr,
+                )
             return 1
     if args.command == "audio" and args.audio_command == "probe":
         return await _cmd_audio_probe(config, args)
