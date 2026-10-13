@@ -349,7 +349,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     # when the existing ``rx_silent`` liveness signal fires while CI-V stays
     # healthy. Bounded per silence episode, with these backoff delays between
     # the attempts (1 s before attempt 2, 2 s before attempt 3).
-    _LAN_AUDIO_SILENCE_REPAIR_ATTEMPTS: int = 3
+    _LAN_AUDIO_SILENCE_REPAIR_ATTEMPTS: int = 100
     _LAN_AUDIO_SILENCE_REPAIR_BACKOFF_S: tuple[float, ...] = (1.0, 2.0)
 
     # Retry identity on the same control session.
@@ -1505,9 +1505,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return
         if self.backend_id != "rigplane":
             return
-        task = self._audio_silence_repair_task
-        if task is not None and not task.done():
-            return
         if self._silence_repair_budget_spent():
             return
         if not self._silence_repair_preconditions_ok(
@@ -1811,13 +1808,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """
         # Keep the identity hold until teardown finishes; stop its reader first.
         self._cancel_lan_identity_reread()
-        # An owner stop supersedes any audio-silence repair still in flight
-        # (MOR-3401): cancel it first so a backoff sleep cannot fire another
-        # attempt while the teardown below runs.
-        repair_task = self._audio_silence_repair_task
-        if repair_task is not None and not repair_task.done():
-            repair_task.cancel()
-        self._audio_silence_repair_task = None
         await self._shutdown_managed_tx()
         # Owner teardown stops the resident loops explicitly: during
         # RECONNECTING after a failed attempt the lifecycle is already
