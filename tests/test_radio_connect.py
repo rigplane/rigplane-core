@@ -24,6 +24,7 @@ from rigplane.audio.route import AudioConfigSource
 from rigplane.profiles import RadioProfile
 from rigplane.runtime._control_phase import ControlPhaseRuntime, _session_reject_hint
 from rigplane.runtime.session_lifecycle import (
+    AttemptOutcome,
     AttemptResult,
     CoreRadioSessionLifecycle,
     LifecycleState,
@@ -665,6 +666,31 @@ class TestReceiveCivPort:
         assert (
             radio._control_phase._status_retry_pause()
             == radio._control_phase._STATUS_RETRY_PAUSE
+        )
+
+    @pytest.mark.asyncio
+    async def test_fd_error_with_positive_port_returns_zero_and_records(self) -> None:
+        """A foreign-holder reject must not accept the advertised port.
+
+        Raw status error 0xFDFFFFFF with a positive advertised civ_port
+        returns 0 and records the error for immediate busy
+        classification — the port is never adopted.
+        """
+        radio = IcomRadio("192.168.1.100", timeout=1.0, model="IC-7610")
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        mt.queue_response(_build_status(50002, 50003, error=0xFDFFFFFF))
+        port = await radio._control_phase._receive_civ_port()
+        assert port == 0
+        assert getattr(radio, "_last_status_error", 0) == 0xFDFFFFFF
+
+    def test_status_retry_pause_uses_reject_cooldown_for_foreign_busy(self) -> None:
+        """0xFDFFFFFF rides the reject cooldown, never the short retry pause."""
+        radio = IcomRadio("192.168.1.100", model="IC-7610")
+        radio._last_status_error = 0xFDFFFFFF
+        assert (
+            radio._control_phase._status_retry_pause()
+            == radio._control_phase._STATUS_REJECT_COOLDOWN
         )
 
 
@@ -1391,6 +1417,97 @@ class TestConnectSessionRejection:
         assert send_mock.await_count == 1, "No retry for mono codec"
         assert mt.disconnected is True
 
+    @pytest.mark.asyncio
+    async def test_global_stereo_fallback_then_foreign_busy_is_busy_not_dual_failure(
+        self,
+    ) -> None:
+        """Global-stereo fallback followed by 0xFDFFFFFF ends busy, not hard.
+
+        The old 0xFFFFFFFF fallback runs once (stereo conninfo, then mono
+        conninfo); a foreign-holder reject on the second status must take
+        the transient busy outcome — never the dual-codec hard failure and
+        never the conninfo retry loop. The once-performed codec selection
+        stays mono.
+        """
+        radio = IcomRadio(
+            "192.168.1.100",
+            username="u",
+            password="p",
+            audio_codec=AudioCodec.PCM_2CH_16BIT,
+            profile=_lan_profile_without_codec_preference(),
+        )
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+
+        civ_port_responses = [0, 0]
+        status_errors = [0xFFFFFFFF, 0xFDFFFFFF]
+
+        async def _status_flow() -> int:
+            if civ_port_responses:
+                radio._last_status_error = status_errors.pop(0)
+                return civ_port_responses.pop(0)
+            radio._last_status_error = 0xFDFFFFFF
+            return 0
+
+        codec_per_call: list[AudioCodec] = []
+
+        async def _capture_codec(*_args: object, **_kwargs: object) -> None:
+            codec_per_call.append(radio._audio_codec)
+
+        with (
+            patch.object(radio._control_phase, "_status_retry_pause", return_value=0.0),
+            patch.object(
+                radio._control_phase,
+                "_wait_for_packet",
+                new=AsyncMock(return_value=_build_login_response()),
+            ),
+            patch.object(radio._control_phase, "_send_token_ack", new=AsyncMock()),
+            patch.object(
+                radio._control_phase,
+                "_receive_guid",
+                new=AsyncMock(return_value=b"\x00" * 16),
+            ),
+            patch.object(
+                radio._control_phase,
+                "_send_conninfo",
+                new=AsyncMock(side_effect=_capture_codec),
+            ),
+            patch.object(
+                radio._control_phase,
+                "_receive_civ_port",
+                new=AsyncMock(side_effect=_status_flow),
+            ),
+            patch.object(
+                radio._control_phase, "_flush_queue", new=AsyncMock(return_value=0)
+            ),
+            patch.object(radio._control_phase, "_start_token_renewal"),
+            patch.object(radio._control_phase, "_start_watchdog"),
+            patch.object(radio._civ_runtime, "start_pump"),
+            patch.object(radio._civ_runtime, "start_data_watchdog"),
+            patch.object(radio._civ_runtime, "start_worker"),
+            patch(
+                "rigplane.transport.IcomTransport",
+                return_value=ConnectMockTransport(),
+            ),
+        ):
+            # The low-level attempt leaves its partial claim for the
+            # lifecycle caller to release; clean it here so no pending
+            # sockets or token claim stay active.
+            try:
+                result = await radio._control_phase.connect_attempt()
+            finally:
+                await radio._control_phase.release()
+
+        assert result.outcome is AttemptOutcome.SESSION_BUSY_REJECT
+        # The fallback ran exactly once, then the busy path took over:
+        # no conninfo retry loop on the busy-issued token.
+        assert codec_per_call == [
+            AudioCodec.PCM_2CH_16BIT,
+            AudioCodec.PCM_1CH_16BIT,
+        ]
+        assert radio._audio_codec == AudioCodec.PCM_1CH_16BIT
+        assert radio.audio_stream_contract.rx_codec_source == AudioConfigSource.FALLBACK
+
 
 class TestStartupBusyHoldBudget:
     """MOR-3391: a start-up busy reject re-logs in with a FRESH token.
@@ -1670,6 +1787,105 @@ class TestStartupBusyHoldBudget:
         # Initial conninfo plus main's three retries: the budget must not
         # add a fourth window to a reconnect.
         assert send_mock.await_count == 4
+        assert mt.disconnected is True
+
+
+class TestStartupBusyForeignHold:
+    """Foreign-holder 0xFDFFFFFF rides the resident busy hold (same
+    cadence and budget as 0xFFFFFFFF), never stereo fallback.
+    Scripted fakes through the production path.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("radio_kwargs", "expected_codec"),
+        [
+            pytest.param(
+                {"model": "IC-7610"},
+                AudioCodec.PCM_2CH_16BIT,
+                id="default-ic7610-profile-stereo",
+            ),
+            pytest.param(
+                {
+                    "audio_codec": AudioCodec.PCM_2CH_16BIT,
+                    "profile": _lan_profile_without_codec_preference(),
+                },
+                AudioCodec.PCM_2CH_16BIT,
+                id="global-stereo",
+            ),
+            pytest.param(
+                {
+                    "audio_codec": AudioCodec.PCM_2CH_16BIT,
+                    "audio_codec_explicit": True,
+                    "model": "IC-7610",
+                },
+                AudioCodec.PCM_2CH_16BIT,
+                id="explicit-stereo",
+            ),
+            pytest.param(
+                {"audio_codec": AudioCodec.PCM_1CH_16BIT, "model": "IC-7610"},
+                AudioCodec.PCM_1CH_16BIT,
+                id="mono",
+            ),
+        ],
+    )
+    async def test_persistent_foreign_busy_uses_resident_hold(
+        self,
+        radio_kwargs: dict[str, object],
+        expected_codec: AudioCodec,
+    ) -> None:
+        """Persistent 0xFDFFFFFF stops at the live-holder error, not a hard
+        failure: each reject releases its token and the retry logs in
+        again, so the wire shows strict login/remove alternation with one
+        conninfo per fresh claim — never a conninfo retry on a
+        busy-issued token and never a generic ConnectionError. The
+        requested codec is preserved untouched on every row.
+        """
+        from rigplane.core.exceptions import RadioSessionHeldError
+
+        radio = IcomRadio(
+            "192.168.1.100",
+            username="u",
+            password="p",
+            **radio_kwargs,  # type: ignore[arg-type]
+        )
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        clock = _VirtualMonotonic()
+        tokens = [0x7000 + i for i in range(8)]
+        logins = [_build_login_response(token=t) for t in tokens]
+        codec_before = radio._audio_codec
+        send_mock = AsyncMock()
+
+        async def _reject_status() -> int:
+            clock.advance(_REJECT_STEP_S)
+            radio._last_status_error = 0xFDFFFFFF
+            return 0
+
+        with _busy_hold_patch_stack(
+            radio,
+            clock,
+            login_responses=logins,
+            status_flow=_reject_status,
+            send_mock=send_mock,
+        ):
+            with pytest.raises(
+                RadioSessionHeldError, match="another client holds the session"
+            ):
+                await radio.connect()
+
+        # The held-subclass error stayed reachable; the codec was never
+        # downgraded.
+        assert radio._audio_codec == expected_codec == codec_before
+        # Four attempts (virtual +0/+35/+70/+105 s, stop at the 90 s
+        # threshold): one conninfo per attempt, each on a fresh claim.
+        assert send_mock.await_count == 4
+        kinds = ["login" if len(p) == 0x80 else "remove" for p in mt.sent_packets]
+        # Every attempt's token is released, including the stopping
+        # fourth — no leak.
+        assert kinds == ["login", "remove"] * 4
+        removes = _token_remove_tokens([p for p in mt.sent_packets if len(p) == 0x40])
+        assert removes == tokens[:4]
         assert mt.disconnected is True
 
 
