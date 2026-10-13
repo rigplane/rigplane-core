@@ -4098,7 +4098,8 @@ class TestLiveOwnerExitCode:
         assert radio.enter_calls == 1
         err = capsys.readouterr().err
         assert "Error: radio busy: another client holds the session" in err
-        assert "from this computer" in err
+        assert "Check for another active radio client before retrying." in err
+        assert "from this computer" not in err
 
     @pytest.mark.asyncio
     async def test_background_live_owner_stop_exits_three(self, capsys: Any) -> None:
@@ -4130,7 +4131,8 @@ class TestLiveOwnerExitCode:
         assert result == 3
         err = capsys.readouterr().err
         assert "Error: radio busy: another client holds the session" in err
-        assert "from this computer" in err
+        assert "Check for another active radio client before retrying." in err
+        assert "from this computer" not in err
         composition.transport_ready.assert_not_awaited()
         assert len(radio.exits) == 1
 
