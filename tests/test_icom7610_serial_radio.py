@@ -3629,6 +3629,48 @@ async def test_owner_disconnect_during_soft_reconnect_identity_gate_with_delayed
 
 
 @pytest.mark.asyncio
+async def test_owner_disconnect_during_soft_reconnect_identity_gate_with_late_read_error() -> None:
+    link = _GateSerialLink(answer_identity=False)
+    radio = _gate_radio(link)
+    radio._civ_get_timeout = 0.5
+
+    in_read = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def _gated_error() -> bytes | None:
+        in_read.set()
+        await gate.wait()
+        raise OSError("write failed: device unplugged")
+
+    radio._read_serial_identity_payload = _gated_error  # type: ignore[assignment]
+
+    soft_reconnect_task = asyncio.create_task(radio.soft_reconnect())
+    try:
+        await asyncio.wait_for(in_read.wait(), timeout=5.0)
+        await radio.disconnect()
+        gate.set()
+        with pytest.raises(ConnectionError) as exc_info:
+            await asyncio.wait_for(soft_reconnect_task, timeout=5.0)
+        assert isinstance(exc_info.value.__cause__, OSError)
+
+        assert radio.conn_state is RadioConnectionState.DISCONNECTED
+        assert radio.connection_identity is None
+        assert radio._serial_identity_reread_task is None
+        assert not radio._serial_identity_gate_running
+        assert radio._serial_identity_answer_epoch is None
+        assert radio._civ_recovering is False
+    finally:
+        gate.set()
+        if not soft_reconnect_task.done():
+            soft_reconnect_task.cancel()
+            try:
+                await soft_reconnect_task
+            except asyncio.CancelledError:
+                pass
+        await radio.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_startup_gate_releases_at_once_while_identity_is_no_response(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
