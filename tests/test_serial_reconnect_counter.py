@@ -1,11 +1,16 @@
-"""Reconnect counting on the serial link paths.
+"""Episode counting for serial-link reconnects.
 
-Pins the serial CI-V soft-reconnect counter
+Pins the serial CI-V episode counter
 (``backends/_icom_serial_base.py: _IcomSerialRadioBase``), the Yaesu CAT
-transport counter exposure
-(``backends/yaesu_cat/radio.py: YaesuCatRadio``), and how
+episode counter (``backends/yaesu_cat/transport.py: TransportStats``,
+exposed as ``backends/yaesu_cat/radio.py: YaesuCatRadio``), and how
 ``web/server.py: WebServer._runtime_process_payload`` serves them as
 ``process.reconnectsTotal``.
+
+An episode is one loss of a working link: CONNECTED -> RECONNECTING for
+serial CI-V (the same edge ``WebServer._on_reconnect_status`` counts for
+LAN), and the first reconnect after the last successful exchange for
+Yaesu CAT. Retries inside one episode do not count again.
 """
 
 from __future__ import annotations
@@ -13,16 +18,42 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from rigplane.backends.icom7610 import Icom7610SerialRadio
+from rigplane.backends.ic7300 import Ic7300SerialRadio
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.types import AudioCodec
 from rigplane.web.server import WebConfig, WebServer
 
 from test_audio_session_health import _FakeWriter, _response_json
-from test_icom7610_serial_radio import _FakeSerialCivLink
+from test_icom7610_serial_radio import _FakeSerialCivLink, _FakeUsbAudioDriver
+from test_yaesu_audio import FakeAudioDriver
+
+
+def _serial_radio() -> tuple[Ic7300SerialRadio, _FakeSerialCivLink]:
+    link = _FakeSerialCivLink(model_id=0x94)
+    radio = Ic7300SerialRadio(
+        device="/dev/ttyUSB-fake",
+        civ_link=link,
+        audio_driver=_FakeUsbAudioDriver(),
+        audio_codec=AudioCodec.PCM_1CH_16BIT,
+        # Hermetic on any host: no OS enumeration, so no real port is probed.
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    return radio, link
+
+
+async def _connect_without_watchdog(
+    radio: Ic7300SerialRadio,
+) -> None:
+    await radio.connect()
+    await radio._stop_civ_data_watchdog()  # noqa: SLF001
+
+
+def _break_link(link: _FakeSerialCivLink) -> None:
+    link.ready = False
+    link.healthy = False
 
 
 async def _runtime_process(srv: WebServer) -> dict[str, Any]:
@@ -48,23 +79,18 @@ def _serial_shaped_radio(**extra: Any) -> SimpleNamespace:
 
 @pytest.mark.asyncio
 async def test_serial_reconnect_counter_starts_at_zero() -> None:
-    radio = Icom7610SerialRadio(
-        device="/dev/ttyUSB0", civ_link=_FakeSerialCivLink()
-    )
+    radio, _ = _serial_radio()
     assert radio.serial_reconnects_total == 0
     assert type(radio.serial_reconnects_total) is int
 
 
 @pytest.mark.asyncio
-async def test_serial_link_loss_and_recovery_counts_once() -> None:
-    link = _FakeSerialCivLink()
-    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
-    await radio.connect()
-    await radio._stop_civ_data_watchdog()  # noqa: SLF001
+async def test_serial_link_loss_and_recovery_counts_one_episode() -> None:
+    radio, link = _serial_radio()
+    await _connect_without_watchdog(radio)
     try:
         assert radio.serial_reconnects_total == 0
-        link.ready = False
-        link.healthy = False
+        _break_link(link)
         await radio.soft_reconnect()
         assert radio.serial_reconnects_total == 1
         assert radio.connected is True
@@ -73,49 +99,119 @@ async def test_serial_link_loss_and_recovery_counts_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_serial_two_recoveries_count_two() -> None:
-    link = _FakeSerialCivLink()
-    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
-    await radio.connect()
-    await radio._stop_civ_data_watchdog()  # noqa: SLF001
+async def test_serial_declare_then_retries_count_one_episode() -> None:
+    """The watchdog declares link-down, then retries recovery in-episode."""
+    radio, link = _serial_radio()
+    await _connect_without_watchdog(radio)
+    try:
+        await radio._declare_serial_link_down()  # noqa: SLF001
+        assert radio.serial_reconnects_total == 1
+        _break_link(link)
+        await radio.soft_reconnect()
+        await radio.soft_reconnect()
+        assert radio.serial_reconnects_total == 1
+    finally:
+        await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_two_separate_losses_count_two() -> None:
+    """The link worked again between losses, so each loss is an episode."""
+    radio, link = _serial_radio()
+    await _connect_without_watchdog(radio)
     try:
         for _ in range(2):
-            link.ready = False
-            link.healthy = False
+            _break_link(link)
             await radio.soft_reconnect()
+            assert radio.connected is True
         assert radio.serial_reconnects_total == 2
     finally:
         await radio.disconnect()
 
 
 @pytest.mark.asyncio
-async def test_yaesu_reconnect_attempts_count() -> None:
-    radio = YaesuCatRadio("/dev/null", profile="ftx1", audio_driver=MagicMock())
-    assert radio.serial_reconnects_total == 0
-    transport = radio._transport  # noqa: SLF001
-    transport._connected = True  # noqa: SLF001
-    transport._writer = SimpleNamespace(  # noqa: SLF001
-        close=lambda: None, wait_closed=AsyncMock()
+async def test_serial_retries_inside_one_loss_count_once() -> None:
+    """Failed reopen attempts keep the RECONNECTING state: still one episode."""
+    radio, link = _serial_radio()
+    await _connect_without_watchdog(radio)
+    link._fail_connect = OSError("port gone")  # noqa: SLF001
+    try:
+        with pytest.raises(ConnectionError):
+            await radio.soft_reconnect()
+        assert radio.serial_reconnects_total == 1
+        with pytest.raises(ConnectionError):
+            await radio.soft_reconnect()
+        assert radio.serial_reconnects_total == 1
+    finally:
+        link._fail_connect = None  # noqa: SLF001
+        await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_serial_user_connect_from_disconnected_counts_zero() -> None:
+    """The web ``radio_connect`` route after a user disconnect is no episode."""
+    radio, link = _serial_radio()
+    await _connect_without_watchdog(radio)
+    await radio.disconnect()
+    assert radio.connected is False
+    try:
+        _break_link(link)
+        await radio.soft_reconnect()
+        assert radio.serial_reconnects_total == 0
+    finally:
+        await radio.disconnect()
+
+
+def _yaesu_radio() -> YaesuCatRadio:
+    return YaesuCatRadio(
+        "/dev/null",
+        profile="ftx1",
+        audio_driver=FakeAudioDriver(),  # type: ignore[arg-type]
     )
 
-    async def connect() -> None:
-        transport._writer = SimpleNamespace(  # noqa: SLF001
-            close=lambda: None, wait_closed=AsyncMock()
-        )
-        transport._connected = True  # noqa: SLF001
-        transport._stats.record_success()  # noqa: SLF001
 
-    transport.connect = AsyncMock(side_effect=connect)  # noqa: SLF001
-    for _ in range(5):
-        transport._stats.record_error("fixture disconnect")  # noqa: SLF001
-    transport._last_reconnect = 0.0  # noqa: SLF001
+async def _yaesu_reconnect(transport: Any) -> None:
+    """Run one transport reconnect without real serial hardware."""
+    transport._last_reconnect = 0.0  # noqa: SLF001  # bypass the cooldown
+
+    async def _fake_close() -> None:
+        transport._connected = False  # noqa: SLF001
+        transport._writer = None  # noqa: SLF001
+
+    async def _fake_connect() -> None:
+        transport._connected = True  # noqa: SLF001
+
+    transport.close = _fake_close  # type: ignore[method-assign]
+    transport.connect = _fake_connect  # type: ignore[method-assign]
     await transport.reconnect()
+
+
+def _yaesu_lose_link(transport: Any) -> None:
+    for _ in range(5):  # the transport's reconnect threshold
+        transport._stats.record_error("fixture disconnect")  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_yaesu_reconnect_episodes_count() -> None:
+    """First reconnect after the link worked opens an episode; retries do not."""
+    radio = _yaesu_radio()
+    assert radio.serial_reconnects_total == 0
+    transport = radio._transport  # noqa: SLF001
+
+    _yaesu_lose_link(transport)
+    await _yaesu_reconnect(transport)
+    assert radio.serial_reconnects_total == 1
+    assert transport.stats.reconnects == 1
+
+    await _yaesu_reconnect(transport)
+    assert transport.stats.reconnects == 2
     assert radio.serial_reconnects_total == 1
 
-    for _ in range(5):
-        transport._stats.record_error("fixture disconnect")  # noqa: SLF001
-    transport._last_reconnect = 0.0  # noqa: SLF001
-    await transport.reconnect()
+    # The link worked again (a successful exchange resets the error
+    # streak), so the next loss is a new episode.
+    transport._stats.record_success()  # noqa: SLF001
+    _yaesu_lose_link(transport)
+    await _yaesu_reconnect(transport)
     assert radio.serial_reconnects_total == 2
 
 
