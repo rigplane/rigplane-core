@@ -441,15 +441,20 @@ async def test_rx_resumed_during_backoff_does_not_grant_extra_attempt() -> None:
         await stack.aclose()
 
 
-async def test_successful_repair_resets_attempt_budget() -> None:
-    """A round that re-establishes demand closes the episode with a fresh
-    budget: one failed round plus success leaves the counter at 0."""
+async def test_successful_round_consumes_budget_and_frames_reopen_episode() -> None:
+    """A successful round does NOT reset the budget — only real frames (or
+    a new connection epoch) close the episode (MOR-3401 r3): one failed
+    round plus a successful one leaves the counter at 2, and a later death
+    is still repaired because frames flowed in between."""
     stack = await soak_driver._start_simulator_stack()
     try:
         radio = stack.radio
         sub = await radio.audio_session.subscribe_rx("web-audio")
         assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
 
+        teardown_calls, restore_teardown = _spy_method(
+            radio, "_teardown_audio_transport"
+        )
         ensure_calls: list[int] = []
         orig_ensure = radio._ensure_audio_transport
 
@@ -468,42 +473,92 @@ async def test_successful_repair_resets_attempt_budget() -> None:
                 lambda: radio._audio_silence_repair_task is None,
                 timeout_s=15.0,
             ), "repair never finished"
-            # At least one round failed (round 1 always raises), yet the
-            # counter is clean: the successful round closed the episode.
-            # (The successful round itself re-enters ensure via
-            # reestablish → start_rx, so no exact call count is asserted.)
-            assert len(ensure_calls) >= 2
-            assert radio._audio_silence_repair_attempts == 0
+            # Both rounds consumed budget (the successful round itself
+            # re-enters ensure via reestablish → start_rx, so no exact
+            # ensure count is asserted); success did not reset anything.
+            assert len(teardown_calls) == 2
+            assert radio._audio_silence_repair_attempts == 2
+
+            # Frames flowed after the repair, so a later death opens a new
+            # episode with a fresh budget and is repaired again.
+            _drain(sub)
+            _kill_client_audio_only(radio)
+            assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
+            assert len(teardown_calls) > 2
         finally:
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
+            restore_teardown()
         await sub.release()
     finally:
         await stack.aclose()
 
 
-async def test_rx_resumed_resets_attempt_budget() -> None:
-    """After a successful repair, a later silence gets a fresh budget."""
+async def test_genuine_rx_resumed_reopens_episode() -> None:
+    """After FAILED, audio healed by another path WITHOUT reestablish lets
+    the session watchdog emit a genuine ``rx_resumed`` (not a test emit):
+    the episode reopens and the next death is repaired (MOR-3401 r3)."""
     stack = await soak_driver._start_simulator_stack()
+    events: list[AudioSessionEvent] = []
     try:
         radio = stack.radio
+        recovery: list[AudioRecoveryState] = []
+        radio._on_audio_recovery = recovery.append
+        radio.audio_session.add_listener(events.append)
+
         sub = await radio.audio_session.subscribe_rx("web-audio")
         assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
 
-        # First silence episode: repaired.
-        _drain(sub)
-        _kill_client_audio_only(radio)
-        assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
-        assert await _wait_until(
-            lambda: radio._audio_silence_repair_task is None,
-            timeout_s=5.0,
-        ), "the first repair never finished"
+        teardown_calls, restore_teardown = _spy_method(
+            radio, "_teardown_audio_transport"
+        )
+        orig_ensure = radio._ensure_audio_transport
+        ensure_calls: list[int] = []
 
-        # Second silence episode: repaired again (a fresh budget).
-        _drain(sub)
-        _kill_client_audio_only(radio)
-        assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
+        async def _fail_ensure() -> None:
+            ensure_calls.append(1)
+            raise CoreConnectionError("audio leg never returns")
+
+        radio._ensure_audio_transport = _fail_ensure  # type: ignore[method-assign]
+        try:
+            # Spend the whole budget: 3 failed attempts, FAILED once.
+            _kill_client_audio_only(radio)
+            assert await _wait_until(
+                lambda: radio._audio_silence_repair_task is None
+                and len(ensure_calls) == 3,
+                timeout_s=15.0,
+            ), f"expected 3 attempts and a finished task, got {len(ensure_calls)}"
+            assert recovery == [AudioRecoveryState.FAILED]
+            resumed_before = sum(
+                1 for e in events if e.reason == "rx_resumed"
+            )
+
+            # Another path rebuilds the transport and re-arms the stream
+            # underneath the session but never reestablishes demand, so the
+            # session stays RECOVERING until real frames arrive — and the
+            # watchdog itself emits rx_resumed.
+            radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
+            await radio._teardown_audio_transport()
+            await radio._ensure_audio_transport()
+            await radio.audio_bus.restart_rx()
+            assert await _wait_until(
+                lambda: sum(1 for e in events if e.reason == "rx_resumed")
+                > resumed_before,
+                timeout_s=8.0,
+            ), "the session watchdog never emitted a genuine rx_resumed"
+            assert radio._audio_silence_repair_attempts == 0
+            repaired_teardowns = len(teardown_calls)
+
+            # A new real death gets a fresh budget and is repaired again.
+            _drain(sub)
+            _kill_client_audio_only(radio)
+            assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
+            assert len(teardown_calls) > repaired_teardowns
+        finally:
+            radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
+            restore_teardown()
         await sub.release()
     finally:
+        radio.audio_session.remove_listener(events.append)
         await stack.aclose()
 
 
@@ -576,3 +631,183 @@ async def test_serial_backend_does_not_run_lan_repair(monkeypatch) -> None:  # t
         await sub.release()
     finally:
         await radio.disconnect()
+
+
+async def test_spent_budget_reopens_after_audio_fixed_by_another_path() -> None:
+    """A budget spent to FAILED does not leak into the next death (MOR-3401
+    r3): audio fixed by another path (teardown → ensure → reestablish,
+    which emits no ``rx_resumed``) reopens the episode, so a later real
+    death is repaired again with a fresh budget."""
+    stack = await soak_driver._start_simulator_stack()
+    try:
+        radio = stack.radio
+        recovery: list[AudioRecoveryState] = []
+        radio._on_audio_recovery = recovery.append
+
+        sub = await radio.audio_session.subscribe_rx("web-audio")
+        assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
+
+        teardown_calls, restore_teardown = _spy_method(
+            radio, "_teardown_audio_transport"
+        )
+        orig_ensure = radio._ensure_audio_transport
+        ensure_calls: list[int] = []
+
+        async def _fail_ensure() -> None:
+            ensure_calls.append(1)
+            raise CoreConnectionError("audio leg never returns")
+
+        radio._ensure_audio_transport = _fail_ensure  # type: ignore[method-assign]
+        try:
+            # Spend the whole budget: 3 failed attempts, FAILED once.
+            _kill_client_audio_only(radio)
+            assert await _wait_until(
+                lambda: radio._audio_silence_repair_task is None
+                and len(ensure_calls) == 3,
+                timeout_s=15.0,
+            ), f"expected 3 attempts and a finished task, got {len(ensure_calls)}"
+            assert recovery == [AudioRecoveryState.FAILED]
+            assert radio._audio_silence_repair_attempts == 3
+
+            # Another path fixes audio (a soft reconnect tail's reestablish,
+            # or demand dropped and re-added): the session goes straight
+            # back to RX_ONLY, so no rx_resumed is emitted on this path.
+            radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
+            await radio._teardown_audio_transport()
+            await radio._ensure_audio_transport()
+            await radio.audio_session.reestablish()
+            _drain(sub)
+            assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
+            repaired_teardowns = len(teardown_calls)
+
+            # A new real death gets a fresh budget and is repaired again.
+            _kill_client_audio_only(radio)
+            assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None, (
+                "MOR-3401 r3: the budget spent on the first episode leaked — "
+                "a later real death was never repaired"
+            )
+            assert len(teardown_calls) > repaired_teardowns, (
+                "no repair round ran for the second death"
+            )
+        finally:
+            radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
+            restore_teardown()
+        await sub.release()
+    finally:
+        await stack.aclose()
+
+
+async def test_successful_rounds_without_frames_cap_and_report_failed() -> None:
+    """Rounds that re-arm the leg but never see an RX frame still cap out
+    (MOR-3401 r3): exactly 3 attempts, one FAILED, then no further
+    attempts for ≥ 5 s — no endless teardown/reestablish loop."""
+    stack = await soak_driver._start_simulator_stack()
+    try:
+        radio = stack.radio
+        recovery: list[AudioRecoveryState] = []
+        radio._on_audio_recovery = recovery.append
+
+        sub = await radio.audio_session.subscribe_rx("web-audio")
+        assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
+
+        teardown_calls, restore_teardown = _spy_method(
+            radio, "_teardown_audio_transport"
+        )
+        orig_ensure = radio._ensure_audio_transport
+        session = radio.audio_session
+        orig_reestablish = session.reestablish
+        reestablished: list[int] = []
+
+        async def _dead_ensure() -> None:
+            await orig_ensure()
+            # The new leg is dead on arrival, but the call succeeds: the
+            # radio accepted the handshake yet sends no RX frames. The RX
+            # callback is only (re-)registered by reestablish below, so no
+            # frame can slip through between the rebuild and the kill.
+            _kill_client_audio_only(radio)
+
+        async def _spy_reestablish() -> None:
+            await orig_reestablish()
+            reestablished.append(1)
+
+        radio._ensure_audio_transport = _dead_ensure  # type: ignore[method-assign]
+        session.reestablish = _spy_reestablish  # type: ignore[method-assign]
+        try:
+            _drain(sub)
+            _kill_client_audio_only(radio)
+
+            assert await _wait_until(
+                lambda: recovery == [AudioRecoveryState.FAILED],
+                timeout_s=25.0,
+            ), (
+                "MOR-3401 r3: successful-but-frameless rounds never "
+                "reported FAILED "
+                f"(teardowns={len(teardown_calls)} "
+                f"reestablished={len(reestablished)})"
+            )
+            # Every round genuinely re-armed the leg…
+            assert len(reestablished) == 3
+            # …exactly 3 attempts, then silence for ≥ 5 s.
+            assert len(teardown_calls) == 3
+            await asyncio.sleep(5.0)
+            assert len(teardown_calls) == 3
+            assert len(reestablished) == 3
+            assert recovery == [AudioRecoveryState.FAILED]
+        finally:
+            radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
+            session.reestablish = orig_reestablish  # type: ignore[method-assign]
+            restore_teardown()
+        await sub.release()
+    finally:
+        await stack.aclose()
+
+
+async def test_frames_resumed_during_backoff_stop_repair_without_teardown() -> None:
+    """Frames resuming during the backoff end the silence (MOR-3401 r3,
+    review finding 3): the repair stops without another teardown."""
+    stack = await soak_driver._start_simulator_stack()
+    try:
+        radio = stack.radio
+        recovery: list[AudioRecoveryState] = []
+        radio._on_audio_recovery = recovery.append
+
+        sub = await radio.audio_session.subscribe_rx("web-audio")
+        assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
+
+        teardown_calls, restore_teardown = _spy_method(
+            radio, "_teardown_audio_transport"
+        )
+        orig_ensure = radio._ensure_audio_transport
+        ensure_calls: list[int] = []
+
+        async def _fail_ensure() -> None:
+            ensure_calls.append(1)
+            raise CoreConnectionError("audio leg never returns")
+
+        radio._ensure_audio_transport = _fail_ensure  # type: ignore[method-assign]
+        try:
+            _kill_client_audio_only(radio)
+            # Round 1 fails; the task now sleeps the 1 s backoff.
+            assert await _wait_until(
+                lambda: len(ensure_calls) >= 1, timeout_s=8.0
+            )
+            # Another path heals audio mid-backoff: frames flow again well
+            # before the repair wakes up.
+            radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
+            await radio._teardown_audio_transport()
+            await radio._ensure_audio_transport()
+            await radio.audio_session.reestablish()
+            _drain(sub)
+            assert await _next_frame_or_none(sub, 2.0) is not None
+
+            # Past every backoff window the repair ran no second round: one
+            # teardown from the repair, one from the healing path.
+            await asyncio.sleep(3.0)
+            assert len(teardown_calls) == 2
+            assert recovery == []
+        finally:
+            radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
+            restore_teardown()
+        await sub.release()
+    finally:
+        await stack.aclose()
