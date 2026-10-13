@@ -10,8 +10,9 @@ exemption on the HTTP raw path: ``_HttpCommandExecutor`` skips
 ``controller.capture()`` for exactly those frames, and the remote-mode
 HTTP route gate lets exactly those frames through to the handler.  The
 raw tuner off (``1C 01 00``) stays captured, matching the typed
-``set_tuner_status`` 0, and the batch credential gate still refuses
-requests without a controller credential.
+``set_tuner_status`` 0; a batch whose every step ends a transmission
+passes the route gate without a credential, while any other batch still
+refuses requests without one.
 """
 
 from __future__ import annotations
@@ -414,7 +415,7 @@ async def test_batch_tuner_off_with_remote_key_is_captured() -> None:
         await _release(srv)
 
 
-async def test_batch_transmission_end_without_key_keeps_credential_refusal() -> None:
+async def test_batch_all_transmission_end_without_key_reaches_radio() -> None:
     srv, _ = _remote_server()
     try:
         await _arm_remote(srv)
@@ -427,6 +428,37 @@ async def test_batch_transmission_end_without_key_keeps_credential_refusal() -> 
                         "type": "raw_civ_transaction",
                         "command": 0x1C,
                         "sub": 0x00,
+                        "data": "00",
+                        "expect": "none",
+                    }
+                ]
+            },
+        )
+        assert writer.response_status == 200
+        [step] = writer.response_body["results"]
+        assert step["ok"] is True
+        srv._radio.send_civ_transaction.assert_awaited_once_with(
+            0x1C, sub=0x00, data=b"\x00", expect="none", timeout=10.0
+        )
+    finally:
+        await _release(srv)
+
+
+async def test_batch_non_transmission_end_without_key_keeps_credential_refusal() -> (
+    None
+):
+    srv, _ = _remote_server()
+    try:
+        await _arm_remote(srv)
+        writer = await _post_json(
+            srv,
+            "/api/v1/commands/batch",
+            {
+                "steps": [
+                    {
+                        "type": "raw_civ_transaction",
+                        "command": 0x1C,
+                        "sub": 0x01,
                         "data": "00",
                         "expect": "none",
                     }

@@ -574,6 +574,22 @@ def _send_civ_params_end_transmission(params: Mapping[str, Any]) -> bool:
     return verdict
 
 
+def is_typed_transmission_end_command(name: str, params: Mapping[str, Any]) -> bool:
+    """True when a typed command only ends a transmission, never keys one.
+
+    The closed de-key set the remote HTTP route gate lets through without
+    a controller credential: ``ptt_off``, ``ptt`` with ``state`` false, and
+    a ``send_civ`` whose frame ends a transmission.  Reads are not part of
+    it: the handler still exempts ``get_*`` from capture, but the route
+    keeps reads credential-gated.
+    """
+    return (
+        name == "ptt_off"
+        or (name == "ptt" and params.get("state") is False)
+        or (name == "send_civ" and _send_civ_params_end_transmission(params))
+    )
+
+
 class ControlHandler:
     """Handles the /api/v1/ws control WebSocket channel.
 
@@ -1773,17 +1789,11 @@ class ControlHandler:
         controller = getattr(self._radio, "_controller_authority", None)
         if not isinstance(controller, ControllerAuthority):
             return
-        if (
-            name.startswith("get_")
-            or name == "ptt_off"
-            or (name == "ptt" and params.get("state") is False)
-            # A send_civ whose frame ends a transmission — PTT off
-            # (``1C 00 00``) or the voice TX memory stop (``28 00 00``)
-            # — never captures (MOR-3384), so no remote-ticket refusal
-            # can name it either.  The raw tuner off captures, like the
-            # typed set_tuner_status 0.
-            or (name == "send_civ" and _send_civ_params_end_transmission(params))
-        ):
+        if name.startswith("get_") or is_typed_transmission_end_command(name, params):
+            # Reads and the typed transmission end (MOR-3384: PTT off
+            # ``1C 00 00`` or the voice TX memory stop ``28 00 00``) never
+            # capture, so no remote-ticket refusal can name them either.
+            # The raw tuner off captures, like the typed set_tuner_status 0.
             return
         ticket = controller.capture()
         if ticket.remote and (

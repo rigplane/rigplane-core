@@ -293,6 +293,26 @@ async def test_single_malformed_body_keeps_todays_refusal() -> None:
         await _release(srv)
 
 
+async def test_single_truncated_body_keeps_credential_refusal() -> None:
+    srv, _ = _remote_server()
+    try:
+        await _arm_remote(srv)
+        body = b'{"name": "ptt_off", "params": {}}'
+        writer = _FakeWriter()
+        await srv._handle_http(  # noqa: SLF001
+            writer,  # type: ignore[arg-type]
+            "POST",
+            "/api/v1/commands",
+            headers={"content-length": str(len(body) + 42)},
+            reader=_reader_for(body),
+        )
+        assert writer.response_status == 403
+        assert writer.response_body["error"] == "controller_invalid"
+        assert srv.command_queue.drain() == []
+    finally:
+        await _release(srv)
+
+
 async def test_single_oversize_body_keeps_todays_refusal() -> None:
     from rigplane.web import server as web_server_mod
 
@@ -408,7 +428,7 @@ async def test_handler_exempt_names_skip_capture(
         await _arm_remote(srv)
         handler = srv._control_handler_for()  # noqa: SLF001
         handler._radio = SimpleNamespace(_controller_authority=authority)  # type: ignore[method-assign]
-        handler._validate_controller_command(name, dict(params))  # noqa: SLF001
+        assert handler._validate_controller_command(name, dict(params)) is None  # noqa: SLF001
     finally:
         authority.revoke()
         await authority.settle()
