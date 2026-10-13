@@ -7,8 +7,7 @@ against a simulator that answers from a recording of the real bench radio.
 This page is for contributors who write tests against the fakes and for
 maintainers who must know what a green simulator run says about the real
 radio. Behaviours backed by the recording carry their fixture source and
-the test that fails when they stop being true; simulator-only behaviours
-are listed separately. The simulator source is
+the test that fails when they stop being true. The simulator source is
 `rigplane_testkit/icom/simulator.py`; the serial fake is
 `rigplane_testkit/serial/civ_serial.py`.
 
@@ -28,9 +27,7 @@ _answer_table`).
 
 The opt-in constructor keywords, read from `rigplane_testkit/icom/simulator.py:
 MockIcomRadio.__init__`. Each defaults off (or `None`), so a plain
-`MockIcomRadio()` keeps the pre-mount behaviour. Most model recorded
-behaviour; `fault_plan`, `drop_rate` and `unsolicited_civ` are simulator
-knobs, not recorded radio behaviour.
+`MockIcomRadio()` keeps the pre-mount behaviour.
 
 - `single_owner=False` — one owning session keyed by `(remote_addr, control
   my_id)`; a foreign conninfo while it is held is busy-rejected, and it is
@@ -59,11 +56,11 @@ knobs, not recorded radio behaviour.
   final NAK. Pinned by
   `tests/testkit/test_simulator_recorded_answers.py::test_without_a_table_the_split_read_still_naks`.
 - `fault_plan=None` — declarative per-port/per-direction drop/duplicate/
-  delay/reorder/corrupt/truncate (a simulator knob, not recorded). Pinned by
+  reorder/corrupt/truncate (a simulator knob, not recorded). Pinned by
   `tests/testkit/test_simulator_faults.py::test_no_plan_behaves_as_before`
   (off) and the fault tests below (on).
-- `drop_rate=0.0` — legacy probability of dropping a reply (a simulator
-  knob). Pinned by
+- `drop_rate=0.0` — probability of dropping each unsolicited frame (only
+  with unsolicited_civ) (a simulator knob). Pinned by
   `tests/test_mock_icom_session.py::test_drop_rate_suppresses_unsolicited_frames`.
 - `civ_inherited_fills_per_round=0` / `civ_inherited_drop_unanswered_rounds=0`
   — pace an inherited orphan's fills, from one capture (MOR-3418 w50 b).
@@ -112,7 +109,7 @@ bench evidence; the pinning test fails if the behaviour stops being true.
 
 | Behaviour | Source | Pinning test |
 |---|---|---|
-| LAN handshake: discovery/login/token exchange matches the recording through step 7; steps 8-12 diverge (see the ledger) | `control_windows.jsonl` `handshake` | `tests/testkit/test_ic7610_conformance.py::test_handshake_structure_matches_ledger` |
+| LAN handshake: discovery/login/token exchange matches the recording through step 7; the entries in the ledger diverge (see the ledger) | `control_windows.jsonl` `handshake` | `tests/testkit/test_ic7610_conformance.py::test_handshake_structure_matches_ledger` |
 | Token renew answered with the recorded 0x40/0x05 layout; live token `00000000`, retired token `ffffffff`, exactly once | `idle_cadence.json` + MOR-3349 | `tests/testkit/test_simulator_renew_standby.py::test_live_renewal_reply_layout`, `::test_retired_token_renewal_rejected_exactly_once` |
 | CI-V echo on LAN (byte-identical before every reply), none on USB | `civ_pairs.jsonl` (echo rows) | `tests/testkit/test_ic7610_conformance.py::test_lan_civ_echo_divergence`, `::test_usb_replay_divergences_match_ledger` |
 | Recorded reply classes (NAK / data / ACK) per recorded request, on LAN and USB | `civ_pairs.jsonl` | `tests/testkit/test_ic7610_conformance.py::test_lan_answer_classes_match_ledger`, `::test_usb_replay_divergences_match_ledger` |
@@ -122,8 +119,8 @@ bench evidence; the pinning test fails if the behaviour stops being true.
 | Power-off order: notice, discovery grace, then silence | `control_windows.jsonl` `power_cycle` | `tests/testkit/test_simulator_drop_session.py::test_reboot_notice_then_discovery_grace_then_silence` |
 | CI-V gap retransmit: single/ranges request twice per round, ~0.1 s repeat, >=70 ms round spacing | `retransmit_gaps.jsonl` | `tests/testkit/test_simulator_civ_gap.py::test_lost_tracked_packet_gets_single_requests_then_fill`, `::test_round_rate_matches_recording` |
 | Orphan CI-V stream state after an unclean end (inherit frontier + gap list; clean end/reboot/expiry clears) | MOR-3418 | `tests/testkit/test_simulator_civ_orphan.py::test_inherited_gap_ignores_behind_and_requests_missing`, `::test_clean_logout_clears_orphan`, `::test_reboot_clears_orphan`, `::test_unclaimed_expiry_starts_clean` |
-| Audio port (opt-in): recorded stereo burst cadence, transport handshake, zero retransmit requests, RX survives CI-V soft reconnect | `audio_stream.json` / `audio_rx_headers.jsonl` | `tests/testkit/test_simulator_audio.py::test_rx_stream_matches_recorded_layout_and_cadence`, `::test_no_retransmit_requests_from_radio_despite_client_gap`, `::test_rx_keeps_flowing_across_civ_soft_reconnect` |
-| Receiver select `07 D0/D1/D2` swaps per-receiver frequency/mode/DATA-mode/filter | `civ_pairs.jsonl` `vfo_select` | `tests/testkit/test_simulator_receiver_select.py::test_recorded_vfo_select_replies_are_byte_identical` |
+| Audio port (opt-in): recorded stereo burst cadence, zero retransmit requests, RX survives CI-V soft reconnect | `audio_stream.json` / `audio_rx_headers.jsonl` | `tests/testkit/test_simulator_audio.py::test_rx_stream_matches_recorded_layout_and_cadence`, `::test_no_retransmit_requests_from_radio_despite_client_gap`, `::test_rx_keeps_flowing_across_civ_soft_reconnect` |
+| Receiver select `07 D0/D1/D2` | `civ_pairs.jsonl` `vfo_select` | `tests/testkit/test_simulator_receiver_select.py::test_recorded_vfo_select_replies_are_byte_identical` |
 
 The at-scale check behind the "answer classes" and "echo" rows is the
 conformance replay through `ic7610_lan_fake` / `ic7610_usb_fake`
@@ -137,26 +134,27 @@ replayed request's reply and ratchets against `conformance_ledger.json`.
   unkeys at session end. Pinned by
   `tests/testkit/test_simulator_stateful_ptt.py::test_stateful_set_and_get_round_trip`
   and `::test_release_unkeys_at_session_end`.
-- Fault plans (drop/duplicate/delay/reorder/corrupt/truncate). Pinned by
+- Fault plans (drop/duplicate/reorder/corrupt/truncate). Pinned by
   `tests/testkit/test_simulator_faults.py::test_drop_bounded_to_next_packet`,
   `::test_duplicate_sends_two_identical_copies`,
   `::test_corrupt_flips_bytes_on_the_wire`,
   `::test_truncate_cuts_reply_on_the_wire`, `::test_reorder_permutes_replies`.
 - Scheduled events (`reboot`, `drop_session`, `keepalive_silence`) driving the
   production reconnect. Pinned by
-  `tests/testkit/test_simulator_events.py::test_reboot_mid_session_client_reconnects_with_new_token`
-  and `::test_keepalive_silence_longer_than_watchdog_fires_link_down`.
+  `tests/testkit/test_simulator_events.py::test_reboot_mid_session_client_reconnects_with_new_token`,
+  `::test_keepalive_silence_longer_than_watchdog_fires_link_down`,
+  `tests/testkit/test_reconnect_storm.py::test_session_drop_with_notice_recovers_with_one_login`.
 - The RX audio payload is synthetic: a byte ramp (`simulator_audio.py:
   _PCM_RAMP`; no on-air samples are committed), pinned by
   `tests/testkit/test_simulator_audio.py::test_rx_stream_matches_recorded_layout_and_cadence`.
 - Writes to the selected/unselected frequency/mode commands
-  (`03`/`05`/`04`/`06`/`25`/`26`) land on the currently selected receiver —
+  (`05`/`06`) land on the currently selected receiver —
   native, not in the recorded `vfo_select` window. Pinned by
   `tests/testkit/test_simulator_receiver_select.py::test_frequency_write_while_sub_selected_lands_on_sub`,
   `::test_mode_write_while_sub_selected_lands_on_sub`,
   `::test_data_mode_flag_follows_receiver_select`.
-- The unselected receiver defaults to a fresh-band setup (7.074 MHz, USB,
-  FIL1) — a simulator choice, not a recorded factory state
+- The unselected receiver defaults to a fresh-band setup — a simulator
+  choice, not a recorded factory state
   (`simulator.py: MockIcomRadio.__init__` `_unselected_*`).
 
 ## Deliberately different
@@ -171,12 +169,12 @@ real radio's hold.
 
 The remaining timing constants are not speed-ups, but they are simulator
 constants that approximate a recorded timing (named in each one's comment),
-not byte-exact recorded values: the ~0.1 s drop-notice delay
+recorded values: the ~0.1 s drop-notice delay
 (`_DROP_NOTICE_DELAY_S`), the CI-V gap round period and round spacing
 (`_CIV_GAP_RETRANSMIT_PERIOD_S`, `_CIV_GAP_ROUND_MIN_SPACING_S` — 75 ms,
 slightly under the recorded 77 ms minimum), the power-off grace
 (`_POWER_OFF_NOTICE_WINDOW_S`, ~0.02 s — the power-off-order test checks a
-grace before silence but pins no duration), and the orphan expiry
+grace before silence), and the orphan expiry
 (`ORPHAN_CIV_STATE_EXPIRY_S`, 140 s inside the recorded 126-150 s bracket,
 MOR-3418).
 
@@ -184,7 +182,7 @@ MOR-3418).
 
 - **Scope wave and per-receiver scope cadence.** There is no native scope
   handler: `0x27` NAKs natively (`simulator.py: MockIcomRadio._dispatch_civ_native`,
-  scope TODO), and the simulator sends no scope wave — the recording holds 5
+  scope TODO), and the simulator sends no scope wave (plain MockIcomRadio()) — the recording holds 5
   complete `27 00` wave frames after wave-on, the simulator none (`scope_wave`
   ledger entry, ratcheted by
   `tests/testkit/test_ic7610_conformance.py::test_scope_wave_decodes_and_cadence_matches_ledger`).
@@ -202,8 +200,8 @@ MOR-3418).
   readback, the TX audio sink (`simulator_audio.py`, pinned by
   `tests/testkit/test_simulator_audio.py::test_tx_sink_records_client_frames_and_numbering`),
   the native `14 0A` RF-power SET and static SWR/ALC readbacks — are
-  simulator choices, listed under "Simulator-only" above.
-- **The ledger.** The known divergences are the six entries in
+  simulator choices.
+- **The ledger.** The known divergences are the entries in the ledger in
   `tests/fixtures/ic7610/conformance_ledger.json` (`handshake_8` through
   `handshake_12`, plus `scope_wave`); see the file and the ratcheting test
   `tests/testkit/test_ic7610_conformance.py`. The fix belongs to the
