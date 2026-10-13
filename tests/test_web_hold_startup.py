@@ -1578,3 +1578,75 @@ async def test_ws_radio_connect_clears_mark_on_already_connected() -> None:
     finally:
         await server.stop()
         await rig.stop()
+
+
+class _RecoveringRadio(_OperableRadio):
+    def __init__(self) -> None:
+        super().__init__()
+        self.connect_calls = 0
+
+    def park_recovery(self, state: RadioConnectionState) -> None:
+        self.connected = False
+        self.control_connected = False
+        self.radio_ready = False
+        self.conn_state = state
+
+    async def connect(self) -> None:
+        self.connect_calls += 1
+        await super().connect()
+
+
+@pytest.mark.asyncio
+async def test_ws_radio_connect_refused_while_backend_connecting() -> None:
+    radio = _RecoveringRadio()
+    rig, server, _rig_port = await _start_operable_stack(radio)
+    try:
+        radio.park_recovery(RadioConnectionState.CONNECTING)
+        server.note_operator_disconnect()
+        assert radio.conn_state is RadioConnectionState.CONNECTING
+
+        ws = SimpleNamespace(send_text=AsyncMock())
+        handler = ControlHandler(
+            ws, radio, "test", "IC-7610", server=server, session_id="ws-recovering"
+        )
+
+        await handler._handle_text(encode_json({"type": "radio_connect", "id": "wr1"}))
+
+        responses = [decode_json(c.args[0]) for c in ws.send_text.await_args_list]
+        assert any(
+            not r.get("ok") and r.get("error") == "backend_recovering"
+            for r in responses
+        )
+        assert radio.connect_calls == 0
+        assert radio.conn_state is RadioConnectionState.CONNECTING
+    finally:
+        await server.stop()
+        await rig.stop()
+
+
+@pytest.mark.asyncio
+async def test_ws_radio_connect_refused_while_backend_reconnecting() -> None:
+    radio = _RecoveringRadio()
+    rig, server, _rig_port = await _start_operable_stack(radio)
+    try:
+        radio.park_recovery(RadioConnectionState.RECONNECTING)
+        server.note_operator_disconnect()
+        assert radio.conn_state is RadioConnectionState.RECONNECTING
+
+        ws = SimpleNamespace(send_text=AsyncMock())
+        handler = ControlHandler(
+            ws, radio, "test", "IC-7610", server=server, session_id="ws-recovering"
+        )
+
+        await handler._handle_text(encode_json({"type": "radio_connect", "id": "wr2"}))
+
+        responses = [decode_json(c.args[0]) for c in ws.send_text.await_args_list]
+        assert any(
+            not r.get("ok") and r.get("error") == "backend_recovering"
+            for r in responses
+        )
+        assert radio.connect_calls == 0
+        assert radio.conn_state is RadioConnectionState.RECONNECTING
+    finally:
+        await server.stop()
+        await rig.stop()
