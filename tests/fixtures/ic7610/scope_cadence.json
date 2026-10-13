@@ -1,0 +1,8 @@
+{
+  "source": "IC-7610 over LAN through the testkit recorder, 2026-10-12, recordings w55 (dual, then single SUB) and w55b (single MAIN), receive only; per-receiver scope speed read as MAIN 01 (mid), SUB 00 (fast)",
+  "frame_len": 711,
+  "speeds": {
+    "mid": {"receiver": "MAIN", "frames": 543, "gap_median_s": 0.12, "gap_p10_s": 0.1176, "gap_p90_s": 0.1223},
+    "fast": {"receiver": "SUB", "frames": 1855, "gap_median_s": 0.0344, "gap_p10_s": 0.0322, "gap_p90_s": 0.0354}
+  }
+}

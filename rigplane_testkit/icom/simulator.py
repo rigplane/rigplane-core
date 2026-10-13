@@ -22,12 +22,14 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import struct
 import time
 from collections import deque
 from collections.abc import Callable
+from pathlib import Path
 from typing import Literal
 
 from rigplane_testkit.icom.faults import Direction, FaultPlan, Port
@@ -79,6 +81,84 @@ _CIV_GAP_ROUND_MIN_SPACING_S = 0.075
 # unclean end: IC-7610, MOR-3418, between 126 and 150 s, w43/w44.
 ORPHAN_CIV_STATE_EXPIRY_S = 140.0
 
+# Scope wave fixtures (IC-7610 over LAN, MOR-3310): the per-speed frame gap
+# is read from ``tests/fixtures/ic7610/scope_cadence.json`` at import — one
+# source of truth, never a copied constant — and each streaming receiver's
+# template is the first recorded ``27 00`` frame for that receiver in the
+# ``scope`` window of ``tests/fixtures/ic7610/civ_pairs.jsonl`` (receiver
+# byte 6: 0x00 MAIN, 0x01 SUB), byte for byte.
+_SCOPE_FIXTURE_DIR = (
+    Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "ic7610"
+)
+_SCOPE_CADENCE = json.loads(
+    (_SCOPE_FIXTURE_DIR / "scope_cadence.json").read_text(encoding="utf-8")
+)
+# Speed code (``27 1A 0r ss``) to wave-frame gap: fast and mid stream every
+# recorded median gap; slow streams nothing (not recorded).
+_SCOPE_GAP_S: dict[int, float | None] = {
+    0x00: _SCOPE_CADENCE["speeds"]["fast"]["gap_median_s"],
+    0x01: _SCOPE_CADENCE["speeds"]["mid"]["gap_median_s"],
+    0x02: None,
+}
+
+
+def _load_scope_templates() -> dict[int, bytes]:
+    """First recorded ``27 00`` wave frame per receiver, byte for byte."""
+    templates: dict[int, bytes] = {}
+    for line in (
+        (_SCOPE_FIXTURE_DIR / "civ_pairs.jsonl").read_text(encoding="utf-8")
+    ).splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if row.get("window") != "scope" or row.get("dir") != "r2c":
+            continue
+        frame = bytes.fromhex(row["frame"])
+        if (
+            len(frame) == _SCOPE_CADENCE["frame_len"]
+            and len(frame) > 6
+            and frame[4] == 0x27
+            and frame[5] == 0x00
+            and frame[6] not in templates
+        ):
+            templates[frame[6]] = frame
+    assert set(templates) == {0x00, 0x01}, "one template per receiver"
+    return templates
+
+
+_SCOPE_TEMPLATES = _load_scope_templates()
+
+# Scope stream pacing tick: below the fastest recorded gap (SUB fast,
+# 0.0344 s) so live emission keeps up; tests take over pacing explicitly.
+_SCOPE_TICK_S = 0.005
+
+# Every ``27 10/11/12/13/1A`` request form recorded in the probe, scope and
+# rx_write_restore windows of ``tests/fixtures/ic7610/civ_pairs.jsonl``.
+# Only these get a native scope answer; any other 0x27 form keeps today's
+# path (recorded table, then NAK) with no state change. The bare ``27 1A``
+# is recorded too and NAKs through today's path, as recorded.
+_SCOPE_RECORDED_FORMS = frozenset(
+    {
+        b"\x12",
+        b"\x13",
+        b"\x1a\x00",
+        b"\x12\x00",
+        b"\x12\x01",
+        b"\x13\x00",
+        b"\x13\x01",
+        b"\x1a\x00\x00",
+        b"\x1a\x00\x01",
+        b"\x10\x01",
+        b"\x11\x01",
+    }
+)
+
+# Marks a recorded echo-only scope SET (``27 10 01`` / ``27 11 01``): the
+# state change applies but no reply frame goes out — the echo already went
+# out on the wire path and the wave stream is the answer (the ``scope``
+# window pairs no reply for them).
+_SCOPE_ECHO_ONLY: object = object()
+
 # ---------------------------------------------------------------------------
 # Protocol constants (duplicated here to keep mock self-contained)
 # ---------------------------------------------------------------------------
@@ -117,6 +197,7 @@ _CMD_CTL_MEM_MENU = 0x1A  # 0x1A 0x05 <item-hi> <item-lo> menu reads/writes
 _CMD_SELECTED_FREQ = 0x25  # Selected/unselected receiver frequency
 _CMD_SELECTED_MODE = 0x26  # Selected/unselected receiver mode
 _CMD_VFO_SELECT = 0x07  # MAIN/SUB receiver select (D0/D1) and read (D2)
+_CMD_SCOPE = 0x27  # scope panel / wave output / receiver / dual / speed
 _CMD_ACK = 0xFB
 _CMD_NAK = 0xFA
 _SUB_RF_POWER = 0x0A
@@ -404,6 +485,21 @@ class MockIcomRadio(AudioPortMixin):
             the selected and unselected receiver fields (frequency, mode,
             DATA-mode flag, filter) and ``07 D2`` reads the selection
             (recorded IC-7610 ``vfo_select`` window).
+        scope_stream: opt-in native scope wave streaming (default False
+            keeps the previous behaviour byte-for-byte: 0x27 answers come
+            from ``recorded_answers`` or the final NAK and no wave frames
+            are sent). When True, only the ``27 10/11/12/13/1A`` request
+            forms recorded in the probe/scope/rx_write_restore windows are
+            answered natively from the recorded arrival state (panel on,
+            output off, dual, MAIN, MAIN mid / SUB fast): reads report the
+            state, recorded SETs are ACKed, and the ``27 10 01`` /
+            ``27 11 01`` SETs send no reply frame (the wave stream is their
+            answer). Every other 0x27 payload keeps today's path with no
+            state change, and while wave output is on each streaming
+            receiver's recorded ``27 00`` template is sent on the CI-V
+            stream at its speed's gap (recorded IC-7610 ``scope`` window
+            and ``tests/fixtures/ic7610/scope_cadence.json``). Any session
+            end, and any new CI-V opener, stops the stream.
     """
 
     def __init__(
@@ -433,6 +529,7 @@ class MockIcomRadio(AudioPortMixin):
         civ_inherited_drop_unanswered_rounds: int = 0,
         clock: Callable[[], float] | None = None,
         dual_receiver: bool = False,
+        scope_stream: bool = False,
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -493,6 +590,21 @@ class MockIcomRadio(AudioPortMixin):
         # the selected receiver, 1 = SUB is (recorded vfo_select window).
         self._dual_receiver: bool = dual_receiver
         self._selected_receiver: int = 0
+        # Native scope wave streaming (opt-in via scope_stream). Initial
+        # values are the recorded arrival state (MOR-3310: panel on, wave
+        # output off, dual on, scope receiver MAIN, MAIN speed mid, SUB
+        # speed fast). With the keyword off this state is never read.
+        self._scope_stream: bool = scope_stream
+        self._scope_panel: int = 0x01
+        self._scope_wave_output: int = 0x00
+        self._scope_dual: int = 0x01
+        self._scope_receiver: int = 0x00
+        self._scope_speed: dict[int, int] = {0x00: 0x01, 0x01: 0x00}
+        # Next wave-frame due time per receiver on ``self.clock``; a
+        # session end, output off or ``stop`` clears it and the next SET
+        # restarts the cadence one gap out.
+        self._scope_next_due: dict[int, float] = {}
+        self._scope_task: asyncio.Task[None] | None = None
         # Modelling of the 0x1A 05 menu items the startup reader reads;
         # current values (defaults and byte widths live in the table above).
         self._ctl_mem_menu: dict[bytes, int] = {
@@ -659,6 +771,7 @@ class MockIcomRadio(AudioPortMixin):
         # unsolicited conninfo notice when no session is held.
         self._last_login: tuple[tuple[str, int], int] | None = None
         self.unsolicited_sent: int = 0  # count of autonomous frames emitted
+        self.scope_frames_sent: int = 0  # wave frames emitted (scope_stream)
         # CI-V sequence-gap tracking, per CI-V client keyed by
         # ((host, port), sender_id): missing client numbers stall
         # tracked-packet processing until the fill arrives, while the radio
@@ -719,6 +832,10 @@ class MockIcomRadio(AudioPortMixin):
             self._unsolicited_task = asyncio.get_running_loop().create_task(
                 self._unsolicited_loop()
             )
+        if self._scope_stream:
+            self._scope_task = asyncio.get_running_loop().create_task(
+                self._scope_loop()
+            )
         self._civ_gap_task = asyncio.get_running_loop().create_task(
             self._civ_gap_loop()
         )
@@ -743,6 +860,14 @@ class MockIcomRadio(AudioPortMixin):
             except (asyncio.CancelledError, Exception):
                 pass
             self._unsolicited_task = None
+        if self._scope_task is not None:
+            self._scope_task.cancel()
+            try:
+                await self._scope_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._scope_task = None
+        self._scope_next_due.clear()
         if self._civ_gap_task is not None:
             self._civ_gap_task.cancel()
             try:
@@ -1034,6 +1159,7 @@ class MockIcomRadio(AudioPortMixin):
         if self._keepalive_timer is not None:
             self._keepalive_timer.cancel()
             self._keepalive_timer = None
+        self._scope_end_session()
         self._audio_end_session(reason)
         if self._owner is not None:
             logger.debug("Mock: session released (%s) owner=%s", reason, self._owner)
@@ -1552,6 +1678,7 @@ class MockIcomRadio(AudioPortMixin):
                 # session is a no-op (main's rule from #4142).
                 if struct.unpack_from("<I", data, 0x1C)[0] == self.token:
                     self._retire_token()
+                    self._scope_end_session()
                     self._audio_end_session("token_remove")
             return
 
@@ -1588,6 +1715,7 @@ class MockIcomRadio(AudioPortMixin):
                 # ``core/transport.py``: ``disconnect``). A disconnect from
                 # any other identity changes nothing. This is a simulator
                 # choice; the recorded rule is the live-token remove above.
+                self._scope_end_session()
                 self._audio_end_session("disconnect")
             return
 
@@ -1684,6 +1812,10 @@ class MockIcomRadio(AudioPortMixin):
                     return
                 self._civ_owner_addr = addr
                 self._civ_owner_id = sender_id
+                # A new opener starts silent (simulator choice, unrecorded):
+                # the previous opener's wave output does not leak to a
+                # client that never enabled it.
+                self._scope_end_session()
                 # The open consumes its header sequence number like any
                 # tracked packet (the production client sends it through
                 # ``send_tracked``), while sequence tracking itself
@@ -1717,6 +1849,13 @@ class MockIcomRadio(AudioPortMixin):
                 # foreign token-remove: it neither frees nor retires.
                 # Tracking outlives the close: it ends only with a new
                 # session, drop_session or reboot (MOR-3361).
+                if (addr, sender_id) == (
+                    self._civ_owner_addr,
+                    self._civ_owner_id,
+                ):
+                    # The stream owner's close ends the wave stream in both
+                    # ownership modes (simulator choice, unrecorded).
+                    self._scope_end_session()
                 if (
                     self.single_owner
                     and self._owner is not None
@@ -2386,7 +2525,15 @@ class MockIcomRadio(AudioPortMixin):
         if cmd in (_CMD_ACK, _CMD_NAK):
             return None
 
-        # TODO: Scope commands (0x27) — add when scope integration tests are needed
+        # --- Scope (0x27) panel / wave output / receiver / dual / speed ---
+        if cmd == _CMD_SCOPE and self._scope_stream:
+            scope_reply = self._dispatch_scope_native(payload, from_addr)
+            if scope_reply is _SCOPE_ECHO_ONLY:
+                # Recorded echo-only SET: the echo already went out and the
+                # wave stream is the answer, so no reply frame goes out.
+                return None
+            if scope_reply is not None:
+                return scope_reply
 
         # Unknown command → NAK
         return self._civ_nak(to, frm)
@@ -2453,6 +2600,170 @@ class MockIcomRadio(AudioPortMixin):
             return self._civ_nak(to, frm)
 
         return self._civ_nak(to, frm)
+
+    # ------------------------------------------------------------------
+    # Scope wave streaming (opt-in via scope_stream, recorded scope window)
+    # ------------------------------------------------------------------
+
+    def _dispatch_scope_native(
+        self, payload: bytes, from_addr: int
+    ) -> bytes | object | None:
+        """Native 0x27 scope answers; None keeps today's path.
+
+        Only the forms in ``_SCOPE_RECORDED_FORMS`` are answered: reads
+        report the simulator state in the recorded reply shape, recorded
+        SETs are ACKed, and the recorded ``27 10 01`` / ``27 11 01`` SETs
+        apply their state change with no reply frame (``_SCOPE_ECHO_ONLY``).
+        The panel SET never touches the wave-output flag. Any other 0x27
+        payload returns None (the recorded table, then NAK) with no state
+        change.
+        """
+        to = from_addr
+        frm = self._radio_addr
+        if not payload or bytes(payload) not in _SCOPE_RECORDED_FORMS:
+            return None
+        sub, rest = payload[0], payload[1:]
+        if sub in (0x12, 0x13):
+            if not rest:
+                value = self._scope_receiver if sub == 0x12 else self._scope_dual
+                return self._civ_frame(
+                    to, frm, _CMD_SCOPE, sub=sub, data=bytes((value,))
+                )
+            if sub == 0x12:
+                self._scope_receiver = rest[0]
+            else:
+                self._scope_dual = rest[0]
+            self._scope_retime()
+            return self._civ_ack(to, frm)
+        if sub == 0x1A:
+            receiver = rest[0]
+            if len(rest) == 1:
+                return self._civ_frame(
+                    to,
+                    frm,
+                    _CMD_SCOPE,
+                    sub=sub,
+                    data=bytes((receiver, self._scope_speed[receiver])),
+                )
+            self._scope_speed[receiver] = rest[1]
+            self._scope_retime(reset=receiver)
+            return self._civ_ack(to, frm)
+        # Only the recorded echo-only SETs reach here (panel / wave output).
+        if sub == 0x10:
+            self._scope_panel = rest[0]
+        else:
+            self._scope_wave_output = rest[0]
+            self._scope_retime()
+        return _SCOPE_ECHO_ONLY
+
+    def _scope_streaming_receivers(self) -> list[int]:
+        """Receivers streaming wave frames right now.
+
+        Dual streams both receivers at their own speeds, single only the
+        selected scope receiver; a receiver at speed slow streams nothing.
+        """
+        if self._scope_wave_output != 0x01:
+            return []
+        wanted = [0x00, 0x01] if self._scope_dual == 0x01 else [self._scope_receiver]
+        out = []
+        for receiver in wanted:
+            speed = self._scope_speed.get(receiver)
+            if speed is not None and _SCOPE_GAP_S.get(speed) is not None:
+                out.append(receiver)
+        return out
+
+    def _scope_end_session(self) -> None:
+        """Stop the wave stream: wave output off, due times cleared.
+
+        Runs at every session end the audio path already handles
+        (token-remove, disconnect, CI-V close) and at every release through
+        ``_release_session``. No other scope state is touched: a new session
+        starts silent (simulator choice, unrecorded).
+        """
+        if self._scope_stream:
+            self._scope_wave_output = 0x00
+            self._scope_next_due.clear()
+
+    def _scope_retime(self, reset: int | None = None) -> None:
+        """Reconcile the wave due times with the receivers streaming now.
+
+        A receiver that keeps streaming keeps its due time, so a SET never
+        disturbs a receiver it does not change; a newly streaming receiver
+        starts one gap out and a stopped one loses its due time. ``reset``
+        restarts one receiver's due time (its speed SET changed its gap).
+        """
+        now = self.clock()
+        streaming = self._scope_streaming_receivers()
+        if reset is not None and reset in streaming:
+            gap = _SCOPE_GAP_S.get(self._scope_speed.get(reset, -1))
+            if gap is not None:
+                self._scope_next_due[reset] = now + gap
+        for receiver in streaming:
+            if receiver not in self._scope_next_due:
+                gap = _SCOPE_GAP_S.get(self._scope_speed.get(receiver, -1))
+                if gap is not None:
+                    self._scope_next_due[receiver] = now + gap
+        for receiver in list(self._scope_next_due):
+            if receiver not in streaming:
+                del self._scope_next_due[receiver]
+
+    def pump_scope_stream(self) -> int:
+        """Send at most one due wave frame per receiver; return the count.
+
+        Each streaming receiver's recorded ``27 00`` template goes on the
+        CI-V stream to the CI-V owner every gap of its speed
+        (``tests/fixtures/ic7610/scope_cadence.json``). The radio does not
+        catch up missed sweeps: at most one frame goes out per receiver per
+        call, the next due time advances one gap from the due time (the
+        cadence keeps its phase), and a jump past several gaps resumes one
+        gap out from now. The background loop calls this live; tests on a
+        manual clock take over pacing and call it after each clock step.
+        Without an opened CI-V stream due times still advance — the radio
+        streams whether or not this client opened — but nothing is sent.
+        """
+        if not self._scope_stream:
+            return 0
+        now = self.clock()
+        proto = self._civ_proto
+        addr = self._civ_owner_addr
+        sent = 0
+        for receiver in self._scope_streaming_receivers():
+            gap = _SCOPE_GAP_S.get(self._scope_speed.get(receiver, -1))
+            if gap is None:
+                continue
+            due = self._scope_next_due.get(receiver)
+            if due is None:
+                self._scope_next_due[receiver] = now + gap
+                continue
+            if due <= now:
+                if proto is not None and addr is not None:
+                    self._send(
+                        proto,
+                        self._wrap_civ(_SCOPE_TEMPLATES[receiver], self._civ_owner_id),
+                        addr,
+                        "civ",
+                    )
+                    sent += 1
+                    self.scope_frames_sent += 1
+                due += gap
+                if due <= now:
+                    # Jumped more than one gap: no catch-up, resume from now.
+                    due = now + gap
+                self._scope_next_due[receiver] = due
+        return sent
+
+    async def _scope_loop(self) -> None:
+        """Emit due wave frames every tick while the stream runs."""
+        try:
+            while True:
+                await asyncio.sleep(_SCOPE_TICK_S)
+                if self._civ_udp is None:
+                    continue
+                self.pump_scope_stream()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Mock: scope stream loop error")
 
     # ------------------------------------------------------------------
     # CI-V frame builders
