@@ -348,6 +348,9 @@ async def test_owner_stop_during_backoff_cancels_pending_repair() -> None:
             # Wait for the first attempt to fail and the task to enter backoff.
             assert await _wait_until(lambda: len(ensure_calls) >= 1, timeout_s=8.0)
             await radio.disconnect()  # owner stops during the backoff sleep
+            # The stop cancels the pending repair synchronously: no task
+            # lingers in its backoff sleep after disconnect() returns.
+            assert radio._audio_silence_repair_task is None
             await asyncio.sleep(3.0)  # past every backoff window
             assert len(ensure_calls) == 1, "a stopped owner still got another attempt"
         finally:
@@ -381,9 +384,14 @@ async def test_silence_repair_caps_at_three_attempts_and_reports_failed_once() -
             _kill_client_audio_only(radio)
 
             # 3 attempts with 1 s + 2 s backoff, then FAILED once.
+            def _repair_done() -> bool:
+                return (
+                    len(ensure_calls) == 3
+                    and radio._audio_silence_repair_task is None
+                )
+
             assert await _wait_until(
-                lambda: len(ensure_calls) == 3
-                and radio._audio_silence_repair_task is None,
+                _repair_done,
                 timeout_s=15.0,
             ), f"expected 3 attempts and a finished task, got {len(ensure_calls)}"
             assert recovery == [AudioRecoveryState.FAILED]

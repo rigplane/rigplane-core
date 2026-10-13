@@ -1548,6 +1548,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         attempts = self._audio_silence_repair_attempts
         return attempts >= self._LAN_AUDIO_SILENCE_REPAIR_ATTEMPTS
 
+    def _silence_repair_backoff_s(self) -> float:
+        """Backoff before the next retry (1 s, then 2 s)."""
+        backoff = self._LAN_AUDIO_SILENCE_REPAIR_BACKOFF_S
+        step = min(self._audio_silence_repair_attempts - 1, len(backoff) - 1)
+        return backoff[step]
+
     async def _run_audio_silence_repair(
         self, *, civ_epoch: int, owner_stop_epoch: int
     ) -> None:
@@ -1565,15 +1571,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         try:
             while not self._silence_repair_budget_spent():
                 if self._audio_silence_repair_attempts:
-                    backoff = self._LAN_AUDIO_SILENCE_REPAIR_BACKOFF_S
-                    await asyncio.sleep(
-                        backoff[
-                            min(
-                                self._audio_silence_repair_attempts - 1,
-                                len(backoff) - 1,
-                            ),
-                        ],
-                    )
+                    await asyncio.sleep(self._silence_repair_backoff_s())
                 if not self._silence_repair_preconditions_ok(
                     civ_epoch,
                     owner_stop_epoch,
