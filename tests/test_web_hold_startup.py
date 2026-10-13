@@ -461,9 +461,7 @@ async def _start_operable_stack(
         await_initial_state=False,
     )
     server = WebServer(radio, config)  # type: ignore[arg-type]
-    with patch(
-        "rigplane.web.web_startup.RadioPoller", return_value=_busy_poller()
-    ):
+    with patch("rigplane.web.web_startup.RadioPoller", return_value=_busy_poller()):
         await server.start()
     assert server._server is not None
     server._runtime_rigctld_addr = f"127.0.0.1:{rig_port}"
@@ -731,9 +729,7 @@ async def test_runtime_reports_operator_disconnect_after_ws_disconnect() -> None
         await handler._handle_text(
             encode_json({"type": "radio_disconnect", "id": "w1"})
         )
-        responses = [
-            decode_json(call.args[0]) for call in ws.send_text.await_args_list
-        ]
+        responses = [decode_json(call.args[0]) for call in ws.send_text.await_args_list]
         assert any(
             response.get("ok") is True
             and response.get("result", {}).get("status") == "disconnected"

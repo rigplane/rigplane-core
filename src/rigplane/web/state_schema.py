@@ -276,7 +276,7 @@ class RadioHealthPublic(_Strict):
 
     serverReachable: bool
     radioLink: Literal["connected", "reconnecting", "disconnected", "unknown"]
-    readiness: Literal["ready", "delayed", "stalled", "recovering"]
+    readiness: Literal["ready", "delayed", "stalled", "recovering", "idle"]
     likelyCause: Literal[
         "server_unreachable",
         "radio_network_lost",
@@ -285,6 +285,7 @@ class RadioHealthPublic(_Strict):
         "radio_powered_off_likely",
         "radio_not_connected",
         "radio_session_busy",
+        "operator_disconnected",
         "unknown",
     ]
     sinceMs: int

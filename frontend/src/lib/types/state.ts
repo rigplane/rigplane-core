@@ -247,7 +247,7 @@ export interface RadioDetailPublic {
 export interface RadioHealthPublic {
   serverReachable: boolean;
   radioLink: "connected" | "reconnecting" | "disconnected" | "unknown";
-  readiness: "ready" | "delayed" | "stalled" | "recovering";
+  readiness: "ready" | "delayed" | "stalled" | "recovering" | "idle";
   likelyCause:
     | "server_unreachable"
     | "radio_network_lost"
@@ -256,6 +256,7 @@ export interface RadioHealthPublic {
     | "radio_powered_off_likely"
     | "radio_not_connected"
     | "radio_session_busy"
+    | "operator_disconnected"
     | "unknown";
   sinceMs: number;
   lastError: string | null;

@@ -205,6 +205,7 @@ class _ClassifyRadioHealthFn(Protocol):
         now_monotonic: float | None = None,
         served_with_silent_link: bool = False,
         served_without_port: bool = False,
+        operator_disconnected: bool = False,
     ) -> dict[str, Any]: ...
 
 
@@ -1277,6 +1278,11 @@ class WebServer:
         # start-up busy hold. Unlike the silent-link mark above it never
         # feeds health: a held session is a busy radio, not a silent one.
         self._served_with_startup_busy_hold: bool = False
+        # MOR-3452: set by an operator-initiated radio disconnect (HTTP
+        # route or WS message) and cleared on operator connect or when
+        # the radio reports connected again. No lifecycle or radio
+        # record of intent exists, so the web seat keeps this one mark.
+        self._operator_disconnected: bool = False
         # Audio bridge (virtual device integration)
         self._audio_bridge: "AudioBridge | None" = None
         # MOR-3078: bridge kwargs armed by ``defer_audio_bridge_start``
@@ -1513,6 +1519,37 @@ class WebServer:
     def _radio_ready(self) -> bool:
         """Backend view of radio readiness (CI-V healthy)."""
         return bool(radio_ready(self._radio))
+
+    def note_operator_disconnect(self) -> None:
+        """Record an intentional operator radio disconnect (MOR-3452)."""
+
+        self._operator_disconnected = True
+
+    def note_operator_connect(self) -> None:
+        """Clear the operator-disconnect mark on operator connect (MOR-3452)."""
+
+        self._operator_disconnected = False
+
+    def _operator_disconnect_active(self) -> bool:
+        """Whether the radio is down after an operator disconnect (MOR-3452).
+
+        Reads only the radio's public ``connected`` / readiness surface,
+        never private lifecycle state. The mark heals the moment the
+        radio reports connected again, so a backend-side reconnect needs
+        no explicit clearing.
+        """
+
+        if not self._operator_disconnected:
+            return False
+        radio = self._radio
+        raw_connected = (
+            getattr(radio, "connected", False) if radio is not None else False
+        )
+        connected = raw_connected if isinstance(raw_connected, bool) else False
+        if connected or self._radio_ready():
+            self._operator_disconnected = False
+            return False
+        return True
 
     def _startup_busy_hold(self) -> tuple[bool, float | None]:
         """Whether the first connect waits out a busy reject (MOR-3391).
@@ -2742,14 +2779,16 @@ class WebServer:
         """Build radio health and advance the health revision on transitions."""
         now = time.monotonic()
         observed = store_has_radio_observation(self.command_state_store)
+        busy, _retry = self._startup_busy_hold()
+        operator = self._operator_disconnect_active()
         health = _classify_radio_health_impl(
             self._radio,
             server_reachable=True,
             now_monotonic=now,
             served_with_silent_link=self._served_with_silent_link and not observed,
             served_without_port=self._served_without_port and not observed,
+            operator_disconnected=operator and not busy,
         )
-        busy, _retry = self._startup_busy_hold()
         if busy:
             # MOR-3450: the radio is present and busy-rejecting, retrying in
             # the background — not missing and not on a dead network. The
@@ -4259,6 +4298,9 @@ class WebServer:
                 "The radio's LAN session is held by another client; retrying "
                 "— stop the other client to connect sooner."
             )
+        elif self._operator_disconnect_active():
+            readiness = "operator_disconnected"
+            message = "Disconnected by the operator."
         elif radio_payload["radioReady"]:
             readiness = "ready_with_radio"
             message = "Station server is ready with an attached radio."
@@ -6675,6 +6717,8 @@ class WebServer:
                 # fallback-store teardown performs — so TTL-less SETTING
                 # and MENU fields cannot stay FRESH past the disconnect.
                 self.command_state_store.begin_provider_generation()
+                # MOR-3452: mark the intentional disconnect for the runtime.
+                self.note_operator_disconnect()
                 resp = {"status": "disconnected"}
             elif path == "/api/v1/radio/connect":
                 if self._control_handler_for()._backend_recovering():  # noqa: SLF001
@@ -6692,6 +6736,9 @@ class WebServer:
                     and generation != poller._vfo_connection_generation()
                 ):
                     self._on_radio_reconnect()
+                # MOR-3452: the operator asked back in — the disconnect
+                # mark no longer describes the station.
+                self.note_operator_connect()
                 resp = {"status": "connecting"}
             elif path == "/api/v1/radio/power":
                 # Read JSON body for power state
