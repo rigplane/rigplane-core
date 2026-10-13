@@ -34,6 +34,7 @@ describe('deriveRadioHealthLabel — cause-keyed branches', () => {
     ['radio_not_responding', 'recovering', 'radio not responding'],
     ['radio_powered_off_likely', 'stalled', 'radio appears powered off or unreachable'],
     ['server_unreachable', 'ready', 'server unreachable'],
+    ['radio_session_busy', 'recovering', 'radio in use by another connection, retrying'],
   ])('%s with readiness %s reads "%s"', (cause, readiness, expected) => {
     expect(deriveRadioHealthLabel({ health: health(cause, readiness), ...healthy })).toBe(expected);
   });
@@ -98,5 +99,11 @@ describe('deriveRadioHealthLabel — locale', () => {
     setLocale('ja-JP');
     expect(deriveRadioHealthLabel({ health: health('radio_network_lost'), ...healthy }))
       .toBe('トランシーバーとの通信が切断されました');
+  });
+
+  it('reads the busy copy in Russian', () => {
+    setLocale('ru-RU');
+    expect(deriveRadioHealthLabel({ health: health('radio_session_busy', 'recovering'), ...healthy }))
+      .toBe('трансивер занят другим подключением, повторяем попытку');
   });
 });

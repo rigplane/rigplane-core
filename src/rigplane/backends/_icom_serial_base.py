@@ -284,6 +284,10 @@ class _IcomSerialRadioBase(CoreRadio):
         # 2026-09-28) — while the fact that the radio answered nothing
         # survives for the web startup gate to read.
         self._civ_link_down_ever_declared = False
+        # Link-loss episodes (CONNECTED -> RECONNECTING edges), served as
+        # ``serial_reconnects_total``. Retries inside one episode do not
+        # recount; user connects from DISCONNECTED are no episode.
+        self._serial_reconnects_total = 0
         # MOR-2876: text of the latest failed port open; None once an open
         # succeeds.
         self.last_error: str | None = None
@@ -410,6 +414,22 @@ class _IcomSerialRadioBase(CoreRadio):
     @property
     def control_connected(self) -> bool:
         return self._serial_session.connected
+
+    @property
+    def serial_reconnects_total(self) -> int:
+        """Link-loss episodes since this radio was created."""
+        return self._serial_reconnects_total
+
+    def _count_serial_link_episode(self) -> None:
+        """Count one link-loss episode (a CONNECTED -> RECONNECTING edge).
+
+        Both link-down paths funnel through here:
+        ``_declare_serial_link_down`` and ``soft_reconnect``. Retries
+        inside the same episode (already RECONNECTING) and user connects
+        from DISCONNECTED do not count.
+        """
+        if self._conn_state == RadioConnectionState.CONNECTED:
+            self._serial_reconnects_total += 1
 
     @property
     def radio_ready(self) -> bool:
@@ -635,6 +655,7 @@ class _IcomSerialRadioBase(CoreRadio):
         owner_stop_epoch = self._owner_stop_epoch
         if self._managed_tx_composition is not None:
             await self._park_managed_tx()
+        self._count_serial_link_episode()
         self._conn_state = RadioConnectionState.RECONNECTING
         self._civ_stream_ready = False
         self._civ_recovering = True
@@ -2043,6 +2064,7 @@ class _IcomSerialRadioBase(CoreRadio):
             self._serial_device,
             self._civ_link_down_note,
         )
+        self._count_serial_link_episode()
         self._conn_state = RadioConnectionState.RECONNECTING
         self._civ_link_down_ever_declared = True
         self._civ_stream_ready = False
