@@ -561,7 +561,14 @@ async def test_genuine_rx_resumed_reopens_episode() -> None:
 
 
 async def test_two_rx_silent_start_one_repair_task() -> None:
-    """Two rx_silent in quick succession schedule exactly one repair task."""
+    """Two rx_silent in quick succession schedule exactly one repair task.
+
+    The silence is real (a killed leg): with healthy frames a repair task
+    would correctly exit quietly (MOR-3401 r3), so single-flight is pinned
+    against a death instead. Both emits land before the watchdog's own
+    edge — the first schedules the task synchronously, the second sees it
+    running.
+    """
     stack = await soak_driver._start_simulator_stack()
     try:
         radio = stack.radio
@@ -570,6 +577,8 @@ async def test_two_rx_silent_start_one_repair_task() -> None:
 
         calls, restore = _spy_method(radio, "_teardown_audio_transport")
         try:
+            _kill_client_audio_only(radio)
+            _drain(sub)
             radio.audio_session._emit("rx_silent")  # noqa: SLF001
             radio.audio_session._emit("rx_silent")  # noqa: SLF001
 

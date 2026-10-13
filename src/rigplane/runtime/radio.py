@@ -571,13 +571,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # ``rx_resumed`` and on a new connect.
         self._audio_silence_repair_attempts: int = 0
         # Silence-episode markers (MOR-3401 r3): the CI-V epoch the episode
-        # began in, the bus RX heartbeat then, and the heartbeat at the
-        # last repair-attempt start. A later ``rx_silent`` opens a new
-        # episode only if frames arrived since the last attempt or the
-        # epoch moved; a successful round never touches these.
+        # began in, the bus RX heartbeat then, and the heartbeat as of the
+        # last settled point (episode open or last task end). A later
+        # ``rx_silent`` opens a new episode only if frames arrived since
+        # the baseline settled or the epoch moved; a successful round never
+        # touches these. Measuring from the settled baseline (not from each
+        # attempt start) absorbs one buffered pre-death frame landing
+        # mid-task: it must neither stop the task nor reopen the episode.
         self._audio_silence_repair_episode_epoch: int | None = None
         self._audio_silence_repair_episode_start_heartbeat: float | None = None
-        self._audio_silence_repair_last_attempt_heartbeat: float | None = None
+        self._audio_silence_repair_baseline_heartbeat: float | None = None
         self._scope_assembler: ScopeAssembler = ScopeAssembler()
         self._scope_callback: Callable[[ScopeFrame], Any] | None = None
         # MOR-2222: last scope-display mode published from the waveform
@@ -1479,11 +1482,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         (``AudioBus.last_rx_frame_monotonic``, the same timestamp
         ``AudioSession._check_liveness_locked`` reads): a later
         ``rx_silent`` opens a NEW episode with a fresh budget only if an RX
-        frame arrived since the last repair attempt, or the CI-V epoch
-        moved since the episode began; otherwise it is the SAME episode and
-        the attempt count continues. A round whose ``reestablish()``
-        succeeds therefore never resets the budget — only frames (or a new
-        epoch) do — so a leg that re-arms but stays frameless still caps
+        frame arrived since the baseline settled (episode open or last task
+        end), or the CI-V epoch moved since the episode began; otherwise
+        it is the SAME episode and the attempt count continues. Measuring
+        from the settled baseline absorbs one buffered pre-death frame
+        landing mid-task. A round whose ``reestablish()`` succeeds
+        therefore never resets the budget — only frames (or a new epoch)
+        do — so a leg that re-arms but stays frameless still caps
         at 3 attempts with one FAILED instead of looping forever. A second
         ``rx_silent`` while the task runs schedules nothing.
         ``rx_resumed`` is itself frame-based so it still ends the episode,
@@ -1501,7 +1506,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 self._audio_silence_repair_episode_epoch = self._civ_epoch
                 heartbeat = self._silence_repair_rx_heartbeat()
                 self._audio_silence_repair_episode_start_heartbeat = heartbeat
-                self._audio_silence_repair_last_attempt_heartbeat = heartbeat
+                self._audio_silence_repair_baseline_heartbeat = heartbeat
             return
         if reason != "rx_silent":
             return
@@ -1511,20 +1516,20 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if task is not None and not task.done():
             return
         heartbeat = self._silence_repair_rx_heartbeat()
-        frames_since_attempt = (
+        frames_since_settled = (
             heartbeat is not None
-            and heartbeat != self._audio_silence_repair_last_attempt_heartbeat
+            and heartbeat != self._audio_silence_repair_baseline_heartbeat
         )
         epoch_moved = self._civ_epoch != self._audio_silence_repair_episode_epoch
         if (
             self._audio_silence_repair_attempts == 0
-            or frames_since_attempt
+            or frames_since_settled
             or epoch_moved
         ):
             self._audio_silence_repair_attempts = 0
             self._audio_silence_repair_episode_epoch = self._civ_epoch
             self._audio_silence_repair_episode_start_heartbeat = heartbeat
-            self._audio_silence_repair_last_attempt_heartbeat = heartbeat
+            self._audio_silence_repair_baseline_heartbeat = heartbeat
         if self._silence_repair_budget_spent():
             return
         if not self._silence_repair_preconditions_ok(
@@ -1553,10 +1558,22 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         return session._bus.last_rx_frame_monotonic
 
     def _silence_repair_silence_over(self) -> bool:
-        """An RX frame arrived since the current episode started."""
+        """RX frames resumed and are still flowing: stop without teardown.
+
+        A frame newer than the episode start is not enough — one buffered
+        pre-death frame landing mid-task must not stop the repair. Only a
+        heartbeat fresher than the session's own silence definition
+        (``RX_LIVENESS_TIMEOUT_S``, the same threshold
+        ``AudioSession._check_liveness_locked`` applies) proves audio
+        really flows again.
+        """
+        from rigplane.audio.session import RX_LIVENESS_TIMEOUT_S
+
         heartbeat = self._silence_repair_rx_heartbeat()
         start = self._audio_silence_repair_episode_start_heartbeat
-        return heartbeat is not None and heartbeat != start
+        if heartbeat is None or heartbeat == start:
+            return False
+        return time.monotonic() - heartbeat < RX_LIVENESS_TIMEOUT_S
 
     def _silence_repair_preconditions_ok(
         self, civ_epoch: int, owner_stop_epoch: int
@@ -1605,7 +1622,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         consumes the shared budget and reports FAILED once through
         ``_on_audio_recovery`` instead of looping with a fresh budget per
         task. Before every round (after the backoff sleep) the task stops
-        quietly when frames have arrived since the episode started: the
+        quietly when frames have resumed and are still flowing: the
         silence is over, nothing to tear down. Never raises — cancellation
         from owner ``disconnect()`` propagates so the stop takes effect.
         """
@@ -1620,9 +1637,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                     owner_stop_epoch,
                 ):
                     return
-                self._audio_silence_repair_last_attempt_heartbeat = (
-                    self._silence_repair_rx_heartbeat()
-                )
                 try:
                     await self._teardown_audio_transport()
                     if not self._silence_repair_preconditions_ok(
@@ -1663,6 +1677,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         except Exception:
             logger.warning("audio-silence repair task failed", exc_info=True)
         finally:
+            # Settle the episode baseline: frames that arrived while this
+            # task ran (e.g. one buffered pre-death frame) must not reopen
+            # the episode later — only post-task frames do.
+            self._audio_silence_repair_baseline_heartbeat = (
+                self._silence_repair_rx_heartbeat()
+            )
             if self._audio_silence_repair_task is asyncio.current_task():
                 self._audio_silence_repair_task = None
 
@@ -1788,7 +1808,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             self._audio_silence_repair_attempts = 0
             self._audio_silence_repair_episode_epoch = None
             self._audio_silence_repair_episode_start_heartbeat = None
-            self._audio_silence_repair_last_attempt_heartbeat = None
+            self._audio_silence_repair_baseline_heartbeat = None
             self._reset_external_cat_session()
             checking = RadioIdentity(
                 status=RadioIdentityStatus.CHECKING, expected_model=self.model
