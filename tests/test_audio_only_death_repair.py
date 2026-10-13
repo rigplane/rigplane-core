@@ -119,8 +119,7 @@ async def test_audio_only_death_never_repaired() -> None:
         radio.audio_session.add_listener(events.append)
 
         sub = await radio.audio_session.subscribe_rx("web-audio")
-        first = await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S)
-        assert first is not None, "no RX frame before the audio death"
+        assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
 
         _drain(sub)
         sent_before = sim.audio_rx_frames_sent
@@ -164,8 +163,7 @@ async def test_manual_audio_rebuild_repairs_audio_only_death() -> None:
         radio.audio_session.add_listener(events.append)
 
         sub = await radio.audio_session.subscribe_rx("web-audio")
-        first = await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S)
-        assert first is not None, "no RX frame before the audio death"
+        assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
 
         _drain(sub)
         old_audio_t = _kill_client_audio_only(radio)
@@ -215,8 +213,7 @@ async def test_rx_silent_repairs_but_soft_reconnect_and_error_watchdog_do_not() 
         radio.soft_reconnect = _spy  # type: ignore[method-assign]
         try:
             sub = await radio.audio_session.subscribe_rx("web-audio")
-            first = await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S)
-            assert first is not None, "no RX frame before the audio death"
+            assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
 
             _drain(sub)
             t_death = time.monotonic()
