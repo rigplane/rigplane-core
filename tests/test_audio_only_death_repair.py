@@ -466,8 +466,8 @@ async def test_successful_round_consumes_budget_and_frames_reopen_episode() -> N
 
         radio._ensure_audio_transport = _fail_first_ensure  # type: ignore[method-assign]
         try:
-            _drain(sub)
             _kill_client_audio_only(radio)
+            _drain(sub)
             assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
             assert await _wait_until(
                 lambda: radio._audio_silence_repair_task is None,
@@ -481,8 +481,8 @@ async def test_successful_round_consumes_budget_and_frames_reopen_episode() -> N
 
             # Frames flowed after the repair, so a later death opens a new
             # episode with a fresh budget and is repaired again.
-            _drain(sub)
             _kill_client_audio_only(radio)
+            _drain(sub)
             assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
             assert len(teardown_calls) > 2
         finally:
@@ -528,9 +528,7 @@ async def test_genuine_rx_resumed_reopens_episode() -> None:
                 timeout_s=15.0,
             ), f"expected 3 attempts and a finished task, got {len(ensure_calls)}"
             assert recovery == [AudioRecoveryState.FAILED]
-            resumed_before = sum(
-                1 for e in events if e.reason == "rx_resumed"
-            )
+            resumed_before = sum(1 for e in events if e.reason == "rx_resumed")
 
             # Another path rebuilds the transport and re-arms the stream
             # underneath the session but never reestablishes demand, so the
@@ -549,8 +547,8 @@ async def test_genuine_rx_resumed_reopens_episode() -> None:
             repaired_teardowns = len(teardown_calls)
 
             # A new real death gets a fresh budget and is repaired again.
-            _drain(sub)
             _kill_client_audio_only(radio)
+            _drain(sub)
             assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
             assert len(teardown_calls) > repaired_teardowns
         finally:
@@ -681,7 +679,9 @@ async def test_spent_budget_reopens_after_audio_fixed_by_another_path() -> None:
             repaired_teardowns = len(teardown_calls)
 
             # A new real death gets a fresh budget and is repaired again.
+            # Kill first, then drain: only post-death frames may pass.
             _kill_client_audio_only(radio)
+            _drain(sub)
             assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None, (
                 "MOR-3401 r3: the budget spent on the first episode leaked — "
                 "a later real death was never repaired"
@@ -733,8 +733,8 @@ async def test_successful_rounds_without_frames_cap_and_report_failed() -> None:
         radio._ensure_audio_transport = _dead_ensure  # type: ignore[method-assign]
         session.reestablish = _spy_reestablish  # type: ignore[method-assign]
         try:
-            _drain(sub)
             _kill_client_audio_only(radio)
+            _drain(sub)
 
             assert await _wait_until(
                 lambda: recovery == [AudioRecoveryState.FAILED],
@@ -788,9 +788,7 @@ async def test_frames_resumed_during_backoff_stop_repair_without_teardown() -> N
         try:
             _kill_client_audio_only(radio)
             # Round 1 fails; the task now sleeps the 1 s backoff.
-            assert await _wait_until(
-                lambda: len(ensure_calls) >= 1, timeout_s=8.0
-            )
+            assert await _wait_until(lambda: len(ensure_calls) >= 1, timeout_s=8.0)
             # Another path heals audio mid-backoff: frames flow again well
             # before the repair wakes up.
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
