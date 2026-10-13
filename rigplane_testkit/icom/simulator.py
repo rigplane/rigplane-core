@@ -501,7 +501,6 @@ class MockIcomRadio(AudioPortMixin):
         }
 
         # Scope control state (recorded subcommands 10, 11, 12, 13 from scope_control window).
-        # Defaults from scope_control recording: 10=01 (on), 11=00 (off), 12=00, 13=01.
         self._scope_10: int = 0x01
         self._scope_11: int = 0x00
         self._scope_12: int = 0x00
