@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from rigplane.backends.ic7300 import Ic7300SerialRadio
+from rigplane.backends.yaesu_cat import transport as _yaesu_transport_module
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.exceptions import ConnectionError
 from rigplane.types import AudioCodec
@@ -26,6 +27,7 @@ from rigplane.web.server import WebConfig, WebServer
 from test_audio_session_health import _FakeWriter, _response_json
 from test_icom7610_serial_radio import _FakeSerialCivLink, _FakeUsbAudioDriver
 from test_yaesu_audio import FakeAudioDriver
+from test_yaesu_cat_transport import FakeStreamReader, FakeStreamWriter
 
 
 def _serial_radio() -> tuple[Ic7300SerialRadio, _FakeSerialCivLink]:
@@ -147,19 +149,23 @@ def _yaesu_radio() -> YaesuCatRadio:
     )
 
 
+def _yaesu_fake_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Serve the real ``YaesuCatTransport.connect`` a silent radio.
+
+    Patches the module-level ``open_serial_port`` the transport calls with
+    the existing ``FakeStreamReader``/``FakeStreamWriter`` pair from the
+    transport tests — the port opens, but the radio never answers.
+    """
+
+    async def _fake_open(url: str, *, baudrate: int, **kwargs: Any) -> Any:
+        return FakeStreamReader([]), FakeStreamWriter()
+
+    monkeypatch.setattr(_yaesu_transport_module, "open_serial_port", _fake_open)
+
+
 async def _yaesu_reconnect(transport: Any) -> None:
-    """Run one transport reconnect without real serial hardware."""
+    """Run one real transport reconnect (close, port reopen, cooldown)."""
     transport._last_reconnect = 0.0  # noqa: SLF001  # bypass the cooldown
-
-    async def _fake_close() -> None:
-        transport._connected = False  # noqa: SLF001
-        transport._writer = None  # noqa: SLF001
-
-    async def _fake_connect() -> None:
-        transport._connected = True  # noqa: SLF001
-
-    transport.close = _fake_close  # type: ignore[method-assign]
-    transport.connect = _fake_connect  # type: ignore[method-assign]
     await transport.reconnect()
 
 
@@ -169,24 +175,29 @@ def _yaesu_lose_link(transport: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_yaesu_reconnect_episodes_count() -> None:
-    """First reconnect after the link worked opens an episode; retries do not."""
+async def test_yaesu_reconnect_episodes_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reopened port alone never closes the episode; an exchange does."""
     radio = _yaesu_radio()
     assert radio.serial_reconnects_total == 0
     transport = radio._transport  # noqa: SLF001
+    _yaesu_fake_open(monkeypatch)
 
     _yaesu_lose_link(transport)
     await _yaesu_reconnect(transport)
     assert radio.serial_reconnects_total == 1
     assert transport.stats.reconnects == 1
 
+    # The port reopened but the radio stayed silent — no exchange ran, so
+    # the retry stays inside the same episode while attempts advance.
+    _yaesu_lose_link(transport)
     await _yaesu_reconnect(transport)
     assert transport.stats.reconnects == 2
     assert radio.serial_reconnects_total == 1
 
-    # The link worked again (a successful exchange resets the error
-    # streak), so the next loss is a new episode.
-    transport._stats.record_success()  # noqa: SLF001
+    # One successful exchange closes the episode, so the next loss opens
+    # a new one.
+    transport._reader = FakeStreamReader([b"FA014074000;"])  # noqa: SLF001
+    assert await transport.query("FA;") == "FA014074000"
     _yaesu_lose_link(transport)
     await _yaesu_reconnect(transport)
     assert radio.serial_reconnects_total == 2

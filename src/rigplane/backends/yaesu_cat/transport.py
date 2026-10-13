@@ -127,8 +127,16 @@ class TransportStats:
     _reconnect_episode_counted: bool = field(default=False, repr=False)
 
     def record_success(self) -> None:
+        """A radio exchange completed: reset the error streak and close the
+        loss episode, so the next reconnect opens a new episode."""
         self._consecutive_errors = 0
         self._reconnect_episode_counted = False
+
+    def record_port_open(self) -> None:
+        """The port opened with no radio evidence yet: reset the error
+        streak (the reconnect threshold depends on it) but leave the loss
+        episode open — only a successful exchange closes it."""
+        self._consecutive_errors = 0
 
     def record_reconnect_attempt(self) -> None:
         """Count one reconnect attempt; the first attempt of a loss episode
@@ -224,7 +232,7 @@ class YaesuCatTransport:
                 stopbits=1,
             )
             self._connected = True
-            self._stats.record_success()
+            self._stats.record_port_open()
             logger.info("CAT serial port opened: %s", self._device)
         except Exception as exc:
             raise CatTransportError(
