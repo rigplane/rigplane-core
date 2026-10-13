@@ -141,6 +141,7 @@ describe('StatusBar radio indicator title carries the health reason', () => {
     ['radio_not_responding', 'stalled', 'Radio ↔ Server: connected (radio not responding)'],
     ['radio_powered_off_likely', 'stalled', 'Radio ↔ Server: connected (radio appears powered off or unreachable)'],
     ['server_unreachable', 'ready', 'Radio ↔ Server: connected (server unreachable)'],
+    ['radio_session_busy', 'recovering', 'Radio ↔ Server: connected (radio in use by another connection, retrying)'],
     ['unknown', 'ready', 'Radio ↔ Server: connected'],
   ] as const)('%s (%s)', (cause, readiness, expected) => {
     vi.mocked(getRadioHealth).mockReturnValue(health(cause, readiness));
