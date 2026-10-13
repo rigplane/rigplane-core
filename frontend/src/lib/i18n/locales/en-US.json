@@ -38,6 +38,7 @@
   "core.statusbar.health.radioNotResponding": "radio not responding",
   "core.statusbar.health.radioPoweredOff": "radio appears powered off or unreachable",
   "core.statusbar.health.serverUnreachable": "server unreachable",
+  "core.statusbar.health.radioSessionBusy": "radio in use by another connection, retrying",
   "core.statusbar.health.rigOffline": "rig offline",
   "core.statusbar.health.radioNotReady": "radio link degraded — radio not ready",
   "core.statusbar.power.toggleOn": "Toggle power (radio is ON — click to power off)",
