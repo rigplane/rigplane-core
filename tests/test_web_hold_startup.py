@@ -1454,3 +1454,102 @@ async def test_standalone_rigctld_still_aborts_against_identity_hold() -> None:
     )
     with pytest.raises(RuntimeError, match="rigctld startup aborted"):
         await rig.start()
+
+
+class _RecoveringRadio(_OperableRadio):
+    """An operable radio that starts ready and can be parked in a backend-owned recovery state.
+
+    Starts with ``connected=True``, ``radio_ready=True``, ``conn_state=CONNECTED``
+    so the web startup gate passes. After the stack is up, call
+    ``park_recovery`` to stage CONNECTING or RECONNECTING without touching
+    the production startup gate. The ``connect_calls`` counter tracks
+    whether the handler invokes a competing ``connect()``.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.connect_calls = 0
+
+    def park_recovery(self, state: RadioConnectionState) -> None:
+        """Park the fake in a backend-owned recovery state after stack startup."""
+        self.connected = False
+        self.control_connected = False
+        self.radio_ready = False
+        self.conn_state = state
+
+    async def connect(self) -> None:
+        self.connect_calls += 1
+        await super().connect()
+
+
+@pytest.mark.asyncio
+async def test_ws_radio_connect_refused_while_backend_connecting() -> None:
+    """A WS operator connect loses to an in-progress backend connect.
+
+    With the backend parked CONNECTING and the operator-disconnect mark
+    set, the WS ``radio_connect`` message is refused as
+    ``backend_recovering`` and the handler starts no competing
+    ``connect()``; the backend state is left alone. This pins only the
+    refusal and the no-race contract, not the mark or the runtime
+    projection after the refusal.
+    """
+
+    radio = _RecoveringRadio()
+    rig, server, _rig_port = await _start_operable_stack(radio)
+    try:
+        radio.park_recovery(RadioConnectionState.CONNECTING)
+        server.note_operator_disconnect()
+        assert radio.conn_state is RadioConnectionState.CONNECTING
+
+        ws = SimpleNamespace(send_text=AsyncMock())
+        handler = ControlHandler(
+            ws, radio, "test", "IC-7610", server=server, session_id="ws-recovering"
+        )
+
+        await handler._handle_text(encode_json({"type": "radio_connect", "id": "wr1"}))
+
+        responses = [decode_json(c.args[0]) for c in ws.send_text.await_args_list]
+        assert any(
+            not r.get("ok") and r.get("error") == "backend_recovering"
+            for r in responses
+        )
+        assert radio.connect_calls == 0
+        assert radio.conn_state is RadioConnectionState.CONNECTING
+    finally:
+        await server.stop()
+        await rig.stop()
+
+
+@pytest.mark.asyncio
+async def test_ws_radio_connect_refused_while_backend_reconnecting() -> None:
+    """A WS operator connect loses to an in-progress backend reconnect.
+
+    Same refusal and no-race contract as the CONNECTING row, with the
+    backend parked RECONNECTING. Pins neither the mark nor the runtime
+    projection after the refusal.
+    """
+
+    radio = _RecoveringRadio()
+    rig, server, _rig_port = await _start_operable_stack(radio)
+    try:
+        radio.park_recovery(RadioConnectionState.RECONNECTING)
+        server.note_operator_disconnect()
+        assert radio.conn_state is RadioConnectionState.RECONNECTING
+
+        ws = SimpleNamespace(send_text=AsyncMock())
+        handler = ControlHandler(
+            ws, radio, "test", "IC-7610", server=server, session_id="ws-recovering"
+        )
+
+        await handler._handle_text(encode_json({"type": "radio_connect", "id": "wr2"}))
+
+        responses = [decode_json(c.args[0]) for c in ws.send_text.await_args_list]
+        assert any(
+            not r.get("ok") and r.get("error") == "backend_recovering"
+            for r in responses
+        )
+        assert radio.connect_calls == 0
+        assert radio.conn_state is RadioConnectionState.RECONNECTING
+    finally:
+        await server.stop()
+        await rig.stop()
