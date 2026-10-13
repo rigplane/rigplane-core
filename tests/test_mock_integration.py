@@ -108,9 +108,6 @@ class TestFrequency:
         self, connected_radio: IcomRadio, mock_radio: MockIcomRadio
     ) -> None:
         await connected_radio.set_freq(7_074_000)
-        await asyncio.sleep(
-            0.05
-        )  # fire-and-forget: give mock time to receive and process UDP
         assert mock_radio._frequency == 7_074_000
         freq = await connected_radio.get_freq()
         assert freq == 7_074_000
@@ -380,7 +377,6 @@ class TestRigctldMirrorFallback:
         ``state_poller`` observation.
         """
         await connected_radio.set_freq(7_074_000)
-        await asyncio.sleep(0.05)  # fire-and-forget UDP settle
         assert await connected_radio.get_freq() == 7_074_000
         # The CI-V read populated both the mirror and the canonical store.
         assert connected_radio.radio_state.main.freq == 7_074_000
