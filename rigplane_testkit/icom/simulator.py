@@ -2938,14 +2938,14 @@ class MockIcomRadio(AudioPortMixin):
         port = self._actual_civ_port if civ_port is None else civ_port
         struct.pack_into(">H", pkt, 0x42, port)
         # The audio port is the bound listener when one is up; otherwise
-        # the dummy the simulator always advertised (CI-V port + 1, kept
-        # within uint16 range): with the listener off nothing answers
-        # there, exactly as before the listener existed.
+        # a dummy adjacent port, excluding this simulator's live endpoints.
         if port == 0:
             audio_port = 0
         elif self._actual_audio_port:
             audio_port = self._actual_audio_port
         else:
             audio_port = port + 1 if port < 65535 else 65534
+            while audio_port in (port, self._actual_ctrl_port, self._actual_civ_port):
+                audio_port = audio_port + 1 if audio_port < 65535 else 1
         struct.pack_into(">H", pkt, 0x46, audio_port)
         return bytes(pkt)
