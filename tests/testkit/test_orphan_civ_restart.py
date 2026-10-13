@@ -44,7 +44,7 @@ _CONNECTED = RadioConnectionState.CONNECTED
 
 # The GUID the simulator sends at login (``MockIcomRadio._guid_conninfo``).
 _SIM_GUID = bytes(range(0x01, 0x11))
-# Record interval for these tests (the shipped value is 5 s).
+# Record interval for these tests (the shipped value is 2 s).
 _RECORD_INTERVAL_S = 0.2
 
 # Frontier the dead client leaves behind. A restarted production client

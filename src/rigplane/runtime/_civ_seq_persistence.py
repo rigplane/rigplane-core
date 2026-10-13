@@ -1,7 +1,7 @@
 """Per-radio record of the CI-V tracked sequence number (MOR-3418).
 
 The control phase records the CI-V transport's ``send_seq`` here, deletes the
-record at a clean exit, and starts a fresh login's numbering just past a record
+record when the owner disconnects cleanly, and starts a fresh login's numbering just past a record
 it finds instead of at 0. ``tests/testkit/test_orphan_civ_restart.py``
 characterizes the case this serves. One JSON file per ``host:port`` under the
 platformdirs state directory, holding the radio's GUID from login; a record
@@ -21,9 +21,12 @@ from typing import Final
 import platformdirs
 
 #: Seconds between two records.
-WRITE_INTERVAL_S: Final = 5.0
-#: Tracked CI-V packets per second assumed sent between the last record and death.
-ADVANCE_RATE_PER_S: Final = 12
+WRITE_INTERVAL_S: Final = 2.0
+#: Tracked CI-V packets per second assumed sent between the last record and
+#: death. Lane A capture w58 (real IC-7610, ``rigplane web`` idle, head
+#: 6bc84c51) measured 23.6/s over 59.4 s and at most 31/s over a 5 s window;
+#: 40 leaves headroom for UI clients that capture did not include.
+ADVANCE_RATE_PER_S: Final = 40
 #: Packets added on top of the assumed rate; chosen, not measured.
 ADVANCE_MARGIN: Final = 30
 #: Upper bound on how far a fresh login steps past the recorded number.

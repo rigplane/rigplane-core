@@ -646,11 +646,12 @@ class ControlPhaseRuntime:
             logger.debug("CI-V numbering record failed", exc_info=future.exception())
 
     async def _forget_civ_seq(self) -> None:
-        """Delete this radio's record at a clean exit (best effort).
+        """Delete this radio's record when the owner disconnects (best effort).
 
-        The delete is submitted only after the timer is cancelled (a cancelled
-        timer starts no further write) and the write already submitted has
-        finished, so no write can land after it.
+        Only ``disconnect`` calls it; ``release`` leaves the record. The delete
+        is submitted only after the timer is cancelled (a cancelled timer
+        starts no further write) and the write already submitted has finished,
+        so no write can land after it.
         """
         guid = self._civ_seq_guid
         if guid is None:
@@ -852,6 +853,8 @@ class ControlPhaseRuntime:
         # disconnect ordering), then the always-sent token-remove.
         self._stop_watchdog()
         self._stop_token_renewal()
+        # The record stays: the reconnect loop tears down through here, and
+        # its token remove may not have reached the radio (see ``disconnect``).
         self._stop_civ_seq_persistence()
         self.fresh_login_status = None
         # An identity-held partial session can have live CI-V tasks. Retire
@@ -935,7 +938,6 @@ class ControlPhaseRuntime:
         h._conn_state = RadioConnectionState.DISCONNECTED
         h._civ_stream_ready = False
         h._civ_recovering = False
-        await self._forget_civ_seq()
 
     async def soft_reconnect(self) -> None:
         """Reconnect CI-V transport using existing control session."""

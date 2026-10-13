@@ -39,8 +39,8 @@ _GUID = bytes(range(0x01, 0x11))  # the GUID area of ``_build_conninfo``
 _OTHER_GUID = bytes(range(0x11, 0x21))
 _NOW = 1_000_000.0
 _HELD = "radio still holds the previous session; waiting"
-_STEP = 90  # 5 s * 12 packets/s + 30
-_WAIT_S = 9  # ceil(90 / 10)
+_STEP = 110  # 2 s * 40 packets/s + 30
+_WAIT_S = 11  # ceil(110 / 10)
 _NO_RESPONSE = RadioIdentityStatus.NO_RESPONSE
 _VERIFIED = RadioIdentityStatus.VERIFIED
 _CONNECTING = RadioConnectionState.CONNECTING
@@ -84,18 +84,18 @@ async def _first_seq(radio: IcomRadio, *, with_guid: bool = True) -> int:
 
 
 def test_the_step_formula_bound_and_status_line() -> None:
-    assert civ_seq.WRITE_INTERVAL_S == 5.0
-    assert civ_seq.ADVANCE_RATE_PER_S == 12
+    assert civ_seq.WRITE_INTERVAL_S == 2.0
+    assert civ_seq.ADVANCE_RATE_PER_S == 40
     assert civ_seq.ADVANCE_MARGIN == 30
     assert civ_seq.MAX_ADVANCE == 150
     assert civ_seq.advance() == _STEP
-    assert civ_seq.advance(0.2) == 3 + 30
+    assert civ_seq.advance(0.2) == 8 + 30
     assert civ_seq.start_seq(100) == 100 + _STEP
-    assert civ_seq.start_seq(0xFFF0) == (0xFFF0 + _STEP) % 0x10000 == 0x4A
+    assert civ_seq.start_seq(0xFFF0) == (0xFFF0 + _STEP) % 0x10000 == 0x5E
     assert civ_seq.wait_seconds() == _WAIT_S
     # However long the interval is made, the step stays within the bound.
     assert civ_seq.advance(3600.0) == civ_seq.MAX_ADVANCE
-    assert all(civ_seq.advance(i) <= 150 for i in (0.0, 0.2, 5.0, 11.0, 60.0, 3600.0))
+    assert all(civ_seq.advance(i) <= 150 for i in (0.0, 0.2, 2.0, 3.0, 60.0, 3600.0))
     assert civ_seq.status_line(None) == _HELD
     assert civ_seq.status_line(_WAIT_S) == f"{_HELD} ~{_WAIT_S} s"
 
@@ -290,9 +290,11 @@ async def test_a_crash_leaves_the_last_periodic_record_on_disk(
     assert _recorded(radio) == 4300
 
 
-@pytest.mark.parametrize("teardown", ["disconnect", "release"])
-async def test_a_clean_exit_deletes_the_record_and_removes_the_token(
-    teardown: str, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("teardown", "record_survives"), [("disconnect", False), ("release", True)]
+)
+async def test_only_the_owners_disconnect_deletes_the_record(
+    teardown: str, record_survives: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(civ_seq, "WRITE_INTERVAL_S", 0.05)
     radio, _ = _recording_radio(777)
@@ -305,9 +307,11 @@ async def test_a_clean_exit_deletes_the_record_and_removes_the_token(
     with patch.object(cp, "_send_token", send_token):
         await getattr(cp, teardown)()
     send_token.assert_any_call(0x01)
+    assert cp._civ_seq_timer is None  # both stop the periodic writer
     await asyncio.sleep(0.3)  # several intervals: nothing writes it back
-    assert not path.exists()
+    assert path.exists() is record_survives
     await cp._forget_civ_seq()  # an absent record is not an error
+    assert not path.exists()
 
 
 async def test_a_late_periodic_write_cannot_recreate_a_deleted_record(
