@@ -9,19 +9,20 @@ Only subcommands 0x10, 0x11, 0x12, 0x13 are in this slice per scope_control
 recordings. Other forms fall through to NAK via existing simulator fallback.
 
 Recorded authoritative forms (scope_control window):
-- 27 10 bare read → 27 10 01 (state=on)
-- 27 11 bare read → 27 11 00 (state=off)
+- 27 10 bare read → 27 10 01
+- 27 11 bare read → 27 11 00
 - 27 12 bare read → 27 12 00
 - 27 13 bare read → 27 13 01
-- 27 10 01 SET → FB (ACK), state becomes 01
-- 27 11 01 SET → FB (ACK), state becomes 01
-- 27 11 00 SET → FB (ACK), state becomes 00
-- 27 12 00 SET → FB (ACK), state becomes 00
-- 27 12 01 SET → FB (ACK), state becomes 01
-- 27 13 00 SET → FB (ACK), state becomes 00
-- 27 13 01 SET → FB (ACK), state becomes 01
+- 27 10 01 SET → FB (ACK)
+- 27 11 01 SET → FB (ACK)
+- 27 11 00 SET → FB (ACK)
+- 27 12 00 SET → FB (ACK)
+- 27 12 01 SET → FB (ACK)
+- 27 13 00 SET → FB (ACK)
+- 27 13 01 SET → FB (ACK)
 
 SET state must be reflected by subsequent bare read.
+Unrecorded payloads (e.g., 27 10 00) → NAK.
 """
 
 import asyncio
@@ -140,26 +141,26 @@ async def client():
 # ---------------------------------------------------------------------------
 
 
-async def test_scope_10_default_on(server, client):
-    """27 10 bare read → 27 10 01 (default on from recording)."""
+async def test_scope_10_default_01(server, client):
+    """27 10 bare read → 27 10 01 (recorded default)."""
     reply = await _send_civ(client, server.civ_port, _frame(0x27, b"\x10"), seq=1)
     assert reply[4] == 0x27
     assert reply[5] == 0x10
-    assert reply[6] == 0x01  # recorded default: on
+    assert reply[6] == 0x01  # recorded default
     assert reply[-1] == 0xFD
 
 
-async def test_scope_11_default_off(server, client):
-    """27 11 bare read → 27 11 00 (default off from recording)."""
+async def test_scope_11_default_00(server, client):
+    """27 11 bare read → 27 11 00 (recorded default)."""
     reply = await _send_civ(client, server.civ_port, _frame(0x27, b"\x11"), seq=2)
     assert reply[4] == 0x27
     assert reply[5] == 0x11
-    assert reply[6] == 0x00  # recorded default: off
+    assert reply[6] == 0x00  # recorded default
     assert reply[-1] == 0xFD
 
 
 async def test_scope_12_default_00(server, client):
-    """27 12 bare read → 27 12 00 (default 00 from recording)."""
+    """27 12 bare read → 27 12 00 (recorded default)."""
     reply = await _send_civ(client, server.civ_port, _frame(0x27, b"\x12"), seq=3)
     assert reply[4] == 0x27
     assert reply[5] == 0x12
@@ -168,7 +169,7 @@ async def test_scope_12_default_00(server, client):
 
 
 async def test_scope_13_default_01(server, client):
-    """27 13 bare read → 27 13 01 (default 01 from recording)."""
+    """27 13 bare read → 27 13 01 (recorded default)."""
     reply = await _send_civ(client, server.civ_port, _frame(0x27, b"\x13"), seq=4)
     assert reply[4] == 0x27
     assert reply[5] == 0x13
@@ -190,13 +191,13 @@ async def test_scope_10_set_01_then_read_reflects(server, client):
     assert reply[6] == 0x01  # state persisted
 
 
-async def test_scope_10_set_00_then_read_reflects(server, client):
-    """27 10 00 SET → FB, then bare read → 27 10 00."""
+async def test_scope_10_set_00_naks_state_unchanged(server, client):
+    """27 10 00 SET (unrecorded) → NAK, state unchanged (remains 01)."""
     reply = await _send_civ(client, server.civ_port, _frame(0x27, b"\x10\x00"), seq=7)
-    assert reply == b"\xfe\xfe\xe0\x98\xfb\xfd"  # bare FB ACK
+    assert reply == b"\xfe\xfe\xe0\x98\xfa\xfd"  # bare NAK
 
     reply = await _send_civ(client, server.civ_port, _frame(0x27, b"\x10"), seq=8)
-    assert reply[6] == 0x00  # state persisted
+    assert reply[6] == 0x01  # state unchanged
 
 
 async def test_scope_11_set_01_then_read_reflects(server, client):
@@ -259,25 +260,25 @@ async def test_scope_13_set_01_then_read_reflects(server, client):
 
 
 async def test_scope_10_invalid_payload_naks(server, client):
-    """27 10 02 (invalid) → NAK."""
+    """27 10 02 (unrecorded) → NAK."""
     reply = await _send_civ(client, server.civ_port, _frame(0x27, b"\x10\x02"), seq=21)
     assert reply == b"\xfe\xfe\xe0\x98\xfa\xfd"  # bare NAK
 
 
 async def test_scope_11_invalid_payload_naks(server, client):
-    """27 11 02 (invalid) → NAK."""
+    """27 11 02 (unrecorded) → NAK."""
     reply = await _send_civ(client, server.civ_port, _frame(0x27, b"\x11\x02"), seq=22)
     assert reply == b"\xfe\xfe\xe0\x98\xfa\xfd"
 
 
 async def test_scope_12_invalid_payload_naks(server, client):
-    """27 12 02 (invalid) → NAK."""
+    """27 12 02 (unrecorded) → NAK."""
     reply = await _send_civ(client, server.civ_port, _frame(0x27, b"\x12\x02"), seq=23)
     assert reply == b"\xfe\xfe\xe0\x98\xfa\xfd"
 
 
 async def test_scope_13_invalid_payload_naks(server, client):
-    """27 13 02 (invalid) → NAK."""
+    """27 13 02 (unrecorded) → NAK."""
     reply = await _send_civ(client, server.civ_port, _frame(0x27, b"\x13\x02"), seq=24)
     assert reply == b"\xfe\xfe\xe0\x98\xfa\xfd"
 

@@ -2416,30 +2416,28 @@ class MockIcomRadio(AudioPortMixin):
         sub = payload[0]
         rest = payload[1:]
 
-        # --- Subcommand 10: scope display on/off ---
+        # --- Subcommand 10 ---
         if sub == 0x10:
-            if not rest:  # bare read → return current state (01=on, 00=off)
+            if not rest:  # bare read → return current state
                 return self._civ_frame(
                     to, frm, 0x27, data=b"\x10" + bytes([self._scope_10])
                 )
-            if rest == b"\x01":  # SET on → FB, update state
+            if rest == b"\x01":  # recorded SET → FB, update state
                 self._scope_10 = 0x01
                 return self._civ_ack(to, frm)
-            if rest == b"\x00":  # SET off → FB, update state
-                self._scope_10 = 0x00
-                return self._civ_ack(to, frm)
+            # unrecorded payloads (e.g., 0x00) → NAK via fallback
             return self._civ_nak(to, frm)
 
-        # --- Subcommand 11: scope display mode ---
+        # --- Subcommand 11 ---
         if sub == 0x11:
-            if not rest:  # bare read → return current state (00/01)
+            if not rest:  # bare read → return current state
                 return self._civ_frame(
                     to, frm, 0x27, data=b"\x11" + bytes([self._scope_11])
                 )
-            if rest == b"\x01":  # SET → FB, update state
+            if rest == b"\x01":  # recorded SET → FB, update state
                 self._scope_11 = 0x01
                 return self._civ_ack(to, frm)
-            if rest == b"\x00":  # SET → FB, update state
+            if rest == b"\x00":  # recorded SET → FB, update state
                 self._scope_11 = 0x00
                 return self._civ_ack(to, frm)
             return self._civ_nak(to, frm)
