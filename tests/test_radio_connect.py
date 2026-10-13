@@ -2808,3 +2808,59 @@ class TestWifiBindBehavior:
                 await radio.connect()
 
         assert mt.disconnected is True
+
+
+class TestAuthTokenLogRedaction:
+    @pytest.mark.asyncio
+    async def test_authenticated_info_omits_token(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The auth success INFO names the endpoint without the session token.
+
+        Drives the production ``_connect_once`` auth path with a fake
+        login response; the GUID/status steps reuse ``_ConnectOnceStubs``.
+        """
+        synthetic_token = 0x1A2B3C4D
+        radio = IcomRadio("192.168.1.100", username="u", password="p", model="IC-7610")
+        mt = ConnectMockTransport()
+        radio._ctrl_transport = mt
+        mt.queue_response(_build_conninfo())
+        with _ConnectOnceStubs(radio):
+            radio._control_phase._wait_for_packet = AsyncMock(  # type: ignore[method-assign]
+                return_value=_build_login_response(token=synthetic_token)
+            )
+            with caplog.at_level("INFO", logger="rigplane.runtime._control_phase"):
+                try:
+                    await radio._control_phase._connect_once()
+                    # Token state remains assigned; control behavior untouched.
+                    assert radio._token == synthetic_token
+                    assert radio._civ_port == 50002
+                    auth_records = [
+                        rec
+                        for rec in caplog.records
+                        if rec.name == "rigplane.runtime._control_phase"
+                        and rec.levelname == "INFO"
+                        and rec.getMessage().startswith("Authenticated with")
+                    ]
+                    assert len(auth_records) == 1
+                    rec = auth_records[0]
+                    rendered = rec.getMessage()
+                    # Successful-auth context/endpoint remains.
+                    assert "192.168.1.100" in rendered
+                    assert str(radio._port) in rendered
+                    # Token absent from both the rendered INFO and the record args.
+                    token_hex = f"{synthetic_token:08X}"
+                    assert token_hex not in rendered
+                    assert token_hex.lower() not in rendered
+                    assert rec.args is not None
+                    assert isinstance(rec.args, tuple)
+                    assert synthetic_token not in rec.args
+                    assert token_hex not in " ".join(str(arg) for arg in rec.args)
+                    assert token_hex.lower() not in " ".join(
+                        str(arg) for arg in rec.args
+                    )
+                finally:
+                    try:
+                        await radio.disconnect()
+                    finally:
+                        radio._control_phase._close_pending_sockets()

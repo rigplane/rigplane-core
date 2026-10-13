@@ -44,6 +44,11 @@ when `inputs.rc` is true. `full.yml` writes that choice as one
 evaluates for `rc` true, false and unset instead of matching its text. These
 pins read the `uv run pytest tests/` line, so a `-m` on a later physical line
 of a `run: >` block, such as `quick.yml`'s web-subset step, is not seen.
+
+Also pins `full.yml`'s `main` push trigger and its two jobs so that an
+accidental guard regression — a missing push trigger, a narrowed
+`paths`/`paths-ignore` filter, or a `jobs.test`/`jobs.capture-harness`
+`if: false` that silently disables the matrix — turns red.
 """
 
 from __future__ import annotations
@@ -96,6 +101,56 @@ _RC_INPUT_RE = re.compile(
     r"^  workflow_dispatch:\n    inputs:\n      rc:\n((?:        .*\n)+)",
     re.MULTILINE,
 )
+
+
+# Text from `jobs:` to end-of-file, so trigger keys like `push:` under `on:`
+# are not mistaken for job names by _JOB_RE.
+def _jobs_text(workflow_name: str) -> str:
+    text = (WORKFLOWS_DIR / workflow_name).read_text()
+    idx = text.find("\njobs:\n")
+    assert idx != -1, f"{workflow_name} has no `jobs:` section"
+    return text[idx:]
+
+
+# A job body extracted by _JOB_RE from _jobs_text. The body starts at the
+# first content line after the job name line; job-level `if:` is at that
+# indent (4 spaces under `jobs:`). Step-level `if:` in `full.yml` is at
+# 8-space or 10-space indent, so `^    if:` does not match those.
+_JOB_IF_KEY_RE = re.compile(r"^    if:", re.MULTILINE)
+
+# The `push:` trigger inside the `on:` section: its body from `push:` to the
+# next sibling key at 2-space indent or end of section.
+_PUSH_TRIGGER_RE = re.compile(
+    r"^  push:\n(.*?)(?=^  \w|\Z)",
+    re.DOTALL | re.MULTILINE,
+)
+
+# Isolates the `on:` section: from `\non:\n` to the next zero-indent
+# top-level key or end-of-file.
+_ON_SECTION_RE = re.compile(r"^on:\n(.*?)(?=^\w|\Z)", re.DOTALL | re.MULTILINE)
+
+
+# Normalized non-comment, non-empty lines for comparing trigger bodies.
+def _non_comment_lines(text: str) -> list[str]:
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() != "" and not line.strip().startswith("#")
+    ]
+
+
+def _on_section(workflow_name: str) -> str:
+    text = (WORKFLOWS_DIR / workflow_name).read_text()
+    match = _ON_SECTION_RE.search(text)
+    assert match, f"{workflow_name} has no `on:` section"
+    return match.group(1)
+
+
+def _push_trigger_body(workflow_name: str) -> str:
+    on_sec = _on_section(workflow_name)
+    match = _PUSH_TRIGGER_RE.search(on_sec)
+    assert match, f"{workflow_name} has no `push:` trigger under `on:`"
+    return match.group(1)
 
 
 def _pytest_invocations(workflow_name: str) -> list[str]:
@@ -233,3 +288,74 @@ def test_full_declares_a_boolean_rc_input_defaulting_to_false() -> None:
     body = match.group(1)
     assert re.search(r"^\s+type:\s*boolean\s*$", body, re.MULTILINE), body
     assert re.search(r"^\s+default:\s*false\s*$", body, re.MULTILINE), body
+
+
+def test_full_push_trigger_is_main_without_narrowing() -> None:
+    body = _push_trigger_body("full.yml")
+    lines = _non_comment_lines(body)
+    assert len(lines) == 1, (
+        f"full.yml push trigger must have exactly one non-comment line; "
+        f"found {len(lines)}: {lines!r}"
+    )
+    assert lines[0] == "branches: [main]", (
+        f"full.yml push trigger line must be `branches: [main]`; found {lines[0]!r}"
+    )
+
+
+def test_full_has_both_jobs_in_jobs_section() -> None:
+    jobs_text = _jobs_text("full.yml")
+    job_names = {name for name, _ in _JOB_RE.findall(jobs_text)}
+    assert "test" in job_names, "full.yml must have a `test` job"
+    assert "capture-harness" in job_names, "full.yml must have a `capture-harness` job"
+
+
+def test_full_test_and_capture_harness_have_no_job_level_if() -> None:
+    jobs_text = _jobs_text("full.yml")
+    for name, body in _JOB_RE.findall(jobs_text):
+        if name not in ("test", "capture-harness"):
+            continue
+        job_if = _JOB_IF_KEY_RE.search(body)
+        assert job_if is None, (
+            f"full.yml `{name}` job has a job-level `if:` at the body "
+            "indent — the matrix must run unconditionally on every main push"
+        )
+
+
+def _job_body(workflow_name: str, job_name: str) -> str:
+    jobs_text = _jobs_text(workflow_name)
+    for name, body in _JOB_RE.findall(jobs_text):
+        if name == job_name:
+            return body
+    raise AssertionError(f"job `{job_name}` not found in {workflow_name}")
+
+
+def test_full_test_job_has_three_python_versions() -> None:
+    body = _job_body("full.yml", "test")
+    assert 'python-version: ["3.11", "3.12", "3.13"]' in body, (
+        "full.yml test matrix must run 3 Python versions (3.11, 3.12, 3.13)"
+    )
+
+
+def test_full_test_job_has_run_tests_step_with_pytest() -> None:
+    body = _job_body("full.yml", "test")
+    match = _RUN_TESTS_STEP_RE.search(body)
+    assert match, "full.yml `test` job must have a `Run tests` step"
+    folded = match.group(1).replace("\\\n", " ")
+    assert "uv run pytest tests/" in folded, (
+        "full.yml `test` job `Run tests` step must invoke `uv run pytest tests/`"
+    )
+
+
+def test_full_capture_harness_invokes_capture_script() -> None:
+    body = _job_body("full.yml", "capture-harness")
+    assert "node frontend/fixtures/capture.mjs" in body, (
+        "full.yml `capture-harness` job must invoke `frontend/fixtures/capture.mjs`"
+    )
+
+
+def test_full_schedule_and_workflow_dispatch_preserved() -> None:
+    full_text = (WORKFLOWS_DIR / "full.yml").read_text()
+    assert "schedule:" in full_text, "full.yml must keep its `schedule:` trigger"
+    assert "workflow_dispatch:" in full_text, (
+        "full.yml must keep its `workflow_dispatch:` trigger"
+    )
