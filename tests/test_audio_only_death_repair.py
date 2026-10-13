@@ -468,7 +468,11 @@ async def test_successful_repair_resets_attempt_budget() -> None:
                 lambda: radio._audio_silence_repair_task is None,
                 timeout_s=15.0,
             ), "repair never finished"
-            assert len(ensure_calls) == 2
+            # At least one round failed (round 1 always raises), yet the
+            # counter is clean: the successful round closed the episode.
+            # (The successful round itself re-enters ensure via
+            # reestablish → start_rx, so no exact call count is asserted.)
+            assert len(ensure_calls) >= 2
             assert radio._audio_silence_repair_attempts == 0
         finally:
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
