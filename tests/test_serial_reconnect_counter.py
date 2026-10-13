@@ -5,12 +5,8 @@ Pins the serial CI-V episode counter
 episode counter (``backends/yaesu_cat/transport.py: TransportStats``,
 exposed as ``backends/yaesu_cat/radio.py: YaesuCatRadio``), and how
 ``web/server.py: WebServer._runtime_process_payload`` serves them as
-``process.reconnectsTotal``.
-
-An episode is one loss of a working link: CONNECTED -> RECONNECTING for
-serial CI-V (the same edge ``WebServer._on_reconnect_status`` counts for
-LAN), and the first reconnect after the last successful exchange for
-Yaesu CAT. Retries inside one episode do not count again.
+``process.reconnectsTotal``. One loss of a working link is one episode;
+retries inside it do not recount.
 """
 
 from __future__ import annotations
@@ -44,9 +40,7 @@ def _serial_radio() -> tuple[Ic7300SerialRadio, _FakeSerialCivLink]:
     return radio, link
 
 
-async def _connect_without_watchdog(
-    radio: Ic7300SerialRadio,
-) -> None:
+async def _connect_without_watchdog(radio: Ic7300SerialRadio) -> None:
     await radio.connect()
     await radio._stop_civ_data_watchdog()  # noqa: SLF001
 
@@ -78,37 +72,17 @@ def _serial_shaped_radio(**extra: Any) -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
-async def test_serial_reconnect_counter_starts_at_zero() -> None:
-    radio, _ = _serial_radio()
-    assert radio.serial_reconnects_total == 0
-    assert type(radio.serial_reconnects_total) is int
-
-
-@pytest.mark.asyncio
-async def test_serial_link_loss_and_recovery_counts_one_episode() -> None:
-    radio, link = _serial_radio()
-    await _connect_without_watchdog(radio)
-    try:
-        assert radio.serial_reconnects_total == 0
-        _break_link(link)
-        await radio.soft_reconnect()
-        assert radio.serial_reconnects_total == 1
-        assert radio.connected is True
-    finally:
-        await radio.disconnect()
-
-
-@pytest.mark.asyncio
 async def test_serial_declare_then_retries_count_one_episode() -> None:
     """The watchdog declares link-down, then retries recovery in-episode."""
     radio, link = _serial_radio()
     await _connect_without_watchdog(radio)
     try:
+        assert radio.serial_reconnects_total == 0
         await radio._declare_serial_link_down()  # noqa: SLF001
         assert radio.serial_reconnects_total == 1
         _break_link(link)
-        await radio.soft_reconnect()
-        await radio.soft_reconnect()
+        for _ in range(2):
+            await radio.soft_reconnect()
         assert radio.serial_reconnects_total == 1
     finally:
         await radio.disconnect()
@@ -125,6 +99,7 @@ async def test_serial_two_separate_losses_count_two() -> None:
             await radio.soft_reconnect()
             assert radio.connected is True
         assert radio.serial_reconnects_total == 2
+        assert type(radio.serial_reconnects_total) is int
     finally:
         await radio.disconnect()
 
@@ -215,22 +190,19 @@ async def test_yaesu_reconnect_episodes_count() -> None:
     assert radio.serial_reconnects_total == 2
 
 
+@pytest.mark.parametrize(
+    ("total", "expected"),
+    [(0, 0), (3, 3), ("3", None)],
+)
 @pytest.mark.asyncio
-async def test_runtime_serves_zero_for_serial_radio_without_loss() -> None:
+async def test_runtime_serves_serial_reconnect_count(
+    total: Any, expected: int | None
+) -> None:
     srv = WebServer(
-        _serial_shaped_radio(serial_reconnects_total=0),
+        _serial_shaped_radio(serial_reconnects_total=total),
         WebConfig(host="127.0.0.1", port=0),
     )
-    assert (await _runtime_process(srv))["reconnectsTotal"] == 0
-
-
-@pytest.mark.asyncio
-async def test_runtime_serves_serial_reconnect_count() -> None:
-    srv = WebServer(
-        _serial_shaped_radio(serial_reconnects_total=3),
-        WebConfig(host="127.0.0.1", port=0),
-    )
-    assert (await _runtime_process(srv))["reconnectsTotal"] == 3
+    assert (await _runtime_process(srv))["reconnectsTotal"] == expected
 
 
 @pytest.mark.asyncio
@@ -240,15 +212,6 @@ async def test_runtime_serves_yaesu_reconnect_count() -> None:
     radio.model = "FTX-1"
     srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     assert (await _runtime_process(srv))["reconnectsTotal"] == 2
-
-
-@pytest.mark.asyncio
-async def test_runtime_ignores_a_non_integer_serial_counter() -> None:
-    srv = WebServer(
-        _serial_shaped_radio(serial_reconnects_total="3"),
-        WebConfig(host="127.0.0.1", port=0),
-    )
-    assert (await _runtime_process(srv))["reconnectsTotal"] is None
 
 
 @pytest.mark.asyncio
