@@ -279,10 +279,9 @@ class ControlPhaseRuntime:
         h._token = auth.token
         h._tok_request = auth.tok_request
         logger.info(
-            "Authenticated with %s:%d, token=0x%08X",
+            "Authenticated with %s:%d",
             h._host,
             h._port,
-            h._token,
         )
 
         await self._send_token_ack()
