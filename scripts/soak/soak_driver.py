@@ -10,8 +10,6 @@ metrics (RSS / FDs / asyncio tasks) are sampled periodically and
 evaluated against the ticket's pass criteria (see ``scripts/soak/
 README.md`` for the criteria and their known limits).
 
-Cadences are constants in this module, not CLI flags; the simulator soak
-takes only ``--duration`` and ``--report`` (``--observe-url``: observe.py).
 Exit status is 0 on a PASS verdict and 1 otherwise: FAIL, or INCOMPLETE (no
 FAIL, but not every criterion PASSed). Run from the repository root (the
 simulator stack imports the top-level ``rigplane_testkit`` package)::
@@ -92,6 +90,7 @@ class SoakConfig:
     fault_drop: float = FAULT_DROP
     fault_duration_s: float = FAULT_DURATION_S
     rss_warmup_s: float = RSS_WARMUP_S
+    probe_diagnostics: bool = False
 
 
 @dataclass
@@ -113,6 +112,154 @@ class ProcessSample:
 
 
 # ---------------------------------------------------------------------------
+
+_DIAGNOSTIC_FIELDS = ("rssBytes", "fds", "asyncioTasks", "connection")
+_DIAGNOSTIC_ROUTES = frozenset({"runtime", "driver", "state", "missing"})
+_DIAGNOSTIC_REASONS = frozenset(
+    {
+        "runtime_unavailable",
+        "process_missing",
+        "process_invalid",
+        "field_missing",
+        "field_null",
+        "field_invalid",
+        "state_unavailable",
+    }
+)
+_DIAGNOSTIC_BOUNDARIES = frozenset(
+    {
+        "cycleStart",
+        "disconnectStart",
+        "disconnectEnd",
+        "recoveryStart",
+        "recoveryEnd",
+        "settleStart",
+        "settleEnd",
+        "cycleEnd",
+    }
+)
+
+
+def _diagnostic_sample_values(sample: ProcessSample) -> dict[str, Any]:
+    return {
+        "t": sample.t_s,
+        "rssBytes": sample.rss_bytes,
+        "fds": sample.fds,
+        "asyncioTasks": sample.asyncio_tasks,
+        "connection": (
+            sample.connection
+            if sample.connection in {"connected", "disconnected"}
+            else None
+        ),
+    }
+
+
+@dataclass
+class _ProbeCapture:
+    sequence: int
+    phase: str
+    started: float
+    ended: float | None = None
+    sample: dict[str, Any] | None = None
+    selections: dict[str, Any] | None = None
+
+    def select(self, field: str, route: str, reason: str | None) -> None:
+        if field not in _DIAGNOSTIC_FIELDS or route not in _DIAGNOSTIC_ROUTES:
+            raise ValueError("invalid diagnostic selection")
+        if reason is not None and reason not in _DIAGNOSTIC_REASONS:
+            raise ValueError("invalid diagnostic missing reason")
+        assert self.selections is not None
+        self.selections[field] = {
+            "route": route,
+            "runtimeMissingReason": reason,
+            "fallbackMissingReason": (
+                "measurement_unavailable"
+                if route == "missing" and field != "connection"
+                else None
+            ),
+        }
+
+
+class _ProbeDiagnostics:
+    def __init__(self) -> None:
+        self.probes: list[_ProbeCapture] = []
+        self.medians: dict[str, Any] = {"pre": None, "post": None}
+        self.boundaries: dict[str, float] = {}
+        self.outcome = "not_started"
+
+    def boundary(self, name: str) -> None:
+        if name not in _DIAGNOSTIC_BOUNDARIES:
+            raise ValueError("invalid diagnostic boundary")
+        self.boundaries[name] = time.monotonic()
+
+    def begin(self, phase: str) -> _ProbeCapture:
+        if phase not in {"pre", "post"}:
+            raise ValueError("invalid diagnostic phase")
+        if len(self.probes) >= 6 or sum(p.phase == phase for p in self.probes) >= 3:
+            raise ValueError("diagnostic probe limit")
+        probe = _ProbeCapture(
+            len(self.probes) + 1, phase, time.monotonic(), selections={}
+        )
+        self.probes.append(probe)
+        return probe
+
+    def to_dict(self) -> dict[str, Any]:
+        phases = {}
+        for phase in ("pre", "post"):
+            attempted = sum(p.phase == phase for p in self.probes)
+            completed = sum(
+                p.phase == phase and p.sample is not None for p in self.probes
+            )
+            phases[phase] = {
+                "status": (
+                    "complete"
+                    if completed == 3
+                    else "partial"
+                    if attempted
+                    else "absent"
+                ),
+                "attempted": attempted,
+                "completed": completed,
+                "median": self.medians[phase],
+            }
+        return {
+            "schemaVersion": 1,
+            "selectedReconnect": 1,
+            "maxProbes": 6,
+            "outcome": self.outcome,
+            "boundariesMonotonicS": dict(self.boundaries),
+            "phases": phases,
+            "probes": [
+                {
+                    "sequence": p.sequence,
+                    "phase": p.phase,
+                    "startedMonotonicS": p.started,
+                    "endedMonotonicS": p.ended,
+                    "sample": p.sample,
+                    "selections": p.selections,
+                }
+                for p in self.probes
+            ],
+        }
+
+
+def _runtime_missing_reason(runtime: dict[str, Any] | None, field: str) -> str | None:
+    if runtime is None:
+        return "runtime_unavailable"
+    if "process" not in runtime:
+        return "process_missing"
+    proc = runtime["process"]
+    if not isinstance(proc, dict):
+        return "process_invalid"
+    if field not in proc:
+        return "field_missing"
+    if proc[field] is None:
+        return "field_null"
+    if _proc_int(proc, field) is None:
+        return "field_invalid"
+    return None
+
+
 # Driver-side process metrics (the per-field fallback sampler path)
 # ---------------------------------------------------------------------------
 
@@ -260,7 +407,9 @@ class ProcessMetricsSampler:
             return None
         return _state_connection_status(body)
 
-    async def sample(self, t_s: float) -> ProcessSample:
+    async def sample(
+        self, t_s: float, capture: _ProbeCapture | None = None
+    ) -> ProcessSample:
         runtime = await self.fetch_runtime()
         rss: int | None = None
         fds: int | None = None
@@ -271,21 +420,58 @@ class ProcessMetricsSampler:
                 rss = _proc_int(proc, "rssBytes")
                 fds = _proc_int(proc, "openFds")
                 tasks = _proc_int(proc, "asyncioTasks")
+        if capture is not None:
+            for field, runtime_field, value in (
+                ("rssBytes", "rssBytes", rss),
+                ("fds", "openFds", fds),
+                ("asyncioTasks", "asyncioTasks", tasks),
+            ):
+                capture.select(
+                    field,
+                    "runtime" if value is not None else "missing",
+                    _runtime_missing_reason(runtime, runtime_field),
+                )
         if rss is None or fds is None:
             d_rss, d_fds = await _driver_side_process_metrics(os.getpid())
             if rss is None:
                 rss = d_rss
+                if capture is not None:
+                    capture.select(
+                        "rssBytes",
+                        "driver" if rss is not None else "missing",
+                        _runtime_missing_reason(runtime, "rssBytes"),
+                    )
             if fds is None:
                 fds = d_fds
+                if capture is not None:
+                    capture.select(
+                        "fds",
+                        "driver" if fds is not None else "missing",
+                        _runtime_missing_reason(runtime, "openFds"),
+                    )
         if tasks is None:
             tasks = _server_asyncio_task_count()
-        return ProcessSample(
+            if capture is not None:
+                capture.select(
+                    "asyncioTasks",
+                    "driver",
+                    _runtime_missing_reason(runtime, "asyncioTasks"),
+                )
+        sample = ProcessSample(
             t_s=t_s,
             rss_bytes=rss,
             fds=fds,
             asyncio_tasks=tasks,
             connection=await self.fetch_connection_status(),
         )
+        if capture is not None:
+            capture.select(
+                "connection",
+                "state" if sample.connection is not None else "missing",
+                None if sample.connection is not None else "state_unavailable",
+            )
+            capture.sample = _diagnostic_sample_values(sample)
+        return sample
 
 
 # ---------------------------------------------------------------------------
@@ -553,6 +739,10 @@ class SoakDriver:
         self._mode_i = 0
         self._last_freq: int | None = None
         self._last_mode: str | None = None
+        self._probe_diagnostics = (
+            _ProbeDiagnostics() if config.probe_diagnostics else None
+        )
+        self._capture_cycle = False
 
     # -- plumbing ----------------------------------------------------------
 
@@ -791,15 +981,25 @@ class SoakDriver:
                 return True
         return await self._fetch_connection_state() == "connected"
 
-    async def _stability_probe(self) -> ProcessSample:
+    async def _stability_probe(self, phase: str = "pre") -> ProcessSample:
         """Median of 3 quick samples: in-flight requests and rigctld
         replays make single task/FD counts oscillate by a few; the median
         keeps the pre/post comparison about leaks, not about a spike."""
         assert self._sampler is not None
-        probes = [
-            await self._sampler.sample(self._elapsed())
-            for _ in range(_STABILITY_PROBE_COUNT)
-        ]
+        diagnostics = self._probe_diagnostics if self._capture_cycle else None
+        if diagnostics is None:
+            probes = [
+                await self._sampler.sample(self._elapsed())
+                for _ in range(_STABILITY_PROBE_COUNT)
+            ]
+        else:
+            probes = []
+            for _ in range(_STABILITY_PROBE_COUNT):
+                capture = diagnostics.begin(phase)
+                try:
+                    probes.append(await self._sampler.sample(self._elapsed(), capture))
+                finally:
+                    capture.ended = time.monotonic()
 
         def median(field_name: str) -> int | None:
             present = [
@@ -812,13 +1012,16 @@ class SoakDriver:
             present.sort()
             return present[len(present) // 2]
 
-        return ProcessSample(
+        result = ProcessSample(
             t_s=probes[len(probes) // 2].t_s,
             rss_bytes=median("rss_bytes"),
             fds=median("fds"),
             asyncio_tasks=median("asyncio_tasks"),
             connection=probes[-1].connection,
         )
+        if diagnostics is not None:
+            diagnostics.medians[phase] = _diagnostic_sample_values(result)
+        return result
 
     def _record_unrecovered_cycle(self, reason: str) -> None:
         self._reconnects.append(
@@ -842,29 +1045,52 @@ class SoakDriver:
         self._counts["forcedReconnects"] += 1
         assert self._sampler is not None
         self._cycle_active = True
+        self._capture_cycle = (
+            self._probe_diagnostics is not None
+            and self._counts["forcedReconnects"] == 1
+        )
+        if self._capture_cycle:
+            assert self._probe_diagnostics is not None
+            self._probe_diagnostics.outcome = "in_progress"
+            self._probe_diagnostics.boundary("cycleStart")
         try:
             await self._reconnect_cycle_inner()
         except asyncio.CancelledError:
+            if self._capture_cycle:
+                assert self._probe_diagnostics is not None
+                self._probe_diagnostics.outcome = "cancelled"
             # The cycle was cancelled without concluding (the run's wait
             # for it timed out): a forced disconnect that never recovered
             # must still fail the verdict, so record it as unrecovered.
             self._record_unrecovered_cycle("cycle cancelled before concluding")
             raise
         except Exception:
+            if self._capture_cycle:
+                assert self._probe_diagnostics is not None
+                self._probe_diagnostics.outcome = "raised"
             logger.exception("soak: reconnect cycle failed")
             self._record_unrecovered_cycle("cycle raised")
         finally:
+            if self._capture_cycle:
+                assert self._probe_diagnostics is not None
+                self._probe_diagnostics.boundary("cycleEnd")
+            self._capture_cycle = False
             self._cycle_active = False
 
     async def _reconnect_cycle_inner(self) -> None:
         window_start_s = self._elapsed()
         pre = await self._stability_probe()
         started_s = self._elapsed()
+        diagnostics = self._probe_diagnostics if self._capture_cycle else None
         logger.info("soak: forced reconnect starting at +%.1fs", started_s)
+        if diagnostics is not None:
+            diagnostics.boundary("disconnectStart")
         await self._post_radio_control("disconnect")
         disconnect_observed = await self._wait_connection(
             lambda state: state != "connected", timeout_s=10.0
         )
+        if diagnostics is not None:
+            diagnostics.boundary("disconnectEnd")
         if not disconnect_observed:
             logger.warning("soak: disconnect never became observable; failing cycle")
         recovered = False
@@ -877,11 +1103,15 @@ class SoakDriver:
             )
         try:
             if disconnect_observed:
+                if diagnostics is not None:
+                    diagnostics.boundary("recoveryStart")
                 recovered = await self._do_connect_until_recovered(
                     self._elapsed() + self._cfg.reconnect_budget_s
                 )
         finally:
             self._sim.fault_plan = None
+        if diagnostics is not None:
+            diagnostics.boundary("recoveryEnd")
         logger.info(
             "soak: reconnect %s after %.1fs",
             "recovered" if recovered else "UNRECOVERED",
@@ -903,12 +1133,22 @@ class SoakDriver:
         if recovered:
             # The stack rebuilds its poller/keepalive tasks on connect;
             # let that settle so the probe compares steady states.
+            if diagnostics is not None:
+                diagnostics.boundary("settleStart")
             await asyncio.sleep(3.0)
-            post = await self._stability_probe()
+            if diagnostics is not None:
+                diagnostics.boundary("settleEnd")
+            post = (
+                await self._stability_probe("post")
+                if diagnostics is not None
+                else await self._stability_probe()
+            )
             entry["fdsPost"] = post.fds
             entry["tasksPost"] = post.asyncio_tasks
         entry["windowEndS"] = round(self._elapsed(), 3)
         self._reconnects.append(entry)
+        if diagnostics is not None:
+            diagnostics.outcome = "recovered" if recovered else "unrecovered"
 
     async def _reconnect_loop(self) -> None:
         next_due = self._ready_s + self._cfg.reconnect_interval_s
@@ -1085,7 +1325,7 @@ class SoakDriver:
     def _build_report(self) -> dict[str, Any]:
         criteria = evaluate_report(self._cfg, self._samples, self._reconnects)
         verdict = _verdict(criteria, self._error)
-        return {
+        report: dict[str, Any] = {
             "schemaVersion": 1,
             "verdict": verdict,
             "startedAt": datetime.now(timezone.utc).isoformat(),
@@ -1099,6 +1339,9 @@ class SoakDriver:
             "reconnects": self._reconnects,
             "samples": [sample.to_dict() for sample in self._samples],
         }
+        if self._probe_diagnostics is not None:
+            report["probeDiagnostics"] = self._probe_diagnostics.to_dict()
+        return report
 
     async def run(self) -> dict[str, Any]:
         self._t0 = time.monotonic()
@@ -1162,6 +1405,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--duration", type=float, default=3600.0, help="seconds (default 3600)"
     )
     parser.add_argument("--report", default="soak-report.json", help="JSON report path")
+    parser.add_argument(
+        "--probe-diagnostics",
+        action="store_true",
+        help="capture at most six probes from the first reconnect",
+    )
+    parser.add_argument(
+        "--reconnect-interval",
+        type=float,
+        default=RECONNECT_INTERVAL_S,
+        help="forced reconnect cadence in seconds",
+    )
     return parser
 
 
@@ -1177,7 +1431,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.observe_url is not None:
         return observe.main_from_args(args, parser)
-    config = SoakConfig(duration_s=args.duration, report_path=args.report)
+    config = SoakConfig(
+        duration_s=args.duration,
+        report_path=args.report,
+        probe_diagnostics=args.probe_diagnostics,
+        reconnect_interval_s=args.reconnect_interval,
+    )
     report = asyncio.run(run_soak(config))
     print(summary_line(report))
     print(f"soak report written to {args.report}")
