@@ -15,18 +15,28 @@ still needs the controller credential, as does a malformed, oversize or
 unreadable body.  The peek classifies with the same parse the handler
 executes, so no body reads as a transmission end to the peek and as keying
 to the handler.
+
+The typed ``ptt_off`` / ``ptt``-false rows below pass the route gate only:
+downstream still refuses them over HTTP (409 ``unsupported_command`` —
+momentary PTT requires a stable WebSocket owner — or ``failed_validation``
+for a batch step), with or without a credential.  Over HTTP the exemption
+reaches the radio only for ``send_civ`` transmission-end frames and raw
+transaction steps.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from rigplane.runtime.controller_authority import ControllerError
+from rigplane.web.radio_poller import SendCiv
 from rigplane.web.server import WebServer
 from test_controller_authority import Safety
 from test_http_raw_civ_transmission_end_capture import (
@@ -79,9 +89,36 @@ async def _anonymous_and_keyed(
         await _release(srv)
 
 
-_DISPATCHED_SINGLE_ROWS: tuple[tuple[dict[str, Any], str], ...] = (
+_GATE_PASS_PTT_ROWS: tuple[tuple[dict[str, Any], str], ...] = (
     ({"name": "ptt_off", "params": {}}, "ptt-off"),
     ({"name": "ptt", "params": {"state": False}}, "ptt-state-false"),
+)
+
+
+@pytest.mark.parametrize(
+    ("payload", "label"),
+    [(row[0], row[1]) for row in _GATE_PASS_PTT_ROWS],
+    ids=[row[1] for row in _GATE_PASS_PTT_ROWS],
+)
+async def test_single_typed_ptt_passes_gate_but_http_still_refuses(
+    payload: dict[str, Any], label: str
+) -> None:
+    """Typed PTT passes the route gate; HTTP still cannot own momentary PTT.
+
+    Both answers are the downstream 409 ``unsupported_command``, with and
+    without a credential — the exemption stops at the gate.
+    """
+    del label
+    anonymous, keyed = await _anonymous_and_keyed("/api/v1/commands", payload)
+    for writer in (anonymous, keyed):
+        assert writer.response_status == 409
+        assert writer.response_body["ok"] is False
+        assert writer.response_body["error"] == "unsupported_command"
+        assert "stable WebSocket owner" in writer.response_body["message"]
+    assert anonymous.response_body == keyed.response_body
+
+
+_SEND_CIV_END_ROWS: tuple[tuple[dict[str, Any], str], ...] = (
     (
         {"name": "send_civ", "params": {"command": 0x1C, "sub": 0x00, "data": "00"}},
         "send-civ-ptt-off",
@@ -95,17 +132,41 @@ _DISPATCHED_SINGLE_ROWS: tuple[tuple[dict[str, Any], str], ...] = (
 
 @pytest.mark.parametrize(
     ("payload", "label"),
-    [(row[0], row[1]) for row in _DISPATCHED_SINGLE_ROWS],
-    ids=[row[1] for row in _DISPATCHED_SINGLE_ROWS],
+    [(row[0], row[1]) for row in _SEND_CIV_END_ROWS],
+    ids=[row[1] for row in _SEND_CIV_END_ROWS],
 )
-async def test_single_typed_transmission_end_passes_without_credential(
+async def test_single_send_civ_transmission_end_reaches_radio_without_credential(
     payload: dict[str, Any], label: str
 ) -> None:
+    """A keyless ``send_civ`` end frame executes: 200 plus the queued frame."""
     del label
-    anonymous, keyed = await _anonymous_and_keyed("/api/v1/commands", payload)
-    assert anonymous.response_status != 403
-    assert anonymous.response_status == keyed.response_status
-    assert anonymous.response_body == keyed.response_body
+    srv, _ = _remote_server()
+    try:
+        key, _ticket = await _arm_remote(srv)
+        for headers in (None, {"x-rigplane-controller": key}):
+            captured: list[object] = []
+            consumer = asyncio.create_task(
+                _complete_ordered_commands(srv.command_queue, 1, captured)
+            )
+            try:
+                writer = await _post_json(
+                    srv, "/api/v1/commands", dict(payload), headers=headers
+                )
+            finally:
+                await asyncio.wait_for(consumer, timeout=5.0)
+            params = payload["params"]
+            assert writer.response_status == 200
+            assert writer.response_body["ok"] is True
+            assert writer.response_body["name"] == "send_civ"
+            assert captured == [
+                SendCiv(
+                    command=params["command"],
+                    sub=params["sub"],
+                    data=bytes.fromhex(params["data"]),
+                )
+            ]
+    finally:
+        await _release(srv)
 
 
 _GATED_SINGLE_ROWS: tuple[tuple[dict[str, Any], str], ...] = (
@@ -304,6 +365,119 @@ async def test_single_truncated_body_keeps_credential_refusal() -> None:
             "POST",
             "/api/v1/commands",
             headers={"content-length": str(len(body) + 42)},
+            reader=_reader_for(body),
+        )
+        assert writer.response_status == 403
+        assert writer.response_body["error"] == "controller_invalid"
+        assert srv.command_queue.drain() == []
+    finally:
+        await _release(srv)
+
+
+async def test_keyed_stalled_body_fails_with_todays_status_without_second_wait() -> (
+    None
+):
+    """A keyed stall costs one read timeout, then today's 500 — not two.
+
+    The peek must not hand its half-drained reader downstream: the handler
+    would wait out its own read timeout on top of the peek's.
+    """
+    srv, _ = _remote_server()
+    try:
+        key, _ticket = await _arm_remote(srv)
+        reader = asyncio.StreamReader()
+        reader.feed_data(b'{"nam')
+        writer = _FakeWriter()
+        started = time.monotonic()
+        await srv._handle_http(  # noqa: SLF001
+            writer,  # type: ignore[arg-type]
+            "POST",
+            "/api/v1/commands",
+            headers={"content-length": "64", "x-rigplane-controller": key},
+            reader=reader,
+        )
+        elapsed = time.monotonic() - started
+        assert writer.response_status == 500
+        assert writer.response_body["error"] == "internal server error"
+        assert elapsed <= 6.0
+    finally:
+        await _release(srv)
+
+
+async def test_keyed_truncated_body_keeps_todays_status() -> None:
+    """A keyed truncated body answers today's 500, at once."""
+    srv, _ = _remote_server()
+    try:
+        key, _ticket = await _arm_remote(srv)
+        body = b'{"name": "ptt_off", "params": {}}'
+        writer = _FakeWriter()
+        await srv._handle_http(  # noqa: SLF001
+            writer,  # type: ignore[arg-type]
+            "POST",
+            "/api/v1/commands",
+            headers={
+                "content-length": str(len(body) + 42),
+                "x-rigplane-controller": key,
+            },
+            reader=_reader_for(body),
+        )
+        assert writer.response_status == 500
+        assert srv.command_queue.drain() == []
+    finally:
+        await _release(srv)
+
+
+def _deeply_nested_command_body(depth: int = 100_000) -> bytes:
+    return b'{"name":"ptt_off","params":{"x":' + b"[" * depth + b"]" * depth + b"}}"
+
+
+def _deeply_nested_batch_body(depth: int = 100_000) -> bytes:
+    return (
+        b'{"steps":[{"name":"ptt_off","params":{"x":'
+        + b"[" * depth
+        + b"]" * depth
+        + b"}}]}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/api/v1/commands", _deeply_nested_command_body()),
+        ("/api/v1/commands/batch", _deeply_nested_batch_body()),
+    ],
+    ids=["commands", "batch"],
+)
+async def test_keyless_deeply_nested_body_keeps_credential_refusal(
+    path: str, body: bytes, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Deep nesting fails closed: 403 with no traceback logged."""
+    srv, _ = _remote_server()
+    try:
+        await _arm_remote(srv)
+        with caplog.at_level(logging.DEBUG):
+            writer = await _post_raw(srv, path, body)
+        assert writer.response_status == 403
+        assert writer.response_body["error"] == "controller_invalid"
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+        assert srv.command_queue.drain() == []
+        srv._radio.send_civ_transaction.assert_not_awaited()
+    finally:
+        await _release(srv)
+
+
+async def test_keyless_put_with_dekey_body_keeps_credential_refusal() -> None:
+    """Only POST is peeked: a keyless PUT with a de-key body stays 403."""
+    srv, _ = _remote_server()
+    try:
+        await _arm_remote(srv)
+        body = json.dumps({"name": "ptt_off", "params": {}}).encode()
+        writer = _FakeWriter()
+        await srv._handle_http(  # noqa: SLF001
+            writer,  # type: ignore[arg-type]
+            "PUT",
+            "/api/v1/commands",
+            headers={"content-length": str(len(body))},
             reader=_reader_for(body),
         )
         assert writer.response_status == 403

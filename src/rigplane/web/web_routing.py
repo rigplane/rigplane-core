@@ -190,6 +190,19 @@ def _batch_body_all_transmission_end(payload: object) -> bool:
     return all(_batch_step_ends_transmission(step) for step in raw_steps)
 
 
+def _exhausted_reader(prefix: bytes = b"") -> asyncio.StreamReader:
+    """A reader yielding *prefix* then EOF — a failed peek's bytes, spent.
+
+    The downstream handler's capped read fails on it at once instead of
+    waiting out a second read timeout.
+    """
+    spent = asyncio.StreamReader()
+    if prefix:
+        spent.feed_data(prefix)
+    spent.feed_eof()
+    return spent
+
+
 async def _peek_http_body(
     headers: dict[str, str] | None,
     reader: asyncio.StreamReader | None,
@@ -199,12 +212,15 @@ async def _peek_http_body(
 
     Returns a fresh reader over the same bytes plus whether the parsed
     payload is exempt for the route.  The reader is None when the body is
-    missing, oversize, or unreadable — the caller then keeps today's
+    missing, oversize, or has no length — the caller then keeps today's
     credential/refusal path with the original reader.  A non-exempt but
     readable body still returns its bytes, so a request that goes on to
     present a credential is handled from the same bytes it sent: the
     downstream handler re-parses them, and the peek and the handler always
-    classify one payload.
+    classify one payload.  When the read itself fails, the returned
+    reader is spent — EOF after whatever bytes the peek saw — so the
+    handler fails at once instead of waiting out a second read timeout.
+    An unparsable body (including pathological nesting) is not exempt.
     """
 
     from . import server as _server_mod  # noqa: TID251
@@ -217,13 +233,15 @@ async def _peek_http_body(
         return None, False
     try:
         body = await _server_mod._read_capped_body(reader, content_length)
-    except Exception:  # noqa: BLE001 — any read failure keeps the refusal
-        return None, False
+    except asyncio.IncompleteReadError as exc:
+        return _exhausted_reader(exc.partial), False
+    except Exception:  # noqa: BLE001 — any other read failure keeps the refusal
+        return _exhausted_reader(), False
     if body is None:
         return None, False
     try:
         payload = json.loads(body)
-    except ValueError:
+    except (ValueError, RecursionError):
         payload = None
     buffered = asyncio.StreamReader()
     buffered.feed_data(body)
@@ -416,14 +434,21 @@ async def _dispatch_http_request(
                 # only when every step ends a transmission.  The peeked
                 # bytes are replayed downstream either way, so a request
                 # that goes on to present a credential is handled from the
-                # same bytes it sent.
-                if path == "/api/v1/commands/batch":
-                    is_exempt: Callable[[object], bool] = (
-                        _batch_body_all_transmission_end
-                    )
-                else:
-                    is_exempt = _single_command_body_ends_transmission
-                buffered, exempt = await _peek_http_body(headers, reader, is_exempt)
+                # same bytes it sent.  Only POST is peeked — the only
+                # method these paths serve — so other methods keep
+                # today's credential-first refusal.  A failed peek hands
+                # downstream a spent reader, bounding the hold to one
+                # read timeout.
+                buffered: asyncio.StreamReader | None = None
+                exempt = False
+                if method == "POST":
+                    if path == "/api/v1/commands/batch":
+                        is_exempt: Callable[[object], bool] = (
+                            _batch_body_all_transmission_end
+                        )
+                    else:
+                        is_exempt = _single_command_body_ends_transmission
+                    buffered, exempt = await _peek_http_body(headers, reader, is_exempt)
                 if exempt:
                     assert buffered is not None
                     await _dispatch_http_routes(
