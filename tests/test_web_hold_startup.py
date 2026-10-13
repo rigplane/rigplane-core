@@ -1454,3 +1454,127 @@ async def test_standalone_rigctld_still_aborts_against_identity_hold() -> None:
     )
     with pytest.raises(RuntimeError, match="rigctld startup aborted"):
         await rig.start()
+
+
+class _WSAlreadyConnectedRadio(_OperableRadio):
+    ws_connect_calls = 0
+
+    async def connect(self) -> None:
+        self.ws_connect_calls += 1
+        await super().connect()
+
+
+@pytest.mark.asyncio
+async def test_ws_radio_connect_clears_mark_on_connect_start_in_flight() -> None:
+    radio = _BlockingConnectRadio()
+    rig, server, _ = await _start_operable_stack(radio)
+    try:
+        status, body = await _post_empty(server, "/api/v1/radio/disconnect")
+        assert status == 200
+        assert server._operator_disconnected is True
+
+        ws = SimpleNamespace(send_text=AsyncMock())
+        handler = ControlHandler(
+            ws, radio, "test", "IC-7610", server=server, session_id="ws-in-flight"
+        )
+
+        connect_task = asyncio.ensure_future(
+            handler._handle_text(encode_json({"type": "radio_connect", "id": "wc1"}))
+        )
+
+        try:
+            await asyncio.wait_for(radio.connect_entered.wait(), timeout=10.0)
+            assert radio.conn_state is RadioConnectionState.CONNECTING
+            assert server._operator_disconnected is False
+
+            status, payload = await _get_json(server, "/api/v1/runtime")
+            assert status == 200
+            health = payload["station"]["health"]
+            assert health["radioLink"] == "reconnecting"
+            assert health["readiness"] == "recovering"
+            assert health["likelyCause"] == "radio_network_lost"
+        finally:
+            radio.release_connect.set()
+            try:
+                await asyncio.wait_for(connect_task, timeout=10.0)
+            except asyncio.CancelledError:
+                pass
+
+        responses = [decode_json(c.args[0]) for c in ws.send_text.await_args_list]
+        assert any(
+            r.get("ok") and r.get("result", {}).get("status") == "connected"
+            for r in responses
+        )
+
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert payload["station"]["readiness"] == "ready_with_radio"
+    finally:
+        await server.stop()
+        await rig.stop()
+
+
+@pytest.mark.asyncio
+async def test_ws_radio_connect_clears_mark_on_connect_failure() -> None:
+    radio = _RefusingConnectRadio()
+    rig, server, _ = await _start_operable_stack(radio)
+    try:
+        status, body = await _post_empty(server, "/api/v1/radio/disconnect")
+        assert status == 200
+        assert server._operator_disconnected is True
+
+        ws = SimpleNamespace(send_text=AsyncMock())
+        handler = ControlHandler(
+            ws, radio, "test", "IC-7610", server=server, session_id="ws-failure"
+        )
+
+        await handler._handle_text(encode_json({"type": "radio_connect", "id": "wc2"}))
+
+        responses = [decode_json(c.args[0]) for c in ws.send_text.await_args_list]
+        assert any(
+            not r.get("ok") and r.get("error") == "connect_failed" for r in responses
+        )
+        assert server._operator_disconnected is False
+
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert status == 200
+        health = payload["station"]["health"]
+        assert health["radioLink"] == "disconnected"
+        assert health["likelyCause"] == "radio_network_lost"
+        assert health["readiness"] == "stalled"
+        assert payload["station"]["readiness"] == "lan_radio_unsupported_or_not_found"
+        assert payload["station"]["message"] != "Disconnected by the operator."
+    finally:
+        await server.stop()
+        await rig.stop()
+
+
+@pytest.mark.asyncio
+async def test_ws_radio_connect_clears_mark_on_already_connected() -> None:
+    radio = _WSAlreadyConnectedRadio()
+    rig, server, _ = await _start_operable_stack(radio)
+    try:
+        server.note_operator_disconnect()
+        assert server._operator_disconnected is True
+        assert radio.connected is True
+
+        ws = SimpleNamespace(send_text=AsyncMock())
+        handler = ControlHandler(
+            ws, radio, "test", "IC-7610", server=server, session_id="ws-already"
+        )
+
+        await handler._handle_text(encode_json({"type": "radio_connect", "id": "wc3"}))
+
+        responses = [decode_json(c.args[0]) for c in ws.send_text.await_args_list]
+        assert any(
+            r.get("ok") and r.get("result", {}).get("status") == "already_connected"
+            for r in responses
+        )
+
+        assert server._operator_disconnected is False
+        assert radio.ws_connect_calls == 0
+
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert payload["station"]["readiness"] == "ready_with_radio"
+    finally:
+        await server.stop()
+        await rig.stop()
