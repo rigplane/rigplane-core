@@ -33,6 +33,8 @@ export function deriveRadioHealthLabel(
       return t('core.statusbar.health.radioPoweredOff');
     case 'server_unreachable':
       return t('core.statusbar.health.serverUnreachable');
+    case 'operator_disconnected':
+      return t('core.statusbar.health.operatorDisconnected');
     case 'radio_session_busy':
       return t('core.statusbar.health.radioSessionBusy');
     default:
