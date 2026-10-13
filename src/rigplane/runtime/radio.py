@@ -765,7 +765,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._managed_tx_arm_lock = asyncio.Lock()
         # Typed identity and current-link ownership, cleared on disconnect.
         self._connection_identity: RadioIdentity | None = None
-        self._last_error: str | None = None
         self._lan_identity_reread_task: asyncio.Task[None] | None = None
         self._lan_identity_answer_epoch: int | None = None
         self._lan_identity_completed_epoch: int | None = None
@@ -872,33 +871,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     def connection_identity(self) -> RadioIdentity | None:
         """Typed identity of the radio that answered on the link (MOR-3064)."""
         return self._connection_identity
-
-    @property
-    def last_error(self) -> str | None:
-        """Operator-visible text of the latest connection problem.
-
-        What a backend sets (the serial Icom radios do) comes first. Otherwise
-        a fresh LAN login whose identity read the radio leaves unanswered
-        reports ``fresh_login_status`` until the identity answers.
-        ``web/runtime_helpers.py: classify_radio_health`` reads it as the
-        health ``lastError``. The LAN text needs ``CONNECTING`` so
-        ``web_startup._serial_port_unopened`` (``RECONNECTING`` plus a string)
-        cannot take it for an unopened port.
-        """
-        if self._last_error is not None:
-            return self._last_error
-        identity = self._connection_identity
-        if (
-            identity is None
-            or identity.status is not RadioIdentityStatus.NO_RESPONSE
-            or self._conn_state is not RadioConnectionState.CONNECTING
-        ):
-            return None
-        return self._control_phase.fresh_login_status
-
-    @last_error.setter
-    def last_error(self, value: str | None) -> None:
-        self._last_error = value
 
     @property
     def startup_busy_hold_event(self) -> asyncio.Event:

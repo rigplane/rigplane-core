@@ -271,22 +271,6 @@ def _isolate_resident_lock_dir(
 
 
 @pytest.fixture(autouse=True)
-def _isolate_civ_seq_state_dir(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Point the CI-V numbering records (MOR-3418) at a per-test tmp dir.
-
-    Without it a connecting radio would write its record into the platformdirs
-    state directory of whoever runs the suite, and a later test's fresh login
-    would read it back.
-    """
-    from rigplane.runtime import _civ_seq_persistence
-
-    state_dir = tmp_path_factory.mktemp("civ_seq")
-    monkeypatch.setattr(_civ_seq_persistence, "_state_dir", lambda: state_dir)
-
-
-@pytest.fixture(autouse=True)
 def _reset_shared_portaudio_pool() -> Iterator[None]:
     """Restore the shared bounded PortAudio pool to a pristine state in place.
 
