@@ -500,6 +500,12 @@ class MockIcomRadio(AudioPortMixin):
             for item, (default, _width) in _CTL_MEM_MENU_STARTUP_ITEMS.items()
         }
 
+        # Scope control state (recorded subcommands 10, 11, 12, 13 from scope_control window).
+        self._scope_10: int = 0x01
+        self._scope_11: int = 0x00
+        self._scope_12: int = 0x00
+        self._scope_13: int = 0x01
+
         # Behaviour flags for edge-case tests
         self.auth_fail: bool = False
         self.response_delay: float = 0.0  # extra sleep before sending a response
@@ -2386,9 +2392,78 @@ class MockIcomRadio(AudioPortMixin):
         if cmd in (_CMD_ACK, _CMD_NAK):
             return None
 
-        # TODO: Scope commands (0x27) — add when scope integration tests are needed
+        # --- Scope commands (0x27) — recorded forms from scope_control/scope windows ---
+        if cmd == 0x27:
+            return self._dispatch_scope(payload, from_addr)
 
         # Unknown command → NAK
+        return self._civ_nak(to, frm)
+
+    def _dispatch_scope(self, payload: bytes, from_addr: int) -> bytes | None:
+        """Handle CI-V 0x27 scope commands per recorded scope_control forms.
+
+        The recorded forms (scope_control window of civ_pairs.jsonl)
+        are authoritative for subcommands 10, 11, 12, 13 only.
+        Other subcommands fall through to NAK via existing fallback.
+        """
+        to = from_addr
+        frm = self._radio_addr
+
+        if not payload:
+            return self._civ_nak(to, frm)
+
+        sub = payload[0]
+        rest = payload[1:]
+
+        # --- Subcommand 10 ---
+        if sub == 0x10:
+            if not rest:  # bare read → return current state
+                return self._civ_frame(
+                    to, frm, 0x27, data=b"\x10" + bytes([self._scope_10])
+                )
+            if rest == b"\x01":  # recorded SET → FB, update state
+                self._scope_10 = 0x01
+                return self._civ_ack(to, frm)
+            # unrecorded payloads (e.g., 0x00) → NAK via fallback
+            return self._civ_nak(to, frm)
+
+        # --- Subcommand 11 ---
+        if sub == 0x11:
+            if not rest:  # bare read → return current state
+                return self._civ_frame(
+                    to, frm, 0x27, data=b"\x11" + bytes([self._scope_11])
+                )
+            if rest == b"\x01":  # recorded SET → FB, update state
+                self._scope_11 = 0x01
+                return self._civ_ack(to, frm)
+            if rest == b"\x00":  # recorded SET → FB, update state
+                self._scope_11 = 0x00
+                return self._civ_ack(to, frm)
+            return self._civ_nak(to, frm)
+
+        # --- Subcommand 12: scope setting ---
+        if sub == 0x12:
+            if not rest:  # bare read → return current state
+                return self._civ_frame(
+                    to, frm, 0x27, data=b"\x12" + bytes([self._scope_12])
+                )
+            if rest in (b"\x00", b"\x01"):  # SET → FB, update state
+                self._scope_12 = rest[0]
+                return self._civ_ack(to, frm)
+            return self._civ_nak(to, frm)
+
+        # --- Subcommand 13: scope setting ---
+        if sub == 0x13:
+            if not rest:  # bare read → return current state
+                return self._civ_frame(
+                    to, frm, 0x27, data=b"\x13" + bytes([self._scope_13])
+                )
+            if rest in (b"\x00", b"\x01"):  # SET → FB, update state
+                self._scope_13 = rest[0]
+                return self._civ_ack(to, frm)
+            return self._civ_nak(to, frm)
+
+        # Other subcommands (14-1F): not in this slice; fall through to NAK
         return self._civ_nak(to, frm)
 
     def _dispatch_cmd29(
