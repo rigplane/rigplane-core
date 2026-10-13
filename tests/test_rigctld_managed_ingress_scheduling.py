@@ -447,3 +447,297 @@ async def test_sequential_frequency_then_ptt_preserves_wire_order(managed):
         await _send(managed, command)
         assert await _replies(managed, 1) == [b"RPRT 0\n"]
     assert [effect.operation for effect in managed.lane.effects] == [ActuationOperation.PTT_ON, ActuationOperation.FORCE_RECEIVE]
+_FREQ_LINE = f"{_FREQUENCY}\n".encode("ascii")
+def _spawn_slot(server, *, writer, session, cmd, predecessor_execution, predecessor_retirement, execution, retirement):
+    return asyncio.get_running_loop().create_task(server._execute_and_retire_client_command(
+        writer=writer, session=session, session_id="rigctld-client-1", client_id=1, cmd=cmd, immediate_error=None,
+        predecessor_execution=predecessor_execution, predecessor_retirement=predecessor_retirement,
+        execution=execution, retirement=retirement, ptt_submission=None, ptt_ready=None))
+async def _cancel_and_join(*tasks):
+    owned = [task for task in tasks if task is not None]
+    for task in owned:
+        if not task.done():
+            task.cancel()
+    gathered = asyncio.gather(*owned, return_exceptions=True)
+    results = await asyncio.wait_for(asyncio.shield(gathered), _WAIT)
+    for result in results:
+        if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+            raise result
+async def test_cancelled_shield_wait_still_settles_both_futures_and_unblocks_successor(managed):
+    registered = asyncio.Event()
+    class ObservedFuture(asyncio.Future):
+        def add_done_callback(self, callback, *, context=None):
+            registered.set()
+            return super().add_done_callback(callback, context=context)
+    calls = []
+    async def fake_handler(*args, **kwargs):
+        calls.append(args[0] if args else kwargs.get("cmd"))
+        return SimpleNamespace(values=[str(_FREQUENCY)], error=HamlibError.OK)
+    managed.server._handler_execute_call = fake_handler
+    loop = asyncio.get_running_loop()
+    writes = []
+    async def no_drain(): return None
+    writer = SimpleNamespace(write=writes.append, drain=lambda: no_drain())
+    predecessor_execution, predecessor_retirement = ObservedFuture(), loop.create_future()
+    predecessor_retirement.set_result(None)
+    execution, retirement = loop.create_future(), loop.create_future()
+    successor_execution, successor_retirement = loop.create_future(), loop.create_future()
+    session = SimpleNamespace(client_id=1, peername="test", extended_mode=False, vfo_mode=False)
+    command = managed.server._protocol.parse_line(b"f", session)
+    successor_command = managed.server._protocol.parse_line(b"f", session)
+    command_task = _spawn_slot(managed.server, writer=writer, session=session, cmd=command,
+        predecessor_execution=predecessor_execution, predecessor_retirement=predecessor_retirement,
+        execution=execution, retirement=retirement)
+    successor_task = None
+    try:
+        await asyncio.wait_for(registered.wait(), _WAIT)
+        command_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(command_task, _WAIT)
+        assert command_task.cancelled() and writes == [] and calls == []
+        assert execution.done() and retirement.done()
+        assert not predecessor_execution.done() and not predecessor_execution.cancelled()
+        successor_task = _spawn_slot(managed.server, writer=writer, session=session, cmd=successor_command,
+            predecessor_execution=execution, predecessor_retirement=retirement,
+            execution=successor_execution, retirement=successor_retirement)
+        await asyncio.wait_for(successor_task, _WAIT)
+        assert successor_execution.done() and successor_retirement.done()
+        assert calls == [successor_command] and writes == [_FREQ_LINE]
+    finally:
+        if not predecessor_execution.done():
+            predecessor_execution.set_result(None)
+        await _cancel_and_join(command_task, successor_task)
+async def test_cancelled_handler_execution_still_settles_both_futures_and_unblocks_successor(managed):
+    entered, release, exited, calls = asyncio.Event(), asyncio.Event(), asyncio.Event(), []
+    async def gated_handler(*args, **kwargs):
+        calls.append(args[0] if args else kwargs.get("cmd"))
+        if len(calls) == 1:
+            entered.set()
+            try:
+                await release.wait()
+            finally:
+                exited.set()
+        return SimpleNamespace(values=[str(_FREQUENCY)], error=HamlibError.OK)
+    managed.server._handler_execute_call = gated_handler
+    loop = asyncio.get_running_loop()
+    writes = []
+    async def no_drain(): return None
+    writer = SimpleNamespace(write=writes.append, drain=lambda: no_drain())
+    predecessor_execution, predecessor_retirement = loop.create_future(), loop.create_future()
+    predecessor_execution.set_result(None)
+    predecessor_retirement.set_result(None)
+    execution, retirement = loop.create_future(), loop.create_future()
+    successor_execution, successor_retirement = loop.create_future(), loop.create_future()
+    session = SimpleNamespace(client_id=1, peername="test", extended_mode=False, vfo_mode=False)
+    command = managed.server._protocol.parse_line(b"f", session)
+    successor_command = managed.server._protocol.parse_line(b"f", session)
+    command_task = _spawn_slot(managed.server, writer=writer, session=session, cmd=command,
+        predecessor_execution=predecessor_execution, predecessor_retirement=predecessor_retirement,
+        execution=execution, retirement=retirement)
+    successor_task = None
+    try:
+        await asyncio.wait_for(entered.wait(), _WAIT)
+        command_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(command_task, _WAIT)
+        assert command_task.cancelled()
+        await asyncio.wait_for(exited.wait(), _WAIT)
+        assert writes == [] and len(calls) == 1
+        assert execution.done() and retirement.done()
+        assert predecessor_execution.done() and not predecessor_execution.cancelled()
+        successor_task = _spawn_slot(managed.server, writer=writer, session=session, cmd=successor_command,
+            predecessor_execution=execution, predecessor_retirement=retirement,
+            execution=successor_execution, retirement=successor_retirement)
+        await asyncio.wait_for(successor_task, _WAIT)
+        assert successor_execution.done() and successor_retirement.done()
+        assert len(calls) == 2 and writes == [_FREQ_LINE]
+    finally:
+        release.set()
+        await _cancel_and_join(command_task, successor_task)
+async def test_pre_start_cancelled_response_task_still_retires_successor(managed, monkeypatch):
+    loop = asyncio.get_running_loop()
+    seen = []
+    real_create_task = type(loop).create_task
+    def spy(self, coro, *args, **kwargs):
+        task = real_create_task(self, coro, *args, **kwargs)
+        if getattr(coro, "__qualname__", "") == "RigctldServer._execute_and_retire_client_command":
+            seen.append(task)
+            if len(seen) == 2:
+                task.cancel()
+        return task
+    monkeypatch.setattr(type(loop), "create_task", spy)
+    await _send(managed, "f", "f", "f")
+    first, third = await _replies(managed, 2)
+    assert len(seen) == 3 and seen[1].cancelled()
+    expected = f"{_FREQUENCY}\n".encode("ascii")
+    assert first == expected and third == expected
+    await _send(managed, "f")
+    (fourth,) = await _replies(managed, 1)
+    assert fourth == expected
+@pytest.mark.parametrize("cancel_phase", ["handler", "retirement"])
+async def test_cancelled_slot_does_not_let_successor_bypass_earlier_retirement(managed, cancel_phase):
+    entered_b, release_b, exited_b, calls = asyncio.Event(), asyncio.Event(), asyncio.Event(), []
+    drain_entered, drain_release = asyncio.Event(), asyncio.Event()
+    b_waiting_retirement, c_waiting_retirement = asyncio.Event(), asyncio.Event()
+    class ObservedFuture(asyncio.Future):
+        def __init__(self, observed):
+            super().__init__()
+            self.observed = observed
+        def add_done_callback(self, callback, *, context=None):
+            self.observed.set()
+            return super().add_done_callback(callback, context=context)
+    session = SimpleNamespace(client_id=1, peername="test", extended_mode=False, vfo_mode=False)
+    command_a = managed.server._protocol.parse_line(b"f", session)
+    command_b = managed.server._protocol.parse_line(b"f", session)
+    command_c = managed.server._protocol.parse_line(b"f", session)
+    async def gated_handler(*args, **kwargs):
+        command = args[0] if args else kwargs.get("cmd")
+        calls.append(command)
+        if command is command_b:
+            entered_b.set()
+            try:
+                await release_b.wait()
+            finally:
+                exited_b.set()
+        return SimpleNamespace(values=[str(_FREQUENCY)], error=HamlibError.OK)
+    managed.server._handler_execute_call = gated_handler
+    async def gated_drain():
+        drain_entered.set()
+        await drain_release.wait()
+    async def no_drain(): return None
+    loop = asyncio.get_running_loop()
+    writes = []
+    writer_a = SimpleNamespace(write=writes.append, drain=lambda: gated_drain())
+    writer_after = SimpleNamespace(write=writes.append, drain=lambda: no_drain())
+    base_execution, base_retirement = loop.create_future(), loop.create_future()
+    base_execution.set_result(None)
+    base_retirement.set_result(None)
+    execution_a, retirement_a = loop.create_future(), ObservedFuture(b_waiting_retirement)
+    execution_b, retirement_b = loop.create_future(), ObservedFuture(c_waiting_retirement)
+    execution_c, retirement_c = loop.create_future(), loop.create_future()
+    task_a = _spawn_slot(managed.server, writer=writer_a, session=session, cmd=command_a,
+        predecessor_execution=base_execution, predecessor_retirement=base_retirement,
+        execution=execution_a, retirement=retirement_a)
+    task_b, task_c = None, None
+    try:
+        await asyncio.wait_for(drain_entered.wait(), _WAIT)
+        assert writes == [_FREQ_LINE] and not task_a.done() and not retirement_a.done()
+        task_b = _spawn_slot(managed.server, writer=writer_after, session=session, cmd=command_b,
+            predecessor_execution=execution_a, predecessor_retirement=retirement_a,
+            execution=execution_b, retirement=retirement_b)
+        await asyncio.wait_for(entered_b.wait(), _WAIT)
+        if cancel_phase == "retirement":
+            release_b.set()
+            await asyncio.wait_for(b_waiting_retirement.wait(), _WAIT)
+        assert calls == [command_a, command_b]
+        task_b.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task_b, _WAIT)
+        assert exited_b.is_set() and execution_b.done() and not retirement_b.done()
+        task_c = _spawn_slot(managed.server, writer=writer_after, session=session, cmd=command_c,
+            predecessor_execution=execution_b, predecessor_retirement=retirement_b,
+            execution=execution_c, retirement=retirement_c)
+        await asyncio.wait_for(c_waiting_retirement.wait(), _WAIT)
+        assert execution_c.done() and not retirement_c.done() and not task_c.done()
+        assert not retirement_a.done() and not retirement_b.done()
+        assert calls == [command_a, command_b, command_c] and writes == [_FREQ_LINE]
+        drain_release.set()
+        await asyncio.wait_for(task_a, _WAIT)
+        await asyncio.wait_for(task_c, _WAIT)
+        assert task_b.cancelled()
+        assert execution_a.done() and retirement_a.done()
+        assert execution_b.done() and retirement_b.done()
+        assert execution_c.done() and retirement_c.done()
+        assert writes == [_FREQ_LINE, _FREQ_LINE]
+    finally:
+        drain_release.set()
+        release_b.set()
+        await _cancel_and_join(task_a, task_b, task_c)
+async def test_repeated_cancellation_waits_for_owned_handler_cleanup(managed):
+    entered, cleanup_entered, cleanup_release, exited = (asyncio.Event() for _ in range(4))
+    async def gated_handler(*args, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_entered.set()
+            await cleanup_release.wait()
+            exited.set()
+    managed.server._handler_execute_call = gated_handler
+    loop = asyncio.get_running_loop()
+    writes = []
+    async def no_drain(): return None
+    writer = SimpleNamespace(write=writes.append, drain=lambda: no_drain())
+    predecessor_execution, predecessor_retirement = loop.create_future(), loop.create_future()
+    predecessor_execution.set_result(None)
+    predecessor_retirement.set_result(None)
+    execution, retirement = loop.create_future(), loop.create_future()
+    session = SimpleNamespace(client_id=1, peername="test", extended_mode=False, vfo_mode=False)
+    command = managed.server._protocol.parse_line(b"f", session)
+    task = _spawn_slot(managed.server, writer=writer, session=session, cmd=command,
+        predecessor_execution=predecessor_execution, predecessor_retirement=predecessor_retirement,
+        execution=execution, retirement=retirement)
+    try:
+        await asyncio.wait_for(entered.wait(), _WAIT)
+        task.cancel()
+        await asyncio.wait_for(cleanup_entered.wait(), _WAIT)
+        task.cancel()
+        cleanup_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, _WAIT)
+        assert exited.is_set() and task.cancelled() and writes == []
+        assert execution.done() and retirement.done()
+    finally:
+        cleanup_release.set()
+        await _cancel_and_join(task)
+async def test_pre_start_cancelled_response_drains_fake_submission_before_disconnect(managed, monkeypatch):
+    cleanup_entered, cleanup_release, exited = (asyncio.Event() for _ in range(3))
+    submissions, responses = [], []
+    async def fake_submission():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_entered.set()
+            await cleanup_release.wait()
+            exited.set()
+    def fake_start(*args, **kwargs):
+        task = asyncio.create_task(fake_submission())
+        submissions.append(task)
+        return task
+    managed.authority.start_ptt_submission = fake_start
+    loop = asyncio.get_running_loop()
+    real_create_task = type(loop).create_task
+    def spy(self, coro, *args, **kwargs):
+        task = real_create_task(self, coro, *args, **kwargs)
+        if getattr(coro, "__qualname__", "") == "RigctldServer._execute_and_retire_client_command":
+            responses.append(task)
+            task.cancel()
+        return task
+    monkeypatch.setattr(type(loop), "create_task", spy)
+    retirement_entered, retiring_tasks = asyncio.Event(), []
+    retire_connection = managed.server._retire_client_connection
+    async def observed_retirement(**kwargs):
+        retiring_tasks.extend(kwargs["tasks"])
+        retirement_entered.set()
+        return await retire_connection(**kwargs)
+    managed.server._retire_client_connection = observed_retirement
+    clients = ()
+    try:
+        await _send(managed, "T 1")
+        await asyncio.wait_for(cleanup_entered.wait(), _WAIT)
+        assert len(responses) == 1 and responses[0].cancelled()
+        clients = tuple(managed.server._client_tasks)
+        assert len(clients) == 1
+        await _send(managed, "q")
+        await asyncio.wait_for(retirement_entered.wait(), _WAIT)
+        assert submissions[0] in retiring_tasks
+        assert not clients[0].done() and not submissions[0].done() and not exited.is_set()
+        assert managed.lane.effects == []
+        cleanup_release.set()
+        await asyncio.wait_for(asyncio.gather(*clients), _WAIT)
+        assert exited.is_set() and submissions[0].cancelled()
+        assert await asyncio.wait_for(managed.reader.read(), _WAIT) == b""
+        assert managed.lane.effects == []
+    finally:
+        cleanup_release.set()
+        await _cancel_and_join(*responses, *submissions, *clients)

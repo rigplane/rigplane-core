@@ -190,6 +190,19 @@ def _mode_to_name(mode: object) -> str:
     return str(mode).upper()
 
 
+def _settle_retirement(
+    predecessor: asyncio.Future[None], retirement: asyncio.Future[None]
+) -> None:
+    def settle(_completed: asyncio.Future[None]) -> None:
+        if not retirement.done():
+            retirement.set_result(None)
+
+    if predecessor.done():
+        settle(predecessor)
+    else:
+        predecessor.add_done_callback(settle)
+
+
 class RigctldServer:
     """Asyncio TCP server implementing the hamlib NET rigctld protocol.
 
@@ -1179,6 +1192,7 @@ class RigctldServer:
         previous_retirement: asyncio.Future[None] = loop.create_future()
         previous_retirement.set_result(None)
         response_tasks: set[asyncio.Task[None]] = set()
+        ptt_submissions: set[asyncio.Task[Any]] = set()
         ptt_revocation = asyncio.Event()
         graceful_quit = False
         # MOR-2890: the HTTP guard inspects only the first non-blank line.
@@ -1191,6 +1205,11 @@ class RigctldServer:
                 logger.debug("client #%d response task failed: %s", client_id, error)
                 writer.close()
 
+        def submission_done(task: asyncio.Task[Any]) -> None:
+            ptt_submissions.discard(task)
+            if not task.cancelled():
+                task.exception()
+
         def schedule_response(
             cmd: Any | None,
             *,
@@ -1201,6 +1220,18 @@ class RigctldServer:
             nonlocal previous_execution, previous_retirement
             execution = loop.create_future()
             retirement = loop.create_future()
+            predecessor_retirement = previous_retirement
+            if ptt_submission is not None:
+                ptt_submissions.add(ptt_submission)
+                ptt_submission.add_done_callback(submission_done)
+
+            def settle_unstarted(task: asyncio.Task[None]) -> None:
+                if task.cancelled() and not execution.done():
+                    if ptt_submission is not None and not ptt_submission.done():
+                        ptt_submission.cancel()
+                    execution.set_result(None)
+                    _settle_retirement(predecessor_retirement, retirement)
+
             task = loop.create_task(
                 self._execute_and_retire_client_command(
                     writer=writer,
@@ -1210,13 +1241,14 @@ class RigctldServer:
                     cmd=cmd,
                     immediate_error=immediate_error,
                     predecessor_execution=previous_execution,
-                    predecessor_retirement=previous_retirement,
+                    predecessor_retirement=predecessor_retirement,
                     execution=execution,
                     retirement=retirement,
                     ptt_submission=ptt_submission,
                     ptt_ready=ptt_ready,
                 )
             )
+            task.add_done_callback(settle_unstarted)
             response_tasks.add(task)
             task.add_done_callback(response_task_done)
             previous_execution = execution
@@ -1360,9 +1392,9 @@ class RigctldServer:
             self._rate_windows.pop(client_id, None)
             if self._command_queue is not None:
                 self._command_queue.unregister_session(session_id)
-            tasks = tuple(response_tasks)
+            tasks = tuple(response_tasks | ptt_submissions)
             if not graceful_quit:
-                for task in tasks:
+                for task in tuple(response_tasks):
                     if not task.done():
                         task.cancel()
             # The retirement below must survive the cancellation ``stop()``
@@ -1390,7 +1422,7 @@ class RigctldServer:
         *,
         session_id: str,
         client_id: int,
-        tasks: tuple[asyncio.Task[None], ...],
+        tasks: tuple[asyncio.Task[Any], ...],
         writer: asyncio.StreamWriter,
     ) -> None:
         """Retire one departing client: wait out its replies, then its socket.
@@ -1437,54 +1469,66 @@ class RigctldServer:
         resp = None
         out = None
         try:
-            if immediate_error is not None:
-                out = proto.format_error(immediate_error)
-            else:
-                assert cmd is not None
-                managed_off = self._is_managed_off(cmd)
-                handler_task: asyncio.Task[Any] | None = None
-                try:
-                    if not managed_off:
-                        await asyncio.shield(predecessor_execution)
-                    handler_task = asyncio.create_task(
-                        self._handler_execute_call(
-                            cmd,
-                            session_id=session_id,
-                            predecessor=predecessor_execution,
-                            ptt_submission=ptt_submission,
-                            ptt_ready=ptt_ready,
+            try:
+                if immediate_error is not None:
+                    out = proto.format_error(immediate_error)
+                else:
+                    assert cmd is not None
+                    managed_off = self._is_managed_off(cmd)
+                    handler_task: asyncio.Task[Any] | None = None
+                    try:
+                        if not managed_off:
+                            await asyncio.shield(predecessor_execution)
+                        handler_task = asyncio.create_task(
+                            self._handler_execute_call(
+                                cmd,
+                                session_id=session_id,
+                                predecessor=predecessor_execution,
+                                ptt_submission=ptt_submission,
+                                ptt_ready=ptt_ready,
+                            )
                         )
-                    )
-                    resp = await asyncio.wait_for(
-                        handler_task,
-                        timeout=self._config.command_timeout,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "client #%d command %r timed out",
-                        client_id,
-                        cmd.short_cmd,
-                    )
-                    out = proto.format_error(HamlibError.ETIMEOUT)
-                except Exception as exc:
-                    logger.error("client #%d handler error: %s", client_id, exc)
-                    out = proto.format_error(HamlibError.EIO)
-                finally:
-                    if handler_task is not None and not handler_task.done():
-                        handler_task.cancel()
-                        await asyncio.gather(handler_task, return_exceptions=True)
-                    if ptt_submission is not None and not ptt_submission.done():
-                        ptt_submission.cancel()
-                        await asyncio.gather(ptt_submission, return_exceptions=True)
-                    elif ptt_submission is not None and ptt_submission.cancelled():
-                        await asyncio.gather(ptt_submission, return_exceptions=True)
+                        resp = await asyncio.wait_for(
+                            asyncio.shield(handler_task),
+                            timeout=self._config.command_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "client #%d command %r timed out",
+                            client_id,
+                            cmd.short_cmd,
+                        )
+                        out = proto.format_error(HamlibError.ETIMEOUT)
+                    except Exception as exc:
+                        logger.error("client #%d handler error: %s", client_id, exc)
+                        out = proto.format_error(HamlibError.EIO)
+                    finally:
+                        owned_tasks = tuple(
+                            task
+                            for task in (handler_task, ptt_submission)
+                            if task is not None
+                        )
+                        for task in owned_tasks:
+                            if not task.done():
+                                task.cancel()
+                        if owned_tasks:
+                            cleanup = asyncio.gather(
+                                *owned_tasks, return_exceptions=True
+                            )
+                            cancelled = False
+                            while not cleanup.done():
+                                try:
+                                    await asyncio.shield(cleanup)
+                                except asyncio.CancelledError:
+                                    cancelled = True
+                            if cancelled:
+                                raise asyncio.CancelledError
 
-            await asyncio.shield(predecessor_execution)
-        finally:
-            if not execution.done():
-                execution.set_result(None)
+                await asyncio.shield(predecessor_execution)
+            finally:
+                if not execution.done():
+                    execution.set_result(None)
 
-        try:
             await asyncio.shield(predecessor_retirement)
             if resp is not None:
                 if cmd.long_cmd == "chk_vfo" and resp.values == ["1"]:
@@ -1514,8 +1558,7 @@ class RigctldServer:
                     )
                 )
         finally:
-            if not retirement.done():
-                retirement.set_result(None)
+            _settle_retirement(predecessor_retirement, retirement)
 
     # ------------------------------------------------------------------
     # Line reader
