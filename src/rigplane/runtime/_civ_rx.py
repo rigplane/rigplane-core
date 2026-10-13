@@ -1795,14 +1795,13 @@ class CivRuntime:
 
                 packets = self._shed_scope_backlog(packets)
 
-                self._host._last_civ_data_received = time.monotonic()
-                self._soft_recovery_epoch = None
-                self._host._civ_stream_ready = True
-                self._host._civ_recovering = False
-
                 for pkt in packets:
                     if len(pkt) <= CIV_HEADER_SIZE:
                         continue
+                    self._host._last_civ_data_received = time.monotonic()
+                    self._soft_recovery_epoch = None
+                    self._host._civ_stream_ready = True
+                    self._host._civ_recovering = False
                     payload = pkt[CIV_HEADER_SIZE:]
                     for frame_bytes in iter_civ_frames(payload):
                         try:

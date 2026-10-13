@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import struct
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -80,6 +81,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
     acquisition_class_for_path,
 )
+from rigplane.core.types import HEADER_SIZE
 from rigplane.exceptions import CommandError, ConnectionError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio import IcomRadio
@@ -6813,3 +6815,170 @@ def test_transceiver_id_reply_never_becomes_store_evidence(
     assert (
         radio._state_store.snapshot().field(_POWER_ON_PATH).value is True  # noqa: SLF001
     )
+
+
+# ---------------------------------------------------------------------------
+# Idle / header-only packet liveness: only a CI-V payload may advance the
+# pump's payload-liveness markers.
+# ---------------------------------------------------------------------------
+
+
+def _idle_civ_datagram() -> bytes:
+    """A 16-byte ptype=0 idle control packet: UDP header only, no payload."""
+    data = bytearray(HEADER_SIZE)
+    struct.pack_into("<I", data, 0, HEADER_SIZE)
+    struct.pack_into("<H", data, 4, 0x00)
+    struct.pack_into("<H", data, 6, 0)
+    struct.pack_into("<I", data, 8, 0xDEADBEEF)
+    struct.pack_into("<I", data, 0x0C, 0x00010001)
+    return bytes(data)
+
+
+class _ControlledTime:
+    """A callable standing in for monotonic() at chosen instants."""
+
+    def __init__(self, start: float) -> None:
+        self._value = start
+
+    def set(self, value: float) -> None:
+        self._value = value
+
+    def __call__(self) -> float:
+        return self._value
+
+
+async def test_idle_datagram_does_not_claim_payload_liveness(
+    radio: IcomRadio, transport: MockTransport
+) -> None:
+    """An idle-only batch must leave the startup liveness markers alone.
+
+    The pump stamps its startup liveness on entry; one header-only batch
+    routes zero frames and must preserve that stamp, the recovery marker,
+    and the stream-ready/recovering flags.
+    """
+    clock = _ControlledTime(10.0)
+    with patch("rigplane.runtime._civ_rx.time", monotonic=clock):
+        marker = radio._civ_epoch
+        radio._civ_runtime._soft_recovery_epoch = marker
+        radio._civ_recovering = True
+        radio._civ_stream_ready = False
+        routed: list[CivFrame] = []
+        original_route = radio._civ_runtime._route_civ_frame
+
+        async def _count_route(
+            frame: CivFrame,
+            *,
+            generation: int,
+            store_provider_generation: int | None = None,
+        ) -> None:
+            routed.append(frame)
+            await original_route(
+                frame,
+                generation=generation,
+                store_provider_generation=store_provider_generation,
+            )
+
+        entries = 0
+        entered_once = asyncio.Event()
+        entered_twice = asyncio.Event()
+        original_receive = transport.receive_packet
+
+        async def _count_receive(timeout: float = 5.0) -> bytes:
+            nonlocal entries
+            entries += 1
+            if entries == 1:
+                entered_once.set()
+            elif entries == 2:
+                entered_twice.set()
+            return await original_receive(timeout)
+
+        with (
+            patch.object(
+                radio._civ_runtime, "_route_civ_frame", side_effect=_count_route
+            ),
+            patch.object(transport, "receive_packet", side_effect=_count_receive),
+        ):
+            radio._civ_runtime.start_pump()
+            try:
+                await asyncio.wait_for(entered_once.wait(), 2.0)
+                clock.set(30.0)
+                transport.queue_response(_idle_civ_datagram())
+                await asyncio.wait_for(entered_twice.wait(), 2.0)
+                assert radio._last_civ_data_received == 10.0
+                assert radio._civ_runtime._soft_recovery_epoch == marker
+                assert radio._civ_stream_ready is False
+                assert radio._civ_recovering is True
+                assert routed == []
+            finally:
+                await radio._civ_runtime.stop_pump()
+
+
+async def test_mixed_idle_and_valid_batch_establishes_liveness(
+    radio: IcomRadio, transport: MockTransport
+) -> None:
+    """Positive control: one batch holding idle plus a payload advances.
+
+    The header-only member routes nothing, the CI-V member routes one
+    frame, and the batch stamps fresh liveness and restores the flags.
+    """
+    clock = _ControlledTime(10.0)
+    with patch("rigplane.runtime._civ_rx.time", monotonic=clock):
+        marker = radio._civ_epoch
+        radio._civ_runtime._soft_recovery_epoch = marker
+        radio._civ_recovering = True
+        radio._civ_stream_ready = False
+        routed: list[CivFrame] = []
+        original_route = radio._civ_runtime._route_civ_frame
+
+        async def _count_route(
+            frame: CivFrame,
+            *,
+            generation: int,
+            store_provider_generation: int | None = None,
+        ) -> None:
+            routed.append(frame)
+            await original_route(
+                frame,
+                generation=generation,
+                store_provider_generation=store_provider_generation,
+            )
+
+        entries = 0
+        entered_once = asyncio.Event()
+        entered_twice = asyncio.Event()
+        original_receive = transport.receive_packet
+
+        async def _count_receive(timeout: float = 5.0) -> bytes:
+            nonlocal entries
+            entries += 1
+            if entries == 1:
+                entered_once.set()
+            elif entries == 2:
+                entered_twice.set()
+            return await original_receive(timeout)
+
+        with (
+            patch.object(
+                radio._civ_runtime, "_route_civ_frame", side_effect=_count_route
+            ),
+            patch.object(transport, "receive_packet", side_effect=_count_receive),
+        ):
+            radio._civ_runtime.start_pump()
+            try:
+                await asyncio.wait_for(entered_once.wait(), 2.0)
+                clock.set(30.0)
+                civ = build_civ_frame(
+                    CONTROLLER_ADDR, IC_7610_ADDR, 0x03, data=bcd_encode(14_074_000)
+                )
+                transport.queue_response(_idle_civ_datagram())
+                # The pump drains this queue into the same batch as the
+                # receive above, so both members share one liveness stamp.
+                transport._packet_queue.put_nowait(_wrap_civ_in_udp(civ))  # noqa: SLF001
+                await asyncio.wait_for(entered_twice.wait(), 2.0)
+                assert radio._last_civ_data_received == 30.0
+                assert radio._civ_runtime._soft_recovery_epoch is None
+                assert radio._civ_stream_ready is True
+                assert radio._civ_recovering is False
+                assert len(routed) == 1
+            finally:
+                await radio._civ_runtime.stop_pump()
