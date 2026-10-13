@@ -998,8 +998,9 @@ class _IcomSerialRadioBase(CoreRadio):
         )
         probe_identity = self._connection_identity
         epoch = self._civ_epoch
+        owner_stop_epoch = self._owner_stop_epoch
         payload = await self._read_serial_identity_payload()
-        if epoch != self._civ_epoch:
+        if epoch != self._civ_epoch or owner_stop_epoch != self._owner_stop_epoch:
             if self._connection_identity is probe_identity:
                 self._connection_identity = None
             return False

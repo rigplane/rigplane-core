@@ -3498,17 +3498,50 @@ async def test_owner_disconnect_during_identity_gate_leaves_no_reread_task() -> 
     async def _gated_silence() -> bytes | None:
         in_read.set()
         await gate.wait()
-        return None  # silence -> NO_RESPONSE
+        return None
 
     radio._read_serial_identity_payload = _gated_silence  # type: ignore[assignment]
 
     connect_task = asyncio.create_task(radio.connect())
-    await asyncio.wait_for(in_read.wait(), timeout=5.0)
+    try:
+        await asyncio.wait_for(in_read.wait(), timeout=5.0)
+        await radio.disconnect()
+    finally:
+        gate.set()
+        await asyncio.wait_for(connect_task, timeout=5.0)
 
-    await radio.disconnect()
+    assert radio.conn_state is RadioConnectionState.DISCONNECTED
+    assert radio.connection_identity is None
+    assert radio._serial_identity_reread_task is None
+    assert not radio._serial_identity_gate_running
+    assert radio._serial_identity_answer_epoch is None
 
-    gate.set()
-    await asyncio.wait_for(connect_task, timeout=5.0)
+
+@pytest.mark.asyncio
+async def test_owner_disconnect_during_identity_gate_with_delayed_payload() -> None:
+    """Delayed successful payload after owner disconnect must not
+    start reread or latch identity."""
+    link = _GateSerialLink(answer_identity=True)
+    radio = _gate_radio(link)
+    radio._civ_get_timeout = 0.5
+
+    in_read = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def _gated_payload() -> bytes | None:
+        in_read.set()
+        await gate.wait()
+        return b"\x94"  # valid IC-7300 payload
+
+    radio._read_serial_identity_payload = _gated_payload  # type: ignore[assignment]
+
+    connect_task = asyncio.create_task(radio.connect())
+    try:
+        await asyncio.wait_for(in_read.wait(), timeout=5.0)
+        await radio.disconnect()
+    finally:
+        gate.set()
+        await asyncio.wait_for(connect_task, timeout=5.0)
 
     assert radio.conn_state is RadioConnectionState.DISCONNECTED
     assert radio.connection_identity is None
