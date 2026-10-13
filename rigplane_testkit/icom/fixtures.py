@@ -30,7 +30,12 @@ import statistics
 import struct
 from pathlib import Path
 
+from rigplane.commands import parse_civ_frame
+from rigplane.scope import ScopeAssembler
 from rigplane_testkit.icom.replay import Record, extract_civ_frame
+
+_SCOPE_CMD = 0x27  # scope command byte
+_SCOPE_WAVE_SUB = 0x00  # wave-data subcommand: 0x27/0x00 packets
 
 _PING_SIZE = 0x15  # ping packet length (request and reply)
 _PING_TYPE = 0x07  # u16 LE packet type at offset 0x04
@@ -89,6 +94,67 @@ def civ_frames(
                 {"t": round(rec.t, 3), "dir": rec.direction, "frame": frame.hex()}
             )
     return out
+
+
+def scope_wave_templates(
+    rows: list[dict], *, radio_addr: int = 0x98
+) -> dict[int, list[bytes]]:
+    """Recorded complete radio-origin CI-V 27 00 frames, grouped by receiver.
+
+    Input rows have the :func:`civ_frames` shape (``{"t", "dir", "frame"}``
+    with the LAN header already dropped); the caller selects the rows, so
+    this helper never loads files or scans the full fixture. Each returned
+    list preserves recording order and holds the original frame bytes.
+
+    Classification runs through the production
+    ``rigplane.commands.parse_civ_frame`` and completeness through
+    ``rigplane.scope.ScopeAssembler.feed`` — the same calls the
+    conformance suite uses for recorded 27 00 frames — with a fresh
+    assembler per frame. Only raw-wire 27 00 frames qualify
+    (parser-unwrapped command29 forms are excluded); each must be a
+    standalone single-packet frame (sequence 01 of 01) carrying actual
+    wave payload. Multi-packet sequence assembly belongs to a later
+    streaming slice and is not accepted here.
+    ``c2r`` rows are skipped before decoding; LAN controller echoes
+    (controller-source ``r2c`` rows, excluded by the source-address
+    check), frames from another source address, and non-wave replies are
+    ignored. A qualifying wave row that is malformed or truncated raises
+    ``ValueError`` instead of producing padded output. Empty input yields
+    ``{}``; a receiver with no recorded frame gets no entry.
+    """
+    templates: dict[int, list[bytes]] = {}
+    for row in rows:
+        if row.get("dir") != "r2c":
+            continue  # only radio-direction rows can hold templates
+        try:
+            frame = bytes.fromhex(row["frame"])
+            parsed = parse_civ_frame(frame)
+        except ValueError as exc:
+            raise ValueError(
+                "scope_wave_templates: r2c row is not a parseable CI-V frame"
+            ) from exc
+        if parsed.from_addr != radio_addr:
+            continue  # not radio-origin
+        if frame[4] != _SCOPE_CMD or parsed.command != _SCOPE_CMD:
+            continue  # wrapped (e.g. command29) or non-scope command
+        if parsed.sub != _SCOPE_WAVE_SUB:
+            continue  # non-wave reply
+        if not parsed.data:
+            raise ValueError("scope_wave_templates: 27 00 frame without receiver byte")
+        # Standalone single-packet structure: sequence 01 of 01 (the only
+        # BCD encoding of 1). Orphan terminals and zero counts fail here
+        # instead of reaching the assembler's terminal continuation branch,
+        # which would emit from default metadata with no seq-01 behind it.
+        if parsed.data[1:3] != b"\x01\x01":
+            raise ValueError(
+                "scope_wave_templates: not a standalone single-packet wave frame"
+            )
+        receiver = parsed.data[0]
+        assembled = ScopeAssembler().feed(parsed.data[1:], receiver)
+        if assembled is None or not assembled.pixels:
+            raise ValueError("scope_wave_templates: incomplete 27 00 wave frame")
+        templates.setdefault(receiver, []).append(frame)
+    return templates
 
 
 def control_structure(records: list[Record]) -> list[dict]:

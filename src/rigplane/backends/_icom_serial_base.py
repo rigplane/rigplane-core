@@ -726,7 +726,10 @@ class _IcomSerialRadioBase(CoreRadio):
             message = (
                 f"Failed to read the radio identity on {self._serial_device}: {exc}"
             )
-            if self._civ_epoch == attempt_epoch:
+            if (
+                self._civ_epoch == attempt_epoch
+                and self._owner_stop_epoch == owner_stop_epoch
+            ):
                 self._connection_identity = None
                 self._serial_identity_hold_reconnect_origin = False
                 self._conn_state = RadioConnectionState.RECONNECTING
@@ -738,7 +741,10 @@ class _IcomSerialRadioBase(CoreRadio):
             if self._civ_epoch == attempt_epoch:
                 self._serial_identity_gate_running = False
         if not identity_answered:
-            if self._civ_epoch == attempt_epoch:
+            if (
+                self._civ_epoch == attempt_epoch
+                and self._owner_stop_epoch == owner_stop_epoch
+            ):
                 # MOR-3064: only the attempt that still owns the current
                 # generation may park the radio in the hold state — a
                 # retired gate must not overwrite whatever replaced it
@@ -750,6 +756,11 @@ class _IcomSerialRadioBase(CoreRadio):
                 await self._recover_serial_audio_after_connect(
                     owner_stop_epoch, attempt_epoch
                 )
+            return
+        if (
+            self._civ_epoch != attempt_epoch
+            or self._owner_stop_epoch != owner_stop_epoch
+        ):
             return
         self._latch_serial_connected()
         # MOR-1440 review round 2 (B1 item 2): this is the RECONNECTING ->
@@ -998,8 +1009,9 @@ class _IcomSerialRadioBase(CoreRadio):
         )
         probe_identity = self._connection_identity
         epoch = self._civ_epoch
+        owner_stop_epoch = self._owner_stop_epoch
         payload = await self._read_serial_identity_payload()
-        if epoch != self._civ_epoch:
+        if epoch != self._civ_epoch or owner_stop_epoch != self._owner_stop_epoch:
             if self._connection_identity is probe_identity:
                 self._connection_identity = None
             return False

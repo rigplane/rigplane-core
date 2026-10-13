@@ -59,14 +59,15 @@ class _DataPortDiscoveryCooldown(Exception):
 
 
 class _StatusBusyReject(Exception):
-    """First-connect status-stage busy reject (civ_port=0, 0xFFFFFFFF).
+    """Status-stage busy reject (civ_port=0).
 
-    Raised by ``_connect_once`` on the profile-selected stereo codec path
-    (the path that used to enter the inline conninfo busy-retry loop) so
-    ``connect_attempt`` can surface it as the transient
-    ``AttemptOutcome.SESSION_BUSY_REJECT``: the lifecycle then releases the
-    busy-issued token and retries with a fresh login instead of re-sending
-    conninfo on the rejected token.
+    Same-computer 0xFFFFFFFF on the profile-selected stereo codec path
+    (the path that used to enter the inline conninfo busy-retry loop),
+    or foreign-holder 0xFDFFFFFF on any codec path. Raised by
+    ``_connect_once`` so ``connect_attempt`` can surface it as the
+    transient ``AttemptOutcome.SESSION_BUSY_REJECT``: the lifecycle then
+    releases the busy-issued token and retries with a fresh login
+    instead of re-sending conninfo on the rejected token.
     """
 
 
@@ -325,6 +326,14 @@ class ControlPhaseRuntime:
                 # Fail fast on immediate session rejection (error=0xFFFFFFFF).
                 # Stereo rejection: downgrade to mono and retry once (#797).
                 # Mono rejection: raise immediately.
+                # A foreign-holder reject (error=0xFDFFFFFF: another
+                # computer holds the radio's LAN session) is transient
+                # busy on every codec path — profile, global, explicit,
+                # or mono — never a codec question. Raise into the
+                # existing busy classification without fallback and
+                # without a conninfo retry on the busy-issued token.
+                if getattr(h, "_last_status_error", 0) == 0xFDFFFFFF:
+                    raise _StatusBusyReject("status busy reject (foreign holder)")
                 if getattr(h, "_last_status_error", 0) == 0xFFFFFFFF:
                     codec_source = h._audio_stream_contract.rx_codec_source
                     allow_stereo_fallback = (
@@ -363,6 +372,14 @@ class ControlPhaseRuntime:
                                 civ_port,
                             )
                             h._civ_port = civ_port
+                        elif getattr(h, "_last_status_error", 0) == 0xFDFFFFFF:
+                            # Foreign-holder reject after the fallback: a
+                            # transient busy, not proof mono failed. Keep
+                            # the once-performed mono selection untouched.
+                            raise _StatusBusyReject(
+                                "status busy reject (foreign holder) "
+                                "after stereo fallback"
+                            )
                         elif getattr(h, "_last_status_error", 0) == 0xFFFFFFFF:
                             # Mono also rejected outright — no busy-retry will help.
                             self._close_pending_sockets()
@@ -445,6 +462,14 @@ class ControlPhaseRuntime:
                         )
                         try:
                             civ_port = await self._receive_civ_port()
+                            if getattr(h, "_last_status_error", 0) == 0xFDFFFFFF:
+                                # Late foreign-holder reject (a not-ready
+                                # status, or a post-fallback warming status,
+                                # followed by FD): transient busy, never
+                                # another conninfo retry.
+                                raise _StatusBusyReject(
+                                    "status busy reject (foreign holder)"
+                                )
                             if civ_port > 0:
                                 logger.info("Radio now reports civ_port=%d", civ_port)
                                 h._civ_port = civ_port
@@ -682,8 +707,9 @@ class ControlPhaseRuntime:
 
         * ``CONNECTED`` — ``_connect_once`` reached CONNECTED;
         * ``SESSION_NOT_READY`` — civ_port==0 / data-port discovery cooldown;
-        * ``SESSION_BUSY_REJECT`` — status (or auth) error 0xFFFFFFFF —
-          "previous session still active";
+        * ``SESSION_BUSY_REJECT`` — status (or auth) error 0xFFFFFFFF
+          ("previous session still active"), or status error 0xFDFFFFFF
+          (a client on another computer holds the session);
         * ``AUTH_CREDENTIALS`` — auth rejected with the *non-transient*
           credential error 0xFEFFFFFF.
 
@@ -695,11 +721,12 @@ class ControlPhaseRuntime:
           mirrors the removed legacy ``connect()`` wrapper, which retried
           exactly this case (its ``_DATA_PORT_COOLDOWN_RETRIES`` loop) and
           let every other failure propagate.
-        * :class:`_StatusBusyReject` (first-connect status-stage busy reject
-          on the profile-selected stereo codec path) →
-          ``SESSION_BUSY_REJECT``.  The busy-issued token is unusable after
-          the hold (MOR-3391), so the attempt must not be retried on it —
-          the lifecycle releases it and logs in again.
+        * :class:`_StatusBusyReject` (status-stage busy reject:
+          0xFFFFFFFF on the profile-selected stereo codec path, or
+          0xFDFFFFFF foreign-holder on any codec path, including after a
+          stereo fallback) → ``SESSION_BUSY_REJECT``.  The lifecycle
+          releases the rejected attempt's token and logs in again
+          instead of re-sending conninfo on it.
         * **Note 1 (auth over-hard-fail fix):** ``_connect_once`` raises
           :class:`AuthenticationError` for ANY ``auth.success == False`` — which
           covers BOTH 0xFEFFFFFF (wrong credentials, hard) AND 0xFFFFFFFF
@@ -1336,7 +1363,7 @@ class ControlPhaseRuntime:
                 )
                 if got_audio > 0:
                     h._audio_port = got_audio
-                if status.error == 0xFFFFFFFF:
+                if status.error in (0xFFFFFFFF, 0xFDFFFFFF):
                     logger.warning(
                         "Status indicates session rejection (error=0x%08X); "
                         "forcing retry/cooldown path",
@@ -1355,7 +1382,10 @@ class ControlPhaseRuntime:
         return civ_port
 
     def _status_retry_pause(self) -> float:
-        if getattr(self._host, "_last_status_error", 0) == 0xFFFFFFFF:
+        if getattr(self._host, "_last_status_error", 0) in (
+            0xFFFFFFFF,
+            0xFDFFFFFF,
+        ):
             return self._STATUS_REJECT_COOLDOWN
         return self._STATUS_RETRY_PAUSE
 

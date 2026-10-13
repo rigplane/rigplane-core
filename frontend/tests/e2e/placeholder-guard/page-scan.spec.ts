@@ -21,6 +21,9 @@
  * language, locator class, token class) — matched per pattern, never per
  * count. An unlisted hit fails; a listed entry that no longer occurs also
  * fails, so the fixing PR deletes its own entries in the same change.
+ *
+ * Per-page diagnostics: navigation/readiness timing, pageerror/crash context.
+ * Same predicate/timeout/message; original fail-fast semantics preserved.
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -29,6 +32,15 @@ import { expect, test, type Page } from '@playwright/test';
 import { HARNESS_REACH } from '../../../fixtures/catalog';
 import { findPlaceholderTokens } from '../../../src/lib/placeholder-token-rule';
 import { findInternalIdentifiers } from '../../../src/semantic/internal-identifier-rule';
+
+interface PageDiagnostics {
+  readonly navigationMs: number;
+  readonly readinessMs: number;
+  readonly pageErrors: readonly string[];
+  readonly crashed: boolean;
+}
+
+const MAX_PAGE_ERRORS = 10;
 
 const LANGUAGES = [null, 'studioline', 'fieldline', 'segmentline'] as const;
 
@@ -77,6 +89,90 @@ function urlFor(face: (typeof HARNESS_REACH)[number], cell: Cell): string {
   return `/fixtures/${face.page}?fixture=${cell.state}&theme=v2`
     + (face.skin ? `&skin=${face.skin}` : '')
     + (cell.language ? `&language=${cell.language}` : '');
+}
+
+const SAFE_ERROR_NAMES: readonly string[] = [
+  'Error',
+  'EvalError',
+  'RangeError',
+  'ReferenceError',
+  'SyntaxError',
+  'TypeError',
+  'URIError',
+  'AggregateError',
+];
+
+function classifyError(error: unknown): string {
+  if (error instanceof Error && SAFE_ERROR_NAMES.includes(error.name)) {
+    return error.name;
+  }
+  return 'unknown';
+}
+
+function pushError(list: string[], msg: string): void {
+  if (list.length < MAX_PAGE_ERRORS) {
+    list.push(msg);
+  }
+}
+
+function formatDiagnostics(faceName: string, cell: Cell, diagnostics: PageDiagnostics): string {
+  const context = diagnostics.pageErrors.length > 0 ? ` ${diagnostics.pageErrors.join('; ')}` : '';
+  return `[${faceName}/${cell.state}${cell.language ? `/${cell.language}` : ''}]`
+    + ` nav=${diagnostics.navigationMs.toFixed(0)}ms`
+    + ` ready=${diagnostics.readinessMs.toFixed(0)}ms`
+    + `${diagnostics.crashed ? ' crashed' : ''}${context}`;
+}
+
+async function gotoWithDiagnostics(
+  page: Page,
+  url: string,
+  faceName: string,
+  cell: Cell,
+): Promise<PageDiagnostics> {
+  const pageErrors: string[] = [];
+  let crashed = false;
+  let navigationMs = 0;
+  let readinessMs = 0;
+
+  const pageErrorHandler = (error: Error) => {
+    pushError(pageErrors, `pageerror:${classifyError(error)}`);
+  };
+  const crashHandler = () => {
+    crashed = true;
+    pushError(pageErrors, 'page crash');
+  };
+
+  page.on('pageerror', pageErrorHandler);
+  page.on('crash', crashHandler);
+
+  try {
+    const navStart = performance.now();
+    try {
+      await page.goto(url, { waitUntil: 'load' });
+    } finally {
+      navigationMs = performance.now() - navStart;
+    }
+
+    const readyStart = performance.now();
+    try {
+      await expect(
+        page.locator('body[data-harness-ready="true"]'),
+        `${faceName} never signalled harness-ready at ${url}`,
+      ).toBeAttached({ timeout: 10_000 });
+    } finally {
+      readinessMs = performance.now() - readyStart;
+    }
+
+    return { navigationMs, readinessMs, pageErrors, crashed };
+  } catch (e) {
+    console.error(formatDiagnostics(faceName, cell, {
+      navigationMs, readinessMs, pageErrors, crashed,
+    }));
+    throw e;
+  } finally {
+    page.off('pageerror', pageErrorHandler);
+    page.off('crash', crashHandler);
+  }
 }
 
 /**
@@ -150,11 +246,8 @@ for (const face of HARNESS_REACH) {
     const dump: OffenderEntry[] = [];
     for (const cell of cellsFor(face)) {
       const url = urlFor(face, cell);
-      await page.goto(url, { waitUntil: 'load' });
-      await expect(
-        page.locator('body[data-harness-ready="true"]'),
-        `${face.face} never signalled harness-ready at ${url}`,
-      ).toBeAttached({ timeout: 10_000 });
+      const diagnostics = await gotoWithDiagnostics(page, url, face.face, cell);
+      console.log(formatDiagnostics(face.face, cell, diagnostics));
       const records = await collectRecords(page);
       for (const record of records) {
         for (const token of findPlaceholderTokens(record.text, { isTitle: record.isTitle })) {
@@ -218,3 +311,92 @@ for (const face of HARNESS_REACH) {
     expect(problems, `${face.face} placeholder ratchet (offenders.json)`).toEqual([]);
   });
 }
+
+async function runFailing(
+  page: Page,
+  url: string,
+  faceName: string,
+  cell: Cell,
+): Promise<{ readonly thrown: unknown; readonly lines: string[] }> {
+  const lines: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    lines.push(args.map((arg) => String(arg)).join(' '));
+  };
+  try {
+    await gotoWithDiagnostics(page, url, faceName, cell);
+    return { thrown: null, lines };
+  } catch (e) {
+    return { thrown: e, lines };
+  } finally {
+    console.error = originalError;
+  }
+}
+
+test.describe('diagnostic helper behavior', () => {
+  test('successful navigation reports per-phase timing', async ({ page }) => {
+    const face = HARNESS_REACH[0];
+    const cell = cellsFor(face)[0];
+    const url = urlFor(face, cell);
+    const diagnostics = await gotoWithDiagnostics(page, url, face.face, cell);
+    expect(diagnostics.navigationMs).toBeGreaterThan(0);
+    expect(diagnostics.readinessMs).toBeGreaterThan(0);
+    expect(diagnostics.crashed).toBe(false);
+    expect(diagnostics.pageErrors).toEqual([]);
+  });
+
+  test('error classification allowlists safe names and masks the rest', () => {
+    expect(classifyError(new TypeError('boom'))).toBe('TypeError');
+    expect(classifyError(new Error('boom'))).toBe('Error');
+    const custom = new Error('probe');
+    custom.name = `${'n'.repeat(500)}\n/path/to/secret host.internal 10.0.0.1`;
+    expect(classifyError(custom)).toBe('unknown');
+    expect(classifyError('boom')).toBe('unknown');
+  });
+
+  test('pageerror context is bounded to the first 10 entries', () => {
+    const errors: string[] = [];
+    for (let i = 0; i < 15; i++) {
+      pushError(errors, `error ${i}`);
+    }
+    expect(errors.length).toBe(MAX_PAGE_ERRORS);
+    expect(errors[0]).toBe('error 0');
+    expect(errors[MAX_PAGE_ERRORS - 1]).toBe('error 9');
+  });
+
+  test('readiness timeout logs failure timing and rethrows the original message', async ({ page }) => {
+    const face = HARNESS_REACH[0];
+    const cell = cellsFor(face)[0];
+    const url = urlFor(face, cell);
+    await page.route('**/fixtures/*', (route) => route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      body: '<!doctype html><html><body><script>setTimeout(() => { throw new Error("probe"); });</script></body></html>',
+    }));
+    const { thrown, lines } = await runFailing(page, url, face.face, cell);
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain(`${face.face} never signalled harness-ready at ${url}`);
+    expect(lines.some((line) => line.includes(`[${face.face}/${cell.state}]`)
+      && /ready=[1-9]\d*ms/.test(line))).toBe(true);
+    expect(lines.some((line) => line.includes('pageerror:Error'))).toBe(true);
+  });
+
+  test('aborted navigation passes the original goto error through unwrapped', async ({ page }) => {
+    const face = HARNESS_REACH[0];
+    const cell = cellsFor(face)[0];
+    const url = urlFor(face, cell);
+    await page.route('**/fixtures/*', (route) => route.abort('failed'));
+    let control: unknown;
+    try {
+      await page.goto(url, { waitUntil: 'load' });
+    } catch (e) {
+      control = e;
+    }
+    const { thrown, lines } = await runFailing(page, url, face.face, cell);
+    expect(control).toBeInstanceOf(Error);
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe((control as Error).message);
+    expect(lines.some((line) => line.includes(`[${face.face}/${cell.state}]`)
+      && line.includes('nav='))).toBe(true);
+  });
+});
