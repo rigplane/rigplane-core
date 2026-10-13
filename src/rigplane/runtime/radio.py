@@ -1508,13 +1508,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         task = self._audio_silence_repair_task
         if task is not None and not task.done():
             return
-        if (
-            self._audio_silence_repair_attempts
-            >= self._LAN_AUDIO_SILENCE_REPAIR_ATTEMPTS
-        ):
+        if self._silence_repair_budget_spent():
             return
         if not self._silence_repair_preconditions_ok(
-            self._civ_epoch, self._owner_stop_epoch
+            self._civ_epoch,
+            self._owner_stop_epoch,
         ):
             return
         self._audio_silence_repair_task = asyncio.get_running_loop().create_task(
@@ -1545,6 +1543,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             and self._owner_stop_epoch == owner_stop_epoch
         )
 
+    def _silence_repair_budget_spent(self) -> bool:
+        """This silence episode already used every repair attempt."""
+        attempts = self._audio_silence_repair_attempts
+        return attempts >= self._LAN_AUDIO_SILENCE_REPAIR_ATTEMPTS
+
     async def _run_audio_silence_repair(
         self, *, civ_epoch: int, owner_stop_epoch: int
     ) -> None:
@@ -1560,10 +1563,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         takes effect.
         """
         try:
-            while (
-                self._audio_silence_repair_attempts
-                < self._LAN_AUDIO_SILENCE_REPAIR_ATTEMPTS
-            ):
+            while not self._silence_repair_budget_spent():
                 if self._audio_silence_repair_attempts:
                     backoff = self._LAN_AUDIO_SILENCE_REPAIR_BACKOFF_S
                     await asyncio.sleep(
@@ -1571,22 +1571,25 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                             min(
                                 self._audio_silence_repair_attempts - 1,
                                 len(backoff) - 1,
-                            )
-                        ]
+                            ),
+                        ],
                     )
                 if not self._silence_repair_preconditions_ok(
-                    civ_epoch, owner_stop_epoch
+                    civ_epoch,
+                    owner_stop_epoch,
                 ):
                     return
                 try:
                     await self._teardown_audio_transport()
                     if not self._silence_repair_preconditions_ok(
-                        civ_epoch, owner_stop_epoch
+                        civ_epoch,
+                        owner_stop_epoch,
                     ):
                         return
                     await self._ensure_audio_transport()
                     if not self._silence_repair_preconditions_ok(
-                        civ_epoch, owner_stop_epoch
+                        civ_epoch,
+                        owner_stop_epoch,
                     ):
                         return
                     await self._audio_session.reestablish()
@@ -1594,15 +1597,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                     raise
                 except Exception:
                     logger.warning(
-                        "audio-silence repair attempt failed", exc_info=True
+                        "audio-silence repair attempt failed",
+                        exc_info=True,
                     )
                     self._audio_silence_repair_attempts += 1
                     continue
                 return
-            if (
-                self._audio_silence_repair_attempts
-                >= self._LAN_AUDIO_SILENCE_REPAIR_ATTEMPTS
-            ):
+            if self._silence_repair_budget_spent():
                 report = self._on_audio_recovery
                 if report is not None:
                     try:

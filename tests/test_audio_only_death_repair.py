@@ -306,7 +306,8 @@ async def test_no_repair_when_identity_hold_owns_link() -> None:
         calls, restore = _spy_method(radio, "_teardown_audio_transport")
         try:
             radio._connection_identity = RadioIdentity(
-                status=RadioIdentityStatus.NO_RESPONSE, expected_model=radio.model
+                status=RadioIdentityStatus.NO_RESPONSE,
+                expected_model=radio.model,
             )
             radio._lan_identity_owned_epoch = radio._civ_epoch
             radio._lan_identity_gate_running = True
@@ -411,7 +412,8 @@ async def test_rx_resumed_resets_attempt_budget() -> None:
         _kill_client_audio_only(radio)
         assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
         assert await _wait_until(
-            lambda: radio._audio_silence_repair_task is None, timeout_s=5.0
+            lambda: radio._audio_silence_repair_task is None,
+            timeout_s=5.0,
         ), "the first repair never finished"
 
         # Second silence episode: repaired again (a fresh budget).
@@ -439,7 +441,8 @@ async def test_two_rx_silent_start_one_repair_task() -> None:
             # The single repair task still re-establishes RX.
             assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
             assert await _wait_until(
-                lambda: radio._audio_silence_repair_task is None, timeout_s=5.0
+                lambda: radio._audio_silence_repair_task is None,
+                timeout_s=5.0,
             )
             assert len(calls) == 1, "a second rx_silent started a second repair"
         finally:
@@ -457,7 +460,9 @@ async def test_serial_backend_does_not_run_lan_repair(monkeypatch) -> None:  # t
     from test_icom7610_serial_radio import _FakeSerialCivLink, _FakeUsbAudioDriver
 
     monkeypatch.setattr(
-        _IcomSerialRadioBase, "_default_enumerate_serial_ports", lambda self: []
+        _IcomSerialRadioBase,
+        "_default_enumerate_serial_ports",
+        lambda self: [],
     )
 
     async def _no_probe(self: object, port: str) -> int | None:
@@ -468,7 +473,9 @@ async def test_serial_backend_does_not_run_lan_repair(monkeypatch) -> None:  # t
     link = _FakeSerialCivLink()
     usb_audio = _FakeUsbAudioDriver()
     radio = Icom7610SerialRadio(
-        device="/dev/ttyUSB0", civ_link=link, audio_driver=usb_audio
+        device="/dev/ttyUSB0",
+        civ_link=link,
+        audio_driver=usb_audio,
     )
     await radio.connect()
     try:
