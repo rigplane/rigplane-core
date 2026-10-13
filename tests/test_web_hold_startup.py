@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
@@ -36,6 +37,8 @@ from rigplane.runtime.session_lifecycle import (
     CoreRadioSessionLifecycle,
     LifecycleState,
 )
+from rigplane.web.handlers.control import ControlHandler
+from rigplane.web.protocol import decode_json, encode_json
 from rigplane.web.state_schema import RadioHealthPublic
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
@@ -282,6 +285,34 @@ class _BusyRadio:
         self.exit_calls += 1
         return False
 
+    async def disconnect(self) -> None:
+        """Owner teardown: the link drops and the busy hold ends with it.
+
+        Mirrors the lifecycle teardown, which clears the start-up hold
+        on DISCONNECTED — an operator disconnect during the hold ends
+        the hold.
+        """
+
+        self.startup_busy_hold_event.clear()
+        self.connected = False
+        self.control_connected = False
+        self.radio_ready = False
+        self.conn_state = RadioConnectionState.DISCONNECTED
+
+    async def connect(self) -> None:
+        """Owner connect: the hold ends and the ready station comes back."""
+
+        self.startup_busy_hold_event.clear()
+        self.connected = True
+        self.control_connected = True
+        self.radio_ready = True
+        self.conn_state = RadioConnectionState.CONNECTED
+        self.connection_identity = RadioIdentity(
+            status=RadioIdentityStatus.VERIFIED,
+            expected_model="IC-7610",
+            answered_model="IC-7610",
+        )
+
 
 class _BusyHandler:
     """Answers the way the busy-held radio does: refused until ready."""
@@ -356,6 +387,108 @@ async def _start_busy_stack(
     assert server._server is not None
     server._runtime_rigctld_addr = f"127.0.0.1:{rig_port}"
     return rig, server, rig_port
+
+
+class _OperableRadio:
+    """A LAN radio that is up and ready, with owner connect/disconnect.
+
+    Stands in for a normal post-start station: connected, ready and
+    VERIFIED, so the runtime serves the ready values until the test
+    drives an operator disconnect (HTTP or WS) or a backend-side link
+    loss (``lose_link``, which never touches the operator mark).
+    """
+
+    backend_id = "rigplane"
+    model = "IC-7610"
+    capabilities: set[str] = set()
+
+    def __init__(self) -> None:
+        self.connected = True
+        self.control_connected = True
+        self.radio_ready = True
+        self.conn_state = RadioConnectionState.CONNECTED
+        self.connection_identity: RadioIdentity | None = RadioIdentity(
+            status=RadioIdentityStatus.VERIFIED,
+            expected_model="IC-7610",
+            answered_model="IC-7610",
+        )
+        self.radio_state = RadioState()
+
+    def supports_command(self, _command: str) -> bool:
+        return False
+
+    async def disconnect(self) -> None:
+        self.connected = False
+        self.control_connected = False
+        self.radio_ready = False
+        self.conn_state = RadioConnectionState.DISCONNECTED
+
+    async def connect(self) -> None:
+        self.connected = True
+        self.control_connected = True
+        self.radio_ready = True
+        self.conn_state = RadioConnectionState.CONNECTED
+
+    def lose_link(self) -> None:
+        """Drop the link the way the backend does — no operator action."""
+
+        self.connected = False
+        self.control_connected = False
+        self.radio_ready = False
+        self.conn_state = RadioConnectionState.DISCONNECTED
+
+
+async def _start_operable_stack(
+    radio: _OperableRadio,
+) -> tuple[RigctldServer, WebServer, int]:
+    """Start the bundled rigctld first, then the web server, like _cmd_web."""
+
+    rig = RigctldServer(
+        radio,
+        RigctldConfig(host="127.0.0.1", port=0),
+        _handler=_BusyHandler(radio),  # type: ignore[arg-type]
+        allow_not_ready=True,
+    )
+    await rig.start()
+    assert rig._server is not None
+    rig_port = int(rig._server.sockets[0].getsockname()[1])
+    # No initial-state wait: the poller is a double, so no radio field
+    # ever arrives and the acquisition gate would idle until timeout.
+    config = WebConfig(
+        host="127.0.0.1",
+        port=0,
+        discovery=False,
+        await_initial_state=False,
+    )
+    server = WebServer(radio, config)  # type: ignore[arg-type]
+    with patch(
+        "rigplane.web.web_startup.RadioPoller", return_value=_busy_poller()
+    ):
+        await server.start()
+    assert server._server is not None
+    server._runtime_rigctld_addr = f"127.0.0.1:{rig_port}"
+    return rig, server, rig_port
+
+
+async def _post_empty(server: WebServer, path: str) -> tuple[int, dict[str, Any]]:
+    """POST with an empty body over a real socket: status plus JSON body."""
+
+    assert server._server is not None
+    host, port = server._server.sockets[0].getsockname()[:2]
+    reader, writer = await asyncio.open_connection(host, port)
+    try:
+        writer.write(
+            f"POST {path} HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Content-Length: 0\r\n"
+            "Connection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        raw = await asyncio.wait_for(reader.read(-1), timeout=10.0)
+    finally:
+        await _close_writer(writer)
+    head, _, body = raw.partition(b"\r\n\r\n")
+    return int(head.split(b" ")[1]), json.loads(body.decode())
 
 
 @pytest.mark.asyncio
@@ -501,33 +634,190 @@ async def test_runtime_returns_to_ready_after_busy_grant() -> None:
 
 @pytest.mark.asyncio
 async def test_runtime_after_operator_disconnect_during_hold() -> None:
-    """MOR-3450: the busy override clears when the operator disconnects.
+    """MOR-3452: an operator disconnect during the hold reports the operator.
 
     Disconnecting during the hold ends the hold (the busy surface clears
     and the radio rests DISCONNECTED without ever having connected), so
-    the runtime must stop reporting ``radio_session_busy`` and fall back
-    to the normal operator-disconnect classification — the same values a
-    disconnect after a normal start produces.
+    the runtime must report the operator disconnect — ``likelyCause``
+    ``operator_disconnected``, health readiness ``idle`` and station
+    readiness ``operator_disconnected`` — not the busy hold and not a
+    network loss.
     """
 
     radio = _BusyRadio()
     poller = _busy_poller()
     rig, server, _rig_port = await _start_busy_stack(radio, poller)
     try:
-        radio.startup_busy_hold_event.clear()
-        radio.conn_state = RadioConnectionState.DISCONNECTED
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert status == 200
+        assert payload["station"]["readiness"] == "radio_session_busy"
+
+        status, body = await _post_empty(server, "/api/v1/radio/disconnect")
+        assert status == 200
+        assert body == {"status": "disconnected"}
 
         status, payload = await _get_json(server, "/api/v1/runtime")
         assert status == 200
         station = payload["station"]
-        assert station["readiness"] != "radio_session_busy"
-        assert station["health"]["likelyCause"] != "radio_session_busy"
-        assert station["health"]["likelyCause"] == "radio_network_lost"
-        assert station["health"]["readiness"] == "stalled"
+        health = station["health"]
+        assert health["radioLink"] == "disconnected"
+        assert health["likelyCause"] == "operator_disconnected"
+        assert health["readiness"] == "idle"
+        assert station["readiness"] == "operator_disconnected"
+        assert station["message"] == "Disconnected by the operator."
+        assert "severity" not in health
+    finally:
+        await server.stop()
+        await rig.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_reports_operator_disconnect_after_http_disconnect() -> None:
+    """MOR-3452: an operator disconnect is not a network loss or a missing radio.
+
+    After a normal start, ``POST /api/v1/radio/disconnect`` must move
+    ``/api/v1/runtime`` to the operator values — ``likelyCause``
+    ``operator_disconnected``, health readiness ``idle``, station
+    readiness ``operator_disconnected`` with the exact operator message
+    — and add no severity field. /readyz keeps its normal not-ready body.
+    """
+
+    radio = _OperableRadio()
+    rig, server, _rig_port = await _start_operable_stack(radio)
+    try:
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert status == 200
+        assert payload["station"]["readiness"] == "ready_with_radio"
+
+        status, body = await _post_empty(server, "/api/v1/radio/disconnect")
+        assert status == 200
+        assert body == {"status": "disconnected"}
+
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert status == 200
+        station = payload["station"]
+        health = station["health"]
+        assert health["radioLink"] == "disconnected"
+        assert health["likelyCause"] == "operator_disconnected"
+        assert health["readiness"] == "idle"
+        assert station["readiness"] == "operator_disconnected"
+        assert station["message"] == "Disconnected by the operator."
+        assert "severity" not in health
+
+        status, payload = await _get_json(server, "/readyz")
+        assert status == 503
+        assert payload == {"status": "not_ready", "radioReady": False}
+    finally:
+        await server.stop()
+        await rig.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_reports_operator_disconnect_after_ws_disconnect() -> None:
+    """MOR-3452: the WS ``radio_disconnect`` message reports the operator too."""
+
+    radio = _OperableRadio()
+    rig, server, _rig_port = await _start_operable_stack(radio)
+    try:
+        ws = SimpleNamespace(send_text=AsyncMock())
+        handler = ControlHandler(
+            ws,
+            radio,  # type: ignore[arg-type]
+            "test",
+            "IC-7610",
+            server=server,
+            session_id="ws-operator-disconnect",
+        )
+        await handler._handle_text(
+            encode_json({"type": "radio_disconnect", "id": "w1"})
+        )
+        responses = [
+            decode_json(call.args[0]) for call in ws.send_text.await_args_list
+        ]
+        assert any(
+            response.get("ok") is True
+            and response.get("result", {}).get("status") == "disconnected"
+            for response in responses
+        )
+
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert status == 200
+        station = payload["station"]
+        health = station["health"]
+        assert health["radioLink"] == "disconnected"
+        assert health["likelyCause"] == "operator_disconnected"
+        assert health["readiness"] == "idle"
+        assert station["readiness"] == "operator_disconnected"
+        assert station["message"] == "Disconnected by the operator."
+        assert "severity" not in health
+    finally:
+        await server.stop()
+        await rig.stop()
+
+
+@pytest.mark.asyncio
+async def test_operator_connect_restores_ready_values() -> None:
+    """MOR-3452: an operator connect after the disconnect restores ready."""
+
+    radio = _OperableRadio()
+    rig, server, _rig_port = await _start_operable_stack(radio)
+    try:
+        status, body = await _post_empty(server, "/api/v1/radio/disconnect")
+        assert status == 200
+
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert payload["station"]["health"]["likelyCause"] == "operator_disconnected"
+
+        status, body = await _post_empty(server, "/api/v1/radio/connect")
+        assert status == 200
+        assert body == {"status": "connecting"}
+
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert status == 200
+        station = payload["station"]
+        assert station["readiness"] == "ready_with_radio"
+        assert station["health"]["readiness"] == "ready"
+        assert station["health"]["likelyCause"] == "unknown"
+    finally:
+        await server.stop()
+        await rig.stop()
+
+
+@pytest.mark.asyncio
+async def test_link_loss_without_operator_disconnect_keeps_network_lost() -> None:
+    """MOR-3452: a real link loss with no operator action is unchanged."""
+
+    radio = _OperableRadio()
+    rig, server, _rig_port = await _start_operable_stack(radio)
+    try:
+        radio.lose_link()
+
+        status, payload = await _get_json(server, "/api/v1/runtime")
+        assert status == 200
+        station = payload["station"]
+        health = station["health"]
+        assert health["radioLink"] == "disconnected"
+        assert health["likelyCause"] == "radio_network_lost"
+        assert health["readiness"] == "stalled"
         assert station["readiness"] == "lan_radio_unsupported_or_not_found"
     finally:
         await server.stop()
         await rig.stop()
+
+
+def test_operator_disconnected_validates_in_radio_health_public() -> None:
+    """MOR-3452: the new cause and readiness are members of the health schema."""
+
+    health = RadioHealthPublic(
+        serverReachable=True,
+        radioLink="disconnected",
+        readiness="idle",
+        likelyCause="operator_disconnected",
+        sinceMs=0,
+        lastError=None,
+    )
+    assert health.likelyCause == "operator_disconnected"
+    assert health.readiness == "idle"
 
 
 def test_radio_session_busy_validates_in_radio_health_public() -> None:
