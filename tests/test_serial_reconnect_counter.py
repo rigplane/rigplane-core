@@ -19,6 +19,7 @@ import pytest
 
 from rigplane.backends.ic7300 import Ic7300SerialRadio
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.exceptions import ConnectionError
 from rigplane.types import AudioCodec
 from rigplane.web.server import WebConfig, WebServer
 
@@ -109,6 +110,7 @@ async def test_serial_retries_inside_one_loss_count_once() -> None:
     """Failed reopen attempts keep the RECONNECTING state: still one episode."""
     radio, link = _serial_radio()
     await _connect_without_watchdog(radio)
+    _break_link(link)
     link._fail_connect = OSError("port gone")  # noqa: SLF001
     try:
         with pytest.raises(ConnectionError):
