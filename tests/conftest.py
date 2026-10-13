@@ -249,12 +249,12 @@ def observed_rx_dispatch_premise(monkeypatch: pytest.MonkeyPatch) -> None:
 def _isolate_resident_lock_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[None]:
-    """Point the resident single-instance guard at a per-test tmp dir.
+    """Point the CLI single-instance guard at a per-test tmp dir.
 
-    MOR-3391: resident CLI starts take a REAL OS file lock in the default
-    user cache and hold it for the pytest worker's life, so parallel
-    workers running the same radio identity refuse each other. Redirecting
-    the guard's default lock directory per test keeps workers independent;
+    MOR-3391: CLI commands take a REAL OS file lock in the default user
+    cache and hold it for the pytest worker's life, so parallel workers
+    running the same radio identity refuse each other. Redirecting the
+    guard's default lock directory per test keeps workers independent;
     closing and clearing the held locks on teardown keeps tests in one
     worker independent too.
     """

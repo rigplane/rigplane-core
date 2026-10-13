@@ -1,15 +1,16 @@
-"""One resident process per radio per computer (single-instance lock).
+"""One rigplane process per radio per computer (single-instance lock).
 
-Resident CLI commands (``web``, ``station``, ``serve``) with a LAN or
-local-serial radio hold the radio's exclusive session for the life of the
-process. Two such processes on one computer against one radio fight over
-that single session, so a second start for the same explicitly named radio
-(``--host``/``--serial-port``) is refused here, before the radio is opened
-and before any listener binds. When the radio is not named explicitly,
-discovery broadcasts or serial probes run first — the lock identity is
-unknown until discovery answers — and the guard is taken once the backend
-config is built. The rigctld backend is never guarded: an external rigctld
-accepts several clients, so there is no exclusive session to protect.
+CLI commands with a LAN or local-serial radio hold the radio's exclusive
+session — resident commands (``web``, ``station``, ``serve``) for the life
+of the process, one-shot commands for the run. Two such processes on one
+computer against one radio fight over that single session, so a second
+process for the same explicitly named radio (``--host``/``--serial-port``)
+is refused here, before the radio is opened and before any listener binds.
+When the radio is not named explicitly, discovery broadcasts or serial
+probes run first — the lock identity is unknown until discovery answers —
+and the guard is taken once the backend config is built. The rigctld
+backend is never guarded: an external rigctld accepts several clients, so
+there is no exclusive session to protect.
 
 The OS file lock is the authority: it is released by the OS when the holder
 exits, including SIGKILL, so a restart after a crash is never blocked. The
@@ -60,7 +61,7 @@ RESIDENT_COMMANDS: frozenset[str] = frozenset({"web", "station", "serve"})
 
 
 class ResidentAlreadyRunningError(Exception):
-    """Another resident process already serves this radio on this computer."""
+    """Another rigplane process already holds this radio on this computer."""
 
     def __init__(self, pid: int | None) -> None:
         self.holder_pid = pid
@@ -77,7 +78,7 @@ class ResidentAlreadyRunningError(Exception):
 
 
 def guards_backend(config: BackendConfig) -> bool:
-    """Whether resident starts with this backend take the single-instance guard.
+    """Whether commands with this backend take the single-instance guard.
 
     Only backends that hold an exclusive radio session — LAN Icom and local
     serial radios (including yaesu-cat) — are guarded. The rigctld backend

@@ -2357,8 +2357,9 @@ class TestCheckPortsAvailable:
         reaches `create_radio` without creating a lock file. Mutations:
         (m1) restoring the `args.command in RESIDENT_COMMANDS` filter on
         the lock call site makes the one-shot row reach `create_radio`
-        instead of refusing; (m2) closing the lock right after acquiring
-        it for one-shot commands lets a rival holder in during the run
+        instead of refusing; (m2, reviewer's) closing the lock right after
+        `create_radio(config)` for non-resident commands keeps the
+        `create_radio`-time probe refused but lets the in-command probe in
         (pinned by `test_one_shot_holds_lock_for_its_run`); (m3) printing
         the resident message for one-shot commands fails the one-shot
         exact-message assertion below.
@@ -2443,15 +2444,19 @@ class TestCheckPortsAvailable:
     def test_one_shot_holds_lock_for_its_run(self, capsys, tmp_path):
         """MOR-3431: a one-shot command with no holder takes the lock for its run.
 
-        While `_run` for one-shot `status` is inside the patched
-        `create_radio`, a child process calling `acquire_resident_lock` on
-        the same identity is refused — the lock is held for the life of
-        the process, exactly as for resident commands, so a resident start
-        for the same radio during the run refuses too. Reuses the
-        subprocess holder pattern above, inverted: here the child probes
-        while the test process holds. Mutation (m2): closing the lock
-        right after acquiring it for one-shot commands lets the probe
-        child acquire it, printing ACQUIRED instead of REFUSED.
+        The lock is probed twice from child processes calling
+        `acquire_resident_lock` on the same identity: once from inside the
+        patched `create_radio`, and once from inside the patched command
+        step (`_cmd_status`) via a hand-written fake radio usable as
+        `async with` on the status path. Both probes must print REFUSED —
+        the lock is held for the life of the process, exactly as for
+        resident commands, so a resident start for the same radio during
+        the run refuses too. Reuses the subprocess holder pattern above,
+        inverted: here the child probes while the test process holds.
+        Mutation (m2, reviewer's): closing the lock right after
+        `create_radio(config)` for non-resident commands keeps the first
+        probe REFUSED but lets the in-command probe acquire it, printing
+        ACQUIRED instead of REFUSED.
         """
         import asyncio
         import os
@@ -2460,6 +2465,23 @@ class TestCheckPortsAvailable:
 
         from rigplane.cli import _run
         from rigplane.cli._instance_guard import radio_lock_identity
+
+        class _OneShotStatusRadio:
+            """Minimal hand-written fake radio for the status path."""
+
+            capabilities: set[str] = set()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get_freq(self) -> int:
+                return 14_074_000
+
+            async def get_mode(self) -> tuple[str, None]:
+                return ("USB", None)
 
         args = _build_parser().parse_args(["--host", "1.2.3.4", "status"])
         identity = radio_lock_identity(
@@ -2484,7 +2506,7 @@ class TestCheckPortsAvailable:
             "    print('ACQUIRED', flush=True)\n"
         )
 
-        def _create_while_probed(config):
+        def _run_probe(where: str) -> None:
             probe = subprocess.Popen(
                 [sys.executable, "-c", probe_script, identity, str(tmp_path)],
                 stdout=subprocess.PIPE,
@@ -2496,23 +2518,42 @@ class TestCheckPortsAvailable:
             verdict = probe.stdout.readline().strip()
             probe.wait(timeout=30)
             assert verdict == "REFUSED", (
-                "rival probe acquired the lock during a one-shot run: "
+                f"rival probe {where} acquired the lock during a one-shot run: "
                 f"{probe.stderr.read() if probe.stderr else ''}"
             )
-            raise RuntimeError("run-marker")
 
-        with patch("rigplane.cli.create_radio", side_effect=_create_while_probed):
-            with pytest.raises(RuntimeError, match="run-marker"):
-                asyncio.run(asyncio.wait_for(_run(args), timeout=30.0))
+        create_verdicts: list[str] = []
+        command_verdicts: list[str] = []
+
+        def _create_while_probed(config):
+            _run_probe("inside create_radio")
+            create_verdicts.append("REFUSED")
+            return _OneShotStatusRadio()
+
+        async def _cmd_status_while_probed(radio, cmd_args):
+            _run_probe("inside the command step")
+            command_verdicts.append("REFUSED")
+            return 0
+
+        with (
+            patch("rigplane.cli.create_radio", side_effect=_create_while_probed),
+            patch("rigplane.cli._cmd_status", side_effect=_cmd_status_while_probed),
+        ):
+            result = asyncio.run(asyncio.wait_for(_run(args), timeout=30.0))
+        assert result == 0
+        assert create_verdicts == ["REFUSED"]
+        assert command_verdicts == ["REFUSED"]
 
     def test_one_shot_serial_refuses_while_holder_serves_port(self, capsys, tmp_path):
         """MOR-3431: a one-shot command refuses while another process holds the serial lock.
 
         The child holds the serial identity for `--serial-port <tmp path>`
         in the per-test lock dir; one-shot `status` for that port refuses
-        with 1 and the one-shot message before `create_radio`. Serial is
-        guarded by reasoning — two processes interleaving CI-V on one port
-        would corrupt each other's exchanges — not by bench evidence.
+        with 1 and the serial one-shot message before `create_radio` — the
+        serial reason (the port cannot be shared between two processes),
+        never the LAN login reason. Serial is guarded by reasoning — two
+        processes interleaving CI-V on one port would corrupt each other's
+        exchanges — not by bench evidence.
         """
         import asyncio
         import os
@@ -2558,12 +2599,13 @@ class TestCheckPortsAvailable:
             captured = capsys.readouterr()
             assert captured.err.strip() == (
                 f"Error: another rigplane process (pid {holder.pid}) "
-                "is already using this radio on this computer; a "
-                "second login from this computer makes the radio drop "
-                "that process's session. Send commands to the running "
+                "is already using this radio on this computer; the "
+                "radio's serial port cannot be shared safely between two "
+                "processes. Send commands to the running "
                 "server instead (its HTTP API or rigctld; for a "
                 "readiness check, GET /readyz), or stop it first."
             )
+            assert "login" not in captured.err
         finally:
             holder.kill()
             holder.wait(timeout=30)

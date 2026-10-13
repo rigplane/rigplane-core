@@ -2543,11 +2543,23 @@ async def _run(args: argparse.Namespace) -> int:
                 pid_hint = (
                     f" (pid {exc.holder_pid})" if exc.holder_pid is not None else ""
                 )
+                # The same-computer drop rule is a property of the Icom
+                # LAN session; serial radios have no login, so they name
+                # the unshareable port instead.
+                if isinstance(config, LanBackendConfig):
+                    reason = (
+                        "a second login from this computer makes "
+                        "the radio drop that process's session"
+                    )
+                else:
+                    reason = (
+                        "the radio's serial port cannot be shared "
+                        "safely between two processes"
+                    )
                 print(
                     "Error: another rigplane process"
                     f"{pid_hint} is already using this radio on this "
-                    "computer; a second login from this computer makes "
-                    "the radio drop that process's session. Send commands "
+                    f"computer; {reason}. Send commands "
                     "to the running server instead (its HTTP API or "
                     "rigctld; for a readiness check, GET /readyz), or stop "
                     "it first.",
