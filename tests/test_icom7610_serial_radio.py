@@ -3551,7 +3551,9 @@ async def test_owner_disconnect_during_identity_gate_with_delayed_payload() -> N
 
 
 @pytest.mark.asyncio
-async def test_owner_disconnect_during_soft_reconnect_identity_gate_leaves_no_reread() -> None:
+async def test_owner_disconnect_during_soft_reconnect_identity_gate_leaves_no_reread() -> (
+    None
+):
     link = _GateSerialLink(answer_identity=False)
     radio = _gate_radio(link)
     radio._civ_get_timeout = 0.5
@@ -3590,7 +3592,9 @@ async def test_owner_disconnect_during_soft_reconnect_identity_gate_leaves_no_re
 
 
 @pytest.mark.asyncio
-async def test_owner_disconnect_during_soft_reconnect_identity_gate_with_delayed_valid_payload() -> None:
+async def test_owner_disconnect_during_soft_reconnect_identity_gate_with_delayed_valid_payload() -> (
+    None
+):
     link = _GateSerialLink(answer_identity=True)
     radio = _gate_radio(link)
     radio._civ_get_timeout = 0.5
@@ -3629,7 +3633,9 @@ async def test_owner_disconnect_during_soft_reconnect_identity_gate_with_delayed
 
 
 @pytest.mark.asyncio
-async def test_owner_disconnect_during_soft_reconnect_identity_gate_with_late_read_error() -> None:
+async def test_owner_disconnect_during_soft_reconnect_identity_gate_with_late_read_error() -> (
+    None
+):
     link = _GateSerialLink(answer_identity=False)
     radio = _gate_radio(link)
     radio._civ_get_timeout = 0.5
