@@ -355,8 +355,12 @@ async def test_owner_stop_during_backoff_cancels_pending_repair() -> None:
 
 
 async def test_silence_repair_caps_at_three_attempts_and_reports_failed_once() -> None:
-    """An audio leg that never returns: exactly 3 attempts, one FAILED, then
-    nothing for ≥ 5 s."""
+    """TEMPORARY DIAGNOSTIC (MOR-3401 r2, run 1): dump every
+    ``_ensure_audio_transport`` caller and always fail by design, so one run
+    answers where the 4th call comes from. Removed right after the run."""
+    import os
+    import traceback
+
     stack = await soak_driver._start_simulator_stack()
     try:
         radio = stack.radio
@@ -367,33 +371,41 @@ async def test_silence_repair_caps_at_three_attempts_and_reports_failed_once() -
         assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
 
         ensure_calls: list[int] = []
+        diag: list[str] = []
         orig_ensure = radio._ensure_audio_transport
 
         async def _fail_ensure() -> None:
             ensure_calls.append(1)
+            current = asyncio.current_task()
+            frames = traceback.extract_stack(limit=6)[:-1][-3:]
+            callers = "<-".join(
+                f"{os.path.basename(f.filename)}:{f.lineno}:{f.name}"
+                for f in frames
+            )
+            diag.append(
+                f"call#{len(ensure_calls)} t={time.monotonic():.1f} "
+                f"task={current.get_name() if current else None} "
+                f"attempts={radio._audio_silence_repair_attempts} "
+                f"{callers}"
+            )
             raise CoreConnectionError("audio leg never returns")
 
         radio._ensure_audio_transport = _fail_ensure  # type: ignore[method-assign]
         try:
             _kill_client_audio_only(radio)
 
-            # 3 attempts with 1 s + 2 s backoff, then FAILED once.
-            def _repair_done() -> bool:
-                return (
-                    len(ensure_calls) == 3
-                    and radio._audio_silence_repair_task is None
-                )
-
             assert await _wait_until(
-                _repair_done,
-                timeout_s=15.0,
-            ), f"expected 3 attempts and a finished task, got {len(ensure_calls)}"
-            assert recovery == [AudioRecoveryState.FAILED]
-
-            # No further attempts for ≥ 5 s after the cap.
-            await asyncio.sleep(5.0)
-            assert len(ensure_calls) == 3
-            assert recovery == [AudioRecoveryState.FAILED]
+                lambda: radio._audio_silence_repair_task is None
+                and len(ensure_calls) >= 3,
+                timeout_s=20.0,
+            ), "DIAG-3401: repair never settled"
+            await asyncio.sleep(6.0)  # catch late callers (5 s watchdog tick)
+            assert False, (
+                "DIAG-3401 "
+                f"ensure_calls={len(ensure_calls)} "
+                f"attempts={radio._audio_silence_repair_attempts} "
+                f"recovery={recovery}\n" + "\n".join(diag)
+            )
         finally:
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
         await sub.release()
