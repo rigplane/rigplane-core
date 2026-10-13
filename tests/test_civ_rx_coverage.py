@@ -6880,17 +6880,24 @@ async def test_idle_datagram_does_not_claim_payload_liveness(
 
         entries = 0
         entered_once = asyncio.Event()
-        entered_twice = asyncio.Event()
+        processed = asyncio.Event()
+        last_succeeded = False
         original_receive = transport.receive_packet
 
         async def _count_receive(timeout: float = 5.0) -> bytes:
-            nonlocal entries
+            nonlocal entries, last_succeeded
             entries += 1
             if entries == 1:
                 entered_once.set()
-            elif entries == 2:
-                entered_twice.set()
-            return await original_receive(timeout)
+            elif last_succeeded:
+                processed.set()
+            try:
+                result = await original_receive(timeout)
+            except asyncio.TimeoutError:
+                last_succeeded = False
+                raise
+            last_succeeded = True
+            return result
 
         with (
             patch.object(
@@ -6903,7 +6910,7 @@ async def test_idle_datagram_does_not_claim_payload_liveness(
                 await asyncio.wait_for(entered_once.wait(), 2.0)
                 clock.set(30.0)
                 transport.queue_response(_idle_civ_datagram())
-                await asyncio.wait_for(entered_twice.wait(), 2.0)
+                await asyncio.wait_for(processed.wait(), 2.0)
                 assert radio._last_civ_data_received == 10.0
                 assert radio._civ_runtime._soft_recovery_epoch == marker
                 assert radio._civ_stream_ready is False
@@ -6945,17 +6952,24 @@ async def test_mixed_idle_and_valid_batch_establishes_liveness(
 
         entries = 0
         entered_once = asyncio.Event()
-        entered_twice = asyncio.Event()
+        processed = asyncio.Event()
+        last_succeeded = False
         original_receive = transport.receive_packet
 
         async def _count_receive(timeout: float = 5.0) -> bytes:
-            nonlocal entries
+            nonlocal entries, last_succeeded
             entries += 1
             if entries == 1:
                 entered_once.set()
-            elif entries == 2:
-                entered_twice.set()
-            return await original_receive(timeout)
+            elif last_succeeded:
+                processed.set()
+            try:
+                result = await original_receive(timeout)
+            except asyncio.TimeoutError:
+                last_succeeded = False
+                raise
+            last_succeeded = True
+            return result
 
         with (
             patch.object(
@@ -6974,7 +6988,7 @@ async def test_mixed_idle_and_valid_batch_establishes_liveness(
                 # The pump drains this queue into the same batch as the
                 # receive above, so both members share one liveness stamp.
                 transport._packet_queue.put_nowait(_wrap_civ_in_udp(civ))  # noqa: SLF001
-                await asyncio.wait_for(entered_twice.wait(), 2.0)
+                await asyncio.wait_for(processed.wait(), 2.0)
                 assert radio._last_civ_data_received == 30.0
                 assert radio._civ_runtime._soft_recovery_epoch is None
                 assert radio._civ_stream_ready is True

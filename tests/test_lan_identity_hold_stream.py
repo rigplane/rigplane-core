@@ -560,12 +560,19 @@ class _ControlledTime:
 # ---------------------------------------------------------------------------
 
 
-async def test_idle_datagram_does_not_suppress_identity_hold_stream_nudge() -> None:
+@pytest.mark.parametrize(
+    "timeout_first", [False, True], ids=["idle-only", "timeout-then-idle"]
+)
+async def test_idle_datagram_does_not_suppress_identity_hold_stream_nudge(
+    timeout_first: bool,
+) -> None:
     """Only a real CI-V payload may stop the hold re-requesting the stream.
 
     A 16-byte idle travels the real path (``IcomTransport._handle_packet``,
     queue, ``CivRuntime`` pump) but routes zero frames; the hold nudge must
-    still emit one OpenClose(open).
+    still emit one OpenClose(open). The timeout-then-idle variant forces
+    one receive timeout first and requires the processing barrier to stay
+    unset through it.
     """
     radio, transport, sent = _radio_with_transport()
     clock = _ControlledTime(10.0)
@@ -589,17 +596,33 @@ async def test_idle_datagram_does_not_suppress_identity_hold_stream_nudge() -> N
 
         entries = 0
         entered_once = asyncio.Event()
-        entered_twice = asyncio.Event()
+        processed = asyncio.Event()
+        reentered = asyncio.Event()
+        timeout_seen = asyncio.Event()
+        last_succeeded = False
+        force_timeout = timeout_first
         original_receive = transport.receive_packet
 
         async def _count_receive(timeout: float = 5.0) -> bytes:
-            nonlocal entries
+            nonlocal entries, last_succeeded, force_timeout
             entries += 1
             if entries == 1:
                 entered_once.set()
+            elif last_succeeded:
+                processed.set()
             elif entries == 2:
-                entered_twice.set()
-            return await original_receive(timeout)
+                reentered.set()
+            if force_timeout:
+                force_timeout = False
+                timeout_seen.set()
+                raise asyncio.TimeoutError()
+            try:
+                result = await original_receive(timeout)
+            except asyncio.TimeoutError:
+                last_succeeded = False
+                raise
+            last_succeeded = True
+            return result
 
         with (
             patch.object(
@@ -614,9 +637,15 @@ async def test_idle_datagram_does_not_suppress_identity_hold_stream_nudge() -> N
                 await asyncio.wait_for(entered_once.wait(), 2.0)
                 hold_started = 20.0
                 clock.set(30.0)
+                if timeout_first:
+                    await asyncio.wait_for(timeout_seen.wait(), 2.0)
+                    await asyncio.wait_for(reentered.wait(), 2.0)
+                    assert not processed.is_set()
                 transport._handle_packet(_idle_control_packet())
-                # The next receive entry proves the idle batch was consumed.
-                await asyncio.wait_for(entered_twice.wait(), 2.0)
+                # The barrier fires only at a receive entry whose prior
+                # receive returned a packet, so a timeout cycle alone can
+                # never satisfy it: this proves the idle batch was consumed.
+                await asyncio.wait_for(processed.wait(), 2.0)
                 await radio._nudge_lan_identity_stream(hold_started)
                 nudged = [pkt for pkt in sent if len(pkt) == OPENCLOSE_SIZE]
                 assert len(nudged) == 1, f"idle must not suppress the nudge: {sent!r}"
@@ -654,17 +683,24 @@ async def test_valid_civ_payload_suppresses_next_nudge() -> None:
 
         entries = 0
         entered_once = asyncio.Event()
-        entered_twice = asyncio.Event()
+        processed = asyncio.Event()
+        last_succeeded = False
         original_receive = transport.receive_packet
 
         async def _count_receive(timeout: float = 5.0) -> bytes:
-            nonlocal entries
+            nonlocal entries, last_succeeded
             entries += 1
             if entries == 1:
                 entered_once.set()
-            elif entries == 2:
-                entered_twice.set()
-            return await original_receive(timeout)
+            elif last_succeeded:
+                processed.set()
+            try:
+                result = await original_receive(timeout)
+            except asyncio.TimeoutError:
+                last_succeeded = False
+                raise
+            last_succeeded = True
+            return result
 
         with (
             patch.object(
@@ -678,7 +714,7 @@ async def test_valid_civ_payload_suppresses_next_nudge() -> None:
                 hold_started = 20.0
                 clock.set(30.0)
                 transport._handle_packet(freq_response(14_074_000))
-                await asyncio.wait_for(entered_twice.wait(), 2.0)
+                await asyncio.wait_for(processed.wait(), 2.0)
                 await radio._nudge_lan_identity_stream(hold_started)
                 assert len(routed) == 1, f"payload must route one frame: {routed!r}"
                 assert routed[0].command == 0x03
