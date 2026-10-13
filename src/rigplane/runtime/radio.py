@@ -1582,9 +1582,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return False
         reference = self._audio_silence_repair_episode_start_heartbeat
         completed = self._audio_silence_repair_teardown_completed
-        if completed is not None and (
-            reference is None or completed > reference
-        ):
+        if completed is not None and (reference is None or completed > reference):
             reference = completed
         if reference is None or heartbeat <= reference:
             return False
@@ -1654,9 +1652,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                     return
                 try:
                     await self._teardown_audio_transport()
-                    self._audio_silence_repair_teardown_completed = (
-                        time.monotonic()
-                    )
+                    self._audio_silence_repair_teardown_completed = time.monotonic()
                     if not self._silence_repair_preconditions_ok(
                         civ_epoch,
                         owner_stop_epoch,
