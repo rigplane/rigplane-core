@@ -142,24 +142,33 @@ describe('StatusBar radio indicator title carries the health reason', () => {
     ['radio_powered_off_likely', 'stalled', 'Radio ↔ Server: connected (radio appears powered off or unreachable)'],
     ['server_unreachable', 'ready', 'Radio ↔ Server: connected (server unreachable)'],
     ['radio_session_busy', 'recovering', 'Radio ↔ Server: connected (radio in use by another connection, retrying)'],
-    ['operator_disconnected', 'idle', 'Radio ↔ Server: connected (disconnected by the operator)'],
+    ['operator_disconnected', 'idle', 'Radio ↔ Server: disconnected (disconnected by the operator)'],
     ['unknown', 'ready', 'Radio ↔ Server: connected'],
   ] as const)('%s (%s)', (cause, readiness, expected) => {
-    vi.mocked(getRadioHealth).mockReturnValue(health(cause, readiness));
+    vi.mocked(getRadioHealth).mockReturnValue({
+      ...health(cause, readiness),
+      radioLink: cause === 'operator_disconnected' ? 'disconnected' : 'connected',
+    });
+    if (cause === 'operator_disconnected') {
+      vi.mocked(getRadioLinkState).mockReturnValue('degraded');
+      vi.mocked(getRigConnected).mockReturnValue(false);
+      vi.mocked(getRadioReady).mockReturnValue(false);
+    }
     expect(radioTitle()).toBe(expected);
   });
 
-  it('keeps an idle operator disconnect disconnected without a delayed tone', () => {
+  it.each([true, null])('shows an idle operator disconnect as disconnected/red with power %s', (powerOn) => {
     vi.mocked(getRadioHealth).mockReturnValue({
       ...health('operator_disconnected', 'idle'), radioLink: 'disconnected',
     });
-    vi.mocked(getRadioLinkState).mockReturnValue('disconnected');
+    vi.mocked(getRadioLinkState).mockReturnValue('degraded');
+    vi.mocked(getRadioPowerOn).mockReturnValue(powerOn);
     vi.mocked(getRigConnected).mockReturnValue(false);
     vi.mocked(getRadioReady).mockReturnValue(false);
-    expect(radioTitle()).toBe('Radio ↔ Server: disconnected (disconnected by the operator)');
+    expect.soft(radioTitle()).toBe('Radio ↔ Server: disconnected (disconnected by the operator)');
     const style = target!.querySelector('.status-indicators .indicator')!.getAttribute('style');
-    expect(style).toContain('#ef4444');
-    expect(style).not.toContain('#facc15');
+    expect.soft(style).toContain('#ef4444');
+    expect.soft(style).not.toContain('#facc15');
   });
 
   it('reads "rig offline" when the rig is down and the link is degraded', () => {

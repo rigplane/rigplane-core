@@ -204,7 +204,7 @@
   let radioHealth = $derived(getRadioHealth());
   // Effective radio indicator: downgrade to 'disconnected' when rigCtld reports radio offline
   let radioIndicatorState = $derived.by(() => {
-    if (radioHealth?.likelyCause === 'radio_network_lost' || radioHealth?.likelyCause === 'radio_powered_off_likely') {
+    if (radioHealth?.likelyCause === 'radio_network_lost' || radioHealth?.likelyCause === 'radio_powered_off_likely' || radioHealth?.likelyCause === 'operator_disconnected') {
       return 'disconnected';
     }
     if (radioHealth?.readiness === 'delayed' || radioHealth?.readiness === 'stalled') {
@@ -432,7 +432,7 @@
      AppGlobalHost's powered-off overlay consumes it in CSS. -->
 <div class="status-bar" bind:this={barEl}>
   <div class="status-indicators">
-    <span class="indicator" role="status" title={radioHealthLabel ? t('core.statusbar.indicator.radioWithReason', { state: radioState, reason: radioHealthLabel }) : t('core.statusbar.indicator.radio', { state: radioState })} style="--indicator-color: {stateColor(radioIndicatorState)}">
+    <span class="indicator" role="status" title={radioHealthLabel ? t('core.statusbar.indicator.radioWithReason', { state: radioHealth?.likelyCause === 'operator_disconnected' ? radioIndicatorState : radioState, reason: radioHealthLabel }) : t('core.statusbar.indicator.radio', { state: radioState })} style="--indicator-color: {stateColor(radioIndicatorState)}">
       <span class="indicator-dot"></span>
       <Radio size={12} color="currentColor" strokeWidth={2.5} />
     </span>
