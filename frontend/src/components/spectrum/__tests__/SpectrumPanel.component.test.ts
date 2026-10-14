@@ -742,6 +742,23 @@ describe('SpectrumPanel component', () => {
     subscriptions[0][0]({ ...receipt, token: { ...receipt.token, source: 'audio_fft' } });
     expect(observe).toHaveBeenCalledTimes(2);
   });
+
+  it.each(['source', 'receiver'] as const)('stops a trace when selected %s changes without another frame', (change) => {
+    vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
+    const target = mountPanel();
+    const start = target.querySelector<HTMLButtonElement>('[aria-label="Scope render trace"] button')!;
+    start.click();
+    flushSync();
+    expect(target.querySelector('[aria-label="Scope render trace"]')?.textContent).toContain('recording');
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    if (change === 'source') runtimeHarness.state.currentCaps = Object.freeze({ scopeSource: 'audio_fft' });
+    else runtimeHarness.state.currentState = Object.freeze({ source: 'test-state', providerGeneration: 17, active: 'SUB' });
+    refreshSpectrumAuthority();
+    flushSync();
+    expect(target.querySelector('[aria-label="Scope render trace"]')?.textContent).toContain('stopped (source_changed)');
+    expect(push).not.toHaveBeenCalled();
+    expect(mockRuntime.scope.subscribeTraceReceipt).toHaveBeenCalledTimes(1);
+  });
   it('mounts without errors', () => {
     const target = mountPanel();
     expect(target.querySelector('.spectrum-panel')).not.toBeNull();
@@ -1983,6 +2000,19 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(destroy.mock.calls.length).toBe(before);
     expect(target.querySelector('.waterfall-content canvas')).not.toBeNull();
     destroy.mockRestore();
+  });
+  it('keeps a recording through a missing projection but ends it on selection change without a frame', () => {
+    vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
+    const { target, props } = managed(projection());
+    target.querySelector<HTMLButtonElement>('[aria-label="Scope render trace"] button')!.click();
+    flushSync();
+    props.set('projection', null);
+    flushSync();
+    expect(target.querySelector('[aria-label="Scope render trace"]')?.textContent).toContain('recording');
+    runtimeHarness.state.currentCaps = Object.freeze({ scopeSource: 'audio_fft' });
+    refreshSpectrumAuthority();
+    flushSync();
+    expect(target.querySelector('[aria-label="Scope render trace"]')?.textContent).toContain('stopped (source_changed)');
   });
   it('discards waterfall history when provider generation changes', () => {
     const generations = new SvelteMap([['current', 17]]);

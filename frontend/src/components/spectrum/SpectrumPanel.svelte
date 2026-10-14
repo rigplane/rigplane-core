@@ -153,7 +153,30 @@
   let traceStatus: 'idle' | TraceStatus = $state('idle');
   let traceError = $state('');
   let traceSource: TraceSource | null = null;
+  type TraceSelection = Readonly<{
+    selectedSource: string | null;
+    providerGeneration: number | null;
+    activeReceiver: string | null;
+    managed: boolean;
+    projectionSource: string | null;
+    projectionReceiver: string | null;
+  }>;
+  let traceSelection: TraceSelection | null = null;
   let unsubscribeTrace: (() => void) | null = null;
+
+  function selectedTraceIdentity(): TraceSelection {
+    const caps = runtime.caps;
+    const state = runtime.state;
+    return {
+      selectedSource: typeof caps?.scopeSource === 'string' ? caps.scopeSource : null,
+      providerGeneration: typeof state?.providerGeneration === 'number' && Number.isSafeInteger(state.providerGeneration)
+        ? state.providerGeneration : null,
+      activeReceiver: typeof state?.active === 'string' ? state.active : null,
+      managed,
+      projectionSource: managed ? scopeProjection?.frame.source ?? null : null,
+      projectionReceiver: managed ? scopeProjection?.frame.receiver ?? null : null,
+    };
+  }
 
   function startTrace(): void {
     if (!traceCandidate || traceStatus === 'recording' || !scopeDemandOn || !scopeConnected) return;
@@ -162,8 +185,10 @@
     traceError = '';
     traceSource = (managed && scopeProjection?.frame.source === 'audio-fft') || (!managed && audioFft)
       ? 'audio_fft' : 'hardware';
+    traceSelection = selectedTraceIdentity();
     const session = new ScopeRenderTrace((status) => {
       traceStatus = status;
+      traceSelection = null;
       unsubscribeTrace?.();
       unsubscribeTrace = null;
     });
@@ -975,6 +1000,20 @@
 
   $effect(() => { if (managed) scopeDemandOn = scopeDemanded; });
   $effect(() => { if (!scopeDemandOn && traceStatus === 'recording') trace?.stop('source_changed'); });
+  $effect(() => {
+    if (traceStatus !== 'recording') return;
+    const selected = selectedTraceIdentity();
+    const initial = traceSelection;
+    if (!initial) return;
+    if (selected.selectedSource !== initial.selectedSource
+      || selected.providerGeneration !== initial.providerGeneration
+      || selected.activeReceiver !== initial.activeReceiver
+      || selected.managed !== initial.managed
+      || (selected.projectionSource !== null && selected.projectionSource !== initial.projectionSource)
+      || (selected.projectionReceiver !== null && selected.projectionReceiver !== initial.projectionReceiver)) {
+      trace?.stop('source_changed');
+    }
+  });
   $effect(() => {
     if (!managed) return;
     const projection = scopeProjection;
