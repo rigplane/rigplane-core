@@ -93,7 +93,10 @@ function preferredRxCodec(): 'opus' | 'pcm16' {
 
 class AudioManager {
   private ws: WebSocket | null = null;
-  private rxPlayer = new RxPlayer();
+  private readonly rxDiagnosticEnabled = import.meta.env.VITE_RX_AUDIO_DIAGNOSTIC === '1';
+  private rxPlayer = new RxPlayer(this.rxDiagnosticEnabled);
+  private rxDiagnosticOverlay: HTMLElement | null = null;
+  private rxDiagnosticTimer: ReturnType<typeof setInterval> | null = null;
   private txMic: TxMic;
   private _rxEnabled = false;
   private _txEnabled = false;
@@ -178,6 +181,7 @@ class AudioManager {
       this.rxPlayer.setJitterBounds(audioCfg.jitterFloorMs, audioCfg.jitterCeilingMs);
     }
     this.rxPlayer.start();
+    this._startRxDiagnosticOverlay();
     this.connect();
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({
@@ -191,6 +195,7 @@ class AudioManager {
   }
 
   stopRx(): void {
+    this._clearRxDiagnosticOverlay();
     this._lastRxResumeError = null;
     if (!this._rxEnabled) return;
     this._rxEnabled = false;
@@ -549,6 +554,68 @@ class AudioManager {
   // counters so the server can record them per client (the step-19
   // adaptive codec controller's client-side signal). Stats only — the
   // server changes no behavior on receipt.
+
+  private _startRxDiagnosticOverlay(): void {
+    if (!this.rxDiagnosticEnabled || this.rxDiagnosticOverlay || typeof document === 'undefined') return;
+    try {
+      const overlay = document.createElement('pre');
+      overlay.dataset.rxAudioDiagnostic = '';
+      overlay.setAttribute('aria-hidden', 'true');
+      overlay.style.position = 'fixed';
+      overlay.style.right = '4px';
+      overlay.style.bottom = '4px';
+      overlay.style.zIndex = '2147483647';
+      overlay.style.pointerEvents = 'none';
+      overlay.style.userSelect = 'none';
+      overlay.style.margin = '0';
+      overlay.style.padding = '6px';
+      overlay.style.maxWidth = 'calc(100vw - 20px)';
+      overlay.style.maxHeight = '30vh';
+      overlay.style.overflow = 'hidden';
+      overlay.style.backgroundColor = 'rgba(17, 17, 17, 0.93)';
+      overlay.style.color = '#fff';
+      overlay.style.font = '11px/1.3 monospace';
+      this.rxDiagnosticOverlay = overlay;
+      document.body.append(overlay);
+      this._refreshRxDiagnosticOverlay();
+      if (this.rxDiagnosticOverlay) {
+        this.rxDiagnosticTimer = setInterval(() => this._refreshRxDiagnosticOverlay(), 1000);
+      }
+    } catch {
+      this._clearRxDiagnosticOverlay();
+    }
+  }
+
+  private _refreshRxDiagnosticOverlay(): void {
+    try {
+      const snapshot = this.rxPlayer.diagnosticSnapshot();
+      if (!snapshot || !this.rxDiagnosticOverlay) return;
+      const number = (value: number | null) => value === null ? 'unavailable' : value.toPrecision(4);
+      const decoded = snapshot.preRouting;
+      this.rxDiagnosticOverlay.textContent = [
+        'RX diagnostic candidate | Physical output: unverified',
+        `Context: ${snapshot.playback.contextState} | rate: ${number(snapshot.playback.sampleRate)}`,
+        `Pre-routing: ${snapshot.decodedStatus} age ms=${number(snapshot.decodedAgeMs)} channels=${decoded?.channelCount ?? 'unavailable'} frames=${decoded?.frameCount ?? 'unavailable'}`,
+        ...(decoded?.channels.map((channel, index) =>
+          `ch${index}: RMS=${number(channel.rms)} peak=${number(channel.peak)}`) ?? []),
+        `Volume=${number(snapshot.volume)} focus=${snapshot.focus} split=${snapshot.splitStereo}`,
+        `Actual gain: pre=${number(snapshot.preGain)} main=${number(snapshot.mainGain)} sub=${number(snapshot.subGain)}`,
+        `Sink selection capability: ${snapshot.sinkSelection} | output route: unverified`,
+        `Received=${snapshot.playback.receivedFrames} valid=${snapshot.playback.validFrames} decoded=${snapshot.playback.decodedFrames}`,
+        `Scheduled=${snapshot.playback.scheduledFrames} drops=${snapshot.droppedFrames} suspended=${snapshot.playback.suspendedDrops}`,
+        `Underruns=${snapshot.underruns} scheduled ahead ms=${snapshot.bufferDepthMs}`,
+      ].join('\n');
+    } catch {
+      this._clearRxDiagnosticOverlay();
+    }
+  }
+
+  private _clearRxDiagnosticOverlay(): void {
+    if (this.rxDiagnosticTimer !== null) clearInterval(this.rxDiagnosticTimer);
+    this.rxDiagnosticTimer = null;
+    this.rxDiagnosticOverlay?.remove();
+    this.rxDiagnosticOverlay = null;
+  }
 
   private _startStatsTimer(): void {
     if (this.statsTimer) return;

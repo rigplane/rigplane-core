@@ -5,6 +5,18 @@ const rxStart = vi.fn();
 const rxStop = vi.fn();
 const rxFlush = vi.fn();
 const rxSetJitterBounds = vi.fn();
+const rxConstruct = vi.fn();
+const rxDiagnosticSnapshot = vi.fn(() => ({
+  preRouting: { channelCount: 1, frameCount: 480, channels: [{ rms: 0.1, peak: 0.2 }] } as {
+    channelCount: number; frameCount: number; channels: { rms: number; peak: number }[];
+  } | null,
+  decodedStatus: 'fresh', decodedAgeMs: 0,
+  volume: 1, focus: 'both', splitStereo: false, preGain: 1, mainGain: 1, subGain: 1,
+  sinkSelection: 'unsupported',
+  ...{ underruns: 3, bufferDepthMs: 140, droppedFrames: 2 },
+  playback: { contextState: 'running', sampleRate: 48000, receivedFrames: 2, validFrames: 2,
+    decodedFrames: 2, scheduledFrames: 2, suspendedDrops: 0 },
+}));
 const playback = {
   schemaVersion: 1, contextState: 'suspended', sampleRate: 48000,
   receivedFrames: 2, validFrames: 2, decodedFrames: 0, pcmPeak: null,
@@ -20,11 +32,13 @@ let txSend: ((data: ArrayBuffer) => void) | null = null;
 
 vi.mock('../rx-player', () => ({
   RxPlayer: class {
+    constructor(enabled: boolean) { rxConstruct(enabled); }
     start = rxStart;
     stop = rxStop;
     flush = rxFlush;
     setJitterBounds = rxSetJitterBounds;
     stats = rxStats;
+    diagnosticSnapshot = rxDiagnosticSnapshot;
     setFocus = vi.fn();
     setSplitStereo = vi.fn();
     setChannelGainDb = vi.fn();
@@ -107,6 +121,80 @@ class FakeWebSocket {
     this.onclose?.({ code, reason });
   }
 }
+
+describe('candidate-only RX numeric overlay', () => {
+  beforeEach(() => {
+    vi.resetModules(); vi.clearAllMocks(); vi.useFakeTimers();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+  });
+  afterEach(async () => {
+    const { audioManager } = await import('../audio-manager');
+    audioManager.destroy();
+    vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.useRealTimers();
+  });
+
+  it.each([undefined, '0'])('does not observe or display in an ordinary build (%s)', async (flag) => {
+    vi.stubEnv('VITE_RX_AUDIO_DIAGNOSTIC', flag);
+    vi.stubGlobal('location', { protocol: 'http:', host: 'localhost', search: '?rxAudioDiagnostic=1' });
+    const { audioManager } = await import('../audio-manager');
+    audioManager.startRx(); vi.advanceTimersByTime(2000);
+    expect(rxConstruct).toHaveBeenCalledWith(false);
+    expect(rxDiagnosticSnapshot).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-rx-audio-diagnostic]')).toBeNull();
+  });
+
+  it('shows bounded read-only local observations and tears them down without changing uplink', async () => {
+    vi.stubEnv('VITE_RX_AUDIO_DIAGNOSTIC', '1');
+    vi.stubGlobal('location', { protocol: 'http:', host: 'localhost' });
+    const { audioManager } = await import('../audio-manager');
+    audioManager.startRx();
+    const overlay = document.querySelector<HTMLElement>('[data-rx-audio-diagnostic]')!;
+    expect(rxConstruct).toHaveBeenCalledWith(true);
+    expect(overlay.textContent).toContain('Pre-routing');
+    expect(overlay.textContent).toContain('Scheduled');
+    expect(overlay.textContent).toContain('Physical output: unverified');
+    expect(overlay.style.position).toBe('fixed');
+    expect(overlay.style.pointerEvents).toBe('none');
+    expect(overlay.querySelector('button, input, select, a, [tabindex]')).toBeNull();
+    expect(overlay.hasAttribute('tabindex')).toBe(false);
+    expect(overlay.getAttribute('aria-hidden')).toBe('true');
+    expect(rxDiagnosticSnapshot).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(999);
+    expect(rxDiagnosticSnapshot).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1);
+    expect(rxDiagnosticSnapshot).toHaveBeenCalledTimes(2);
+    rxDiagnosticSnapshot.mockReturnValueOnce({
+      ...rxDiagnosticSnapshot(), preRouting: null, decodedStatus: 'expired', decodedAgeMs: 2001,
+    });
+    vi.advanceTimersByTime(1000);
+    expect(overlay.textContent).toContain('expired');
+    expect(overlay.textContent).not.toContain('RMS=');
+    const ws = FakeWebSocket.instances[0]; ws.open(); ws.sent = [];
+    vi.advanceTimersByTime(1500);
+    expect(ws.sent.map(s => JSON.parse(s as string)).filter(m => m.type === 'audio_stats')).toEqual([{
+      type: 'audio_stats', underruns: 3, buffer_depth_ms: 140, dropped_frames: 2,
+      playback, microphoneCaptureError: null,
+    }]);
+    audioManager.stopRx();
+    expect(document.querySelector('[data-rx-audio-diagnostic]')).toBeNull();
+    const calls = rxDiagnosticSnapshot.mock.calls.length;
+    vi.advanceTimersByTime(3000);
+    expect(rxDiagnosticSnapshot).toHaveBeenCalledTimes(calls);
+  });
+
+  it('isolates observation failure from RX and removes its timer and overlay', async () => {
+    vi.stubEnv('VITE_RX_AUDIO_DIAGNOSTIC', '1');
+    vi.stubGlobal('location', { protocol: 'http:', host: 'localhost' });
+    rxDiagnosticSnapshot.mockImplementationOnce(() => { throw new Error('observation unavailable'); });
+    const { audioManager } = await import('../audio-manager');
+    expect(() => audioManager.startRx()).not.toThrow();
+    expect(audioManager.rxEnabled).toBe(true);
+    expect(document.querySelector('[data-rx-audio-diagnostic]')).toBeNull();
+    expect(txStart).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
 
 describe('AudioManager controller currency', () => {
   beforeEach(() => {
