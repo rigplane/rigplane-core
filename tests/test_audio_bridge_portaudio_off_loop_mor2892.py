@@ -153,8 +153,16 @@ async def test_enumeration_timeout_keeps_loop_free_and_fails_start(
     warnings = _warnings(caplog)
     assert len(warnings) == 1, "exactly one actionable warning on timeout"
     message = warnings[0].getMessage()
-    assert "device enumeration" in message
-    assert "BRIDGE" in message
+    args = warnings[0].args
+    assert isinstance(args, tuple) and len(args) == 2
+    operation_id, timeout = args
+    assert isinstance(operation_id, int) and operation_id > 0
+    assert timeout == _TEST_TIMEOUT_S
+    assert message.startswith(
+        f"usb-audio: PortAudio operation {operation_id} "
+        f"did not finish within {timeout:.1f}s"
+    )
+    assert "microphone permission prompt" in message
 
 
 @pytest.mark.timeout(10)
