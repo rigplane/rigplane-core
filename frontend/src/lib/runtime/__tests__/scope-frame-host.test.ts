@@ -43,7 +43,7 @@ function frame(receiver: 0 | 1 = 0, pixels = [0, 128, 255], wireSequence = 17): 
   view.setUint8(1, receiver);
   view.setUint32(3, 14_000_000, true);
   view.setUint32(7, 14_100_000, true);
-  view.setUint16(12, wireSequence, true);
+  view.setUint16(11, wireSequence, true);
   view.setUint16(14, pixels.length, true);
   pixels.forEach((sample, index) => view.setUint8(16 + index, sample));
   return buffer;

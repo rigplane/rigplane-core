@@ -39,7 +39,7 @@ function frame(id: number): ArrayBuffer {
   view.setUint8(0, 1);
   view.setUint32(3, 14_000_000, true);
   view.setUint32(7, 14_100_000, true);
-  view.setUint16(12, id, true);
+  view.setUint16(11, id, true);
   view.setUint16(14, 4, true);
   new Uint8Array(buffer, 16).fill(id);
   return buffer;
@@ -116,7 +116,7 @@ describe('same-session scope delivery across hidden rendering', () => {
     // These buffers are retained by this test, not by production or a modeled WebKit queue.
     const produced = ids.map(frame);
     const deliver = (buffer: ArrayBuffer) => {
-      arrivals.push(new DataView(buffer).getUint16(12, true));
+      arrivals.push(new DataView(buffer).getUint16(11, true));
       socket.deliver(buffer);
       flushSync();
     };

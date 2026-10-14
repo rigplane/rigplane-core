@@ -11,6 +11,7 @@ import { resolve } from 'node:path';
 import { ScopeController } from '../scope-controller.svelte';
 import { PresentationResourceHost } from '../resource-host';
 import type { ScopeFrame } from '../scope-controller.svelte';
+import { ScopeRenderTrace } from '../scope-render-trace';
 
 // ── Helpers ──
 
@@ -72,6 +73,23 @@ function makeScopeFrameBuffer(pixelCount = 4): ArrayBuffer {
   return buf;
 }
 
+// Golden bytes emitted by rigplane.web.protocol.encode_scope_frame, with
+// receiver/mode 0, 14.0–14.1 MHz and pixels [0, 128, 255]. Keep the complete
+// wire header independent of the decoder: sequence bytes11–12, flags13.
+const encodedScopeFrames = [
+  { sequence: 1, flags: 0, hex: '010000809fd5002026d70001000003000080ff' },
+  { sequence: 2, flags: 1, hex: '010000809fd5002026d70002000103000080ff' },
+  { sequence: 255, flags: 0, hex: '010000809fd5002026d700ff000003000080ff' },
+  { sequence: 256, flags: 1, hex: '010000809fd5002026d70000010103000080ff' },
+  { sequence: 257, flags: 0, hex: '010000809fd5002026d70001010003000080ff' },
+  { sequence: 65535, flags: 0, hex: '010000809fd5002026d700ffff0003000080ff' },
+  { sequence: 0, flags: 1, hex: '010000809fd5002026d70000000103000080ff' },
+  { sequence: 3, flags: 1, hex: '010000809fd5002026d70003000103000080ff' },
+];
+function encodedScopeBuffer(hex: string): ArrayBuffer {
+  return Uint8Array.from(hex.match(/../g)!, pair => Number.parseInt(pair, 16)).buffer;
+}
+
 function makeTiming() {
   let now = 0;
   let nextId = 1;
@@ -125,6 +143,65 @@ describe('ScopeController', () => {
     vi.restoreAllMocks();
   });
 
+  describe.each(['hardware', 'audio_fft'] as const)('%s wire sequence', (source) => {
+    it.each(encodedScopeFrames)('preserves encoder sequence $sequence with flags $flags in receipt and envelope', async ({ sequence, hex }) => {
+      ctrl.setFrameAuthority({ source, receiver: 0, providerGeneration: 1 });
+      const receipt = vi.fn();
+      const unsubscribe = ctrl.subscribeTraceReceipt(receipt);
+      const driver = source === 'hardware' ? ctrl.hardwareScopeDriver : ctrl.audioFftDriver;
+      const handle = await driver.start();
+      try {
+        channel._setState('connected');
+        channel._fire(encodedScopeBuffer(hex));
+        expect.soft(receipt).toHaveBeenCalledWith(expect.objectContaining({
+          kind: 'accepted', token: expect.objectContaining({ source, wireSequence: sequence }),
+        }));
+        expect.soft(ctrl.snapshotFrameEvidence().envelope?.wireSequence).toBe(sequence);
+      } finally {
+        unsubscribe();
+        await driver.stop(handle);
+      }
+    });
+
+    it('counts a real skip but neither flag changes nor uint16 wrap as wire gaps', async () => {
+      const trace = new ScopeRenderTrace();
+      const unsubscribe = ctrl.subscribeTraceReceipt(receipt => trace.observe(receipt));
+      const driver = source === 'hardware' ? ctrl.hardwareScopeDriver : ctrl.audioFftDriver;
+      const handle = await driver.start();
+      try {
+        channel._setState('connected');
+        for (const sequence of [65535, 0, 1, 3]) {
+          channel._fire(encodedScopeBuffer(encodedScopeFrames.find(frame => frame.sequence === sequence)!.hex));
+        }
+        trace.stop();
+        const result = JSON.parse(trace.export()!);
+        expect(result.counts).toMatchObject({ accepted: 4, rejected: 0, wireGaps: 1 });
+        expect(result.burst.filter((event: { stage: string }) => event.stage === 'wire_gap'))
+          .toEqual([expect.objectContaining({ source, wireSequence: 3 })]);
+      } finally {
+        unsubscribe(); trace.dispose();
+        await driver.stop(handle);
+      }
+    });
+  });
+
+  it.each([0, 1, 11, 12, 13, 14, 15, 16, 18])('rejects an encoder frame truncated to %i bytes before publishing sequence', async (size) => {
+    ctrl.setFrameAuthority({ source: 'audio_fft', receiver: 0, providerGeneration: 1 });
+    const receipt = vi.fn();
+    const unsubscribe = ctrl.subscribeTraceReceipt(receipt);
+    const handle = await ctrl.audioFftDriver.start();
+    try {
+      channel._setState('connected');
+      const buffer = encodedScopeBuffer(encodedScopeFrames[0].hex).slice(0, size);
+      expect(() => channel._fire(buffer)).not.toThrow();
+      expect(receipt).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: 'rejected', reason: 'parse' }));
+      expect(ctrl.snapshotFrameEvidence().envelope).toBeNull();
+    } finally {
+      unsubscribe();
+      await ctrl.audioFftDriver.stop(handle);
+    }
+  });
+
   it('keeps frame subscriptions lifetime-neutral', () => {
     expect(channel.connect).not.toHaveBeenCalled();
 
@@ -149,7 +226,7 @@ describe('ScopeController', () => {
     const handle = await ctrl.audioFftDriver.start();
     channel._setState('connected');
     const buffer = makeScopeFrameBuffer(2049);
-    new DataView(buffer).setUint16(12, 65535, true);
+    new DataView(buffer).setUint16(11, 65535, true);
     channel._fire(buffer);
     expect(order).toEqual(['receipt', 'frame']);
     expect(frameHandler.mock.calls[0]).toHaveLength(1);
