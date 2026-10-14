@@ -29,6 +29,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.core.exceptions import AuthenticationError
 from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.core.transport import IcomTransport
@@ -38,7 +39,7 @@ from rigplane.radio import IcomRadio
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime._control_phase import ControlPhaseRuntime, OPENCLOSE_SIZE
 
-from _helpers import freq_response
+from _helpers import freq_response, wrap_civ_in_udp
 from test_radio import MockTransport
 from test_radio_connect import ConnectMockTransport, _build_conninfo, _ConnectOnceStubs
 
@@ -509,12 +510,12 @@ async def test_connect_routes_token_answers_to_the_probe_only_after_setup() -> N
 # ---------------------------------------------------------------------------
 
 
-def _idle_control_packet() -> bytes:
+def _idle_control_packet(seq: int = 0) -> bytes:
     """A 16-byte ptype=0 idle control packet: UDP header only, no payload."""
     pkt = bytearray(HEADER_SIZE)
     struct.pack_into("<I", pkt, 0, HEADER_SIZE)
     struct.pack_into("<H", pkt, 4, PacketType.DATA)
-    struct.pack_into("<H", pkt, 6, 0)
+    struct.pack_into("<H", pkt, 6, seq)
     struct.pack_into("<I", pkt, 8, 0x00010001)
     struct.pack_into("<I", pkt, 0x0C, 0xDEADBEEF)
     return bytes(pkt)
@@ -653,6 +654,84 @@ async def test_idle_datagram_does_not_suppress_identity_hold_stream_nudge(
                 assert routed == [], f"idle must route zero frames: {routed!r}"
             finally:
                 await radio._civ_runtime.stop_pump()
+
+
+async def test_high_seq_idle_then_identity_reply_completes_same_hold() -> None:
+    """A high numbered idle stream cannot block a later valid identity reply.
+
+    MOR-3418 observed seq 8534+ on 16-byte inbound headers. The seq 8536
+    identity reply below is a hypothetical offline discriminator: no such
+    payload was observed in the physical silent flow.
+    """
+    radio, _control, _answers = make_radio()
+    transport = IcomTransport()
+    transport.my_id = 0x00010001
+    transport.remote_id = 0xDEADBEEF
+    sent: list[bytes] = []
+    transport._raw_send = sent.append
+    radio._civ_transport = transport
+    _park_no_response_hold(radio)
+    _fast_reread(radio)
+    owned_epoch = radio._civ_epoch
+    owned_control = radio._ctrl_transport
+    original_route = radio._civ_runtime._route_civ_frame
+
+    with (
+        patch.object(radio, "_start_civ_data_watchdog"),
+        patch.object(radio, "_fetch_initial_state", new_callable=AsyncMock),
+        patch.object(radio, "_arm_managed_tx", new_callable=AsyncMock),
+        patch.object(
+            radio._civ_runtime, "_route_civ_frame", wraps=original_route
+        ) as route,
+    ):
+        radio._civ_runtime.start_pump()
+        try:
+            for seq in (0, 0, 8534, 8535):
+                transport._handle_packet(_idle_control_packet(seq))
+            assert await _wait_until(lambda: transport._packet_queue.empty())
+            await asyncio.sleep(0)
+            assert transport.rx_last_seq == 8535
+            assert not transport.rx_missing
+            assert route.await_count == 0
+            assert radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
+            assert radio._civ_stream_ready is False
+
+            radio._start_lan_identity_reread()
+            assert await _wait_until(
+                lambda: any(len(pkt) > 27 and pkt[25:27] == b"\x19\x00" for pkt in sent)
+            )
+            assert any(len(pkt) == OPENCLOSE_SIZE and pkt[0x15] == 0x04 for pkt in sent)
+            assert radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
+
+            reply = wrap_civ_in_udp(
+                build_civ_frame(
+                    CONTROLLER_ADDR,
+                    radio._radio_addr,
+                    0x19,
+                    sub=0x00,
+                    data=b"\x0b\x90",
+                ),
+                seq=8536,
+            )
+            transport._handle_packet(reply)
+            assert await _wait_until(
+                lambda: radio.connection_identity.status is RadioIdentityStatus.VERIFIED
+            )
+            assert route.await_count == 1
+            assert radio.connection_identity.answered_id == "0B90"
+            assert radio._civ_stream_ready is True
+            assert transport.rx_last_seq == 8536
+            assert not transport.rx_missing
+            assert radio._civ_transport is transport
+            assert radio._ctrl_transport is owned_control
+            assert radio._civ_epoch == owned_epoch
+            assert radio._conn_state is RadioConnectionState.CONNECTED
+            assert radio._lan_identity_answer_epoch == owned_epoch
+            assert not radio._lan_identity_phase_owns_open_link()
+        finally:
+            await _stop_reread(radio)
+            await radio._civ_runtime.stop_pump()
+            await radio.disconnect()
 
 
 async def test_valid_civ_payload_suppresses_next_nudge() -> None:
