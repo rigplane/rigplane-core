@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import struct
 import time
 from collections.abc import AsyncGenerator
@@ -741,7 +742,10 @@ async def test_default_audio_port_answers_nothing() -> None:
         status = await ctrl.recv()
         advertised = struct.unpack_from(">H", status, 0x46)[0]
         assert advertised != 0  # still advertised, as before
-        assert advertised == server.civ_port + 1
+        assert advertised not in (server.control_port, server.civ_port)
+        adjacent = server.civ_port + 1 if server.civ_port < 65535 else 65534
+        if adjacent != server.control_port:
+            assert advertised == adjacent
 
         probe = await _udp()
         try:
@@ -754,6 +758,102 @@ async def test_default_audio_port_answers_nothing() -> None:
     finally:
         ctrl.close()
         await server.stop()
+
+
+@pytest.mark.parametrize("endpoint", ["control_port", "civ_port"])
+async def test_disabled_audio_advertisement_avoids_live_endpoint(
+    endpoint: str,
+) -> None:
+    """The status CIV-port override forces the old dummy onto a real listener."""
+    server = MockIcomRadio()
+    await server.start()
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    probe.bind((_HOST, 0))
+    probe.setblocking(False)
+    loop = asyncio.get_running_loop()
+    try:
+        live_port = getattr(server, endpoint)
+        assert server.audio_port == 0
+        assert server._audio_udp is None
+        await loop.sock_sendto(probe, _ayt(), (_HOST, live_port))
+        control_reply, control_addr = await asyncio.wait_for(
+            loop.sock_recvfrom(probe, 1024), 1.0
+        )
+        assert control_addr == (_HOST, live_port)
+        assert struct.unpack_from("<H", control_reply, 4)[0] == _PT_I_AM_HERE
+
+        status = server._status_response(_CLIENT_ID, civ_port=live_port - 1)
+        advertised = struct.unpack_from(">H", status, 0x46)[0]
+        for packet in (_ayt(), _ping()):
+            await loop.sock_sendto(probe, packet, (_HOST, advertised))
+            try:
+                response = await asyncio.wait_for(loop.sock_recvfrom(probe, 1024), 0.2)
+            except TimeoutError:
+                response = None
+            assert response is None, (
+                f"expected silence, received {response}; "
+                f"control reply={control_reply.hex()} from {control_addr}"
+            )
+        assert advertised not in (server.control_port, server.civ_port)
+    finally:
+        probe.close()
+        await server.stop()
+    assert server._ctrl_udp is None
+    assert server._civ_udp is None
+    assert server._audio_udp is None
+
+
+async def test_disabled_audio_preserves_explicit_ports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sockets = [socket.socket(socket.AF_INET, socket.SOCK_DGRAM) for _ in range(2)]
+    for sock in sockets:
+        sock.bind((_HOST, 0))
+        sock.setblocking(False)
+    ctrl_port, civ_port = [sock.getsockname()[1] for sock in sockets]
+    loop = asyncio.get_running_loop()
+    create_endpoint = loop.create_datagram_endpoint
+
+    async def reserved_endpoint(factory, *, local_addr):
+        sock = sockets[0] if local_addr[1] == ctrl_port else sockets[1]
+        assert local_addr == sock.getsockname()
+        return await create_endpoint(factory, sock=sock)
+
+    monkeypatch.setattr(loop, "create_datagram_endpoint", reserved_endpoint)
+    server = MockIcomRadio(port=ctrl_port, civ_port=civ_port)
+    try:
+        await server.start()
+        assert (server.control_port, server.civ_port) == (ctrl_port, civ_port)
+        assert server.audio_port == 0
+        assert server._audio_udp is None
+        status = server._status_response(_CLIENT_ID)
+        assert struct.unpack_from(">H", status, 0x42)[0] == civ_port
+        assert struct.unpack_from(">H", status, 0x46)[0] not in (ctrl_port, civ_port)
+    finally:
+        await server.stop()
+        await asyncio.sleep(0)
+        for sock in sockets:
+            sock.close()
+    assert server._ctrl_udp is None
+    assert server._civ_udp is None
+    assert server._audio_udp is None
+
+
+@pytest.mark.parametrize(
+    ("ctrl_port", "civ_port", "advertised"),
+    [(65534, 65535, 1), (65535, 65534, 1), (50000, 50001, 50002)],
+)
+def test_disabled_audio_advertisement_port_boundaries(
+    ctrl_port: int, civ_port: int, advertised: int
+) -> None:
+    server = MockIcomRadio(port=ctrl_port, civ_port=civ_port)
+    server._actual_ctrl_port = ctrl_port
+    server._actual_civ_port = civ_port
+    status = server._status_response(_CLIENT_ID)
+    assert struct.unpack_from(">H", status, 0x42)[0] == civ_port
+    assert struct.unpack_from(">H", status, 0x46)[0] == advertised
+    not_ready = server._status_response(_CLIENT_ID, civ_port=0)
+    assert struct.unpack_from(">H", not_ready, 0x46)[0] == 0
 
 
 # ---------------------------------------------------------------------------

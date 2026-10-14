@@ -31,11 +31,14 @@ import pytest
 
 from rigplane.core.exceptions import AuthenticationError
 from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
+from rigplane.core.transport import IcomTransport
+from rigplane.core.types import HEADER_SIZE, PacketType, CivFrame
 from rigplane.exceptions import ConnectionError
 from rigplane.radio import IcomRadio
 from rigplane.runtime._connection_state import RadioConnectionState
-from rigplane.runtime._control_phase import ControlPhaseRuntime
+from rigplane.runtime._control_phase import ControlPhaseRuntime, OPENCLOSE_SIZE
 
+from _helpers import freq_response
 from test_radio import MockTransport
 from test_radio_connect import ConnectMockTransport, _build_conninfo, _ConnectOnceStubs
 
@@ -498,3 +501,224 @@ async def test_connect_routes_token_answers_to_the_probe_only_after_setup() -> N
         await radio._control_phase._connect_once()
     assert during_setup == [None]
     assert mt._token_reply_callback == radio._control_phase._on_token_reply
+
+
+# ---------------------------------------------------------------------------
+# Idle liveness: a header-only idle datagram carries no CI-V payload, so it
+# must not count as payload arrival for the identity hold.
+# ---------------------------------------------------------------------------
+
+
+def _idle_control_packet() -> bytes:
+    """A 16-byte ptype=0 idle control packet: UDP header only, no payload."""
+    pkt = bytearray(HEADER_SIZE)
+    struct.pack_into("<I", pkt, 0, HEADER_SIZE)
+    struct.pack_into("<H", pkt, 4, PacketType.DATA)
+    struct.pack_into("<H", pkt, 6, 0)
+    struct.pack_into("<I", pkt, 8, 0x00010001)
+    struct.pack_into("<I", pkt, 0x0C, 0xDEADBEEF)
+    return bytes(pkt)
+
+
+def _radio_with_transport() -> tuple[IcomRadio, IcomTransport, list[bytes]]:
+    """A radio on a real CI-V transport with only the outbound send faked."""
+    radio = IcomRadio("192.168.1.100", model="IC-7610")
+    radio._profile = replace(radio._profile, expected_identity_ids=("0B90",))
+    transport = IcomTransport()
+    transport.my_id = 0x00010001
+    transport.remote_id = 0xDEADBEEF
+    sent: list[bytes] = []
+    transport._raw_send = sent.append
+    radio._civ_transport = transport
+    return radio, transport, sent
+
+
+def _park_no_response_hold(radio: IcomRadio) -> None:
+    """An owned NO_RESPONSE hold on the current CI-V epoch."""
+    radio._conn_state = RadioConnectionState.CONNECTING
+    radio._connection_identity = RadioIdentity(
+        status=RadioIdentityStatus.NO_RESPONSE, expected_model=radio.model
+    )
+    radio._lan_identity_owned_epoch = radio._civ_epoch
+
+
+class _ControlledTime:
+    """A callable standing in for monotonic() at chosen instants."""
+
+    def __init__(self, start: float) -> None:
+        self._value = start
+
+    def set(self, value: float) -> None:
+        self._value = value
+
+    def __call__(self) -> float:
+        return self._value
+
+
+# ---------------------------------------------------------------------------
+# Idle datagrams must not suppress the identity-hold stream nudge.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "timeout_first", [False, True], ids=["idle-only", "timeout-then-idle"]
+)
+async def test_idle_datagram_does_not_suppress_identity_hold_stream_nudge(
+    timeout_first: bool,
+) -> None:
+    """Only a real CI-V payload may stop the hold re-requesting the stream.
+
+    A 16-byte idle travels the real path (``IcomTransport._handle_packet``,
+    queue, ``CivRuntime`` pump) but routes zero frames; the hold nudge must
+    still emit one OpenClose(open). The timeout-then-idle variant forces
+    one receive timeout first and requires the processing barrier to stay
+    unset through it.
+    """
+    radio, transport, sent = _radio_with_transport()
+    clock = _ControlledTime(10.0)
+    with patch("rigplane.runtime._civ_rx.time", monotonic=clock):
+        _park_no_response_hold(radio)
+        routed: list[CivFrame] = []
+        original_route = radio._civ_runtime._route_civ_frame
+
+        async def _count_route(
+            frame: CivFrame,
+            *,
+            generation: int,
+            store_provider_generation: int | None = None,
+        ) -> None:
+            routed.append(frame)
+            await original_route(
+                frame,
+                generation=generation,
+                store_provider_generation=store_provider_generation,
+            )
+
+        entries = 0
+        entered_once = asyncio.Event()
+        processed = asyncio.Event()
+        reentered = asyncio.Event()
+        timeout_seen = asyncio.Event()
+        last_succeeded = False
+        force_timeout = timeout_first
+        original_receive = transport.receive_packet
+
+        async def _count_receive(timeout: float = 5.0) -> bytes:
+            nonlocal entries, last_succeeded, force_timeout
+            entries += 1
+            if entries == 1:
+                entered_once.set()
+            elif last_succeeded:
+                processed.set()
+            elif entries == 2:
+                reentered.set()
+            if force_timeout:
+                force_timeout = False
+                timeout_seen.set()
+                raise asyncio.TimeoutError()
+            try:
+                result = await original_receive(timeout)
+            except asyncio.TimeoutError:
+                last_succeeded = False
+                raise
+            last_succeeded = True
+            return result
+
+        with (
+            patch.object(
+                radio._civ_runtime, "_route_civ_frame", side_effect=_count_route
+            ),
+            patch.object(transport, "receive_packet", side_effect=_count_receive),
+        ):
+            radio._civ_runtime.start_pump()
+            try:
+                # The first receive entry proves the pump already stamped its
+                # startup liveness before the hold starts.
+                await asyncio.wait_for(entered_once.wait(), 2.0)
+                hold_started = 20.0
+                clock.set(30.0)
+                if timeout_first:
+                    await asyncio.wait_for(timeout_seen.wait(), 2.0)
+                    await asyncio.wait_for(reentered.wait(), 2.0)
+                    assert not processed.is_set()
+                transport._handle_packet(_idle_control_packet())
+                # The barrier fires only at a receive entry whose prior
+                # receive returned a packet, so a timeout cycle alone can
+                # never satisfy it: this proves the idle batch was consumed.
+                await asyncio.wait_for(processed.wait(), 2.0)
+                await radio._nudge_lan_identity_stream(hold_started)
+                nudged = [pkt for pkt in sent if len(pkt) == OPENCLOSE_SIZE]
+                assert len(nudged) == 1, f"idle must not suppress the nudge: {sent!r}"
+                assert nudged[0][0x15] == 0x04, "nudge must re-request an open stream"
+                assert routed == [], f"idle must route zero frames: {routed!r}"
+            finally:
+                await radio._civ_runtime.stop_pump()
+
+
+async def test_valid_civ_payload_suppresses_next_nudge() -> None:
+    """Positive control: a real CI-V payload within the hold stops the nudge.
+
+    The same real path delivers one frequency reply; the routed frame is
+    required, and the nudge must send nothing.
+    """
+    radio, transport, sent = _radio_with_transport()
+    clock = _ControlledTime(10.0)
+    with patch("rigplane.runtime._civ_rx.time", monotonic=clock):
+        _park_no_response_hold(radio)
+        routed: list[CivFrame] = []
+        original_route = radio._civ_runtime._route_civ_frame
+
+        async def _count_route(
+            frame: CivFrame,
+            *,
+            generation: int,
+            store_provider_generation: int | None = None,
+        ) -> None:
+            routed.append(frame)
+            await original_route(
+                frame,
+                generation=generation,
+                store_provider_generation=store_provider_generation,
+            )
+
+        entries = 0
+        entered_once = asyncio.Event()
+        processed = asyncio.Event()
+        last_succeeded = False
+        original_receive = transport.receive_packet
+
+        async def _count_receive(timeout: float = 5.0) -> bytes:
+            nonlocal entries, last_succeeded
+            entries += 1
+            if entries == 1:
+                entered_once.set()
+            elif last_succeeded:
+                processed.set()
+            try:
+                result = await original_receive(timeout)
+            except asyncio.TimeoutError:
+                last_succeeded = False
+                raise
+            last_succeeded = True
+            return result
+
+        with (
+            patch.object(
+                radio._civ_runtime, "_route_civ_frame", side_effect=_count_route
+            ),
+            patch.object(transport, "receive_packet", side_effect=_count_receive),
+        ):
+            radio._civ_runtime.start_pump()
+            try:
+                await asyncio.wait_for(entered_once.wait(), 2.0)
+                hold_started = 20.0
+                clock.set(30.0)
+                transport._handle_packet(freq_response(14_074_000))
+                await asyncio.wait_for(processed.wait(), 2.0)
+                await radio._nudge_lan_identity_stream(hold_started)
+                assert len(routed) == 1, f"payload must route one frame: {routed!r}"
+                assert routed[0].command == 0x03
+                nudged = [pkt for pkt in sent if len(pkt) == OPENCLOSE_SIZE]
+                assert nudged == [], f"payload must suppress the nudge: {sent!r}"
+            finally:
+                await radio._civ_runtime.stop_pump()

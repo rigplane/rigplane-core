@@ -2627,16 +2627,24 @@ describe('center panorama motion (MOR-2464)', () => {
     return orders;
   };
   it('glides the panorama across a translated→recentered transition through real intermediate frames', async () => {
-    const { target, props } = mountPanorama(panoramaProjection());
-    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
-    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
-    expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.left).toBe('38%');
-    await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
-    await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
-    props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
-    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
-    await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
-    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    let panoramaNow = 0;
+    vi.stubGlobal('performance', { now: () => panoramaNow });
+    try {
+      const { target, props } = mountPanorama(panoramaProjection());
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+      panoramaNow = 40;
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.left).toBe('38%');
+      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+      panoramaNow = 140;
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+      props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
+      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('retargets a rapid reversal without overshoot and keeps the carrier anchored', async () => {
