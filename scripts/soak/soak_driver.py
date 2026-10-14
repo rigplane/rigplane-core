@@ -25,9 +25,12 @@ import contextlib
 import json
 import logging
 import os
+import secrets
 import sys
 import time
+import weakref
 from collections import Counter
+from contextvars import Context, ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -91,6 +94,7 @@ class SoakConfig:
     fault_duration_s: float = FAULT_DURATION_S
     rss_warmup_s: float = RSS_WARMUP_S
     probe_diagnostics: bool = False
+    task_provenance: bool = False
 
 
 @dataclass
@@ -260,6 +264,325 @@ def _runtime_missing_reason(runtime: dict[str, Any] | None, field: str) -> str |
     return None
 
 
+_TASK_ROLES = frozenset({"radio.civ_rx", "radio.watchdog", "web.client"})
+_TASK_HEADER = "x-rigplane-soak-probe"
+_TASK_REQUEST: ContextVar[dict[str, str] | None] = ContextVar(
+    "soak_task_request", default=None
+)
+_TASK_ENTRY_LIMIT = 128
+_TASK_EVENT_LIMIT = 256
+_TASK_REGISTRY_LIMIT = 256
+
+
+def _task_counted(task: asyncio.Task[Any]) -> bool:
+    return not task.get_name().startswith(_DRIVER_TASK_PREFIX)
+
+
+class _TaskProvenance:
+    def __init__(self) -> None:
+        self.active: dict[str, Any] | None = None
+        self.first_failure: dict[str, Any] | None = None
+        self._registry = weakref.WeakKeyDictionary()
+        self._callbacks = weakref.WeakKeyDictionary()
+        self._next_label = 0
+        self._generation = 0
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def begin_cycle(self, reconnect: int) -> None:
+        self._release_callbacks()
+        self._loop = asyncio.get_running_loop()
+        self.active = {
+            "reconnect": reconnect,
+            "outcome": "in_progress",
+            "taskStability": None,
+            "probes": [],
+            "events": [],
+            "completionCoverage": "observed_only",
+            "labelMapCoverage": "complete",
+        }
+
+    def begin_probe(self, phase: str) -> dict[str, Any]:
+        if self.active is None or phase not in {"pre", "post"}:
+            raise ValueError("invalid task provenance phase")
+        probes = self.active["probes"]
+        if len(probes) >= 6 or sum(p["phase"] == phase for p in probes) >= 3:
+            raise ValueError("task provenance probe limit")
+        probe = {"sequence": len(probes) + 1, "phase": phase, "snapshot": None}
+        probes.append(probe)
+        return probe
+
+    def unknown(
+        self,
+        probe: dict[str, Any],
+        route: str,
+        measured: int | None,
+        reason: str = "correlation_missing",
+    ) -> None:
+        probe["snapshot"] = {
+            "route": route,
+            "measuredCount": measured,
+            "identityEligible": False,
+            "coverage": reason,
+            "countAgreement": None,
+            "tasks": [],
+        }
+
+    def capture(
+        self,
+        probe: dict[str, Any],
+        route: str,
+        measured: int,
+        *,
+        tasks: set[asyncio.Task[Any]] | None = None,
+        bindings: list[tuple[asyncio.Task[Any], str]] | tuple[Any, ...] = (),
+    ) -> None:
+        if self.active is None or route not in {"runtime", "driver"}:
+            raise ValueError("invalid task provenance capture")
+        population = asyncio.all_tasks() if tasks is None else tasks
+        now = time.monotonic()
+        roles: dict[asyncio.Task[Any], set[str]] = {}
+        for task, role in bindings:
+            if role in _TASK_ROLES:
+                roles.setdefault(task, set()).add(role)
+        inventory_count = sum(
+            route == "runtime" or _task_counted(t) for t in population
+        )
+        entries = []
+        truncated = len(population) > _TASK_ENTRY_LIMIT
+        for task in population:
+            if len(entries) >= _TASK_ENTRY_LIMIT:
+                break
+            metadata = self._registry.get(task)
+            if metadata is None:
+                if len(self._registry) >= _TASK_REGISTRY_LIMIT:
+                    truncated = True
+                    self.active["labelMapCoverage"] = "truncated"
+                    continue
+                self._next_label += 1
+                metadata = (self._next_label, now)
+                self._registry[task] = metadata
+            label, first = metadata
+            if task not in self._callbacks:
+                sink = weakref.ref(self)
+                generation = self._generation
+
+                def done(
+                    finished: asyncio.Task[Any],
+                    *,
+                    label: int = label,
+                    generation: int = generation,
+                    sink: Any = sink,
+                ) -> None:
+                    collector = sink()
+                    if collector is None or collector._generation != generation:
+                        return
+                    active = collector.active
+                    if active is None:
+                        return
+                    if len(active["events"]) >= _TASK_EVENT_LIMIT:
+                        active["completionCoverage"] = "truncated"
+                        return
+                    active["events"].append(
+                        {
+                            "taskLabel": label,
+                            "observedMonotonicS": time.monotonic(),
+                            "done": finished.done(),
+                            "cancelled": finished.cancelled(),
+                        }
+                    )
+
+                self._callbacks[task] = done
+                task.add_done_callback(done, context=Context())
+            bound = roles.get(task, set())
+            entries.append(
+                {
+                    "taskLabel": label,
+                    "firstObservedMonotonicS": first,
+                    "cancellingCount": task.cancelling(),
+                    "role": next(iter(bound)) if len(bound) == 1 else "unclassified",
+                    "soakPrefix": not _task_counted(task),
+                    "countedByRoute": route == "runtime" or _task_counted(task),
+                }
+            )
+        probe["snapshot"] = {
+            "route": route,
+            "producerPid": os.getpid(),
+            "producerLoopLabel": (
+                1 if asyncio.get_running_loop() is self._loop else None
+            ),
+            "observedMonotonicS": now,
+            "measuredCount": measured,
+            "inventoryCount": inventory_count,
+            "countAgreement": measured == inventory_count,
+            "identityEligible": (
+                measured == inventory_count and asyncio.get_running_loop() is self._loop
+            ),
+            "coverage": "truncated" if truncated else "complete",
+            "roleCoverage": (
+                "complete"
+                if not truncated
+                and all(e["role"] != "unclassified" for e in entries)
+                and all(len(r) == 1 for r in roles.values())
+                else "unknown"
+            ),
+            "lifetimeCoverage": "observed_only",
+            "roleMultiplicity": dict(Counter(e["role"] for e in entries)),
+            "tasks": entries,
+        }
+
+    def fallback(self, probe: dict[str, Any]) -> int:
+        population = asyncio.all_tasks()
+        measured = sum(_task_counted(task) for task in population)
+        self.capture(probe, "driver", measured, tasks=population)
+        return measured
+
+    def _release_callbacks(self) -> None:
+        self._generation += 1
+        for task, callback in list(self._callbacks.items()):
+            task.remove_done_callback(callback)
+        self._callbacks.clear()
+
+    def close(self) -> None:
+        self._release_callbacks()
+        self._registry.clear()
+
+    def finish_cycle(self, entry: dict[str, Any], outcome: str) -> None:
+        self._release_callbacks()
+        assert self.active is not None
+        self.active["outcome"] = outcome
+        checks = _stability_checks([entry], "tasks")
+        if not checks:
+            if outcome == "recovered":
+                self.active["outcome"] = "missing_task_measurement"
+            return
+        self.active["taskStability"] = checks[0]
+        if not checks[0]["ok"] and self.first_failure is None:
+            self.first_failure = json.loads(json.dumps(self.active))
+        self.active = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return json.loads(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "maxProbes": 6,
+                    "maxTaskEntries": _TASK_ENTRY_LIMIT,
+                    "maxEvents": _TASK_EVENT_LIMIT,
+                    "maxTrackedTasks": _TASK_REGISTRY_LIMIT,
+                    "active": self.active,
+                    "firstFailure": self.first_failure,
+                }
+            )
+        )
+
+
+class _RuntimeTaskAdapter:
+    def __init__(self, stack: Any, collector: _TaskProvenance) -> None:
+        self._stack = stack
+        self._collector = collector
+        self._loop = asyncio.get_running_loop()
+        self._pid = os.getpid()
+        self._pending: dict[str, dict[str, Any]] = {}
+        self._producer: ContextVar[dict[str, Any] | None] = ContextVar(
+            "soak_task_producer", default=None
+        )
+        self._installed = False
+
+    def install(self) -> None:
+        web = self._stack.web
+        if any(
+            name in vars(web) for name in ("_serve_runtime", "_runtime_process_payload")
+        ):
+            return
+        original_handler = web._serve_runtime
+        original_payload = web._runtime_process_payload
+
+        async def handler(writer: Any, headers: dict[str, str] | None = None) -> None:
+            probe = self._pending.pop((headers or {}).get(_TASK_HEADER, ""), None)
+            state = {"probe": probe, "calls": 0} if probe is not None else None
+            context = self._producer.set(state)
+            try:
+                await original_handler(writer, headers)
+            finally:
+                self._producer.reset(context)
+
+        def payload() -> dict[str, Any]:
+            result = original_payload()
+            state = self._producer.get()
+            if state is not None:
+                probe = state["probe"]
+                state["calls"] += 1
+                count = _proc_int(result, "asyncioTasks")
+                if state["calls"] != 1:
+                    self._collector.unknown(
+                        probe, "runtime", count, "correlation_ambiguous"
+                    )
+                elif (
+                    count is not None
+                    and os.getpid() == self._pid
+                    and asyncio.get_running_loop() is self._loop
+                ):
+                    population = asyncio.all_tasks()
+                    try:
+                        bindings = []
+                        for name, role in (
+                            ("_civ_rx_task", "radio.civ_rx"),
+                            ("_watchdog_task", "radio.watchdog"),
+                        ):
+                            task = getattr(self._stack.radio, name, None)
+                            if isinstance(task, asyncio.Task):
+                                bindings.append((task, role))
+                        bindings.extend(
+                            (task, "web.client")
+                            for task in getattr(web, "_client_tasks", ())
+                            if isinstance(task, asyncio.Task)
+                        )
+                        self._collector.capture(
+                            probe, "runtime", count, tasks=population, bindings=bindings
+                        )
+                    except Exception:
+                        self._collector.unknown(probe, "runtime", count)
+                else:
+                    self._collector.unknown(probe, "runtime", count)
+            return result
+
+        try:
+            web._serve_runtime = handler
+            web._runtime_process_payload = payload
+        except Exception:
+            for name in ("_serve_runtime", "_runtime_process_payload"):
+                if name in vars(web):
+                    delattr(web, name)
+            return
+        self._installed = True
+
+    @contextlib.contextmanager
+    def request(self, probe: dict[str, Any]) -> Any:
+        if self._pending or asyncio.get_running_loop() is not self._loop:
+            context = _TASK_REQUEST.set(None)
+            try:
+                yield {}
+            finally:
+                _TASK_REQUEST.reset(context)
+            return
+        token = secrets.token_hex(16)
+        headers = {_TASK_HEADER: token}
+        self._pending[token] = probe
+        context = _TASK_REQUEST.set(headers)
+        try:
+            yield headers
+        finally:
+            _TASK_REQUEST.reset(context)
+            self._pending.pop(token, None)
+
+    def close(self) -> None:
+        if self._installed:
+            del self._stack.web._serve_runtime
+            del self._stack.web._runtime_process_payload
+            self._installed = False
+        self._pending.clear()
+
+
 # Driver-side process metrics (the per-field fallback sampler path)
 # ---------------------------------------------------------------------------
 
@@ -328,11 +651,7 @@ def _server_asyncio_task_count() -> int:
     (``_DRIVER_TASK_PREFIX``); everything else running on the loop is the
     in-process stack, so the difference is the server-side task count.
     """
-    return sum(
-        1
-        for task in asyncio.all_tasks()
-        if not task.get_name().startswith(_DRIVER_TASK_PREFIX)
-    )
+    return sum(1 for task in asyncio.all_tasks() if _task_counted(task))
 
 
 def _proc_int(proc: dict[str, Any], name: str) -> int | None:
@@ -377,6 +696,8 @@ class ProcessMetricsSampler:
     def __init__(self, session: aiohttp.ClientSession, base_url: str) -> None:
         self._session = session
         self._base_url = base_url
+        self._task_provenance: _TaskProvenance | None = None
+        self._runtime_task_adapter: _RuntimeTaskAdapter | None = None
 
     async def _get_json(
         self, path: str, timeout_s: float = 5.0
@@ -387,9 +708,13 @@ class ProcessMetricsSampler:
         # under connection churn against the simulator.
         assert self._session is not None
         try:
+            kwargs: dict[str, Any] = {}
+            if path == "/api/v1/runtime" and _TASK_REQUEST.get() is not None:
+                kwargs["headers"] = _TASK_REQUEST.get()
             async with self._session.get(
                 f"{self._base_url}{path}",
                 timeout=aiohttp.ClientTimeout(total=timeout_s),
+                **kwargs,
             ) as resp:
                 if resp.status != 200:
                     return None
@@ -408,9 +733,18 @@ class ProcessMetricsSampler:
         return _state_connection_status(body)
 
     async def sample(
-        self, t_s: float, capture: _ProbeCapture | None = None
+        self,
+        t_s: float,
+        capture: _ProbeCapture | None = None,
+        *,
+        task_probe: dict[str, Any] | None = None,
     ) -> ProcessSample:
-        runtime = await self.fetch_runtime()
+        collector = self._task_provenance if task_probe is not None else None
+        if collector is not None and self._runtime_task_adapter is not None:
+            with self._runtime_task_adapter.request(task_probe):
+                runtime = await self.fetch_runtime()
+        else:
+            runtime = await self.fetch_runtime()
         rss: int | None = None
         fds: int | None = None
         tasks: int | None = None
@@ -450,13 +784,25 @@ class ProcessMetricsSampler:
                         _runtime_missing_reason(runtime, "openFds"),
                     )
         if tasks is None:
-            tasks = _server_asyncio_task_count()
+            tasks = (
+                collector.fallback(task_probe)
+                if collector is not None
+                else _server_asyncio_task_count()
+            )
             if capture is not None:
                 capture.select(
                     "asyncioTasks",
                     "driver",
                     _runtime_missing_reason(runtime, "asyncioTasks"),
                 )
+        elif collector is not None:
+            snapshot = task_probe["snapshot"]
+            if (
+                snapshot is None
+                or runtime.get("pid") != snapshot.get("producerPid")
+                or tasks != snapshot.get("measuredCount")
+            ):
+                collector.unknown(task_probe, "runtime", tasks)
         sample = ProcessSample(
             t_s=t_s,
             rss_bytes=rss,
@@ -743,6 +1089,8 @@ class SoakDriver:
             _ProbeDiagnostics() if config.probe_diagnostics else None
         )
         self._capture_cycle = False
+        self._task_provenance = _TaskProvenance() if config.task_provenance else None
+        self._runtime_task_adapter: _RuntimeTaskAdapter | None = None
 
     # -- plumbing ----------------------------------------------------------
 
@@ -987,7 +1335,8 @@ class SoakDriver:
         keeps the pre/post comparison about leaks, not about a spike."""
         assert self._sampler is not None
         diagnostics = self._probe_diagnostics if self._capture_cycle else None
-        if diagnostics is None:
+        provenance = self._task_provenance
+        if diagnostics is None and provenance is None:
             probes = [
                 await self._sampler.sample(self._elapsed())
                 for _ in range(_STABILITY_PROBE_COUNT)
@@ -995,11 +1344,24 @@ class SoakDriver:
         else:
             probes = []
             for _ in range(_STABILITY_PROBE_COUNT):
-                capture = diagnostics.begin(phase)
+                capture = diagnostics.begin(phase) if diagnostics is not None else None
+                task_probe = (
+                    provenance.begin_probe(phase) if provenance is not None else None
+                )
                 try:
-                    probes.append(await self._sampler.sample(self._elapsed(), capture))
+                    if task_probe is None:
+                        probes.append(
+                            await self._sampler.sample(self._elapsed(), capture)
+                        )
+                    else:
+                        probes.append(
+                            await self._sampler.sample(
+                                self._elapsed(), capture, task_probe=task_probe
+                            )
+                        )
                 finally:
-                    capture.ended = time.monotonic()
+                    if capture is not None:
+                        capture.ended = time.monotonic()
 
         def median(field_name: str) -> int | None:
             present = [
@@ -1053,9 +1415,15 @@ class SoakDriver:
             assert self._probe_diagnostics is not None
             self._probe_diagnostics.outcome = "in_progress"
             self._probe_diagnostics.boundary("cycleStart")
+        if self._task_provenance is not None:
+            self._task_provenance.begin_cycle(self._counts["forcedReconnects"])
+            self._sampler._task_provenance = self._task_provenance
+            self._sampler._runtime_task_adapter = self._runtime_task_adapter
+        outcome = "recovered"
         try:
             await self._reconnect_cycle_inner()
         except asyncio.CancelledError:
+            outcome = "cancelled"
             if self._capture_cycle:
                 assert self._probe_diagnostics is not None
                 self._probe_diagnostics.outcome = "cancelled"
@@ -1065,6 +1433,7 @@ class SoakDriver:
             self._record_unrecovered_cycle("cycle cancelled before concluding")
             raise
         except Exception:
+            outcome = "raised"
             if self._capture_cycle:
                 assert self._probe_diagnostics is not None
                 self._probe_diagnostics.outcome = "raised"
@@ -1074,6 +1443,13 @@ class SoakDriver:
             if self._capture_cycle:
                 assert self._probe_diagnostics is not None
                 self._probe_diagnostics.boundary("cycleEnd")
+            if self._task_provenance is not None:
+                entry = self._reconnects[-1]
+                if outcome == "recovered" and not entry["recovered"]:
+                    outcome = "unrecovered"
+                self._task_provenance.finish_cycle(entry, outcome)
+                self._sampler._task_provenance = None
+                self._sampler._runtime_task_adapter = None
             self._capture_cycle = False
             self._cycle_active = False
 
@@ -1140,7 +1516,7 @@ class SoakDriver:
                 diagnostics.boundary("settleEnd")
             post = (
                 await self._stability_probe("post")
-                if diagnostics is not None
+                if diagnostics is not None or self._task_provenance is not None
                 else await self._stability_probe()
             )
             entry["fdsPost"] = post.fds
@@ -1341,6 +1717,8 @@ class SoakDriver:
         }
         if self._probe_diagnostics is not None:
             report["probeDiagnostics"] = self._probe_diagnostics.to_dict()
+        if self._task_provenance is not None:
+            report["taskProvenance"] = self._task_provenance.to_dict()
         return report
 
     async def run(self) -> dict[str, Any]:
@@ -1374,6 +1752,7 @@ async def run_soak(config: SoakConfig) -> dict[str, Any]:
     """
     stack = await _start_simulator_stack()
     report: dict[str, Any] | None = None
+    adapter: _RuntimeTaskAdapter | None = None
     try:
         driver = SoakDriver(
             config,
@@ -1381,9 +1760,16 @@ async def run_soak(config: SoakConfig) -> dict[str, Any]:
             rigctld_url=f"127.0.0.1:{stack.rigctld_port}",
             sim=stack.sim,
         )
+        if driver._task_provenance is not None:
+            adapter = _RuntimeTaskAdapter(stack, driver._task_provenance)
+            adapter.install()
+            driver._runtime_task_adapter = adapter
         report = await driver.run()
         return report
     finally:
+        if adapter is not None:
+            adapter.close()
+            driver._task_provenance.close()
         if config.report_path and report is not None:
             Path(config.report_path).write_text(
                 json.dumps(report, indent=2) + "\n", encoding="utf-8"
@@ -1411,6 +1797,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="capture at most six probes from the first reconnect",
     )
     parser.add_argument(
+        "--task-provenance",
+        action="store_true",
+        help="capture bounded active and first task-stability-failing reconnect tasks",
+    )
+    parser.add_argument(
         "--reconnect-interval",
         type=float,
         default=RECONNECT_INTERVAL_S,
@@ -1435,6 +1826,7 @@ def main(argv: list[str] | None = None) -> int:
         duration_s=args.duration,
         report_path=args.report,
         probe_diagnostics=args.probe_diagnostics,
+        task_provenance=args.task_provenance,
         reconnect_interval_s=args.reconnect_interval,
     )
     report = asyncio.run(run_soak(config))
