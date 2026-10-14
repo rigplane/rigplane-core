@@ -4201,7 +4201,8 @@ class CivRuntime:
         (``register_ack(wait=True)``) and the raw transaction path's
         ``nak_terminal=True`` default already carry.
         """
-        assert self._host._civ_transport is not None
+        if self._host._civ_transport is None:
+            raise ConnectionError("Not connected to radio")
         self._ensure_civ_runtime()
         transport = self._host._civ_transport
         tracker = self._host._civ_request_tracker
