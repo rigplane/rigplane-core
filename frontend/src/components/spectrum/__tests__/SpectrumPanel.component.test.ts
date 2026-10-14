@@ -15,6 +15,7 @@ import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter
 import { qualifyScopeFrameEnvelope, toScopeDisplayFrame } from '$lib/runtime/adapters/scope-adapter';
 import { resolveLcdSpectrumFrame } from '../../../skins/segmentline/lcd-display-contract';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import { ScopeRenderTrace, type TraceReceipt } from '$lib/runtime/scope-render-trace';
 
 // ---------------------------------------------------------------------------
 // Global mocks (must be before component import)
@@ -145,6 +146,7 @@ const runtimeHarness = vi.hoisted(() => {
     scope: {
       registerPresentationDriver: vi.fn(),
       subscribe: vi.fn(() => () => {}),
+      subscribeTraceReceipt: vi.fn((_observer: (receipt: TraceReceipt) => void) => () => {}),
       get hardwareScopeConnected() { return state.mockScopeConnected; },
       get hardwareScopeFrameLive() { return state.mockScopeFrameLive; },
       subscribeHardware: vi.fn((handler: (frame: TestScopeFrame) => void) => {
@@ -686,6 +688,7 @@ afterEach(() => {
   expect(txHarness.listenerCount()).toBe(0);
   appTxHostHarness.controller = null;
   document.body.innerHTML = '';
+  vi.unstubAllEnvs();
 });
 
 // ---------------------------------------------------------------------------
@@ -693,6 +696,52 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('SpectrumPanel component', () => {
+  it('keeps trace controls absent in an ordinary build', () => {
+    const target = mountPanel();
+    expect(target.querySelector('[aria-label="Scope render trace"]')).toBeNull();
+    expect(runtimeHarness.runtime.scope.subscribeTraceReceipt).not.toHaveBeenCalled();
+  });
+
+  it('starts and stops a candidate trace only on explicit clicks without opening a source', () => {
+    vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
+    const target = mountPanel();
+    const controls = target.querySelector('[aria-label="Scope render trace"]');
+    expect(controls).not.toBeNull();
+    const start = [...controls!.querySelectorAll('button')].find((button) => button.textContent === 'Start trace')!;
+    expect(start.disabled).toBe(false);
+    start.click();
+    flushSync();
+    expect(runtimeHarness.runtime.scope.subscribeTraceReceipt).toHaveBeenCalledTimes(1);
+    expect(controls?.textContent).toContain('recording');
+    expect(runtimeHarness.runtime.acquireHardwareScope).toHaveBeenCalledTimes(1);
+    const stop = [...controls!.querySelectorAll('button')].find((button) => button.textContent === 'Stop trace')!;
+    stop.click();
+    flushSync();
+    expect(controls?.textContent).toContain('stopped');
+    expect(controls?.textContent).toContain('Download trace');
+  });
+
+  it('keeps concurrent panel sessions separate and ignores receipts from another source', () => {
+    vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
+    const observe = vi.spyOn(ScopeRenderTrace.prototype, 'observe');
+    const first = mountPanel();
+    const second = mountPanel();
+    for (const panel of [first, second]) {
+      (panel.querySelector('[aria-label="Scope render trace"] button') as HTMLButtonElement).click();
+    }
+    flushSync();
+    const subscriptions = vi.mocked(runtimeHarness.runtime.scope.subscribeTraceReceipt).mock.calls;
+    expect(subscriptions).toHaveLength(2);
+    const frame = Object.freeze({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, pixels: new Uint8Array(4) });
+    const receipt = { kind: 'accepted' as const, frame, token: { source: 'hardware' as const,
+      transportEpoch: 1, wireSequence: 1, acceptedSequence: 1 }, callbackAt: performance.now(), acceptedAt: performance.now() };
+    subscriptions[0][0](receipt);
+    subscriptions[1][0](receipt);
+    expect(observe).toHaveBeenCalledTimes(2);
+    expect(observe.mock.contexts[0]).not.toBe(observe.mock.contexts[1]);
+    subscriptions[0][0]({ ...receipt, token: { ...receipt.token, source: 'audio_fft' } });
+    expect(observe).toHaveBeenCalledTimes(2);
+  });
   it('mounts without errors', () => {
     const target = mountPanel();
     expect(target.querySelector('.spectrum-panel')).not.toBeNull();

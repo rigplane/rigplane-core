@@ -9,14 +9,16 @@
   import { vibrate } from '../../lib/utils/haptics';
   import { canvasBackingSize, watchDevicePixelRatio, watchStageScale } from '../../lib/canvas/backing-store.svelte';
   import { getStageScale } from '../../primitives/stage/stage-scale';
+  import type { ScopeRenderTrace, TraceToken } from '../../lib/runtime/scope-render-trace';
 
   interface Props {
     options?: WaterfallOptions;
     onFreqClick?: (hz: number) => void;
-    onRegisterPush?: (fn: (data: Uint8Array, options?: WaterfallOptions) => void) => void;
+    trace?: ScopeRenderTrace | null;
+    onRegisterPush?: (fn: (data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null) => void) => void;
   }
 
-  let { options = defaultWaterfallOptions, onFreqClick, onRegisterPush }: Props = $props();
+  let { options = defaultWaterfallOptions, onFreqClick, onRegisterPush, trace = null }: Props = $props();
 
   let canvas: HTMLCanvasElement;
   let renderer: WaterfallRenderer | null = null;
@@ -26,13 +28,19 @@
   let cssWidth = 0;
   let cssHeight = 0;
 
-  function directPush(pixels: Uint8Array, frameOptions?: WaterfallOptions): void {
-    if (document.hidden) return;
+  function directPush(pixels: Uint8Array, frameOptions?: WaterfallOptions, token?: TraceToken | null): void {
+    if (document.hidden || !renderer) return;
     // The push fires synchronously from the frame handler while the options
     // $effect runs later — prefer the caller's fresh snapshot.
     const effective = frameOptions ?? options;
-    if (renderer && effective) renderer.updateOptions(effective);
-    renderer?.pushRow(pixels);
+    const measuring = trace?.status === 'recording';
+    if (measuring) trace?.recordGeometry('waterfall', cssWidth, cssHeight, canvas.width, canvas.height, window.devicePixelRatio || 1);
+    const optionsStart = measuring ? performance.now() : 0;
+    if (effective) renderer.updateOptions(effective);
+    if (measuring) trace?.record('waterfall_options', token ?? null, performance.now() - optionsStart);
+    const pushStart = measuring ? performance.now() : 0;
+    renderer.pushRow(pixels);
+    if (measuring) trace?.record('waterfall_push', token ?? null, performance.now() - pushStart);
   }
 
   $effect(() => {

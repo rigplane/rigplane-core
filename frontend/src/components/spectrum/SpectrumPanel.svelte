@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { untrack, type Snippet } from 'svelte';
+  import { onDestroy, untrack, type Snippet } from 'svelte';
+  import { ScopeRenderTrace, type TraceToken, type TraceSource, type TraceStatus } from '../../lib/runtime/scope-render-trace';
   import SpectrumCanvas from './SpectrumCanvas.svelte';
   import WaterfallCanvas from './WaterfallCanvas.svelte';
   import DxOverlay from './DxOverlay.svelte';
@@ -145,8 +146,61 @@
   let sampledReceipt: number | null = null;
   let brtLevel = $state(0);
   let colorScheme = $state<ColorSchemeName>('classic');
-  let spectrumPush: ((data: Uint8Array) => void) | null = null;
-  let waterfallPush: ((data: Uint8Array, options?: WaterfallOptions) => void) | null = null;
+  let spectrumPush: ((data: Uint8Array, token?: TraceToken | null) => void) | null = null;
+  let waterfallPush: ((data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null) => void) | null = null;
+  const traceCandidate = import.meta.env.VITE_SCOPE_TRACE_CANDIDATE === '1';
+  let trace: ScopeRenderTrace | null = $state(null);
+  let traceStatus: 'idle' | TraceStatus = $state('idle');
+  let traceError = $state('');
+  let traceSource: TraceSource | null = null;
+  let unsubscribeTrace: (() => void) | null = null;
+
+  function startTrace(): void {
+    if (!traceCandidate || traceStatus === 'recording' || !scopeDemandOn || !scopeConnected) return;
+    unsubscribeTrace?.();
+    trace?.dispose();
+    traceError = '';
+    traceSource = (managed && scopeProjection?.frame.source === 'audio-fft') || (!managed && audioFft)
+      ? 'audio_fft' : 'hardware';
+    const session = new ScopeRenderTrace((status) => {
+      traceStatus = status;
+      unsubscribeTrace?.();
+      unsubscribeTrace = null;
+    });
+    trace = session;
+    traceStatus = session.status;
+    if (session.status === 'recording') {
+      unsubscribeTrace = runtime.scope.subscribeTraceReceipt((receipt) => {
+        const source = receipt.kind === 'accepted' ? receipt.token.source : receipt.source;
+        if (source !== traceSource) return;
+        try { session.observe(receipt); } catch {
+          traceError = 'Trace collector stopped after an error';
+          session.stop('observer_error');
+        }
+      });
+    }
+  }
+
+  function stopTrace(): void { trace?.stop('operator'); }
+
+  function downloadTrace(): void {
+    const contents = trace?.export();
+    if (!contents) return;
+    try {
+      const url = URL.createObjectURL(new Blob([contents], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `scope-render-trace-${trace?.runId}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    } catch {
+      traceError = 'Local trace download failed';
+    }
+  }
+
+  onDestroy(() => { unsubscribeTrace?.(); trace?.dispose(); });
   let startFreq = $state(0);
   let endFreq = $state(0);
   let frameScopeMode = $state(0);  // scope mode from binary frame header (authoritative)
@@ -920,6 +974,7 @@
   });
 
   $effect(() => { if (managed) scopeDemandOn = scopeDemanded; });
+  $effect(() => { if (!scopeDemandOn && traceStatus === 'recording') trace?.stop('source_changed'); });
   $effect(() => {
     if (!managed) return;
     const projection = scopeProjection;
@@ -930,12 +985,18 @@
       startFreq = projection.frame.startHz;
       endFreq = projection.frame.endHz;
       if (sampledReceipt !== projection.acceptedSequence) {
+        const traceStart = trace?.status === 'recording' ? performance.now() : 0;
+        const source: TraceSource = projection.frame.source === 'audio-fft' ? 'audio_fft' : 'hardware';
+        if (trace?.status === 'recording' && source !== traceSource) trace.stop('source_changed');
+        const token = trace?.tokenForAcceptedSequence(projection.acceptedSequence, source) ?? null;
         sampledReceipt = projection.acceptedSequence;
         scopePixels = Uint8Array.from(projection.frame.normalizedBins, sample => Math.round(sample * 255));
-        spectrumPush?.(scopePixels);
+        spectrumPush?.(scopePixels, token);
         // MOR-3158: a TX-frozen SDR source adds no waterfall row — the
         // panorama holds its last pre-transmit image under the TX marker.
-        if (!sdrTxFrozen) waterfallPush?.(scopePixels, waterfallOptions);
+        if (!sdrTxFrozen) waterfallPush?.(scopePixels, waterfallOptions, token);
+        else trace?.record('waterfall_suppressed', token, 0, true);
+        if (traceStart) trace?.record('fanout', token, performance.now() - traceStart);
       }
       if (projection.passband.state !== 'current') {
         resizeCapture = null;
@@ -955,6 +1016,9 @@
         if (managed || !scopeDemandOn) return;
         if (sourceIsAudio && (frame.pixels.length < 3 || frame.pixels.length % 2 === 0
           || frame.endFreq <= frame.startFreq)) return;
+        const traceStart = trace?.status === 'recording' ? performance.now() : 0;
+        if (traceStart && (sourceIsAudio ? 'audio_fft' : 'hardware') !== traceSource) trace?.stop('source_changed');
+        const token = trace?.tokenForFrame(frame) ?? null;
         const pixels = sourceIsAudio
           ? frame.pixels.slice(Math.floor(frame.pixels.length / 2)).map(value =>
               Math.round(Math.min(value, AUDIO_FFT_AMPLITUDE_MAX)
@@ -964,9 +1028,11 @@
         startFreq = sourceIsAudio ? 0 : frame.startFreq;
         endFreq = sourceIsAudio ? (frame.endFreq - frame.startFreq) / 2 : frame.endFreq;
         scopePixels = pixels;
-        spectrumPush?.(pixels);
+        spectrumPush?.(pixels, token);
         // MOR-3158: same TX-frozen hold as the managed path above.
-        if (!sdrTxFrozen) waterfallPush?.(pixels, waterfallOptions);
+        if (!sdrTxFrozen) waterfallPush?.(pixels, waterfallOptions, token);
+        else trace?.record('waterfall_suppressed', token, 0, true);
+        if (traceStart) trace?.record('fanout', token, performance.now() - traceStart);
       };
       const unsubscribe = sourceIsManaged ? () => {} : sourceIsAudio
         ? runtime.scope.subscribe(receive)
@@ -1037,6 +1103,14 @@
     <ScopeSourceBadge source="sdr" sdr={sdrState} />
     <ScopeSourceSelector sources={[...sdrOtherSources, 'sdr']} active="sdr" />
   {/snippet}
+  {#if traceCandidate}
+    <div class="scope-trace-controls" aria-label="Scope render trace">
+      <button type="button" onclick={startTrace} disabled={traceStatus === 'recording' || !scopeDemandOn || !scopeConnected}>Start trace</button>
+      {#if traceStatus === 'recording'}<button type="button" onclick={stopTrace}>Stop trace</button>{/if}
+      {#if traceStatus === 'stopped' || traceStatus === 'overflow'}<button type="button" onclick={downloadTrace}>Download trace</button>{/if}
+      <span role="status">{traceStatus}{trace?.reason ? ` (${trace.reason})` : ''}{traceError ? ` · ${traceError}` : ''}</span>
+    </div>
+  {/if}
   {#if audioFft}
     <div class="audio-source-label">
       <span>Audio FFT · AF</span>
@@ -1071,7 +1145,7 @@
       {/if}
       {#if !audioFft}<BandPlanOverlay startFreq={viewportStartFreq} endFreq={viewportEndFreq} visible={showBandPlan} {hiddenLayers} />{/if}
       {#if scopeTraceLive}
-      <SpectrumCanvas data={scopePixels} options={spectrumOptions} {spanHz} {enableAvg} {enablePeakHold} onRegisterPush={(fn) => { spectrumPush = fn; if (managed && scopePixels) fn(scopePixels); }} />
+      <SpectrumCanvas data={scopePixels} options={spectrumOptions} {spanHz} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} onRegisterPush={(fn) => { spectrumPush = fn; if (managed && scopePixels) fn(scopePixels); }} />
       {/if}
       {#if spectrumCenterReferenceVisible}
         <div class="tune-line" style="left:{tuneLinePct}%"></div>
@@ -1121,7 +1195,7 @@
     <div class="waterfall-content" class:panning={dragging} class:draggable={canPan} bind:this={waterfallContent} onpointerdown={handleDragStart} role="presentation">
       {#key runtime.state?.providerGeneration}
       <div class="waterfall-history" style:visibility={managedUnavailable ? 'hidden' : 'visible'} aria-hidden={managedUnavailable}>
-        <WaterfallCanvas options={waterfallOptions} onFreqClick={audioFft || managedUnavailable ? undefined : handleTune} onRegisterPush={(fn) => { waterfallPush = fn; if (managed && scopePixels && !sdrTxFrozen) fn(scopePixels, waterfallOptions); }} />
+        <WaterfallCanvas options={waterfallOptions} trace={traceStatus === 'recording' ? trace : null} onFreqClick={audioFft || managedUnavailable ? undefined : handleTune} onRegisterPush={(fn) => { waterfallPush = fn; if (managed && scopePixels && !sdrTxFrozen) fn(scopePixels, waterfallOptions); }} />
         <!-- MOR-3158: the TX-frozen veil rides inside the history wrapper so
              it dims the painted rows without hiding the tune-line/passband
              overlays stacked above the canvas; it hides together with the

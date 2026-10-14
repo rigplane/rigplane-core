@@ -136,6 +136,48 @@ describe('ScopeController', () => {
     expect(channel.disconnect).not.toHaveBeenCalled();
   });
 
+  it('publishes the exact accepted receipt before legacy frame delivery, without changing subscriber arguments', async () => {
+    const order: string[] = [];
+    const receipts: unknown[] = [];
+    const stopTrace = ctrl.subscribeTraceReceipt((receipt) => { order.push('receipt'); receipts.push(receipt); });
+    const frameHandler = vi.fn((frame: ScopeFrame) => {
+      order.push('frame');
+      expect((receipts[0] as { frame: ScopeFrame }).frame).toBe(frame);
+    });
+    ctrl.subscribe(frameHandler);
+    expect(channel.connect).not.toHaveBeenCalled();
+    const handle = await ctrl.audioFftDriver.start();
+    channel._setState('connected');
+    const buffer = makeScopeFrameBuffer(2049);
+    new DataView(buffer).setUint16(12, 65535, true);
+    channel._fire(buffer);
+    expect(order).toEqual(['receipt', 'frame']);
+    expect(frameHandler.mock.calls[0]).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ kind: 'accepted', token: {
+      source: 'audio_fft', transportEpoch: channel.sessionEpoch, wireSequence: 65535, acceptedSequence: 1,
+    } });
+    stopTrace();
+    await ctrl.audioFftDriver.stop(handle);
+  });
+
+  it('isolates a failing diagnostic observer and reports parse rejection without changing frame delivery', async () => {
+    const frames = vi.fn();
+    const receipts = vi.fn();
+    ctrl.subscribeTraceReceipt(() => { throw new Error('diagnostic failure'); });
+    ctrl.subscribeTraceReceipt(receipts);
+    ctrl.subscribe(frames);
+    const handle = await ctrl.audioFftDriver.start();
+    channel._setState('connected');
+    const bad = makeScopeFrameBuffer();
+    new DataView(bad).setUint8(0, 0);
+    expect(() => channel._fire(bad)).not.toThrow();
+    expect(receipts).toHaveBeenCalledWith(expect.objectContaining({ kind: 'rejected', reason: 'parse' }));
+    expect(frames).not.toHaveBeenCalled();
+    expect(() => channel._fire(makeScopeFrameBuffer())).not.toThrow();
+    expect(frames).toHaveBeenCalledTimes(1);
+    await ctrl.audioFftDriver.stop(handle);
+  });
+
   it('registers one exact-handle driver for first/shared/last demand', async () => {
     const host = new PresentationResourceHost<unknown>('session');
     ctrl.registerPresentationDriver(host);

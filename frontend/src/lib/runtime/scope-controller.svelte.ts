@@ -31,6 +31,7 @@ import type {
   WsChannel,
 } from '$lib/transport/ws-client';
 import type { PresentationResourceDriver, PresentationResourceHost } from './resource-host';
+import type { TraceReceipt } from './scope-render-trace';
 
 export type { ScopeFrame };
 
@@ -90,6 +91,7 @@ export class ScopeController {
   private _hardwareSubscribers = new Map<number, FrameHandler>();
   private _healthSubscribers = new Map<number, HealthHandler>();
   private _evidenceSubscribers = new Map<number, EvidenceHandler>();
+  private _traceObservers: Map<number, (receipt: TraceReceipt) => void> | null = null;
   private _nextId = 0;
   private _bindings = new Map<AudioFftHandle, ChannelBinding>();
   private _activeHandle: AudioFftHandle | null = null;
@@ -147,6 +149,24 @@ export class ScopeController {
   subscribeHardware(handler: FrameHandler): () => void {
     const id = this._nextId++; this._hardwareSubscribers.set(id, handler);
     return () => { this._hardwareSubscribers.delete(id); };
+  }
+
+  /** Optional diagnostic observation; never acquires a channel or changes frame subscribers. */
+  subscribeTraceReceipt(observer: (receipt: TraceReceipt) => void): () => void {
+    const id = this._nextId++;
+    (this._traceObservers ??= new Map()).set(id, observer);
+    return () => {
+      this._traceObservers?.delete(id);
+      if (this._traceObservers?.size === 0) this._traceObservers = null;
+    };
+  }
+
+  private _publishTraceReceipt(receipt: TraceReceipt): void {
+    const observers = this._traceObservers;
+    if (!observers) return;
+    for (const observer of [...observers.values()]) {
+      try { observer(receipt); } catch { /* Diagnostics never interrupt delivery. */ }
+    }
   }
 
   snapshotHealth(source: ScopeSource): ScopeHealth {
@@ -284,12 +304,15 @@ export class ScopeController {
     try {
       binding.unsubscribeBinary = channel.onBinary((buf) => {
         if (!current() || this._readHealth(source).transport !== 'connected') return;
+        const callbackAt = this._traceObservers ? this._timing.now() : null;
         const frame = parseScopeFrame(buf);
         if (!frame) {
+          if (callbackAt !== null) this._publishTraceReceipt({ kind: 'rejected', source,
+            transportEpoch: channel.sessionEpoch, callbackAt, reason: 'parse' });
           this._invalidateSource(source, authorityRevision === this._authorityRevision);
           return;
         }
-        if (this._acceptFrame(source, channel, authorityRevision, frame, buf)) {
+        if (this._acceptFrame(source, channel, authorityRevision, frame, buf, callbackAt)) {
           const subscribers = source === 'hardware' ? this._hardwareSubscribers : this._subscribers;
           for (const subscriber of subscribers.values()) subscriber(frame);
         }
@@ -412,14 +435,20 @@ export class ScopeController {
     authorityRevision: number,
     frame: ScopeFrame,
     buffer: ArrayBuffer,
+    callbackAt: number | null,
   ): boolean {
     const receivedAt = this._timing.now();
     const transportEpoch = channel.sessionEpoch;
     if (!Number.isFinite(receivedAt) || receivedAt < 0) {
+      if (callbackAt !== null) this._publishTraceReceipt({ kind: 'rejected', source,
+        transportEpoch, callbackAt, reason: 'clock' });
       this._invalidateSource(source, authorityRevision === this._authorityRevision);
       return false;
     }
     const acceptedSequence = ++this._acceptedSequence;
+    if (callbackAt !== null) this._publishTraceReceipt({ kind: 'accepted', frame,
+      token: { source, transportEpoch, wireSequence: new DataView(buffer).getUint16(12, true), acceptedSequence },
+      callbackAt, acceptedAt: receivedAt });
     const arrival = Object.freeze({ receivedAt, acceptedSequence });
     this._arrivals[source] = arrival;
     if (source === 'hardware') this.scopeFrame = frame;
