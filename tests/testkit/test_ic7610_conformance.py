@@ -66,7 +66,7 @@ from rigplane_testkit.icom import (
     MockIcomRadio,
 )
 from rigplane_testkit.icom.fixtures import control_structure
-from rigplane_testkit.icom.replay import Recording, extract_civ_frame
+from rigplane_testkit.icom.replay import Record, Recording, extract_civ_frame
 
 from _perf_helpers import fast_connect
 from testkit.ic7610_fakes import ic7610_lan_fake, ic7610_usb_fake
@@ -636,6 +636,32 @@ def _compare_handshake(recorded_rows: list[dict], sim_rows: list[dict]) -> dict:
     return observed
 
 
+def _handshake_control_rows(records: list[Record], civ_start: float) -> list[dict]:
+    # Apply the strict cutoff before control_structure rounds times to milliseconds.
+    return control_structure([record for record in records if record.t < civ_start])
+
+
+@pytest.mark.parametrize(
+    ("status_time", "civ_start", "included"),
+    [
+        pytest.param(0.100600, 0.100900, True, id="before-rounded-up"),
+        pytest.param(0.100400, 0.100400, False, id="at-rounded-down"),
+        pytest.param(0.100400, 0.100300, False, id="after-rounded-down"),
+    ],
+)
+def test_handshake_cutoff_preserves_raw_precision(
+    status_time: float, civ_start: float, included: bool
+) -> None:
+    status = Record(
+        t=status_time,
+        direction="r2c",
+        port="control",
+        data=bytes.fromhex("50000000") + bytes(76),
+    )
+    rows = _handshake_control_rows([status], civ_start)
+    assert rows == (control_structure([status]) if included else [])
+
+
 async def test_handshake_structure_matches_ledger(tmp_path) -> None:
     mock = MockIcomRadio()
     await mock.start()
@@ -671,7 +697,7 @@ async def test_handshake_structure_matches_ledger(tmp_path) -> None:
     # do not place the first CI-V data. The t-cut below also drops this
     # session's own rows at/after civ_start (the disconnect exchange);
     # pings/idle are dropped by _control_steps.
-    sim_rows = [row for row in control_structure(records) if row["t"] < civ_start]
+    sim_rows = _handshake_control_rows(records, civ_start)
     recorded_rows = [
         row for row in _load_control_windows() if row["window"] == "handshake"
     ]
