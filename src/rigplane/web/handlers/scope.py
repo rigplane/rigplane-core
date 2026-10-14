@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+import time
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from ..protocol import decode_json, encode_json, encode_scope_frame  # noqa: TID251
 from ..transport import Connection  # noqa: TID251
@@ -18,6 +20,27 @@ __all__ = ["HIGH_WATERMARK", "ScopeHandler"]
 logger = logging.getLogger(__name__)
 
 HIGH_WATERMARK = 5  # Max queued scope/meter frames before dropping
+
+
+class ScopeTraceEvent(TypedDict):
+    """Scalar, connection-local diagnostics; no payload or source-age claim."""
+
+    stage: str
+    channel: str
+    wire_sequence: int | None
+    queue_depth: int
+    monotonic_ns: int
+
+
+TraceStage = Literal[
+    "enqueue",
+    "drop_oldest",
+    "drop_new",
+    "send_start",
+    "send_complete",
+    "send_cancelled",
+    "send_error",
+]
 
 
 class ScopeHandler:
@@ -38,6 +61,8 @@ class ScopeHandler:
         radio: Any = None,
         server: Any = None,
         audio_mode: bool = False,
+        *,
+        trace_observer: Callable[[ScopeTraceEvent], None] | None = None,
     ) -> None:
         self._ws = ws
         self._radio = radio
@@ -48,6 +73,29 @@ class ScopeHandler:
             maxsize=HIGH_WATERMARK * 2
         )
         self._running = False
+        # Opt-in observers must be bounded/non-blocking. Disable a failed
+        # observer without changing frame delivery or sender cancellation.
+        self._trace_observer = trace_observer
+
+    def _observe(self, stage: TraceStage, data: bytes) -> None:
+        observer = self._trace_observer
+        if observer is None:
+            return
+        try:
+            observer(
+                ScopeTraceEvent(
+                    stage=stage,
+                    channel="audio-scope" if self._audio_mode else "scope",
+                    wire_sequence=int.from_bytes(data[11:13], "little")
+                    if len(data) >= 13
+                    else None,
+                    queue_depth=self._frame_queue.qsize(),
+                    monotonic_ns=time.monotonic_ns(),
+                )
+            )
+        except Exception:
+            self._trace_observer = None
+            logger.warning("scope: diagnostic observer disabled after failure")
 
     def enqueue_frame(self, frame: "ScopeFrame") -> None:
         """Enqueue a scope frame (called by server broadcast)."""
@@ -57,12 +105,15 @@ class ScopeHandler:
         self._seq = (self._seq + 1) & 0xFFFF
         if self._frame_queue.full():
             try:
-                self._frame_queue.get_nowait()
+                dropped = self._frame_queue.get_nowait()
+                self._observe("drop_oldest", dropped)
             except asyncio.QueueEmpty:
                 pass
         try:
             self._frame_queue.put_nowait(encoded)
+            self._observe("enqueue", encoded)
         except asyncio.QueueFull:
+            self._observe("drop_new", encoded)
             logger.debug("ScopeHandler: frame queue full, dropping frame")
 
     async def run(self) -> None:
@@ -121,7 +172,16 @@ class ScopeHandler:
                     self._frame_queue.get(),
                     timeout=1.0,
                 )
-                await self._ws.send_binary(data)
+                self._observe("send_start", data)
+                try:
+                    await self._ws.send_binary(data)
+                except asyncio.CancelledError:
+                    self._observe("send_cancelled", data)
+                    raise
+                except Exception:
+                    self._observe("send_error", data)
+                    raise
+                self._observe("send_complete", data)
                 sent += 1
                 if sent <= 3 or sent % 300 == 0:
                     logger.debug("scope: sent frame #%d (%d bytes)", sent, len(data))

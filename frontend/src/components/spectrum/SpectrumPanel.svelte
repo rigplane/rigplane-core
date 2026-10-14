@@ -96,7 +96,8 @@
   // once per mount for both the root attribute and the renderer options`.
   let { hideSourceControls = false, hideScopeControls = false, hideAutoStepToggle = false, hideToolbar = false,
     enableAvg = $bindable(true), enablePeakHold = $bindable(true), showBandPlan = $bindable(true), scopeControls,
-    scopeStatusIndicator, scopeProjection, scopeDemanded = true, onScopeDemandChange, colorRoles }: {
+    scopeStatusIndicator, scopeProjection, scopeDemanded = true, onScopeDemandChange, colorRoles,
+    captureTraceTimeline = false, onTraceComplete }: {
     hideSourceControls?: boolean; hideScopeControls?: boolean; hideAutoStepToggle?: boolean; hideToolbar?: boolean;
     enableAvg?: boolean; enablePeakHold?: boolean; showBandPlan?: boolean;
     scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet]>;
@@ -104,6 +105,9 @@
     scopeProjection?: ScopeDisplayProjection | null;
     scopeDemanded?: boolean; onScopeDemandChange?: (enabled: boolean) => void;
     colorRoles?: Partial<SpectrumColorRoles>;
+    /** Diagnostic candidates only; ordinary rendering never invokes these hooks. */
+    captureTraceTimeline?: boolean;
+    onTraceComplete?: (contents: string) => void;
   } = $props();
 
   let resolvedColorRoles = $derived(resolveSpectrumColorRoles(colorRoles));
@@ -186,21 +190,35 @@
     traceSource = (managed && scopeProjection?.frame.source === 'audio-fft') || (!managed && audioFft)
       ? 'audio_fft' : 'hardware';
     traceSelection = selectedTraceIdentity();
-    const session = new ScopeRenderTrace((status) => {
+    // An already-hidden constructor can stop synchronously. Export that
+    // session only after assignment, avoiding an uninitialized closure read.
+    let completedDuringConstruction = false;
+    let session: ScopeRenderTrace | null = null;
+    const completed = () => {
+      const contents = session?.export();
+      if (contents && onTraceComplete) {
+        try { onTraceComplete(contents); } catch { traceError = 'Trace export callback failed'; }
+      }
+    };
+    session = new ScopeRenderTrace((status) => {
       traceStatus = status;
       traceSelection = null;
       unsubscribeTrace?.();
       unsubscribeTrace = null;
-    });
+      if (session) completed();
+      else completedDuringConstruction = true;
+    }, undefined, undefined, { captureTimeline: captureTraceTimeline });
     trace = session;
     traceStatus = session.status;
+    if (completedDuringConstruction) completed();
     if (session.status === 'recording') {
+      const recordingSession = session;
       unsubscribeTrace = runtime.scope.subscribeTraceReceipt((receipt) => {
         const source = receipt.kind === 'accepted' ? receipt.token.source : receipt.source;
         if (source !== traceSource) return;
-        try { session.observe(receipt); } catch {
+        try { recordingSession.observe(receipt); } catch {
           traceError = 'Trace collector stopped after an error';
-          session.stop('observer_error');
+          recordingSession.stop('observer_error');
         }
       });
     }

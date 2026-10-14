@@ -33,12 +33,14 @@ const MAX_BYTES = 16 * 1024 * 1024;
 const MAX_BUCKETS = 121;
 const MAX_BURST = 2_048;
 const MAX_INDEX = 512;
+const MAX_TIMELINE = 32_768;
 const LAG_INTERVAL_MS = 100;
 
 type StageCount = { count: number; totalMs: number; maxMs: number; firstSequence?: number; lastSequence?: number };
 type Bucket = { second: number; stages: Partial<Record<TraceStage, StageCount>> };
 type Burst = { atMs: number; stage: TraceStage; durationMs: number; acceptedSequence?: number; wireSequence?: number; transportEpoch?: number; source?: TraceSource };
 type Geometry = { cssWidth: number; cssHeight: number; backingWidth: number; backingHeight: number; dpr: number };
+type TimelineEvent = Burst | (Geometry & { atMs: number; stage: 'geometry'; canvas: 'waterfall' | 'spectrum' });
 type TraceClock = {
   now(): number;
   setTimeout(callback: () => void, ms: number): ReturnType<typeof setTimeout>;
@@ -74,12 +76,16 @@ export class ScopeRenderTrace {
   private lagTimer: ReturnType<typeof setInterval> | null = null;
   private expectedLagAt = 0;
   private frozen: string | null = null;
+  private readonly timeline: TimelineEvent[] | null;
+  private timelineOverflow = false;
 
   constructor(
     private readonly onStop: (status: TraceStatus) => void = () => {},
     private readonly clock: TraceClock = browserClock,
     runId?: string,
+    options: Readonly<{ captureTimeline?: boolean }> = {},
   ) {
+    this.timeline = options.captureTimeline === true ? [] : null;
     this.runId = runId && runId.length <= 64 ? runId
       : (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
     this.startedAt = clock.now();
@@ -154,16 +160,21 @@ export class ScopeRenderTrace {
     this.geometry[canvas] = { cssWidth: Math.round(cssWidth), cssHeight: Math.round(cssHeight),
       backingWidth: Math.round(backingWidth), backingHeight: Math.round(backingHeight),
       dpr: Math.round(dpr * 100) / 100 };
+    if (this.timeline) this.appendTimeline({ stage: 'geometry', canvas,
+      atMs: this.clock.now() - this.startedAt, ...this.geometry[canvas] });
   }
 
   record(stage: TraceStage, token: TraceToken | null = null, durationMs = 0, interesting = false, at = this.clock.now()): void {
     if (!this.active(at)) return;
+    const duration = Number.isFinite(durationMs) ? Math.max(0, Math.min(durationMs, MAX_MS)) : 0;
+    if (this.timeline && !this.appendTimeline({ atMs: at - this.startedAt, stage, durationMs: duration,
+      ...(token ? { source: token.source, transportEpoch: token.transportEpoch,
+        wireSequence: token.wireSequence, acceptedSequence: token.acceptedSequence } : {}) })) return;
     const second = Math.floor((at - this.startedAt) / 1000);
     if (second < 0 || second >= MAX_BUCKETS) { this.stop('overflow'); return; }
     const bucket = this.buckets[second] ?? (this.buckets[second] = { second, stages: {} });
     const count = bucket.stages[stage] ?? (bucket.stages[stage] = { count: 0, totalMs: 0, maxMs: 0 });
     count.count += 1;
-    const duration = Number.isFinite(durationMs) ? Math.max(0, Math.min(durationMs, MAX_MS)) : 0;
     count.totalMs += duration;
     count.maxMs = Math.max(count.maxMs, duration);
     if (token) {
@@ -197,11 +208,13 @@ export class ScopeRenderTrace {
       clockDomain: 'browser-performance-now', startedAt: this.startedAt, stoppedAt: this.clock.now(),
       status: this._status, reason: this._reason,
       counts: { accepted: this.accepted, rejected: this.rejected, wireGaps: this.wireGaps,
-        burstDropped: this.burstDropped }, geometry: this.geometry, buckets: this.buckets, burst: this.burst });
+        burstDropped: this.burstDropped }, geometry: this.geometry, buckets: this.buckets, burst: this.burst,
+      ...(this.timeline ? { timeline: this.timeline, timelineLimit: MAX_TIMELINE, timelineOverflow: this.timelineOverflow } : {}) });
     this.frozen = snapshot();
     if (new TextEncoder().encode(this.frozen).byteLength > MAX_BYTES) {
       this._status = 'overflow'; this._reason = 'overflow';
       this.buckets.length = 0; this.burst.length = 0;
+      if (this.timeline) { this.timeline.length = 0; this.timelineOverflow = true; }
       this.frozen = snapshot();
     }
     this.onStop(this._status);
@@ -209,6 +222,17 @@ export class ScopeRenderTrace {
 
   export(): string | null { this.active(); return this._status === 'recording' ? null : this.frozen; }
   dispose(): void { this.stop('disposed'); }
+
+  private appendTimeline(event: TimelineEvent): boolean {
+    if (!this.timeline) return true;
+    if (this.timeline.length >= MAX_TIMELINE) {
+      this.timelineOverflow = true;
+      this.stop('overflow');
+      return false;
+    }
+    this.timeline.push(event);
+    return true;
+  }
 
   private active(now = this.clock.now()): boolean {
     if (this._status !== 'recording') return false;
