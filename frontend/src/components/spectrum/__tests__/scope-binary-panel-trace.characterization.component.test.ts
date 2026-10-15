@@ -116,6 +116,9 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       button('Stop trace').click(); flushSync();
       expect(completed).toHaveBeenCalledTimes(1);
       const report = JSON.parse(completed.mock.calls[0][0]);
+      expect(report.schema).toBe('rigplane.scope-render-trace.v1');
+      expect(report.clockDomain).toBe('browser-performance-now');
+      expect(report.timelineLimit).toBe(32_768);
       expect(report.counts).toMatchObject({ accepted: 2, rejected: 0, wireGaps: 0 });
       for (const stage of ['callback', 'accepted', 'fanout', 'spectrum_push', 'waterfall_push']) {
         expect(report.timeline.filter((e: { stage: string }) => e.stage === stage)
@@ -144,7 +147,7 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       }) as typeof setTimeout);
       button('Download trace').click();
       expect(clicked).toHaveBeenCalledOnce();
-      const link = clicked.mock.instances[0];
+      const link = clicked.mock.instances[0] as HTMLAnchorElement;
       expect(link.download).toBe(`scope-render-trace-${report.runId}.json`);
       expect(link.isConnected).toBe(false);
       expect(downloaded?.type).toBe('application/json');
