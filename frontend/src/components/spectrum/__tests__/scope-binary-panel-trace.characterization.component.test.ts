@@ -5,13 +5,18 @@ import { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import type { WsChannel } from '$lib/transport/ws-client';
 import SpectrumPanel from '../SpectrumPanel.svelte';
 
-const harness = vi.hoisted(() => ({ controller: null as ScopeController | null }));
+const harness = vi.hoisted(() => ({ controller: null as ScopeController | null, source: 'hardware' as 'hardware' | 'audio_fft' }));
 vi.mock('$lib/runtime/frontend-runtime', () => ({
-  presentationResources: {},
+  presentationResources: {
+    configure: vi.fn(),
+    acquire: () => ({ resource: 'audio-fft', handle: harness.controller!.audioFftDriver.start() }),
+    release: (lease: { handle: unknown }) => harness.controller!.audioFftDriver.stop(lease.handle),
+  },
   runtime: {
     get scope() { return harness.controller!; },
     state: null,
-    caps: { scopeSource: 'hardware' },
+    get caps() { return { scopeSource: harness.source }; },
+    defaultScopeStatus: { transport: 'connected' },
     acquireHardwareScope: () => harness.controller!.hardwareScopeDriver.start(),
     releaseHardwareScope: (lease: unknown) => harness.controller!.hardwareScopeDriver.stop(lease),
     subscribeDx: () => () => {},
@@ -48,8 +53,22 @@ function channel() {
 }
 
 describe('binary → actual controller → actual panel → actual canvases', () => {
-  it.each([false, true])('correlates delivery and RAF coalescing; export callback throws=%s', async (exportThrows) => {
-    vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
+  it.each([
+    ['hardware', 'ordinary', false], ['hardware', 'ordinary', true],
+    ['hardware', 'continued-hidden', false], ['audio_fft', 'continued-hidden', false],
+    ['hardware', 'deferred-return', false], ['audio_fft', 'deferred-return', false],
+    ['hardware', 'default-hidden', false], ['audio_fft', 'default-hidden', false],
+    ['hardware', 'disabled', false], ['audio_fft', 'disabled', false],
+  ] as const)('%s %s; export callback throws=%s', async (source, mode, exportThrows) => {
+    harness.source = source;
+    let now = 1_000;
+    let hidden = false;
+    let focused = true;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => hidden ? 'hidden' : 'visible');
+    vi.spyOn(document, 'hasFocus').mockImplementation(() => focused);
+    vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', mode === 'disabled' ? '0' : '1');
     vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
     const rafs = new Map<number, FrameRequestCallback>();
     let nextRaf = 0;
@@ -65,11 +84,12 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       return new Proxy(context, { get: (target, key) => key in target ? Reflect.get(target, key) : () => {} }) as unknown as CanvasRenderingContext2D;
     });
     const transport = channel();
-    harness.controller = new ScopeController(() => transport as unknown as WsChannel);
+    const channelFactory = vi.fn(() => transport as unknown as WsChannel);
+    harness.controller = new ScopeController(channelFactory);
     const target = document.createElement('div'); document.body.appendChild(target);
     const completed = vi.fn((_contents: string) => { if (exportThrows) throw new Error('sink failed'); });
     const panel = mount(SpectrumPanel, { target, props: {
-      hideToolbar: true, showBandPlan: false, captureTraceTimeline: true, onTraceComplete: completed,
+      hideToolbar: true, showBandPlan: false, captureTraceTimeline: mode === 'ordinary', onTraceComplete: completed,
     } });
     const button = (text: string) => [...target.querySelectorAll('button')].find(b => b.textContent === text)!;
     const drawPending = () => {
@@ -81,8 +101,83 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       // Literal Python-encoder golden: seed connection liveness before opt-in.
       transport.receive('010000809fd5002026d700ff000003000080ff');
       flushSync(); drawPending();
-      expect(button('Start trace').disabled).toBe(false);
-      button('Start trace').click(); flushSync();
+      expect(channelFactory).toHaveBeenCalledWith(source === 'audio_fft' ? 'audio-scope' : 'scope');
+      if (mode === 'disabled') {
+        expect(button('Start trace')).toBeUndefined();
+        expect(button('Start transition trace')).toBeUndefined();
+        expect(completed).not.toHaveBeenCalled();
+        return;
+      }
+      const transition = mode === 'continued-hidden' || mode === 'deferred-return';
+      const start = button(transition ? 'Start transition trace' : 'Start trace');
+      expect(start).toBeDefined();
+      expect(start.disabled).toBe(false);
+      start.click(); flushSync();
+      if (transition || mode === 'default-hidden') {
+        now += 10;
+        transport.receive('010000809fd5002026d700ffff0003000080ff');
+        flushSync(); drawPending();
+        now += 10; focused = false; window.dispatchEvent(new Event('blur'));
+        now += 10; hidden = true; document.dispatchEvent(new Event('visibilitychange')); flushSync();
+        if (mode === 'default-hidden') {
+          expect(completed).toHaveBeenCalledTimes(1);
+          const report = JSON.parse(completed.mock.calls[0][0]);
+          expect(report.reason).toBe('hidden');
+          expect(report.counts.accepted).toBe(1);
+          expect(report).not.toHaveProperty('transition');
+          expect(report).not.toHaveProperty('timeline');
+          hidden = false; document.dispatchEvent(new Event('visibilitychange'));
+          transport.receive('010000809fd5002026d70000000103000080ff');
+          flushSync(); drawPending();
+          expect(completed).toHaveBeenCalledTimes(1);
+          return;
+        }
+        expect(completed).not.toHaveBeenCalled();
+        now += 10;
+        if (mode === 'continued-hidden') {
+          transport.receive('010000809fd5002026d70000000103000080ff');
+          flushSync(); // Canvas visibility suppresses RAF scheduling while hidden.
+        }
+        now += 500;
+        hidden = false;
+        // Delivery before visibilitychange must observe the current document state.
+        if (mode === 'deferred-return') transport.receive('010000809fd5002026d70000000103000080ff');
+        transport.receive('010000809fd5002026d70001000003000080ff');
+        flushSync(); drawPending();
+        now += 10; document.dispatchEvent(new Event('visibilitychange')); flushSync(); drawPending();
+        focused = true; window.dispatchEvent(new Event('focus'));
+        button('Stop trace').click(); flushSync();
+        expect(completed).toHaveBeenCalledTimes(1);
+        const report = JSON.parse(completed.mock.calls[0][0]);
+        expect(report.reason).toBe('operator');
+        expect(report.transition).toEqual({ mode: 'document-transition', visibilityProvenance: 'document-observed' });
+        expect(report.counts).toMatchObject({ accepted: 3, rejected: 0, wireGaps: 0 });
+        expect(report.timelineOverflow).toBe(false);
+        const events = (stage: string) => report.timeline.filter((e: { stage: string }) => e.stage === stage);
+        expect(events('visibility')).toMatchObject([
+          { atMs: 0, document: { hidden: false } }, { atMs: 30, document: { hidden: true } },
+          { atMs: 550, document: { hidden: false } },
+        ]);
+        for (const stage of ['callback', 'accepted', 'fanout', 'spectrum_push']) {
+          expect(events(stage)).toMatchObject([
+            { atMs: 10, source, wireSequence: 65535, acceptedSequence: 2, document: { hidden: false } },
+            { atMs: mode === 'continued-hidden' ? 40 : 540, source, wireSequence: 0, acceptedSequence: 3,
+              document: { hidden: mode === 'continued-hidden' } },
+            { atMs: 540, source, wireSequence: 1, acceptedSequence: 4, document: { hidden: false, hasFocus: false } },
+          ]);
+        }
+        expect(events('waterfall_push').map((e: { acceptedSequence: number }) => e.acceptedSequence))
+          .toEqual(mode === 'continued-hidden' ? [2, 4] : [2, 3, 4]);
+        for (const stage of ['raf', 'spectrum_render']) {
+          expect(events(stage)).toMatchObject([
+            { atMs: 10, wireSequence: 65535, acceptedSequence: 2 },
+            { atMs: 550, wireSequence: 1, acceptedSequence: 4, document: { hidden: false } },
+          ]);
+        }
+        expect(events('coalesced')).toEqual([]);
+        expect(report.timeline.every((e: { document?: unknown }) => e.document !== undefined)).toBe(true);
+        return;
+      }
       transport.receive('010000809fd5002026d700ffff0003000080ff');
       transport.receive('010000809fd5002026d70000000103000080ff');
       flushSync(); drawPending();

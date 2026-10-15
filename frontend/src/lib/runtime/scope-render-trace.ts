@@ -24,7 +24,7 @@ export type TraceReceipt = Readonly<{
 export type TraceStage =
   | 'callback' | 'accepted' | 'rejected' | 'fanout' | 'waterfall_suppressed'
   | 'waterfall_options' | 'waterfall_push' | 'spectrum_push'
-  | 'raf' | 'spectrum_render' | 'coalesced' | 'wire_gap' | 'lag' | 'blur' | 'focus';
+  | 'raf' | 'spectrum_render' | 'coalesced' | 'wire_gap' | 'lag' | 'blur' | 'focus' | 'visibility';
 export type TraceStopReason = 'operator' | 'deadline' | 'hidden' | 'disposed' | 'overflow' | 'source_changed' | 'observer_error';
 export type TraceStatus = 'recording' | 'stopped' | 'overflow';
 
@@ -40,7 +40,9 @@ type StageCount = { count: number; totalMs: number; maxMs: number; firstSequence
 type Bucket = { second: number; stages: Partial<Record<TraceStage, StageCount>> };
 type Burst = { atMs: number; stage: TraceStage; durationMs: number; acceptedSequence?: number; wireSequence?: number; transportEpoch?: number; source?: TraceSource };
 type Geometry = { cssWidth: number; cssHeight: number; backingWidth: number; backingHeight: number; dpr: number };
-type TimelineEvent = Burst | (Geometry & { atMs: number; stage: 'geometry'; canvas: 'waterfall' | 'spectrum' });
+type TimelineEvent = (Burst | (Geometry & { atMs: number; stage: 'geometry'; canvas: 'waterfall' | 'spectrum' })) & {
+  document?: { hidden: boolean; visibilityState: DocumentVisibilityState; hasFocus: boolean };
+};
 type TraceClock = {
   now(): number;
   setTimeout(callback: () => void, ms: number): ReturnType<typeof setTimeout>;
@@ -78,21 +80,25 @@ export class ScopeRenderTrace {
   private frozen: string | null = null;
   private readonly timeline: TimelineEvent[] | null;
   private timelineOverflow = false;
+  private readonly captureTransition: boolean;
+  private transitionIdentity: { source: TraceSource; transportEpoch: number } | null = null;
 
   constructor(
     private readonly onStop: (status: TraceStatus) => void = () => {},
     private readonly clock: TraceClock = browserClock,
     runId?: string,
-    options: Readonly<{ captureTimeline?: boolean }> = {},
+    options: Readonly<{ captureTimeline?: boolean; captureTransition?: boolean }> = {},
   ) {
-    this.timeline = options.captureTimeline === true ? [] : null;
+    this.captureTransition = options.captureTransition === true;
+    this.timeline = options.captureTimeline === true || this.captureTransition ? [] : null;
     this.runId = runId && runId.length <= 64 ? runId
       : (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
     this.startedAt = clock.now();
     document.addEventListener('visibilitychange', this.onVisibility);
     window.addEventListener('blur', this.onBlur);
     window.addEventListener('focus', this.onFocus);
-    if (document.hidden) {
+    if (this.captureTransition) this.record('visibility', null, 0, true);
+    if (document.hidden && !this.captureTransition) {
       this.stop('hidden');
       return;
     }
@@ -110,6 +116,15 @@ export class ScopeRenderTrace {
 
   observe(observation: TraceReceipt): void {
     if (!this.active()) return;
+    if (this.captureTransition) {
+      const identity = observation.kind === 'accepted' ? observation.token : observation;
+      if (this.transitionIdentity && (identity.source !== this.transitionIdentity.source
+        || identity.transportEpoch !== this.transitionIdentity.transportEpoch)) {
+        this.stop('source_changed');
+        return;
+      }
+      this.transitionIdentity ??= { source: identity.source, transportEpoch: identity.transportEpoch };
+    }
     if (observation.kind === 'rejected') {
       this.rejected += 1;
       this.record('rejected', null, 0, true, observation.callbackAt);
@@ -191,6 +206,7 @@ export class ScopeRenderTrace {
 
   stop(reason: TraceStopReason = 'operator'): void {
     if (this._status !== 'recording') return;
+    if (this.captureTransition && this.clock.now() - this.startedAt >= MAX_MS) reason = 'deadline';
     this._status = reason === 'overflow' ? 'overflow' : 'stopped';
     this._reason = reason;
     if (this.deadlineTimer !== null) this.clock.clearTimeout(this.deadlineTimer);
@@ -204,9 +220,11 @@ export class ScopeRenderTrace {
     this.acceptedIndex.clear();
     this.lastWire.clear();
     this.lastCallbackAt.clear();
+    this.transitionIdentity = null;
     const snapshot = () => JSON.stringify({ schema: 'rigplane.scope-render-trace.v1', runId: this.runId,
       clockDomain: 'browser-performance-now', startedAt: this.startedAt, stoppedAt: this.clock.now(),
       status: this._status, reason: this._reason,
+      ...(this.captureTransition ? { transition: { mode: 'document-transition', visibilityProvenance: 'document-observed' } } : {}),
       counts: { accepted: this.accepted, rejected: this.rejected, wireGaps: this.wireGaps,
         burstDropped: this.burstDropped }, geometry: this.geometry, buckets: this.buckets, burst: this.burst,
       ...(this.timeline ? { timeline: this.timeline, timelineLimit: MAX_TIMELINE, timelineOverflow: this.timelineOverflow } : {}) });
@@ -230,17 +248,26 @@ export class ScopeRenderTrace {
       this.stop('overflow');
       return false;
     }
-    this.timeline.push(event);
+    this.timeline.push(this.captureTransition ? { ...event, document: {
+      hidden: document.hidden, visibilityState: document.visibilityState, hasFocus: document.hasFocus(),
+    } } : event);
     return true;
   }
 
   private active(now = this.clock.now()): boolean {
     if (this._status !== 'recording') return false;
-    if (now - this.startedAt >= MAX_MS) { this.stop('deadline'); return false; }
+    if (now - this.startedAt >= MAX_MS
+      || (this.captureTransition && this.clock.now() - this.startedAt >= MAX_MS)) {
+      this.stop('deadline');
+      return false;
+    }
     return true;
   }
 
-  private readonly onVisibility = () => { if (document.hidden) this.stop('hidden'); };
+  private readonly onVisibility = () => {
+    if (this.captureTransition) this.record('visibility', null, 0, true);
+    else if (document.hidden) this.stop('hidden');
+  };
   private readonly onBlur = () => { this.record('blur', null, 0, true); };
   private readonly onFocus = () => { this.record('focus', null, 0, true); };
 }

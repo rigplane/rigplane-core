@@ -182,7 +182,7 @@
     };
   }
 
-  function startTrace(): void {
+  function startTrace(captureTransition = false): void {
     if (!traceCandidate || traceStatus === 'recording' || !scopeDemandOn || !scopeConnected) return;
     unsubscribeTrace?.();
     trace?.dispose();
@@ -207,7 +207,7 @@
       unsubscribeTrace = null;
       if (session) completed();
       else completedDuringConstruction = true;
-    }, undefined, undefined, { captureTimeline: captureTraceTimeline });
+    }, undefined, undefined, { captureTimeline: captureTraceTimeline, captureTransition });
     trace = session;
     traceStatus = session.status;
     if (completedDuringConstruction) completed();
@@ -1162,7 +1162,8 @@
   {/snippet}
   {#if traceCandidate}
     <div class="scope-trace-controls" aria-label="Scope render trace">
-      <button type="button" onclick={startTrace} disabled={traceStatus === 'recording' || !scopeDemandOn || !scopeConnected}>Start trace</button>
+      <button type="button" onclick={() => startTrace()} disabled={traceStatus === 'recording' || !scopeDemandOn || !scopeConnected}>Start trace</button>
+      <button type="button" onclick={() => startTrace(true)} disabled={traceStatus === 'recording' || !scopeDemandOn || !scopeConnected}>Start transition trace</button>
       {#if traceStatus === 'recording'}<button type="button" onclick={stopTrace}>Stop trace</button>{/if}
       {#if traceStatus === 'stopped' || traceStatus === 'overflow'}<button type="button" onclick={downloadTrace}>Download trace</button>{/if}
       <span role="status">{traceStatus}{trace?.reason ? ` (${trace.reason})` : ''}{traceError ? ` · ${traceError}` : ''}</span>
