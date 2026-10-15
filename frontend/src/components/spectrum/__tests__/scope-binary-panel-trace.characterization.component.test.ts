@@ -57,10 +57,11 @@ function channel() {
 
 describe('binary → actual controller → actual panel → actual canvases', () => {
   it.each([
-    ['hardware', false], ['hardware', true], ['audio_fft', false], ['audio_fft', true],
-  ] as const)('correlates %s delivery and RAF coalescing; export callback throws=%s', async (source, exportThrows) => {
+    ['hardware', false, true], ['hardware', true, true], ['audio_fft', false, true], ['audio_fft', true, true],
+    ['hardware', false, false], ['audio_fft', false, false],
+  ] as const)('correlates %s delivery; export throws=%s, trace enabled=%s', async (source, exportThrows, enabled) => {
     harness.source = source;
-    vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
+    vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', enabled ? '1' : '0');
     vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
     const rafs = new Map<number, FrameRequestCallback>();
     let nextRaf = 0;
@@ -96,6 +97,12 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       transport.receive('010000809fd5002026d700ff000003000080ff');
       flushSync(); drawPending();
       expect(channelFactory).toHaveBeenCalledWith(source === 'audio_fft' ? 'audio-scope' : 'scope');
+      if (!enabled) {
+        expect(button('Start trace')).toBeUndefined();
+        expect(completed).not.toHaveBeenCalled();
+        expect(rows).toHaveBeenCalled();
+        return;
+      }
       expect(button('Start trace').disabled).toBe(false);
       button('Start trace').click(); flushSync();
       rows.mockClear(); renders.mockClear();

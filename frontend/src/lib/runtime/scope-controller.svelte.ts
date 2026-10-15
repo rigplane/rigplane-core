@@ -447,7 +447,7 @@ export class ScopeController {
     }
     const acceptedSequence = ++this._acceptedSequence;
     if (callbackAt !== null) this._publishTraceReceipt({ kind: 'accepted', frame,
-      token: { source, transportEpoch, wireSequence: new DataView(buffer).getUint16(12, true), acceptedSequence },
+      token: { source, transportEpoch, wireSequence: new DataView(buffer).getUint16(11, true), acceptedSequence },
       callbackAt, acceptedAt: receivedAt });
     const arrival = Object.freeze({ receivedAt, acceptedSequence });
     this._arrivals[source] = arrival;
@@ -479,7 +479,7 @@ export class ScopeController {
       transportEpoch,
       receivedAt,
       acceptedSequence,
-    }, view.getUint16(12, true));
+    }, view.getUint16(11, true));
     this._notifyEvidence();
     return true;
   }
