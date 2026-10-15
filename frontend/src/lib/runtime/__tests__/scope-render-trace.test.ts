@@ -66,4 +66,57 @@ describe('ScopeRenderTrace', () => {
     expect(output.buckets[0].stages.coalesced.count).toBe(2_200);
     expect(new TextEncoder().encode(trace.export()!).byteLength).toBeLessThanOrEqual(16 * 1024 * 1024);
   });
+
+  it('keeps full chronology opt-in and correlates ordinary frames across wrap', () => {
+    const ordinary = new ScopeRenderTrace();
+    ordinary.observe(receipt(1, 1)); ordinary.stop();
+    expect(JSON.parse(ordinary.export()!)).not.toHaveProperty('timeline');
+    const detailed = new ScopeRenderTrace(undefined, undefined, 'detailed', { captureTimeline: true });
+    for (const [accepted, wire] of [[1, 65535], [2, 0]]) {
+      detailed.observe(receipt(accepted, wire));
+      detailed.record('fanout', detailed.tokenForAcceptedSequence(accepted, 'audio_fft'));
+    }
+    detailed.recordGeometry('spectrum', 1024, 180, 2048, 360, 2);
+    detailed.recordGeometry('spectrum', 1000, 180, 2000, 360, 2);
+    detailed.stop();
+    const output = JSON.parse(detailed.export()!);
+    expect(output.timeline.map((e: { stage: string }) => e.stage)).toEqual([
+      'callback', 'accepted', 'fanout', 'callback', 'accepted', 'fanout', 'geometry', 'geometry',
+    ]);
+    expect(output.timeline.filter((e: { stage: string }) => e.stage === 'callback'))
+      .toMatchObject([{ wireSequence: 65535, acceptedSequence: 1, transportEpoch: 1 },
+        { wireSequence: 0, acceptedSequence: 2, transportEpoch: 1 }]);
+    expect(output.timeline.at(-1)).toMatchObject({ canvas: 'spectrum', cssWidth: 1000 });
+    expect(output.counts.wireGaps).toBe(0);
+    expect(detailed.export()).not.toContain('pixels');
+  });
+
+  it.each(['stage', 'geometry'])('fails closed at the detailed %s cap instead of evicting history', (kind) => {
+    const stopped = vi.fn();
+    const trace = new ScopeRenderTrace(stopped, undefined, 'bounded', { captureTimeline: true });
+    for (let i = 0; i < 32_769; i++) {
+      if (kind === 'stage') trace.record('fanout');
+      else trace.recordGeometry('spectrum', 1024, 180, 2048, 360, 2);
+    }
+    expect(trace.status).toBe('overflow');
+    expect(trace.reason).toBe('overflow');
+    const output = JSON.parse(trace.export()!);
+    expect(output.timeline).toHaveLength(32_768);
+    expect(output.timelineOverflow).toBe(true);
+    expect(stopped).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(new TextEncoder().encode(trace.export()!).byteLength).toBeLessThan(16 * 1024 * 1024);
+  });
+
+  it('seals detailed capture at the existing deadline and keeps geometry within its cap', () => {
+    const trace = new ScopeRenderTrace(undefined, undefined, 'deadline', { captureTimeline: true });
+    trace.observe(receipt(1, 4));
+    vi.advanceTimersByTime(120_000);
+    expect(trace.reason).toBe('deadline');
+    const frozen = trace.export();
+    trace.recordGeometry('spectrum', 1, 1, 1, 1, 1);
+    trace.observe(receipt(2, 5));
+    expect(trace.export()).toBe(frozen);
+    expect(JSON.parse(frozen!).timelineOverflow).toBe(false);
+  });
 });
