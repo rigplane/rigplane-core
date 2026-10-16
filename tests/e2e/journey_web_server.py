@@ -1,9 +1,4 @@
-"""Local WebServer target for the operator-journey Chromium test.
-
-Serves the built frontend over a real ``WebServer`` whose radio is the
-in-memory ``SerialMockRadio`` with its default IC-7610 profile; no serial
-device is opened and nothing reaches a radio.
-"""
+"""Local WebServer targets for the operator-journey Chromium tests."""
 
 from __future__ import annotations
 
@@ -95,6 +90,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="serve with the RX-audio-capable JourneyAudioRadio instead of JourneyRadio",
     )
+    parser.add_argument(
+        "--panorama-audio",
+        action="store_true",
+        help="use the loopback IC-7610 simulator with mixed scope and synthetic PCM",
+    )
     return parser.parse_args()
 
 
@@ -102,27 +102,69 @@ async def run() -> None:
     args = parse_args()
     if not args.static_dir.is_dir():
         raise SystemExit(f"frontend build is missing: {args.static_dir}")
-    radio: SerialMockRadio = JourneyAudioRadio() if args.audio else JourneyRadio()
-    await radio.connect()
-    if args.freq is not None:
-        await radio.set_freq(args.freq)
-    server = WebServer(
-        radio,
-        WebConfig(
-            host=args.host,
-            port=args.port,
-            static_dir=args.static_dir,
-            radio_model=radio.model,
-            discovery=False,
-            read_only=args.read_only,
-        ),
-    )
-    await server.serve_forever(
-        on_started=lambda: print(
-            f"{radio.model} journey fake ready at http://{args.host}:{args.port}/?ui=v2",
-            flush=True,
+    simulator = None
+    if args.panorama_audio:
+        if args.host != "127.0.0.1":
+            raise SystemExit("--panorama-audio requires --host 127.0.0.1")
+        from rigplane.core.types import AudioCodec
+        from rigplane.runtime.radio import IcomRadio
+        from rigplane_testkit.icom.simulator import MockIcomRadio
+
+        simulator = MockIcomRadio(
+            host="127.0.0.1", scope_stream=True, enable_audio=True, dual_receiver=True
         )
-    )
+        # Recorded headers/cadence remain intact; their all-zero amplitude
+        # payloads cannot witness rendering. Give only this opt-in simulator a
+        # synthetic nonconstant wave, carried through its normal CI-V sender.
+        for receiver, templates in simulator._scope_templates.items():
+            shaped = []
+            for template in templates:
+                assert len(template) == 711 and template[7:9] == b"\x01\x01"
+                assert template[-1] == 0xFD
+                amplitude = bytes(
+                    15 + ((index + receiver * 17) % 90) // 3 for index in range(689)
+                )
+                shaped.append(template[:21] + amplitude + template[-1:])
+            simulator._scope_templates[receiver] = shaped
+        await simulator.start()
+        radio = IcomRadio(
+            host="127.0.0.1",
+            port=simulator.control_port,
+            username="testuser",
+            password="testpass",
+            model="IC-7610",
+            audio_codec=AudioCodec.PCM_2CH_16BIT,
+            audio_sample_rate=48000,
+        )
+    else:
+        radio = JourneyAudioRadio() if args.audio else JourneyRadio()
+    try:
+        await radio.connect()
+        if args.freq is not None:
+            await radio.set_freq(args.freq)
+        server = WebServer(
+            radio,
+            WebConfig(
+                host=args.host,
+                port=args.port,
+                static_dir=args.static_dir,
+                radio_model=radio.model,
+                discovery=False,
+                read_only=args.read_only,
+            ),
+        )
+        await server.serve_forever(
+            on_started=lambda: print(
+                f"{radio.model} journey fake ready at http://{args.host}:{args.port}/?ui=v2",
+                flush=True,
+            )
+        )
+    finally:
+        if simulator is not None:
+            try:
+                await radio.disconnect()
+            finally:
+                await simulator.stop()
 
 
 if __name__ == "__main__":

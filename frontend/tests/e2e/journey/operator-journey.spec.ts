@@ -1,3 +1,4 @@
+import { writeFile } from 'node:fs/promises';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { startJourneyServer, type JourneyServerHandle } from './server-process';
 
@@ -453,6 +454,250 @@ test.describe('audio server killed and restarted on the same port', () => {
       expect(await audioErrorFrames()).toEqual([]);
     } finally {
       await first.kill().catch(() => undefined);
+    }
+  });
+});
+
+interface PanoramaWitness {
+  acknowledgments: string[];
+  active: boolean;
+  pinned: boolean;
+  baselineSignal: number;
+  pixelLosses: number;
+  main: number;
+  sub: number;
+  audioWire: number;
+  pcmBuffers: number;
+  pcm: { at: number; state: string; rate: number; scheduledAt: number; frames: number }[];
+  finiteSamples: number;
+  nonzeroSamples: number;
+  invalidSamples: number;
+  subChecks: number;
+  losses: number;
+  latestMain: number;
+  lastReceiver: number;
+  frames: { at: number; receiver: number; sequence: number; pixels: number; start: number; end: number }[];
+  samples: { at: number; main: number; mounted: boolean; width: number; height: number; signal: number }[];
+}
+
+async function installPanoramaWitness(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    // Exercise the production PCM fallback when optional WebCodecs is absent.
+    Object.defineProperty(window, 'AudioDecoder', { configurable: true, value: undefined });
+    const win = window as Window & { __PANORAMA__: PanoramaWitness };
+    const w: PanoramaWitness = {
+      acknowledgments: [], active: false, pinned: false, baselineSignal: 0, pixelLosses: 0, main: 0, sub: 0, audioWire: 0, pcmBuffers: 0,
+      finiteSamples: 0, nonzeroSamples: 0, invalidSamples: 0, subChecks: 0, losses: 0,
+      latestMain: -1, lastReceiver: -1, frames: [], samples: [], pcm: [],
+    };
+    win.__PANORAMA__ = w;
+    let panel: HTMLElement | null = null;
+    let canvas: HTMLCanvasElement | null = null;
+    let width = 0;
+    let height = 0;
+    const selector = '.spectrum-panel[data-waterfall]:not(.audio-fft)';
+    // The production canvas is transparent. Exclude its ten/five grid lines,
+    // bottom labels, edges, and central tuning/passband overlays. The remaining
+    // opaque pixels can only come from the actual trace/fill, never DOM geometry.
+    const signalPixels = (target: HTMLCanvasElement | null): number => {
+      if (!target?.isConnected || !target.width || !target.height) return 0;
+      const context = target.getContext('2d');
+      if (!context) return 0;
+      const { width: cw, height: ch } = target;
+      const rgba = context.getImageData(0, 0, cw, ch).data;
+      const scale = cw / Math.max(1, target.getBoundingClientRect().width);
+      let count = 0;
+      for (let y = Math.ceil(ch * 0.1); y < ch - 20 * scale; y += 2) {
+        if (Math.abs(y - Math.round(y / (ch / 5)) * (ch / 5)) < 3 * scale) continue;
+        for (let x = Math.ceil(cw * 0.05); x < cw * 0.95; x += 2) {
+          if (x > cw * 0.4 && x < cw * 0.6) continue;
+          if (Math.abs(x - Math.round(x / (cw / 10)) * (cw / 10)) < 3 * scale) continue;
+          if (rgba[(y * cw + x) * 4 + 3] > 32) count += 1;
+        }
+      }
+      return count;
+    };
+    const nativeStart = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function (...args: Parameters<typeof nativeStart>) {
+      nativeStart.apply(this, args);
+      // Observe the decoded buffer handed to the actual AudioContext unchanged.
+      const buffer = this.buffer;
+      if (!buffer || buffer.length < 200) return;
+      w.pcmBuffers += 1;
+      if (w.pcm.length >= 120) w.pcm.shift();
+      w.pcm.push({ at: performance.now(), state: this.context.state,
+        rate: buffer.sampleRate, scheduledAt: args[0] ?? 0, frames: buffer.length });
+      for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+        for (const sample of buffer.getChannelData(channel)) {
+          if (!Number.isFinite(sample)) w.invalidSamples += 1;
+          else {
+            w.finiteSamples += 1;
+            if (sample !== 0) w.nonzeroSamples += 1;
+          }
+        }
+      }
+    };
+    const NativeSocket = window.WebSocket;
+    class ObservedSocket extends NativeSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols as never);
+        const path = new URL(String(url), location.href).pathname;
+        this.addEventListener('message', (event: MessageEvent) => {
+          if (typeof event.data === 'string') {
+            try {
+              const message = JSON.parse(event.data);
+              if (message.type === 'response' && message.ok === true) w.acknowledgments.push(String(message.id));
+            } catch { /* Non-JSON control traffic is irrelevant to this witness. */ }
+            return;
+          }
+          if (!(event.data instanceof ArrayBuffer)) return;
+          const bytes = new Uint8Array(event.data);
+          if (path === '/api/v1/audio' && bytes.length > 8 && bytes[0] === 0x10 && bytes[1] === 2) {
+            w.audioWire += 1;
+          }
+          if (path !== '/api/v1/scope' || bytes.length < 16 || bytes[0] !== 1) return;
+          const view = new DataView(event.data);
+          const receiver = bytes[1];
+          const pixels = view.getUint16(14, true);
+          const start = view.getUint32(3, true);
+          const end = view.getUint32(7, true);
+          const sequence = view.getUint16(11, true);
+          if (receiver > 1 || bytes[13] !== 0 || !pixels || bytes.length !== pixels + 16 || start >= end) return;
+          if (receiver === 0) { w.main += 1; w.latestMain = sequence; }
+          else w.sub += 1;
+          w.lastReceiver = receiver;
+          if (w.frames.length >= 240) w.frames.shift();
+          w.frames.push({ at: performance.now(), receiver, sequence, pixels, start, end });
+          if (!w.active) return;
+          const mainSequence = w.latestMain;
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            const current = document.querySelector<HTMLElement>(selector);
+            const currentCanvas = current?.querySelector<HTMLCanvasElement>('.spectrum-area canvas') ?? null;
+            const rect = currentCanvas?.getBoundingClientRect();
+            if (receiver === 0 && w.lastReceiver === 0 && current && currentCanvas && rect && rect.width > 0 && rect.height > 0 && !w.pinned) {
+              const signal = signalPixels(currentCanvas);
+              if (signal < 20) return;
+              w.baselineSignal = signal;
+              panel = current;
+              canvas = currentCanvas;
+              width = rect.width;
+              height = rect.height;
+              w.pinned = true;
+            }
+            // Sample after rendering, and only before the next MAIN can conceal a loss.
+            if (receiver !== 1 || !w.pinned || w.latestMain !== mainSequence || w.lastReceiver !== 1) return;
+            const mounted = current === panel && currentCanvas === canvas && !!canvas?.isConnected
+              && !!rect && Math.abs(rect.width - width) < 1 && Math.abs(rect.height - height) < 1
+              && !!current && getComputedStyle(current).visibility !== 'hidden' && getComputedStyle(current).display !== 'none'
+              && !current.querySelector('.scope-disconnected-overlay')
+              && !!current.querySelector('.spectrum-container .span-indicators')
+              && (current.querySelector('.waterfall-area canvas')?.getBoundingClientRect().height ?? 0) > 0;
+            const signal = signalPixels(currentCanvas);
+            w.subChecks += 1;
+            if (signal < w.baselineSignal * 0.5) w.pixelLosses += 1;
+            if (!mounted) w.losses += 1;
+            if (w.samples.length < 120) w.samples.push({
+              at: performance.now(), main: mainSequence, mounted, signal,
+              width: rect?.width ?? 0, height: rect?.height ?? 0,
+            });
+          }));
+        });
+      }
+    }
+    window.WebSocket = ObservedSocket;
+  });
+}
+
+async function panoramaWitness(page: Page): Promise<PanoramaWitness> {
+  return page.evaluate(() => (window as Window & { __PANORAMA__: PanoramaWitness }).__PANORAMA__);
+}
+
+const panoramaTest = test.extend({
+  launchOptions: {
+    ...(process.env.RIGPLANE_JOURNEY_CHROMIUM
+      ? { executablePath: process.env.RIGPLANE_JOURNEY_CHROMIUM }
+      : {}),
+    args: ['--mute-audio'],
+  },
+});
+
+panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
+  const url = 'http://127.0.0.1:18770';
+  panoramaTest.use({
+    baseURL: url,
+  });
+
+  panoramaTest('MOR-3513 mixed scope preserves MAIN while PCM and controls advance', async ({ page }, testInfo) => {
+    test.setTimeout(90_000);
+    const server = await startJourneyServer(18770, 14_286_000, ['--panorama-audio']);
+    try {
+      await installWebSocketInterceptor(page);
+      await installPanoramaWitness(page);
+      await page.goto('/?ui=v2', { waitUntil: 'domcontentloaded' });
+      await expect(page.locator('[role="status"][title="Control WebSocket: connected"]')).toBeVisible();
+      await expect.poll(async () => (await page.request.get('/api/v1/state')).json()).toMatchObject({ active: 'MAIN' });
+      await page.getByTestId('rx-audio-monitor-live').click();
+      await expect.poll(async () => (await panoramaWitness(page)).main).toBeGreaterThan(3);
+      await expect.poll(async () => (await panoramaWitness(page)).sub).toBeGreaterThan(3);
+      await expect.poll(async () => (await panoramaWitness(page)).pcmBuffers).toBeGreaterThan(5);
+      await expect.poll(async () => (await panoramaWitness(page)).audioWire).toBeGreaterThan(5);
+      await page.evaluate(() => { (window as Window & { __PANORAMA__: PanoramaWitness }).__PANORAMA__.active = true; });
+      const before = await panoramaWitness(page);
+      expect(before.pcm.at(-1)?.state).toBe('running');
+      await expectServerMain(page, { freqHz: 14_286_000 });
+      expect(before.nonzeroSamples).toBeGreaterThan(0);
+      expect(before.invalidSamples).toBe(0);
+      const modeKey = page.getByTestId('standard-mode-LSB').getByRole('radio');
+      await modeKey.click();
+      await expect.poll(() => sentParams(page, 'set_mode')).toContainEqual({ mode: 'LSB', receiver: 0 });
+      await expectServerMain(page, { mode: 'LSB' });
+      await expect(modeKey).toHaveAttribute('aria-checked', 'true');
+      const command = (await sentCommands(page, ['set_mode'])).at(-1)!;
+      await expect.poll(async () => (await panoramaWitness(page)).acknowledgments).toContain(command.id);
+      // Audio/control health is independent of the visual regression target.
+      await expect.poll(async () => (await panoramaWitness(page)).main - before.main).toBeGreaterThan(3);
+      await expect.poll(async () => (await panoramaWitness(page)).sub - before.sub).toBeGreaterThan(15);
+      await expect.poll(async () => (await panoramaWitness(page)).pcmBuffers - before.pcmBuffers).toBeGreaterThan(10);
+      const after = await panoramaWitness(page);
+      // These preconditions must pass even on the deliberately unchanged RED controller.
+      expect(after.main - before.main).toBeGreaterThan(3);
+      expect(after.sub - before.sub).toBeGreaterThan(15);
+      expect(after.audioWire - before.audioWire).toBeGreaterThan(10);
+      expect(after.pcmBuffers - before.pcmBuffers).toBeGreaterThan(10);
+      expect(after.finiteSamples - before.finiteSamples).toBeGreaterThan(1000);
+      expect(after.nonzeroSamples - before.nonzeroSamples).toBeGreaterThan(1000);
+      expect(after.invalidSamples).toBe(0);
+      const intervalPcm = after.pcm.filter((sample) => sample.at > (before.pcm.at(-1)?.at ?? 0));
+      expect(intervalPcm.length).toBeGreaterThan(10);
+      expect(intervalPcm.every((sample) => sample.state === 'running' && sample.rate === 48_000)).toBe(true);
+      expect(after.frames.filter((frame) => frame.receiver === 0).every((frame) => frame.start === 14_186_000 && frame.end === 14_386_000)).toBe(true);
+      // Persist independent checks before a failing visual target can stop the test.
+      const healthPath = testInfo.outputPath('joint-health.json');
+      await writeFile(healthPath, JSON.stringify({ before, after, command }, null, 2));
+      await testInfo.attach('joint-health.json', { path: healthPath, contentType: 'application/json' });
+      const beforePath = testInfo.outputPath('panorama-before.png');
+      await page.screenshot({ path: beforePath });
+      await testInfo.attach('panorama-before.png', { path: beforePath, contentType: 'image/png' });
+
+      await expect.poll(async () => (await panoramaWitness(page)).baselineSignal,
+        { message: 'Actual MAIN signal must render while mixed scope, PCM and controls are healthy' }).toBeGreaterThanOrEqual(20);
+      await expect.poll(async () => (await panoramaWitness(page)).subChecks).toBeGreaterThanOrEqual(20);
+      const rendered = await panoramaWitness(page);
+      expect(rendered.pixelLosses, 'Actual MAIN signal pixels cleared during a SUB-only interval').toBe(0);
+      expect(rendered.losses, 'MAIN canvas disappeared or changed geometry after valid SUB before next MAIN').toBe(0);
+    } finally {
+      try {
+        if (!page.isClosed()) {
+          const afterPath = testInfo.outputPath('panorama-after.png');
+          const timelinePath = testInfo.outputPath('panorama-pcm-timeline.json');
+          await page.screenshot({ path: afterPath });
+          await writeFile(timelinePath, JSON.stringify(await panoramaWitness(page), null, 2) ?? '{}');
+          await testInfo.attach('panorama-after.png', { path: afterPath, contentType: 'image/png' });
+          await testInfo.attach('panorama-pcm-timeline.json', { path: timelinePath, contentType: 'application/json' });
+        }
+      } finally {
+        await server.kill();
+      }
     }
   });
 });
