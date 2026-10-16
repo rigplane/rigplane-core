@@ -1034,6 +1034,122 @@ class TestDisconnect:
         assert transport._ping_task.cancelled()
         assert transport._retransmit_task.cancelled()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "attribute", ["_ping_task", "_idle_task", "_retransmit_task"]
+    )
+    async def test_disconnect_retrieves_completed_failure(self, attribute: str) -> None:
+        transport = IcomTransport()
+
+        async def fail() -> None:
+            raise AttributeError("closed endpoint")
+
+        task = asyncio.create_task(fail())
+        setattr(transport, attribute, task)
+        await asyncio.sleep(0)
+        assert task.done() and task._log_traceback
+        try:
+            await transport.disconnect()
+            assert not task._log_traceback
+        finally:
+            task.exception()
+
+    @pytest.mark.asyncio
+    async def test_send_error_still_closes_and_drains(self) -> None:
+        error = AttributeError("closed endpoint")
+        closed = asyncio.Event()
+
+        class Endpoint:
+            def sendto(self, data: bytes) -> None:
+                raise error
+
+            def close(self) -> None:
+                closed.set()
+
+        transport = IcomTransport()
+        transport.state = ConnectionState.CONNECTED
+        transport.remote_id = 1
+        transport._udp_transport = Endpoint()
+        task = asyncio.create_task(asyncio.Event().wait())
+        transport._ping_task = task
+        await asyncio.sleep(0)
+        try:
+            with pytest.raises(AttributeError) as caught:
+                await transport.disconnect()
+            assert caught.value is error
+            assert closed.is_set()
+            assert transport._udp_transport is None
+            assert transport.state == ConnectionState.DISCONNECTED
+            assert task.done()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("send_fails", [False, True])
+    async def test_owner_cancellation_waits_for_task_retirement(
+        self, send_fails: bool
+    ) -> None:
+        transport = IcomTransport()
+        transport.state = ConnectionState.CONNECTED
+        transport.remote_id = 1
+        error = AttributeError("final send failed")
+
+        def send(data: bytes) -> None:
+            if send_fails:
+                raise error
+
+        transport._raw_send = send
+        retiring = asyncio.Event()
+        release = asyncio.Event()
+        retired = asyncio.Event()
+
+        async def owned() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                retiring.set()
+                await release.wait()
+                retired.set()
+
+        task = asyncio.create_task(owned())
+        transport._idle_task = task
+        await asyncio.sleep(0)
+        disconnect = asyncio.create_task(transport.disconnect())
+        try:
+            await asyncio.wait_for(retiring.wait(), 1)
+            disconnect.cancel("owner stop")
+            await asyncio.sleep(0)
+            disconnect.cancel("owner stop repeated")
+            await asyncio.sleep(0)
+            assert not disconnect.done()
+            release.set()
+            if send_fails:
+                with pytest.raises(AttributeError) as caught:
+                    await disconnect
+                assert caught.value is error
+                assert isinstance(caught.value.__cause__, asyncio.CancelledError)
+            else:
+                with pytest.raises(asyncio.CancelledError, match="owner stop"):
+                    await disconnect
+            assert retired.is_set() and task.done()
+            assert transport.state == ConnectionState.DISCONNECTED
+        finally:
+            release.set()
+            await asyncio.gather(disconnect, return_exceptions=True)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_disconnect_does_not_await_its_current_owned_task(self) -> None:
+        transport = IcomTransport()
+
+        async def owned() -> None:
+            transport._ping_task = asyncio.current_task()
+            await transport.disconnect()
+
+        await asyncio.wait_for(asyncio.create_task(owned()), 1)
+
 
 # ---------------------------------------------------------------------------
 # Ping loop

@@ -404,42 +404,70 @@ class IcomTransport:
         tasks = [
             task
             for task in (self._ping_task, self._idle_task, self._retransmit_task)
-            if task is not None
-            and not task.done()
-            and task is not asyncio.current_task()
+            if task is not None and task is not asyncio.current_task()
         ]
         for task in tasks:
-            task.cancel()
+            if not task.done():
+                task.cancel()
 
-        if self.state != ConnectionState.DISCONNECTED and self.remote_id:
-            pkt = self._build_control(ptype=PacketType.DISCONNECT, seq=0)
-            self._raw_send(pkt)
+        send_error: BaseException | None = None
+        try:
+            if self.state != ConnectionState.DISCONNECTED and self.remote_id:
+                pkt = self._build_control(ptype=PacketType.DISCONNECT, seq=0)
+                self._raw_send(pkt)
+        except BaseException as exc:
+            # Defer, rather than suppress, the initiating error until retirement.
+            send_error = exc
 
-        close_wait_cancelled: asyncio.CancelledError | None = None
-        if self._udp_transport is not None:
-            close_event = self._udp_close_event
-            self._udp_transport.close()
-            self._udp_transport = None
-            if close_event is not None:
-                try:
-                    await asyncio.wait_for(close_event.wait(), 1.0)
-                except asyncio.TimeoutError:
-                    logger.debug("UDP socket close not confirmed within 1s; continuing")
-                except asyncio.CancelledError as exc:
-                    close_wait_cancelled = exc
-
-        self.state = ConnectionState.DISCONNECTED
-
-        for task in tasks:
+        async def retire() -> None:
             try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                logger.debug("keepalive task raised during disconnect", exc_info=True)
-        logger.info("Disconnected")
-        if close_wait_cancelled is not None:
-            raise close_wait_cancelled
+                if self._udp_transport is not None:
+                    udp, self._udp_transport = self._udp_transport, None
+                    close_event = self._udp_close_event
+                    udp.close()
+                    if close_event is not None:
+                        try:
+                            await asyncio.wait_for(close_event.wait(), 1.0)
+                        except asyncio.TimeoutError:
+                            logger.debug(
+                                "UDP socket close not confirmed within 1s; continuing"
+                            )
+            finally:
+                self.state = ConnectionState.DISCONNECTED
+                for task in tasks:
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        logger.debug(
+                            "keepalive task raised during disconnect", exc_info=True
+                        )
+            logger.info("Disconnected")
+
+        # Caller cancellation must not cancel a keepalive's own finalizer.
+        retirement = asyncio.create_task(retire(), name="icom-transport-disconnect")
+        cancelled: asyncio.CancelledError | None = None
+        try:
+            while not retirement.done():
+                try:
+                    await asyncio.shield(retirement)
+                except asyncio.CancelledError as exc:
+                    if retirement.cancelled():
+                        raise
+                    if cancelled is None:
+                        cancelled = exc
+            retirement.result()
+        except BaseException as cleanup_error:
+            if send_error is not None:
+                raise send_error from cleanup_error
+            raise
+        if send_error is not None:
+            if cancelled is not None:
+                raise send_error from cancelled
+            raise send_error
+        if cancelled is not None:
+            raise cancelled
 
     def start_ping_loop(self) -> None:
         """Start the periodic ping task."""
