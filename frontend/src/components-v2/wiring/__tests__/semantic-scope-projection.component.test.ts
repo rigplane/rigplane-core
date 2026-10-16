@@ -10,6 +10,7 @@ import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-pro
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 import { WaterfallRenderer } from '$lib/renderers/waterfall-renderer';
+import { SpectrumRenderer } from '$lib/renderers/spectrum-renderer';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import * as passband from '$lib/runtime/adapters/scope-passband-display';
 import { ScopeFrameHost } from '$lib/runtime/scope-frame-host';
@@ -191,6 +192,58 @@ afterEach(async () => {
 });
 
 describe('one managed scope owner through the real region and panel', () => {
+  it.each([50, 100, 200])('keeps the selected panorama drawn across interleaved receivers every %s ms', async interval => {
+    setCapabilities({ ...getCapabilities()!, receivers: 2, vfoScheme: 'main_sub',
+      capabilities: [...getCapabilities()!.capabilities, 'dual_rx'] });
+    radio.current!.sub = structuredClone(radio.current!.main);
+    publishAuthority();
+    const callbacks = new Map<number, FrameRequestCallback>();
+    let nextRaf = 0;
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      const id = ++nextRaf; callbacks.set(id, callback); return id;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => callbacks.delete(id));
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(target: Element) {
+        this.callback([{ target, contentRect: { width: 240, height: 80 } } as ResizeObserverEntry], this as unknown as ResizeObserver);
+      }
+      unobserve() {} disconnect() {}
+    });
+    const render = vi.spyOn(SpectrumRenderer.prototype, 'render');
+    const rows = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    const context = document.createElement('canvas').getContext('2d')!;
+    const line = vi.spyOn(context, 'lineTo');
+    function draw() {
+      flushSync();
+      const pending = [...callbacks.values()]; callbacks.clear();
+      for (const callback of pending) callback(performance.now());
+      flushSync();
+    }
+    await mountHost(); wire.connected(); wire.frame(0); draw();
+    const canvas = target.querySelector('.spectrum-area canvas');
+    expect(canvas).not.toBeNull();
+    expect(render).toHaveBeenCalled();
+    expect(new Set(line.mock.calls.map(([, y]) => y)).size).toBeGreaterThan(1);
+    const selected = render.mock.lastCall![1];
+    const initialFrequency = radio.current!.main.freqHz;
+    for (let tick = 1; tick <= 3; tick++) {
+      vi.advanceTimersByTime(interval);
+      radio.current!.main.freqHz = initialFrequency + tick * 100;
+      renew(10 + tick);
+      const before = rows.mock.calls.length;
+      wire.frame(1); draw();
+      expect(target.querySelector('.spectrum-area canvas')).toBe(canvas);
+      expect(target.querySelector<HTMLElement>('.waterfall-history')!.style.visibility).toBe('visible');
+      expect(target.querySelector('.scope-disconnected-overlay')).toBeNull();
+      expect(rows).toHaveBeenCalledTimes(before);
+      expect(render.mock.lastCall![1]).toEqual(selected);
+      expect(radio.current!.main.freqHz).toBe(initialFrequency + tick * 100);
+      wire.frame(0); draw();
+      expect(rows).toHaveBeenCalledTimes(before + 1);
+    }
+  });
+
   it('appends only accepted receipts, including identical bins, and seeds recovery once', async () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     await render(); expect(push).toHaveBeenCalledTimes(1);
