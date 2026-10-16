@@ -18,6 +18,8 @@ from rigplane.core.state_pipeline_contracts import (
 from rigplane.web.server import WebConfig, WebServer
 
 ROOT = Path(__file__).resolve().parents[2]
+# Non-shipping simulator helpers live at the repository root (as in pytest).
+sys.path.insert(0, str(ROOT))
 # SerialMockRadio is a non-shipping test double that lives under tests/.
 sys.path.insert(0, str(ROOT / "tests"))
 from serial_stub import SerialMockRadio  # noqa: E402
