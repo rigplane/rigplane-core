@@ -197,14 +197,24 @@ async def test_manual_audio_rebuild_repairs_audio_only_death() -> None:
 
 
 async def test_rx_silent_repairs_but_soft_reconnect_and_error_watchdog_do_not() -> None:
-    """The repair is rx_silent-driven: soft_reconnect never runs and the
-    error-count watchdog never trips, yet the transport is rebuilt."""
+    """Require completed repair and fresh RX, without another recovery trigger."""
     stack = await soak_driver._start_simulator_stack()
     events: list[AudioSessionEvent] = []
-    try:
-        radio = stack.radio
-        radio.audio_session.add_listener(events.append)
+    repair_tasks: list[asyncio.Task[None]] = []
+    silent_seen = asyncio.Event()
+    radio = stack.radio
+    session = radio.audio_session
 
+    def record_event(event: AudioSessionEvent) -> None:
+        events.append(event)
+        if event.reason == "rx_silent":
+            task = radio._audio_silence_repair_task
+            if task is not None:
+                repair_tasks.append(task)
+            silent_seen.set()
+
+    session.add_listener(record_event)
+    try:
         soft_calls: list[str] = []
         orig_soft = radio.soft_reconnect
 
@@ -213,19 +223,38 @@ async def test_rx_silent_repairs_but_soft_reconnect_and_error_watchdog_do_not() 
             await orig_soft()
 
         radio.soft_reconnect = _spy  # type: ignore[method-assign]
+        sub = post_sub = None
         try:
-            sub = await radio.audio_session.subscribe_rx("web-audio")
+            sub = await session.subscribe_rx("web-audio")
             assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
-
             _drain(sub)
             t_death = time.monotonic()
+            deadline = t_death + RESUME_BOUND_S
             audio_t = _kill_client_audio_only(radio)
 
-            # The rx_silent-driven repair (teardown → ensure → reestablish).
-            packet = await _next_frame_or_none(sub, RESUME_BOUND_S)
-            assert packet is not None, (
-                "the rx_silent-driven repair never restored RX frames"
+            def remaining() -> float:
+                budget = deadline - time.monotonic()
+                assert budget > 0, "RX repair exceeded the original death+10s bound"
+                return budget
+
+            await asyncio.wait_for(silent_seen.wait(), remaining())
+            assert repair_tasks, "rx_silent did not start a repair task"
+            await asyncio.wait_for(asyncio.shield(repair_tasks[0]), remaining())
+            replacement = radio._audio_transport
+            assert replacement is not None and replacement is not audio_t
+            assert session.rx_demand > 0
+            assert session._bus.rx_active, "repair did not re-arm RX before subscribing"
+
+            # stop_rx flushes the old jitter buffer; those queued frames cannot
+            # prove recovery. Keep its demand while opening a fresh empty queue.
+            _drain(sub)
+            post_sub = await asyncio.wait_for(
+                session.subscribe_rx("post-repair"), remaining()
             )
+            packet = None
+            while packet is None:
+                packet = await _next_frame_or_none(post_sub, remaining())
+            assert radio._audio_transport is replacement
 
             silent = [e for e in events if e.reason == "rx_silent"]
             assert silent, "rx_silent never fired during the audio-only death"
@@ -236,15 +265,17 @@ async def test_rx_silent_repairs_but_soft_reconnect_and_error_watchdog_do_not() 
                 "UDP error storm — audio_error_watchdog_loop territory, "
                 "not a silent death"
             )
-            assert radio._audio_transport is not audio_t, (  # noqa: SLF001
-                "audio transport was never rebuilt after the rx_silent trigger"
+            assert await asyncio.wait_for(_civ_answers(radio), remaining()) > 0, (
+                "CI-V stopped answering"
             )
-            assert await _civ_answers(radio) > 0, "CI-V stopped answering"
-            await sub.release()
         finally:
             radio.soft_reconnect = orig_soft  # type: ignore[method-assign]
+            if post_sub is not None:
+                await post_sub.release()
+            if sub is not None:
+                await sub.release()
     finally:
-        radio.audio_session.remove_listener(events.append)
+        session.remove_listener(record_event)
         await stack.aclose()
 
 

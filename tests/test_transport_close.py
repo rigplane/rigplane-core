@@ -140,19 +140,51 @@ class _UnconfirmedClose:
         self.closed = True
 
 
+class _ObservedCloseEvent(asyncio.Event):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+
+    async def wait(self) -> bool:
+        self.entered.set()
+        return await super().wait()
+
+
+async def test_disconnect_closes_endpoint_before_first_yield() -> None:
+    transport = IcomTransport()
+    endpoint = _UnconfirmedClose()
+    close_event = _ObservedCloseEvent()
+    transport.state = ConnectionState.CONNECTING
+    transport._udp_transport = endpoint  # type: ignore[assignment]
+    transport._udp_close_event = close_event
+    task = asyncio.create_task(transport.disconnect())
+    try:
+        await asyncio.sleep(0)
+        assert endpoint.closed
+        assert transport._udp_transport is None
+    finally:
+        close_event.set()
+        await task
+
+
 async def test_cancel_during_close_wait_still_ends_disconnected() -> None:
-    """A cancellation that lands in ``disconnect()``'s close wait propagates
-    and still leaves the transport DISCONNECTED."""
+    """Cancel after the close-confirmation wait actually starts."""
     t = IcomTransport()
     endpoint = _UnconfirmedClose()
+    close_event = _ObservedCloseEvent()
     t.state = ConnectionState.CONNECTING
     t._udp_transport = endpoint  # type: ignore[assignment]
-    t._udp_close_event = asyncio.Event()
+    t._udp_close_event = close_event
     task = asyncio.create_task(t.disconnect())
-    await asyncio.sleep(0)
-    assert endpoint.closed
-    assert not task.done()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert t.state is ConnectionState.DISCONNECTED
+    try:
+        await asyncio.wait_for(close_event.entered.wait(), 1)
+        assert endpoint.closed
+        assert not task.done()
+        task.cancel()
+        close_event.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert t.state is ConnectionState.DISCONNECTED
+    finally:
+        close_event.set()
+        await asyncio.gather(task, return_exceptions=True)

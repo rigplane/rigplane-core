@@ -419,19 +419,25 @@ class IcomTransport:
             # Defer, rather than suppress, the initiating error until retirement.
             send_error = exc
 
+        # Initiate socket retirement in this task, before the first yield.
+        udp, self._udp_transport = self._udp_transport, None
+        close_event = self._udp_close_event if udp is not None else None
+        close_error: BaseException | None = None
+        if udp is not None:
+            try:
+                udp.close()
+            except BaseException as exc:
+                close_error = exc
+
         async def retire() -> None:
             try:
-                if self._udp_transport is not None:
-                    udp, self._udp_transport = self._udp_transport, None
-                    close_event = self._udp_close_event
-                    udp.close()
-                    if close_event is not None:
-                        try:
-                            await asyncio.wait_for(close_event.wait(), 1.0)
-                        except asyncio.TimeoutError:
-                            logger.debug(
-                                "UDP socket close not confirmed within 1s; continuing"
-                            )
+                if close_event is not None and close_error is None:
+                    try:
+                        await asyncio.wait_for(close_event.wait(), 1.0)
+                    except asyncio.TimeoutError:
+                        logger.debug(
+                            "UDP socket close not confirmed within 1s; continuing"
+                        )
             finally:
                 self.state = ConnectionState.DISCONNECTED
                 for task in tasks:
@@ -443,6 +449,8 @@ class IcomTransport:
                         logger.debug(
                             "keepalive task raised during disconnect", exc_info=True
                         )
+            if close_error is not None:
+                raise close_error
             logger.info("Disconnected")
 
         # Caller cancellation must not cancel a keepalive's own finalizer.
