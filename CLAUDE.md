@@ -189,10 +189,13 @@ Documentation-only work follows its explicit `AGENTS.md` exception.
 
 ## Agent working rules
 
-Resolve the authoritative planning owner before non-trivial work. For the v3
-project, `AGENTS.md` delegates scope, acceptance, dependencies, and status to
-Linear; GitHub holds execution evidence. Do not duplicate that planning in a
-GitHub issue. Use `docs/internals/github-project-workflow.md` for delivery.
+Resolve the Linear planning owner before non-trivial work. Linear owns Core
+scope, acceptance, dependencies, and status; GitHub holds execution evidence.
+GitHub Projects are not used for Core planning, and membership, fields, or
+GitHub Projects OAuth scopes are not prerequisites. Ordinary GitHub issues
+remain available for customer intake and discussion; do not duplicate Linear
+planning in GitHub issues. Use `docs/internals/github-project-workflow.md` for
+delivery.
 
 Coordinators resume from the existing private Linear checkpoint when relevant;
 workers use their assigned contract. Check known artifact paths, not recursive
