@@ -357,6 +357,15 @@ describe('ScopeFrameHost MOR-2326 lifecycle', () => {
     const malformed = host.snapshot();
     expect(malformed.state).toBe('ghost');
     expect(malformed).not.toHaveProperty('frame');
+    channels.scope.fire(frame(1));
+    expect(host.snapshot().state).toBe('ghost');
+    for (const receiver of [0, 1] as const) {
+      channels.scope.fire(frame());
+      channels.scope.fire(frame(receiver, []));
+      expect(host.snapshot().state).toBe('ghost');
+      channels.scope.fire(frame(1));
+      expect(host.snapshot().state).toBe('ghost');
+    }
     await controller.hardwareScopeDriver.stop(handle);
     host.dispose();
   });

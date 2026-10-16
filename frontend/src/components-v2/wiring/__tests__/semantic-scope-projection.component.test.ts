@@ -89,10 +89,10 @@ function channel() {
     onStateChange: (fn: (value: string) => void) => { states.add(fn); return () => states.delete(fn); },
     onSessionTransition: (fn: (next: { state: string; epoch: number }) => void) => { sessions.add(fn); return () => sessions.delete(fn); },
     connected() { transition('connected'); },
-    frame(receiver = 0) {
-      const buffer = new ArrayBuffer(19), view = new DataView(buffer);
+    frame(receiver = 0, pixels = [0, 128, 255]) {
+      const buffer = new ArrayBuffer(16 + pixels.length), view = new DataView(buffer);
       view.setUint8(0, 1); view.setUint8(1, receiver); view.setUint32(3, 14_000_000, true);
-      view.setUint32(7, 14_100_000, true); view.setUint16(14, 3, true); new Uint8Array(buffer, 16).set([0, 128, 255]);
+      view.setUint32(7, 14_100_000, true); view.setUint16(14, pixels.length, true); new Uint8Array(buffer, 16).set(pixels);
       for (const fn of binary) fn(buffer); flushSync();
     }, count: () => binary.size,
   };
@@ -212,8 +212,10 @@ describe('one managed scope owner through the real region and panel', () => {
     });
     const render = vi.spyOn(SpectrumRenderer.prototype, 'render');
     const rows = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    const project = vi.spyOn(passband, 'projectScopePassbandDisplay');
     const context = document.createElement('canvas').getContext('2d')!;
-    const line = vi.spyOn(context, 'lineTo');
+    const line = vi.fn<(x: number, y: number) => void>();
+    context.lineTo = line;
     function draw() {
       flushSync();
       const pending = [...callbacks.values()]; callbacks.clear();
@@ -226,19 +228,20 @@ describe('one managed scope owner through the real region and panel', () => {
     expect(render).toHaveBeenCalled();
     expect(new Set(line.mock.calls.map(([, y]) => y)).size).toBeGreaterThan(1);
     const selected = render.mock.lastCall![1];
-    const initialFrequency = radio.current!.main.freqHz;
+    const initialFrequency = 14_050_000;
+    expect(radio.current!.main.freqHz).toBe(initialFrequency);
     for (let tick = 1; tick <= 3; tick++) {
       vi.advanceTimersByTime(interval);
       radio.current!.main.freqHz = initialFrequency + tick * 100;
       renew(10 + tick);
       const before = rows.mock.calls.length;
-      wire.frame(1); draw();
+      wire.frame(1, [255, 0, 0]); draw();
       expect(target.querySelector('.spectrum-area canvas')).toBe(canvas);
       expect(target.querySelector<HTMLElement>('.waterfall-history')!.style.visibility).toBe('visible');
       expect(target.querySelector('.scope-disconnected-overlay')).toBeNull();
       expect(rows).toHaveBeenCalledTimes(before);
       expect(render.mock.lastCall![1]).toEqual(selected);
-      expect(radio.current!.main.freqHz).toBe(initialFrequency + tick * 100);
+      expect(project.mock.lastCall![1].state?.main.freqHz).toBe(initialFrequency + tick * 100);
       wire.frame(0); draw();
       expect(rows).toHaveBeenCalledTimes(before + 1);
     }
@@ -295,7 +298,8 @@ describe('one managed scope owner through the real region and panel', () => {
     vi.advanceTimersByTime(499); flushSync(); expect(overlay()).not.toBeNull();
     vi.advanceTimersByTime(1); flushSync(); clear(); expect(h.scope.hardwareScopeConnected).toBe(true);
     wire.frame(); expect(overlay()).toBeNull(); renew(11); wire.frame(); expect(overlay()).not.toBeNull();
-    wire.frame(1); clear();
+    const canvas = target.querySelector('.spectrum-area canvas');
+    wire.frame(1); expect(target.querySelector('.spectrum-area canvas')).toBe(canvas);
   });
   it('retains whole stale geometry and sends frequency-only pan while resize remains denied', async () => {
     await render(); const edges = overlay()!.getAttribute('style'); renew(10, true); wire.frame();

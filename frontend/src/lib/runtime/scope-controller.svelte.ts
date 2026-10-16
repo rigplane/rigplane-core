@@ -101,6 +101,7 @@ export class ScopeController {
   private _authorityRevision = 0;
   private _frameAuthority: ScopeFrameCanonicalAuthority | null = null;
   private _frameEnvelope: QualifiedScopeFrameEnvelope | null = null;
+  private _frameExpiryTimer: TimerHandle | null = null;
   private _acceptedSequence = 0;
   private _arrivals: Record<ScopeSource, Readonly<{
     receivedAt: number; acceptedSequence: number;
@@ -199,7 +200,7 @@ export class ScopeController {
       this._authorityRevision += 1;
     }
     this._frameAuthority = normalized;
-    this._frameEnvelope = null;
+    this._setFrameEnvelope(null);
     this._notifyEvidence();
     if (normalized?.receiver != null && normalized.providerGeneration != null) {
       if (normalized.source === 'hardware') {
@@ -460,28 +461,53 @@ export class ScopeController {
     const authority = this._frameAuthority;
     if (authorityRevision !== this._authorityRevision || authority?.source !== source) return true;
     if (!Number.isSafeInteger(transportEpoch) || transportEpoch <= 0) {
-      this._frameEnvelope = null;
+      this._setFrameEnvelope(null);
       this._notifyEvidence();
       return true;
     }
     if ((authority.receiver !== 0 && authority.receiver !== 1)
       || !Number.isSafeInteger(authority.providerGeneration)
       || (authority.providerGeneration as number) < 0) {
-      this._frameEnvelope = null;
+      this._setFrameEnvelope(null);
       this._notifyEvidence();
       return true;
     }
     const view = new DataView(buffer);
-    this._frameEnvelope = qualifyScopeFrameEnvelope(frame, {
+    const identity = {
       source,
       receiver: authority.receiver,
       providerGeneration: authority.providerGeneration as number,
       transportEpoch,
       receivedAt,
       acceptedSequence,
-    }, view.getUint16(11, true));
+    };
+    const wireSequence = view.getUint16(11, true);
+    const envelope = qualifyScopeFrameEnvelope(frame, identity, wireSequence);
+    if (!envelope && frame.pixels.length >= 2 && frame.endFreq > frame.startFreq
+      && qualifyScopeFrameEnvelope(frame, {
+        ...identity, receiver: authority.receiver === 0 ? 1 : 0,
+      }, wireSequence)) return true;
+    this._setFrameEnvelope(envelope);
     this._notifyEvidence();
     return true;
+  }
+
+  private _setFrameEnvelope(envelope: QualifiedScopeFrameEnvelope | null): void {
+    if (this._frameExpiryTimer !== null) this._timing.clearTimeout(this._frameExpiryTimer);
+    this._frameExpiryTimer = null;
+    this._frameEnvelope = envelope;
+    if (!envelope) return;
+    const wake = () => {
+      if (this._frameEnvelope !== envelope) return;
+      const age = this._timing.now() - envelope.receivedAt;
+      if (!Number.isFinite(age) || age < 0 || age >= SCOPE_FRAME_SILENCE_MS) {
+        this._frameExpiryTimer = null;
+        this._notifyEvidence();
+        return;
+      }
+      this._frameExpiryTimer = this._timing.setTimeout(wake, SCOPE_FRAME_SILENCE_MS - age);
+    };
+    this._frameExpiryTimer = this._timing.setTimeout(wake, SCOPE_FRAME_SILENCE_MS);
   }
 
   private _armExpiry(
@@ -498,10 +524,6 @@ export class ScopeController {
         if (source === 'hardware') this.scopeFrame = null;
         else this.audioScopeFrame = null;
         this._setHealth(source, { ...this._readHealth(source), frameSeen: false });
-        if (this._frameEnvelope?.source === source
-          && this._frameEnvelope.acceptedSequence === arrival.acceptedSequence) {
-          this._notifyEvidence();
-        }
         return;
       }
       this._expiryTimers[source] = this._timing.setTimeout(
@@ -522,7 +544,7 @@ export class ScopeController {
     this._arrivals[source] = null;
     if (source === 'hardware') this.scopeFrame = null;
     else this.audioScopeFrame = null;
-    if (clearEnvelope && this._frameEnvelope?.source === source) this._frameEnvelope = null;
+    if (clearEnvelope && this._frameEnvelope?.source === source) this._setFrameEnvelope(null);
     const current = this._readHealth(source);
     if (current.frameSeen) this._setHealth(source, { ...current, frameSeen: false });
     this._notifyEvidence();

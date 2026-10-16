@@ -805,12 +805,12 @@ describe('ScopeController', () => {
     const handle = await controller.hardwareScopeDriver.start();
     local._setState('connected');
     local._fire(makeScopeFrameBuffer());
-    const oldTimer = timed.ids()[0];
+    const oldTimers = timed.ids();
     timed.advance(100);
     local._fire(makeScopeFrameBuffer());
     const newer = controller.snapshotFrameEvidence().envelope;
 
-    timed.fireEvenIfCancelled(oldTimer);
+    for (const timer of oldTimers) timed.fireEvenIfCancelled(timer);
     expect(controller.snapshotFrameEvidence().envelope).toBe(newer);
     expect(controller.snapshotHealth('hardware').frameSeen).toBe(true);
     expect(newer?.acceptedSequence).toBe(2);
