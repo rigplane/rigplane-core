@@ -11,9 +11,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b16] — 2026-10-15
+
 ### Fixed
 
 - **Close and reconnect a silent control, scope or audio-scope WebSocket instead of showing a live link over a dead connection (MOR-1831, MOR-3276, #4043).** The Web UI now closes and reconnects the channel when the server goes silent for 30 s. A new Web UI talking to an older Core without the pong reply reconnects an idle control channel about every 31 s.
+
+- **Keep web and station listeners available during the LAN identity hold
+  (MOR-3363, #4102).** The bundled rigctld listener no longer aborts startup
+  while radio identity is pending; readiness remains false until the hold resolves.
+
+- **Re-login when the control session dies during a LAN identity hold
+  (MOR-3349, #4109, #4172).** The held session is probed before requesting
+  recovery; a live standby session does not trigger that escalation.
+
+- **Recover startup from a radio-held session with bounded fresh-login retries
+  (MOR-3391, #4176, #4178, #4197).** Web and station serve HTTP not-ready
+  during the startup busy hold. The busy retry budget is 600 seconds, with
+  a 90-second live-holder boundary and two retries for an unanswered first
+  discovery; a live holder ends the retry loop rather than being displaced.
+
+### Known issues
+
+- **MOR-3471 remains unresolved and is deferred to the next release:** the
+  waterfall can replay buffered frames at 4–5× after returning from an inactive
+  macOS Space. The added diagnostics (#4246) do not establish a fix.
 
 ## [3.0.0b15] — 2026-10-11
 
@@ -4473,7 +4495,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b15...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b16...HEAD
+[3.0.0b16]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b15...v3.0.0b16
 [3.0.0b15]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b14...v3.0.0b15
 [3.0.0b14]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b13...v3.0.0b14
 [3.0.0b13]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b12...v3.0.0b13
