@@ -484,7 +484,7 @@ async function installPanoramaWitness(page: Page): Promise<void> {
   await page.addInitScript(() => {
     // Exercise the production PCM fallback when optional WebCodecs is absent.
     Object.defineProperty(window, 'AudioDecoder', { configurable: true, value: undefined });
-    const win = window as Window & { __PANORAMA__: PanoramaWitness };
+    const win = window as Window & { __PANORAMA__?: PanoramaWitness };
     const w: PanoramaWitness = {
       acknowledgments: [], active: false, pinned: false, baselineSignal: 0, pixelLosses: 0, main: 0, sub: 0, audioWire: 0, pcmBuffers: 0,
       finiteSamples: 0, nonzeroSamples: 0, invalidSamples: 0, subChecks: 0, losses: 0,
@@ -609,7 +609,7 @@ async function installPanoramaWitness(page: Page): Promise<void> {
 }
 
 async function panoramaWitness(page: Page): Promise<PanoramaWitness> {
-  return page.evaluate(() => (window as Window & { __PANORAMA__: PanoramaWitness }).__PANORAMA__);
+  return page.evaluate(() => (window as Window & { __PANORAMA__?: PanoramaWitness }).__PANORAMA__!);
 }
 
 const panoramaTest = test.extend({
@@ -641,7 +641,7 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
       await expect.poll(async () => (await panoramaWitness(page)).sub).toBeGreaterThan(3);
       await expect.poll(async () => (await panoramaWitness(page)).pcmBuffers).toBeGreaterThan(5);
       await expect.poll(async () => (await panoramaWitness(page)).audioWire).toBeGreaterThan(5);
-      await page.evaluate(() => { (window as Window & { __PANORAMA__: PanoramaWitness }).__PANORAMA__.active = true; });
+      await page.evaluate(() => { (window as Window & { __PANORAMA__?: PanoramaWitness }).__PANORAMA__!.active = true; });
       const before = await panoramaWitness(page);
       expect(before.pcm.at(-1)?.state).toBe('running');
       await expectServerMain(page, { freqHz: 14_286_000 });
