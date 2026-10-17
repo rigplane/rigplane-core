@@ -235,8 +235,10 @@ available_when = [
 values = [0, 20]
 
 [preamp]
-# CI-V 0x16 0x02: 0=OFF, 1=P.AMP1, 2=P.AMP2
-values = [0, 1, 2]
+# CI-V 0x16 0x02: IC-9700 CI-V Reference Guide p.5 -- 00 both OFF, 01 P.AMP ON,
+# 02 EXT-P.AMP ON, 03 both ON.
+values = [0, 1, 2, 3]
+labels = { "0" = "OFF", "1" = "INT", "2" = "EXT", "3" = "INT+EXT" }
 
 [agc]
 # CI-V 0x16 0x12: 1=FAST, 2=MID, 3=SLOW (wfview IC-7300.rig lists Min/Max 0-2 for UI)
