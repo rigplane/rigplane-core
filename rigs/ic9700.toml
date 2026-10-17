@@ -125,6 +125,10 @@ meter_coalescing_window_seconds = 0.2
 
 [state_acquisition.capabilities]
 polling_only = [
+    # 0x07 0xD2 (get_main_sub_band): IC-9700 CI-V Reference Guide p.4, "Send/read
+    # main band selection". Pinned by
+    # test_state_queries.py: test_main_sub_profiles_poll_active_receiver.
+    "global.slow_state.active",
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
     "receiver.main.operator_controls.af_level",

@@ -5721,6 +5721,23 @@ def test_civ_expects_response_scope_set(
     assert radio_with_state._civ_runtime._civ_expects_response(frame) is False
 
 
+def test_civ_expects_response_main_sub_band_read_vs_set() -> None:
+    """07 D2 is the active-receiver read; 07 D2 <00|01> selects (ACK only).
+
+    Classified as a write, the read's fire-and-forget ACK sink is never
+    retired by its ``07 D2 xx`` data reply, so every later blocking command
+    drops it and marks an ACK unclaimed -- which made each managed-TX unkey
+    settle UNCERTAIN on an IC-9700 polling the active receiver.
+    """
+    from rigplane.commands._frame import parse_civ_frame
+    from rigplane.runtime._civ_rx import CivRuntime
+
+    read = parse_civ_frame(bytes.fromhex("fefea2e007d2fd"))
+    select_sub = parse_civ_frame(bytes.fromhex("fefea2e007d201fd"))
+    assert CivRuntime._civ_expects_response(read) is True
+    assert CivRuntime._civ_expects_response(select_sub) is False
+
+
 def test_update_radio_state_exception_suppressed(radio_with_state: IcomRadio) -> None:
     """Exception in _update_radio_state_from_frame is suppressed (line 621-622)."""
     # RadioState uses slots=True, so replace the whole object with a MagicMock
