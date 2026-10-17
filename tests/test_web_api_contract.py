@@ -309,6 +309,7 @@ def test_pro_web_api_contract_lists_stable_surface() -> None:
     assert ("PUT", "/api/v1/managed-transmit/tot") in http
     assert ("GET", "/api/v1/bridge") in http
     assert ("POST", "/api/v1/bridge") in http
+    assert ("PATCH", "/api/v1/bridge") in http
     assert ("DELETE", "/api/v1/bridge") in http
     assert ("POST", "/api/v1/commands") in http
     assert ("POST", "/api/v1/commands/batch") in http
