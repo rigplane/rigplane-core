@@ -566,6 +566,16 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
     expect(r.el('attenuator-6')?.textContent).toBe('6 dB');
   });
 
+  it('presents profile-declared preamp labels instead of the generic P<n> text', () => {
+    const view = finiteBase();
+    const r = renderFinite({
+      ...view, rfFrontEnd: { ...view.rfFrontEnd!, preLabels: { '1': 'INT', '2': 'EXT' } },
+    });
+    expect(r.el('preamp-0')?.textContent).toBe('OFF');
+    expect(r.el('preamp-1')?.textContent).toBe('INT');
+    expect(r.el('preamp-2')?.textContent).toBe('EXT');
+  });
+
   it.each([0, 6, 12, 18] as const)(
     'sends attenuator step %s dB exactly once, from a fresh mount, independent of the other buttons',
     (value) => {

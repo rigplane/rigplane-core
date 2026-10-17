@@ -419,7 +419,8 @@
 
   const preampChoices = (): readonly number[] => rf?.preValues ?? [];
   const attenuatorChoices = (): readonly number[] => rf?.attValues ?? [];
-  const preampChoiceText = (value: number): string => value === 0 ? 'OFF' : `P${value}`;
+  const preampChoiceText = (value: number): string =>
+    rf?.preLabels?.[String(value)] ?? (value === 0 ? 'OFF' : `P${value}`);
   const attenuatorChoiceText = (value: number): string => value === 0 ? 'OFF' : `${value} dB`;
   // Same hint hosts RfFrontEnd exposes (MOR-2793).
   const rfGainShortcut = (): string | null => getShortcutHint('adjust_rf_gain');

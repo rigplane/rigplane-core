@@ -73,6 +73,14 @@ describe('rfFrontEnd (MOR-1262 slice 6A)', () => {
     expect(() => validateRadioViewModel(malformed)).toThrow(/\$\.rfFrontEnd\.preValues/);
   });
 
+  it('accepts string preLabels and rejects a non-string label with a precise error path', () => {
+    const withR = withRfFrontEnd(base);
+    const labelled = { ...withR, rfFrontEnd: { ...withR.rfFrontEnd, preLabels: { '2': 'EXT' } } };
+    expect(validateRadioViewModel(labelled).rfFrontEnd!.preLabels).toEqual({ '2': 'EXT' });
+    const malformed = { ...withR, rfFrontEnd: { ...withR.rfFrontEnd, preLabels: { '2': 2 } } };
+    expect(() => validateRadioViewModel(malformed)).toThrow(/\$\.rfFrontEnd\.preLabels\.2/);
+  });
+
   it('rejects a non-array attValues', () => {
     const withR = withRfFrontEnd(base);
     const malformed = { ...withR, rfFrontEnd: { ...withR.rfFrontEnd, attValues: '6dB' } };
