@@ -230,9 +230,8 @@ available_when = [
 # ── Parameterized Capabilities ───────────────────────────────────
 
 [attenuator]
-# CI-V 0x11: binary toggle only
-# 0x00=OFF, 0x20=20dB ON
-values = [0, 20]
+# CI-V 0x11: IC-9700 CI-V Reference Guide p.4 -- "00" OFF, "10" 10 dB.
+values = [0, 10]
 
 [preamp]
 # CI-V 0x16 0x02: 0=OFF, 1=P.AMP1, 2=P.AMP2
