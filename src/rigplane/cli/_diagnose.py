@@ -25,7 +25,6 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 import sys
 import time
 import uuid
@@ -153,15 +152,10 @@ def _default_config_dir() -> Path:
 
 
 def _resolve_endpoint(endpoint_arg: str | None) -> str:
-    if endpoint_arg:
-        return endpoint_arg
-    env = os.environ.get("RIGPLANE_REPORT_ENDPOINT")
-    if env:
-        return env
     # Lazy import — see module-level NOTE about deferring diagnostics imports.
-    from rigplane.diagnostics import DEFAULT_ENDPOINT
+    from rigplane.diagnostics.upload import _resolve_endpoint as resolve  # noqa: TID251
 
-    return str(DEFAULT_ENDPOINT)
+    return resolve(endpoint_arg or None)
 
 
 def _is_tty() -> bool:

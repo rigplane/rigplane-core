@@ -40,7 +40,7 @@ class ReportSubmitted:
 def _resolve_endpoint(endpoint: str | None) -> str:
     if endpoint is not None:
         return endpoint
-    return os.environ.get("RIGPLANE_REPORT_ENDPOINT", DEFAULT_ENDPOINT)
+    return os.environ.get("RIGPLANE_REPORT_ENDPOINT") or DEFAULT_ENDPOINT
 
 
 def _raise_for_error(status: int, body: dict[str, Any]) -> None:

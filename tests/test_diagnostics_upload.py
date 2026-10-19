@@ -14,6 +14,7 @@ import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
+from rigplane.diagnostics.upload import _resolve_endpoint  # noqa: TID251
 from rigplane.diagnostics import (
     DEFAULT_ENDPOINT,
     BundleTooLarge,
@@ -139,12 +140,34 @@ async def test_upload_endpoint_arg_overrides_env(
     assert hits["n"] == 1
 
 
-def test_default_endpoint_is_public_reports_host() -> None:
-    """MOR-3533: the old default, reports.msmsoft.net, resolves only on the tailnet."""
+def test_default_endpoint_is_https_on_a_public_host() -> None:
+    """MOR-3533: the old default resolved only inside the maintainer's tailnet.
+
+    The address itself is spelled once, in ``DEFAULT_ENDPOINT``; the CI
+    shipped-code guard keeps it and any internal domain out of other files.
+    """
     parts = urlsplit(DEFAULT_ENDPOINT)
     assert parts.scheme == "https"
-    assert parts.hostname == "reports.rigplane.app"
     assert parts.path == "/v1/diagnostics/upload"
+    assert parts.hostname is not None
+    assert not parts.hostname.endswith((".msmsoft.net", ".ts.net"))
+
+
+@pytest.mark.parametrize(
+    "doc",
+    ["docs/guide/diagnostic-reports.md", "docs/contracts/diagnostic-bundle-v2.md"],
+)
+def test_docs_name_the_default_endpoint(doc: str) -> None:
+    """The user guide and the v2 contract must print the address the code uses."""
+    text = (Path(__file__).resolve().parent.parent / doc).read_text(encoding="utf-8")
+    assert DEFAULT_ENDPOINT in text
+
+
+def test_empty_env_endpoint_is_treated_as_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIGPLANE_REPORT_ENDPOINT", "")
+    assert _resolve_endpoint(None) == DEFAULT_ENDPOINT
 
 
 async def test_upload_endpoint_env_overrides_default(

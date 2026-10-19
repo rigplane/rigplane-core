@@ -882,9 +882,8 @@ class WebConfig:
     # PCM16↔Opus switching on detected slow/lossy links. Off (default) =
     # static MOR-584 per-connection codecs, never switched mid-stream.
     audio_adaptive_egress: bool = False
-    # Extra Host-header names admitted by the Host allowlist (MOR-2880),
-    # e.g. the stands' *.msmsoft.net names (MOR-2868). Repeatable via
-    # the CLI's --allowed-host flag.
+    # Extra Host-header names admitted by the Host allowlist (MOR-2880).
+    # Repeatable via the CLI's --allowed-host flag.
     allowed_hosts: tuple[str, ...] = ()
     # Explicitly trusted serialized http(s) origins (MOR-3108 b11): the
     # operator's own public HTTPS origin in front of this HTTP/internal

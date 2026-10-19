@@ -1572,7 +1572,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help=(
             "Admit this Host header name in addition to the local allowlist "
-            "(repeatable, e.g. stand77.msmsoft.net)"
+            "(repeatable, e.g. host.example.net)"
         ),
     )
     web_p.add_argument(
