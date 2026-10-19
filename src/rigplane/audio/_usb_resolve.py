@@ -97,6 +97,8 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "AudioDeviceMapping",
     "WindowsPnpDevice",
+    "WindowsAudioAmbiguityError",
+    "WindowsAudioEndpointNameError",
     "WindowsAudioTopologyError",
     "resolve_audio_for_serial_port",
 ]
@@ -159,6 +161,18 @@ class WindowsPnpDevice:
 
 class WindowsAudioTopologyError(RuntimeError):
     """Windows topology cannot identify a safe audio pair for this serial port."""
+
+
+class WindowsAudioAmbiguityError(WindowsAudioTopologyError):
+    """More than one radio or audio device fits the topology; none is chosen."""
+
+
+class WindowsAudioEndpointNameError(WindowsAudioTopologyError):
+    """The radio's codec is identified, but no host API lists its RX/TX pair."""
+
+
+# MME device names were cut to 31 characters on GTR7 (MOR-3526).
+_MME_NAME_LIMIT = 31
 
 
 def resolve_audio_for_serial_port(
@@ -385,7 +399,7 @@ def _resolve_windows(
         ]
         identities = {r.parent_pnp_id or r.pnp_device_id for r in audio_devs}
         if len(identities) > 1:
-            raise WindowsAudioTopologyError(
+            raise WindowsAudioAmbiguityError(
                 "Windows USB audio identity is ambiguous; "
                 "select explicit RX/TX devices."
             )
@@ -562,7 +576,7 @@ def _resolve_ic7300_hub(
             or len(candidates) != 1
             or same_name_codecs != set(candidates)
         ):
-            raise WindowsAudioTopologyError(
+            raise WindowsAudioAmbiguityError(
                 "IC-7300 USB association is ambiguous; select explicit RX/TX devices."
             )
         codec_id = next(iter(candidates))
@@ -605,6 +619,20 @@ def _resolve_ic7300_hub(
         }
     )
     rank = identities.index(codec_id)
+    # Endpoint FriendlyNames can be localized, renamed or "2- "-prefixed. The
+    # SWD endpoint rows carry each codec's names; on GTR7 PortAudio listed the
+    # same strings, cut to 31 characters under MME (MOR-3526).
+    endpoint_names: dict[str, set[str]] = {}
+    for r in records:
+        if (
+            r.pnp_device_id.upper().startswith("SWD\\")
+            and r.audio_endpoint_name is not None
+            and (p := physical(r)) is not None
+            and p.pnp_device_id.upper() in identities
+        ):
+            endpoint_names.setdefault(p.pnp_device_id.upper(), set()).add(
+                r.audio_endpoint_name.strip()
+            )
     sd: Any = sounddevice_module
     if sd is None:
         try:
@@ -612,16 +640,39 @@ def _resolve_ic7300_hub(
         except ImportError:
             return None
     devices = list(sd.query_devices())
+    query_hostapis = getattr(sd, "query_hostapis", None)
+    mme = {
+        i
+        for i, api in enumerate(query_hostapis() if callable(query_hostapis) else ())
+        if api.get("name") == "MME"
+    }
+
+    def owners(device: dict[str, Any]) -> set[str]:
+        name = str(device.get("name", ""))
+        truncated = device.get("hostapi") in mme and len(name) == _MME_NAME_LIMIT
+        return {
+            codec
+            for codec, names in endpoint_names.items()
+            if any(
+                n == name.strip() or (truncated and n.startswith(name)) for n in names
+            )
+        }
+
+    def member(device: dict[str, Any]) -> bool:
+        return bool(owners(device)) or (
+            _windows_audio_product(str(device.get("name", ""))) == "USB Audio CODEC"
+        )
+
     hostapis = dict.fromkeys(
         d.get("hostapi")
         for d in devices
-        if _windows_audio_product(d.get("name", "")) == "USB Audio CODEC"
-        and isinstance(d.get("hostapi"), int)
+        if isinstance(d.get("hostapi"), int) and member(d)
     )
+    contradicted = False
     for hostapi in hostapis:
         normalized = [
-            dict(d, name=_windows_audio_product(d.get("name", "")))
-            if d.get("hostapi") == hostapi
+            dict(d, name="USB Audio CODEC")
+            if d.get("hostapi") == hostapi and member(d)
             else dict(d, name="")
             for d in devices
         ]
@@ -633,17 +684,27 @@ def _resolve_ic7300_hub(
         if len(clusters) != len(identities):
             continue
         pair = _pair_audio_cluster_by_name_rank(normalized, "USB Audio CODEC", rank)
-        if pair is not None:
-            return AudioDeviceMapping(pair[0], pair[1], serial.com_port or "", None)
-    raise WindowsAudioTopologyError(
+        if pair is None:
+            continue
+        # The rank picks the pair; a name PnP also ties to another codec
+        # (including a shared truncated MME prefix) refuses this host API.
+        if any(owners(devices[i]) - {codec_id} for i in pair):
+            contradicted = True
+            continue
+        return AudioDeviceMapping(pair[0], pair[1], serial.com_port or "", None)
+    if contradicted:
+        raise WindowsAudioAmbiguityError(
+            "IC-7300 USB audio endpoint names do not match the codec rank; "
+            "select explicit RX/TX devices."
+        )
+    raise WindowsAudioEndpointNameError(
         "IC-7300 USB audio has no complete same-host-API pair."
     )
 
 
 def _windows_audio_product(name: str) -> str:
-    name = name.strip()
-    match = re.fullmatch(r"(?:Microphone|Speakers) \((.+)\)", name)
-    return match[1].strip() if match else name
+    match = re.fullmatch(r".*\((?:\d+-\s*)?([^()]+)\)", name.strip())
+    return match[1].strip() if match else name.strip()
 
 
 def _query_windows_pnp_devices() -> list[WindowsPnpDevice]:
@@ -695,13 +756,13 @@ def _query_windows_pnp_devices() -> list[WindowsPnpDevice]:
             timeout=5,
         )
         if result.returncode != 0:
-            logger.debug(
+            logger.warning(
                 "usb-audio-resolve: Get-PnpDevice exited %d", result.returncode
             )
             return []
         text = result.stdout.decode("utf-8", errors="replace")
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        logger.debug("usb-audio-resolve: PowerShell PnP query failed: %s", exc)
+        logger.warning("usb-audio-resolve: PowerShell PnP query failed: %s", exc)
         return []
 
     devices: list[WindowsPnpDevice] = []

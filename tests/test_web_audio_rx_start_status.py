@@ -43,7 +43,7 @@ async def info(server):
 
 FAILED = {
     "schemaVersion": 1,
-    "failure": {"stage": "rx_start", "code": "core_rx_start_failed"},
+    "failure": {"stage": "rx_start", "code": "core_rx_start_failed", "reason": "other"},
 }
 CLEAR = {"schemaVersion": 1, "failure": None}
 
@@ -122,3 +122,77 @@ async def test_late_retired_attempt_cannot_overwrite_current_source_fact(
     assert await info(server) == expected
     assert broadcaster._subscription is current_subscription
     assert old.audio_session.rx_demand == 0
+
+
+def _chained(outer, inner):
+    outer.__cause__ = inner
+    return outer
+
+
+def _rx_start_failures():
+    from rigplane.audio.usb_driver import (
+        AudioCaptureOpenTimeoutError,
+        AudioDeviceAmbiguousError,
+        AudioDeviceSelectionError,
+        AudioFormatUnsupportedError,
+        AudioTopologyUnavailableError,
+    )
+    from rigplane.usb_audio_resolve import (
+        WindowsAudioAmbiguityError,
+        WindowsAudioEndpointNameError,
+        WindowsAudioTopologyError,
+    )
+
+    private = "private device /private/example could not open"
+    return {
+        "usb_topology_names": _chained(
+            AudioDeviceSelectionError(private), WindowsAudioEndpointNameError(private)
+        ),
+        "usb_topology_unavailable": AudioTopologyUnavailableError(private),
+        "usb_topology_unavailable-graph": _chained(
+            AudioDeviceSelectionError(private), WindowsAudioTopologyError(private)
+        ),
+        "usb_ambiguous": AudioDeviceAmbiguousError(private),
+        "usb_ambiguous-graph": _chained(
+            AudioDeviceSelectionError(private), WindowsAudioAmbiguityError(private)
+        ),
+        "open_timeout": AudioCaptureOpenTimeoutError(private),
+        "format": AudioFormatUnsupportedError(private),
+        "other": AudioDeviceSelectionError(private),
+        "other-os": OSError(private),
+    }
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "usb_topology_names",
+        "usb_topology_unavailable",
+        "usb_topology_unavailable-graph",
+        "usb_ambiguous",
+        "usb_ambiguous-graph",
+        "open_timeout",
+        "format",
+        "other",
+        "other-os",
+    ],
+)
+async def test_refusal_reports_its_redacted_reason_category(station, case):
+    server, radio, broadcaster = station
+    error = _rx_start_failures()[case]
+
+    async def refuse(callback, *, jitter_depth=None):
+        raise error
+
+    radio.start_rx = refuse
+    await broadcaster.ensure_relay()
+    status = await info(server)
+    assert status == {
+        "schemaVersion": 1,
+        "failure": {
+            "stage": "rx_start",
+            "code": "core_rx_start_failed",
+            "reason": case.split("-")[0],
+        },
+    }
+    assert "private" not in json.dumps(status)
