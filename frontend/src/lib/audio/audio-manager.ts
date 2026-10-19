@@ -344,7 +344,9 @@ class AudioManager {
     if (this.controller?.remote() && !this.controller.ready()) return;
     if (this.controller && !this.controller.remote() && !this.controller.ready()) {
       // MOR-3535: a local session is being re-acquired — defer the socket
-      // until the fresh key exists so it never degrades to sessionless.
+      // while the re-acquire is in flight so it never races the fresh key
+      // sessionless; if the re-acquire itself fails, the client falls back
+      // to sessionless like an old Core.
       if (this.reconnectTimer === null) {
         const delay = this.backoff;
         this.backoff = Math.min(Math.floor(this.backoff * 1.7), BACKOFF_MAX);

@@ -66,6 +66,7 @@ describe('remote controller channel grouping', () => {
     await vi.waitFor(() => expect(instances).toHaveLength(3));
     instances[2].simulateOpen();
     expect(instances[2].sent.some((raw) => JSON.parse(raw).id === 'old')).toBe(false);
+    expect(control.send({ type: 'cmd', id: 'fresh', name: 'ptt', params: { state: true } })).toBe(true);
     control.disconnect();
   });
 });
@@ -90,6 +91,12 @@ describe('local controller session channels', () => {
     const { WsChannel } = await import('../ws-client');
     const control = new WsChannel();
     const scope = new WsChannel(false);
+    // Silent-recovery pin: a local session loss must surface no error toast.
+    // Collecting on both channels catches an emit wired into the local
+    // onLoss branch whether or not it is guarded by `control`.
+    const notifications: WsMessage[] = [];
+    control.onMessage((m) => { if (m.type === 'notification') notifications.push(m); });
+    scope.onMessage((m) => { if (m.type === 'notification') notifications.push(m); });
     await controllerClient.prepare();
     expect(controllerClient.remote).toBe(false);
     control.connect('wss://station.test/api/v1/ws');
@@ -118,6 +125,7 @@ describe('local controller session channels', () => {
     expect(sentIds).not.toContain('stale-ptt');
     expect(sentIds).toContain('queued-set');
     expect(control.send({ type: 'cmd', id: 'fresh-ptt', name: 'ptt', params: { state: true } })).toBe(true);
+    expect(notifications).toEqual([]);
     control.disconnect();
     scope.disconnect();
   });
