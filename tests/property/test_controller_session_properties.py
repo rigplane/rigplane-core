@@ -30,9 +30,12 @@ pytestmark = pytest.mark.property
 _SESSIONS = ("a", "b", "c")
 _OPS = ("ptt_down", "ptt_up", "transmit_on", "expire", "force_off")
 _ON = (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON)
+_RELEASE = ActuationOperation.FORCE_RECEIVE
 
 
-async def _scenario(session_count: int, steps: list[list[tuple[str, int]]]) -> None:
+async def _scenario(
+    session_count: int, steps: list[list[tuple[str, int]]]
+) -> tuple[ManagedTxIntentKind, list[ActuationOperation]]:
     clock, controller, managed, lane = stack()
     names = _SESSIONS[:session_count]
     tickets = {name: open_session(controller, name)[1] for name in names}
@@ -105,13 +108,15 @@ async def _scenario(session_count: int, steps: list[list[tuple[str, int]]]) -> N
         for name in tuple(live):
             controller.detach(tickets[name])
         await controller.settle()
-        assert (await managed.snapshot()).state.intent.kind is ManagedTxIntentKind.RX
+        final = (await managed.snapshot()).state.intent.kind
+        operations = [effect.operation for effect in lane.effects]
     finally:
         controller.revoke()
         await controller.settle()
         off = await managed.submit_force_off()
         await off.wait_settlement()
         await managed.close()
+    return final, operations
 
 
 @given(
@@ -129,4 +134,11 @@ async def _scenario(session_count: int, steps: list[list[tuple[str, int]]]) -> N
 def test_interleaved_sessions_never_put_two_owners_on_air(
     session_count: int, steps: list[list[tuple[str, int]]]
 ) -> None:
-    asyncio.run(_scenario(session_count, steps))
+    final, operations = asyncio.run(_scenario(session_count, steps))
+    # Every session ended: the transmitter is released, and over the whole
+    # run no ON effect followed another without a FORCE_RECEIVE between.
+    assert final is ManagedTxIntentKind.RX
+    on_air = [op for op in operations if op in _ON or op is _RELEASE]
+    assert all(
+        not (prev in _ON and op in _ON) for prev, op in zip(on_air, on_air[1:])
+    ), operations
