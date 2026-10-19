@@ -1863,6 +1863,15 @@ class ControlHandler:
         authority = self._managed_tx_authority
         if (
             starts_tx
+            and isinstance(authority, ManagedTxAuthority)
+            and authority.radio_tx_unowned_nowait()
+        ):
+            # MOR-3537: the radio transmits a TX no owner keyed (the
+            # operator's own mic or PTT); nothing keys over it. Checked on
+            # admission and again when the command runs, for every owner.
+            raise ControllerError("radio_tx_unowned", 409)
+        if (
+            starts_tx
             and not owner_checked
             and isinstance(authority, ManagedTxAuthority)
         ):

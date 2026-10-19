@@ -733,6 +733,14 @@ class ManagedTxAuthority:
             and self.tx_holder_nowait() != owner
         )
 
+    def radio_tx_unowned_nowait(self) -> bool:
+        """Whether the radio transmits a TX no owner keyed (MOR-3537).
+
+        Read without the lock, like :meth:`held_by_other`: the operator's own
+        mic or PTT at the radio, while Core holds and owes no TX.
+        """
+        return self._unowned_radio_tx_locked()
+
     def _projection_locked(self) -> ManagedTxProjection:
         deadline = self._tot_deadline_locked()
         state = replace(self._state, tot_deadline_monotonic=deadline)

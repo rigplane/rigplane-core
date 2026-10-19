@@ -696,3 +696,29 @@ async def test_a_tx_start_admitted_before_another_owner_keys_is_refused_when_run
     assert server.command_queue.drain() == []
     assert managed.tx_holder_nowait() == a.tx_owner
     assert await managed.ptt_up(a.tx_owner) is ACCEPTED
+
+
+@pytest.mark.parametrize(("name", "params"), _TX_STARTS)
+async def test_a_tx_start_is_refused_while_the_radio_sends_a_tx_no_owner_keyed(
+    station,  # noqa: F811
+    name: str,
+    params: dict[str, object],
+) -> None:
+    """CW text, VOX, TUNE and break-in never key over the operator's TX."""
+    server, _ = station
+    managed, clock, _lane, radio = radio_tx_authority()
+    try:
+        handler = _handler(server, managed)
+        handler._validate_controller_command(name, params)  # radio RX: admitted
+        radio.append(clock.now)  # the operator keys at the radio
+        with pytest.raises(ControllerError, match="radio_tx_unowned"):
+            await handler._enqueue_command(name, params)
+        # An intent admitted before the operator keyed is refused when it runs.
+        intent = CommandIntent("queued", name, dict(params), "websocket")
+        with pytest.raises(ControllerError, match="radio_tx_unowned"):
+            await _handler(server, managed)._execute_intent(intent)
+        assert server.command_queue.drain() == []
+        radio.clear()  # the operator's TX ends
+        handler._validate_controller_command(name, params)
+    finally:
+        await managed.close()

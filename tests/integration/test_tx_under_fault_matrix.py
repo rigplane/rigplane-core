@@ -948,10 +948,17 @@ async def test_a_tx_no_owner_keyed_is_never_keyed_over_nor_unkeyed(
             response = await ws.command(command_id, "ptt_on")
             assert response.get("ok") is False, response
             assert response.get("message") == "radio_tx_unowned", response
+            # Nor do CW text, VOX, TUNE or break-in key over it.
+            for name, params in _TX_STARTS:
+                response = await ws.command(f"{command_id}-{name}", name, params)
+                assert response.get("ok") is False, response
+                assert response.get("message") == "radio_tx_unowned", response
         assert rig._writer is not None and rig._reader is not None
-        rig._writer.write(b"T 1\n")
-        await rig._writer.drain()
-        assert await asyncio.wait_for(rig._reader.readline(), 10.0) == b"RPRT -9\n"
+        for line in (b"T 1\n", b"U VOX 1\n"):
+            rig._writer.write(line)
+            await rig._writer.drain()
+            reply = await asyncio.wait_for(rig._reader.readline(), 10.0)
+            assert reply == b"RPRT -9\n", (line, reply)
         path = "/api/v1/managed-transmit/command"
         on = {"operation": "transmit_on"}
         assert await _http_json(port, "POST", path, on, key) == (
