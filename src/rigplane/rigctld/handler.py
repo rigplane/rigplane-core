@@ -58,6 +58,7 @@ from ..radio_state import RadioState, ReceiverState
 from ..runtime import _poller_types as tx_commands  # noqa: TID251
 from ..runtime import tx_interlock
 from ..runtime._dual_rx_runtime import require_receiver_for_profile
+from ..runtime.managed_tx_authority import ManagedTxAuthority
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
 from ..runtime.managed_tx_state import ManagedTxOutcome
 from ..types import Mode
@@ -567,6 +568,19 @@ class _RigctldCommandExecutor:
             and str(intent.params["func"]).upper() == "TUNER"
         ):
             return await self._execute_managed_tuner(intent)
+        if (
+            managed
+            and intent.name == "set_func"
+            and str(intent.params["func"]).upper() == "VOX"
+            and bool(intent.params["on"])
+            and isinstance(self.handler._managed_tx_authority, ManagedTxAuthority)
+            and self.handler._managed_tx_authority.held_by_other(
+                intent.params.get("session_id")
+            )
+        ):
+            # MOR-3534: VOX arms keying; another owner's TX refuses it. The
+            # owner is the connection id the rigctld server minted.
+            raise _RigctldCommandFailure(HamlibError.ERJCTED)
         if managed and intent.name == "send_raw":
             # A raw TX-family frame is refused by payload alone —
             # regardless of the observed RF state, and without consulting

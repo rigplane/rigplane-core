@@ -5619,14 +5619,14 @@ class WebServer:
                 await self._managed_tx_unavailable(writer)
                 return
             except ControllerError as exc:
-                # The session ended between routing and admission (MOR-3534).
+                # Controller currency failed after routing (MOR-3534): e.g. ended.
                 await self._send_json(
                     writer, exc.status, "Forbidden", {"error": exc.code}
                 )
                 return
             except CommandError:
-                # The command queue reports a refused transmit_on (another
-                # owner holds TX, MOR-3534) as a command error: a conflict.
+                # The queue reports a refused or no-longer-current transmit_on
+                # (another owner holds TX, MOR-3534) as a command error.
                 submission = None
             accepted = submission is not None and submission.outcome.value == "accepted"
             await self._send_json(
