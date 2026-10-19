@@ -188,7 +188,7 @@ the actual secret).
 By default, uploads target:
 
 ```
-https://reports.msmsoft.net/v1/diagnostics/upload
+https://reports.rigplane.app/v1/diagnostics/upload
 ```
 
 This is a maintainer-operated triage endpoint. Anonymous (open-core)
@@ -221,7 +221,7 @@ follow it to the bundle on their side.
 
 ```
 Sent. Reference this URL in your issue or reply:
-  https://reports.msmsoft.net/r/2k9q-7j4f-8x3p
+  https://reports.rigplane.app/r/2k9q-7j4f-8x3p
 ```
 
 Anonymous reports are retained for **90 days** and then deleted

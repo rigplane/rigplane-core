@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Send diagnostic reports to the public `reports.rigplane.app` endpoint
+  (MOR-3533).** The built-in "Send" button and `rigplane diagnose --upload`
+  defaulted to `reports.msmsoft.net`, which does not resolve outside the
+  maintainer's private network, so uploads failed for every external user with
+  `getaddrinfo failed`. `RIGPLANE_REPORT_ENDPOINT` still overrides the default.
+
 ## [3.0.0b16] — 2026-10-15
 
 ### Fixed

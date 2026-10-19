@@ -20,7 +20,7 @@ from rigplane.diagnostics._errors import (
     UploadFailed,
 )
 
-DEFAULT_ENDPOINT = "https://reports.msmsoft.net/v1/diagnostics/upload"
+DEFAULT_ENDPOINT = "https://reports.rigplane.app/v1/diagnostics/upload"
 """Default diagnostic-bundle upload endpoint. Override via ``RIGPLANE_REPORT_ENDPOINT``."""
 
 HeaderProvider = Callable[[], Awaitable[dict[str, str]]]

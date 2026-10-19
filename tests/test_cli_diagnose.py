@@ -86,7 +86,7 @@ def fake_upload(monkeypatch: pytest.MonkeyPatch):
     mock = AsyncMock(
         return_value=ReportSubmitted(
             report_id="rpt-123",
-            support_url="https://reports.msmsoft.net/r/rpt-123",
+            support_url="https://reports.rigplane.app/r/rpt-123",
             received_at_unix=1_700_000_001,
             auth_class="anonymous",
         )
@@ -488,6 +488,16 @@ class TestEndpoint:
 
         assert _diagnose._resolve_endpoint(None) == DEFAULT_ENDPOINT
         assert _diagnose._resolve_endpoint("https://x") == "https://x"
+
+    def test_cli_keeps_no_second_copy_of_the_default_endpoint(self):
+        """MOR-3533: the CLI must take the default from the library constant.
+
+        A literal endpoint left behind in ``_diagnose`` is what kept pointing
+        at the tailnet-only host after the library default moved.
+        """
+        import inspect
+
+        assert "/v1/diagnostics/upload" not in inspect.getsource(_diagnose)
 
     def test_env_endpoint_used(self, monkeypatch):
         monkeypatch.setenv("RIGPLANE_REPORT_ENDPOINT", "https://env.test/u")

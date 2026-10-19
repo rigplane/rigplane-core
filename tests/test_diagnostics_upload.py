@@ -7,6 +7,7 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 import pytest_asyncio
@@ -14,6 +15,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from rigplane.diagnostics import (
+    DEFAULT_ENDPOINT,
     BundleTooLarge,
     DiagnosticUploadError,
     ForbiddenContent,
@@ -135,6 +137,14 @@ async def test_upload_endpoint_arg_overrides_env(
     monkeypatch.setenv("RIGPLANE_REPORT_ENDPOINT", "http://wrong.invalid/")
     await upload_bundle(bundle_file, {}, endpoint=_url(server))
     assert hits["n"] == 1
+
+
+def test_default_endpoint_is_public_reports_host() -> None:
+    """MOR-3533: the old default, reports.msmsoft.net, resolves only on the tailnet."""
+    parts = urlsplit(DEFAULT_ENDPOINT)
+    assert parts.scheme == "https"
+    assert parts.hostname == "reports.rigplane.app"
+    assert parts.path == "/v1/diagnostics/upload"
 
 
 async def test_upload_endpoint_env_overrides_default(

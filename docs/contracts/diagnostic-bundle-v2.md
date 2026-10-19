@@ -45,7 +45,7 @@ headers; their behaviour is documented in a private contract.
 ## Endpoint
 
 ```
-POST https://reports.msmsoft.net/v1/diagnostics/upload
+POST https://reports.rigplane.app/v1/diagnostics/upload
 ```
 
 The endpoint is overridable via the `RIGPLANE_REPORT_ENDPOINT` environment
@@ -143,7 +143,7 @@ unavailable field; they must omit the key entirely.
 {
   "report_id": "rpt_01JZ7F8A0M5W6X3DKQNHFVHRE0",
   "received_at_unix": 1777670400,
-  "support_url": "https://reports.msmsoft.net/r/rpt_01JZ7F8A0M5W6X3DKQNHFVHRE0",
+  "support_url": "https://reports.rigplane.app/r/rpt_01JZ7F8A0M5W6X3DKQNHFVHRE0",
   "auth_class": "anonymous"
 }
 ```
