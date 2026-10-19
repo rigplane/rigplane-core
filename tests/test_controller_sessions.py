@@ -558,3 +558,16 @@ async def test_http_transmit_on_for_a_session_ended_mid_request_is_forbidden(
         key=key,
     )
     assert (response.status, response.payload) == (403, {"error": "controller_invalid"})
+
+
+def test_ws_caps_keep_the_control_channel_of_a_sessionless_ptt_holder() -> None:
+    manager = server_module.ConnectionManager()
+    holder = object()
+    others = [object() for _ in range(9)]
+    manager.register("127.0.0.1", "/api/v1/ws", holder, owner="websocket-1")  # type: ignore[arg-type]
+    evicted = [
+        manager.register("127.0.0.1", "/api/v1/ws", ws, holder="websocket-1")  # type: ignore[arg-type]
+        for ws in others
+    ]
+    assert evicted[-1] == [others[0]]
+    assert holder in manager._connections[("127.0.0.1", "/api/v1/ws")]

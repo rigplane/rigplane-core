@@ -922,10 +922,11 @@ class ConnectionManager:
 
     The client scope is the controller session's TX owner when the channel
     joined a session, else the peer IP (MOR-3534): behind a gateway every
-    client shares one IP. Channels owned by the current TX holder are never
-    evicted.
+    client shares one IP. Channels owned by the current TX holder (a session,
+    or a sessionless socket that keyed PTT) are never evicted.
     """
 
+    # Per client scope (session or IP) per channel path, despite the name.
     MAX_PER_IP_PER_CHANNEL: int = 9  # 3 tabs × 3 WS (control + scope + audio-scope)
 
     def __init__(self) -> None:
@@ -7726,7 +7727,8 @@ class WebServer:
 
         # Register with connection manager; evict oldest excess connections.
         # MOR-3534: a session-attached channel counts against its session, not
-        # the shared IP, and the TX holder's channels are never evicted.
+        # the shared IP. The holder session's channels, and the control channel
+        # of a sessionless socket that keyed PTT, are never evicted.
         scope = ip if ticket.tx_owner is None else ticket.tx_owner
         managed = self._managed_tx_authority()
         evicted = self._conn_manager.register(
