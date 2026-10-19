@@ -49,6 +49,35 @@ logger = logging.getLogger(__name__)
 ManagedTxChangeListener = Callable[[], None]
 
 
+class RadioTxOrigin(StrEnum):
+    """Who keyed a TX the radio reports while Core holds and owes none (MOR-3537)."""
+
+    # Seen after Core's last unkey with no RX observed in between: Core's
+    # own TX, which the radio did not release.
+    UNRELEASED = "unreleased"
+    # Seen after an RX: the operator's own mic or PTT at the radio.
+    FOREIGN = "foreign"
+
+
+class RadioTxProbe(Protocol):
+    """The radio's PTT readback, as the composition observes it (MOR-3537)."""
+
+    def radio_released(self, keyed_at: float) -> None:
+        """Core's own TX, keyed at ``keyed_at``, just ended: its unkey settled."""
+        ...
+
+    def radio_tx_since(self, since: float) -> RadioTxOrigin | None:
+        """Origin of a TX the radio reported after ``since``; ``None`` if none."""
+        ...
+
+
+# The refusal code for a TX start while the radio reports such a TX.
+_RADIO_TX_REFUSALS = {
+    RadioTxOrigin.UNRELEASED: "radio_tx_unreleased",
+    RadioTxOrigin.FOREIGN: "radio_tx_unowned",
+}
+
+
 class _Wakeup(Protocol):
     async def wait_until(self, deadline: float | None) -> None: ...
 
@@ -151,7 +180,7 @@ class ManagedTxAuthority:
         wakeup: _Wakeup | None = None,
         attempt_timeout_seconds: float = ATTEMPT_TIMEOUT_S,
         retry_delay_seconds: float = RETRY_DELAY_S,
-        radio_tx_since: Callable[[float], bool] | None = None,
+        radio_tx: RadioTxProbe | None = None,
     ) -> None:
         if not 0 < attempt_timeout_seconds < float("inf") or not 0 < (
             retry_delay_seconds
@@ -192,12 +221,13 @@ class ManagedTxAuthority:
         # Owner of a latched TRANSMIT intent (MOR-3534): the controller session
         # that sent transmit_on, or None for a sessionless one.
         self._transmit_owner: str | None = None
-        # MOR-3537: whether the radio reported TX in an observation made after
-        # the given clock reading, and the clock reading at which Core last
-        # had no transmission of its own. Radio TX newer than that is a TX no
-        # owner keyed: the operator's own mic or PTT at the radio.
-        self._radio_tx_since = radio_tx_since
+        # MOR-3537: the radio's PTT readback, and the clock reading at which
+        # Core's own TX last ended. A TX the radio reports after that refuses
+        # every TX start; it never blocks force_off.
+        self._radio_tx = radio_tx
         self._idle_since = float("-inf")
+        # When Core last keyed, until that TX's release settles.
+        self._keyed_at: float | None = None
         self._scheduler_task = asyncio.create_task(self._scheduler())
 
     def bind_controller(self, controller: ControllerAuthority) -> None:
@@ -369,9 +399,9 @@ class ManagedTxAuthority:
                         return ManagedTxTransition(
                             self._state, ManagedTxOutcome.REJECTED
                         ), None
-                    if self._unowned_radio_tx_locked():
-                        # MOR-3537: never key over a TX no owner keyed.
-                        raise ControllerError("radio_tx_unowned", 409)
+                    if (refusal := self._radio_tx_refusal_locked()) is not None:
+                        # MOR-3537: never key over a TX the radio reports.
+                        raise ControllerError(refusal, 409)
                     transition, full_force = self._transition_locked(action, owner)
                     if transition is None:
                         transition = ManagedTxTransition(
@@ -733,13 +763,14 @@ class ManagedTxAuthority:
             and self.tx_holder_nowait() != owner
         )
 
-    def radio_tx_unowned_nowait(self) -> bool:
-        """Whether the radio transmits a TX no owner keyed (MOR-3537).
+    def radio_tx_refusal_nowait(self) -> str | None:
+        """Refusal code for a TX start while the radio reports TX (MOR-3537).
 
-        Read without the lock, like :meth:`held_by_other`: the operator's own
-        mic or PTT at the radio, while Core holds and owes no TX.
+        Read without the lock, like :meth:`held_by_other`: a TX the radio
+        reports while Core holds and owes none, either Core's own TX the radio
+        did not release or the operator's own mic or PTT; ``None`` otherwise.
         """
-        return self._unowned_radio_tx_locked()
+        return self._radio_tx_refusal_locked()
 
     def _projection_locked(self) -> ManagedTxProjection:
         deadline = self._tot_deadline_locked()
@@ -1072,10 +1103,6 @@ class ManagedTxAuthority:
     def _force_off_locked(self) -> ManagedTxTransition:
         self._retry_due = None
         self._pending_abort_cleanup.append(self._abort_fence.force_off())
-        if self._unowned_radio_tx_locked():
-            # MOR-3537: Core holds no TX and the radio transmits anyway; a
-            # force-receive would unkey the operator at the radio.
-            return ManagedTxTransition(self._state, ManagedTxOutcome.REJECTED)
         return self._reduce_locked(
             ForceOff(self._provider_generation, self._attempt_id_locked())
         )
@@ -1087,9 +1114,14 @@ class ManagedTxAuthority:
         self._state = transition.state
         if self._state.intent.kind is not ManagedTxIntentKind.TRANSMIT:
             self._transmit_owner = None
+        if was_clean and self._state.intent.kind is not ManagedTxIntentKind.RX:
+            self._keyed_at = self._clock()  # MOR-3537: Core keys
         if self._state_is_clean_locked():
             if not was_clean:
                 self._idle_since = self._clock()
+                if self._keyed_at is not None and self._radio_tx is not None:
+                    self._radio_tx.radio_released(self._keyed_at)
+                self._keyed_at = None
             self._release_drained.set()
         else:
             self._release_drained.clear()
@@ -1256,13 +1288,12 @@ class ManagedTxAuthority:
             and self._state.pending_effect is None
         )
 
-    def _unowned_radio_tx_locked(self) -> bool:
-        """Whether the radio transmits while Core holds and owes no TX."""
-        return bool(
-            self._radio_tx_since is not None
-            and self._state_is_clean_locked()
-            and self._radio_tx_since(self._idle_since)
-        )
+    def _radio_tx_refusal_locked(self) -> str | None:
+        """Refusal code while the radio transmits and Core holds and owes no TX."""
+        if self._radio_tx is None or not self._state_is_clean_locked():
+            return None
+        origin = self._radio_tx.radio_tx_since(self._idle_since)
+        return None if origin is None else _RADIO_TX_REFUSALS[origin]
 
     def _pending_settlements_locked(self) -> tuple[_SubmissionCompletion, ...]:
         return tuple(task for task in self._settlement_tasks if not task.done())

@@ -1864,12 +1864,13 @@ class ControlHandler:
         if (
             starts_tx
             and isinstance(authority, ManagedTxAuthority)
-            and authority.radio_tx_unowned_nowait()
+            and (refusal := authority.radio_tx_refusal_nowait()) is not None
         ):
-            # MOR-3537: the radio transmits a TX no owner keyed (the
-            # operator's own mic or PTT); nothing keys over it. Checked on
-            # admission and again when the command runs, for every owner.
-            raise ControllerError("radio_tx_unowned", 409)
+            # MOR-3537: the radio transmits while no owner holds TX (the
+            # operator's own mic or PTT, or Core's own TX the radio did not
+            # release); nothing keys over it. Checked on admission and again
+            # when the command runs, for every owner.
+            raise ControllerError(refusal, 409)
         if (
             starts_tx
             and not owner_checked

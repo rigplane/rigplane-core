@@ -580,12 +580,13 @@ class _RigctldCommandExecutor:
                 self.handler._managed_tx_authority.held_by_other(
                     intent.params.get("session_id")
                 )
-                or self.handler._managed_tx_authority.radio_tx_unowned_nowait()
+                or self.handler._managed_tx_authority.radio_tx_refusal_nowait()
+                is not None
             )
         ):
-            # MOR-3534: VOX arms keying; another owner's TX refuses it, and
-            # so does a TX no owner keyed (MOR-3537). The owner is the
-            # connection id the rigctld server minted.
+            # MOR-3534: VOX arms keying; another owner's TX refuses it, and so
+            # does a TX the radio reports while no owner holds TX (MOR-3537).
+            # The owner is the connection id the rigctld server minted.
             raise _RigctldCommandFailure(HamlibError.ERJCTED)
         if managed and intent.name == "send_raw":
             # A raw TX-family frame is refused by payload alone —

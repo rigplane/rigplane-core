@@ -911,7 +911,18 @@ async def _wait_rf(web: WebServer, expected: RfState, deadline_s: float) -> None
         await asyncio.sleep(0.05)
 
 
-async def test_a_tx_no_owner_keyed_is_never_keyed_over_nor_unkeyed(
+async def _wait_released(composition: ManagedTxComposition) -> None:
+    """Wait until Core holds and owes no TX (see _RELEASE_DEBT_GRACE_S)."""
+    end = time.monotonic() + _RELEASE_DEBT_GRACE_S
+    while True:
+        state = (await composition.authority.snapshot()).state
+        if state.intent.kind is ManagedTxIntentKind.RX and not state.release_required:
+            return
+        assert time.monotonic() < end, f"release still owed: {state}"
+        await asyncio.sleep(0.1)
+
+
+async def test_a_tx_no_owner_keyed_is_never_keyed_over_and_force_off_unkeys_it(
     tmp_path: Path,
 ) -> None:
     stack = await _stand_up_stack(
@@ -965,17 +976,18 @@ async def test_a_tx_no_owner_keyed_is_never_keyed_over_nor_unkeyed(
             409,
             {"error": "radio_tx_unowned"},
         )
-        # Anyone may force TX off, but Core keyed none of this TX: nothing is
-        # sent. A force-receive, if sent, lands within one attempt bound.
+        # The refusals sent nothing to the radio.
+        assert sim.ptt_on and sim.ptt_set_writes[writes:] == []
+        # MOR-3561: the emergency release is never gated by who keyed; it
+        # unkeys even the operator's TX.
         off = await _http_json(port, "POST", path, {"operation": "force_off"})
-        assert off[0] == 409, off
-        await asyncio.sleep(ATTEMPT_TIMEOUT_S)
-        assert sim.ptt_on, f"Core unkeyed the operator: {sim.ptt_transitions}"
-        assert sim.ptt_set_writes[writes:] == []
+        assert off[0] == 202, off
+        await _wait_ptt(sim, False, _LEASE_BUDGET_S)
+        assert sim.ptt_set_writes[writes][1] is False
 
-        # The operator's TX ends: keying works again.
-        sim._set_simulated_ptt(False, wire_set=False)  # noqa: SLF001
+        # With the radio back on RX, keying works again.
         await _wait_rf(web, RfState.RX, _GATE_TIMEOUT_S)
+        await _wait_released(stack.composition)
         assert await session.key("s-key-free")
         await _wait_ptt(sim, True, _KEY_DEADLINE_S)
         assert (await session.command("s-unkey", "ptt_off")).get("ok")
@@ -985,4 +997,76 @@ async def test_a_tx_no_owner_keyed_is_never_keyed_over_nor_unkeyed(
             with contextlib.suppress(Exception):
                 await ws.close()
         await rig.close()
+        await _tear_down_stack(stack)
+
+
+async def test_core_tx_the_radio_kept_after_an_acked_unkey_still_gets_unkeyed(
+    tmp_path: Path,
+) -> None:
+    """MOR-3561: the radio ACKs Core's unkey but stays keyed."""
+    stack = await _stand_up_stack(
+        tmp_path, loss="hold", tot_seconds=_LINK_FAULT_TOT_S, unsolicited=False
+    )
+    clients: list[_WsKeyClient] = []
+    try:
+        sim, web = stack.sim, stack.web
+        port = web.port
+        # A frozen controller clock: the session never expires mid-test.
+        web._controller._clock = _FrozenClock()  # noqa: SLF001
+        status, grant = await _http_json(
+            port, "POST", "/api/v1/controller", {"kind": "pro"}
+        )
+        assert status == 201, grant
+        session = _WsKeyClient("127.0.0.1", port, grant["controller_key"])
+        await session.connect()
+        clients.append(session)
+        await _wait_ptt_observed(web, _GATE_TIMEOUT_S)
+        assert await session.key("key")
+        await _wait_ptt(sim, True, _KEY_DEADLINE_S)
+
+        # From here the radio ACKs every de-key write but stays keyed.
+        honour = sim._set_simulated_ptt  # noqa: SLF001
+
+        def acked_but_kept(on: bool, *, wire_set: bool) -> None:
+            if wire_set and not on:
+                sim.ptt_set_writes.append((time.monotonic(), False))
+                return
+            honour(on, wire_set=wire_set)
+
+        sim._set_simulated_ptt = acked_but_kept  # type: ignore[method-assign]  # noqa: SLF001
+        assert (await session.command("unkey", "ptt_off")).get("ok")
+        await _wait_released(stack.composition)
+        released_at = time.monotonic()
+        # The next poll reads TX with no RX since Core's unkey: Core's own TX,
+        # not foreign. Nothing keys over it.
+        ptt = FieldPath.global_("tx_state", "ptt")
+        end = released_at + _GATE_TIMEOUT_S
+        while True:
+            snapshot = web.command_state_store.snapshot()
+            if (
+                resolve_rf_state(snapshot) is RfState.TX
+                and snapshot.field(ptt).last_observed_monotonic > released_at
+            ):
+                break
+            assert time.monotonic() < end, "no poll after the unkey read TX"
+            await asyncio.sleep(0.05)
+        for name, params in (("ptt_on", {}), *_TX_STARTS):
+            response = await session.command(f"kept-{name}", name, params)
+            assert response.get("ok") is False, response
+            assert response.get("message") == "radio_tx_unreleased", response
+        assert sim.ptt_on
+
+        # The radio honours de-keys again; force_off is not blocked by any of
+        # those refusals and sends the unkey.
+        sim._set_simulated_ptt = honour  # type: ignore[method-assign]  # noqa: SLF001
+        writes = len(sim.ptt_set_writes)
+        path = "/api/v1/managed-transmit/command"
+        off = await _http_json(port, "POST", path, {"operation": "force_off"})
+        assert off[0] == 202, off
+        await _wait_ptt(sim, False, _LEASE_BUDGET_S)
+        assert sim.ptt_set_writes[writes][1] is False
+    finally:
+        for ws in clients:
+            with contextlib.suppress(Exception):
+                await ws.close()
         await _tear_down_stack(stack)

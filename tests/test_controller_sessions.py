@@ -10,6 +10,8 @@ and anyone may still force TX off.
 from __future__ import annotations
 
 import asyncio
+import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -21,17 +23,28 @@ from test_managed_tx_authority import (
     FakeWakeup,
 )
 from test_managed_tx_authority import authority as managed_authority
+from test_managed_tx_production_composition import LegacyRadio, RecordingActuator
 from test_web_audio_tx_session import _pcm_tx_frame, _SessionLanRadio, _start_tx
 from test_web_controller import Writer, audio_handler, request, station  # noqa: F401
 
 from rigplane.core.exceptions import CommandRejectedError
-from rigplane.core.state_pipeline_contracts import CommandIntent
+from rigplane.core.state_pipeline_contracts import (
+    CommandIntent,
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import StateStore
 from rigplane.runtime.controller_authority import (
     ControllerAuthority,
     ControllerError,
     ControllerTicket,
 )
-from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
+from rigplane.runtime.managed_tx_authority import ManagedTxAuthority, RadioTxOrigin
+from rigplane.runtime.managed_tx_composition import (
+    ManagedTxComposition,
+    install_managed_tx_composition,
+)
 from rigplane.runtime.managed_tx_state import (
     ActuationOperation,
     ManagedTxIntentKind,
@@ -590,13 +603,24 @@ async def test_session_owner_tokens_are_not_sequential() -> None:
 # ---------------------------------------------------------------------------
 
 
-def radio_tx_authority() -> tuple[ManagedTxAuthority, FakeClock, FakeLane, list[float]]:
-    """A managed authority whose radio reports TX observed at ``radio[-1]``.
+class FakeRadioTx:
+    """The radio's PTT readback: TX observed at ``tx_at`` (``None`` is RX)."""
 
-    An empty ``radio`` is the radio reporting RX.
-    """
-    clock, lane = FakeClock(), FakeLane()
-    radio: list[float] = []
+    def __init__(self) -> None:
+        self.tx_at: float | None = None
+        self.origin = RadioTxOrigin.FOREIGN
+        self.releases = 0
+
+    def radio_released(self, keyed_at: float) -> None:
+        self.releases += 1
+
+    def radio_tx_since(self, since: float) -> RadioTxOrigin | None:
+        return None if self.tx_at is None or self.tx_at <= since else self.origin
+
+
+def radio_tx_authority() -> tuple[ManagedTxAuthority, FakeClock, FakeLane, FakeRadioTx]:
+    """A managed authority over a fake radio PTT readback."""
+    clock, lane, radio = FakeClock(), FakeLane(), FakeRadioTx()
     managed = ManagedTxAuthority(
         lane,
         FakeConfigStore(),
@@ -606,33 +630,49 @@ def radio_tx_authority() -> tuple[ManagedTxAuthority, FakeClock, FakeLane, list[
         wakeup=FakeWakeup(),
         attempt_timeout_seconds=1.0,
         retry_delay_seconds=2.0,
-        radio_tx_since=lambda since: bool(radio) and radio[-1] > since,
+        radio_tx=radio,
     )
     return managed, clock, lane, radio
 
 
-async def test_a_tx_no_owner_keyed_is_never_keyed_over_nor_unkeyed() -> None:
+async def test_a_tx_no_owner_keyed_refuses_keying_but_force_off_still_unkeys() -> None:
     managed, clock, lane, radio = radio_tx_authority()
     try:
-        radio.append(clock.now)  # the operator keys at the radio
+        radio.tx_at = clock.now  # the operator keys at the radio
         with pytest.raises(ControllerError, match="radio_tx_unowned"):
             await managed.ptt_down("websocket-1")
         with pytest.raises(ControllerError, match="radio_tx_unowned"):
             await managed.transmit_on()
-        assert await managed.force_off() is REJECTED
         assert await managed.ptt_up("websocket-1") is REJECTED
-        assert lane.effects == [] and lane.aborts == []
-        state = (await managed.snapshot()).state
-        assert state.intent.kind is ManagedTxIntentKind.RX
-        assert not state.release_required
+        assert lane.effects == []
+        # The emergency release is never gated: it unkeys whoever keyed.
+        assert await managed.force_off() is ACCEPTED
+        assert [effect.operation for effect in lane.effects] == [
+            ActuationOperation.FORCE_RECEIVE
+        ]
 
-        radio.clear()  # the operator's TX ends
+        radio.tx_at = None  # the radio reports RX
         assert await managed.ptt_down("websocket-1") is ACCEPTED
         assert await managed.ptt_up("websocket-1") is ACCEPTED
-        assert [effect.operation for effect in lane.effects] == [
-            ActuationOperation.PTT_ON,
-            ActuationOperation.FORCE_RECEIVE,
-        ]
+        assert lane.effects[-2].operation is ActuationOperation.PTT_ON
+    finally:
+        await managed.close()
+
+
+async def test_core_tx_the_radio_did_not_release_refuses_starts_not_force_off() -> None:
+    managed, clock, lane, radio = radio_tx_authority()
+    try:
+        assert await managed.ptt_down("websocket-1") is ACCEPTED
+        assert await managed.ptt_up("websocket-1") is ACCEPTED  # the unkey is ACKed
+        assert radio.releases == 1
+        clock.now += 0.5
+        # The radio still reports TX, with no RX since Core's unkey.
+        radio.tx_at, radio.origin = clock.now, RadioTxOrigin.UNRELEASED
+        assert managed.radio_tx_refusal_nowait() == "radio_tx_unreleased"
+        with pytest.raises(ControllerError, match="radio_tx_unreleased"):
+            await managed.ptt_down("websocket-2")
+        assert await managed.force_off() is ACCEPTED
+        assert lane.effects[-1].operation is ActuationOperation.FORCE_RECEIVE
     finally:
         await managed.close()
 
@@ -642,7 +682,7 @@ async def test_core_tx_still_reported_after_its_release_is_not_foreign() -> None
     try:
         assert await managed.ptt_down("websocket-1") is ACCEPTED
         clock.now += 0.5
-        radio.append(clock.now)  # the radio reports the TX Core keyed
+        radio.tx_at = clock.now  # the radio reports the TX Core keyed
         clock.now += 0.5
         assert await managed.force_off() is ACCEPTED  # Core's own TX: released
         assert lane.effects[-1].operation is ActuationOperation.FORCE_RECEIVE
@@ -710,7 +750,7 @@ async def test_a_tx_start_is_refused_while_the_radio_sends_a_tx_no_owner_keyed(
     try:
         handler = _handler(server, managed)
         handler._validate_controller_command(name, params)  # radio RX: admitted
-        radio.append(clock.now)  # the operator keys at the radio
+        radio.tx_at = clock.now  # the operator keys at the radio
         with pytest.raises(ControllerError, match="radio_tx_unowned"):
             await handler._enqueue_command(name, params)
         # An intent admitted before the operator keyed is refused when it runs.
@@ -718,7 +758,64 @@ async def test_a_tx_start_is_refused_while_the_radio_sends_a_tx_no_owner_keyed(
         with pytest.raises(ControllerError, match="radio_tx_unowned"):
             await _handler(server, managed)._execute_intent(intent)
         assert server.command_queue.drain() == []
-        radio.clear()  # the operator's TX ends
+        radio.tx_at = None  # the operator's TX ends
         handler._validate_controller_command(name, params)
     finally:
         await managed.close()
+
+
+def _radio_reports(store: StateStore, transmitting: bool) -> None:
+    """One PTT readback from the radio, observed now."""
+    store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=transmitting,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=time.monotonic(),
+            max_age=60.0,
+        )
+    )
+
+
+async def test_the_readback_tells_core_tx_the_radio_kept_from_an_operator_tx(
+    tmp_path: Path,
+) -> None:
+    """MOR-3561: force_off always unkeys; only the refusal reason differs."""
+    actuator, radio = RecordingActuator(), LegacyRadio()
+    composition = ManagedTxComposition(actuator, config_path=tmp_path / "tx.json")
+    install_managed_tx_composition(radio, composition)
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.transport_ready(radio)
+    await composition.bind_state_store(store)
+    authority = composition.authority
+
+    def unkeys() -> int:
+        return actuator.operations.count(ActuationOperation.FORCE_RECEIVE)
+
+    try:
+        _radio_reports(store, False)
+        assert await authority.ptt_down("websocket-1") is ACCEPTED
+        _radio_reports(store, True)  # the radio reports Core's TX
+        assert await authority.ptt_up("websocket-1") is ACCEPTED  # unkey ACKed
+        # A poll after the unkey still reads TX, with no RX in between: a
+        # stale poll, or the radio kept Core's TX. Not foreign; no new key.
+        _radio_reports(store, True)
+        assert authority.radio_tx_refusal_nowait() == "radio_tx_unreleased"
+        with pytest.raises(ControllerError, match="radio_tx_unreleased"):
+            await authority.ptt_down("websocket-2")
+        sent = unkeys()
+        assert await authority.force_off() is ACCEPTED
+        assert unkeys() == sent + 1  # the emergency release still unkeys
+
+        _radio_reports(store, False)  # the radio reports RX
+        assert authority.radio_tx_refusal_nowait() is None
+        _radio_reports(store, True)  # then the operator keys at the radio
+        assert authority.radio_tx_refusal_nowait() == "radio_tx_unowned"
+        with pytest.raises(ControllerError, match="radio_tx_unowned"):
+            await authority.ptt_down("websocket-2")
+        sent = unkeys()
+        assert await authority.force_off() is ACCEPTED
+        assert unkeys() == sent + 1  # force_off unkeys even the operator
+    finally:
+        await composition.shutdown(asyncio.Event())
