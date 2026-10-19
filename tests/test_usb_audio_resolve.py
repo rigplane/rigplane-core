@@ -1649,7 +1649,7 @@ class TestWindowsPnpProductionQuery:
     def test_actual_tab_records_and_emitter_contract(self) -> None:
         import subprocess
 
-        from rigplane.usb_audio_resolve import _query_windows_pnp_devices
+        from rigplane.usb_audio_resolve import _query_windows_pnp_devices_powershell
 
         stdout = (
             "USB\\VID_0D8C&PID_0012\\SER\tPARENT\tPorts\tSerial (COM3)\r\n"
@@ -1660,7 +1660,7 @@ class TestWindowsPnpProductionQuery:
             patch("rigplane.usb_audio_resolve.subprocess.run") as run,
         ):
             run.return_value = subprocess.CompletedProcess([], 0, stdout)
-            records = _query_windows_pnp_devices()
+            records = _query_windows_pnp_devices_powershell()
         assert len(records) == 2
         assert records[0].com_port == "COM3"
         assert records[1].audio_endpoint_name == "USB Audio Device"
@@ -1675,19 +1675,19 @@ class TestWindowsPnpProductionQuery:
     def test_timeout_or_broken_separator_produces_no_records(self) -> None:
         import subprocess
 
-        from rigplane.usb_audio_resolve import _query_windows_pnp_devices
+        from rigplane.usb_audio_resolve import _query_windows_pnp_devices_powershell
 
         with (
             patch("rigplane.usb_audio_resolve.platform.system", return_value="Windows"),
             patch("rigplane.usb_audio_resolve.subprocess.run") as run,
         ):
             run.side_effect = subprocess.TimeoutExpired("powershell", 2)
-            assert _query_windows_pnp_devices() == []
+            assert _query_windows_pnp_devices_powershell() == []
             run.side_effect = None
             run.return_value = subprocess.CompletedProcess(
                 [], 0, b"id`tparent`tPorts`tSerial (COM3)\r\n"
             )
-            assert _query_windows_pnp_devices() == []
+            assert _query_windows_pnp_devices_powershell() == []
 
 
 class TestWindowsTopologySafety:
@@ -1743,7 +1743,10 @@ class TestWindowsTopologySafety:
 def test_windows_actual_tab_metadata_preserves_full_physical_name_rank() -> None:
     import subprocess
 
-    from rigplane.usb_audio_resolve import _query_windows_pnp_devices, _resolve_windows
+    from rigplane.usb_audio_resolve import (
+        _query_windows_pnp_devices_powershell,
+        _resolve_windows,
+    )
 
     stdout = (
         "serial\tRADIO-B\tPorts\tSerial (COM3)\r\n"
@@ -1756,7 +1759,7 @@ def test_windows_actual_tab_metadata_preserves_full_physical_name_rank() -> None
         patch("rigplane.usb_audio_resolve.subprocess.run") as run,
     ):
         run.return_value = subprocess.CompletedProcess([], 0, stdout)
-        records = _query_windows_pnp_devices()
+        records = _query_windows_pnp_devices_powershell()
     assert len(records) == 4
     assert {r.parent_pnp_id for r in records} == {"RADIO-A", "RADIO-B"}
     result = _resolve_windows(
@@ -1910,7 +1913,7 @@ class TestWindowsIc7300InternalHub:
     def test_metadata_producer_retains_only_bounded_family_parent_nodes(self):
         import subprocess
 
-        from rigplane.usb_audio_resolve import _query_windows_pnp_devices
+        from rigplane.usb_audio_resolve import _query_windows_pnp_devices_powershell
 
         rows = [
             (
@@ -1927,7 +1930,7 @@ class TestWindowsIc7300InternalHub:
             patch("rigplane.usb_audio_resolve.subprocess.run") as run,
         ):
             run.return_value = subprocess.CompletedProcess([], 0, stdout)
-            records = _query_windows_pnp_devices()
+            records = _query_windows_pnp_devices_powershell()
         assert {r.pnp_device_id for r in records} == {row[0] for row in rows}
         assert len(records) == 3
         assert run.call_args.kwargs["timeout"] == 5

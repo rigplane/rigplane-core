@@ -1,0 +1,1004 @@
+{
+ "source": "GTR7 Windows 11 x64, IC-7300 on USB, 2026-10-19, session 0; serial numbers redacted",
+ "tree": [
+  [
+   "PCI\\VEN_1022&DEV_14ED&SUBSYS_14531022&REV_00\\3&11583659&0&09",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI Express Root Port"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14ED&SUBSYS_14531022&REV_00\\3&11583659&0&0A",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI Express Root Port"
+  ],
+  [
+   "HDAUDIO\\FUNC_01&VEN_1002&DEV_AA01&SUBSYS_00AA0100&REV_1008\\5&1CD0132C&0&0001",
+   "PCI\\VEN_1002&DEV_1640&SUBSYS_16401002&REV_00\\4&98c338a&0&0141",
+   "MEDIA",
+   "AMD High Definition Audio Device"
+  ],
+  [
+   "USB\\VID_08BB&PID_2901&MI_00\\8&2DD4048C&0&0000",
+   "USB\\VID_08BB&PID_2901\\7&1b4bbb56&1&4",
+   "MEDIA",
+   "USB Audio CODEC "
+  ],
+  [
+   "ACPI\\PNP0C02\\4&98C338A&0",
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&41",
+   "System",
+   "Motherboard resources"
+  ],
+  [
+   "ACPI\\PNP0B00\\4&34FF65F&0",
+   "PCI\\VEN_1022&DEV_790E&SUBSYS_790E1022&REV_51\\3&11583659&0&A3",
+   "System",
+   "System CMOS/real time clock"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14F5&SUBSYS_00000000&REV_00\\3&11583659&0&C5",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI standard host CPU bridge"
+  ],
+  [
+   "ROOT\\VOLMGR\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "Volume Manager"
+  ],
+  [
+   "ACPI\\PNP0103\\2&DABA3FF&0",
+   "ACPI_HAL\\PNP0C08\\0",
+   "System",
+   "High precision event timer"
+  ],
+  [
+   "PCI\\VEN_1B21&DEV_2142&SUBSYS_21421B21&REV_00\\4&25C6DA53&0&0009",
+   "PCI\\VEN_1022&DEV_14ED&SUBSYS_14531022&REV_00\\3&11583659&0&09",
+   "USB",
+   "ASMedia USB 3.1 eXtensible Host Controller - 1.10 (Microsoft)"
+  ],
+  [
+   "UEFI\\RES_{00000000-0000-0000-0000-000000000000}\\0",
+   "ACPI_HAL\\UEFI\\0",
+   "Firmware",
+   "System Firmware"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14E8&SUBSYS_14E81022&REV_00\\3&11583659&0&00",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI standard host CPU bridge"
+  ],
+  [
+   "ROOT\\VMBUS\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "Microsoft Hyper-V Virtual Machine Bus Provider"
+  ],
+  [
+   "ROOT\\BASICDISPLAY\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "Microsoft Basic Display Driver"
+  ],
+  [
+   "ROOT\\AMDXE\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "AMD Link Controller Emulation"
+  ],
+  [
+   "ROOT\\HVSERVICE\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "Microsoft Hypervisor Service"
+  ],
+  [
+   "USB\\ROOT_HUB30\\5&19C782B&0&0",
+   "PCI\\VEN_1022&DEV_15B9&SUBSYS_15B91022&REV_00\\4&98c338a&0&0341",
+   "USB",
+   "USB Root Hub (USB 3.0)"
+  ],
+  [
+   "ACPI\\AMDI0030\\0",
+   "ACPI_HAL\\PNP0C08\\0",
+   "System",
+   "AMD GPIO Controller"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_164A&SUBSYS_164A1022&REV_00\\4&98C338A&0&0741",
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&41",
+   "System",
+   "AMD Sensor Fusion Hub"
+  ],
+  [
+   "PCI\\VEN_1002&DEV_1640&SUBSYS_16401002&REV_00\\4&98C338A&0&0141",
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&41",
+   "System",
+   "High Definition Audio Bus"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&41",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI Express Root Port"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&42",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI Express Root Port"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&43",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI Express Root Port"
+  ],
+  [
+   "ROOT\\VMS_VSMP\\0000",
+   "HTREE\\ROOT\\0",
+   "Net",
+   "Hyper-V Virtual Switch Extension Adapter"
+  ],
+  [
+   "ROOT\\VMS_VSMP\\0001",
+   "HTREE\\ROOT\\0",
+   "Net",
+   "Hyper-V Virtual Switch Extension Adapter #2"
+  ],
+  [
+   "ROOT\\VMS_VSMP\\0002",
+   "HTREE\\ROOT\\0",
+   "Net",
+   "Hyper-V Virtual Switch Extension Adapter #3"
+  ],
+  [
+   "ROOT\\NET\\0000",
+   "HTREE\\ROOT\\0",
+   "Net",
+   "TAP-Windows Adapter V9 for OpenVPN Connect"
+  ],
+  [
+   "ROOT\\NET\\0001",
+   "HTREE\\ROOT\\0",
+   "Net",
+   "OpenVPN Data Channel Offload"
+  ],
+  [
+   "ROOT\\NET\\0003",
+   "HTREE\\ROOT\\0",
+   "Net",
+   "TAP-Windows Adapter V9"
+  ],
+  [
+   "ROOT\\NET\\0004",
+   "HTREE\\ROOT\\0",
+   "Net",
+   "OpenVPN Data Channel Offload #2"
+  ],
+  [
+   "ACPI\\THERMALZONE\\TZ01",
+   "ACPI_HAL\\PNP0C08\\0",
+   "System",
+   "ACPI Thermal Zone"
+  ],
+  [
+   "UMB\\UMB\\1&841921D&0&TERMINPUT_BUS",
+   "ROOT\\UMBUS\\0000",
+   "System",
+   "UMBus Enumerator"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14F2&SUBSYS_00000000&REV_00\\3&11583659&0&C2",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI standard host CPU bridge"
+  ],
+  [
+   "ACPI\\ACPI0010\\1",
+   "ACPI_HAL\\PNP0C08\\0",
+   "System",
+   "ACPI Processor Container Device"
+  ],
+  [
+   "ROOT\\VMWARE\\0000",
+   "HTREE\\ROOT\\0",
+   "Net",
+   "VMware Virtual Ethernet Adapter for VMnet1"
+  ],
+  [
+   "ROOT\\VMWARE\\0001",
+   "HTREE\\ROOT\\0",
+   "Net",
+   "VMware Virtual Ethernet Adapter for VMnet8"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EA&SUBSYS_00000000&REV_00\\3&11583659&0&08",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI standard host CPU bridge"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EA&SUBSYS_00000000&REV_00\\3&11583659&0&10",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI standard host CPU bridge"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EA&SUBSYS_00000000&REV_00\\3&11583659&0&18",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI standard host CPU bridge"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EA&SUBSYS_00000000&REV_00\\3&11583659&0&20",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI standard host CPU bridge"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EA&SUBSYS_00000000&REV_00\\3&11583659&0&40",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI standard host CPU bridge"
+  ],
+  [
+   "SWD\\MMDEVAPI\\{0.0.0.00000000}.{6EF31112-9C93-4E7D-9FD1-B5EE856E561E}",
+   "ROOT\\{83ED7F0E-2028-4956-B0B4-39C76FDAEF1D}\\0000",
+   "AudioEndpoint",
+   "Line 1 (Virtual Audio Cable)"
+  ],
+  [
+   "ROOT\\VID\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "Microsoft Hyper-V Virtualization Infrastructure Driver"
+  ],
+  [
+   "USB\\ROOT_HUB30\\5&284CF363&0&0",
+   "PCI\\VEN_1022&DEV_15C1&SUBSYS_15C11022&REV_00\\4&1be72dc0&0&0443",
+   "USB",
+   "USB Root Hub (USB 3.0)"
+  ],
+  [
+   "ROOT\\COMPOSITEBUS\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "Composite Bus Enumerator"
+  ],
+  [
+   "ROOT\\VDRVROOT\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "Microsoft Virtual Drive Enumerator"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EF&SUBSYS_14531022&REV_00\\3&11583659&0&19",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI Express Root Port"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EF&SUBSYS_14531022&REV_00\\3&11583659&0&21",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI Express Root Port"
+  ],
+  [
+   "ROOT\\SPACEPORT\\0000",
+   "HTREE\\ROOT\\0",
+   "SCSIAdapter",
+   "Microsoft Storage Spaces Controller"
+  ],
+  [
+   "ROOT\\KDNIC\\0000",
+   "HTREE\\ROOT\\0",
+   "Net",
+   "Microsoft Kernel Debug Network Adapter"
+  ],
+  [
+   "USB\\ROOT_HUB30\\5&1FEB54E4&0&0",
+   "PCI\\VEN_1022&DEV_15C0&SUBSYS_15C01022&REV_00\\4&1be72dc0&0&0343",
+   "USB",
+   "USB Root Hub (USB 3.0)"
+  ],
+  [
+   "ROOT\\AMDSAFD&FUN_01&REV_01\\0000",
+   "HTREE\\ROOT\\0",
+   "MEDIA",
+   "AMD Streaming Audio Device"
+  ],
+  [
+   "USB4\\ROOT_DEVICE_ROUTER&VID_1022&PID_1669\\5&9A457CF&0&0",
+   "PCI\\VEN_1022&DEV_1669&SUBSYS_16691022&REV_00&USB4_MS_CM\\4&1be72dc0&0&0643",
+   "USB",
+   "USB4 Root Router (1.0)"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_15C7&SUBSYS_15C71022&REV_00\\4&98C338A&0&0241",
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&41",
+   "SecurityDevices",
+   "AMD PSP 11.0 Device"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14F7&SUBSYS_00000000&REV_00\\3&11583659&0&C7",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI standard host CPU bridge"
+  ],
+  [
+   "USB\\VID_0451&PID_2046\\6&3878EF1F&0&2",
+   "USB\\ROOT_HUB30\\5&19c782b&0&0",
+   "USB",
+   "Generic USB Hub"
+  ],
+  [
+   "UMB\\UMB\\1&841921D&0&TS_USB_HUB_ENUMERATOR",
+   "ROOT\\UMBUS\\0000",
+   "System",
+   "UMBus Enumerator"
+  ],
+  [
+   "ACPI\\PNP0000\\4&34FF65F&0",
+   "PCI\\VEN_1022&DEV_790E&SUBSYS_790E1022&REV_51\\3&11583659&0&A3",
+   "System",
+   "Programmable interrupt controller"
+  ],
+  [
+   "SWD\\MMDEVAPI\\{0.0.0.00000000}.{994DFFF9-2FA9-4222-9C51-84330761724B}",
+   "ROOT\\MEDIA\\0001",
+   "AudioEndpoint",
+   "RigPlane Virtual Cable Output (RigPlane Virtual Audio Cable)"
+  ],
+  [
+   "ROOT\\UMBUS\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "UMBus Root Bus Enumerator"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_15C0&SUBSYS_15C01022&REV_00\\4&1BE72DC0&0&0343",
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&43",
+   "USB",
+   "AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft)"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14F4&SUBSYS_00000000&REV_00\\3&11583659&0&C4",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI standard host CPU bridge"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_790E&SUBSYS_790E1022&REV_51\\3&11583659&0&A3",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI standard ISA bridge"
+  ],
+  [
+   "USB\\ROOT_HUB30\\5&1424396A&0&0",
+   "PCI\\VEN_1B21&DEV_2142&SUBSYS_21421B21&REV_00\\4&25c6da53&0&0009",
+   "USB",
+   "USB Root Hub (USB 3.0)"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_15B9&SUBSYS_15B91022&REV_00\\4&98C338A&0&0341",
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&41",
+   "USB",
+   "AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft)"
+  ],
+  [
+   "ACPI\\PNP0C01\\C8",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "System board"
+  ],
+  [
+   "ROOT\\ACPI_HAL\\0000",
+   "HTREE\\ROOT\\0",
+   "Computer",
+   "ACPI x64-based PC"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_1668&SUBSYS_16681022&REV_00&USB4_MS_CM\\4&1BE72DC0&0&0543",
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&43",
+   "USB",
+   "USB4(TM) Host Router (Microsoft)"
+  ],
+  [
+   "ACPI\\PNP0C14\\AOD",
+   "ACPI_HAL\\PNP0C08\\0",
+   "System",
+   "Microsoft Windows Management Interface for ACPI"
+  ],
+  [
+   "HDAUDIO\\FUNC_01&VEN_10EC&DEV_0897&SUBSYS_1F660202&REV_1004\\5&F093692&0&0001",
+   "PCI\\VEN_1022&DEV_15E3&SUBSYS_02021F66&REV_00\\4&98c338a&0&0641",
+   "MEDIA",
+   "High Definition Audio Device"
+  ],
+  [
+   "ACPI\\PNP0A08\\0",
+   "ACPI_HAL\\PNP0C08\\0",
+   "System",
+   "PCI Express Root Complex"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_15E3&SUBSYS_02021F66&REV_00\\4&98C338A&0&0641",
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&41",
+   "System",
+   "High Definition Audio Controller"
+  ],
+  [
+   "USB4\\ROOT_DEVICE_ROUTER&VID_1022&PID_1668\\5&2F549F58&0&0",
+   "PCI\\VEN_1022&DEV_1668&SUBSYS_16681022&REV_00&USB4_MS_CM\\4&1be72dc0&0&0543",
+   "USB",
+   "USB4 Root Router (1.0)"
+  ],
+  [
+   "ROOT\\VPCIVSP\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "Microsoft Hyper-V PCI Server"
+  ],
+  [
+   "ACPI\\PNP0C09\\4&34FF65F&0",
+   "PCI\\VEN_1022&DEV_790E&SUBSYS_790E1022&REV_51\\3&11583659&0&A3",
+   "System",
+   "Microsoft ACPI-Compliant Embedded Controller"
+  ],
+  [
+   "ACPI_HAL\\PNP0C08\\0",
+   "ROOT\\ACPI_HAL\\0000",
+   "System",
+   "Microsoft ACPI-Compliant System"
+  ],
+  [
+   "HTREE\\ROOT\\0",
+   "",
+   "",
+   ""
+  ],
+  [
+   "ROOT\\BASICRENDER\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "Microsoft Basic Render Driver"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14F1&SUBSYS_00000000&REV_00\\3&11583659&0&C1",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI standard host CPU bridge"
+  ],
+  [
+   "UMB\\UMB\\1&841921D&0&RDCAMERA_BUS",
+   "ROOT\\UMBUS\\0000",
+   "System",
+   "Remote Desktop Camera Bus"
+  ],
+  [
+   "UMB\\UMB\\1&841921D&0&TSBUS",
+   "ROOT\\UMBUS\\0000",
+   "System",
+   "UMBus Enumerator"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_15E2&SUBSYS_15E21022&REV_63\\4&98C338A&0&0541",
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&41",
+   "",
+   "Multimedia Controller"
+  ],
+  [
+   "SWD\\MMDEVAPI\\{0.0.0.00000000}.{9082644E-6A88-4638-B416-E1788AAC0FDF}",
+   "USB\\VID_08BB&PID_2901&MI_00\\8&2dd4048c&0&0000",
+   "AudioEndpoint",
+   "Speakers (USB Audio CODEC )"
+  ],
+  [
+   "ACPI_HAL\\UEFI\\0",
+   "ROOT\\ACPI_HAL\\0000",
+   "System",
+   "Microsoft UEFI-Compliant System"
+  ],
+  [
+   "USB4\\VIRTUAL_POWER_PDO\\5&9A457CF&0&0",
+   "PCI\\VEN_1022&DEV_1669&SUBSYS_16691022&REV_00&USB4_MS_CM\\4&1be72dc0&0&0643",
+   "",
+   "USB4 Virtual power coordination device"
+  ],
+  [
+   "SWD\\MMDEVAPI\\{0.0.1.00000000}.{963D478C-4D8C-412E-A32C-387169AFB3A0}",
+   "USB\\VID_08BB&PID_2901&MI_00\\8&2dd4048c&0&0000",
+   "AudioEndpoint",
+   "Microphone (USB Audio CODEC )"
+  ],
+  [
+   "ACPI\\MSFT0101\\1",
+   "ACPI_HAL\\PNP0C08\\0",
+   "SecurityDevices",
+   "Trusted Platform Module 2.0"
+  ],
+  [
+   "USB\\VID_08BB&PID_2901&MI_03\\8&2DD4048C&0&0003",
+   "USB\\VID_08BB&PID_2901\\7&1b4bbb56&1&4",
+   "HIDClass",
+   "USB Input Device"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EE&SUBSYS_14531022&REV_00\\3&11583659&0&0C",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI Express Root Port"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EE&SUBSYS_14531022&REV_00\\3&11583659&0&11",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI Express Root Port"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EE&SUBSYS_14531022&REV_00\\3&11583659&0&12",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI Express Root Port"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EE&SUBSYS_14531022&REV_00\\3&11583659&0&13",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI Express Root Port"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EE&SUBSYS_14531022&REV_00\\3&11583659&0&14",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI Express Root Port"
+  ],
+  [
+   "HID\\VID_08BB&PID_2901&MI_03\\9&2B8FE2C2&0&0000",
+   "USB\\VID_08BB&PID_2901&MI_03\\8&2dd4048c&0&0003",
+   "HIDClass",
+   "HID-compliant consumer control device"
+  ],
+  [
+   "ACPI\\AMDI0009\\1",
+   "ACPI_HAL\\PNP0C08\\0",
+   "System",
+   "AMD Micro PEP Device"
+  ],
+  [
+   "PCI\\VEN_C0A9&DEV_540A&SUBSYS_5021C0A9&REV_01\\4&325488D2&0&0014",
+   "PCI\\VEN_1022&DEV_14EE&SUBSYS_14531022&REV_00\\3&11583659&0&14",
+   "SCSIAdapter",
+   "Standard NVM Express Controller"
+  ],
+  [
+   "USB\\VID_1C7A&PID_0577\\SERIAL00000000",
+   "USB\\ROOT_HUB30\\5&38f471a6&0&0",
+   "Biometric",
+   "EgisTec Touch Fingerprint Sensor"
+  ],
+  [
+   "ACPI\\PNP0C02\\90",
+   "ACPI_HAL\\PNP0C08\\0",
+   "System",
+   "Motherboard resources"
+  ],
+  [
+   "ROOT\\{83ED7F0E-2028-4956-B0B4-39C76FDAEF1D}\\0000",
+   "HTREE\\ROOT\\0",
+   "MEDIA",
+   "Virtual Audio Cable"
+  ],
+  [
+   "ROOT\\FLEXRADIO_DAX_764FAB72\\0000",
+   "HTREE\\ROOT\\0",
+   "MEDIA",
+   "FlexRadio DAX"
+  ],
+  [
+   "ACPI\\PNP0100\\4&34FF65F&0",
+   "PCI\\VEN_1022&DEV_790E&SUBSYS_790E1022&REV_51\\3&11583659&0&A3",
+   "System",
+   "System timer"
+  ],
+  [
+   "SWD\\MMDEVAPI\\{0.0.1.00000000}.{B2622763-C85C-4E34-B625-D672872E3C23}",
+   "ROOT\\{83ED7F0E-2028-4956-B0B4-39C76FDAEF1D}\\0000",
+   "AudioEndpoint",
+   "Line 1 (Virtual Audio Cable)"
+  ],
+  [
+   "PCI\\VEN_8086&DEV_15F3&SUBSYS_00008086&REV_03\\7070FCFFFF03289200",
+   "PCI\\VEN_1022&DEV_14EE&SUBSYS_14531022&REV_00\\3&11583659&0&0C",
+   "Net",
+   "Intel(R) Ethernet Controller (3) I225-V"
+  ],
+  [
+   "PCI\\VEN_8086&DEV_15F3&SUBSYS_00008086&REV_03\\7070FCFFFF03289300",
+   "PCI\\VEN_1022&DEV_14EE&SUBSYS_14531022&REV_00\\3&11583659&0&11",
+   "Net",
+   "Intel(R) Ethernet Controller (3) I225-V #2"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_15C1&SUBSYS_15C11022&REV_00\\4&1BE72DC0&0&0443",
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&43",
+   "USB",
+   "AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft)"
+  ],
+  [
+   "ROOT\\VMWVMCIHOSTDEV\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "VMware VMCI Host Device"
+  ],
+  [
+   "USB4\\VIRTUAL_POWER_PDO\\5&2F549F58&0&0",
+   "PCI\\VEN_1022&DEV_1668&SUBSYS_16681022&REV_00&USB4_MS_CM\\4&1be72dc0&0&0543",
+   "",
+   "USB4 Virtual power coordination device"
+  ],
+  [
+   "USB\\VID_8087&PID_0029\\6&3878EF1F&0&5",
+   "USB\\ROOT_HUB30\\5&19c782b&0&0",
+   "Bluetooth",
+   "Intel(R) Wireless Bluetooth(R)"
+  ],
+  [
+   "PCI\\VEN_8086&DEV_2723&SUBSYS_00848086&REV_1A\\4&1C2D2015&0&0012",
+   "PCI\\VEN_1022&DEV_14EE&SUBSYS_14531022&REV_00\\3&11583659&0&12",
+   "Net",
+   "Intel(R) Wi-Fi 6 AX200 160MHz"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14F6&SUBSYS_00000000&REV_00\\3&11583659&0&C6",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI standard host CPU bridge"
+  ],
+  [
+   "ROOT\\STORVSP\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "Microsoft Hyper-V Virtual Disk Server"
+  ],
+  [
+   "SWD\\MMDEVAPI\\MICROSOFTGSWAVETABLESYNTH",
+   "HTREE\\ROOT\\0",
+   "SoftwareDevice",
+   "Microsoft GS Wavetable Synth"
+  ],
+  [
+   "ACPI\\PNP0C0C\\AA",
+   "ACPI_HAL\\PNP0C08\\0",
+   "System",
+   "ACPI Power Button"
+  ],
+  [
+   "TS_USB_HUB_ENUMERATOR\\UMB\\2&30D3618&0&TS_USB_HUB",
+   "UMB\\UMB\\1&841921d&0&TS_USB_HUB_Enumerator",
+   "System",
+   "Remote Desktop USB Hub"
+  ],
+  [
+   "ROOT\\MULTIPORTSERIAL\\0000",
+   "HTREE\\ROOT\\0",
+   "MultiPortSerial",
+   "Icom Virtual Serial Driver"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_15BA&SUBSYS_15B91022&REV_00\\4&98C338A&0&0441",
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&41",
+   "USB",
+   "AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft)"
+  ],
+  [
+   "ACPI\\MSFT0001\\4&34FF65F&0",
+   "PCI\\VEN_1022&DEV_790E&SUBSYS_790E1022&REV_51\\3&11583659&0&A3",
+   "Keyboard",
+   "Standard PS/2 Keyboard"
+  ],
+  [
+   "ROOT\\VMS_MP\\0000",
+   "HTREE\\ROOT\\0",
+   "Net",
+   "Hyper-V Virtual Ethernet Adapter #3"
+  ],
+  [
+   "USB\\VID_08BB&PID_2901\\7&1B4BBB56&1&4",
+   "USB\\VID_0451&PID_2046\\6&3878ef1f&0&2",
+   "USB",
+   "USB Composite Device"
+  ],
+  [
+   "ROOT\\AMDLOG\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "AMD Crash Defender"
+  ],
+  [
+   "ROOT\\NDISVIRTUALBUS\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "NDIS Virtual Network Adapter Enumerator"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14F3&SUBSYS_00000000&REV_00\\3&11583659&0&C3",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI standard host CPU bridge"
+  ],
+  [
+   "USB\\VID_10C4&PID_EA60\\IC-7300_00000001",
+   "USB\\VID_0451&PID_2046\\6&3878ef1f&0&2",
+   "Ports",
+   "Silicon Labs CP210x USB to UART Bridge (COM3)"
+  ],
+  [
+   "ACPI\\PNP0C02\\700",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "Motherboard resources"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_1502&SUBSYS_15021022&REV_00\\4&92D7D1B&0&0142",
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&42",
+   "ComputeAccelerator",
+   "NPU Compute Accelerator Device"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EC&SUBSYS_14EC1022&REV_00\\4&1BE72DC0&0&0043",
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&43",
+   "System",
+   "AMD PCI"
+  ],
+  [
+   "ACPI\\AUTHENTICAMD_-_AMD64_FAMILY_25_MODEL_116_-_AMD_RYZEN_7_7840HS_W/_RADEON_780M_GRAPHICS_____\\0",
+   "ACPI\\ACPI0010\\1",
+   "Processor",
+   "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics     "
+  ],
+  [
+   "ACPI\\AUTHENTICAMD_-_AMD64_FAMILY_25_MODEL_116_-_AMD_RYZEN_7_7840HS_W/_RADEON_780M_GRAPHICS_____\\1",
+   "ACPI\\ACPI0010\\1",
+   "Processor",
+   "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics     "
+  ],
+  [
+   "ACPI\\AUTHENTICAMD_-_AMD64_FAMILY_25_MODEL_116_-_AMD_RYZEN_7_7840HS_W/_RADEON_780M_GRAPHICS_____\\2",
+   "ACPI\\ACPI0010\\1",
+   "Processor",
+   "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics     "
+  ],
+  [
+   "ACPI\\AUTHENTICAMD_-_AMD64_FAMILY_25_MODEL_116_-_AMD_RYZEN_7_7840HS_W/_RADEON_780M_GRAPHICS_____\\3",
+   "ACPI\\ACPI0010\\1",
+   "Processor",
+   "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics     "
+  ],
+  [
+   "ACPI\\AUTHENTICAMD_-_AMD64_FAMILY_25_MODEL_116_-_AMD_RYZEN_7_7840HS_W/_RADEON_780M_GRAPHICS_____\\4",
+   "ACPI\\ACPI0010\\1",
+   "Processor",
+   "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics     "
+  ],
+  [
+   "ACPI\\AUTHENTICAMD_-_AMD64_FAMILY_25_MODEL_116_-_AMD_RYZEN_7_7840HS_W/_RADEON_780M_GRAPHICS_____\\5",
+   "ACPI\\ACPI0010\\1",
+   "Processor",
+   "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics     "
+  ],
+  [
+   "ACPI\\AUTHENTICAMD_-_AMD64_FAMILY_25_MODEL_116_-_AMD_RYZEN_7_7840HS_W/_RADEON_780M_GRAPHICS_____\\6",
+   "ACPI\\ACPI0010\\1",
+   "Processor",
+   "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics     "
+  ],
+  [
+   "ACPI\\AUTHENTICAMD_-_AMD64_FAMILY_25_MODEL_116_-_AMD_RYZEN_7_7840HS_W/_RADEON_780M_GRAPHICS_____\\7",
+   "ACPI\\ACPI0010\\1",
+   "Processor",
+   "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics     "
+  ],
+  [
+   "ACPI\\AUTHENTICAMD_-_AMD64_FAMILY_25_MODEL_116_-_AMD_RYZEN_7_7840HS_W/_RADEON_780M_GRAPHICS_____\\8",
+   "ACPI\\ACPI0010\\1",
+   "Processor",
+   "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics     "
+  ],
+  [
+   "ACPI\\AUTHENTICAMD_-_AMD64_FAMILY_25_MODEL_116_-_AMD_RYZEN_7_7840HS_W/_RADEON_780M_GRAPHICS_____\\9",
+   "ACPI\\ACPI0010\\1",
+   "Processor",
+   "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics     "
+  ],
+  [
+   "ACPI\\AUTHENTICAMD_-_AMD64_FAMILY_25_MODEL_116_-_AMD_RYZEN_7_7840HS_W/_RADEON_780M_GRAPHICS_____\\A",
+   "ACPI\\ACPI0010\\1",
+   "Processor",
+   "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics     "
+  ],
+  [
+   "ACPI\\AUTHENTICAMD_-_AMD64_FAMILY_25_MODEL_116_-_AMD_RYZEN_7_7840HS_W/_RADEON_780M_GRAPHICS_____\\B",
+   "ACPI\\ACPI0010\\1",
+   "Processor",
+   "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics     "
+  ],
+  [
+   "ACPI\\AUTHENTICAMD_-_AMD64_FAMILY_25_MODEL_116_-_AMD_RYZEN_7_7840HS_W/_RADEON_780M_GRAPHICS_____\\C",
+   "ACPI\\ACPI0010\\1",
+   "Processor",
+   "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics     "
+  ],
+  [
+   "ACPI\\AUTHENTICAMD_-_AMD64_FAMILY_25_MODEL_116_-_AMD_RYZEN_7_7840HS_W/_RADEON_780M_GRAPHICS_____\\D",
+   "ACPI\\ACPI0010\\1",
+   "Processor",
+   "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics     "
+  ],
+  [
+   "ACPI\\AUTHENTICAMD_-_AMD64_FAMILY_25_MODEL_116_-_AMD_RYZEN_7_7840HS_W/_RADEON_780M_GRAPHICS_____\\E",
+   "ACPI\\ACPI0010\\1",
+   "Processor",
+   "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics     "
+  ],
+  [
+   "ACPI\\AUTHENTICAMD_-_AMD64_FAMILY_25_MODEL_116_-_AMD_RYZEN_7_7840HS_W/_RADEON_780M_GRAPHICS_____\\F",
+   "ACPI\\ACPI0010\\1",
+   "Processor",
+   "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics     "
+  ],
+  [
+   "PCI\\VEN_15B7&DEV_5009&SUBSYS_500915B7&REV_01\\4&346BE0CE&0&000A",
+   "PCI\\VEN_1022&DEV_14ED&SUBSYS_14531022&REV_00\\3&11583659&0&0A",
+   "SCSIAdapter",
+   "Standard NVM Express Controller"
+  ],
+  [
+   "ACPI\\PNP0800\\4&34FF65F&0",
+   "PCI\\VEN_1022&DEV_790E&SUBSYS_790E1022&REV_51\\3&11583659&0&A3",
+   "System",
+   "System speaker"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14EC&SUBSYS_14EC1022&REV_00\\4&92D7D1B&0&0042",
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&42",
+   "System",
+   "AMD PCI"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_790B&SUBSYS_790B1022&REV_71\\3&11583659&0&A0",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "AMD SMBUS"
+  ],
+  [
+   "ROOT\\MSSMBIOS\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "Microsoft System Management BIOS Driver"
+  ],
+  [
+   "PCI\\VEN_1002&DEV_15BF&SUBSYS_00311F66&REV_C2\\4&98C338A&0&0041",
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&41",
+   "Display",
+   "AMD Radeon 780M Graphics"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_1669&SUBSYS_16691022&REV_00&USB4_MS_CM\\4&1BE72DC0&0&0643",
+   "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00\\3&11583659&0&43",
+   "USB",
+   "USB4(TM) Host Router (Microsoft)"
+  ],
+  [
+   "USB\\ROOT_HUB30\\5&38F471A6&0&0",
+   "PCI\\VEN_1022&DEV_15BA&SUBSYS_15B91022&REV_00\\4&98c338a&0&0441",
+   "USB",
+   "USB Root Hub (USB 3.0)"
+  ],
+  [
+   "PCI\\VEN_1022&DEV_14F0&SUBSYS_00000000&REV_00\\3&11583659&0&C0",
+   "ACPI\\PNP0A08\\0",
+   "System",
+   "PCI standard host CPU bridge"
+  ],
+  [
+   "ROOT\\SYSTEM\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "Plug and Play Software Device Enumerator"
+  ],
+  [
+   "ROOT\\SYSTEM\\0001",
+   "HTREE\\ROOT\\0",
+   "System",
+   "Logitech G HUB Virtual Bus Enumerator"
+  ],
+  [
+   "ROOT\\SYSTEM\\0002",
+   "HTREE\\ROOT\\0",
+   "System",
+   "Logitech Virtual Bus Enumerator"
+  ],
+  [
+   "ROOT\\SYSTEM\\0003",
+   "HTREE\\ROOT\\0",
+   "System",
+   "FabulaTech Virtual Serial Port Bus"
+  ],
+  [
+   "SWD\\MMDEVAPI\\{0.0.1.00000000}.{DF17AAC6-167D-40DF-AF54-7FA5CE29892E}",
+   "ROOT\\MEDIA\\0001",
+   "AudioEndpoint",
+   "RigPlane Virtual Cable Input (RigPlane Virtual Audio Cable)"
+  ],
+  [
+   "FABULATECH\\VSP\\1&2D12BED1&0&DEVICE001",
+   "ROOT\\SYSTEM\\0003",
+   "Ports",
+   "FlexRadio Virtual Serial Port (COM8)"
+  ],
+  [
+   "FABULATECH\\VSP\\1&2D12BED1&0&DEVICE002",
+   "ROOT\\SYSTEM\\0003",
+   "Ports",
+   "FlexRadio Virtual Serial Port (COM108)"
+  ],
+  [
+   "ROOT\\RDPBUS\\0000",
+   "HTREE\\ROOT\\0",
+   "System",
+   "Remote Desktop Device Redirector Bus"
+  ],
+  [
+   "ROOT\\MEDIA\\0000",
+   "HTREE\\ROOT\\0",
+   "MEDIA",
+   "Icom Virtual Audio Driver"
+  ],
+  [
+   "ROOT\\MEDIA\\0001",
+   "HTREE\\ROOT\\0",
+   "MEDIA",
+   "RigPlane Virtual Audio Cable"
+  ],
+  [
+   "ACPI\\AMDI0052\\2&DABA3FF&0",
+   "ACPI_HAL\\PNP0C08\\0",
+   "System",
+   "AMD PPM Provisioning File"
+  ],
+  [
+   "ACPI\\PNP0200\\4&34FF65F&0",
+   "PCI\\VEN_1022&DEV_790E&SUBSYS_790E1022&REV_51\\3&11583659&0&A3",
+   "System",
+   "Direct memory access controller"
+  ]
+ ],
+ "powershell_stdout": [
+  "HDAUDIO\\FUNC_01&VEN_1002&DEV_AA01&SUBSYS_00AA0100&REV_1008\\5&1CD0132C&0&0001\tPCI\\VEN_1002&DEV_1640&SUBSYS_16401002&REV_00\\4&98c338a&0&0141\tMEDIA\tAMD High Definition Audio Device",
+  "USB\\VID_08BB&PID_2901&MI_00\\8&2DD4048C&0&0000\tUSB\\VID_08BB&PID_2901\\7&1b4bbb56&1&4\tMEDIA\tUSB Audio CODEC ",
+  "USB\\VID_08BB&PID_2901\\7&1B4BBB56&1&4\tUSB\\VID_0451&PID_2046\\6&3878ef1f&0&2\tUSB\tUSB Composite Device",
+  "USB\\VID_0451&PID_2046\\6&3878EF1F&0&2\tUSB\\ROOT_HUB30\\5&19c782b&0&0\tUSB\tGeneric USB Hub",
+  "SWD\\MMDEVAPI\\{0.0.0.00000000}.{6EF31112-9C93-4E7D-9FD1-B5EE856E561E}\tROOT\\{83ED7F0E-2028-4956-B0B4-39C76FDAEF1D}\\0000\tAudioEndpoint\tLine 1 (Virtual Audio Cable)",
+  "ROOT\\AMDSAFD&FUN_01&REV_01\\0000\tHTREE\\ROOT\\0\tMEDIA\tAMD Streaming Audio Device",
+  "SWD\\MMDEVAPI\\{0.0.0.00000000}.{994DFFF9-2FA9-4222-9C51-84330761724B}\tROOT\\MEDIA\\0001\tAudioEndpoint\tRigPlane Virtual Cable Output (RigPlane Virtual Audio Cable)",
+  "HDAUDIO\\FUNC_01&VEN_10EC&DEV_0897&SUBSYS_1F660202&REV_1004\\5&F093692&0&0001\tPCI\\VEN_1022&DEV_15E3&SUBSYS_02021F66&REV_00\\4&98c338a&0&0641\tMEDIA\tHigh Definition Audio Device",
+  "SWD\\MMDEVAPI\\{0.0.0.00000000}.{9082644E-6A88-4638-B416-E1788AAC0FDF}\tUSB\\VID_08BB&PID_2901&MI_00\\8&2dd4048c&0&0000\tAudioEndpoint\tSpeakers (USB Audio CODEC )",
+  "SWD\\MMDEVAPI\\{0.0.1.00000000}.{963D478C-4D8C-412E-A32C-387169AFB3A0}\tUSB\\VID_08BB&PID_2901&MI_00\\8&2dd4048c&0&0000\tAudioEndpoint\tMicrophone (USB Audio CODEC )",
+  "ROOT\\{83ED7F0E-2028-4956-B0B4-39C76FDAEF1D}\\0000\tHTREE\\ROOT\\0\tMEDIA\tVirtual Audio Cable",
+  "ROOT\\FLEXRADIO_DAX_764FAB72\\0000\tHTREE\\ROOT\\0\tMEDIA\tFlexRadio DAX",
+  "SWD\\MMDEVAPI\\{0.0.1.00000000}.{B2622763-C85C-4E34-B625-D672872E3C23}\tROOT\\{83ED7F0E-2028-4956-B0B4-39C76FDAEF1D}\\0000\tAudioEndpoint\tLine 1 (Virtual Audio Cable)",
+  "USB\\VID_10C4&PID_EA60\\IC-7300_00000001\tUSB\\VID_0451&PID_2046\\6&3878ef1f&0&2\tPorts\tSilicon Labs CP210x USB to UART Bridge (COM3)",
+  "SWD\\MMDEVAPI\\{0.0.1.00000000}.{DF17AAC6-167D-40DF-AF54-7FA5CE29892E}\tROOT\\MEDIA\\0001\tAudioEndpoint\tRigPlane Virtual Cable Input (RigPlane Virtual Audio Cable)",
+  "FABULATECH\\VSP\\1&2D12BED1&0&DEVICE001\tROOT\\SYSTEM\\0003\tPorts\tFlexRadio Virtual Serial Port (COM8)",
+  "FABULATECH\\VSP\\1&2D12BED1&0&DEVICE002\tROOT\\SYSTEM\\0003\tPorts\tFlexRadio Virtual Serial Port (COM108)",
+  "ROOT\\MEDIA\\0000\tHTREE\\ROOT\\0\tMEDIA\tIcom Virtual Audio Driver",
+  "ROOT\\MEDIA\\0001\tHTREE\\ROOT\\0\tMEDIA\tRigPlane Virtual Audio Cable"
+ ]
+}
