@@ -130,6 +130,20 @@ describe('local controller session channels', () => {
     scope.disconnect();
   });
 
+  it('attaches the control channel from the unauthenticated same-origin relative URL', async () => {
+    const { controllerClient } = await import('../controller-client');
+    const { WsChannel } = await import('../ws-client');
+    const control = new WsChannel();
+    await controllerClient.prepare();
+    control.connect('/api/v1/ws');
+    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    const primary = instances[0] as ControllerSocket;
+    expect(primary.protocols).toEqual([`rigplane-controller-v1.${sessionKey}`]);
+    expect(new URL(primary.url, location.href).pathname).toBe('/api/v1/ws');
+    expect(new URL(primary.url, location.href).searchParams.get('controller_role')).toBe('primary');
+    control.disconnect();
+  });
+
   it('stays sessionless against an older core that refuses the local POST', async () => {
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => new Response(JSON.stringify(
       init?.method === 'POST'

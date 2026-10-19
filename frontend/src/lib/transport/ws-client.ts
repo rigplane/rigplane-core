@@ -7,7 +7,7 @@ import { isValidServerState, matchesCurrentCapabilityTopology, resetRadioState, 
 import { isStateAdvance, type StateAdvanceBaseline } from '../stores/live-metadata';
 import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
 import { fetchCapabilities } from './http-client';
-import { authenticatedWsUrl, withoutWsAuthToken } from './ws-url';
+import { authenticatedWsUrl, withoutWsAuthToken, withWsSearchParam } from './ws-url';
 import { controllerClient, ControllerClientError } from './controller-client';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
@@ -307,9 +307,7 @@ export class WsChannel {
     this.controllerEpoch = epoch;
     let target = authenticatedWsUrl(this.url);
     if (this.control && controllerClient.session) {
-      const url = new URL(target);
-      url.searchParams.set('controller_role', controllerClient.role);
-      target = url.toString();
+      target = withWsSearchParam(target, 'controller_role', controllerClient.role);
     }
     const ws = protocols.length ? new WebSocket(target, protocols) : new WebSocket(target);
     let socketEpoch = 0;
