@@ -154,6 +154,9 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
   const theme = options.theme ?? (width === 900 ? 'github-light' : 'nord');
   const locale = options.locale ?? (width === 900 ? 'ru-RU' : 'en-US');
   await page.setViewportSize({ width, height });
+  page.on('console', m => { console.log(`DIAG console.${m.type()}: ${m.text().slice(0, 300)}`); });
+  page.on('pageerror', e => { console.log(`DIAG pageerror: ${String(e).slice(0, 300)}`); });
+  page.on('request', r => { if (r.url().includes('/api/')) console.log(`DIAG req ${r.method()} ${r.url()}`); });
   await page.addInitScript(({ state, layout, language, theme, locale }) => {
     // MOR-2218: activation seeds use the v2 per-skin map; a v1 global
     // `designLanguage` is dropped on read, never migrated.
