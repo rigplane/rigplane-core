@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Pair IC-7300 USB audio on Windows when endpoint names are localized,
+  renamed or re-plugged (MOR-3530).** The resolver matches the endpoint names
+  the PnP query reports for the radio's codec, including MME's 31-character
+  cut, instead of requiring `Microphone (USB Audio CODEC)`.
+  `/api/v1/info` `audioReceive.failure` gains an additive `reason` category
+  (`usb_topology_names`, `usb_topology_unavailable`, `usb_ambiguous`,
+  `open_timeout`, `format`, `other`), and PnP query failures and timeouts are
+  logged at WARNING.
+
 - **Send diagnostic reports to the public `reports.rigplane.app` endpoint
   (MOR-3533).** The built-in "Send" button and `rigplane diagnose --upload`
   defaulted to `reports.msmsoft.net`, which does not resolve outside the

@@ -351,6 +351,62 @@ async def test_usb_audio_driver_explicit_sample_rate_failure_is_clear() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_usb_audio_driver_unsupported_format_is_typed(explicit: bool) -> None:
+    from rigplane.audio.usb_driver import (
+        AudioFormatUnsupportedError,
+        audio_start_failure_reason,
+    )
+
+    backend = FakeAudioBackend(_fake_devices(), supported_sample_rates={44_100})
+    driver = UsbAudioDriver(backend=backend)
+
+    with pytest.raises(AudioFormatUnsupportedError) as raised:
+        await driver.start_rx(
+            lambda _: None,
+            sample_rate=48_000,
+            allow_sample_rate_fallback=not explicit,
+        )
+    assert audio_start_failure_reason(raised.value) == "format"
+    assert not driver.rx_running
+
+
+def test_failure_reason_follows_the_newest_failure_and_honours_from_none() -> None:
+    from rigplane.audio.usb_driver import (
+        AudioCaptureOpenTimeoutError,
+        AudioFormatUnsupportedError,
+        audio_start_failure_reason,
+    )
+
+    def raised(outer: Exception, inner: Exception, *, suppress: bool) -> Exception:
+        try:
+            try:
+                raise inner
+            except Exception:
+                if suppress:
+                    raise outer from None
+                raise outer
+        except Exception as exc:
+            return exc
+
+    timeout = AudioCaptureOpenTimeoutError("stuck")
+    assert (
+        audio_start_failure_reason(raised(OSError("x"), timeout, suppress=True))
+        == "other"
+    )
+    assert (
+        audio_start_failure_reason(
+            raised(AudioFormatUnsupportedError("x"), timeout, suppress=False)
+        )
+        == "format"
+    )
+    assert (
+        audio_start_failure_reason(raised(RuntimeError("x"), timeout, suppress=False))
+        == "open_timeout"
+    )
+
+
+@pytest.mark.asyncio
 async def test_usb_audio_driver_explicit_sample_rate_reports_explicit_source() -> None:
     backend = FakeAudioBackend(_fake_devices(), supported_sample_rates={48_000})
     driver = UsbAudioDriver(backend=backend)

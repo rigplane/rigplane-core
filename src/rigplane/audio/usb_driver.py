@@ -74,6 +74,14 @@ class AudioDeviceSelectionError(RuntimeError):
     """Raised when no suitable USB audio device can be selected."""
 
 
+class AudioDeviceAmbiguousError(AudioDeviceSelectionError):
+    """Several audio devices match and none can be chosen safely."""
+
+
+class AudioTopologyUnavailableError(AudioDeviceSelectionError):
+    """The USB topology was not read, so the radio's audio pair is unknown."""
+
+
 class AudioDriverLifecycleError(RuntimeError):
     """Raised on invalid USB audio lifecycle operations."""
 
@@ -117,6 +125,58 @@ class AudioCaptureOpenTimeoutError(AudioDriverLifecycleError):
     to WS clients — no bespoke availability flag. The next subscriber
     attempt opens a fresh stream from scratch.
     """
+
+
+class AudioFormatUnsupportedError(AudioDriverLifecycleError):
+    """Raised when the device accepts none of the requested stream formats."""
+
+
+AudioStartFailureReason = Literal[
+    "usb_topology_names",
+    "usb_topology_unavailable",
+    "usb_ambiguous",
+    "open_timeout",
+    "format",
+    "other",
+]
+
+
+def audio_start_failure_reason(exc: BaseException) -> AudioStartFailureReason:
+    """Classify an audio start failure by the exception types it chains.
+
+    The category is safe to publish: it never carries exception text.
+    """
+    from ._usb_resolve import (
+        WindowsAudioAmbiguityError,
+        WindowsAudioEndpointNameError,
+        WindowsAudioTopologyError,
+    )
+
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__
+        )
+    reasons: tuple[
+        tuple[tuple[type[BaseException], ...], AudioStartFailureReason], ...
+    ] = (
+        ((AudioCaptureOpenTimeoutError,), "open_timeout"),
+        ((AudioFormatUnsupportedError,), "format"),
+        ((AudioDeviceAmbiguousError, WindowsAudioAmbiguityError), "usb_ambiguous"),
+        ((WindowsAudioEndpointNameError,), "usb_topology_names"),
+        (
+            (AudioTopologyUnavailableError, WindowsAudioTopologyError),
+            "usb_topology_unavailable",
+        ),
+    )
+    # The outermost classified exception is the newest failure.
+    for error in chain:
+        for types, reason in reasons:
+            if isinstance(error, types):
+                return reason
+    return "other"
 
 
 _DEFAULT_SAMPLE_RATE_CANDIDATES: tuple[int, ...] = (48_000, 24_000, 16_000, 8_000)
@@ -769,7 +829,7 @@ def _unique_override_match(
         return matches[0]
     if len(matches) > 1:
         available = _format_device_choices(matches)
-        raise AudioDeviceSelectionError(
+        raise AudioDeviceAmbiguousError(
             f"Ambiguous {direction.upper()} device override {override!r}. "
             f"Matching {direction.upper()} devices: {available}"
         )
@@ -1309,7 +1369,9 @@ class UsbAudioDriver:
             try:
                 return list(_query_windows_pnp_devices())
             except Exception:  # noqa: BLE001 — optional metadata only
-                logger.debug("usb-audio: optional Windows topology unavailable")
+                logger.warning(
+                    "usb-audio: optional Windows topology unavailable", exc_info=True
+                )
                 return []
 
         records: list[Any] = []
@@ -1325,7 +1387,7 @@ class UsbAudioDriver:
                     warn_on_timeout=False,
                 )
             except AudioCaptureOpenTimeoutError:
-                logger.info(
+                logger.warning(
                     "usb-audio: optional Windows topology did not settle; "
                     "requiring an unambiguous audio pair"
                 )
@@ -1394,7 +1456,14 @@ class UsbAudioDriver:
                 if (d.supports_rx if direction == "rx" else d.supports_tx)
             }
             if len(identities) != 1:
-                raise AudioDeviceSelectionError(
+                error = (
+                    AudioTopologyUnavailableError
+                    if not records
+                    else AudioDeviceAmbiguousError
+                    if identities
+                    else AudioDeviceSelectionError
+                )
+                raise error(
                     "Windows USB audio selection is ambiguous or unavailable; "
                     "select explicit RX/TX devices for the serial radio."
                 )
@@ -1556,7 +1625,7 @@ class UsbAudioDriver:
             )
 
         if not allow_sample_rate_fallback:
-            raise AudioDriverLifecycleError(
+            raise AudioFormatUnsupportedError(
                 f"Explicit {direction.upper()} sample rate "
                 f"{requested_sample_rate} Hz is not supported by [{device.index}] "
                 f"{device.name}."
@@ -1592,7 +1661,7 @@ class UsbAudioDriver:
                     open_channels=open_field,
                 )
 
-        raise AudioDriverLifecycleError(
+        raise AudioFormatUnsupportedError(
             f"No supported {direction.upper()} sample rate found for [{device.index}] "
             f"{device.name}; tried {list(self._sample_rate_candidates(requested_sample_rate))}."
         )

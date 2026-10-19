@@ -799,9 +799,14 @@ async def test_optional_pnp_timeout_falls_back_while_worker_stays_tracked(
 
 @pytest.mark.timeout(10)
 async def test_optional_pnp_timeout_refuses_indistinguishable_radios(
-    monkeypatch: pytest.MonkeyPatch, windows_selection: None
+    monkeypatch: pytest.MonkeyPatch,
+    windows_selection: None,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from rigplane.audio.usb_driver import AudioDeviceSelectionError
+    from rigplane.audio.usb_driver import (
+        AudioTopologyUnavailableError,
+        audio_start_failure_reason,
+    )
 
     gate = threading.Event()
     devices = _fake_devices() + [
@@ -822,8 +827,16 @@ async def test_optional_pnp_timeout_refuses_indistinguishable_radios(
         "rigplane.usb_audio_resolve._query_windows_pnp_devices", lambda: gate.wait()
     )
     try:
-        with pytest.raises(AudioDeviceSelectionError, match="ambiguous"):
+        with (
+            caplog.at_level(logging.WARNING, logger="rigplane.audio.usb_driver"),
+            pytest.raises(AudioTopologyUnavailableError, match="ambiguous") as raised,
+        ):
             await driver.start_rx(lambda _frame: None)
+        assert audio_start_failure_reason(raised.value) == "usb_topology_unavailable"
+        assert any(
+            r.levelno == logging.WARNING and "did not settle" in r.getMessage()
+            for r in caplog.records
+        )
         assert not backend.rx_streams
         assert driver.selected_rx_device is None
     finally:
@@ -835,6 +848,8 @@ async def test_optional_pnp_timeout_refuses_indistinguishable_radios(
 async def test_windows_selection_has_one_deadline_and_no_late_cache(
     monkeypatch: pytest.MonkeyPatch, windows_selection: None
 ) -> None:
+    from rigplane.audio.usb_driver import audio_start_failure_reason
+
     gate = threading.Event()
     driver, backend = _make_driver(capture_open_timeout=0.08)
     driver.set_serial_port("COM3")
@@ -857,9 +872,10 @@ async def test_windows_selection_has_one_deadline_and_no_late_cache(
     monkeypatch.setattr(driver, "_select_windows_devices", delayed_mapping)
     started = time.monotonic()
     try:
-        with pytest.raises(AudioCaptureOpenTimeoutError):
+        with pytest.raises(AudioCaptureOpenTimeoutError) as raised:
             await driver.start_rx(lambda _frame: None)
         assert time.monotonic() - started < 0.12
+        assert audio_start_failure_reason(raised.value) == "open_timeout"
         assert not backend.rx_streams
         assert driver.selected_rx_device is None
     finally:
@@ -966,7 +982,11 @@ async def test_windows_valid_topology_and_wrong_parent_never_share_fallback(
     from dataclasses import replace
     from types import SimpleNamespace
 
-    from rigplane.audio.usb_driver import AudioDeviceSelectionError
+    from rigplane.audio.usb_driver import (
+        AudioDeviceAmbiguousError,
+        AudioDeviceSelectionError,
+        audio_start_failure_reason,
+    )
     from rigplane.usb_audio_resolve import WindowsPnpDevice
 
     records = [
@@ -1000,10 +1020,45 @@ async def test_windows_valid_topology_and_wrong_parent_never_share_fallback(
     records[1] = replace(records[1], parent_pnp_id="WRONG-RADIO")
     driver, backend = _make_driver(capture_open_timeout=0.5)
     driver.set_serial_port("COM3")
-    with pytest.raises(AudioDeviceSelectionError, match="parents do not match"):
+    with pytest.raises(
+        AudioDeviceSelectionError, match="parents do not match"
+    ) as raised:
         await driver.start_rx(lambda _frame: None)
+    assert audio_start_failure_reason(raised.value) == "usb_topology_unavailable"
     assert not backend.rx_streams
     assert driver.selected_rx_device is None
+
+    # The serial radio's topology lists no audio function at all: the name
+    # fallback then sees two candidate pairs and refuses them as ambiguous.
+    driver, backend = _make_driver(capture_open_timeout=0.5)
+    backend.add_device(
+        AudioDeviceInfo(
+            id=AudioDeviceId(9),
+            name="USB Audio CODEC",
+            input_channels=1,
+            output_channels=1,
+        )
+    )
+    driver.set_serial_port("COM3")
+    monkeypatch.setattr(
+        "rigplane.usb_audio_resolve._query_windows_pnp_devices", lambda: records[:1]
+    )
+    with pytest.raises(AudioDeviceAmbiguousError, match="ambiguous") as raised:
+        await driver.start_rx(lambda _frame: None)
+    assert audio_start_failure_reason(raised.value) == "usb_ambiguous"
+    assert not backend.rx_streams
+
+    # An IC-7300 whose codec PortAudio does not list under any host API.
+    from test_usb_audio_resolve import _ic7300_hub_records
+
+    driver, backend = _make_driver(capture_open_timeout=0.5)
+    driver.set_serial_port("COM3")
+    monkeypatch.setattr(
+        "rigplane.usb_audio_resolve._query_windows_pnp_devices", _ic7300_hub_records
+    )
+    with pytest.raises(AudioDeviceSelectionError, match="same-host-API") as raised:
+        await driver.start_rx(lambda _frame: None)
+    assert audio_start_failure_reason(raised.value) == "usb_topology_names"
 
 
 @pytest.mark.timeout(10)
