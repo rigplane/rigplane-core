@@ -11,10 +11,42 @@
  * cause baseline screenshot churn; everything here is frozen.
  */
 
+import type { Route } from '@playwright/test';
 import type { Capabilities } from '../../../src/lib/types/capabilities';
 import type { ServerState, ReceiverState } from '../../../src/lib/types/state';
 
 export const mockLocalControllerStatus = { protocol_version: 1, mode: 'local' } as const;
+
+// MOR-3534: local-mode Core opens one controller session per browser —
+// POST /api/v1/controller answers 201 with a grant (docs/api/web.md;
+// `server.py: _handle_http_controller`, `controller_authority.py:
+// _open_session`). Frozen deterministic values: the client validates only
+// the shape (`controller-client.ts: adopt` — 64-hex key, safe integer
+// generation, ttl_ms 6000, heartbeat_ms 2000).
+export const mockControllerGrant = {
+  controller_key: '0'.repeat(64),
+  generation: 0,
+  ttl_ms: 6000,
+  heartbeat_ms: 2000,
+} as const;
+
+/** Ack frame real Core returns for a primary session heartbeat
+ * (`controller_authority.py: heartbeat`); the generation matches
+ * `mockControllerGrant`. */
+export const mockControllerHeartbeatAck = {
+  type: 'controller_heartbeat',
+  generation: mockControllerGrant.generation,
+} as const;
+
+/** Serve `/api/v1/controller` as real local-mode Core does: GET status,
+ * POST opens the frozen session (201 grant), DELETE ends it (200). */
+export async function fulfillControllerRoute(route: Route): Promise<void> {
+  const method = route.request().method();
+  if (method === 'POST') return route.fulfill({ status: 201, json: mockControllerGrant });
+  if (method === 'DELETE') return route.fulfill({ json: mockLocalControllerStatus });
+  if (method === 'GET') return route.fulfill({ json: mockLocalControllerStatus });
+  return route.fulfill({ status: 405, json: { error: 'method_not_allowed' } });
+}
 
 const baseReceiver: ReceiverState = {
   freqHz: 14_205_000,
