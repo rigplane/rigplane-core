@@ -5574,6 +5574,12 @@ class WebServer:
             except RuntimeError:
                 await self._managed_tx_unavailable(writer)
                 return
+            except ControllerError as exc:
+                # The session ended between routing and admission (MOR-3534).
+                await self._send_json(
+                    writer, exc.status, "Forbidden", {"error": exc.code}
+                )
+                return
             except CommandError:
                 # The command queue reports a refused transmit_on (another
                 # owner holds TX, MOR-3534) as a command error: a conflict.
