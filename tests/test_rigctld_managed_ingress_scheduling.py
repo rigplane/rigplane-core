@@ -741,3 +741,19 @@ async def test_pre_start_cancelled_response_drains_fake_submission_before_discon
     finally:
         cleanup_release.set()
         await _cancel_and_join(*responses, *submissions, *clients)
+async def test_managed_vox_on_is_refused_while_another_owner_holds_tx(managed):
+    # MOR-3534: VOX arms keying, so it is a TX start a non-holder may not issue.
+    receipt = await managed.authority.submit_ptt(True, "websocket-1")
+    assert receipt.outcome is ManagedTxOutcome.ACCEPTED
+    await receipt.wait_settlement()
+    await _send(managed, "U VOX 1", "U VOX 0")
+    assert await _replies(managed, 2) == [b"RPRT -9\n", b"RPRT 0\n"]
+    assert managed.radio._vox_on is False
+    await _clear_release_debt(managed)
+    receipt = await managed.authority.submit_ptt(True, "rigctld-client-1")
+    assert receipt.outcome is ManagedTxOutcome.ACCEPTED
+    await receipt.wait_settlement()
+    await _send(managed, "U VOX 1")
+    assert await _replies(managed, 1) == [b"RPRT 0\n"]
+    assert managed.radio._vox_on is True
+    await _clear_release_debt(managed)

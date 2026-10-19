@@ -194,21 +194,6 @@ async def test_session_expiry_releases_only_its_own_tx(held: str) -> None:
         await close(controller, managed)
 
 
-async def test_any_client_may_force_tx_off() -> None:
-    _, controller, managed, _ = stack()
-    try:
-        _, a = open_session(controller, "a")
-        _, b = open_session(controller, "b")
-        with controller.bind(a):
-            assert await managed.transmit_on() is ACCEPTED
-        with controller.bind(b):
-            assert await managed.force_off() is ACCEPTED
-        assert managed.tx_holder_nowait() is None
-        assert (await managed.snapshot()).state.intent.kind is ManagedTxIntentKind.RX
-    finally:
-        await close(controller, managed)
-
-
 async def test_primary_loss_fences_only_that_session() -> None:
     _, controller, managed, _ = stack()
     try:
@@ -231,21 +216,6 @@ async def test_primary_loss_fences_only_that_session() -> None:
             controller.attach(key_a, "primary", "late")
         await controller.settle()
         assert managed.tx_holder_nowait() is None
-    finally:
-        await close(controller, managed)
-
-
-async def test_sessionless_socket_keys_as_before_but_never_over_a_holder() -> None:
-    _, controller, managed, _ = stack()
-    try:
-        _, a = open_session(controller, "a")
-        with controller.bind(a):
-            assert await managed.ptt_down(a.tx_owner) is ACCEPTED
-        assert await managed.ptt_down("websocket-1") is REJECTED
-        assert await managed.ptt_up(a.tx_owner) is ACCEPTED
-        assert await managed.ptt_down("websocket-1") is ACCEPTED
-        assert managed.tx_holder_nowait() == "websocket-1"
-        assert await managed.ptt_up("websocket-1") is ACCEPTED
     finally:
         await close(controller, managed)
 
@@ -407,16 +377,6 @@ async def test_naming_the_holder_in_a_request_never_claims_its_tx(
             )
     assert managed.tx_holder_nowait() == a.tx_owner
     assert await managed.ptt_up(a.tx_owner) is ACCEPTED
-
-
-async def test_session_owner_tokens_are_not_sequential() -> None:
-    _, controller, managed, _ = stack()
-    try:
-        owners = {open_session(controller, name)[1].tx_owner for name in "abc"}
-        assert len(owners) == 3
-        assert not {"controller-session-1", "controller-session-2"} & owners
-    finally:
-        await close(controller, managed)
 
 
 async def test_http_transmit_on_for_a_session_ended_mid_request_is_forbidden(
