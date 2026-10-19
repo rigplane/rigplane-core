@@ -156,7 +156,9 @@ def audio_start_failure_reason(exc: BaseException) -> AudioStartFailureReason:
     current: BaseException | None = exc
     while current is not None and current not in chain:
         chain.append(current)
-        current = current.__cause__ or current.__context__
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__
+        )
     reasons: tuple[
         tuple[tuple[type[BaseException], ...], AudioStartFailureReason], ...
     ] = (
@@ -169,9 +171,11 @@ def audio_start_failure_reason(exc: BaseException) -> AudioStartFailureReason:
             "usb_topology_unavailable",
         ),
     )
-    for types, reason in reasons:
-        if any(isinstance(e, types) for e in chain):
-            return reason
+    # The outermost classified exception is the newest failure.
+    for error in chain:
+        for types, reason in reasons:
+            if isinstance(error, types):
+                return reason
     return "other"
 
 

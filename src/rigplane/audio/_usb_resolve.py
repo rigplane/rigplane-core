@@ -620,19 +620,18 @@ def _resolve_ic7300_hub(
     )
     rank = identities.index(codec_id)
     # Endpoint FriendlyNames can be localized, renamed or "2- "-prefixed. The
-    # SWD endpoint rows carry each codec's names; on GTR7 PortAudio listed the
-    # same strings, cut to 31 characters under MME (MOR-3526).
+    # SWD endpoint rows carry every device's names, keyed by its physical
+    # device (or the row itself); on GTR7 PortAudio listed the same strings,
+    # cut to 31 characters under MME (MOR-3526).
     endpoint_names: dict[str, set[str]] = {}
     for r in records:
         if (
             r.pnp_device_id.upper().startswith("SWD\\")
             and r.audio_endpoint_name is not None
-            and (p := physical(r)) is not None
-            and p.pnp_device_id.upper() in identities
         ):
-            endpoint_names.setdefault(p.pnp_device_id.upper(), set()).add(
-                r.audio_endpoint_name.strip()
-            )
+            owner = (physical(r) or r).pnp_device_id.upper()
+            endpoint_names.setdefault(owner, set()).add(r.audio_endpoint_name.strip())
+    family = set(identities)
     sd: Any = sounddevice_module
     if sd is None:
         try:
@@ -659,7 +658,7 @@ def _resolve_ic7300_hub(
         }
 
     def member(device: dict[str, Any]) -> bool:
-        return bool(owners(device)) or (
+        return bool(owners(device) & family) or (
             _windows_audio_product(str(device.get("name", ""))) == "USB Audio CODEC"
         )
 
@@ -686,9 +685,13 @@ def _resolve_ic7300_hub(
         pair = _pair_audio_cluster_by_name_rank(normalized, "USB Audio CODEC", rank)
         if pair is None:
             continue
-        # The rank picks the pair; a name PnP also ties to another codec
-        # (including a shared truncated MME prefix) refuses this host API.
-        if any(owners(devices[i]) - {codec_id} for i in pair):
+        # The rank picks the pair. Refuse it when PnP ties either name to
+        # another device (a shared truncated MME prefix included) or, with
+        # several radios, when only one half has an endpoint row behind it.
+        rx_owners, tx_owners = owners(devices[pair[0]]), owners(devices[pair[1]])
+        if (rx_owners | tx_owners) - {codec_id} or (
+            len(identities) > 1 and bool(rx_owners) != bool(tx_owners)
+        ):
             contradicted = True
             continue
         return AudioDeviceMapping(pair[0], pair[1], serial.com_port or "", None)

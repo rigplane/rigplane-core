@@ -2221,46 +2221,51 @@ _MME, _DSOUND, _WASAPI, _WDMKS = 0, 1, 3, 4
 def _windows_portaudio(*endpoints, interleaved=False):
     """PortAudio's Windows device list for IC-7300 ``(rx_name, tx_name)`` pairs.
 
-    MME, DirectSound and WASAPI list every input before every output, and MME
-    cuts names to 31 characters, as captured on GTR7 (MOR-3526). WDM-KS lists
-    each device's pins together. ``interleaved`` keeps every radio's pair
-    adjacent on all host APIs.
+    Order as captured with one IC-7300 on GTR7: MME and DirectSound list
+    inputs before outputs, WASAPI outputs before inputs, WDM-KS each device's
+    output pin next to its input pin; MME cuts names to 31 characters.
+    ``interleaved`` keeps every radio's pair adjacent on all host APIs.
     """
     from types import SimpleNamespace
 
-    extras = {
-        _MME: ("Microsoft Sound Mapper - Input", "Microsoft Sound Mapper - Output"),
-        _DSOUND: ("Primary Sound Capture Driver", "Primary Sound Driver"),
-        _WASAPI: (None, None),
-        _WDMKS: (None, None),
-    }
-    devices = []
-
-    def add(hostapi, name, rx):
-        if name is None:
-            return
-        devices.append(
-            {
-                "name": name[:31] if hostapi == _MME else name,
-                "hostapi": hostapi,
-                "max_input_channels": 2 if rx else 0,
-                "max_output_channels": 0 if rx else 2,
-            }
-        )
-
-    for hostapi, (mapper_in, mapper_out) in extras.items():
-        add(hostapi, mapper_in, True)
-        if interleaved or hostapi == _WDMKS:
-            for rx_name, tx_name in endpoints:
-                add(hostapi, rx_name, True)
-                add(hostapi, tx_name, False)
-            add(hostapi, mapper_out, False)
-            continue
-        for rx_name, _tx in endpoints:
-            add(hostapi, rx_name, True)
-        add(hostapi, mapper_out, False)
-        for _rx, tx_name in endpoints:
-            add(hostapi, tx_name, False)
+    rx = [(n, True) for n, _ in endpoints]
+    tx = [(n, False) for _, n in endpoints]
+    pairs = [e for r, t in zip(rx, tx) for e in (r, t)]
+    mme_in, mme_out = (
+        ("Microsoft Sound Mapper - Input", True),
+        (
+            "Microsoft Sound Mapper - Output",
+            False,
+        ),
+    )
+    ds_in, ds_out = (
+        ("Primary Sound Capture Driver", True),
+        ("Primary Sound Driver", False),
+    )
+    if interleaved:
+        order = {
+            _MME: [mme_in, *pairs, mme_out],
+            _DSOUND: [ds_in, *pairs, ds_out],
+            _WASAPI: pairs,
+            _WDMKS: pairs,
+        }
+    else:
+        order = {
+            _MME: [mme_in, *rx, mme_out, *tx],
+            _DSOUND: [ds_in, *rx, ds_out, *tx],
+            _WASAPI: tx + rx,
+            _WDMKS: [e for t, r in zip(tx, rx) for e in (t, r)],
+        }
+    devices = [
+        {
+            "name": name[:31] if hostapi == _MME else name,
+            "hostapi": hostapi,
+            "max_input_channels": 2 if is_rx else 0,
+            "max_output_channels": 0 if is_rx else 2,
+        }
+        for hostapi, listed in order.items()
+        for name, is_rx in listed
+    ]
     return SimpleNamespace(
         query_devices=lambda: devices, query_hostapis=lambda: _WINDOWS_HOSTAPIS
     )
@@ -2356,9 +2361,8 @@ class TestWindowsIc7300EndpointNames:
         self, interleaved, hostapi, port
     ):
         """Radio A (COM7) has the first endpoint names, radio B (COM3) the
-        re-plugged "2- " ones. With every input before every output, the MME,
-        DirectSound and WASAPI lists do not form two adjacent pairs, so only
-        WDM-KS qualifies."""
+        re-plugged "2- " ones. In the GTR7 order the MME, DirectSound and WASAPI
+        lists do not form two adjacent pairs, so only WDM-KS qualifies."""
         from rigplane.usb_audio_resolve import _resolve_windows
 
         a = _IC7300_ENDPOINT_NAMES["en-US"]
@@ -2452,3 +2456,97 @@ class TestWindowsIc7300EndpointNames:
             _resolve_windows(
                 "COM3", sounddevice_module=doubled, pnp_query=lambda: records
             )
+
+    def test_halves_of_two_radios_never_form_one_pair(self):
+        """Radio B (COM3) has no endpoint rows and WASAPI lists only its output
+        between radio A's input and output. A's input and B's output must not
+        become A's pair; with one radio, a missing row stays harmless."""
+        from types import SimpleNamespace
+
+        from rigplane.usb_audio_resolve import (
+            WindowsAudioAmbiguityError,
+            _resolve_windows,
+        )
+
+        a = _IC7300_ENDPOINT_NAMES["fi-FI"]
+        devices = [
+            {
+                "name": n,
+                "hostapi": _WASAPI,
+                "max_input_channels": i,
+                "max_output_channels": o,
+            }
+            for n, i, o in (
+                (a[0], 2, 0),
+                ("Speakers (2- USB Audio CODEC)", 0, 2),
+                (a[1], 0, 2),
+            )
+        ]
+        sd = SimpleNamespace(
+            query_devices=lambda: devices, query_hostapis=lambda: _WINDOWS_HOSTAPIS
+        )
+        no_rows = [
+            r
+            for r in _ic7300_hub_records("B", "COM3")
+            if not r.pnp_device_id.upper().startswith("SWD\\")
+        ]
+        records = _ic7300_hub_records("A", "COM7", *a) + no_rows
+        with pytest.raises(WindowsAudioAmbiguityError):
+            _resolve_windows("COM7", sounddevice_module=sd, pnp_query=lambda: records)
+
+        one = _windows_portaudio(
+            ("Mikrofoni (USB Audio CODEC)", "Speakers (USB Audio CODEC)")
+        )
+        rx_only = _ic7300_hub_records(
+            rx_name="Mikrofoni (USB Audio CODEC)", tx_name=""
+        )[:-1]
+        result = _resolve_windows(
+            "COM3", sounddevice_module=one, pnp_query=lambda: rx_only
+        )
+        assert result is not None
+        assert (result.rx_device_index, result.tx_device_index) == _windows_pair(
+            one, _MME, "Mikrofoni (USB Audio CODEC)", "Speakers (USB Audio CODEC)"
+        )
+
+    def test_truncated_name_shared_with_another_device_is_not_the_radio(self):
+        """An unrelated USB audio device's endpoints differ from the renamed
+        IC-7300 ones only after 31 characters. MME lists only that device, so
+        its pair must be refused and the IC-7300's DirectSound pair chosen."""
+        from types import SimpleNamespace
+
+        from rigplane.usb_audio_resolve import WindowsPnpDevice, _resolve_windows
+
+        a = _IC7300_ENDPOINT_NAMES["renamed-long"]
+        other = tuple(n.replace("USB Audio CODEC", "USB Audio Device") for n in a)
+        assert [n[:31] for n in a] == [n[:31] for n in other]
+        other_id = r"USB\VID_0D8C&PID_0016\OTHER"
+        records = _ic7300_hub_records(rx_name=a[0], tx_name=a[1]) + [
+            WindowsPnpDevice(
+                other_id, r"USB\ROOT_HUB30\HOST", "0D8C", "0016", None, None
+            ),
+            *(
+                WindowsPnpDevice(
+                    rf"SWD\MMDEVAPI\OTHER_{i}", other_id, None, None, None, n
+                )
+                for i, n in enumerate(other)
+            ),
+        ]
+        devices = [
+            {"name": n, "hostapi": h, "max_input_channels": i, "max_output_channels": o}
+            for n, h, i, o in (
+                (other[0][:31], _MME, 2, 0),
+                (other[1][:31], _MME, 0, 2),
+                (a[0], _DSOUND, 2, 0),
+                (a[1], _DSOUND, 0, 2),
+                (other[0], _DSOUND, 2, 0),
+                (other[1], _DSOUND, 0, 2),
+            )
+        ]
+        sd = SimpleNamespace(
+            query_devices=lambda: devices, query_hostapis=lambda: _WINDOWS_HOSTAPIS
+        )
+        result = _resolve_windows(
+            "COM3", sounddevice_module=sd, pnp_query=lambda: records
+        )
+        assert result is not None
+        assert (result.rx_device_index, result.tx_device_index) == (2, 3)
