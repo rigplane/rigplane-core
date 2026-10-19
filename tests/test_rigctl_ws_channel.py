@@ -146,6 +146,21 @@ async def test_one_channel_per_session_and_max_clients_refuse(
     assert not server._channel_owners  # noqa: SLF001
 
 
+async def test_cancelled_channel_releases_and_stays_cancelled(
+    rigctld: tuple[RigctldServer, MagicMock],
+) -> None:
+    # Server shutdown cancels the channel: the TX release still runs, and the
+    # cancel is not swallowed by rigctld's own teardown.
+    server, handler = rigctld
+    ws = _FakeWs()
+    run = _channel(server, ws)
+    await _until(lambda: _OWNER in server._channel_owners)  # noqa: SLF001
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    handler.release_session_tx.assert_awaited_once_with(_OWNER)
+
+
 async def test_line_reader_holds_a_fast_sender_until_lines_are_read() -> None:
     reader = _LineReader(limit=1)
     feed = asyncio.create_task(reader.feed("a\nb"))

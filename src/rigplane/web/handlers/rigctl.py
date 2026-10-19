@@ -134,7 +134,13 @@ class RigctlChannelHandler:
             return
         pump = asyncio.create_task(self._pump(reader))
         try:
-            await session
+            await asyncio.shield(session)
+        except asyncio.CancelledError:
+            # rigctld absorbs a cancel to finish its teardown (the TX release)
+            # and then returns; wait that out, but stay cancelled.
+            session.cancel()
+            await asyncio.gather(session, return_exceptions=True)
+            raise
         finally:
             pump.cancel()
             await asyncio.gather(pump, return_exceptions=True)
