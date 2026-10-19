@@ -45,12 +45,19 @@ def _key(data1: int, data2: int, data3: int, data4: bytes, pid: int) -> DevPropK
     return DevPropKey(_Guid(data1, data2, data3, (ctypes.c_ubyte * 8)(*data4)), pid)
 
 
-# devpkey.h: DEVPKEY_NAME is what Win32_PnPEntity reports as Name/FriendlyName
-# (the friendly name, else the device description); DEVPKEY_Device_Class is
-# its PNPClass.
-DEVPKEY_NAME = _key(0xB725F130, 0x47EF, 0x101A, b"\xa5\xf1\x02\x60\x8c\x9e\xba\xc0", 10)
-DEVPKEY_DEVICE_CLASS = _key(
-    0xA45C254E, 0xDF1C, 0x4EFD, b"\x80\x20\x67\xd1\x46\xa8\x50\xe0", 9
+# devpkey.h. On GTR7 Get-PnpDevice reports FriendlyName, else DeviceDesc, as
+# FriendlyName; cfgmgr32 has no DEVPKEY_NAME for devnodes (CR_NO_SUCH_VALUE).
+_DEVPKEY_DEVICE_FMTID = (
+    0xA45C254E,
+    0xDF1C,
+    0x4EFD,
+    b"\x80\x20\x67\xd1\x46\xa8\x50\xe0",
+)
+DEVPKEY_DEVICE_DESC = _key(*_DEVPKEY_DEVICE_FMTID, 2)
+DEVPKEY_DEVICE_CLASS = _key(*_DEVPKEY_DEVICE_FMTID, 9)
+DEVPKEY_DEVICE_FRIENDLY_NAME = _key(*_DEVPKEY_DEVICE_FMTID, 14)
+DEVPKEY_DEVICE_PARENT = _key(
+    0x4340A6C5, 0x93FA, 0x4706, b"\x97\x2c\x7b\x64\x80\x08\xa5\xa7", 8
 )
 
 
@@ -160,21 +167,25 @@ class _CfgMgr32:
 def present_devnodes(api: DevNodeApi | None = None) -> list[DevNodeRow]:
     """Every present devnode, depth-first from the root of the device tree.
 
-    Parent ids are the parent devnode's own instance id, so the root's is
-    ``""``. Raises ``OSError`` when cfgmgr32 is unavailable or a call fails.
+    The parent is ``DEVPKEY_Device_Parent``, the property PowerShell reads:
+    it keeps the case the parent's id was created with, while the device id
+    calls return it upper-cased. Raises ``OSError`` when cfgmgr32 is
+    unavailable or a call fails.
     """
     api = api if api is not None else _CfgMgr32()
     rows: list[DevNodeRow] = []
-    stack: list[tuple[int, str]] = [(api.root(), "")]
+    stack = [api.root()]
     while stack:
-        devnode, parent_id = stack.pop()
-        instance_id = api.device_id(devnode)
+        devnode = stack.pop()
+        prop = api.string_property
         rows.append(
             (
-                instance_id,
-                parent_id,
-                api.string_property(devnode, DEVPKEY_DEVICE_CLASS) or "",
-                api.string_property(devnode, DEVPKEY_NAME) or "",
+                api.device_id(devnode),
+                prop(devnode, DEVPKEY_DEVICE_PARENT) or "",
+                prop(devnode, DEVPKEY_DEVICE_CLASS) or "",
+                prop(devnode, DEVPKEY_DEVICE_FRIENDLY_NAME)
+                or prop(devnode, DEVPKEY_DEVICE_DESC)
+                or "",
             )
         )
         children: list[int] = []
@@ -182,5 +193,5 @@ def present_devnodes(api: DevNodeApi | None = None) -> list[DevNodeRow]:
         while child is not None:
             children.append(child)
             child = api.sibling(child)
-        stack.extend((c, instance_id) for c in reversed(children))
+        stack.extend(reversed(children))
     return rows

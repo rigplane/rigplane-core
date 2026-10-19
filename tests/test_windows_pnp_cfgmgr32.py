@@ -15,7 +15,9 @@ import pytest
 from rigplane.audio import _usb_resolve
 from rigplane.audio._windows_devnode import (
     DEVPKEY_DEVICE_CLASS,
-    DEVPKEY_NAME,
+    DEVPKEY_DEVICE_DESC,
+    DEVPKEY_DEVICE_FRIENDLY_NAME,
+    DEVPKEY_DEVICE_PARENT,
     DevPropKey,
     present_devnodes,
 )
@@ -26,14 +28,24 @@ _FIXTURE = Path(__file__).parent / "fixtures" / "windows_pnp_gtr7_ic7300.json"
 class FakeCfgMgr32:
     """Device tree served the way the cfgmgr32 calls see it.
 
-    ``nodes`` rows are ``(instance_id, parent_id, class, name)``; ``None``
-    for class or name means the property is absent on that devnode.
+    ``nodes`` rows are ``(instance_id, parent_id, class, friendly_name)``;
+    ``None`` or ``""`` means the property is absent on that devnode.
+    ``descriptions`` maps an instance id to its DeviceDesc.
     """
 
-    def __init__(self, nodes: list[tuple[str, str, str | None, str | None]]) -> None:
+    def __init__(
+        self,
+        nodes: list[tuple[str, str, str | None, str | None]],
+        descriptions: dict[str, str] | None = None,
+    ) -> None:
         self.ids = [n[0] for n in nodes]
         self.props = {
-            i: {DEVPKEY_DEVICE_CLASS: n[2], DEVPKEY_NAME: n[3]}
+            i: {
+                DEVPKEY_DEVICE_PARENT: n[1] or None,
+                DEVPKEY_DEVICE_CLASS: n[2] or None,
+                DEVPKEY_DEVICE_FRIENDLY_NAME: n[3] or None,
+                DEVPKEY_DEVICE_DESC: (descriptions or {}).get(n[0]),
+            }
             for i, n in enumerate(nodes)
         }
         index = {n[0].upper(): i for i, n in enumerate(nodes)}
@@ -73,21 +85,8 @@ def _gtr7() -> dict[str, list]:
 
 
 def _gtr7_cfgmgr32() -> FakeCfgMgr32:
-    """The recorded GTR7 tree as cfgmgr32 reports it.
-
-    The capture came from Get-PnpDevice, whose InstanceId is upper-cased,
-    while DEVPKEY_Device_Parent keeps the case the devnode was created with.
-    cfgmgr32 returns that original case for every node, so a node referenced
-    as a parent gets the spelling its children recorded.
-    """
-    tree = _gtr7()["tree"]
-    spelled = {row[1].upper(): row[1] for row in tree if row[1]}
-    return FakeCfgMgr32(
-        [
-            (spelled.get(i.upper(), i), parent, cls or None, name or None)
-            for i, parent, cls, name in tree
-        ]
-    )
+    """The recorded GTR7 tree; Get-PnpDevice's name stands in for FriendlyName."""
+    return FakeCfgMgr32([tuple(row) for row in _gtr7()["tree"]])
 
 
 def _key(record: _usb_resolve.WindowsPnpDevice) -> tuple[str, ...]:
@@ -159,14 +158,19 @@ def test_walk_visits_children_and_siblings_depth_first() -> None:
             ("HTREE\\ROOT\\0", "", None, None),
             ("PCI\\a", "HTREE\\ROOT\\0", "System", "Bridge"),
             ("USB\\b", "PCI\\a", "USB", "Hub"),
-            ("PCI\\c", "HTREE\\ROOT\\0", "Net", None),
-        ]
+            ("PCI\\c", "htree\\root\\0", "Net", None),
+            ("PCI\\d", "HTREE\\ROOT\\0", None, None),
+        ],
+        descriptions={"PCI\\c": "Ethernet", "PCI\\a": "unused"},
     )
+    # Parent spelling comes from the property; the name falls back to
+    # DeviceDesc only when FriendlyName is absent.
     assert present_devnodes(api) == [
         ("HTREE\\ROOT\\0", "", "", ""),
         ("PCI\\a", "HTREE\\ROOT\\0", "System", "Bridge"),
         ("USB\\b", "PCI\\a", "USB", "Hub"),
-        ("PCI\\c", "HTREE\\ROOT\\0", "Net", ""),
+        ("PCI\\c", "htree\\root\\0", "Net", "Ethernet"),
+        ("PCI\\d", "HTREE\\ROOT\\0", "", ""),
     ]
 
 
