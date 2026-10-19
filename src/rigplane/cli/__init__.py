@@ -4736,6 +4736,10 @@ async def _cmd_web(
             rigctld_server = candidate
             rigctld_addr = f"{rigctld_host}:{rigctld_port}"
             server._runtime_rigctld_addr = rigctld_addr
+            if managed_tx_composition is not None:
+                # MOR-3536: /api/v1/rigctl keys as the client's session, which
+                # only the managed authority enforces; unmanaged, it stays off.
+                server.attach_rigctl_channel(candidate.open_channel)
 
     scheme = "https" if config_kwargs.get("tls") else "http"
     web_url = f"{scheme}://{args.web_host}:{args.web_port}/"

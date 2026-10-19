@@ -193,6 +193,16 @@ Every client may read state, scope and audio, and any client may command the rad
 - The per-client WebSocket limit (9 per channel path) counts a session's channels against that session and sessionless channels against their IP, so clients behind one gateway IP do not evict each other. Channels of the TX holder's session, and the control channel of a sessionless socket that keyed PTT, are never evicted.
 - Clients without a session keep the earlier behaviour. Each sessionless control socket is its own TX owner, and the rule above applies to it. Their TX audio is not pinned to their own keying: while a sessionless socket holds TX, any sessionless audio channel may feed it. The bundled web frontend currently connects without a session in local mode. A sessionless `transmit_on` has no owner: a later sessionless `transmit_on` is accepted, a session's is rejected, and no disconnect releases it (`force_off` and the TOT do).
 
+### rigctl channel (`/api/v1/rigctl`)
+
+A remote CAT client (WSJT-X, a logger) can run the Hamlib rigctld protocol over a WebSocket that joins its session, so its keying and its TX audio belong to the same owner. The channel is served by the bundled rigctld server (`src/rigplane/rigctld/server.py: RigctldServer.open_channel`); only the transport is new (`src/rigplane/web/handlers/rigctl.py`).
+
+- Attach with the session subprotocol `rigplane-controller-v1.<controller_key>` (an auxiliary channel: the session needs its primary). A request without a session is refused before the upgrade with `403 {"error": "controller_session_required"}`; so is any request in the exclusive remote mode. A sessionless rigctld client uses the TCP port instead.
+- Each text message carries one or more rigctld command lines; a missing final newline is implied and a line never spans two messages. Each reply comes back as one text message, in command order. A binary message closes the channel (`1003`).
+- Commands run through the same parser, handler and managed-PTT path as a TCP client, with the session as owner: `T 1` keys as the session, the session's `/api/v1/audio` channel then feeds that TX, and another owner's `T 1` is refused with `RPRT -9` while the session holds. Closing the channel releases the TX the session holds, the same release a TCP disconnect makes; so does the session ending.
+- Limits are rigctld's: the channel counts against `max_clients` (10 by default, shared with TCP clients), lines over 1024 bytes and 300 s of silence close it, and a configured command rate limit applies. One rigctl channel per session; a second is closed with `1013`, as is one over `max_clients`. The per-session WebSocket cap above also applies.
+- Available only when the bundled rigctld runs with managed TX (`web` and `station`); otherwise the channel closes with `1008`.
+
 ### Optional WebRTC DataChannels
 
 WebRTC is optional and requires the `rigplane[webrtc]` extra (`aiortc`). There
