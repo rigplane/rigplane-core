@@ -13,6 +13,13 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from test_managed_tx_authority import (
+    FakeClock,
+    FakeConfigStore,
+    FakeFence,
+    FakeLane,
+    FakeWakeup,
+)
 from test_managed_tx_authority import authority as managed_authority
 from test_web_audio_tx_session import _pcm_tx_frame, _SessionLanRadio, _start_tx
 from test_web_controller import Writer, audio_handler, request, station  # noqa: F401
@@ -292,6 +299,8 @@ _TX_STARTS = [
     ("send_cw_text", {"text": "test"}),
     ("set_vox", {"on": True}),
     ("set_tuner_status", {"value": 2}),
+    # MOR-3537: break-in arms CW keying.
+    ("set_break_in", {"mode": 1}),
 ]
 
 
@@ -574,3 +583,116 @@ async def test_session_owner_tokens_are_not_sequential() -> None:
         assert not {"controller-session-1", "controller-session-2"} & owners
     finally:
         await close(controller, managed)
+
+
+# ---------------------------------------------------------------------------
+# MOR-3537: a TX no owner keyed; the execution-time TX-start re-check
+# ---------------------------------------------------------------------------
+
+
+def radio_tx_authority() -> tuple[ManagedTxAuthority, FakeClock, FakeLane, list[float]]:
+    """A managed authority whose radio reports TX observed at ``radio[-1]``.
+
+    An empty ``radio`` is the radio reporting RX.
+    """
+    clock, lane = FakeClock(), FakeLane()
+    radio: list[float] = []
+    managed = ManagedTxAuthority(
+        lane,
+        FakeConfigStore(),
+        FakeFence(),
+        provider_generation=7,
+        clock=clock,
+        wakeup=FakeWakeup(),
+        attempt_timeout_seconds=1.0,
+        retry_delay_seconds=2.0,
+        radio_tx_since=lambda since: bool(radio) and radio[-1] > since,
+    )
+    return managed, clock, lane, radio
+
+
+async def test_a_tx_no_owner_keyed_is_never_keyed_over_nor_unkeyed() -> None:
+    managed, clock, lane, radio = radio_tx_authority()
+    try:
+        radio.append(clock.now)  # the operator keys at the radio
+        with pytest.raises(ControllerError, match="radio_tx_unowned"):
+            await managed.ptt_down("websocket-1")
+        with pytest.raises(ControllerError, match="radio_tx_unowned"):
+            await managed.transmit_on()
+        assert await managed.force_off() is REJECTED
+        assert await managed.ptt_up("websocket-1") is REJECTED
+        assert lane.effects == [] and lane.aborts == []
+        state = (await managed.snapshot()).state
+        assert state.intent.kind is ManagedTxIntentKind.RX
+        assert not state.release_required
+
+        radio.clear()  # the operator's TX ends
+        assert await managed.ptt_down("websocket-1") is ACCEPTED
+        assert await managed.ptt_up("websocket-1") is ACCEPTED
+        assert [effect.operation for effect in lane.effects] == [
+            ActuationOperation.PTT_ON,
+            ActuationOperation.FORCE_RECEIVE,
+        ]
+    finally:
+        await managed.close()
+
+
+async def test_core_tx_still_reported_after_its_release_is_not_foreign() -> None:
+    managed, clock, lane, radio = radio_tx_authority()
+    try:
+        assert await managed.ptt_down("websocket-1") is ACCEPTED
+        clock.now += 0.5
+        radio.append(clock.now)  # the radio reports the TX Core keyed
+        clock.now += 0.5
+        assert await managed.force_off() is ACCEPTED  # Core's own TX: released
+        assert lane.effects[-1].operation is ActuationOperation.FORCE_RECEIVE
+        # The radio's last report predates the release: Core's own TX, not
+        # one nobody keyed, so keying is not refused.
+        assert await managed.ptt_down("websocket-2") is ACCEPTED
+        assert await managed.ptt_up("websocket-2") is ACCEPTED
+    finally:
+        await managed.close()
+
+
+@pytest.mark.parametrize(
+    ("name", "params"),
+    [
+        ("send_cw_text", {"text": "test"}),
+        ("set_vox", {"on": True}),
+        ("set_break_in", {"mode": 1}),
+    ],
+)
+async def test_a_tx_start_admitted_before_another_owner_keys_is_refused_when_run(
+    station,  # noqa: F811
+    monkeypatch,
+    name: str,
+    params: dict[str, object],
+) -> None:
+    """H3: the owner check runs again when the queued intent executes."""
+    server, managed = station
+    assert server._managed_tx_authority() is managed
+    controller = server._controller
+    _, a = open_session(controller, "a")
+    _, b = open_session(controller, "b")
+    handler = _handler(server, managed, b)
+    admitted: list[CommandIntent] = []
+
+    async def hold(intent: CommandIntent, *, executor: object = None) -> object:
+        admitted.append(intent)
+        return SimpleNamespace(executor_result=SimpleNamespace(details={}))
+
+    monkeypatch.setattr(handler, "_command_service", SimpleNamespace(execute=hold))
+    # Nobody holds TX: b's TX start is admitted. A client-sent owner is dropped.
+    with controller.bind(b):
+        await handler._enqueue_command(name, {**params, "_tx_owner": a.tx_owner})
+    (intent,) = admitted
+    assert intent.params["_tx_owner"] == b.tx_owner
+    # a keys before b's intent runs.
+    with controller.bind(a):
+        assert await managed.ptt_down(a.tx_owner) is ACCEPTED
+    # The shared executor runs it on a fresh handler with no identity of its own.
+    with pytest.raises(ControllerError, match="controller_tx_unsupported"):
+        await _handler(server, managed)._execute_intent(intent)
+    assert server.command_queue.drain() == []
+    assert managed.tx_holder_nowait() == a.tx_owner
+    assert await managed.ptt_up(a.tx_owner) is ACCEPTED

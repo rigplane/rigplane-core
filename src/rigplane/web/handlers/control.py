@@ -208,6 +208,8 @@ __all__ = ["ControlHandler"]
 
 logger = logging.getLogger(__name__)
 _MAX_CW_TEXT_CHARS = 512
+# Intent param carrying the TX owner `_enqueue_command` checked (MOR-3537).
+_TX_OWNER_PARAM = "_tx_owner"
 
 # MOR-624: maps the per-DATA-group MOD-input SET command name (as sent by the
 # frontend auto-restore) to its allowed teardown arm name (MOR-993).
@@ -1820,45 +1822,55 @@ class ControlHandler:
         )
 
     def _validate_controller_command(
-        self, name: str, params: dict[str, Any], *, owner_checked: bool = False
-    ) -> None:
+        self,
+        name: str,
+        params: dict[str, Any],
+        *,
+        owner_checked: bool = False,
+        owner: str | None = None,
+    ) -> str | None:
+        """Refuse what the controller forbids; return the TX owner checked."""
         controller = getattr(self._radio, "_controller_authority", None)
         if not isinstance(controller, ControllerAuthority):
-            return
+            return None
         if name.startswith("get_") or is_typed_transmission_end_command(name, params):
             # Reads and the typed transmission end (MOR-3384: PTT off
             # ``1C 00 00`` or the voice TX memory stop ``28 00 00``) never
             # capture, so no remote-ticket refusal can name them either.
             # The raw tuner off captures, like the typed set_tuner_status 0.
-            return
+            return None
         ticket = controller.capture()
+        # Break-in arms CW keying (MOR-3537), so enabling it is a TX start.
         starts_tx = (
             name == "send_cw_text"
             or (
                 name == "set_vox" and params.get("on", params.get("value")) is not False
             )
             or (name == "set_tuner_status" and params.get("value") == 2)
+            or (name == "set_break_in" and params.get("mode") != 0)
         )
         if ticket.remote and (
             name in {"send_civ", "transmit_on", "radio_connect", "radio_disconnect"}
             or starts_tx
-            or (name == "set_break_in" and params.get("mode") != 0)
         ):
             raise ControllerError("controller_tx_unsupported")
-        # MOR-3534: while one owner holds the transmitter, CW text, VOX and
-        # TUNE from any other owner are refused like the remote ones above.
-        # The owner is server-known identity only: the bound controller
-        # session, else this handler's own socket. A request field never
-        # names it.
+        # MOR-3534: while one owner holds the transmitter, CW text, VOX,
+        # TUNE and break-in from any other owner are refused like the remote
+        # ones above. The owner is server-known identity only: the bound
+        # controller session, else this handler's own socket, or the owner
+        # ``_enqueue_command`` stamped on its own intent. A request field
+        # never names it.
         authority = self._managed_tx_authority
         if (
             starts_tx
             and not owner_checked
             and isinstance(authority, ManagedTxAuthority)
         ):
-            owner = ticket.tx_owner or self._tx_owner
+            owner = owner or ticket.tx_owner or self._tx_owner
             if authority.held_by_other(owner):
                 raise ControllerError("controller_tx_unsupported")
+            return owner
+        return None
 
     async def _enqueue_command(
         self,
@@ -1868,10 +1880,15 @@ class ControlHandler:
         command_id: str | None = None,
         source: CommandSource = "websocket",
     ) -> dict[str, Any]:
-        self._validate_controller_command(name, params)
+        tx_owner = self._validate_controller_command(name, params)
         if name in self._MANAGED_PTT_COMMANDS:
             return await self._enqueue_managed_ptt(name, params, source=source)
         intent_params = dict(params)
+        # MOR-3537: the executor re-checks a TX start as this owner. Server
+        # stamped only; a client-sent value never survives.
+        intent_params.pop(_TX_OWNER_PARAM, None)
+        if tx_owner is not None:
+            intent_params[_TX_OWNER_PARAM] = tx_owner
         if self._server is not None:
             intent_params["_control_server"] = self._server
         if name in ("set_vfo", "select_vfo") and "receiver_count" not in intent_params:
@@ -1988,11 +2005,19 @@ class ControlHandler:
     ) -> CommandExecutionResult:
         # A websocket intent is built only by ``_enqueue_command``, which ran
         # the owner check as the issuing socket; this executor may be a fresh
-        # handler with no socket identity of its own.
+        # handler with no socket identity of its own. Another owner may have
+        # keyed since that check (MOR-3537), so a TX start is checked again
+        # here as the owner it was stamped with. A descriptor intent drops
+        # the stamp: its TUNE is refused at the write by
+        # ``admit_managed_write`` while any owner holds TX.
+        stamped = (
+            intent.params.get(_TX_OWNER_PARAM) if intent.source == "websocket" else None
+        )
         self._validate_controller_command(
             intent.name,
             dict(intent.params),
-            owner_checked=intent.source == "websocket",
+            owner_checked=intent.source == "websocket" and not isinstance(stamped, str),
+            owner=stamped if isinstance(stamped, str) else None,
         )
         if intent.name == "set_vfo_freq":
             if self._read_only:
@@ -2108,6 +2133,7 @@ class ControlHandler:
 
         params = dict(intent.params)
         params.pop("_control_server", None)
+        params.pop(_TX_OWNER_PARAM, None)
         result = await self._enqueue_legacy_command(
             intent.name,
             params,

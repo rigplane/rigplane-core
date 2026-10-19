@@ -487,7 +487,9 @@ class _RigctldCommandExecutor:
             if task is not None and task.cancelling() > cancelling:
                 raise
             raise _RigctldCommandFailure(HamlibError.ERJCTED) from exc
-        except CommandError as exc:
+        except (CommandError, ControllerError) as exc:
+            # A refused key (MOR-3537: e.g. the radio transmits a TX no owner
+            # keyed) is a rejection, not an I/O failure.
             raise _RigctldCommandFailure(HamlibError.ERJCTED) from exc
         except Exception as exc:
             raise _RigctldCommandFailure(HamlibError.EIO) from exc

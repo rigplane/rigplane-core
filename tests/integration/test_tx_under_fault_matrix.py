@@ -66,6 +66,7 @@ from rigplane.runtime.managed_tx_composition import (  # noqa: E402
 )
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfigStore  # noqa: E402
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind  # noqa: E402
+from rigplane.runtime.tx_interlock import RfState, resolve_rf_state  # noqa: E402
 from rigplane.web.protocol import (  # noqa: E402
     AUDIO_CODEC_PCM16,
     AUDIO_HEADER_SIZE,
@@ -729,6 +730,7 @@ _TX_STARTS = (
     ("send_cw_text", {"text": "TEST"}),
     ("set_vox", {"on": True}),
     ("set_tuner_status", {"value": 2}),
+    ("set_break_in", {"mode": 1}),  # MOR-3537: break-in arms CW keying
 )
 
 # One browser PCM16 TX frame: the web audio wire header and 480 samples.
@@ -893,4 +895,87 @@ async def test_multi_session_tx_lanes(lane: str, tmp_path: Path) -> None:
         for ws in clients:
             with contextlib.suppress(Exception):
                 await ws.close()
+        await _tear_down_stack(stack)
+
+
+# ---------------------------------------------------------------------------
+# MOR-3537: a TX no owner keyed — the operator's own mic or PTT at the radio
+# ---------------------------------------------------------------------------
+
+
+async def _wait_rf(web: WebServer, expected: RfState, deadline_s: float) -> None:
+    """Wait until the poller's PTT readback resolves to ``expected``."""
+    end = time.monotonic() + deadline_s
+    while resolve_rf_state(web.command_state_store.snapshot()) is not expected:
+        assert time.monotonic() < end, f"radio never observed {expected} PTT"
+        await asyncio.sleep(0.05)
+
+
+async def test_a_tx_no_owner_keyed_is_never_keyed_over_nor_unkeyed(
+    tmp_path: Path,
+) -> None:
+    stack = await _stand_up_stack(
+        tmp_path, loss="hold", tot_seconds=_LINK_FAULT_TOT_S, unsolicited=False
+    )
+    clients: list[_WsKeyClient] = []
+    rig = _RigctldKeyClient("127.0.0.1", stack.rigctld_port)
+    try:
+        sim, web = stack.sim, stack.web
+        port = web.port
+        # A frozen controller clock: the session never expires mid-test.
+        web._controller._clock = _FrozenClock()  # noqa: SLF001
+        status, grant = await _http_json(
+            port, "POST", "/api/v1/controller", {"kind": "pro"}
+        )
+        assert status == 201, grant
+        key = grant["controller_key"]
+        for ws in (
+            _WsKeyClient("127.0.0.1", port, key),
+            _WsKeyClient("127.0.0.1", port),
+        ):
+            await ws.connect()
+            clients.append(ws)
+        session, sessionless = clients
+        await rig.connect()
+        await _wait_ptt_observed(web, _GATE_TIMEOUT_S)
+
+        writes = len(sim.ptt_set_writes)
+        # The operator keys the radio's own mic: no session, no wire write.
+        sim._set_simulated_ptt(True, wire_set=False)  # noqa: SLF001
+        await _wait_rf(web, RfState.TX, _GATE_TIMEOUT_S)
+
+        for ws, command_id in ((session, "s-key"), (sessionless, "x-key")):
+            response = await ws.command(command_id, "ptt_on")
+            assert response.get("ok") is False, response
+            assert response.get("message") == "radio_tx_unowned", response
+        assert rig._writer is not None and rig._reader is not None
+        rig._writer.write(b"T 1\n")
+        await rig._writer.drain()
+        assert await asyncio.wait_for(rig._reader.readline(), 10.0) == b"RPRT -9\n"
+        path = "/api/v1/managed-transmit/command"
+        on = {"operation": "transmit_on"}
+        assert await _http_json(port, "POST", path, on, key) == (
+            409,
+            {"error": "radio_tx_unowned"},
+        )
+        # Anyone may force TX off, but Core keyed none of this TX: nothing is
+        # sent. A force-receive, if sent, lands within one attempt bound.
+        off = await _http_json(port, "POST", path, {"operation": "force_off"})
+        assert off[0] == 409, off
+        await asyncio.sleep(ATTEMPT_TIMEOUT_S)
+        assert sim.ptt_on, f"Core unkeyed the operator: {sim.ptt_transitions}"
+        assert sim.ptt_set_writes[writes:] == []
+
+        # The operator's TX ends: keying works again.
+        sim._set_simulated_ptt(False, wire_set=False)  # noqa: SLF001
+        await _wait_rf(web, RfState.RX, _GATE_TIMEOUT_S)
+        assert await session.key("s-key-free")
+        await _wait_ptt(sim, True, _KEY_DEADLINE_S)
+        assert (await session.command("s-unkey", "ptt_off")).get("ok")
+        await _wait_ptt(sim, False, _LEASE_BUDGET_S)
+    finally:
+        for ws in clients:
+            with contextlib.suppress(Exception):
+                await ws.close()
+        await rig.close()
         await _tear_down_stack(stack)

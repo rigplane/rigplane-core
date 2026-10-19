@@ -151,6 +151,7 @@ class ManagedTxAuthority:
         wakeup: _Wakeup | None = None,
         attempt_timeout_seconds: float = ATTEMPT_TIMEOUT_S,
         retry_delay_seconds: float = RETRY_DELAY_S,
+        radio_tx_since: Callable[[float], bool] | None = None,
     ) -> None:
         if not 0 < attempt_timeout_seconds < float("inf") or not 0 < (
             retry_delay_seconds
@@ -191,6 +192,12 @@ class ManagedTxAuthority:
         # Owner of a latched TRANSMIT intent (MOR-3534): the controller session
         # that sent transmit_on, or None for a sessionless one.
         self._transmit_owner: str | None = None
+        # MOR-3537: whether the radio reported TX in an observation made after
+        # the given clock reading, and the clock reading at which Core last
+        # had no transmission of its own. Radio TX newer than that is a TX no
+        # owner keyed: the operator's own mic or PTT at the radio.
+        self._radio_tx_since = radio_tx_since
+        self._idle_since = float("-inf")
         self._scheduler_task = asyncio.create_task(self._scheduler())
 
     def bind_controller(self, controller: ControllerAuthority) -> None:
@@ -362,6 +369,9 @@ class ManagedTxAuthority:
                         return ManagedTxTransition(
                             self._state, ManagedTxOutcome.REJECTED
                         ), None
+                    if self._unowned_radio_tx_locked():
+                        # MOR-3537: never key over a TX no owner keyed.
+                        raise ControllerError("radio_tx_unowned", 409)
                     transition, full_force = self._transition_locked(action, owner)
                     if transition is None:
                         transition = ManagedTxTransition(
@@ -1054,6 +1064,10 @@ class ManagedTxAuthority:
     def _force_off_locked(self) -> ManagedTxTransition:
         self._retry_due = None
         self._pending_abort_cleanup.append(self._abort_fence.force_off())
+        if self._unowned_radio_tx_locked():
+            # MOR-3537: Core holds no TX and the radio transmits anyway; a
+            # force-receive would unkey the operator at the radio.
+            return ManagedTxTransition(self._state, ManagedTxOutcome.REJECTED)
         return self._reduce_locked(
             ForceOff(self._provider_generation, self._attempt_id_locked())
         )
@@ -1061,10 +1075,13 @@ class ManagedTxAuthority:
     def _reduce_locked(self, event: ManagedTxEvent) -> ManagedTxTransition:
         transition = reduce_managed_tx(self._state, event)
         changed = transition.state != self._state
+        was_clean = self._state_is_clean_locked()
         self._state = transition.state
         if self._state.intent.kind is not ManagedTxIntentKind.TRANSMIT:
             self._transmit_owner = None
         if self._state_is_clean_locked():
+            if not was_clean:
+                self._idle_since = self._clock()
             self._release_drained.set()
         else:
             self._release_drained.clear()
@@ -1229,6 +1246,14 @@ class ManagedTxAuthority:
             self._state.intent.kind is ManagedTxIntentKind.RX
             and not self._state.release_required
             and self._state.pending_effect is None
+        )
+
+    def _unowned_radio_tx_locked(self) -> bool:
+        """Whether the radio transmits while Core holds and owes no TX."""
+        return bool(
+            self._radio_tx_since is not None
+            and self._state_is_clean_locked()
+            and self._radio_tx_since(self._idle_since)
         )
 
     def _pending_settlements_locked(self) -> tuple[_SubmissionCompletion, ...]:

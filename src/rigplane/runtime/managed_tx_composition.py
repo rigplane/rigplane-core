@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from rigplane.core.radio_protocol import ManagedTxSupervisor
+from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_safety import (
     RadioTx,
@@ -28,6 +29,7 @@ from rigplane.runtime.managed_tx_effect_lane import (
 )
 from rigplane.runtime.managed_tx_fence import TxAbortFence
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
+from rigplane.runtime.tx_interlock import RfState, resolve_rf_state
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +130,7 @@ class ManagedTxComposition:
             self._tot_config_store,
             self._abort_fence,
             provider_generation=None,
+            radio_tx_since=self._radio_tx_since,
         )
         self._legacy_supervisor = _LegacyManagedTxCutoverGate(self._authority)
         self._state_store: StateStore | None = None
@@ -167,6 +170,23 @@ class ManagedTxComposition:
                 self._provider_generation_changed
             )
             await self._ensure_current_locked()
+
+    def _radio_tx_since(self, since: float) -> bool:
+        """Whether the radio reported TX in an observation newer than ``since``.
+
+        MOR-3537: the observed-RF truth every TX seat already resolves; the
+        observation time is read from the same validated field, on the
+        ``time.monotonic`` clock the authority reads (see
+        ``RigctldHandler._ptt_observed_after`` for the clock-domain note).
+        """
+        store = self._state_store
+        if store is None:
+            return False
+        snapshot = store.snapshot()
+        if resolve_rf_state(snapshot) is not RfState.TX:
+            return False
+        observed = snapshot.field(FieldPath.global_("tx_state", "ptt"))
+        return observed.last_observed_monotonic > since
 
     def _provider_generation_changed(self, generation: int) -> None:
         self._observation_generation = int(generation)
