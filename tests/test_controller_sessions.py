@@ -14,7 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 from test_managed_tx_authority import authority as managed_authority
-from test_web_controller import request, station  # noqa: F401
+from test_web_audio_tx_session import _pcm_tx_frame, _SessionLanRadio, _start_tx
+from test_web_controller import Writer, audio_handler, request, station  # noqa: F401
 
 from rigplane.runtime.controller_authority import (
     ControllerAuthority,
@@ -27,6 +28,7 @@ from rigplane.runtime.managed_tx_state import (
     ManagedTxIntentKind,
     ManagedTxOutcome,
 )
+from rigplane.web import server as server_module
 from rigplane.web.handlers.control import ControlHandler
 
 ACCEPTED = ManagedTxOutcome.ACCEPTED
@@ -368,3 +370,119 @@ async def test_session_cw_vox_tune_are_refused_while_a_socket_holds_ptt(
         await _handler(server, managed, b)._enqueue_command(name, params)
     socket._validate_controller_command(name, params)
     assert await managed.ptt_up(socket._tx_owner) is ACCEPTED
+
+
+# ---------------------------------------------------------------------------
+# H2: TX audio pinned to the holder session; H4: per-session WebSocket caps
+# ---------------------------------------------------------------------------
+
+
+async def test_session_tx_audio_is_pinned_to_the_holder(station) -> None:  # noqa: F811
+    server, managed = station
+    assert server._managed_tx_authority() is managed
+    controller = server._controller
+    key_a, a = open_session(controller, "a")
+    key_b, _ = open_session(controller, "b")
+    radio = _SessionLanRadio()
+    holder, other, sessionless = (
+        audio_handler(server, radio, ticket)
+        for ticket in (
+            controller.attach(key_a, "auxiliary", "a-audio"),
+            controller.attach(key_b, "auxiliary", "b-audio"),
+            controller.capture(),
+        )
+    )
+    for handler in (holder, other, sessionless):
+        await _start_tx(handler)
+    with controller.bind(a):
+        assert await managed.ptt_down(a.tx_owner) is ACCEPTED
+    await other._handle_tx_audio(_pcm_tx_frame(b"other"))
+    await sessionless._handle_tx_audio(_pcm_tx_frame(b"sessionless"))
+    await holder._handle_tx_audio(_pcm_tx_frame(b"holder"))
+    assert radio.pushed == [b"holder"]
+    assert other._tx_warn_counts["tx_gate_closed"] == 1
+    assert sessionless._tx_warn_counts["tx_gate_closed"] == 1
+    assert await managed.ptt_up(a.tx_owner) is ACCEPTED
+    # A sessionless socket holds: sessionless audio is not pinned, but a
+    # session's audio never feeds someone else's transmission.
+    assert await managed.ptt_down("websocket-1") is ACCEPTED
+    await other._handle_tx_audio(_pcm_tx_frame(b"other-2"))
+    await sessionless._handle_tx_audio(_pcm_tx_frame(b"sessionless-2"))
+    assert radio.pushed == [b"holder", b"sessionless-2"]
+    assert await managed.ptt_up("websocket-1") is ACCEPTED
+    for handler in (holder, other, sessionless):
+        await handler._stop_tx(reason="test")
+
+
+async def test_ws_caps_count_per_session_and_never_evict_the_holder(
+    station,  # noqa: F811
+    monkeypatch,
+) -> None:
+    server, managed = station
+    assert server._managed_tx_authority() is managed
+    controller = server._controller
+    release = asyncio.Event()
+    started: list[object] = []
+
+    class Handler:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def run(self) -> None:
+            started.append(self)
+            await release.wait()
+
+    monkeypatch.setattr(server_module, "ControlHandler", Handler)
+    keys = {name: await _grant(server) for name in ("holder", "other")}
+    channels: list[asyncio.Task[None]] = []
+
+    async def connect(key: str | None, role: str = "auxiliary") -> None:
+        headers = {"sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ=="}
+        if key is not None:
+            headers["sec-websocket-protocol"] = f"rigplane-controller-v1.{key}"
+        before = len(started)
+        channels.append(
+            asyncio.create_task(
+                server._handle_websocket(
+                    asyncio.StreamReader(),
+                    Writer(),
+                    "/api/v1/ws",
+                    headers,
+                    {"controller_role": [role]},
+                )
+            )
+        )
+        for _ in range(100):
+            await asyncio.sleep(0)
+            if len(started) != before:
+                return
+        raise AssertionError("channel never registered")
+
+    try:
+        for name, key in keys.items():
+            await connect(key, "primary")
+        owners = {
+            name: ticket.tx_owner
+            for name, ticket in (
+                (name, controller.credential(key)) for name, key in keys.items()
+            )
+        }
+        with controller.bind(controller.credential(keys["holder"])):
+            assert await managed.ptt_down(owners["holder"]) is ACCEPTED
+        for _ in range(9):  # 10 channels in the holder's own session
+            await connect(keys["holder"])
+        for _ in range(8):  # 9 channels in another session
+            await connect(keys["other"])
+        for _ in range(10):  # 10 sessionless channels from the same IP
+            await connect(None)
+        counts = {
+            scope: len(conns)
+            for (scope, _path), conns in server._conn_manager._connections.items()
+        }
+        assert counts == {owners["holder"]: 10, owners["other"]: 9, "127.0.0.1": 9}
+        controller.validate(controller.credential(keys["other"]))
+        assert managed.tx_holder_nowait() == owners["holder"]
+    finally:
+        release.set()
+        await asyncio.gather(*channels, return_exceptions=True)
+        assert await managed.force_off() is ACCEPTED

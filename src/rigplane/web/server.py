@@ -918,38 +918,69 @@ class WebConfig:
 
 
 class ConnectionManager:
-    """Track WebSocket connections per-IP per-channel; evict excess and reap zombies."""
+    """Track WebSocket connections per client per channel; evict excess and reap zombies.
+
+    The client scope is the controller session's TX owner when the channel
+    joined a session, else the peer IP (MOR-3534): behind a gateway every
+    client shares one IP. Channels owned by the current TX holder are never
+    evicted.
+    """
 
     MAX_PER_IP_PER_CHANNEL: int = 9  # 3 tabs × 3 WS (control + scope + audio-scope)
 
     def __init__(self) -> None:
         self._connections: dict[tuple[str, str], list[WebSocketConnection]] = {}
+        self._owners: dict[WebSocketConnection, str] = {}
 
     def register(
-        self, ip: str, channel: str, ws: WebSocketConnection
+        self,
+        scope: str,
+        channel: str,
+        ws: WebSocketConnection,
+        *,
+        owner: str | None = None,
+        holder: str | None = None,
     ) -> list[WebSocketConnection]:
-        """Register ws for (ip, channel) and return any evicted excess connections."""
-        key = (ip, channel)
+        """Register ws for (scope, channel) and return any evicted excess connections.
+
+        ``owner`` is the channel's TX owner, ``holder`` the current TX holder.
+        """
+        key = (scope, channel)
         conns = self._connections.setdefault(key, [])
         conns.append(ws)
+        if owner is not None:
+            self._owners[ws] = owner
         evicted: list[WebSocketConnection] = []
         while len(conns) > self.MAX_PER_IP_PER_CHANNEL:
-            evicted.append(conns.pop(0))
+            victim = next(
+                (
+                    conn
+                    for conn in conns
+                    if holder is None or self._owners.get(conn) != holder
+                ),
+                None,
+            )
+            if victim is None:
+                break
+            conns.remove(victim)
+            self._owners.pop(victim, None)
+            evicted.append(victim)
         # Debug: log current connection count per channel
         if evicted:
             logger.debug(
                 "conn_manager: %s from %s now has %d connections (evicted %d)",
                 channel,
-                ip,
+                scope,
                 len(conns),
                 len(evicted),
             )
         return evicted
 
-    def unregister(self, ip: str, channel: str, ws: WebSocketConnection) -> None:
-        """Remove ws from (ip, channel) tracking."""
-        key = (ip, channel)
+    def unregister(self, scope: str, channel: str, ws: WebSocketConnection) -> None:
+        """Remove ws from (scope, channel) tracking."""
+        key = (scope, channel)
         conns = self._connections.get(key, [])
+        self._owners.pop(ws, None)
         try:
             conns.remove(ws)
         except ValueError:
@@ -965,6 +996,8 @@ class ConnectionManager:
             alive = [ws for ws in conns if ws.is_alive()]
             dead_here = [ws for ws in conns if not ws.is_alive()]
             dead.extend(dead_here)
+            for ws in dead_here:
+                self._owners.pop(ws, None)
             if alive:
                 self._connections[key] = alive
             else:
@@ -5381,6 +5414,16 @@ class WebServer:
         try:
             self._controller.validate(ticket)
             if not ticket.remote:
+                # MOR-3534: while a session holds TX only that session's own
+                # audio channel transmits. A sessionless channel is not pinned
+                # to its owner, but never feeds a session's transmission.
+                held = self._managed_tx_authority()
+                if isinstance(held, ManagedTxAuthority) and (
+                    held.held_by_other(ticket.tx_owner)
+                    if ticket.tx_owner is not None
+                    else self._controller.is_session_owner(held.tx_holder_nowait())
+                ):
+                    return False
                 return await self._bridge_tx_gate_open()
             authority = self._managed_tx_authority()
             if authority is None:
@@ -7675,11 +7718,25 @@ class WebServer:
         peer = writer.get_extra_info("peername", ("?", 0))
         ip = str(peer[0])
 
-        # Register with connection manager; evict oldest excess connections
-        evicted = self._conn_manager.register(ip, path, ws)
+        # Register with connection manager; evict oldest excess connections.
+        # MOR-3534: a session-attached channel counts against its session, not
+        # the shared IP, and the TX holder's channels are never evicted.
+        scope = ip if ticket.tx_owner is None else ticket.tx_owner
+        managed = self._managed_tx_authority()
+        evicted = self._conn_manager.register(
+            scope,
+            path,
+            ws,
+            owner=ticket.tx_owner or getattr(handler, "_tx_owner", None),
+            holder=managed.tx_holder_nowait()
+            if isinstance(managed, ManagedTxAuthority)
+            else None,
+        )
         for old_ws in evicted:
             logger.info(
-                "ws: evicting old connection from %s on %s (per-IP limit)", ip, path
+                "ws: evicting old connection from %s on %s (per-client limit)",
+                ip,
+                path,
             )
             try:
                 await old_ws.close(1001, "replaced by newer connection")
@@ -7697,7 +7754,7 @@ class WebServer:
             self._controller.validate(ticket)
         except ControllerError:
             self._controller.detach(ticket)
-            self._conn_manager.unregister(ip, path, ws)
+            self._conn_manager.unregister(scope, path, ws)
             ws.abort()
             return
         keepalive = asyncio.create_task(
@@ -7723,7 +7780,7 @@ class WebServer:
                 await keepalive
             except asyncio.CancelledError:
                 pass
-            self._conn_manager.unregister(ip, path, ws)
+            self._conn_manager.unregister(scope, path, ws)
             logger.info(
                 "ws disconnect: %s %s:%s (active=%d)",
                 path,
