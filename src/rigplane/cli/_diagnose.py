@@ -152,10 +152,11 @@ def _default_config_dir() -> Path:
 
 
 def _resolve_endpoint(endpoint_arg: str | None) -> str:
-    # Lazy import — see module-level NOTE about deferring diagnostics imports.
-    from rigplane.diagnostics.upload import _resolve_endpoint as resolve  # noqa: TID251
+    # ``endpoint`` holds only stdlib code, so this stays importable without
+    # aiohttp (see module-level NOTE about deferring the upload stack).
+    from rigplane.diagnostics.endpoint import resolve_endpoint
 
-    return resolve(endpoint_arg or None)
+    return resolve_endpoint(endpoint_arg or None)
 
 
 def _is_tty() -> bool:

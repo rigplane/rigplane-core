@@ -61,8 +61,8 @@ LISTEOF
 # Single definition: only DEFAULT_ENDPOINT may spell the report address.
 check_shipped_code "MOR-3533 single-definition guard: report endpoint written out" \
     'reports\.(rigplane\.app|msmsoft\.net)|/v1/diagnostics/upload' \
-    "Import DEFAULT_ENDPOINT from rigplane.diagnostics.upload instead of repeating the address." \
-    src/rigplane/diagnostics/upload.py
+    "Import DEFAULT_ENDPOINT from rigplane.diagnostics.endpoint instead of repeating the address." \
+    src/rigplane/diagnostics/endpoint.py
 
 # Internal hosts are reachable only inside the maintainer's network.
 # Examples and comments use example.com / example.net.
