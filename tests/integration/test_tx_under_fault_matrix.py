@@ -769,6 +769,21 @@ async def test_multi_session_tx_lanes(lane: str, tmp_path: Path) -> None:
             assert status == 201, grant
             return await client(grant["controller_key"])
 
+        async def released() -> None:
+            # The unkey's release debt can trail the radio-side unkey by a
+            # few retry cadences (see _RELEASE_DEBT_GRACE_S); keying again
+            # before it clears is refused by design.
+            deadline = time.monotonic() + _RELEASE_DEBT_GRACE_S
+            while True:
+                state = (await authority.snapshot()).state
+                if (
+                    state.intent.kind is ManagedTxIntentKind.RX
+                    and not state.release_required
+                ):
+                    return
+                assert time.monotonic() < deadline, f"{lane}: release owed: {state}"
+                await asyncio.sleep(0.1)
+
         a, b = await session(), await session()
         await _wait_ptt_observed(web, _GATE_TIMEOUT_S)
 
@@ -812,6 +827,7 @@ async def test_multi_session_tx_lanes(lane: str, tmp_path: Path) -> None:
             assert authority.tx_holder_nowait() == holder
             assert (await holder_client.command("unkey", "ptt_off")).get("ok")
             await _wait_ptt(sim, False, _LEASE_BUDGET_S)
+            await released()
             # With no holder a sessionless client keys exactly as before.
             assert await sessionless.key("s-key-free")
             await _wait_ptt(sim, True, _KEY_DEADLINE_S)
@@ -872,16 +888,7 @@ async def test_multi_session_tx_lanes(lane: str, tmp_path: Path) -> None:
         if lane != "sessionless_vs_session":
             # Nobody but the holder ever keyed the radio.
             assert [w for w in sim.ptt_set_writes if w[1]] == keyed_writes
-        deadline = time.monotonic() + _RELEASE_DEBT_GRACE_S
-        while True:
-            state = (await authority.snapshot()).state
-            if (
-                state.intent.kind is ManagedTxIntentKind.RX
-                and not state.release_required
-            ):
-                break
-            assert time.monotonic() < deadline, f"{lane}: release still owed: {state}"
-            await asyncio.sleep(0.1)
+        await released()
     finally:
         for ws in clients:
             with contextlib.suppress(Exception):
