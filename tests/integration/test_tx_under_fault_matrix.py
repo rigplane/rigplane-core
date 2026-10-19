@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -165,33 +166,74 @@ _GATE_TIMEOUT_S = 20.0  # tests/test_mor2557_web_rigctld_shared_seat.py
 
 
 class _WsKeyClient:
-    """A raw WebSocket control session that keys via ``ptt_on``."""
+    """A raw WebSocket control session that keys via ``ptt_on``.
 
-    def __init__(self, host: str, port: int) -> None:
+    With ``controller_key`` it is the primary channel of that multi-client
+    controller session (MOR-3534); without, a sessionless client.
+    """
+
+    def __init__(self, host: str, port: int, controller_key: str | None = None) -> None:
         self._host = host
         self._port = port
+        self.controller_key = controller_key
         self._writer: Any = None
         self._reader: Any = None
 
     async def connect(self) -> None:
-        self._reader, self._writer, _ = await _ws_connect(
-            self._host, self._port, "/api/v1/ws"
-        )
+        if self.controller_key is None:
+            self._reader, self._writer, _ = await _ws_connect(
+                self._host, self._port, "/api/v1/ws"
+            )
+        else:
+            self._reader, self._writer = await asyncio.open_connection(
+                self._host, self._port
+            )
+            self._writer.write(
+                (
+                    f"GET /api/v1/ws HTTP/1.1\r\nHost: {self._host}:{self._port}\r\n"
+                    "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Sec-WebSocket-Version: 13\r\n"
+                    f"Sec-WebSocket-Protocol: rigplane-controller-v1.{self.controller_key}"
+                    "\r\n\r\n"
+                ).encode()
+            )
+            await self._writer.drain()
+            response = await asyncio.wait_for(
+                self._reader.readuntil(b"\r\n\r\n"), timeout=5.0
+            )
+            assert response.startswith(b"HTTP/1.1 101 "), response[:200]
         await _ws_skip_handshake(self._reader)
 
-    async def key(self, command_id: str) -> bool:
+    async def _until(self, matches: Any) -> dict[str, Any]:
+        while True:
+            _, payload = await _ws_recv_frame(self._reader, timeout=10.0)
+            message = json.loads(payload)
+            if matches(message):
+                return message
+
+    async def command(
+        self, command_id: str, name: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         assert self._writer is not None and self._reader is not None
         await _ws_send_text(
             self._writer,
             json.dumps(
-                {"type": "cmd", "id": command_id, "name": "ptt_on", "params": {}}
+                {"type": "cmd", "id": command_id, "name": name, "params": params or {}}
             ),
         )
-        while True:
-            _, payload = await _ws_recv_frame(self._reader, timeout=10.0)
-            message = json.loads(payload)
-            if message.get("type") == "response" and message.get("id") == command_id:
-                return bool(message.get("ok"))
+        return await self._until(
+            lambda message: (
+                message.get("type") == "response" and message.get("id") == command_id
+            )
+        )
+
+    async def key(self, command_id: str) -> bool:
+        return bool((await self.command(command_id, "ptt_on")).get("ok"))
+
+    async def heartbeat(self) -> None:
+        await _ws_send_text(self._writer, json.dumps({"type": "controller_heartbeat"}))
+        await self._until(lambda message: message.get("type") == "controller_heartbeat")
 
     def kill(self) -> None:
         if self._writer is not None:
@@ -591,4 +633,169 @@ async def test_tx_under_fault_matrix(
     finally:
         with contextlib.suppress(Exception):
             await client.close()
+        await _tear_down_stack(stack)
+
+
+# ---------------------------------------------------------------------------
+# MOR-3534: multi-session lanes — one TX holder, many clients
+# ---------------------------------------------------------------------------
+#
+# Each lane opens two controller sessions over the real HTTP route and attaches
+# each one's primary control WebSocket. The controller's clock is frozen (a
+# fake clock) so a session expires only when a lane advances it.
+
+
+class _FrozenClock:
+    def __init__(self) -> None:
+        self.now = time.monotonic()
+
+    def __call__(self) -> float:
+        return self.now
+
+
+async def _http_json(
+    port: int,
+    method: str,
+    path: str,
+    body: dict[str, Any] | None = None,
+    key: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        payload = b"" if body is None else json.dumps(body).encode()
+        session = "" if key is None else f"X-RigPlane-Controller: {key}\r\n"
+        writer.write(
+            (
+                f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+                f"Content-Type: application/json\r\n{session}"
+                f"Content-Length: {len(payload)}\r\nConnection: close\r\n\r\n"
+            ).encode()
+            + payload
+        )
+        await writer.drain()
+        head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=10.0)
+        status = int(head.split(b" ", 2)[1])
+        length = re.search(rb"(?i)content-length:\s*(\d+)", head)
+        data = (
+            await asyncio.wait_for(reader.readexactly(int(length.group(1))), 10.0)
+            if length
+            else b""
+        )
+        return status, json.loads(data or b"{}")
+    finally:
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
+
+
+_MULTI_SESSION_LANES = (
+    "simultaneous",
+    "holder_silent",
+    "non_holder_refused",
+    "sessionless_vs_session",
+)
+
+# CW text, VOX enable and TUNE: the TX starts a non-holder may not issue.
+_TX_STARTS = (
+    ("send_cw_text", {"text": "TEST"}),
+    ("set_vox", {"on": True}),
+    ("set_tuner_status", {"value": 2}),
+)
+
+
+@pytest.mark.parametrize("lane", _MULTI_SESSION_LANES)
+async def test_multi_session_tx_lanes(lane: str, tmp_path: Path) -> None:
+    stack = await _stand_up_stack(
+        tmp_path, loss="hold", tot_seconds=_LINK_FAULT_TOT_S, unsolicited=False
+    )
+    clients: list[_WsKeyClient] = []
+    try:
+        sim, web, authority = stack.sim, stack.web, stack.composition.authority
+        controller = web._controller  # noqa: SLF001
+        clock = _FrozenClock()
+        controller._clock = clock  # noqa: SLF001
+        port = web.port
+
+        async def client(key: str | None = None) -> _WsKeyClient:
+            ws = _WsKeyClient("127.0.0.1", port, key)
+            await ws.connect()
+            clients.append(ws)
+            return ws
+
+        async def session() -> _WsKeyClient:
+            status, grant = await _http_json(
+                port, "POST", "/api/v1/controller", {"kind": "pro"}
+            )
+            assert status == 201, grant
+            return await client(grant["controller_key"])
+
+        a, b = await session(), await session()
+        await _wait_ptt_observed(web, _GATE_TIMEOUT_S)
+
+        if lane == "simultaneous":
+            results = await asyncio.gather(a.key("a-key"), b.key("b-key"))
+            assert sorted(results) == [False, True], results
+            holder_client = a if results[0] else b
+        else:
+            assert await a.key("a-key")
+            holder_client = a
+        await _wait_ptt(sim, True, _KEY_DEADLINE_S)
+        holder = authority.tx_holder_nowait()
+        assert holder is not None and holder.startswith("controller-session-"), holder
+        keyed_writes = [write for write in sim.ptt_set_writes if write[1]]
+
+        if lane == "holder_silent":
+            # b renews; a stays silent until the clock passes its deadline.
+            clock.now += 4.0
+            await b.heartbeat()
+            clock.now += 3.0
+            budget = controller.HEARTBEAT_MS / 1000 + _LEASE_BUDGET_S
+            await _wait_ptt(sim, False, budget)
+            await b.heartbeat()  # the other session is untouched
+        elif lane == "non_holder_refused":
+            for name, params in _TX_STARTS:
+                response = await b.command(f"b-{name}", name, params)
+                assert response.get("ok") is False, response
+                assert response.get("message") == "controller_tx_unsupported", response
+            assert authority.tx_holder_nowait() == holder
+            assert (await holder_client.command("unkey", "ptt_off")).get("ok")
+            await _wait_ptt(sim, False, _LEASE_BUDGET_S)
+        elif lane == "sessionless_vs_session":
+            sessionless = await client()
+            assert not await sessionless.key("s-key")
+            on = {"operation": "transmit_on"}
+            path = "/api/v1/managed-transmit/command"
+            assert (await _http_json(port, "POST", path, on))[0] == 409
+            assert (await _http_json(port, "POST", path, on, b.controller_key))[
+                0
+            ] == 409
+            assert authority.tx_holder_nowait() == holder
+            assert (await holder_client.command("unkey", "ptt_off")).get("ok")
+            await _wait_ptt(sim, False, _LEASE_BUDGET_S)
+            # With no holder a sessionless client keys exactly as before.
+            assert await sessionless.key("s-key-free")
+            await _wait_ptt(sim, True, _KEY_DEADLINE_S)
+            assert (await sessionless.command("s-unkey", "ptt_off")).get("ok")
+            await _wait_ptt(sim, False, _LEASE_BUDGET_S)
+        else:
+            assert (await holder_client.command("unkey", "ptt_off")).get("ok")
+            await _wait_ptt(sim, False, _LEASE_BUDGET_S)
+
+        if lane != "sessionless_vs_session":
+            # Nobody but the holder ever keyed the radio.
+            assert [w for w in sim.ptt_set_writes if w[1]] == keyed_writes
+        deadline = time.monotonic() + _RELEASE_DEBT_GRACE_S
+        while True:
+            state = (await authority.snapshot()).state
+            if (
+                state.intent.kind is ManagedTxIntentKind.RX
+                and not state.release_required
+            ):
+                break
+            assert time.monotonic() < deadline, f"{lane}: release still owed: {state}"
+            await asyncio.sleep(0.1)
+    finally:
+        for ws in clients:
+            with contextlib.suppress(Exception):
+                await ws.close()
         await _tear_down_stack(stack)

@@ -46,9 +46,12 @@ class Safety:
 async def test_atomic_acquire_and_no_client_selected_identity(kinds) -> None:
     safety = Safety()
     authority = safety.authority()
-    with pytest.raises(ControllerError, match="remote_disabled"):
-        authority.acquire(kinds[0])
+    # MOR-3534: local mode opens a multi-client session instead of refusing;
+    # arming the exclusive mode ends it.
+    local = authority.acquire(kinds[0])
     await authority.set_mode("remote")
+    with pytest.raises(ControllerError, match="controller_invalid"):
+        authority.credential(local["controller_key"])
 
     async def acquire(kind):
         try:

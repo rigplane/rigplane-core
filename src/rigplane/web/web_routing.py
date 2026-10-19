@@ -475,7 +475,14 @@ async def _dispatch_http_request(
         )
         return
     # Capture local HTTP currency too: a handoff cannot revive its delayed work.
-    with controller.bind(controller.capture()):
+    # A request naming a multi-client session acts as that session (MOR-3534).
+    key = (headers or {}).get("x-rigplane-controller")
+    try:
+        ticket = controller.capture() if key is None else controller.credential(key)
+    except ControllerError as exc:
+        await server._send_json(writer, exc.status, "Forbidden", {"error": exc.code})
+        return
+    with controller.bind(ticket):
         await _dispatch_http_routes(
             server, writer, method, path, headers, reader, query
         )

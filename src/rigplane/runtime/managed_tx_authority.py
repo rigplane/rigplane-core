@@ -188,6 +188,9 @@ class ManagedTxAuthority:
         self._closed = False
         self._controller: ControllerAuthority | None = None
         self._controller_effects: dict[EffectToken, ControllerTicket] = {}
+        # Owner of a latched TRANSMIT intent (MOR-3534): the controller session
+        # that sent transmit_on, or None for a sessionless one.
+        self._transmit_owner: str | None = None
         self._scheduler_task = asyncio.create_task(self._scheduler())
 
     def bind_controller(self, controller: ControllerAuthority) -> None:
@@ -313,6 +316,13 @@ class ManagedTxAuthority:
                 action != "ptt_down" or controller_ticket.session_id != owner
             ):
                 raise ControllerError("controller_tx_unsupported")
+            if controller_ticket.tx_owner is not None:
+                # A session keys only as itself; its latched transmit_on is
+                # owned by the session too.
+                if action == "transmit_on":
+                    owner = controller_ticket.tx_owner
+                elif owner != controller_ticket.tx_owner:
+                    raise ControllerError("controller_tx_unsupported")
         if action == "ptt_down":
             if type(owner) is not str:
                 raise TypeError("PTT requires a builtin str owner")
@@ -638,7 +648,7 @@ class ManagedTxAuthority:
         self._cancel_pending_ptt(owner)
         async with self._lock:
             self._require_ingress_open_locked()
-            if self._state.intent != ManagedTxIntent.ptt(owner):
+            if self.tx_holder_nowait() != owner:
                 return ManagedTxOutcome.REJECTED
             transition = self._force_off_locked()
             self._wakeup.wake()
@@ -694,6 +704,24 @@ class ManagedTxAuthority:
         not wait on a stuck authority (MOR-2875); no ``await`` runs between
         its reads."""
         return self._projection_locked()
+
+    def tx_holder_nowait(self) -> str | None:
+        """Owner of the held transmitter, read without the lock (MOR-3534).
+
+        The PTT owner, or the owner of a latched transmit_on (``None`` for a
+        sessionless one); ``None`` in RX.
+        """
+        intent = self._state.intent
+        if intent.kind is ManagedTxIntentKind.TRANSMIT:
+            return self._transmit_owner
+        return intent.owner_token
+
+    def held_by_other(self, owner: str | None) -> bool:
+        """Whether the transmitter is held by an owner other than ``owner``."""
+        return (
+            self._state.intent.kind is not ManagedTxIntentKind.RX
+            and self.tx_holder_nowait() != owner
+        )
 
     def _projection_locked(self) -> ManagedTxProjection:
         deadline = self._tot_deadline_locked()
@@ -993,6 +1021,10 @@ class ManagedTxAuthority:
             action == "transmit_on"
             and self._state.intent.kind is ManagedTxIntentKind.TRANSMIT
         ):
+            if owner != self._transmit_owner:
+                return ManagedTxTransition(
+                    self._state, ManagedTxOutcome.REJECTED
+                ), False
             return self._reduce_locked(
                 TransmitOn(
                     generation or max(0, self._generation_high_water),
@@ -1015,6 +1047,8 @@ class ManagedTxAuthority:
             event = PttUp(owner, generation, attempt)
         else:
             event = TransmitOn(generation, attempt, now, self._deadline_from(now))
+            if self._state.intent.kind is ManagedTxIntentKind.RX:
+                self._transmit_owner = owner
         return self._reduce_locked(event), False
 
     def _force_off_locked(self) -> ManagedTxTransition:
@@ -1028,6 +1062,8 @@ class ManagedTxAuthority:
         transition = reduce_managed_tx(self._state, event)
         changed = transition.state != self._state
         self._state = transition.state
+        if self._state.intent.kind is not ManagedTxIntentKind.TRANSMIT:
+            self._transmit_owner = None
         if self._state_is_clean_locked():
             self._release_drained.set()
         else:

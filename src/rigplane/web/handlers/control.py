@@ -47,6 +47,7 @@ from ...runtime.tx_interlock import (
     resolve_rf_state,
     send_civ_frame,
 )
+from ...runtime.managed_tx_authority import ManagedTxAuthority
 from ...runtime.managed_tx_state import ManagedTxOutcome
 from ..protocol import (  # noqa: TID251
     decode_json,
@@ -179,7 +180,6 @@ from ..websocket import WS_OP_TEXT  # noqa: TID251
 
 if TYPE_CHECKING:
     from ...radio_protocol import Radio
-    from ...runtime.managed_tx_authority import ManagedTxAuthority
 
 from ...capabilities import (
     CAP_AF_LEVEL,
@@ -816,6 +816,7 @@ class ControlHandler:
         session_id: str | None = None,
         managed_tx_authority: "ManagedTxAuthority | None" = None,
         clock: Callable[[], float] = time.monotonic,
+        tx_owner: str | None = None,
     ) -> None:
         self._ws = ws
         self._radio = radio
@@ -827,6 +828,9 @@ class ControlHandler:
         self._session_id = (
             session_id if session_id is not None else f"websocket-{time.monotonic_ns()}"
         )
+        # Managed-TX owner (MOR-3534): the controller session this channel is
+        # attached to, else the socket itself.
+        self._tx_owner = tx_owner if tx_owner is not None else self._session_id
         self._managed_tx_authority = managed_tx_authority
         self._subscribed_streams: set[str] = set()
         # MOR-624: (command_name, previous_source) armed by the frontend auto-LAN
@@ -1770,7 +1774,7 @@ class ControlHandler:
         authority = self._managed_tx_authority
         if authority is None:
             return None
-        release = authority.owner_disconnect(self._session_id)
+        release = authority.owner_disconnect(self._tx_owner)
         server = self._server
         spawn = None if server is None else getattr(type(server), "_spawn", None)
         if callable(spawn):
@@ -1826,22 +1830,28 @@ class ControlHandler:
             # The raw tuner off captures, like the typed set_tuner_status 0.
             return
         ticket = controller.capture()
-        if ticket.remote and (
-            name
-            in {
-                "send_civ",
-                "send_cw_text",
-                "transmit_on",
-                "radio_connect",
-                "radio_disconnect",
-            }
+        starts_tx = (
+            name == "send_cw_text"
             or (
                 name == "set_vox" and params.get("on", params.get("value")) is not False
             )
             or (name == "set_tuner_status" and params.get("value") == 2)
+        )
+        if ticket.remote and (
+            name in {"send_civ", "transmit_on", "radio_connect", "radio_disconnect"}
+            or starts_tx
             or (name == "set_break_in" and params.get("mode") != 0)
         ):
             raise ControllerError("controller_tx_unsupported")
+        # MOR-3534: while one owner holds the transmitter, CW text, VOX and
+        # TUNE from any other owner are refused like the remote ones above.
+        # The owner is the controller session, else the issuing socket (a
+        # queued intent carries it as ``session_id``).
+        authority = self._managed_tx_authority
+        if starts_tx and isinstance(authority, ManagedTxAuthority):
+            owner = ticket.tx_owner or params.get("session_id") or self._tx_owner
+            if authority.held_by_other(owner):
+                raise ControllerError("controller_tx_unsupported")
 
     async def _enqueue_command(
         self,
@@ -1944,7 +1954,7 @@ class ControlHandler:
                 )
                 pending = authority.start_ptt_submission(
                     True,
-                    self._session_id,
+                    self._tx_owner,
                     ready=ready,
                     expires_at_monotonic=expires_at,
                 )
@@ -1957,7 +1967,7 @@ class ControlHandler:
                     connection_generation=connection_generation,
                 )
             else:
-                submission = await authority.submit_ptt(False, self._session_id)
+                submission = await authority.submit_ptt(False, self._tx_owner)
         except (CommandError, RuntimeError, TimeoutError) as exc:
             raise CommandRejectedError(
                 "managed transmit authority unavailable"

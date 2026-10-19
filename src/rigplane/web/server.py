@@ -1216,6 +1216,7 @@ class WebServer:
             ready=self._controller_ready,
             cleanup=self._controller_cleanup,
             tx_ready=self._controller_native_ready,
+            release_session=self._controller_release_session,
         )
         self._command_queue.bind_controller(self._controller)
         self._controller_handler_tasks: dict[ControllerTicket, asyncio.Task[Any]] = {}
@@ -5368,6 +5369,12 @@ class WebServer:
                 *(asyncio.shield(task) for task in tasks), return_exceptions=True
             )
 
+    async def _controller_release_session(self, owner: str) -> None:
+        """Release the TX an ended multi-client session holds (MOR-3534)."""
+        authority = self._managed_tx_authority()
+        if authority is not None:
+            await authority.owner_disconnect(owner)
+
     async def _controller_audio_gate(
         self, ticket: ControllerTicket, source: object
     ) -> bool:
@@ -5567,7 +5574,11 @@ class WebServer:
             except RuntimeError:
                 await self._managed_tx_unavailable(writer)
                 return
-            accepted = submission.outcome.value == "accepted"
+            except CommandError:
+                # The command queue reports a refused transmit_on (another
+                # owner holds TX, MOR-3534) as a command error: a conflict.
+                submission = None
+            accepted = submission is not None and submission.outcome.value == "accepted"
             await self._send_json(
                 writer,
                 202 if accepted else 409,
@@ -7549,17 +7560,21 @@ class WebServer:
                 )
                 return
 
+        protocols = [
+            part.strip()
+            for part in headers.get("sec-websocket-protocol", "").split(",")
+            if part.strip().startswith("rigplane-controller-v1.")
+        ]
+        # Local mode: a channel that names a controller session attaches to
+        # it (MOR-3534); one that names none stays sessionless, as before.
         ticket = (
-            self._controller.capture() if self._controller.mode == "local" else None
+            self._controller.capture()
+            if self._controller.mode == "local" and not protocols
+            else None
         )
         selected_protocol = ""
-        if self._controller.mode == "remote":
+        if ticket is None:
             try:
-                protocols = [
-                    part.strip()
-                    for part in headers.get("sec-websocket-protocol", "").split(",")
-                    if part.strip().startswith("rigplane-controller-v1.")
-                ]
                 if len(protocols) != 1:
                     raise ControllerError("controller_invalid")
                 selected_protocol = protocols[0]
@@ -7627,7 +7642,8 @@ class WebServer:
                 server=self,
                 read_only=self._config.read_only,
                 managed_tx_authority=self._managed_tx_authority(),
-                session_id=ticket.session_id if ticket.remote else None,
+                session_id=ticket.session_id,
+                tx_owner=ticket.tx_owner,
             )
         elif path == "/api/v1/scope":
             handler = ScopeHandler(ws, self._radio, server=self)
@@ -7687,6 +7703,8 @@ class WebServer:
         keepalive = asyncio.create_task(
             ws.keepalive_loop(self._config.keepalive_interval)
         )
+        if ticket.tx_owner is not None:
+            self._controller.add_channel(ticket, ws.abort)
         if ticket.remote:
             self._controller.add_channel(ticket, ws.abort)
             task = asyncio.current_task()
