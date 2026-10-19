@@ -33,6 +33,7 @@ import asyncio
 import contextlib
 import json
 import re
+import struct
 import sys
 import time
 from dataclasses import dataclass, field
@@ -65,6 +66,11 @@ from rigplane.runtime.managed_tx_composition import (  # noqa: E402
 )
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfigStore  # noqa: E402
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind  # noqa: E402
+from rigplane.web.protocol import (  # noqa: E402
+    AUDIO_CODEC_PCM16,
+    AUDIO_HEADER_SIZE,
+    MSG_TYPE_AUDIO_TX,
+)
 from rigplane.web.server import WebConfig, WebServer  # noqa: E402
 from rigplane.web.web_startup import (  # noqa: E402
     attach_managed_tx_composition,
@@ -172,17 +178,24 @@ class _WsKeyClient:
     controller session (MOR-3534); without, a sessionless client.
     """
 
-    def __init__(self, host: str, port: int, controller_key: str | None = None) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        controller_key: str | None = None,
+        path: str = "/api/v1/ws",
+    ) -> None:
         self._host = host
         self._port = port
         self.controller_key = controller_key
+        self._path = path
         self._writer: Any = None
         self._reader: Any = None
 
     async def connect(self) -> None:
         if self.controller_key is None:
             self._reader, self._writer, _ = await _ws_connect(
-                self._host, self._port, "/api/v1/ws"
+                self._host, self._port, self._path
             )
         else:
             self._reader, self._writer = await asyncio.open_connection(
@@ -190,7 +203,7 @@ class _WsKeyClient:
             )
             self._writer.write(
                 (
-                    f"GET /api/v1/ws HTTP/1.1\r\nHost: {self._host}:{self._port}\r\n"
+                    f"GET {self._path} HTTP/1.1\r\nHost: {self._host}:{self._port}\r\n"
                     "Upgrade: websocket\r\nConnection: Upgrade\r\n"
                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
                     "Sec-WebSocket-Version: 13\r\n"
@@ -203,11 +216,14 @@ class _WsKeyClient:
                 self._reader.readuntil(b"\r\n\r\n"), timeout=5.0
             )
             assert response.startswith(b"HTTP/1.1 101 "), response[:200]
-        await _ws_skip_handshake(self._reader)
+        if self._path.startswith("/api/v1/ws"):
+            await _ws_skip_handshake(self._reader)
 
     async def _until(self, matches: Any) -> dict[str, Any]:
         while True:
-            _, payload = await _ws_recv_frame(self._reader, timeout=10.0)
+            opcode, payload = await _ws_recv_frame(self._reader, timeout=10.0)
+            if opcode != 0x1:
+                continue  # RX audio frames on the audio channel
             message = json.loads(payload)
             if matches(message):
                 return message
@@ -234,6 +250,17 @@ class _WsKeyClient:
     async def heartbeat(self) -> None:
         await _ws_send_text(self._writer, json.dumps({"type": "controller_heartbeat"}))
         await self._until(lambda message: message.get("type") == "controller_heartbeat")
+
+    async def send(self, message: dict[str, Any]) -> None:
+        await _ws_send_text(self._writer, json.dumps(message))
+
+    async def send_binary(self, payload: bytes) -> None:
+        mask = b"\xde\xad\xbe\xef"
+        masked = bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload))
+        self._writer.write(
+            struct.pack("!BBH", 0x82, 0x80 | 126, len(payload)) + mask + masked
+        )
+        await self._writer.drain()
 
     def kill(self) -> None:
         if self._writer is not None:
@@ -693,6 +720,8 @@ _MULTI_SESSION_LANES = (
     "holder_silent",
     "non_holder_refused",
     "sessionless_vs_session",
+    "audio_refused",
+    "eviction",
 )
 
 # CW text, VOX enable and TUNE: the TX starts a non-holder may not issue.
@@ -701,6 +730,15 @@ _TX_STARTS = (
     ("set_vox", {"on": True}),
     ("set_tuner_status", {"value": 2}),
 )
+
+# One browser PCM16 TX frame: the web audio wire header and 480 samples.
+_PCM_TX_FRAME = (
+    bytes([MSG_TYPE_AUDIO_TX, AUDIO_CODEC_PCM16])
+    + b"\x00" * (AUDIO_HEADER_SIZE - 2)
+    + b"\x10\x00" * 480
+)
+_AUDIO_FRAMES = 10
+_AUDIO_SETTLE_S = 0.5
 
 
 @pytest.mark.parametrize("lane", _MULTI_SESSION_LANES)
@@ -716,8 +754,10 @@ async def test_multi_session_tx_lanes(lane: str, tmp_path: Path) -> None:
         controller._clock = clock  # noqa: SLF001
         port = web.port
 
-        async def client(key: str | None = None) -> _WsKeyClient:
-            ws = _WsKeyClient("127.0.0.1", port, key)
+        async def client(
+            key: str | None = None, path: str = "/api/v1/ws"
+        ) -> _WsKeyClient:
+            ws = _WsKeyClient("127.0.0.1", port, key, path)
             await ws.connect()
             clients.append(ws)
             return ws
@@ -792,6 +832,54 @@ async def test_multi_session_tx_lanes(lane: str, tmp_path: Path) -> None:
             assert await sessionless.key("s-key-free")
             await _wait_ptt(sim, True, _KEY_DEADLINE_S)
             assert (await sessionless.command("s-unkey", "ptt_off")).get("ok")
+            await _wait_ptt(sim, False, _LEASE_BUDGET_S)
+        elif lane == "audio_refused":
+            # The simulator's LAN audio stream does not open in this stack,
+            # so the verdict is read at the server's TX audio gate: every
+            # browser TX frame passes it before it can reach the radio.
+            verdicts: list[tuple[str | None, bool]] = []
+            gate = web._controller_audio_gate  # noqa: SLF001
+
+            async def recorded(ticket: Any, source: object) -> bool:
+                verdict = await gate(ticket, source)
+                verdicts.append((ticket.tx_owner, verdict))
+                return verdict
+
+            web._controller_audio_gate = recorded  # type: ignore[method-assign]  # noqa: SLF001
+            mics = {}
+            for name, owner in (("holder", holder_client), ("other", b)):
+                mics[name] = await client(owner.controller_key, "/api/v1/audio")
+                await mics[name].send({"type": "audio_start", "direction": "tx"})
+                await mics[name]._until(
+                    lambda message: message.get("type") == "audio_tx_format"
+                )
+            for name in ("other", "holder"):
+                for _ in range(_AUDIO_FRAMES):
+                    await mics[name].send_binary(_PCM_TX_FRAME)
+            end = time.monotonic() + _AUDIO_SETTLE_S * 4
+            while len(verdicts) < 2 * _AUDIO_FRAMES and time.monotonic() < end:
+                await asyncio.sleep(0.05)
+            assert authority.tx_holder_nowait() == holder
+            assert {verdict for owner, verdict in verdicts if owner != holder} == {
+                False
+            }, verdicts
+            assert any(owner == holder and verdict for owner, verdict in verdicts)
+            assert (await holder_client.command("unkey", "ptt_off")).get("ok")
+            await _wait_ptt(sim, False, _LEASE_BUDGET_S)
+        elif lane == "eviction":
+            # Ten control channels in the holder's own session, nine in
+            # another session and ten sessionless ones, all from one IP.
+            auxiliary = "/api/v1/ws?controller_role=auxiliary"
+            for _ in range(9):
+                await client(holder_client.controller_key, auxiliary)
+            for _ in range(8):
+                await client(b.controller_key, auxiliary)
+            for _ in range(10):
+                await client()
+            await holder_client.heartbeat()
+            await b.heartbeat()
+            assert sim.ptt_on and authority.tx_holder_nowait() == holder
+            assert (await holder_client.command("unkey", "ptt_off")).get("ok")
             await _wait_ptt(sim, False, _LEASE_BUDGET_S)
         else:
             assert (await holder_client.command("unkey", "ptt_off")).get("ok")

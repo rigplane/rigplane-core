@@ -301,6 +301,10 @@ class ControllerAuthority:
             session.deadline = deadline
         return {"type": "controller_heartbeat", "generation": self.generation}
 
+    def is_session_owner(self, owner: str | None) -> bool:
+        """Whether ``owner`` is the TX owner of a live multi-client session."""
+        return owner is not None and owner in self._sessions
+
     def validate_positive(self, ticket: ControllerTicket) -> None:
         self.validate(ticket)
         if ticket.remote:
