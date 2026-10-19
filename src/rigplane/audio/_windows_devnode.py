@@ -1,9 +1,8 @@
 """Windows present-device tree read directly from cfgmgr32 via ctypes.
 
 Replaces the PowerShell/WMI enumeration as the data source for the Windows
-USB audio topology (MOR-3556): one WMI call per device costs about 0.5 s in
-the interactive session, the cfgmgr32 walk a few milliseconds for the whole
-tree. Importable on every OS; only :class:`_CfgMgr32` needs Windows.
+USB audio topology (MOR-3556; timings in MOR-3526). Importable on every OS;
+only :class:`_CfgMgr32` needs Windows.
 """
 
 from __future__ import annotations
@@ -45,8 +44,10 @@ def _key(data1: int, data2: int, data3: int, data4: bytes, pid: int) -> DevPropK
     return DevPropKey(_Guid(data1, data2, data3, (ctypes.c_ubyte * 8)(*data4)), pid)
 
 
-# devpkey.h. On GTR7 Get-PnpDevice reports FriendlyName, else DeviceDesc, as
-# FriendlyName; cfgmgr32 has no DEVPKEY_NAME for devnodes (CR_NO_SUCH_VALUE).
+# devpkey.h. On GTR7 Get-PnpDevice's FriendlyName matched FriendlyName, else
+# DeviceDesc, for the nodes the resolver reads
+# (test_real_cfgmgr32_matches_powershell_and_is_fast), and
+# CM_Get_DevNode_PropertyW returned CR_NO_SUCH_VALUE for DEVPKEY_NAME.
 _DEVPKEY_DEVICE_FMTID = (
     0xA45C254E,
     0xDF1C,
@@ -167,10 +168,9 @@ class _CfgMgr32:
 def present_devnodes(api: DevNodeApi | None = None) -> list[DevNodeRow]:
     """Every present devnode, depth-first from the root of the device tree.
 
-    The parent is ``DEVPKEY_Device_Parent``, the property PowerShell reads:
-    it keeps the case the parent's id was created with, while the device id
-    calls return it upper-cased. Raises ``OSError`` when cfgmgr32 is
-    unavailable or a call fails.
+    The parent is ``DEVPKEY_Device_Parent``, the property PowerShell reads;
+    on GTR7 it kept lower-case parts that ``CM_Get_Device_IDW`` upper-cases.
+    Raises ``OSError`` when cfgmgr32 is unavailable or a call fails.
     """
     api = api if api is not None else _CfgMgr32()
     rows: list[DevNodeRow] = []

@@ -734,7 +734,7 @@ def _query_windows_pnp_devices() -> list[WindowsPnpDevice]:
     Reads the present device tree from cfgmgr32 and keeps the nodes the
     PowerShell query selects (:func:`_eligible_pnp_rows`). If cfgmgr32 fails,
     falls back to that PowerShell query, which costs one WMI call per eligible
-    node: 10-26 s in the interactive session on GTR7 (MOR-3526). Returns
+    node: about 10-26 s in the interactive session on GTR7 (MOR-3526). Returns
     ``[]`` on any failure — the caller treats an empty/raised result as
     "topology unavailable".
     """
@@ -765,9 +765,9 @@ def _eligible_pnp_rows(nodes: Sequence[DevNodeRow]) -> list[DevNodeRow]:
 
     Mirrors the script in :func:`_query_windows_pnp_devices_powershell`:
     eligible nodes plus up to three present ``USB\\VID_`` ancestors, each
-    once, with case-insensitive matching. The own id is upper-cased as
-    ``Get-PnpDevice`` reports ``InstanceId``; the parent keeps the spelling
-    ``DEVPKEY_Device_Parent`` reports.
+    once, with case-insensitive matching. The own id is upper-cased, as every
+    ``Get-PnpDevice`` ``InstanceId`` was on GTR7; the parent keeps the
+    spelling ``DEVPKEY_Device_Parent`` reports.
     """
     by_id = {node[0].upper(): node for node in nodes}
     emitted: set[str] = set()
