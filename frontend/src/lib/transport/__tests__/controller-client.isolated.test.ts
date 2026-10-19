@@ -19,21 +19,89 @@ describe('controller protocol v1 client', () => {
   beforeEach(() => { vi.resetModules(); vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
-  it('keeps supported local mode anonymous without acquire, heartbeat or DELETE', async () => {
-    const fetcher = vi.fn(async () => response({ ...status, mode: 'local' }));
+  it('acquires a local session with the browser POST and runs the primary heartbeat', async () => {
+    const fetcher = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') return response(grant, 201);
+      return response({ ...status, mode: 'local' });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const { ControllerClient } = await import('../controller-client');
+    let now = 0;
+    const client = new ControllerClient(() => now);
+    await client.prepare();
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(JSON.parse(fetcher.mock.calls[1][1]!.body as string)).toEqual({ kind: 'browser' });
+    expect(client.remote).toBe(false);
+    expect(client.protocols()).toEqual([`rigplane-controller-v1.${key}`]);
+    expect(client.headers()).toEqual({ 'X-RigPlane-Controller': key });
+    const send = vi.fn();
+    client.controlOpened(send);
+    expect(client.active).toBe(true);
+    expect(send).toHaveBeenCalledWith({ type: 'controller_heartbeat' });
+    client.acknowledge({ type: 'controller_heartbeat', generation: grant.generation });
+    now = 2000;
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(send).toHaveBeenCalledTimes(2);
+    await client.release();
+    expect(fetcher.mock.calls.at(-1)?.[1]).toMatchObject({
+      method: 'DELETE', headers: { 'X-RigPlane-Controller': key }, redirect: 'error',
+    });
+    expect(JSON.stringify(client)).not.toContain(key);
+  });
+
+  it.each([
+    { error: 'remote_disabled', code: 403 },
+    { error: 'not_found', code: 404 },
+  ])('stays sessionless without error UI when an older core refuses the local POST (%s)', async (refusal) => {
+    const fetcher = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') return response({ error: refusal.error }, refusal.code);
+      return response({ ...status, mode: 'local' });
+    });
     vi.stubGlobal('fetch', fetcher);
     const { ControllerClient } = await import('../controller-client');
     const client = new ControllerClient();
-    await client.prepare();
+    await expect(client.prepare()).resolves.toBeUndefined();
+    expect(client.remote).toBe(false);
+    expect(client.active).toBe(true);
+    expect(client.protocols()).toEqual([]);
+    expect(client.headers()).toEqual({});
     const send = vi.fn();
     client.controlOpened(send);
     await vi.advanceTimersByTimeAsync(8000);
-    expect(client.remote).toBe(false);
-    expect(client.protocols()).toEqual([]);
-    expect(client.headers()).toEqual({});
-    await client.release();
-    expect(fetcher).toHaveBeenCalledTimes(1);
     expect(send).not.toHaveBeenCalled();
+    await client.release();
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
+  });
+
+  it('silently re-acquires a fresh local session after loss and fences the expired epoch', async () => {
+    let generation = 4;
+    const fetcher = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        generation += 1;
+        return response({ ...grant, generation }, 201);
+      }
+      return response({ ...status, mode: 'local' });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const { ControllerClient } = await import('../controller-client');
+    let now = 0;
+    const client = new ControllerClient(() => now);
+    await client.prepare();
+    const send = vi.fn();
+    client.controlOpened(send);
+    const stale = client.epoch;
+    const lost = vi.fn(() => expect(client.headers()).toEqual({}));
+    client.onLoss(lost);
+    now = 8000;
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(lost).toHaveBeenCalledOnce();
+    expect(client.active).toBe(false);
+    expect(client.headers()).toEqual({});
+    await client.prepare();
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(2);
+    expect(client.protocols()).toEqual([`rigplane-controller-v1.${key}`]);
+    expect(client.valid(stale)).toBe(false);
+    expect(client.valid(client.epoch)).toBe(true);
   });
 
   it('adopts the native held grant before treating it as busy, without heartbeat or shared DELETE', async () => {

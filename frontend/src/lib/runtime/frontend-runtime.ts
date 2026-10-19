@@ -374,7 +374,7 @@ class FrontendRuntime {
    */
   private async _doBootstrap(signal?: AbortSignal): Promise<() => Promise<void>> {
     audioManager.setControllerBinding({
-      remote: () => !controllerClient.active || controllerClient.remote,
+      remote: () => controllerClient.remote,
       ready: () => controllerClient.active,
       epoch: () => controllerClient.epoch,
       current: (epoch) => controllerClient.active && controllerClient.current(epoch),
@@ -434,9 +434,15 @@ class FrontendRuntime {
       await controllerClient.prepare(signal);
       signal?.throwIfAborted();
       stopController = controllerClient.onLoss(() => {
-        void systemController.disconnect().catch(() => {
-          transport.emitLocalNotification('error', 'Удалённое управление потеряно. Подключитесь заново.', 'controller_lost');
-        });
+        if (controllerClient.remote) {
+          void systemController.disconnect().catch(() => {
+            transport.emitLocalNotification('error', 'Удалённое управление потеряно. Подключитесь заново.', 'controller_lost');
+          });
+          return;
+        }
+        // MOR-3535: a lost local session recovers silently; TX audio stops
+        // and never replays — only a deliberate new PTT may key again.
+        audioManager.stopTx();
       });
 
       // Re-arm a remounted App only after controller admission succeeds.

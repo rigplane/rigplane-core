@@ -66,7 +66,79 @@ describe('remote controller channel grouping', () => {
     await vi.waitFor(() => expect(instances).toHaveLength(3));
     instances[2].simulateOpen();
     expect(instances[2].sent.some((raw) => JSON.parse(raw).id === 'old')).toBe(false);
-    expect(control.send({ type: 'cmd', id: 'fresh', name: 'ptt', params: { state: true } })).toBe(true);
+    control.disconnect();
+  });
+});
+
+describe('local controller session channels', () => {
+  const sessionKey = 'b'.repeat(64);
+
+  beforeEach(() => {
+    vi.resetModules(); vi.useFakeTimers(); instances.length = 0;
+    vi.stubGlobal('WebSocket', ControllerSocket);
+    let posts = 0;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => new Response(JSON.stringify(
+      init?.method === 'POST'
+        ? { controller_key: sessionKey, generation: ++posts, ttl_ms: 6000, heartbeat_ms: 2000 }
+        : { protocol_version: 1, mode: 'local', state: 'idle' },
+    ), { status: init?.method === 'POST' ? 201 : 200 })));
+  });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules(); });
+
+  it('attaches every channel with the session subprotocol and recovers after loss without replaying PTT', async () => {
+    const { controllerClient } = await import('../controller-client');
+    const { WsChannel } = await import('../ws-client');
+    const control = new WsChannel();
+    const scope = new WsChannel(false);
+    await controllerClient.prepare();
+    expect(controllerClient.remote).toBe(false);
+    control.connect('wss://station.test/api/v1/ws');
+    scope.connect('wss://station.test/api/v1/scope');
+    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    const primary = instances[0] as ControllerSocket;
+    expect(primary.protocols).toEqual([`rigplane-controller-v1.${sessionKey}`]);
+    expect(primary.url).not.toContain(sessionKey);
+    expect(new URL(primary.url).searchParams.get('controller_role')).toBe('primary');
+    primary.simulateOpen();
+    await vi.waitFor(() => expect(instances).toHaveLength(2));
+    const child = instances[1] as ControllerSocket;
+    expect(child.protocols).toEqual(primary.protocols);
+    child.simulateOpen();
+    primary.simulateClose();
+    expect(child.readyState).toBe(ControllerSocket.CLOSED);
+    expect(control.send({ type: 'cmd', id: 'stale-ptt', name: 'ptt', params: { state: true } })).toBe(false);
+    control.send({ type: 'cmd', id: 'queued-set', name: 'set_freq', params: { freq: 2 } });
+    await vi.waitFor(() => expect(instances).toHaveLength(3));
+    const recovered = instances[2] as ControllerSocket;
+    expect(recovered.protocols).toEqual([`rigplane-controller-v1.${sessionKey}`]);
+    recovered.simulateOpen();
+    const sentIds = recovered.sent.map((raw) => {
+      try { return (JSON.parse(raw) as { id?: string }).id; } catch { return undefined; }
+    });
+    expect(sentIds).not.toContain('stale-ptt');
+    expect(sentIds).toContain('queued-set');
+    expect(control.send({ type: 'cmd', id: 'fresh-ptt', name: 'ptt', params: { state: true } })).toBe(true);
+    control.disconnect();
+    scope.disconnect();
+  });
+
+  it('stays sessionless against an older core that refuses the local POST', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => new Response(JSON.stringify(
+      init?.method === 'POST'
+        ? { error: 'remote_disabled' }
+        : { protocol_version: 1, mode: 'local', state: 'idle' },
+    ), { status: init?.method === 'POST' ? 403 : 200 })));
+    const { controllerClient } = await import('../controller-client');
+    const { WsChannel } = await import('../ws-client');
+    const control = new WsChannel();
+    await controllerClient.prepare();
+    control.connect('wss://station.test/api/v1/ws');
+    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    const socket = instances[0] as ControllerSocket;
+    expect(socket.protocols).toEqual([]);
+    expect(new URL(socket.url).searchParams.has('controller_role')).toBe(false);
+    socket.simulateOpen();
+    expect(control.send({ type: 'cmd', id: 'plain', name: 'set_freq', params: { freq: 1 } })).toBe(true);
     control.disconnect();
   });
 });
