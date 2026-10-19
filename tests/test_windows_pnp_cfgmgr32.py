@@ -202,13 +202,15 @@ def test_records_follow_powershell_selection_rules() -> None:
     records = _usb_resolve._pnp_records_from_devnodes(nodes)
     by_id = {r.pnp_device_id: r for r in records}
 
-    # Eligible nodes plus at most three USB\VID_ ancestors; ids upper-cased
+    # Eligible nodes plus at most three USB\VID_ ancestors each: the serial
+    # reaches the outer hub, nothing reaches the top hub. Ids are upper-cased
     # like Get-PnpDevice InstanceId, parents spelled as the devnode records them.
     assert set(by_id) == {
         "USB\\VID_08BB&PID_2901&MI_00\\8&GHI&0&0000",
         composite.upper(),
         hub.upper(),
         "USB\\VID_BBBB&PID_0002\\2",
+        "USB\\VID_AAAA&PID_0001\\1",
         "USB\\VID_10C4&PID_EA60\\IC-7300_X",
         "FABULATECH\\VSP\\1",
         "SWD\\MMDEVAPI\\{A}",

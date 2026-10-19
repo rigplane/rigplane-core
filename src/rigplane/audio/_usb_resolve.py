@@ -90,6 +90,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+from rigplane.audio._windows_devnode import DevNodeRow, present_devnodes
 from rigplane.audio.backend import _ALSA_HW_RE
 
 logger = logging.getLogger(__name__)
@@ -127,7 +128,7 @@ class AudioDeviceMapping:
 
 @dataclass(frozen=True, slots=True)
 class WindowsPnpDevice:
-    """One USB PnP function enumerated by the Windows PnP/WMI subsystem.
+    """One USB PnP function enumerated by the Windows PnP subsystem.
 
     Each entry models a single child function of a USB composite device — the
     serial (CDC/COM) function or the USB Audio Class function. The
@@ -324,7 +325,7 @@ def _resolve_windows(
         pnp_query: Injected zero-arg callable returning a list of
             :class:`WindowsPnpDevice` (for testing without a Windows host).
             Defaults to :func:`_query_windows_pnp_devices`, the real
-            PowerShell/WMI enumeration. Isolating the OS call here keeps the
+            enumeration. Isolating the OS call here keeps the
             resolver body testable on non-Windows hosts.
 
     Algorithm:
@@ -730,17 +731,77 @@ def _windows_audio_product(name: str) -> str:
 def _query_windows_pnp_devices() -> list[WindowsPnpDevice]:
     """Enumerate USB PnP functions on a real Windows host (best-effort).
 
-    Runs PowerShell ``Get-PnpDevice`` and joins each device with its parent
-    instance path and VID:PID parsed from the PnP instance id, plus the COM
-    port name (for serial functions) or the friendly audio endpoint name (for
-    USB Audio Class functions). Returns ``[]`` on any failure — the caller
-    treats an empty/raised result as "topology unavailable" and falls back to
-    name-based selection. This keeps the base install free of a hard PnP/WMI
-    dependency; the heavy lifting is shelled out to PowerShell, which ships
-    with Windows.
+    Reads the present device tree from cfgmgr32 and keeps the nodes the
+    PowerShell query selects (:func:`_eligible_pnp_rows`). If cfgmgr32 fails,
+    falls back to that PowerShell query, which costs one WMI call per eligible
+    node: 10-26 s in the interactive session on GTR7 (MOR-3526). Returns
+    ``[]`` on any failure — the caller treats an empty/raised result as
+    "topology unavailable".
     """
     if platform.system() != "Windows":
         return []
+    try:
+        nodes = present_devnodes()
+    except Exception as exc:  # noqa: BLE001 — any cfgmgr32 failure → PowerShell
+        logger.warning(
+            "usb-audio-resolve: cfgmgr32 device walk failed (%s); "
+            "falling back to the PowerShell PnP query",
+            exc,
+        )
+        return _query_windows_pnp_devices_powershell()
+    return _pnp_records_from_devnodes(nodes)
+
+
+_PNP_ELIGIBLE_NAME = re.compile(
+    r"\bCOM\d+\b|USB Audio CODEC|USB Audio Device|yaesu|kenwood|c-media|cmedia",
+    re.IGNORECASE,
+)
+_PNP_ELIGIBLE_CLASSES = frozenset({"audioendpoint", "media"})
+_PNP_ANCESTOR_DEPTH = 3
+
+
+def _eligible_pnp_rows(nodes: Sequence[DevNodeRow]) -> list[DevNodeRow]:
+    """The rows the PowerShell query emits, chosen from the full tree.
+
+    Mirrors the script in :func:`_query_windows_pnp_devices_powershell`:
+    eligible nodes plus up to three present ``USB\\VID_`` ancestors, each
+    once, with case-insensitive matching. The own id is upper-cased as
+    ``Get-PnpDevice`` reports ``InstanceId``; the parent keeps the spelling
+    ``DEVPKEY_Device_Parent`` reports.
+    """
+    by_id = {node[0].upper(): node for node in nodes}
+    emitted: set[str] = set()
+    rows: list[DevNodeRow] = []
+
+    def emit(node: DevNodeRow) -> None:
+        key = node[0].upper()
+        if key not in emitted:
+            emitted.add(key)
+            rows.append((key, node[1], node[2], node[3]))
+
+    for node in nodes:
+        _instance_id, parent, dev_class, name = node
+        if not (
+            _PNP_ELIGIBLE_NAME.search(name)
+            or dev_class.casefold() in _PNP_ELIGIBLE_CLASSES
+        ):
+            continue
+        emit(node)
+        for _ in range(_PNP_ANCESTOR_DEPTH):
+            ancestor = by_id.get(parent.upper())
+            if ancestor is None or not parent.upper().startswith("USB\\VID_"):
+                break
+            emit(ancestor)
+            parent = ancestor[1]
+    return rows
+
+
+def _pnp_records_from_devnodes(nodes: Sequence[DevNodeRow]) -> list[WindowsPnpDevice]:
+    return _pnp_records_from_rows(_eligible_pnp_rows(nodes))
+
+
+def _query_windows_pnp_devices_powershell() -> list[WindowsPnpDevice]:
+    """The PowerShell ``Get-PnpDevice`` query; fallback for cfgmgr32 failures."""
     # PowerShell one-liner: emit one CSV-ish line per USB PnP device with the
     # fields we need. We parse the parent and VID:PID from the InstanceId.
     script = (
@@ -784,18 +845,22 @@ def _query_windows_pnp_devices() -> list[WindowsPnpDevice]:
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
         logger.warning("usb-audio-resolve: PowerShell PnP query failed: %s", exc)
         return []
+    return _pnp_records_from_powershell_text(text)
 
-    devices: list[WindowsPnpDevice] = []
+
+def _pnp_records_from_powershell_text(text: str) -> list[WindowsPnpDevice]:
+    rows: list[DevNodeRow] = []
     for line in text.splitlines():
         parts = line.split("\t")
-        if len(parts) < 4:
-            continue
-        instance_id, parent, dev_class, friendly = (
-            parts[0].strip(),
-            parts[1].strip(),
-            parts[2].strip(),
-            parts[3].strip(),
-        )
+        if len(parts) >= 4:
+            rows.append((parts[0], parts[1], parts[2], parts[3]))
+    return _pnp_records_from_rows(rows)
+
+
+def _pnp_records_from_rows(rows: Sequence[DevNodeRow]) -> list[WindowsPnpDevice]:
+    devices: list[WindowsPnpDevice] = []
+    for row in rows:
+        instance_id, parent, dev_class, friendly = (part.strip() for part in row)
         vid, pid = _parse_vid_pid(instance_id)
         com_port = _parse_com_port(friendly)
         # Audio Class functions report Class in {AudioEndpoint, MEDIA}; the
