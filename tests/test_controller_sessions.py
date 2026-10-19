@@ -17,6 +17,8 @@ from test_managed_tx_authority import authority as managed_authority
 from test_web_audio_tx_session import _pcm_tx_frame, _SessionLanRadio, _start_tx
 from test_web_controller import Writer, audio_handler, request, station  # noqa: F401
 
+from rigplane.core.exceptions import CommandRejectedError
+from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.runtime.controller_authority import (
     ControllerAuthority,
     ControllerError,
@@ -486,3 +488,73 @@ async def test_ws_caps_count_per_session_and_never_evict_the_holder(
         release.set()
         await asyncio.gather(*channels, return_exceptions=True)
         assert await managed.force_off() is ACCEPTED
+
+
+@pytest.mark.parametrize(("name", "params"), _TX_STARTS)
+async def test_naming_the_holder_in_a_request_never_claims_its_tx(
+    station,  # noqa: F811
+    name: str,
+    params: dict[str, object],
+) -> None:
+    """Ownership comes from server-known identity only, never a request field."""
+    server, managed = station
+    assert server._managed_tx_authority() is managed
+    controller = server._controller
+    _, a = open_session(controller, "a")
+    _, b = open_session(controller, "b")
+    with controller.bind(a):
+        assert await managed.ptt_down(a.tx_owner) is ACCEPTED
+    spoofed = {**params, "session_id": a.tx_owner}
+    with (
+        controller.bind(b),
+        pytest.raises(ControllerError, match="controller_tx_unsupported"),
+    ):
+        await _handler(server, managed, b)._enqueue_command(name, spoofed)
+    with pytest.raises(ControllerError, match="controller_tx_unsupported"):
+        await _handler(server, managed)._enqueue_command(name, spoofed)
+    # HTTP /api/v1/commands validates its intent on a fresh handler.
+    intent = CommandIntent("spoof", name, spoofed, "http")
+    with pytest.raises(ControllerError, match="controller_tx_unsupported"):
+        await _handler(server, managed)._execute_intent(intent)
+    assert server.command_queue.drain() == []
+    # Nor can a request field release the holder's PTT.
+    for ticket in (b, None):
+        with pytest.raises(CommandRejectedError):
+            await _handler(server, managed, ticket)._enqueue_managed_ptt(
+                "ptt_off", {"session_id": a.tx_owner}, source="websocket"
+            )
+    assert managed.tx_holder_nowait() == a.tx_owner
+    assert await managed.ptt_up(a.tx_owner) is ACCEPTED
+
+
+async def test_session_owner_tokens_are_not_sequential() -> None:
+    _, controller, managed, _ = stack()
+    try:
+        owners = {open_session(controller, name)[1].tx_owner for name in "abc"}
+        assert len(owners) == 3
+        assert not {"controller-session-1", "controller-session-2"} & owners
+    finally:
+        await close(controller, managed)
+
+
+async def test_http_transmit_on_for_a_session_ended_mid_request_is_forbidden(
+    station,  # noqa: F811
+    monkeypatch,
+) -> None:
+    server, _ = station
+
+    async def ended(*, submission, **_kwargs):
+        submission.cancel()
+        raise ControllerError("controller_invalid")
+
+    monkeypatch.setattr(server, "enqueue_managed_positive_tx", ended)
+    server.command_queue.bind_connection_generation(lambda: 1)
+    key = await _grant(server)
+    response = await request(
+        server,
+        "POST",
+        "/api/v1/managed-transmit/command",
+        {"operation": "transmit_on"},
+        key=key,
+    )
+    assert (response.status, response.payload) == (403, {"error": "controller_invalid"})

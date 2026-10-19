@@ -1819,7 +1819,9 @@ class ControlHandler:
             isinstance(controller, ControllerAuthority) and controller.mode == "remote"
         )
 
-    def _validate_controller_command(self, name: str, params: dict[str, Any]) -> None:
+    def _validate_controller_command(
+        self, name: str, params: dict[str, Any], *, owner_checked: bool = False
+    ) -> None:
         controller = getattr(self._radio, "_controller_authority", None)
         if not isinstance(controller, ControllerAuthority):
             return
@@ -1845,11 +1847,16 @@ class ControlHandler:
             raise ControllerError("controller_tx_unsupported")
         # MOR-3534: while one owner holds the transmitter, CW text, VOX and
         # TUNE from any other owner are refused like the remote ones above.
-        # The owner is the controller session, else the issuing socket (a
-        # queued intent carries it as ``session_id``).
+        # The owner is server-known identity only: the bound controller
+        # session, else this handler's own socket. A request field never
+        # names it.
         authority = self._managed_tx_authority
-        if starts_tx and isinstance(authority, ManagedTxAuthority):
-            owner = ticket.tx_owner or params.get("session_id") or self._tx_owner
+        if (
+            starts_tx
+            and not owner_checked
+            and isinstance(authority, ManagedTxAuthority)
+        ):
+            owner = ticket.tx_owner or self._tx_owner
             if authority.held_by_other(owner):
                 raise ControllerError("controller_tx_unsupported")
 
@@ -1979,7 +1986,14 @@ class ControlHandler:
     async def _execute_intent(
         self, intent: CommandIntent, *, wait_for_completion: bool = True
     ) -> CommandExecutionResult:
-        self._validate_controller_command(intent.name, dict(intent.params))
+        # A websocket intent is built only by ``_enqueue_command``, which ran
+        # the owner check as the issuing socket; this executor may be a fresh
+        # handler with no socket identity of its own.
+        self._validate_controller_command(
+            intent.name,
+            dict(intent.params),
+            owner_checked=intent.source == "websocket",
+        )
         if intent.name == "set_vfo_freq":
             if self._read_only:
                 raise PermissionError("read-only mode: set_vfo_freq rejected")

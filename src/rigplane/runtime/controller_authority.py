@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 import time
 from collections.abc import Awaitable, Callable, Iterator
@@ -10,6 +11,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 
 class ControllerError(PermissionError):
@@ -73,7 +76,6 @@ class ControllerAuthority:
         self._tx_ready = tx_ready
         self._release_session = release_session
         self._sessions: dict[str, _Session] = {}
-        self._session_count = 0
         self._session_watchdog: asyncio.Task[None] | None = None
         self._session_fences: set[asyncio.Future[object]] = set()
         self.mode: Literal["local", "remote"] = "local"
@@ -119,7 +121,7 @@ class ControllerAuthority:
             fence = asyncio.ensure_future(self._release_session(owner))
             self._session_fences.add(fence)
             fence.add_done_callback(self._session_fences.discard)
-            fence.add_done_callback(self._consume_cleanup)
+            fence.add_done_callback(self._log_failed_release)
 
     def _is_ready(self) -> bool:
         try:
@@ -193,8 +195,9 @@ class ControllerAuthority:
         }
 
     def _open_session(self) -> dict[str, object]:
-        self._session_count += 1
-        owner = f"controller-session-{self._session_count}"
+        # Not sequential: an owner is never accepted from a client, and a
+        # guessable one would invite trying.
+        owner = f"controller-session-{secrets.token_hex(8)}"
         key = secrets.token_hex(32)
         self._sessions[owner] = _Session(key, self._clock() + self.TTL_MS / 1000)
         if self._session_watchdog is None or self._session_watchdog.done():
@@ -443,6 +446,11 @@ class ControllerAuthority:
 
         self._revocation = asyncio.create_task(cleanup())
         self._revocation.add_done_callback(self._consume_cleanup)
+
+    @staticmethod
+    def _log_failed_release(fence: asyncio.Future[Any]) -> None:
+        if not fence.cancelled() and (error := fence.exception()) is not None:
+            logger.warning("controller session TX release failed", exc_info=error)
 
     @staticmethod
     def _consume_cleanup(task: asyncio.Future[Any]) -> None:
