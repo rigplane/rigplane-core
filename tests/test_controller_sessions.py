@@ -531,3 +531,46 @@ def test_ws_caps_keep_the_control_channel_of_a_sessionless_ptt_holder() -> None:
     ]
     assert evicted[-1] == [others[0]]
     assert holder in manager._connections[("127.0.0.1", "/api/v1/ws")]
+
+
+# Behaviour pins moved here from part 1 to keep it under the size ceiling.
+
+
+async def test_any_client_may_force_tx_off() -> None:
+    _, controller, managed, _ = stack()
+    try:
+        _, a = open_session(controller, "a")
+        _, b = open_session(controller, "b")
+        with controller.bind(a):
+            assert await managed.transmit_on() is ACCEPTED
+        with controller.bind(b):
+            assert await managed.force_off() is ACCEPTED
+        assert managed.tx_holder_nowait() is None
+        assert (await managed.snapshot()).state.intent.kind is ManagedTxIntentKind.RX
+    finally:
+        await close(controller, managed)
+
+
+async def test_sessionless_socket_keys_as_before_but_never_over_a_holder() -> None:
+    _, controller, managed, _ = stack()
+    try:
+        _, a = open_session(controller, "a")
+        with controller.bind(a):
+            assert await managed.ptt_down(a.tx_owner) is ACCEPTED
+        assert await managed.ptt_down("websocket-1") is REJECTED
+        assert await managed.ptt_up(a.tx_owner) is ACCEPTED
+        assert await managed.ptt_down("websocket-1") is ACCEPTED
+        assert managed.tx_holder_nowait() == "websocket-1"
+        assert await managed.ptt_up("websocket-1") is ACCEPTED
+    finally:
+        await close(controller, managed)
+
+
+async def test_session_owner_tokens_are_not_sequential() -> None:
+    _, controller, managed, _ = stack()
+    try:
+        owners = {open_session(controller, name)[1].tx_owner for name in "abc"}
+        assert len(owners) == 3
+        assert not {"controller-session-1", "controller-session-2"} & owners
+    finally:
+        await close(controller, managed)
