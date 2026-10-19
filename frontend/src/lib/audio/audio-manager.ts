@@ -342,6 +342,21 @@ class AudioManager {
 
   private connect(): void {
     if (this.controller?.remote() && !this.controller.ready()) return;
+    if (this.controller && !this.controller.remote() && !this.controller.ready()) {
+      // MOR-3535: a local session is being re-acquired — defer the socket
+      // while the re-acquire is in flight so it never races the fresh key
+      // sessionless; if the re-acquire itself fails, the client falls back
+      // to sessionless like an old Core.
+      if (this.reconnectTimer === null) {
+        const delay = this.backoff;
+        this.backoff = Math.min(Math.floor(this.backoff * 1.7), BACKOFF_MAX);
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          this.connect();
+        }, delay);
+      }
+      return;
+    }
     if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
       return;
     }
@@ -356,8 +371,8 @@ class AudioManager {
     this.ws = ws;
 
     ws.onopen = () => {
-      if (this.controller?.remote()
-        && (this.ws !== ws || !this.controller.current(epoch) || ws.protocol !== protocols[0])) { ws.close(); return; }
+      if (protocols.length > 0
+        && (this.ws !== ws || this.controller?.current(epoch) !== true || ws.protocol !== protocols[0])) { ws.close(); return; }
       this.backoff = BACKOFF_MIN;
       setAudioConnected(true);
       console.log('[audio-ws] connected');
@@ -389,7 +404,7 @@ class AudioManager {
     };
 
     ws.onmessage = (ev) => {
-      if (this.controller?.remote() && (this.ws !== ws || !this.controller.current(epoch))) return;
+      if (protocols.length > 0 && (this.ws !== ws || this.controller?.current(epoch) !== true)) return;
       if (ev.data instanceof ArrayBuffer) {
         this.rxPlayer.feed(ev.data);
         return;
@@ -409,7 +424,17 @@ class AudioManager {
       this._clearStatsTimer();
       this.ws = null;
       setAudioConnected(false);
-      if (this.controller?.remote() && this._txEnabled) this._failTxAudio('Удалённое TX-аудио потеряно.');
+      // MOR-3535: session-attached TX audio is pinned to its session — a
+      // socket that dies together with the session never resumes on its own.
+      // A start still awaiting its audio_tx_format acknowledgement fails on
+      // ANY socket close, regardless of session currency: it never keyed the
+      // radio, so there is nothing to resume, and holding it pending would
+      // hang the caller's PTT press through an unbounded reconnect backoff.
+      if (this._txEnabled
+        && (this.txAdmission !== null
+          || (protocols.length > 0 && this.controller?.current(epoch) !== true))) {
+        this._failTxAudio('Удалённое TX-аудио потеряно.');
+      }
       // Decoder availability is a fact about the server we are talking to;
       // once the link is gone we no longer know it. Re-learned at the next
       // TX start (MOR-1791).

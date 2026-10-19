@@ -1388,6 +1388,8 @@ class TestWebRigctldDefault:
         composition.bind_state_store = AsyncMock()
         captured: dict[str, object] = {}
         web_stores: list[object] = []
+        attached: list[object] = []
+        rigctlds: list[object] = []
         command_queue = object()
 
         class FakeWebServer:
@@ -1397,6 +1399,9 @@ class TestWebRigctldDefault:
                 self.command_state_store = object()
                 web_stores.append(self.command_state_store)
 
+            def attach_rigctl_channel(self, open_channel):
+                attached.append(open_channel)
+
             async def serve_forever(self, *, on_started=None):
                 on_started()
                 raise asyncio.CancelledError
@@ -1404,6 +1409,10 @@ class TestWebRigctldDefault:
         class FakeRigctldServer:
             def __init__(self, _radio, _cfg, **kwargs):
                 captured.update(kwargs)
+                rigctlds.append(self)
+
+            def open_channel(self, _reader, _writer, _owner):
+                return None
 
             async def start(self):
                 pass
@@ -1434,6 +1443,8 @@ class TestWebRigctldDefault:
             "command_queue": command_queue,
             "command_service": command_service,
         }
+        # MOR-3536: the managed rigctld serves /api/v1/rigctl.
+        assert attached == [rigctlds[0].open_channel]
         composition.bind_state_store.assert_awaited_once_with(web_stores[0])
 
     @pytest.mark.asyncio
@@ -2920,6 +2931,9 @@ class _BusyHoldWebServer:
 
     def defer_audio_bridge_start(self, **_kwargs: Any) -> None:
         self.events.append("bridge-deferred")
+
+    def attach_rigctl_channel(self, open_channel: Any) -> None:
+        self.rigctl_channel = open_channel
 
     async def serve_forever(self, **kwargs: Any) -> None:
         import asyncio

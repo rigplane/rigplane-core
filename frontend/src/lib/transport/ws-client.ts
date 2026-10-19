@@ -7,7 +7,7 @@ import { isValidServerState, matchesCurrentCapabilityTopology, resetRadioState, 
 import { isStateAdvance, type StateAdvanceBaseline } from '../stores/live-metadata';
 import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
 import { fetchCapabilities } from './http-client';
-import { authenticatedWsUrl, withoutWsAuthToken } from './ws-url';
+import { authenticatedWsUrl, withoutWsAuthToken, withWsSearchParam } from './ws-url';
 import { controllerClient, ControllerClientError } from './controller-client';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
@@ -192,8 +192,17 @@ export class WsChannel {
       this.pendingPttRelease = null;
       this.trackedPttCommands.clear();
       this.cancelNonPtt('controller_lost');
+      if (controllerClient.remote) {
+        this.disconnect();
+        if (this.control) this.emitLocalNotification('error', new ControllerClientError('controller_lost').message, 'controller_lost');
+        return;
+      }
+      // MOR-3535: a lost local session recovers silently — reconnect through
+      // prepare() so this channel re-attaches with the fresh session key.
+      // A channel closed on purpose stays closed.
+      const resume = !this.intentionalClose && !!this.url;
       this.disconnect();
-      if (this.control) this.emitLocalNotification('error', new ControllerClientError('controller_lost').message, 'controller_lost');
+      if (resume) this.connect(this.url);
     });
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this._onVisibilityChange);
@@ -262,16 +271,29 @@ export class WsChannel {
   }
 
   private _open() {
-    if (!controllerClient.remote) { this._openSocket(); return; }
+    const readyState = this.ws?.readyState;
+    if (readyState === WebSocket.OPEN || readyState === WebSocket.CONNECTING) return;
+    if (!controllerClient.sessionMode) { this._openSocket(); return; }
     const opening = ++this.opening;
-    const epoch = controllerClient.epoch;
     this.setState(this.attempt === 0 ? 'connecting' : 'reconnecting');
-    const ready = this.control ? Promise.resolve() : controllerClient.waitForPrimary();
-    void ready.then(() => {
-      if (opening === this.opening && !this.intentionalClose && controllerClient.valid(epoch)) this._openSocket();
-    }).catch(() => {
-      if (opening === this.opening) this.setState('disconnected');
-    });
+    void (controllerClient.remote ? Promise.resolve() : controllerClient.prepare())
+      .then(() => {
+        const epoch = controllerClient.epoch;
+        const ready = this.control ? Promise.resolve() : controllerClient.waitForPrimary();
+        return ready.then(() => {
+          if (opening === this.opening && !this.intentionalClose && controllerClient.valid(epoch)) this._openSocket();
+        });
+      })
+      .catch(() => {
+        if (opening !== this.opening) return;
+        this.setState('disconnected');
+        if (controllerClient.remote || this.intentionalClose) return;
+        // MOR-3535: retry the local session acquisition with backoff.
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          this._open();
+        }, calcBackoff(this.attempt++));
+      });
   }
 
   private _openSocket() {
@@ -284,10 +306,8 @@ export class WsChannel {
     const epoch = controllerClient.epoch;
     this.controllerEpoch = epoch;
     let target = authenticatedWsUrl(this.url);
-    if (controllerClient.remote && this.control) {
-      const url = new URL(target);
-      url.searchParams.set('controller_role', controllerClient.role);
-      target = url.toString();
+    if (this.control && controllerClient.session) {
+      target = withWsSearchParam(target, 'controller_role', controllerClient.role);
     }
     const ws = protocols.length ? new WebSocket(target, protocols) : new WebSocket(target);
     let socketEpoch = 0;
@@ -295,7 +315,7 @@ export class WsChannel {
     this.ws = ws;
 
     ws.onopen = () => {
-      if (controllerClient.remote) {
+      if (protocols.length > 0) {
         if (!controllerClient.valid(epoch) || ws.protocol !== protocols[0]) { ws.close(); return; }
         if (this.control) controllerClient.controlOpened((message) => ws.send(JSON.stringify(message)));
       }
@@ -321,7 +341,7 @@ export class WsChannel {
     };
 
     ws.onmessage = (event: MessageEvent) => {
-      if (controllerClient.remote && (this.ws !== ws || !controllerClient.current(epoch))) return;
+      if (protocols.length > 0 && (this.ws !== ws || !controllerClient.current(epoch))) return;
       if (this.ws === ws) this._resetHeartbeat();
       if (event.data instanceof ArrayBuffer) {
         if (this.ws !== ws) return;
@@ -379,7 +399,8 @@ export class WsChannel {
       this.trackedNonPttCommands.clear();
       this.trackedLifecycleCommands.clear();
       this.ws = null;
-      if (this.control && controllerClient.remote && controllerClient.valid(epoch)) {
+      if (this.control && !this.intentionalClose
+        && controllerClient.session && controllerClient.valid(epoch)) {
         controllerClient.lose();
         return;
       }
@@ -433,7 +454,10 @@ export class WsChannel {
   }
 
   send(cmd: WsCommand): boolean {
-    if (controllerClient.remote && (!controllerClient.current(this.controllerEpoch) || this.ws?.readyState !== WebSocket.OPEN)) return false;
+    if (controllerClient.remote || controllerClient.session) {
+      if (!controllerClient.current(this.controllerEpoch)) return false;
+      if (controllerClient.remote && this.ws?.readyState !== WebSocket.OPEN) return false;
+    }
     if (this.ws?.readyState === WebSocket.OPEN) {
       const intent = pttIntent(cmd.name, cmd.params);
       if (intent) {

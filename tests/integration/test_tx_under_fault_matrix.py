@@ -255,6 +255,13 @@ class _WsKeyClient:
     async def send(self, message: dict[str, Any]) -> None:
         await _ws_send_text(self._writer, json.dumps(message))
 
+    async def rigctl(self, lines: str) -> str:
+        """One rigctld command over the rigctl channel; its reply (MOR-3536)."""
+        await _ws_send_text(self._writer, lines)
+        opcode, payload = await _ws_recv_frame(self._reader, timeout=10.0)
+        assert opcode == 0x1, (opcode, payload)
+        return payload.decode()
+
     async def send_binary(self, payload: bytes) -> None:
         mask = b"\xde\xad\xbe\xef"
         masked = bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload))
@@ -370,6 +377,7 @@ async def _stand_up_stack(
         command_service=web.command_service,
     )
     await rigctld.start()
+    web.attach_rigctl_channel(rigctld.open_channel)
     await asyncio.wait_for(web.start(), timeout=_GATE_TIMEOUT_S)
     rigctld_port = rigctld._server.sockets[0].getsockname()[1]  # noqa: SLF001
     return _Stack(sim, radio, composition, web, rigctld, rigctld_port)
@@ -1065,6 +1073,129 @@ async def test_core_tx_the_radio_kept_after_an_acked_unkey_still_gets_unkeyed(
         assert off[0] == 202, off
         await _wait_ptt(sim, False, _LEASE_BUDGET_S)
         assert sim.ptt_set_writes[writes][1] is False
+    finally:
+        for ws in clients:
+            with contextlib.suppress(Exception):
+                await ws.close()
+        await _tear_down_stack(stack)
+
+
+# ---------------------------------------------------------------------------
+# MOR-3536: the rigctl channel over WebSocket, bound to the client's session
+# ---------------------------------------------------------------------------
+#
+# rigctld lines sent over /api/v1/rigctl key as the session the channel joined:
+# that session's audio is admitted, another session's T 1 is refused while it
+# holds, and the WebSocket closing (or the session ending on a silent link)
+# releases the TX.
+
+_RIGCTL_LANES = ("keys_as_session", "ws_close_releases", "session_expiry_releases")
+
+
+@pytest.mark.parametrize("lane", _RIGCTL_LANES)
+async def test_rigctl_ws_lanes(lane: str, tmp_path: Path) -> None:
+    stack = await _stand_up_stack(
+        tmp_path, loss="hold", tot_seconds=_LINK_FAULT_TOT_S, unsolicited=False
+    )
+    clients: list[_WsKeyClient] = []
+    try:
+        sim, web, authority = stack.sim, stack.web, stack.composition.authority
+        controller = web._controller  # noqa: SLF001
+        clock = _FrozenClock()
+        controller._clock = clock  # noqa: SLF001
+        port = web.port
+
+        async def client(key: str | None, path: str) -> _WsKeyClient:
+            ws = _WsKeyClient("127.0.0.1", port, key, path)
+            await ws.connect()
+            clients.append(ws)
+            return ws
+
+        async def session() -> tuple[_WsKeyClient, _WsKeyClient, str]:
+            status, grant = await _http_json(
+                port, "POST", "/api/v1/controller", {"kind": "pro"}
+            )
+            assert status == 201, grant
+            key = grant["controller_key"]
+            primary = await client(key, "/api/v1/ws")
+            owner = next(
+                owner
+                for owner, entry in controller._sessions.items()  # noqa: SLF001
+                if entry.key == key
+            )
+            return primary, await client(key, "/api/v1/rigctl"), owner
+
+        # A sessionless rigctl channel is refused before the upgrade.
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            (
+                f"GET /api/v1/rigctl HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+                "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                "Sec-WebSocket-Version: 13\r\n\r\n"
+            ).encode()
+        )
+        head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5.0)
+        writer.close()
+        assert head.startswith(b"HTTP/1.1 403 "), head
+
+        (a, a_cat, a_owner), (b, b_cat, b_owner) = await session(), await session()
+        await _wait_ptt_observed(web, _GATE_TIMEOUT_S)
+
+        assert await a_cat.rigctl("T 1\n") == "RPRT 0\n"
+        await _wait_ptt(sim, True, _KEY_DEADLINE_S)
+        assert authority.tx_holder_nowait() == a_owner
+        keyed_writes = [write for write in sim.ptt_set_writes if write[1]]
+
+        if lane == "keys_as_session":
+            # Another session keys neither over rigctl nor over its control WS.
+            assert await b_cat.rigctl("T 1\n") == "RPRT -9\n"
+            assert not await b.key("b-key")
+            assert authority.tx_holder_nowait() == a_owner
+            # The holder session's own TX audio passes the gate; b's does not.
+            verdicts: list[tuple[str | None, bool]] = []
+            gate = web._controller_audio_gate  # noqa: SLF001
+
+            async def recorded(ticket: Any, source: object) -> bool:
+                verdict = await gate(ticket, source)
+                verdicts.append((ticket.tx_owner, verdict))
+                return verdict
+
+            web._controller_audio_gate = recorded  # type: ignore[method-assign]  # noqa: SLF001
+            for owner_client in (b, a):
+                mic = await client(owner_client.controller_key, "/api/v1/audio")
+                await mic.send({"type": "audio_start", "direction": "tx"})
+                await mic._until(lambda m: m.get("type") == "audio_tx_format")
+                for _ in range(_AUDIO_FRAMES):
+                    await mic.send_binary(_PCM_TX_FRAME)
+            end = time.monotonic() + _AUDIO_SETTLE_S * 4
+            while len(verdicts) < 2 * _AUDIO_FRAMES and time.monotonic() < end:
+                await asyncio.sleep(0.05)
+            assert {v for owner, v in verdicts if owner == b_owner} == {False}, verdicts
+            assert any(owner == a_owner and v for owner, v in verdicts), verdicts
+            assert await a_cat.rigctl("T 0\n") == "RPRT 0\n"
+            await _wait_ptt(sim, False, _LEASE_BUDGET_S)
+        elif lane == "ws_close_releases":
+            await a_cat.close()
+            await _wait_ptt(sim, False, _LEASE_BUDGET_S)
+            await a.heartbeat()  # only the channel closed; the session lives
+        else:
+            # Half-open: a's channels stay open but nothing reaches the server;
+            # b renews while the clock passes a's deadline.
+            clock.now += 4.0
+            await b.heartbeat()
+            clock.now += 3.0
+            await _wait_ptt(
+                sim, False, controller.HEARTBEAT_MS / 1000 + _LEASE_BUDGET_S
+            )
+            await b.heartbeat()
+
+        # Nobody but the holder session ever keyed the radio.
+        assert [w for w in sim.ptt_set_writes if w[1]] == keyed_writes
+        deadline = time.monotonic() + _RELEASE_DEBT_GRACE_S
+        while authority.tx_holder_nowait() is not None:
+            assert time.monotonic() < deadline, f"{lane}: TX still held"
+            await asyncio.sleep(0.1)
     finally:
         for ws in clients:
             with contextlib.suppress(Exception):

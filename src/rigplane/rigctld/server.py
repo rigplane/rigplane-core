@@ -277,6 +277,8 @@ class RigctldServer:
         self._state_diagnostics = getattr(radio, "_state_diagnostics", None)
         # Per-client sliding window for rate limiting: client_id → timestamps
         self._rate_windows: dict[int, list[float]] = {}
+        # MOR-3536: owners with a live open_channel connection.
+        self._channel_owners: set[str] = set()
         # MOR-2890: peer host → monotonic time of its last logged HTTP
         # refusal; throttles the per-connection WARNING below.
         self._http_refusal_logged_at: dict[str, float] = {}
@@ -1095,6 +1097,39 @@ class RigctldServer:
 
         Called synchronously within the event loop; must not block.
         """
+        if self._admit(writer, lambda: self._handle_client(reader, writer)) is None:
+            writer.close()
+
+    def open_channel(
+        self, reader: Any, writer: Any, owner: str
+    ) -> asyncio.Task[None] | None:
+        """Serve one connection over another transport, keyed as ``owner``.
+
+        The web rigctl channel (MOR-3536) hands in a reader (``readline()``)
+        and a writer (``write``, ``drain``, ``close``, ``wait_closed``,
+        ``get_extra_info``). Its lines run through the same loop as a TCP
+        client, with ``owner`` (the controller session the channel joined) as
+        the managed-TX owner instead of a minted ``rigctld-client-N``; teardown
+        releases the TX that owner holds, as a TCP disconnect does. Counts
+        against ``max_clients``. One connection per owner: the owner is also
+        its command-queue session, which a second one's teardown would end.
+        Call it in the session's controller context, which the task copies.
+        Returns ``None`` when refused.
+        """
+        if self._server is None or owner in self._channel_owners:
+            return None
+        task = self._admit(
+            writer, lambda: self._handle_client(reader, writer, owner=owner)
+        )
+        if task is not None:
+            self._channel_owners.add(owner)
+            task.add_done_callback(lambda _: self._channel_owners.discard(owner))
+        return task
+
+    def _admit(
+        self, writer: Any, start: Callable[[], Coroutine[Any, Any, None]]
+    ) -> asyncio.Task[None] | None:
+        """Start one client connection, or ``None`` at ``max_clients``."""
         if self._client_count >= self._config.max_clients:
             peer = writer.get_extra_info("peername", ("?", 0))
             logger.warning(
@@ -1103,11 +1138,10 @@ class RigctldServer:
                 peer[0],
                 peer[1],
             )
-            writer.close()
-            return
+            return None
 
         loop = asyncio.get_running_loop()
-        task = loop.create_task(self._handle_client(reader, writer))
+        task = loop.create_task(start())
         self._client_tasks.add(task)
         self._client_count += 1
 
@@ -1118,6 +1152,7 @@ class RigctldServer:
             self._spawn(self._wsjtx_compat_prewarm())
 
         task.add_done_callback(self._on_client_done)
+        return task
 
     def _on_client_done(self, task: asyncio.Task[None]) -> None:
         self._client_tasks.discard(task)
@@ -1167,6 +1202,8 @@ class RigctldServer:
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
+        *,
+        owner: str | None = None,
     ) -> None:
         """Manage one client while receipt and ordered retirement stay separate."""
         proto = self._protocol
@@ -1180,8 +1217,9 @@ class RigctldServer:
         )
         # Minted once per accepted socket and released in this coroutine's
         # ``finally``: that pairing is what makes it a lease-bearing managed TX
-        # owner identity rather than a throwaway request id (MOR-1014).
-        session_id = f"rigctld-client-{client_id}"
+        # owner identity rather than a throwaway request id (MOR-1014). A
+        # channel opened for a controller session keys as that session.
+        session_id = owner or f"rigctld-client-{client_id}"
         if self._command_queue is not None:
             self._command_queue.register_session(session_id)
         logger.info("client #%d connected from %s", client_id, session.peername)

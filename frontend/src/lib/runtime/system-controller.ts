@@ -89,6 +89,9 @@ export class SystemController {
     if (controllerClient.remote) this._effects.destroyAudio();
     const barrier = this._releaseBarrier?.run;
     if (!barrier && !controllerClient.remote) {
+      // MOR-3535: release the local session so the server frees this
+      // client's TX hold immediately instead of waiting for the TTL.
+      if (controllerClient.session) void controllerClient.release().catch(() => {});
       this._teardown();
       return Promise.resolve();
     }
@@ -97,7 +100,11 @@ export class SystemController {
       .then(barrier)
       .finally(async () => {
         try {
-          const release = controllerClient.remote ? controllerClient.release() : Promise.resolve();
+          const release = controllerClient.remote
+            ? controllerClient.release()
+            : controllerClient.session
+              ? controllerClient.release().catch(() => undefined)
+              : Promise.resolve();
           try { this._teardown(); } finally { await release; }
         } finally {
           this._disconnectInFlight = null;

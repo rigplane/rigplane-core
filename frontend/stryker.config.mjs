@@ -2,6 +2,7 @@
 /** @type {import('@stryker-mutator/api/core').PartialStrykerOptions} */
 export default {
   mutate: [
+    'src/lib/transport/controller-client.ts',
     'src/lib/runtime/adapters/radio-view-model-adapter.ts',
     'src/semantic/radio-view-model.ts',
     'src/lib/runtime/props/panel-props.ts',

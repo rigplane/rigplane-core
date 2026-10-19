@@ -54,10 +54,10 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 
 import {
+  fulfillControllerRoute,
   mockCapabilities,
   mockDisconnectedState,
   mockInfo,
-  mockLocalControllerStatus,
   mockState,
 } from './fixtures';
 
@@ -160,14 +160,17 @@ function wsStubInit(selectedState: typeof mockState): string {
     const initialControlFrame = ${JSON.stringify(initialControlFrame)};
 
     class StubWebSocket extends EventTarget {
-      constructor(url) {
+      constructor(url, protocols = []) {
         super();
         this.url = url;
         this.readyState = 0;
         this.binaryType = 'arraybuffer';
         this.bufferedAmount = 0;
         this.extensions = '';
-        this.protocol = '';
+        // Real local Core accepts the client's controller subprotocol
+        // (docs/api/web.md); without the echo ws-client.ts _openSocket
+        // closes the channel right after open.
+        this.protocol = protocols[0] || '';
         // Hook for compatibility with code that uses ws.onopen = fn.
         this.onopen = null;
         this.onmessage = null;
@@ -189,7 +192,21 @@ function wsStubInit(selectedState: typeof mockState): string {
         });
       }
       send(_data) {
-        // Swallow: the visual smoke does not exercise outbound commands.
+        // Swallow outbound commands, but ack session heartbeats the way
+        // real Core does: without acks the client drops the session once
+        // the 6 s TTL passes. The generation is the frozen
+        // mockControllerGrant.generation.
+        try {
+          const frame = JSON.parse(String(_data));
+          if (frame && frame.type === 'controller_heartbeat' && this.readyState === 1) {
+            const ack = JSON.stringify({ type: 'controller_heartbeat', generation: 0 });
+            const evt = new MessageEvent('message', { data: ack });
+            this.dispatchEvent(evt);
+            if (typeof this.onmessage === 'function') this.onmessage(evt);
+          }
+        } catch {
+          // Not JSON — swallow.
+        }
       }
       close() {
         this.readyState = 3;
@@ -230,10 +247,7 @@ async function routeMockBackend(page: Page, state = mockState): Promise<void> {
   await page.route('**/api/v1/state', (route) => json(route, state));
   await page.route('**/api/v1/capabilities', (route) => json(route, mockCapabilities));
   await page.route('**/api/v1/info', (route) => json(route, mockInfo));
-  await page.route('**/api/v1/controller', (route) => {
-    if (route.request().method() !== 'GET') return route.fulfill({ status: 405, json: {} });
-    return json(route, mockLocalControllerStatus);
-  });
+  await page.route('**/api/v1/controller', fulfillControllerRoute);
   // Anything else under /api/v1/ — return an empty 200 so the page does
   // not surface a network error overlay we did not plan for.
   await page.route('**/api/v1/**', (route) => {

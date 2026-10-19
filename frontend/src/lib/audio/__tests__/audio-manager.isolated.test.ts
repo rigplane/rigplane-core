@@ -950,3 +950,92 @@ describe('AudioManager credential-free WebSockets', () => {
     ]);
   });
 });
+
+describe('local controller session audio', () => {
+  const sessionKey = 'b'.repeat(64);
+
+  beforeEach(() => {
+    vi.resetModules(); vi.useFakeTimers(); vi.clearAllMocks();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('location', { protocol: 'https:', host: 'station.test' });
+  });
+  afterEach(async () => {
+    const { audioManager } = await import('../audio-manager');
+    audioManager.destroy(); vi.useRealTimers(); vi.unstubAllGlobals();
+  });
+
+  function localBinding(state: { ready: boolean; current: boolean }) {
+    return {
+      remote: () => false,
+      ready: () => state.ready,
+      epoch: () => 7,
+      current: (epoch: number) => epoch === 7 && state.current,
+      protocols: () => (state.ready ? [`rigplane-controller-v1.${sessionKey}`] : []),
+    };
+  }
+
+  it('fails session-attached TX audio when the session dies with the socket', async () => {
+    const { audioManager } = await import('../audio-manager');
+    const state = { ready: true, current: true };
+    audioManager.setControllerBinding(localBinding(state));
+    audioManager.startRx();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    const starting = audioManager.startTx();
+    await vi.advanceTimersByTimeAsync(0);
+    socket.onmessage?.({ data: JSON.stringify({ type: 'audio_tx_format', codec: 'opus', sample_rate: 48000 }) });
+    await starting;
+    expect(audioManager.txEnabled).toBe(true);
+    const died = vi.fn();
+    audioManager.onTxAudioDied(died);
+    state.current = false;
+    socket.serverClose();
+    expect(audioManager.txEnabled).toBe(false);
+    expect(txStop).toHaveBeenCalled();
+    expect(died).toHaveBeenCalledOnce();
+  });
+
+  it('keeps TX audio across a session-healthy socket drop and resumes on reconnect', async () => {
+    const { audioManager } = await import('../audio-manager');
+    const state = { ready: true, current: true };
+    audioManager.setControllerBinding(localBinding(state));
+    audioManager.startRx();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    const starting = audioManager.startTx();
+    await vi.advanceTimersByTimeAsync(0);
+    socket.onmessage?.({ data: JSON.stringify({ type: 'audio_tx_format', codec: 'opus', sample_rate: 48000 }) });
+    await starting;
+    socket.serverClose();
+    expect(audioManager.txEnabled).toBe(true);
+    await vi.advanceTimersByTimeAsync(500);
+    const resumed = FakeWebSocket.instances[1];
+    resumed.open();
+    expect(resumed.sent.some((raw) => {
+      const msg = JSON.parse(raw as string);
+      return msg.type === 'audio_start' && msg.direction === 'tx';
+    })).toBe(true);
+  });
+
+  it('defers the audio socket while a lost local session is re-acquired', async () => {
+    const { audioManager } = await import('../audio-manager');
+    const state = { ready: false, current: false };
+    audioManager.setControllerBinding(localBinding(state));
+    audioManager.startRx();
+    expect(audioManager.rxEnabled).toBe(true);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+    state.ready = true;
+    state.current = true;
+    await vi.advanceTimersByTimeAsync(2000);
+    const socket = FakeWebSocket.instances[0];
+    expect(socket.protocols).toEqual([`rigplane-controller-v1.${sessionKey}`]);
+    socket.open();
+    expect(socket.sent.some((raw) => {
+      const msg = JSON.parse(raw as string);
+      return msg.type === 'audio_start' && msg.direction === 'rx';
+    })).toBe(true);
+  });
+});

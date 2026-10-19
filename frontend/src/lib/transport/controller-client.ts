@@ -24,6 +24,7 @@ function record(value: unknown): value is Record<string, unknown> {
 export class ControllerClient {
   #grant: Grant | null = null;
   private _remote = false;
+  private _localSessions = false;
   private prepared = false;
   private primaryReady = false;
   private _epoch = 0;
@@ -41,21 +42,29 @@ export class ControllerClient {
   get remote(): boolean { return this._remote; }
   get role(): Role { return this.#grant?.controller_role ?? 'primary'; }
   get epoch(): number { return this._epoch; }
-  get active(): boolean { return this.prepared && (!this.remote || this.primaryReady); }
-
-  valid(epoch: number): boolean {
-    return !this.remote || (this.#grant !== null && epoch === this._epoch);
+  get session(): boolean { return this.#grant !== null; }
+  get sessionMode(): boolean { return this._remote || this._localSessions; }
+  get active(): boolean {
+    return this.prepared && (this.#grant === null || !this._remote || this.primaryReady);
   }
 
-  current(epoch: number): boolean { return this.valid(epoch) && (!this.remote || this.active); }
+  valid(epoch: number): boolean {
+    return this.#grant !== null ? epoch === this._epoch : !this._remote;
+  }
+
+  current(epoch: number): boolean {
+    return this.valid(epoch) && (this.#grant === null || this.active);
+  }
 
   headers(): Record<string, string> {
     return this.#grant ? { 'X-RigPlane-Controller': this.#grant.controller_key } : {};
   }
 
   protocols(): string[] {
-    if (!this.remote) return [];
-    if (!this.#grant) throw new ControllerClientError('controller_lost');
+    if (this.#grant === null) {
+      if (!this._remote) return [];
+      throw new ControllerClientError('controller_lost');
+    }
     return [`rigplane-controller-v1.${this.#grant.controller_key}`];
   }
 
@@ -97,7 +106,7 @@ export class ControllerClient {
   private async acquire(epoch: number, signal?: AbortSignal): Promise<void> {
     this.check(epoch, signal);
     this.reportedLoss = false;
-    this._remote = true;
+    this._remote = !this._localSessions;
     this.prepared = false;
     this.changed();
     const statusResponse = await fetch('/api/v1/controller', { signal, redirect: 'error' });
@@ -110,27 +119,51 @@ export class ControllerClient {
     this.check(epoch, signal);
     if (status.mode === 'local') {
       this._remote = false;
+      this.changed();
+      // MOR-3535: local mode grants every browser its own session. An older
+      // core that refuses the POST (or a transient failure) keeps today's
+      // sessionless behaviour instead of failing the UI.
+      let granted: { status: number; value: unknown } | null = null;
+      try {
+        granted = await this.postBrowser(signal);
+        this.check(epoch, signal);
+      } catch (error) {
+        if (signal?.aborted || error instanceof ControllerClientError) throw error;
+      }
+      if (granted !== null && granted.status === 201 && this.adopt(granted.value)) {
+        this._localSessions = true;
+      }
       this.prepared = true;
       this.changed();
       return;
     }
-    const response = await fetch('/api/v1/controller', {
-      method: 'POST', signal, redirect: 'error',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'browser' }),
-    });
-    const value: unknown = await response.json();
+    this._remote = true;
+    const { status: grantedStatus, value } = await this.postBrowser(signal);
     this.check(epoch, signal);
-    if (response.status !== 201) {
+    if (grantedStatus !== 201) {
       const code = record(value) && typeof value.error === 'string'
         && Object.hasOwn(messages, value.error) ? value.error as Code : 'controller_not_ready';
       throw new ControllerClientError(code);
     }
+    if (!this.adopt(value)) throw new ControllerClientError('controller_invalid');
+    this.changed();
+  }
+
+  private async postBrowser(signal?: AbortSignal): Promise<{ status: number; value: unknown }> {
+    const response = await fetch('/api/v1/controller', {
+      method: 'POST', signal, redirect: 'error',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'browser' }),
+    });
+    return { status: response.status, value: await response.json() };
+  }
+
+  private adopt(value: unknown): boolean {
     if (!record(value) || typeof value.controller_key !== 'string'
       || !/^[0-9a-f]{64}$/.test(value.controller_key)
       || typeof value.generation !== 'number' || !Number.isSafeInteger(value.generation) || value.generation < 0
       || value.ttl_ms !== 6000 || value.heartbeat_ms !== 2000
       || (value.controller_role !== undefined && value.controller_role !== 'primary' && value.controller_role !== 'auxiliary')) {
-      throw new ControllerClientError('controller_invalid');
+      return false;
     }
     this.#grant = { controller_key: value.controller_key, generation: value.generation,
       controller_role: value.controller_role ?? 'primary' };
@@ -142,17 +175,18 @@ export class ControllerClient {
       if (this.clock() - this.lastAck >= 6000) this.lose();
       else if (this.primaryReady) this.sendHeartbeat();
     }, 2000);
-    this.changed();
+    return true;
   }
 
   waitForPrimary(): Promise<void> {
-    if (!this.remote || this.active) return Promise.resolve();
-    if (!this.#grant) return Promise.reject(new ControllerClientError('controller_lost'));
+    if (!this._remote && this.#grant === null) return Promise.resolve();
+    if (this.#grant !== null && this.primaryReady) return Promise.resolve();
+    if (this.#grant === null) return Promise.reject(new ControllerClientError('controller_lost'));
     return new Promise<void>((resolve, reject) => { this.children.add({ resolve, reject }); });
   }
 
   controlOpened(sender: Sender): void {
-    if (!this.remote || !this.#grant) return;
+    if (this.#grant === null) return;
     this.primaryReady = true;
     if (this.role === 'primary') { this.sender = sender; this.sendHeartbeat(); }
     for (const child of this.children) child.resolve();
@@ -199,7 +233,11 @@ export class ControllerClient {
     const response = await fetch('/api/v1/controller', {
       method: 'DELETE', headers: { 'X-RigPlane-Controller': grant.controller_key }, redirect: 'error',
     });
-    if (!response.ok && response.status !== 403) throw new ControllerClientError('controller_not_ready');
+    if (!response.ok && response.status !== 403) {
+      // A local session release is best-effort: the server TTL reaps it.
+      if (!this._remote) return;
+      throw new ControllerClientError('controller_not_ready');
+    }
   }
 }
 

@@ -125,6 +125,7 @@ from .handlers import (  # noqa: TID251
 )
 from .handlers.audio import browser_tx_audio_facts  # noqa: TID251
 from .handlers.control import _consume_normalized_level_unit  # noqa: TID251
+from .handlers.rigctl import OpenRigctlChannel, RigctlChannelHandler  # noqa: TID251
 from .host_guard import (  # noqa: TID251
     MISDIRECTED_BODY,
     ORIGIN_FORBIDDEN_BODY,
@@ -1158,6 +1159,8 @@ class WebServer:
         self._suppressed_refusals = 0
         self._runtime_log_path: str | None = None
         self._runtime_rigctld_addr: str | None = None
+        # MOR-3536: RigctldServer.open_channel, attached by the composition root.
+        self._rigctl_channel: OpenRigctlChannel | None = None
         self._runtime_last_error: str | None = None
         self._client_tasks: set[asyncio.Task[None]] = set()
         self._scope_handlers: set["ScopeHandler"] = set()
@@ -1553,6 +1556,10 @@ class WebServer:
     def _radio_ready(self) -> bool:
         """Backend view of radio readiness (CI-V healthy)."""
         return bool(radio_ready(self._radio))
+
+    def attach_rigctl_channel(self, open_channel: OpenRigctlChannel) -> None:
+        """Serve ``/api/v1/rigctl`` through the bundled rigctld server (MOR-3536)."""
+        self._rigctl_channel = open_channel
 
     def note_operator_disconnect(self) -> None:
         """Record an intentional operator radio disconnect (MOR-3452)."""
@@ -7642,6 +7649,16 @@ class WebServer:
                 )
                 return
         assert ticket is not None
+        if path == "/api/v1/rigctl" and ticket.tx_owner is None:
+            # MOR-3536: rigctl lines key as the session the channel joined, so
+            # a channel without a multi-client session is refused. A sessionless
+            # rigctld client has the TCP port; this channel exists to tie a
+            # remote client's keying to its own session's audio.
+            self._controller.detach(ticket)
+            await self._send_json(
+                writer, 403, "Forbidden", {"error": "controller_session_required"}
+            )
+            return
         ws_key = headers.get("sec-websocket-key", "")
         if not ws_key:
             self._controller.detach(ticket)
@@ -7716,6 +7733,19 @@ class WebServer:
                 controller_audio_loss=self._controller_audio_loss,
                 controller_track_stop=self._controller_track_audio_stop,
                 managed_tx_authority=self._managed_tx_authority(),
+            )
+        elif path == "/api/v1/rigctl":
+            owner = ticket.tx_owner
+            assert owner is not None  # refused before the upgrade otherwise
+            if self._rigctl_channel is None:
+                self._controller.detach(ticket)
+                await ws.close(1008, "rigctl channel not available")
+                return
+            handler = RigctlChannelHandler(
+                ws,
+                self._rigctl_channel,
+                owner,
+                writer.get_extra_info("peername", ("?", 0)),
             )
         else:
             self._controller.detach(ticket)

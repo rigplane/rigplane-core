@@ -135,7 +135,7 @@ vi.mock('./system-controller', async () => {
 // ── Import modules under test after mocks are hoisted ──
 
 import { fetchCapabilities } from '$lib/transport/http-client';
-import { connect, getChannel, getControlSession, onControlSessionTransition, onMessage, sendRaw, emitLocalNotification } from '$lib/transport/ws-client';
+import { connect, disconnectAll, getChannel, getControlSession, onControlSessionTransition, onMessage, sendRaw, emitLocalNotification } from '$lib/transport/ws-client';
 import { getCapabilities, setCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 import { radio, subscribeRadioState } from '$lib/stores/radio.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
@@ -563,6 +563,21 @@ describe('FrontendRuntime.bootstrap()', () => {
     await cleanup();
     await cleanup();
     expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it('stops TX audio silently on local loss without the disconnect teardown', async () => {
+    controller.remote = false;
+    const rt = await freshRuntime();
+    const cleanup = await rt.bootstrap();
+    controller.onLoss.mock.calls.at(-1)![0]();
+    // Silent recovery: TX audio stops, but no full disconnect teardown and
+    // no error toast — wiring the remote-loss UI into the local branch
+    // fails every assertion below.
+    expect(audioManager.stopTx).toHaveBeenCalledOnce();
+    expect(audioManager.destroy).not.toHaveBeenCalled();
+    expect(disconnectAll).not.toHaveBeenCalled();
+    expect(emitLocalNotification).not.toHaveBeenCalled();
+    await cleanup();
   });
 
   it('rejects remote power actions before any host HTTP submission', async () => {
