@@ -733,8 +733,8 @@ def _query_windows_pnp_devices() -> list[WindowsPnpDevice]:
 
     Reads the present device tree from cfgmgr32 and keeps the nodes the
     PowerShell query selects (:func:`_eligible_pnp_rows`). If cfgmgr32 fails,
-    falls back to that PowerShell query, which costs one WMI call per eligible
-    node: about 10-26 s in the interactive session on GTR7 (MOR-3526). Returns
+    falls back to that PowerShell query, which costs one WMI call per emitted
+    device: about 10-26 s in the interactive session on GTR7 (MOR-3526). Returns
     ``[]`` on any failure — the caller treats an empty/raised result as
     "topology unavailable".
     """
