@@ -426,7 +426,13 @@ class AudioManager {
       setAudioConnected(false);
       // MOR-3535: session-attached TX audio is pinned to its session — a
       // socket that dies together with the session never resumes on its own.
-      if (protocols.length > 0 && this._txEnabled && this.controller?.current(epoch) !== true) {
+      // A start still awaiting its audio_tx_format acknowledgement fails on
+      // ANY socket close, regardless of session currency: it never keyed the
+      // radio, so there is nothing to resume, and holding it pending would
+      // hang the caller's PTT press through an unbounded reconnect backoff.
+      if (this._txEnabled
+        && (this.txAdmission !== null
+          || (protocols.length > 0 && this.controller?.current(epoch) !== true))) {
         this._failTxAudio('Удалённое TX-аудио потеряно.');
       }
       // Decoder availability is a fact about the server we are talking to;
