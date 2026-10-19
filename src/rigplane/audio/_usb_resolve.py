@@ -630,7 +630,9 @@ def _resolve_ic7300_hub(
             and r.audio_endpoint_name is not None
         ):
             owner = (physical(r) or r).pnp_device_id.upper()
-            endpoint_names.setdefault(owner, set()).add(r.audio_endpoint_name.strip())
+            endpoint_names.setdefault(owner, set()).add(
+                _endpoint_name_key(r.audio_endpoint_name)
+            )
     family = set(identities)
     sd: Any = sounddevice_module
     if sd is None:
@@ -648,13 +650,12 @@ def _resolve_ic7300_hub(
 
     def owners(device: dict[str, Any]) -> set[str]:
         name = str(device.get("name", ""))
+        key = _endpoint_name_key(name)
         truncated = device.get("hostapi") in mme and len(name) == _MME_NAME_LIMIT
         return {
             codec
-            for codec, names in endpoint_names.items()
-            if any(
-                n == name.strip() or (truncated and n.startswith(name)) for n in names
-            )
+            for codec, keys in endpoint_names.items()
+            if any(k == key or (truncated and k.startswith(key)) for k in keys)
         }
 
     def member(device: dict[str, Any]) -> bool:
@@ -682,6 +683,13 @@ def _resolve_ic7300_hub(
         ]
         if len(clusters) != len(identities):
             continue
+        # With several radios, a stray half means the clusters may join pins
+        # of different radios, so the rank cannot pick from them.
+        if len(identities) > 1 and any(
+            rx is None or tx is None for _n, rx, tx in clusters
+        ):
+            contradicted = True
+            continue
         pair = _pair_audio_cluster_by_name_rank(normalized, "USB Audio CODEC", rank)
         if pair is None:
             continue
@@ -703,6 +711,15 @@ def _resolve_ic7300_hub(
     raise WindowsAudioEndpointNameError(
         "IC-7300 USB audio has no complete same-host-API pair."
     )
+
+
+def _endpoint_name_key(name: str) -> str:
+    """Endpoint name without the spacing host APIs disagree on.
+
+    On GTR7 PnP reported ``Speakers (USB Audio CODEC )`` and WDM-KS
+    ``Speakers (USB Audio CODEC)`` for the same endpoint (MOR-3526).
+    """
+    return re.sub(r"\(\s+", "(", re.sub(r"\s+\)", ")", " ".join(name.split())))
 
 
 def _windows_audio_product(name: str) -> str:
