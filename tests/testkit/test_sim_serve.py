@@ -39,10 +39,15 @@ _STARTUP_KEYS = [
     "host",
     "control_port",
     "username",
-    "password",
     "control",
     "seed",
 ]
+
+# Obvious test-only credentials for the subprocess end-to-end run: the
+# password is a value nothing but the --password flag could put on the wire,
+# so any appearance of it in process output is a leak.
+_TEST_USERNAME = "sim-e2e-user"
+_TEST_PASSWORD = "sim-e2e-pass-2f8d41"
 
 # The four (port, direction) streams a lan_drop blackouts.
 _LAN_DROP_STREAMS = (
@@ -287,9 +292,13 @@ async def test_subprocess_end_to_end() -> None:
         "ic7610",
         "--seed",
         "1",
+        "--username",
+        _TEST_USERNAME,
+        "--password",
+        _TEST_PASSWORD,
         cwd=_REPO_ROOT,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
     )
     try:
         first = await asyncio.wait_for(proc.stdout.readline(), 20)
@@ -303,7 +312,7 @@ async def test_subprocess_end_to_end() -> None:
         assert line["host"] == "127.0.0.1"
         assert line["seed"] == 1
         assert isinstance(line["control_port"], int) and line["control_port"] > 0
-        assert line["username"] and line["password"]
+        assert line["username"] == _TEST_USERNAME
         # "control" is the HTTP endpoint; "control_port" the radio LAN port.
         http_port = int(line["control"].rsplit(":", 1)[1])
         assert line["control"] == f"http://127.0.0.1:{http_port}"
@@ -312,14 +321,25 @@ async def test_subprocess_end_to_end() -> None:
         radio = IcomRadio(
             host=line["host"],
             port=line["control_port"],
-            username=line["username"],
-            password=line["password"],
+            username=_TEST_USERNAME,
+            password=_TEST_PASSWORD,
             timeout=5.0,
             model="IC-7610",
         )
         with fast_connect():
             await radio.connect()
         assert await radio.get_freq() == 14_074_000
+
+        # The password is never printed, logged or returned: scan the
+        # process output so far and both readable control bodies while the
+        # subprocess is still running.
+        async with ClientSession() as http:
+            state_body = await (await http.get(f"{line['control']}/state")).text()
+        async with ClientSession() as http:
+            trace_body = await (await http.get(f"{line['control']}/trace")).text()
+        assert _TEST_PASSWORD not in first.decode()
+        assert _TEST_PASSWORD not in state_body
+        assert _TEST_PASSWORD not in trace_body
 
         async with ClientSession() as http:
             async with http.post(
@@ -336,8 +356,9 @@ async def test_subprocess_end_to_end() -> None:
                 assert await resp.json() == {"ok": True}
 
         assert await asyncio.wait_for(proc.wait(), 10) == 0
-        # Nothing else was ever printed on stdout.
+        # Nothing else was ever printed on stdout; no password anywhere.
         assert await proc.stdout.read() == b""
+        assert _TEST_PASSWORD not in await proc.stderr.read()
 
         with socket.socket() as sock:
             sock.settimeout(2.0)

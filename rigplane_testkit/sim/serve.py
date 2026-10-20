@@ -244,7 +244,15 @@ def build_radio(args: argparse.Namespace) -> MockIcomRadio:
     ``keepalive_hold_s`` defaults to the recorded real IC-7610 dead-session
     hold (83.4-85.9 s, see ``_DEFAULT_KEEPALIVE_HOLD_S`` in
     ``rigplane_testkit/icom/simulator.py``), not the 0.5 s fast-test default.
+    ``--username``/``--password`` override the constructor's fixed test
+    credentials; ``None`` (the CLI default) keeps them.
     """
+    # None = do not pass the kwarg: MockIcomRadio's own default applies.
+    credentials = {
+        key: value
+        for key, value in (("username", args.username), ("password", args.password))
+        if value is not None
+    }
     return MockIcomRadio(
         host=args.bind,
         port=0,
@@ -255,6 +263,7 @@ def build_radio(args: argparse.Namespace) -> MockIcomRadio:
         enable_audio=True,
         dual_receiver=True,
         stateful_ptt=True,
+        **credentials,
     )
 
 
@@ -369,8 +378,10 @@ def startup_line(
     radio: MockIcomRadio, args: argparse.Namespace, http_port: int
 ) -> dict:
     control_host, _ = args.control
-    # _username/_password are the constructor's fixed test credentials; the
-    # simulator exposes no public properties for them (nor for frequency).
+    # _username is the login username the simulator accepts (--username or
+    # the constructor's fixed test value; no public property exposes it).
+    # The password is deliberately absent: it is never printed, logged or
+    # returned by anything in this process.
     return {
         "sim": "rigplane-sim/1",
         "radio": "IC-7610",
@@ -380,7 +391,6 @@ def startup_line(
         "host": args.bind,
         "control_port": radio.control_port,
         "username": radio._username,
-        "password": radio._password,
         # Bracket IPv6 literals so the value parses as a URL.
         "control": f"http://{format_control_host(control_host)}:{http_port}",
         "seed": args.seed,

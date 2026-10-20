@@ -10,7 +10,8 @@ published `rigplane` wheel.
 
 ```
 python -m rigplane_testkit.sim serve --radio ic7610 [--seed N] \
-    [--bind HOST] [--control HOST:PORT] [--trace FILE] [--keepalive-hold-s S]
+    [--bind HOST] [--control HOST:PORT] [--trace FILE] [--keepalive-hold-s S] \
+    [--username NAME] [--password SECRET]
 ```
 
 | Flag | Default | Meaning |
@@ -21,6 +22,8 @@ python -m rigplane_testkit.sim serve --radio ic7610 [--seed N] \
 | `--control` | `127.0.0.1:0` | Control endpoint address; port 0 = ephemeral, reported on stdout. |
 | `--trace` | off | Append the trace as JSON lines to this file. |
 | `--keepalive-hold-s` | `85.0` | Dead-session hold; the recorded real IC-7610 holds 83.4–85.9 s. The simulator's constructor default (0.5 s) is for fast unit tests. |
+| `--username` | constructor default | Login username the simulator accepts (otherwise `MockIcomRadio`'s fixed test value). |
+| `--password` | constructor default | Login password the simulator accepts. Never printed, logged or returned. |
 
 ## Startup line
 
@@ -31,12 +34,18 @@ to stderr), with this key set and order:
 ```json
 {"sim":"rigplane-sim/1","radio":"IC-7610","fidelity":"A","evidence":"simulated",
  "transport":"lan","host":"127.0.0.1","control_port":12345,
- "username":"...","password":"...","control":"http://127.0.0.1:12345","seed":0}
+ "username":"...","control":"http://127.0.0.1:12345","seed":0}
 ```
 
-`username`/`password` are the simulator's fixed test credentials (not
-secrets). `control_port` is the simulator's LAN control port a radio client
-connects to; `control` is the local HTTP endpoint described below.
+`username` is the login username the simulator accepts (from `--username`,
+else the constructor's fixed test value). `control_port` is the simulator's
+LAN control port a radio client connects to; `control` is the local HTTP
+endpoint described below.
+
+Credentials: the simulator accepts the credentials passed with
+`--username`/`--password` (defaults are the constructor's fixed test values;
+see `MockIcomRadio`). The password is never printed, logged or returned; a
+caller that needs it passes it or uses the documented default.
 
 ## Control endpoint
 

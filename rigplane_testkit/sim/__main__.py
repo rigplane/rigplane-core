@@ -35,6 +35,18 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="simulated radio model",
     )
+    serve.add_argument(
+        "--username",
+        default=None,
+        help="login username the simulator accepts (default: the "
+        "simulator's fixed test username, see MockIcomRadio)",
+    )
+    serve.add_argument(
+        "--password",
+        default=None,
+        help="login password the simulator accepts; never printed, logged "
+        "or returned (default: the simulator's fixed test password)",
+    )
     serve.add_argument("--seed", type=int, default=0, help="FaultPlan seed (default 0)")
     serve.add_argument(
         "--bind",
