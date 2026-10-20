@@ -14,12 +14,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import Protocol
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
 from serial_stub import SerialMockRadio
-from rigplane.core.radio_protocol import RelativeVfoState
+from rigplane.core.radio_protocol import (
+    Radio,
+    RelativeVfoReadbackCapable,
+    RelativeVfoState,
+    VfoSlotCapable,
+)
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -78,12 +84,26 @@ class _FakeProfile:
         self.vfo_scheme = vfo_scheme
 
 
+class _SplitTxRadioSpec(Radio, VfoSlotCapable, RelativeVfoReadbackCapable, Protocol):
+    """Spec for the split-TX handler stand-ins.
+
+    The real Protocols the dance drives (core setters, slot
+    select/readback, relative readback), deliberately without
+    ``VfoSlotConfirmedCapable`` and ``RigctldRoutable``: ``getattr`` sees
+    their absence, so no attribute deletion is needed to model a radio
+    without the ACK-confirmed seam. Confirmed-seam tests assign
+    ``set_vfo_slot_confirmed`` explicitly (allowed with ``spec=``).
+    """
+
+    profile: _FakeProfile
+
+
 def _mock_radio(*, receiver_count: int, vfo_scheme: str) -> AsyncMock:
-    radio = AsyncMock()
-    del radio.rigctld_routing
-    # Model a radio without the ACK-confirmed seam: the dance falls back
-    # to select-plus-readback here (confirmed-path tests re-add it).
-    del radio.set_vfo_slot_confirmed
+    # Spec'd stand-in for a radio without the ACK-confirmed seam: the
+    # spec lacks set_vfo_slot_confirmed (and rigctld_routing), so the
+    # dance falls back to select-plus-readback here (confirmed-path
+    # tests assign the seam explicitly).
+    radio = AsyncMock(spec=_SplitTxRadioSpec)
     radio.profile = _FakeProfile(receiver_count=receiver_count, vfo_scheme=vfo_scheme)
 
     async def _select_slot(slot: str, receiver: int = 0) -> None:
