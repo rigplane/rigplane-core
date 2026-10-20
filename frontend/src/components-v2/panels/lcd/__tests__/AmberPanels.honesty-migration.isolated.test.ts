@@ -50,7 +50,12 @@ const scopeProps = vi.hoisted(() => ({
   },
 }));
 
+// MOR-2855 follow-up: `tx: true` is the top-level flag `toTxProps` reads
+// (`hasTx: caps?.tx`), declared the way amber-tx-truth.component.test.ts's
+// TX_CAPS does — the TX chip renders in this suite from the managed TX
+// snapshot (inactive; the harness defaults to RX), never from state.ptt.
 const amberCaps = {
+  tx: true,
   capabilities: [
     'rit', 'xit', 'vox', 'compressor', 'tuner', 'split', 'dial_lock', 'ip_plus',
   ],

@@ -66,7 +66,7 @@ vi.mock('$lib/runtime', () => ({
 // contract accuracy, not because a test requires it.
 vi.mock('$lib/runtime/props/panel-props', () => ({
   toTxProps: () => ({
-    txActive: false, voxActive: false, compActive: false, compLevel: 0,
+    voxActive: false, compActive: false, compLevel: 0,
     atuActive: false, atuTuning: false, hasTx: false, hasTuner: false, hasMonitor: false,
   }),
   toRitXitProps: () => ({

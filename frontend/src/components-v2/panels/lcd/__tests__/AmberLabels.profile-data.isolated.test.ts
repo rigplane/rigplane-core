@@ -70,7 +70,7 @@ vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => {
   return {
     ...actual,
     toTxProps: () => ({
-      txActive: false, voxActive: false, compActive: false, compLevel: 0,
+      voxActive: false, compActive: false, compLevel: 0,
       atuActive: false, atuTuning: false, hasTx: false, hasTuner: false, hasMonitor: false,
     }),
     toRitXitProps: () => ({

@@ -728,6 +728,7 @@ async def test_silent_drop_keeps_the_published_managed_tx_document_honest(
 
         deadline = time.monotonic() + _SILENT_DROP_BUDGET_S + _RELEASE_DEBT_GRACE_S
         samples = 0
+        keyed_samples = 0
         while True:
             await asyncio.sleep(0.1)
             status, document = await _http_json(
@@ -743,6 +744,7 @@ async def test_silent_drop_keeps_the_published_managed_tx_document_honest(
             if sim.ptt_on:
                 # The radio is still keyed: the document may not claim a
                 # clean RX (nothing transmitting, nothing owed).
+                keyed_samples += 1
                 assert not (
                     observed == "off" and owed is False and intent_kind == "rx"
                 ), f"clean RX claimed while the simulator is keyed: {document}"
@@ -762,7 +764,14 @@ async def test_silent_drop_keeps_the_published_managed_tx_document_honest(
             assert time.monotonic() < deadline, (
                 f"authority never settled after the silent drop: {state}"
             )
-        print(f"[ws-drop_silent-hold-pin] settled after {samples} document samples")
+        assert keyed_samples > 0, (
+            "simulator unkeyed before any keyed sample was taken; the "
+            "keyed-sample assertion never ran"
+        )
+        print(
+            f"[ws-drop_silent-hold-pin] settled after {samples} document "
+            f"samples ({keyed_samples} while keyed)"
+        )
     finally:
         with contextlib.suppress(Exception):
             await client.close()
