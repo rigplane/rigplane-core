@@ -42,6 +42,7 @@ import aiohttp
 
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
+from rigplane.runtime.controller_authority import ControllerAuthority
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
@@ -83,17 +84,22 @@ RSS_WARMUP_S = 60.0
 TX_SESSIONS_INTERVAL_S = 20.0
 # How long the winning session holds the transmitter before the cycle ends it.
 TX_HOLD_S = 1.0
-# TX must be off this long after a holder's link is cut or goes silent. The
-# lease is 6 s and the watchdog ticks every 2 s (ControllerAuthority.TTL_MS,
-# HEARTBEAT_MS); the rest is the release actuation and slack.
+# TX must be off this long after the holder ends, in any of the four modes. The
+# slowest is a silent holder: its lease (ControllerAuthority.TTL_MS) counts from
+# its grant and the watchdog ticks every ControllerAuthority.HEARTBEAT_MS; the
+# rest of the budget is the release actuation and slack.
 TX_OFF_BUDGET_S = 15.0
 # How a cycle ends the winner's transmission: it unkeys, its session is
 # deleted, its link is cut without a close, or it goes silent with the link open.
 _TX_END_MODES = ("unkey", "delete", "cut", "half_open")
 _TX_VIOLATIONS_KEPT = 20
-# After a cycle closes its clients no session may remain this long (the lease
-# is 6 s, so a session that is still there was not ended by its channel).
-_TX_SESSION_END_S = 4.0
+# After a cycle closes its clients no session may remain this long. A session
+# kept only by its lease outlives its last heartbeat by TTL_MS, and that
+# heartbeat is at most HEARTBEAT_MS old at the close, so such a session stays at
+# least this long: one still there then was not ended by its channel's loss.
+_TX_SESSION_END_S = (
+    ControllerAuthority.TTL_MS - ControllerAuthority.HEARTBEAT_MS
+) / 1000
 
 _TUNE_FREQS = (14_074_000, 14_074_500, 7_074_000, 7_074_500, 3_574_000)
 _MODES = ("USB", "LSB")
@@ -1175,12 +1181,12 @@ class _TxSessionClient:
         )
 
     def start_heartbeat(self) -> None:
-        """Renew the session every 2 s; a session that does not expires in 6 s."""
+        """Renew the session every HEARTBEAT_MS; one that does not expires after TTL_MS."""
 
         async def beat() -> None:
             assert self._ws is not None
             while True:
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(ControllerAuthority.HEARTBEAT_MS / 1000)
                 await self._ws.send_json({"type": "controller_heartbeat"})
 
         self._heartbeat = asyncio.create_task(beat(), name="soak-tx-heartbeat")
@@ -1550,7 +1556,7 @@ class SoakDriver:
             for client in clients:
                 await client.close()
         # Closing the clients ended their sessions on the server, which sees
-        # a primary channel go away; well inside the 6 s lease none may stay.
+        # a primary channel go away; none may stay for _TX_SESSION_END_S.
         if self._session_count is not None:
             deadline = time.monotonic() + _TX_SESSION_END_S
             while self._session_count() and time.monotonic() < deadline:

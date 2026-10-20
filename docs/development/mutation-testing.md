@@ -38,9 +38,9 @@ that imports the mutated modules. That import closure (~84 test files)
 was measured first: popular functions such as the frame codec's
 encode/decode inherit every integration test that touches them, and
 per-mutant runs reached roughly a minute. The committed selection is the
-focused per-module unit-test files, which keeps the full fifteen-module
-sweep to an estimated fifteen minutes (the baseline section below says
-where and how that estimate was measured). `mutmut` runs only the tests
+focused per-module unit-test files, which kept the full sweep of the
+fifteen modules of the baseline to an estimated fifteen minutes (the
+baseline section below says where and how that estimate was measured). `mutmut` runs only the tests
 its stats phase saw covering each mutated function, so per-mutant cost
 stays bounded by those focused tests.
 
