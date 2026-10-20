@@ -30,6 +30,7 @@
   import { ValueControl } from '../components-v2/controls/value-control';
   import AttenuatorControl from '../components-v2/controls/AttenuatorControl.svelte';
   import { getShortcutHint } from '../components-v2/layout/shortcut-hints';
+  import { formatPreLabel } from '../components-v2/panels/rf-frontend-utils';
   import type {
     DualParamIssuedStatusPresentation,
     DualParamIssuedStatusSnapshot,
@@ -419,8 +420,7 @@
 
   const preampChoices = (): readonly number[] => rf?.preValues ?? [];
   const attenuatorChoices = (): readonly number[] => rf?.attValues ?? [];
-  const preampChoiceText = (value: number): string =>
-    rf?.preLabels?.[String(value)] ?? (value === 0 ? 'OFF' : `P${value}`);
+  const preampChoiceText = (value: number): string => formatPreLabel(value, rf?.preLabels);
   const attenuatorChoiceText = (value: number): string => value === 0 ? 'OFF' : `${value} dB`;
   // Same hint hosts RfFrontEnd exposes (MOR-2793).
   const rfGainShortcut = (): string | null => getShortcutHint('adjust_rf_gain');

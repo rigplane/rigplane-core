@@ -2178,8 +2178,9 @@ function validateDsp(value: unknown, path: string): DspViewModel {
   };
 }
 
-/** N4 again: exactly the eight facts the adapter reads (MOR-1293 added
- *  `digiSel`/`ipPlus` to 6A's original six), no speculative keys.
+/** N4 again: exactly the nine facts the adapter reads (MOR-1293 added
+ *  `digiSel`/`ipPlus` to 6A's original six; MOR-3574 added the optional
+ *  `preLabels`), no speculative keys.
  *  See `radio-view-model-adapter.ts::deriveRfFrontEnd`. */
 function validateRfFrontEnd(value: unknown, path: string): RfFrontEndViewModel {
   const v = record(value, path);
