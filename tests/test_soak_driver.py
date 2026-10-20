@@ -35,9 +35,10 @@ radio disconnect/connect, and pins:
   outlives its channel — for unkey, cut and half_open alike, and with the
   leases forced old at the close.
 * the post-reconnect stability settle (MOR-3575): a transient FD surplus
-  that drains after recovery passes once settled, a persistent one still
-  fails, and a feed that never settles cannot stall the cycle past its
-  window.
+  that drains after recovery passes once settled — even across a flat
+  plateau mid-drain — a persistent one still fails, and the settle
+  gives up at its window or on a hung sample. The feeds are scripted;
+  the window and hang tests use short real timeouts.
 """
 
 from __future__ import annotations
@@ -742,16 +743,11 @@ def _process_script(
     fds_values: list[int], tasks: int = 30
 ) -> Callable[[], dict[str, int]]:
     """A runtime ``process`` feed replaying scripted FD counts, then holding."""
-
     values = iter(fds_values)
     last = fds_values[-1]
 
     def script() -> dict[str, int]:
-        try:
-            fds = next(values)
-        except StopIteration:
-            fds = last
-        return {"rssBytes": 1024, "openFds": fds, "asyncioTasks": tasks}
+        return {"rssBytes": 1024, "openFds": next(values, last), "asyncioTasks": tasks}
 
     return script
 
@@ -759,13 +755,10 @@ def _process_script(
 async def _run_cycle_with_process_script(
     monkeypatch: pytest.MonkeyPatch,
     script: Callable[[], dict[str, int]],
+    *,
+    hang_settle_sample: bool = False,
 ) -> tuple[soak_driver.SoakDriver, list[float]]:
-    """One recovered reconnect cycle over a scripted process feed.
-
-    Mirrors the ``_cycle`` harness in test_soak_probe_diagnostics.py: no
-    stack, no clock. Returns the driver and the recorded asyncio.sleep
-    delays.
-    """
+    """One recovered cycle over a scripted feed; records asyncio.sleep delays."""
     driver = soak_driver.SoakDriver(
         soak_driver.SoakConfig(duration_s=45),
         "http://127.0.0.1:1",
@@ -773,9 +766,15 @@ async def _run_cycle_with_process_script(
         SimpleNamespace(fault_plan=None),
     )
     sampler = soak_driver.ProcessMetricsSampler(object(), "http://127.0.0.1:1")
+    real_sleep = asyncio.sleep
     sleeps: list[float] = []
+    calls = 0
 
     async def runtime() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if hang_settle_sample and calls == 2 * soak_driver._STABILITY_PROBE_COUNT + 1:
+            await real_sleep(30.0)
         return {"process": script()}
 
     async def status() -> str:
@@ -814,72 +813,80 @@ def _stability_status(entry: dict[str, Any], field: str) -> dict[str, Any]:
 async def test_stability_post_probe_settles_a_transient_fd_surplus(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A draining transient must not read as a leak (MOR-3575).
-
-    CI run 39451768550 failed with FDs 48 -> 55 (delta 7 > 5) on a
-    loaded xdist worker: closed sockets drain a few loop turns after
-    recovery. The script replays that shape — a first post median of 55
-    over a 48 baseline, then a decay back to 48 — and the criterion
-    must PASS.
-    """
+    """A draining transient must not read as a leak (MOR-3575, CI 39451768550)."""
     script = _process_script(
-        [48, 48, 48, 56, 55, 54, 53, 52, 51, 50, 49, 48, 48, 48, 48, 48]
+        [48, 48, 48, 56, 55, 54, 53, 52, 51, 50, 49, 48, 48, 48, 48, 48, 48]
     )
     driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
     (entry,) = driver._reconnects
     assert entry["recovered"] is True
     assert entry["fdsPost"] == 48
     assert entry["tasksPost"] == 30
-    fds = _stability_status(entry, "fds")
-    assert fds["status"] == "PASS", fds
-    tasks = _stability_status(entry, "tasks")
-    assert tasks["status"] == "PASS", tasks
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    assert _stability_status(entry, "tasks")["status"] == "PASS"
     assert sleeps[0] == 3.0
     settle = sleeps[1:]
-    assert settle and all(
-        step == soak_driver._STABILITY_SETTLE_STEP_S for step in settle
-    )
+    assert settle and all(s == soak_driver._STABILITY_SETTLE_STEP_S for s in settle)
     assert sum(settle) < soak_driver._STABILITY_SETTLE_WINDOW_S
 
 
 async def test_stability_post_probe_still_fails_a_persistent_fd_surplus(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A genuine leak survives the settle window (MOR-3575 control).
-
-    Same 48 -> 55 shape, but the count never drains: the settle exits
-    on its first comparison and the second median still fails.
-    """
-    script = _process_script([48, 48, 48] + [55] * 8)
+    """A surplus that never drains still fails (MOR-3575 control)."""
+    script = _process_script([48, 48, 48] + [55] * 10)
     driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
     (entry,) = driver._reconnects
     assert entry["recovered"] is True
     assert entry["fdsPost"] == 55
-    fds = _stability_status(entry, "fds")
-    assert fds["status"] == "FAIL", fds
-    assert sleeps == [3.0, soak_driver._STABILITY_SETTLE_STEP_S]
+    assert _stability_status(entry, "fds")["status"] == "FAIL"
+    assert sleeps == [3.0] + [soak_driver._STABILITY_SETTLE_STEP_S] * 3
+
+
+async def test_stability_settle_waits_out_a_plateau_before_further_decay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A flat pair mid-drain is not the settled value (MOR-3575)."""
+    script = _process_script(
+        [48, 48, 48, 56, 55, 54, 55, 55, 55, 54, 53, 52, 51, 50, 49, 48, 48, 48, 48, 48]
+    )
+    driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
+    (entry,) = driver._reconnects
+    assert entry["fdsPost"] == 48
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    assert len(sleeps) > 2
 
 
 async def test_stability_settle_is_bounded_by_its_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Counts that never stop decreasing cannot stall the driver (MOR-3575).
-
-    A hang-shaped feed (FDs falling forever) with a 50 ms window: the
-    cycle still concludes and the surplus still fails.
-    """
+    """A feed that never settles cannot stall the settle past its window."""
     monkeypatch.setattr(soak_driver, "_STABILITY_SETTLE_WINDOW_S", 0.05)
-    falling = itertools.chain([48, 48, 48], itertools.count(5000, -1))
+    falling = itertools.chain([48, 48, 48], itertools.count(10**9, -1))
 
     def script() -> dict[str, int]:
         return {"rssBytes": 1024, "openFds": next(falling), "asyncioTasks": 30}
 
     started = time.monotonic()
     driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
-    elapsed = time.monotonic() - started
+    assert time.monotonic() - started < 10.0
     (entry,) = driver._reconnects
     assert entry["recovered"] is True
-    fds = _stability_status(entry, "fds")
-    assert fds["status"] == "FAIL", fds
+    assert _stability_status(entry, "fds")["status"] == "FAIL"
     assert len(sleeps) > 1
-    assert elapsed < 10.0
+
+
+async def test_stability_settle_gives_up_on_a_hung_sample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sample past the window ends the settle; the cycle still concludes."""
+    monkeypatch.setattr(soak_driver, "_STABILITY_SETTLE_WINDOW_S", 0.05)
+    script = _process_script([48, 48, 48, 56, 55, 54, 48, 48, 48])
+    driver, sleeps = await _run_cycle_with_process_script(
+        monkeypatch, script, hang_settle_sample=True
+    )
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert entry["fdsPost"] == 48
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    assert sleeps == [3.0]
