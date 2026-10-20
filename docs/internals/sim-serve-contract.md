@@ -32,8 +32,8 @@ with this key set and order:
 ```
 
 (`username` from `--username`, else the fixed test value; `control_port` is
-the simulator's LAN control port a radio client connects to; `control` is
-the HTTP endpoint below, IPv6 literals bracketed.)
+the radio LAN port a client connects to; `control` is the HTTP endpoint
+below.)
 
 ## Control endpoint
 
@@ -43,8 +43,7 @@ loop — one loop, no threads).
 - `GET /state` → `{"frequency_hz":int,"mode":int,"ptt":bool,"session_held":bool,"login_count":int}`
 - `GET /trace?since=N` → `{"events":[...],"next":int}` — records with `n >= N`.
 - `POST /stop` → `{"ok":true}`, then a clean shutdown (same path as
-  SIGINT/SIGTERM): site stopped, simulator stopped, exit 0. A second `POST
-  /stop` before it completes is harmless.
+  SIGINT/SIGTERM); a second `POST /stop` before it completes is harmless.
 - `POST /event` with `{"event":"<name>", ...args}` → `{"ok":true,...}`, or
   HTTP 400 `{"ok":false,"error":"unsupported"|"invalid_args",...}` for an
   unknown event / bad arguments.
@@ -78,16 +77,17 @@ real elapsed time (recovery timings need it) and is the only
 time-dependent field. The server itself adds no ephemeral ports to trace
 records (the start record carries the `--control` hint, port 0 included);
 extra keys a client sends in an event body are recorded in `args` with
-non-finite floats (any nesting depth, from permissively parsed
-`NaN`/`Infinity` literals) replaced by their string spellings — the
-snapshot, the `--trace` file and every HTTP response stay strict JSON.
+non-finite floats (from permissively parsed `NaN`/`Infinity` literals)
+replaced by their string spellings — the snapshot, the `--trace` file and
+every HTTP response stay strict JSON. Sanitising recurses per nesting
+level: past the Python recursion limit the event is rejected with 400
+`invalid_args` (traced with empty `args`) before any handler runs.
 
 ## Evidence labelling
 
 The startup line carries `"evidence":"simulated"`. `fidelity` is the tier of
 the model's evidence: **A** — replay against a real recording of this exact
-model (the IC-7610 simulator has recorded conformance in
-`tests/testkit/test_ic7610_conformance.py`); **B** — manual oracles only;
-**C** — profile declarations only.
+model (the IC-7610 simulator has recorded conformance);
+**B** — manual oracles only; **C** — profile declarations only.
 
 Planned: `lan_drop` (exact N-second UDP blackout), tracked in MOR-3593.

@@ -6,7 +6,7 @@ import argparse
 import asyncio
 import logging
 
-from rigplane_testkit.sim.serve import DEFAULT_KEEPALIVE_HOLD_S, run_serve
+from rigplane_testkit.sim.serve import DEFAULT_KEEPALIVE_HOLD_S, _is_num, run_serve
 
 
 def _control_arg(value: str) -> tuple[str, int]:
@@ -23,6 +23,13 @@ def _control_arg(value: str) -> tuple[str, int]:
             f"bracket IPv6 literals as [host]:port, got {value!r}"
         )
     return host, int(port)
+
+
+def _hold_s_arg(value: str) -> float:
+    seconds = float(value)  # float("x") raises ValueError; argparse exits 2 too
+    if not _is_num(seconds) or seconds < 0:
+        raise argparse.ArgumentTypeError(f"a finite number >= 0, got {value!r}")
+    return seconds
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -68,10 +75,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--keepalive-hold-s",
-        type=float,
+        type=_hold_s_arg,
         default=DEFAULT_KEEPALIVE_HOLD_S,
-        help="seconds the radio holds a dead client's session "
-        "(default: %(default)s, the recorded real IC-7610 hold)",
+        help="seconds the radio holds a dead client's session, a finite "
+        "number >= 0 (default: %(default)s, the recorded real IC-7610 hold)",
     )
     return parser
 

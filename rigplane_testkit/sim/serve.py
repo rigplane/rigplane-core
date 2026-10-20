@@ -3,11 +3,10 @@
 ``run_serve`` owns one asyncio loop: the simulator's UDP servers, the local
 aiohttp control endpoint and every event handler — no threads. One JSON line
 goes to stdout once both listen (logs to stderr); every accepted or rejected
-control event, plus process start and stop, lands in a bounded trace
-(optionally a JSONL file). With the same launcher arguments (``--seed``,
-``--bind``, ``--control``, ``--keepalive-hold-s``, ``--username``) and the
-same event sequence, the trace is identical once the real-time ``t`` field
-is removed.
+control event, plus start and stop, lands in a bounded trace (optionally a
+JSONL file). With the same launcher arguments (``--seed``, ``--bind``,
+``--control``, ``--keepalive-hold-s``, ``--username``) and the same event
+sequence, the trace is identical once the real-time ``t`` field is removed.
 """
 
 from __future__ import annotations
@@ -51,8 +50,9 @@ def _is_num(value: object) -> bool:
 
 
 def _json_safe(value: object) -> object:
-    """Replace non-finite floats (any dict/list depth) with their string
-    spellings — strict JSON cannot emit them as numbers."""
+    """Replace non-finite floats with their string spellings — strict JSON
+    cannot emit them as numbers. Nesting is bounded by Python recursion;
+    past the limit the event caller rejects the body (RecursionError)."""
     if isinstance(value, float):
         if math.isnan(value):
             return "NaN"
@@ -120,9 +120,9 @@ _EVENTS: dict[str, Callable[[MockIcomRadio, dict], dict]] = {
 
 class TraceLog:
     """Bounded in-memory event trace with an optional JSONL file. Records are
-    ``{"n", "t", "kind", "name", "args", "result"}``; ``t`` is real seconds
-    since construction — the only time-dependent field. ``args``/``result``
-    are sanitised: non-finite floats become string spellings (strict JSON).
+    ``{"n", "t", "kind", "name", "args", "result"}``: ``t`` (real seconds
+    since construction) is the only time-dependent field; ``args``/``result``
+    are sanitised — non-finite floats become string spellings.
     """
 
     def __init__(self, path: str | None = None) -> None:
@@ -181,9 +181,7 @@ class ServeStack:
 
 def build_radio(args: argparse.Namespace) -> MockIcomRadio:
     """The IC-7610 simulator with the serve defaults (MOR-3593): the recorded
-    real dead-session hold (83.4-85.9 s), not the 0.5 s fast-test default,
-    plus optional credential overrides.
-    """
+    real dead-session hold (83.4-85.9 s), not the 0.5 s fast-test default."""
     # None = do not pass the kwarg: MockIcomRadio's own default applies.
     pairs = (("username", args.username), ("password", args.password))
     credentials = {key: value for key, value in pairs if value is not None}
@@ -291,19 +289,20 @@ async def _handle_event(request: web.Request) -> web.Response:
             trace, name, args, {"ok": False, "error": "unsupported", "event": name}
         )
     try:
+        safe_args = _json_safe(args)
+    except RecursionError:  # unrecordably nested: reject, no handler runs
+        return _reject(
+            trace, name, {}, {"ok": False, "error": "invalid_args", "event": name}
+        )
+    try:
         applied = handler(radio, body)
         result = {"ok": True, "event": name, **applied}
-        trace.append("event", name, args, result)
+        trace.append("event", name, safe_args, result)
     except InvalidArgs as exc:
         return _reject(
             trace,
-            name,
-            args,
+            safe_args,
             {"ok": False, "error": "invalid_args", "event": name, "detail": str(exc)},
-        )
-    except RecursionError:  # the args sanitizer recurses per nesting level
-        return _reject(
-            trace, name, {}, {"ok": False, "error": "invalid_args", "event": name}
         )
     return web.json_response(result, dumps=_dumps)
 
@@ -319,8 +318,7 @@ async def _handle_trace(request: web.Request) -> web.Response:
 
 async def _handle_stop(request: web.Request) -> web.Response:
     stop_event: asyncio.Event = request.app[_STOP_EVENT_KEY]
-    # Flush the response before teardown. A repeat POST schedules another
-    # call_later timer, and Event.set is idempotent once the event is set.
+    # Flush the response before teardown; a repeat POST only re-arms the idempotent set.
     asyncio.get_running_loop().call_later(_STOP_DRAIN_S, stop_event.set)
     return web.json_response({"ok": True}, dumps=_dumps)
 

@@ -1,9 +1,8 @@
 """Tests for the standalone simulator launcher (`python -m rigplane_testkit.sim serve`).
 
-In-process tests build the same objects ``serve.py`` builds (via
-``build_stack``) and drive the control endpoint through the aiohttp test
-client; subprocess tests start the real entry point — one end to end
-against a production ``IcomRadio``, the rest checking signals and --trace.
+In-process tests use ``build_stack`` and the aiohttp test client;
+subprocess tests start the real entry point — one end to end against a
+production ``IcomRadio``, the rest checking signals and --trace.
 """
 
 from __future__ import annotations
@@ -39,15 +38,13 @@ _STARTUP_KEYS = (
     "sim radio fidelity evidence transport host control_port username control seed"
 ).split()
 
-# Obvious test-only credentials for the subprocess run: the password is a
-# value nothing but --password could put on the wire, so any appearance of
-# it in process output is a leak.
+# Obvious test-only credentials for the subprocess run: only --password can
+# put this value on the wire, so any appearance in output is a leak.
 _TEST_USERNAME = "sim-e2e-user"
 _TEST_PASSWORD = "sim-e2e-pass-2f8d41"
 
-# JSON literals a permissive parser (aiohttp's request.json()) accepts but
-# that must never reach a radio timer as a duration; true and "5" pin the
-# bool/str rejection next to them. set_frequency adds 7.5 and "7".
+# JSON literals a permissive parser accepts but that must never reach a
+# radio timer as a duration; set_frequency additionally rejects 7.5 and "7".
 _BAD_NUMERIC_LITERALS = ("NaN", "Infinity", "-Infinity", "true", '"5"')
 _HZ_BAD_LITERALS = ("NaN", "Infinity", "-Infinity", "true", "7.5", '"7"')
 
@@ -102,13 +99,11 @@ async def test_event_error_responses() -> None:
         resp = await s.client.post(
             "/event", data=b"not json", headers={"Content-Type": "application/json"}
         )
-        assert resp.status == 400
-        assert (await resp.json())["error"] == "invalid_args"
+        assert resp.status == 400 and (await resp.json())["error"] == "invalid_args"
 
 
 async def test_non_finite_or_mistyped_numbers_rejected() -> None:
-    # Raw text bodies: NaN/Infinity parse permissively, so the guard lives
-    # in the handler, not in JSON decoding.
+    # Raw text bodies: the guard lives in the handler, not JSON decoding.
     with pytest.raises(AssertionError):
         _strict_loads('{"x": NaN}')  # the parser itself must be strict
     async with _stack() as s:
@@ -119,14 +114,12 @@ async def test_non_finite_or_mistyped_numbers_rejected() -> None:
                 assert resp.status == 400, literal
                 body = _strict_loads(await resp.text())
                 assert body["error"] == "invalid_args", literal
-                # event+detail present: a handler rejection, not a parse error.
                 assert body["event"] == event and body["detail"], literal
 
         for literal in _HZ_BAD_LITERALS:
             resp = await _post_raw(s, f'{{"event":"set_frequency","hz":{literal}}}')
             assert resp.status == 400, literal
             body = _strict_loads(await resp.text())
-            # event+detail present: a handler rejection, not a parse error.
             assert body["error"] == "invalid_args", literal
             assert body["event"] == "set_frequency" and body["detail"], literal
 
@@ -168,9 +161,11 @@ async def test_huge_integers_rejected() -> None:
 
 
 async def test_deeply_nested_body_rejected_and_traced() -> None:
-    # 5000 levels: parsing survives; the args sanitizer's recursion gives up.
+    # 5000 levels: parsing survives; the sanitizer rejects before any handler.
     async with _stack() as s:
         deep = "[" * 5000 + "]" * 5000
+        before = await (await s.client.get("/state")).json()
+        token = s.inner.radio.token
         resp = await _post_raw(s, f'{{"event":"session_drop","junk":{deep}}}')
         assert resp.status == 400
         verdict = {"ok": False, "error": "invalid_args", "event": "session_drop"}
@@ -178,6 +173,9 @@ async def test_deeply_nested_body_rejected_and_traced() -> None:
         rec = (await (await s.client.get("/trace")).json())["events"][-1]
         assert (rec["kind"], rec["name"], rec["args"]) == ("event", "session_drop", {})
         assert rec["result"] == verdict
+        # No handler ran: /state unchanged; a drop that ran rotates the token.
+        assert await (await s.client.get("/state")).json() == before
+        assert s.inner.radio.token == token
 
 
 async def test_set_frequency_changes_state() -> None:
@@ -205,7 +203,6 @@ async def test_set_frequency_changes_state() -> None:
 
 async def test_second_stop_is_harmless() -> None:
     async with _stack() as s:
-        # Every POST arms stop_event.set; count the real 0->1 flips.
         transitions = 0
         original_set = s.inner.stop_event.set
 
@@ -217,9 +214,8 @@ async def test_second_stop_is_harmless() -> None:
         s.inner.stop_event.set = _counting_set  # type: ignore[method-assign]
         for _ in range(2):
             resp = await s.client.post("/stop")
-            assert resp.status == 200
-            assert await resp.json() == {"ok": True}
-        await asyncio.sleep(0.3)  # longer than the 0.25 s stop drain
+            assert resp.status == 200 and await resp.json() == {"ok": True}
+        await asyncio.wait_for(s.inner.stop_event.wait(), 5)
         assert s.inner.stop_event.is_set() and transitions == 1
 
 
@@ -228,13 +224,11 @@ def test_trace_log_is_bounded_but_n_keeps_counting() -> None:
     for i in range(TRACE_RECORD_LIMIT + 5):
         trace.append("event", "tick", {"i": i}, {"ok": True})
     snapshot = trace.snapshot(0)
-    # Only the last TRACE_RECORD_LIMIT records stay in memory, while n
-    # keeps counting past the dropped records (no reuse).
+    # The last TRACE_RECORD_LIMIT records stay in memory; n keeps counting.
     assert len(snapshot["events"]) == TRACE_RECORD_LIMIT
     assert snapshot["events"][0]["n"] == 5
     assert snapshot["events"][-1]["n"] == TRACE_RECORD_LIMIT + 4
     assert snapshot["next"] == TRACE_RECORD_LIMIT + 5
-    # since past the end: an empty list.
     assert trace.snapshot(snapshot["next"])["events"] == []
 
 
@@ -245,6 +239,14 @@ def test_control_host_forms() -> None:
     assert format_control_host("fe80::1") == "[fe80::1]"
     with pytest.raises(argparse.ArgumentTypeError, match=r"\[host\]:port"):
         _control_arg("::1")
+
+
+@pytest.mark.parametrize("bad", ["nan", "inf", "-1"])
+def test_hold_s_rejects_nonfinite_or_negative(bad: str, capsys) -> None:
+    with pytest.raises(SystemExit) as exc:
+        _args("--keepalive-hold-s", bad)
+    assert exc.value.code == 2
+    assert "--keepalive-hold-s" in capsys.read_outerr().err
 
 
 # --- Trace ------------------------------------------------------------------
@@ -282,7 +284,6 @@ async def test_trace_records_and_since_filter() -> None:
 
 # --- Trace determinism --------------------------------------------------------
 
-# All four supported events plus two rejected posts.
 _DETERMINISM_EVENTS = [
     {"event": "set_frequency", "hz": 7_074_000},
     {"event": "set_frequency", "hz": 0},
@@ -376,9 +377,8 @@ async def test_subprocess_end_to_end(tmp_path: Path) -> None:
             await radio.connect()
         assert await radio.get_freq() == 14_074_000
 
-        # The password is never printed, logged or returned: scan the
-        # startup line and both readable control bodies, then drive the
-        # endpoint, while the subprocess is still running.
+        # The password is never printed, logged or returned: scan output
+        # and responses while the subprocess is still running.
         async with ClientSession() as http:
             state_body = await (await http.get(f"{line['control']}/state")).text()
             trace_body = await (await http.get(f"{line['control']}/trace")).text()
@@ -402,8 +402,7 @@ async def test_subprocess_end_to_end(tmp_path: Path) -> None:
         # Nothing else was ever printed on stdout; no password anywhere.
         assert await proc.stdout.read() == b""
         stderr = await proc.stderr.read()
-        # U+FFFD replacements of non-UTF-8 bytes cannot spell the ASCII
-        # password, so decoding does not weaken this scan.
+        # U+FFFD replacement cannot spell the ASCII password, so this scan stays safe.
         assert _TEST_PASSWORD not in stderr.decode(errors="replace")
     finally:
         await _kill_if_alive(proc)
