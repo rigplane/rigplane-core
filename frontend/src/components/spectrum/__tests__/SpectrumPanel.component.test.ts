@@ -2448,6 +2448,11 @@ describe('managed scope projection (MOR-2367)', () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     let clock = 0;
     const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    const generations = new SvelteMap([['current', 17]]);
+    const original = Object.getOwnPropertyDescriptor(runtimeHarness.state, 'currentState')!;
+    Object.defineProperty(runtimeHarness.state, 'currentState', {
+      configurable: true, get: () => ({ source: 'test-state', providerGeneration: generations.get('current'), active: 'MAIN' }),
+    });
     try {
       mountPanel();
       let id = 0;
@@ -2477,12 +2482,12 @@ describe('managed scope projection (MOR-2367)', () => {
       clock += 2 * 60 * 60 * 1000;
       deliver(1);
       deliver(1);
-      runtimeHarness.state.currentState = Object.freeze({ source: 'test-state', providerGeneration: 18, active: 'MAIN' });
-      flushSync();
+      generations.set('current', 18); flushSync();
       deliver(1);
       for (let index = 0; index < 3; index += 1) deliver(1);
       expect(painted()).toEqual([1, 6, 19, 22]);
     } finally {
+      Object.defineProperty(runtimeHarness.state, 'currentState', original);
       nowSpy.mockRestore();
       push.mockRestore();
     }
@@ -2928,18 +2933,30 @@ describe('center panorama motion (MOR-2464)', () => {
   it('binds recentered frame geometry to pixels before the row is written (real component path)', async () => {
     const updateSpy = vi.spyOn(WaterfallRenderer.prototype, 'updateOptions');
     const pushSpy = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    let panoramaNow = 0;
+    vi.stubGlobal('performance', { now: () => panoramaNow });
     try {
       const { target, props } = mountPanorama(panoramaProjection());
-      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+      // MOR-3471: warm the fresh gate to steady painting with
+      // live-spaced sequences so the asserted rows below paint.
+      for (let sequence = 2; sequence <= 5; sequence += 1) {
+        panoramaNow += 83;
+        props.set('projection', panoramaProjection(14_050_000, 50_000, sequence)); flushSync();
+      }
+      panoramaNow += 83;
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 6, 1_000)); flushSync();
+      panoramaNow += 140;
       await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
       updateSpy.mockClear(); pushSpy.mockClear();
-      props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
+      panoramaNow += 83;
+      props.set('projection', panoramaProjection(14_051_000, 50_000, 7)); flushSync();
       expect(pushSpy).toHaveBeenCalled();
       const binding = bindingOrders(updateSpy, 14_051_000, 0);
       expect(binding.length).toBeGreaterThan(0);
       expect(Math.min(...binding)).toBeLessThan(pushSpy.mock.invocationCallOrder.at(-1)!);
       expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
     } finally {
+      vi.unstubAllGlobals();
       updateSpy.mockRestore();
       pushSpy.mockRestore();
     }

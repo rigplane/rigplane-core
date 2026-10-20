@@ -52,6 +52,14 @@ function channel() {
   };
 }
 
+// A valid scope frame with an arbitrary wire sequence (uint16 LE at
+// offset 11), used for pre-trace warm-up deliveries.
+function warmFrame(wireSequence: number): string {
+  const wire = [wireSequence & 0xff, wireSequence >> 8]
+    .map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `010000809fd5002026d700${wire}0003000080ff`;
+}
+
 describe('binary → actual controller → actual panel → actual canvases', () => {
   it.each([
     ['hardware', 'ordinary', false], ['hardware', 'ordinary', true],
@@ -101,6 +109,17 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       // Literal Python-encoder golden: seed connection liveness before opt-in.
       transport.receive('010000809fd5002026d700ff000003000080ff');
       flushSync(); drawPending();
+      // MOR-3471: warm the waterfall freshness gate to steady painting
+      // (the fresh gate paints its first delivery, then withholds until
+      // five live-spaced deliveries re-earn painting) so trace-window
+      // frames paint on their own spacing merit. Pre-trace warm-ups are
+      // invisible to the trace but shift the controller's accepted-sequence
+      // counter: trace-window frames below are accepted 7, 8, 9.
+      for (let warm = 0; warm < 5; warm += 1) {
+        now += 83;
+        transport.receive(warmFrame(100 + warm));
+        flushSync(); drawPending();
+      }
       expect(channelFactory).toHaveBeenCalledWith(source === 'audio_fft' ? 'audio-scope' : 'scope');
       if (mode === 'disabled') {
         expect(button('Start trace')).toBeUndefined();
@@ -160,22 +179,23 @@ describe('binary → actual controller → actual panel → actual canvases', ()
         ]);
         for (const stage of ['callback', 'accepted', 'fanout', 'spectrum_push']) {
           expect(events(stage)).toMatchObject([
-            { atMs: 10, source, wireSequence: 65535, acceptedSequence: 2, document: { hidden: false } },
-            { atMs: mode === 'continued-hidden' ? 40 : 540, source, wireSequence: 0, acceptedSequence: 3,
+            { atMs: 10, source, wireSequence: 65535, acceptedSequence: 7, document: { hidden: false } },
+            { atMs: mode === 'continued-hidden' ? 40 : 540, source, wireSequence: 0, acceptedSequence: 8,
               document: { hidden: mode === 'continued-hidden' } },
-            { atMs: 540, source, wireSequence: 1, acceptedSequence: 4, document: { hidden: false, hasFocus: false } },
+            { atMs: 540, source, wireSequence: 1, acceptedSequence: 9, document: { hidden: false, hasFocus: false } },
           ]);
         }
-        // MOR-3471 freshness gate: only the registration's first delivery
-        // paints by now — the later deliveries sit inside the fresh gate's
-        // resume run (or arrive hidden), so they reach the transport and
-        // fan-out stages above without painting a row.
+        // MOR-3471 freshness gate: with the gate warmed to steady
+        // painting, painting keeps the original characterization. In
+        // continued-hidden only seq 8 is withheld (delivered while
+        // hidden); in deferred-return all three paint (visible,
+        // live-spaced once the gap resolves).
         expect(events('waterfall_push').map((e: { acceptedSequence: number }) => e.acceptedSequence))
-          .toEqual([2]);
+          .toEqual(mode === 'continued-hidden' ? [7, 9] : [7, 8, 9]);
         for (const stage of ['raf', 'spectrum_render']) {
           expect(events(stage)).toMatchObject([
-            { atMs: 10, wireSequence: 65535, acceptedSequence: 2 },
-            { atMs: 550, wireSequence: 1, acceptedSequence: 4, document: { hidden: false } },
+            { atMs: 10, wireSequence: 65535, acceptedSequence: 7 },
+            { atMs: 550, wireSequence: 1, acceptedSequence: 9, document: { hidden: false } },
           ]);
         }
         expect(events('coalesced')).toEqual([]);
@@ -193,14 +213,15 @@ describe('binary → actual controller → actual panel → actual canvases', ()
         expect(report.timeline.filter((e: { stage: string }) => e.stage === stage)
           .map((e: { wireSequence: number }) => e.wireSequence)).toEqual([65535, 0]);
       }
-      // MOR-3471: the two deliveries arrive back-to-back, so the second
-      // is burst-drain-spaced and paints no row.
+      // The gate is warmed to steady painting before the trace, so the
+      // back-to-back pair stays below the discontinuity threshold and
+      // both rows paint (status quo for sub-threshold spacing).
       expect(report.timeline.filter((e: { stage: string }) => e.stage === 'waterfall_push')
-        .map((e: { wireSequence: number }) => e.wireSequence)).toEqual([65535]);
+        .map((e: { wireSequence: number }) => e.wireSequence)).toEqual([65535, 0]);
       expect(report.timeline.filter((e: { stage: string }) => e.stage === 'spectrum_render'))
-        .toMatchObject([{ wireSequence: 0, acceptedSequence: 3, transportEpoch: 1 }]);
+        .toMatchObject([{ wireSequence: 0, acceptedSequence: 8, transportEpoch: 1 }]);
       expect(report.timeline.filter((e: { stage: string }) => e.stage === 'coalesced'))
-        .toMatchObject([{ wireSequence: 65535, acceptedSequence: 2 }]);
+        .toMatchObject([{ wireSequence: 65535, acceptedSequence: 7 }]);
       expect(report.reason).toBe('operator');
       expect(report.timelineOverflow).toBe(false);
       if (exportThrows) expect(target.textContent).toContain('Trace export callback failed');
