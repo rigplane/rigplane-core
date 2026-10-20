@@ -879,7 +879,9 @@ async def test_an_expired_session_frees_capacity_for_its_ip() -> None:
     try:
         controller.acquire("pro", "10.0.0.1")
         clock.now += ControllerAuthority.TTL_MS / 1000 + 1
-        controller.acquire("pro", "10.0.0.1")
+        grant = controller.acquire("pro", "10.0.0.1")
+        assert len(controller._sessions) == 1
+        assert isinstance(grant["controller_key"], str)
     finally:
         await close(controller, managed)
 
