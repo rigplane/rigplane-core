@@ -36,6 +36,7 @@ def smoke_report(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         reconnect_interval_s=4.0,
         metrics_interval_s=1.0,
         rss_warmup_s=3.0,
+        tx_sessions_interval_s=100.0,  # one multi-session TX cycle, at the start
     )
     asyncio.run(soak_driver.run_soak(config))
     report: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
@@ -71,6 +72,7 @@ def test_real_report_is_summarized_with_the_drivers_own_numbers(
         ("FDs", "fdsStability"),
         ("Tasks", "tasksStability"),
         ("Unrecovered disconnects", "recovery"),
+        ("Multi-session TX", "txSessions"),
     ):
         prefix = f"- {label} {criteria[key]['status']}: "
         (by_label[label],) = [line for line in lines if line.startswith(prefix)]
@@ -83,6 +85,10 @@ def test_real_report_is_summarized_with_the_drivers_own_numbers(
     assert f": max abs delta {fds} (" in by_label["FDs"]
     assert f": max abs delta {tasks} (" in by_label["Tasks"]
     assert f": {unrecovered} of {forced} (" in by_label["Unrecovered disconnects"]
+    tx = criteria["txSessions"]
+    assert by_label["Multi-session TX"].endswith(
+        f": {tx['cycles']} cycles, {tx['violationCount']} violations"
+    )
 
 
 def test_measured_values_and_a_driver_error_are_formatted(
@@ -94,6 +100,9 @@ def test_measured_values_and_a_driver_error_are_formatted(
     criteria["fdsStability"].update(checks=[{"delta": 3}, {"delta": -4}], status="PASS")
     criteria["tasksStability"].update(checks=[{"delta": -2}], status="FAIL")
     criteria["recovery"].update(status="FAIL", unrecovered=1, forced=3)
+    criteria["txSessions"].update(
+        status="FAIL", cycles=4, violationCount=2, violations=["cut: TX still on"]
+    )
     report.update(verdict="FAIL", error="ValueError: boom")
     code, lines = _summarize(tmp_path, monkeypatch, report)
     assert code == 0
@@ -103,6 +112,11 @@ def test_measured_values_and_a_driver_error_are_formatted(
     assert any(
         line.startswith("- Unrecovered disconnects FAIL: 1 of 3 (") for line in lines
     )
+    assert any(
+        line.startswith("- Multi-session TX FAIL: 4 cycles, 2 violations")
+        for line in lines
+    )
+    assert "  - cut: TX still on" in lines
     assert "- Driver error: `ValueError: boom`" in lines
 
 

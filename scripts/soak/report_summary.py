@@ -41,6 +41,13 @@ def render(report: dict[str, Any]) -> str:
         f"- Unrecovered disconnects {recovery['status']}: {recovery['unrecovered']}"
         f" of {recovery['forced']} (budget {recovery['budgetS']:.0f} s)"
     )
+    tx_sessions = criteria.get("txSessions")
+    if tx_sessions is not None:
+        lines.append(
+            f"- Multi-session TX {tx_sessions['status']}: {tx_sessions['cycles']}"
+            f" cycles, {tx_sessions['violationCount']} violations"
+        )
+        lines.extend(f"  - {violation}" for violation in tx_sessions["violations"])
     if report["error"]:
         lines.append(f"- Driver error: `{report['error']}`")
     return "\n".join(lines) + "\n"

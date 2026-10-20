@@ -4,10 +4,11 @@ An operated soak for the rigplane web stack against the IC-7610 simulator
 (`rigplane_testkit.icom.simulator.MockIcomRadio`). MOR-3236.
 
 The driver starts the full in-process stack — simulator, `IcomRadio`,
-`WebServer`, `RigctldServer` — then operates it the way an operator would
+managed TX composition, `WebServer`, `RigctldServer` — then operates it the way an operator would
 for a configurable duration: tune + readback, mode changes, a rigctld
-replay (`F`/`f`/`M`/`m`/`t`), forced radio disconnect/connect cycles, and
-a WebSocket client subscribed to state and audio the whole time.
+replay (`F`/`f`/`M`/`m`/`t`), forced radio disconnect/connect cycles,
+multi-session TX cycles, and a WebSocket client subscribed to state and audio
+the whole time.
 
 ## Running
 
@@ -61,6 +62,36 @@ blackout (drop probability and window); by default no fault is injected.
 The verdict is `FAIL` on a driver error or any criterion `FAIL`; `PASS` only
 when every criterion was evaluated and passed; otherwise `INCOMPLETE`. A
 `NOT_EVALUATED` criterion therefore keeps a run from `PASS`.
+
+## Multi-session TX cycles
+
+`TX_SESSIONS_INTERVAL_S` (20 s) after the previous cycle ended, the driver
+opens two controller sessions (`POST /api/v1/controller`, a primary control
+WebSocket each) and runs one cycle (MOR-3538); `SoakConfig.tx_sessions_interval_s = 0` turns the
+scenario off and starts the stack without managed TX, as before.
+
+1. Both sessions send `ptt_on` at once. Exactly one is accepted, the
+   simulator's PTT goes on, and its set-writes show one key.
+2. The other session's `ptt_on` is refused while the first holds
+   (`TX_HOLD_S`, 1 s).
+3. The holder ends in one of four modes, each used once per round of four
+   cycles in a random order: `unkey` (`ptt_off`), `delete` (`DELETE
+   /api/v1/controller`), `cut` (the link is dropped without a close) or
+   `half_open` (silent, link open; the 6 s lease runs out). The PTT must be
+   off within `TX_OFF_BUDGET_S` (15 s).
+4. The other session then keys and unkeys; the simulator saw exactly two keys.
+5. After both clients close, no session may remain on the server for more
+   than 4 s.
+
+A cycle is skipped while the radio is not connected, and a forced reconnect
+cycle and a TX cycle never overlap (a shared lock), so the reconnect's
+stability probes do not count the TX cycle's sockets and tasks. While a
+session transmits the tune, mode and rigctld actions are skipped.
+
+The `txSessions` criterion is `FAIL` on any violated step, `PASS` with at
+least one finished cycle and none violated, `NOT_EVALUATED` with no finished
+cycle (which keeps a run from `PASS`). The report lists the first 20
+violations, each with the random seed of the mode order.
 
 ## Process metrics sampling
 

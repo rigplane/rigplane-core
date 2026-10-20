@@ -28,7 +28,11 @@ radio disconnect/connect, and pins:
 * the report file and its ``verdict`` field survive a stack-teardown
   ``stop()`` that raises;
 * a reconnect cycle still running at the run deadline must not wedge
-  the run (the periodic loops must always yield).
+  the run (the periodic loops must always yield);
+* the multi-session TX scenario (MOR-3538): every end mode of the holder
+  (unkey, delete, cut, silent) passes beside the other criteria, and the
+  criterion fails when a silent holder keeps the transmitter or a session
+  outlives its channel.
 """
 
 from __future__ import annotations
@@ -60,6 +64,9 @@ def _smoke_config(**overrides: Any) -> soak_driver.SoakConfig:
         fault_drop=0.0,
         fault_duration_s=3.0,
         rss_warmup_s=5.0,
+        # The multi-session TX scenario has its own tests below; the others
+        # keep the stack they were written against.
+        tx_sessions_interval_s=0.0,
     )
     defaults.update(overrides)
     return soak_driver.SoakConfig(**defaults)
@@ -254,11 +261,17 @@ def test_exit_status_is_zero_only_for_a_pass_verdict(
 def test_cli_exits_non_zero_for_a_run_too_short_to_evaluate_anything(
     capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
-    """The real stack for 3 s at the default cadences: no reconnect, no RSS fit."""
+    """The real stack for 3 s at the default cadences: no reconnect, no RSS fit.
+
+    The multi-session TX cycle that starts at once is allowed to finish, so
+    its criterion may be evaluated; every other criterion is not.
+    """
     report_path = tmp_path / "r.json"
     status = soak_driver.main(["--duration", "3", "--report", str(report_path)])
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert {c["status"] for c in report["criteria"].values()} == {"NOT_EVALUATED"}
+    statuses = {key: c["status"] for key, c in report["criteria"].items()}
+    assert statuses.pop("txSessions") in ("PASS", "NOT_EVALUATED")
+    assert set(statuses.values()) == {"NOT_EVALUATED"}
     assert report["error"] is None
     assert report["verdict"] == soak_driver.VERDICT_INCOMPLETE
     assert capsys.readouterr().out.startswith("soak INCOMPLETE ")
@@ -549,3 +562,85 @@ async def test_soak_report_written_when_a_stop_raises(
     # 6 s is below the first forced reconnect (8 s) and the RSS fit floor.
     assert report["verdict"] == soak_driver.VERDICT_INCOMPLETE
     assert report["durationConfiguredS"] == 6.0
+
+
+# ---------------------------------------------------------------------------
+# MOR-3538: the multi-session TX scenario
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_tx_sessions_statuses() -> None:
+    passed = soak_driver.evaluate_tx_sessions(4, [])
+    failed = soak_driver.evaluate_tx_sessions(4, [f"cut: v{i}" for i in range(30)])
+    none = soak_driver.evaluate_tx_sessions(0, [])
+    assert (passed["status"], none["status"], failed["status"]) == (
+        "PASS",
+        "NOT_EVALUATED",
+        "FAIL",
+    )
+    assert failed["violationCount"] == 30 and len(failed["violations"]) == 20
+    assert soak_driver._verdict({"txSessions": failed}, None) == "FAIL"
+    assert soak_driver._verdict({"txSessions": none}, None) == (
+        soak_driver.VERDICT_INCOMPLETE
+    )
+
+
+async def test_soak_multi_session_tx_passes_in_every_end_mode_beside_a_reconnect() -> (
+    None
+):
+    """Four cycles cover unkey, delete, cut and a silent holder; a forced
+    reconnect in the same run keeps the FD and task criteria passing."""
+    report = await soak_driver.run_soak(
+        _smoke_config(
+            duration_s=34.0,
+            tx_sessions_interval_s=1.0,
+            reconnect_interval_s=16.0,
+            reconnect_budget_s=25.0,
+        )
+    )
+    tx = report["criteria"]["txSessions"]
+    assert tx["violations"] == [] and tx["status"] == "PASS", tx
+    assert tx["cycles"] >= 4
+    counts = report["counts"]
+    for mode in ("unkey", "delete", "cut", "half_open"):
+        assert counts[f"txSessionCycles.{mode}"] >= 1, counts
+    assert report["error"] is None
+    for key in ("recovery", "fdsStability", "tasksStability"):
+        assert report["criteria"][key]["status"] == "PASS", report["criteria"][key]
+    assert report["verdict"] == soak_driver.VERDICT_INCOMPLETE
+
+
+async def test_soak_multi_session_tx_fails_when_a_silent_holder_keeps_the_transmitter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A holder that stops renewing must lose the transmitter: with the lease
+    made effectively endless, the silent-holder cycle reports it."""
+    from rigplane.runtime.controller_authority import ControllerAuthority
+
+    monkeypatch.setattr(ControllerAuthority, "TTL_MS", 3_600_000)
+    monkeypatch.setattr(soak_driver, "_TX_END_MODES", ("half_open",))
+    monkeypatch.setattr(soak_driver, "TX_OFF_BUDGET_S", 3.0)
+    report = await soak_driver.run_soak(
+        _smoke_config(duration_s=6.0, tx_sessions_interval_s=100.0)
+    )
+    tx = report["criteria"]["txSessions"]
+    assert tx["status"] == "FAIL", tx
+    assert any("TX still on" in v and "half_open" in v for v in tx["violations"]), tx
+    assert report["verdict"] == "FAIL"
+
+
+async def test_soak_multi_session_tx_fails_when_a_session_outlives_its_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session whose primary channel is gone must end at once, not at its
+    lease: with the channel's detach made a no-op the cycle reports a leak."""
+    from rigplane.runtime.controller_authority import ControllerAuthority
+
+    monkeypatch.setattr(ControllerAuthority, "detach", lambda self, ticket: None)
+    monkeypatch.setattr(soak_driver, "_TX_END_MODES", ("unkey",))
+    report = await soak_driver.run_soak(
+        _smoke_config(duration_s=6.0, tx_sessions_interval_s=100.0)
+    )
+    tx = report["criteria"]["txSessions"]
+    assert tx["status"] == "FAIL", tx
+    assert any("left after the cycle" in v for v in tx["violations"]), tx

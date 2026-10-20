@@ -20,11 +20,12 @@ freeze limits how the code itself moves.
 
 ## What gets mutated
 
-`only_mutate` in `pyproject.toml` names the fifteen high-risk modules the stabilization program picked:
+`only_mutate` in `pyproject.toml` names the seventeen high-risk modules the stabilization program picked:
 the web delta encoder, the rigctld protocol and routing modules, the CIv
 codec, the audio codecs, the command frame codec, the core types and
 state store, the acquisition drain, the controller authority, the TX
-safety/target/observation modules, the managed TX fence, and the Yaesu CAT
+safety/target/observation modules, the managed TX fence and state
+reducer, the rigctl WebSocket channel handler, and the Yaesu CAT
 parser. The whole `src/` tree is copied into the `mutants/` sandbox
 (`source_paths`) so imports stay intact; `also_copy` brings
 `rigplane_testkit/` (tests import it via the pytest `pythonpath` setting)
@@ -87,6 +88,35 @@ Per module (killed / survived / timeout / no tests):
 | `rigplane.runtime.managed_tx_fence` | 62 | 15 | 0 | 0 |
 | `rigplane.backends.yaesu_cat.parser` | 79 | 28 | 2 | 0 |
 | `rigplane.rigctld.routing` | 0 | 2 | 0 | 910 |
+
+### Added 2026-10-19 (MOR-3538): multi-session TX modules
+
+`rigplane.runtime.managed_tx_state` (the first-PTT-wins reducer) and
+`rigplane.web.handlers.rigctl` (the rigctl channel bound to a session) joined
+`only_mutate`, with `tests/test_managed_tx_state.py`,
+`tests/test_rigctl_ws_channel.py` and `tests/test_controller_sessions.py` in
+the test selection; the last one is what exercises the session logic of
+`rigplane.runtime.controller_authority`. They are not part of the baseline
+table above. Measured once on the Mac mini test host, only these three
+modules, with
+
+```bash
+uv run mutmut run --max-children 4 "rigplane.runtime.managed_tx_state*" \
+    "rigplane.web.handlers.rigctl*" "rigplane.runtime.controller_authority*"
+```
+
+in 1 m 18 s (`real`), summarized by `scripts/mutation/summarize.py`:
+
+| module | k | s | t | nt |
+|---|--:|--:|--:|--:|
+| `rigplane.runtime.managed_tx_state` | 305 | 23 | 0 | 0 |
+| `rigplane.web.handlers.rigctl` | 73 | 33 | 0 | 0 |
+| `rigplane.runtime.controller_authority` | 359 | 188 | 0 | 74 |
+
+The first scheduled run on the CI runner took about 14 minutes for the
+fifteen-module sweep (workflow run 39180454618, `startedAt` to `updatedAt`);
+the two new modules add 434 mutants (328 and 106 above) to the 4971 of the
+baseline.
 
 The wall times were measured on the builder's Linux test host (x86_64,
 16 cores), not on the CI runner, and they vary by host: the frame

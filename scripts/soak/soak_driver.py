@@ -25,8 +25,10 @@ import contextlib
 import json
 import logging
 import os
+import random
 import secrets
 import sys
+import tempfile
 import time
 import weakref
 from collections import Counter
@@ -40,8 +42,16 @@ import aiohttp
 
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
+from rigplane.runtime.managed_tx_composition import (
+    ManagedTxComposition,
+    install_managed_tx_composition,
+)
 from rigplane.runtime.radio import IcomRadio
 from rigplane.web.server import WebConfig, WebServer
+from rigplane.web.web_startup import (
+    attach_managed_tx_composition,
+    prepare_managed_tx_observation_generation,
+)
 from rigplane_testkit.icom.faults import FaultPlan, FaultRule
 from rigplane_testkit.icom.simulator import MockIcomRadio
 
@@ -69,6 +79,21 @@ RECONNECT_BUDGET_S = 30.0
 FAULT_DROP = 0.0
 FAULT_DURATION_S = 3.0
 RSS_WARMUP_S = 60.0
+# Two controller sessions key against each other this often (MOR-3538).
+TX_SESSIONS_INTERVAL_S = 20.0
+# How long the winning session holds the transmitter before the cycle ends it.
+TX_HOLD_S = 1.0
+# TX must be off this long after a holder's link is cut or goes silent. The
+# lease is 6 s and the watchdog ticks every 2 s (ControllerAuthority.TTL_MS,
+# HEARTBEAT_MS); the rest is the release actuation and slack.
+TX_OFF_BUDGET_S = 15.0
+# How a cycle ends the winner's transmission: it unkeys, its session is
+# deleted, its link is cut without a close, or it goes silent with the link open.
+_TX_END_MODES = ("unkey", "delete", "cut", "half_open")
+_TX_VIOLATIONS_KEPT = 20
+# After a cycle closes its clients no session may remain this long (the lease
+# is 6 s, so a session that is still there was not ended by its channel).
+_TX_SESSION_END_S = 4.0
 
 _TUNE_FREQS = (14_074_000, 14_074_500, 7_074_000, 7_074_500, 3_574_000)
 _MODES = ("USB", "LSB")
@@ -93,6 +118,7 @@ class SoakConfig:
     fault_drop: float = FAULT_DROP
     fault_duration_s: float = FAULT_DURATION_S
     rss_warmup_s: float = RSS_WARMUP_S
+    tx_sessions_interval_s: float = TX_SESSIONS_INTERVAL_S
     probe_diagnostics: bool = False
     task_provenance: bool = False
 
@@ -831,6 +857,10 @@ class _SimulatorStack:
     radio: IcomRadio
     web: WebServer
     rigctld: RigctldServer
+    # Set only with managed TX: the composition and the directory holding its
+    # config file, which the stack removes on close.
+    composition: ManagedTxComposition | None = None
+    config_dir: tempfile.TemporaryDirectory[str] | None = None
 
     @property
     def web_port(self) -> int:
@@ -841,27 +871,39 @@ class _SimulatorStack:
         # RigctldServer exposes no port accessor; read the bound socket.
         return int(self.rigctld._server.sockets[0].getsockname()[1])  # noqa: SLF001
 
+    def session_count(self) -> int:
+        """Controller sessions the web server still holds."""
+        return len(self.web._controller._sessions)  # noqa: SLF001
+
     async def aclose(self) -> None:
         await self.rigctld.stop()
         await self.web.stop()
         with contextlib.suppress(Exception):
             await self.radio.disconnect()
+        if self.composition is not None:
+            with contextlib.suppress(Exception):
+                await self.composition.shutdown(termination=asyncio.Event())
         await self.sim.stop()
+        if self.config_dir is not None:
+            self.config_dir.cleanup()
 
 
-async def _start_simulator_stack() -> _SimulatorStack:
-    """The `rigplane web` stack minus managed TX, against the simulator.
+async def _start_simulator_stack(managed_tx: bool = False) -> _SimulatorStack:
+    """The `rigplane web` stack against the simulator.
 
-    Managed TX composition is deliberately absent: it persists a user
-    config file (platformdirs), which a soak must not touch. Without it
-    the RigctldServer takes the same standalone wiring as `rigplane
-    serve`, reusing the web seat's state services on the radio.
+    By default managed TX composition is absent, so the RigctldServer takes
+    the same standalone wiring as `rigplane serve`, reusing the web seat's
+    state services on the radio. With ``managed_tx`` the stack is composed
+    the way the CLI composes it (MOR-3538): the simulator keeps a stateful
+    PTT, and the composition's config file lives in a temporary directory
+    the stack removes on close, so the soak never touches the user's config.
     """
     sim = MockIcomRadio(
         single_owner=True,
         unsolicited_civ=True,
         unsolicited_interval_s=0.1,
         enable_audio=True,
+        stateful_ptt=managed_tx,
     )
     await sim.start()
     # timeout=1.0: the simulator does not answer a few menu reads the
@@ -877,16 +919,46 @@ async def _start_simulator_stack() -> _SimulatorStack:
         timeout=1.0,
         model="IC-7610",
     )
+    composition = None
+    config_dir: tempfile.TemporaryDirectory[str] | None = None
+    if managed_tx:
+        config_dir = tempfile.TemporaryDirectory(prefix="rigplane-soak-")
+        composition = ManagedTxComposition(
+            radio, config_path=Path(config_dir.name) / "managed-tx.json"
+        )
+        install_managed_tx_composition(radio, composition)
     await radio.connect()
     web = WebServer(radio, WebConfig(host="127.0.0.1", port=0, discovery=False))
-    await web.start()
     # command_timeout above the 2 s default: with the web poller sharing
     # the CI-V lane, a set under acquisition contention can exceed it.
-    rigctld = RigctldServer(
-        radio, RigctldConfig(host="127.0.0.1", port=0, command_timeout=10.0)
+    rigctld_config = RigctldConfig(host="127.0.0.1", port=0, command_timeout=10.0)
+    if composition is None:
+        await web.start()
+        rigctld = RigctldServer(radio, rigctld_config)
+        await rigctld.start()
+    else:
+        prepare_managed_tx_observation_generation(web)
+        await composition.bind_state_store(web.command_state_store)
+        attach_managed_tx_composition(web, composition)
+        rigctld = RigctldServer(
+            radio,
+            rigctld_config,
+            allow_not_ready=True,
+            managed_tx_authority=composition.authority,
+            command_queue=web.command_queue,
+            command_service=web.command_service,
+        )
+        await rigctld.start()
+        web.attach_rigctl_channel(rigctld.open_channel)
+        await web.start()
+    return _SimulatorStack(
+        sim=sim,
+        radio=radio,
+        web=web,
+        rigctld=rigctld,
+        composition=composition,
+        config_dir=config_dir,
     )
-    await rigctld.start()
-    return _SimulatorStack(sim=sim, radio=radio, web=web, rigctld=rigctld)
 
 
 # ---------------------------------------------------------------------------
@@ -1005,6 +1077,26 @@ def evaluate_report(
     }
 
 
+def evaluate_tx_sessions(cycles: int, violations: list[str]) -> dict[str, Any]:
+    """The multi-session TX criterion: no cycle broke an invariant.
+
+    ``NOT_EVALUATED`` when no cycle ran to its end, so a run too short or too
+    disconnected to key twice cannot certify.
+    """
+    if violations:
+        status = "FAIL"
+    elif cycles:
+        status = "PASS"
+    else:
+        status = "NOT_EVALUATED"
+    return {
+        "status": status,
+        "cycles": cycles,
+        "violations": violations[:_TX_VIOLATIONS_KEPT],
+        "violationCount": len(violations),
+    }
+
+
 def _verdict(criteria: dict[str, Any], error: str | None) -> str:
     """FAIL on an error or any FAIL; PASS if criteria exist and all PASS; else
     INCOMPLETE."""
@@ -1048,6 +1140,98 @@ def summary_line(report: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# A controller-session client for the multi-session TX scenario
+# ---------------------------------------------------------------------------
+
+
+class _TxSessionClient:
+    """One controller session as a client drives it (MOR-3534).
+
+    Its own HTTP session holds the primary control WebSocket, so closing that
+    session cuts the link without a WebSocket close, as a dead network does.
+    """
+
+    def __init__(self, base_url: str) -> None:
+        self._base_url = base_url
+        self._http: aiohttp.ClientSession | None = None
+        self._ws: aiohttp.ClientWebSocketResponse | None = None
+        self._heartbeat: asyncio.Task[None] | None = None
+        self.key = ""
+        self._next_id = 0
+
+    async def open(self) -> None:
+        self._http = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=None, connect=10.0)
+        )
+        async with self._http.post(
+            f"{self._base_url}/api/v1/controller", json={"kind": "pro"}
+        ) as resp:
+            if resp.status != 201:
+                raise RuntimeError(f"controller grant refused: {resp.status}")
+            self.key = (await resp.json())["controller_key"]
+        self._ws = await self._http.ws_connect(
+            f"{self._base_url}/api/v1/ws",
+            protocols=(f"rigplane-controller-v1.{self.key}",),
+        )
+
+    def start_heartbeat(self) -> None:
+        """Renew the session every 2 s; a session that does not expires in 6 s."""
+
+        async def beat() -> None:
+            assert self._ws is not None
+            while True:
+                await asyncio.sleep(2.0)
+                await self._ws.send_json({"type": "controller_heartbeat"})
+
+        self._heartbeat = asyncio.create_task(beat(), name="soak-tx-heartbeat")
+
+    async def command(self, name: str, timeout_s: float = 10.0) -> bool:
+        """Run one control command; whether the server answered ``ok``."""
+        assert self._ws is not None
+        self._next_id += 1
+        command_id = f"soak-{self._next_id}"
+        await self._ws.send_json(
+            {"type": "cmd", "id": command_id, "name": name, "params": {}}
+        )
+        deadline = time.monotonic() + timeout_s
+        while True:
+            msg = await asyncio.wait_for(
+                self._ws.receive(), timeout=max(0.1, deadline - time.monotonic())
+            )
+            if msg.type is aiohttp.WSMsgType.TEXT:
+                data = msg.json()
+                if data.get("type") == "response" and data.get("id") == command_id:
+                    return data.get("ok") is True
+            elif msg.type in (
+                aiohttp.WSMsgType.CLOSE,
+                aiohttp.WSMsgType.CLOSING,
+                aiohttp.WSMsgType.CLOSED,
+                aiohttp.WSMsgType.ERROR,
+            ):
+                return False
+
+    async def delete(self) -> None:
+        """End the session over HTTP, as a client leaving does."""
+        assert self._http is not None
+        async with self._http.delete(
+            f"{self._base_url}/api/v1/controller",
+            headers={"X-RigPlane-Controller": self.key},
+        ):
+            pass
+
+    async def close(self) -> None:
+        """Drop the link; closing the HTTP session sends no WebSocket close."""
+        if self._heartbeat is not None:
+            self._heartbeat.cancel()
+            await asyncio.gather(self._heartbeat, return_exceptions=True)
+            self._heartbeat = None
+        if self._http is not None:
+            with contextlib.suppress(Exception):
+                await self._http.close()
+            self._http = None
+
+
+# ---------------------------------------------------------------------------
 # The driver
 # ---------------------------------------------------------------------------
 
@@ -1061,11 +1245,23 @@ class SoakDriver:
         base_url: str,
         rigctld_url: str,
         sim: MockIcomRadio,
+        session_count: Callable[[], int] | None = None,
     ) -> None:
         self._cfg = config
         self._base_url = base_url
         self._rigctld_url = rigctld_url
         self._sim = sim
+        self._session_count = session_count
+        # Held by a multi-session TX cycle and by a forced reconnect cycle:
+        # the stability probes of the latter must not see the former's
+        # sockets and handler tasks.
+        self._exclusive = asyncio.Lock()
+        self._tx_keyed = False
+        self._tx_seed = secrets.randbits(32)
+        self._tx_rng = random.Random(self._tx_seed)
+        self._tx_modes: list[str] = []
+        self._tx_cycles = 0
+        self._tx_violations: list[str] = []
         self._session: aiohttp.ClientSession | None = None
         self._ws_session: aiohttp.ClientSession | None = None
         self._sampler: ProcessMetricsSampler | None = None
@@ -1169,7 +1365,8 @@ class SoakDriver:
     # -- operator actions ----------------------------------------------------
 
     def _skip_operator_action(self) -> bool:
-        return self._connection_state != "connected"
+        # Not while a session transmits: retuning a keyed radio is refused.
+        return self._connection_state != "connected" or self._tx_keyed
 
     async def _poll_state_main(self, timeout_s: float) -> dict[str, Any] | None:
         """Poll /api/v1/state until ``main`` is populated (or timeout)."""
@@ -1286,6 +1483,139 @@ class SoakDriver:
         else:
             self._counts["rigctldFailures"] += 1
             logger.warning("soak: rigctld replay failed at step %s", failed_step)
+
+    # -- multi-session TX (MOR-3538) -------------------------------------------
+
+    def _ptt_on_writes(self) -> int:
+        return sum(1 for _at, on in self._sim.ptt_set_writes if on)
+
+    async def _wait_ptt(self, expected: bool, timeout_s: float) -> bool:
+        deadline = time.monotonic() + timeout_s
+        while self._sim.ptt_on is not expected:
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.05)
+        return True
+
+    async def _force_tx_off(self) -> None:
+        assert self._session is not None
+        with contextlib.suppress(Exception):
+            async with self._session.post(
+                f"{self._base_url}/api/v1/managed-transmit/command",
+                json={"operation": "force_off"},
+                timeout=aiohttp.ClientTimeout(total=10.0),
+            ):
+                pass
+
+    async def _tx_sessions_once(self) -> None:
+        """Two sessions race to key; one is cut, silenced or ends; the other keys.
+
+        Per cycle the invariants are: exactly one of two simultaneous keys is
+        accepted and the radio is keyed once; a second key is refused while
+        the holder holds; the transmitter is off within ``TX_OFF_BUDGET_S`` of
+        the holder ending however it ends; the other session then keys; the
+        radio saw no key beyond those two; and no session is left behind.
+        """
+        if self._skip_operator_action() or self._exclusive.locked():
+            self._counts["txSessionsSkipped"] += 1
+            return
+        if not self._tx_modes:
+            # Every mode comes up once per round, in a random order.
+            self._tx_modes = list(_TX_END_MODES)
+            self._tx_rng.shuffle(self._tx_modes)
+        mode = self._tx_modes.pop()
+        async with self._exclusive:
+            try:
+                problems = await self._tx_sessions_cycle(mode)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                problems = [f"raised {exc!r}"]
+            finally:
+                self._tx_keyed = False
+        self._tx_cycles += 1
+        self._counts[f"txSessionCycles.{mode}"] += 1
+        for problem in problems:
+            logger.warning("soak: multi-session TX (%s): %s", mode, problem)
+            self._tx_violations.append(f"{mode}: {problem} (seed {self._tx_seed})")
+
+    async def _tx_sessions_cycle(self, mode: str) -> list[str]:
+        problems: list[str] = []
+        clients = [_TxSessionClient(self._base_url), _TxSessionClient(self._base_url)]
+        try:
+            await self._tx_sessions_steps(mode, clients, problems)
+        finally:
+            if self._sim.ptt_on:
+                await self._force_tx_off()
+            for client in clients:
+                await client.close()
+        # Closing the clients ended their sessions on the server, which sees
+        # a primary channel go away; well inside the 6 s lease none may stay.
+        if self._session_count is not None:
+            deadline = time.monotonic() + _TX_SESSION_END_S
+            while self._session_count() and time.monotonic() < deadline:
+                await asyncio.sleep(0.2)
+            if left := self._session_count():
+                problems.append(f"{left} session(s) left after the cycle")
+        return problems
+
+    async def _tx_sessions_steps(
+        self, mode: str, clients: list[_TxSessionClient], problems: list[str]
+    ) -> None:
+        for client in clients:
+            await client.open()
+        writes_before = self._ptt_on_writes()
+        outcomes = await asyncio.gather(
+            *(client.command("ptt_on") for client in clients)
+        )
+        if sorted(outcomes) != [False, True]:
+            problems.append(f"simultaneous keys answered {outcomes}")
+        if True not in outcomes:
+            return
+        holder = clients[outcomes.index(True)]
+        other = clients[outcomes.index(True) ^ 1]
+        self._tx_keyed = True
+        # The other session renews its lease while the holder's story unfolds;
+        # the holder's lease runs out on its own where the mode leaves it silent.
+        other.start_heartbeat()
+        if not await self._wait_ptt(True, 5.0):
+            problems.append("the radio was never keyed")
+        if self._ptt_on_writes() - writes_before != 1:
+            problems.append("the radio was keyed other than once")
+        if await other.command("ptt_on"):
+            problems.append("a second session keyed over the holder")
+        await asyncio.sleep(TX_HOLD_S)
+        if not self._sim.ptt_on:
+            problems.append("TX dropped while the holder held it")
+        if mode == "unkey":
+            if not await holder.command("ptt_off"):
+                problems.append("the holder's unkey was refused")
+        elif mode == "delete":
+            await holder.delete()
+        elif mode == "cut":
+            await holder.close()
+        # half_open: nothing; the link stays open and silent.
+        if not await self._wait_ptt(False, TX_OFF_BUDGET_S):
+            problems.append(f"TX still on {TX_OFF_BUDGET_S:.0f}s after {mode}")
+        self._tx_keyed = False
+        # The holder is gone: the other session keys, once the release debt of
+        # the first transmission clears.
+        for _ in range(50):
+            if await other.command("ptt_on"):
+                break
+            await asyncio.sleep(0.2)
+        else:
+            problems.append("the other session could not key after the release")
+            return
+        self._tx_keyed = True
+        if not await self._wait_ptt(True, 5.0):
+            problems.append("the other session's key never reached the radio")
+        if not await other.command("ptt_off"):
+            problems.append("the other session's unkey was refused")
+        if not await self._wait_ptt(False, TX_OFF_BUDGET_S):
+            problems.append("TX still on after the other session's unkey")
+        if self._ptt_on_writes() - writes_before != 2:
+            problems.append("the radio was keyed other than twice")
 
     # -- forced disconnect / reconnect ----------------------------------------
 
@@ -1536,7 +1866,8 @@ class SoakDriver:
                 return
             if self._elapsed() + 1e-9 < next_due:
                 continue
-            await self._reconnect_cycle()
+            async with self._exclusive:
+                await self._reconnect_cycle()
             next_due = self._elapsed() + self._cfg.reconnect_interval_s
 
     # -- periodic loops -------------------------------------------------------
@@ -1674,6 +2005,17 @@ class SoakDriver:
                     name="soak-metrics",
                 ),
             ]
+            if self._cfg.tx_sessions_interval_s > 0:
+                tasks.append(
+                    asyncio.create_task(
+                        self._run_periodic(
+                            "tx-sessions",
+                            self._cfg.tx_sessions_interval_s,
+                            self._tx_sessions_once,
+                        ),
+                        name="soak-tx-sessions",
+                    )
+                )
             reconnect_task = asyncio.create_task(
                 self._reconnect_loop(), name="soak-reconnect"
             )
@@ -1694,12 +2036,20 @@ class SoakDriver:
                 except asyncio.TimeoutError:
                     reconnect_task.cancel()
                     await asyncio.gather(reconnect_task, return_exceptions=True)
+                # A multi-session TX cycle in flight ends on its own; cancelling
+                # it mid-transmission would only leave the stack to clean up.
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._exclusive.acquire(), timeout=60.0)
                 for task in tasks:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
 
     def _build_report(self) -> dict[str, Any]:
         criteria = evaluate_report(self._cfg, self._samples, self._reconnects)
+        if self._cfg.tx_sessions_interval_s > 0:
+            criteria["txSessions"] = evaluate_tx_sessions(
+                self._tx_cycles, self._tx_violations
+            )
         verdict = _verdict(criteria, self._error)
         report: dict[str, Any] = {
             "schemaVersion": 1,
@@ -1750,7 +2100,8 @@ async def run_soak(config: SoakConfig) -> dict[str, Any]:
     pins it); the stdout verdict line is printed by ``main`` only after
     ``run_soak`` returns, so a raising teardown still loses that line.
     """
-    stack = await _start_simulator_stack()
+    managed_tx = config.tx_sessions_interval_s > 0
+    stack = await _start_simulator_stack(managed_tx=managed_tx)
     report: dict[str, Any] | None = None
     adapter: _RuntimeTaskAdapter | None = None
     try:
@@ -1759,6 +2110,7 @@ async def run_soak(config: SoakConfig) -> dict[str, Any]:
             f"http://127.0.0.1:{stack.web_port}",
             rigctld_url=f"127.0.0.1:{stack.rigctld_port}",
             sim=stack.sim,
+            session_count=stack.session_count if managed_tx else None,
         )
         if driver._task_provenance is not None:
             adapter = _RuntimeTaskAdapter(stack, driver._task_provenance)
