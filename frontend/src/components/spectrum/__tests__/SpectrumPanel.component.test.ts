@@ -1940,6 +1940,53 @@ describe('SDR scope source routing (MOR-3158)', () => {
     }
   });
 
+  it('paints burst-spaced live frames after a long flowing TX freeze because frozen deliveries kept classifying (MOR-3471)', () => {
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    let clock = 0;
+    const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    try {
+      selectSdrSource();
+      const target = mountPanel();
+      emitFrame();
+      expect(push).toHaveBeenCalledTimes(1);
+      // A second live-spaced delivery latches steady painting.
+      clock += 83; emitFrame();
+      expect(push).toHaveBeenCalledTimes(2);
+      replaceSdrLeaf(sdrLeaf({ txFrozen: true }));
+      flushSync();
+      expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).not.toBeNull();
+      // Flowing freeze: the SDR keeps delivering through the freeze at its
+      // production cadence (fps=20 → 50 ms) for 82 frames = 4.1 s, past
+      // the 3 s discontinuity threshold. Every frozen delivery must still
+      // classify through the gate (paint withheld), keeping the spacing
+      // baseline moving across the whole freeze.
+      for (let i = 0; i < 82; i += 1) {
+        clock += 50; emitFrame();
+      }
+      expect(push).toHaveBeenCalledTimes(2);
+      replaceSdrLeaf(sdrLeaf({ txFrozen: false }));
+      flushSync();
+      expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).toBeNull();
+      // Live deliveries right after unfreeze can batch tighter than the
+      // 40 ms burst spacing. Because the frozen flow kept classifying,
+      // the freeze never became a >3 s delivery gap: steady painting
+      // stayed latched and every burst-spaced live frame paints. Without
+      // the TX-frozen admit() classification this exact sequence would
+      // trip the discontinuity on the first live frame and suppress the
+      // remaining burst inside the reopened 1500 ms skip window — pinned
+      // failing-first by deleting both TX-frozen admit() calls.
+      for (let i = 0; i < 5; i += 1) {
+        clock += 1; emitFrame();
+      }
+      expect(push).toHaveBeenCalledTimes(7);
+      clock += 83; emitFrame();
+      expect(push).toHaveBeenCalledTimes(8);
+    } finally {
+      nowSpy.mockRestore();
+      push.mockRestore();
+    }
+  });
+
   it('holds managed waterfall pushes under the TX marker too', () => {
     function sdrProjection(sequence: number): ScopeDisplayProjection {
       return Object.freeze({
