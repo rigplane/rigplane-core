@@ -49,6 +49,10 @@ on:
       - "!docs/guide/audio-recipes.md"
       - "!docs/guide/diagnostic-reports.md"
       - "!docs/internals/audio-capture-health.md"
+  # Merge queue: the queue tests the PR on top of main and the
+  # entries ahead of it. merge_group has no path filter; classify decides.
+  merge_group:
+    types: [checks_requested]
   pull_request:
     branches: [main]
     types: [opened, reopened, synchronize, ready_for_review]
@@ -124,8 +128,8 @@ jobs:
       - name: Classify exact changed paths
         id: paths
         env:
-          QUICK_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          QUICK_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          QUICK_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          QUICK_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
         run: >-
           python3 .github/scripts/classify-quick-paths.py
           --repo .
@@ -142,6 +146,7 @@ jobs:
       always() &&
       needs.classify.outputs.docs != 'true' &&
       (github.event_name == 'push' ||
+      github.event_name == 'merge_group' ||
       github.event.pull_request.draft == false)
     # Self-hosted Mac mini build-tier runner. Python 3.11+/uv/Node 24/Rust
     # and the Tauri/audio system libs are pre-baked in the image, so this
