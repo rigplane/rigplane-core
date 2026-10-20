@@ -11,6 +11,8 @@ wire test runs against.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -25,6 +27,7 @@ from rigplane.core.state_pipeline_contracts import (
 )
 from rigplane.core.state_store import StateStore
 from rigplane.exceptions import CommandRejectedError
+from rigplane.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.rigctld.contract import (
     HamlibError,
     RigctldCommand,
@@ -202,6 +205,92 @@ async def test_set_split_freq_restores_slot_after_failed_write(
     resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
 
     assert resp.error is HamlibError.ERJCTED
+    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
+
+
+@pytest.mark.asyncio
+async def test_set_split_freq_restores_slot_when_first_switch_raises(
+    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+) -> None:
+    # An ambiguous first-switch failure (ACK timeout / NAK after
+    # landing) may have switched the radio anyway: the restore is
+    # still attempted, the write never runs, and the original error
+    # reaches the client.
+    single_rx_radio.get_vfo_slot.return_value = "A"
+    single_rx_radio.set_vfo_slot.side_effect = [
+        CommandRejectedError("ambiguous NAK after landing"),
+        None,
+    ]
+
+    resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
+
+    assert resp.error is HamlibError.ERJCTED
+    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
+    single_rx_radio.set_freq.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_split_freq_restore_failure_does_not_replace_write_error(
+    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+) -> None:
+    # Best-effort restore: when both the write and the restore fail,
+    # the client sees the write's error (ETIMEOUT), not the restore's.
+    single_rx_radio.get_vfo_slot.return_value = "A"
+    single_rx_radio.set_vfo_slot.side_effect = [
+        None,
+        CommandRejectedError("restore refused"),
+    ]
+    single_rx_radio.set_freq.side_effect = RigplaneTimeoutError("write lost")
+
+    resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
+
+    assert resp.error is HamlibError.ETIMEOUT
+    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
+
+
+@pytest.mark.asyncio
+async def test_set_split_freq_best_effort_restore_logs_and_keeps_success(
+    single_rx_handler: RigctldHandler,
+    single_rx_radio: AsyncMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    single_rx_radio.get_vfo_slot.return_value = "A"
+    single_rx_radio.set_vfo_slot.side_effect = [
+        None,
+        CommandRejectedError("restore refused"),
+    ]
+    caplog.set_level(logging.ERROR, logger="rigplane.rigctld.handler")
+
+    resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
+
+    assert resp.ok
+    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
+    assert any("restoring VFO slot" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_set_split_freq_cancel_mid_dance_still_restores_slot(
+    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+) -> None:
+    # A command-timeout cancellation landing mid-dance (the server
+    # cancels the handler task on command_timeout) still runs the
+    # shielded restore before the cancellation propagates.
+    single_rx_radio.get_vfo_slot.return_value = "A"
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_write(freq_hz: int, receiver: int = 0) -> None:
+        entered.set()
+        await release.wait()
+
+    single_rx_radio.set_freq.side_effect = _slow_write
+    task = asyncio.create_task(
+        single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
+    )
+    await asyncio.wait_for(entered.wait(), timeout=2.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
     single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
 
 

@@ -3126,21 +3126,37 @@ class RigctldHandler:
         The VFO-slot dance (hamlib icom-backend precedent): select the
         complement of the currently selected slot, write through the
         normal receiver-0 setter, and restore the selected slot even when
-        the write fails. Answers ENAVAIL when the backend cannot switch
-        slots; radio errors from the switches or the write itself
-        propagate to the seat's normal mapping (refusals → ERJCTED,
-        timeouts → ETIMEOUT).
+        the first switch or the write fails. Answers ENAVAIL when the
+        backend cannot switch slots; radio errors from the switches or
+        the write itself propagate to the seat's normal mapping
+        (refusals → ERJCTED, timeouts → ETIMEOUT).
+
+        The restore is best-effort and shielded: a command-timeout
+        cancellation mid-dance still runs it, and a restore failure is
+        logged but never replaces the original outcome — including an
+        in-flight cancellation.
         """
         set_vfo_slot = getattr(self._radio, "set_vfo_slot", None)
         if set_vfo_slot is None:
             return HamlibError.ENAVAIL
         previous = await self._selected_vfo_slot()
         target = "B" if previous == "A" else "A"
-        await set_vfo_slot(target)
         try:
+            await set_vfo_slot(target)
             await write()
         finally:
-            await set_vfo_slot(previous)
+            # Attempted even when the first switch raised: an ambiguous
+            # failure (ACK timeout / NAK after landing) may have switched
+            # the radio anyway, and leaving it on the TX slot would
+            # strand the dial.
+            try:
+                await asyncio.shield(set_vfo_slot(previous))
+            except Exception:
+                logger.exception(
+                    "split TX write: restoring VFO slot %s failed; "
+                    "radio may be on the TX slot",
+                    previous,
+                )
         return HamlibError.OK
 
     async def _cmd_get_split_freq(self, cmd: RigctldCommand) -> RigctldResponse:
