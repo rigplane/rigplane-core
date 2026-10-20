@@ -1,15 +1,17 @@
 name: Merge queue gates
 
-# The merge queue tests a temporary gh-readonly-queue/main/pr-<N>-<sha> ref and
-# waits for every required context on that commit. Two of the required
+# The merge queue tests a temporary gh-readonly-queue/main/pr-<N>-<sha> branch
+# and waits for every required context on its head commit. Two required
 # contexts are PR-level gates that read PR comments and the PR body, which the
-# merge_group event does not carry:
-#   - "Agent Review Gate"  (commit status, agent-review-gate.yml)
-#   - "Evaluate stabilization-freeze PR contract"  (check run, freeze-gate.yml)
-# The PR could only enter the queue after both passed on its head, so here they
-# only re-confirm that.  The queue is configured with a merge group of one PR,
-# so the PR number in the ref name identifies the whole group.
+# merge_group event does not carry, so they are re-derived here through the API
+# for the single PR named by the branch (the queue uses a merge group of one):
+#   - "Agent Review Gate" (commit status): the queued PR head must still have a
+#     passing Agent Review Gate; the status is then published on the queue commit.
+#   - "Evaluate stabilization-freeze PR contract" (check run): the PR title,
+#     labels and body are evaluated with the same .github/scripts/freeze-gate.js.
 # "quick" reports from quick.yml itself (it has a merge_group trigger).
+# The scripts are checked out from main, not from the queued commit, so a PR
+# cannot change the code that gates it.
 
 on:
   merge_group:
@@ -26,42 +28,35 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Re-confirm the PR head still has a passing Agent Review Gate
-        uses: actions/github-script@v7
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.merge_group.base_ref }}
+          persist-credentials: false
+      - uses: actions/github-script@v7
         env:
           MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
           MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
         with:
           script: |
-            const {owner, repo} = context.repo;
-            const sha = process.env.MERGE_GROUP_SHA;
-            const url = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-            const publish = (state, description) => github.rest.repos.createCommitStatus({
-              owner, repo, sha, state, context: 'Agent Review Gate', description, target_url: url,
-            });
-            const match = /^refs\/heads\/gh-readonly-queue\/[^/]+\/pr-(\d+)-[0-9a-f]{40}$/u
-              .exec(process.env.MERGE_GROUP_REF);
-            if (!match) {
-              await publish('failure', 'Merge group ref has no single PR number.');
-              core.setFailed('merge group ref is not a single-PR queue ref');
-              return;
-            }
-            const {data: pull} = await github.rest.pulls.get({owner, repo, pull_number: Number(match[1])});
-            const {data: statuses} = await github.rest.repos.getCombinedStatusForRef({
-              owner, repo, ref: pull.head.sha, per_page: 100,
-            });
-            const gate = statuses.statuses.find((s) => s.context === 'Agent Review Gate');
-            if (gate?.state !== 'success') {
-              await publish('failure', `PR #${pull.number} head has no passing Agent Review Gate.`);
-              core.setFailed(`Agent Review Gate on PR head ${pull.head.sha} is ${gate?.state ?? 'missing'}`);
-              return;
-            }
-            await publish('success', `PR #${pull.number} head ${pull.head.sha.slice(0, 7)} passed the Agent Review Gate.`);
+            const {run} = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/merge-queue-gates.js`);
+            await run({github, context, core, gate: 'agent-review',
+              ref: process.env.MERGE_GROUP_REF, sha: process.env.MERGE_GROUP_SHA});
 
   freeze-gate:
     name: Evaluate stabilization-freeze PR contract
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Pass through (PR-level freeze gate already admitted the PR)
-        run: echo "Freeze gate is evaluated on the pull request; the PR body is not available on merge_group."
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.merge_group.base_ref }}
+          persist-credentials: false
+      - uses: actions/github-script@v7
+        env:
+          MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
+          MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
+        with:
+          script: |
+            const {run} = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/merge-queue-gates.js`);
+            await run({github, context, core, gate: 'freeze',
+              ref: process.env.MERGE_GROUP_REF, sha: process.env.MERGE_GROUP_SHA});
