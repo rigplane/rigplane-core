@@ -43,7 +43,9 @@ radio disconnect/connect, and pins:
   monotonic clock so the deadline itself ends the settle (one late
   settle sample hangs for real and is bounded by the wait_for on the
   remaining window), and the hung-sample test uses a real 50 ms window
-  against a real 30 s hang.
+  against a real 30 s hang. The step sleep is clamped to the remaining
+  window, and a sample cancelled inside the ``ps`` fallback kills and
+  reaps its child before the cancellation propagates.
 """
 
 from __future__ import annotations
@@ -388,6 +390,47 @@ async def test_driver_side_metrics_tolerate_a_missing_ps_sample(
     rss, _fds = await soak_driver._driver_side_process_metrics(999999)
 
     assert rss is None
+
+
+class _BlockingPsProcess:
+    """A fake ``ps`` child that never finishes and records its teardown."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def communicate(self) -> tuple[bytes, None]:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    def kill(self) -> None:
+        self.calls.append("kill")
+
+    async def wait(self) -> None:
+        self.calls.append("wait")
+
+
+async def test_ps_output_kills_and_reaps_its_child_when_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled sample must not leak its ps child (MOR-3575).
+
+    The settle window's ``wait_for`` can cancel a sample that is inside
+    ``_ps_output``; the child is killed and reaped before the
+    cancellation propagates. RED on the pre-fix helper: the cancel
+    propagated straight through and these kill/reap assertions failed.
+    """
+
+    async def _spawn_ps(*args: Any, **kwargs: Any) -> _BlockingPsProcess:
+        return proc
+
+    proc = _BlockingPsProcess()
+    monkeypatch.setattr(soak_driver.asyncio, "create_subprocess_exec", _spawn_ps)
+    task = asyncio.create_task(soak_driver._ps_output(["-o", "rss="]))
+    await asyncio.sleep(0.01)  # reach the blocking communicate()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert proc.calls == ["kill", "wait"]
 
 
 async def test_soak_smoke_report_shape_and_incomplete_verdict() -> None:
@@ -931,9 +974,10 @@ async def test_stability_settle_is_bounded_by_its_window(
     ``wait_for`` on the remaining window gives up on it. The settle ends
     after a single step although the budget allows four, and the cycle
     still concludes with a FAIL on the never-settling counts. Remove the
-    deadline bounding and this goes red: without the clamped sleeps four
-    full steps are recorded, and without the ``wait_for`` the 30 s hang
-    outruns the outer bound.
+    sample-bounding ``wait_for`` and this goes red: the 30 s hang
+    outruns the outer bound instead of being cancelled at the window's
+    end. (The step-sleep clamp is pinned separately, by
+    test_stability_settle_clamps_its_step_sleep_to_the_remaining_window.)
     """
     real_monotonic = time.monotonic
     monkeypatch.setattr(soak_driver, "_STABILITY_SETTLE_WINDOW_S", 1.0)
@@ -958,6 +1002,40 @@ async def test_stability_settle_is_bounded_by_its_window(
     # of four steps (window 1.0 s / step 0.25 s) nor by a calm reading
     # (the counts fall forever, so calm never reaches its threshold).
     assert sleeps == [3.0, soak_driver._STABILITY_SETTLE_STEP_S]
+
+
+async def test_stability_settle_clamps_its_step_sleep_to_the_remaining_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A step sleep never outruns the window (MOR-3575).
+
+    A controlled clock with 0.8 s samples leaves 0.2 s of the 1.0 s
+    window after the settle's first sample, so the step sleep is
+    clamped to that 0.2 s instead of its full 0.25 s; the next
+    resample then starts past the window and the settle ends. Remove
+    the clamp and this goes red: the recorded sleep is the full 0.25 s
+    step.
+    """
+    monkeypatch.setattr(soak_driver, "_STABILITY_SETTLE_WINDOW_S", 1.0)
+    clock = _SettleClock(sample_cost_s=0.8)
+    monkeypatch.setattr(soak_driver, "time", SimpleNamespace(monotonic=clock.monotonic))
+    falling = itertools.chain([48, 48, 48], itertools.count(10**9, -1))
+
+    def script() -> dict[str, int]:
+        return {"rssBytes": 1024, "openFds": next(falling), "asyncioTasks": 30}
+
+    driver, sleeps = await _run_cycle_with_process_script(
+        monkeypatch, script, clock=clock
+    )
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert _stability_status(entry, "fds")["status"] == "FAIL"
+    assert sleeps[0] == 3.0
+    # Clamped to the 0.2 s left of the window — not the full 0.25 s step
+    # (the controlled clock's deadline arithmetic carries float error,
+    # so compare approximately and against the step bound).
+    assert sleeps[1] == pytest.approx(1.0 - 0.8)
+    assert sleeps[1] < soak_driver._STABILITY_SETTLE_STEP_S
 
 
 async def test_stability_settle_gives_up_on_a_hung_sample(

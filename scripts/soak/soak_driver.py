@@ -681,6 +681,15 @@ async def _ps_output(args: list[str]) -> str | None:
             proc.kill()
         await proc.wait()
         return None
+    except asyncio.CancelledError:
+        # A caller-side bound (the settle window's wait_for giving up
+        # on this sample) cancels us mid-communicate: the ps child
+        # must not outlive the call, so kill and reap it before
+        # letting the cancellation propagate.
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        await proc.wait()
+        raise
     return out.decode("utf-8", "replace")
 
 
