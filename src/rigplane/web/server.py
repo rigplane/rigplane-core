@@ -3475,6 +3475,7 @@ class WebServer:
                 is ObservedPtt.ON
             )
         except Exception:
+            logger.debug("scope TX probe: unexpected failure", exc_info=True)
             return False
 
     def _scope_health_check(self, frame: Any) -> None:

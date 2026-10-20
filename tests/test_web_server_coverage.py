@@ -3461,7 +3461,7 @@ async def test_scope_health_monitor_recovers_after_tx_ends(
     srv = WebServer(radio)
     srv._scope_handlers.add(MagicMock())
     srv._scope_enabled = True
-    srv._scope_health_interval = 0.01
+    srv._scope_health_interval = 0.05
     srv._scope_last_nonzero = time.monotonic() - 1.0
     srv._managed_tx_keyed = True  # noqa: SLF001
     queued: list[EnableScope] = []
@@ -3469,12 +3469,12 @@ async def test_scope_health_monitor_recovers_after_tx_ends(
 
     task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
     try:
-        await asyncio.sleep(0.15)  # long TX consumes any pre-fix retry budget
+        await asyncio.sleep(0.3)  # long TX spans the 3-retry budget (6 intervals)
         assert queued == []
         srv._managed_tx_keyed = False  # noqa: SLF001 — de-key, traffic resumes
-        for _ in range(17):  # ~50 ms of live traffic, ~3 ms between frames
+        for _ in range(25):  # ~250 ms of live traffic, ~10 ms between frames
             srv._scope_health_check(SimpleNamespace(pixels=b"\x00\x01"))  # noqa: SLF001
-            await asyncio.sleep(0.003)
+            await asyncio.sleep(0.01)
         assert queued == []  # live traffic after TX stays quiet
         # Genuine RX stall: frames stop again.
         srv._scope_last_nonzero = time.monotonic() - 1.0
@@ -3484,6 +3484,43 @@ async def test_scope_health_monitor_recovers_after_tx_ends(
         await asyncio.gather(task, return_exceptions=True)
 
     assert any(isinstance(command, EnableScope) for command in queued)
+
+
+@pytest.mark.asyncio
+async def test_scope_health_monitor_tx_resets_retry_budget_after_give_up(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-2859: a TX pause restores the retry budget exhausted by an RX stall."""
+    caplog.set_level("WARNING", logger="rigplane.web.server")
+    radio = _scope_radio(ready=True, connected=True)
+    srv = WebServer(radio)
+    srv._scope_handlers.add(MagicMock())
+    srv._scope_enabled = True
+    srv._scope_health_interval = 0.05
+    srv._scope_last_nonzero = time.monotonic() - 1.0
+    queued: list[EnableScope] = []
+    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
+
+    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    try:
+        # RX stall with zero frames until the monitor exhausts its retries.
+        await _await_condition(
+            lambda: len(queued) >= 3 and "giving up" in caplog.text,
+            timeout=5.0,
+        )
+        baseline = len(queued)
+        # TX known for a few intervals: quiet, timer + retries reset.
+        srv._managed_tx_keyed = True  # noqa: SLF001
+        await asyncio.sleep(0.2)
+        assert len(queued) == baseline
+        # De-key with zero frames continuing: fresh budget re-enables.
+        srv._managed_tx_keyed = False  # noqa: SLF001
+        await _await_condition(lambda: len(queued) > baseline, timeout=5.0)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert any(isinstance(command, EnableScope) for command in queued[baseline:])
 
 
 @pytest.mark.asyncio
