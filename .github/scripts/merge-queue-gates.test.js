@@ -9,7 +9,7 @@ const SHA = 'a'.repeat(40);
 const SHORT = `gh-readonly-queue/main/pr-42-${SHA}`;
 
 test('parses the short and the full queue ref', () => {
-  assert.deepEqual(parseQueueRef(SHORT), {base: 'main', number: 42, queuedHeadSha: SHA});
+  assert.deepEqual(parseQueueRef(SHORT), {base: 'main', number: 42});
   assert.equal(parseQueueRef(`refs/heads/${SHORT}`).number, 42);
   assert.equal(parseQueueRef(`gh-readonly-queue/release/1.x/pr-7-${SHA}`).base, 'release/1.x');
 });
@@ -21,14 +21,12 @@ test('rejects refs that do not name exactly one PR', () => {
   }
 });
 
-const queued = parseQueueRef(SHORT);
 const pull = {number: 42, head: {sha: SHA}};
 
 test('agent review gate needs a success status on the queued head', () => {
-  assert.equal(evaluateAgentReviewGate({queued, pull, statuses: [{context: 'Agent Review Gate', state: 'success'}]}).ok, true);
-  assert.equal(evaluateAgentReviewGate({queued, pull, statuses: [{context: 'Agent Review Gate', state: 'failure'}]}).ok, false);
-  assert.equal(evaluateAgentReviewGate({queued, pull, statuses: []}).ok, false);
-  assert.equal(evaluateAgentReviewGate({queued, pull: {number: 42, head: {sha: 'b'.repeat(40)}}, statuses: [{context: 'Agent Review Gate', state: 'success'}]}).ok, false);
+  assert.equal(evaluateAgentReviewGate({pull, statuses: [{context: 'Agent Review Gate', state: 'success'}]}).ok, true);
+  assert.equal(evaluateAgentReviewGate({pull, statuses: [{context: 'Agent Review Gate', state: 'failure'}]}).ok, false);
+  assert.equal(evaluateAgentReviewGate({pull, statuses: []}).ok, false);
 });
 
 function fakeApi({pullData, statuses, throwOn}) {

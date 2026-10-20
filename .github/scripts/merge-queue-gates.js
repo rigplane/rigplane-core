@@ -18,17 +18,12 @@ function parseQueueRef(ref) {
   if (!match) {
     return null;
   }
-  return {base: match[1], number: Number(match[2]), queuedHeadSha: match[3]};
+  // match[3] is the main commit the group was built on, not the PR head.
+  return {base: match[1], number: Number(match[2])};
 }
 
 // pull: {number, head: {sha}}; statuses: commit statuses of the PR head.
-function evaluateAgentReviewGate({queued, pull, statuses}) {
-  if (pull.head.sha !== queued.queuedHeadSha) {
-    return {
-      ok: false,
-      reason: `PR #${pull.number} head ${pull.head.sha.slice(0, 7)} differs from the queued head ${queued.queuedHeadSha.slice(0, 7)}.`,
-    };
-  }
+function evaluateAgentReviewGate({pull, statuses}) {
   const gate = (Array.isArray(statuses) ? statuses : []).find(
     (status) => status.context === AGENT_REVIEW_CONTEXT,
   );
@@ -80,7 +75,7 @@ async function run({github, context, core, gate, ref, sha}) {
       const {data: combined} = await github.rest.repos.getCombinedStatusForRef({
         owner, repo, ref: pull.head.sha, per_page: 100,
       });
-      verdict = evaluateAgentReviewGate({queued, pull, statuses: combined.statuses});
+      verdict = evaluateAgentReviewGate({pull, statuses: combined.statuses});
     }
   } catch (error) {
     await fail(`${gate} evaluation failed closed: ${error instanceof Error ? error.message : String(error)}`);
