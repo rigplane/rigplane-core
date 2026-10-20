@@ -110,8 +110,8 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       transport.receive('010000809fd5002026d700ff000003000080ff');
       flushSync(); drawPending();
       // MOR-3471: warm the waterfall freshness gate to steady painting
-      // (the fresh gate paints its first delivery, then withholds until
-      // five live-spaced deliveries re-earn painting) so trace-window
+      // (the fresh gate paints its first delivery and the first
+      // live-spaced delivery latches steady painting) so trace-window
       // frames paint on their own spacing merit. Pre-trace warm-ups are
       // invisible to the trace but shift the controller's accepted-sequence
       // counter: trace-window frames below are accepted 7, 8, 9.

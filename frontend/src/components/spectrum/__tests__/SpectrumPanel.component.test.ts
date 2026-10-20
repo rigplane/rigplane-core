@@ -1895,13 +1895,45 @@ describe('SDR scope source routing (MOR-3158)', () => {
       replaceSdrLeaf(sdrLeaf({ txFrozen: false }));
       flushSync();
       expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).toBeNull();
-      // Unfrozen: painting re-earns through the gate — the frozen
-      // deliveries reset the resume run, so five consecutive live-spaced
-      // frames are needed and the fifth paints.
-      for (let index = 0; index < 4; index += 1) { clock += 83; emitFrame(); }
-      expect(push).toHaveBeenCalledTimes(1);
+      // Unfrozen: the frozen deliveries kept classifying through the
+      // gate, so the spacing baseline never tripped a discontinuity and
+      // painting resumes immediately.
       clock += 83; emitFrame();
       expect(push).toHaveBeenCalledTimes(2);
+      clock += 83; emitFrame();
+      expect(push).toHaveBeenCalledTimes(3);
+    } finally {
+      nowSpy.mockRestore();
+      push.mockRestore();
+    }
+  });
+
+  it('paints the first live frame after a >3 s delivery silence during a TX freeze (MOR-3471)', () => {
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    let clock = 0;
+    const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    try {
+      selectSdrSource();
+      const target = mountPanel();
+      emitFrame();
+      expect(push).toHaveBeenCalledTimes(1);
+      // TX freeze with a silent source: deliveries stopped during the
+      // freeze (nothing classifies — there is nothing to classify), so
+      // the 4 s silence must not cost live rows afterwards.
+      replaceSdrLeaf(sdrLeaf({ txFrozen: true }));
+      flushSync();
+      expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).not.toBeNull();
+      clock += 4_000;
+      replaceSdrLeaf(sdrLeaf({ txFrozen: false }));
+      flushSync();
+      expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).toBeNull();
+      // The first live frame after the freeze paints immediately — no
+      // multi-row suppression after a normal silence — and painting
+      // continues.
+      clock += 83; emitFrame();
+      expect(push).toHaveBeenCalledTimes(2);
+      clock += 83; emitFrame();
+      expect(push).toHaveBeenCalledTimes(3);
     } finally {
       nowSpy.mockRestore();
       push.mockRestore();
@@ -1930,24 +1962,24 @@ describe('SDR scope source routing (MOR-3158)', () => {
         scopeDemanded: true,
       });
       expect(push).toHaveBeenCalledTimes(1);
-      // Fresh-gate resume cost: deliveries two through five are withheld,
-      // the fifth live-spaced projection re-earns painting.
+      // The first delivered projection paints (fresh gate) and the next
+      // live-spaced one latches steady painting.
       for (let sequence = 2; sequence <= 6; sequence += 1) {
         clock += 83;
         props.set('projection', sdrProjection(sequence)); flushSync();
       }
-      expect(push).toHaveBeenCalledTimes(2);
+      expect(push).toHaveBeenCalledTimes(6);
       replaceSdrLeaf(sdrLeaf({ txFrozen: true }));
       flushSync();
       expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).not.toBeNull();
       clock += 83;
       props.set('projection', sdrProjection(7)); flushSync();
-      expect(push).toHaveBeenCalledTimes(2);
+      expect(push).toHaveBeenCalledTimes(6);
       replaceSdrLeaf(sdrLeaf({ txFrozen: false }));
       flushSync();
       clock += 83;
       props.set('projection', sdrProjection(8)); flushSync();
-      expect(push).toHaveBeenCalledTimes(3);
+      expect(push).toHaveBeenCalledTimes(7);
     } finally {
       nowSpy.mockRestore();
       push.mockRestore();
@@ -2415,14 +2447,15 @@ describe('managed scope projection (MOR-2367)', () => {
       expect(push).toHaveBeenCalledTimes(1);
       expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
       const firstCanvas = target.querySelector('.waterfall-content canvas');
-      // Warm the fresh gate to steady painting (fresh-gate resume cost)
-      // with distinct live-spaced sequences, so the recovery frame below
-      // is judged on spacing, not on the resume run.
+      // Warm the fresh gate to steady painting (the first delivery
+      // paints, the first live-spaced one latches) with distinct
+      // live-spaced sequences, so the recovery frame below is judged on
+      // spacing, not on the latch.
       for (let sequence = 2; sequence <= 6; sequence += 1) {
         clock += 83;
         props.set('projection', sequenced(sequence)); flushSync();
       }
-      expect(push).toHaveBeenCalledTimes(2);
+      expect(push).toHaveBeenCalledTimes(6);
       props.set('projection', null); flushSync(); const afterClear = push.mock.calls.length;
       expect(target.querySelector<HTMLElement>('.waterfall-history')?.style.visibility).toBe('hidden');
       emitFrame(); expect(push).toHaveBeenCalledTimes(afterClear);
@@ -2461,31 +2494,29 @@ describe('managed scope projection (MOR-2367)', () => {
         emitFrame({ pixels: new Uint8Array(475).fill(++id) });
       };
       const painted = () => push.mock.calls.map(([pixels]) => pixels[0]);
-      // Fresh registration: the first delivery paints, the next four
-      // live-spaced deliveries are the fresh gate's resume cost, and the
-      // fifth re-earns painting.
+      // Fresh registration: the first delivery paints and the first
+      // live-spaced delivery latches steady painting.
       deliver(0);
       for (let index = 0; index < 5; index += 1) deliver(83);
-      expect(painted()).toEqual([1, 6]);
-      // A >3 s delivery gap enters skip mode: a back-to-back burst that
-      // drains after the gap is suppressed at the registration, and five
-      // consecutive live-spaced deliveries re-earn painting.
+      expect(painted()).toEqual([1, 2, 3, 4, 5, 6]);
+      // A >3 s delivery gap re-opens skip mode: the entering frame
+      // paints, the back-to-back burst that follows is suppressed at the
+      // registration, and the first live-spaced delivery latches again.
       clock += 2 * 60 * 60 * 1000;
       for (let index = 0; index < 8; index += 1) deliver(1);
-      for (let index = 0; index < 4; index += 1) deliver(83);
-      expect(painted()).toEqual([1, 6]);
-      deliver(83);
-      expect(painted()).toEqual([1, 6, 19]);
+      for (let index = 0; index < 5; index += 1) deliver(83);
+      expect(painted()).toEqual([1, 2, 3, 4, 5, 6, 7, 15, 16, 17, 18, 19]);
       // A burst straddling a provider-switch remount hits a fresh gate:
       // it paints at most one row (the first delivery on the fresh
-      // registration), then withholds until live spacing returns.
+      // registration) while the rest drains at burst spacing inside the
+      // skip budget.
       clock += 2 * 60 * 60 * 1000;
       deliver(1);
       deliver(1);
       generations.set('current', 18); flushSync();
       deliver(1);
       for (let index = 0; index < 3; index += 1) deliver(1);
-      expect(painted()).toEqual([1, 6, 19, 22]);
+      expect(painted()).toEqual([1, 2, 3, 4, 5, 6, 7, 15, 16, 17, 18, 19, 20, 22]);
     } finally {
       Object.defineProperty(runtimeHarness.state, 'currentState', original);
       nowSpy.mockRestore();

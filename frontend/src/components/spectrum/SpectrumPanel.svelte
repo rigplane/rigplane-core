@@ -1059,7 +1059,10 @@
         // spacing baseline tracks the transport across the freeze; only
         // the paint is withheld.
         if (!sdrTxFrozen) waterfallPush?.(scopePixels, waterfallOptions, token);
-        else { waterfallFreshnessGate?.admit(); trace?.record('waterfall_suppressed', token, 0, true); }
+        else {
+          waterfallFreshnessGate?.admit();
+          trace?.record('waterfall_suppressed', token, 0, true);
+        }
         if (traceStart) trace?.record('fanout', token, performance.now() - traceStart);
       }
       if (projection.passband.state !== 'current') {
@@ -1097,7 +1100,10 @@
         // same MOR-3471 classification: the delivery updates the gate's
         // baseline, the paint is withheld.
         if (!sdrTxFrozen) waterfallPush?.(pixels, waterfallOptions, token);
-        else { waterfallFreshnessGate?.admit(); trace?.record('waterfall_suppressed', token, 0, true); }
+        else {
+          waterfallFreshnessGate?.admit();
+          trace?.record('waterfall_suppressed', token, 0, true);
+        }
         if (traceStart) trace?.record('fanout', token, performance.now() - traceStart);
       };
       const unsubscribe = sourceIsManaged ? () => {} : sourceIsAudio
@@ -1262,14 +1268,21 @@
     <div class="waterfall-content" class:panning={dragging} class:draggable={canPan} bind:this={waterfallContent} onpointerdown={handleDragStart} role="presentation">
       {#key runtime.state?.providerGeneration}
       <div class="waterfall-history" style:visibility={managedUnavailable ? 'hidden' : 'visible'} aria-hidden={managedUnavailable}>
-        <WaterfallCanvas options={waterfallOptions} trace={traceStatus === 'recording' ? trace : null} onFreqClick={audioFft || managedUnavailable ? undefined : handleTune} onRegisterPush={(fn) => {
+        <WaterfallCanvas options={waterfallOptions} trace={traceStatus === 'recording' ? trace : null} onFreqClick={audioFft || managedUnavailable ? undefined : handleTune}         onRegisterPush={(fn) => {
           // MOR-3471: collapse a post-gap delivery burst instead of painting
           // one history row per frame. Every delivery that reaches this
           // registration classifies through the gate (hidden or not), and
           // the TX-frozen fan-out paths above classify through it while
           // withholding the paint, so the spacing baseline tracks the
-          // transport. Suppressed deliveries record on the
-          // waterfall_suppressed trace stage. The delayed case of
+          // transport. The gate is wall-time bounded: skip mode suppresses
+          // only burst-spaced frames inside WATERFALL_SKIP_BUDGET_MS of a
+          // discontinuity, the first frame after a gap paints, and the
+          // first live-spaced frame latches steady painting — so neither a
+          // normal silence (demand off/on, source gap, TX freeze with a
+          // silent source) nor a live stream whose render deliveries batch
+          // tighter than burst spacing can lose live rows indefinitely.
+          // Suppressed deliveries record on the waterfall_suppressed trace
+          // stage. The delayed case of
           // scope-hidden-delivery.characterization.test.ts mirrors this
           // registration with its own gate wrapper and does not execute
           // this code; this wiring itself is pinned by the 'wires the

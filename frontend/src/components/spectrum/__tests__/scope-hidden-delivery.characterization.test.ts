@@ -142,16 +142,16 @@ describe('same-session scope delivery across hidden rendering', () => {
     };
     try {
       expect(push).toBeTypeOf('function');
-      // Visible live-spaced baseline: the fresh gate paints the first
-      // delivery and withholds the next two (fresh-gate resume cost); all
-      // three establish the pre-gap delivery history the later gap is
-      // measured against.
+      // Visible live-spaced baseline: the fresh gate paints its first
+      // delivery and the first live-spaced one latches steady painting,
+      // so all three paint; they also establish the pre-gap delivery
+      // history the later gap is measured against.
       for (const id of baselineIds) { deliver(frame(id)); advance(83); }
-      expect(pushed.mock.calls.map(([pixels]) => pixels[0])).toEqual([baselineIds[0]]);
+      expect(pushed.mock.calls.map(([pixels]) => pixels[0])).toEqual(baselineIds);
       hidden = true;
       if (mode === 'continued') for (const buffer of produced) deliver(buffer);
-      expect(pushed).toHaveBeenCalledTimes(1);
-      expect(paint).toHaveBeenCalledTimes(1);
+      expect(pushed).toHaveBeenCalledTimes(3);
+      expect(paint).toHaveBeenCalledTimes(3);
       expect(arrivals).toEqual(mode === 'continued' ? [...baselineIds, ...ids] : baselineIds);
       advance(2 * 60 * 60 * 1000);
       flushSync();
@@ -159,30 +159,28 @@ describe('same-session scope delivery across hidden rendering', () => {
       hidden = false;
       document.dispatchEvent(new Event('visibilitychange'));
       flushSync();
-      expect(pushed).toHaveBeenCalledTimes(1);
+      expect(pushed).toHaveBeenCalledTimes(3);
       if (mode === 'delayed') {
         for (const buffer of produced) { deliver(buffer); advance(1); }
       }
-      // Live-spaced frames after the return: the post-gap deliveries
-      // collapse (MOR-3471) and painting resumes after five consecutive
-      // live-spaced frames re-earn it. In `delayed` the discontinuity is
-      // the burst's first frame, so live painting resumes at frame 72; in
-      // `continued` the first post-gap frame (68, itself live-spaced)
-      // spends the discontinuity slot, so painting resumes one frame
-      // later. The model's hidden deliveries stay sub-second apart, so
-      // they trip no discontinuity — whether a real Space switch keeps
-      // delivering while hidden is unconfirmed (MOR-3471 trace pending).
+      // Live frames after the return: the first delivery after the gap
+      // paints (MOR-3471 round 3: a normal silence costs no live rows).
+      // In `delayed` the discontinuity opens with the burst's first
+      // frame, which paints (one deferred row, accepted cost) while the
+      // rest of the drain collapses; the first live-spaced frame after
+      // the drain latches steady painting. In `continued` the hidden
+      // deliveries stayed sub-second apart, so they trip no
+      // discontinuity — whether a real Space switch keeps delivering
+      // while hidden is unconfirmed (MOR-3471 trace pending).
       for (const id of liveIds) { advance(83); deliver(frame(id)); }
       expect(arrivals).toEqual([...baselineIds, ...ids, ...liveIds]);
       expect(accepted.map((value) => value.id)).toEqual([...baselineIds, ...ids, ...liveIds]);
       expect(accepted.map((value) => value.sequence)).toEqual([...baselineIds, ...ids, ...liveIds]);
       const paintedIds = pushed.mock.calls.map(([pixels]) => pixels[0]);
       expect(paintedIds).toEqual(mode === 'delayed'
-        ? [baselineIds[0], 72, 73, 74]
-        : [baselineIds[0], 73, 74]);
-      expect(suppressed).toEqual(mode === 'delayed'
-        ? [baselineIds[1], baselineIds[2], ...ids, 68, 69, 70, 71]
-        : [baselineIds[1], baselineIds[2], ...ids, 68, 69, 70, 71, 72]);
+        ? [...baselineIds, ids[0], ...liveIds]
+        : [...baselineIds, ...liveIds]);
+      expect(suppressed).toEqual(mode === 'delayed' ? ids.slice(1) : []);
       expect(paint).toHaveBeenCalledTimes(paintedIds.length);
       expect(accepted[0].receivedAt).toBe(0);
       expect(accepted.at(-1)?.receivedAt).toBe(now);
