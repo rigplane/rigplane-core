@@ -310,10 +310,6 @@ export function getMode(): string {
   return active?.mode ?? '';
 }
 
-export function getIsTransmitting(): boolean {
-  return radio.current?.ptt ?? false;
-}
-
 export function getLastRevision(): number {
   return lastRevision;
 }

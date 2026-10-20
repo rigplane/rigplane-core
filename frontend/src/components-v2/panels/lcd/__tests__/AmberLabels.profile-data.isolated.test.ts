@@ -17,6 +17,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+// MOR-2855: both faces read the App-owned managed TX controller for their TX
+// look; the harness provides it the way the LcdLayout tests do.
+const txHarness = new ManagedAppTxHarness();
 
 // ── Controlled adapter output ───────────────────────────────────────────────
 
@@ -41,6 +46,10 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
 
 vi.mock('$lib/runtime/adapters/qsy-history-adapter', () => ({
   deriveQsyRecent: () => [],
+}));
+
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => txHarness.controller,
 }));
 
 vi.mock('$lib/runtime', () => ({

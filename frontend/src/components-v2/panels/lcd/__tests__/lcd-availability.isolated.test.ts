@@ -11,6 +11,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ServerState } from '$lib/types/state';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+// MOR-2855: AmberScope reads the App-owned managed TX controller for its TX
+// look; the harness provides it the way the LcdLayout tests do.
+const txHarness = new ManagedAppTxHarness();
 
 // ── Controlled adapter output ───────────────────────────────────────────────
 
@@ -26,6 +31,10 @@ const scopeProps = vi.hoisted(() => ({
 
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveAmberScopeProps: () => scopeProps.value,
+}));
+
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => txHarness.controller,
 }));
 
 vi.mock('$lib/runtime', () => ({

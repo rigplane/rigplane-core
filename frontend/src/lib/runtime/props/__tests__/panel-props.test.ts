@@ -138,17 +138,14 @@ describe('panel prop field availability', () => {
         fieldStatus: {
           powerLevel: fieldStatus('missing', false),
           micGain: fieldStatus('stale'),
-          ptt: fieldStatus('available'),
         },
       }),
       { tx: true, capabilities: ['tuner', 'monitor'] } as any,
     );
 
-    expect(props.txActive).toBe(false);
     expect(props.rfPower).toBe(0.5);
     expect(props.rfPowerAvailable).toBe(false);
     expect(props.micGainAvailable).toBe(false);
-    expect(props.txActiveAvailable).toBe(true);
   });
 
   it('keeps observed TX controls available', () => {
