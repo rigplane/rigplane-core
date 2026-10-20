@@ -17,6 +17,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
+from rigplane.core.radio_protocol import RelativeVfoState
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -166,10 +167,16 @@ class DeterministicSerialCivLink:
 
 
 @dataclass(slots=True)
-class _ReceiverState:
+class _VfoSlotFreqMode:
+    """Per-VFO-slot frequency/mode state (A/B slots are independent)."""
+
     freq: int = 14_074_000
     mode: Mode = Mode.USB
     filter_width: int | None = 1
+
+
+@dataclass(slots=True)
+class _ReceiverState:
     data_mode: bool = False
     rf_gain: int = 200
     af_level: int = 200
@@ -229,8 +236,17 @@ class SerialMockRadio:
             receiver: _ReceiverState()
             for receiver in range(self._profile.receiver_count)
         }
-        # Seed RadioState's MAIN/SUB receivers from the per-receiver
-        # _ReceiverState defaults so the rigctld handler's per-VFO reads
+        # A/B slots carry independent freq/mode per receiver; the active
+        # slot (``get_vfo_slot`` / ``set_vfo_slot``) selects which one the
+        # bare ``get_freq`` / ``set_freq`` / ``get_mode`` / ``set_mode``
+        # paths address — the mock analogue of the radio's VFO select.
+        self._vfo_slot: dict[int, str] = {receiver: "A" for receiver in self._rx}
+        self._slots: dict[int, dict[str, _VfoSlotFreqMode]] = {
+            receiver: {"A": _VfoSlotFreqMode(), "B": _VfoSlotFreqMode()}
+            for receiver in self._rx
+        }
+        # Seed RadioState's MAIN/SUB receivers from the active-slot
+        # defaults so the rigctld handler's per-VFO reads
         # (which go through ``radio.radio_state.{main,sub}.{freq,mode,filter}``)
         # see the same values as the bare ``radio.get_freq()`` / ``get_mode()``
         # paths. Without this, ``f VFOB`` on a freshly-connected dual-RX
@@ -295,21 +311,26 @@ class SerialMockRadio:
             f"{self._profile.model} (receivers={self._profile.receiver_count})"
         )
 
+    def _active_slot_state(self, receiver: int, *, operation: str) -> _VfoSlotFreqMode:
+        """Freq/mode state of the active A/B slot (validates the receiver)."""
+        self._receiver_state(receiver, operation=operation)
+        return self._slots[receiver][self._vfo_slot[receiver]]
+
     def _sync_radio_state_from_rx(self, receiver: int) -> None:
-        """Mirror per-receiver state into ``RadioState.{main,sub}``.
+        """Mirror the active slot into ``RadioState.{main,sub}``.
 
         rigctld's per-VFO read paths (``f VFOB``, ``m VFOB``) read from
         ``radio.radio_state.sub.{freq,mode,filter}`` directly, bypassing
-        the radio coroutines. Keep that view in sync with ``self._rx``
+        the radio coroutines. Keep that view in sync with the active slot
         whenever a write touches a specific receiver.
         """
-        rx = self._rx.get(receiver)
-        if rx is None:
+        if receiver not in self._rx:
             return
+        slot = self._slots[receiver][self._vfo_slot[receiver]]
         target = self._radio_state.main if receiver == 0 else self._radio_state.sub
-        target.freq = rx.freq
-        target.mode = rx.mode.name
-        target.filter = rx.filter_width
+        target.freq = slot.freq
+        target.mode = slot.mode.name
+        target.filter = slot.filter_width
 
     def set_state_change_callback(self, callback: Any | None) -> None:
         self._state_change_callback = callback
@@ -339,13 +360,13 @@ class SerialMockRadio:
         self._scope_enabled = False
 
     async def set_freq(self, freq: int, receiver: int = 0) -> None:
-        self._receiver_state(receiver, operation="set_freq").freq = freq
+        self._active_slot_state(receiver, operation="set_freq").freq = freq
         self._sync_radio_state_from_rx(receiver)
         if receiver == 0:
             self._state_cache.update_freq(freq)
 
     async def get_freq(self, receiver: int = 0) -> int:
-        return self._receiver_state(receiver, operation="get_freq").freq
+        return self._active_slot_state(receiver, operation="get_freq").freq
 
     # Backward-compat aliases
     set_frequency = set_freq
@@ -355,21 +376,21 @@ class SerialMockRadio:
         self, mode: Mode | str, filter_width: int | None = None, receiver: int = 0
     ) -> None:
         parsed_mode = mode if isinstance(mode, Mode) else Mode[mode.upper()]
-        receiver_state = self._receiver_state(receiver, operation="set_mode")
-        receiver_state.mode = parsed_mode
+        slot = self._active_slot_state(receiver, operation="set_mode")
+        slot.mode = parsed_mode
         if filter_width is not None:
-            receiver_state.filter_width = filter_width
+            slot.filter_width = filter_width
         self._sync_radio_state_from_rx(receiver)
         if receiver == 0:
-            self._state_cache.update_mode(parsed_mode.name, receiver_state.filter_width)
+            self._state_cache.update_mode(parsed_mode.name, slot.filter_width)
 
     async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
-        state = self._receiver_state(receiver, operation="get_mode")
-        return state.mode.name, state.filter_width
+        slot = self._active_slot_state(receiver, operation="get_mode")
+        return slot.mode.name, slot.filter_width
 
     async def get_mode_info(self, receiver: int = 0) -> tuple[Mode, int | None]:
-        state = self._receiver_state(receiver, operation="get_mode_info")
-        return state.mode, state.filter_width
+        slot = self._active_slot_state(receiver, operation="get_mode_info")
+        return slot.mode, slot.filter_width
 
     async def get_data_mode(self) -> bool:
         return self._data_mode
@@ -413,12 +434,13 @@ class SerialMockRadio:
         return 200
 
     async def get_filter(self, receiver: int = 0) -> int | None:
-        return self._receiver_state(receiver, operation="get_filter").filter_width
+        return self._active_slot_state(receiver, operation="get_filter").filter_width
 
     async def set_filter(self, filter_num: int, receiver: int = 0) -> None:
-        self._receiver_state(receiver, operation="set_filter").filter_width = filter_num
+        slot = self._active_slot_state(receiver, operation="set_filter")
+        slot.filter_width = filter_num
         if receiver == 0:
-            self._state_cache.update_mode(self._rx[receiver].mode.name, filter_num)
+            self._state_cache.update_mode(slot.mode.name, filter_num)
 
     async def get_rf_gain(self, receiver: int = 0) -> int:
         return self._receiver_state(receiver, operation="get_rf_gain").rf_gain
@@ -574,9 +596,10 @@ class SerialMockRadio:
         for receiver in sorted(self._rx):
             rid = str(receiver)
             rx = self._rx[receiver]
+            slot = self._slots[receiver][self._vfo_slot[receiver]]
             # freq_mode family (active slot)
-            _obs(FieldPath.active(rid, "freq_mode", "freq_hz"), rx.freq)
-            _obs(FieldPath.active(rid, "freq_mode", "mode"), rx.mode.name)
+            _obs(FieldPath.active(rid, "freq_mode", "freq_hz"), slot.freq)
+            _obs(FieldPath.active(rid, "freq_mode", "mode"), slot.mode.name)
             _obs(
                 FieldPath.active(rid, "freq_mode", "data_mode"),
                 int(rx.data_mode),
@@ -634,6 +657,42 @@ class SerialMockRadio:
 
     # Backward-compat alias
     select_vfo = set_vfo
+
+    async def get_vfo_slot(self, receiver: int = 0) -> str:
+        """Active A/B slot for ``receiver`` (``VfoSlotCapable`` mirror)."""
+        if receiver not in self._rx:
+            raise ValueError(
+                f"receiver {receiver} out of range for profile "
+                f"{self._profile.model} (receivers={self._profile.receiver_count})"
+            )
+        return self._vfo_slot[receiver]
+
+    async def set_vfo_slot(self, slot: str, receiver: int = 0) -> None:
+        """Select A/B slot on ``receiver`` (``VfoSlotCapable`` mirror)."""
+        normalized = slot.upper()
+        if normalized not in ("A", "B"):
+            raise ValueError(f"slot must be 'A' or 'B', got {slot!r}")
+        if receiver not in self._rx:
+            raise ValueError(
+                f"receiver {receiver} out of range for profile "
+                f"{self._profile.model} (receivers={self._profile.receiver_count})"
+            )
+        self._vfo_slot[receiver] = normalized
+        target = self._radio_state.main if receiver == 0 else self._radio_state.sub
+        target.active_slot = normalized
+        self._sync_radio_state_from_rx(receiver)
+
+    async def read_relative_vfo(self, *, selected: bool) -> RelativeVfoState:
+        """Selected/unselected tuple for receiver 0 without switching slots."""
+        active = self._vfo_slot[0]
+        slot_name = active if selected else ("B" if active == "A" else "A")
+        slot = self._slots[0][slot_name]
+        return RelativeVfoState(
+            freq_hz=slot.freq,
+            mode=slot.mode.name,
+            filter_num=slot.filter_width,
+            data_mode=int(self._rx[0].data_mode),
+        )
 
     async def set_powerstat(self, on: bool) -> None:
         self._connected = on
