@@ -259,12 +259,13 @@ async def test_path1_clients_keying_in_the_same_instant_apply_exactly_one(
             holder, expected = arena.holder(), lanes[winners[0]][1]
             assert holder is not None and holder.startswith(expected), (holder, winners)
             assert len(arena.on_writes()) == keyed_before + 1
-            # A loser's PTT off is not the holder's release.
-            for loser in (a, b):
-                if loser.owner != holder:
-                    assert (await loser.primary.command("x", "ptt_off")).get(
-                        "ok"
-                    ) is False
+            # No loser's PTT off, on any lane, is the holder's release.
+            for name, release in unkey.items():
+                if name == winners[0]:
+                    continue
+                reply = await release()
+                if isinstance(reply, dict):  # a WebSocket control lane
+                    assert reply.get("ok") is False, (name, reply)
             assert arena.holder() == holder and arena.sim.ptt_on
             await unkey[winners[0]]()
             await _wait_ptt(arena.sim, False, _LEASE_BUDGET_S)
@@ -711,7 +712,11 @@ async def test_path7_closing_an_auxiliary_control_channel_keeps_the_holders_tx(
         assert await a.primary.key("a")
         await _wait_ptt(arena.sim, True, _KEY_DEADLINE_S)
         (await arena.ws(a.key, _AUX)).kill()
-        await asyncio.sleep(1.5)
+        # Wait for the release to show (or the lease budget, which is longer
+        # than one force-off attempt, to pass) instead of sleeping a guess.
+        end = time.monotonic() + _LEASE_BUDGET_S
+        while arena.sim.ptt_on and time.monotonic() < end:
+            await asyncio.sleep(0.05)
         assert arena.sim.ptt_on and arena.holder() == a.owner
         await a.primary.heartbeat()  # the session itself is alive throughout
 
