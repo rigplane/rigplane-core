@@ -930,9 +930,7 @@ async def test_cmd_web_applies_log_level_to_rigplane_logger() -> None:
 
     def _fake_get_logger(name: str = "") -> MagicMock:
         logger_mock = MagicMock()
-        logger_mock.setLevel.side_effect = lambda level: seen.__setitem__(
-            name, level
-        )
+        logger_mock.setLevel.side_effect = lambda level: seen.__setitem__(name, level)
         return logger_mock
 
     with (
