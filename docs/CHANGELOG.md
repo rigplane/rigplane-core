@@ -11,6 +11,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b17] — 2026-10-20
+
+### Added
+
+- **Several clients can share one radio session; only one of them holds TX
+  at a time (MOR-3534, #4253, #4254).** The first client to press PTT holds
+  transmit until it releases; the others stay connected for receive, scope
+  and control. The web UI opens a controller session in every mode
+  (MOR-3535, #4255).
+- **rigctl over the WebSocket, bound to the client's session (MOR-3536,
+  #4256).** A remote client can drive CAT through the same session that
+  carries its audio and scope.
+- **Per-IP cap on controller sessions and channels (MOR-3557, #4258).**
+
+### Fixed
+
+- **Refuse CW text, VOX, TUNE and break-in while the radio transmits TX that
+  Core does not hold (MOR-3537, #4257).** Emergency TX release is never
+  gated; TX counts as foreign only after receive was seen since Core's own
+  unkey (MOR-3561).
+- **Closing an auxiliary channel no longer drops the session's TX
+  (MOR-3562, #4261).**
+- **Pair IC-7300 USB audio on non-English Windows endpoint names (MOR-3530,
+  #4250).** When receive audio cannot start, the status now carries the
+  reason (`audioReceive.failure.reason`).
+- **Read the Windows USB audio topology from cfgmgr32 instead of a
+  PowerShell PnP query (MOR-3556, #4252).** Audio device matching no longer
+  waits on a slow PowerShell call.
+- **Diagnostic upload defaults to the public reports.rigplane.app endpoint
+  (MOR-3533, #4251).**
+
+### Tests
+
+- Multi-session TX fault lanes, soak scenario and mutation targets
+  (MOR-3538, #4259, #4260).
+
 ### Fixed
 
 - **Pair IC-7300 USB audio on Windows when endpoint names are localized,
@@ -4512,7 +4548,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b16...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b17...HEAD
+[3.0.0b17]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b16...v3.0.0b17
 [3.0.0b16]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b15...v3.0.0b16
 [3.0.0b15]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b14...v3.0.0b15
 [3.0.0b14]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b13...v3.0.0b14
