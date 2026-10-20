@@ -3465,6 +3465,18 @@ class WebServer:
             if self._scope_reenable_task is current_task:
                 self._scope_reenable_task = None
 
+    def _scope_tx_known(self) -> bool:
+        """Whether a transmit is known from managed intent or observed PTT."""
+        try:
+            if self.tx_active_hint():
+                return True
+            return (
+                project_observed_ptt(self.command_state_store.snapshot())
+                is ObservedPtt.ON
+            )
+        except Exception:
+            return False
+
     def _scope_health_check(self, frame: Any) -> None:
         """Track whether scope frames contain real data (non-zero pixels)."""
         import time
@@ -3502,6 +3514,13 @@ class WebServer:
                     retries = 0
                     continue
                 if not self._scope_enabled:
+                    continue
+                if self._scope_tx_known():
+                    # MOR-2859: all-zero frames are expected during transmit
+                    # (an IC-7300 with scope-during-TX off sends blanks), so
+                    # pause the stall timer instead of re-enabling mid-TX.
+                    self._scope_last_nonzero = time.monotonic()
+                    retries = 0
                     continue
                 now = time.monotonic()
                 if self._scope_last_nonzero == 0.0:
