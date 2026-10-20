@@ -166,8 +166,12 @@ describe('binary → actual controller → actual panel → actual canvases', ()
             { atMs: 540, source, wireSequence: 1, acceptedSequence: 4, document: { hidden: false, hasFocus: false } },
           ]);
         }
+        // MOR-3471 freshness gate: only the registration's first delivery
+        // paints by now — the later deliveries sit inside the fresh gate's
+        // resume run (or arrive hidden), so they reach the transport and
+        // fan-out stages above without painting a row.
         expect(events('waterfall_push').map((e: { acceptedSequence: number }) => e.acceptedSequence))
-          .toEqual(mode === 'continued-hidden' ? [2, 4] : [2, 3, 4]);
+          .toEqual([2]);
         for (const stage of ['raf', 'spectrum_render']) {
           expect(events(stage)).toMatchObject([
             { atMs: 10, wireSequence: 65535, acceptedSequence: 2 },
@@ -185,10 +189,14 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       expect(completed).toHaveBeenCalledTimes(1);
       const report = JSON.parse(completed.mock.calls[0][0]);
       expect(report.counts).toMatchObject({ accepted: 2, rejected: 0, wireGaps: 0 });
-      for (const stage of ['callback', 'accepted', 'fanout', 'spectrum_push', 'waterfall_push']) {
+      for (const stage of ['callback', 'accepted', 'fanout', 'spectrum_push']) {
         expect(report.timeline.filter((e: { stage: string }) => e.stage === stage)
           .map((e: { wireSequence: number }) => e.wireSequence)).toEqual([65535, 0]);
       }
+      // MOR-3471: the two deliveries arrive back-to-back, so the second
+      // is burst-drain-spaced and paints no row.
+      expect(report.timeline.filter((e: { stage: string }) => e.stage === 'waterfall_push')
+        .map((e: { wireSequence: number }) => e.wireSequence)).toEqual([65535]);
       expect(report.timeline.filter((e: { stage: string }) => e.stage === 'spectrum_render'))
         .toMatchObject([{ wireSequence: 0, acceptedSequence: 3, transportEpoch: 1 }]);
       expect(report.timeline.filter((e: { stage: string }) => e.stage === 'coalesced'))

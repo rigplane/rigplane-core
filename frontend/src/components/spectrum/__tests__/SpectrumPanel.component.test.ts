@@ -1873,6 +1873,8 @@ describe('SDR scope source routing (MOR-3158)', () => {
 
   it('holds the waterfall under the TX marker while sdr.txFrozen and resumes on release', () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    let clock = 0;
+    const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
     try {
       selectSdrSource();
       const target = mountPanel();
@@ -1884,16 +1886,24 @@ describe('SDR scope source routing (MOR-3158)', () => {
       const marker = target.querySelector<HTMLElement>('[data-testid="sdr-tx-frozen"]')!;
       expect(marker).not.toBeNull();
       expect(marker.closest('.waterfall-history')).not.toBeNull();
-      emitFrame();
-      emitFrame();
-      // Frozen: no new row scrolls — the last pre-TX panorama stays.
+      clock += 1; emitFrame();
+      clock += 1; emitFrame();
+      // Frozen: no new row scrolls — the last pre-TX panorama stays. The
+      // deliveries still classify through the freshness gate (baseline
+      // keeps moving).
       expect(push).toHaveBeenCalledTimes(1);
       replaceSdrLeaf(sdrLeaf({ txFrozen: false }));
       flushSync();
       expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).toBeNull();
-      emitFrame();
+      // Unfrozen: painting re-earns through the gate — the frozen
+      // deliveries reset the resume run, so five consecutive live-spaced
+      // frames are needed and the fifth paints.
+      for (let index = 0; index < 4; index += 1) { clock += 83; emitFrame(); }
+      expect(push).toHaveBeenCalledTimes(1);
+      clock += 83; emitFrame();
       expect(push).toHaveBeenCalledTimes(2);
     } finally {
+      nowSpy.mockRestore();
       push.mockRestore();
     }
   });
@@ -1910,6 +1920,8 @@ describe('SDR scope source routing (MOR-3158)', () => {
       });
     }
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    let clock = 0;
+    const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
     try {
       selectSdrSource();
       const props = new SvelteMap<string, unknown>([['projection', sdrProjection(1)]]);
@@ -1918,18 +1930,26 @@ describe('SDR scope source routing (MOR-3158)', () => {
         scopeDemanded: true,
       });
       expect(push).toHaveBeenCalledTimes(1);
-      props.set('projection', sdrProjection(2)); flushSync();
+      // Fresh-gate resume cost: deliveries two through five are withheld,
+      // the fifth live-spaced projection re-earns painting.
+      for (let sequence = 2; sequence <= 6; sequence += 1) {
+        clock += 83;
+        props.set('projection', sdrProjection(sequence)); flushSync();
+      }
       expect(push).toHaveBeenCalledTimes(2);
       replaceSdrLeaf(sdrLeaf({ txFrozen: true }));
       flushSync();
       expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).not.toBeNull();
-      props.set('projection', sdrProjection(3)); flushSync();
+      clock += 83;
+      props.set('projection', sdrProjection(7)); flushSync();
       expect(push).toHaveBeenCalledTimes(2);
       replaceSdrLeaf(sdrLeaf({ txFrozen: false }));
       flushSync();
-      props.set('projection', sdrProjection(4)); flushSync();
+      clock += 83;
+      props.set('projection', sdrProjection(8)); flushSync();
       expect(push).toHaveBeenCalledTimes(3);
     } finally {
+      nowSpy.mockRestore();
       push.mockRestore();
     }
   });
@@ -2386,20 +2406,36 @@ describe('managed scope projection (MOR-2367)', () => {
   });
   it('pushes normalized managed frames through existing waterfall registrations on mount and recovery', () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    let clock = 0;
+    const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    const sequenced = (sequence: number): ScopeDisplayProjection =>
+      ({ ...projection(), acceptedSequence: sequence });
     try {
       const { target, props } = managed(projection());
       expect(push).toHaveBeenCalledTimes(1);
       expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
       const firstCanvas = target.querySelector('.waterfall-content canvas');
+      // Warm the fresh gate to steady painting (fresh-gate resume cost)
+      // with distinct live-spaced sequences, so the recovery frame below
+      // is judged on spacing, not on the resume run.
+      for (let sequence = 2; sequence <= 6; sequence += 1) {
+        clock += 83;
+        props.set('projection', sequenced(sequence)); flushSync();
+      }
+      expect(push).toHaveBeenCalledTimes(2);
       props.set('projection', null); flushSync(); const afterClear = push.mock.calls.length;
       expect(target.querySelector<HTMLElement>('.waterfall-history')?.style.visibility).toBe('hidden');
       emitFrame(); expect(push).toHaveBeenCalledTimes(afterClear);
-      props.set('projection', projection()); flushSync();
+      clock += 83;
+      props.set('projection', sequenced(7)); flushSync();
       expect(target.querySelector('.waterfall-content canvas')).toBe(firstCanvas);
       expect(target.querySelector<HTMLElement>('.waterfall-history')?.style.visibility).toBe('visible');
       expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
       expect(push).toHaveBeenCalledTimes(afterClear + 1);
-    } finally { push.mockRestore(); }
+    } finally {
+      nowSpy.mockRestore();
+      push.mockRestore();
+    }
   });
   it('preserves raw waterfall push delivery in legacy mode', () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
@@ -2407,6 +2443,49 @@ describe('managed scope projection (MOR-2367)', () => {
       mountPanel(); const frame = emitFrame();
       expect(push).toHaveBeenCalledWith(frame.pixels);
     } finally { push.mockRestore(); }
+  });
+  it('wires the waterfall freshness gate into the waterfallPush registration (MOR-3471)', () => {
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    let clock = 0;
+    const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    try {
+      mountPanel();
+      let id = 0;
+      const deliver = (spacing: number): void => {
+        clock += spacing;
+        emitFrame({ pixels: new Uint8Array(475).fill(++id) });
+      };
+      const painted = () => push.mock.calls.map(([pixels]) => pixels[0]);
+      // Fresh registration: the first delivery paints, the next four
+      // live-spaced deliveries are the fresh gate's resume cost, and the
+      // fifth re-earns painting.
+      deliver(0);
+      for (let index = 0; index < 5; index += 1) deliver(83);
+      expect(painted()).toEqual([1, 6]);
+      // A >3 s delivery gap enters skip mode: a back-to-back burst that
+      // drains after the gap is suppressed at the registration, and five
+      // consecutive live-spaced deliveries re-earn painting.
+      clock += 2 * 60 * 60 * 1000;
+      for (let index = 0; index < 8; index += 1) deliver(1);
+      for (let index = 0; index < 4; index += 1) deliver(83);
+      expect(painted()).toEqual([1, 6]);
+      deliver(83);
+      expect(painted()).toEqual([1, 6, 19]);
+      // A burst straddling a provider-switch remount hits a fresh gate:
+      // it paints at most one row (the first delivery on the fresh
+      // registration), then withholds until live spacing returns.
+      clock += 2 * 60 * 60 * 1000;
+      deliver(1);
+      deliver(1);
+      runtimeHarness.state.currentState = Object.freeze({ source: 'test-state', providerGeneration: 18, active: 'MAIN' });
+      flushSync();
+      deliver(1);
+      for (let index = 0; index < 3; index += 1) deliver(1);
+      expect(painted()).toEqual([1, 6, 19, 22]);
+    } finally {
+      nowSpy.mockRestore();
+      push.mockRestore();
+    }
   });
   it.each(['tap', 'pan'] as const)('cancels an in-flight %s and DX coordinates when managed projection becomes null', (gesture) => {
     const { target, props } = managed(projection()); const { spectrum, waterfall } = prepareGeometry(target);

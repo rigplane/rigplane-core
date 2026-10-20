@@ -142,14 +142,16 @@ describe('same-session scope delivery across hidden rendering', () => {
     };
     try {
       expect(push).toBeTypeOf('function');
-      // Visible live-spaced baseline: the gate measures the later gap
-      // against this pre-gap delivery history.
+      // Visible live-spaced baseline: the fresh gate paints the first
+      // delivery and withholds the next two (fresh-gate resume cost); all
+      // three establish the pre-gap delivery history the later gap is
+      // measured against.
       for (const id of baselineIds) { deliver(frame(id)); advance(83); }
-      expect(pushed.mock.calls.map(([pixels]) => pixels[0])).toEqual(baselineIds);
+      expect(pushed.mock.calls.map(([pixels]) => pixels[0])).toEqual([baselineIds[0]]);
       hidden = true;
       if (mode === 'continued') for (const buffer of produced) deliver(buffer);
-      expect(pushed).toHaveBeenCalledTimes(baselineIds.length);
-      expect(paint).toHaveBeenCalledTimes(baselineIds.length);
+      expect(pushed).toHaveBeenCalledTimes(1);
+      expect(paint).toHaveBeenCalledTimes(1);
       expect(arrivals).toEqual(mode === 'continued' ? [...baselineIds, ...ids] : baselineIds);
       advance(2 * 60 * 60 * 1000);
       flushSync();
@@ -157,7 +159,7 @@ describe('same-session scope delivery across hidden rendering', () => {
       hidden = false;
       document.dispatchEvent(new Event('visibilitychange'));
       flushSync();
-      expect(pushed).toHaveBeenCalledTimes(baselineIds.length);
+      expect(pushed).toHaveBeenCalledTimes(1);
       if (mode === 'delayed') {
         for (const buffer of produced) { deliver(buffer); advance(1); }
       }
@@ -167,15 +169,20 @@ describe('same-session scope delivery across hidden rendering', () => {
       // the burst's first frame, so live painting resumes at frame 72; in
       // `continued` the first post-gap frame (68, itself live-spaced)
       // spends the discontinuity slot, so painting resumes one frame
-      // later — a production-continued stream (frames flowing while
-      // hidden) never trips the discontinuity at all.
+      // later. The model's hidden deliveries stay sub-second apart, so
+      // they trip no discontinuity — whether a real Space switch keeps
+      // delivering while hidden is unconfirmed (MOR-3471 trace pending).
       for (const id of liveIds) { advance(83); deliver(frame(id)); }
       expect(arrivals).toEqual([...baselineIds, ...ids, ...liveIds]);
       expect(accepted.map((value) => value.id)).toEqual([...baselineIds, ...ids, ...liveIds]);
       expect(accepted.map((value) => value.sequence)).toEqual([...baselineIds, ...ids, ...liveIds]);
       const paintedIds = pushed.mock.calls.map(([pixels]) => pixels[0]);
-      expect(paintedIds).toEqual(mode === 'delayed' ? [...baselineIds, 72, 73, 74] : [...baselineIds, 73, 74]);
-      expect(suppressed).toEqual(mode === 'delayed' ? [...ids, 68, 69, 70, 71] : [68, 69, 70, 71, 72]);
+      expect(paintedIds).toEqual(mode === 'delayed'
+        ? [baselineIds[0], 72, 73, 74]
+        : [baselineIds[0], 73, 74]);
+      expect(suppressed).toEqual(mode === 'delayed'
+        ? [baselineIds[1], baselineIds[2], ...ids, 68, 69, 70, 71]
+        : [baselineIds[1], baselineIds[2], ...ids, 68, 69, 70, 71, 72]);
       expect(paint).toHaveBeenCalledTimes(paintedIds.length);
       expect(accepted[0].receivedAt).toBe(0);
       expect(accepted.at(-1)?.receivedAt).toBe(now);

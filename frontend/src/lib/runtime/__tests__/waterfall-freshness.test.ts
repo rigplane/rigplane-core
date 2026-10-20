@@ -22,17 +22,24 @@ function admissions(gate: WaterfallFreshnessGate, clock: ReturnType<typeof fakeC
 }
 
 describe('waterfall freshness gate', () => {
-  it('admits the first delivery and a steady live-spaced stream', () => {
+  it('paints the first delivery of a fresh gate, then re-earns painting after the resume cost', () => {
     const clock = fakeClock();
     const gate = new WaterfallFreshnessGate(clock);
     expect(gate.admit()).toBe(true);
-    expect(admissions(gate, clock, [83, 83, 83, 83, 83, 83, 83])).toEqual([true, true, true, true, true, true, true]);
+    // A fresh gate starts unsaturated: the first delivery paints (no
+    // spacing history to judge), the next four live-spaced deliveries are
+    // the resume cost, and the fifth re-earns painting.
+    const stream = admissions(gate, clock, Array.from({ length: 7 }, () => 83));
+    expect(stream).toEqual([false, false, false, false, true, true, true]);
   });
 
   it('still replays a short-stall burst (status quo below the discontinuity threshold)', () => {
     const clock = fakeClock();
     const gate = new WaterfallFreshnessGate(clock);
     gate.admit();
+    // Reach steady painting first (fresh-gate resume cost), then a
+    // sub-threshold stall keeps admitting.
+    admissions(gate, clock, Array.from({ length: 5 }, () => 83));
     const burst = admissions(gate, clock, [500, ...Array.from({ length: 10 }, () => 1)]);
     expect(burst).toEqual(Array.from({ length: 11 }, () => true));
     expect(500).toBeLessThan(WATERFALL_DISCONTINUITY_MS);
