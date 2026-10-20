@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import types
 import wave
 from types import SimpleNamespace
@@ -896,6 +897,57 @@ def test_web_managed_parser_defaults_without_auth() -> None:
     assert args.web_rigctld is True
     assert args.auth_token is None
     assert args.auth_token_file is None
+
+
+def test_web_log_level_option() -> None:
+    parser = _build_parser()
+
+    assert parser.parse_args(["web"]).log_level == "INFO"
+    assert parser.parse_args(["web", "--log-level", "DEBUG"]).log_level == "DEBUG"
+
+
+def test_web_log_level_invalid_rejected() -> None:
+    parser = _build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["web", "--log-level", "VERBOSE"])
+
+
+@pytest.mark.asyncio
+async def test_cmd_web_applies_log_level_to_rigplane_logger() -> None:
+    radio = AsyncMock()
+
+    class FakeWebServer:
+        def __init__(self, _radio, cfg):
+            self.radio = _radio
+            self.cfg = cfg
+
+        async def serve_forever(self, *, on_started=None):
+            on_started()
+            raise asyncio.CancelledError
+
+    seen: dict[str, int] = {}
+
+    def _fake_get_logger(name: str = "") -> MagicMock:
+        logger_mock = MagicMock()
+        logger_mock.setLevel.side_effect = lambda level: seen.__setitem__(
+            name, level
+        )
+        return logger_mock
+
+    with (
+        patch("rigplane.web.server.WebServer", FakeWebServer),
+        patch("logging.getLogger", side_effect=_fake_get_logger),
+    ):
+        args = argparse.Namespace(
+            web_host="127.0.0.1",
+            web_port=9090,
+            web_static_dir=None,
+            log_level="DEBUG",
+        )
+        assert await _cmd_web(radio, args) == 0
+
+    assert seen.get("rigplane") == logging.DEBUG
 
 
 def test_station_parser_is_managed_web_runtime() -> None:
