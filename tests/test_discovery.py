@@ -1484,11 +1484,26 @@ class _FakeUdpSocket:
     Each scripted response is delivered exactly once; otherwise recvfrom raises
     socket.timeout so the scan keeps looping until the clock passes the
     deadline.
+
+    ``recv_errors`` are raised from recvfrom (one per call, before any queued
+    response is delivered); ``recv_error_always`` is raised from every
+    recvfrom call. They fake per-socket receive failures such as Windows
+    ConnectionResetError (WSAECONNRESET) after an ICMP port-unreachable.
     """
 
-    def __init__(self, responses: dict[int, list[tuple[bytes, tuple]]]) -> None:
+    def __init__(
+        self,
+        responses: dict[int, list[tuple[bytes, tuple]]],
+        *,
+        recv_errors: list[Exception] | None = None,
+        recv_error_always: Exception | None = None,
+    ) -> None:
         self._responses = {k: list(v) for k, v in responses.items()}
+        self._recv_errors = list(recv_errors or [])
+        self._recv_error_always = recv_error_always
         self.send_count = 0
+        self.sent_to: list[tuple] = []
+        self.bound_to: tuple | None = None
         self.closed = False
         self._pending: list[tuple[bytes, tuple]] = []
 
@@ -1498,8 +1513,12 @@ class _FakeUdpSocket:
     def settimeout(self, *_a: object, **_k: object) -> None:
         pass
 
-    def sendto(self, _data: bytes, _addr: tuple) -> int:
+    def bind(self, addr: tuple) -> None:
+        self.bound_to = addr
+
+    def sendto(self, _data: bytes, addr: tuple) -> int:
         self.send_count += 1
+        self.sent_to.append(addr)
         # Queue any responses unlocked by reaching this probe count.
         self._pending.extend(self._responses.pop(self.send_count, []))
         return len(_data)
@@ -1507,6 +1526,10 @@ class _FakeUdpSocket:
     def recvfrom(self, _bufsize: int) -> tuple[bytes, tuple]:
         import socket as _socket
 
+        if self._recv_error_always is not None:
+            raise self._recv_error_always
+        if self._recv_errors:
+            raise self._recv_errors.pop(0)
         if self._pending:
             return self._pending.pop(0)
         raise _socket.timeout()
@@ -1523,6 +1546,28 @@ def _patched_lan_socket(fake: _FakeUdpSocket, *, step: float = 0.05):
     with (
         patch.object(_socket, "socket", return_value=fake),
         patch.object(_time, "monotonic", _FakeClock(step=step)),
+    ):
+        yield
+
+
+@contextmanager
+def _patched_lan_sockets(
+    fakes: list[_FakeUdpSocket], local_addresses: list[str], *, step: float = 0.05
+):
+    """Multi-socket variant of ``_patched_lan_socket``.
+
+    Every ``socket.socket()`` call returns the next fake from ``fakes`` (the
+    first call is the unbound socket, then one per local address in order),
+    and the address-enumeration helper is patched to return
+    ``local_addresses``.
+    """
+    import socket as _socket
+    import time as _time
+
+    with (
+        patch.object(_socket, "socket", side_effect=list(fakes)),
+        patch.object(_time, "monotonic", _FakeClock(step=step)),
+        patch("rigplane.discovery._local_ipv4_addresses", return_value=local_addresses),
     ):
         yield
 
@@ -1589,6 +1634,87 @@ class TestDiscoverLanRadios:
         assert result == []
         assert fake.send_count >= 2  # still retransmitted across the window
         assert fake.closed
+
+    async def test_recvfrom_connection_reset_once_still_finds_radio(self) -> None:
+        # Windows raises ConnectionResetError (WSAECONNRESET) from recvfrom
+        # after an ICMP port-unreachable; one such error must neither kill
+        # the scan nor lose an already-received radio.
+        addr = ("192.168.1.81", 50001)
+        fake = _FakeUdpSocket(
+            {1: [(_i_am_here(0x0BADF00D), addr)]},
+            recv_errors=[ConnectionResetError()],
+        )
+        with _patched_lan_socket(fake):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert result == [{"host": "192.168.1.81", "remote_id": 0x0BADF00D}]
+
+    async def test_recvfrom_connection_reset_every_time_returns_empty(self) -> None:
+        # A socket in a permanent reset state must not raise out of the scan.
+        fake = _FakeUdpSocket({}, recv_error_always=ConnectionResetError())
+        with _patched_lan_socket(fake):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert result == []
+
+    async def test_probe_leaves_through_every_local_adapter(self) -> None:
+        # One unbound socket plus one bound to each local address; every
+        # socket sends the limited broadcast (on Windows an unbound socket
+        # emits it through a single adapter only).
+        fakes = [_FakeUdpSocket({}) for _ in range(3)]
+        with _patched_lan_sockets(fakes, ["192.168.1.5", "10.8.0.2"]):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert result == []
+        assert fakes[0].bound_to is None
+        assert fakes[1].bound_to == ("192.168.1.5", 0)
+        assert fakes[2].bound_to == ("10.8.0.2", 0)
+        for fake in fakes:
+            assert fake.send_count >= 1  # every socket retransmits
+            assert all(dest == ("255.255.255.255", 50001) for dest in fake.sent_to)
+
+    async def test_reply_on_second_adapter_socket_is_found(self) -> None:
+        # A radio reachable only through the second local address replies on
+        # the socket bound to it; the receive loop must poll every socket.
+        addr = ("192.168.1.82", 50001)
+        fakes = [
+            _FakeUdpSocket({}),
+            _FakeUdpSocket({}),
+            _FakeUdpSocket({1: [(_i_am_here(0x55667788), addr)]}),
+        ]
+        with _patched_lan_sockets(fakes, ["192.168.1.5", "10.8.0.2"]):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert result == [{"host": "192.168.1.82", "remote_id": 0x55667788}]
+
+    async def test_address_enumeration_error_falls_back_to_unbound(self) -> None:
+        # If enumerating local addresses raises, the scan still runs on the
+        # plain unbound socket.
+        addr = ("192.168.1.83", 50001)
+        fake = _FakeUdpSocket({1: [(_i_am_here(0x9ABCDEF0), addr)]})
+        with (
+            _patched_lan_socket(fake),
+            patch(
+                "rigplane.discovery._local_ipv4_addresses",
+                side_effect=RuntimeError("enumeration boom"),
+            ),
+        ):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert result == [{"host": "192.168.1.83", "remote_id": 0x9ABCDEF0}]
+
+    async def test_all_sockets_closed_despite_recv_oserror(self) -> None:
+        # Every created socket is closed even while one keeps raising an
+        # unexpected OSError from recvfrom.
+        fakes = [
+            _FakeUdpSocket({}),
+            _FakeUdpSocket({}, recv_error_always=OSError("adapter vanished")),
+        ]
+        with _patched_lan_sockets(fakes, ["192.168.1.5"]):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert result == []
+        assert all(fake.closed for fake in fakes)
 
 
 # MOR-3133: exercise the actual opener/read boundary on the old API as well.
