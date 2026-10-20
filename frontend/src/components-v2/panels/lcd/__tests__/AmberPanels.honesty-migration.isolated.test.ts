@@ -270,8 +270,10 @@ describe('Amber TX and inline RIT availability (MOR-1586 review)', () => {
     return state as ServerState;
   }
 
+  // TX (ptt) is excluded: invariant R9 overrides the generic R29 rule for
+  // TX — the look tracks the managed TX snapshot only, never state.ptt —
+  // and that is pinned in amber-tx-truth.component.test.ts.
   const tokenCases = [
-    ['TX', 'ptt', false, true, 'TX', [mountCockpit, mountScope]],
     ['VOX', 'voxOn', false, true, 'VOX', [mountCockpit, mountScope]],
     ['PROC', 'compressorOn', false, true, 'PROC 7', [mountCockpit, mountScope]],
     ['ATU', 'tunerStatus', 0, 1, 'ATU', [mountCockpit]],
