@@ -16,6 +16,7 @@ import pytest
 from _caps import FULL_ICOM_CAPS
 from rigplane.backends.config import LanBackendConfig, SerialBackendConfig
 from rigplane.cli import (
+    _apply_log_level,
     _build_parser,
     _cmd_att,
     _cmd_audio_loopback,
@@ -946,6 +947,54 @@ async def test_cmd_web_applies_log_level_to_rigplane_logger() -> None:
         assert await _cmd_web(radio, args) == 0
 
     assert seen.get("rigplane") == logging.DEBUG
+
+
+def test_apply_log_level_noops_without_flag() -> None:
+    """Without --log-level the helper must not touch any logger (#1905).
+
+    An unconditional setLevel(INFO) would override the root DEBUG level
+    installed for ICOM_DEBUG=1, so a missing (station) or None (web
+    default) value must leave the logger hierarchy alone.
+    """
+    with patch("logging.getLogger") as get_logger:
+        _apply_log_level(argparse.Namespace())
+        _apply_log_level(argparse.Namespace(log_level=None))
+    get_logger.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cmd_web_without_log_level_keeps_logger_untouched() -> None:
+    """_cmd_web with a Namespace lacking log_level must not call setLevel (#1905)."""
+    radio = AsyncMock()
+
+    class FakeWebServer:
+        def __init__(self, _radio, cfg):
+            self.radio = _radio
+            self.cfg = cfg
+
+        async def serve_forever(self, *, on_started=None):
+            on_started()
+            raise asyncio.CancelledError
+
+    seen: dict[str, int] = {}
+
+    def _fake_get_logger(name: str = "") -> MagicMock:
+        logger_mock = MagicMock()
+        logger_mock.setLevel.side_effect = lambda level: seen.__setitem__(name, level)
+        return logger_mock
+
+    with (
+        patch("rigplane.web.server.WebServer", FakeWebServer),
+        patch("logging.getLogger", side_effect=_fake_get_logger),
+    ):
+        args = argparse.Namespace(
+            web_host="127.0.0.1",
+            web_port=9090,
+            web_static_dir=None,
+        )
+        assert await _cmd_web(radio, args) == 0
+
+    assert "rigplane" not in seen
 
 
 def test_station_parser_is_managed_web_runtime() -> None:
