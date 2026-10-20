@@ -43,7 +43,9 @@ describe('waterfall freshness gate', () => {
     const gate = new WaterfallFreshnessGate(clock);
     gate.admit();
     // 64-frame deferred burst after a 2 h gap, draining at back-to-back
-    // spacing (~16 ms measured in MOR-3471), then live frames at ~83 ms.
+    // spacing below the resume threshold, then live frames at a spacing
+    // above it (no drain-spacing measurement exists yet; only the
+    // below/above-threshold split is pinned).
     const burst = admissions(gate, clock, [2 * 60 * 60 * 1000, ...Array.from({ length: 63 }, () => 16)]);
     expect(burst).toEqual(Array.from({ length: 64 }, () => false));
     const resume = admissions(gate, clock, Array.from({ length: 7 }, () => 83));
@@ -75,5 +77,43 @@ describe('waterfall freshness gate', () => {
     // consecutive deliveries, so a burst-drain frame stays burst-drain.
     clock.advance(1);
     expect(gate.admit()).toBe(false);
+  });
+
+  it('resumes only after consecutive live-spaced frames: an interleaved burst frame resets the count', () => {
+    const clock = fakeClock();
+    const gate = new WaterfallFreshnessGate(clock);
+    gate.admit();
+    clock.advance(2 * 60 * 60 * 1000);
+    expect(gate.admit()).toBe(false);
+    expect(admissions(gate, clock, [83, 83, 83])).toEqual([false, false, false]);
+    // A burst-spaced frame mid-resume breaks the consecutive run instead
+    // of pausing it: a mixed drain/live stretch must restart from zero.
+    expect(admissions(gate, clock, [16])).toEqual([false]);
+    expect(admissions(gate, clock, Array.from({ length: 5 }, () => 83))).toEqual([false, false, false, false, true]);
+  });
+
+  it('treats spacing exactly at the discontinuity threshold as live, not a new discontinuity', () => {
+    const clock = fakeClock();
+    const gate = new WaterfallFreshnessGate(clock);
+    gate.admit();
+    clock.advance(2 * 60 * 60 * 1000);
+    expect(gate.admit()).toBe(false);
+    // Exactly WATERFALL_DISCONTINUITY_MS falls on the live side of the `>`
+    // boundary: such deliveries earn resume credit, so the fifth admits.
+    const resume = admissions(gate, clock, Array.from({ length: 5 }, () => WATERFALL_DISCONTINUITY_MS));
+    expect(resume).toEqual([false, false, false, false, true]);
+  });
+
+  it('counts spacing exactly at the resume threshold as live-spaced', () => {
+    const clock = fakeClock();
+    const gate = new WaterfallFreshnessGate(clock);
+    gate.admit();
+    clock.advance(2 * 60 * 60 * 1000);
+    expect(gate.admit()).toBe(false);
+    // Exactly WATERFALL_RESUME_SPACING_MS falls on the live side of the
+    // `<` boundary and earns resume credit; only strictly smaller spacing
+    // counts as burst drain.
+    const resume = admissions(gate, clock, Array.from({ length: 5 }, () => WATERFALL_RESUME_SPACING_MS));
+    expect(resume).toEqual([false, false, false, false, true]);
   });
 });

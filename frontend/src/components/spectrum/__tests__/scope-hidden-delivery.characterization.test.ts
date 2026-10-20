@@ -107,9 +107,10 @@ describe('same-session scope delivery across hidden rendering', () => {
       target,
       props: {
         // Mirrors the SpectrumPanel waterfallPush registration (MOR-3471):
-        // every delivery classifies through the gate — hidden or not, so the
-        // timing baseline tracks the transport — and a suppressed delivery
-        // records on the waterfall_suppressed trace stage there.
+        // every delivery that reaches the registration classifies through
+        // the gate — hidden or not, so the timing baseline tracks the
+        // transport — and a suppressed delivery records on the
+        // waterfall_suppressed trace stage there.
         onRegisterPush: (fn) => {
           push = (pixels) => {
             if (freshness.admit()) fn(pixels);

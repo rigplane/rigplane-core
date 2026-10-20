@@ -153,6 +153,9 @@
   let colorScheme = $state<ColorSchemeName>('classic');
   let spectrumPush: ((data: Uint8Array, token?: TraceToken | null) => void) | null = null;
   let waterfallPush: ((data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null) => void) | null = null;
+  // Freshness gate behind waterfallPush (MOR-3471); the TX-frozen fan-out
+  // paths classify their deliveries through it while withholding the paint.
+  let waterfallFreshnessGate: WaterfallFreshnessGate | null = null;
   const traceCandidate = import.meta.env.VITE_SCOPE_TRACE_CANDIDATE === '1';
   let trace: ScopeRenderTrace | null = $state(null);
   let traceStatus: 'idle' | TraceStatus = $state('idle');
@@ -1052,8 +1055,11 @@
         spectrumPush?.(scopePixels, token);
         // MOR-3158: a TX-frozen SDR source adds no waterfall row — the
         // panorama holds its last pre-transmit image under the TX marker.
+        // MOR-3471: the delivery still classifies through the gate so the
+        // spacing baseline tracks the transport across the freeze; only
+        // the paint is withheld.
         if (!sdrTxFrozen) waterfallPush?.(scopePixels, waterfallOptions, token);
-        else trace?.record('waterfall_suppressed', token, 0, true);
+        else { waterfallFreshnessGate?.admit(); trace?.record('waterfall_suppressed', token, 0, true); }
         if (traceStart) trace?.record('fanout', token, performance.now() - traceStart);
       }
       if (projection.passband.state !== 'current') {
@@ -1087,9 +1093,11 @@
         endFreq = sourceIsAudio ? (frame.endFreq - frame.startFreq) / 2 : frame.endFreq;
         scopePixels = pixels;
         spectrumPush?.(pixels, token);
-        // MOR-3158: same TX-frozen hold as the managed path above.
+        // MOR-3158: same TX-frozen hold as the managed path above, and
+        // same MOR-3471 classification: the delivery updates the gate's
+        // baseline, the paint is withheld.
         if (!sdrTxFrozen) waterfallPush?.(pixels, waterfallOptions, token);
-        else trace?.record('waterfall_suppressed', token, 0, true);
+        else { waterfallFreshnessGate?.admit(); trace?.record('waterfall_suppressed', token, 0, true); }
         if (traceStart) trace?.record('fanout', token, performance.now() - traceStart);
       };
       const unsubscribe = sourceIsManaged ? () => {} : sourceIsAudio
@@ -1256,13 +1264,17 @@
       <div class="waterfall-history" style:visibility={managedUnavailable ? 'hidden' : 'visible'} aria-hidden={managedUnavailable}>
         <WaterfallCanvas options={waterfallOptions} trace={traceStatus === 'recording' ? trace : null} onFreqClick={audioFft || managedUnavailable ? undefined : handleTune} onRegisterPush={(fn) => {
           // MOR-3471: collapse a post-gap delivery burst instead of painting
-          // one history row per frame; every delivery classifies through the
-          // gate (hidden or not), and suppressed deliveries record on the
+          // one history row per frame. Every delivery that reaches this
+          // registration classifies through the gate (hidden or not), and
+          // the TX-frozen fan-out paths above classify through it while
+          // withholding the paint, so the spacing baseline tracks the
+          // transport. Suppressed deliveries record on the
           // waterfall_suppressed trace stage. Pinned by the delayed case of
           // scope-hidden-delivery.characterization.test.ts. The registration
           // replay below is a canvas repaint of the current sample, not a
           // delivery, so it bypasses the gate.
           const freshness = new WaterfallFreshnessGate();
+          waterfallFreshnessGate = freshness;
           waterfallPush = (data, frameOptions, token) => {
             if (freshness.admit()) fn(data, frameOptions, token);
             else trace?.record('waterfall_suppressed', token ?? null, 0, true);
