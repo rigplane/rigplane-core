@@ -903,7 +903,7 @@ def test_web_managed_parser_defaults_without_auth() -> None:
 def test_web_log_level_option() -> None:
     parser = _build_parser()
 
-    assert parser.parse_args(["web"]).log_level == "INFO"
+    assert parser.parse_args(["web"]).log_level is None
     assert parser.parse_args(["web", "--log-level", "DEBUG"]).log_level == "DEBUG"
 
 

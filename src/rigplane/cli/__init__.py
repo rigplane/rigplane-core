@@ -1516,9 +1516,9 @@ def _build_parser() -> argparse.ArgumentParser:
     web_p.add_argument(
         "--log-level",
         dest="log_level",
-        default="INFO",
+        default=None,
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Logging level for the web UI server (default: INFO)",
+        help="Logging level for the web UI server (default: unset, ICOM_DEBUG applies)",
     )
     web_p.add_argument(
         "--auth-token",
@@ -4344,10 +4344,17 @@ def _print_startup_banner(
 
 
 def _apply_log_level(args: argparse.Namespace) -> None:
-    """Apply --log-level to the rigplane logger hierarchy (serve/web)."""
+    """Apply --log-level to the rigplane logger hierarchy (serve/web).
+
+    Only an explicitly requested level is applied: a missing (e.g.
+    station) or None (web default) value leaves the loggers untouched
+    so the root ICOM_DEBUG configuration stays effective.
+    """
     import logging as _logging
 
-    log_level = getattr(args, "log_level", "INFO")
+    log_level = getattr(args, "log_level", None)
+    if log_level is None:
+        return
     _logging.getLogger("rigplane").setLevel(getattr(_logging, log_level))
 
 
