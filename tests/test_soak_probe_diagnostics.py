@@ -303,10 +303,9 @@ async def test_mixed_routes_preserve_each_actual_selected_value(
 
 def test_allowlists_and_storage_limits() -> None:
     diagnostic = soak_driver._ProbeDiagnostics()
-    for _ in range(3):
-        diagnostic.begin("pre")
-    for _ in range(6):
-        probe = diagnostic.begin("post")
+    for phase in ("pre", "post"):
+        for _ in range(3):
+            probe = diagnostic.begin(phase)
     for phase in ("pre", "post", "secret phase"):
         with pytest.raises(ValueError):
             diagnostic.begin(phase)
@@ -319,7 +318,17 @@ def test_allowlists_and_storage_limits() -> None:
             probe.select(*args)
     with pytest.raises(ValueError):
         diagnostic.boundary("secret")
-    assert len(diagnostic.probes) == 9
+    with pytest.raises(ValueError):
+        diagnostic.drop_phase("secret phase")
+    assert len(diagnostic.probes) == 6
+    diagnostic.medians["post"] = {"fds": 1}
+    diagnostic.drop_phase("post")
+    assert [p.phase for p in diagnostic.probes] == ["pre"] * 3
+    assert diagnostic.medians["post"] is None
+    for _ in range(3):
+        diagnostic.begin("post")
+    with pytest.raises(ValueError):
+        diagnostic.begin("post")
     values = soak_driver._diagnostic_sample_values(
         soak_driver.ProcessSample(1.0, 1, 2, 3, "secret auth body")
     )

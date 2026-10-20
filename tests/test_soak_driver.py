@@ -939,7 +939,11 @@ async def test_stability_settle_waits_out_a_long_plateau_before_late_decay(
 async def test_stability_settle_applies_under_probe_diagnostics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Capture must not disable the settle: same transient, same PASS (MOR-3575)."""
+    """Capture must not disable the settle: same transient, same PASS (MOR-3575).
+
+    The transient trio is dropped so the settled re-probe fits the
+    six-probe bound; the report keeps the settled post trio.
+    """
     script = _process_script(
         [48, 48, 48, 56, 55, 54, 53, 52, 51, 50, 49, 48, 48, 48, 48, 48, 48]
     )
@@ -952,7 +956,9 @@ async def test_stability_settle_applies_under_probe_diagnostics(
     assert _stability_status(entry, "fds")["status"] == "PASS"
     assert len(sleeps) > 1
     diagnostic = driver._build_report()["probeDiagnostics"]
-    assert [p["phase"] for p in diagnostic["probes"]] == ["pre"] * 3 + ["post"] * 6
+    assert diagnostic["maxProbes"] == 6
+    assert [p["phase"] for p in diagnostic["probes"]] == ["pre"] * 3 + ["post"] * 3
+    assert [p["sequence"] for p in diagnostic["probes"]] == list(range(1, 7))
     assert diagnostic["phases"]["post"]["median"]["fds"] == 48
     assert diagnostic["phases"]["post"]["status"] == "complete"
 
@@ -960,16 +966,26 @@ async def test_stability_settle_applies_under_probe_diagnostics(
 async def test_stability_settle_applies_under_task_provenance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Task capture must not disable the settle either (MOR-3575)."""
+    """Task capture must not disable the settle either (MOR-3575).
+
+    Nine probes begin (the transient post trio plus its settled
+    re-probe) but the transient trio is dropped first, so at most six
+    are ever retained.
+    """
     script = _process_script(
         [48, 48, 48, 56, 55, 54, 53, 52, 51, 50, 49, 48, 48, 48, 48, 48, 48]
     )
     calls: list[str] = []
+    retained_high_water = 0
     original = soak_driver._TaskProvenance.begin_probe
 
     def counting(self: Any, phase: str) -> dict[str, Any]:
+        nonlocal retained_high_water
         calls.append(phase)
-        return original(self, phase)
+        probe = original(self, phase)
+        assert self.active is not None
+        retained_high_water = max(retained_high_water, len(self.active["probes"]))
+        return probe
 
     monkeypatch.setattr(soak_driver._TaskProvenance, "begin_probe", counting)
     driver, sleeps = await _run_cycle_with_process_script(
@@ -981,6 +997,7 @@ async def test_stability_settle_applies_under_task_provenance(
     assert _stability_status(entry, "fds")["status"] == "PASS"
     assert len(sleeps) > 1
     assert calls == ["pre"] * 3 + ["post"] * 6
+    assert retained_high_water == 6
 
 
 async def test_stability_post_probe_settles_a_transient_tasks_surplus(

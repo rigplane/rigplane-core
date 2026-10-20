@@ -247,17 +247,26 @@ class _ProbeDiagnostics:
     def begin(self, phase: str) -> _ProbeCapture:
         if phase not in {"pre", "post"}:
             raise ValueError("invalid diagnostic phase")
-        # Post allows a second trio: when the first post median shows a
-        # surplus the cycle settles and re-probes, keeping the transient
-        # trio beside the settled one (MOR-3575).
-        limit = 6 if phase == "post" else 3
-        if len(self.probes) >= 9 or sum(p.phase == phase for p in self.probes) >= limit:
+        if len(self.probes) >= 6 or sum(p.phase == phase for p in self.probes) >= 3:
             raise ValueError("diagnostic probe limit")
         probe = _ProbeCapture(
             len(self.probes) + 1, phase, time.monotonic(), selections={}
         )
         self.probes.append(probe)
         return probe
+
+    def drop_phase(self, phase: str) -> None:
+        """Discard the retained probes of one phase, freeing its budget.
+
+        When the first post median shows a surplus the cycle settles and
+        takes the median again (MOR-3575): the transient trio is dropped
+        so the settled re-probe fits the six-probe bound. The median goes
+        with it; the re-probe sets the settled one.
+        """
+        if phase not in {"pre", "post"}:
+            raise ValueError("invalid diagnostic phase")
+        self.probes = [p for p in self.probes if p.phase != phase]
+        self.medians[phase] = None
 
     def to_dict(self) -> dict[str, Any]:
         phases = {}
@@ -267,10 +276,9 @@ class _ProbeDiagnostics:
                 p.phase == phase and p.sample is not None for p in self.probes
             )
             phases[phase] = {
-                # Post may hold a second trio after a settle re-probe.
                 "status": (
                     "complete"
-                    if completed >= 3
+                    if completed == 3
                     else "partial"
                     if attempted
                     else "absent"
@@ -282,7 +290,7 @@ class _ProbeDiagnostics:
         return {
             "schemaVersion": 1,
             "selectedReconnect": 1,
-            "maxProbes": 9,
+            "maxProbes": 6,
             "outcome": self.outcome,
             "boundariesMonotonicS": dict(self.boundaries),
             "phases": phases,
@@ -358,13 +366,26 @@ class _TaskProvenance:
         if self.active is None or phase not in {"pre", "post"}:
             raise ValueError("invalid task provenance phase")
         probes = self.active["probes"]
-        # Post allows a second trio for the settle re-probe (MOR-3575).
-        limit = 6 if phase == "post" else 3
-        if len(probes) >= 9 or sum(p["phase"] == phase for p in probes) >= limit:
+        if len(probes) >= 6 or sum(p["phase"] == phase for p in probes) >= 3:
             raise ValueError("task provenance probe limit")
         probe = {"sequence": len(probes) + 1, "phase": phase, "snapshot": None}
         probes.append(probe)
         return probe
+
+    def drop_phase(self, phase: str) -> None:
+        """Discard the retained probes of one phase, freeing its budget.
+
+        When the first post median shows a surplus the cycle settles and
+        takes the median again (MOR-3575): the transient trio is dropped
+        so the settled re-probe fits the six-probe bound. Task labels and
+        completion events are per-cycle tracking, not per-probe, so they
+        stay.
+        """
+        if self.active is None or phase not in {"pre", "post"}:
+            raise ValueError("invalid task provenance phase")
+        self.active["probes"] = [
+            p for p in self.active["probes"] if p["phase"] != phase
+        ]
 
     def unknown(
         self,
@@ -520,7 +541,7 @@ class _TaskProvenance:
             json.dumps(
                 {
                     "schemaVersion": 1,
-                    "maxProbes": 9,
+                    "maxProbes": 6,
                     "maxTaskEntries": _TASK_ENTRY_LIMIT,
                     "maxEvents": _TASK_EVENT_LIMIT,
                     "maxTrackedTasks": _TASK_REGISTRY_LIMIT,
@@ -2003,12 +2024,15 @@ class SoakDriver:
             if _stability_surplus(pre, post):
                 # A surplus right after recovery may be teardown still
                 # draining (MOR-3575): settle, then take the median again.
-                # The settle's own samples are uncaptured; the re-probe is
-                # captured like the first post trio, whose transient values
-                # the 9-probe budget keeps beside it. Observation never
-                # changes the verdict: a surplus surviving the settle
-                # still fails.
+                # The settle's own samples are uncaptured; the transient
+                # trio is dropped so the settled re-probe fits the
+                # six-probe bound. Observation never changes the verdict:
+                # a surplus surviving the settle still fails.
                 await self._settle_stability_counts(pre)
+                if diagnostics is not None:
+                    diagnostics.drop_phase("post")
+                if self._task_provenance is not None:
+                    self._task_provenance.drop_phase("post")
                 post = await self._stability_probe("post")
             entry["fdsPost"] = post.fds
             entry["tasksPost"] = post.asyncio_tasks
