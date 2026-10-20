@@ -20,14 +20,14 @@ TX mode):
   single-receiver MK2 profile.
 
 So a correct server must answer ``RPRT 0`` to ``I`` and ``X`` and reply
-with values to ``i`` and ``x``.  Today the parser rejects all four as
-unknown commands and the server answers ``RPRT -4`` (ENIMPL), which
-netrigctl surfaces as ``-RIG_ENIMPL``; WSJT-X's ``error_check`` turns
-that into a rig-control failure — split operation never starts.
+with values to ``i`` and ``x``.  Before the MOR-3115 split surface the
+parser rejected all four as unknown commands and the server answered
+``RPRT -4`` (ENIMPL), which netrigctl surfaces as ``-RIG_ENIMPL``;
+WSJT-X's ``error_check`` turns that into a rig-control failure — split
+operation never starts.
 
-RED pin for the gap recorded in MOR-3115: the split-frequency surface
-needs new rigctld + runtime work (feature-sized) and is intentionally
-not implemented here.
+Acceptance for the MOR-3115 split-frequency surface: the exact WSJT-X
+wire sequence below must stay green.
 """
 
 from __future__ import annotations
@@ -96,8 +96,10 @@ async def test_wsjtx_rig_split_sequence_on_ic7300mk2(cfg: RigctldConfig) -> None
     await radio.connect()
     srv = RigctldServer(radio, cfg)
     await srv.start()
-    # DEFER-classified split writes fail closed on unknown RF state; seed a
-    # known-RX observation so the TX interlock stays out of this test.
+    # S/I/X are DEFER-classified (VFO-topology): dispatched only on
+    # known RX, dropped with RPRT 0 while transmitting, ERJCTED on
+    # unknown RF truth. Seed a known-RX observation so the TX interlock
+    # stays out of this wire-sequence test.
     _apply_store_value(
         srv._state_store, FieldPath.global_("tx_state", "ptt"), False, max_age=1e9
     )
@@ -120,25 +122,21 @@ async def test_wsjtx_rig_split_sequence_on_ic7300mk2(cfg: RigctldConfig) -> None
             assert await _exchange(writer, reader, b"S 1 VFOB\n") == b"RPRT 0\n"
 
             # rig_set_split_freq -> netrigctl "I 14080100".
-            # RED today: server answers RPRT -4 (unknown command 'I').
             assert await _exchange(writer, reader, b"I 14080100\n") == b"RPRT 0\n"
 
             # rig_set_split_mode -> netrigctl "X USB 0".
-            # RED today: server answers RPRT -4 (unknown command 'X').
             assert await _exchange(writer, reader, b"X USB 0\n") == b"RPRT 0\n"
 
             # "Enable split last" (WSJT-X comment in do_tx_frequency).
             assert await _exchange(writer, reader, b"S 1 VFOB\n") == b"RPRT 0\n"
 
             # -- do_mode in split: rig_get_split_mode -> netrigctl "x" ------
-            # Expects two value lines (mode token, passband Hz). RED today:
-            # server answers RPRT -4 (unknown command 'x').
+            # Expects two value lines (mode token, passband Hz).
             mode_line = await _exchange(writer, reader, b"x\n")
             assert mode_line.splitlines()[0] == b"USB"
 
             # -- rig_get_split_freq -> netrigctl "i" ------------------------
-            # Expects one value line: the split TX frequency in Hz. RED today:
-            # server answers RPRT -4 (unknown command 'i').
+            # Expects one value line: the split TX frequency in Hz.
             assert await _exchange(writer, reader, b"i\n") == b"14080100\n"
         finally:
             writer.close()

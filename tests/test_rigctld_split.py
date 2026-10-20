@@ -3,8 +3,9 @@
 Handler-level coverage for the surface that
 ``tests/test_rigctld_wsjtx_split_mk2.py`` drives end to end on the wire:
 set/get of the split-TX frequency and mode on single-RX profiles via
-the VFO-slot dance, error paths, TX-interlock parity with
-``set_freq``/``set_mode``, and the SerialMockRadio slot model the
+the VFO-slot dance, error paths, DEFER interlock outcomes (drop on
+known TX, refuse on unknown RF truth, dispatch only on known RX),
+restore-after-failure coverage, and the SerialMockRadio slot model the
 wire test runs against.
 """
 
@@ -229,36 +230,74 @@ async def test_set_split_freq_enavail_without_slot_switching(
     single_rx_radio.set_freq.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("ptt", [False, True, None], ids=["rx", "tx", "unknown"])
-async def test_set_split_freq_dispatches_in_every_rf_state_like_set_freq(
-    single_rx_handler: RigctldHandler,
-    single_rx_radio: AsyncMock,
-    ptt: bool | None,
-) -> None:
-    # TX_SAFE parity with set_freq (see
-    # test_authority_approved_writes_dispatch_in_every_rf_state): the split
-    # write shares set_freq's policy command, so it dispatches wherever the
-    # main write dispatches. The premise of each case is asserted first so a
-    # broken seed cannot pass vacuously.
+def _canonical_split_setup(
+    config: RigctldConfig, *, ptt: bool | None
+) -> tuple[RigctldHandler, AsyncMock]:
+    """Single-RX handler with a canonical store seeded to one RF truth.
+
+    The plain fixtures deliberately use the handler's non-canonical
+    fallback store, where the defer gate never fires; DEFER outcomes
+    need an injected canonical store (as in
+    test_rigctld_tx_interlock.py). The premise of each case is asserted
+    first so a broken seed cannot pass vacuously.
+    """
+    store = StateStore()
     if ptt is not None:
-        _seed(
-            _store_of(single_rx_handler),
-            FieldPath.global_("tx_state", "ptt"),
-            ptt,
-        )
+        _seed(store, FieldPath.global_("tx_state", "ptt"), ptt)
+    radio = _mock_radio(receiver_count=1, vfo_scheme="ab")
+    handler = RigctldHandler(radio, config, state_store=store)
     expected = {
         False: tx_interlock.RfState.RX,
         True: tx_interlock.RfState.TX,
         None: tx_interlock.RfState.UNKNOWN,
     }[ptt]
-    assert single_rx_handler._resolve_rigctld_rf_state() is expected  # noqa: SLF001
+    assert handler._resolve_rigctld_rf_state() is expected  # noqa: SLF001
+    return handler, radio
 
-    resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
+
+@pytest.mark.asyncio
+async def test_set_split_freq_dropped_while_transmitting(
+    config: RigctldConfig,
+) -> None:
+    # DEFER, exactly like the other DEFER writes (S/U SPLIT): known TX
+    # answers RPRT 0 with the radio untouched — never even the slot
+    # read, since the gate fires before the intent executes.
+    handler, radio = _canonical_split_setup(config, ptt=True)
+
+    resp = await handler.execute(set_cmd("set_split_freq", "14080100"))
 
     assert resp.ok
-    single_rx_radio.set_freq.assert_awaited_once_with(14080100, receiver=0)
-    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
+    radio.set_freq.assert_not_awaited()
+    radio.set_vfo_slot.assert_not_awaited()
+    radio.get_vfo_slot.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_split_freq_rejected_on_unknown_rf_truth(
+    config: RigctldConfig,
+) -> None:
+    handler, radio = _canonical_split_setup(config, ptt=None)
+
+    resp = await handler.execute(set_cmd("set_split_freq", "14080100"))
+
+    assert resp.error is HamlibError.ERJCTED
+    radio.set_freq.assert_not_awaited()
+    radio.set_vfo_slot.assert_not_awaited()
+    radio.get_vfo_slot.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_split_freq_dispatches_in_known_rx(
+    config: RigctldConfig,
+) -> None:
+    handler, radio = _canonical_split_setup(config, ptt=False)
+    radio.get_vfo_slot.return_value = "A"
+
+    resp = await handler.execute(set_cmd("set_split_freq", "14080100"))
+
+    assert resp.ok
+    radio.set_freq.assert_awaited_once_with(14080100, receiver=0)
+    radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
 
 
 @pytest.mark.asyncio
@@ -358,32 +397,47 @@ async def test_set_split_mode_einval(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ptt", [False, True, None], ids=["rx", "tx", "unknown"])
-async def test_set_split_mode_dispatches_in_every_rf_state_like_set_mode(
-    single_rx_handler: RigctldHandler,
-    single_rx_radio: AsyncMock,
-    ptt: bool | None,
+async def test_set_split_mode_dropped_while_transmitting(
+    config: RigctldConfig,
 ) -> None:
-    # TX_SAFE parity with set_mode, premises asserted first (see the
-    # set_split_freq RF-state test above).
-    if ptt is not None:
-        _seed(
-            _store_of(single_rx_handler),
-            FieldPath.global_("tx_state", "ptt"),
-            ptt,
-        )
-    expected = {
-        False: tx_interlock.RfState.RX,
-        True: tx_interlock.RfState.TX,
-        None: tx_interlock.RfState.UNKNOWN,
-    }[ptt]
-    assert single_rx_handler._resolve_rigctld_rf_state() is expected  # noqa: SLF001
+    # DEFER, exactly like the other DEFER writes (S/U SPLIT): known TX
+    # answers RPRT 0 with the radio untouched.
+    handler, radio = _canonical_split_setup(config, ptt=True)
 
-    resp = await single_rx_handler.execute(set_cmd("set_split_mode", "USB", "0"))
+    resp = await handler.execute(set_cmd("set_split_mode", "USB", "0"))
 
     assert resp.ok
-    single_rx_radio.set_mode.assert_awaited_once_with("USB", filter_width=None)
-    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
+    radio.set_mode.assert_not_awaited()
+    radio.set_vfo_slot.assert_not_awaited()
+    radio.get_vfo_slot.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_split_mode_rejected_on_unknown_rf_truth(
+    config: RigctldConfig,
+) -> None:
+    handler, radio = _canonical_split_setup(config, ptt=None)
+
+    resp = await handler.execute(set_cmd("set_split_mode", "USB", "0"))
+
+    assert resp.error is HamlibError.ERJCTED
+    radio.set_mode.assert_not_awaited()
+    radio.set_vfo_slot.assert_not_awaited()
+    radio.get_vfo_slot.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_split_mode_dispatches_in_known_rx(
+    config: RigctldConfig,
+) -> None:
+    handler, radio = _canonical_split_setup(config, ptt=False)
+    radio.get_vfo_slot.return_value = "A"
+
+    resp = await handler.execute(set_cmd("set_split_mode", "USB", "0"))
+
+    assert resp.ok
+    radio.set_mode.assert_awaited_once_with("USB", filter_width=None)
+    radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
 
 
 # -- split writes share the interlock gate -------------------------------

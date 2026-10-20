@@ -338,13 +338,20 @@ def _classify_rigctld_tx_intent(
     if intent.name == "set_freq":
         command = tx_commands.SetFreq(int(params["freq_hz"]))
     elif intent.name == "set_split_freq":
-        # Split-TX writes share the main write's policy command exactly:
-        # whatever disposition/family set_freq gets, set_split_freq gets.
-        command = tx_commands.SetFreq(int(params["freq_hz"]))
+        # NOT SetFreq: the split-TX write is a VFO-topology write
+        # (select-slot-B, write, restore), and with split on, slot B is
+        # the live TX VFO. Dispatching during TX or on unknown RF truth
+        # could retune a live transmission, so these borrow SetSplit's
+        # policy entry exactly: DEFER (dropped with RPRT 0 on known TX,
+        # ERJCTED on unknown RF truth). The `on` value is unconsumed —
+        # only the disposition/family are read, as with send_raw's
+        # synthetic SendCiv(command=0) below.
+        command = tx_commands.SetSplit(True)
     elif intent.name == "set_mode":
         command = tx_commands.SetMode(str(params["mode"]))
     elif intent.name == "set_split_mode":
-        command = tx_commands.SetMode(str(params["mode"]))
+        # Same VFO-topology reasoning as set_split_freq above.
+        command = tx_commands.SetSplit(True)
     elif intent.name == "set_ptt":
         command = tx_commands.PttOn() if bool(params["ptt"]) else tx_commands.PttOff()
     elif intent.name in ("set_rit", "set_xit"):
