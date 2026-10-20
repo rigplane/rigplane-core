@@ -34,15 +34,21 @@ radio disconnect/connect, and pins:
   criterion fails when a silent holder keeps the transmitter or a session
   outlives its channel — for unkey, cut and half_open alike, and with the
   leases forced old at the close.
+* the post-reconnect stability settle (MOR-3575): a transient FD surplus
+  that drains after recovery passes once settled, a persistent one still
+  fails, and a feed that never settles cannot stall the cycle past its
+  window.
 """
 
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import time
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, Callable
 
 import pytest
 
@@ -730,3 +736,150 @@ async def test_renew_gives_a_session_its_full_lease_whatever_its_age() -> None:
             await client.close()
     finally:
         await stack.aclose()
+
+
+def _process_script(
+    fds_values: list[int], tasks: int = 30
+) -> Callable[[], dict[str, int]]:
+    """A runtime ``process`` feed replaying scripted FD counts, then holding."""
+
+    values = iter(fds_values)
+    last = fds_values[-1]
+
+    def script() -> dict[str, int]:
+        try:
+            fds = next(values)
+        except StopIteration:
+            fds = last
+        return {"rssBytes": 1024, "openFds": fds, "asyncioTasks": tasks}
+
+    return script
+
+
+async def _run_cycle_with_process_script(
+    monkeypatch: pytest.MonkeyPatch,
+    script: Callable[[], dict[str, int]],
+) -> tuple[soak_driver.SoakDriver, list[float]]:
+    """One recovered reconnect cycle over a scripted process feed.
+
+    Mirrors the ``_cycle`` harness in test_soak_probe_diagnostics.py: no
+    stack, no clock. Returns the driver and the recorded asyncio.sleep
+    delays.
+    """
+    driver = soak_driver.SoakDriver(
+        soak_driver.SoakConfig(duration_s=45),
+        "http://127.0.0.1:1",
+        "127.0.0.1:1",
+        SimpleNamespace(fault_plan=None),
+    )
+    sampler = soak_driver.ProcessMetricsSampler(object(), "http://127.0.0.1:1")
+    sleeps: list[float] = []
+
+    async def runtime() -> dict[str, Any]:
+        return {"process": script()}
+
+    async def status() -> str:
+        return "connected"
+
+    async def control(action: str) -> None:
+        pass
+
+    async def wait(*args: Any, **kwargs: Any) -> bool:
+        return True
+
+    async def connect(deadline: float) -> bool:
+        return True
+
+    async def sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(sampler, "fetch_runtime", runtime)
+    monkeypatch.setattr(sampler, "fetch_connection_status", status)
+    monkeypatch.setattr(driver, "_post_radio_control", control)
+    monkeypatch.setattr(driver, "_wait_connection", wait)
+    monkeypatch.setattr(driver, "_do_connect_until_recovered", connect)
+    monkeypatch.setattr(soak_driver.asyncio, "sleep", sleep)
+    monkeypatch.setattr(driver, "_elapsed", lambda: 10.0)
+    driver._sampler = sampler
+    await driver._reconnect_cycle()
+    return driver, sleeps
+
+
+def _stability_status(entry: dict[str, Any], field: str) -> dict[str, Any]:
+    return soak_driver._stability_criterion(
+        soak_driver._stability_checks([entry], field)
+    )
+
+
+async def test_stability_post_probe_settles_a_transient_fd_surplus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A draining transient must not read as a leak (MOR-3575).
+
+    CI run 39451768550 failed with FDs 48 -> 55 (delta 7 > 5) on a
+    loaded xdist worker: closed sockets drain a few loop turns after
+    recovery. The script replays that shape — a first post median of 55
+    over a 48 baseline, then a decay back to 48 — and the criterion
+    must PASS.
+    """
+    script = _process_script(
+        [48, 48, 48, 56, 55, 54, 53, 52, 51, 50, 49, 48, 48, 48, 48, 48]
+    )
+    driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert entry["fdsPost"] == 48
+    assert entry["tasksPost"] == 30
+    fds = _stability_status(entry, "fds")
+    assert fds["status"] == "PASS", fds
+    tasks = _stability_status(entry, "tasks")
+    assert tasks["status"] == "PASS", tasks
+    assert sleeps[0] == 3.0
+    settle = sleeps[1:]
+    assert settle and all(
+        step == soak_driver._STABILITY_SETTLE_STEP_S for step in settle
+    )
+    assert sum(settle) < soak_driver._STABILITY_SETTLE_WINDOW_S
+
+
+async def test_stability_post_probe_still_fails_a_persistent_fd_surplus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuine leak survives the settle window (MOR-3575 control).
+
+    Same 48 -> 55 shape, but the count never drains: the settle exits
+    on its first comparison and the second median still fails.
+    """
+    script = _process_script([48, 48, 48] + [55] * 8)
+    driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert entry["fdsPost"] == 55
+    fds = _stability_status(entry, "fds")
+    assert fds["status"] == "FAIL", fds
+    assert sleeps == [3.0, soak_driver._STABILITY_SETTLE_STEP_S]
+
+
+async def test_stability_settle_is_bounded_by_its_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Counts that never stop decreasing cannot stall the driver (MOR-3575).
+
+    A hang-shaped feed (FDs falling forever) with a 50 ms window: the
+    cycle still concludes and the surplus still fails.
+    """
+    monkeypatch.setattr(soak_driver, "_STABILITY_SETTLE_WINDOW_S", 0.05)
+    falling = itertools.chain([48, 48, 48], itertools.count(5000, -1))
+
+    def script() -> dict[str, int]:
+        return {"rssBytes": 1024, "openFds": next(falling), "asyncioTasks": 30}
+
+    started = time.monotonic()
+    driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
+    elapsed = time.monotonic() - started
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    fds = _stability_status(entry, "fds")
+    assert fds["status"] == "FAIL", fds
+    assert len(sleeps) > 1
+    assert elapsed < 10.0

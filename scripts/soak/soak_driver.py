@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import gc
 import json
 import logging
 import os
@@ -69,6 +70,13 @@ RSS_MIN_FIT_SPAN_S = 600.0
 VERDICT_INCOMPLETE = "INCOMPLETE"
 STABILITY_TOLERANCE = 5
 _STABILITY_PROBE_COUNT = 3
+# A post-reconnect median above pre + tolerance may be teardown still
+# draining rather than a leak (MOR-3575): the driver then settles — gc
+# once, then resamples in small steps until neither count decreases —
+# and takes the median again. The window bounds that wait so a run
+# whose counts never settle cannot stall the driver.
+_STABILITY_SETTLE_WINDOW_S = 5.0
+_STABILITY_SETTLE_STEP_S = 0.25
 _DRIVER_TASK_PREFIX = "soak-"
 
 TUNE_INTERVAL_S = 2.0
@@ -1023,6 +1031,30 @@ def _stability_criterion(checks: list[dict[str, Any]]) -> dict[str, Any]:
     return {"status": status, "tolerance": STABILITY_TOLERANCE, "checks": checks}
 
 
+def _stability_counts_decreased(before: ProcessSample, after: ProcessSample) -> bool:
+    """Either stability count strictly lower; a missing field never counts."""
+    for field in ("fds", "asyncio_tasks"):
+        old = getattr(before, field)
+        new = getattr(after, field)
+        if old is not None and new is not None and new < old:
+            return True
+    return False
+
+
+def _stability_surplus(pre: ProcessSample, post: ProcessSample) -> bool:
+    """Either post count above pre + tolerance; missing fields never count."""
+    for field in ("fds", "asyncio_tasks"):
+        before = getattr(pre, field)
+        after = getattr(post, field)
+        if (
+            before is not None
+            and after is not None
+            and after - before > STABILITY_TOLERANCE
+        ):
+            return True
+    return False
+
+
 def evaluate_report(
     config: SoakConfig,
     samples: list[ProcessSample],
@@ -1773,6 +1805,26 @@ class SoakDriver:
             diagnostics.medians[phase] = _diagnostic_sample_values(result)
         return result
 
+    async def _settle_stability_counts(self) -> None:
+        """Resample until FD/task counts stop decreasing, within a window.
+
+        Closed sockets and tasks drain a few event-loop turns after the
+        reconnect; a genuine leak never drains, so it still shows in the
+        median taken after this returns. The monotonic deadline (the
+        ``_wait_ptt`` shape, not ``_elapsed``) bounds the wait even when
+        counts fall forever.
+        """
+        assert self._sampler is not None
+        gc.collect()
+        deadline = time.monotonic() + _STABILITY_SETTLE_WINDOW_S
+        previous = await self._sampler.sample(self._elapsed())
+        while time.monotonic() < deadline:
+            await asyncio.sleep(_STABILITY_SETTLE_STEP_S)
+            current = await self._sampler.sample(self._elapsed())
+            if not _stability_counts_decreased(previous, current):
+                return
+            previous = current
+
     def _record_unrecovered_cycle(self, reason: str) -> None:
         self._reconnects.append(
             {
@@ -1907,6 +1959,20 @@ class SoakDriver:
                 if diagnostics is not None or self._task_provenance is not None
                 else await self._stability_probe()
             )
+            if (
+                diagnostics is None
+                and self._task_provenance is None
+                and _stability_surplus(pre, post)
+            ):
+                # A surplus right after recovery may be teardown still
+                # draining rather than a leak (MOR-3575): settle, then take
+                # the median again. Skipped under probe/task capture, whose
+                # 6-probe budget the extra samples would overflow — and whose
+                # raw probes are the diagnosis. A genuine leak never
+                # decreases, so the second median still shows the surplus
+                # and still fails.
+                await self._settle_stability_counts()
+                post = await self._stability_probe()
             entry["fdsPost"] = post.fds
             entry["tasksPost"] = post.asyncio_tasks
         entry["windowEndS"] = round(self._elapsed(), 3)
