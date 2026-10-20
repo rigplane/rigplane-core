@@ -638,14 +638,15 @@ async def test_soak_multi_session_tx_fails_when_a_session_outlives_its_channel(
     """A session whose primary channel is gone must end at once, not at its
     lease: with the channel's detach made a no-op the cycle reports a leak.
 
-    Pinned for every mode that leaves the ending to the channel's loss —
-    ``delete`` is excluded because its HTTP DELETE ends the session
-    server-side, so the no-op detach leaks nothing. In ``cut`` and
-    ``half_open`` the holder's own lease runs out mid-cycle while the
-    driver waits out the TX release, so the reported leak is the other
-    session's: the close-time renew gives its live link a full lease, and
-    cutting that link at the close must still not leave it past the check
-    window. The violation must come from this mode's own cycle.
+    The pinned signal is the other session's final-close leak, identical
+    in every mode: the close-time renew gives its still-open link a full
+    lease, and the sabotaged close leaves it past the check window, which
+    the cycle must report. In ``cut`` and ``half_open`` the holder's own
+    lease also runs out mid-cycle while the driver waits out the TX
+    release. ``delete`` is excluded as a scoping choice: its HTTP DELETE
+    ends the holder's session through ``release``, bypassing ``detach``,
+    so the mode adds no signal beyond the common one. The violation must
+    come from this mode's own cycle.
     """
     from rigplane.runtime.controller_authority import ControllerAuthority
 
