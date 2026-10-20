@@ -114,6 +114,38 @@ class TestParseLineShort:
         assert cmd.long_cmd == "set_split_vfo"
         assert cmd.args == ("1", "VFOB")
 
+    def test_get_split_freq(self) -> None:
+        cmd = parse_line(b"i")
+        assert cmd.short_cmd == "i"
+        assert cmd.long_cmd == "get_split_freq"
+        assert cmd.args == ()
+        assert cmd.is_set is False
+
+    def test_set_split_freq(self) -> None:
+        cmd = parse_line(b"I 14080100")
+        assert cmd.short_cmd == "I"
+        assert cmd.long_cmd == "set_split_freq"
+        assert cmd.args == ("14080100",)
+        assert cmd.is_set is True
+
+    def test_get_split_mode(self) -> None:
+        cmd = parse_line(b"x")
+        assert cmd.short_cmd == "x"
+        assert cmd.long_cmd == "get_split_mode"
+        assert cmd.is_set is False
+
+    def test_set_split_mode_with_passband(self) -> None:
+        cmd = parse_line(b"X USB 3000")
+        assert cmd.short_cmd == "X"
+        assert cmd.long_cmd == "set_split_mode"
+        assert cmd.args == ("USB", "3000")
+        assert cmd.is_set is True
+
+    def test_set_split_mode_without_passband(self) -> None:
+        cmd = parse_line(b"X LSB")
+        assert cmd.short_cmd == "X"
+        assert cmd.args == ("LSB",)
+
     def test_quit(self) -> None:
         cmd = parse_line(b"q")
         assert cmd.short_cmd == "q"
@@ -191,6 +223,32 @@ class TestParseLineLong:
     def test_quit_long(self) -> None:
         cmd = parse_line(b"\\quit")
         assert cmd.long_cmd == "quit"
+
+    def test_get_split_freq_long(self) -> None:
+        cmd = parse_line(b"\\get_split_freq")
+        assert cmd.short_cmd == "i"
+        assert cmd.long_cmd == "get_split_freq"
+        assert cmd.is_set is False
+
+    def test_set_split_freq_long(self) -> None:
+        cmd = parse_line(b"\\set_split_freq 14080100")
+        assert cmd.short_cmd == "I"
+        assert cmd.long_cmd == "set_split_freq"
+        assert cmd.args == ("14080100",)
+        assert cmd.is_set is True
+
+    def test_get_split_mode_long(self) -> None:
+        cmd = parse_line(b"\\get_split_mode")
+        assert cmd.short_cmd == "x"
+        assert cmd.long_cmd == "get_split_mode"
+        assert cmd.is_set is False
+
+    def test_set_split_mode_long(self) -> None:
+        cmd = parse_line(b"\\set_split_mode USB 3000")
+        assert cmd.short_cmd == "X"
+        assert cmd.long_cmd == "set_split_mode"
+        assert cmd.args == ("USB", "3000")
+        assert cmd.is_set is True
 
 
 # ── parse_line: tolerance and edge cases ──────────────────────────────────────
@@ -282,6 +340,26 @@ class TestParseLineErrors:
         with pytest.raises(ValueError, match="at least"):
             parse_line(b"S 1")
 
+    def test_set_split_freq_no_arg(self) -> None:
+        # I requires exactly 1 arg.
+        with pytest.raises(ValueError, match="at least"):
+            parse_line(b"I")
+
+    def test_set_split_mode_too_many_args(self) -> None:
+        # X accepts at most 2 args.
+        with pytest.raises(ValueError, match="at most"):
+            parse_line(b"X USB 3000 extra")
+
+    def test_get_split_freq_with_arg(self) -> None:
+        # i accepts 0 args.
+        with pytest.raises(ValueError, match="at most"):
+            parse_line(b"i extra")
+
+    def test_get_split_mode_with_arg(self) -> None:
+        # x accepts 0 args.
+        with pytest.raises(ValueError, match="at most"):
+            parse_line(b"x extra")
+
     def test_get_freq_with_arg(self) -> None:
         # f accepts 0 args.
         with pytest.raises(ValueError, match="at most"):
@@ -298,8 +376,9 @@ class TestParseLineErrors:
 class TestParseLineVfoPrefix:
     """Parser accepts leading VFO arg under chk_vfo=1 (#1319, A2/#1343).
 
-    The 13 wire forms below correspond 1:1 with the
-    wsjtx/fldigi/JS8Call init traces under chk_vfo=1, per the
+    The wire forms below correspond 1:1 with the
+    wsjtx/fldigi/JS8Call init traces under chk_vfo=1, plus the WSJT-X
+    split-TX forms (``I``/``i``/``X``/``x``), per the
     `rigctl(1) <https://hamlib.sourceforge.net/manuals/4.5.5/rigctl.1.html>`_
     "Reading"/"Writing" command groups. After #1343 the parser strips
     the leading ``VFOA``/``VFOB``/``currVFO`` token and stashes it on
@@ -319,6 +398,8 @@ class TestParseLineVfoPrefix:
             (b"t VFOA", "t", "get_ptt", "VFOA", ()),
             (b"j VFOA", "j", "get_rit", "VFOA", ()),
             (b"s VFOA", "s", "get_split_vfo", "VFOA", ()),
+            (b"i VFOB", "i", "get_split_freq", "VFOB", ()),
+            (b"x VFOA", "x", "get_split_mode", "VFOA", ()),
             (b"l VFOA STRENGTH", "l", "get_level", "VFOA", ("STRENGTH",)),
             (b"u VFOA NB", "u", "get_func", "VFOA", ("NB",)),
             # SET commands — Hamlib prefixes VFO under chk_vfo=1.
@@ -334,6 +415,14 @@ class TestParseLineVfoPrefix:
             ),
             (b"U VFOA NB 1", "U", "set_func", "VFOA", ("NB", "1")),
             (b"S VFOA 1 VFOB", "S", "set_split_vfo", "VFOA", ("1", "VFOB")),
+            (b"I VFOB 14080100", "I", "set_split_freq", "VFOB", ("14080100",)),
+            (
+                b"X VFOB USB 0",
+                "X",
+                "set_split_mode",
+                "VFOB",
+                ("USB", "0"),
+            ),
         ],
     )
     def test_parses_vfo_prefix(

@@ -46,7 +46,19 @@ def _intent(name: str, **params: object) -> CommandIntent:
 def test_material_intents_use_shared_policy() -> None:
     cases = (
         (_intent("set_freq", freq_hz=1), commands.SetFreq, "tx-safe", "frequency"),
+        (
+            _intent("set_split_freq", freq_hz=1),
+            commands.SetFreq,
+            "tx-safe",
+            "frequency",
+        ),
         (_intent("set_mode", mode="USB"), commands.SetMode, "tx-safe", "mode"),
+        (
+            _intent("set_split_mode", mode="USB"),
+            commands.SetMode,
+            "tx-safe",
+            "mode",
+        ),
         (_intent("set_ptt", ptt=False), commands.PttOff, "always-pass", "ptt-off"),
         (_intent("set_ptt", ptt=True), commands.PttOn, "block", "ptt-on"),
         (_intent("set_rit", hz=50), commands.SetRitFrequency, "tx-safe", "rit-xit"),
@@ -109,7 +121,10 @@ def test_all_current_function_setters_use_shared_policy() -> None:
 
 
 def test_protocol_inventory_aliases_and_wire_output_remain_unchanged() -> None:
-    material_names = "set_freq set_mode set_ptt set_vfo set_level set_func set_split_vfo send_raw".split()
+    material_names = (
+        "set_freq set_split_freq set_mode set_split_mode set_ptt set_vfo "
+        "set_level set_func set_split_vfo send_raw"
+    ).split()
     material_defs = {
         definition
         for definition in COMMAND_TABLE.values()
