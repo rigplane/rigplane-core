@@ -44,20 +44,19 @@ def test_quick_worker_diagnostics_wiring() -> None:
     run = text.split("- name: Run tests", 1)[1].split("- name:", 1)[0]
     assert "-p pytest_worker_diagnostics" in run
     assert (
-        "RIGPLANE_WORKER_DIAG_DIR: ${{ runner.temp }}/pytest-worker-diagnostics"
-        in run
+        "RIGPLANE_WORKER_DIAG_DIR: ${{ runner.temp }}/pytest-worker-diagnostics" in run
     )
     assert "PYTHONPATH: ${{ github.workspace }}/.github/scripts" in run
-    finalize = text.split("- name: Bound worker diagnostics", 1)[1].split(
-        "- name:", 1
-    )[0]
+    finalize = text.split("- name: Bound worker diagnostics", 1)[1].split("- name:", 1)[
+        0
+    ]
     assert (
         "pytest_worker_diagnostics.py --finalize" in finalize
         and "${{ runner.temp }}/pytest-worker-diagnostics" in finalize
     )
-    upload = text.split("- name: Upload worker diagnostics", 1)[1].split(
-        "- name:", 1
-    )[0]
+    upload = text.split("- name: Upload worker diagnostics", 1)[1].split("- name:", 1)[
+        0
+    ]
     assert "actions/upload-artifact" in upload and "always()" in upload
     for leaf in (
         "events-*.jsonl",
