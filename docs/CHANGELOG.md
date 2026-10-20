@@ -15,10 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`rigplane web` accepts `--log-level` (MOR-3569, #4265, #1905).** The web
-  server could not be started with DEBUG logging. The flag takes
-  `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. Without it the loggers are
-  left alone, so `ICOM_DEBUG=1` still works.
+- **`rigplane web` accepts `--log-level` (MOR-3569, #4265, #1905).** Before,
+  the level of the web server could only be raised to DEBUG through the
+  `ICOM_DEBUG` environment variable. The flag takes `DEBUG`, `INFO`,
+  `WARNING`, `ERROR` or `CRITICAL`. Without it the loggers are left alone, so
+  `ICOM_DEBUG=1` still works.
 
 ### Fixed
 
