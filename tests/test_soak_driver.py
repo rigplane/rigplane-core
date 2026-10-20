@@ -879,12 +879,20 @@ async def test_stability_settle_is_bounded_by_its_window(
 async def test_stability_settle_gives_up_on_a_hung_sample(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A sample past the window ends the settle; the cycle still concludes."""
+    """A sample past the window ends the settle; the cycle still concludes.
+
+    The outer 10 s bound is the discrimination: without the wait_for in
+    _settle_sample the injected 30 s hang is unguarded, the bound fires
+    TimeoutError, and this test goes red instead of passing after 30 s.
+    """
     monkeypatch.setattr(soak_driver, "_STABILITY_SETTLE_WINDOW_S", 0.05)
     script = _process_script([48, 48, 48, 56, 55, 54, 48, 48, 48])
-    driver, sleeps = await _run_cycle_with_process_script(
-        monkeypatch, script, hang_settle_sample=True
+    started = time.monotonic()
+    driver, sleeps = await asyncio.wait_for(
+        _run_cycle_with_process_script(monkeypatch, script, hang_settle_sample=True),
+        timeout=10.0,
     )
+    assert time.monotonic() - started < 5.0
     (entry,) = driver._reconnects
     assert entry["recovered"] is True
     assert entry["fdsPost"] == 48
