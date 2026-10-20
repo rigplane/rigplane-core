@@ -272,6 +272,10 @@ the handler in the dispatch table, and translates exceptions:
 | `U` | `set_func` | SET | Function write (`NB`, `NR`, `COMP`, `VOX`, etc.) |
 | `s` | `get_split_vfo` | GET | Split VFO status |
 | `S` | `set_split_vfo` | SET | Accepted/ACKed (compat path) |
+| `i` | `get_split_freq` | GET | Split TX frequency in Hz (single-RX only) |
+| `I` | `set_split_freq` | SET | Split TX frequency in Hz (single-RX only) |
+| `x` | `get_split_mode` | GET | Split TX mode + passband Hz (single-RX only) |
+| `X` | `set_split_mode` | SET | Split TX mode + optional passband (single-RX only) |
 | `q` | `quit` | CTL | Close connection |
 | `\dump_state` | `dump_state` | CTL | IC-7610 capability block |
 | `1` | `dump_caps` | CTL | Alias for `dump_state` |
