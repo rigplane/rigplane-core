@@ -118,9 +118,21 @@ async def _open_with_idle_lines(
     loop = asyncio.get_running_loop()
     reader = asyncio.StreamReader()
     protocol = asyncio.StreamReaderProtocol(reader)
-    transport, _ = await serial_asyncio.connection_for_serial(
-        loop, lambda: protocol, serial_instance
-    )
+    try:
+        transport, _ = await serial_asyncio.connection_for_serial(
+            loop, lambda: protocol, serial_instance
+        )
+    except BaseException:
+        # The async transport has not been handed to a writer yet.
+        try:
+            serial_instance.close()
+        except BaseException:
+            logger.warning(
+                "serial open: failed to close %s after wrap failure",
+                url,
+                exc_info=True,
+            )
+        raise
     writer = asyncio.StreamWriter(transport, protocol, reader, loop)
     return reader, writer
 

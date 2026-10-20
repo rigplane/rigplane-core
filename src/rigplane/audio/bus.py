@@ -42,6 +42,7 @@ import asyncio
 import inspect
 import logging
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from rigplane.audio.usb_driver import AudioAlreadyStartedError
@@ -288,11 +289,20 @@ class AudioBus:
     Args:
         radio: A radio instance implementing AudioCapable.
         jitter_depth: Jitter buffer depth passed to radio RX start.
+        monotonic: Clock stamping the RX liveness heartbeat; defaults to
+            ``time.monotonic``.
     """
 
-    def __init__(self, radio: Any, *, jitter_depth: int = 5) -> None:
+    def __init__(
+        self,
+        radio: Any,
+        *,
+        jitter_depth: int = 5,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._radio = radio
         self._jitter_depth = jitter_depth
+        self._monotonic = monotonic
         self._subscribers: list[AudioSubscription] = []
         self._rx_active = False
         self._lock = asyncio.Lock()
@@ -313,9 +323,11 @@ class AudioBus:
 
     @property
     def last_rx_frame_monotonic(self) -> float | None:
-        """``time.monotonic()`` of the most recent RX fan-out, or None.
+        """Monotonic timestamp of the most recent RX fan-out, or None.
 
         RX liveness heartbeat (MOR-564): observability only, no watchdog.
+        Stamped from this bus's ``monotonic`` clock, which defaults to
+        ``time.monotonic``.
         """
         return self._last_rx_frame_monotonic
 
@@ -347,7 +359,7 @@ class AudioBus:
 
     def _on_opus_packet(self, packet: "AudioPacket | None") -> None:
         """Internal callback — distributes packet to all active subscribers."""
-        self._last_rx_frame_monotonic = time.monotonic()
+        self._last_rx_frame_monotonic = self._monotonic()
         for sub in self._subscribers:
             sub.deliver(packet)
         # ``rx.pcm`` stage tap (MOR-565): passive observer of radio-native

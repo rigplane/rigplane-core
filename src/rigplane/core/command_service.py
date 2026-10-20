@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from rigplane.core.acquisition_scheduler import AcquisitionPriority, AcquisitionStatus
 from rigplane.core.command_dispatch import (
     _af_level_from_param as _af_level_from_param,
+    _int_param as _int_param,
     _raw_int_level_from_param as _raw_int_level_from_param,
     bind_command_intent,
     command_descriptor,
@@ -1279,7 +1280,8 @@ def command_intent_from_request(
         raw_freq = (
             normalized["freq_hz"] if "freq_hz" in normalized else normalized["freq"]
         )
-        freq = int(raw_freq)
+        field = "freq_hz" if "freq_hz" in normalized else "freq"
+        freq = _int_param(raw_freq, field)
         normalized["freq_hz"] = freq
         normalized.setdefault("freq", freq)
     elif command_name == "set_mode":
@@ -1292,9 +1294,9 @@ def command_intent_from_request(
                     int(raw_filter[-1]) if raw_filter[-1:].isdigit() else 1
                 )
             else:
-                normalized["filter_num"] = int(raw_filter)
+                normalized["filter_num"] = _int_param(raw_filter, "filter")
     elif command_name == "set_filter_width":
-        normalized["filter_width"] = int(normalized["width"])
+        normalized["filter_width"] = _int_param(normalized["width"], "width")
     elif command_name in ("set_ptt", "ptt"):
         normalized["ptt"] = _ptt_value(command_name, normalized)
     elif command_name == "ptt_on":
@@ -1302,10 +1304,8 @@ def command_intent_from_request(
     elif command_name == "ptt_off":
         normalized["ptt"] = False
     elif command_name == "set_preamp":
-        raw_value = (
-            normalized["level"] if "level" in normalized else normalized["value"]
-        )
-        normalized["preamp"] = int(raw_value)
+        level_key = "level" if "level" in normalized else "value"
+        normalized["preamp"] = _int_param(normalized[level_key], level_key)
     elif command_name == "set_nb":
         normalized["nb"] = bool(normalized["on"])
     elif command_name == "set_nr":
@@ -1315,15 +1315,11 @@ def command_intent_from_request(
     elif command_name in ("set_ip_plus", "set_ipplus"):
         normalized["ipplus"] = bool(normalized["on"])
     elif command_name == "set_pbt_inner":
-        raw_level = (
-            normalized["value"] if "value" in normalized else normalized["level"]
-        )
-        normalized["pbt_inner"] = int(raw_level)
+        inner_key = "value" if "value" in normalized else "level"
+        normalized["pbt_inner"] = _int_param(normalized[inner_key], inner_key)
     elif command_name == "set_pbt_outer":
-        raw_level = (
-            normalized["value"] if "value" in normalized else normalized["level"]
-        )
-        normalized["pbt_outer"] = int(raw_level)
+        outer_key = "value" if "value" in normalized else "level"
+        normalized["pbt_outer"] = _int_param(normalized[outer_key], outer_key)
     elif command_name == "set_powerstat":
         normalized["power_on"] = bool(normalized.get("on", True))
     elif command_name in ("set_rf_power", "set_power"):
@@ -1339,12 +1335,12 @@ def command_intent_from_request(
     elif command_name == "set_split":
         normalized["split"] = bool(normalized.get("on", False))
     elif command_name == "set_rit":
-        hz = int(normalized["hz"])
+        hz = _int_param(normalized["hz"], "hz")
         normalized["hz"] = hz
         normalized["rit_freq"] = hz
         normalized["rit_on"] = hz != 0
     elif command_name == "set_xit":
-        hz = int(normalized["hz"])
+        hz = _int_param(normalized["hz"], "hz")
         normalized["hz"] = hz
         normalized["rit_freq"] = hz
         normalized["rit_tx"] = hz != 0
@@ -1361,7 +1357,12 @@ def command_intent_from_request(
             normalized["receiver_count"] = receiver_count
     elif command_name == "set_level":
         normalized["level"] = str(normalized["level"]).upper()
-        normalized["value"] = float(normalized["value"])
+        try:
+            normalized["value"] = float(normalized["value"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"value must be a number, got {normalized['value']!r}"
+            ) from exc
         _normalize_level_value(normalized)
     elif command_name == "set_func":
         func = str(normalized["func"]).lower()
@@ -1434,7 +1435,7 @@ _SET_FUNC_TOGGLE_FIELDS = {"TONE": "repeater_tone", "TSQL": "repeater_tsql"}
 
 
 def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
-    receiver = str(int(params.get("receiver", 0)))
+    receiver = str(_int_param(params.get("receiver", 0), "receiver"))
     if name == "set_vfo_freq":
         if params.get("slot") not in ("A", "B") or params.get(
             "expected_active_slot"
@@ -1698,7 +1699,7 @@ def _receiver_count_value(params: Mapping[str, Any]) -> int | None:
         return None
     try:
         return int(params["receiver_count"])
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 

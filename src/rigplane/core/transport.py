@@ -18,7 +18,7 @@ from typing import ClassVar
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core._queue_pressure import PRESSURE_THRESHOLD
 from .exceptions import CommandError
-from .exceptions import TimeoutError as _TimeoutError
+from .exceptions import DiscoveryTimeout as _DiscoveryTimeout
 from .types import HEADER_SIZE, PacketType
 
 __all__ = [
@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 CONTROL_SIZE = 0x10
 CONNINFO_NOTICE_SIZE = 0x90
+TOKEN_PACKET_SIZE = 0x40
 PING_SIZE = 0x15
 PING_PERIOD = 0.5  # seconds
 IDLE_PERIOD = 0.1
@@ -101,6 +102,9 @@ class _UdpProtocol(asyncio.DatagramProtocol):
 
     def connection_lost(self, exc: Exception | None) -> None:
         logger.info("UDP connection lost [peer=%s]: %s", self._peer, exc)
+        close_event = self._owner._udp_close_event
+        if close_event is not None:
+            close_event.set()
 
 
 class IcomTransport:
@@ -129,6 +133,7 @@ class IcomTransport:
         self.rx_missing: dict[int, int] = {}  # seq -> retry count
         self._udp_transport: asyncio.DatagramTransport | None = None
         self._udp_peer_addr: tuple[str, int] | None = None
+        self._udp_close_event: asyncio.Event | None = None
         self._ping_task: asyncio.Task[None] | None = None
         self._idle_task: asyncio.Task[None] | None = None
         self._retransmit_task: asyncio.Task[None] | None = None
@@ -158,8 +163,11 @@ class IcomTransport:
         self._discard_data_packets: bool = False
         # Optional callback for a 0x90 conninfo notice (ptype 0x00). Runs
         # before the discard branch so a "radio free" notice can start
-        # recovery while every other data packet is still dropped.
+        # recovery.
         self._conninfo_notice_callback: Callable[[bytes], None] | None = None
+        # Optional callback for a 0x40 token packet (ptype 0x00), also routed
+        # before the discard branch.
+        self._token_reply_callback: Callable[[bytes], None] | None = None
 
     @property
     def queue_pressure(self) -> float:
@@ -209,10 +217,14 @@ class IcomTransport:
                 when *sock* is given.
 
         Raises:
-            TimeoutError: If the radio does not respond to discovery.
+            DiscoveryTimeout: If the radio does not respond to discovery
+                (a TimeoutError subclass).
         """
-        # A reused instance opens a new radio session, so it must not carry
-        # the previous session's counters into it.
+        # Start the sequence numbers at 0 and drop the buffered packets and
+        # gap tracking of any earlier use of this instance. After a teardown
+        # that kept the radio session, ControlPhaseRuntime.soft_reconnect
+        # (runtime/_control_phase.py) sets the CI-V send_seq back to the number
+        # recorded then; tests/test_civ_seq_continuity.py pins that.
         self.send_seq = 0
         self.ping_seq = 0
         self.tx_buffer.clear()
@@ -227,6 +239,7 @@ class IcomTransport:
                 break
         self.state = ConnectionState.CONNECTING
         loop = asyncio.get_running_loop()
+        self._udp_close_event = asyncio.Event()
         if sock is not None:
             # Caller reserved this socket earlier; connect + hand off.
             sock.connect((host, port))
@@ -282,6 +295,7 @@ class IcomTransport:
         self.state = ConnectionState.CONNECTING
         loop = asyncio.get_running_loop()
         local_addr = (local_host, 0) if local_host else None
+        self._udp_close_event = asyncio.Event()
         await loop.create_datagram_endpoint(
             lambda: _UdpProtocol(self),
             remote_addr=(host, port),
@@ -315,7 +329,8 @@ class IcomTransport:
         """Send 'Are You There' and wait for 'I Am Here' to learn remote_id.
 
         Raises:
-            TimeoutError: If radio does not respond after retries.
+            DiscoveryTimeout: If radio does not respond after retries (a
+                TimeoutError subclass; the message is unchanged).
         """
         for attempt in range(DISCOVERY_RETRIES):
             pkt = self._build_control(ptype=PacketType.ARE_YOU_THERE, seq=0)
@@ -342,7 +357,7 @@ class IcomTransport:
                     )
                     return
 
-        raise _TimeoutError(
+        raise _DiscoveryTimeout(
             f"Radio did not respond to discovery after {DISCOVERY_RETRIES} attempts"
         )
 
@@ -379,37 +394,88 @@ class IcomTransport:
         Keepalive tasks are cancelled AND awaited so that when this
         coroutine returns nothing from this transport is left pending in
         the event loop and a follow-up ``connect()`` on the same instance
-        restarts the loops from a clean slate (MOR-595).  Idempotent —
-        safe to call again after a partial start.
+        restarts the loops from a clean slate (MOR-595).  The UDP socket
+        close is likewise awaited (bounded at 1 s): asyncio closes the socket
+        in a deferred callback, right after ``connection_lost``, and returning
+        earlier let a reconnect rebind the same local port and fail with
+        EADDRINUSE.
+        Idempotent — safe to call again after a partial start.
         """
         tasks = [
             task
             for task in (self._ping_task, self._idle_task, self._retransmit_task)
-            if task is not None
-            and not task.done()
-            and task is not asyncio.current_task()
+            if task is not None and task is not asyncio.current_task()
         ]
         for task in tasks:
-            task.cancel()
+            if not task.done():
+                task.cancel()
 
-        if self.state != ConnectionState.DISCONNECTED and self.remote_id:
-            pkt = self._build_control(ptype=PacketType.DISCONNECT, seq=0)
-            self._raw_send(pkt)
+        send_error: BaseException | None = None
+        try:
+            if self.state != ConnectionState.DISCONNECTED and self.remote_id:
+                pkt = self._build_control(ptype=PacketType.DISCONNECT, seq=0)
+                self._raw_send(pkt)
+        except BaseException as exc:
+            # Defer, rather than suppress, the initiating error until retirement.
+            send_error = exc
 
-        if self._udp_transport is not None:
-            self._udp_transport.close()
-            self._udp_transport = None
-
-        self.state = ConnectionState.DISCONNECTED
-
-        for task in tasks:
+        # Initiate socket retirement in this task, before the first yield.
+        udp, self._udp_transport = self._udp_transport, None
+        close_event = self._udp_close_event if udp is not None else None
+        close_error: BaseException | None = None
+        if udp is not None:
             try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                logger.debug("keepalive task raised during disconnect", exc_info=True)
-        logger.info("Disconnected")
+                udp.close()
+            except BaseException as exc:
+                close_error = exc
+
+        async def retire() -> None:
+            try:
+                if close_event is not None and close_error is None:
+                    try:
+                        await asyncio.wait_for(close_event.wait(), 1.0)
+                    except asyncio.TimeoutError:
+                        logger.debug(
+                            "UDP socket close not confirmed within 1s; continuing"
+                        )
+            finally:
+                self.state = ConnectionState.DISCONNECTED
+                for task in tasks:
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        logger.debug(
+                            "keepalive task raised during disconnect", exc_info=True
+                        )
+            if close_error is not None:
+                raise close_error
+            logger.info("Disconnected")
+
+        # Caller cancellation must not cancel a keepalive's own finalizer.
+        retirement = asyncio.create_task(retire(), name="icom-transport-disconnect")
+        cancelled: asyncio.CancelledError | None = None
+        try:
+            while not retirement.done():
+                try:
+                    await asyncio.shield(retirement)
+                except asyncio.CancelledError as exc:
+                    if retirement.cancelled():
+                        raise
+                    if cancelled is None:
+                        cancelled = exc
+            retirement.result()
+        except BaseException as cleanup_error:
+            if send_error is not None:
+                raise send_error from cleanup_error
+            raise
+        if send_error is not None:
+            if cancelled is not None:
+                raise send_error from cancelled
+            raise send_error
+        if cancelled is not None:
+            raise cancelled
 
     def start_ping_loop(self) -> None:
         """Start the periodic ping task."""
@@ -444,8 +510,9 @@ class IcomTransport:
             is_current: Optional caller-owned synchronous, nonblocking,
                 read-only predicate, checked before sending and retransmitting.
                 False raises CommandError before an initial send; an initial
-                predicate exception propagates. Retransmits skip on false or
-                ordinary exceptions.
+                predicate exception propagates. A false or raising guard
+                answers the retransmit request with an idle packet carrying
+                that sequence instead of the stored packet.
 
         This guards local submission only, not delivery or radio execution.
         """
@@ -603,16 +670,26 @@ class IcomTransport:
         self._handle_data_packet(data, ptype, seq, sender_id)
 
     def _retransmit(self, seq: int) -> None:
+        seq &= 0xFFFF
         data = self.tx_buffer.get(seq)
         if data is None:
+            logger.debug("retransmit #%d not buffered; answering with idle", seq)
+            self._raw_send(self._build_control(ptype=0x00, seq=seq))
             return
         is_current = self._tx_guards.get(seq)
         if is_current is not None:
             try:
                 if not is_current():
+                    logger.debug("retransmit #%d stale; answering with idle", seq)
+                    self._raw_send(self._build_control(ptype=0x00, seq=seq))
                     return
             except Exception:
-                logger.debug("Skipping retransmit with failed guard", exc_info=True)
+                logger.debug(
+                    "retransmit #%d guard failed; answering with idle",
+                    seq,
+                    exc_info=True,
+                )
+                self._raw_send(self._build_control(ptype=0x00, seq=seq))
                 return
         self._raw_send(data)
 
@@ -625,11 +702,32 @@ class IcomTransport:
             self._retransmit(seq)
             return True
 
-        # Multi retransmit request
-        for i in range(CONTROL_SIZE, len(data), 2):
-            if i + 2 <= len(data):
-                rseq = struct.unpack_from("<H", data, i)[0]
-                self._retransmit(rseq)
+        # Multi retransmit request: the payload past the header holds
+        # consecutive 4-byte (first, last) inclusive ranges in the 16-bit
+        # sequence space. A trailing partial pair carries no range.
+        end = CONTROL_SIZE + (len(data) - CONTROL_SIZE) // 4 * 4
+        for i in range(CONTROL_SIZE, end, 4):
+            first, last = struct.unpack_from("<HH", data, i)
+            span = (last - first) & 0xFFFF
+            if span >= 0x8000:
+                logger.debug(
+                    "retransmit range %d..%d backward; ignoring",
+                    first,
+                    last,
+                )
+                continue
+            count = min(span + 1, MAX_MISSING)
+            if count < span + 1:
+                logger.debug(
+                    "retransmit range %d..%d wider than %d; serving first %d, "
+                    "rest left for the radio's next request",
+                    first,
+                    last,
+                    MAX_MISSING,
+                    count,
+                )
+            for offset in range(count):
+                self._retransmit((first + offset) & 0xFFFF)
         return True
 
     def _handle_ping_packet(
@@ -678,6 +776,13 @@ class IcomTransport:
             and self._conninfo_notice_callback is not None
         ):
             self._conninfo_notice_callback(data)
+            return
+        if (
+            ptype == 0x00
+            and len(data) == TOKEN_PACKET_SIZE
+            and self._token_reply_callback is not None
+        ):
+            self._token_reply_callback(data)
             return
 
         # Discard data packets when queue consumer is absent (control transport

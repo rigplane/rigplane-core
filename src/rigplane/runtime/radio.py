@@ -13,6 +13,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import socket as _socket
@@ -174,7 +175,12 @@ from rigplane.commands import get_main_sub_tracking as _get_main_sub_tracking_cm
 from rigplane.commands import get_repeater_tone as _get_repeater_tone_cmd
 from rigplane.commands import get_repeater_tsql as _get_repeater_tsql_cmd
 from rigplane.core.env_config import get_managed_tx_enabled
-from rigplane.core.exceptions import CommandError, ConnectionError, TimeoutError
+from rigplane.core.exceptions import (
+    CommandError,
+    CommandRejectedError,
+    ConnectionError,
+    TimeoutError,
+)
 from rigplane.core.radio_protocol import (
     ManagedTxSupervisor,
     RadioIdentity,
@@ -340,9 +346,18 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     WATCHDOG_CHECK_INTERVAL = 0.5
     _WATCHDOG_HEALTH_LOG_INTERVAL = 30.0
 
+    # Audio-only silence repair (MOR-3401): rebuild the LAN audio transport
+    # when the existing ``rx_silent`` liveness signal fires while CI-V stays
+    # healthy. Bounded per silence episode, with these backoff delays between
+    # the attempts (1 s before attempt 2, 2 s before attempt 3).
+    _LAN_AUDIO_SILENCE_REPAIR_ATTEMPTS: int = 3
+    _LAN_AUDIO_SILENCE_REPAIR_BACKOFF_S: tuple[float, ...] = (1.0, 2.0)
+
     # Retry identity on the same control session.
     _LAN_IDENTITY_REREAD_BACKOFF_S: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0)
     _LAN_IDENTITY_REREAD_STEADY_S: float = 15.0
+    # A dead verdict this soon after the previous escalation keeps holding.
+    _LAN_IDENTITY_ESCALATION_SPACING_S: float = 60.0
 
     # CoreRadio publishes the exact CI-V transport identity at arm/rearm and
     # withdraws that same identity before the transport closes. Mounted session
@@ -470,6 +485,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._ctrl_transport = IcomTransport()
         self._civ_transport: IcomTransport | None = None
         self._audio_transport: IcomTransport | None = None
+        # Single-flight lock for ``_ensure_audio_transport`` (MOR-3400): the
+        # whole rebuild runs under it; no teardown ever takes it.
+        self._audio_ensure_lock = asyncio.Lock()
         self._audio_stream: AudioStream | None = None
         self._pcm_transcoder: PcmOpusTranscoder | None = None
         self._pcm_transcoder_fmt: tuple[int, int, int] | None = None
@@ -485,6 +503,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._audio_sock_pending: _socket.socket | None = None
         self._civ_send_seq: int = 0
         self._audio_send_seq: int = 0
+        # ``send_seq`` of the CI-V transport last torn down. ``soft_reconnect``
+        # resumes from it; ``_connect_once``, ``disconnect`` and ``release``
+        # clear it.
+        self._civ_resume_seq: int | None = None
+        # ``send_seq`` of the audio transport last torn down on a kept
+        # session. ``_ensure_audio_transport`` resumes from it; a fresh login
+        # (``_connect_once``), ``disconnect`` and ``release`` clear it.
+        self._audio_resume_seq: int | None = None
         self._last_civ_send_monotonic: float = 0.0
         # MOR-2595: 10 ms LAN gap. IC-7610 over LAN, 2026-09-25: 03 round
         # trip median 7.55 ms, p95 9.0 ms; 0 errors at a 0 ms post-reply gap.
@@ -509,6 +535,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._watchdog_timeout = watchdog_timeout
         self._watchdog_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
+        # ``disconnect`` increments this before it stops the resident loops.
+        # ``radio_reconnect.reconnect_loop`` and ``CivRuntime._watchdog_recover``
+        # read it when they start and take a later change for the owner's
+        # stop: a per-attempt release also sets ``_conn_state`` DISCONNECTED,
+        # so that state cannot tell the two apart.
+        self._owner_stop_epoch: int = 0
         self._auto_recover_audio = auto_recover_audio
         self._on_audio_recovery = on_audio_recovery
         self._on_reconnect: Callable[[], None] | None = None
@@ -531,6 +563,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._audio_bus: Any = None
         # AudioSession — lazy-initialized radio-owned singleton (MOR-579)
         self._audio_session: Any = None
+        # Single-flight audio-silence repair task (MOR-3401); None when idle.
+        self._audio_silence_repair_task: asyncio.Task[None] | None = None
+        # Spent silence-repair attempts in the current episode (MOR-3401):
+        # EVERY round consumes one, failed or successful — only real RX
+        # frames (or a new CI-V epoch) close the episode. Reset on
+        # ``rx_resumed`` and on a new connect.
+        self._audio_silence_repair_attempts: int = 0
+        # Silence-episode markers (MOR-3401 r3): the CI-V epoch the episode
+        # began in, the bus RX heartbeat then, and the heartbeat as of the
+        # last settled point (episode open or last task end). A later
+        # ``rx_silent`` opens a new episode only if frames arrived since
+        # the baseline settled or the epoch moved; a successful round never
+        # touches these. Measuring from the settled baseline (not from each
+        # attempt start) absorbs one buffered pre-death frame landing
+        # mid-task: it must neither stop the task nor reopen the episode.
+        self._audio_silence_repair_episode_epoch: int | None = None
+        self._audio_silence_repair_episode_start_heartbeat: float | None = None
+        self._audio_silence_repair_baseline_heartbeat: float | None = None
+        # Monotonic time the last repair-round teardown completed (MOR-3401
+        # r3): the teardown itself flushes jitter-buffered pre-death frames
+        # into the bus, so only heartbeats NEWER than this prove audio
+        # really flows again.
+        self._audio_silence_repair_teardown_completed: float | None = None
         self._scope_assembler: ScopeAssembler = ScopeAssembler()
         self._scope_callback: Callable[[ScopeFrame], Any] | None = None
         # MOR-2222: last scope-display mode published from the waveform
@@ -684,11 +739,28 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             # attempts is the radio's own keepalive window, and the lifecycle
             # already RELEASES the (partial) session before each retry, so no
             # client-side cooldown sleep is needed here.  The within-attempt
-            # conninfo busy-retry pacing still lives in ``_connect_once``
-            # (``_STATUS_RETRY_PAUSE``).  The longer-lived Pro service constructs
-            # the lifecycle with the default 10/30 s cooldowns.
+            # conninfo retry pacing for reconnects and not-ready sessions
+            # still lives in ``_connect_once`` (``_STATUS_RETRY_PAUSE``).  The
+            # longer-lived Pro service constructs the lifecycle with the
+            # default 10/30 s cooldowns.
             not_ready_cooldown_s=0.0,
             reject_cooldown_s=0.0,
+            # Start-up busy-hold policy (MOR-3391): on the first connect a
+            # profile-selected stereo status-stage busy reject and an
+            # auth-stage busy reject retry with a fresh login after the
+            # reject cooldown, until the start-up budget elapses — unless
+            # a busy reject on an attempt starting at or after first-busy
+            # plus the live-holder threshold proves a LIVE session holds
+            # the radio (part 1b), which stops with the honest busy error.
+            # Later connects keep the immediate attempts above; their
+            # status-stage busy path stays in ``_connect_once``.
+            first_connect_busy_cooldown_s=(ControlPhaseRuntime._STATUS_REJECT_COOLDOWN),
+            first_connect_busy_budget_s=(
+                ControlPhaseRuntime.STARTUP_BUSY_HOLD_BUDGET_S
+            ),
+            first_connect_busy_live_holder_after_s=(
+                ControlPhaseRuntime.STARTUP_BUSY_LIVE_HOLDER_AFTER_S
+            ),
             # Recovery backoff is ZERO for the in-process CoreRadio (A4): the
             # CI-V data watchdog already spends its patient OpenClose phase
             # (~``_OPENCLOSE_DEADLINE`` = 60 s) BEFORE handing off to this
@@ -732,6 +804,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._lan_identity_connect_lock = asyncio.Lock()
         # Recovery completion runs the deferred tail instead of a fresh fetch.
         self._lan_identity_revalidate_origin: bool = False
+        self._lan_identity_escalated_at: float | None = None
+        # (audio runtime, snapshot, CI-V epoch, owner stop epoch) — audio
+        # recovery deferred while the identity hold owned the link (a hard
+        # reconnect round or an owner connect that returned into the hold);
+        # hold completion consumes it.
+        self._hard_reconnect_deferred_audio: (
+            tuple[AudioRecoveryRuntime, object, int, int] | None
+        ) = None
 
     # Host shims for ControlPhaseRuntime and Icom7610SerialRadio (delegate to civ_runtime)
     def _advance_civ_generation(self, reason: str) -> None:
@@ -822,6 +902,27 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     def connection_identity(self) -> RadioIdentity | None:
         """Typed identity of the radio that answered on the link (MOR-3064)."""
         return self._connection_identity
+
+    @property
+    def startup_busy_hold_event(self) -> asyncio.Event:
+        """Set while the first connect waits out a busy reject (MOR-3391).
+
+        Read-only for consumers: wait on it or probe ``is_set()``, never
+        set or clear it. The session lifecycle sets it when the first
+        connect enters the SESSION_BUSY_REJECT cooldown and clears it on
+        CONNECTED/DISCONNECTED; reconnect busy rejects never set it.
+        Lets start-up serve not-ready while the same connect keeps running.
+        """
+        return self._session_lifecycle.startup_busy_hold_event
+
+    @property
+    def startup_busy_hold_retry_in_seconds(self) -> float | None:
+        """The live cooldown remainder while one runs, else the hold's
+        cooldown between two busy passes; ``None`` when no hold is
+        active. Read through the private session lifecycle — this module
+        owns that layer, so no upper layer has to.
+        """
+        return self._session_lifecycle.startup_busy_hold_retry_in_seconds
 
     @property
     def remote_control_unreachable(self) -> bool:
@@ -1374,7 +1475,254 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             from rigplane.audio.session import AudioSession
 
             self._audio_session = AudioSession(self)
+            self._audio_session.add_listener(self._on_audio_session_event)
         return self._audio_session
+
+    def _on_audio_session_event(self, event: Any) -> None:
+        """AudioSession listener: repair a LAN audio-only death (MOR-3401).
+
+        Schedules ONE bounded repair task per ``rx_silent`` episode, where
+        an episode is defined by REAL RX frames — not by call success. The
+        observable is the bus RX heartbeat
+        (``AudioBus.last_rx_frame_monotonic``, the same timestamp
+        ``AudioSession._check_liveness_locked`` reads): a later
+        ``rx_silent`` opens a NEW episode with a fresh budget only if an RX
+        frame arrived since the baseline settled (episode open or last task
+        end), or the CI-V epoch moved since the episode began; otherwise
+        it is the SAME episode and the attempt count continues. Measuring
+        from the settled baseline absorbs one buffered pre-death frame
+        landing mid-task. A round whose ``reestablish()`` succeeds
+        therefore never resets the budget — only frames (or a new epoch)
+        do — so a leg that re-arms but stays frameless still caps
+        at 3 attempts with one FAILED instead of looping forever. A second
+        ``rx_silent`` while the task runs schedules nothing.
+        ``rx_resumed`` is itself frame-based so it still ends the episode,
+        but only once its repair task is done: a stray resumed edge (e.g. a
+        buffered frame landing mid-repair) must not fund an extra round.
+        Non-LAN backends never schedule: serial Icom inherits this listener
+        but owns USB audio (``backend_id`` ``"icom_serial"``), while Yaesu
+        and rigctld are separate classes outside this path entirely.
+        """
+        reason = event.reason
+        if reason == "rx_resumed":
+            task = self._audio_silence_repair_task
+            if task is None or task.done():
+                self._audio_silence_repair_attempts = 0
+                self._audio_silence_repair_episode_epoch = self._civ_epoch
+                heartbeat = self._silence_repair_rx_heartbeat()
+                self._audio_silence_repair_episode_start_heartbeat = heartbeat
+                self._audio_silence_repair_baseline_heartbeat = heartbeat
+                self._audio_silence_repair_teardown_completed = None
+            return
+        if reason != "rx_silent":
+            return
+        if self.backend_id != "rigplane":
+            return
+        task = self._audio_silence_repair_task
+        if task is not None and not task.done():
+            return
+        heartbeat = self._silence_repair_rx_heartbeat()
+        frames_since_settled = (
+            heartbeat is not None
+            and heartbeat != self._audio_silence_repair_baseline_heartbeat
+        )
+        epoch_moved = self._civ_epoch != self._audio_silence_repair_episode_epoch
+        if (
+            self._audio_silence_repair_attempts == 0
+            or frames_since_settled
+            or epoch_moved
+        ):
+            self._audio_silence_repair_attempts = 0
+            self._audio_silence_repair_episode_epoch = self._civ_epoch
+            self._audio_silence_repair_episode_start_heartbeat = heartbeat
+            self._audio_silence_repair_baseline_heartbeat = heartbeat
+        if self._silence_repair_budget_spent():
+            return
+        if not self._silence_repair_preconditions_ok(
+            self._civ_epoch,
+            self._owner_stop_epoch,
+        ):
+            return
+        self._audio_silence_repair_task = asyncio.get_running_loop().create_task(
+            self._run_audio_silence_repair(
+                civ_epoch=self._civ_epoch,
+                owner_stop_epoch=self._owner_stop_epoch,
+            ),
+            name="audio-silence-repair",
+        )
+
+    def _silence_repair_rx_heartbeat(self) -> float | None:
+        """Bus RX heartbeat: monotonic stamp of the last arrived RX frame.
+
+        The same observable ``AudioSession._check_liveness_locked`` reads
+        (``AudioBus.last_rx_frame_monotonic``); None when no frame ever
+        arrived or the session is gone.
+        """
+        session = self._audio_session
+        if session is None:
+            return None
+        return session._bus.last_rx_frame_monotonic
+
+    def _silence_repair_silence_over(self) -> bool:
+        """RX frames resumed and are still flowing: stop without teardown.
+
+        Newer than the episode start is not enough — one buffered
+        pre-death frame landing mid-task, or the teardown's own
+        jitter-buffer flush, must not stop the repair. Only a heartbeat
+        that is both newer than the last teardown completion and fresher
+        than the session's own silence definition
+        (``RX_LIVENESS_TIMEOUT_S``, the same threshold
+        ``AudioSession._check_liveness_locked`` applies) proves audio
+        really flows again.
+        """
+        from rigplane.audio.session import RX_LIVENESS_TIMEOUT_S
+
+        heartbeat = self._silence_repair_rx_heartbeat()
+        if heartbeat is None:
+            return False
+        reference = self._audio_silence_repair_episode_start_heartbeat
+        completed = self._audio_silence_repair_teardown_completed
+        if completed is not None and (reference is None or completed > reference):
+            reference = completed
+        if reference is None or heartbeat <= reference:
+            return False
+        return time.monotonic() - heartbeat < RX_LIVENESS_TIMEOUT_S
+
+    def _silence_repair_preconditions_ok(
+        self, civ_epoch: int, owner_stop_epoch: int
+    ) -> bool:
+        """Whether the silence repair may (still) run for a trigger episode.
+
+        RX demand must still be held, the radio must be CONNECTED (not
+        RECONNECTING or mid soft-reconnect), the LAN identity hold must not
+        own the link, and the CI-V / owner-stop epochs must still name the
+        trigger generation — any reconnect or owner stop since then aborts.
+        """
+        session = self._audio_session
+        return bool(
+            session is not None
+            and session.rx_demand > 0
+            and self._conn_state is RadioConnectionState.CONNECTED
+            and not self._lan_identity_phase_owns_open_link()
+            and self._civ_epoch == civ_epoch
+            and self._owner_stop_epoch == owner_stop_epoch
+        )
+
+    def _silence_repair_budget_spent(self) -> bool:
+        """This silence episode already used every repair attempt."""
+        attempts = self._audio_silence_repair_attempts
+        return attempts >= self._LAN_AUDIO_SILENCE_REPAIR_ATTEMPTS
+
+    def _silence_repair_backoff_s(self) -> float:
+        """Backoff before the next retry (1 s, then 2 s)."""
+        backoff = self._LAN_AUDIO_SILENCE_REPAIR_BACKOFF_S
+        step = min(self._audio_silence_repair_attempts - 1, len(backoff) - 1)
+        return backoff[step]
+
+    async def _run_audio_silence_repair(
+        self, *, civ_epoch: int, owner_stop_epoch: int
+    ) -> None:
+        """Rebuild the LAN audio transport for one ``rx_silent`` episode.
+
+        Up to ``_LAN_AUDIO_SILENCE_REPAIR_ATTEMPTS`` teardown → ensure →
+        reestablish rounds (the phase-1 positive-control path, serialized on
+        ``_audio_ensure_lock`` inside ``_ensure_audio_transport``), with the
+        ``_LAN_AUDIO_SILENCE_REPAIR_BACKOFF_S`` sleeps between rounds. Every
+        precondition is re-checked after each await. Every round consumes
+        one attempt. Re-establishing demand does NOT reset the budget:
+        only real RX frames (or a new CI-V epoch) close the episode, so a
+        leg that re-arms yet stays frameless
+        consumes the shared budget and reports FAILED once through
+        ``_on_audio_recovery`` instead of looping with a fresh budget per
+        task. A successful final round observes frames for at most
+        ``RX_LIVENESS_TIMEOUT_S`` before reporting FAILED. Before every
+        round (after the backoff sleep) the task stops quietly when frames
+        have resumed and are still flowing: the
+        silence is over, nothing to tear down. Never raises — cancellation
+        from owner ``disconnect()`` propagates so the stop takes effect.
+        """
+        try:
+            while not self._silence_repair_budget_spent():
+                if self._audio_silence_repair_attempts:
+                    await asyncio.sleep(self._silence_repair_backoff_s())
+                if self._silence_repair_silence_over():
+                    return
+                if not self._silence_repair_preconditions_ok(
+                    civ_epoch,
+                    owner_stop_epoch,
+                ):
+                    return
+                try:
+                    await self._teardown_audio_transport()
+                    self._audio_silence_repair_teardown_completed = time.monotonic()
+                    if not self._silence_repair_preconditions_ok(
+                        civ_epoch,
+                        owner_stop_epoch,
+                    ):
+                        return
+                    await self._ensure_audio_transport()
+                    if not self._silence_repair_preconditions_ok(
+                        civ_epoch,
+                        owner_stop_epoch,
+                    ):
+                        return
+                    await self._audio_session.reestablish()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning(
+                        "audio-silence repair attempt failed",
+                        exc_info=True,
+                    )
+                    self._audio_silence_repair_attempts += 1
+                    continue
+                self._audio_silence_repair_attempts += 1
+                if self._silence_repair_budget_spent():
+                    from rigplane.audio.session import RX_LIVENESS_TIMEOUT_S
+
+                    deadline = time.monotonic() + RX_LIVENESS_TIMEOUT_S
+                    while self._silence_repair_preconditions_ok(
+                        civ_epoch, owner_stop_epoch
+                    ):
+                        if self._silence_repair_silence_over():
+                            return
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        await asyncio.sleep(min(0.05, remaining))
+                    else:
+                        return
+                break
+            if self._silence_repair_budget_spent():
+                if (
+                    not self._silence_repair_preconditions_ok(
+                        civ_epoch, owner_stop_epoch
+                    )
+                    or self._silence_repair_silence_over()
+                ):
+                    return
+                report = self._on_audio_recovery
+                if report is not None:
+                    try:
+                        report(AudioRecoveryState.FAILED)
+                    except Exception:
+                        logger.warning(
+                            "audio-silence repair FAILED report failed",
+                            exc_info=True,
+                        )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("audio-silence repair task failed", exc_info=True)
+        finally:
+            # Settle the episode baseline: frames that arrived while this
+            # task ran (e.g. one buffered pre-death frame) must not reopen
+            # the episode later — only post-task frames do.
+            self._audio_silence_repair_baseline_heartbeat = (
+                self._silence_repair_rx_heartbeat()
+            )
+            if self._audio_silence_repair_task is asyncio.current_task():
+                self._audio_silence_repair_task = None
 
     @property
     def profile(self) -> RadioProfile:
@@ -1489,26 +1837,60 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         async with self._lan_identity_connect_lock:
             if self.connected or self._lan_identity_phase_owns_open_link():
                 return
+            # The resident reconnect loop runs as ``_reconnect_task``; its own
+            # connect() keeps the escalation spacing, an owner connect resets it.
+            if asyncio.current_task() is not getattr(self, "_reconnect_task", None):
+                self._lan_identity_escalated_at = None
+            # A new connect starts a fresh audio-silence episode (MOR-3401):
+            # a repair budget exhausted on the old connection is forgotten.
+            self._audio_silence_repair_attempts = 0
+            self._audio_silence_repair_episode_epoch = None
+            self._audio_silence_repair_episode_start_heartbeat = None
+            self._audio_silence_repair_baseline_heartbeat = None
+            self._audio_silence_repair_teardown_completed = None
             self._reset_external_cat_session()
             checking = RadioIdentity(
                 status=RadioIdentityStatus.CHECKING, expected_model=self.model
             )
             self._connection_identity = checking
+            # Per-attempt owner-stop epoch, captured before any await: the
+            # tail below skips recovery when the owner tore the radio down
+            # mid-connect (an owner disconnect during _fetch_initial_state
+            # would otherwise recover against the torn-down radio).
+            owner_stop_epoch = self._owner_stop_epoch
             try:
                 await self._session_lifecycle.connect()
+                gate_accepted = True
                 if self._lan_identity_owned_epoch != self._civ_epoch or (
                     self._lan_identity_unanswered_for_current_epoch()
                     and not self._lan_identity_phase_owns_open_link()
                 ):
-                    if not await self._gate_lan_identity():
+                    gate_accepted = await self._gate_lan_identity()
+                if gate_accepted:
+                    if self._lan_identity_unanswered_for_current_epoch():
                         return
-                if self._lan_identity_unanswered_for_current_epoch():
-                    return
-                await self._finish_lan_identity_completion()
+                    await self._finish_lan_identity_completion()
             except BaseException:
                 if self._connection_identity is checking:
                     self._connection_identity = None
                 raise
+            # An owner connect re-establishes session audio demand that
+            # survived its teardown (MOR-3415). The resident reconnect loop
+            # is excluded — ``radio_reconnect.reconnect_loop`` runs the same
+            # recovery itself from its pre-teardown snapshot — via the same
+            # ``_reconnect_task`` identity test as the escalation reset
+            # above. Skipped when the owner stopped the radio mid-connect:
+            # the epoch captured above moved, and recovering then would run
+            # into the teardown and report a spurious FAILED.
+            if asyncio.current_task() is not getattr(self, "_reconnect_task", None):
+                audio_runtime = getattr(self, "_audio_runtime", None)
+                if (
+                    audio_runtime is not None
+                    and self._owner_stop_epoch == owner_stop_epoch
+                ):
+                    await self._recover_audio_after_connect(
+                        audio_runtime.capture_snapshot(), owner_stop_epoch
+                    )
 
     async def __aenter__(self) -> "CoreRadio":
         # Route through the lifecycle's guaranteed-release context manager so a
@@ -1538,7 +1920,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """
         # Keep the identity hold until teardown finishes; stop its reader first.
         self._cancel_lan_identity_reread()
+        # An owner stop supersedes any audio-silence repair still in flight
+        # (MOR-3401): cancel it first so a backoff sleep cannot fire another
+        # attempt while the teardown below runs.
+        repair_task = self._audio_silence_repair_task
+        self._audio_silence_repair_task = None
+        if repair_task is not None and not repair_task.done():
+            repair_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await repair_task
         await self._shutdown_managed_tx()
+        # Owner teardown stops the resident loops explicitly: during
+        # RECONNECTING after a failed attempt the lifecycle is already
+        # released and unclaimed, so the lifecycle disconnect below is a
+        # no-op and the CONNECTED-gated control-phase teardown never runs —
+        # without this the loop would log back in after the user left.
+        self._owner_stop_epoch += 1
+        self._lan_identity_escalated_at = None
+        self._control_phase._stop_watchdog()
+        self._control_phase._stop_reconnect()
+        if self._conn_state is RadioConnectionState.RECONNECTING:
+            # Make conn_state read DISCONNECTED when the lifecycle
+            # teardown below has nothing to release.
+            self._conn_state = RadioConnectionState.DISCONNECTED
         await self._session_lifecycle.disconnect()
         if self._conn_state == RadioConnectionState.CONNECTED:
             await self._control_phase.disconnect()
@@ -1579,13 +1983,19 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._pcm_tx_fmt = None
         self._pcm_rx_user_callback = None
         self._opus_rx_user_callback = None
-        if self._audio_transport is not None:
+        audio_t = self._audio_transport
+        if audio_t is not None:
             try:
                 await self._send_audio_open_close(open_stream=False)
             except Exception:
                 logger.debug("soft_disconnect: audio open/close failed", exc_info=True)
-            await self._audio_transport.disconnect()
-            self._audio_transport = None
+            # A queued ensure's entry teardown can empty the slot during the
+            # awaits above: disconnect the local, record its numbering, and
+            # clear the slot only if it still holds this transport.
+            await audio_t.disconnect()
+            self._audio_resume_seq = audio_t.send_seq
+            if self._audio_transport is audio_t:
+                self._audio_transport = None
 
         # Stop CI-V
         if self._civ_transport:
@@ -1597,6 +2007,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             await self._civ_runtime.stop_worker()
             await self._civ_runtime.stop_pump()
             await self._civ_transport.disconnect()
+            self._civ_resume_seq = self._civ_transport.send_seq
             self._civ_transport = None
 
         # Teardown has finished; retire its identity.
@@ -1629,6 +2040,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 logger.debug(
                     "force_cleanup_civ: transport disconnect failed", exc_info=True
                 )
+            self._civ_resume_seq = self._civ_transport.send_seq
             self._civ_transport = None
         ctrl_alive = bool(
             self._ctrl_transport
@@ -1732,7 +2144,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return b""
         try:
             resp = await self._execute_civ_raw(request, wait_response=True)
-        except (TimeoutError, asyncio.TimeoutError):
+        except (CommandRejectedError, TimeoutError, asyncio.TimeoutError):
+            # A refused 19 00 read counts as no answer: the hold's re-read
+            # loop (``_lan_identity_reread_loop``) retries on silence, and a
+            # ``CommandRejectedError`` escaping here would abandon the hold
+            # instead (its edge catches only ``Exception``).
             return None
         except (ConnectionError, OSError):
             return None
@@ -1850,6 +2266,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def _lan_identity_reread_loop(self) -> None:
         """Re-read on the same link at 1/2/4/8/15 s, fencing replaced epochs."""
         attempts = 0
+        hold_started = time.monotonic()
         try:
             while True:
                 backoff = self._LAN_IDENTITY_REREAD_BACKOFF_S
@@ -1861,6 +2278,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 attempts += 1
                 await asyncio.sleep(delay)
                 if not self._lan_identity_phase_owns_open_link():
+                    return
+                await self._nudge_lan_identity_stream(hold_started)
+                if (
+                    attempts == 1 or self._control_phase.renewal_unanswered()
+                ) and await self._escalate_lan_identity_hold_if_dead():
                     return
                 owned_epoch = self._lan_identity_owned_epoch
                 payload = await self._read_lan_identity_payload()
@@ -1894,6 +2316,69 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 exc_info=True,
             )
 
+    async def _nudge_lan_identity_stream(self, hold_started: float) -> None:
+        """Re-request the CI-V data stream while the hold has seen no payload.
+
+        The hold stops the data watchdog (``_gate_lan_identity``), so nothing
+        else sends OpenClose(open) while it owns the link; a radio that did
+        not restart its CI-V DATA stream after the soft reconnect stays
+        silent. ``_last_civ_data_received`` is stamped by the receive loop
+        on any payload and by ``soft_reconnect`` at the end of a CI-V
+        rebuild, before the gate starts the hold, so a stamp older than
+        ``hold_started`` means no payload has arrived within this hold.
+        """
+        last = self._last_civ_data_received
+        if last is not None and last >= hold_started:
+            return
+        try:
+            await self._send_open_close(open_stream=True)
+        except Exception:
+            logger.debug(
+                "rigplane (%s): identity hold stream re-request failed",
+                self.model,
+                exc_info=True,
+            )
+
+    async def _escalate_lan_identity_hold_if_dead(self) -> bool:
+        """Probe the held control session; request a re-login if it is dead.
+
+        True when the re-read must stop: recovery was requested, or while the
+        probe ran the hold was lost, the CI-V epoch moved or disconnect() ran.
+        A dead verdict within ``_LAN_IDENTITY_ESCALATION_SPACING_S`` of the
+        previous escalation keeps holding.
+        """
+        civ_epoch = self._civ_epoch
+        owner_stop_epoch = self._owner_stop_epoch
+        dead = await self._control_phase.probe_control_session()
+        if dead is None:
+            return False
+        if (
+            not self._lan_identity_phase_owns_open_link()
+            or self._civ_epoch != civ_epoch
+            or self._owner_stop_epoch != owner_stop_epoch
+        ):
+            return True
+        now = time.monotonic()
+        last = self._lan_identity_escalated_at
+        if last is not None and now - last < self._LAN_IDENTITY_ESCALATION_SPACING_S:
+            logger.info(
+                "rigplane (%s): control session dead (%s) during the identity "
+                "hold; last escalation %.0f s ago, still holding",
+                self.model,
+                dead,
+                now - last,
+            )
+            return False
+        self._lan_identity_escalated_at = now
+        logger.warning(
+            "rigplane (%s): control session dead (%s) during the identity hold; "
+            "requesting a re-login",
+            self.model,
+            dead,
+        )
+        self._civ_runtime.request_recovery_now(f"control session dead: {dead}")
+        return True
+
     async def _finish_lan_identity_completion(self) -> None:
         """Complete a held connect from a recorded acceptable answer."""
         epoch = self._lan_identity_answer_epoch
@@ -1901,6 +2386,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return
         self._lan_identity_completed_epoch = epoch
         self._cancel_lan_identity_reread()
+        self._lan_identity_escalated_at = None
         revalidate_origin = self._lan_identity_revalidate_origin
         self._lan_identity_revalidate_origin = False
         # The acceptable answer restarts the data watchdog exactly once.
@@ -1918,6 +2404,66 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if self._civ_epoch != epoch:
             return
         await self._arm_managed_tx()
+        await self._run_hard_reconnect_deferred_audio(epoch)
+
+    async def _recover_audio_after_connect(
+        self, snapshot: object, owner_stop_epoch: int
+    ) -> None:
+        """Recover audio after ``connect()`` returned: now, or past the hold.
+
+        ``radio_reconnect.reconnect_loop`` and the owner-connect tail of
+        ``connect()`` call this with the snapshot they captured. connect()
+        can return while the LAN identity hold owns the link: recovering
+        then would run start_rx into ``_check_connected``'s hold refusal
+        and report FAILED, so the recovery is stashed with the epoch and
+        owner-stop counter instead; the hold's completion
+        (``_finish_lan_identity_completion``) runs it once and drops it
+        when the epoch changed or the owner stopped the radio.
+        """
+        if not (self._auto_recover_audio and snapshot is not None):
+            return
+        if self._lan_identity_unanswered_for_current_epoch():
+            self._hard_reconnect_deferred_audio = (
+                self._audio_runtime,
+                snapshot,
+                self._civ_epoch,
+                owner_stop_epoch,
+            )
+        else:
+            await self._audio_runtime.recover(snapshot)
+
+    async def _run_hard_reconnect_deferred_audio(self, epoch: int) -> None:
+        """Recover audio a held hard reconnect deferred, exactly once.
+
+        ``radio_reconnect.reconnect_loop`` stashed it because ``connect()``
+        had returned while the identity hold refused commands. It runs only
+        when the hold completed on the epoch the stash recorded with no
+        owner stop since; anything else drops it. The stash's epoch is
+        compared against the live ``_civ_epoch``, not only the completion's
+        ``epoch`` argument (captured before the ``_arm_managed_tx`` await,
+        during which the epoch can move), immediately before ``recover()``
+        with no await in between.
+        """
+        tail = self._hard_reconnect_deferred_audio
+        if tail is None:
+            return
+        self._hard_reconnect_deferred_audio = None
+        audio_runtime, audio_snapshot, tail_epoch, owner_stop_epoch = tail
+        if (
+            tail_epoch != epoch
+            or self._civ_epoch != tail_epoch
+            or self._owner_stop_epoch != owner_stop_epoch
+        ):
+            return
+        try:
+            await audio_runtime.recover(audio_snapshot)
+        except Exception:
+            # recover() reports its own failures through on_audio_recovery;
+            # this keeps a raising callback from failing the hold completion
+            # it runs inside.
+            logger.warning(
+                "hard-reconnect deferred audio recovery failed", exc_info=True
+            )
 
     async def _send_open_close(self, *, open_stream: bool) -> None:
         """Delegate to control-phase runtime (for soft_disconnect, _force_cleanup_civ, etc.)."""
@@ -4246,18 +4792,21 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             raise CommandError(f"Radio rejected split {'on' if on else 'off'}")
         self._last_split = on
 
-    async def get_split(self) -> bool:
+    async def get_split(self, *, strict: bool = False) -> bool:
         """Read split mode state (CI-V ``0x0F``).
 
         Returns ``True`` when split is enabled, ``False`` otherwise.  On a
         radio that does not respond, returns the cached last-known value
-        (defaulting to ``False``).
+        (defaulting to ``False``) — unless ``strict`` is set, in which case
+        a failed or empty read raises instead of returning the mirror.
         """
         self._check_connected()
         civ = self._commands.get_split(to_addr=self._radio_addr)
         try:
             resp = await self._send_civ_expect(civ, label="get_split")
         except (CommandError, TimeoutError):
+            if strict:
+                raise
             if self._last_split is not None:
                 logger.debug(
                     "get_split: no response, returning cached %s", self._last_split
@@ -4270,6 +4819,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             on = resp.data[0] == 0x01
             self._last_split = on
             return on
+        if strict:
+            raise CommandError("Radio returned empty split response")
         if self._last_split is not None:
             return self._last_split
         return False
@@ -4470,11 +5021,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             self._commands.set_quick_dual_watch(enabled, to_addr=self._radio_addr)
         )
 
-    async def get_attenuator_level(self, receiver: int = RECEIVER_MAIN) -> int:
+    async def get_attenuator_level(
+        self, receiver: int = RECEIVER_MAIN, *, strict: bool = False
+    ) -> int:
         """Read attenuator level in dB (Command29-aware).
 
         Args:
             receiver: RECEIVER_MAIN (0) or RECEIVER_SUB (1).
+            strict: re-raise on timeout and raise on an empty reply instead
+                of returning the setter-written ``_attenuator_state`` mirror.
         """
         self._check_connected()
         self._require_capability("attenuator", operation="get_attenuator_level")
@@ -4488,21 +5043,25 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         try:
             resp = await self._send_civ_expect(civ, label="get_attenuator_level")
+        except TimeoutError:
+            if strict:
+                raise
+        else:
             if resp.data:
                 raw = resp.data[0]
                 val = ((raw >> 4) & 0x0F) * 10 + (raw & 0x0F)
                 self._attenuator_state = val != 0
                 return val
-        except TimeoutError:
-            pass
+            if strict:
+                raise CommandError("Radio returned empty attenuator response")
 
         if self._attenuator_state is not None:
             return 18 if self._attenuator_state else 0
         raise CommandError("Radio returned empty attenuator response")
 
-    async def get_attenuator(self, receiver: int = 0) -> bool:
+    async def get_attenuator(self, receiver: int = 0, *, strict: bool = False) -> bool:
         """Read attenuator state (compat wrapper)."""
-        return (await self.get_attenuator_level(receiver)) > 0
+        return (await self.get_attenuator_level(receiver, strict=strict)) > 0
 
     def project_attenuator_observation_value(self, db: int) -> int:
         return db
@@ -4593,11 +5152,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             )
         await self.set_attenuator_level(non_zero[0], receiver=receiver)
 
-    async def get_preamp(self, receiver: int = RECEIVER_MAIN) -> int:
+    async def get_preamp(
+        self, receiver: int = RECEIVER_MAIN, *, strict: bool = False
+    ) -> int:
         """Read preamp level (0=off, 1=PREAMP1, 2=PREAMP2) (Command29-aware).
 
         Args:
             receiver: RECEIVER_MAIN (0) or RECEIVER_SUB (1).
+            strict: re-raise on timeout and raise on an empty reply instead
+                of returning the setter-written ``_preamp_level`` mirror.
         """
         self._check_connected()
         self._require_capability("preamp", operation="get_preamp")
@@ -4609,12 +5172,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         try:
             resp = await self._send_civ_expect(civ, label="get_preamp")
+        except TimeoutError:
+            if strict:
+                raise
+        else:
             if resp.data:
                 raw = resp.data[0]
                 self._preamp_level = ((raw >> 4) & 0x0F) * 10 + (raw & 0x0F)
                 return self._preamp_level
-        except TimeoutError:
-            pass
+            if strict:
+                raise CommandError("Radio returned empty preamp response")
 
         if self._preamp_level is not None:
             return self._preamp_level

@@ -1,0 +1,82 @@
+name: Platform subset
+
+on:
+  schedule:
+    # Daily 01:30 UTC.
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Which platform legs to run
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - macos
+      pytest_k:
+        description: Optional pytest -k expression
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-subset-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: Platform subset / macos
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos'
+    runs-on: [self-hosted, macOS, ARM64, platform]
+    timeout-minutes: 40
+    env:
+      UV_PYTHON: "3.11"
+    steps:
+      - name: Check out
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Python dependencies
+        run: uv sync --all-extras
+
+      - name: Toolchain probe
+        run: |
+          uv run python --version
+          uv --version
+          uv run python -c "import platform; print(platform.platform()); print(platform.machine())"
+
+      # The repository is public, so the job log is public: print only a line
+      # count, not registry contents (which include the console user name).
+      - name: Live probe (ioreg)
+        run: |
+          ioreg -l > "$RUNNER_TEMP/ioreg.txt"
+          echo "ioreg -l lines: $(wc -l < "$RUNNER_TEMP/ioreg.txt")"
+
+      - name: Run platform tests
+        env:
+          PYTEST_K: ${{ inputs.pytest_k }}
+        run: |
+          set -euo pipefail
+          args=(-p no:cacheprovider --timeout 300 -n 2 --junitxml "$RUNNER_TEMP/platform-subset/junit.xml")
+          if [ -n "${PYTEST_K:-}" ]; then args+=(-k "$PYTEST_K"); fi
+          uv run pytest "${args[@]}" \
+            tests/test_usb_audio_*.py \
+            tests/test_transport.py \
+            tests/test_serial_open.py \
+            tests/test_platformdirs_migration.py \
+            tests/test_cli.py \
+            tests/test_discovery_responder.py
+
+      - name: Upload JUnit XML
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: platform-subset-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/platform-subset/junit.xml
+          if-no-files-found: warn
+          retention-days: 14

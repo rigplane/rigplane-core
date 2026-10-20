@@ -31,6 +31,7 @@ import type {
   WsChannel,
 } from '$lib/transport/ws-client';
 import type { PresentationResourceDriver, PresentationResourceHost } from './resource-host';
+import type { TraceReceipt } from './scope-render-trace';
 
 export type { ScopeFrame };
 
@@ -90,6 +91,7 @@ export class ScopeController {
   private _hardwareSubscribers = new Map<number, FrameHandler>();
   private _healthSubscribers = new Map<number, HealthHandler>();
   private _evidenceSubscribers = new Map<number, EvidenceHandler>();
+  private _traceObservers: Map<number, (receipt: TraceReceipt) => void> | null = null;
   private _nextId = 0;
   private _bindings = new Map<AudioFftHandle, ChannelBinding>();
   private _activeHandle: AudioFftHandle | null = null;
@@ -99,6 +101,7 @@ export class ScopeController {
   private _authorityRevision = 0;
   private _frameAuthority: ScopeFrameCanonicalAuthority | null = null;
   private _frameEnvelope: QualifiedScopeFrameEnvelope | null = null;
+  private _frameExpiryTimer: TimerHandle | null = null;
   private _acceptedSequence = 0;
   private _arrivals: Record<ScopeSource, Readonly<{
     receivedAt: number; acceptedSequence: number;
@@ -149,6 +152,24 @@ export class ScopeController {
     return () => { this._hardwareSubscribers.delete(id); };
   }
 
+  /** Optional diagnostic observation; never acquires a channel or changes frame subscribers. */
+  subscribeTraceReceipt(observer: (receipt: TraceReceipt) => void): () => void {
+    const id = this._nextId++;
+    (this._traceObservers ??= new Map()).set(id, observer);
+    return () => {
+      this._traceObservers?.delete(id);
+      if (this._traceObservers?.size === 0) this._traceObservers = null;
+    };
+  }
+
+  private _publishTraceReceipt(receipt: TraceReceipt): void {
+    const observers = this._traceObservers;
+    if (!observers) return;
+    for (const observer of [...observers.values()]) {
+      try { observer(receipt); } catch { /* Diagnostics never interrupt delivery. */ }
+    }
+  }
+
   snapshotHealth(source: ScopeSource): ScopeHealth {
     return Object.freeze({ ...this._readHealth(source) });
   }
@@ -179,7 +200,7 @@ export class ScopeController {
       this._authorityRevision += 1;
     }
     this._frameAuthority = normalized;
-    this._frameEnvelope = null;
+    this._setFrameEnvelope(null);
     this._notifyEvidence();
     if (normalized?.receiver != null && normalized.providerGeneration != null) {
       if (normalized.source === 'hardware') {
@@ -284,12 +305,15 @@ export class ScopeController {
     try {
       binding.unsubscribeBinary = channel.onBinary((buf) => {
         if (!current() || this._readHealth(source).transport !== 'connected') return;
+        const callbackAt = this._traceObservers ? this._timing.now() : null;
         const frame = parseScopeFrame(buf);
         if (!frame) {
+          if (callbackAt !== null) this._publishTraceReceipt({ kind: 'rejected', source,
+            transportEpoch: channel.sessionEpoch, callbackAt, reason: 'parse' });
           this._invalidateSource(source, authorityRevision === this._authorityRevision);
           return;
         }
-        if (this._acceptFrame(source, channel, authorityRevision, frame, buf)) {
+        if (this._acceptFrame(source, channel, authorityRevision, frame, buf, callbackAt)) {
           const subscribers = source === 'hardware' ? this._hardwareSubscribers : this._subscribers;
           for (const subscriber of subscribers.values()) subscriber(frame);
         }
@@ -412,14 +436,20 @@ export class ScopeController {
     authorityRevision: number,
     frame: ScopeFrame,
     buffer: ArrayBuffer,
+    callbackAt: number | null,
   ): boolean {
     const receivedAt = this._timing.now();
     const transportEpoch = channel.sessionEpoch;
     if (!Number.isFinite(receivedAt) || receivedAt < 0) {
+      if (callbackAt !== null) this._publishTraceReceipt({ kind: 'rejected', source,
+        transportEpoch, callbackAt, reason: 'clock' });
       this._invalidateSource(source, authorityRevision === this._authorityRevision);
       return false;
     }
     const acceptedSequence = ++this._acceptedSequence;
+    if (callbackAt !== null) this._publishTraceReceipt({ kind: 'accepted', frame,
+      token: { source, transportEpoch, wireSequence: new DataView(buffer).getUint16(11, true), acceptedSequence },
+      callbackAt, acceptedAt: receivedAt });
     const arrival = Object.freeze({ receivedAt, acceptedSequence });
     this._arrivals[source] = arrival;
     if (source === 'hardware') this.scopeFrame = frame;
@@ -431,28 +461,53 @@ export class ScopeController {
     const authority = this._frameAuthority;
     if (authorityRevision !== this._authorityRevision || authority?.source !== source) return true;
     if (!Number.isSafeInteger(transportEpoch) || transportEpoch <= 0) {
-      this._frameEnvelope = null;
+      this._setFrameEnvelope(null);
       this._notifyEvidence();
       return true;
     }
     if ((authority.receiver !== 0 && authority.receiver !== 1)
       || !Number.isSafeInteger(authority.providerGeneration)
       || (authority.providerGeneration as number) < 0) {
-      this._frameEnvelope = null;
+      this._setFrameEnvelope(null);
       this._notifyEvidence();
       return true;
     }
     const view = new DataView(buffer);
-    this._frameEnvelope = qualifyScopeFrameEnvelope(frame, {
+    const identity = {
       source,
       receiver: authority.receiver,
       providerGeneration: authority.providerGeneration as number,
       transportEpoch,
       receivedAt,
       acceptedSequence,
-    }, view.getUint16(12, true));
+    };
+    const wireSequence = view.getUint16(11, true);
+    const envelope = qualifyScopeFrameEnvelope(frame, identity, wireSequence);
+    if (!envelope && frame.pixels.length >= 2 && frame.endFreq > frame.startFreq
+      && qualifyScopeFrameEnvelope(frame, {
+        ...identity, receiver: authority.receiver === 0 ? 1 : 0,
+      }, wireSequence)) return true;
+    this._setFrameEnvelope(envelope);
     this._notifyEvidence();
     return true;
+  }
+
+  private _setFrameEnvelope(envelope: QualifiedScopeFrameEnvelope | null): void {
+    if (this._frameExpiryTimer !== null) this._timing.clearTimeout(this._frameExpiryTimer);
+    this._frameExpiryTimer = null;
+    this._frameEnvelope = envelope;
+    if (!envelope) return;
+    const wake = () => {
+      if (this._frameEnvelope !== envelope) return;
+      const age = this._timing.now() - envelope.receivedAt;
+      if (!Number.isFinite(age) || age < 0 || age >= SCOPE_FRAME_SILENCE_MS) {
+        this._frameExpiryTimer = null;
+        this._notifyEvidence();
+        return;
+      }
+      this._frameExpiryTimer = this._timing.setTimeout(wake, SCOPE_FRAME_SILENCE_MS - age);
+    };
+    this._frameExpiryTimer = this._timing.setTimeout(wake, SCOPE_FRAME_SILENCE_MS);
   }
 
   private _armExpiry(
@@ -469,10 +524,6 @@ export class ScopeController {
         if (source === 'hardware') this.scopeFrame = null;
         else this.audioScopeFrame = null;
         this._setHealth(source, { ...this._readHealth(source), frameSeen: false });
-        if (this._frameEnvelope?.source === source
-          && this._frameEnvelope.acceptedSequence === arrival.acceptedSequence) {
-          this._notifyEvidence();
-        }
         return;
       }
       this._expiryTimers[source] = this._timing.setTimeout(
@@ -493,7 +544,7 @@ export class ScopeController {
     this._arrivals[source] = null;
     if (source === 'hardware') this.scopeFrame = null;
     else this.audioScopeFrame = null;
-    if (clearEnvelope && this._frameEnvelope?.source === source) this._frameEnvelope = null;
+    if (clearEnvelope && this._frameEnvelope?.source === source) this._setFrameEnvelope(null);
     const current = this._readHealth(source);
     if (current.frameSeen) this._setHealth(source, { ...current, frameSeen: false });
     this._notifyEvidence();

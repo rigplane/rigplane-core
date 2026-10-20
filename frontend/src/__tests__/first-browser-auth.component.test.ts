@@ -66,7 +66,9 @@ beforeEach(() => {
     expect(init.redirect).toBe('error');
     expect(new Headers(init.headers).has('Authorization')).toBe(false);
     if (url === '/api/v1/controller') {
-      expect(init.method ?? 'GET').toBe('GET');
+      if (init.method === 'POST') {
+        return response(403, { error: 'remote_disabled' });
+      }
       return response(200, { protocol_version: 1, mode: 'local' });
     }
     return response(200, url.endsWith('/capabilities') ? caps : { version: 'test' });
@@ -89,7 +91,7 @@ describe('credential-free App and real runtime startup', () => {
     startApp();
     await settle();
     expect(promptMock).not.toHaveBeenCalled();
-    expect(requests).toEqual(['/api/v1/info', '/api/v1/controller']);
+    expect(requests).toEqual(['/api/v1/info', '/api/v1/controller', '/api/v1/controller']);
     expect(instances).toHaveLength(1);
     const socket = instances[0];
     expect(new URL(socket.url, 'http://localhost').searchParams.has('token')).toBe(false);

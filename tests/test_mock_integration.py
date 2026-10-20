@@ -7,11 +7,18 @@ local mock server, verifying the connection lifecycle and CI-V commands end-to-e
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
-from rigplane.exceptions import AuthenticationError, CommandError
+from rigplane import IC_7610_ADDR
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+from rigplane.core.state_store import FreshnessState
+from rigplane.exceptions import AuthenticationError, CommandError, CommandRejectedError
 from rigplane.radio import IcomRadio
+from rigplane.rigctld.contract import RigctldConfig
+from rigplane.rigctld.handler import RigctldHandler
+from rigplane.rigctld.protocol import parse_line
 from rigplane.types import Mode
 
 from _perf_helpers import fast_connect
@@ -101,9 +108,6 @@ class TestFrequency:
         self, connected_radio: IcomRadio, mock_radio: MockIcomRadio
     ) -> None:
         await connected_radio.set_freq(7_074_000)
-        await asyncio.sleep(
-            0.05
-        )  # fire-and-forget: give mock time to receive and process UDP
         assert mock_radio._frequency == 7_074_000
         freq = await connected_radio.get_freq()
         assert freq == 7_074_000
@@ -287,6 +291,57 @@ class TestKeepalive:
 
 
 # ---------------------------------------------------------------------------
+# Refused reads (MOR-3297)
+# ---------------------------------------------------------------------------
+
+
+class TestRefusedReadsDoNotBlockTheQueue:
+    async def test_refused_menu_reads_settle_fast_and_do_not_delay_set_freq(
+        self, mock_radio: MockIcomRadio
+    ) -> None:
+        """Six NAKed menu reads must not make the queued set_freq wait.
+
+        ``_civ_rx.py: CivRuntime._execute_civ_raw`` waited out the whole
+        ``_civ_get_timeout`` window per refused read (a NAK parked in the
+        tracker's orphan backlog), so a set queued behind six refusals at
+        ``Priority.NORMAL`` reached the wire seconds late. The frames read
+        menu item 0x99 0x99 via 0x1A 05 — an item no Icom radio defines, so
+        ``MockIcomRadio._dispatch`` answers NAK (unknown command → NAK).
+        """
+        radio = IcomRadio(
+            host="127.0.0.1",
+            port=mock_radio.control_port,
+            username="testuser",
+            password="testpass",
+            model="IC-7610",
+        )
+        try:
+            with fast_connect():
+                await radio.connect()
+            assert radio.connected
+            frames = [
+                build_civ_frame(
+                    IC_7610_ADDR, CONTROLLER_ADDR, 0x1A, sub=0x05, data=b"\x99\x99"
+                )
+                for _ in range(6)
+            ]
+            started = time.monotonic()
+            results = await asyncio.gather(
+                *(radio._send_civ_raw(frame) for frame in frames),
+                radio.set_freq(14_074_000),
+                return_exceptions=True,
+            )
+            elapsed = time.monotonic() - started
+        finally:
+            await radio.disconnect()
+
+        reads, set_result = results[:6], results[6]
+        assert all(isinstance(result, CommandRejectedError) for result in reads), reads
+        assert set_result is None, set_result
+        assert elapsed < 2.0, f"elapsed={elapsed:.3f}s"
+
+
+# ---------------------------------------------------------------------------
 # Disconnect
 # ---------------------------------------------------------------------------
 
@@ -302,3 +357,59 @@ class TestDisconnect:
     async def test_double_disconnect_is_safe(self, connected_radio: IcomRadio) -> None:
         await connected_radio.disconnect()
         await connected_radio.disconnect()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# rigctld ingress must not launder the RadioState mirror into the store
+# ---------------------------------------------------------------------------
+
+
+class TestRigctldMirrorFallback:
+    async def test_get_freq_does_not_write_stale_mirror_into_state_store(
+        self, connected_radio: IcomRadio, mock_radio: MockIcomRadio
+    ) -> None:
+        """A rigctld ``f`` served from the mirror leaves the store untouched.
+
+        The canonical freq observation is driven STALE (CI-V starved via
+        ``stall_for``, then aged past its max_age), so the ``f`` below is
+        answered from the ``RadioState`` mirror like before — but the
+        mirror value must not be re-stamped into the store as a fresh
+        ``state_poller`` observation.
+        """
+        await connected_radio.set_freq(7_074_000)
+        assert await connected_radio.get_freq() == 7_074_000
+        # The CI-V read populated both the mirror and the canonical store.
+        assert connected_radio.radio_state.main.freq == 7_074_000
+        store = connected_radio.state_store
+        freq_fields = [
+            field
+            for field in store.snapshot().fields
+            if str(field.path).endswith("freq_mode.freq_hz")
+        ]
+        assert freq_fields
+
+        mock_radio.stall_for(2.0)
+        store.mark_stale_due(now=time.monotonic() + 60.0)
+        stale_before = [
+            field
+            for field in store.snapshot().fields
+            if str(field.path).endswith("freq_mode.freq_hz")
+        ]
+        assert all(
+            field.freshness is not FreshnessState.FRESH for field in stale_before
+        )
+
+        handler = RigctldHandler(connected_radio, RigctldConfig())
+        resp = await handler.execute(parse_line(b"f"))
+
+        assert resp.ok
+        assert resp.values == ["7074000"]
+        after = [
+            field
+            for field in store.snapshot().fields
+            if str(field.path).endswith("freq_mode.freq_hz")
+        ]
+        assert after
+        for field in after:
+            assert field.freshness is FreshnessState.STALE
+            assert field.source.source != "state_poller"

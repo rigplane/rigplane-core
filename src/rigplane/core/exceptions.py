@@ -3,11 +3,13 @@
 __all__ = [
     "RigplaneError",
     "ConnectionError",
+    "RadioSessionHeldError",
     "AuthenticationError",
     "CommandError",
     "BackgroundSendDropped",
     "CommandRejectedError",
     "TimeoutError",
+    "DiscoveryTimeout",
     "AudioError",
     "AudioCodecBackendError",
     "AudioFormatError",
@@ -21,6 +23,16 @@ class RigplaneError(Exception):
 
 class ConnectionError(RigplaneError):
     """Raised when a connection to the radio fails or is lost."""
+
+
+class RadioSessionHeldError(ConnectionError):
+    """Raised only by the start-up live-holder stop in
+    ``CoreRadioSessionLifecycle._first_connect_busy_pass``.
+
+    A subclass of :class:`ConnectionError`, so every existing ``except``
+    still catches it; the CLI maps it to exit code 3 (a deliberate stop,
+    not a crash).
+    """
 
 
 class AuthenticationError(RigplaneError):
@@ -48,6 +60,17 @@ class CommandRejectedError(CommandError):
 
 class TimeoutError(RigplaneError):
     """Raised when an operation times out."""
+
+
+class DiscoveryTimeout(TimeoutError):
+    """Discovery got no answer.
+
+    Raised by ``IcomTransport._discover`` when the radio answers none of
+    the "Are You There" probes.  A subclass of :class:`TimeoutError`, so
+    every existing ``except TimeoutError`` handler and message assertion
+    behaves exactly as before; the start-up busy loop catches exactly
+    this subclass without parsing the message.
+    """
 
 
 class AudioError(RigplaneError):

@@ -20,6 +20,7 @@ from rigplane.core.auth import (
 )
 from ._connection_state import RadioConnectionState
 from rigplane.core.exceptions import AuthenticationError, ConnectionError, TimeoutError
+from ._audio_recovery import AudioRecoveryState
 from .startup_checks import wait_for_radio_startup_ready
 from rigplane.core.transport import ConnectionState, IcomTransport
 from rigplane.core.types import AudioCodec
@@ -55,6 +56,19 @@ _STEREO_CODECS = (
 
 class _DataPortDiscoveryCooldown(Exception):
     """Recoverable startup failure after control auth advertised a CI-V port."""
+
+
+class _StatusBusyReject(Exception):
+    """Status-stage busy reject (civ_port=0).
+
+    Same-computer 0xFFFFFFFF on the profile-selected stereo codec path
+    (the path that used to enter the inline conninfo busy-retry loop),
+    or foreign-holder 0xFDFFFFFF on any codec path. Raised by
+    ``_connect_once`` so ``connect_attempt`` can surface it as the
+    transient ``AttemptOutcome.SESSION_BUSY_REJECT``: the lifecycle then
+    releases the busy-issued token and retries with a fresh login
+    instead of re-sending conninfo on the rejected token.
+    """
 
 
 def _session_reject_hint(error: int) -> str:
@@ -107,11 +121,51 @@ class ControlPhaseRuntime:
     # owns CONNECTING↔COOLDOWN (it RELEASES before each cooldown wait).
     _STATUS_RETRY_PAUSE = 10.0
     _STATUS_REJECT_COOLDOWN = 30.0
+    # Cap for first-connect busy-hold retries after a busy reject (status
+    # error=0xFFFFFFFF: the radio still holds a dead client's session).
+    # Sizing bench (MOR-3391, 2026-10-12): a hold bounded at
+    # (70.7, 85.9] s with separate client ports; a token issued during
+    # the hold is unusable afterwards, so each reject releases
+    # (token-remove) and the retry logs in again. This constant now sizes
+    # the lifecycle's fresh-login loop (``CoreRadioSessionLifecycle``
+    # first-connect busy policy, wired in ``CoreRadio``); exhausting it
+    # raises that loop's resident never-ready ConnectionError.
+    STARTUP_BUSY_HOLD_BUDGET_S: float = 600.0
+    # Live-holder stop for first-connect busy retries (MOR-3391 part 1b):
+    # the dead client's last packet precedes our first busy reject and its
+    # hold ends at most 85.9 s after that packet, so a busy reject on an
+    # attempt that STARTS at or after first-busy + this threshold proves a
+    # LIVE session holds the radio — retrying would fight it. Sizing bench
+    # (2026-10-12): (70.7, 85.9] s with separate client ports; about 71 s
+    # in proxy-recorded windows.
+    STARTUP_BUSY_LIVE_HOLDER_AFTER_S: float = 90.0
+    # Unanswered-first-discovery retries: the bench saw 1-in-3 restarts answer no first discovery.
+    STARTUP_DISCOVERY_RETRIES: int = 2
+    # Token-renewal probe of a held session (``probe_control_session``). An
+    # answer counts only with reply flag 0x02 at 0x14, request type 0x05 and
+    # our token at 0x1C; the u32 at ``_RENEWAL_RESPONSE_OFFSET`` is the verdict.
+    _RENEWAL_PROBE_TIMEOUT_S = 1.0
+    _RENEWAL_PROBE_ATTEMPTS = 3
+    _RENEWAL_RESPONSE_OFFSET = 0x30
+    _RENEWAL_OK = 0x00000000
+    _RENEWAL_REJECT = 0xFFFFFFFF
+    # Soft-reconnect audio-rebuild retry bound: a failed
+    # ``_ensure_audio_transport`` re-arm is retried at most this many attempts
+    # with ``_SOFT_AUDIO_REBUILD_BACKOFF_S`` between them, and only while
+    # recovery is owed (the snapshot holds audio demand and
+    # ``_auto_recover_audio`` is set) and the CI-V / owner-stop epochs,
+    # re-checked immediately before every attempt, say this session still
+    # owns the radio.
+    _SOFT_AUDIO_REBUILD_ATTEMPTS = 3
+    _SOFT_AUDIO_REBUILD_BACKOFF_S = 0.1
 
     def __init__(self, host: ControlPhaseHost) -> None:
         self._host = host
         # A held identity defers this audio snapshot until its late answer.
         self._deferred_retail: "tuple[object, object] | None" = None
+        self._renewal_waiter: asyncio.Future[bool] | None = None
+        self._renewal_sent_at: float | None = None
+        self._renewal_answered_at: float | None = None
 
     def _resolve_local_bind_host(self) -> str:
         """Resolve the routed local interface IP used to reach the radio."""
@@ -148,6 +202,8 @@ class ControlPhaseRuntime:
         """Open connection to the radio and authenticate."""
         h = self._host
         h._conn_state = RadioConnectionState.CONNECTING
+        h._civ_resume_seq = None
+        h._audio_resume_seq = None
         h._civ_stream_ready = False
         h._civ_recovering = False
         h._last_status_error = 0
@@ -158,6 +214,7 @@ class ControlPhaseRuntime:
         # first 0x90 from the queue.
         h._ctrl_transport._discard_data_packets = False
         h._ctrl_transport._conninfo_notice_callback = None
+        h._ctrl_transport._token_reply_callback = None
         local_bind_host = self._resolve_local_bind_host()
         h._local_bind_host = local_bind_host
 
@@ -222,10 +279,9 @@ class ControlPhaseRuntime:
         h._token = auth.token
         h._tok_request = auth.tok_request
         logger.info(
-            "Authenticated with %s:%d, token=0x%08X",
+            "Authenticated with %s:%d",
             h._host,
             h._port,
-            h._token,
         )
 
         await self._send_token_ack()
@@ -269,6 +325,14 @@ class ControlPhaseRuntime:
                 # Fail fast on immediate session rejection (error=0xFFFFFFFF).
                 # Stereo rejection: downgrade to mono and retry once (#797).
                 # Mono rejection: raise immediately.
+                # A foreign-holder reject (error=0xFDFFFFFF: another
+                # computer holds the radio's LAN session) is transient
+                # busy on every codec path — profile, global, explicit,
+                # or mono — never a codec question. Raise into the
+                # existing busy classification without fallback and
+                # without a conninfo retry on the busy-issued token.
+                if getattr(h, "_last_status_error", 0) == 0xFDFFFFFF:
+                    raise _StatusBusyReject("status busy reject (foreign holder)")
                 if getattr(h, "_last_status_error", 0) == 0xFFFFFFFF:
                     codec_source = h._audio_stream_contract.rx_codec_source
                     allow_stereo_fallback = (
@@ -307,6 +371,14 @@ class ControlPhaseRuntime:
                                 civ_port,
                             )
                             h._civ_port = civ_port
+                        elif getattr(h, "_last_status_error", 0) == 0xFDFFFFFF:
+                            # Foreign-holder reject after the fallback: a
+                            # transient busy, not proof mono failed. Keep
+                            # the once-performed mono selection untouched.
+                            raise _StatusBusyReject(
+                                "status busy reject (foreign holder) "
+                                "after stereo fallback"
+                            )
                         elif getattr(h, "_last_status_error", 0) == 0xFFFFFFFF:
                             # Mono also rejected outright — no busy-retry will help.
                             self._close_pending_sockets()
@@ -323,6 +395,15 @@ class ControlPhaseRuntime:
                         # warming up after fallback. Fall through to the
                         # busy-retry loop with the now-mono codec.
                     elif profile_selected_stereo:
+                        if not _reconnect:
+                            # First connect: the busy-issued token is unusable
+                            # after the hold (MOR-3391 bench 2026-10-12), so
+                            # never re-send conninfo on it — surface the
+                            # transient busy reject and let the lifecycle
+                            # release it and log in again with a fresh token.
+                            raise _StatusBusyReject(
+                                "status busy reject on first connect"
+                            )
                         logger.warning(
                             "Status rejected session (error=0xFFFFFFFF) with "
                             "profile-selected stereo rx_codec=%s; preserving profile "
@@ -339,9 +420,16 @@ class ControlPhaseRuntime:
                             f"{_session_reject_hint(h._last_status_error)}"
                         )
 
-                # Busy-retry loop — runs when:
+                # Within-attempt retry loop — runs when:
                 #   (a) first status was civ_port=0 without 0xFFFFFFFF, or
-                #   (b) mono fallback above produced civ_port=0 without 0xFFFFFFFF.
+                #   (b) mono fallback above produced civ_port=0 without
+                #       0xFFFFFFFF, or
+                #   (c) a reconnect's profile-selected stereo codec was
+                #       busy-rejected (0xFFFFFFFF) above.
+                # A first-connect busy reject never reaches here — it raises
+                # ``_StatusBusyReject`` above so the retry logs in again with
+                # a fresh token instead of re-sending conninfo on the
+                # rejected one. What remains is a fixed three attempts.
                 if civ_port == 0:
                     retry_pause = self._status_retry_pause()
                     status_error = getattr(h, "_last_status_error", 0)
@@ -353,30 +441,40 @@ class ControlPhaseRuntime:
                         retry_pause,
                         _session_reject_hint(status_error),
                     )
-                    for _retry in range(3):
+                    attempts = 0
+                    while True:
+                        if attempts >= 3:
+                            self._close_pending_sockets()
+                            await h._ctrl_transport.disconnect()
+                            h._conn_state = RadioConnectionState.DISCONNECTED
+                            error_val = getattr(h, "_last_status_error", 0)
+                            raise ConnectionError(
+                                f"Radio rejected session allocation (civ_port=0, "
+                                f"error=0x{error_val:08X}) after retries. "
+                                f"{_session_reject_hint(error_val)}"
+                            )
+                        attempts += 1
                         await asyncio.sleep(retry_pause)
-                        logger.info("Retrying conninfo (attempt %d/3)...", _retry + 1)
+                        logger.info("Retrying conninfo (attempt %d)...", attempts)
                         await self._send_conninfo(
                             guid, _civ_local_port, _audio_local_port
                         )
                         try:
                             civ_port = await self._receive_civ_port()
+                            if getattr(h, "_last_status_error", 0) == 0xFDFFFFFF:
+                                # Late foreign-holder reject (a not-ready
+                                # status, or a post-fallback warming status,
+                                # followed by FD): transient busy, never
+                                # another conninfo retry.
+                                raise _StatusBusyReject(
+                                    "status busy reject (foreign holder)"
+                                )
                             if civ_port > 0:
                                 logger.info("Radio now reports civ_port=%d", civ_port)
                                 h._civ_port = civ_port
                                 break
                         except asyncio.TimeoutError:
                             pass
-                    else:
-                        self._close_pending_sockets()
-                        await h._ctrl_transport.disconnect()
-                        h._conn_state = RadioConnectionState.DISCONNECTED
-                        error_val = getattr(h, "_last_status_error", 0)
-                        raise ConnectionError(
-                            f"Radio rejected session allocation (civ_port=0, "
-                            f"error=0x{error_val:08X}) after retries. "
-                            f"{_session_reject_hint(error_val)}"
-                        )
         except asyncio.TimeoutError:
             logger.debug("No status packet received, using default ports")
             logger.warning("Audio port not in status, using default %d", h._audio_port)
@@ -453,10 +551,10 @@ class ControlPhaseRuntime:
         h._ctrl_transport.state = ConnectionState.CONNECTED
         # Control transport queue has no consumer after setup — discard
         # incoming data packets to prevent unbounded queue growth. A 0x90
-        # conninfo notice is the exception: it reports whether the radio
-        # still holds our session.
+        # conninfo notice and a 0x40 token answer are the exceptions.
         h._ctrl_transport._discard_data_packets = True
         h._ctrl_transport._conninfo_notice_callback = self._on_conninfo_notice
+        h._ctrl_transport._token_reply_callback = self._on_token_reply
         self._start_token_renewal()
         if h._auto_reconnect:
             self._start_watchdog()
@@ -475,7 +573,14 @@ class ControlPhaseRuntime:
                 component="radio connect",
             )
         except RuntimeError as exc:
-            await h.disconnect()
+            # End this attempt only: ``CoreRadio.disconnect`` is the owner's
+            # stop.  Retire the identity this attempt's gate recorded, as
+            # that teardown does.
+            await self.disconnect()
+            h._connection_identity = None
+            h._lan_identity_answer_epoch = None
+            h._lan_identity_owned_epoch = None
+            h._lan_identity_revalidate_origin = False
             raise ConnectionError(str(exc)) from exc
 
         h._has_connected_once = True
@@ -517,16 +622,18 @@ class ControlPhaseRuntime:
         """Cleanly disconnect from the radio."""
         h = self._host
         self._deferred_retail = None
+        self._renewal_waiter = None
         if h._conn_state != RadioConnectionState.CONNECTED:
             return
         h._conn_state = RadioConnectionState.DISCONNECTING
+        h._civ_resume_seq = None
+        h._audio_resume_seq = None
         civ_rt = getattr(h, "_civ_runtime", None)
         if civ_rt is not None:
             civ_rt.advance_generation("disconnect")
         else:
             h._advance_civ_generation("disconnect")
         self._stop_watchdog()
-        self._stop_reconnect()
         self._stop_token_renewal()
         stop_audio_wd = getattr(h, "_stop_audio_watchdog", None)
         if stop_audio_wd is not None:
@@ -599,19 +706,26 @@ class ControlPhaseRuntime:
 
         * ``CONNECTED`` — ``_connect_once`` reached CONNECTED;
         * ``SESSION_NOT_READY`` — civ_port==0 / data-port discovery cooldown;
-        * ``SESSION_BUSY_REJECT`` — status (or auth) error 0xFFFFFFFF —
-          "previous session still active";
+        * ``SESSION_BUSY_REJECT`` — status (or auth) error 0xFFFFFFFF
+          ("previous session still active"), or status error 0xFDFFFFFF
+          (a client on another computer holds the session);
         * ``AUTH_CREDENTIALS`` — auth rejected with the *non-transient*
           credential error 0xFEFFFFFF.
 
         Classification rules (lifecycle Note 1; behaviour-preserving wiring):
 
-        * The ONLY transient signal ``_connect_once`` emits is
-          :class:`_DataPortDiscoveryCooldown` (CI-V data-port discovery timed out
-          after a successful auth/status) → ``SESSION_NOT_READY``.  This mirrors
-          the removed legacy ``connect()`` wrapper, which retried exactly this
-          case (its ``_DATA_PORT_COOLDOWN_RETRIES`` loop) and let every other
-          failure propagate.
+        * ``_connect_once`` emits two transient signals:
+          :class:`_DataPortDiscoveryCooldown` (CI-V data-port discovery timed
+          out after a successful auth/status) → ``SESSION_NOT_READY``.  This
+          mirrors the removed legacy ``connect()`` wrapper, which retried
+          exactly this case (its ``_DATA_PORT_COOLDOWN_RETRIES`` loop) and
+          let every other failure propagate.
+        * :class:`_StatusBusyReject` (status-stage busy reject:
+          0xFFFFFFFF on the profile-selected stereo codec path, or
+          0xFDFFFFFF foreign-holder on any codec path, including after a
+          stereo fallback) → ``SESSION_BUSY_REJECT``.  The lifecycle
+          releases the rejected attempt's token and logs in again
+          instead of re-sending conninfo on it.
         * **Note 1 (auth over-hard-fail fix):** ``_connect_once`` raises
           :class:`AuthenticationError` for ANY ``auth.success == False`` — which
           covers BOTH 0xFEFFFFFF (wrong credentials, hard) AND 0xFFFFFFFF
@@ -633,6 +747,8 @@ class ControlPhaseRuntime:
             await self._connect_once()
         except _DataPortDiscoveryCooldown:
             return AttemptResult(AttemptOutcome.SESSION_NOT_READY)
+        except _StatusBusyReject:
+            return AttemptResult(AttemptOutcome.SESSION_BUSY_REJECT)
         except AuthenticationError:
             # Note 1: ONLY 0xFEFFFFFF is a hard credential failure.  Any other
             # auth failure (e.g. 0xFFFFFFFF "previous session active" surfaced at
@@ -653,10 +769,12 @@ class ControlPhaseRuntime:
         """
         h = self._host
         self._deferred_retail = None
+        self._renewal_waiter = None
+        h._civ_resume_seq = None
+        h._audio_resume_seq = None
         # Best-effort teardown of any data/audio transports first (mirrors
         # disconnect ordering), then the always-sent token-remove.
         self._stop_watchdog()
-        self._stop_reconnect()
         self._stop_token_renewal()
         # An identity-held partial session can have live CI-V tasks. Retire
         # their generation before closing transports or accepting late replies.
@@ -676,6 +794,16 @@ class ControlPhaseRuntime:
             with _suppress(asyncio.CancelledError, Exception):
                 await identity_reader
         self._close_pending_sockets()
+        # Stop the stream before the transport teardown, mirroring
+        # ``disconnect``: a stale stream left in RECEIVING makes
+        # ``_ensure_audio_transport`` return early, so the post-reconnect
+        # audio recovery fails with "Cannot start RX in state receiving".
+        if h._audio_stream is not None:
+            with _suppress(Exception):
+                await h._audio_stream.stop_rx()
+            with _suppress(Exception):
+                await h._audio_stream.stop_tx()
+            h._audio_stream = None
         audio_t = getattr(h, "_audio_transport", None)
         if audio_t is not None:
             with _suppress(Exception):
@@ -777,10 +905,20 @@ class ControlPhaseRuntime:
                 # Defensive: _force_cleanup_civ normally nulls the transport.
                 # If a subclass/mock left it set, do not loop forever — bail.
                 return
-        if not h._ctrl_transport or not getattr(
-            h._ctrl_transport, "_udp_transport", None
+        # A control transport that ``_connect_once`` never marked CONNECTED is
+        # no session to reuse: ``IcomTransport.connect``/``reconnect`` leave it
+        # CONNECTING, so an open UDP socket alone must not select the
+        # CI-V-rebuild branch.  Transport doubles without a ``state`` attribute
+        # keep the pre-gate behaviour.
+        if (
+            not h._ctrl_transport
+            or not getattr(h._ctrl_transport, "_udp_transport", None)
+            or getattr(h._ctrl_transport, "state", ConnectionState.CONNECTED)
+            is not ConnectionState.CONNECTED
         ):
-            logger.info("soft_reconnect: control transport gone, doing full connect")
+            logger.info(
+                "soft_reconnect: control session not established, doing full connect"
+            )
             # The legacy ``connect()`` retry wrapper was removed in A3; the
             # lifecycle owns retry.  A full re-establish here is a single
             # mechanism attempt (``_connect_once``); the lifecycle's RECOVERING
@@ -796,6 +934,11 @@ class ControlPhaseRuntime:
                     await teardown_audio()
                 except Exception:
                     logger.debug("soft_reconnect: audio teardown failed", exc_info=True)
+            if getattr(h._ctrl_transport, "_udp_transport", None) is not None:
+                # Open but not CONNECTED: ``_connect_once`` opens a new
+                # endpoint on this transport without closing this one.
+                with _suppress(Exception):
+                    await h._ctrl_transport.disconnect()
             await self._connect_once()
             identity_epoch = getattr(h, "_lan_identity_owned_epoch", None)
             await self._after_reconnect(
@@ -841,7 +984,24 @@ class ControlPhaseRuntime:
                 local_host=getattr(h, "_local_bind_host", None),
                 local_port=requested_local_port,
             )
-        except OSError as exc:
+        except (OSError, TimeoutError) as exc:
+            # ``connect`` resets the numbering to 0 before discovery, and a
+            # rebuild that failed never carried this session's numbering:
+            # drop it without recording ``send_seq``, or a later attempt
+            # resumes 0 and the radio ignores the packets of the session it
+            # still holds.  Close it only when it actually holds an
+            # endpoint: ``IcomTransport.connect`` sets ``_udp_transport``
+            # only once the datagram endpoint exists, so a bind failure
+            # (nothing open) has no socket to close, while a discovery
+            # timeout is bound to the fixed local CI-V port the next
+            # attempt needs and must be closed.
+            failed = h._civ_transport
+            if (
+                failed is not None
+                and getattr(failed, "_udp_transport", None) is not None
+            ):
+                with _suppress(Exception):
+                    await failed.disconnect()
             h._civ_transport = None
             ctrl_alive = getattr(h, "control_connected", False)
             h._conn_state = (
@@ -852,6 +1012,11 @@ class ControlPhaseRuntime:
             h._civ_stream_ready = False
             h._civ_recovering = ctrl_alive
             raise ConnectionError(f"Failed to reconnect CI-V: {exc}") from exc
+
+        if h._civ_resume_seq is not None:
+            # ``connect`` reset the numbering to 0; continue that of the CI-V
+            # transport torn down on this session.
+            h._civ_transport.send_seq = h._civ_resume_seq
 
         h._civ_transport.start_ping_loop()
         h._civ_transport.start_retransmit_loop()
@@ -946,23 +1111,88 @@ class ControlPhaseRuntime:
                     "soft_reconnect: _on_reconnect callback failed", exc_info=True
                 )
 
-        # Re-arm the audio transport on a fresh FD and restore any live demand.
-        # Bounded/safe: failures are logged, never raised, so a CI-V soft
-        # reconnect still succeeds even if audio cannot be re-established.
+        # Re-arm the audio transport on a fresh FD and restore any live
+        # demand. Each failed attempt logs a WARNING with the cause.
+        # ``AudioRecoveryState.FAILED`` reaches ``on_audio_recovery`` at most
+        # once — only after the retrying ends with the transport still not
+        # rebuilt, only when recovery was owed (the reconnect snapshot
+        # holds audio demand and ``_auto_recover_audio`` is set, the same
+        # gate the hard path and the audio watchdog apply before running
+        # ``recover`` (radio_reconnect)), and only while ownership is
+        # unchanged: the hard path returns silently on an owner stop and
+        # a new CI-V generation runs its own recovery, so this tail
+        # stays silent too. With nothing owed, exactly one best-effort
+        # attempt runs and its failure stays a WARNING. On the
+        # identity-hold path this tail runs in a task ``disconnect()`` cannot
+        # cancel, so unchanged CI-V / owner-stop epochs are the only
+        # ownership guard: they are re-read after every backoff sleep,
+        # immediately before the attempt they authorize, and once more
+        # before the post-success ``recover`` and the FAILED report.
+        # ``_ensure_audio_transport`` captures the same epochs at entry
+        # and re-checks them after acquiring its lock and after
+        # ``connect()``. Bounded/safe:
+        # failures are never raised, so a CI-V soft reconnect still
+        # succeeds even if audio cannot be re-established.
         ensure_audio = getattr(h, "_ensure_audio_transport", None)
         if ensure_audio is not None:
-            try:
-                await ensure_audio()
-                if (
-                    audio_runtime is not None
-                    and audio_snapshot is not None
-                    and getattr(h, "_auto_recover_audio", False)
-                ):
-                    recover = getattr(audio_runtime, "recover", None)
-                    if recover is not None:
+            owed = audio_snapshot is not None and getattr(
+                h, "_auto_recover_audio", False
+            )
+            civ_epoch = getattr(h, "_civ_epoch", None)
+            owner_stop_epoch = getattr(h, "_owner_stop_epoch", None)
+
+            def _ownership_moved_on() -> bool:
+                return (
+                    getattr(h, "_civ_epoch", None) != civ_epoch
+                    or getattr(h, "_owner_stop_epoch", None) != owner_stop_epoch
+                )
+
+            rearmed = False
+            for attempt in range(1, self._SOFT_AUDIO_REBUILD_ATTEMPTS + 1):
+                if attempt > 1:
+                    await asyncio.sleep(self._SOFT_AUDIO_REBUILD_BACKOFF_S)
+                    if _ownership_moved_on():
+                        # An owner stop or a new CI-V generation landed
+                        # inside the backoff sleep: this session no longer
+                        # owns the radio, so no further rebuild attempt.
+                        break
+                try:
+                    await ensure_audio()
+                    rearmed = True
+                    break
+                except Exception as exc:
+                    if not owed or attempt >= self._SOFT_AUDIO_REBUILD_ATTEMPTS:
+                        logger.warning(
+                            "soft_reconnect: audio re-arm failed on attempt %d/%d: %s",
+                            attempt,
+                            self._SOFT_AUDIO_REBUILD_ATTEMPTS,
+                            exc,
+                        )
+                        break
+                    logger.warning(
+                        "soft_reconnect: audio re-arm failed on attempt %d/%d: "
+                        "%s; retrying while this session owns the radio",
+                        attempt,
+                        self._SOFT_AUDIO_REBUILD_ATTEMPTS,
+                        exc,
+                    )
+            if not rearmed and owed and not _ownership_moved_on():
+                on_audio_recovery = getattr(h, "_on_audio_recovery", None)
+                if on_audio_recovery is not None:
+                    on_audio_recovery(AudioRecoveryState.FAILED)
+            elif rearmed and owed and not _ownership_moved_on():
+                # ``ensure_audio()`` is itself an await, so ownership may
+                # have moved on while the rebuild ran. Re-check before
+                # restoring demand, mirroring the hard path's post-connect
+                # owner-stop check.
+                recover = getattr(audio_runtime, "recover", None)
+                if recover is not None:
+                    try:
                         await recover(audio_snapshot)
-            except Exception:
-                logger.debug("soft_reconnect: audio re-arm failed", exc_info=True)
+                    except Exception:
+                        logger.debug(
+                            "soft_reconnect: audio recovery failed", exc_info=True
+                        )
 
     async def _send_token_ack(self) -> None:
         h = self._host
@@ -999,6 +1229,62 @@ class ControlPhaseRuntime:
         self._host._civ_runtime.request_recovery_now(
             "radio reported the LAN session free (conninfo busy=0)"
         )
+
+    def _on_token_reply(self, data: bytes) -> None:
+        """A 0x40 packet on the control port; settles a pending renewal probe.
+
+        Runs inside the datagram callback. Only a reply to a renewal carrying
+        our token counts; OK also stamps ``_renewal_answered_at``.
+        """
+        token = struct.unpack_from("<I", data, 0x1C)[0]
+        if data[0x14] != 0x02 or data[0x15] != 0x05 or token != self._host._token:
+            return
+        result = struct.unpack_from("<I", data, self._RENEWAL_RESPONSE_OFFSET)[0]
+        if result == self._RENEWAL_OK:
+            self._renewal_answered_at = time.monotonic()
+            holds = True
+        elif result == self._RENEWAL_REJECT:
+            holds = False
+        else:
+            return
+        waiter = self._renewal_waiter
+        if waiter is not None and not waiter.done():
+            waiter.set_result(holds)
+
+    async def probe_control_session(self) -> str | None:
+        """Ask the radio, by token renewal, whether it still holds our session.
+
+        Returns None on an OK answer; otherwise why the session is dead:
+        ``"reject"`` on a rejected renewal, ``"no renewal answer"`` when
+        ``_RENEWAL_PROBE_ATTEMPTS`` renewals each go unanswered for
+        ``_RENEWAL_PROBE_TIMEOUT_S``.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            for _ in range(self._RENEWAL_PROBE_ATTEMPTS):
+                waiter: asyncio.Future[bool] = loop.create_future()
+                self._renewal_waiter = waiter
+                await self._send_token(0x05)
+                try:
+                    holds = await asyncio.wait_for(
+                        waiter, self._RENEWAL_PROBE_TIMEOUT_S
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                return None if holds else "reject"
+            return "no renewal answer"
+        finally:
+            self._renewal_waiter = None
+
+    def renewal_unanswered(self) -> bool:
+        """The last renewal sent has had no OK answer for over the probe timeout."""
+        sent = self._renewal_sent_at
+        if sent is None:
+            return False
+        answered = self._renewal_answered_at
+        if answered is not None and answered >= sent:
+            return False
+        return time.monotonic() - sent > self._RENEWAL_PROBE_TIMEOUT_S
 
     async def _receive_guid(self) -> bytes | None:
         await asyncio.sleep(0.3)
@@ -1076,7 +1362,7 @@ class ControlPhaseRuntime:
                 )
                 if got_audio > 0:
                     h._audio_port = got_audio
-                if status.error == 0xFFFFFFFF:
+                if status.error in (0xFFFFFFFF, 0xFDFFFFFF):
                     logger.warning(
                         "Status indicates session rejection (error=0x%08X); "
                         "forcing retry/cooldown path",
@@ -1095,7 +1381,10 @@ class ControlPhaseRuntime:
         return civ_port
 
     def _status_retry_pause(self) -> float:
-        if getattr(self._host, "_last_status_error", 0) == 0xFFFFFFFF:
+        if getattr(self._host, "_last_status_error", 0) in (
+            0xFFFFFFFF,
+            0xFDFFFFFF,
+        ):
             return self._STATUS_REJECT_COOLDOWN
         return self._STATUS_RETRY_PAUSE
 
@@ -1214,6 +1503,8 @@ class ControlPhaseRuntime:
         struct.pack_into("<H", pkt, 0x1A, h._tok_request)
         struct.pack_into(">H", pkt, 0x24, 0x0798)
         struct.pack_into("<I", pkt, 0x1C, h._token)
+        if magic == 0x05:
+            self._renewal_sent_at = time.monotonic()
         await h._ctrl_transport.send_tracked(bytes(pkt))
 
     def _start_watchdog(self) -> None:
@@ -1230,8 +1521,12 @@ class ControlPhaseRuntime:
     def _stop_reconnect(self) -> None:
         h = self._host
         if h._reconnect_task is not None and not h._reconnect_task.done():
+            # Never cancel the calling task itself; keep the handle so a
+            # later owner stop can still cancel it.
+            if h._reconnect_task is asyncio.current_task():
+                return
             h._reconnect_task.cancel()
-            h._reconnect_task = None
+        h._reconnect_task = None
 
 
 class ControlPhaseSessionMechanism:

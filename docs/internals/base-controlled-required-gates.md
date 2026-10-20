@@ -50,6 +50,12 @@ trees are metadata-only and these entries must match the base blobs:
 - `.github/workflows/quick-v2.yml`
 - `.github/scripts/quick-v2-metadata-policy-v1.js`
 
+`classify-quick-paths.py` also selects `frontend` for changes under `src/rigplane/runtime/`, `contracts/`, `rigs/`, and
+`src/rigplane/core/` files whose name contains `state`, because the frontend consumes the payloads they produce, and
+emits a `web` output for non-documentation changes under `frontend/`, which `quick.yml` consumes to run
+`tests/web` and `tests/test_web_*.py` when `core` is not selected. `base-gate-policy-v1.js: classifyPullFiles` mirrors
+the earlier rules only; it does not implement these two additions.
+
 The trusted base classifier predicts whether substantive `quick` must run. Workflow-level success with that job skipped
 is unknown/failure. Stale head/base, fork, cancellation, changed control, incomplete pagination, ambiguous association,
 non-current attempt, or route/job disagreement cannot publish success.

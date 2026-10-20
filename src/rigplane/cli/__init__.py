@@ -89,6 +89,13 @@ from rigplane.cli._diagnose import (  # noqa: E402
     add_subparser as _add_diagnose_subparser,
     run as _run_diagnose,
 )
+from rigplane.cli._instance_guard import (  # noqa: E402
+    RESIDENT_COMMANDS,
+    ResidentAlreadyRunningError,
+    acquire_resident_lock,
+    guards_backend,
+    radio_lock_identity,
+)
 from rigplane.cli._validate import (  # noqa: E402
     add_subparser as _add_validate_subparser,
     run as _run_validate,
@@ -103,6 +110,7 @@ from rigplane.cli._convert import (  # noqa: E402
 )
 from rigplane.core.exceptions import (  # noqa: E402
     ConnectionError as RigplaneConnectionError,
+    RadioSessionHeldError,
 )
 from rigplane.core.radio_protocol import (  # noqa: E402
     ManagedTxApi,
@@ -662,6 +670,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "  rigplane --model IC-7610 web --bridge           # web UI + audio bridge\n"
             "  rigplane --model IC-7610 serve                  # rigctld server only\n"
             "  rigplane discover                               # find radios on the network\n"
+            "exit codes (web, station, serve and the radio commands):\n"
+            "  0  success\n"
+            "  1  runtime error (connection, auth, command failure)\n"
+            "  2  usage error (argument parsing)\n"
+            "  3  radio session held by a live owner (a deliberate stop, not a crash)\n"
+            "validate, radio-validate, convert and diagnose use their own exit codes.\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1500,6 +1514,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Enable WSJT-X compatibility pre-warm on embedded rigctld",
     )
     web_p.add_argument(
+        "--log-level",
+        dest="log_level",
+        default=None,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging level for the web UI server (default: unset, ICOM_DEBUG applies)",
+    )
+    web_p.add_argument(
         "--auth-token",
         dest="auth_token",
         type=_reject_retired_auth_option,
@@ -1558,7 +1579,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help=(
             "Admit this Host header name in addition to the local allowlist "
-            "(repeatable, e.g. stand77.msmsoft.net)"
+            "(repeatable, e.g. host.example.net)"
         ),
     )
     web_p.add_argument(
@@ -2319,6 +2340,168 @@ class _ManagedTxRadioSession:
         return result
 
 
+def _startup_busy_hold_event_of(session: Any) -> asyncio.Event | None:
+    """The radio's start-up busy signal, if it publishes one (MOR-3391)."""
+    radio = session._radio if isinstance(session, _ManagedTxRadioSession) else session
+    event = getattr(radio, "startup_busy_hold_event", None)
+    return event if isinstance(event, asyncio.Event) else None
+
+
+async def _cancel_task_quietly(task: asyncio.Task[Any]) -> None:
+    """Cancel a task and retrieve it, swallowing the expected cancel."""
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+async def _settle_background_enter(enter_task: asyncio.Task[Any]) -> None:
+    """Leave no background session enter unretrieved after serving ends.
+
+    A still-pending enter is cancelled (shutdown during the hold); an
+    enter that failed while serving was already ending is logged — the
+    serve outcome wins that race — so its exception is still retrieved
+    and never surfaces as "Task exception was never retrieved".
+    """
+    if not enter_task.done():
+        await _cancel_task_quietly(enter_task)
+        return
+    if enter_task.cancelled():
+        return
+    failure = enter_task.exception()
+    if failure is not None:
+        logger.warning("background start-up connect failed: %s", failure)
+
+
+async def _serve_while_startup_connect_pending(
+    server: Any,
+    startup_enter: asyncio.Task[Any],
+    serve: Any,
+) -> None:
+    """Serve while the start-up connect keeps running (MOR-3391 part 2).
+
+    ``serve`` (the blocking ``serve_forever``) runs as a child task raced
+    against the pending session enter:
+    * the enter finishes first and succeeds — the late completion runs,
+      then serving continues until shutdown;
+    * the enter finishes first and fails (budget out, refused) — serving
+      is torn down and the connect error propagates, so the process ends
+      with the same ``Error:`` text and return code 3 for a live-owner
+      hold, 1 otherwise;
+    * the enter is cancelled by an operator disconnect during the hold —
+      serving continues until shutdown, the same as a disconnect after a
+      normal start (a later operator connect re-primes through the radio
+      control handler);
+    * serving ends first (shutdown) — the pending enter is left for the
+      caller, which cancels it and still runs the radio's exit.
+    """
+    serve_task: asyncio.Task[None] = asyncio.ensure_future(serve())
+    try:
+        done, _pending = await asyncio.wait(
+            {startup_enter, serve_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if startup_enter in done:
+            current = asyncio.current_task()
+            if startup_enter.cancelled() and (
+                current is None or current.cancelling() == 0
+            ):
+                # An operator disconnect during the hold cancels the
+                # background enter without cancelling this task (awaiting
+                # a cancelled task raises here but leaves this task
+                # uncancelled): keep serving below. A genuine shutdown
+                # cancels this task too, so it still falls through to
+                # the re-raise and ends cleanly.
+                pass
+            else:
+                # The hold cleared (or gave up) before shutdown: success
+                # runs the late completion and serving continues; failure
+                # tears serving down by raising through the finally below.
+                await startup_enter
+                await server.finish_startup_busy_hold()
+        await serve_task
+    finally:
+        if not serve_task.done():
+            serve_task.cancel()
+            try:
+                await serve_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        elif not serve_task.cancelled():
+            # Retrieve a terminal serve error without masking the
+            # in-flight one (a re-raise of the same instance is harmless).
+            serve_task.exception()
+
+
+async def _run_web_station_with_busy_hold(
+    session: Any,
+    args: argparse.Namespace,
+    *,
+    managed_tx_composition: ManagedTxCompositionPort | None,
+    shutdown_backstop: _ShutdownBackstop | None,
+) -> int:
+    """Run web/station when the radio publishes a start-up busy signal.
+
+    Behaviour is unchanged unless the first connect enters the busy
+    cooldown: the enter is raced against the hold signal, and only when
+    the hold wins does start-up stop waiting — ``_cmd_web`` serves
+    not-ready while THE SAME connect keeps running in the background (no
+    second connect is started). A radio without the signal never reaches
+    here; ``serve`` and every other command keep awaiting the connect.
+    """
+    event = _startup_busy_hold_event_of(session)
+    assert event is not None
+    radio = session._radio if isinstance(session, _ManagedTxRadioSession) else session
+    enter_task: asyncio.Task[Any] = asyncio.ensure_future(session.__aenter__())
+    busy_waiter: asyncio.Task[bool] = asyncio.ensure_future(event.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {enter_task, busy_waiter}, return_when=asyncio.FIRST_COMPLETED
+        )
+    except BaseException:
+        await _cancel_task_quietly(busy_waiter)
+        await _cancel_task_quietly(enter_task)
+        raise
+    if not busy_waiter.done():
+        await _cancel_task_quietly(busy_waiter)
+    if enter_task in done:
+        # The first connect finished before any busy cooldown: exactly
+        # today's start-up, with manual enter/exit standing in for
+        # ``async with`` (a failed enter propagates with no exit, as the
+        # context manager would).
+        await enter_task
+        try:
+            result = await _cmd_web(
+                radio,
+                args,
+                managed_tx_composition=managed_tx_composition,
+                shutdown_backstop=shutdown_backstop,
+            )
+        except BaseException as exc:
+            await session.__aexit__(type(exc), exc, exc.__traceback__)
+            raise
+        await session.__aexit__(None, None, None)
+        return result
+    # The busy hold won: serve now while the same connect keeps running.
+    # Its post-enter continuation (transport_ready) runs inside the
+    # background ``__aenter__`` itself when the grant lands.
+    try:
+        result = await _cmd_web(
+            radio,
+            args,
+            managed_tx_composition=managed_tx_composition,
+            shutdown_backstop=shutdown_backstop,
+            startup_enter=enter_task,
+        )
+    except BaseException as exc:
+        await _settle_background_enter(enter_task)
+        await session.__aexit__(type(exc), exc, exc.__traceback__)
+        raise
+    await _settle_background_enter(enter_task)
+    await session.__aexit__(None, None, None)
+    return result
+
+
 async def _run(args: argparse.Namespace) -> int:
     wants_stats = bool(getattr(args, "stats", False))
     if args.command == "audio" and args.audio_command == "caps" and not wants_stats:
@@ -2336,6 +2519,60 @@ async def _run(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+    # web, serve and station run for the life of the process on one radio, so
+    # a LAN radio gets the resident reconnect loop.
+    if isinstance(config, LanBackendConfig) and args.command in (
+        "web",
+        "serve",
+        "station",
+    ):
+        config = replace(config, auto_reconnect=True)
+    # MOR-3391: one process per radio per computer. The guard is taken
+    # before the radio is opened and before any listener binds; the
+    # acquired lock is held for the process lifetime (the OS releases it on
+    # exit, including SIGKILL). Re-entering _run in the same process reuses
+    # the held lock — only another process is refused. Only backends holding
+    # an exclusive radio session are guarded (LAN, local serial); the
+    # rigctld backend talks to an external rigctld and is never guarded.
+    # MOR-3431: one-shot commands take the same lock and hold it for the
+    # run. A second login from this computer makes the radio drop the
+    # resident holder's live session about 90 s later, and releasing the
+    # second token does not prevent it — so a refused one-shot never
+    # reaches the radio. A resident start refused while a one-shot holds
+    # the lock keeps the resident message (accepted cost).
+    if guards_backend(config):
+        try:
+            acquire_resident_lock(radio_lock_identity(config))
+        except ResidentAlreadyRunningError as exc:
+            if args.command in RESIDENT_COMMANDS:
+                print(f"Error: {exc}", file=sys.stderr)
+            else:
+                pid_hint = (
+                    f" (pid {exc.holder_pid})" if exc.holder_pid is not None else ""
+                )
+                # The same-computer drop rule is a property of the Icom
+                # LAN session; serial radios have no login, so they name
+                # the unshareable port instead.
+                if isinstance(config, LanBackendConfig):
+                    reason = (
+                        "a second login from this computer makes "
+                        "the radio drop that process's session"
+                    )
+                else:
+                    reason = (
+                        "the radio's serial port cannot be shared "
+                        "safely between two processes"
+                    )
+                print(
+                    "Error: another rigplane process"
+                    f"{pid_hint} is already using this radio on this "
+                    f"computer; {reason}. Send commands "
+                    "to the running server instead (its HTTP API or "
+                    "rigctld; for a readiness check, GET /readyz), or stop "
+                    "it first.",
+                    file=sys.stderr,
+                )
+            return 1
     if args.command == "audio" and args.audio_command == "probe":
         return await _cmd_audio_probe(config, args)
     try:
@@ -2408,6 +2645,18 @@ async def _run(args: argparse.Namespace) -> int:
         else _ManagedTxRadioSession(radio, managed_tx_composition, backstop)
     )
     try:
+        if args.command in ("web", "station") and (
+            _startup_busy_hold_event_of(session) is not None
+        ):
+            # MOR-3391 part 2: this radio reports a first-connect busy
+            # hold through a public signal; start-up stops waiting only
+            # when that hold is entered, and serves not-ready meanwhile.
+            return await _run_web_station_with_busy_hold(
+                session,
+                args,
+                managed_tx_composition=managed_tx_composition,
+                shutdown_backstop=backstop,
+            )
         async with session:
             if args.command == "audio" and args.audio_command == "caps":
                 if CAP_AUDIO not in radio.capabilities:
@@ -2561,6 +2810,10 @@ async def _run(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         logger.debug("Traceback:", exc_info=True)
+        # A live owner holds the radio session: a deliberate stop, not a
+        # crash — exit 3 so a supervisor does not relaunch into it.
+        if isinstance(exc, RadioSessionHeldError):
+            return 3
         return 1
     finally:
         if isinstance(session, _ManagedTxRadioSession):
@@ -4090,6 +4343,21 @@ def _print_startup_banner(
     print("\n".join(lines))
 
 
+def _apply_log_level(args: argparse.Namespace) -> None:
+    """Apply --log-level to the rigplane logger hierarchy (serve/web).
+
+    Only an explicitly requested level is applied: a missing (e.g.
+    station) or None (web default) value leaves the loggers untouched
+    so the root ICOM_DEBUG configuration stays effective.
+    """
+    import logging as _logging
+
+    log_level = getattr(args, "log_level", None)
+    if log_level is None:
+        return
+    _logging.getLogger("rigplane").setLevel(getattr(_logging, log_level))
+
+
 async def _cmd_serve(radio: Radio, args: argparse.Namespace) -> int:
     import logging as _logging
 
@@ -4097,9 +4365,7 @@ async def _cmd_serve(radio: Radio, args: argparse.Namespace) -> int:
     from rigplane.rigctld.contract import RigctldConfig
     from rigplane.rigctld.server import RigctldServer
 
-    # Apply requested log level to the rigplane logger hierarchy.
-    log_level = getattr(args, "log_level", "INFO")
-    _logging.getLogger("rigplane").setLevel(getattr(_logging, log_level))
+    _apply_log_level(args)
 
     # Configure JSON audit log if a path was provided.
     audit_log_path: str | None = getattr(args, "audit_log", None)
@@ -4178,10 +4444,13 @@ async def _cmd_web(
     *,
     managed_tx_composition: ManagedTxCompositionPort | None = None,
     shutdown_backstop: _ShutdownBackstop | None = None,
+    startup_enter: asyncio.Task[Any] | None = None,
 ) -> int:
     import pathlib
 
     from rigplane.web.server import WebConfig, WebServer
+
+    _apply_log_level(args)
 
     static_dir = pathlib.Path(args.web_static_dir) if args.web_static_dir else None
     if static_dir is not None and not static_dir.is_dir():
@@ -4438,12 +4707,19 @@ async def _cmd_web(
             wsjtx_data_mode=wsjtx_data_mode,
             wsjtx_data_mod_input=wsjtx_data_mod_input,
         )
+        # The bundled seat shared by `web` and `station` tolerates a radio
+        # that is still in its connect-time identity hold: a failed start-up
+        # readiness check is logged as a warning instead of aborting, so the
+        # bundled listener binds while the radio is not ready, mirroring the
+        # web start-up gate.
+        # Standalone `serve` keeps the fail-hard check.
         if managed_tx_composition is None:
-            candidate = RigctldServer(radio, rigctld_config)
+            candidate = RigctldServer(radio, rigctld_config, allow_not_ready=True)
         else:
             candidate = RigctldServer(
                 radio,
                 rigctld_config,
+                allow_not_ready=True,
                 managed_tx_authority=managed_tx_composition.authority,
                 command_queue=server.command_queue,
                 command_service=server.command_service,
@@ -4482,6 +4758,10 @@ async def _cmd_web(
             rigctld_server = candidate
             rigctld_addr = f"{rigctld_host}:{rigctld_port}"
             server._runtime_rigctld_addr = rigctld_addr
+            if managed_tx_composition is not None:
+                # MOR-3536: /api/v1/rigctl keys as the client's session, which
+                # only the managed authority enforces; unmanaged, it stays off.
+                server.attach_rigctl_channel(candidate.open_channel)
 
     scheme = "https" if config_kwargs.get("tls") else "http"
     web_url = f"{scheme}://{args.web_host}:{args.web_port}/"
@@ -4501,7 +4781,7 @@ async def _cmd_web(
             dx_cluster=dx_info,
         )
 
-    try:
+    async def _serve() -> None:
         if shutdown_backstop is None:
             await server.serve_forever(on_started=_banner)
         else:
@@ -4510,6 +4790,15 @@ async def _cmd_web(
                 on_shutdown_signal=shutdown_backstop.arm,
                 on_tx_release=shutdown_backstop.protect,
             )
+
+    try:
+        if startup_enter is None:
+            await _serve()
+        else:
+            # MOR-3391 part 2: the first connect is waiting out a busy
+            # reject; serve not-ready now (the bundled rigctld above is
+            # already bound) while the same connect keeps running.
+            await _serve_while_startup_connect_pending(server, startup_enter, _serve)
     except asyncio.CancelledError:
         pass
     finally:

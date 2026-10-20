@@ -6,7 +6,7 @@ next ``_ensure_audio_transport`` re-arm raised
 ``RuntimeError: File descriptor ... is used by transport``. RX never recovered
 without a full app restart.
 
-Two regressions, both RED before the fix:
+Regressions, each RED before the fix that pins it:
 
 (a) ``test_ensure_audio_transport_rearm_no_stale_fd_leak`` — re-arming over a
     half-dead transport (stream gone, underlying UDP transport still owning the
@@ -16,18 +16,51 @@ Two regressions, both RED before the fix:
 (b) ``test_soft_reconnect_recovers_audio`` — after a simulated audio drop a
     ``soft_reconnect`` must re-arm the audio transport and drive audio recovery
     so RX is live again.
+
+(c) ``test_ensure_audio_transport_failure_releases_local_port`` — a rebuild
+    whose discovery times out after the endpoint exists must close that
+    endpoint: the session's fixed ``_audio_local_port`` is released (a plain
+    ``socket.bind`` succeeds) and a second rebuild fails with the discovery
+    timeout again, not EADDRINUSE. The failed transport is dropped without
+    recording its reset numbering.
+
+(d) ``test_soft_reconnect_reports_and_retries_a_failed_audio_rebuild`` /
+    ``test_soft_reconnect_stops_retrying_audio_rebuild_after_the_bound`` — a
+    failed soft-reconnect audio rebuild is reported (WARNING + FAILED to
+    ``on_audio_recovery``) and retried with a bound; it never loops unbounded
+    and never fails the CI-V reconnect itself.
+
+(e) ``test_soft_reconnect_owner_stop_during_backoff_stops_audio_rebuild_retry``
+    — an owner stop that lands inside the retry backoff (scheduled from
+    the failing first attempt via ``call_soon``) is caught by the
+    ownership re-check that runs immediately before the next attempt:
+    exactly one rebuild, no retry.
+(f) ``test_soft_reconnect_civ_epoch_change_during_backoff_stops_audio_rebuild_retry``
+    — a new CI-V epoch landing inside the retry backoff likewise stops
+    the retrying after exactly one rebuild.
+(g) ``test_soft_reconnect_failed_rebuild_with_no_audio_demand_stays_quiet`` /
+    ``test_soft_reconnect_failed_rebuild_with_auto_recover_off_stays_quiet``
+    — with nothing owed to recovery (no snapshot demand, or
+    auto-recovery disabled) a failed rebuild is one WARNING attempt: no
+    FAILED report, no retry.
+(h) ``test_soft_reconnect_owner_stop_during_successful_rebuild_skips_recovery``
+    — an owner stop recorded while a rebuild attempt runs skips the
+    post-success ``recover``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import socket
 import struct
 
 import pytest
 
 from rigplane.audio import AudioStream
+from rigplane.core.exceptions import ConnectionError, TimeoutError
 from rigplane.core.transport import CONTROL_SIZE, IcomTransport
+from rigplane.runtime._audio_recovery import AudioRecoveryState
 from rigplane.runtime._audio_runtime_mixin import AudioRuntimeMixin
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime._control_phase import ControlPhaseRuntime
@@ -65,6 +98,7 @@ class _StaleFdHost(AudioRuntimeMixin):
         self._audio_port = audio_port
         self._audio_stream = None
         self._audio_transport = None
+        self._audio_ensure_lock = asyncio.Lock()
         self._audio_sock_pending: socket.socket | None = None
         self._audio_local_port = 0
         self._local_bind_host = "127.0.0.1"
@@ -178,6 +212,56 @@ async def test_ensure_audio_transport_rearm_no_stale_fd_leak(monkeypatch) -> Non
     sock2.close()
 
 
+@pytest.mark.asyncio
+async def test_ensure_audio_transport_failure_releases_local_port(
+    monkeypatch,
+) -> None:
+    """A failed rebuild must release the fixed local audio port it bound.
+
+    The soft-reconnect rebuild connects with no pending socket on the
+    session's fixed ``_audio_local_port``. When discovery times out after
+    the endpoint exists, that port must be released — otherwise every later
+    rebuild fails with EADDRINUSE and RX never returns (the field shape:
+    INFO "Soft reconnect to ..." with no later "Audio transport connected
+    on port").
+    """
+    import rigplane.core.transport as _core_transport
+
+    monkeypatch.setattr(_core_transport, "DISCOVERY_RETRIES", 1)
+    monkeypatch.setattr(_core_transport, "DISCOVERY_TIMEOUT", 0.05)
+
+    def _free_port() -> int:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        return port
+
+    host = _StaleFdHost(host="127.0.0.1", audio_port=_free_port())
+    host._audio_local_port = _free_port()
+    host._audio_sock_pending = None
+    host._audio_resume_seq = 7
+
+    # Discovery against a dead loopback port times out.
+    with pytest.raises(TimeoutError):
+        await host._ensure_audio_transport()
+
+    # The failed transport must have released the fixed local port.
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    probe.bind(("127.0.0.1", host._audio_local_port))
+    probe.close()
+
+    # A second rebuild fails with the discovery timeout again — not
+    # EADDRINUSE from a port the first failure never released.
+    with pytest.raises(TimeoutError) as excinfo:
+        await host._ensure_audio_transport()
+    assert not isinstance(excinfo.value, ConnectionError)
+
+    # The failed rebuild is dropped without recording its reset numbering.
+    assert host._audio_transport is None
+    assert host._audio_resume_seq == 7
+
+
 # ---------------------------------------------------------------------------
 # soft_reconnect host: real ControlPhaseMixin.soft_reconnect over fakes.
 # ---------------------------------------------------------------------------
@@ -208,16 +292,20 @@ class _FakeAudioRuntime:
         self._host = host
         self.recovered = False
         self.snapshot_calls = 0
+        # Live RX demand exists → recoverable; tests set this to None to pin
+        # the nothing-owed branch.
+        self.snapshot: object | None = object()
 
     def capture_snapshot(self):
         self.snapshot_calls += 1
-        # Live RX demand exists → recoverable.
-        return object()
+        return self.snapshot
 
     async def recover(self, snapshot) -> None:
+        self._host._on_audio_recovery(AudioRecoveryState.RECOVERING)
         self.recovered = True
         # Recovery makes RX live again on the (freshly armed) transport.
         self._host.rx_live = True
+        self._host._on_audio_recovery(AudioRecoveryState.RECOVERED)
 
 
 class _SoftReconnectHost:
@@ -231,6 +319,7 @@ class _SoftReconnectHost:
         self._civ_stream_ready = False
         self._civ_recovering = True
         self._civ_local_port = 0
+        self._civ_resume_seq = None
         self._local_bind_host = "127.0.0.1"
         self._last_civ_data_received = None
         self._civ_ready_idle_timeout = 3.0
@@ -252,6 +341,18 @@ class _SoftReconnectHost:
         self._teardown_calls = 0
         self._ensure_calls = 0
 
+        # Soft-reconnect audio-tail knobs (regressions d–h): how many
+        # ``_ensure_audio_transport`` calls fail before one succeeds, and
+        # ownership changes injected around the rebuild attempts.
+        self.ensure_failures = 0
+        self.bump_owner_stop_in_backoff = False
+        self.bump_civ_epoch_in_backoff = False
+        self.stop_owner_during_success = False
+        self._civ_epoch = 0
+        self._owner_stop_epoch = 0
+        self.recovery_states: list[AudioRecoveryState] = []
+        self._on_audio_recovery = self.recovery_states.append
+
     # --- CI-V rebuild seams (no-op; soft_reconnect drives the orchestration) -
     def _advance_civ_generation(self, reason: str) -> None: ...
     async def _stop_civ_rx_pump(self) -> None: ...
@@ -265,8 +366,28 @@ class _SoftReconnectHost:
         self._audio_transport = None
         self._audio_stream = None
 
+    def _bump_epoch_after_failure(self) -> None:
+        """Scheduled with ``call_soon`` from a failing rebuild attempt.
+
+        The bump fires on the event-loop pass inside the retry backoff
+        sleep — after the failure handler has logged, before the next
+        attempt runs.
+        """
+        if self.bump_civ_epoch_in_backoff:
+            self._civ_epoch += 1
+        if self.bump_owner_stop_in_backoff:
+            self._owner_stop_epoch += 1
+
     async def _ensure_audio_transport(self) -> None:
         self._ensure_calls += 1
+        if self._ensure_calls <= self.ensure_failures:
+            if self.bump_owner_stop_in_backoff or self.bump_civ_epoch_in_backoff:
+                asyncio.get_running_loop().call_soon(self._bump_epoch_after_failure)
+            raise RuntimeError("audio rebuild failed (simulated)")
+        if self.stop_owner_during_success:
+            # Recorded while the successful rebuild runs: before the tail's
+            # post-success ownership re-check.
+            self._owner_stop_epoch += 1
         # A fresh transport is bound on re-arm.
         self._audio_transport = _FakeCivTransport()
         self._audio_stream = _FakeAudioStream()
@@ -278,6 +399,9 @@ class _SoftReconnectHost:
 
 class _TestControlPhaseRuntime(ControlPhaseRuntime):
     """Real ``soft_reconnect``; no-op the CI-V open/close protocol seam."""
+
+    # Keep the retry-backoff wait out of the test's wall time.
+    _SOFT_AUDIO_REBUILD_BACKOFF_S = 0.01
 
     async def _send_open_close(self, *, open_stream: bool) -> None:
         return None
@@ -312,6 +436,195 @@ async def test_soft_reconnect_recovers_audio(monkeypatch) -> None:
     assert host._audio_transport is not None
     assert host._audio_stream is not None
     assert host.rx_live is True
+
+
+@pytest.mark.asyncio
+async def test_soft_reconnect_reports_and_retries_a_failed_audio_rebuild(
+    monkeypatch, caplog
+) -> None:
+    """One failed rebuild: WARNING with the cause, retry, then recovery."""
+    import rigplane.transport as _transport_mod
+
+    monkeypatch.setattr(_transport_mod, "IcomTransport", _FakeCivTransport)
+
+    host = _SoftReconnectHost()
+    host.ensure_failures = 1
+    runtime = _TestControlPhaseRuntime(host)  # type: ignore[arg-type]
+
+    with caplog.at_level(logging.WARNING, logger="rigplane.runtime._control_phase"):
+        await runtime.soft_reconnect()
+
+    # The failed first rebuild was retried and the second one armed audio.
+    assert host._ensure_calls == 2
+    assert host._audio_runtime.recovered is True
+    assert host.rx_live is True
+    assert host.recovery_states == [
+        AudioRecoveryState.RECOVERING,
+        AudioRecoveryState.RECOVERED,
+    ]
+    warnings = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING and "audio re-arm failed" in record.message
+    ]
+    assert warnings
+    assert "audio rebuild failed (simulated)" in warnings[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_soft_reconnect_stops_retrying_audio_rebuild_after_the_bound(
+    monkeypatch,
+) -> None:
+    """A rebuild that always fails stops after the bound and reports FAILED."""
+    import rigplane.transport as _transport_mod
+
+    monkeypatch.setattr(_transport_mod, "IcomTransport", _FakeCivTransport)
+
+    host = _SoftReconnectHost()
+    host.ensure_failures = 10  # more than the retry bound
+    runtime = _TestControlPhaseRuntime(host)  # type: ignore[arg-type]
+
+    await runtime.soft_reconnect()
+
+    assert host._ensure_calls == 3
+    assert host._audio_runtime.recovered is False
+    assert host.recovery_states == [AudioRecoveryState.FAILED]
+    # The bounded audio failure never fails the CI-V reconnect itself.
+    assert host._civ_transport is not None
+    assert host._conn_state == RadioConnectionState.CONNECTED
+
+
+@pytest.mark.asyncio
+async def test_soft_reconnect_owner_stop_during_backoff_stops_audio_rebuild_retry(
+    monkeypatch,
+) -> None:
+    """An owner stop landing inside the retry backoff allows no further rebuild.
+
+    The stop is scheduled with ``call_soon`` from the failing first
+    attempt, so it fires on the event-loop pass inside the backoff sleep —
+    after the failure is logged, before the next attempt. The tail must
+    re-check ownership after the sleep and stop: exactly one rebuild.
+    """
+    import rigplane.transport as _transport_mod
+
+    monkeypatch.setattr(_transport_mod, "IcomTransport", _FakeCivTransport)
+
+    host = _SoftReconnectHost()
+    host.ensure_failures = 10
+    host.bump_owner_stop_in_backoff = True
+    runtime = _TestControlPhaseRuntime(host)  # type: ignore[arg-type]
+
+    await runtime.soft_reconnect()
+
+    assert host._ensure_calls == 1
+    assert host.recovery_states == []
+
+
+@pytest.mark.asyncio
+async def test_soft_reconnect_civ_epoch_change_during_backoff_stops_audio_rebuild_retry(
+    monkeypatch,
+) -> None:
+    """A new CI-V epoch landing inside the retry backoff stops the retrying.
+
+    Same schedule as the owner-stop variant: the epoch bump is scheduled
+    from the failing first attempt and fires inside the backoff sleep. A
+    new CI-V generation means this session no longer owns the radio, so
+    no second rebuild may run.
+    """
+    import rigplane.transport as _transport_mod
+
+    monkeypatch.setattr(_transport_mod, "IcomTransport", _FakeCivTransport)
+
+    host = _SoftReconnectHost()
+    host.ensure_failures = 10
+    host.bump_civ_epoch_in_backoff = True
+    runtime = _TestControlPhaseRuntime(host)  # type: ignore[arg-type]
+
+    await runtime.soft_reconnect()
+
+    assert host._ensure_calls == 1
+    assert host.recovery_states == []
+
+
+@pytest.mark.asyncio
+async def test_soft_reconnect_failed_rebuild_with_no_audio_demand_stays_quiet(
+    monkeypatch,
+) -> None:
+    """With no snapshot demand a failed rebuild is not reported or retried.
+
+    Nothing is owed to ``on_audio_recovery`` when the reconnect snapshot
+    holds no audio demand, so the failure stays a single WARNING attempt:
+    no FAILED report, no retry — the silence the hard path and the audio
+    watchdog keep in the same situation.
+    """
+    import rigplane.transport as _transport_mod
+
+    monkeypatch.setattr(_transport_mod, "IcomTransport", _FakeCivTransport)
+
+    host = _SoftReconnectHost()
+    host.ensure_failures = 10
+    host._audio_runtime.snapshot = None
+    runtime = _TestControlPhaseRuntime(host)  # type: ignore[arg-type]
+
+    await runtime.soft_reconnect()
+
+    assert host._ensure_calls == 1
+    assert host.recovery_states == []
+
+
+@pytest.mark.asyncio
+async def test_soft_reconnect_failed_rebuild_with_auto_recover_off_stays_quiet(
+    monkeypatch,
+) -> None:
+    """With audio auto-recovery off a failed rebuild stays a WARNING too.
+
+    ``_auto_recover_audio`` gates recovery on the hard path and the audio
+    watchdog (radio_reconnect); the tail applies the same gate to its
+    retrying and FAILED report: one attempt, silence afterwards.
+    """
+    import rigplane.transport as _transport_mod
+
+    monkeypatch.setattr(_transport_mod, "IcomTransport", _FakeCivTransport)
+
+    host = _SoftReconnectHost()
+    host.ensure_failures = 10
+    host._auto_recover_audio = False
+    runtime = _TestControlPhaseRuntime(host)  # type: ignore[arg-type]
+
+    await runtime.soft_reconnect()
+
+    assert host._ensure_calls == 1
+    assert host.recovery_states == []
+
+
+@pytest.mark.asyncio
+async def test_soft_reconnect_owner_stop_during_successful_rebuild_skips_recovery(
+    monkeypatch,
+) -> None:
+    """An owner stop recorded during a successful rebuild skips recovery.
+
+    ``_ensure_audio_transport`` is itself an await, so ownership can move
+    on while the rebuild runs. The tail re-checks the epochs before the
+    post-success ``recover``: live demand is not restored onto a radio
+    this session no longer owns.
+    """
+    import rigplane.transport as _transport_mod
+
+    monkeypatch.setattr(_transport_mod, "IcomTransport", _FakeCivTransport)
+
+    host = _SoftReconnectHost()
+    host.stop_owner_during_success = True
+    runtime = _TestControlPhaseRuntime(host)  # type: ignore[arg-type]
+
+    await runtime.soft_reconnect()
+
+    # The rebuild itself ran and armed a fresh transport...
+    assert host._ensure_calls == 1
+    assert host._audio_transport is not None
+    # ...but no recovery was driven on top of it.
+    assert host._audio_runtime.recovered is False
+    assert host.rx_live is False
+    assert host.recovery_states == []
 
 
 def _audio_data_packet(seq: int) -> bytes:

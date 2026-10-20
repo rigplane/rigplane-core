@@ -8,13 +8,28 @@ on:
     types: [created, edited, deleted]
 
 concurrency:
-  group: agent-review-gate-v2-${{ github.event.issue.pull_request && github.event.issue.number || github.event.pull_request.number }}
+  # Same unique-group trick as agent-review-gate.yml: the group carries the
+  # job's relevance predicate so a skipped run lands in its own github.run_id
+  # group and cancels no in-flight evaluation.
+  # REST calls of a full evaluation, counted from the script below: 8
+  # calls (pulls.get + repos.getBranch + repos.getCommit + repos.getContent +
+  # one issues.listComments page per 100 comments + the post-check pulls.get
+  # and repos.getBranch + repos.createCommitStatus).
+  # A run that stops because the base is not the current main head makes 3
+  # (pulls.get + repos.getBranch + the pending repos.createCommitStatus).
+  # A run that stops because the head or main moved during the run makes 8
+  # (the same 7 reads as a full evaluation plus the pending
+  # repos.createCommitStatus).
+  group: agent-review-gate-v2-${{ github.event.issue.pull_request && github.event.issue.number || github.event.pull_request.number }}-${{ (github.event_name == 'pull_request_target' && (github.event.action != 'edited' || github.event.changes.base) || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:')))) && 'eval' || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   publish:
     name: Trusted review observation publisher
-    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+    # issue_comment legs use the same verdict-relevance predicate as
+    # agent-review-gate.yml; pull_request_target 'edited' is skipped unless
+    # the base changed, the only edit that can move the observation domain.
+    if: github.event_name == 'pull_request_target' && (github.event.action != 'edited' || github.event.changes.base) || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:')))
     runs-on: ubuntu-latest
     timeout-minutes: 3
     permissions:
@@ -56,7 +71,18 @@ jobs:
                 owner, repo, branch: initialPull.base.ref,
               });
               if (baseBranch.commit.sha !== baseSha) {
-                throw new Error('pull request base is not the current main head');
+                // The observer evaluates exact-current-base trust only: a PR
+                // behind main is outside its domain, not a failure. Publish a
+                // pending observation, which replaces any earlier success for this
+                // head from this run onward.
+                await github.rest.repos.createCommitStatus({
+                  owner, repo, sha: headSha, state: 'pending',
+                  context: 'Agent Review Gate v2 observe',
+                  description: 'Not observed: PR base is not the current main head.',
+                  target_url: targetUrl,
+                });
+                core.notice('Agent Review Gate v2 observation skipped: pull request base is not the current main head.');
+                return;
               }
               const [{data: commit}, comments, {data: parserFile}] = await Promise.all([
                 github.rest.repos.getCommit({owner, repo, ref: headSha}),
@@ -104,8 +130,18 @@ jobs:
                 currentPull.base.sha !== baseSha ||
                 currentBase.commit.sha !== baseSha
               ) {
-                status.state = 'failure';
-                status.description = 'PR head or current main changed during review observation.';
+                // main or the PR head moved during the run, so the evaluated
+                // snapshot no longer binds the exact current base: publish a
+                // pending observation, which replaces any earlier success for this
+                // head from this run onward, and end the job successfully.
+                await github.rest.repos.createCommitStatus({
+                  owner, repo, sha: headSha, state: 'pending',
+                  context: 'Agent Review Gate v2 observe',
+                  description: 'Not observed: PR head or main moved during the observation.',
+                  target_url: targetUrl,
+                });
+                core.notice('Agent Review Gate v2 observation skipped: PR head or current main changed during review observation.');
+                return;
               }
               await github.rest.repos.createCommitStatus(status);
               if (status.state !== 'success') {

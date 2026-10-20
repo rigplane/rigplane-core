@@ -32,6 +32,8 @@ from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBack
 from rigplane.audio.bridge import AudioBridge
 from rigplane.audio.usb_driver import AudioCaptureOpenTimeoutError
 
+from _portaudio_pool_helpers import drain_pool
+
 # The pool lives in usb_driver, so its warnings carry that logger name —
 # the shared pool's voice, whichever consumer submitted the stuck call.
 _LOGGER_NAME = "rigplane.audio.usb_driver"
@@ -137,7 +139,7 @@ async def test_enumeration_timeout_keeps_loop_free_and_fails_start(
         await ticker.stop()
         await ticker_task
         gate.set()  # release the stuck background listing
-        await asyncio.sleep(0.05)
+        await drain_pool()
 
     assert ticker.progressed >= 3, (
         "event loop should keep making progress while enumeration is stuck"
@@ -151,8 +153,16 @@ async def test_enumeration_timeout_keeps_loop_free_and_fails_start(
     warnings = _warnings(caplog)
     assert len(warnings) == 1, "exactly one actionable warning on timeout"
     message = warnings[0].getMessage()
-    assert "device enumeration" in message
-    assert "BRIDGE" in message
+    args = warnings[0].args
+    assert isinstance(args, tuple) and len(args) == 2
+    operation_id, timeout = args
+    assert isinstance(operation_id, int) and operation_id > 0
+    assert timeout == _TEST_TIMEOUT_S
+    assert message.startswith(
+        f"usb-audio: PortAudio operation {operation_id} "
+        f"did not finish within {timeout:.1f}s"
+    )
+    assert "microphone permission prompt" in message
 
 
 @pytest.mark.timeout(10)
@@ -193,7 +203,7 @@ async def test_playback_start_timeout_keeps_loop_free_and_fails_start(
     # Release LAST: the abandoned open's late-handle close logs its own
     # warning, which must land after the assertions above (mor1438 shape).
     gate.set()
-    await asyncio.sleep(0.05)
+    await drain_pool()
 
 
 @pytest.mark.timeout(10)
@@ -231,7 +241,7 @@ async def test_capture_start_timeout_keeps_loop_free_and_fails_start(
     # Release LAST: the abandoned open's late-handle close logs its own
     # warning, which must land after the assertions above (mor1438 shape).
     gate.set()
-    await asyncio.sleep(0.05)
+    await drain_pool()
 
 
 @pytest.mark.timeout(10)
@@ -262,7 +272,7 @@ async def test_stop_timeout_keeps_loop_free_and_completes_teardown(
         await ticker.stop()
         await ticker_task
         gate.set()  # release the stuck background stop
-        await asyncio.sleep(0.05)
+        await drain_pool()
 
     assert ticker.progressed >= 3, (
         "event loop should keep making progress while the stop is stuck"

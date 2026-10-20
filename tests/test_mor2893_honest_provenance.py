@@ -5,7 +5,8 @@ radio actually answered something this code parsed. The scan family
 (CI-V 0x0E, SET-only on Icom) can never be radio-confirmed, so its seed at
 connect and its fire-and-forget command echoes must carry an explicitly
 unconfirmed source instead — same for the public-API sync facade's
-expected-value echo after fire-and-forget CI-V setters.
+expected-value echo: it is the locally expected value, never one parsed
+from a radio readback.
 
 Silent-link legs reuse the never-answering fake serial CI-V link from
 ``test_icom7610_serial_radio.py``; the answering leg answers exactly one
@@ -161,9 +162,8 @@ async def test_answering_link_power_off_ack_records_command_response() -> None:
 
 
 def test_public_api_sync_set_records_local_reconcile_not_command_response() -> None:
-    """The sync facade's setters are fire-and-forget CI-V writes: the expected
-    value they echo into the facade's local store was never answered by the
-    radio, so it must not claim ``command_response``."""
+    """The sync facade echoes the locally expected value — not one parsed
+    from a radio readback — so it must not claim ``command_response``."""
     from rigplane.runtime.sync import IcomRadio as SyncIcomRadio
 
     sync_radio = SyncIcomRadio("192.0.2.1")

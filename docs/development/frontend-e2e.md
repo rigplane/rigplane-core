@@ -1,0 +1,3 @@
+# Frontend end-to-end tests
+
+The FTX-1 RIT scenario in `frontend/tests/e2e/v2-ui-interactive.impl.ts` drives Chromium against an in-memory fake served by `tests/e2e/ftx1_rit_web_server.py`. It runs in the `quick` workflow's frontend job as `RIGPLANE_FTX1_RIT_E2E=1 npx playwright test --project ftx1-rit`, run from `frontend/` after `npm run build` (the fake serves `frontend/dist`); the Playwright config starts the fake with `uv run`, on port 18765 unless `RIGPLANE_FTX1_RIT_PORT` is set. The other tests in that spec file belong to the `live-audit` project and still need `RIGPLANE_V2_URL` pointing at a live server.

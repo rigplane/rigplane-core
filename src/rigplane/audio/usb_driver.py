@@ -19,6 +19,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
+from itertools import count
+from threading import Lock
 from types import SimpleNamespace
 from typing import Any, Callable, Coroutine, Iterator, Literal
 
@@ -35,6 +37,7 @@ from .backend import (
 )
 
 logger = logging.getLogger(__name__)
+_PORTAUDIO_OPERATION_IDS = count(1)
 
 _SILENCE_WARN_SECONDS = 10
 """Consecutive bit-exact-zero RX seconds before the silence watchdog warns."""
@@ -69,6 +72,14 @@ _USB_NAME_PATTERNS: tuple[str, ...] = (
 
 class AudioDeviceSelectionError(RuntimeError):
     """Raised when no suitable USB audio device can be selected."""
+
+
+class AudioDeviceAmbiguousError(AudioDeviceSelectionError):
+    """Several audio devices match and none can be chosen safely."""
+
+
+class AudioTopologyUnavailableError(AudioDeviceSelectionError):
+    """The USB topology was not read, so the radio's audio pair is unknown."""
 
 
 class AudioDriverLifecycleError(RuntimeError):
@@ -114,6 +125,58 @@ class AudioCaptureOpenTimeoutError(AudioDriverLifecycleError):
     to WS clients — no bespoke availability flag. The next subscriber
     attempt opens a fresh stream from scratch.
     """
+
+
+class AudioFormatUnsupportedError(AudioDriverLifecycleError):
+    """Raised when the device accepts none of the requested stream formats."""
+
+
+AudioStartFailureReason = Literal[
+    "usb_topology_names",
+    "usb_topology_unavailable",
+    "usb_ambiguous",
+    "open_timeout",
+    "format",
+    "other",
+]
+
+
+def audio_start_failure_reason(exc: BaseException) -> AudioStartFailureReason:
+    """Classify an audio start failure by the exception types it chains.
+
+    The category is safe to publish: it never carries exception text.
+    """
+    from ._usb_resolve import (
+        WindowsAudioAmbiguityError,
+        WindowsAudioEndpointNameError,
+        WindowsAudioTopologyError,
+    )
+
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__
+        )
+    reasons: tuple[
+        tuple[tuple[type[BaseException], ...], AudioStartFailureReason], ...
+    ] = (
+        ((AudioCaptureOpenTimeoutError,), "open_timeout"),
+        ((AudioFormatUnsupportedError,), "format"),
+        ((AudioDeviceAmbiguousError, WindowsAudioAmbiguityError), "usb_ambiguous"),
+        ((WindowsAudioEndpointNameError,), "usb_topology_names"),
+        (
+            (AudioTopologyUnavailableError, WindowsAudioTopologyError),
+            "usb_topology_unavailable",
+        ),
+    )
+    # The outermost classified exception is the newest failure.
+    for error in chain:
+        for types, reason in reasons:
+            if isinstance(error, types):
+                return reason
+    return "other"
 
 
 _DEFAULT_SAMPLE_RATE_CANDIDATES: tuple[int, ...] = (48_000, 24_000, 16_000, 8_000)
@@ -270,38 +333,86 @@ class _BoundedPortAudioPool:
         An abandoned item has no stream handle to late-close and remains
         counted until its worker settles.
         """
+
+        def log_safe(level: int, message: str, *args: Any) -> None:
+            try:
+                logger.log(level, message, *args)
+            except Exception:
+                pass
+
         if self.inflight >= _CAPTURE_OPEN_MAX_WORKERS:
-            logger.warning(
+            log_safe(
+                logging.WARNING,
                 "usb-audio: PortAudio worker pool saturated by %d stuck "
-                "operation(s) — failing the %s %s fast instead of queuing "
-                "behind them",
+                "operation(s) — failing fast instead of queuing behind them",
                 self.inflight,
-                direction.upper(),
-                what,
             )
             raise AudioCaptureOpenTimeoutError(
                 f"PortAudio worker pool saturated by "
                 f"{self.inflight} stuck operation(s)."
             )
 
-        future = self.submit_tracked(fn)
-        _done, pending = await asyncio.wait({future}, timeout=timeout)
-        if future in pending:
-            if warn_on_timeout:
-                logger.warning(
-                    "usb-audio: %s %s did not finish within %.1fs — an OS audio "
-                    "device call is stuck; a microphone permission prompt may "
-                    "be pending on the computer running RigPlane (macOS: grant "
-                    "Microphone access to the app that launched the server, "
-                    "e.g. Terminal); failing this audio request",
-                    direction.upper(),
-                    what,
-                    timeout,
-                )
-            raise AudioCaptureOpenTimeoutError(
-                f"{direction.upper()} {what} timed out after {timeout}s."
+        operation_id = next(_PORTAUDIO_OPERATION_IDS)
+        state_lock = Lock()
+        caller_state: str | None = None
+        native_state = "pending"
+
+        def log_state() -> None:
+            log_safe(
+                logging.INFO,
+                "usb-audio: PortAudio operation %d caller=%s native=%s",
+                operation_id,
+                caller_state,
+                native_state,
             )
-        return future.result()
+
+        def record_terminal(outcome: str) -> None:
+            nonlocal native_state
+            with state_lock:
+                native_state = outcome
+                if caller_state is not None:
+                    log_state()
+
+        def run() -> Any:
+            outcome = "failed"
+            try:
+                result = fn()
+                outcome = "completed"
+                return result
+            finally:
+                record_terminal(outcome)
+
+        future = self.submit_tracked(run)
+        future.add_done_callback(
+            lambda done: None if done.cancelled() else done.exception()
+        )
+        try:
+            _done, pending = await asyncio.wait({future}, timeout=timeout)
+            if future not in pending:
+                return future.result()
+        except asyncio.CancelledError:
+            with state_lock:
+                caller_state = "cancelled"
+                log_state()
+            raise
+        with state_lock:
+            caller_state = "timed_out"
+            log_state()
+        if warn_on_timeout:
+            log_safe(
+                logging.WARNING,
+                "usb-audio: PortAudio operation %d did not finish within %.1fs "
+                "— an OS audio "
+                "device call is stuck; a microphone permission prompt may "
+                "be pending on the computer running RigPlane (macOS: grant "
+                "Microphone access to the app that launched the server, "
+                "e.g. Terminal); failing this audio request",
+                operation_id,
+                timeout,
+            )
+        raise AudioCaptureOpenTimeoutError(
+            f"{direction.upper()} {what} timed out after {timeout}s."
+        )
 
     async def open_stream_bounded(
         self,
@@ -718,7 +829,7 @@ def _unique_override_match(
         return matches[0]
     if len(matches) > 1:
         available = _format_device_choices(matches)
-        raise AudioDeviceSelectionError(
+        raise AudioDeviceAmbiguousError(
             f"Ambiguous {direction.upper()} device override {override!r}. "
             f"Matching {direction.upper()} devices: {available}"
         )
@@ -979,11 +1090,18 @@ def resolve_usb_duplex_mode(
     Everything else — separate devices, virtual loopbacks, non-macOS
     platforms — supports the two-stream path: ``"full"``.
 
+    The platform identity is read through ``platform.system()`` on this
+    module's ``platform`` attribute — the same seam
+    ``UsbAudioDriver._ensure_selected_devices`` and
+    ``UsbAudioDriver._select_devices_bounded`` already consult — so one
+    monkeypatch on ``usb_driver.platform.system`` steers the selection
+    branches and this policy together.
+
     Pure read-only policy (MOR-534, AudioTransport 1/12). Consumed via
     :attr:`UsbAudioDriver.duplex_mode`, which the backends expose as
     ``audio_duplex_mode`` for the AudioSession's setup-order sequencing.
     """
-    if sys.platform != "darwin":
+    if platform.system() != "Darwin":
         return "full"
     if rx_dev.index != tx_dev.index:
         return "full"
@@ -1251,7 +1369,9 @@ class UsbAudioDriver:
             try:
                 return list(_query_windows_pnp_devices())
             except Exception:  # noqa: BLE001 — optional metadata only
-                logger.debug("usb-audio: optional Windows topology unavailable")
+                logger.warning(
+                    "usb-audio: optional Windows topology unavailable", exc_info=True
+                )
                 return []
 
         records: list[Any] = []
@@ -1267,7 +1387,7 @@ class UsbAudioDriver:
                     warn_on_timeout=False,
                 )
             except AudioCaptureOpenTimeoutError:
-                logger.info(
+                logger.warning(
                     "usb-audio: optional Windows topology did not settle; "
                     "requiring an unambiguous audio pair"
                 )
@@ -1336,7 +1456,14 @@ class UsbAudioDriver:
                 if (d.supports_rx if direction == "rx" else d.supports_tx)
             }
             if len(identities) != 1:
-                raise AudioDeviceSelectionError(
+                error = (
+                    AudioTopologyUnavailableError
+                    if not records
+                    else AudioDeviceAmbiguousError
+                    if identities
+                    else AudioDeviceSelectionError
+                )
+                raise error(
                     "Windows USB audio selection is ambiguous or unavailable; "
                     "select explicit RX/TX devices for the serial radio."
                 )
@@ -1498,7 +1625,7 @@ class UsbAudioDriver:
             )
 
         if not allow_sample_rate_fallback:
-            raise AudioDriverLifecycleError(
+            raise AudioFormatUnsupportedError(
                 f"Explicit {direction.upper()} sample rate "
                 f"{requested_sample_rate} Hz is not supported by [{device.index}] "
                 f"{device.name}."
@@ -1534,7 +1661,7 @@ class UsbAudioDriver:
                     open_channels=open_field,
                 )
 
-        raise AudioDriverLifecycleError(
+        raise AudioFormatUnsupportedError(
             f"No supported {direction.upper()} sample rate found for [{device.index}] "
             f"{device.name}; tried {list(self._sample_rate_candidates(requested_sample_rate))}."
         )

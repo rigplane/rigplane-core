@@ -82,6 +82,7 @@ SWAP_B0 = b"\x07\xb0"
 
 # CI-V ACK frame (FB) wrapped in UDP for MockTransport.receive_packet.
 ACK_IC7610 = _wrap_civ_in_udp(b"\xfe\xfe\xe0\x98\xfb\xfd")
+ACK_IC7300 = _wrap_civ_in_udp(b"\xfe\xfe\xe0\x94\xfb\xfd")
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +95,7 @@ class TestPerReceiverFreq:
     async def test_ic7610_set_freq_main_no_select_prefix(
         self, ic7610: IcomRadio, mock_transport: MockTransport
     ) -> None:
+        mock_transport.queue_response_on_send(1, ACK_IC7610)
         await ic7610.set_freq(14_074_000, receiver=0)
         frames = _civ_bytes(mock_transport.sent_packets)
         freq_frame = next((f for f in frames if f[4:5] == b"\x05"), None)
@@ -113,11 +115,10 @@ class TestPerReceiverFreq:
     ) -> None:
         # Fallback path: set_vfo("SUB") → set_freq → set_vfo("MAIN").
         # Release each ACK only after its own send (1=select SUB, 2=set-freq
-        # fire-and-forget, 3=restore MAIN). Pre-queueing ACKs upfront lets the
-        # rx pump race them into the wrong consumer (fire-and-forget ACK sink
-        # vs restore waiter); the race winner differs between 3.11 and 3.12+
-        # because pre-3.12 asyncio.wait_for wraps the awaitable in an extra
-        # Task (gh-96764), changing scheduling order.
+        # (waits for its answer), 3=restore MAIN). Pre-queueing ACKs upfront lets
+        # the rx pump race them into the wrong consumer; the race winner differs
+        # between 3.11 and 3.12+ because pre-3.12 asyncio.wait_for wraps the
+        # awaitable in an extra Task (gh-96764), changing scheduling order.
         mock_transport.queue_response_on_send(1, ACK_IC7610)
         mock_transport.queue_response_on_send(2, ACK_IC7610)
         mock_transport.queue_response_on_send(3, ACK_IC7610)
@@ -145,6 +146,7 @@ class TestPerReceiverFreq:
     async def test_ic7300_set_freq_direct(
         self, ic7300: IcomRadio, mock_transport: MockTransport
     ) -> None:
+        mock_transport.queue_response_on_send(1, ACK_IC7300)
         await ic7300.set_freq(14_074_000, receiver=0)
         frames = _civ_bytes(mock_transport.sent_packets)
         freq_frame = next((f for f in frames if f[4:5] == b"\x05"), None)

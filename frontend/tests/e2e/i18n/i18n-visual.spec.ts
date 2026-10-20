@@ -3,8 +3,7 @@
  *
  * Drives the built Core frontend with a stubbed backend (no live radio,
  * no live Tower) under three locales — `en-US`, `ja-JP`, `qps-ploc` — at
- * two viewports — desktop 1280×800 and mobile 390×844 — and captures a
- * screenshot of every P0 surface extracted in RP-ML-005.
+ * two viewports — desktop 1280×800 and mobile 390×844.
  *
  * Locale switch path:
  *   - We do NOT click through `LanguageSelector` per locale (slow + flaky).
@@ -20,40 +19,47 @@
  *     `__i18nWsDispatch(msg)` hook for pushing fake `notification` frames
  *     (used for the Toast surface).
  *
- * Assertion floor (no screenshot diffs are forced — see README):
- *   - Page text MUST NOT contain `[missing:` (lookup-miss marker).
- *   - Page text MUST NOT contain `${` (raw template leak).
+ * Assertion floor:
+ *   - Page text AND page markup MUST NOT contain `[missing:` (lookup-miss
+ *     marker) or `${` (raw template leak). The markup pass catches
+ *     markers in `aria-label`/`title`/`placeholder` attributes and in
+ *     hidden containers that the visibility-filtered `innerText` pass
+ *     never sees.
+ *   - The status-bar, disconnected and toast cases assert their own
+ *     surface rather than the app shell: the desktop `.status-bar` must
+ *     be visible and the mobile layout must not render one; the
+ *     disconnected case expects the StatusBar radio indicator to report
+ *     `degraded` on desktop and the phone's radio-link line to be visible
+ *     with the localized lost-link text on mobile; the toast case requires
+ *     the `__i18nWsDispatch` hook, dispatches through it and expects a
+ *     visible toast.
  *   - Glossary tokens used by populated state — `MAIN`, `SUB`, `USB`,
- *     `LSB`, `RTTY`, the radio model `IC-7300` — MUST appear verbatim
- *     in EVERY locale, including `qps-ploc`.
- *   - On `qps-ploc` we DO NOT also check for diacritics in the page,
- *     because some unsubstituted English glyphs are intentional
- *     (interpolated radio model, mode tokens). The component-level
- *     pseudo smoke (RP-ML-013A) already covers the runtime transform.
+ *     `LSB`, `RTTY`, `VFO` — MUST appear verbatim in EVERY locale,
+ *     including `qps-ploc`, on the desktop app-shell. The radio model is
+ *     not asserted: no surface this suite drives renders it. Mobile is
+ *     excluded: the portrait phone renders only the active receiver.
+ *   - On `qps-ploc` the body text MUST carry pseudo-locale markers
+ *     (`⟦⟧` wrappers / diacritic substitutions, `pseudo.ts`), so a
+ *     silent fall-back to English fails the run. Unsubstituted English
+ *     glyphs elsewhere are still expected — interpolated radio values
+ *     and mode tokens are passed through verbatim by design.
  *
  * Scope split with RP-ML-013A:
  *   - RP-ML-013A is the cheap unit-test floor (vitest + jsdom) that runs
  *     in <2s with no browser. It validates the runtime transform.
- *   - RP-ML-006 (this file) is the heavier full-page visual smoke. It
- *     catches layout regressions (clipped buttons, overflow, broken
- *     mobile sheets) that a string-level test cannot see.
+ *   - RP-ML-006 (this file) is the heavier full-page smoke driven in a
+ *     real browser.
  */
 
 import { test, expect, type Page, type Route } from '@playwright/test';
-import { mkdir } from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import {
+  fulfillControllerRoute,
   mockCapabilities,
   mockDisconnectedState,
   mockInfo,
-  mockLocalControllerStatus,
   mockState,
 } from './fixtures';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BASELINE_DIR = path.join(__dirname, '__screenshots__', 'i18n');
 
 type SupportedLocale = 'en-US' | 'ja-JP' | 'qps-ploc';
 const LOCALES: SupportedLocale[] = ['en-US', 'ja-JP', 'qps-ploc'];
@@ -76,12 +82,38 @@ const VIEWPORTS: ViewportSpec[] = [
  * by composing them as interpolation values at the call site
  * (see `frontend/src/lib/i18n/pseudo.ts` header).
  *
- * Note: We assert the tokens MAIN/SUB/USB/LSB and the radio model
- * "IC-7300" appear in the rendered DOM somewhere. Visibility per
- * surface is not required — the layout naturally hides some on mobile.
- * The smoke is: glossary survives the locale switch at all.
+ * All six render on the desktop app-shell under every supported locale,
+ * `qps-ploc` included. The radio model is deliberately NOT asserted:
+ * no surface this suite drives renders the model string at all (the
+ * fixtures publish `mockCapabilities.model` and it never reaches the
+ * DOM), so there is no verbatim model text to guard. Mobile is excluded
+ * because the portrait phone renders only the active receiver — its DOM
+ * carries no SUB/RTTY/VFO text at all, so the desktop-wide token set
+ * cannot honestly apply there.
  */
-const GLOSSARY_TOKENS_DESKTOP = ['USB', 'VFO'];
+const GLOSSARY_TOKENS_DESKTOP = ['MAIN', 'SUB', 'USB', 'LSB', 'RTTY', 'VFO'];
+
+/**
+ * Characters that can only come from the `qps-ploc` transform in
+ * `frontend/src/lib/i18n/pseudo.ts`: the `⟦`/`⟧` wrappers it puts around
+ * every catalog string plus its DIACRITIC_MAP letter substitutions.
+ * Plain English copy — the state the page falls back to when the
+ * pseudo-locale never applied — contains none of them.
+ */
+const PSEUDO_MARKERS =
+  /[⟦⟧áƀçđéƒğĥíĵķłɱñóþǫŕšťúṽŵẋýžÁƁÇĐÉƑĞĤÍĴĶŁⱮÑÓÞǪŔŠŤÚṼŴẊÝŽ]/;
+
+/**
+ * What the phone's radio-link line must read for `mockDisconnectedState`
+ * (`likelyCause: 'radio_network_lost'`): the catalog entry
+ * `core.statusbar.health.radioLinkLost` in each locale. `qps-ploc` has no
+ * catalog file, so it is matched by the pseudo-locale wrappers.
+ */
+const RADIO_LINK_LOST_TEXT: Record<SupportedLocale, string | RegExp> = {
+  'en-US': 'radio link lost',
+  'ja-JP': 'トランシーバーとの通信が切断されました',
+  'qps-ploc': /^⟦.+⟧$/,
+};
 
 function locStorageInit(locale: SupportedLocale) {
   // Stamp both keys: the explicit Core selector (LanguageSelector path)
@@ -128,14 +160,17 @@ function wsStubInit(selectedState: typeof mockState): string {
     const initialControlFrame = ${JSON.stringify(initialControlFrame)};
 
     class StubWebSocket extends EventTarget {
-      constructor(url) {
+      constructor(url, protocols = []) {
         super();
         this.url = url;
         this.readyState = 0;
         this.binaryType = 'arraybuffer';
         this.bufferedAmount = 0;
         this.extensions = '';
-        this.protocol = '';
+        // Real local Core accepts the client's controller subprotocol
+        // (docs/api/web.md); without the echo ws-client.ts _openSocket
+        // closes the channel right after open.
+        this.protocol = protocols[0] || '';
         // Hook for compatibility with code that uses ws.onopen = fn.
         this.onopen = null;
         this.onmessage = null;
@@ -157,7 +192,21 @@ function wsStubInit(selectedState: typeof mockState): string {
         });
       }
       send(_data) {
-        // Swallow: the visual smoke does not exercise outbound commands.
+        // Swallow outbound commands, but ack session heartbeats the way
+        // real Core does: without acks the client drops the session once
+        // the 6 s TTL passes. The generation is the frozen
+        // mockControllerGrant.generation.
+        try {
+          const frame = JSON.parse(String(_data));
+          if (frame && frame.type === 'controller_heartbeat' && this.readyState === 1) {
+            const ack = JSON.stringify({ type: 'controller_heartbeat', generation: 0 });
+            const evt = new MessageEvent('message', { data: ack });
+            this.dispatchEvent(evt);
+            if (typeof this.onmessage === 'function') this.onmessage(evt);
+          }
+        } catch {
+          // Not JSON — swallow.
+        }
       }
       close() {
         this.readyState = 3;
@@ -198,10 +247,7 @@ async function routeMockBackend(page: Page, state = mockState): Promise<void> {
   await page.route('**/api/v1/state', (route) => json(route, state));
   await page.route('**/api/v1/capabilities', (route) => json(route, mockCapabilities));
   await page.route('**/api/v1/info', (route) => json(route, mockInfo));
-  await page.route('**/api/v1/controller', (route) => {
-    if (route.request().method() !== 'GET') return route.fulfill({ status: 405, json: {} });
-    return json(route, mockLocalControllerStatus);
-  });
+  await page.route('**/api/v1/controller', fulfillControllerRoute);
   // Anything else under /api/v1/ — return an empty 200 so the page does
   // not surface a network error overlay we did not plan for.
   await page.route('**/api/v1/**', (route) => {
@@ -251,37 +297,35 @@ async function preparePage(
   await routeMockBackend(page, selectedState);
 }
 
-function screenshotPath(
-  surface: string,
-  locale: SupportedLocale,
-  viewport: ViewportSpec,
-): string {
-  return path.join(BASELINE_DIR, locale, `${surface}-${viewport.name}.png`);
-}
-
-async function ensureScreenshotDir(): Promise<void> {
-  for (const locale of LOCALES) {
-    await mkdir(path.join(BASELINE_DIR, locale), { recursive: true });
-  }
-}
-
 /**
- * Inspect the rendered body text for forbidden markers.
+ * Inspect the rendered body text and the full page markup for forbidden
+ * markers.
  *
  * `[missing:` is what the runtime emits when a key is absent from the
  * active locale catalog (see `runtime.ts`). It MUST NOT appear in a
  * shipped surface. `${` is the raw template-literal leak; same story.
+ *
+ * The markup pass exists because `innerText` is visibility-filtered:
+ * `aria-label`, `title` and `placeholder` attribute values and hidden
+ * containers never reach it. Script and style blocks are stripped from
+ * the markup first.
  */
 async function assertNoLookupMisses(page: Page, surfaceLabel: string): Promise<void> {
   const bodyText = await page.locator('body').innerText();
   expect(bodyText, `${surfaceLabel}: lookup-miss marker present`).not.toMatch(/\[missing:/);
   expect(bodyText, `${surfaceLabel}: raw template leak present`).not.toMatch(/\$\{[a-zA-Z]/);
+  const markup = (await page.content())
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '');
+  expect(markup, `${surfaceLabel}: lookup-miss marker in markup`).not.toMatch(/\[missing:/);
+  expect(markup, `${surfaceLabel}: raw template leak in markup`).not.toMatch(/\$\{[a-zA-Z]/);
 }
 
 /**
  * Confirm glossary tokens survive the active locale, including
- * `qps-ploc`. Restricted to desktop because some panels collapse on
- * mobile and may not surface every token.
+ * `qps-ploc`. Restricted to desktop: the mobile portrait layout renders
+ * only the active receiver, and its DOM carries no SUB/RTTY/VFO text at
+ * all, so the desktop token set cannot apply there.
  */
 async function assertGlossaryTokens(
   page: Page,
@@ -289,10 +333,30 @@ async function assertGlossaryTokens(
   surfaceLabel: string,
 ): Promise<void> {
   if (viewport.name !== 'desktop') return;
-  const bodyText = await page.locator('body').innerText();
   for (const token of GLOSSARY_TOKENS_DESKTOP) {
-    expect(bodyText, `${surfaceLabel}: glossary token "${token}" missing`).toContain(token);
+    await expect(
+      page.locator('body'),
+      `${surfaceLabel}: glossary token "${token}" missing`,
+    ).toContainText(token, { useInnerText: true });
   }
+}
+
+/**
+ * Under `qps-ploc` the page must actually carry the pseudo-locale
+ * transform. Without this, a run that silently fell back to English
+ * would pass every other check: glossary tokens and mode readouts are
+ * interpolation values the transform deliberately leaves verbatim.
+ */
+async function assertPseudoMarkers(
+  page: Page,
+  locale: SupportedLocale,
+  surfaceLabel: string,
+): Promise<void> {
+  if (locale !== 'qps-ploc') return;
+  await expect(
+    page.locator('body'),
+    `${surfaceLabel}: no pseudo-locale markers — did the locale fall back to English?`,
+  ).toContainText(PSEUDO_MARKERS, { useInnerText: true });
 }
 
 async function waitForAppShell(page: Page): Promise<void> {
@@ -303,7 +367,7 @@ async function waitForAppShell(page: Page): Promise<void> {
     .first()
     .waitFor({ state: 'visible', timeout: 15_000 });
   // Settle layout: small idle window so transitions and Svelte 5
-  // effects flush before the screenshot.
+  // effects flush before the assertions.
   await page.waitForTimeout(400);
 }
 
@@ -315,14 +379,59 @@ async function gotoApp(page: Page, locale: SupportedLocale): Promise<void> {
   ).toBe(true);
 }
 
-async function captureBaseline(
-  page: Page,
-  surface: string,
-  locale: SupportedLocale,
-  viewport: ViewportSpec,
-): Promise<void> {
-  const dest = screenshotPath(surface, locale, viewport);
-  await page.screenshot({ path: dest, fullPage: false });
+interface Rect { x: number; y: number; width: number; height: number }
+
+interface RadioLinkLineMeasure {
+  line: Rect;
+  next: Rect | null;
+  nextClass: string | null;
+  overlay: Rect | null;
+  spectrum: Rect | null;
+  hitIsLine: boolean;
+  style: { fontFamily: string; fontSize: string; fontWeight: string; firstLetter: string };
+}
+
+/**
+ * Geometry and typography of the phone's radio-link line, read in the page:
+ * its box, the box of the element that follows it in the DOM, the landscape
+ * overlay bar and spectrum, whether the line is what a hit test finds at its
+ * own centre, and the computed style the operator sees (including the
+ * first-letter pseudo-element's text transform).
+ */
+async function measureRadioLinkLine(page: Page): Promise<RadioLinkLineMeasure | null> {
+  return page.evaluate(() => {
+    const line = document.querySelector<HTMLElement>('[data-testid="radio-link-line"]');
+    if (line === null) return null;
+    const rect = (el: Element | null) => {
+      if (el === null) return null;
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height };
+    };
+    const own = line.getBoundingClientRect();
+    const hit = document.elementFromPoint(own.x + own.width / 2, own.y + own.height / 2);
+    const style = getComputedStyle(line);
+    return {
+      line: rect(line)!,
+      next: rect(line.nextElementSibling),
+      nextClass: line.nextElementSibling?.className ?? null,
+      overlay: rect(document.querySelector('.m-ls-overlay')),
+      spectrum: rect(document.querySelector('.m-ls-spectrum')),
+      hitIsLine: hit !== null && line.contains(hit),
+      style: {
+        fontFamily: style.fontFamily,
+        fontSize: style.fontSize,
+        fontWeight: style.fontWeight,
+        firstLetter: getComputedStyle(line, '::first-letter').textTransform,
+      },
+    };
+  });
+}
+
+/** True when the two boxes share any area (sub-pixel edge contact is not overlap). */
+function overlaps(a: Rect, b: Rect): boolean {
+  const eps = 0.5;
+  return a.x + eps < b.x + b.width && b.x + eps < a.x + a.width
+    && a.y + eps < b.y + b.height && b.y + eps < a.y + a.height;
 }
 
 // MOR-1549: this file used to force `mode: 'serial'` here, which made the
@@ -349,10 +458,6 @@ async function captureBaseline(
 test.describe.configure({ mode: 'default' });
 
 test.describe('i18n visual smoke (RP-ML-006)', () => {
-  test.beforeAll(async () => {
-    await ensureScreenshotDir();
-  });
-
   for (const locale of LOCALES) {
     for (const viewport of VIEWPORTS) {
       test(`app-shell loaded — ${locale} @ ${viewport.name}`, async ({ page }) => {
@@ -360,78 +465,135 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
         await gotoApp(page, locale);
         await waitForAppShell(page);
         await assertNoLookupMisses(page, `app-shell/${locale}/${viewport.name}`);
+        if (viewport.name === 'mobile') {
+          // Control for the disconnected case below: the connected fixture
+          // must not raise the phone's radio-link line.
+          await expect(
+            page.getByTestId('radio-link-line'),
+            `app-shell/${locale}/${viewport.name}: radio-link line shown while the link is healthy`,
+          ).toHaveCount(0);
+        }
         await assertGlossaryTokens(page, viewport, `app-shell/${locale}/${viewport.name}`);
-        await captureBaseline(page, 'app-shell', locale, viewport);
+        await assertPseudoMarkers(page, locale, `app-shell/${locale}/${viewport.name}`);
       });
 
       test(`status-bar populated — ${locale} @ ${viewport.name}`, async ({ page }) => {
         await preparePage(page, locale, viewport);
         await gotoApp(page, locale);
         await waitForAppShell(page);
-        // StatusBar lives at the top of the layout in both skins.
-        const statusBar = page.locator('.status-bar, [data-status-bar], header.status-bar');
-        if ((await statusBar.count()) > 0) {
-          await statusBar.first().scrollIntoViewIfNeeded();
+        // StatusBar.svelte renders the `.status-bar` element and
+        // RadioLayout.svelte mounts it; MobileRadioLayout.svelte does
+        // not reference StatusBar, so the mobile case pins its absence.
+        const statusBar = page.locator('.status-bar');
+        if (viewport.name === 'desktop') {
+          await expect(
+            statusBar,
+            `status-bar/${locale}/${viewport.name}: .status-bar not visible`,
+          ).toBeVisible();
+        } else {
+          await expect(
+            statusBar,
+            `status-bar/${locale}/${viewport.name}: the mobile skin must not render a status bar`,
+          ).toHaveCount(0);
         }
         await assertNoLookupMisses(page, `status-bar/${locale}/${viewport.name}`);
-        await captureBaseline(page, 'status-bar', locale, viewport);
       });
 
       test(`connection-overlay disconnected — ${locale} @ ${viewport.name}`, async ({ page }) => {
         await preparePage(page, locale, viewport, { state: mockDisconnectedState });
         await gotoApp(page, locale);
         await waitForAppShell(page);
+        if (viewport.name === 'desktop') {
+          // StatusBar.svelte interpolates the raw link state
+          // (`state: radioState`) into the radio indicator's title.
+          await expect(
+            page.locator('.status-bar .indicator[title*="degraded"]'),
+            `connection-overlay/${locale}/${viewport.name}: no StatusBar indicator reports the degraded radio link`,
+          ).toBeVisible();
+        } else {
+          // The phone has no status bar; its radio-link line carries the
+          // same localized reason, readable (16 px or larger) and inside
+          // the first screen without scrolling.
+          const line = page.getByTestId('radio-link-line');
+          await expect(
+            line,
+            `connection-overlay/${locale}/${viewport.name}: no radio-link line on the phone`,
+          ).toBeVisible();
+          await expect(
+            line,
+            `connection-overlay/${locale}/${viewport.name}: radio-link line text`,
+          ).toHaveText(RADIO_LINK_LOST_TEXT[locale]);
+          const fontSize = await line.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+          expect(fontSize, `connection-overlay/${locale}/${viewport.name}: line font size`)
+            .toBeGreaterThanOrEqual(16);
+          const box = await line.boundingBox();
+          expect(box, `connection-overlay/${locale}/${viewport.name}: line has no box`).not.toBeNull();
+          expect(box!.y, `connection-overlay/${locale}/${viewport.name}: line above the viewport`)
+            .toBeGreaterThanOrEqual(0);
+          expect(box!.y + box!.height, `connection-overlay/${locale}/${viewport.name}: line below the first screen`)
+            .toBeLessThanOrEqual(viewport.height);
+        }
         await assertNoLookupMisses(
           page,
           `connection-overlay/${locale}/${viewport.name}`,
         );
-        await captureBaseline(page, 'connection-overlay', locale, viewport);
       });
 
       test(`settings modal open — ${locale} @ ${viewport.name}`, async ({ page }) => {
         await preparePage(page, locale, viewport);
         await gotoApp(page, locale);
         await waitForAppShell(page);
-        // The settings button lives in StatusBar. Its aria-label is
-        // localized; instead of looking up the translated string per
-        // locale, use the CSS class hook the component already exposes.
-        const settingsBtn = page.locator('.control-btn.settings-btn');
-        if ((await settingsBtn.count()) > 0) {
-          await settingsBtn.first().click();
-          // Wait for the modal dialog.
-          await page
-            .locator('[role="dialog"][aria-modal="true"]')
-            .first()
-            .waitFor({ state: 'visible', timeout: 4_000 })
-            .catch(() => undefined);
-          await page.waitForTimeout(250);
+        // The opener depends on the responsive skin: the desktop
+        // StatusBar carries `.control-btn.settings-btn`; the mobile
+        // skin's header carries `.m-settings-btn` (MobileRadioLayout),
+        // which opens the setup BottomSheet. Each viewport must open a
+        // real dialog — a renamed selector or a dialog that never
+        // appears fails here instead of degrading this case into
+        // another app-shell pass.
+        const desktopOpener = page.locator('.control-btn.settings-btn');
+        if (viewport.name === 'desktop') {
+          await expect(desktopOpener).toHaveCount(1);
+          await desktopOpener.click();
+        } else {
+          await expect(desktopOpener).toHaveCount(0);
+          const mobileOpener = page.locator('.m-settings-btn');
+          await expect(mobileOpener).toHaveCount(1);
+          await mobileOpener.click();
         }
+        await expect(
+          page.locator('[role="dialog"][aria-modal="true"]').first(),
+          `settings-modal/${locale}/${viewport.name}: dialog never opened`,
+        ).toBeVisible();
         await assertNoLookupMisses(
           page,
           `settings-modal/${locale}/${viewport.name}`,
         );
-        await captureBaseline(page, 'settings-modal', locale, viewport);
       });
 
       test(`send-report dialog open — ${locale} @ ${viewport.name}`, async ({ page }) => {
         await preparePage(page, locale, viewport);
         await gotoApp(page, locale);
         await waitForAppShell(page);
+        // The report opener is desktop chrome: StatusBar renders it,
+        // the mobile skin does not. Desktop must open the dialog; the
+        // mobile case pins the desktop opener's absence so a selector
+        // rename or a layout regression fails here loudly instead of
+        // degrading this case into another app-shell pass.
         const reportBtn = page.locator('.control-btn.report-btn');
-        if ((await reportBtn.count()) > 0) {
-          await reportBtn.first().click();
-          await page
-            .locator('[role="dialog"][aria-modal="true"]')
-            .first()
-            .waitFor({ state: 'visible', timeout: 4_000 })
-            .catch(() => undefined);
-          await page.waitForTimeout(250);
+        if (viewport.name === 'desktop') {
+          await expect(reportBtn).toHaveCount(1);
+          await reportBtn.click();
+          await expect(
+            page.locator('[role="dialog"][aria-modal="true"]').first(),
+            `send-report-dialog/${locale}/${viewport.name}: dialog never opened`,
+          ).toBeVisible();
+        } else {
+          await expect(reportBtn).toHaveCount(0);
         }
         await assertNoLookupMisses(
           page,
           `send-report-dialog/${locale}/${viewport.name}`,
         );
-        await captureBaseline(page, 'send-report-dialog', locale, viewport);
       });
 
       test(`toast notification — ${locale} @ ${viewport.name}`, async ({ page }) => {
@@ -440,29 +602,75 @@ test.describe('i18n visual smoke (RP-ML-006)', () => {
         await waitForAppShell(page);
         // Dispatch a notification through the stubbed WebSocket using
         // a code that is bundled in en-US.json (RP-ML-005 emits
-        // reasonCode + params from `broadcast_notification`).
+        // reasonCode + params from `broadcast_notification`). The hook
+        // is asserted before use so a missing stub fails with its own
+        // message.
+        const hookType = await page.evaluate(() =>
+          typeof (window as unknown as { __i18nWsDispatch?: unknown }).__i18nWsDispatch
+        );
+        expect(
+          hookType,
+          `toast/${locale}/${viewport.name}: window.__i18nWsDispatch is missing — the WS stub never installed it`,
+        ).toBe('function');
         await page.evaluate(() => {
-          const dispatch = (
-            window as unknown as {
-              __i18nWsDispatch?: (msg: unknown) => void;
-            }
-          ).__i18nWsDispatch;
-          if (dispatch) {
-            dispatch({
-              type: 'notification',
-              level: 'warning',
-              code: 'licenseExpired',
-              message: 'Your license has expired. Reactivate to continue.',
-              params: {},
-            });
-          }
+          (window as unknown as { __i18nWsDispatch: (msg: unknown) => void }).__i18nWsDispatch({
+            type: 'notification',
+            level: 'warning',
+            code: 'licenseExpired',
+            message: 'Your license has expired. Reactivate to continue.',
+            params: {},
+          });
         });
+        // Toast.svelte renders a notification as `button.toast` inside
+        // its own `.toast-container`; AppGlobalHost.svelte mounts it.
+        // The toast's `in:fly` transition lasts 200 ms; the wait below
+        // is 400 ms.
+        await expect(
+          page.locator('.toast-container .toast'),
+          `toast/${locale}/${viewport.name}: dispatched notification rendered no toast`,
+        ).toBeVisible();
         await page.waitForTimeout(400);
         await assertNoLookupMisses(page, `toast/${locale}/${viewport.name}`);
-        await captureBaseline(page, 'toast', locale, viewport);
       });
     }
   }
+
+  test('radio-link line takes layout space and keeps one style — portrait and landscape', async ({ page }) => {
+    const label = 'radio-link-line/en-US';
+    await preparePage(page, 'en-US', { name: 'mobile', width: 390, height: 844 }, {
+      state: mockDisconnectedState,
+    });
+    await gotoApp(page, 'en-US');
+    await waitForAppShell(page);
+    await expect(page.locator('.m-layout'), `${label}/portrait: portrait layout`).toBeVisible();
+    const portrait = await measureRadioLinkLine(page);
+    await page.setViewportSize({ width: 844, height: 390 });
+    await expect(page.locator('.m-landscape'), `${label}/landscape: landscape layout`).toBeVisible();
+    await page.waitForTimeout(200);
+    const landscape = await measureRadioLinkLine(page);
+
+    for (const [name, m] of [['portrait', portrait], ['landscape', landscape]] as const) {
+      expect(m, `${label}/${name}: no radio-link line`).not.toBeNull();
+      const found = m!;
+      expect(found.line.height, `${label}/${name}: line has no height`).toBeGreaterThan(0);
+      expect(found.hitIsLine, `${label}/${name}: something covers the line's centre`).toBe(true);
+      expect(found.next, `${label}/${name}: no element follows the line`).not.toBeNull();
+      expect(overlaps(found.line, found.next!), `${label}/${name}: line overlaps the next sibling`).toBe(false);
+      expect(found.line.y + found.line.height, `${label}/${name}: next sibling starts above the line's bottom edge`)
+        .toBeLessThanOrEqual(found.next!.y + 0.5);
+      expect(parseFloat(found.style.fontSize), `${label}/${name}: font size`).toBeGreaterThanOrEqual(16);
+      expect(found.style.firstLetter, `${label}/${name}: first-letter text transform`).toBe('uppercase');
+    }
+    expect(portrait!.nextClass, 'radio-link-line/portrait: next sibling').toContain('m-content');
+    expect(landscape!.nextClass, 'radio-link-line/landscape: next sibling').toContain('m-ls-body');
+    expect(landscape!.overlay, 'radio-link-line/landscape: overlay bar missing').not.toBeNull();
+    expect(overlaps(landscape!.line, landscape!.overlay!), 'radio-link-line/landscape: line overlaps the overlay bar')
+      .toBe(false);
+    expect(landscape!.spectrum, 'radio-link-line/landscape: spectrum missing').not.toBeNull();
+    expect(overlaps(landscape!.line, landscape!.spectrum!), 'radio-link-line/landscape: line overlaps the spectrum')
+      .toBe(false);
+    expect(landscape!.style, 'radio-link-line: one typography in both orientations').toEqual(portrait!.style);
+  });
 });
 
 type ProductionLanguageCase = {

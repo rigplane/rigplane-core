@@ -1,0 +1,239 @@
+name: Bench nightly (read-only)
+
+# Nightly checks against the bench radios on the macOS bench runner.
+# Informational, not a required check. TX and the tuner are never actuated:
+# every radio-touching command runs through scripts/bench/guard.sh.
+# Secrets, modes and limits: docs/internals/bench-nightly.md.
+
+on:
+  schedule:
+    # Weekdays: read-only.
+    - cron: "30 1 * * 1-5"
+    # Weekends: receive-side write-and-restore. The mode step matches this exact string.
+    - cron: "30 1 * * 0,6"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run the guard, the lock and rigplane diagnose only (no radio validate or pytest)"
+        type: boolean
+        default: false
+      rx_write_restore:
+        description: "Enable receive-side write-and-restore (the weekend variant)"
+        type: boolean
+        default: false
+      provider:
+        description: "rigplane validate --provider"
+        type: choice
+        options: [native, both]
+        default: native
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-nightly
+  cancel-in-progress: false
+
+jobs:
+  radio:
+    name: ${{ matrix.label }}
+    runs-on: [self-hosted, macOS, ARM64, bench]
+    timeout-minutes: 45
+    # No job-level continue-on-error: a night passes for a radio only when its
+    # job concludes success. Radios stay independent through fail-fast: false
+    # (one radio's failure never cancels the others) and run one at a time
+    # through max-parallel: 1.
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - radio: ic7610
+            label: IC-7610
+            connect: --backend lan --model IC-7610 --radio-addr 0x98
+          - radio: ic7300
+            label: IC-7300
+            connect: --backend serial --model IC-7300 --radio-addr 0x94
+          - radio: ftx1
+            label: FTX-1
+            connect: --backend yaesu-cat --model FTX-1
+    env:
+      RADIO: ${{ matrix.radio }}
+      LABEL: ${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Guard (no TX, no tuner)
+        run: bash scripts/bench/guard.sh check-env
+
+      - name: Resolve run mode
+        id: mode
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          RX_WRITE: ${{ inputs.rx_write_restore }}
+          PROVIDER: ${{ inputs.provider }}
+        run: |
+          mode=read-only
+          if [ "$SCHEDULE" = "30 1 * * 0,6" ] || [ "$RX_WRITE" = "true" ]; then
+            mode=rx-write-restore
+          fi
+          provider="${PROVIDER:-native}"
+          {
+            echo "mode=$mode"
+            echo "provider=$provider"
+            echo "dry_run=$([ "$DRY_RUN" = "true" ] && echo true || echo false)"
+          } >> "$GITHUB_OUTPUT"
+          state="$HOME/.rigplane-bench-nightly/$RADIO/$mode-$provider"
+          mkdir -p "$state"
+          echo "STATE_DIR=$state" >> "$GITHUB_ENV"
+          echo "OUT_DIR=$RUNNER_TEMP/bench-out/$RADIO" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/bench-out/$RADIO"
+          echo "### $LABEL: mode $mode, provider $provider, dry run ${DRY_RUN:-false}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check radio configuration
+        id: config
+        env:
+          ICOM_HOST: ${{ matrix.radio == 'ic7610' && secrets.BENCH_IC7610_HOST || '' }}
+          ICOM_USER: ${{ matrix.radio == 'ic7610' && secrets.BENCH_IC7610_USER || '' }}
+          ICOM_PASS: ${{ matrix.radio == 'ic7610' && secrets.BENCH_IC7610_PASS || '' }}
+          ICOM_SERIAL_DEVICE: ${{ matrix.radio == 'ic7300' && secrets.BENCH_IC7300_SERIAL || matrix.radio == 'ftx1' && secrets.BENCH_FTX1_SERIAL || '' }}
+        run: |
+          configured=true
+          if [ "$RADIO" = ic7610 ]; then
+            [ -n "$ICOM_HOST" ] && [ -n "$ICOM_USER" ] && [ -n "$ICOM_PASS" ] || configured=false
+          else
+            [ -n "$ICOM_SERIAL_DEVICE" ] || configured=false
+          fi
+          echo "configured=$configured" >> "$GITHUB_OUTPUT"
+          if [ "$configured" = false ]; then
+            echo "$LABEL: skipped: not configured (repository secrets missing)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Bench lock
+        id: lock
+        run: |
+          set +e
+          bash scripts/bench/bench-lock.sh acquire "$RADIO" "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "acquired=true" >> "$GITHUB_OUTPUT"
+          elif [ "$rc" -eq 3 ]; then
+            echo "acquired=false" >> "$GITHUB_OUTPUT"
+            echo "$LABEL: skipped: busy" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            exit "$rc"
+          fi
+
+      - name: Validate
+        id: validate
+        if: steps.lock.outputs.acquired == 'true' && steps.config.outputs.configured == 'true' && steps.mode.outputs.dry_run != 'true'
+        env:
+          ICOM_HOST: ${{ matrix.radio == 'ic7610' && secrets.BENCH_IC7610_HOST || '' }}
+          ICOM_USER: ${{ matrix.radio == 'ic7610' && secrets.BENCH_IC7610_USER || '' }}
+          ICOM_PASS: ${{ matrix.radio == 'ic7610' && secrets.BENCH_IC7610_PASS || '' }}
+          ICOM_SERIAL_DEVICE: ${{ matrix.radio == 'ic7300' && secrets.BENCH_IC7300_SERIAL || matrix.radio == 'ftx1' && secrets.BENCH_FTX1_SERIAL || '' }}
+          RIGPLANE_VALIDATION_ALLOW_HARDWARE: "1"
+          CONNECT: ${{ matrix.connect }}
+          MODE: ${{ steps.mode.outputs.mode }}
+          PROVIDER: ${{ steps.mode.outputs.provider }}
+        run: |
+          read_only=--read-only
+          if [ "$MODE" = rx-write-restore ]; then read_only=; fi
+          # $CONNECT and $read_only are split into words on purpose.
+          # --output keeps the raw artifact (it records the endpoint) on the runner only;
+          # --regen-golden writes the normalized artifact that is compared and uploaded.
+          bash scripts/bench/guard.sh run -- uv run rigplane $CONNECT --timeout 6 \
+            validate --hardware --allow-hardware $read_only --provider "$PROVIDER" \
+            --json --output "$STATE_DIR/current.raw.json" \
+            --regen-golden "$STATE_DIR/current.json"
+
+      - name: Night-to-night diff
+        if: steps.validate.outcome == 'success'
+        run: |
+          set +e
+          uv run python scripts/bench/night_diff.py "$STATE_DIR/latest.json" "$STATE_DIR/current.json" \
+            --label "$LABEL" > "$OUT_DIR/diff.md"
+          rc=$?
+          set -e
+          cat "$OUT_DIR/diff.md" | tee -a "$GITHUB_STEP_SUMMARY"
+          cp "$STATE_DIR/current.json" "$OUT_DIR/validate.normalized.json"
+          mv "$STATE_DIR/current.json" "$STATE_DIR/latest.json"
+          exit "$rc"
+
+      - name: Hardware pytest subset
+        if: matrix.radio == 'ic7610' && steps.lock.outputs.acquired == 'true' && steps.config.outputs.configured == 'true' && steps.mode.outputs.dry_run != 'true' && !cancelled()
+        env:
+          ICOM_HOST: ${{ secrets.BENCH_IC7610_HOST }}
+          ICOM_USER: ${{ secrets.BENCH_IC7610_USER }}
+          ICOM_PASS: ${{ secrets.BENCH_IC7610_PASS }}
+          MODE: ${{ steps.mode.outputs.mode }}
+        run: |
+          file=tests/integration/test_radio_integration.py
+          # Read-only nights run TestConnection alone: the shared `radio` fixture
+          # in tests/integration/conftest.py writes on teardown.
+          targets="$file::TestConnection"
+          if [ "$MODE" = rx-write-restore ]; then
+            for cls in TestFrequency TestMode TestMeters TestStatus TestVFO; do
+              targets="$targets $file::$cls"
+            done
+          fi
+          bash scripts/bench/guard.sh run -- uv run pytest $targets -p no:cacheprovider --timeout 300
+
+      - name: rigplane diagnose
+        if: always() && steps.mode.outcome == 'success'
+        # Evidence only: a diagnose failure must not decide the night.
+        continue-on-error: true
+        run: |
+          # The bundle holds runner logs and configuration: it stays on the runner.
+          bash scripts/bench/guard.sh run -- uv run rigplane diagnose \
+            --output "$STATE_DIR/diagnose-latest.zip"
+
+      - name: Release bench lock
+        if: always() && steps.lock.outputs.acquired == 'true'
+        run: bash scripts/bench/bench-lock.sh release "$RADIO" "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+      - name: Upload normalized results
+        if: always() && steps.mode.outcome == 'success'
+        # Evidence only: artifact storage must not decide the night.
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-nightly-${{ matrix.radio }}
+          path: ${{ runner.temp }}/bench-out/${{ matrix.radio }}
+          if-no-files-found: ignore
+          retention-days: 3
+
+      # Honest-verdict steps, last in the job. Each turns one silent green
+      # ending red with its own step name; a night passes for a radio only
+      # when its job concludes success.
+      - name: "Outcome: not configured"
+        if: always() && steps.config.outputs.configured == 'false'
+        run: |
+          line="$LABEL: not configured (repository secrets missing)"
+          echo "::error title=not configured::$line"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: "Outcome: busy"
+        if: always() && steps.lock.outputs.acquired == 'false'
+        run: |
+          line="$LABEL: busy (bench lock held by another run)"
+          echo "::error title=busy::$line"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: "Outcome: dry run"
+        if: always() && steps.mode.outputs.dry_run == 'true'
+        run: |
+          line="$LABEL: dry run (never a certification night)"
+          echo "::error title=dry run::$line"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          exit 1

@@ -5,10 +5,6 @@ the god-object module. The two coroutines here read/write radio state through
 internal attributes and helpers (``_check_connected``/``_connected``/
 ``_advance_civ_generation`` are call hubs that stay on ``IcomRadio`` per the
 spike — they are invoked here via the ``radio`` parameter).
-
-Behaviour is intentionally identical to the previous ``IcomRadio._watchdog_loop``
-and ``IcomRadio._reconnect_loop`` methods; the public ``IcomRadio`` methods now
-delegate here. Public API, reconnect timing and watchdog cadence are unchanged.
 """
 
 from __future__ import annotations
@@ -124,11 +120,21 @@ async def watchdog_loop(radio: IcomRadio) -> None:
 
 
 async def reconnect_loop(radio: IcomRadio) -> None:
-    """Attempt to reconnect with exponential backoff."""
+    """Attempt to reconnect with exponential backoff.
+
+    The loop also returns, at its next check, once ``CoreRadio.disconnect``
+    has incremented ``_owner_stop_epoch`` since the loop started: the
+    owner's cancel alone can be swallowed by an await inside a round
+    (``CivRuntime.stop_data_watchdog``).
+    """
+    owner_stop_epoch = radio._owner_stop_epoch
     delay = radio._reconnect_delay
     attempt = 0
     try:
-        while radio._conn_state != RadioConnectionState.DISCONNECTED:
+        while (
+            radio._conn_state != RadioConnectionState.DISCONNECTED
+            and radio._owner_stop_epoch == owner_stop_epoch
+        ):
             attempt += 1
             logger.info("Reconnect attempt %d (delay=%.1fs)", attempt, delay)
             _emit_reconnect_status(
@@ -138,55 +144,28 @@ async def reconnect_loop(radio: IcomRadio) -> None:
                 radio._civ_runtime.advance_generation("reconnect-attempt")
                 # Capture audio state for auto-recovery.
                 audio_snapshot = radio._audio_runtime.capture_snapshot()
-                # Clean up old transports
-                radio._stop_token_renewal()
-                if radio._audio_stream is not None:
-                    try:
-                        await radio._audio_stream.stop_rx()
-                        await radio._audio_stream.stop_tx()
-                    except Exception:
-                        logger.debug(
-                            "reconnect: audio_stream stop failed", exc_info=True
-                        )
-                    radio._audio_stream = None
-                if radio._audio_transport is not None:
-                    try:
-                        await radio._audio_transport.disconnect()
-                    except Exception:
-                        logger.debug(
-                            "reconnect: audio_transport disconnect failed",
-                            exc_info=True,
-                        )
-                    radio._audio_transport = None
-                if radio._civ_transport is not None:
-                    try:
-                        await radio._civ_transport.disconnect()
-                    except Exception:
-                        logger.debug(
-                            "reconnect: civ_transport disconnect failed",
-                            exc_info=True,
-                        )
-                    radio._civ_transport = None
-                try:
-                    await radio._send_token(0x01)
-                except Exception:
-                    logger.debug("reconnect: token remove failed", exc_info=True)
-                try:
-                    await radio._ctrl_transport.disconnect()
-                except Exception:
-                    logger.debug(
-                        "reconnect: ctrl_transport disconnect failed", exc_info=True
-                    )
+                # Release through the session lifecycle so the connect below
+                # performs a real login: a teardown that bypasses the
+                # lifecycle leaves it in CONNECTED, and connect() then skips
+                # the login while the CI-V transport is already gone.
+                await radio._session_lifecycle.disconnect()
+                if radio._owner_stop_epoch != owner_stop_epoch:
+                    return
 
                 # Re-initialize transport
                 radio._ctrl_transport = IcomTransport()
                 await radio.connect()
+                if radio._owner_stop_epoch != owner_stop_epoch:
+                    # Finish the owner's stop on the session this round opened.
+                    await radio.disconnect()
+                    return
                 logger.info("Reconnected successfully after %d attempts", attempt)
                 _emit_reconnect_status(
                     radio, "connected", attempt=attempt, next_retry_seconds=None
                 )
-                if radio._auto_recover_audio and audio_snapshot is not None:
-                    await radio._audio_runtime.recover(audio_snapshot)
+                await radio._recover_audio_after_connect(
+                    audio_snapshot, owner_stop_epoch
+                )
                 return
             except (AuthenticationError, ValueError, TypeError) as exc:
                 logger.error(
@@ -201,6 +180,8 @@ async def reconnect_loop(radio: IcomRadio) -> None:
                 )
                 return
             except Exception as exc:
+                if radio._owner_stop_epoch != owner_stop_epoch:
+                    return
                 radio._conn_state = RadioConnectionState.RECONNECTING
                 logger.warning("Reconnect attempt %d failed: %s", attempt, exc)
                 await asyncio.sleep(delay)
@@ -270,6 +251,10 @@ async def audio_error_watchdog_loop(radio: "IcomRadio") -> None:
                 logger.debug(
                     "audio-watchdog: transport disconnect failed", exc_info=True
                 )
+            # Audio-only recovery keeps the radio session (control and CI-V
+            # stay up): record the numbering; the ``_ensure_audio_transport``
+            # rebuild below resumes it, and a new login clears it.
+            radio._audio_resume_seq = audio_t.send_seq
             radio._audio_transport = None
 
             if not radio._connected:

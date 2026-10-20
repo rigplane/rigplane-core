@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import struct
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -65,6 +66,7 @@ from rigplane.core.state_acquisition_policy import (
     RadioAcquisitionProfile,
     acquisition_policy_for_class,
 )
+from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.core.tx_target import KnownTxTarget, TxReceiver, UnknownTxTarget
 from rigplane.core.tx_observation import (
@@ -79,6 +81,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
     acquisition_class_for_path,
 )
+from rigplane.core.types import HEADER_SIZE
 from rigplane.exceptions import CommandError, ConnectionError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio import IcomRadio
@@ -978,18 +981,58 @@ async def test_request_recovery_now_starts_one_full_reconnect(
     )
 
 
+def _park_owned_identity_hold(radio: IcomRadio) -> None:
+    """An identity hold that owns the open link (CONNECTING, gate running)."""
+    radio._conn_state = RadioConnectionState.CONNECTING
+    radio._connection_identity = RadioIdentity(
+        status=RadioIdentityStatus.NO_RESPONSE, expected_model=radio.model
+    )
+    radio._lan_identity_owned_epoch = radio._civ_epoch
+    radio._lan_identity_gate_running = True
+    radio._ctrl_transport._udp_transport = object()  # control session open
+
+
+@pytest.mark.parametrize("trigger", ["direct_request", "busy_zero_notice"])
+async def test_owned_identity_hold_admits_the_full_reconnect(
+    radio: IcomRadio,
+    trigger: str,
+) -> None:
+    """A hold on the open link is not CONNECTED, yet a dead-session verdict
+    or a busy=0 notice during it must reach the same recovery."""
+    order, _released = _arm_notice_recovery(radio)
+    _park_owned_identity_hold(radio)
+    assert radio._lan_identity_phase_owns_open_link() is True
+
+    with patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()):
+        if trigger == "direct_request":
+            radio._civ_runtime.request_recovery_now("control session dead: reject")
+        else:
+            # All-zero 0x90 notice: busy at 0x60 reads 0.
+            radio._control_phase._on_conninfo_notice(bytes(0x90))
+        task = radio._civ_runtime._reconnect_task
+        assert task is not None
+        await task
+
+    assert order == ["force_cleanup", "release", "soft_reconnect", "remote_id=0"]
+
+
 @pytest.mark.parametrize(
     "blocker",
-    ["not_connected", "recovering", "live_task"],
+    ["not_connected", "connecting_without_hold", "recovering", "live_task"],
 )
 async def test_request_recovery_now_is_a_no_op_when_blocked(
     radio: IcomRadio,
     blocker: str,
 ) -> None:
-    """Not CONNECTED, already recovering, or a live recovery task: do nothing."""
+    """Not CONNECTED and no owned identity hold, already recovering, or a live
+    recovery task: do nothing."""
     _order, released = _arm_notice_recovery(radio)
     if blocker == "not_connected":
         radio._conn_state = RadioConnectionState.DISCONNECTED
+    elif blocker == "connecting_without_hold":
+        radio._conn_state = RadioConnectionState.CONNECTING
+        radio._ctrl_transport._udp_transport = object()
+        assert radio._lan_identity_phase_owns_open_link() is False
     elif blocker == "recovering":
         radio._civ_recovering = True
     else:
@@ -2856,15 +2899,19 @@ def _public_value_control_expected(public_path: str, value: object) -> object:
 
 
 def _expected_observation_max_age(radio: IcomRadio, store_path: str) -> float | None:
-    """What ``_observation`` stamps: the resolved policy TTL, else the table.
+    """What ``_observation`` stamps: the resolved policy TTL, else the table,
+    else the profile default.
 
     Written out here rather than delegated to ``_civ_rx``'s own resolver: the
     store spells receivers ``0``/``1`` and ``[state_acquisition.field_policies]``
     spells them ``main``/``sub``, and that translation is the part worth
     restating independently. The rule is ``_observation_max_age``'s
-    (MOR-2576): a declared entry or a pollable capability resolves through
-    ``policy_for``; a path the profile does not poll keeps the rig-blind
-    table.
+    (MOR-2576, MOR-1815 residual fix): a declared entry or a pollable
+    capability resolves through ``policy_for``; a path the profile does not
+    poll keeps the rig-blind table entry where one exists, and otherwise the
+    profile default TTL — so only an explicit ``"never"`` (or a pollable
+    class resolving to the MOR-2615 deliberate ``None``) still stamps
+    ``None``.
     """
 
     from rigplane.runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
@@ -2884,6 +2931,12 @@ def _expected_observation_max_age(radio: IcomRadio, store_path: str) -> float | 
                 acquisition.capability_for(candidate).can_poll
             ):
                 return acquisition.policy_for(candidate).freshness_ttl_seconds
+        table_ttl = _OBSERVATION_MAX_AGE_SECONDS.get(
+            (path.scope.value, path.family.value, path.name)
+        )
+        if table_ttl is not None:
+            return table_ttl
+        return acquisition.policy_for(spellings[0]).freshness_ttl_seconds
     return _OBSERVATION_MAX_AGE_SECONDS.get(
         (path.scope.value, path.family.value, path.name)
     )
@@ -6762,3 +6815,184 @@ def test_transceiver_id_reply_never_becomes_store_evidence(
     assert (
         radio._state_store.snapshot().field(_POWER_ON_PATH).value is True  # noqa: SLF001
     )
+
+
+# ---------------------------------------------------------------------------
+# Idle / header-only packet liveness: only a CI-V payload may advance the
+# pump's payload-liveness markers.
+# ---------------------------------------------------------------------------
+
+
+def _idle_civ_datagram() -> bytes:
+    """A 16-byte ptype=0 idle control packet: UDP header only, no payload."""
+    data = bytearray(HEADER_SIZE)
+    struct.pack_into("<I", data, 0, HEADER_SIZE)
+    struct.pack_into("<H", data, 4, 0x00)
+    struct.pack_into("<H", data, 6, 0)
+    struct.pack_into("<I", data, 8, 0xDEADBEEF)
+    struct.pack_into("<I", data, 0x0C, 0x00010001)
+    return bytes(data)
+
+
+class _ControlledTime:
+    """A callable standing in for monotonic() at chosen instants."""
+
+    def __init__(self, start: float) -> None:
+        self._value = start
+
+    def set(self, value: float) -> None:
+        self._value = value
+
+    def __call__(self) -> float:
+        return self._value
+
+
+async def test_idle_datagram_does_not_claim_payload_liveness(
+    radio: IcomRadio, transport: MockTransport
+) -> None:
+    """An idle-only batch must leave the startup liveness markers alone.
+
+    The pump stamps its startup liveness on entry; one header-only batch
+    routes zero frames and must preserve that stamp, the recovery marker,
+    and the stream-ready/recovering flags.
+    """
+    clock = _ControlledTime(10.0)
+    with patch("rigplane.runtime._civ_rx.time", monotonic=clock):
+        marker = radio._civ_epoch
+        radio._civ_runtime._soft_recovery_epoch = marker
+        radio._civ_recovering = True
+        radio._civ_stream_ready = False
+        routed: list[CivFrame] = []
+        original_route = radio._civ_runtime._route_civ_frame
+
+        async def _count_route(
+            frame: CivFrame,
+            *,
+            generation: int,
+            store_provider_generation: int | None = None,
+        ) -> None:
+            routed.append(frame)
+            await original_route(
+                frame,
+                generation=generation,
+                store_provider_generation=store_provider_generation,
+            )
+
+        entries = 0
+        entered_once = asyncio.Event()
+        processed = asyncio.Event()
+        last_succeeded = False
+        original_receive = transport.receive_packet
+
+        async def _count_receive(timeout: float = 5.0) -> bytes:
+            nonlocal entries, last_succeeded
+            entries += 1
+            if entries == 1:
+                entered_once.set()
+            elif last_succeeded:
+                processed.set()
+            try:
+                result = await original_receive(timeout)
+            except asyncio.TimeoutError:
+                last_succeeded = False
+                raise
+            last_succeeded = True
+            return result
+
+        with (
+            patch.object(
+                radio._civ_runtime, "_route_civ_frame", side_effect=_count_route
+            ),
+            patch.object(transport, "receive_packet", side_effect=_count_receive),
+        ):
+            radio._civ_runtime.start_pump()
+            try:
+                await asyncio.wait_for(entered_once.wait(), 2.0)
+                clock.set(30.0)
+                transport.queue_response(_idle_civ_datagram())
+                await asyncio.wait_for(processed.wait(), 2.0)
+                assert radio._last_civ_data_received == 10.0
+                assert radio._civ_runtime._soft_recovery_epoch == marker
+                assert radio._civ_stream_ready is False
+                assert radio._civ_recovering is True
+                assert routed == []
+            finally:
+                await radio._civ_runtime.stop_pump()
+
+
+async def test_mixed_idle_and_valid_batch_establishes_liveness(
+    radio: IcomRadio, transport: MockTransport
+) -> None:
+    """Positive control: one batch holding idle plus a payload advances.
+
+    The header-only member routes nothing, the CI-V member routes one
+    frame, and the batch stamps fresh liveness and restores the flags.
+    """
+    clock = _ControlledTime(10.0)
+    with patch("rigplane.runtime._civ_rx.time", monotonic=clock):
+        marker = radio._civ_epoch
+        radio._civ_runtime._soft_recovery_epoch = marker
+        radio._civ_recovering = True
+        radio._civ_stream_ready = False
+        routed: list[CivFrame] = []
+        original_route = radio._civ_runtime._route_civ_frame
+
+        async def _count_route(
+            frame: CivFrame,
+            *,
+            generation: int,
+            store_provider_generation: int | None = None,
+        ) -> None:
+            routed.append(frame)
+            await original_route(
+                frame,
+                generation=generation,
+                store_provider_generation=store_provider_generation,
+            )
+
+        entries = 0
+        entered_once = asyncio.Event()
+        processed = asyncio.Event()
+        last_succeeded = False
+        original_receive = transport.receive_packet
+
+        async def _count_receive(timeout: float = 5.0) -> bytes:
+            nonlocal entries, last_succeeded
+            entries += 1
+            if entries == 1:
+                entered_once.set()
+            elif last_succeeded:
+                processed.set()
+            try:
+                result = await original_receive(timeout)
+            except asyncio.TimeoutError:
+                last_succeeded = False
+                raise
+            last_succeeded = True
+            return result
+
+        with (
+            patch.object(
+                radio._civ_runtime, "_route_civ_frame", side_effect=_count_route
+            ),
+            patch.object(transport, "receive_packet", side_effect=_count_receive),
+        ):
+            radio._civ_runtime.start_pump()
+            try:
+                await asyncio.wait_for(entered_once.wait(), 2.0)
+                clock.set(30.0)
+                civ = build_civ_frame(
+                    CONTROLLER_ADDR, IC_7610_ADDR, 0x03, data=bcd_encode(14_074_000)
+                )
+                transport.queue_response(_idle_civ_datagram())
+                # The pump drains this queue into the same batch as the
+                # receive above, so both members share one liveness stamp.
+                transport._packet_queue.put_nowait(_wrap_civ_in_udp(civ))  # noqa: SLF001
+                await asyncio.wait_for(processed.wait(), 2.0)
+                assert radio._last_civ_data_received == 30.0
+                assert radio._civ_runtime._soft_recovery_epoch is None
+                assert radio._civ_stream_ready is True
+                assert radio._civ_recovering is False
+                assert len(routed) == 1
+            finally:
+                await radio._civ_runtime.stop_pump()

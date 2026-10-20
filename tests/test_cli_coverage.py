@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import types
 import wave
 from types import SimpleNamespace
@@ -13,8 +14,9 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import pytest
 
 from _caps import FULL_ICOM_CAPS
-from rigplane.backends.config import SerialBackendConfig
+from rigplane.backends.config import LanBackendConfig, SerialBackendConfig
 from rigplane.cli import (
+    _apply_log_level,
     _build_parser,
     _cmd_att,
     _cmd_audio_loopback,
@@ -318,6 +320,74 @@ async def test_run_serve_uses_serial_backend_factory_config() -> None:
         )
     )
     cmd_serve.assert_awaited_once_with(radio, args)
+
+
+def _lan_run_args(command: str) -> argparse.Namespace:
+    args = _run_args(command=command)
+    if command in {"web", "station"}:
+        args.web_host = "127.0.0.1"
+        args.web_port = 8080
+    if command == "serve":
+        args.serve_host = "127.0.0.1"
+        args.serve_port = 4532
+    return args
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "handler_name"),
+    [("web", "_cmd_web"), ("station", "_cmd_web"), ("serve", "_cmd_serve")],
+)
+async def test_run_resident_command_builds_lan_radio_with_auto_reconnect(
+    command: str, handler_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ICOM_PASS", raising=False)
+    _, radio = _mock_radio_ctx()
+    if command in {"web", "station"}:
+        _add_managed_tx_surface(radio)
+    with (
+        patch("rigplane.cli.create_radio", return_value=radio) as create_radio,
+        patch("rigplane.cli.check_ports_available"),
+        patch(f"rigplane.cli.{handler_name}", new_callable=AsyncMock) as handler,
+    ):
+        handler.return_value = 0
+        rc = await _run(_lan_run_args(command))
+
+    assert rc == 0
+    assert create_radio.call_count == 1
+    config = create_radio.call_args.args[0]
+    assert config == LanBackendConfig(
+        host="127.0.0.1", port=50001, timeout=1.0, auto_reconnect=True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "handler_name"),
+    [
+        ("status", "_cmd_status"),
+        ("freq", "_cmd_freq"),
+        ("mode", "_cmd_mode"),
+        ("meter", "_cmd_meter"),
+    ],
+)
+async def test_run_one_shot_command_builds_lan_radio_without_auto_reconnect(
+    command: str, handler_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ICOM_PASS", raising=False)
+    _, radio = _mock_radio_ctx()
+    with (
+        patch("rigplane.cli.create_radio", return_value=radio) as create_radio,
+        patch(f"rigplane.cli.{handler_name}", new_callable=AsyncMock) as handler,
+    ):
+        handler.return_value = 0
+        rc = await _run(_lan_run_args(command))
+
+    assert rc == 0
+    assert create_radio.call_count == 1
+    config = create_radio.call_args.args[0]
+    assert config.auto_reconnect is False
+    assert config == LanBackendConfig(host="127.0.0.1", port=50001, timeout=1.0)
 
 
 @pytest.mark.asyncio
@@ -830,6 +900,103 @@ def test_web_managed_parser_defaults_without_auth() -> None:
     assert args.auth_token_file is None
 
 
+def test_web_log_level_option() -> None:
+    parser = _build_parser()
+
+    assert parser.parse_args(["web"]).log_level is None
+    assert parser.parse_args(["web", "--log-level", "DEBUG"]).log_level == "DEBUG"
+
+
+def test_web_log_level_invalid_rejected() -> None:
+    parser = _build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["web", "--log-level", "VERBOSE"])
+
+
+@pytest.mark.asyncio
+async def test_cmd_web_applies_log_level_to_rigplane_logger() -> None:
+    radio = AsyncMock()
+
+    class FakeWebServer:
+        def __init__(self, _radio, cfg):
+            self.radio = _radio
+            self.cfg = cfg
+
+        async def serve_forever(self, *, on_started=None):
+            on_started()
+            raise asyncio.CancelledError
+
+    seen: dict[str, int] = {}
+
+    def _fake_get_logger(name: str = "") -> MagicMock:
+        logger_mock = MagicMock()
+        logger_mock.setLevel.side_effect = lambda level: seen.__setitem__(name, level)
+        return logger_mock
+
+    with (
+        patch("rigplane.web.server.WebServer", FakeWebServer),
+        patch("logging.getLogger", side_effect=_fake_get_logger),
+    ):
+        args = argparse.Namespace(
+            web_host="127.0.0.1",
+            web_port=9090,
+            web_static_dir=None,
+            log_level="DEBUG",
+        )
+        assert await _cmd_web(radio, args) == 0
+
+    assert seen.get("rigplane") == logging.DEBUG
+
+
+def test_apply_log_level_noops_without_flag() -> None:
+    """Without --log-level the helper must not touch any logger (#1905).
+
+    An unconditional setLevel(INFO) would override the root DEBUG level
+    installed for ICOM_DEBUG=1, so a missing (station) or None (web
+    default) value must leave the logger hierarchy alone.
+    """
+    with patch("logging.getLogger") as get_logger:
+        _apply_log_level(argparse.Namespace())
+        _apply_log_level(argparse.Namespace(log_level=None))
+    get_logger.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cmd_web_without_log_level_keeps_logger_untouched() -> None:
+    """_cmd_web with a Namespace lacking log_level must not call setLevel (#1905)."""
+    radio = AsyncMock()
+
+    class FakeWebServer:
+        def __init__(self, _radio, cfg):
+            self.radio = _radio
+            self.cfg = cfg
+
+        async def serve_forever(self, *, on_started=None):
+            on_started()
+            raise asyncio.CancelledError
+
+    seen: dict[str, int] = {}
+
+    def _fake_get_logger(name: str = "") -> MagicMock:
+        logger_mock = MagicMock()
+        logger_mock.setLevel.side_effect = lambda level: seen.__setitem__(name, level)
+        return logger_mock
+
+    with (
+        patch("rigplane.web.server.WebServer", FakeWebServer),
+        patch("logging.getLogger", side_effect=_fake_get_logger),
+    ):
+        args = argparse.Namespace(
+            web_host="127.0.0.1",
+            web_port=9090,
+            web_static_dir=None,
+        )
+        assert await _cmd_web(radio, args) == 0
+
+    assert "rigplane" not in seen
+
+
 def test_station_parser_is_managed_web_runtime() -> None:
     parser = _build_parser()
 
@@ -963,7 +1130,7 @@ async def test_cmd_web_managed_ignores_env_auth_and_keeps_loopback_rigctld(
             raise asyncio.CancelledError
 
     class FakeRigctldServer:
-        def __init__(self, _radio, cfg):
+        def __init__(self, _radio, cfg, *, allow_not_ready=False):
             captured["rigctld_cfg"] = cfg
 
         async def start(self):

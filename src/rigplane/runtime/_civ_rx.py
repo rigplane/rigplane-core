@@ -51,7 +51,7 @@ from rigplane.commands import (
     parse_scope_vbw_response,
 )
 from rigplane.commands.scope import _span_index_for_hz
-from rigplane.core.exceptions import ConnectionError, TimeoutError
+from rigplane.core.exceptions import CommandRejectedError, ConnectionError, TimeoutError
 from rigplane.core.tx_safety import ProviderPttObservation, RadioTx
 from rigplane.core.tx_target import (
     KnownTxTarget,
@@ -79,6 +79,7 @@ from rigplane.core.types import (
     ctcss_booleans_for_tone_squelch_type,
 )
 from rigplane.runtime._connection_state import RadioConnectionState
+from rigplane.runtime import radio_reconnect
 from rigplane.runtime._state_queries import tx_target_max_age
 from rigplane.runtime.meter_cal import interpolate_meter
 
@@ -555,11 +556,13 @@ def _observation_max_age(
     non-selected receiver (MOR-2599) and ``observed_active`` carries the
     observed value, the demoted path stamps its DEMOTED class's TTL —
     the same value the demoted poll itself carries — so it never ages to
-    stale between demoted polls (PR #3643 finding 2). Everything else —
-    paths the profile does not poll at all — falls back to
-    :data:`_OBSERVATION_MAX_AGE_SECONDS`: ``policy_for`` would answer the
-    profile default there, which applies to every path in the rig,
-    including the ones no author considered when writing it.
+    stale between demoted polls (PR #3643 finding 2). A path the profile
+    does not poll at all keeps the rig-blind
+    :data:`_OBSERVATION_MAX_AGE_SECONDS` entry where one exists; with
+    neither a declaration, a pollable capability, nor a table entry, the
+    stamp is the profile's ``default_policy`` TTL
+    (MOR-1815 residual: ``policy_for`` already answers that default for
+    such a path).
     """
 
     acquisition = getattr(profile, "state_acquisition", None)
@@ -572,6 +575,12 @@ def _observation_max_age(
                 profile_path, observed_active=observed_active
             ).freshness_ttl_seconds
             return ttl
+        table_ttl = _OBSERVATION_MAX_AGE_SECONDS.get(
+            (path.scope.value, path.family.value, path.name)
+        )
+        if table_ttl is not None:
+            return table_ttl
+        return acquisition.policy_for(profile_path).freshness_ttl_seconds
     return _OBSERVATION_MAX_AGE_SECONDS.get(
         (path.scope.value, path.family.value, path.name)
     )
@@ -924,9 +933,7 @@ class CivRuntime:
         as it drops the runtime — the one moment the counter restarts — and
         never during a session, where retirement's own marks are load-bearing
         (a port whose close failed stays registered so the retirement can be
-        retried). A retirement still in flight when this runs cannot undo it:
-        everything it writes here happens before its one ``await``, the
-        transport close, and that close is all it has left to do.
+        retried). A retirement still in flight when this runs cannot undo it.
         """
         for tasks in self._managed_tx_sends.values():
             for task in tasks:
@@ -956,7 +963,8 @@ class CivRuntime:
             self.unbind_ptt_observer()
         if self._host._civ_epoch == token.civ_source_generation:
             self.advance_generation("managed TX physical port retired")
-        if self._host._civ_transport is token.transport:
+        retired_live_transport = self._host._civ_transport is token.transport
+        if retired_live_transport:
             self._host._civ_transport = None
         barrier = self._managed_tx_retirements.get(provider_generation)
         if barrier is None or (
@@ -965,6 +973,8 @@ class CivRuntime:
             barrier = asyncio.create_task(token.transport.disconnect())
             self._managed_tx_retirements[provider_generation] = barrier
         await asyncio.shield(barrier)
+        if retired_live_transport:
+            self._host._civ_resume_seq = token.transport.send_seq
 
     async def stop_pump(self) -> None:
         """Stop CI-V receive pump and fail pending request futures."""
@@ -1551,10 +1561,14 @@ class CivRuntime:
         """Start the detached recovery now, unless one is already under way.
 
         A radio "session free" notice calls this from the datagram callback.
-        It is a no-op unless the session is CONNECTED, no recovery is already
+        It is a no-op unless the session is CONNECTED or held by the identity
+        phase (``_lan_identity_phase_owns_open_link``), no recovery is already
         flagged, and no recovery task is still running.
         """
-        if self._host._conn_state != RadioConnectionState.CONNECTED:
+        owns_hold = getattr(self._host, "_lan_identity_phase_owns_open_link", None)
+        if self._host._conn_state != RadioConnectionState.CONNECTED and not (
+            owns_hold is not None and owns_hold()
+        ):
             return
         if self._host._civ_recovering:
             return
@@ -1586,6 +1600,7 @@ class CivRuntime:
         hold keeps it paused until acceptance; a released control session has
         no stream to watch.
         """
+        owner_stop_epoch = self._host._owner_stop_epoch
         escalate = full_reconnect_reason is not None or (
             self._soft_recovery_epoch is not None
             and self._soft_recovery_epoch == self._host._civ_epoch
@@ -1615,12 +1630,13 @@ class CivRuntime:
         except asyncio.CancelledError:
             cancelled = True
             raise
-        except (ConnectionError, TimeoutError, OSError):
+        except (ConnectionError, TimeoutError, OSError) as exc:
             logger.error(
                 "civ-data-watchdog: lifecycle recovery failed (exhausted or "
                 "transient); watchdog will re-arm if the session survives",
                 exc_info=True,
             )
+            self._hand_off_exhaustion_to_reconnect_loop(exc, owner_stop_epoch)
         except Exception:
             logger.error(
                 "civ-data-watchdog: unexpected error in lifecycle recovery",
@@ -1632,6 +1648,37 @@ class CivRuntime:
                     self._reconnect_task = None
             else:
                 self._rearm_data_watchdog_after_recovery()
+
+    def _hand_off_exhaustion_to_reconnect_loop(
+        self, exc: Exception, owner_stop_epoch: int
+    ) -> None:
+        """Start the resident reconnect loop after lifecycle recovery exhausted.
+
+        The exhaustion is the ``RigplaneConnectionError`` that
+        ``CoreRadioSessionLifecycle._run_recover`` raises after its release.
+        ``owner_stop_epoch`` is the host's ``_owner_stop_epoch`` when the
+        recovery started; an owner stop since then starts no loop.
+        """
+        host = self._host
+        if not isinstance(exc, ConnectionError):
+            return
+        if host._owner_stop_epoch != owner_stop_epoch:
+            return
+        if host._conn_state is not RadioConnectionState.DISCONNECTED:
+            return
+        if not getattr(host, "_auto_reconnect", False):
+            return
+        live = getattr(host, "_reconnect_task", None)
+        if live is not None and not live.done():
+            return
+        host._conn_state = RadioConnectionState.RECONNECTING
+        radio_reconnect._emit_reconnect_status(
+            host,
+            "reconnecting",
+            attempt=1,
+            next_retry_seconds=host._reconnect_delay,
+        )
+        host._reconnect_task = asyncio.create_task(host._reconnect_loop())
 
     def _rearm_data_watchdog_after_recovery(self) -> None:
         """Re-arm the CI-V data watchdog after a detached recovery attempt.
@@ -1748,14 +1795,13 @@ class CivRuntime:
 
                 packets = self._shed_scope_backlog(packets)
 
-                self._host._last_civ_data_received = time.monotonic()
-                self._soft_recovery_epoch = None
-                self._host._civ_stream_ready = True
-                self._host._civ_recovering = False
-
                 for pkt in packets:
                     if len(pkt) <= CIV_HEADER_SIZE:
                         continue
+                    self._host._last_civ_data_received = time.monotonic()
+                    self._soft_recovery_epoch = None
+                    self._host._civ_stream_ready = True
+                    self._host._civ_recovering = False
                     payload = pkt[CIV_HEADER_SIZE:]
                     for frame_bytes in iter_civ_frames(payload):
                         try:
@@ -4141,8 +4187,22 @@ class CivRuntime:
         *,
         is_current: Callable[[], bool] | None = None,
     ) -> "CivFrame | None":
-        """Execute one CI-V command via request tracker (serialized by worker)."""
-        assert self._host._civ_transport is not None
+        """Execute one CI-V command via request tracker (serialized by worker).
+
+        A response-expecting read settles on the first of its data response
+        or its NAK-only ACK waiter (``CivRequestTracker.register_ack`` with
+        ``nak_only=True``): a refusal logs ``CI-V command 0x%02X refused
+        (NAK)`` and raises
+        :class:`~rigplane.core.exceptions.CommandRejectedError` instead of
+        waiting out ``_civ_get_timeout`` and reporting a timeout. A refusal
+        names no command, so a late ``0xFA`` to an earlier
+        ``wait_response=False`` write whose ACK sink was already dropped can
+        settle this read — the same exposure the write branch
+        (``register_ack(wait=True)``) and the raw transaction path's
+        ``nak_terminal=True`` default already carry.
+        """
+        if self._host._civ_transport is None:
+            raise ConnectionError("Not connected to radio")
         self._ensure_civ_runtime()
         transport = self._host._civ_transport
         tracker = self._host._civ_request_tracker
@@ -4217,10 +4277,27 @@ class CivRuntime:
         check_current()
 
         pending: "asyncio.Future[CivFrame] | None" = None
+        nak_pending: "asyncio.Future[CivFrame] | None" = None
         sent = False
         try:
             if expects_response:
                 pending = tracker.register_response(request_key)
+                # A refusal is a bare 0xFA that names no command, and
+                # ``CivRequestTracker.resolve`` hands ACK/NAK frames to ACK
+                # waiters only, so without a waiter here the refusal parked
+                # in the orphan backlog while the read waited out the whole
+                # answer window (MOR-3297). Same call shape as the raw
+                # transaction path's ``nak_terminal=True`` default
+                # (``_register_civ_data_transaction``); ``consume_backlog=False``
+                # because anything already parked belongs to another command.
+                nak_or_token = tracker.register_ack(
+                    wait=True,
+                    consume_backlog=False,
+                    nak_only=True,
+                )
+                if isinstance(nak_or_token, int):
+                    raise RuntimeError("ACK waiter registration returned sink token")
+                nak_pending = nak_or_token
             else:
                 # ``consume_backlog=False``: this waiter is registered before
                 # the frame is sent, so anything already in the orphan ACK/NAK
@@ -4259,11 +4336,15 @@ class CivRuntime:
             # of it whenever the pacing sleep overshot the remainder --
             # ``tests/test_radio.py:
             # TestResponseDeadlineOpensAtSend`` fails on that mis-charge.
-            try:
-                response = await asyncio.wait_for(
-                    pending, timeout=self._host._civ_get_timeout
-                )
-            except asyncio.TimeoutError:
+            waiters: tuple[asyncio.Future[CivFrame], ...] = (
+                (pending, nak_pending) if nak_pending is not None else (pending,)
+            )
+            done, _ = await asyncio.wait(
+                waiters,
+                timeout=self._host._civ_get_timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
                 check_current()
                 tracker.note_timeout()
                 logger.debug(
@@ -4271,8 +4352,21 @@ class CivRuntime:
                     request_key.command,
                 )
                 raise TimeoutError("CI-V response timed out")
-            check_current()
-            return response
+            if pending in done:
+                check_current()
+                return pending.result()
+            assert nak_pending is not None
+            # A future settled with a *result* carries the 0xFA frame; one
+            # settled by a generation advance or stale cleanup carries an
+            # exception that ``result()`` re-raises here.
+            nak_pending.result()
+            logger.debug(
+                "CI-V command 0x%02X refused (NAK)",
+                request_key.command,
+            )
+            raise CommandRejectedError(
+                f"CI-V command 0x{request_key.command:02X} refused (NAK)"
+            )
         except Exception:
             check_current()
             raise
@@ -4290,3 +4384,9 @@ class CivRuntime:
                     and (pending.cancelled() or pending.exception() is not None)
                 ):
                     tracker.note_ack_unclaimed()
+            if nak_pending is not None:
+                tracker.unregister(nak_pending)
+                if not nak_pending.done():
+                    nak_pending.cancel()
+                elif not nak_pending.cancelled():
+                    nak_pending.exception()

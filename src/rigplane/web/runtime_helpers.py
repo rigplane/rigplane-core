@@ -892,6 +892,7 @@ def classify_radio_health(
     now_monotonic: float | None = None,
     served_with_silent_link: bool = False,
     served_without_port: bool = False,
+    operator_disconnected: bool = False,
 ) -> dict[str, Any]:
     """Classify server/radio health from runtime evidence.
 
@@ -914,6 +915,11 @@ def classify_radio_health(
     started while the radio's serial port could not be opened: the verdict
     is ``radio_not_connected`` while the latest port open failed
     (``last_error`` set), otherwise ``radio_powered_off_likely``.
+
+    ``operator_disconnected`` (MOR-3452) is the web server's record of an
+    intentional operator disconnect: the verdict is ``idle`` /
+    ``operator_disconnected`` with the link held at ``disconnected``,
+    whatever the live link state infers.
     """
     now = time.monotonic() if now_monotonic is None else now_monotonic
     if not server_reachable:
@@ -950,6 +956,20 @@ def classify_radio_health(
     stats = _civ_stats(radio)
     last_error = getattr(radio, "last_error", None)
     last_error_value = last_error if isinstance(last_error, str) else None
+
+    if operator_disconnected:
+        # MOR-3452: the operator disconnected on purpose — not a dead
+        # network and not a missing radio. The link stays reported as
+        # ``disconnected``; readiness is the ``idle`` literal, never
+        # ``stalled`` or ``recovering``. No severity is reported.
+        return {
+            "serverReachable": True,
+            "radioLink": "disconnected",
+            "readiness": "idle",
+            "likelyCause": "operator_disconnected",
+            "sinceMs": 0,
+            "lastError": last_error_value,
+        }
 
     serial_error = getattr(radio, "serial_open_error", None)
     if isinstance(serial_error, str):

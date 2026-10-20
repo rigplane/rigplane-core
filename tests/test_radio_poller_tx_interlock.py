@@ -1,5 +1,6 @@
 import asyncio
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -14,7 +15,12 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.core.state_store import (
+    FreshnessClock,
+    FreshnessState,
+    StateSnapshot,
+    StateStore,
+)
 from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime._poller_types import (
@@ -42,6 +48,7 @@ from rigplane.runtime.tx_interlock import (
     TxInterlockDisposition,
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
+    resolve_rf_state,
 )
 from rigplane.web.radio_poller import (
     _WEB_IMMEDIATE_BLOCK_FAMILIES,
@@ -141,6 +148,7 @@ async def _dispatch(poller: RadioPoller, cmd: object) -> None:
 
 _BLOCK_CASES = (
     (SendCiv(command=0x1A, data=b"\x01"), "send_civ"),
+    (SendCiv(command=0x28, sub=0x00, data=b"\x01"), "send_civ"),
     (ScanStart(scan_type=1), "scan_start"),
     (SetAntenna1(on=True), "set_antenna_1"),
     (SetTunerStatus(value=1), "set_tuner_status"),
@@ -180,6 +188,76 @@ async def test_fresh_rx_preserves_truthful_unsupported_failure() -> None:
     del radio.send_civ
     with pytest.raises(CommandError, match="send_civ is not supported"):
         await _dispatch(poller, SendCiv(command=0x1A, data=b"\x01"))
+
+
+# ── MOR-3378: an unmanaged send_civ de-key must never be refused ────────────
+# ``SendCiv`` is in ``_WEB_IMMEDIATE_BLOCK_FAMILIES`` (family RAW_CIV), so a
+# raw PTT off (``1C 00 00``) or tuner off (``1C 01 00``) sent through
+# ``send_civ`` was refused once the observed PTT read TX or went stale —
+# leaving a raw keyer keyed. An exact de-key frame is exempt from that
+# RF-state refusal on this seat, exactly as the typed ``PttOff`` always is
+# (ALWAYS_PASS) and as the unmanaged HTTP raw seat already exempts it
+# (PR #4122). The frame is rebuilt with ``build_civ_frame(0x00, 0x00,
+# command, sub, data)`` — the same construction the HTTP seat refuses on.
+
+_DEKEY_SEND_CIV_COMMANDS = (
+    SendCiv(command=0x1C, sub=0x00, data=b"\x00"),
+    SendCiv(command=0x29, sub=0x00, data=b"\x1c\x00\x00"),
+    SendCiv(command=0x1C, sub=0x01, data=b"\x00"),
+    SendCiv(command=0x28, sub=0x00, data=b"\x00"),
+    SendCiv(command=0x29, sub=0x00, data=b"\x28\x00\x00"),
+)
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    _DEKEY_SEND_CIV_COMMANDS,
+    ids=[
+        "ptt-off",
+        "cmd29-ptt-off",
+        "tuner-off",
+        "voice-memory-stop",
+        "cmd29-voice-memory-stop",
+    ],
+)
+@pytest.mark.parametrize("ptt", (True, None), ids=("tx", "unknown"))
+async def test_send_civ_exact_dekey_passes_rf_state_refusal(
+    cmd: SendCiv, ptt: bool | None
+) -> None:
+    poller, radio, store = _poller()
+    if ptt is not None:
+        _observe_ptt(store, ptt)
+
+    await _dispatch(poller, cmd)
+
+    radio.send_civ.assert_awaited_once_with(
+        cmd.command, sub=cmd.sub, data=cmd.data, wait_response=False
+    )
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    (
+        SendCiv(command=0x1C, sub=0x00, data=b"\x01"),
+        SendCiv(command=0x1C, sub=0x00, data=b"\x00\x00"),
+        SendCiv(command=0x29, sub=0x00, data=b"\x28\x00\x01"),
+        SendCiv(command=0x28, sub=0x00, data=b"\x00\x00"),
+    ),
+    ids=[
+        "raw-ptt-on",
+        "dekey-with-extra-byte",
+        "cmd29-voice-memory-tx",
+        "voice-stop-with-extra-byte",
+    ],
+)
+async def test_send_civ_non_dekey_still_refused_while_tx(cmd: SendCiv) -> None:
+    poller, radio, store = _poller()
+    _observe_ptt(store, True)
+
+    with pytest.raises(CommandError, match="RF state is TX"):
+        await _dispatch(poller, cmd)
+
+    radio.send_civ.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -1003,3 +1081,107 @@ async def test_refused_ptt_on_emits_machine_readable_failed_lifecycle() -> None:
         "RF state is unknown; this command must not be attempted yet."
     )
     radio.set_ptt.assert_not_awaited()
+
+
+def _manual_snapshot_base() -> tuple[FreshnessClock, StateStore, RadioPoller]:
+    """One fresh PTT=False observation at t0=10.0 on a manual clock."""
+
+    clock = FreshnessClock(start=10.0)
+    radio, store = _radio(), StateStore(freshness_clock=clock)
+    store.begin_provider_generation()
+    poller = RadioPoller(radio, CommandQueue(), state_store=store)
+    _observe_ptt(store, False, observed_at=clock.now())
+    return clock, store, poller
+
+
+def test_stale_snapshot_after_generation_roll_stays_unknown() -> None:
+    """A snapshot taken before a generation roll must never read RX/TX again.
+
+    The shared resolver only compares the field against its own snapshot, so
+    it still reads RX here; the poller must keep refusing the stale proof
+    against the store's current generation. A naive delegation without the
+    current-generation check would answer RX — more permissive. Forbidden.
+    """
+
+    _clock, store, poller = _manual_snapshot_base()
+    stale = store.snapshot()
+    assert poller._current_rf_state(stale) is RfState.RX  # noqa: SLF001
+
+    store.begin_provider_generation()
+
+    assert resolve_rf_state(stale) is RfState.RX
+    assert poller._current_rf_state(stale) is RfState.UNKNOWN  # noqa: SLF001
+    assert poller._current_rf_state() is RfState.UNKNOWN  # noqa: SLF001
+
+
+def _corrupt_snapshot(snapshot: StateSnapshot, case: str) -> StateSnapshot:
+    field = snapshot.field(_PTT)
+    if case == "missing":
+        return replace(snapshot, fields=())
+    if case == "stale-flag":
+        stale = replace(field, freshness=FreshnessState.STALE)
+        return replace(snapshot, fields=(stale,))
+    if case == "non-bool":
+        return replace(snapshot, fields=(replace(field, value=1),))
+    if case == "max-age-none":
+        return replace(snapshot, fields=(replace(field, max_age=None),))
+    if case == "max-age-zero":
+        return replace(snapshot, fields=(replace(field, max_age=0.0),))
+    if case == "nan-observed":
+        nan = replace(field, last_observed_monotonic=float("nan"))
+        return replace(snapshot, fields=(nan,))
+    if case == "inf-max-age":
+        return replace(snapshot, fields=(replace(field, max_age=float("inf")),))
+    if case == "nan-generated":
+        return replace(snapshot, generated_at_monotonic=float("nan"))
+    if case == "generation-mismatch":
+        moved = replace(field, provider_generation=field.provider_generation + 1)
+        return replace(snapshot, fields=(moved,))
+    if case == "negative-generation":
+        negative = replace(field, provider_generation=-1)
+        return replace(snapshot, fields=(negative,), provider_generation=-1)
+    raise AssertionError(f"unknown corruption case: {case}")
+
+
+_CORRUPT_CASES = (
+    "missing",
+    "stale-flag",
+    "non-bool",
+    "max-age-none",
+    "max-age-zero",
+    # Non-finite timings: the pre-delegation poller answered RX here, so
+    # delegation through the shared resolver is strictly tighter, never
+    # looser. Every row pins the delegating poller's answer, not the old one.
+    "nan-observed",
+    "inf-max-age",
+    "nan-generated",
+    "age-at-ttl",
+    "age-over-ttl",
+    "future",
+    "generation-mismatch",
+    "negative-generation",
+)
+
+
+@pytest.mark.parametrize("case", _CORRUPT_CASES)
+def test_delegated_answer_never_permits_where_poller_refuses(case: str) -> None:
+    """Delegation must lose none of the poller's refusals.
+
+    Every corrupt shape must read UNKNOWN through the poller and through
+    the shared resolver it delegates to.
+    """
+
+    clock, store, poller = _manual_snapshot_base()
+    if case == "age-at-ttl":
+        clock.advance(1.0)
+        snapshot = store.snapshot()
+    elif case == "age-over-ttl":
+        clock.advance(1.5)
+        snapshot = store.snapshot()
+    elif case == "future":
+        _observe_ptt(store, False, observed_at=clock.now() + 5.0)
+        snapshot = store.snapshot()
+    else:
+        snapshot = _corrupt_snapshot(store.snapshot(), case)
+    assert poller._current_rf_state(snapshot) is RfState.UNKNOWN  # noqa: SLF001
+    assert resolve_rf_state(snapshot) is RfState.UNKNOWN

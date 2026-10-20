@@ -6,7 +6,9 @@ Part of the radio.py decomposition (#505). All methods are accessed via
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import suppress as _suppress
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
@@ -39,6 +41,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
 
     # -- type stubs for attributes defined in CoreRadio.__init__ ---------
     _audio_transport: IcomTransport | None
+    _audio_ensure_lock: asyncio.Lock
     _audio_stream: AudioStream | None
     _pcm_transcoder: PcmOpusTranscoder | None
     _pcm_transcoder_fmt: tuple[int, int, int] | None
@@ -763,10 +766,30 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 logger.debug(
                     "audio teardown: transport disconnect failed", exc_info=True
                 )
+            # Record the numbering; a rebuild on the same session resumes
+            # it, and a new login (``_connect_once``) clears it.
+            self._audio_resume_seq = audio_transport.send_seq
             self._audio_transport = None
 
     async def _ensure_audio_transport(self) -> None:
         """Connect the audio transport if not already connected.
+
+        Single flight (MOR-3400): the whole rebuild runs under
+        ``_audio_ensure_lock``, so concurrent callers (``start_rx`` /
+        ``start_tx``, the soft-reconnect audio tail, the audio-error
+        watchdog) serialize instead of tearing down each other's
+        half-built transport. The CI-V / owner-stop epochs are captured
+        at entry — BEFORE waiting on the lock — and re-checked right
+        after the lock is acquired and again after ``connect()``: a
+        caller that waited on the lock while the owner stopped fails
+        before building anything, and a rebuild superseded during
+        ``connect()`` is closed without recording its seq. The transport
+        is built in a local variable and published to
+        ``_audio_transport`` only after its ``connect`` succeeded and the
+        epochs still name this session — the slot never holds a
+        half-built transport, so no teardown can disconnect a rebuild
+        mid-handshake or record its reset ``send_seq`` over the session's
+        carried ``_audio_resume_seq``.
 
         If a previous audio transport is still attached and either the stream
         was already torn down while the transport lingered, or the transport is
@@ -781,56 +804,114 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         test mocks/stubs) are intentionally *not* treated as stale — they fall
         through to the ``if self._audio_stream is not None: return``
         short-circuit below.
+
+        Raises:
+            ConnectionError: Audio port unavailable; connect failed with an
+                ``OSError``; or the rebuild was superseded (owner stop or
+                new CI-V generation) while waiting on the lock or during
+                ``connect``.
         """
-        audio_transport = getattr(self, "_audio_transport", None)
-        if audio_transport is not None and (
-            self._audio_stream is None
-            or (
-                hasattr(audio_transport, "_udp_transport")
-                and audio_transport._udp_transport is None
-            )
-        ):
-            await self._teardown_audio_transport()
-
-        if self._audio_stream is not None:
-            return
-
-        if self._audio_port == 0:
-            raise ConnectionError("Audio port not available")
-
-        self._audio_transport = IcomTransport()
-        audio_sock = getattr(self, "_audio_sock_pending", None)
-        try:
-            await self._audio_transport.connect(
-                self._host,
-                self._audio_port,
-                local_host=getattr(self, "_local_bind_host", None),
-                local_port=getattr(self, "_audio_local_port", 0),
-                sock=audio_sock,
-            )
-        except BaseException as exc:
-            if audio_sock is not None:
-                audio_sock.close()
-                self._audio_sock_pending = None
-            self._audio_transport = None
-            if isinstance(exc, OSError):
+        civ_epoch = getattr(self, "_civ_epoch", None)
+        owner_stop_epoch = getattr(self, "_owner_stop_epoch", None)
+        async with self._audio_ensure_lock:
+            if (
+                getattr(self, "_civ_epoch", None) != civ_epoch
+                or getattr(self, "_owner_stop_epoch", None) != owner_stop_epoch
+            ):
+                # Ownership moved on while this caller waited on the lock:
+                # nothing was built yet, so there is nothing to close.
                 raise ConnectionError(
-                    f"Failed to connect audio port {self._audio_port}: {exc}"
-                ) from exc
-            raise
-        else:
-            if audio_sock is not None:
-                self._audio_sock_pending = None
+                    "Audio transport rebuild superseded: "
+                    "ownership moved on while waiting for the ensure lock"
+                )
 
-        self._audio_transport.start_ping_loop()
-        self._audio_transport.start_retransmit_loop()
-        self._audio_transport.start_idle_loop()
+            audio_transport = getattr(self, "_audio_transport", None)
+            if audio_transport is not None and (
+                self._audio_stream is None
+                or (
+                    hasattr(audio_transport, "_udp_transport")
+                    and audio_transport._udp_transport is None
+                )
+            ):
+                await self._teardown_audio_transport()
 
-        # Per wfview, audio stream also uses OpenClose on its own UDP channel.
-        await self._send_audio_open_close(open_stream=True)
+            if self._audio_stream is not None:
+                return
 
-        self._audio_stream = AudioStream(self._audio_transport)
-        logger.info("Audio transport connected on port %d", self._audio_port)
+            if self._audio_port == 0:
+                raise ConnectionError("Audio port not available")
 
-        # Start EPIPE-storm watchdog for this transport session.
-        self._start_audio_watchdog()
+            transport = IcomTransport()
+            audio_sock = getattr(self, "_audio_sock_pending", None)
+            try:
+                await transport.connect(
+                    self._host,
+                    self._audio_port,
+                    local_host=getattr(self, "_local_bind_host", None),
+                    local_port=getattr(self, "_audio_local_port", 0),
+                    sock=audio_sock,
+                )
+            except BaseException as exc:
+                if getattr(transport, "_udp_transport", None) is not None:
+                    # The endpoint exists only once ``_UdpProtocol.connection_made``
+                    # ran, so this failure happened past the bind: the transport
+                    # still holds the session's fixed ``_audio_local_port`` and
+                    # every later rebuild would fail with EADDRINUSE. Close it, and
+                    # drop it without recording its ``send_seq`` — a rebuild that
+                    # never carried this session's numbering must not overwrite
+                    # ``_audio_resume_seq``. The socket is asyncio's now; closing
+                    # ``audio_sock`` here would close its fd twice. CancelledError
+                    # is not suppressed, so a cancellation still propagates.
+                    with _suppress(Exception):
+                        await transport.disconnect()
+                    self._audio_sock_pending = None
+                elif audio_sock is not None:
+                    audio_sock.close()
+                    self._audio_sock_pending = None
+                if isinstance(exc, OSError):
+                    raise ConnectionError(
+                        f"Failed to connect audio port {self._audio_port}: {exc}"
+                    ) from exc
+                raise
+            else:
+                if audio_sock is not None:
+                    self._audio_sock_pending = None
+
+            if (
+                getattr(self, "_civ_epoch", None) != civ_epoch
+                or getattr(self, "_owner_stop_epoch", None) != owner_stop_epoch
+            ):
+                # An owner stop or a new CI-V generation landed while
+                # ``connect`` ran: this session no longer owns the radio, so
+                # the rebuild is superseded. The local transport never
+                # carried this session's numbering, so close it without
+                # recording its reset ``send_seq``.
+                with _suppress(Exception):
+                    await transport.disconnect()
+                raise ConnectionError(
+                    "Audio transport rebuild superseded: "
+                    "ownership moved on during connect"
+                )
+
+            resume_seq = getattr(self, "_audio_resume_seq", None)
+            if resume_seq is not None:
+                # ``connect`` reset the numbering to 0; continue that of the audio
+                # transport torn down on this session.
+                transport.send_seq = resume_seq
+
+            self._audio_transport = transport
+            transport.start_ping_loop()
+            transport.start_retransmit_loop()
+            transport.start_idle_loop()
+
+            # Per wfview, audio stream also uses OpenClose on its own UDP channel.
+            # The send chain (``_send_audio_open_close`` → ``send_tracked``)
+            # contains no await that can suspend, so nothing can run between
+            # the publish above and the stream construction below.
+            await self._send_audio_open_close(open_stream=True)
+
+            self._audio_stream = AudioStream(transport)
+            logger.info("Audio transport connected on port %d", self._audio_port)
+
+            # Start EPIPE-storm watchdog for this transport session.
+            self._start_audio_watchdog()

@@ -118,6 +118,18 @@ the URL; Core no longer performs the application-token check
 (`src/rigplane/web/web_routing.py: dispatch_http_request`). Existing radio login
 failures still require the radio credentials described above.
 
+### Second resident start for the same radio is refused
+
+**Symptom:** `Error: another rigplane process (pid 1234) is already serving this radio on this computer; stop it first`, exit 1.
+
+Only one resident command (`web`, `station`, `serve`) may serve an explicitly named radio (`--host`/`--serial-port`) from one computer: once the backend config is built, each takes an exclusive OS file lock on a per-radio lock file before the radio is opened (`src/rigplane/cli/_instance_guard.py: acquire_resident_lock`), so a second start refuses instead of fighting over the radio's single session. Without `--host`/`--serial-port`, discovery broadcasts or serial probes run before the guard is taken. The rigctld backend is never guarded — an external rigctld accepts several clients. Stop the named process and start again. The OS releases the lock when the holder exits, including a kill, so a restart after a crash is never blocked. If the lock directory cannot be created, the start proceeds without the guard after one warning.
+
+### One-shot command refused while a resident server holds the same radio
+
+**Symptom:** `Error: another rigplane process (pid 1234) is already using this radio on this computer`, exit 1.
+
+A one-shot command (`status`, `freq`, …) against a LAN or local-serial radio takes the same per-radio lock in `_run` (`src/rigplane/cli/__init__.py: _run`) and holds it for the run, so the one-shot refuses before the radio is opened instead of operating beside the running server. For LAN radios a second login from this computer makes the radio drop the running server's live session; for serial radios the port cannot be shared safely between two processes. Without `--host`/`--serial-port`, discovery runs before the lock (LAN discovery is a broadcast, not a login; serial discovery probes ports). Send the command to the running server instead (its HTTP API or rigctld; for a readiness check, `GET /readyz`), or stop the server first. In the reverse order — a resident start while a one-shot holds the lock — the start refuses once with the "already serving this radio" message above.
+
 ### `radio_connect` returns `backend_recovering`
 
 **Symptom:** WebSocket response:

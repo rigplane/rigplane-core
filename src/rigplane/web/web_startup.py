@@ -10,6 +10,7 @@ The functions here access ``WebServer`` state via the ``server`` argument
 from __future__ import annotations
 
 import asyncio
+from asyncio import Event
 import logging
 import time
 from collections.abc import Sequence
@@ -152,11 +153,18 @@ def _validate_managed_tx(server: WebServer) -> ManagedTxCompositionPort | None:
         raise RuntimeError("managed TX composition is not attached to Web")
     if attached is not installed:
         raise RuntimeError("managed TX composition identity mismatch")
-    if _serial_port_unopened(server) or _serial_identity_pending(server):
+    if (
+        _serial_port_unopened(server)
+        or _serial_identity_pending(server)
+        or _startup_busy_hold_pending(server)
+    ):
         # MOR-2876 / MOR-3081: there is no transport for a provider to
         # stand on yet — the port never opened, or the identity gate still
-        # holds the open link (MOR-3071). The store identity and the
-        # observation generation are still checked inside.
+        # holds the open link (MOR-3071). MOR-3391 part 2 names the busy
+        # hold on its own: the first connect has no session yet, even
+        # though its CHECKING identity also trips the serial predicate.
+        # The store identity and the observation generation are still
+        # checked inside.
         attached.validate_state_store(
             server.command_state_store, transport_pending=True
         )
@@ -337,6 +345,41 @@ def _serial_identity_pending(server: WebServer) -> bool:
     return serial_identity_hold(server._radio) is not None
 
 
+def _startup_busy_hold_pending(server: WebServer) -> bool:
+    """Whether the first connect waits out a busy reject (MOR-3391 part 2).
+
+    Read through the radio's public busy surface only — the same signal
+    the web wire serves. A radio without that surface never pends here.
+    """
+
+    event = getattr(server._radio, "startup_busy_hold_event", None)
+    # Bound at import (not via the ``asyncio`` module global): the gate
+    # tests replace ``web_startup.asyncio`` with a sleep-only double.
+    return isinstance(event, Event) and event.is_set()
+
+
+def _serve_with_startup_busy_hold(server: WebServer) -> None:
+    """Release the startup gate while a busy reject holds the first connect.
+
+    The radio answered (with a busy reject) but holds no session for us —
+    each reject is released before its cooldown — so the readiness check
+    and the initial-state wait have nothing to work with yet. The
+    resident first connect keeps retrying in the background and the late
+    completion runs when the grant lands. Holds NO silent-link mark: a
+    held session is a busy radio, not a silent one, so health must not
+    blame a powered-off rig.
+    """
+
+    if server._served_with_startup_busy_hold:
+        return
+    server._served_with_startup_busy_hold = True
+    logger.warning(
+        "startup gate: another session holds the radio (start-up busy "
+        "hold); serving not-ready while the first connect keeps retrying "
+        "in the background."
+    )
+
+
 def _serve_with_identity_pending(server: WebServer) -> None:
     """Release the startup gate while the identity read owns the link (MOR-3071).
 
@@ -501,6 +544,12 @@ async def _await_initial_state_acquisition(
 
     if not server._config.await_initial_state or server._served_without_port:
         return
+    if _startup_busy_hold_pending(server):
+        # MOR-3391 part 2: the connect has not completed, so no state
+        # read can answer yet; the gate releases and the late completion
+        # runs when the grant lands.
+        _serve_with_startup_busy_hold(server)
+        return
     if _serial_identity_pending(server):
         # MOR-3071: release the startup gate at once while identity is
         # checking/no_response — the connect has not completed, so no state
@@ -656,6 +705,12 @@ async def _start_web_server(
 
     if _serial_port_unopened(server):
         _serve_without_port(server)
+    elif _startup_busy_hold_pending(server):
+        # MOR-3391 part 2: the first connect waits out a busy reject —
+        # serve not-ready now; the resident connect keeps retrying and
+        # the late completion runs when it lands. No silent-link mark:
+        # a held session is a busy radio, not a silent link.
+        _serve_with_startup_busy_hold(server)
     elif _serial_identity_pending(server):
         # MOR-3071: the link is open but the radio has not answered its
         # identity read — not connected, not ready, and every state poll

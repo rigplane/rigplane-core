@@ -17,7 +17,7 @@ from rigplane.transport import (
     PRESSURE_THRESHOLD,
 )
 from rigplane.core.transport import _UdpProtocol
-from rigplane.core.exceptions import CommandError
+from rigplane.core.exceptions import CommandError, DiscoveryTimeout, TimeoutError
 from rigplane.types import HEADER_SIZE, PacketType
 
 
@@ -405,7 +405,8 @@ class TestTrackedWriteGuard:
         if len(seqs) == 1:
             return _build_control(ptype=0x01, seq=seqs[0])
         packet = bytearray(_build_control(ptype=0x01))
-        packet.extend(struct.pack(f"<{len(seqs)}H", *seqs))
+        for s in seqs:
+            packet.extend(struct.pack("<HH", s, s))
         struct.pack_into("<I", packet, 0, len(packet))
         return bytes(packet)
 
@@ -478,10 +479,18 @@ class TestTrackedWriteGuard:
         )
         off = sent[-1]
         transport._handle_packet(self._request(0, 1) if multi else self._request(0))
-        assert [packet[CONTROL_SIZE:] for packet in sent] == (
-            [b"ON", b"OFF", b"OFF"] if multi else [b"ON", b"OFF"]
-        )
-        assert sent[-1] == off
+        if multi:
+            # seq 0 is stale: idle reply, then the live OFF resend.
+            assert [packet[CONTROL_SIZE:] for packet in sent] == (
+                [b"ON", b"OFF", b"", b"OFF"]
+            )
+            assert sent[-1] == off
+        else:
+            # seq 0 is stale: one idle reply carrying 0, OFF is not resent.
+            assert [packet[CONTROL_SIZE:] for packet in sent] == ([b"ON", b"OFF", b""])
+            assert struct.unpack_from("<H", sent[-1], 4)[0] == 0x00
+            assert struct.unpack_from("<H", sent[-1], 6)[0] == 0
+            assert sent[-1] != off
 
     @pytest.mark.asyncio
     async def test_multi_replay_rechecks_each_entry(
@@ -502,7 +511,9 @@ class TestTrackedWriteGuard:
 
         transport._raw_send = write
         transport._handle_packet(self._request(0, 1))
-        assert [packet[CONTROL_SIZE:] for packet in sent] == [b"first"]
+        # seq 0 replays while the guard holds; seq 1 then finds the guard
+        # stale and answers with idle instead of resending.
+        assert [packet[CONTROL_SIZE:] for packet in sent] == [b"first", b""]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("multi", [False, True])
@@ -523,8 +534,9 @@ class TestTrackedWriteGuard:
         broken = True
         sent.clear()
         transport._handle_packet(self._request(0, 1) if multi else self._request(0))
+        # The failed guard answers with idle (b""); the unguarded seq resends.
         assert [packet[CONTROL_SIZE:] for packet in sent] == (
-            [b"unguarded"] if multi else []
+            [b"", b"unguarded"] if multi else [b""]
         )
 
     def test_guard_metadata_follows_fifo_eviction(
@@ -553,9 +565,15 @@ class TestTrackedWriteGuard:
         transport._track_sent(7, b"current", is_current=lambda: True)
         transport._handle_packet(self._request(7))
         assert sent == [b"current"]
+        transport._track_sent(7, b"stale", is_current=lambda: False)
+        transport._handle_packet(self._request(7))
+        assert len(sent) == 2
+        assert struct.unpack_from("<H", sent[1], 4)[0] == 0x00
+        assert struct.unpack_from("<H", sent[1], 6)[0] == 7
         transport._track_sent(7, b"unguarded")
         transport._handle_packet(self._request(7))
-        assert sent == [b"current", b"unguarded"]
+        assert len(sent) == 3
+        assert sent[2] == b"unguarded"
         assert transport.tx_buffer == {7: b"unguarded"}
         assert transport._tx_guards == {}
 
@@ -693,28 +711,36 @@ class TestHandlePacket:
     def test_retransmit_request_missing_seq(self, transport: IcomTransport) -> None:
         sent = []
         transport._raw_send = lambda data: sent.append(data)
-        # seq not in tx_buffer
+        # seq not in tx_buffer: answered with an untracked idle packet
         req = _build_control(ptype=0x01, seq=99)
         transport._handle_packet(req)
-        assert len(sent) == 0
+        assert len(sent) == 1
+        assert len(sent[0]) == CONTROL_SIZE
+        assert struct.unpack_from("<H", sent[0], 4)[0] == 0x00
+        assert struct.unpack_from("<H", sent[0], 6)[0] == 99
 
     def test_retransmit_multi(self, transport: IcomTransport) -> None:
         sent = []
         transport._raw_send = lambda data: sent.append(data)
         transport.tx_buffer[5] = b"pkt5"
         transport.tx_buffer[7] = b"pkt7"
-        # Multi retransmit: longer than CONTROL_SIZE, type=0x01
+        # Multi retransmit: longer than CONTROL_SIZE, type=0x01; the payload
+        # is one (first, last) inclusive range, so 6 answers with idle.
         pkt = bytearray(CONTROL_SIZE + 4)
         struct.pack_into("<I", pkt, 0, CONTROL_SIZE + 4)
         struct.pack_into("<H", pkt, 4, 0x01)
         struct.pack_into("<H", pkt, 6, 0)
         struct.pack_into("<I", pkt, 8, 0xAABBCCDD)
         struct.pack_into("<I", pkt, 0x0C, 0)
-        # Two seq entries
+        # One range pair (5, 7)
         struct.pack_into("<H", pkt, CONTROL_SIZE, 5)
         struct.pack_into("<H", pkt, CONTROL_SIZE + 2, 7)
         transport._handle_packet(bytes(pkt))
-        assert len(sent) == 2
+        assert len(sent) == 3
+        assert sent[0] == b"pkt5"
+        assert struct.unpack_from("<H", sent[1], 4)[0] == 0x00
+        assert struct.unpack_from("<H", sent[1], 6)[0] == 6
+        assert sent[2] == b"pkt7"
 
     def test_remote_id_learned(self) -> None:
         t = IcomTransport()
@@ -767,6 +793,63 @@ class TestConninfoNoticeCallback:
         transport._conninfo_notice_callback = None
         transport._handle_packet(_conninfo_notice())
         assert transport._packet_queue.empty()
+
+
+def _token_packet() -> bytes:
+    """A 0x40-byte ptype-0 packet, the size of a token renewal answer."""
+    pkt = bytearray(0x40)
+    struct.pack_into("<I", pkt, 0, 0x40)
+    struct.pack_into("<H", pkt, 4, 0x00)
+    struct.pack_into("<H", pkt, 6, 2)
+    return bytes(pkt)
+
+
+class TestTokenReplyCallback:
+    def _route_both(self, transport: IcomTransport) -> tuple[list[bytes], list[bytes]]:
+        replies: list[bytes] = []
+        notices: list[bytes] = []
+        transport._discard_data_packets = True
+        transport._token_reply_callback = replies.append
+        transport._conninfo_notice_callback = notices.append
+        return replies, notices
+
+    def test_token_packet_reaches_its_callback_once_and_is_not_queued(
+        self, transport: IcomTransport
+    ) -> None:
+        replies, notices = self._route_both(transport)
+        pkt = _token_packet()
+        transport._handle_packet(pkt)
+        assert replies == [pkt]
+        assert notices == []
+        assert transport._packet_queue.empty()
+
+    def test_conninfo_still_reaches_only_its_own_callback(
+        self, transport: IcomTransport
+    ) -> None:
+        replies, notices = self._route_both(transport)
+        pkt = _conninfo_notice()
+        transport._handle_packet(pkt)
+        assert notices == [pkt]
+        assert replies == []
+        assert transport._packet_queue.empty()
+
+    def test_token_packet_discarded_when_callback_is_none(
+        self, transport: IcomTransport
+    ) -> None:
+        transport._discard_data_packets = True
+        transport._token_reply_callback = None
+        transport._handle_packet(_token_packet())
+        assert transport._packet_queue.empty()
+
+    def test_token_packet_is_queued_during_setup(
+        self, transport: IcomTransport
+    ) -> None:
+        transport._discard_data_packets = False
+        transport._token_reply_callback = None
+        pkt = _token_packet()
+        transport._handle_packet(pkt)
+        assert transport._packet_queue.qsize() == 1
+        assert transport._packet_queue.get_nowait() == pkt
 
 
 # ---------------------------------------------------------------------------
@@ -951,6 +1034,122 @@ class TestDisconnect:
         assert transport._ping_task.cancelled()
         assert transport._retransmit_task.cancelled()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "attribute", ["_ping_task", "_idle_task", "_retransmit_task"]
+    )
+    async def test_disconnect_retrieves_completed_failure(self, attribute: str) -> None:
+        transport = IcomTransport()
+
+        async def fail() -> None:
+            raise AttributeError("closed endpoint")
+
+        task = asyncio.create_task(fail())
+        setattr(transport, attribute, task)
+        await asyncio.sleep(0)
+        assert task.done() and task._log_traceback
+        try:
+            await transport.disconnect()
+            assert not task._log_traceback
+        finally:
+            task.exception()
+
+    @pytest.mark.asyncio
+    async def test_send_error_still_closes_and_drains(self) -> None:
+        error = AttributeError("closed endpoint")
+        closed = asyncio.Event()
+
+        class Endpoint:
+            def sendto(self, data: bytes) -> None:
+                raise error
+
+            def close(self) -> None:
+                closed.set()
+
+        transport = IcomTransport()
+        transport.state = ConnectionState.CONNECTED
+        transport.remote_id = 1
+        transport._udp_transport = Endpoint()
+        task = asyncio.create_task(asyncio.Event().wait())
+        transport._ping_task = task
+        await asyncio.sleep(0)
+        try:
+            with pytest.raises(AttributeError) as caught:
+                await transport.disconnect()
+            assert caught.value is error
+            assert closed.is_set()
+            assert transport._udp_transport is None
+            assert transport.state == ConnectionState.DISCONNECTED
+            assert task.done()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("send_fails", [False, True])
+    async def test_owner_cancellation_waits_for_task_retirement(
+        self, send_fails: bool
+    ) -> None:
+        transport = IcomTransport()
+        transport.state = ConnectionState.CONNECTED
+        transport.remote_id = 1
+        error = AttributeError("final send failed")
+
+        def send(data: bytes) -> None:
+            if send_fails:
+                raise error
+
+        transport._raw_send = send
+        retiring = asyncio.Event()
+        release = asyncio.Event()
+        retired = asyncio.Event()
+
+        async def owned() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                retiring.set()
+                await release.wait()
+                retired.set()
+
+        task = asyncio.create_task(owned())
+        transport._idle_task = task
+        await asyncio.sleep(0)
+        disconnect = asyncio.create_task(transport.disconnect())
+        try:
+            await asyncio.wait_for(retiring.wait(), 1)
+            disconnect.cancel("owner stop")
+            await asyncio.sleep(0)
+            disconnect.cancel("owner stop repeated")
+            await asyncio.sleep(0)
+            assert not disconnect.done()
+            release.set()
+            if send_fails:
+                with pytest.raises(AttributeError) as caught:
+                    await disconnect
+                assert caught.value is error
+                assert isinstance(caught.value.__cause__, asyncio.CancelledError)
+            else:
+                with pytest.raises(asyncio.CancelledError, match="owner stop"):
+                    await disconnect
+            assert retired.is_set() and task.done()
+            assert transport.state == ConnectionState.DISCONNECTED
+        finally:
+            release.set()
+            await asyncio.gather(disconnect, return_exceptions=True)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_disconnect_does_not_await_its_current_owned_task(self) -> None:
+        transport = IcomTransport()
+
+        async def owned() -> None:
+            transport._ping_task = asyncio.current_task()
+            await transport.disconnect()
+
+        await asyncio.wait_for(asyncio.create_task(owned()), 1)
+
 
 # ---------------------------------------------------------------------------
 # Ping loop
@@ -1072,3 +1271,26 @@ class TestUdpErrorThrottling:
         assert "(#100, suppressed 96)" in records[3].message
         # The n=200 line accounts for 101..199 not logged: 99 suppressed.
         assert "(#200, suppressed 99)" in records[4].message
+
+
+async def test_unanswered_discovery_raises_discovery_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 round 2: unanswered discovery raises DiscoveryTimeout.
+
+    The marker is a TimeoutError subclass with today's message, so every
+    existing handler behaves as before; the start-up busy loop catches
+    exactly this type to count the attempt as a busy pass without parsing
+    the message.
+    """
+    import rigplane.core.transport as _core_transport
+
+    monkeypatch.setattr(_core_transport, "DISCOVERY_RETRIES", 2)
+    monkeypatch.setattr(_core_transport, "DISCOVERY_TIMEOUT", 0.05)
+
+    with pytest.raises(DiscoveryTimeout) as excinfo:
+        await IcomTransport()._discover()
+
+    assert isinstance(excinfo.value, TimeoutError)
+    message = str(excinfo.value)
+    assert message == "Radio did not respond to discovery after 2 attempts"

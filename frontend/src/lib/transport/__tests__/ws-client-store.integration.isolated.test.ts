@@ -15,8 +15,9 @@ vi.mock('../http-client', async (importOriginal) => ({
 // control-channel ``_ctrl.onMessage`` handler feeds the real
 // ``setRadioState`` gate in ``radio.svelte.ts``. No store stand-in. The
 // assertions therefore only pass when the production
-// ``liveMetadataAdvanced`` / ``metadataAdvanced`` gate runs for real
-// (MOR-442 fidelity gap).
+// ``live-metadata.ts`` ``isStateAdvance`` predicate runs for real in both
+// ``ws-client.ts`` ``applyDeltaEnvelope`` and ``radio.svelte.ts``
+// ``setRadioState``.
 //
 // ``connection.svelte`` is also left REAL — its setters are plain ``$state``
 // assignments, harmless under jsdom.
@@ -208,7 +209,7 @@ describe('ws-client → real radio store gate (integration)', () => {
       fullEnvelope(makeState({ revision: 5, stateRevision: 5, ptt: false })),
     );
 
-    // Real store accepted the initial full snapshot (isInitial branch).
+    // Real store accepted the initial full snapshot.
     const s = store.getRadioState() as ServerStateWithObservation | null;
     expect(s?.stateRevision).toBe(5);
     expect(s?.ptt).toBe(false);
@@ -276,7 +277,8 @@ describe('ws-client → real radio store gate (integration)', () => {
       deltaEnvelope(makeState({ revision: 6, stateRevision: 6 }), { ptt: true }),
     );
 
-    // Real store accepted via the semanticAdvanced branch (6 > 5).
+    // Real store accepted via the semantic-revision advance term of
+    // ``live-metadata.ts`` ``isStateAdvance`` (6 > 5).
     const s = store.getRadioState() as ServerStateWithObservation | null;
     expect(s?.revision).toBe(6);
     expect(s?.stateRevision).toBe(6);
@@ -330,13 +332,101 @@ describe('ws-client → real radio store gate (integration)', () => {
       ),
     );
 
-    // This is the core MOR-442 regression class: equal semantic revision but
-    // advancing observation metadata. Acceptance flows through the real
-    // store's ``observationAdvanced`` → ``metadataAdvanced`` branch, NOT a mock.
+    // Equal semantic revision but advancing observation metadata. Acceptance
+    // flows through the real store's ``setRadioState`` observation-sequence
+    // term of ``live-metadata.ts`` ``isStateAdvance``, NOT a mock.
     const s = store.getRadioState() as ServerStateWithObservation | null;
     expect(s?.stateRevision).toBe(5);
     expect(s?.observationSeq).toBe(2);
     expect(s?.fieldStatus?.['main.freqHz']).toEqual(nextFieldStatus['main.freqHz']);
+  });
+
+  it('accepts a full that changes only live metadata on a delivery advance', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    const connection = await import('../../stores/connection.svelte');
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    // Same state/freshness/health/observation revisions; only transportSeq
+    // and connection.rigConnected differ between the two full snapshots.
+    sendStateUpdate(
+      instances[0],
+      fullEnvelope(makeState({ revision: 5, stateRevision: 5, transportSeq: 10 })),
+    );
+    expect(store.getRadioState()?.connection.rigConnected).toBe(true);
+
+    sendStateUpdate(
+      instances[0],
+      fullEnvelope(makeState({
+        revision: 5, stateRevision: 5, transportSeq: 11,
+        connection: { rigConnected: false, radioReady: true, controlConnected: true },
+      })),
+    );
+
+    expect(store.getRadioState()?.connection.rigConnected).toBe(false);
+    expect(connection.getRigConnected()).toBe(false);
+  });
+
+  it('accepts a full with a lower delivery sequence when the semantic revision advances', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    sendStateUpdate(
+      instances[0],
+      fullEnvelope(makeState({ revision: 5, stateRevision: 5, transportSeq: 10 })),
+    );
+    expect(store.getRadioState()?.stateRevision).toBe(5);
+
+    // Newer semantic revision (6 > 5) with a changed semantic field, but a
+    // delivery sequence that went back (9 < 10).
+    sendStateUpdate(
+      instances[0],
+      fullEnvelope(makeState({
+        revision: 6, stateRevision: 6, transportSeq: 9,
+        main: makeReceiver({ freqHz: 7_100_000 }),
+      })),
+    );
+
+    const s = store.getRadioState() as ServerStateWithObservation | null;
+    expect(s?.stateRevision).toBe(6);
+    expect(s?.main.freqHz).toBe(7_100_000);
+    expect(store.getLastRevision()).toBe(6);
+  });
+
+  it('rejects a metadata delta that removes a non-metadata key in both layers', async () => {
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities());
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    // The sub receiver ships in the full snapshot with a frequency no other
+    // field carries, and radio.svelte.ts isValidServerState accepts a state
+    // without it — so a delta dropping it stays contract-valid end to end.
+    sendStateUpdate(
+      instances[0],
+      fullEnvelope(makeState({ revision: 5, stateRevision: 5, transportSeq: 10 })),
+    );
+    expect(store.getRadioState()?.sub?.freqHz).toBe(7_074_000);
+
+    sendStateUpdate(
+      instances[0],
+      deltaEnvelope(
+        makeState({ revision: 5, stateRevision: 5, transportSeq: 11 }),
+        { connection: { rigConnected: false, radioReady: true, controlConnected: true } },
+        ['sub'],
+      ),
+    );
+
+    sendStateUpdate(
+      instances[0],
+      deltaEnvelope(makeState({ revision: 6, stateRevision: 6 }), { ptt: true }),
+    );
+
+    expect(store.getRadioState()?.sub?.freqHz).toBe(7_074_000);
+    expect(store.getRadioState()?.ptt).toBe(true);
   });
 
   it('keeps a retained relative tuple visible and applies a live leaf delta', async () => {
@@ -423,9 +513,10 @@ describe('ws-client → real radio store gate (integration)', () => {
       ),
     );
 
-    // ws-client's ``isRevisionAcceptable`` rejects at the accumulator
-    // (neither semanticAdvanced nor metadataAdvanced nor isReset), so
-    // ``setRadioState`` is never invoked and the real store cannot regress.
+    // ``ws-client.ts`` ``applyDeltaEnvelope`` returns null via
+    // ``live-metadata.ts`` ``isStateAdvance`` (lower semantic revision, so
+    // the revision-mismatch early return), so ``setRadioState`` is never
+    // invoked and the real store cannot regress.
     const s = store.getRadioState() as ServerStateWithObservation | null;
     expect(s?.stateRevision).toBe(6);
     expect(s?.observationSeq).toBe(6);
@@ -652,6 +743,7 @@ describe('ws-client → real radio store gate (integration)', () => {
       fetchCapabilities.mockReset();
       modules = await loadModules();
       modules.wsClient.connect('ws://test/api/v1/ws');
+      instances[0].answersPings = true;
       instances[0].simulateOpen();
     });
     afterEach(() => {
@@ -758,6 +850,7 @@ describe('ws-client → real radio store gate (integration)', () => {
       sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
       instances[0].simulateClose();
       await vi.advanceTimersByTimeAsync(1000);
+      instances[1].answersPings = true;
       instances[1].simulateOpen();
       sendStateUpdate(instances[1], fullEnvelope(makeState({ providerGeneration: 1, revision: 2 })));
       await vi.advanceTimersByTimeAsync(0);
@@ -766,6 +859,46 @@ describe('ws-client → real radio store gate (integration)', () => {
       expect(modules.capabilities.getCapabilities()?.model).toBe('NEW');
       expect(modules.store.getRadioState()?.revision).toBe(2);
       expect(fetchCapabilities).toHaveBeenCalledTimes(2);
+    });
+
+    it('a capability retry that publishes held state clears the stale signal', async () => {
+      fetchCapabilities
+        .mockResolvedValueOnce(makeCapabilities(1))
+        .mockRejectedValueOnce(new Error('HTTP 503'))
+        .mockResolvedValue(makeCapabilities(1));
+      const connection = await import('../../stores/connection.svelte');
+      // Ten fake ms pass before the first push so the store's
+      // ``lastStateUpdate`` lands above zero whatever epoch the fake clock
+      // starts from; the staleness interval's ``lastStateUpdate > 0`` arm
+      // can then engage.
+      await vi.advanceTimersByTimeAsync(10);
+      // Session 1: capabilities already match, so the full publishes on the
+      // normal push path and marks the state fresh.
+      modules.capabilities.setCapabilities(makeCapabilities(1));
+      sendStateUpdate(instances[0], fullEnvelope(makeState({ providerGeneration: 1 })));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(modules.store.getRadioState()?.revision).toBe(1);
+      expect(connection.isStale()).toBe(false);
+
+      // No further accepted pushes: past the 5 s threshold the store's 1 s
+      // staleness interval must report the link stale.
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(connection.isStale()).toBe(true);
+
+      instances[0].simulateClose();
+      await vi.advanceTimersByTimeAsync(1000);
+      instances[1].answersPings = true;
+      instances[1].simulateOpen();
+      sendStateUpdate(instances[1], fullEnvelope(makeState({ providerGeneration: 1, revision: 2 })));
+      await vi.advanceTimersByTimeAsync(0);
+      // Capabilities were cleared on the drop, so the full is held until the
+      // session-owned capability retry publishes it.
+      expect(modules.store.getRadioState()).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetchCapabilities).toHaveBeenCalledTimes(3);
+      expect(modules.store.getRadioState()?.revision).toBe(2);
+      expect(connection.isStale()).toBe(false);
     });
 
     it.each(['explicit stop', 'socket close'] as const)('cancels retry backoff on %s', async (ending) => {

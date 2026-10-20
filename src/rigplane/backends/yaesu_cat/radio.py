@@ -276,6 +276,10 @@ class YaesuCatRadio:
         self._identity_generation: int = 0
         self._identity_reread_task: asyncio.Task[None] | None = None
         self._identity_gate_running: bool = False
+        # MOR-3436: the connect generation whose identity hold still owes
+        # the audio re-establishment; the re-read completion consumes it,
+        # any generation advance (``disconnect``, a new connect) drops it.
+        self._audio_reestablish_generation: int | None = None
 
     # -- Lifecycle ----------------------------------------------------------
 
@@ -347,14 +351,24 @@ class YaesuCatRadio:
                 self._device,
             )
             self._start_identity_reread()
+            # MOR-3436: the connect returned into the identity hold — the
+            # audio re-establishment waits for the hold's completion.
+            self._audio_reestablish_generation = generation
             return
-        await self._resolve_identity_answer(answered)
+        completed = await self._resolve_identity_answer(answered)
+        if completed:
+            await self._reestablish_audio_after_connect(generation)
+        else:
+            # A wrong radio holds the connect; the re-read completion owes
+            # the audio re-establishment (MOR-3436).
+            self._audio_reestablish_generation = generation
 
     async def disconnect(self) -> None:
         """Close the serial port."""
         self._cancel_identity_reread()
         self._identity_generation += 1
         self._connection_identity = None
+        self._audio_reestablish_generation = None
         await self._audio_driver.stop_rx()
         await self._audio_driver.stop_tx()
         await self._transport.close()
@@ -384,6 +398,17 @@ class YaesuCatRadio:
     def radio_ready(self) -> bool:
         """Whether the backend is ready for commands."""
         return self.connected
+
+    @property
+    def serial_reconnects_total(self) -> int:
+        """Link-loss episodes since this radio was created.
+
+        The first reconnect after the last successful exchange opens an
+        episode; retries inside it do not recount.
+        """
+        stats = getattr(getattr(self, "_transport", None), "stats", None)
+        episodes = getattr(stats, "reconnect_episodes", 0)
+        return episodes if type(episodes) is int else 0
 
     @property
     def connection_identity(self) -> RadioIdentity | None:
@@ -585,6 +610,9 @@ class YaesuCatRadio:
                     continue
                 completed = await self._resolve_identity_answer(answered)
                 if completed:
+                    # MOR-3436: the hold completed — run the audio
+                    # re-establishment a held connect deferred here, once.
+                    await self._run_deferred_audio_reestablish(generation)
                     return
         except asyncio.CancelledError:
             pass
@@ -600,6 +628,41 @@ class YaesuCatRadio:
                 exc,
                 exc_info=True,
             )
+
+    # -- Audio tail of a completed connect (MOR-3436) -----------------------
+
+    async def _reestablish_audio_after_connect(self, generation: int) -> None:
+        """Re-arm audio demand an owner teardown left held (MOR-3436).
+
+        ``disconnect()`` stops the USB audio driver's RX and TX legs while
+        the radio-owned ``AudioSession``'s demand handles survive it, and
+        before this tail nothing re-armed them after an owner
+        ``connect()``. Runs only while this connect's generation still
+        owns the radio — ``disconnect()`` and every new connect advance
+        ``_identity_generation``. This backend has no recovery-event
+        channel, so a failure is logged (WARNING), not raised — the same
+        non-raising contract ``AudioRecoveryRuntime.recover`` applies.
+        """
+        if self._identity_generation != generation:
+            return
+        session = self._audio_session
+        if session is None or (session.rx_demand <= 0 and session.tx_demand <= 0):
+            return
+        try:
+            await session.reestablish()
+        except Exception:
+            logger.warning(
+                "rigplane (%s): re-establishing held audio demand after connect failed",
+                self.model,
+                exc_info=True,
+            )
+
+    async def _run_deferred_audio_reestablish(self, generation: int) -> None:
+        """Run the audio re-establishment a held connect deferred, once."""
+        stashed = self._audio_reestablish_generation
+        self._audio_reestablish_generation = None
+        if stashed == generation:
+            await self._reestablish_audio_after_connect(generation)
 
     @property
     def backend_id(self) -> str:

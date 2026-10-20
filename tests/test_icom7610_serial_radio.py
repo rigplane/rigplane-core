@@ -2851,6 +2851,45 @@ async def test_dead_link_during_identity_hold_hands_over_to_recovery() -> None:
     await radio.disconnect()
 
 
+@pytest.mark.asyncio
+async def test_refused_identity_read_counts_as_no_answer() -> None:
+    """A refused (NAK) 19 00 read is silence, not a crashed gate (MOR-3297).
+
+    ``backends/_icom_serial_base.py: _read_serial_identity_payload``
+    counts a NAK as no answer; a ``CommandRejectedError`` escaping there
+    would become "Failed to read the radio identity" out of ``connect()``
+    and abandon the hold in ``_serial_identity_reread_loop`` (its edge
+    catches only ``Exception``), handing the link to the watchdog's
+    reopen — where the base behaviour held the refusal as silence.
+    """
+    link = _GateSerialLink(answer_identity=False)
+    radio = _gate_radio(link)
+    nak = build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0xFA)
+    # Send #1 is the connect-time gate read; later sends are the re-read's
+    # and the direct read below — refuse them all alike.
+    for send_no in range(1, 30):
+        link.queue_response_on_send(send_no, nak)
+
+    await radio.connect()  # must not raise: the NAK reads as no answer
+
+    assert radio.connected is False
+    identity = radio.connection_identity
+    assert identity is not None
+    assert identity.status is RadioIdentityStatus.NO_RESPONSE
+    assert (reread := radio._serial_identity_reread_task) is not None
+    assert not reread.done()
+
+    # The direct read under a live NAK returns silence, not an exception.
+    assert await radio._read_serial_identity_payload() is None
+
+    # A few re-read rounds later the hold still owns the link: exactly one
+    # port open, no watchdog reopen.
+    await asyncio.sleep(0.3)
+    assert link.connect_calls == 1
+    assert not reread.done()
+    await radio.disconnect()
+
+
 # ---------------------------------------------------------------------------
 # MOR-3071 round 4: one invariant — CONNECTED latches only when the identity
 # gate has an answer for the CURRENT link (the same CI-V generation). All of
@@ -3442,6 +3481,199 @@ async def test_info_connection_identity_keys_are_pinned() -> None:
         "no_response",
         "unverified",
     }
+
+
+@pytest.mark.asyncio
+async def test_owner_disconnect_during_identity_gate_leaves_no_reread_task() -> None:
+    """Owner disconnect() while connect() awaits identity read must not
+    leave a residual reread task. The gate's epoch check must fail so
+    it returns without starting _start_serial_identity_reread."""
+    link = _GateSerialLink(answer_identity=False)
+    radio = _gate_radio(link)
+    radio._civ_get_timeout = 0.5
+
+    in_read = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def _gated_silence() -> bytes | None:
+        in_read.set()
+        await gate.wait()
+        return None
+
+    radio._read_serial_identity_payload = _gated_silence  # type: ignore[assignment]
+
+    connect_task = asyncio.create_task(radio.connect())
+    try:
+        await asyncio.wait_for(in_read.wait(), timeout=5.0)
+        await radio.disconnect()
+    finally:
+        gate.set()
+        await asyncio.wait_for(connect_task, timeout=5.0)
+
+    assert radio.conn_state is RadioConnectionState.DISCONNECTED
+    assert radio.connection_identity is None
+    assert radio._serial_identity_reread_task is None
+    assert not radio._serial_identity_gate_running
+    assert radio._serial_identity_answer_epoch is None
+
+
+@pytest.mark.asyncio
+async def test_owner_disconnect_during_identity_gate_with_delayed_payload() -> None:
+    """Delayed successful payload after owner disconnect must not
+    start reread or latch identity."""
+    link = _GateSerialLink(answer_identity=True)
+    radio = _gate_radio(link)
+    radio._civ_get_timeout = 0.5
+
+    in_read = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def _gated_payload() -> bytes | None:
+        in_read.set()
+        await gate.wait()
+        return b"\x94"  # valid IC-7300 payload
+
+    radio._read_serial_identity_payload = _gated_payload  # type: ignore[assignment]
+
+    connect_task = asyncio.create_task(radio.connect())
+    try:
+        await asyncio.wait_for(in_read.wait(), timeout=5.0)
+        await radio.disconnect()
+    finally:
+        gate.set()
+        await asyncio.wait_for(connect_task, timeout=5.0)
+
+    assert radio.conn_state is RadioConnectionState.DISCONNECTED
+    assert radio.connection_identity is None
+    assert radio._serial_identity_reread_task is None
+    assert not radio._serial_identity_gate_running
+    assert radio._serial_identity_answer_epoch is None
+
+
+@pytest.mark.asyncio
+async def test_owner_disconnect_during_soft_reconnect_identity_gate_leaves_no_reread() -> (
+    None
+):
+    link = _GateSerialLink(answer_identity=False)
+    radio = _gate_radio(link)
+    radio._civ_get_timeout = 0.5
+
+    in_read = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def _gated_silence() -> bytes | None:
+        in_read.set()
+        await gate.wait()
+        return None
+
+    radio._read_serial_identity_payload = _gated_silence  # type: ignore[assignment]
+
+    soft_reconnect_task = asyncio.create_task(radio.soft_reconnect())
+    try:
+        await asyncio.wait_for(in_read.wait(), timeout=5.0)
+        await radio.disconnect()
+        gate.set()
+        await asyncio.wait_for(soft_reconnect_task, timeout=5.0)
+
+        assert radio.conn_state is RadioConnectionState.DISCONNECTED
+        assert radio.connection_identity is None
+        assert radio._serial_identity_reread_task is None
+        assert not radio._serial_identity_gate_running
+        assert radio._serial_identity_answer_epoch is None
+    finally:
+        gate.set()
+        if not soft_reconnect_task.done():
+            soft_reconnect_task.cancel()
+            try:
+                await soft_reconnect_task
+            except asyncio.CancelledError:
+                pass
+        await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_owner_disconnect_during_soft_reconnect_identity_gate_with_delayed_valid_payload() -> (
+    None
+):
+    link = _GateSerialLink(answer_identity=True)
+    radio = _gate_radio(link)
+    radio._civ_get_timeout = 0.5
+
+    in_read = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def _gated_payload() -> bytes | None:
+        in_read.set()
+        await gate.wait()
+        return b"\x94"
+
+    radio._read_serial_identity_payload = _gated_payload  # type: ignore[assignment]
+
+    soft_reconnect_task = asyncio.create_task(radio.soft_reconnect())
+    try:
+        await asyncio.wait_for(in_read.wait(), timeout=5.0)
+        await radio.disconnect()
+        gate.set()
+        await asyncio.wait_for(soft_reconnect_task, timeout=5.0)
+
+        assert radio.conn_state is RadioConnectionState.DISCONNECTED
+        assert radio.connection_identity is None
+        assert radio._serial_identity_reread_task is None
+        assert not radio._serial_identity_gate_running
+        assert radio._serial_identity_answer_epoch is None
+    finally:
+        gate.set()
+        if not soft_reconnect_task.done():
+            soft_reconnect_task.cancel()
+            try:
+                await soft_reconnect_task
+            except asyncio.CancelledError:
+                pass
+        await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_owner_disconnect_during_soft_reconnect_identity_gate_with_late_read_error() -> (
+    None
+):
+    link = _GateSerialLink(answer_identity=False)
+    radio = _gate_radio(link)
+    radio._civ_get_timeout = 0.5
+
+    in_read = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def _gated_error() -> bytes | None:
+        in_read.set()
+        await gate.wait()
+        raise OSError("write failed: device unplugged")
+
+    radio._read_serial_identity_payload = _gated_error  # type: ignore[assignment]
+
+    soft_reconnect_task = asyncio.create_task(radio.soft_reconnect())
+    try:
+        await asyncio.wait_for(in_read.wait(), timeout=5.0)
+        await radio.disconnect()
+        gate.set()
+        with pytest.raises(ConnectionError) as exc_info:
+            await asyncio.wait_for(soft_reconnect_task, timeout=5.0)
+        assert isinstance(exc_info.value.__cause__, OSError)
+
+        assert radio.conn_state is RadioConnectionState.DISCONNECTED
+        assert radio.connection_identity is None
+        assert radio._serial_identity_reread_task is None
+        assert not radio._serial_identity_gate_running
+        assert radio._serial_identity_answer_epoch is None
+        assert radio._civ_recovering is False
+    finally:
+        gate.set()
+        if not soft_reconnect_task.done():
+            soft_reconnect_task.cancel()
+            try:
+                await soft_reconnect_task
+            except asyncio.CancelledError:
+                pass
+        await radio.disconnect()
 
 
 @pytest.mark.asyncio

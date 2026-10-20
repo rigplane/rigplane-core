@@ -15,6 +15,7 @@ import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter
 import { qualifyScopeFrameEnvelope, toScopeDisplayFrame } from '$lib/runtime/adapters/scope-adapter';
 import { resolveLcdSpectrumFrame } from '../../../skins/segmentline/lcd-display-contract';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import { ScopeRenderTrace, type TraceReceipt } from '$lib/runtime/scope-render-trace';
 
 // ---------------------------------------------------------------------------
 // Global mocks (must be before component import)
@@ -130,6 +131,7 @@ const runtimeHarness = vi.hoisted(() => {
     currentCaps: Object.freeze({ source: 'test-capabilities' }) as unknown,
     currentSession: { state: 'connected' as const, epoch: 1 },
     mockScopeConnected: true,
+    mockScopeFrameLive: true,
     tuningStep: 1_000,
     nextLeaseId: 0,
     hardwareUnsubscribe: vi.fn(),
@@ -144,7 +146,9 @@ const runtimeHarness = vi.hoisted(() => {
     scope: {
       registerPresentationDriver: vi.fn(),
       subscribe: vi.fn(() => () => {}),
+      subscribeTraceReceipt: vi.fn((_observer: (receipt: TraceReceipt) => void) => () => {}),
       get hardwareScopeConnected() { return state.mockScopeConnected; },
+      get hardwareScopeFrameLive() { return state.mockScopeFrameLive; },
       subscribeHardware: vi.fn((handler: (frame: TestScopeFrame) => void) => {
         state.capturedHardwareFrame = handler;
         return state.hardwareUnsubscribe;
@@ -175,6 +179,12 @@ Object.defineProperty(runtimeHarness.state, 'mockScopeConnected', {
   configurable: true,
   get: () => hardwareScopeTransport.get('connected')!,
   set: (value: boolean) => hardwareScopeTransport.set('connected', value),
+});
+const hardwareScopeFrameLive = new SvelteMap<string, boolean>([['live', true]]);
+Object.defineProperty(runtimeHarness.state, 'mockScopeFrameLive', {
+  configurable: true,
+  get: () => hardwareScopeFrameLive.get('live')!,
+  set: (value: boolean) => hardwareScopeFrameLive.set('live', value),
 });
 
 const authorityHarness = vi.hoisted(() => {
@@ -650,6 +660,7 @@ beforeEach(() => {
   runtimeHarness.state.capturedHardwareFrame = null;
   runtimeHarness.state.capturedDxMessage = null;
   runtimeHarness.state.mockScopeConnected = true;
+  runtimeHarness.state.mockScopeFrameLive = true;
   runtimeHarness.state.tuningStep = 1_000;
   runtimeHarness.state.nextLeaseId = 0;
   runtimeHarness.state.hardwareUnsubscribe = vi.fn();
@@ -677,6 +688,7 @@ afterEach(() => {
   expect(txHarness.listenerCount()).toBe(0);
   appTxHostHarness.controller = null;
   document.body.innerHTML = '';
+  vi.unstubAllEnvs();
 });
 
 // ---------------------------------------------------------------------------
@@ -684,6 +696,69 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('SpectrumPanel component', () => {
+  it('keeps trace controls absent in an ordinary build', () => {
+    const target = mountPanel();
+    expect(target.querySelector('[aria-label="Scope render trace"]')).toBeNull();
+    expect(runtimeHarness.runtime.scope.subscribeTraceReceipt).not.toHaveBeenCalled();
+  });
+
+  it('starts and stops a candidate trace only on explicit clicks without opening a source', () => {
+    vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
+    const target = mountPanel();
+    const controls = target.querySelector('[aria-label="Scope render trace"]');
+    expect(controls).not.toBeNull();
+    const start = [...controls!.querySelectorAll('button')].find((button) => button.textContent === 'Start trace')!;
+    expect(start.disabled).toBe(false);
+    start.click();
+    flushSync();
+    expect(runtimeHarness.runtime.scope.subscribeTraceReceipt).toHaveBeenCalledTimes(1);
+    expect(controls?.textContent).toContain('recording');
+    expect(runtimeHarness.runtime.acquireHardwareScope).toHaveBeenCalledTimes(1);
+    const stop = [...controls!.querySelectorAll('button')].find((button) => button.textContent === 'Stop trace')!;
+    stop.click();
+    flushSync();
+    expect(controls?.textContent).toContain('stopped');
+    expect(controls?.textContent).toContain('Download trace');
+  });
+
+  it('keeps concurrent panel sessions separate and ignores receipts from another source', () => {
+    vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
+    const observe = vi.spyOn(ScopeRenderTrace.prototype, 'observe');
+    const first = mountPanel();
+    const second = mountPanel();
+    for (const panel of [first, second]) {
+      (panel.querySelector('[aria-label="Scope render trace"] button') as HTMLButtonElement).click();
+    }
+    flushSync();
+    const subscriptions = vi.mocked(runtimeHarness.runtime.scope.subscribeTraceReceipt).mock.calls;
+    expect(subscriptions).toHaveLength(2);
+    const frame = Object.freeze({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, pixels: new Uint8Array(4) });
+    const receipt = { kind: 'accepted' as const, frame, token: { source: 'hardware' as const,
+      transportEpoch: 1, wireSequence: 1, acceptedSequence: 1 }, callbackAt: performance.now(), acceptedAt: performance.now() };
+    subscriptions[0][0](receipt);
+    subscriptions[1][0](receipt);
+    expect(observe).toHaveBeenCalledTimes(2);
+    expect(observe.mock.contexts[0]).not.toBe(observe.mock.contexts[1]);
+    subscriptions[0][0]({ ...receipt, token: { ...receipt.token, source: 'audio_fft' } });
+    expect(observe).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['source', 'receiver'] as const)('stops a trace when selected %s changes without another frame', (change) => {
+    vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
+    const target = mountPanel();
+    const start = target.querySelector<HTMLButtonElement>('[aria-label="Scope render trace"] button')!;
+    start.click();
+    flushSync();
+    expect(target.querySelector('[aria-label="Scope render trace"]')?.textContent).toContain('recording');
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    if (change === 'source') runtimeHarness.state.currentCaps = Object.freeze({ scopeSource: 'audio_fft' });
+    else runtimeHarness.state.currentState = Object.freeze({ source: 'test-state', providerGeneration: 17, active: 'SUB' });
+    refreshSpectrumAuthority();
+    flushSync();
+    expect(target.querySelector('[aria-label="Scope render trace"]')?.textContent).toContain('stopped (source_changed)');
+    expect(push).not.toHaveBeenCalled();
+    expect(mockRuntime.scope.subscribeTraceReceipt).toHaveBeenCalledTimes(1);
+  });
   it('mounts without errors', () => {
     const target = mountPanel();
     expect(target.querySelector('.spectrum-panel')).not.toBeNull();
@@ -1926,6 +2001,19 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(target.querySelector('.waterfall-content canvas')).not.toBeNull();
     destroy.mockRestore();
   });
+  it('keeps a recording through a missing projection but ends it on selection change without a frame', () => {
+    vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
+    const { target, props } = managed(projection());
+    target.querySelector<HTMLButtonElement>('[aria-label="Scope render trace"] button')!.click();
+    flushSync();
+    props.set('projection', null);
+    flushSync();
+    expect(target.querySelector('[aria-label="Scope render trace"]')?.textContent).toContain('recording');
+    runtimeHarness.state.currentCaps = Object.freeze({ scopeSource: 'audio_fft' });
+    refreshSpectrumAuthority();
+    flushSync();
+    expect(target.querySelector('[aria-label="Scope render trace"]')?.textContent).toContain('stopped (source_changed)');
+  });
   it('discards waterfall history when provider generation changes', () => {
     const generations = new SvelteMap([['current', 17]]);
     const original = Object.getOwnPropertyDescriptor(runtimeHarness.state, 'currentState')!;
@@ -2516,6 +2604,60 @@ describe('hardware scope drop clears the trace (R53)', () => {
   });
 });
 
+describe('silent raw scope refuses click-to-tune', () => {
+  it('clears the stale span on frame silence and tunes again after a fresh frame', () => {
+    const target = mountPanel();
+    emitFrame({ mode: 1, startFreq: 14_000_000, endFreq: 14_100_000 });
+    prepareGeometry(target);
+
+    // One in-span DX spot so the post-silence badge assertion can fail:
+    // DxOverlay renders only spots inside the frame span.
+    runtimeHarness.state.capturedDxMessage?.({
+      type: 'dx_spot',
+      spot: {
+        spotter: 'N0CALL', freq: 14_075_410, call: 'K1ABC', comment: 'test',
+        time_utc: '1200', timestamp: 1,
+      },
+    });
+    flushSync();
+    expect(target.querySelector('.dx-badge')).not.toBeNull();
+
+    // Frames stop while the transport stays connected.
+    runtimeHarness.state.mockScopeFrameLive = false;
+    flushSync();
+
+    authorityHarness.state.current = authority({ frequencyHz: 7_050_000 });
+    refreshSpectrumAuthority();
+    flushSync();
+
+    const { spectrum, waterfall } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 8, 100);
+    pointer(spectrum, 'pointermove', 8, 104);
+    pointer(spectrum, 'pointerup', 8, 104);
+    const canvas = waterfall.querySelector('canvas')!;
+    pointer(canvas, 'pointerdown', 4, 150);
+    pointer(canvas, 'pointerup', 4, 150);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    expect(mockRuntime.send).not.toHaveBeenCalled();
+    expect(target.querySelector('.dx-badge')).toBeNull();
+
+    runtimeHarness.state.mockScopeFrameLive = true;
+    flushSync();
+    emitFrame({ mode: 1, startFreq: 7_000_000, endFreq: 7_100_000 });
+    // A second waterfall tap at the same point would fall inside the
+    // recognizer's double-tap window, so the recovery leg clicks the
+    // spectrum release path instead — the same x the neighbouring
+    // below-threshold release test uses (104/200 of the 100 kHz span).
+    const { spectrum: revivedSpectrum } = prepareGeometry(target);
+    pointer(revivedSpectrum, 'pointerdown', 9, 100);
+    pointer(revivedSpectrum, 'pointermove', 9, 104);
+    pointer(revivedSpectrum, 'pointerup', 9, 104);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(7_052_000, 0);
+    expect(mockRuntime.send).not.toHaveBeenCalled();
+  });
+});
+
 // MOR-2464 — the center panorama. In CENTER scope the carrier+passband
 // indicator is anchored at 50% while the visual viewport glides toward the
 // commanded frequency; a late recentered frame never restarts or double-shifts.
@@ -2564,16 +2706,24 @@ describe('center panorama motion (MOR-2464)', () => {
     return orders;
   };
   it('glides the panorama across a translated→recentered transition through real intermediate frames', async () => {
-    const { target, props } = mountPanorama(panoramaProjection());
-    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
-    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
-    expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.left).toBe('38%');
-    await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
-    await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
-    props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
-    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
-    await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
-    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    let panoramaNow = 0;
+    vi.stubGlobal('performance', { now: () => panoramaNow });
+    try {
+      const { target, props } = mountPanorama(panoramaProjection());
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+      panoramaNow = 40;
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.left).toBe('38%');
+      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+      panoramaNow = 140;
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+      props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
+      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('retargets a rapid reversal without overshoot and keeps the carrier anchored', async () => {

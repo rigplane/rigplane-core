@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from typing import Callable
 from unittest.mock import AsyncMock
 
 import pytest
 
-from rigplane.audio import AudioPacket
+from rigplane.audio import AudioPacket, usb_driver
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
 from rigplane.audio.lan_stream import SYNTHETIC_RX_IDENT
 from rigplane.audio.usb_driver import UsbAudioDriver
@@ -31,6 +30,7 @@ class FakeAudioDriver:
         self._tx_task: asyncio.Task[None] | None = None
         self._rx_callback: Callable[[bytes], None] | None = None
         self._tx_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=64)
+        self.rx_starts = 0
 
     # -- properties expected by get_audio_stats ------------------------------
 
@@ -54,6 +54,7 @@ class FakeAudioDriver:
     ) -> None:
         self._rx_callback = callback
         self._rx_task = asyncio.ensure_future(asyncio.sleep(3600))
+        self.rx_starts += 1
 
     async def stop_rx(self) -> None:
         if self._rx_task is not None:
@@ -172,7 +173,7 @@ class TestAudioDescriptors:
     async def test_duplex_mode_same_device_macos_is_exclusive(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(usb_driver.platform, "system", lambda: "Darwin")
         backend = FakeAudioBackend(
             [
                 AudioDeviceInfo(

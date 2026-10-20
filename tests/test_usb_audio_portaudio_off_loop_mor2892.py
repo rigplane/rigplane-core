@@ -21,13 +21,19 @@ import asyncio
 import logging
 import threading
 import time
+from concurrent.futures import Future
 
 import pytest
 from aiohttp import ClientSession, web
 from aiohttp.test_utils import TestServer
 
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
-from rigplane.audio.usb_driver import AudioCaptureOpenTimeoutError, UsbAudioDriver
+from rigplane.audio.usb_driver import (
+    AudioCaptureOpenTimeoutError,
+    UsbAudioDriver,
+)
+
+from _portaudio_pool_helpers import drain_pool
 
 _LOGGER_NAME = "rigplane.audio.usb_driver"
 # Tiny relative to the production default — keeps this suite fast while
@@ -121,7 +127,7 @@ async def test_probe_timeout_keeps_loop_free_and_fails_request(
         await ticker.stop()
         await ticker_task
         gate.set()  # release the stuck background probe so the worker exits
-        await asyncio.sleep(0.05)
+        await drain_pool()
 
     assert ticker.progressed >= 3, (
         "event loop should keep making progress while the probe is stuck"
@@ -132,7 +138,7 @@ async def test_probe_timeout_keeps_loop_free_and_fails_request(
     warnings = _warnings(caplog)
     assert len(warnings) == 1, "exactly one actionable warning on timeout"
     message = warnings[0].getMessage()
-    assert "format probe" in message
+    assert "PortAudio operation" in message
     assert "microphone" in message.lower(), (
         f"operator-readable reason expected, got: {message!r}"
     )
@@ -163,6 +169,336 @@ async def test_probe_runs_off_loop_thread() -> None:
     )
     assert driver.rx_running is True
     await driver.stop_rx()
+
+
+@pytest.mark.parametrize("abandon", ["timeout", "cancel", "cancel_wrapper"])
+@pytest.mark.parametrize("late_failure", [False, True])
+@pytest.mark.timeout(10)
+async def test_abandoned_probe_logs_actual_native_terminal_with_same_id(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    abandon: str,
+    late_failure: bool,
+) -> None:
+    from rigplane.audio import usb_driver
+
+    caplog.set_level(logging.INFO, logger=_LOGGER_NAME)
+    cancel = abandon == "cancel"
+    cancel_wrapper = abandon == "cancel_wrapper"
+    pool = usb_driver._BoundedPortAudioPool()
+    submitted: list[asyncio.Future] = []
+    submit = pool.submit_tracked
+
+    def record_submission(fn):
+        future = submit(fn)
+        submitted.append(future)
+        return future
+
+    monkeypatch.setattr(pool, "submit_tracked", record_submission)
+    backend = FakeAudioBackend(_fake_devices())
+    entered, release = threading.Event(), threading.Event()
+    private = "/private/device-name/secret-description"
+
+    def blocked_probe() -> None:
+        entered.set()
+        assert release.wait(5)
+        if late_failure:
+            raise RuntimeError(private)
+
+    def lifecycle() -> list[logging.LogRecord]:
+        return [
+            record
+            for record in caplog.records
+            if record.name == _LOGGER_NAME
+            and record.levelno == logging.INFO
+            and record.msg.startswith("usb-audio: PortAudio operation ")
+        ]
+
+    backend.block_probe = blocked_probe
+    attempt = asyncio.create_task(
+        pool.run_bounded(
+            lambda: backend.check_sample_rate(AudioDeviceId(1), 48_000),
+            what=private,
+            direction=private,
+            timeout=2.0 if cancel or cancel_wrapper else _TEST_TIMEOUT_S,
+        )
+    )
+    try:
+        async with asyncio.timeout(2):
+            while not entered.is_set():
+                await asyncio.sleep(0.005)
+        if cancel or cancel_wrapper:
+            if cancel_wrapper:
+                submitted[0].cancel()
+            else:
+                attempt.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await attempt
+        else:
+            with pytest.raises(AudioCaptureOpenTimeoutError):
+                await attempt
+
+        pending = lifecycle()
+        assert len(pending) == 1
+        operation_id, caller_state, native_state = pending[0].args
+        assert isinstance(operation_id, int) and operation_id > 0
+        assert caller_state == (
+            "cancelled" if cancel or cancel_wrapper else "timed_out"
+        )
+        assert native_state == "pending"
+        if not cancel_wrapper:
+            assert pool.inflight == 1
+        await asyncio.sleep(0)
+        assert lifecycle() == pending
+
+        release.set()
+        async with asyncio.timeout(2):
+            while pool.inflight or len(lifecycle()) < 2:
+                await asyncio.sleep(0.005)
+        records = lifecycle()
+        assert len(records) == 2
+        assert records[1].args == (
+            operation_id,
+            caller_state,
+            "failed" if late_failure else "completed",
+        )
+        for record in records:
+            assert record.exc_info is None
+        assert all(
+            private not in record.getMessage()
+            for record in caplog.records
+            if record.name == _LOGGER_NAME
+        )
+    finally:
+        release.set()
+        if not attempt.done():
+            attempt.cancel()
+        await asyncio.gather(attempt, return_exceptions=True)
+        pool._executor.shutdown(wait=True)
+
+
+@pytest.mark.timeout(10)
+async def test_ordinary_probe_success_does_not_log_lifecycle_info(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from rigplane.audio import usb_driver
+
+    caplog.set_level(logging.INFO, logger=_LOGGER_NAME)
+    pool = usb_driver._BoundedPortAudioPool()
+    backend = FakeAudioBackend(_fake_devices())
+    try:
+        assert await pool.run_bounded(
+            lambda: backend.check_sample_rate(AudioDeviceId(1), 48_000),
+            what="format probe",
+            direction="rx",
+            timeout=1.0,
+        )
+        await asyncio.sleep(0)
+        assert not [
+            record
+            for record in caplog.records
+            if record.name == _LOGGER_NAME and record.levelno >= logging.INFO
+        ]
+    finally:
+        pool._executor.shutdown(wait=True)
+
+
+@pytest.mark.timeout(10)
+async def test_abandoned_probe_ids_are_distinct_across_pools(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from rigplane.audio import usb_driver
+
+    caplog.set_level(logging.INFO, logger=_LOGGER_NAME)
+    pools = [usb_driver._BoundedPortAudioPool() for _ in range(2)]
+    backends = [FakeAudioBackend(_fake_devices()) for _ in pools]
+    release = threading.Event()
+    for backend in backends:
+        backend.block_probe = lambda: release.wait(5)
+    try:
+        for pool, backend in zip(pools, backends, strict=True):
+            with pytest.raises(AudioCaptureOpenTimeoutError):
+                await pool.run_bounded(
+                    lambda backend=backend: backend.check_sample_rate(
+                        AudioDeviceId(1), 48_000
+                    ),
+                    what="format probe",
+                    direction="rx",
+                    timeout=_TEST_TIMEOUT_S,
+                )
+        records = [
+            record
+            for record in caplog.records
+            if record.name == _LOGGER_NAME
+            and record.levelno == logging.INFO
+            and record.msg.startswith("usb-audio: PortAudio operation ")
+        ]
+        assert len(records) == 2
+        assert records[0].args[0] != records[1].args[0]
+    finally:
+        release.set()
+        for pool in pools:
+            pool._executor.shutdown(wait=True)
+
+
+class _RaisingAudioHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        raise RuntimeError("observation failed")
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+@pytest.mark.timeout(10)
+async def test_logging_failure_preserves_abandoned_probe_caller_outcome(
+    cancel: bool,
+) -> None:
+    from rigplane.audio import usb_driver
+
+    pool = usb_driver._BoundedPortAudioPool()
+    backend = FakeAudioBackend(_fake_devices())
+    entered, release = threading.Event(), threading.Event()
+
+    def blocked_probe() -> None:
+        entered.set()
+        assert release.wait(5)
+
+    backend.block_probe = blocked_probe
+    owned_logger = logging.getLogger(_LOGGER_NAME)
+    handler = _RaisingAudioHandler()
+    previous_level = owned_logger.level
+    owned_logger.setLevel(logging.INFO)
+    owned_logger.addHandler(handler)
+    attempt = asyncio.create_task(
+        pool.run_bounded(
+            lambda: backend.check_sample_rate(AudioDeviceId(1), 48_000),
+            what="format probe",
+            direction="rx",
+            timeout=2.0 if cancel else _TEST_TIMEOUT_S,
+        )
+    )
+    try:
+        async with asyncio.timeout(2):
+            while not entered.is_set():
+                await asyncio.sleep(0.005)
+        if cancel:
+            attempt.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await attempt
+        else:
+            with pytest.raises(AudioCaptureOpenTimeoutError, match="RX format probe"):
+                await attempt
+    finally:
+        release.set()
+        if not attempt.done():
+            attempt.cancel()
+        await asyncio.gather(attempt, return_exceptions=True)
+        pool._executor.shutdown(wait=True)
+        owned_logger.removeHandler(handler)
+        owned_logger.setLevel(previous_level)
+
+
+@pytest.mark.parametrize("closed_first", [False, True])
+@pytest.mark.parametrize("late_failure", [False, True])
+@pytest.mark.parametrize("broken_logging", [False, True])
+def test_native_terminal_survives_owner_loop_shutdown(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    closed_first: bool,
+    late_failure: bool,
+    broken_logging: bool,
+) -> None:
+    from rigplane.audio import usb_driver
+
+    caplog.set_level(logging.INFO, logger=_LOGGER_NAME)
+    pool = usb_driver._BoundedPortAudioPool()
+    backend = FakeAudioBackend(_fake_devices())
+    submitted = []
+    native_future = Future()
+
+    def deferred_submit(fn, *args):
+        submitted.append(lambda: fn(*args))
+        return native_future
+
+    monkeypatch.setattr(pool._executor, "submit", deferred_submit)
+    private = "/private/native-failure"
+    if late_failure:
+
+        def fail_probe() -> None:
+            raise RuntimeError(private)
+
+        backend.block_probe = fail_probe
+    loop = asyncio.new_event_loop()
+    owned_logger = logging.getLogger(_LOGGER_NAME)
+    handler = _RaisingAudioHandler()
+    try:
+        with pytest.raises(AudioCaptureOpenTimeoutError):
+            loop.run_until_complete(
+                pool.run_bounded(
+                    lambda: backend.check_sample_rate(AudioDeviceId(1), 48_000),
+                    what="format probe",
+                    direction="rx",
+                    timeout=0,
+                )
+            )
+        if closed_first:
+            loop.close()
+        if broken_logging:
+            owned_logger.addHandler(handler)
+        if late_failure:
+            with pytest.raises(RuntimeError, match=private):
+                submitted[0]()
+        else:
+            assert submitted[0]() is True
+        loop.close()
+        records = [
+            record
+            for record in caplog.records
+            if record.name == _LOGGER_NAME
+            and record.levelno == logging.INFO
+            and record.msg.startswith("usb-audio: PortAudio operation ")
+        ]
+        assert records[0].args[1:] == ("timed_out", "pending")
+        if broken_logging:
+            assert len(records) == 1
+        else:
+            assert len(records) == 2
+            assert records[1].args == (
+                records[0].args[0],
+                "timed_out",
+                "failed" if late_failure else "completed",
+            )
+    finally:
+        owned_logger.removeHandler(handler)
+        loop.close()
+        pool._executor.shutdown(wait=True)
+
+
+async def test_saturated_probe_warning_is_safe_and_observational(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rigplane.audio import usb_driver
+
+    caplog.set_level(logging.INFO, logger=_LOGGER_NAME)
+    pool = usb_driver._BoundedPortAudioPool()
+    monkeypatch.setattr(pool, "inflight", usb_driver._CAPTURE_OPEN_MAX_WORKERS)
+    private = "/private/device-description"
+    owned_logger = logging.getLogger(_LOGGER_NAME)
+    handler = _RaisingAudioHandler()
+    try:
+        for broken_logging in (False, True):
+            if broken_logging:
+                owned_logger.addHandler(handler)
+            with pytest.raises(AudioCaptureOpenTimeoutError, match="pool saturated"):
+                await pool.run_bounded(
+                    lambda: None, what=private, direction=private, timeout=0
+                )
+        assert all(
+            private not in record.getMessage()
+            for record in caplog.records
+            if record.name == _LOGGER_NAME
+        )
+    finally:
+        owned_logger.removeHandler(handler)
+        pool._executor.shutdown(wait=True)
 
 
 @pytest.mark.timeout(10)
@@ -218,7 +554,7 @@ async def test_probe_timeout_keeps_http_and_ws_answering(
         await ws.close()
         await session.close()
         await server.close()
-        await asyncio.sleep(0.05)
+        await drain_pool()
 
 
 @pytest.mark.timeout(10)
@@ -233,7 +569,7 @@ async def test_probe_recovers_after_permission_granted() -> None:
     assert driver.rx_running is False
 
     gate.set()
-    await asyncio.sleep(0.05)  # let the abandoned probe settle
+    await drain_pool()  # let the abandoned probe settle
     backend.block_probe = None  # simulate the permission granted
 
     await driver.start_rx(lambda _frame: None)
@@ -280,10 +616,7 @@ async def test_stop_rx_off_loop_and_bounded(
     )
 
     gate.set()  # let the abandoned background stop finally complete
-    for _ in range(50):
-        await asyncio.sleep(0.01)
-        if stream.stopped_count:
-            break
+    await drain_pool()
     assert stream.stopped_count == 1, "background stop must still complete"
 
 
@@ -314,12 +647,12 @@ async def test_enumeration_timeout_bounded(
         await ticker.stop()
         await ticker_task
         gate.set()
-        await asyncio.sleep(0.05)
+        await drain_pool()
 
     assert ticker.progressed >= 3
     assert driver.rx_running is False
-    assert any("device enumeration" in w.getMessage() for w in _warnings(caplog)), (
-        "timeout warning must name the stuck operation"
+    assert any("PortAudio operation" in w.getMessage() for w in _warnings(caplog)), (
+        "timeout warning must identify the bounded operation safely"
     )
 
 
@@ -466,9 +799,14 @@ async def test_optional_pnp_timeout_falls_back_while_worker_stays_tracked(
 
 @pytest.mark.timeout(10)
 async def test_optional_pnp_timeout_refuses_indistinguishable_radios(
-    monkeypatch: pytest.MonkeyPatch, windows_selection: None
+    monkeypatch: pytest.MonkeyPatch,
+    windows_selection: None,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from rigplane.audio.usb_driver import AudioDeviceSelectionError
+    from rigplane.audio.usb_driver import (
+        AudioTopologyUnavailableError,
+        audio_start_failure_reason,
+    )
 
     gate = threading.Event()
     devices = _fake_devices() + [
@@ -489,19 +827,29 @@ async def test_optional_pnp_timeout_refuses_indistinguishable_radios(
         "rigplane.usb_audio_resolve._query_windows_pnp_devices", lambda: gate.wait()
     )
     try:
-        with pytest.raises(AudioDeviceSelectionError, match="ambiguous"):
+        with (
+            caplog.at_level(logging.WARNING, logger="rigplane.audio.usb_driver"),
+            pytest.raises(AudioTopologyUnavailableError, match="ambiguous") as raised,
+        ):
             await driver.start_rx(lambda _frame: None)
+        assert audio_start_failure_reason(raised.value) == "usb_topology_unavailable"
+        assert any(
+            r.levelno == logging.WARNING and "did not settle" in r.getMessage()
+            for r in caplog.records
+        )
         assert not backend.rx_streams
         assert driver.selected_rx_device is None
     finally:
         gate.set()
-        await asyncio.sleep(0.05)
+        await drain_pool()
 
 
 @pytest.mark.timeout(10)
 async def test_windows_selection_has_one_deadline_and_no_late_cache(
     monkeypatch: pytest.MonkeyPatch, windows_selection: None
 ) -> None:
+    from rigplane.audio.usb_driver import audio_start_failure_reason
+
     gate = threading.Event()
     driver, backend = _make_driver(capture_open_timeout=0.08)
     driver.set_serial_port("COM3")
@@ -524,14 +872,15 @@ async def test_windows_selection_has_one_deadline_and_no_late_cache(
     monkeypatch.setattr(driver, "_select_windows_devices", delayed_mapping)
     started = time.monotonic()
     try:
-        with pytest.raises(AudioCaptureOpenTimeoutError):
+        with pytest.raises(AudioCaptureOpenTimeoutError) as raised:
             await driver.start_rx(lambda _frame: None)
         assert time.monotonic() - started < 0.12
+        assert audio_start_failure_reason(raised.value) == "open_timeout"
         assert not backend.rx_streams
         assert driver.selected_rx_device is None
     finally:
         gate.set()
-        await asyncio.sleep(0.05)
+        await drain_pool()
     assert driver.selected_rx_device is None
 
 
@@ -573,7 +922,7 @@ async def test_windows_cancelled_or_rebound_pnp_cannot_publish_selection(
             assert not backend.rx_streams
         finally:
             gate.set()
-            await asyncio.sleep(0.05)
+            await drain_pool()
         assert driver.selected_rx_device is None
 
 
@@ -633,7 +982,11 @@ async def test_windows_valid_topology_and_wrong_parent_never_share_fallback(
     from dataclasses import replace
     from types import SimpleNamespace
 
-    from rigplane.audio.usb_driver import AudioDeviceSelectionError
+    from rigplane.audio.usb_driver import (
+        AudioDeviceAmbiguousError,
+        AudioDeviceSelectionError,
+        audio_start_failure_reason,
+    )
     from rigplane.usb_audio_resolve import WindowsPnpDevice
 
     records = [
@@ -667,10 +1020,45 @@ async def test_windows_valid_topology_and_wrong_parent_never_share_fallback(
     records[1] = replace(records[1], parent_pnp_id="WRONG-RADIO")
     driver, backend = _make_driver(capture_open_timeout=0.5)
     driver.set_serial_port("COM3")
-    with pytest.raises(AudioDeviceSelectionError, match="parents do not match"):
+    with pytest.raises(
+        AudioDeviceSelectionError, match="parents do not match"
+    ) as raised:
         await driver.start_rx(lambda _frame: None)
+    assert audio_start_failure_reason(raised.value) == "usb_topology_unavailable"
     assert not backend.rx_streams
     assert driver.selected_rx_device is None
+
+    # The serial radio's topology lists no audio function at all: the name
+    # fallback then sees two candidate pairs and refuses them as ambiguous.
+    driver, backend = _make_driver(capture_open_timeout=0.5)
+    backend.add_device(
+        AudioDeviceInfo(
+            id=AudioDeviceId(9),
+            name="USB Audio CODEC",
+            input_channels=1,
+            output_channels=1,
+        )
+    )
+    driver.set_serial_port("COM3")
+    monkeypatch.setattr(
+        "rigplane.usb_audio_resolve._query_windows_pnp_devices", lambda: records[:1]
+    )
+    with pytest.raises(AudioDeviceAmbiguousError, match="ambiguous") as raised:
+        await driver.start_rx(lambda _frame: None)
+    assert audio_start_failure_reason(raised.value) == "usb_ambiguous"
+    assert not backend.rx_streams
+
+    # An IC-7300 whose codec PortAudio does not list under any host API.
+    from test_usb_audio_resolve import _ic7300_hub_records
+
+    driver, backend = _make_driver(capture_open_timeout=0.5)
+    driver.set_serial_port("COM3")
+    monkeypatch.setattr(
+        "rigplane.usb_audio_resolve._query_windows_pnp_devices", _ic7300_hub_records
+    )
+    with pytest.raises(AudioDeviceSelectionError, match="same-host-API") as raised:
+        await driver.start_rx(lambda _frame: None)
+    assert audio_start_failure_reason(raised.value) == "usb_topology_names"
 
 
 @pytest.mark.timeout(10)

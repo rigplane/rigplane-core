@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import time as _real_time
-from unittest.mock import AsyncMock, MagicMock, patch
+from collections.abc import Callable
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -97,6 +98,7 @@ def _make_server(
     proto: MagicMock,
     handler: MagicMock,
     rate_limit: float | None,
+    clock: Callable[[], float] | None = None,
 ) -> RigctldServer:
     cfg = RigctldConfig(
         host="127.0.0.1",
@@ -105,7 +107,11 @@ def _make_server(
         client_timeout=5.0,
         command_timeout=1.0,
     )
-    return RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
+    if clock is None:
+        return RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
+    return RigctldServer(
+        mock_radio, cfg, _protocol=proto, _handler=handler, clock=clock
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -231,31 +237,32 @@ class TestOverLimit:
         def _fake_monotonic() -> float:
             return fake_now[0]
 
-        srv = _make_server(mock_radio, proto, handler, rate_limit=1.0)
-        with patch("rigplane.rigctld.server.time.monotonic", _fake_monotonic):
-            async with srv:
-                r, w = await _connect(srv)
+        srv = _make_server(
+            mock_radio, proto, handler, rate_limit=1.0, clock=_fake_monotonic
+        )
+        async with srv:
+            r, w = await _connect(srv)
 
-                # Allow first.
-                w.write(b"f\n")
-                await w.drain()
-                data = await _read(r)
-                assert data == _OK_BYTES
+            # Allow first.
+            w.write(b"f\n")
+            await w.drain()
+            data = await _read(r)
+            assert data == _OK_BYTES
 
-                # Reject second.
-                w.write(b"f\n")
-                await w.drain()
-                rejected = await _read(r)
-                assert rejected == b"RPRT -6\n"
+            # Reject second.
+            w.write(b"f\n")
+            await w.drain()
+            rejected = await _read(r)
+            assert rejected == b"RPRT -6\n"
 
-                # Advance fake time by 2s instead of real sleep.
-                fake_now[0] = t0 + 2.0
-                w.write(b"f\n")
-                await w.drain()
-                data = await _read(r)
-                assert data == _OK_BYTES
+            # Advance fake time by 2s instead of real sleep.
+            fake_now[0] = t0 + 2.0
+            w.write(b"f\n")
+            await w.drain()
+            data = await _read(r)
+            assert data == _OK_BYTES
 
-                await _close(w)
+            await _close(w)
 
 
 # ---------------------------------------------------------------------------
@@ -277,34 +284,35 @@ class TestWindowReset:
         def _fake_monotonic() -> float:
             return fake_now[0]
 
-        srv = _make_server(mock_radio, proto, handler, rate_limit=2.0)
-        with patch("rigplane.rigctld.server.time.monotonic", _fake_monotonic):
-            async with srv:
-                r, w = await _connect(srv)
+        srv = _make_server(
+            mock_radio, proto, handler, rate_limit=2.0, clock=_fake_monotonic
+        )
+        async with srv:
+            r, w = await _connect(srv)
 
-                # Saturate window (2 allowed).
-                for _ in range(2):
-                    w.write(b"f\n")
-                    await w.drain()
-                    data = await _read(r)
-                    assert data == _OK_BYTES
-
-                # 3rd rejected.
-                w.write(b"f\n")
-                await w.drain()
-                data = await _read(r)
-                assert data == b"RPRT -6\n"
-
-                # Advance fake time by 2s instead of real sleep.
-                fake_now[0] = t0 + 2.0
-
-                # Should be allowed again.
+            # Saturate window (2 allowed).
+            for _ in range(2):
                 w.write(b"f\n")
                 await w.drain()
                 data = await _read(r)
                 assert data == _OK_BYTES
 
-                await _close(w)
+            # 3rd rejected.
+            w.write(b"f\n")
+            await w.drain()
+            data = await _read(r)
+            assert data == b"RPRT -6\n"
+
+            # Advance fake time by 2s instead of real sleep.
+            fake_now[0] = t0 + 2.0
+
+            # Should be allowed again.
+            w.write(b"f\n")
+            await w.drain()
+            data = await _read(r)
+            assert data == _OK_BYTES
+
+            await _close(w)
 
 
 # ---------------------------------------------------------------------------

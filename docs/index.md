@@ -88,7 +88,7 @@ RigPlane keeps the browser UI, audio path, diagnostics, and `rigctld`-compatible
 - :white_check_mark: **CLI tool** — `rigplane --model IC-7610 status`, `rigplane --model IC-7610 freq 14.074m`
 - :white_check_mark: **Built-in Web UI** — spectrum, waterfall, controls, meters, audio in browser; LCD layout for non-scope radios
 - :white_check_mark: **Async + Sync API** — async by default, blocking wrapper available
-- :white_check_mark: **Auto-reconnect** — watchdog + exponential backoff (opt-in)
+- :white_check_mark: **Auto-reconnect** — watchdog + exponential backoff; off by default in the library (`LanBackendConfig.auto_reconnect`, `IcomRadio(auto_reconnect=False)`), enabled for a LAN radio by the `web`, `serve` and `station` commands (`cli: _run`)
 - :white_check_mark: **Type-annotated** — full `py.typed` support for IDE autocompletion
 
 ## Supported Radios

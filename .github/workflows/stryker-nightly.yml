@@ -1,0 +1,59 @@
+name: Stryker nightly (informational)
+
+# Mutation testing of the pure view-model modules named in
+# frontend/stryker.config.mjs. Runs on a schedule or by hand only; it has no
+# pull_request trigger, so it never reports a status on a PR. Reading the
+# report: docs/development/mutation-testing-frontend.md.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: stryker-nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  stryker:
+    runs-on: [self-hosted, linux, build]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+
+      # Stryker 10 declares engines.node >=22.
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies and Stryker
+        working-directory: frontend
+        run: |
+          npm ci
+          npm install --no-save --no-audit --no-fund \
+            @stryker-mutator/core@10.0.0 \
+            @stryker-mutator/vitest-runner@10.0.0
+
+      # --inPlace: mutants are written into this ephemeral checkout instead
+      # of a sandbox copy; the next run's checkout replaces them.
+      - name: Run Stryker
+        working-directory: frontend
+        run: npx stryker run --inPlace
+
+      - name: Upload mutation reports
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: stryker-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            frontend/reports/mutation/mutation.html
+            frontend/reports/mutation/mutation.json
+          if-no-files-found: warn
+          retention-days: 3

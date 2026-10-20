@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
-import { mockCapabilities, mockInfo, mockLocalControllerStatus, mockState } from './fixtures';
+import { fulfillControllerRoute, mockCapabilities, mockControllerHeartbeatAck, mockInfo, mockLocalControllerStatus, mockState } from './fixtures';
 import type { Capabilities } from '../../../src/lib/types/capabilities';
 import type { ServerState } from '../../../src/lib/types/state';
 
@@ -58,6 +58,9 @@ async function prepare(page: Page) {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
     if (request.method() !== 'GET') {
+      // Controller session admission (MOR-3534: one local session per
+      // browser, docs/api/web.md) is transport, not a radio write.
+      if (pathname === '/api/v1/controller') return fulfillControllerRoute(route);
       // The local tuning-step preference is not a radio command, but is isolated too.
       if (pathname !== '/api/local/v1/rc28/tuning-step') writes.push(`${request.method()} ${pathname}`);
       await route.fulfill({ status: 404, body: '{}' });
@@ -76,6 +79,12 @@ async function prepare(page: Page) {
   await page.routeWebSocket(/.*/, (socket) => {
     socket.onMessage((message) => {
       const frame = JSON.parse(String(message));
+      // Real Core acks session heartbeats (`controller_authority.py:
+      // heartbeat`); they are keepalive, not a radio command.
+      if (frame.type === 'controller_heartbeat') {
+        socket.send(JSON.stringify(mockControllerHeartbeatAck));
+        return;
+      }
       if (frame.type !== 'subscribe') writes.push(String(message));
     });
     if (new URL(socket.url()).pathname === '/api/v1/ws') {
@@ -166,10 +175,18 @@ test('no visible interactive element ever sits under the PTT button (MOR-2874)',
     await page.goto('/');
     await settled(page);
     const scroller = page.locator('.m-content');
-    const scrollRange = await scroller.evaluate((el) => el.scrollHeight - el.clientHeight);
     // The phone is one scroller (MOR-2816/2851): without real scroll range
     // the middle and bottom stages would silently degenerate to the top.
-    expect(scrollRange, `${size}: the phone content must actually scroll`).toBeGreaterThan(0);
+    // The range is polled until it is positive instead of read once.
+    await expect.poll(() => scroller.evaluate((el) => el.scrollHeight - el.clientHeight), {
+      message: `${size}: the phone content must actually scroll`,
+      timeout: 10_000,
+    }).toBeGreaterThan(0);
+    const scrollRange = await scroller.evaluate((el) => el.scrollHeight - el.clientHeight);
+    // This is a second read, so the poll above does not cover it: a range
+    // that is not positive here would make all three stages measure the top.
+    expect(scrollRange, `${size}: the scroll range read for the stages must be positive`)
+      .toBeGreaterThan(0);
     const stages: [string, number][] = [
       ['top', 0],
       ['middle', Math.round(scrollRange / 2)],
@@ -181,6 +198,11 @@ test('no visible interactive element ever sits under the PTT button (MOR-2874)',
       const measured = await page.evaluate(clearanceScript);
       writeFileSync(info.outputPath(`mor-2874-${viewport.width}-${stage}.json`),
         JSON.stringify(measured, null, 2));
+      // A scrollTop write that does not take leaves the scroller where it
+      // was, and the stage would be measured there under its own name.
+      expect(Math.abs(measured.scrollTop - top),
+        `${size} ${stage}: scrollTop ${measured.scrollTop} must be within 1px of the target ${top}`)
+        .toBeLessThanOrEqual(1);
       // An empty measurement must not pass: a stale element query would
       // find zero candidates and therefore trivially zero offenders.
       // The fixed chrome alone keeps six candidates at every stage and

@@ -17,7 +17,12 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
-from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
+from rigplane.core.state_store import (
+    FreshnessClock,
+    FreshnessState,
+    StateSnapshot,
+    StateStore,
+)
 from rigplane.core.tx_interlock_contract import TxInterlockDisposition
 from rigplane.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.radio_state import RadioState
@@ -144,7 +149,12 @@ def test_non_writes_and_future_material_intents_fail_closed() -> None:
             )
 
 
-_BLOCK_WIRES = (b"T 1", b"U TUNER 1", b"w FE FE 98 E0 03 FD")
+_BLOCK_WIRES = (
+    b"T 1",
+    b"U TUNER 1",
+    b"w FE FE 98 E0 03 FD",
+    b"w FE FE 98 E0 28 00 01 FD",
+)
 
 
 def _store(case: str) -> tuple[StateStore, object | None]:
@@ -226,7 +236,83 @@ async def test_hard_blocks_dispatch_once_with_fresh_rx(wire: bytes) -> None:
     assert response.ok
     _attempt(radio, routing, wire).assert_awaited_once()
     if wire.startswith(b"w"):
-        radio._send_civ_raw.assert_awaited_once_with(b"\xfe\xfe\x98\xe0\x03\xfd")
+        radio._send_civ_raw.assert_awaited_once_with(
+            bytes.fromhex(wire[2:].decode("ascii").replace(" ", ""))
+        )
+
+
+# ── MOR-3378: an unmanaged raw de-key must never be refused ─────────────────
+# The unmanaged branch of ``_RigctldCommandExecutor.execute`` maps every
+# ``w`` frame to the BLOCK family, so a raw PTT off (``1C 00 00``) or tuner
+# off (``1C 01 00``) was refused once the observed PTT read TX or went
+# stale — leaving a raw keyer keyed. An exact de-key frame is exempt from
+# that RF-state refusal on this seat, exactly as the typed ``T 0`` always
+# was (``PttOff`` is ALWAYS_PASS) and as the unmanaged HTTP raw seat
+# already exempts it (PR #4122).
+
+_DEKEY_WIRES = (
+    (b"w FE FE 98 E0 1C 00 00 FD", b"\xfe\xfe\x98\xe0\x1c\x00\x00\xfd"),
+    (b"w FE FE 98 E0 29 00 1C 00 00 FD", b"\xfe\xfe\x98\xe0\x29\x00\x1c\x00\x00\xfd"),
+    (b"w FE FE 98 E0 1C 01 00 FD", b"\xfe\xfe\x98\xe0\x1c\x01\x00\xfd"),
+    (b"w FE FE 98 E0 28 00 00 FD", b"\xfe\xfe\x98\xe0\x28\x00\x00\xfd"),
+    (b"w FE FE 98 E0 29 00 28 00 00 FD", b"\xfe\xfe\x98\xe0\x29\x00\x28\x00\x00\xfd"),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["tx", "absent"], ids=["tx", "unknown"])
+@pytest.mark.parametrize(
+    ("wire", "frame"),
+    _DEKEY_WIRES,
+    ids=[
+        "ptt-off",
+        "cmd29-ptt-off",
+        "tuner-off",
+        "voice-memory-stop",
+        "cmd29-voice-memory-stop",
+    ],
+)
+async def test_unmanaged_raw_dekey_passes_rf_state_refusal(
+    case: str, wire: bytes, frame: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, forced = _store(case)
+    handler, radio, _routing = _handler(store)
+    if forced is not None:
+        monkeypatch.setattr(StateStore, "snapshot", lambda _: forced)
+
+    response = await handler.execute(parse_line(wire))
+
+    assert response.ok, (
+        "MOR-3378: an exact raw de-key must not be refused by the RF-state check"
+    )
+    radio._send_civ_raw.assert_awaited_once_with(frame)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wire",
+    (
+        b"w FE FE 98 E0 1C 00 01 FD",
+        b"w FE FE 98 E0 1C 00 00 00 FD",
+        b"w FE FE 98 E0 03 FD",
+        b"w FE FE 98 E0 29 00 28 00 01 FD",
+        b"w FE FE 98 E0 28 00 00 00 FD",
+    ),
+    ids=[
+        "raw-ptt-on",
+        "dekey-with-extra-byte",
+        "non-tx-raw",
+        "cmd29-voice-memory-tx",
+        "voice-stop-with-extra-byte",
+    ],
+)
+async def test_unmanaged_non_dekey_raw_still_refused_while_tx(wire: bytes) -> None:
+    handler, radio, _routing = _handler(_store("tx")[0])
+
+    response = await handler.execute(parse_line(wire))
+
+    assert response.error is HamlibError.ERJCTED
+    radio._send_civ_raw.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -885,3 +971,108 @@ async def test_ptt_poll_records_the_mirror_fallback_as_a_diagnostic() -> None:
     assert len(events) == 1
     assert events[0].source == "rigctld.handler"
     assert events[0].details["value"] is True
+
+
+def _rf_snapshot_base() -> tuple[FreshnessClock, StateStore]:
+    """One fresh PTT=False observation at t0=10.0 on a manual clock."""
+
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=clock.now(),
+            max_age=1.0,
+        )
+    )
+    return clock, store
+
+
+def _corrupt_rf_snapshot(snapshot: StateSnapshot, case: str) -> StateSnapshot:
+    path = FieldPath.global_("tx_state", "ptt")
+    field = snapshot.field(path)
+    if case == "missing":
+        return replace(snapshot, fields=())
+    if case == "stale-flag":
+        stale = replace(field, freshness=FreshnessState.STALE)
+        return replace(snapshot, fields=(stale,))
+    if case == "non-bool":
+        return replace(snapshot, fields=(replace(field, value=1),))
+    if case == "max-age-none":
+        return replace(snapshot, fields=(replace(field, max_age=None),))
+    if case == "max-age-zero":
+        return replace(snapshot, fields=(replace(field, max_age=0.0),))
+    if case == "nan-observed":
+        nan = replace(field, last_observed_monotonic=float("nan"))
+        return replace(snapshot, fields=(nan,))
+    if case == "inf-max-age":
+        return replace(snapshot, fields=(replace(field, max_age=float("inf")),))
+    if case == "nan-generated":
+        return replace(snapshot, generated_at_monotonic=float("nan"))
+    if case == "generation-mismatch":
+        moved = replace(field, provider_generation=field.provider_generation + 1)
+        return replace(snapshot, fields=(moved,))
+    if case == "negative-generation":
+        negative = replace(field, provider_generation=-1)
+        return replace(snapshot, fields=(negative,), provider_generation=-1)
+    raise AssertionError(f"unknown corruption case: {case}")
+
+
+_RIGCTLD_CORRUPT_CASES = (
+    "missing",
+    "stale-flag",
+    "non-bool",
+    "max-age-none",
+    "max-age-zero",
+    "nan-observed",
+    "inf-max-age",
+    "nan-generated",
+    "age-at-ttl",
+    "age-over-ttl",
+    "future",
+    "generation-mismatch",
+    "negative-generation",
+)
+
+
+@pytest.mark.parametrize("case", _RIGCTLD_CORRUPT_CASES)
+def test_rigctld_resolver_matches_shared_resolver_on_corrupt_shapes(
+    case: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rigctld seat and the shared resolver refuse every corrupt shape.
+
+    The negative-generation row is the delegation contract: the seat
+    refuses it today, and the shared resolver must refuse it too before
+    the seat can delegate.
+    """
+
+    clock, store = _rf_snapshot_base()
+    if case == "age-at-ttl":
+        clock.advance(1.0)
+        snapshot = store.snapshot()
+    elif case == "age-over-ttl":
+        clock.advance(1.5)
+        snapshot = store.snapshot()
+    elif case == "future":
+        _observe_future_ptt(store, clock)
+        snapshot = store.snapshot()
+    else:
+        snapshot = _corrupt_rf_snapshot(store.snapshot(), case)
+    handler, _, _ = _handler(store)
+    monkeypatch.setattr(StateStore, "snapshot", lambda _: snapshot)
+    assert handler._resolve_rigctld_rf_state() is tx_interlock.RfState.UNKNOWN  # noqa: SLF001
+    assert tx_interlock.resolve_rf_state(snapshot) is tx_interlock.RfState.UNKNOWN
+
+
+def _observe_future_ptt(store: StateStore, clock: FreshnessClock) -> None:
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=clock.now() + 5.0,
+            max_age=1.0,
+        )
+    )

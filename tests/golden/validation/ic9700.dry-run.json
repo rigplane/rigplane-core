@@ -1,0 +1,410 @@
+{
+  "schema_version": 1,
+  "radio": {
+    "model": "IC-9700",
+    "profile_id": "icom_ic9700"
+  },
+  "mode": "dry-run",
+  "checks": [
+    {
+      "check_id": "af_level.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "agc.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "antenna.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "apf.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "attenuator.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "audio.rx",
+      "status": "manual_required",
+      "declaration": "manual_required"
+    },
+    {
+      "check_id": "audio.rx.rms",
+      "status": "manual_required",
+      "declaration": "manual_required"
+    },
+    {
+      "check_id": "audio.tx.byte_perfect",
+      "status": "blocked",
+      "declaration": "manual_required",
+      "failure_domain": "command_execution"
+    },
+    {
+      "check_id": "band_edge.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "break_in.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "bsr.select",
+      "status": "manual_required",
+      "declaration": "manual_required"
+    },
+    {
+      "check_id": "comp_level.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "contour.set",
+      "status": "unsupported",
+      "declaration": "unsupported"
+    },
+    {
+      "check_id": "ctcss_tone.read",
+      "status": "unsupported",
+      "declaration": "unsupported"
+    },
+    {
+      "check_id": "cw_pitch.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "data_mode.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "dial_lock.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "discovery.identify",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "dual_rx.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "dual_watch.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "filter_shape.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "filter_width.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "freq.reverse_sync",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "freq.write",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "if_shift.set",
+      "status": "unsupported",
+      "declaration": "unsupported"
+    },
+    {
+      "check_id": "ip_plus.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "key_speed.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "meters.read",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "mic_gain.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "mod_input.set",
+      "status": "unsupported",
+      "declaration": "unsupported"
+    },
+    {
+      "check_id": "mode.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "monitor.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "nb.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "nb_level.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "notch.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "nr.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "nr_level.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "pbt.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "preamp.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "repeater_tone.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "rf_gain.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "rf_power.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "rit.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scan.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "scope.capture",
+      "status": "manual_required",
+      "declaration": "manual_required"
+    },
+    {
+      "check_id": "scope.fft.presence",
+      "status": "manual_required",
+      "declaration": "manual_required"
+    },
+    {
+      "check_id": "scope_center_type.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_dual.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_during_tx.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_edge.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_fixed_edge.read",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_hold.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_mode.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_rbw.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_receiver.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_ref.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_span.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_speed.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "scope_vbw.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "speech.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "split.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "sql_type.set",
+      "status": "unsupported",
+      "declaration": "unsupported"
+    },
+    {
+      "check_id": "squelch.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "ssb_tx_bw.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "system_date.read",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "system_time.read",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "tone_freq.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "tsql.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "tsql_freq.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "tuner.tune",
+      "status": "blocked",
+      "declaration": "manual_required",
+      "failure_domain": "command_execution"
+    },
+    {
+      "check_id": "tuning_step.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "twin_peak.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "tx.ptt",
+      "status": "blocked",
+      "declaration": "manual_required",
+      "failure_domain": "command_execution"
+    },
+    {
+      "check_id": "vfo_slot.set",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "vox.read",
+      "status": "skip",
+      "declaration": "supported"
+    },
+    {
+      "check_id": "vox.set",
+      "status": "blocked",
+      "declaration": "manual_required",
+      "failure_domain": "command_execution"
+    },
+    {
+      "check_id": "vox_gain.set",
+      "status": "blocked",
+      "declaration": "manual_required",
+      "failure_domain": "command_execution"
+    },
+    {
+      "check_id": "xfc.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "xit.set",
+      "status": "skip",
+      "declaration": "supported"
+    }
+  ]
+}

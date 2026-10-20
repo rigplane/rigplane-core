@@ -198,6 +198,20 @@ export interface ReceiverStatePublic {
   toneFreq?: number | null;
   tsqlFreq?: number | null;
   repeaterShift?: number | null;
+  toneSquelchType?:
+    | (
+        | "off"
+        | "tone"
+        | "tsql"
+        | "dtcs"
+        | "dtcs_t"
+        | "tone_t_dtcs_r"
+        | "dtcs_t_tsql_r"
+        | "tone_t_tsql_r"
+        | "pr_freq"
+        | "rev_tone"
+      )
+    | null;
   dcd?: boolean | null;
 }
 /**
@@ -233,7 +247,7 @@ export interface RadioDetailPublic {
 export interface RadioHealthPublic {
   serverReachable: boolean;
   radioLink: "connected" | "reconnecting" | "disconnected" | "unknown";
-  readiness: "ready" | "delayed" | "stalled" | "recovering";
+  readiness: "ready" | "delayed" | "stalled" | "recovering" | "idle";
   likelyCause:
     | "server_unreachable"
     | "radio_network_lost"
@@ -241,6 +255,8 @@ export interface RadioHealthPublic {
     | "radio_not_responding"
     | "radio_powered_off_likely"
     | "radio_not_connected"
+    | "radio_session_busy"
+    | "operator_disconnected"
     | "unknown";
   sinceMs: number;
   lastError: string | null;

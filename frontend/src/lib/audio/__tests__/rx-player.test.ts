@@ -55,6 +55,97 @@ function pcm16(n: number): ArrayBuffer {
 }
 
 describe('local RX playback diagnostics', () => {
+  it('keeps candidate measurements disabled by default', () => {
+    const p = new RxPlayer();
+    const record = vi.spyOn(p as any, '_recordDecodedObservation');
+    p.start(); p.feed(pcm16(480));
+    expect(p.diagnosticSnapshot()).toBeNull();
+    expect(record).not.toHaveBeenCalled();
+    p.stop();
+  });
+
+  it('observes mono and stereo decoded planes without retaining samples', () => {
+    const p = new RxPlayer(true); p.start();
+    p.feed(pcm16(480));
+    expect(p.diagnosticSnapshot()?.preRouting).toEqual({
+      channelCount: 1, frameCount: 480, channels: [{ rms: 0, peak: 0 }],
+    });
+    const signal = new ArrayBuffer(AUDIO_HEADER_SIZE + 8);
+    const v = new DataView(signal);
+    v.setUint8(0, MSG_TYPE_RX); v.setUint8(1, CODEC_PCM16);
+    v.setUint16(4, SAMPLE_RATE / 100, true); v.setUint8(6, 2);
+    [16384, 0, -16384, 8192].forEach((n, i) => v.setInt16(AUDIO_HEADER_SIZE + i * 2, n, true));
+    p.feed(signal);
+    const snapshot = p.diagnosticSnapshot()!;
+    expect(snapshot.preRouting?.channelCount).toBe(2);
+    expect(snapshot.preRouting?.frameCount).toBe(2);
+    expect(snapshot.preRouting?.channels[0]).toEqual({ rms: 0.5, peak: 0.5 });
+    expect(snapshot.preRouting?.channels[1].rms).toBeCloseTo(Math.sqrt(0.25 ** 2 / 2));
+    expect(snapshot.preRouting?.channels[1].peak).toBe(0.25);
+    snapshot.preRouting!.channels[0].peak = 99;
+    expect(p.diagnosticSnapshot()?.preRouting?.channels[0].peak).toBe(0.5);
+    expect(Object.keys(p.stats().playback)).not.toContain('preRouting');
+    p.stop();
+    expect(p.diagnosticSnapshot()?.preRouting).toBeNull();
+  });
+
+  it('clears invalid or oversized decoded measurements and reports actual graph values', () => {
+    const p = new RxPlayer(true);
+    expect(p.diagnosticSnapshot()).toMatchObject({ preGain: null, sinkSelection: 'unavailable' });
+    p.start(); p.feed(pcm16(480));
+    const record = (data: Float32Array, channels = 1, length = data.length) =>
+      (p as any)._recordDecoded({ length, numberOfChannels: channels, getChannelData: () => data });
+    for (const data of [new Float32Array([NaN]), new Float32Array([Infinity])]) {
+      record(data);
+      expect(p.diagnosticSnapshot()?.preRouting).toBeNull();
+    }
+    record(new Float32Array([1]), 3);
+    expect(p.diagnosticSnapshot()?.preRouting).toBeNull();
+    record(new Float32Array([1]), 1, 5761);
+    expect(p.diagnosticSnapshot()?.preRouting).toBeNull();
+    const readOversized = vi.fn();
+    (p as any)._recordDecodedObservation({ length: 5761, numberOfChannels: 1, getChannelData: readOversized });
+    expect(readOversized).not.toHaveBeenCalled();
+    p.volume = 0.4; p.setFocus('sub'); p.setSplitStereo(true);
+    ctx._gains[0].gain.value = 0.2;
+    expect(p.diagnosticSnapshot()).toMatchObject({
+      volume: 0.4, preGain: 0.2, mainGain: 0, subGain: 1,
+      focus: 'sub', splitStereo: true, sinkSelection: 'unsupported',
+    });
+    ctx.setSinkId = vi.fn(); ctx.sinkId = 'must-not-leak';
+    ctx._gains[1].gain.value = NaN;
+    expect(p.diagnosticSnapshot()).toMatchObject({ mainGain: null, sinkSelection: 'supported' });
+    expect(JSON.stringify(p.diagnosticSnapshot())).not.toContain('must-not-leak');
+    p.stop();
+  });
+
+  it('expires decoded aggregates after two seconds without new input', () => {
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(100);
+    const p = new RxPlayer(true);
+    try {
+      p.start(); p.feed(pcm16(480));
+      clock.mockReturnValue(2100);
+      expect(p.diagnosticSnapshot()).toMatchObject({ decodedStatus: 'fresh', decodedAgeMs: 2000 });
+      clock.mockReturnValue(2101);
+      expect(p.diagnosticSnapshot()).toMatchObject({ decodedStatus: 'expired', decodedAgeMs: 2001, preRouting: null });
+      p.feed(pcm16(480));
+      expect(p.diagnosticSnapshot()).toMatchObject({ decodedStatus: 'fresh', decodedAgeMs: 0 });
+    } finally {
+      p.stop(); clock.mockRestore();
+    }
+  });
+
+  it('keeps playback scheduling alive if candidate measurement fails', () => {
+    const p = new RxPlayer(true);
+    vi.spyOn(p as any, '_recordDecodedObservation').mockImplementation(() => { throw new Error('diagnostic failure'); });
+    p.start();
+    p.feed(pcm16(480));
+    expect(p.stats().playback).toMatchObject({ decodedFrames: 1, scheduledFrames: 1 });
+    expect(ctx._lastSrc.start).toHaveBeenCalledTimes(1);
+    expect(p.diagnosticSnapshot()?.preRouting).toBeNull();
+    p.stop();
+  });
+
   it('distinguishes no input, malformed input, silent PCM, and nonzero PCM', () => {
     const p = new RxPlayer();
     expect(p.stats().playback).toMatchObject({ contextState: 'unavailable', pcmPeak: null });

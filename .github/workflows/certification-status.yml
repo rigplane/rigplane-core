@@ -1,0 +1,45 @@
+name: Certification status
+
+# Reads the scheduled bench-nightly history from the Actions API (no artifacts)
+# and reports whether every radio in scope has enough consecutive PASS nights.
+# Read-only: it never touches the bench. Rules: docs/internals/bench-nightly.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      radios:
+        description: "Comma-separated labels of the radios in scope; other radios are listed, not judged"
+        required: true
+        default: "IC-7610"
+        type: string
+      nights:
+        description: "Consecutive PASS nights required per radio"
+        required: false
+        default: "3"
+        type: string
+      no_verdict:
+        description: "Nights with no verdict (bench lease held by another certification item): comma-separated YYYY-MM-DD:RADIO, or YYYY-MM-DD for every radio"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Certification status
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RADIOS: ${{ inputs.radios }}
+          NIGHTS: ${{ inputs.nights || '3' }}
+          NO_VERDICT: ${{ inputs.no_verdict }}
+        run: python3 .github/scripts/certification_status.py --radios "$RADIOS" --nights "$NIGHTS" --no-verdict "$NO_VERDICT"

@@ -193,6 +193,14 @@ class TestRigctldAuditFormatter:
 
 
 class TestLogCommand:
+    @staticmethod
+    def _audit_record(caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
+        records = [
+            record for record in caplog.records if record.name == AUDIT_LOGGER_NAME
+        ]
+        assert len(records) == 1
+        return records[0]
+
     def test_calls_info_on_audit_logger(self) -> None:
         rec = _sample_record()
         with patch.object(logging.getLogger(AUDIT_LOGGER_NAME), "info") as mock_info:
@@ -204,21 +212,23 @@ class TestLogCommand:
     ) -> None:
         rec = _sample_record()
         with caplog.at_level(logging.INFO, logger=AUDIT_LOGGER_NAME):
+            logging.getLogger("unrelated.audit-test").error("unrelated background log")
             log_command(rec)
-        assert len(caplog.records) == 1
-        assert caplog.records[0].name == AUDIT_LOGGER_NAME
+        assert self._audit_record(caplog).name == AUDIT_LOGGER_NAME
 
     def test_record_level_is_info(self, caplog: pytest.LogCaptureFixture) -> None:
         rec = _sample_record()
         with caplog.at_level(logging.INFO, logger=AUDIT_LOGGER_NAME):
+            logging.getLogger("unrelated.audit-test").error("unrelated background log")
             log_command(rec)
-        assert caplog.records[0].levelno == logging.INFO
+        assert self._audit_record(caplog).levelno == logging.INFO
 
     def test_msg_is_audit_record(self, caplog: pytest.LogCaptureFixture) -> None:
         rec = _sample_record()
         with caplog.at_level(logging.INFO, logger=AUDIT_LOGGER_NAME):
+            logging.getLogger("unrelated.audit-test").error("unrelated background log")
             log_command(rec)
-        assert caplog.records[0].msg is rec
+        assert self._audit_record(caplog).msg is rec
 
 
 # ---------------------------------------------------------------------------

@@ -45,6 +45,17 @@ function emptyPlayback(): RxPlaybackDiagnostics {
 }
 
 const MAX_COUNTER = 0xffffffff;
+const MAX_DIAGNOSTIC_FRAMES = 5760;
+const DIAGNOSTIC_MAX_AGE_MS = 2000;
+type DecodedObservation = {
+  channelCount: number;
+  frameCount: number;
+  channels: { rms: number; peak: number }[];
+};
+
+function finiteOrNull(value: number | undefined): number | null {
+  return value !== undefined && Number.isFinite(value) ? value : null;
+}
 const RESUME_ERROR_NAMES = new Set([
   'NotAllowedError', 'InvalidStateError', 'NotSupportedError', 'AbortError', 'SecurityError', 'UnknownError',
 ]);
@@ -96,6 +107,34 @@ export class RxPlayer {
   private _droppedFrames = 0;
   private _playback = emptyPlayback();
   private _resumeAttempt = 0;
+  private _decodedObservation: DecodedObservation | null = null;
+  private _decodedObservedAt: number | null = null;
+
+  constructor(private readonly diagnosticEnabled = false) {}
+
+  diagnosticSnapshot() {
+    if (!this.diagnosticEnabled) return null;
+    const observation = this._decodedObservation;
+    const age = this._decodedObservedAt === null ? null
+      : finiteOrNull(Math.max(0, performance.now() - this._decodedObservedAt));
+    const fresh = observation !== null && age !== null && age <= DIAGNOSTIC_MAX_AGE_MS;
+    return {
+      ...this.stats(),
+      decodedStatus: observation === null ? 'unavailable' : fresh ? 'fresh' : 'expired',
+      decodedAgeMs: age === null ? null : Math.min(MAX_COUNTER, Math.round(age)),
+      preRouting: fresh && observation ? {
+        channelCount: observation.channelCount, frameCount: observation.frameCount,
+        channels: observation.channels.map(channel => ({ ...channel })),
+      } : null,
+      volume: finiteOrNull(this._volume), focus: this._focus, splitStereo: this._splitStereo,
+      preGain: finiteOrNull(this.preGain?.gain.value),
+      mainGain: finiteOrNull(this.mainGain?.gain.value),
+      subGain: finiteOrNull(this.subGain?.gain.value),
+      sinkSelection: this.ctx === null ? 'unavailable'
+        : typeof (this.ctx as AudioContext & { setSinkId?: unknown }).setSinkId === 'function'
+          ? 'supported' : 'unsupported',
+    };
+  }
 
   get volume(): number {
     return this._volume;
@@ -191,6 +230,8 @@ export class RxPlayer {
   stop(): void {
     this._resumeAttempt++;
     this._playback = emptyPlayback();
+    this._decodedObservation = null;
+    this._decodedObservedAt = null;
     this.resetDecoder();
     this.lastCodec = null;
     this._detachResumeListeners();
@@ -431,6 +472,15 @@ export class RxPlayer {
   // ── Scheduler ──
 
   private _recordDecoded(buffer: AudioBuffer): void {
+    if (this.diagnosticEnabled) {
+      try {
+        this._recordDecodedObservation(buffer);
+      } catch {
+        // Diagnostics must never interrupt decoding or the playback schedule.
+        this._decodedObservation = null;
+        this._decodedObservedAt = null;
+      }
+    }
     if (buffer.length <= 0 || (buffer.numberOfChannels !== 1 && buffer.numberOfChannels !== 2)) return;
     let peak = 0;
     for (let c = 0; c < buffer.numberOfChannels; c++) {
@@ -441,6 +491,30 @@ export class RxPlayer {
     }
     this._playback.decodedFrames = Math.min(MAX_COUNTER, this._playback.decodedFrames + 1);
     this._playback.pcmPeak = Math.round(Math.min(1, peak) * 100);
+  }
+
+  private _recordDecodedObservation(buffer: AudioBuffer): void {
+    this._decodedObservation = null;
+    this._decodedObservedAt = null;
+    if (!Number.isInteger(buffer.length) || buffer.length <= 0 || buffer.length > MAX_DIAGNOSTIC_FRAMES
+      || (buffer.numberOfChannels !== 1 && buffer.numberOfChannels !== 2)) return;
+    const channels: DecodedObservation['channels'] = [];
+    for (let c = 0; c < buffer.numberOfChannels; c++) {
+      const data = buffer.getChannelData(c);
+      if (data.length !== buffer.length) return;
+      let peak = 0;
+      let squares = 0;
+      for (const sample of data) {
+        if (!Number.isFinite(sample)) return;
+        peak = Math.max(peak, Math.abs(sample));
+        squares += sample * sample;
+      }
+      const rms = Math.sqrt(squares / buffer.length);
+      if (!Number.isFinite(rms) || !Number.isFinite(peak)) return;
+      channels.push({ rms, peak });
+    }
+    this._decodedObservation = { channelCount: buffer.numberOfChannels, frameCount: buffer.length, channels };
+    this._decodedObservedAt = performance.now();
   }
 
   private schedule(buf: AudioBuffer): void {

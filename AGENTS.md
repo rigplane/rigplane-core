@@ -25,6 +25,40 @@ This repository is the public open-core `rigplane` implementation.
 - License: MIT, unless a file says otherwise
 - Project board: https://github.com/orgs/rigplane/projects/2
 
+## Stabilization freeze (from 2026-10-13)
+
+Owner decision of 2026-10-11: after Core 3.0.0b15 the repository is in a
+stabilization freeze while the hardening program (Linear project
+"Stabilization & Hardening 2026-Q4") runs.
+
+Allowed change classes:
+
+- `fix` — a defect, with a test that reproduces it;
+- `regression-test`;
+- `characterization-test`;
+- `testability` — seams, fakes, simulators, recorders;
+- `observability` — diagnostics, metrics, logging;
+- `ci`;
+- `docs`;
+- `release`;
+- `chore` — dependency pins, tooling.
+
+Prohibited without an exception: new features, speculative refactoring, UI
+redesign, new protocols, radios or DSP features, opportunistic cleanup that
+widens the regression surface.
+
+Every PR body carries a line `Change class: <class>` with exactly one class
+from the list above. `.github/workflows/freeze-gate.yml` checks it and refuses
+a `feat` title without the `freeze-exception` label. An exception is the
+owner's decision, recorded as the first line of the PR body
+(`Freeze exception: <ruling, date>`) together with the label
+`freeze-exception`.
+
+`slow`-marked tests must not run on every build; they must run when a release
+candidate or a release is cut (owner ruling 2026-10-10).
+
+Every PR names its Linear owner in the body (`Linear: MOR-NNNN`).
+
 ## Public/open-core boundary
 
 Everything in this repository should be safe to publish as open-core work:

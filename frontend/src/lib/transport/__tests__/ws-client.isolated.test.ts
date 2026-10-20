@@ -71,6 +71,100 @@ describe('remote controller channel grouping', () => {
   });
 });
 
+describe('local controller session channels', () => {
+  const sessionKey = 'b'.repeat(64);
+
+  beforeEach(() => {
+    vi.resetModules(); vi.useFakeTimers(); instances.length = 0;
+    vi.stubGlobal('WebSocket', ControllerSocket);
+    let posts = 0;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => new Response(JSON.stringify(
+      init?.method === 'POST'
+        ? { controller_key: sessionKey, generation: ++posts, ttl_ms: 6000, heartbeat_ms: 2000 }
+        : { protocol_version: 1, mode: 'local', state: 'idle' },
+    ), { status: init?.method === 'POST' ? 201 : 200 })));
+  });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules(); });
+
+  it('attaches every channel with the session subprotocol and recovers after loss without replaying PTT', async () => {
+    const { controllerClient } = await import('../controller-client');
+    const { WsChannel } = await import('../ws-client');
+    const control = new WsChannel();
+    const scope = new WsChannel(false);
+    // Silent-recovery pin: a local session loss must surface no error toast.
+    // Collecting on both channels catches an emit wired into the local
+    // onLoss branch whether or not it is guarded by `control`.
+    const notifications: WsMessage[] = [];
+    control.onMessage((m) => { if (m.type === 'notification') notifications.push(m); });
+    scope.onMessage((m) => { if (m.type === 'notification') notifications.push(m); });
+    await controllerClient.prepare();
+    expect(controllerClient.remote).toBe(false);
+    control.connect('wss://station.test/api/v1/ws');
+    scope.connect('wss://station.test/api/v1/scope');
+    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    const primary = instances[0] as ControllerSocket;
+    expect(primary.protocols).toEqual([`rigplane-controller-v1.${sessionKey}`]);
+    expect(primary.url).not.toContain(sessionKey);
+    expect(new URL(primary.url).searchParams.get('controller_role')).toBe('primary');
+    primary.simulateOpen();
+    await vi.waitFor(() => expect(instances).toHaveLength(2));
+    const child = instances[1] as ControllerSocket;
+    expect(child.protocols).toEqual(primary.protocols);
+    child.simulateOpen();
+    primary.simulateClose();
+    expect(child.readyState).toBe(ControllerSocket.CLOSED);
+    expect(control.send({ type: 'cmd', id: 'stale-ptt', name: 'ptt', params: { state: true } })).toBe(false);
+    control.send({ type: 'cmd', id: 'queued-set', name: 'set_freq', params: { freq: 2 } });
+    await vi.waitFor(() => expect(instances).toHaveLength(3));
+    const recovered = instances[2] as ControllerSocket;
+    expect(recovered.protocols).toEqual([`rigplane-controller-v1.${sessionKey}`]);
+    recovered.simulateOpen();
+    const sentIds = recovered.sent.map((raw) => {
+      try { return (JSON.parse(raw) as { id?: string }).id; } catch { return undefined; }
+    });
+    expect(sentIds).not.toContain('stale-ptt');
+    expect(sentIds).toContain('queued-set');
+    expect(control.send({ type: 'cmd', id: 'fresh-ptt', name: 'ptt', params: { state: true } })).toBe(true);
+    expect(notifications).toEqual([]);
+    control.disconnect();
+    scope.disconnect();
+  });
+
+  it('attaches the control channel from the unauthenticated same-origin relative URL', async () => {
+    const { controllerClient } = await import('../controller-client');
+    const { WsChannel } = await import('../ws-client');
+    const control = new WsChannel();
+    await controllerClient.prepare();
+    control.connect('/api/v1/ws');
+    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    const primary = instances[0] as ControllerSocket;
+    expect(primary.protocols).toEqual([`rigplane-controller-v1.${sessionKey}`]);
+    expect(new URL(primary.url, location.href).pathname).toBe('/api/v1/ws');
+    expect(new URL(primary.url, location.href).searchParams.get('controller_role')).toBe('primary');
+    control.disconnect();
+  });
+
+  it('stays sessionless against an older core that refuses the local POST', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => new Response(JSON.stringify(
+      init?.method === 'POST'
+        ? { error: 'remote_disabled' }
+        : { protocol_version: 1, mode: 'local', state: 'idle' },
+    ), { status: init?.method === 'POST' ? 403 : 200 })));
+    const { controllerClient } = await import('../controller-client');
+    const { WsChannel } = await import('../ws-client');
+    const control = new WsChannel();
+    await controllerClient.prepare();
+    control.connect('wss://station.test/api/v1/ws');
+    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    const socket = instances[0] as ControllerSocket;
+    expect(socket.protocols).toEqual([]);
+    expect(new URL(socket.url).searchParams.has('controller_role')).toBe(false);
+    socket.simulateOpen();
+    expect(control.send({ type: 'cmd', id: 'plain', name: 'set_freq', params: { freq: 1 } })).toBe(true);
+    control.disconnect();
+  });
+});
+
 function normalizedLevelWireVectors(): string[] {
   const catalog = readFileSync(resolve(process.cwd(), '../docs/api/command-catalog.md'), 'utf8');
   const match = catalog.match(/<!-- normalized-level-wire-vectors:start -->\n```jsonl\n([\s\S]*?)\n```\n<!-- normalized-level-wire-vectors:end -->/u);
@@ -418,6 +512,7 @@ describe('WsChannel', () => {
     ch.disconnect();
     ch.connect('ws://test');
     const replacement = instances[1];
+    replacement.answersPings = true;
     replacement.simulateOpen();
 
     first.simulateClose(1000, 'delayed close', true);
@@ -456,6 +551,7 @@ describe('WsChannel', () => {
     await Promise.resolve();
     await Promise.resolve();
     const replacement = instances[1];
+    replacement.answersPings = true;
     replacement.simulateOpen();
 
     first.simulateClose(1000, 'delayed close', true);
@@ -1151,24 +1247,97 @@ describe('WsChannel', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('keeps the connection alive by sending periodic ping frames', async () => {
+  it('closes and reconnects when the server stays silent past the heartbeat timeout', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
+    const states: string[] = [];
+    ch.onStateChange((s) => states.push(s));
 
     ch.connect('ws://test');
     instances[0].simulateOpen();
     expect(ch.state).toBe('connected');
 
-    // advance past two keepalive intervals without incoming messages
-    vi.advanceTimersByTime(30001);
-
+    // The client's own ping at 15 s must not count as proof the server is alive.
+    vi.advanceTimersByTime(29_999);
     const pingFrames = instances[0].sent
       .map((data) => JSON.parse(data))
       .filter((msg) => msg.type === 'ping');
+    expect(pingFrames).toHaveLength(1);
+    expect(ch.state).toBe('connected');
 
-    expect(pingFrames.length).toBeGreaterThanOrEqual(2);
+    vi.advanceTimersByTime(1);
+    expect(instances[0].readyState).toBe(MockWebSocket.CLOSED);
+    expect(ch.state).toBe('disconnected');
+
+    // First backoff is at most 1.2 s (calcBackoff jitter).
+    vi.advanceTimersByTime(1_300);
+    expect(instances).toHaveLength(2);
+    expect(ch.state).toBe('reconnecting');
+
+    instances[1].simulateOpen();
+    expect(ch.state).toBe('connected');
+    expect(states).toEqual(['connecting', 'connected', 'disconnected', 'reconnecting', 'connected']);
+  });
+
+  it('stays connected through server silence while the server answers keepalive pings', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+
+    ch.connect('ws://test');
+    instances[0].answersPings = true;
+    instances[0].simulateOpen();
+
+    vi.advanceTimersByTime(120_000);
+
     expect(ch.state).toBe('connected');
     expect(instances).toHaveLength(1);
+  });
+
+  it("a stale socket's frame does not re-arm or close the newer socket", async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+
+    ch.connect('ws://test');
+    const stale = instances[0];
+    stale.simulateOpen();
+    stale.simulateClose();
+    vi.advanceTimersByTime(1_300); // first backoff is at most 1.2 s (calcBackoff jitter)
+    expect(instances).toHaveLength(2);
+    expect(instances[1].readyState).toBe(MockWebSocket.CONNECTING);
+    expect(ch.state).toBe('reconnecting');
+
+    stale.simulateMessage('{}');
+    vi.advanceTimersByTime(30_000);
+
+    expect(instances).toHaveLength(2);
+    expect(instances[1].readyState).toBe(MockWebSocket.CONNECTING);
+    expect(ch.state).toBe('reconnecting');
+  });
+
+  it('binary and malformed text frames re-arm the heartbeat', async () => {
+    const { WsChannel } = await import('../ws-client');
+
+    const framesKeepTheSocketAlive = (deliver: (socket: MockWebSocket) => void) => {
+      const base = instances.length;
+      const ch = new WsChannel();
+      ch.connect('ws://test');
+      const socket = instances[base];
+      socket.answersPings = false;
+      socket.simulateOpen();
+      for (let i = 0; i < 4; i++) {
+        vi.advanceTimersByTime(20_000);
+        deliver(socket);
+      }
+      expect(ch.state).toBe('connected');
+      expect(instances).toHaveLength(base + 1);
+      vi.advanceTimersByTime(30_000);
+      expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+      expect(ch.state).toBe('disconnected');
+      ch.disconnect();
+    };
+
+    framesKeepTheSocketAlive((socket) => socket.simulateMessage(new ArrayBuffer(1)));
+    framesKeepTheSocketAlive((socket) => socket.simulateMessage('not json'));
   });
 
   it('resets heartbeat timer on each incoming message', async () => {
@@ -1178,14 +1347,96 @@ describe('WsChannel', () => {
     ch.connect('ws://test');
     instances[0].simulateOpen();
 
-    // keep feeding messages — should not disconnect
+    // Five frames 20 s apart: each gap is under the 30 s timeout, but the
+    // 100 s total far exceeds one timeout — only re-arming on every frame
+    // keeps the connection alive.
     for (let i = 0; i < 5; i++) {
-      vi.advanceTimersByTime(5000);
+      vi.advanceTimersByTime(20_000);
       instances[0].simulateMessage(JSON.stringify({ type: 'ack', id: `${i}` }));
     }
-
     expect(ch.state).toBe('connected');
     expect(instances).toHaveLength(1);
+
+    vi.advanceTimersByTime(30_000);
+    expect(instances[0].readyState).toBe(MockWebSocket.CLOSED);
+    expect(ch.state).toBe('disconnected');
+    // Cleanup: the close left a reconnect timer armed; disconnect() stops
+    // this channel's still-live visibilitychange listener (document
+    // listeners outlive the `it` block) from reconnecting during a later
+    // test's visibilitychange dispatch.
+    ch.disconnect();
+  });
+
+  it('disconnect stops the keepalive and no ping is sent afterwards', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    ch.disconnect();
+
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(60_000);
+    expect(instances[0].sent).toEqual([]);
+  });
+
+  it('a server-side close stops the keepalive interval', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    instances[0].simulateClose();
+
+    // After the close only the reconnect timer should remain: onclose
+    // clears the heartbeat timeout and stops the keepalive interval.
+    expect(vi.getTimerCount()).toBe(1);
+    ch.disconnect();
+  });
+
+  it('a late close from a replaced socket does not stop the new keepalive', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+
+    ch.connect('ws://test');
+    const stale = instances[0];
+    stale.simulateOpen();
+    stale.simulateClose();
+    vi.advanceTimersByTime(1_300); // first backoff is at most 1.2 s (calcBackoff jitter)
+    const current = instances[1];
+    current.simulateOpen();
+
+    // Late close event from the already-replaced socket: it must not stop
+    // the channel's keepalive, which now belongs to the new socket.
+    stale.simulateClose(1000, 'delayed close', true);
+    vi.advanceTimersByTime(15_000);
+
+    const pingFrames = current.sent
+      .map((data) => JSON.parse(data))
+      .filter((msg) => msg.type === 'ping');
+    expect(pingFrames).toHaveLength(1);
+    ch.disconnect();
+  });
+
+  it('no ping is sent while reconnecting after a server-side close', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    instances[0].simulateClose();
+    vi.advanceTimersByTime(120_000);
+
+    // onclose stops the keepalive interval and clears the heartbeat timeout,
+    // so once the reconnect backoff has fired, no channel timer is left.
+    expect(vi.getTimerCount()).toBe(0);
+    expect(instances).toHaveLength(2);
+    for (const socket of instances) {
+      const pingFrames = socket.sent
+        .map((data) => JSON.parse(data))
+        .filter((msg) => msg.type === 'ping');
+      expect(pingFrames).toHaveLength(0);
+    }
   });
 
   it('removes message handler via returned cleanup fn', async () => {

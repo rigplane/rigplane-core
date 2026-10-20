@@ -11,6 +11,152 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b18] — 2026-10-20
+
+Republishes 3.0.0b17 to PyPI. The 3.0.0b17 tag exists on GitHub but its
+PyPI publish stopped in the pre-publish test run, so 3.0.0b17 was never
+uploaded. The runtime code is identical to 3.0.0b17.
+
+### Tests
+
+- **Make the soak detach-sabotage test deterministic (MOR-3565, #4263).** On
+  slower runners one soak cycle lasted about two seconds and the sabotaged
+  session's lease expired inside the check window, so the negative control
+  passed instead of failing. The soak driver now renews live sessions' leases
+  before closing clients.
+
+## [3.0.0b17] — 2026-10-20
+
+### Added
+
+- **Several clients can share one radio session; only one of them holds TX
+  at a time (MOR-3534, #4253, #4254).** The first client to press PTT holds
+  transmit until it releases; the others stay connected for receive, scope
+  and control. The web UI opens a controller session in every mode
+  (MOR-3535, #4255).
+- **rigctl over the WebSocket, bound to the client's session (MOR-3536,
+  #4256).** A remote client can drive CAT through the same session that
+  carries its audio and scope.
+- **Per-IP cap on controller sessions and channels (MOR-3557, #4258).**
+
+### Fixed
+
+- **Refuse CW text, VOX, TUNE and break-in while the radio transmits TX that
+  Core does not hold (MOR-3537, #4257).** Emergency TX release is never
+  gated; TX counts as foreign only after receive was seen since Core's own
+  unkey (MOR-3561).
+- **Closing an auxiliary channel no longer drops the session's TX
+  (MOR-3562, #4261).**
+- **Pair IC-7300 USB audio on Windows when endpoint names are localized,
+  renamed or re-plugged (MOR-3530, #4250).** The resolver matches the endpoint
+  names the Windows device topology reports for the radio's codec, including
+  MME's 31-character cut, instead of requiring `Microphone (USB Audio CODEC)`.
+  `/api/v1/info` `audioReceive.failure` gains an additive `reason` category
+  (`usb_topology_names`, `usb_topology_unavailable`, `usb_ambiguous`,
+  `open_timeout`, `format`, `other`), and topology query failures and timeouts
+  are logged at WARNING.
+- **Read the Windows USB audio topology primarily from cfgmgr32, keeping the
+  PowerShell PnP query as a fallback (MOR-3556, #4252).** Audio device
+  matching no longer waits on a slow PowerShell call in the normal case.
+- **Send diagnostic reports to the public `reports.rigplane.app` endpoint
+  (MOR-3533, #4251).** The built-in "Send" button and `rigplane diagnose
+  --upload` defaulted to `reports.msmsoft.net`, which does not resolve outside
+  the maintainer's private network, so uploads failed for every external user
+  with `getaddrinfo failed`. `RIGPLANE_REPORT_ENDPOINT` still overrides the
+  default.
+
+### Tests
+
+- Multi-session TX fault lanes, soak scenario and mutation targets
+  (MOR-3538, #4259, #4260).
+
+## [3.0.0b16] — 2026-10-15
+
+### Fixed
+
+- **Close and reconnect a silent control, scope or audio-scope WebSocket instead of showing a live link over a dead connection (MOR-1831, MOR-3276, #4043).** The Web UI now closes and reconnects the channel when the server goes silent for 30 s. A new Web UI talking to an older Core without the pong reply reconnects an idle control channel about every 31 s.
+
+- **Keep web and station listeners available during the LAN identity hold
+  (MOR-3363, #4102).** The bundled rigctld listener no longer aborts startup
+  while radio identity is pending; readiness remains false until the hold resolves.
+
+- **Re-login when the control session dies during a LAN identity hold
+  (MOR-3349, #4109, #4172).** The held session is probed before requesting
+  recovery; a live standby session does not trigger that escalation.
+
+- **Recover startup from a radio-held session with bounded fresh-login retries
+  (MOR-3391, #4176, #4178, #4197).** Web and station serve HTTP not-ready
+  during the startup busy hold. The busy retry budget is 600 seconds, with
+  a 90-second live-holder boundary and two retries for an unanswered first
+  discovery; a live holder ends the retry loop rather than being displaced.
+
+### Known issues
+
+- **MOR-3471 remains unresolved and is deferred to the next release:** the
+  waterfall can replay buffered frames at 4–5× after returning from an inactive
+  macOS Space. The added diagnostics (#4246) do not establish a fix.
+
+## [3.0.0b15] — 2026-10-11
+
+### Added
+
+- **Add an experimental SDR IQ panadapter as a scope source (MOR-3151,
+  MOR-3154, MOR-3155, MOR-3156, #4011, #4015, #4016, #4018).** A new
+  `rigplane.sdr` package defines the IQ source contract, and
+  `SoapyIqSource` implements it over SoapySDR through an optional `sdr`
+  extra, including a remote driver and reconnect. `IqFftScope` converts
+  IQ into scope frames, and a controller follows the radio VFO with
+  view shift or retune and freezes the scope during TX. The SDR scope
+  source is experimental in this beta and off by default unless
+  configured.
+
+- **Wire the SDR scope source into the server, CLI and Web UI
+  (MOR-3157, MOR-3158, MOR-3200, MOR-3201, MOR-3202, #4014, #4019,
+  #4020, #4021, #4022).** The Web UI renders the SDR scope source with
+  a status badge, a TX-frozen hold and a source selector, and a public
+  `sdr` status object exposes its state; environment configuration
+  controls the source. Zoom FFT gives real resolution for narrow spans,
+  and radios that have their own scope fall back between SDR and
+  hardware scopes at runtime.
+
+- **Add an experimental remote controller lease with admission and
+  transmit fences (MOR-3143, MOR-3144, #4002, #4003, #4012, #4013,
+  #4017).** One ephemeral controller capability with heartbeat and
+  expiry gates queued commands, and revocation fences new work before
+  retained cleanup completes. Admission is enforced across HTTP,
+  WebSocket and rigctld ingress and browser TX-audio ownership, and a
+  lost admission releases momentary holds. The remote controller lease
+  is experimental in this beta; its admission is enabled whenever the
+  managed TX composition is installed, which is the normal `rigplane web`
+  and `station` startup.
+
+- **Report a refused browser RX start through the existing info status
+  (MOR-3148, #4005).** `GET /api/v1/info` now retains the actual
+  RX-start refusal, including when no client WebSocket received the
+  error, and a confirmed successful start clears it.
+
+### Fixed
+
+- **Drop TX frames that lost admission during audio-session convergence
+  (MOR-3149, #4004).** A TX frame could pass admission, await audio
+  session convergence and reach the radio after revocation. The
+  submission guard is now rechecked immediately before the radio push,
+  and non-confirming results drop the frame.
+
+- **Declare the resolved audio route in server info (#4025).**
+  `/api/v1/info` omitted the active audio route, leaving remote
+  consumers unable to select one. The response now carries the
+  canonical route from the existing resolver, or null without an
+  attached radio; existing fields and protocol version 1 are unchanged.
+
+- **Request 50 ms input latency for Linux ALSA capture (MOR-3140,
+  #4001).** The Linux ALSA capture path now requests a 50 ms input
+  latency.
+
+### Known issues
+
+- Linux hardware audio acceptance remains pending.
+
 ## [3.0.0b14] — 2026-10-06
 
 ### Fixed
@@ -4408,7 +4554,11 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b14...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b18...HEAD
+[3.0.0b18]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b17...v3.0.0b18
+[3.0.0b17]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b16...v3.0.0b17
+[3.0.0b16]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b15...v3.0.0b16
+[3.0.0b15]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b14...v3.0.0b15
 [3.0.0b14]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b13...v3.0.0b14
 [3.0.0b13]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b12...v3.0.0b13
 [3.0.0b12]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b11...v3.0.0b12
