@@ -39,8 +39,11 @@ radio disconnect/connect, and pins:
   flat plateau mid-drain, for FDs and task counts alike, and whether or
   not probe/task capture is on — a persistent one still fails after the
   full window, and the settle gives up at its window or on a hung
-  sample. The feeds are scripted; the window and hang tests use short
-  real timeouts.
+  sample. The feeds are scripted; the window test drives a controlled
+  monotonic clock so the deadline itself ends the settle (one late
+  settle sample hangs for real and is bounded by the wait_for on the
+  remaining window), and the hung-sample test uses a real 50 ms window
+  against a real 30 s hang.
 """
 
 from __future__ import annotations
@@ -764,15 +767,48 @@ def _process_script(
     return script
 
 
+class _SettleClock:
+    """A controlled monotonic clock for the settle's deadline math.
+
+    Every scripted sample costs ``sample_cost_s`` of window time and
+    every recorded sleep advances the clock by its delay, so the test
+    decides exactly when the settle's window expires without waiting
+    for real time to pass. Installed as a ``time``-module stub inside
+    ``soak_driver`` only: on Python 3.13 the event loop's ``time()``
+    reads ``time.monotonic`` dynamically, so patching the stdlib module
+    attribute globally would freeze the loop's own timers.
+    """
+
+    def __init__(self, sample_cost_s: float) -> None:
+        self.now = 1000.0
+        self._sample_cost_s = sample_cost_s
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def advance_by_sample(self) -> None:
+        self.now += self._sample_cost_s
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 async def _run_cycle_with_process_script(
     monkeypatch: pytest.MonkeyPatch,
     script: Callable[[], dict[str, int]],
     *,
-    hang_settle_sample: bool = False,
+    hang_call: int | None = None,
     probe_diagnostics: bool = False,
     task_provenance: bool = False,
+    clock: _SettleClock | None = None,
 ) -> tuple[soak_driver.SoakDriver, list[float]]:
-    """One recovered cycle over a scripted feed; records asyncio.sleep delays."""
+    """One recovered cycle over a scripted feed; records asyncio.sleep delays.
+
+    ``hang_call`` makes the Nth ``fetch_runtime`` call sleep 30 real
+    seconds (an unbounded sampler hang). ``clock``, when given, is
+    installed as the driver's ``time.monotonic`` and advanced by every
+    sample and sleep, driving the settle's deadline arithmetic.
+    """
     driver = soak_driver.SoakDriver(
         soak_driver.SoakConfig(
             duration_s=45,
@@ -791,9 +827,12 @@ async def _run_cycle_with_process_script(
     async def runtime() -> dict[str, Any]:
         nonlocal calls
         calls += 1
-        if hang_settle_sample and calls == 2 * soak_driver._STABILITY_PROBE_COUNT + 1:
+        if hang_call is not None and calls == hang_call:
             await real_sleep(30.0)
-        return {"process": script()}
+        feed = script()
+        if clock is not None:
+            clock.advance_by_sample()
+        return {"process": feed}
 
     async def status() -> str:
         return "connected"
@@ -809,6 +848,8 @@ async def _run_cycle_with_process_script(
 
     async def sleep(delay: float) -> None:
         sleeps.append(delay)
+        if clock is not None:
+            clock.advance(delay)
 
     monkeypatch.setattr(sampler, "fetch_runtime", runtime)
     monkeypatch.setattr(sampler, "fetch_connection_status", status)
@@ -880,20 +921,43 @@ async def test_stability_settle_waits_out_a_plateau_before_further_decay(
 async def test_stability_settle_is_bounded_by_its_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A feed that never settles cannot stall the settle past its window."""
-    monkeypatch.setattr(soak_driver, "_STABILITY_SETTLE_WINDOW_S", 0.05)
+    """The window, not the resample budget, ends a never-settling feed.
+
+    A controlled monotonic clock drives the deadline arithmetic: with a
+    1.0 s window, every sample costs 0.1 s of it and every sleep
+    advances the clock by its delay. After the first settle sample and
+    one 0.25 s step the next settle sample starts with 0.65 s of window
+    left — and that late sample hangs for 30 real seconds, so the
+    ``wait_for`` on the remaining window gives up on it. The settle ends
+    after a single step although the budget allows four, and the cycle
+    still concludes with a FAIL on the never-settling counts. Remove the
+    deadline bounding and this goes red: without the clamped sleeps four
+    full steps are recorded, and without the ``wait_for`` the 30 s hang
+    outruns the outer bound.
+    """
+    real_monotonic = time.monotonic
+    monkeypatch.setattr(soak_driver, "_STABILITY_SETTLE_WINDOW_S", 1.0)
+    clock = _SettleClock(sample_cost_s=0.1)
+    monkeypatch.setattr(soak_driver, "time", SimpleNamespace(monotonic=clock.monotonic))
     falling = itertools.chain([48, 48, 48], itertools.count(10**9, -1))
 
     def script() -> dict[str, int]:
         return {"rssBytes": 1024, "openFds": next(falling), "asyncioTasks": 30}
 
-    started = time.monotonic()
-    driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
-    assert time.monotonic() - started < 10.0
+    started = real_monotonic()
+    driver, sleeps = await asyncio.wait_for(
+        _run_cycle_with_process_script(monkeypatch, script, hang_call=8, clock=clock),
+        timeout=10.0,
+    )
+    assert real_monotonic() - started < 5.0
     (entry,) = driver._reconnects
     assert entry["recovered"] is True
     assert _stability_status(entry, "fds")["status"] == "FAIL"
-    assert len(sleeps) > 1
+    # One clamped step sleep; the late hung sample consumed the rest of
+    # the window, so the settle ended by the window — not by its budget
+    # of four steps (window 1.0 s / step 0.25 s) nor by a calm reading
+    # (the counts fall forever, so calm never reaches its threshold).
+    assert sleeps == [3.0, soak_driver._STABILITY_SETTLE_STEP_S]
 
 
 async def test_stability_settle_gives_up_on_a_hung_sample(
@@ -901,15 +965,22 @@ async def test_stability_settle_gives_up_on_a_hung_sample(
 ) -> None:
     """A sample past the window ends the settle; the cycle still concludes.
 
-    The outer 10 s bound is the discrimination: without the wait_for in
-    _settle_sample the injected 30 s hang is unguarded, the bound fires
-    TimeoutError, and this test goes red instead of passing after 30 s.
+    The 7th runtime call is the settle's first sample; it hangs 30 real
+    seconds against a real 50 ms window, and the ``wait_for`` on the
+    remaining window cancels it. The outer 10 s bound is the
+    discrimination: without the wait_for in _settle_sample the injected
+    hang is unguarded, the bound fires TimeoutError, and this test goes
+    red instead of passing after 30 s.
     """
     monkeypatch.setattr(soak_driver, "_STABILITY_SETTLE_WINDOW_S", 0.05)
     script = _process_script([48, 48, 48, 56, 55, 54, 48, 48, 48])
     started = time.monotonic()
     driver, sleeps = await asyncio.wait_for(
-        _run_cycle_with_process_script(monkeypatch, script, hang_settle_sample=True),
+        _run_cycle_with_process_script(
+            monkeypatch,
+            script,
+            hang_call=2 * soak_driver._STABILITY_PROBE_COUNT + 1,
+        ),
         timeout=10.0,
     )
     assert time.monotonic() - started < 5.0
