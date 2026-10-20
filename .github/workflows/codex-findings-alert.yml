@@ -1,0 +1,131 @@
+name: Codex findings alert
+
+# Pings the owner when the Codex review bot finds something on a PR: adds the
+# `codex-findings` label and sends a Telegram message (repo, PR, title, link,
+# P1/P2 badge when present, and the finding's headline). The merge script's
+# unresolved-review-thread guard stays the hard stop; this is only the alert.
+# Fan-out: every inline Codex finding sends its own message (N findings = N
+# messages). A comment counts as a finding only when it carries a P-badge or
+# Codex's finding marker (`codex-code-review-finding`); clean runs, status
+# replies, comments on plain issues and review summaries stay silent.
+# The bot token and chat id are secrets (TELEGRAM_BOT_TOKEN,
+# TELEGRAM_HOME_CHANNEL), never printed. `workflow_dispatch` sends a test
+# alert for a given PR with a sample finding.
+
+on:
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request to label and announce (test alert)
+        required: true
+      sample_body:
+        description: Sample finding text
+        required: false
+        default: '**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Test alert from workflow_dispatch**'
+
+permissions:
+  issues: write
+  pull-requests: write # labels on a PR need this (issues: write alone returns 403)
+
+jobs:
+  alert:
+    name: Alert on Codex findings
+    # Only the Codex bot (or a manual test); comments on plain issues are ignored below.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.review.user.login == 'chatgpt-codex-connector[bot]' ||
+      github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Label the PR and send the Telegram alert
+        uses: actions/github-script@v7
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_HOME_CHANNEL: ${{ secrets.TELEGRAM_HOME_CHANNEL }}
+          SAMPLE_BODY: ${{ inputs.sample_body }}
+          SAMPLE_PR: ${{ inputs.pr_number }}
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const event = context.eventName;
+            const payload = context.payload;
+            let number;
+            let body;
+            let link;
+            let where = '';
+            if (event === 'workflow_dispatch') {
+              number = Number(process.env.SAMPLE_PR);
+              body = process.env.SAMPLE_BODY || '';
+            } else if (event === 'pull_request_review') {
+              number = payload.pull_request.number;
+              body = payload.review.body || '';
+              link = payload.review.html_url;
+            } else if (event === 'pull_request_review_comment') {
+              number = payload.pull_request.number;
+              body = payload.comment.body || '';
+              link = payload.comment.html_url;
+              if (payload.comment.path) {
+                where = `${payload.comment.path}${(payload.comment.line ?? payload.comment.original_line) ? ':' + (payload.comment.line ?? payload.comment.original_line) : ''}`;
+              }
+            } else {
+              if (!payload.issue.pull_request) {
+                core.info('comment is on an issue, not a pull request');
+                return;
+              }
+              number = payload.issue.number;
+              body = payload.comment.body || '';
+              link = payload.comment.html_url;
+            }
+            // A finding carries a P-badge or Codex's finding marker; anything else (a
+            // clean run, a status reply, a review summary) is not alerted.
+            const badge = /!\[(P\d+) Badge\]/.exec(body)?.[1] ?? '';
+            if (!badge && !body.includes('codex-code-review-finding')) {
+              core.info('Codex comment without a finding marker; no alert');
+              return;
+            }
+            // Headline: first non-empty line, markdown and HTML stripped.
+            const firstLine = body.split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '';
+            const headline = firstLine
+              .replace(/<[^>]*>/g, ' ')
+              .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+              .replace(/[*_`#>]/g, '')
+              .replace(/\s+/g, ' ')
+              .trim()
+              .slice(0, 160);
+            const {data: pull} = await github.rest.pulls.get({owner, repo, pull_number: number});
+            link = link ?? pull.html_url;
+            const label = 'codex-findings';
+            try {
+              await github.rest.issues.createLabel({owner, repo, name: label, color: 'd93f0b', description: 'Codex review bot left findings'});
+            } catch (error) {
+              if (error.status !== 422) throw error; // 422: label already exists
+            }
+            await github.rest.issues.addLabels({owner, repo, issue_number: number, labels: [label]});
+            const token = process.env.TELEGRAM_BOT_TOKEN;
+            const chat = process.env.TELEGRAM_HOME_CHANNEL;
+            if (!token || !chat) {
+              core.warning('Telegram secrets are not set; the PR is labeled but no message was sent');
+              return;
+            }
+            core.setSecret(token);
+            const text = [
+              `Codex finding${badge ? ' ' + badge : ''}: ${owner}/${repo}#${number}`,
+              pull.title,
+              headline ? `${headline}${where ? ' (' + where + ')' : ''}` : '',
+              link,
+            ].filter(Boolean).join('\n');
+            const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+              method: 'POST',
+              headers: {'content-type': 'application/json'},
+              body: JSON.stringify({chat_id: chat, text, disable_web_page_preview: true}),
+            });
+            if (!response.ok) {
+              core.setFailed(`Telegram sendMessage failed with HTTP ${response.status}`);
+            }
