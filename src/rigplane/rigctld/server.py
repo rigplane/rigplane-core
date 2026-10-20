@@ -1110,9 +1110,10 @@ class RigctldServer:
         ``get_extra_info``). Its lines run through the same loop as a TCP
         client, with ``owner`` (the controller session the channel joined) as
         the managed-TX owner instead of a minted ``rigctld-client-N``; teardown
-        releases the TX that owner holds, as a TCP disconnect does. Counts
-        against ``max_clients``. One connection per owner: the owner is also
-        its command-queue session, which a second one's teardown would end.
+        releases the TX that owner holds only when the channel's last ``T`` was
+        a key (MOR-3562). Counts against ``max_clients``. One connection per
+        owner: the owner is also its command-queue session, which a second
+        one's teardown would end.
         Call it in the session's controller context, which the task copies.
         Returns ``None`` when refused.
         """
@@ -1233,6 +1234,11 @@ class RigctldServer:
         ptt_submissions: set[asyncio.Task[Any]] = set()
         ptt_revocation = asyncio.Event()
         graceful_quit = False
+        # MOR-3562: a channel keys as its controller session, which outlives
+        # it; its close releases the session's TX only when its last ``T`` was
+        # a key. The session's end releases the rest. A TCP client is the
+        # owner and always releases.
+        release_on_close = owner is None
         # MOR-2890: the HTTP guard inspects only the first non-blank line.
         first_command_line = True
 
@@ -1378,6 +1384,12 @@ class RigctldServer:
                     schedule_response(None, immediate_error=HamlibError.EIO)
                     continue
 
+                if owner is not None and cmd.long_cmd == "set_ptt" and cmd.args:
+                    try:
+                        release_on_close = bool(int(cmd.args[0]))
+                    except ValueError:
+                        pass
+
                 ptt_submission = None
                 ptt_ready = None
                 if self._is_managed_ptt(cmd) and cmd.args:
@@ -1444,6 +1456,7 @@ class RigctldServer:
             retirement = loop.create_task(
                 self._retire_client_connection(
                     session_id=session_id,
+                    release_tx=release_on_close,
                     client_id=client_id,
                     tasks=tasks,
                     writer=writer,
@@ -1459,6 +1472,7 @@ class RigctldServer:
         self,
         *,
         session_id: str,
+        release_tx: bool,
         client_id: int,
         tasks: tuple[asyncio.Task[Any], ...],
         writer: asyncio.StreamWriter,
@@ -1472,7 +1486,8 @@ class RigctldServer:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         try:
-            await self._release_session_tx(session_id)
+            if release_tx:
+                await self._release_session_tx(session_id)
         finally:
             # Unconditional, and nested so no failure above can skip it:
             # since 3.12 the listener's ``wait_closed()`` returns only once

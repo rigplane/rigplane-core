@@ -833,6 +833,11 @@ class ControlHandler:
         # Managed-TX owner (MOR-3534): the controller session this channel is
         # attached to, else the socket itself.
         self._tx_owner = tx_owner if tx_owner is not None else self._session_id
+        # MOR-3562: closing a session's channel releases the session's TX only
+        # when this channel's last PTT request was a key; the session's end
+        # releases the rest. A sessionless socket is the owner and always does.
+        self._session_attached = tx_owner is not None
+        self._last_ptt_on = False
         self._managed_tx_authority = managed_tx_authority
         self._subscribed_streams: set[str] = set()
         # MOR-624: (command_name, previous_source) armed by the frontend auto-LAN
@@ -1774,7 +1779,7 @@ class ControlHandler:
 
     def _start_managed_ptt_disconnect(self) -> asyncio.Task[ManagedTxOutcome] | None:
         authority = self._managed_tx_authority
-        if authority is None:
+        if authority is None or (self._session_attached and not self._last_ptt_on):
             return None
         release = authority.owner_disconnect(self._tx_owner)
         server = self._server
@@ -1976,6 +1981,8 @@ class ControlHandler:
                 raise ValueError("PTT state must be a boolean")
         else:
             on = name == "ptt_on"
+        # Before the submission: a close while the key is in flight releases.
+        self._last_ptt_on = on
         try:
             if on:
                 if self._server is None:

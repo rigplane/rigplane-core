@@ -695,15 +695,6 @@ async def test_path7_reconnect_storm_leaks_no_session_and_replays_no_ptt(
         await arena.unkey(a)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "MOR-3538 finding (ticket to be filed): closing an auxiliary /api/v1/ws "
-        "channel of the holder session releases the session's TX, because "
-        "ControlHandler teardown calls owner_disconnect(tx_owner) for every "
-        "control channel of the session, not only the primary"
-    ),
-)
 async def test_path7_closing_an_auxiliary_control_channel_keeps_the_holders_tx(
     tmp_path: Path,
 ) -> None:
@@ -719,6 +710,45 @@ async def test_path7_closing_an_auxiliary_control_channel_keeps_the_holders_tx(
             await asyncio.sleep(0.05)
         assert arena.sim.ptt_on and arena.holder() == a.owner
         await a.primary.heartbeat()  # the session itself is alive throughout
+
+
+async def test_path7_closing_the_auxiliary_channel_that_keyed_releases_the_tx(
+    tmp_path: Path,
+) -> None:
+    # MOR-3562: a channel's close still releases the TX that channel keyed.
+    async with _Arena(tmp_path) as arena:
+        a = await arena.session()
+        aux = await arena.ws(a.key, _AUX)
+        assert await aux.key("a-aux")
+        await _wait_ptt(arena.sim, True, _KEY_DEADLINE_S)
+        assert arena.holder() == a.owner
+        aux.kill()
+        await _wait_ptt(arena.sim, False, _LEASE_BUDGET_S)
+        await arena.released()
+        await a.primary.heartbeat()  # only the channel closed; the session lives
+        assert await a.primary.key("a")
+        await _wait_ptt(arena.sim, True, _KEY_DEADLINE_S)
+        await arena.unkey(a)
+
+
+async def test_path7_closing_the_holders_rigctl_channel_keeps_the_tx_it_did_not_key(
+    tmp_path: Path,
+) -> None:
+    # MOR-3562: the rigctl channel's close releases only a TX its own T 1 keyed.
+    async with _Arena(tmp_path) as arena:
+        a = await arena.session(cat=True)
+        assert (await a.cat.rigctl("f\n")).strip().isdigit()
+        assert await a.primary.key("a")
+        await _wait_ptt(arena.sim, True, _KEY_DEADLINE_S)
+        a.cat.kill()
+        # rigctld drops the owner only once the channel's teardown has run.
+        end = time.monotonic() + _LEASE_BUDGET_S
+        while a.owner in arena.stack.rigctld._channel_owners:  # noqa: SLF001
+            assert time.monotonic() < end, "the rigctl channel never retired"
+            await asyncio.sleep(0.05)
+        assert arena.sim.ptt_on and arena.holder() == a.owner
+        await a.primary.heartbeat()
+        await arena.unkey(a)
 
 
 async def test_path7_stale_key_reconnect_storm_never_replays_the_released_ptt(

@@ -136,8 +136,8 @@ class RigctlChannelHandler:
         try:
             await asyncio.shield(session)
         except asyncio.CancelledError:
-            # rigctld absorbs a cancel to finish its teardown (the TX release)
-            # and then returns; wait that out, but stay cancelled.
+            # rigctld absorbs a cancel to finish its teardown and then
+            # returns; wait that out, but stay cancelled.
             session.cancel()
             await asyncio.gather(session, return_exceptions=True)
             raise
@@ -157,5 +157,5 @@ class RigctlChannelHandler:
             pass
         finally:
             # The client closing the WebSocket is EOF to rigctld, which then
-            # retires the connection and releases the TX it holds.
+            # retires the connection.
             reader.feed_eof()

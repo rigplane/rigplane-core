@@ -104,11 +104,40 @@ async def test_lines_run_as_the_session_and_each_reply_is_one_message(
 
     ws.inbox.put_nowait(None)  # the client closes the WebSocket
     await asyncio.wait_for(run, 2.0)
-    handler.release_session_tx.assert_awaited_once_with(_OWNER)
+    # MOR-3562: it never keyed, so its close leaves the session's TX alone.
+    handler.release_session_tx.assert_not_awaited()
     assert ws.close_code == 1000
 
 
-async def test_binary_message_closes_the_channel_and_releases(
+def _parse_ptt(line: bytes, _session: Any) -> RigctldCommand:
+    if line.startswith(b"T "):
+        return RigctldCommand("T", "set_ptt", (line[2:].decode(),), is_set=True)
+    return RigctldCommand("f", "get_freq", is_set=False)
+
+
+@pytest.mark.parametrize(
+    ("lines", "released"),
+    [("T 1", True), ("T 1\nT 0", False), ("T 0\nT 1\nf", True)],
+)
+async def test_close_releases_the_session_tx_only_after_the_channels_own_key(
+    rigctld: tuple[RigctldServer, MagicMock], lines: str, released: bool
+) -> None:
+    # MOR-3562: the channel's last T decides; the session ending releases the rest.
+    server, handler = rigctld
+    cast(MagicMock, server._protocol).parse_line.side_effect = _parse_ptt  # noqa: SLF001
+    ws = _FakeWs()
+    run = _channel(server, ws)
+    ws.inbox.put_nowait((WS_OP_TEXT, lines.encode()))
+    await _until(lambda: len(ws.sent) == len(lines.split("\n")))
+    ws.inbox.put_nowait(None)
+    await asyncio.wait_for(run, 2.0)
+    if released:
+        handler.release_session_tx.assert_awaited_once_with(_OWNER)
+    else:
+        handler.release_session_tx.assert_not_awaited()
+
+
+async def test_binary_message_closes_the_channel(
     rigctld: tuple[RigctldServer, MagicMock],
 ) -> None:
     server, handler = rigctld
@@ -118,7 +147,7 @@ async def test_binary_message_closes_the_channel_and_releases(
     await asyncio.wait_for(run, 2.0)
     assert ws.close_code == 1003
     handler.execute.assert_not_called()
-    handler.release_session_tx.assert_awaited_once_with(_OWNER)
+    handler.release_session_tx.assert_not_awaited()
 
 
 async def test_one_channel_per_session_and_max_clients_refuse(
@@ -152,9 +181,11 @@ async def test_cancelled_channel_releases_and_stays_cancelled(
     # Server shutdown cancels the channel: the TX release still runs, and the
     # cancel is not swallowed by rigctld's own teardown.
     server, handler = rigctld
+    cast(MagicMock, server._protocol).parse_line.side_effect = _parse_ptt  # noqa: SLF001
     ws = _FakeWs()
     run = _channel(server, ws)
-    await _until(lambda: _OWNER in server._channel_owners)  # noqa: SLF001
+    ws.inbox.put_nowait((WS_OP_TEXT, b"T 1"))
+    await _until(lambda: len(ws.sent) == 1)
     run.cancel()
     with pytest.raises(asyncio.CancelledError):
         await run
