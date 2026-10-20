@@ -11,6 +11,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b19] — 2026-10-20
+
+### Added
+
+- **`rigplane web` accepts `--log-level` (MOR-3569, #4265, #1905).** The web
+  server could not be started with DEBUG logging. The flag takes
+  `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. Without it the loggers are
+  left alone, so `ICOM_DEBUG=1` still works.
+
+### Fixed
+
+- **LAN discovery finds radios behind a second network adapter and survives
+  receive errors (MOR-2968, #4270).** The probe is also sent from each local
+  IPv4 address, and a Windows `ConnectionResetError` while receiving no
+  longer aborts the scan and drops the radios already found.
+- **No scope-health writes while the radio is known to be transmitting
+  (MOR-2859, #4271).** With "scope during TX" off, the all-zero scope frames
+  made the server re-enable the scope three times during a transmit. The
+  watchdog now waits, and the panorama says the radio is transmitting instead
+  of "Scope disconnected".
+- **The LCD layout takes its TX look from the managed TX state, not from
+  the last `ptt` value (MOR-2855, #4272).** A stale PTT reading no longer
+  leaves the LCD showing a transmit that is not happening.
+
+### Tests
+
+- **Cover every holder-end mode of the soak detach-sabotage test (MOR-3565,
+  #4266).**
+- **Capture xdist worker hang evidence in the quick test run (MOR-3575,
+  #4273).**
+- **Settle file-descriptor and task counts before the soak stability
+  comparison (MOR-3575, #4274).** On a loaded test worker the soak driver
+  compared counts while sockets and tasks were still closing and failed a
+  healthy run.
+- **CI: merge queue triggers and gates (MOR-3571, #4268, #4269).**
+
 ## [3.0.0b18] — 2026-10-20
 
 Republishes 3.0.0b17 to PyPI. The 3.0.0b17 tag exists on GitHub but its
@@ -4554,7 +4590,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b18...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b19...HEAD
+[3.0.0b19]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b18...v3.0.0b19
 [3.0.0b18]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b17...v3.0.0b18
 [3.0.0b17]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b16...v3.0.0b17
 [3.0.0b16]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b15...v3.0.0b16
