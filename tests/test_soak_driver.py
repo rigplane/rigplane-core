@@ -34,11 +34,13 @@ radio disconnect/connect, and pins:
   criterion fails when a silent holder keeps the transmitter or a session
   outlives its channel — for unkey, cut and half_open alike, and with the
   leases forced old at the close.
-* the post-reconnect stability settle (MOR-3575): a transient FD surplus
-  that drains after recovery passes once settled — even across a flat
-  plateau mid-drain — a persistent one still fails, and the settle
-  gives up at its window or on a hung sample. The feeds are scripted;
-  the window and hang tests use short real timeouts.
+* the post-reconnect stability settle (MOR-3575): a transient surplus
+  that drains after recovery passes once settled — even across a long
+  flat plateau mid-drain, for FDs and task counts alike, and whether or
+  not probe/task capture is on — a persistent one still fails after the
+  full window, and the settle gives up at its window or on a hung
+  sample. The feeds are scripted; the window and hang tests use short
+  real timeouts.
 """
 
 from __future__ import annotations
@@ -740,14 +742,24 @@ async def test_renew_gives_a_session_its_full_lease_whatever_its_age() -> None:
 
 
 def _process_script(
-    fds_values: list[int], tasks: int = 30
+    fds_values: list[int],
+    tasks_values: list[int] | None = None,
+    tasks: int = 30,
 ) -> Callable[[], dict[str, int]]:
-    """A runtime ``process`` feed replaying scripted FD counts, then holding."""
-    values = iter(fds_values)
-    last = fds_values[-1]
+    """A runtime ``process`` feed replaying scripted counts, then holding."""
+    fds = iter(fds_values)
+    last_fds = fds_values[-1]
+    task_feed = iter(tasks_values) if tasks_values is not None else None
+    last_tasks = tasks_values[-1] if tasks_values is not None else tasks
 
     def script() -> dict[str, int]:
-        return {"rssBytes": 1024, "openFds": next(values, last), "asyncioTasks": tasks}
+        return {
+            "rssBytes": 1024,
+            "openFds": next(fds, last_fds),
+            "asyncioTasks": (
+                next(task_feed, last_tasks) if task_feed is not None else tasks
+            ),
+        }
 
     return script
 
@@ -757,10 +769,16 @@ async def _run_cycle_with_process_script(
     script: Callable[[], dict[str, int]],
     *,
     hang_settle_sample: bool = False,
+    probe_diagnostics: bool = False,
+    task_provenance: bool = False,
 ) -> tuple[soak_driver.SoakDriver, list[float]]:
     """One recovered cycle over a scripted feed; records asyncio.sleep delays."""
     driver = soak_driver.SoakDriver(
-        soak_driver.SoakConfig(duration_s=45),
+        soak_driver.SoakConfig(
+            duration_s=45,
+            probe_diagnostics=probe_diagnostics,
+            task_provenance=task_provenance,
+        ),
         "http://127.0.0.1:1",
         "127.0.0.1:1",
         SimpleNamespace(fault_plan=None),
@@ -834,13 +852,15 @@ async def test_stability_post_probe_still_fails_a_persistent_fd_surplus(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A surplus that never drains still fails (MOR-3575 control)."""
-    script = _process_script([48, 48, 48] + [55] * 10)
+    script = _process_script([48, 48, 48] + [55] * 30)
     driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
     (entry,) = driver._reconnects
     assert entry["recovered"] is True
     assert entry["fdsPost"] == 55
     assert _stability_status(entry, "fds")["status"] == "FAIL"
-    assert sleeps == [3.0] + [soak_driver._STABILITY_SETTLE_STEP_S] * 3
+    # The flat surplus never clears: the settle runs its full resample
+    # budget (window/step = 20) before the re-probe still fails.
+    assert sleeps == [3.0] + [soak_driver._STABILITY_SETTLE_STEP_S] * 20
 
 
 async def test_stability_settle_waits_out_a_plateau_before_further_decay(
@@ -898,3 +918,100 @@ async def test_stability_settle_gives_up_on_a_hung_sample(
     assert entry["fdsPost"] == 48
     assert _stability_status(entry, "fds")["status"] == "PASS"
     assert sleeps == [3.0]
+
+
+async def test_stability_settle_waits_out_a_long_plateau_before_late_decay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plateau above tolerance is not settled until it decays (MOR-3575)."""
+    script = _process_script(
+        [48, 48, 48, 56, 55, 54]
+        + [55] * 8
+        + [54, 53, 52, 51, 50, 49, 48, 48, 48, 48, 48, 48, 48]
+    )
+    driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
+    (entry,) = driver._reconnects
+    assert entry["fdsPost"] == 48
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    assert len(sleeps[1:]) > 3
+
+
+async def test_stability_settle_applies_under_probe_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Capture must not disable the settle: same transient, same PASS (MOR-3575)."""
+    script = _process_script(
+        [48, 48, 48, 56, 55, 54, 53, 52, 51, 50, 49, 48, 48, 48, 48, 48, 48]
+    )
+    driver, sleeps = await _run_cycle_with_process_script(
+        monkeypatch, script, probe_diagnostics=True
+    )
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert entry["fdsPost"] == 48
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    assert len(sleeps) > 1
+    diagnostic = driver._build_report()["probeDiagnostics"]
+    assert [p["phase"] for p in diagnostic["probes"]] == ["pre"] * 3 + ["post"] * 6
+    assert diagnostic["phases"]["post"]["median"]["fds"] == 48
+    assert diagnostic["phases"]["post"]["status"] == "complete"
+
+
+async def test_stability_settle_applies_under_task_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task capture must not disable the settle either (MOR-3575)."""
+    script = _process_script(
+        [48, 48, 48, 56, 55, 54, 53, 52, 51, 50, 49, 48, 48, 48, 48, 48, 48]
+    )
+    calls: list[str] = []
+    original = soak_driver._TaskProvenance.begin_probe
+
+    def counting(self: Any, phase: str) -> dict[str, Any]:
+        calls.append(phase)
+        return original(self, phase)
+
+    monkeypatch.setattr(soak_driver._TaskProvenance, "begin_probe", counting)
+    driver, sleeps = await _run_cycle_with_process_script(
+        monkeypatch, script, task_provenance=True
+    )
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert entry["fdsPost"] == 48
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    assert len(sleeps) > 1
+    assert calls == ["pre"] * 3 + ["post"] * 6
+
+
+async def test_stability_post_probe_settles_a_transient_tasks_surplus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The settle covers task counts too: FDs stable, tasks drain (MOR-3575)."""
+    script = _process_script(
+        [48] * 18,
+        tasks_values=[30] * 3 + [38, 37, 36, 35, 34, 33, 32, 31] + [30] * 7,
+    )
+    driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert entry["fdsPost"] == 48
+    assert entry["tasksPost"] == 30
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    assert _stability_status(entry, "tasks")["status"] == "PASS"
+    # Eight resamples: every task decrease resets the calm count.
+    assert len(sleeps[1:]) == 8
+
+
+async def test_stability_post_probe_still_fails_a_persistent_tasks_surplus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A task surplus that never drains still fails; FDs stay green (MOR-3575)."""
+    script = _process_script([48] * 30, tasks_values=[30, 30, 30] + [37] * 27)
+    driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert entry["fdsPost"] == 48
+    assert entry["tasksPost"] == 37
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    assert _stability_status(entry, "tasks")["status"] == "FAIL"
+    assert sleeps == [3.0] + [soak_driver._STABILITY_SETTLE_STEP_S] * 20
