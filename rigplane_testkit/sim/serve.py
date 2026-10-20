@@ -324,6 +324,15 @@ async def _handle_stop(request: web.Request) -> web.Response:
 async def run_serve(args: argparse.Namespace) -> int:
     """Run one serve process until SIGINT/SIGTERM/POST /stop; return 0."""
     stack = build_stack(args)
+    # Signal handlers before anything listens or prints: a caller may read
+    # the startup line and signal at once; the default action would kill
+    # the process (-SIGTERM) before the traced shutdown could run.
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stack.stop_event.set)
+        except NotImplementedError:
+            break  # Windows: __main__ falls back to KeyboardInterrupt
     control_host, control_port_hint = args.control
     runner = web.AppRunner(stack.app, access_log=None)
     try:
@@ -341,12 +350,6 @@ async def run_serve(args: argparse.Namespace) -> int:
             args.trace or "off",
         )
 
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                loop.add_signal_handler(sig, stack.stop_event.set)
-            except NotImplementedError:
-                break  # Windows: __main__ falls back to KeyboardInterrupt
         await stack.stop_event.wait()
         return 0
     finally:
