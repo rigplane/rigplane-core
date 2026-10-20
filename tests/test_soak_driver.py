@@ -32,7 +32,8 @@ radio disconnect/connect, and pins:
 * the multi-session TX scenario (MOR-3538): every end mode of the holder
   (unkey, delete, cut, silent) passes beside the other criteria, and the
   criterion fails when a silent holder keeps the transmitter or a session
-  outlives its channel.
+  outlives its channel — for unkey, cut and half_open alike, and with the
+  leases forced old at the close.
 """
 
 from __future__ import annotations
@@ -630,21 +631,35 @@ async def test_soak_multi_session_tx_fails_when_a_silent_holder_keeps_the_transm
     assert report["verdict"] == "FAIL"
 
 
+@pytest.mark.parametrize("mode", ["unkey", "cut", "half_open"])
 async def test_soak_multi_session_tx_fails_when_a_session_outlives_its_channel(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     """A session whose primary channel is gone must end at once, not at its
-    lease: with the channel's detach made a no-op the cycle reports a leak."""
+    lease: with the channel's detach made a no-op the cycle reports a leak.
+
+    Pinned for every mode that leaves the ending to the channel's loss —
+    ``delete`` is excluded because its HTTP DELETE ends the session
+    server-side, so the no-op detach leaks nothing. In ``cut`` and
+    ``half_open`` the holder's own lease runs out mid-cycle while the
+    driver waits out the TX release, so the reported leak is the other
+    session's: the close-time renew gives its live link a full lease, and
+    cutting that link at the close must still not leave it past the check
+    window. The violation must come from this mode's own cycle.
+    """
     from rigplane.runtime.controller_authority import ControllerAuthority
 
     monkeypatch.setattr(ControllerAuthority, "detach", lambda self, ticket: None)
-    monkeypatch.setattr(soak_driver, "_TX_END_MODES", ("unkey",))
+    monkeypatch.setattr(soak_driver, "_TX_END_MODES", (mode,))
     report = await soak_driver.run_soak(
         _smoke_config(duration_s=6.0, tx_sessions_interval_s=100.0)
     )
     tx = report["criteria"]["txSessions"]
     assert tx["status"] == "FAIL", tx
-    assert any("left after the cycle" in v for v in tx["violations"]), tx
+    assert any(
+        v.startswith(f"{mode}: ") and "left after the cycle" in v
+        for v in tx["violations"]
+    ), tx
 
 
 async def test_soak_multi_session_tx_catches_a_leak_whatever_the_age_of_the_leases(
@@ -652,16 +667,24 @@ async def test_soak_multi_session_tx_catches_a_leak_whatever_the_age_of_the_leas
 ) -> None:
     """The bad phase of the leak check, forced: leases that are old at the close.
 
-    With no heartbeat and a 4 s hold every lease has about 1.5 s left when the
-    cycle closes its clients, so a leaked session is reaped by its lease (one
-    2 s reaper tick at most after it ends) inside the 4 s check window and the
-    check passes: the alignment that made the check flaky. The
-    cycle must renew the leases before it closes, so the leak is still there.
+    No heartbeat runs and the hold is 4 s of an 8 s lease, so both leases
+    have about 2.5 s left when the cycle closes its clients — old enough
+    that without the close-time renew a leaked session's lease ends inside
+    the 4 s check window and the reaper can end it there: the alignment
+    that made the check flaky. The 8 s lease (the check window stays at
+    the import-derived 4 s) keeps the close well clear of the lease end on
+    a loaded runner, where the production 6 s lease left under a second;
+    the cycle must renew the leases before it closes, so the leak is still
+    there whatever the age. Only ``unkey`` can run here: with no heartbeat
+    the TX release of ``cut`` and ``half_open`` waits out the holder's
+    lease, which is also the other session's end, so neither session
+    survives to the close.
     """
     from rigplane.runtime.controller_authority import ControllerAuthority
 
     monkeypatch.setattr(soak_driver._TxSessionClient, "start_heartbeat", lambda s: None)
     monkeypatch.setattr(ControllerAuthority, "detach", lambda self, ticket: None)
+    monkeypatch.setattr(ControllerAuthority, "TTL_MS", 8_000)
     monkeypatch.setattr(soak_driver, "_TX_END_MODES", ("unkey",))
     monkeypatch.setattr(soak_driver, "TX_HOLD_S", 4.0)
     report = await soak_driver.run_soak(

@@ -1588,12 +1588,18 @@ class SoakDriver:
         finally:
             if self._sim.ptt_on:
                 await self._force_tx_off()
-            # Every live lease gets its full TTL_MS from here, so the check
-            # below does not depend on how old the leases were at the close.
-            # Without it a cycle of about 2 s put the end of a leaked
-            # session's lease on the end of the check window, and the reaper
-            # tick that ends it landed inside the window (measured: 7 of 25
-            # sabotaged runs passed, holds of 1.6 to 1.8 s; 0 of 25 with it).
+            # renew() gives a full TTL_MS to every client whose link is still
+            # open, so the check below does not depend on how old that lease
+            # was at the close. A cut-mode holder whose link died earlier is
+            # skipped: its lease keeps its age, the reaper may end that
+            # session before this close, and the check then leans on the
+            # other session, renewed here and leaked by this close with a
+            # full lease. Without the renew a cycle of about 2 s put the end
+            # of a leaked session's lease on the end of the check window,
+            # and the reaper tick that ends it landed inside the window
+            # (measured on a Mac mini, a forced-cycle sweep with holds of
+            # 1.6 to 1.8 s: 7 of 25 sabotaged runs passed; 0 of 25 with the
+            # renew).
             await asyncio.gather(*(client.renew() for client in clients))
             for client in clients:
                 await client.close()
