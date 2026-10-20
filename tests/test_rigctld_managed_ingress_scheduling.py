@@ -167,6 +167,7 @@ class _LeafHandler:
     def __init__(self, error=HamlibError.OK):
         self._radio, self._managed_tx_authority = _LeafRadio(), object()
         self._has_canonical_state_store, self.error, self.calls = False, error, []
+        self._vfo_slot_lock = asyncio.Lock()
     async def _apply_packet_data_mode(self, *, receiver): self.calls.append(("packet", receiver))
     async def _execute_set_vfo(self, vfo): return self.calls.append(("vfo", vfo)) or self.error
     async def _execute_set_level(self, level, value, *, receiver, vfo_arg): return self.calls.append(("level", level, value, receiver, vfo_arg)) or self.error
