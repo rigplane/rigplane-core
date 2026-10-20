@@ -303,9 +303,15 @@ def startup_line(
         "control_port": radio.control_port,
         "username": radio._username,
         "password": radio._password,
-        "control": f"http://{control_host}:{http_port}",
+        # Bracket IPv6 literals so the value parses as a URL.
+        "control": f"http://{format_control_host(control_host)}:{http_port}",
         "seed": args.seed,
     }
+
+
+def format_control_host(host: str) -> str:
+    """Bracket an IPv6 literal for URL interpolation; IPv4/hostname as-is."""
+    return f"[{host}]" if ":" in host else host
 
 
 def _start_trace_args(args: argparse.Namespace) -> dict:

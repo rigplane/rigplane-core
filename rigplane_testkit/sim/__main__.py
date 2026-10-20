@@ -11,6 +11,8 @@ from rigplane_testkit.sim.serve import DEFAULT_KEEPALIVE_HOLD_S, run_serve
 
 def _control_arg(value: str) -> tuple[str, int]:
     host, sep, port = value.rpartition(":")
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]  # accept the bracketed "[IPv6]:port" spelling
     if not sep or not host or not port.isdigit() or int(port) > 65535:
         raise argparse.ArgumentTypeError(f"expected HOST:PORT, got {value!r}")
     return host, int(port)
