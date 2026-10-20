@@ -4,7 +4,8 @@ name: Merge queue gates
 # and waits for every required context on its head commit. Two required
 # contexts are PR-level gates that read PR comments and the PR body, which the
 # merge_group event does not carry, so they are re-derived here through the API
-# for the single PR named by the branch (the queue uses a merge group of one):
+# for the single PR named by the branch (the queue must be configured with a
+# merge group of one PR):
 #   - "Agent Review Gate" (commit status): the queued PR head must still have a
 #     passing Agent Review Gate; the status is then published on the queue commit.
 #   - "Evaluate stabilization-freeze PR contract" (check run): the PR title,

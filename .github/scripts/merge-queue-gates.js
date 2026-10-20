@@ -2,15 +2,16 @@
 
 // Merge-queue counterparts of the two PR-level required gates. The merge_group
 // event carries no PR comments or body, so both gates are re-derived through
-// the API for the single PR named by the queue ref (the queue is configured
-// with a merge group of one PR). Both fail closed.
+// the API for the single PR named by the queue ref (the queue must be
+// configured with a merge group of one PR). Both fail closed.
 
 const {evaluate: evaluateFreeze} = require('./freeze-gate');
 
 const AGENT_REVIEW_CONTEXT = 'Agent Review Gate';
 
 // head_ref is the short branch name; the full ref is tolerated too.
-const QUEUE_REF = /^(?:refs\/heads\/)?gh-readonly-queue\/(.+)\/pr-(\d+)-([0-9a-f]{40})$/u;
+// The base part may not itself contain a pr-<n>-<sha> segment, so a ref naming several PRs is rejected.
+const QUEUE_REF = /^(?:refs\/heads\/)?gh-readonly-queue\/((?:(?!pr-\d+-[0-9a-f]{40}).)+)\/pr-(\d+)-([0-9a-f]{40})$/u;
 
 function parseQueueRef(ref) {
   const match = QUEUE_REF.exec(typeof ref === 'string' ? ref : '');

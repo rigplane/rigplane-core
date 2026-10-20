@@ -15,7 +15,8 @@ test('parses the short and the full queue ref', () => {
 });
 
 test('rejects refs that do not name exactly one PR', () => {
-  for (const ref of [undefined, '', 'main', `gh-readonly-queue/main/pr-x-${SHA}`, 'gh-readonly-queue/main/pr-1-abc']) {
+  for (const ref of [undefined, '', 'main', `gh-readonly-queue/main/pr-x-${SHA}`, 'gh-readonly-queue/main/pr-1-abc',
+    `gh-readonly-queue/main/pr-1-${SHA}/pr-2-${SHA}`]) {
     assert.equal(parseQueueRef(ref), null, String(ref));
   }
 });
