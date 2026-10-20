@@ -322,7 +322,13 @@ class _Stack:
 
 
 async def _stand_up_stack(
-    tmp_path: Path, *, loss: str, tot_seconds: float, unsolicited: bool
+    tmp_path: Path,
+    *,
+    loss: str,
+    tot_seconds: float,
+    unsolicited: bool,
+    sim_options: dict[str, Any] | None = None,
+    web_max_clients: int | None = None,
 ) -> _Stack:
     """Build the production stack over the simulator, in the CLI's order."""
     config_path = tmp_path / "managed-tx.json"
@@ -336,6 +342,7 @@ async def _stand_up_stack(
         stateful_ptt=True,
         ptt_on_session_loss=loss,
         unsolicited_civ=unsolicited,
+        **(sim_options or {}),
     )
     await sim.start()
 
@@ -362,6 +369,7 @@ async def _stand_up_stack(
             host="127.0.0.1",
             port=0,
             discovery=False,
+            **({} if web_max_clients is None else {"max_clients": web_max_clients}),
         ),
     )
     prepare_managed_tx_observation_generation(web)
