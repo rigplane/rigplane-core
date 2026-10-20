@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -267,6 +267,27 @@ def _passband_to_filter(passband_hz: int) -> int | None:
     return 3
 
 
+def _split_mode_values(
+    mode: object, filter_num: object, data_mode: object
+) -> tuple[str, str]:
+    """Format an unselected-VFO mode tuple as ``(mode, passband)`` lines.
+
+    Same display mapping as ``get_mode``: the DATA sub-mode (an int on
+    the way in, never narrowed to bool) selects the packet-mode label.
+    """
+    mode_str = str(mode).upper()
+    filt = None if filter_num is None else int(filter_num)
+    data = 0 if data_mode is None else int(data_mode)
+    if data:
+        if mode_str == "USB":
+            mode_str = "PKTUSB"
+        elif mode_str == "LSB":
+            mode_str = "PKTLSB"
+        elif mode_str == "RTTY":
+            mode_str = "PKTRTTY"
+    return mode_str, str(_filter_to_passband(filt))
+
+
 # The supervisor took the request: a lease is ours (key), or a durable OFF is
 # owed and will be retried until the rig confirms it (unkey). Anything else and
 # nothing reached the wire.
@@ -316,7 +337,13 @@ def _classify_rigctld_tx_intent(
     command: tx_commands.Command
     if intent.name == "set_freq":
         command = tx_commands.SetFreq(int(params["freq_hz"]))
+    elif intent.name == "set_split_freq":
+        # Split-TX writes share the main write's policy command exactly:
+        # whatever disposition/family set_freq gets, set_split_freq gets.
+        command = tx_commands.SetFreq(int(params["freq_hz"]))
     elif intent.name == "set_mode":
+        command = tx_commands.SetMode(str(params["mode"]))
+    elif intent.name == "set_split_mode":
         command = tx_commands.SetMode(str(params["mode"]))
     elif intent.name == "set_ptt":
         command = tx_commands.PttOn() if bool(params["ptt"]) else tx_commands.PttOff()
@@ -696,6 +723,21 @@ class _RigctldCommandExecutor:
             error = await self.handler._execute_set_split_vfo(
                 bool(params["on"]),
                 str(params["tx_vfo"]),
+            )
+            if error is not HamlibError.OK:
+                raise _RigctldCommandFailure(error)
+        elif intent.name == "set_split_freq":
+            error = await self.handler._execute_set_split_freq(int(params["freq_hz"]))
+            if error is not HamlibError.OK:
+                raise _RigctldCommandFailure(error)
+        elif intent.name == "set_split_mode":
+            filter_width = params.get("filter_width")
+            if filter_width is not None:
+                filter_width = int(filter_width)
+            error = await self.handler._execute_set_split_mode(
+                str(params["mode"]),
+                filter_width=filter_width,
+                packet_mode=bool(params.get("packet_mode", False)),
             )
             if error is not HamlibError.OK:
                 raise _RigctldCommandFailure(error)
@@ -1116,6 +1158,15 @@ class RigctldHandler:
             )
             aliases.append(
                 FieldPath.receiver(legacy_receiver, path.family.value, path.name)
+            )
+        elif path.slot is not None and path.slot.value == "unselected":
+            # Unselected-relative paths alias across the receiver-id spelling
+            # only (the poller publishes receiver "0"; seats project "main").
+            # They must NOT fall through to the bare receiver alias below:
+            # that field carries active-slot state, which would answer a
+            # split-TX read with the RX VFO's value.
+            aliases.append(
+                FieldPath.unselected(legacy_receiver, path.family.value, path.name)
             )
         elif path.scope.value == "receiver":
             aliases.append(
@@ -3012,6 +3063,260 @@ class RigctldHandler:
             )
 
     # ------------------------------------------------------------------
+    # Split TX frequency / mode commands (single-RX A/B slot routing)
+    # ------------------------------------------------------------------
+
+    def _validate_split_tx_vfo_arg(self, vfo_arg: str | None) -> None:
+        """Accept any TX-VFO label on a split command; refuse unknown labels.
+
+        Unlike ``_resolve_target_vfo``, ``VFOB`` is accepted on single-RX:
+        the prefix names the split-TX role (netrigctl sends the TX VFO
+        under chk_vfo=1), not a second receiver, and there is exactly one
+        split-TX VFO — the unselected slot on single-RX, SUB on dual-RX.
+        Callers map ``ValueError`` to ``EVFO``.
+        """
+        if vfo_arg is None or vfo_arg in ("currVFO", "VFOA", "VFOB"):
+            return
+        raise ValueError(f"Unknown VFO arg: {vfo_arg!r}")
+
+    def _split_tx_needs_dual_rx_routing(self) -> bool:
+        """True when split-TX state lives on a second receiver (not this lane).
+
+        Single-RX rigs — and profile-less/mocked radios, which route as
+        single-RX throughout this seat — address the split-TX VFO as the
+        unselected A/B slot of receiver 0. Dual-RX rigs transmit split on
+        SUB, whose routing needs SUB-slot semantics this lane does not
+        define; the four split commands answer ENIMPL there, exactly as
+        before they existed.
+        """
+        info = self._profile_vfo_info()
+        return info is not None and info[0] >= 2
+
+    async def _selected_vfo_slot(self) -> Literal["A", "B"]:
+        """Read the currently selected A/B slot (single-RX split writes).
+
+        Prefers the backend's live ``get_vfo_slot`` — fresh with respect
+        to our own ``V`` commands, which the StateStore only learns about
+        on the next poll — and falls back to this seat's projected active
+        VFO (StateStore → RadioState mirror → ``"A"``) when the backend
+        has no slot getter or answers outside ``A``/``B``. A backend that
+        RAISES fails the command instead of guessing: writing the wrong
+        slot would retune the RX VFO and strand the dial.
+        """
+        get_vfo_slot = getattr(self._radio, "get_vfo_slot", None)
+        if get_vfo_slot is not None:
+            slot = await get_vfo_slot()
+            if isinstance(slot, str) and slot.upper() in ("A", "B"):
+                return cast(Literal["A", "B"], slot.upper())
+        return "B" if self._active_vfo_name() == "VFOB" else "A"
+
+    async def _run_on_split_tx_slot(
+        self, write: Callable[[], Awaitable[None]]
+    ) -> HamlibError:
+        """Run ``write`` against the split-TX (unselected) slot, then restore.
+
+        Single-RX only; callers refuse dual-RX profiles with ENIMPL first.
+        The VFO-slot dance (hamlib icom-backend precedent): select the
+        complement of the currently selected slot, write through the
+        normal receiver-0 setter, and restore the selected slot even when
+        the write fails. Answers ENAVAIL when the backend cannot switch
+        slots; radio errors from the switches or the write itself
+        propagate to the seat's normal mapping (refusals → ERJCTED,
+        timeouts → ETIMEOUT).
+        """
+        set_vfo_slot = getattr(self._radio, "set_vfo_slot", None)
+        if set_vfo_slot is None:
+            return HamlibError.ENAVAIL
+        previous = await self._selected_vfo_slot()
+        target = "B" if previous == "A" else "A"
+        await set_vfo_slot(target)
+        try:
+            await write()
+        finally:
+            await set_vfo_slot(previous)
+        return HamlibError.OK
+
+    async def _cmd_get_split_freq(self, cmd: RigctldCommand) -> RigctldResponse:
+        try:
+            self._validate_split_tx_vfo_arg(cmd.vfo_arg)
+        except ValueError:
+            return _err(HamlibError.EVFO)
+        if self._split_tx_needs_dual_rx_routing():
+            return _err(HamlibError.ENIMPL)
+        path = FieldPath.unselected("main", "freq_mode", "freq_hz")
+        projection = self._project_with_freshness(
+            (path,), reason="rigctld.get_split_freq"
+        )
+        projected = projection.value(path)
+        if projected is not None:
+            return RigctldResponse(values=[str(int(projected.value))])
+        read_relative_vfo = getattr(self._radio, "read_relative_vfo", None)
+        if read_relative_vfo is None:
+            return _err(HamlibError.ENIMPL)
+        unselected = await read_relative_vfo(selected=False)
+        freq = int(unselected.freq_hz)
+        self._record_state_sample(
+            path,
+            freq,
+            source="hamlib_response",
+            max_age=self._config.cache_ttl,
+        )
+        return RigctldResponse(values=[str(freq)])
+
+    async def _cmd_set_split_freq(self, cmd: RigctldCommand) -> RigctldResponse:
+        if not cmd.args:
+            return _err(HamlibError.EINVAL)
+        try:
+            freq = int(float(cmd.args[0]))
+        except ValueError:
+            return _err(HamlibError.EINVAL)
+        try:
+            self._validate_split_tx_vfo_arg(cmd.vfo_arg)
+        except ValueError:
+            return _err(HamlibError.EVFO)
+        if self._split_tx_needs_dual_rx_routing():
+            return _err(HamlibError.ENIMPL)
+        intent = command_intent_from_request(
+            "set_split_freq",
+            {"freq_hz": freq},
+            source="rigctld",
+            command_id=f"rigctld-set-split-freq-{time.monotonic_ns()}",
+            session_id=self._session_id(),
+        )
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
+        await self._execute_write(intent)
+        self._record_pending_overlay(
+            FieldPath.unselected("main", "freq_mode", "freq_hz"),
+            freq,
+            command_id=intent.id,
+        )
+        return _ok()
+
+    async def _execute_set_split_freq(self, freq_hz: int) -> HamlibError:
+        async def _write() -> None:
+            await self._radio.set_freq(freq_hz, receiver=0)
+
+        return await self._run_on_split_tx_slot(_write)
+
+    async def _cmd_get_split_mode(self, cmd: RigctldCommand) -> RigctldResponse:
+        try:
+            self._validate_split_tx_vfo_arg(cmd.vfo_arg)
+        except ValueError:
+            return _err(HamlibError.EVFO)
+        if self._split_tx_needs_dual_rx_routing():
+            return _err(HamlibError.ENIMPL)
+        mode_path = FieldPath.unselected("main", "freq_mode", "mode")
+        filter_num_path = FieldPath.unselected("main", "freq_mode", "filter_num")
+        data_mode_path = FieldPath.unselected("main", "freq_mode", "data_mode")
+        projection = self._project_with_freshness(
+            (mode_path, filter_num_path, data_mode_path),
+            reason="rigctld.get_split_mode",
+        )
+        projected_mode = projection.value(mode_path)
+        projected_filter_num = projection.value(filter_num_path)
+        projected_data_mode = projection.value(data_mode_path)
+        if (
+            projected_mode is not None
+            and projected_filter_num is not None
+            and projected_data_mode is not None
+        ):
+            mode_str, passband = _split_mode_values(
+                projected_mode.value,
+                projected_filter_num.value,
+                projected_data_mode.value,
+            )
+            return RigctldResponse(values=[mode_str, passband])
+        read_relative_vfo = getattr(self._radio, "read_relative_vfo", None)
+        if read_relative_vfo is None:
+            return _err(HamlibError.ENIMPL)
+        unselected = await read_relative_vfo(selected=False)
+        # No store write-back: get_mode deliberately records nothing on its
+        # live path (MOR-895), and this read answers from the same tuple.
+        mode_str, passband = _split_mode_values(
+            unselected.mode, unselected.filter_num, unselected.data_mode
+        )
+        return RigctldResponse(values=[mode_str, passband])
+
+    async def _cmd_set_split_mode(self, cmd: RigctldCommand) -> RigctldResponse:
+        if not cmd.args:
+            return _err(HamlibError.EINVAL)
+        requested_mode = cmd.args[0].upper()
+        if requested_mode not in HAMLIB_MODE_MAP:
+            return _err(HamlibError.EINVAL)
+        civ_val = HAMLIB_MODE_MAP[requested_mode]
+        try:
+            mode = Mode(civ_val)
+        except ValueError:
+            return _err(HamlibError.EINVAL)
+        base_mode_str = CIV_TO_HAMLIB_MODE.get(mode.value, "USB")
+        passband_hz = 0
+        if len(cmd.args) >= 2:
+            try:
+                passband_hz = int(cmd.args[1])
+            except ValueError:
+                return _err(HamlibError.EINVAL)
+        filter_width = _passband_to_filter(passband_hz)
+        packet_modes = {"PKTUSB", "PKTLSB", "PKTRTTY"}
+        try:
+            self._validate_split_tx_vfo_arg(cmd.vfo_arg)
+        except ValueError:
+            return _err(HamlibError.EVFO)
+        if self._split_tx_needs_dual_rx_routing():
+            return _err(HamlibError.ENIMPL)
+        intent = command_intent_from_request(
+            "set_split_mode",
+            {
+                "mode": base_mode_str,
+                "filter_width": filter_width,
+                "packet_mode": requested_mode in packet_modes,
+            },
+            source="rigctld",
+            command_id=f"rigctld-set-split-mode-{time.monotonic_ns()}",
+            session_id=self._session_id(),
+        )
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
+        await self._execute_write(intent)
+        self._record_pending_overlay(
+            FieldPath.unselected("main", "freq_mode", "mode"),
+            base_mode_str,
+            command_id=intent.id,
+        )
+        self._record_pending_overlay(
+            FieldPath.unselected("main", "freq_mode", "filter_num"),
+            filter_width,
+            command_id=intent.id,
+        )
+        if requested_mode in packet_modes:
+            self._record_pending_overlay(
+                FieldPath.unselected("main", "freq_mode", "data_mode"),
+                True,
+                command_id=intent.id,
+            )
+        return _ok()
+
+    async def _execute_set_split_mode(
+        self,
+        mode: str,
+        *,
+        filter_width: int | None,
+        packet_mode: bool,
+    ) -> HamlibError:
+        async def _write() -> None:
+            await self._radio.set_mode(mode, filter_width=filter_width)
+            if packet_mode:
+                # DATA is applied while the TX slot is still selected, so it
+                # lands on the TX VFO — not on the restored RX slot.
+                await self._apply_packet_data_mode(receiver=0)
+
+        return await self._run_on_split_tx_slot(_write)
+
+    # ------------------------------------------------------------------
     # RIT
     # ------------------------------------------------------------------
 
@@ -3265,6 +3570,10 @@ RigctldHandler._DISPATCH = {
     "set_func": RigctldHandler._cmd_set_func,
     "get_split_vfo": RigctldHandler._cmd_get_split_vfo,
     "set_split_vfo": RigctldHandler._cmd_set_split_vfo,
+    "get_split_freq": RigctldHandler._cmd_get_split_freq,
+    "set_split_freq": RigctldHandler._cmd_set_split_freq,
+    "get_split_mode": RigctldHandler._cmd_get_split_mode,
+    "set_split_mode": RigctldHandler._cmd_set_split_mode,
     "get_rit": RigctldHandler._cmd_get_rit,
     "set_rit": RigctldHandler._cmd_set_rit,
     "get_xit": RigctldHandler._cmd_get_xit,
