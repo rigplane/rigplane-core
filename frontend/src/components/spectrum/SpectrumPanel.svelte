@@ -1269,8 +1269,12 @@
           // the TX-frozen fan-out paths above classify through it while
           // withholding the paint, so the spacing baseline tracks the
           // transport. Suppressed deliveries record on the
-          // waterfall_suppressed trace stage. Pinned by the delayed case of
-          // scope-hidden-delivery.characterization.test.ts. The registration
+          // waterfall_suppressed trace stage. The delayed case of
+          // scope-hidden-delivery.characterization.test.ts mirrors this
+          // registration with its own gate wrapper and does not execute
+          // this code; this wiring itself is pinned by the 'wires the
+          // waterfall freshness gate into the waterfallPush registration'
+          // case in SpectrumPanel.component.test.ts. The registration
           // replay below is a canvas repaint of the current sample, not a
           // delivery, so it bypasses the gate.
           const freshness = new WaterfallFreshnessGate();

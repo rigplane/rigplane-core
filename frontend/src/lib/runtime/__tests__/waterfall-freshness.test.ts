@@ -67,8 +67,10 @@ describe('waterfall freshness gate', () => {
     gate.admit();
     clock.advance(60_000);
     expect(gate.admit()).toBe(false);
-    // AudioFftScope targets fps=20 (src/rigplane/audio/fft_scope.py), so live
-    // audio-fft frames arrive just above the resume spacing.
+    // AudioFftScope targets fps=20 (src/rigplane/audio/fft_scope.py): live
+    // audio-fft frames are produced at 50 ms, just above the resume
+    // spacing — their delivery spacing at the render boundary can still
+    // batch tighter than production.
     expect(50).toBeGreaterThanOrEqual(WATERFALL_RESUME_SPACING_MS);
     const resume = admissions(gate, clock, Array.from({ length: 6 }, () => 50));
     expect(resume).toEqual([false, false, false, false, true, true]);
