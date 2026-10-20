@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import { ScopeFrameHost } from '$lib/runtime/scope-frame-host';
+import { WaterfallFreshnessGate } from '$lib/runtime/waterfall-freshness';
 import { WaterfallRenderer } from '$lib/renderers/waterfall-renderer';
 import WaterfallCanvas from '../WaterfallCanvas.svelte';
 
@@ -100,7 +101,23 @@ describe('same-session scope delivery across hidden rendering', () => {
     const target = document.createElement('div');
     document.body.append(target);
     let push: ((pixels: Uint8Array) => void) | undefined;
-    const component = mount(WaterfallCanvas, { target, props: { onRegisterPush: (fn) => { push = fn; } } });
+    const suppressed: number[] = [];
+    const freshness = new WaterfallFreshnessGate(timing);
+    const component = mount(WaterfallCanvas, {
+      target,
+      props: {
+        // Mirrors the SpectrumPanel waterfallPush registration (MOR-3471):
+        // every delivery classifies through the gate — hidden or not, so the
+        // timing baseline tracks the transport — and a suppressed delivery
+        // records on the waterfall_suppressed trace stage there.
+        onRegisterPush: (fn) => {
+          push = (pixels) => {
+            if (freshness.admit()) fn(pixels);
+            else suppressed.push(pixels[0]);
+          };
+        },
+      },
+    });
     flushSync();
     const arrivals: number[] = [];
     const accepted: { id: number; sequence: number; receivedAt: number }[] = [];
@@ -112,9 +129,11 @@ describe('same-session scope delivery across hidden rendering', () => {
     });
     const handle = await controller.hardwareScopeDriver.start();
     socket.connected();
-    const ids = Array.from({ length: 64 }, (_, index) => index + 1);
+    const baselineIds = [1, 2, 3];
+    const ids = Array.from({ length: 64 }, (_, index) => index + 4);
     // These buffers are retained by this test, not by production or a modeled WebKit queue.
     const produced = ids.map(frame);
+    const liveIds = [68, 69, 70, 71, 72, 73, 74];
     const deliver = (buffer: ArrayBuffer) => {
       arrivals.push(new DataView(buffer).getUint16(11, true));
       socket.deliver(buffer);
@@ -122,29 +141,42 @@ describe('same-session scope delivery across hidden rendering', () => {
     };
     try {
       expect(push).toBeTypeOf('function');
+      // Visible live-spaced baseline: the gate measures the later gap
+      // against this pre-gap delivery history.
+      for (const id of baselineIds) { deliver(frame(id)); advance(83); }
+      expect(pushed.mock.calls.map(([pixels]) => pixels[0])).toEqual(baselineIds);
       hidden = true;
       if (mode === 'continued') for (const buffer of produced) deliver(buffer);
-      expect(pushed).not.toHaveBeenCalled();
-      expect(paint).not.toHaveBeenCalled();
-      expect(arrivals).toEqual(mode === 'continued' ? ids : []);
+      expect(pushed).toHaveBeenCalledTimes(baselineIds.length);
+      expect(paint).toHaveBeenCalledTimes(baselineIds.length);
+      expect(arrivals).toEqual(mode === 'continued' ? [...baselineIds, ...ids] : baselineIds);
       advance(2 * 60 * 60 * 1000);
       flushSync();
       expect(host.snapshotPresentation().resolution.state).toBe('ghost');
       hidden = false;
       document.dispatchEvent(new Event('visibilitychange'));
       flushSync();
-      expect(pushed).not.toHaveBeenCalled();
+      expect(pushed).toHaveBeenCalledTimes(baselineIds.length);
       if (mode === 'delayed') {
         for (const buffer of produced) { deliver(buffer); advance(1); }
       }
-      deliver(frame(65));
-      expect(arrivals).toEqual([...ids, 65]);
-      expect(accepted.map((value) => value.id)).toEqual([...ids, 65]);
-      expect(accepted.map((value) => value.sequence)).toEqual([...ids, 65]);
+      // Live-spaced frames after the return: the post-gap deliveries
+      // collapse (MOR-3471) and painting resumes after five consecutive
+      // live-spaced frames re-earn it. In `delayed` the discontinuity is
+      // the burst's first frame, so live painting resumes at frame 72; in
+      // `continued` the first post-gap frame (68, itself live-spaced)
+      // spends the discontinuity slot, so painting resumes one frame
+      // later — a production-continued stream (frames flowing while
+      // hidden) never trips the discontinuity at all.
+      for (const id of liveIds) { advance(83); deliver(frame(id)); }
+      expect(arrivals).toEqual([...baselineIds, ...ids, ...liveIds]);
+      expect(accepted.map((value) => value.id)).toEqual([...baselineIds, ...ids, ...liveIds]);
+      expect(accepted.map((value) => value.sequence)).toEqual([...baselineIds, ...ids, ...liveIds]);
       const paintedIds = pushed.mock.calls.map(([pixels]) => pixels[0]);
-      expect(paintedIds).toEqual(mode === 'continued' ? [65] : [...ids, 65]);
+      expect(paintedIds).toEqual(mode === 'delayed' ? [...baselineIds, 72, 73, 74] : [...baselineIds, 73, 74]);
+      expect(suppressed).toEqual(mode === 'delayed' ? [...ids, 68, 69, 70, 71] : [68, 69, 70, 71, 72]);
       expect(paint).toHaveBeenCalledTimes(paintedIds.length);
-      expect(accepted[0].receivedAt).toBe(mode === 'continued' ? 0 : 7_200_000);
+      expect(accepted[0].receivedAt).toBe(0);
       expect(accepted.at(-1)?.receivedAt).toBe(now);
       expect(host.snapshotPresentation().resolution.state).toBe('live');
       expect(socket.sessionEpoch).toBe(1);

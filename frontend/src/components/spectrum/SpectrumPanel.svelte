@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack, type Snippet } from 'svelte';
   import { ScopeRenderTrace, type TraceToken, type TraceSource, type TraceStatus } from '../../lib/runtime/scope-render-trace';
+  import { WaterfallFreshnessGate } from '../../lib/runtime/waterfall-freshness';
   import SpectrumCanvas from './SpectrumCanvas.svelte';
   import WaterfallCanvas from './WaterfallCanvas.svelte';
   import DxOverlay from './DxOverlay.svelte';
@@ -1253,7 +1254,21 @@
     <div class="waterfall-content" class:panning={dragging} class:draggable={canPan} bind:this={waterfallContent} onpointerdown={handleDragStart} role="presentation">
       {#key runtime.state?.providerGeneration}
       <div class="waterfall-history" style:visibility={managedUnavailable ? 'hidden' : 'visible'} aria-hidden={managedUnavailable}>
-        <WaterfallCanvas options={waterfallOptions} trace={traceStatus === 'recording' ? trace : null} onFreqClick={audioFft || managedUnavailable ? undefined : handleTune} onRegisterPush={(fn) => { waterfallPush = fn; if (managed && scopePixels && !sdrTxFrozen) fn(scopePixels, waterfallOptions); }} />
+        <WaterfallCanvas options={waterfallOptions} trace={traceStatus === 'recording' ? trace : null} onFreqClick={audioFft || managedUnavailable ? undefined : handleTune} onRegisterPush={(fn) => {
+          // MOR-3471: collapse a post-gap delivery burst instead of painting
+          // one history row per frame; every delivery classifies through the
+          // gate (hidden or not), and suppressed deliveries record on the
+          // waterfall_suppressed trace stage. Pinned by the delayed case of
+          // scope-hidden-delivery.characterization.test.ts. The registration
+          // replay below is a canvas repaint of the current sample, not a
+          // delivery, so it bypasses the gate.
+          const freshness = new WaterfallFreshnessGate();
+          waterfallPush = (data, frameOptions, token) => {
+            if (freshness.admit()) fn(data, frameOptions, token);
+            else trace?.record('waterfall_suppressed', token ?? null, 0, true);
+          };
+          if (managed && scopePixels && !sdrTxFrozen) fn(scopePixels, waterfallOptions);
+        }} />
         <!-- MOR-3158: the TX-frozen veil rides inside the history wrapper so
              it dims the painted rows without hiding the tune-line/passband
              overlays stacked above the canvas; it hides together with the
