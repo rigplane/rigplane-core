@@ -246,7 +246,7 @@ def test_hold_s_rejects_nonfinite_or_negative(bad: str, capsys) -> None:
     with pytest.raises(SystemExit) as exc:
         _args("--keepalive-hold-s", bad)
     assert exc.value.code == 2
-    assert "--keepalive-hold-s" in capsys.read_outerr().err
+    assert "--keepalive-hold-s" in capsys.readouterr().err
 
 
 # --- Trace ------------------------------------------------------------------

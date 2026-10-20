@@ -264,11 +264,8 @@ async def _handle_state(request: web.Request) -> web.Response:
 
 
 def _reject(trace: TraceLog, name: str, args: dict, result: dict) -> web.Response:
-    """Trace a rejected event and answer it with HTTP 400."""
-    try:
-        trace.append("event", name, args, result)
-    except RecursionError:  # unrecordably nested args: trace the verdict only
-        trace.append("event", name, {}, result)
+    """Trace a rejected event (``args`` already sanitised) and answer 400."""
+    trace.append("event", name, args, result)
     return web.json_response(result, status=400, dumps=_dumps)
 
 
@@ -283,16 +280,16 @@ async def _handle_event(request: web.Request) -> web.Response:
     if not isinstance(name, str):
         return _reject(trace, "", {}, {"ok": False, "error": "invalid_args"})
     args = {key: value for key, value in body.items() if key != "event"}
-    handler = _EVENTS.get(name)
-    if handler is None:
-        return _reject(
-            trace, name, args, {"ok": False, "error": "unsupported", "event": name}
-        )
     try:
-        safe_args = _json_safe(args)
+        safe_args = _json_safe(args)  # every branch below records sanitised args
     except RecursionError:  # unrecordably nested: reject, no handler runs
         return _reject(
             trace, name, {}, {"ok": False, "error": "invalid_args", "event": name}
+        )
+    handler = _EVENTS.get(name)
+    if handler is None:
+        return _reject(
+            trace, name, safe_args, {"ok": False, "error": "unsupported", "event": name}
         )
     try:
         applied = handler(radio, body)
@@ -301,6 +298,7 @@ async def _handle_event(request: web.Request) -> web.Response:
     except InvalidArgs as exc:
         return _reject(
             trace,
+            name,
             safe_args,
             {"ok": False, "error": "invalid_args", "event": name, "detail": str(exc)},
         )
