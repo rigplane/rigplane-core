@@ -93,10 +93,14 @@ TX_OFF_BUDGET_S = 15.0
 # deleted, its link is cut without a close, or it goes silent with the link open.
 _TX_END_MODES = ("unkey", "delete", "cut", "half_open")
 _TX_VIOLATIONS_KEPT = 20
-# After a cycle closes its clients no session may remain this long. A session
-# kept only by its lease outlives its last heartbeat by TTL_MS, and that
-# heartbeat is at most HEARTBEAT_MS old at the close, so such a session stays at
-# least this long: one still there then was not ended by its channel's loss.
+# How long a lease renewal before the close waits for the server's answer.
+_TX_RENEW_TIMEOUT_S = 2.0
+# After a cycle closes its clients no session may remain this long. The cycle
+# renews every live lease just before it closes (_TxSessionClient.renew), so a
+# session kept only by its lease stays about TTL_MS; the wait is HEARTBEAT_MS
+# shorter, which leaves a margin of that much: one still there then was not
+# ended by its channel's loss, whatever phase the lease and the server's
+# expiry tick had.
 _TX_SESSION_END_S = (
     ControllerAuthority.TTL_MS - ControllerAuthority.HEARTBEAT_MS
 ) / 1000
@@ -1225,6 +1229,37 @@ class _TxSessionClient:
         ):
             pass
 
+    async def renew(self) -> None:
+        """Renew the lease once and wait for the answer, best effort.
+
+        The background beat stops first, so afterwards the session's lease runs
+        its full TTL_MS from the moment the server processed this beat; a
+        session that is gone or whose link is dead is left alone.
+        """
+        if self._heartbeat is not None:
+            self._heartbeat.cancel()
+            await asyncio.gather(self._heartbeat, return_exceptions=True)
+            self._heartbeat = None
+        if self._ws is None or self._ws.closed:
+            return
+        with contextlib.suppress(Exception):
+            await self._ws.send_json({"type": "controller_heartbeat"})
+            deadline = time.monotonic() + _TX_RENEW_TIMEOUT_S
+            while True:
+                msg = await asyncio.wait_for(
+                    self._ws.receive(), timeout=max(0.1, deadline - time.monotonic())
+                )
+                if msg.type is aiohttp.WSMsgType.TEXT:
+                    if msg.json().get("type") == "controller_heartbeat":
+                        return
+                elif msg.type in (
+                    aiohttp.WSMsgType.CLOSE,
+                    aiohttp.WSMsgType.CLOSING,
+                    aiohttp.WSMsgType.CLOSED,
+                    aiohttp.WSMsgType.ERROR,
+                ):
+                    return
+
     async def close(self) -> None:
         """Drop the link; closing the HTTP session sends no WebSocket close."""
         if self._heartbeat is not None:
@@ -1553,6 +1588,13 @@ class SoakDriver:
         finally:
             if self._sim.ptt_on:
                 await self._force_tx_off()
+            # Every live lease gets its full TTL_MS from here, so the check
+            # below does not depend on how old the leases were at the close.
+            # Without it a cycle of about 2 s put the end of a leaked
+            # session's lease on the end of the check window, and the reaper
+            # tick that ends it landed inside the window (measured: 7 of 25
+            # sabotaged runs passed, holds of 1.6 to 1.8 s; 0 of 25 with it).
+            await asyncio.gather(*(client.renew() for client in clients))
             for client in clients:
                 await client.close()
         # Closing the clients ended their sessions on the server, which sees

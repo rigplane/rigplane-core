@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -644,3 +645,64 @@ async def test_soak_multi_session_tx_fails_when_a_session_outlives_its_channel(
     tx = report["criteria"]["txSessions"]
     assert tx["status"] == "FAIL", tx
     assert any("left after the cycle" in v for v in tx["violations"]), tx
+
+
+async def test_soak_multi_session_tx_catches_a_leak_whatever_the_age_of_the_leases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bad phase of the leak check, forced: leases that are old at the close.
+
+    With no heartbeat and a 4 s hold every lease has about 1.5 s left when the
+    cycle closes its clients, so a leaked session is reaped by its lease (one
+    2 s reaper tick at most after it ends) inside the 4 s check window and the
+    check passes: the alignment that made the check flaky. The
+    cycle must renew the leases before it closes, so the leak is still there.
+    """
+    from rigplane.runtime.controller_authority import ControllerAuthority
+
+    monkeypatch.setattr(soak_driver._TxSessionClient, "start_heartbeat", lambda s: None)
+    monkeypatch.setattr(ControllerAuthority, "detach", lambda self, ticket: None)
+    monkeypatch.setattr(soak_driver, "_TX_END_MODES", ("unkey",))
+    monkeypatch.setattr(soak_driver, "TX_HOLD_S", 4.0)
+    report = await soak_driver.run_soak(
+        _smoke_config(duration_s=6.0, tx_sessions_interval_s=100.0)
+    )
+    tx = report["criteria"]["txSessions"]
+    assert tx["status"] == "FAIL", tx
+    assert any("left after the cycle" in v for v in tx["violations"]), tx
+
+
+async def test_renew_gives_a_session_its_full_lease_whatever_its_age() -> None:
+    """The leak check after a TX cycle must not depend on the leases' phase.
+
+    The cycle renews every live lease just before it closes its clients, so a
+    session that is not ended by its channel's loss stays a full ``TTL_MS``.
+    Driven on a fake controller clock: a lease aged to within 1.5 s of its end
+    is back at the full ``TTL_MS`` after ``renew``, deterministically.
+    """
+    from rigplane.runtime.controller_authority import ControllerAuthority
+
+    stack = await soak_driver._start_simulator_stack(managed_tx=True)
+    try:
+        controller = stack.web._controller
+        now = [time.monotonic()]
+        controller._clock = lambda: now[0]
+        client = soak_driver._TxSessionClient(f"http://127.0.0.1:{stack.web_port}")
+        await client.open()
+        try:
+            (session,) = controller._sessions.values()
+            now[0] += (ControllerAuthority.TTL_MS - 1500) / 1000
+            assert session.deadline - now[0] == pytest.approx(1.5)
+            await client.renew()
+            ttl = ControllerAuthority.TTL_MS / 1000
+            assert session.deadline - now[0] == pytest.approx(ttl)
+            # A leaked session then outlives the check window by at least one
+            # reaper tick, so the reaper cannot end it inside the window: the
+            # coincidence of lease end and window end that failed the release
+            # validation run (publish.yml, 3.13) cannot recur.
+            margin = ttl - soak_driver._TX_SESSION_END_S
+            assert margin >= ControllerAuthority.HEARTBEAT_MS / 1000
+        finally:
+            await client.close()
+    finally:
+        await stack.aclose()
