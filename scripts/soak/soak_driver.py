@@ -682,7 +682,7 @@ async def _ps_output(args: list[str]) -> str | None:
         await proc.wait()
         return None
     except asyncio.CancelledError:
-        # A caller-side bound (the settle window's wait_for giving up
+        # A caller-side bound (the settle window's timeout giving up
         # on this sample) cancels us mid-communicate: the ps child
         # must not outlive the call, so kill and reap it before
         # letting the cancellation propagate.
@@ -1847,15 +1847,27 @@ class SoakDriver:
         return result
 
     async def _settle_sample(self, deadline: float) -> ProcessSample | None:
-        """One settle sample, bounded by the remaining window (None past it)."""
+        """One settle sample, bounded by the remaining window (None past it).
+
+        The bound is an in-task timeout, not ``wait_for``: on Python
+        3.11 (the CI quick suite's interpreter) ``wait_for`` runs the
+        awaited coroutine as a task of its own, which both task-count
+        routes count — the runtime route's ``len(asyncio.all_tasks())``
+        and the fallback's non-``soak-`` filter — so the settle would
+        measure one task above the probe-time population and read a
+        delta sitting exactly at tolerance as a surplus.
+        ``asyncio.timeout`` cancels without creating a task on every
+        supported version: the sampler runs on the settle's own
+        ``soak-`` task, the same task the probes run on, so the
+        compared populations are identical.
+        """
         assert self._sampler is not None
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return None
         with contextlib.suppress(asyncio.TimeoutError):
-            return await asyncio.wait_for(
-                self._sampler.sample(self._elapsed()), remaining
-            )
+            async with asyncio.timeout(remaining):
+                return await self._sampler.sample(self._elapsed())
         return None
 
     async def _settle_stability_counts(self, pre: ProcessSample) -> None:

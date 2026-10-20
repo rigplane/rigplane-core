@@ -41,11 +41,15 @@ radio disconnect/connect, and pins:
   full window, and the settle gives up at its window or on a hung
   sample. The feeds are scripted; the window test drives a controlled
   monotonic clock so the deadline itself ends the settle (one late
-  settle sample hangs for real and is bounded by the wait_for on the
-  remaining window), and the hung-sample test uses a real 50 ms window
-  against a real 30 s hang. The step sleep is clamped to the remaining
-  window, and a sample cancelled inside the ``ps`` fallback kills and
-  reaps its child before the cancellation propagates.
+  settle sample hangs for real and is bounded by the in-task timeout on
+  the remaining window), and the hung-sample test uses a real 50 ms
+  window against a real 30 s hang. The step sleep is clamped to the
+  remaining window, a sample cancelled inside the ``ps`` fallback kills
+  and reaps its child before the cancellation propagates, and the
+  settle's own bound adds no task to the counts it takes: on the live
+  loop a task delta exactly at tolerance must still settle, measured by
+  both count routes with the CI interpreter's task-wrapping
+  ``wait_for`` semantics emulated (Python 3.11; 3.12+ await in-task).
 """
 
 from __future__ import annotations
@@ -414,7 +418,7 @@ async def test_ps_output_kills_and_reaps_its_child_when_cancelled(
 ) -> None:
     """A cancelled sample must not leak its ps child (MOR-3575).
 
-    The settle window's ``wait_for`` can cancel a sample that is inside
+    The settle window's timeout can cancel a sample that is inside
     ``_ps_output``; the child is killed and reaped before the
     cancellation propagates. RED on the pre-fix helper: the cancel
     propagated straight through and these kill/reap assertions failed.
@@ -849,8 +853,11 @@ async def _run_cycle_with_process_script(
 
     ``hang_call`` makes the Nth ``fetch_runtime`` call sleep 30 real
     seconds (an unbounded sampler hang). ``clock``, when given, is
-    installed as the driver's ``time.monotonic`` and advanced by every
-    sample and sleep, driving the settle's deadline arithmetic.
+    only advanced by every sample and sleep recorded here, driving
+    the settle's deadline arithmetic; installing it as the driver's
+    ``time.monotonic`` is the caller's job (see the window and clamp
+    tests), because patching the ``time`` module attribute inside the
+    helper would scope the stub to every caller whether wanted or not.
     """
     driver = soak_driver.SoakDriver(
         soak_driver.SoakConfig(
@@ -971,10 +978,10 @@ async def test_stability_settle_is_bounded_by_its_window(
     advances the clock by its delay. After the first settle sample and
     one 0.25 s step the next settle sample starts with 0.65 s of window
     left — and that late sample hangs for 30 real seconds, so the
-    ``wait_for`` on the remaining window gives up on it. The settle ends
-    after a single step although the budget allows four, and the cycle
-    still concludes with a FAIL on the never-settling counts. Remove the
-    sample-bounding ``wait_for`` and this goes red: the 30 s hang
+    in-task timeout on the remaining window gives up on it. The settle
+    ends after a single step although the budget allows four, and the
+    cycle still concludes with a FAIL on the never-settling counts.
+    Remove the sample-bounding timeout and this goes red: the 30 s hang
     outruns the outer bound instead of being cancelled at the window's
     end. (The step-sleep clamp is pinned separately, by
     test_stability_settle_clamps_its_step_sleep_to_the_remaining_window.)
@@ -1044,9 +1051,9 @@ async def test_stability_settle_gives_up_on_a_hung_sample(
     """A sample past the window ends the settle; the cycle still concludes.
 
     The 7th runtime call is the settle's first sample; it hangs 30 real
-    seconds against a real 50 ms window, and the ``wait_for`` on the
-    remaining window cancels it. The outer 10 s bound is the
-    discrimination: without the wait_for in _settle_sample the injected
+    seconds against a real 50 ms window, and the in-task timeout on
+    the remaining window cancels it. The outer 10 s bound is the
+    discrimination: without the timeout in _settle_sample the injected
     hang is unguarded, the bound fires TimeoutError, and this test goes
     red instead of passing after 30 s.
     """
@@ -1067,6 +1074,97 @@ async def test_stability_settle_gives_up_on_a_hung_sample(
     assert entry["fdsPost"] == 48
     assert _stability_status(entry, "fds")["status"] == "PASS"
     assert sleeps == [3.0]
+
+
+async def test_stability_settle_counts_no_task_of_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The settle's bound must not add a task to the counts it takes.
+
+    Five long-lived tasks make a task delta that sits exactly at
+    tolerance, and the sampler counts the live loop both ways the
+    report does — ``len(asyncio.all_tasks())`` (the runtime route,
+    server.py) and the non-``soak-`` fallback. CI's quick suite runs
+    Python 3.11 (``UV_PYTHON: "3.11"`` in quick.yml), whose
+    ``wait_for`` runs the awaited coroutine as a task of its own;
+    Python 3.12+ reimplemented ``wait_for`` over ``asyncio.timeout``,
+    in-task, so this host's 3.13 cannot show the bias unaided and the
+    monkeypatched ``wait_for`` restores the 3.11 wrap. Under that
+    wrap a ``wait_for``-bounded settle measures one task above the
+    delta, the boundary reads as a surplus that never drains, and the
+    settle spins to its window; the in-task bound never calls
+    ``wait_for``, both routes read exactly the delta, and the settle
+    ends after the initial sample plus three stable readings.
+    """
+    driver = soak_driver.SoakDriver(
+        soak_driver.SoakConfig(duration_s=45),
+        "http://127.0.0.1:1",
+        "127.0.0.1:1",
+        SimpleNamespace(fault_plan=None),
+    )
+    runtime_route_counts: list[int] = []
+    fallback_route_counts: list[int] = []
+
+    class _LiveTaskCountingSampler:
+        async def sample(
+            self,
+            t_s: float,
+            capture: Any = None,
+            *,
+            task_probe: Any = None,
+        ) -> soak_driver.ProcessSample:
+            runtime_route_counts.append(len(asyncio.all_tasks()))
+            fallback_route_counts.append(soak_driver._server_asyncio_task_count())
+            return soak_driver.ProcessSample(
+                t_s=t_s,
+                rss_bytes=1024,
+                fds=48,
+                asyncio_tasks=fallback_route_counts[-1],
+                connection="connected",
+            )
+
+    driver._sampler = _LiveTaskCountingSampler()
+    real_wait_for = asyncio.wait_for
+
+    async def wait_for_wrapping_its_awaitable_in_a_task(
+        awaiting: Any, timeout: float
+    ) -> Any:
+        return await real_wait_for(asyncio.ensure_future(awaiting), timeout)
+
+    monkeypatch.setattr(
+        soak_driver.asyncio, "wait_for", wait_for_wrapping_its_awaitable_in_a_task
+    )
+    baseline_runtime = len(asyncio.all_tasks())
+    baseline_fallback = soak_driver._server_asyncio_task_count()
+    extras = [
+        asyncio.create_task(asyncio.sleep(30.0))
+        for _ in range(soak_driver.STABILITY_TOLERANCE)
+    ]
+    try:
+        pre = soak_driver.ProcessSample(
+            t_s=0.0,
+            rss_bytes=1024,
+            fds=48,
+            asyncio_tasks=baseline_fallback,
+            connection="connected",
+        )
+        await driver._settle_stability_counts(pre)
+    finally:
+        for extra in extras:
+            extra.cancel()
+        await asyncio.gather(*extras, return_exceptions=True)
+    assert fallback_route_counts
+    assert all(
+        count - baseline_fallback == soak_driver.STABILITY_TOLERANCE
+        for count in fallback_route_counts
+    )
+    assert all(
+        count - baseline_runtime == soak_driver.STABILITY_TOLERANCE
+        for count in runtime_route_counts
+    )
+    assert (
+        len(fallback_route_counts) == 1 + soak_driver._STABILITY_SETTLE_STABLE_READINGS
+    )
 
 
 async def test_stability_settle_waits_out_a_long_plateau_before_late_decay(
