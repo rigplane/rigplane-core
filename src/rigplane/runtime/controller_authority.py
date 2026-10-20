@@ -42,6 +42,8 @@ class _Session:
     deadline: float
     primary: ControllerTicket | None = None
     channels: dict[ControllerTicket, Callable[[], None]] = field(default_factory=dict)
+    # Peer IP that opened the session (MOR-3557); ``None`` when unknown.
+    client: str | None = None
 
 
 _current: ContextVar[ControllerTicket | None] = ContextVar("controller", default=None)
@@ -60,6 +62,11 @@ class ControllerAuthority:
 
     TTL_MS = 6000
     HEARTBEAT_MS = 2000
+    # MOR-3557: live local-mode sessions one client IP may hold. A gateway puts
+    # every remote device behind one IP, so this is a bound on a runaway client,
+    # not a per-device quota. Each session bounds its own channels (the
+    # ConnectionManager per-channel cap), so this also bounds total channels.
+    MAX_SESSIONS_PER_CLIENT = 32
 
     def __init__(
         self,
@@ -69,7 +76,11 @@ class ControllerAuthority:
         clock: Callable[[], float] = time.monotonic,
         tx_ready: Callable[[], bool] = lambda: True,
         release_session: Callable[[str], Awaitable[object]] | None = None,
+        max_sessions_per_client: int = MAX_SESSIONS_PER_CLIENT,
     ) -> None:
+        if max_sessions_per_client < 1:
+            raise ValueError("max_sessions_per_client must be >= 1")
+        self._max_sessions_per_client = max_sessions_per_client
         self._ready = ready
         self._cleanup = cleanup
         self._clock = clock
@@ -172,12 +183,12 @@ class ControllerAuthority:
         self.mode = mode
         self._state = "idle"
 
-    def acquire(self, kind: str) -> dict[str, object]:
+    def acquire(self, kind: str, client: str | None = None) -> dict[str, object]:
         self._expire()
         if kind not in ("browser", "pro"):
             raise ControllerError("invalid_request", 400)
         if self.mode == "local":
-            return self._open_session()
+            return self._open_session(client)
         if self._taking_back or self._state in ("held", "revoking"):
             raise ControllerError("controller_busy", 409)
         if self._state == "blocked" or not self._is_ready():
@@ -194,12 +205,21 @@ class ControllerAuthority:
             "heartbeat_ms": self.HEARTBEAT_MS,
         }
 
-    def _open_session(self) -> dict[str, object]:
+    def _open_session(self, client: str | None) -> dict[str, object]:
+        # MOR-3557: refuse the NEW session at the cap; never end an existing
+        # one, so the TX holder's session is untouched.
+        if client is not None and (
+            sum(1 for s in self._sessions.values() if s.client == client)
+            >= self._max_sessions_per_client
+        ):
+            raise ControllerError("controller_session_limit", 429)
         # Not sequential: an owner is never accepted from a client, and a
         # guessable one would invite trying.
         owner = f"controller-session-{secrets.token_hex(8)}"
         key = secrets.token_hex(32)
-        self._sessions[owner] = _Session(key, self._clock() + self.TTL_MS / 1000)
+        self._sessions[owner] = _Session(
+            key, self._clock() + self.TTL_MS / 1000, client=client
+        )
         if self._session_watchdog is None or self._session_watchdog.done():
             self._session_watchdog = asyncio.create_task(self._watch_sessions())
         return {

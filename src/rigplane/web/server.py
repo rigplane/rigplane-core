@@ -854,6 +854,8 @@ class WebConfig:
         max_clients: Maximum concurrent WebSocket clients.
         keepalive_interval: Seconds between WebSocket keepalive pings.
             Set to a very large value (e.g. 9999) to disable during tests.
+        max_controller_sessions_per_ip: Live controller sessions per peer IP;
+            a new session beyond it is refused (429 ``controller_session_limit``).
     """
 
     host: str = "0.0.0.0"
@@ -862,6 +864,9 @@ class WebConfig:
     radio_model: str = _RADIO_MODEL_UNSPECIFIED
     max_clients: int = 100
     keepalive_interval: float = WS_KEEPALIVE_INTERVAL
+    # Live controller sessions one peer IP may hold (MOR-3557). Default fits a
+    # gateway fronting several devices with a few tabs each.
+    max_controller_sessions_per_ip: int = 32
     dx_cluster_host: str = ""
     dx_cluster_port: int = 0
     dx_callsign: str = ""
@@ -907,6 +912,8 @@ class WebConfig:
                 "Application authentication was removed; auth_token must be empty."
             )
         validate_trusted_origins(self.trusted_origins)
+        if self.max_controller_sessions_per_ip < 1:
+            raise ValueError("max_controller_sessions_per_ip must be >= 1")
         if self.scope_source not in ("auto", "hardware", "sdr", "audio_fft"):
             raise ValueError(
                 f"scope_source must be auto/hardware/sdr/audio_fft, "
@@ -1254,6 +1261,7 @@ class WebServer:
             cleanup=self._controller_cleanup,
             tx_ready=self._controller_native_ready,
             release_session=self._controller_release_session,
+            max_sessions_per_client=self._config.max_controller_sessions_per_ip,
         )
         self._command_queue.bind_controller(self._controller)
         self._controller_handler_tasks: dict[ControllerTicket, asyncio.Task[Any]] = {}
@@ -5510,7 +5518,11 @@ class WebServer:
                     await self._controller.set_mode(payload[field])
                     result, status = self._controller.status(), 200
                 else:
-                    result, status = self._controller.acquire(payload[field]), 201
+                    peer = writer.get_extra_info("peername")
+                    result = self._controller.acquire(
+                        payload[field], str(peer[0]) if peer else None
+                    )
+                    status = 201
             await self._send_json(
                 writer, status, "Created" if status == 201 else "OK", result
             )

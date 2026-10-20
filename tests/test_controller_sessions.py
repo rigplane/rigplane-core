@@ -65,7 +65,9 @@ class Clock:
         return self.now
 
 
-def stack() -> tuple[Clock, ControllerAuthority, ManagedTxAuthority, object]:
+def stack(
+    **limits: int,
+) -> tuple[Clock, ControllerAuthority, ManagedTxAuthority, object]:
     """A controller over a managed authority on the fake effect lane."""
     clock = Clock()
     managed, *_, lane = managed_authority()
@@ -78,6 +80,7 @@ def stack() -> tuple[Clock, ControllerAuthority, ManagedTxAuthority, object]:
         cleanup=cleanup,
         clock=clock,
         release_session=managed.owner_disconnect,
+        **limits,
     )
     managed.bind_controller(controller)
     return clock, controller, managed, lane
@@ -819,3 +822,96 @@ async def test_the_readback_tells_core_tx_the_radio_kept_from_an_operator_tx(
         assert unkeys() == sent + 1  # force_off unkeys even the operator
     finally:
         await composition.shutdown(asyncio.Event())
+
+
+# MOR-3557: per-IP cap on live controller sessions.
+
+
+async def test_new_session_at_the_per_ip_cap_is_refused_with_its_code() -> None:
+    _, controller, managed, _ = stack(max_sessions_per_client=3)
+    try:
+        for _ in range(3):
+            controller.acquire("pro", "10.0.0.1")
+        with pytest.raises(ControllerError) as refused:
+            controller.acquire("pro", "10.0.0.1")
+        assert (refused.value.code, refused.value.status) == (
+            "controller_session_limit",
+            429,
+        )
+        assert len(controller._sessions) == 3  # refused, nothing evicted
+    finally:
+        await close(controller, managed)
+
+
+async def test_the_cap_never_ends_the_tx_holders_session() -> None:
+    _, controller, managed, _ = stack(max_sessions_per_client=2)
+    try:
+        key = controller.acquire("pro", "10.0.0.1")["controller_key"]
+        holder = controller.attach(key, "primary", "holder")
+        controller.acquire("pro", "10.0.0.1")
+        with controller.bind(holder):
+            assert await managed.ptt_down(holder.tx_owner) is ACCEPTED
+        for _ in range(5):
+            with pytest.raises(ControllerError, match="controller_session_limit"):
+                controller.acquire("pro", "10.0.0.1")
+        controller.validate(holder)
+        assert managed.tx_holder_nowait() == holder.tx_owner
+        assert controller.is_session_owner(holder.tx_owner)
+    finally:
+        await close(controller, managed)
+
+
+async def test_a_released_session_frees_capacity_for_its_ip() -> None:
+    _, controller, managed, _ = stack(max_sessions_per_client=2)
+    try:
+        first = controller.acquire("pro", "10.0.0.1")["controller_key"]
+        controller.acquire("pro", "10.0.0.1")
+        with pytest.raises(ControllerError, match="controller_session_limit"):
+            controller.acquire("pro", "10.0.0.1")
+        await controller.release(first)
+        controller.acquire("pro", "10.0.0.1")
+    finally:
+        await close(controller, managed)
+
+
+async def test_an_expired_session_frees_capacity_for_its_ip() -> None:
+    clock, controller, managed, _ = stack(max_sessions_per_client=1)
+    try:
+        controller.acquire("pro", "10.0.0.1")
+        clock.now += ControllerAuthority.TTL_MS / 1000 + 1
+        controller.acquire("pro", "10.0.0.1")
+    finally:
+        await close(controller, managed)
+
+
+async def test_the_cap_is_counted_per_ip() -> None:
+    _, controller, managed, _ = stack(max_sessions_per_client=1)
+    try:
+        controller.acquire("pro", "10.0.0.1")
+        controller.acquire("pro", "10.0.0.2")
+        with pytest.raises(ControllerError, match="controller_session_limit"):
+            controller.acquire("pro", "10.0.0.2")
+        controller.acquire("pro")  # unknown peer is not counted
+        controller.acquire("pro")
+    finally:
+        await close(controller, managed)
+
+
+async def test_http_post_refuses_a_session_over_the_ip_cap(station) -> None:  # noqa: F811
+    server, _ = station
+    cap = server._config.max_controller_sessions_per_ip
+    assert cap == 32
+    server._controller._max_sessions_per_client = 2
+    for _ in range(2):
+        assert (
+            await request(server, "POST", "/api/v1/controller", {"kind": "pro"})
+        ).status == 201
+    refused = await request(server, "POST", "/api/v1/controller", {"kind": "pro"})
+    assert (refused.status, refused.payload) == (
+        429,
+        {"error": "controller_session_limit"},
+    )
+    other = await request(
+        server, "POST", "/api/v1/controller", {"kind": "pro"}, peer="192.168.1.9"
+    )
+    assert other.status == 201
