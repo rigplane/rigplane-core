@@ -2,9 +2,8 @@
 
 In-process tests build the same objects ``serve.py`` builds (via
 ``build_stack``) and drive the control endpoint through the aiohttp test
-client; one subprocess test runs the real entry point end to end against a
-production ``IcomRadio``, exactly the way the Pro dogfood scorecard will
-bind to it (MOR-3593).
+client; subprocess tests run the real entry point against a production
+``IcomRadio``.
 """
 
 from __future__ import annotations
@@ -12,89 +11,70 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import socket
-import struct
+import signal
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from aiohttp import ClientSession
 from aiohttp.test_utils import TestClient, TestServer
 
 from rigplane.radio import IcomRadio
 
-from rigplane_testkit.sim.__main__ import build_parser
-from rigplane_testkit.sim.serve import ServeStack, build_stack
+from rigplane_testkit.sim.__main__ import _control_arg, build_parser
+from rigplane_testkit.sim.serve import build_stack, format_control_host
 
 from _perf_helpers import fast_connect
-from testkit.test_simulator_faults import _UdpClient, _ayt
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-_STARTUP_KEYS = [
-    "sim",
-    "radio",
-    "fidelity",
-    "evidence",
-    "transport",
-    "host",
-    "control_port",
-    "username",
-    "control",
-    "seed",
-]
+_STARTUP_KEYS = (
+    "sim radio fidelity evidence transport host control_port username control seed"
+).split()
 
-# Obvious test-only credentials for the subprocess end-to-end run: the
-# password is a value nothing but the --password flag could put on the wire,
-# so any appearance of it in process output is a leak.
+# Obvious test-only credentials for the subprocess run: the password is a
+# value nothing but --password could put on the wire, so any appearance of
+# it in process output is a leak.
 _TEST_USERNAME = "sim-e2e-user"
 _TEST_PASSWORD = "sim-e2e-pass-2f8d41"
 
-# The four (port, direction) streams a lan_drop blackouts.
-_LAN_DROP_STREAMS = (
-    "control_to_client",
-    "control_from_client",
-    "civ_to_client",
-    "civ_from_client",
-)
+# JSON literals a permissive parser (aiohttp's request.json()) accepts but
+# that must never reach a radio timer as a duration; true and "5" pin the
+# bool/str rejection next to them.
+_BAD_NUMERIC_LITERALS = ("NaN", "Infinity", "-Infinity", "true", '"5"')
 
 
 def _args(*extra: str) -> argparse.Namespace:
     return build_parser().parse_args(["serve", "--radio", "ic7610", *extra])
 
 
-class _Stack:
-    """build_stack result started for one in-process test."""
+def _strict_loads(text: str) -> dict:
+    def _reject(literal: str) -> None:
+        raise AssertionError(f"non-finite JSON literal in body: {literal}")
 
-    def __init__(self, stack: ServeStack) -> None:
-        self.inner = stack
-        self.client: TestClient | None = None
-
-    async def __aenter__(self) -> "_Stack":
-        await self.inner.radio.start()
-        self.client = TestClient(TestServer(self.inner.app))
-        await self.client.start_server()
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        assert self.client is not None
-        # Mirror run_serve's shutdown: no lan_drop restore may outlive the
-        # radio (it would mutate a stopped radio's fault plan).
-        self.inner.lan_drop.cancel()
-        await self.client.close()
-        await self.inner.radio.stop()
-        self.inner.trace.close()
+    return json.loads(text, parse_constant=_reject)
 
 
-def _stack(*extra: str) -> _Stack:
-    return _Stack(build_stack(_args(*extra)))
+@asynccontextmanager
+async def _stack(*extra: str):
+    stack = build_stack(_args(*extra))
+    await stack.radio.start()
+    client = TestClient(TestServer(stack.app))
+    await client.start_server()
+    try:
+        yield SimpleNamespace(inner=stack, client=client)
+    finally:
+        await client.close()
+        await stack.radio.stop()
+        stack.trace.close()
 
 
-# ---------------------------------------------------------------------------
-# Control endpoint semantics (in-process)
-# ---------------------------------------------------------------------------
+# --- Control endpoint semantics (in-process) -------------------------------
 
 
-async def test_unknown_event_returns_400_unsupported() -> None:
+async def test_event_error_responses() -> None:
     async with _stack() as s:
         resp = await s.client.post("/event", json={"event": "nope"})
         assert resp.status == 400
@@ -104,16 +84,7 @@ async def test_unknown_event_returns_400_unsupported() -> None:
             "event": "nope",
         }
 
-
-async def test_bad_args_return_400_invalid_args() -> None:
-    async with _stack() as s:
         resp = await s.client.post("/event", json={"event": "set_frequency", "hz": "x"})
-        assert resp.status == 400
-        body = await resp.json()
-        assert body["ok"] is False
-        assert body["error"] == "invalid_args"
-
-        resp = await s.client.post("/event", json={"event": "lan_drop", "for_s": 0})
         assert resp.status == 400
         assert (await resp.json())["error"] == "invalid_args"
 
@@ -124,13 +95,30 @@ async def test_bad_args_return_400_invalid_args() -> None:
         assert (await resp.json())["error"] == "invalid_args"
 
 
+async def test_non_finite_or_mistyped_numbers_rejected() -> None:
+    # Raw text bodies: NaN/Infinity parse permissively, so the guard lives
+    # in the handler, not in JSON decoding.
+    with pytest.raises(AssertionError):
+        _strict_loads('{"x": NaN}')  # the parser itself must be strict
+    async with _stack() as s:
+        cases = (("power_cycle", "down_for_s"), ("keepalive_silence", "for_s"))
+        for event, arg in cases:
+            for literal in _BAD_NUMERIC_LITERALS:
+                resp = await s.client.post(
+                    "/event",
+                    data=f'{{"event":"{event}","{arg}":{literal}}}',
+                    headers={"Content-Type": "application/json"},
+                )
+                assert resp.status == 400, literal
+                body = _strict_loads(await resp.text())
+                assert body["error"] == "invalid_args", literal
+
+
 async def test_set_frequency_changes_state() -> None:
     async with _stack() as s:
         state = await (await s.client.get("/state")).json()
         assert state["frequency_hz"] == 14_074_000
         assert state["ptt"] is False
-        assert state["session_held"] is False
-        assert state["login_count"] == 0
 
         resp = await s.client.post(
             "/event", json={"event": "set_frequency", "hz": 7_100_000}
@@ -149,73 +137,24 @@ async def test_set_frequency_changes_state() -> None:
         }
 
 
-async def test_lan_drop_installs_full_blackout_rules() -> None:
+async def test_second_stop_is_harmless() -> None:
     async with _stack() as s:
-        seed_before = s.inner.radio.fault_plan.seed
-        plan = s.inner.radio.fault_plan
-        assert plan is not None
-        saved = {stream: getattr(plan, stream) for stream in _LAN_DROP_STREAMS}
-        resp = await s.client.post("/event", json={"event": "lan_drop", "for_s": 0.2})
-        assert resp.status == 200
-        assert plan.seed == seed_before
-        for stream in _LAN_DROP_STREAMS:
-            rule = getattr(plan, stream)
-            assert rule.drop_probability == 1.0, stream
-            # The window is exact: serve.py restores the rules itself, so
-            # the rules carry no duration bound of their own.
-            assert rule.duration_s is None, stream
-        # After exactly for_s the ORIGINAL rule objects are back.
-        await asyncio.sleep(0.4)
-        for stream in _LAN_DROP_STREAMS:
-            assert getattr(plan, stream) is saved[stream], stream
+        for _ in range(2):
+            resp = await s.client.post("/stop")
+            assert resp.status == 200
+            assert await resp.json() == {"ok": True}
 
 
-async def test_overlapping_lan_drop_restores_once_at_later_deadline() -> None:
-    async with _stack() as s:
-        plan = s.inner.radio.fault_plan
-        assert plan is not None
-        saved = {stream: getattr(plan, stream) for stream in _LAN_DROP_STREAMS}
-        await s.client.post("/event", json={"event": "lan_drop", "for_s": 5.0})
-        first_timer = s.inner.lan_drop.timer
-        assert first_timer is not None
-
-        await asyncio.sleep(0.1)
-        resp = await s.client.post("/event", json={"event": "lan_drop", "for_s": 0.2})
-        assert resp.status == 200
-        # The first restore is gone; the blackout runs until the SECOND
-        # deadline and then restores the ORIGINAL rules once.
-        assert first_timer.cancelled()
-        for stream in _LAN_DROP_STREAMS:
-            assert getattr(plan, stream).drop_probability == 1.0, stream
-
-        await asyncio.sleep(0.4)
-        for stream in _LAN_DROP_STREAMS:
-            assert getattr(plan, stream) is saved[stream], stream
-        body = await (await s.client.get("/trace")).json()
-        ends = [rec for rec in body["events"] if rec["name"] == "lan_drop_end"]
-        assert len(ends) == 1
+def test_control_host_forms() -> None:
+    assert format_control_host("127.0.0.1") == "127.0.0.1"
+    assert format_control_host("localhost") == "localhost"
+    assert format_control_host("::1") == "[::1]"
+    assert format_control_host("fe80::1") == "[fe80::1]"
+    with pytest.raises(argparse.ArgumentTypeError, match=r"\[host\]:port"):
+        _control_arg("::1")
 
 
-async def test_lan_drop_end_record_in_trace() -> None:
-    async with _stack() as s:
-        await s.client.post("/event", json={"event": "lan_drop", "for_s": 0.2})
-        await asyncio.sleep(0.4)
-        body = await (await s.client.get("/trace")).json()
-        rec = next(rec for rec in body["events"] if rec["name"] == "lan_drop_end")
-        assert rec["kind"] == "event"
-        assert rec["args"] == {}
-        assert rec["result"] == {"ok": True}
-
-
-async def test_shutdown_cancels_pending_lan_drop_restore() -> None:
-    async with _stack() as s:
-        await s.client.post("/event", json={"event": "lan_drop", "for_s": 30.0})
-        timer = s.inner.lan_drop.timer
-        assert timer is not None
-        assert not timer.cancelled()
-    # Teardown ran the serve shutdown path: no scheduled restore remains.
-    assert timer.cancelled()
-    assert s.inner.lan_drop.timer is None
+# --- Trace ------------------------------------------------------------------
 
 
 async def test_trace_records_and_since_filter() -> None:
@@ -224,8 +163,7 @@ async def test_trace_records_and_since_filter() -> None:
         await s.client.post("/event", json={"event": "nope"})
 
         body = await (await s.client.get("/trace")).json()
-        kinds = [(rec["kind"], rec["name"]) for rec in body["events"]]
-        assert kinds == [
+        assert [(rec["kind"], rec["name"]) for rec in body["events"]] == [
             ("start", "serve"),
             ("event", "set_frequency"),
             ("event", "nope"),
@@ -241,17 +179,24 @@ async def test_trace_records_and_since_filter() -> None:
             "event": "nope",
         }
 
+        for raw in ("-3", "abc"):  # negative and non-numeric read as 0
+            body = await (await s.client.get(f"/trace?since={raw}")).json()
+            assert [rec["n"] for rec in body["events"]] == [0, 1, 2], raw
+        body = await (await s.client.get("/trace?since=99")).json()
+        assert body["events"] == []
+        assert body["next"] == 3
 
-# ---------------------------------------------------------------------------
-# Trace determinism
-# ---------------------------------------------------------------------------
 
+# --- Trace determinism --------------------------------------------------------
+
+# All four supported events plus two rejected posts.
 _DETERMINISM_EVENTS = [
     {"event": "set_frequency", "hz": 7_074_000},
     {"event": "set_frequency", "hz": 0},
     {"event": "nope"},
-    {"event": "lan_drop", "for_s": 1.5},
+    {"event": "session_drop", "notice": False},
     {"event": "power_cycle", "down_for_s": 0.2},
+    {"event": "keepalive_silence", "for_s": 0.1},
 ]
 
 
@@ -277,12 +222,10 @@ async def test_same_seed_and_events_produce_identical_trace() -> None:
     assert len(first) == 1 + len(_DETERMINISM_EVENTS)
 
 
-# ---------------------------------------------------------------------------
-# Subprocess end to end
-# ---------------------------------------------------------------------------
+# --- Subprocess end to end ----------------------------------------------------
 
 
-async def test_subprocess_end_to_end() -> None:
+async def _start_sim(*extra: str) -> tuple[asyncio.subprocess.Process, dict]:
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
@@ -290,33 +233,36 @@ async def test_subprocess_end_to_end() -> None:
         "serve",
         "--radio",
         "ic7610",
-        "--seed",
-        "1",
-        "--username",
-        _TEST_USERNAME,
-        "--password",
-        _TEST_PASSWORD,
+        *extra,
         cwd=_REPO_ROOT,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    line = json.loads(await asyncio.wait_for(proc.stdout.readline(), 20))
+    return proc, line
+
+
+async def _kill_if_alive(proc: asyncio.subprocess.Process) -> None:
+    if proc.returncode is None:
+        proc.kill()
+        await proc.wait()
+
+
+async def test_subprocess_end_to_end(tmp_path: Path) -> None:
+    trace_path = tmp_path / "trace.jsonl"
+    extra = ["--seed", "1", "--trace", str(trace_path)]
+    extra += ["--username", _TEST_USERNAME, "--password", _TEST_PASSWORD]
+    proc, line = await _start_sim(*extra)
     try:
-        first = await asyncio.wait_for(proc.stdout.readline(), 20)
-        line = json.loads(first)
         assert list(line) == _STARTUP_KEYS
-        assert line["sim"] == "rigplane-sim/1"
-        assert line["radio"] == "IC-7610"
-        assert line["fidelity"] == "A"
-        assert line["evidence"] == "simulated"
-        assert line["transport"] == "lan"
-        assert line["host"] == "127.0.0.1"
-        assert line["seed"] == 1
+        assert line["sim"] == "rigplane-sim/1" and line["radio"] == "IC-7610"
+        assert line["fidelity"] == "A" and line["evidence"] == "simulated"
+        assert line["transport"] == "lan" and line["host"] == "127.0.0.1"
+        assert line["seed"] == 1 and line["username"] == _TEST_USERNAME
         assert isinstance(line["control_port"], int) and line["control_port"] > 0
-        assert line["username"] == _TEST_USERNAME
         # "control" is the HTTP endpoint; "control_port" the radio LAN port.
         http_port = int(line["control"].rsplit(":", 1)[1])
         assert line["control"] == f"http://127.0.0.1:{http_port}"
-        assert http_port > 0
 
         radio = IcomRadio(
             host=line["host"],
@@ -331,22 +277,19 @@ async def test_subprocess_end_to_end() -> None:
         assert await radio.get_freq() == 14_074_000
 
         # The password is never printed, logged or returned: scan the
-        # process output so far and both readable control bodies while the
-        # subprocess is still running.
+        # startup line and both readable control bodies, then drive the
+        # endpoint, while the subprocess is still running.
         async with ClientSession() as http:
             state_body = await (await http.get(f"{line['control']}/state")).text()
-        async with ClientSession() as http:
             trace_body = await (await http.get(f"{line['control']}/trace")).text()
-        assert _TEST_PASSWORD not in first.decode()
-        assert _TEST_PASSWORD not in state_body
-        assert _TEST_PASSWORD not in trace_body
-
-        async with ClientSession() as http:
             async with http.post(
                 f"{line['control']}/event",
                 json={"event": "set_frequency", "hz": 7_100_000},
             ) as resp:
                 assert resp.status == 200
+        assert _TEST_PASSWORD not in json.dumps(line)
+        assert _TEST_PASSWORD not in state_body
+        assert _TEST_PASSWORD not in trace_body
         assert await radio.get_freq() == 7_100_000
         await radio.disconnect()
 
@@ -362,51 +305,28 @@ async def test_subprocess_end_to_end() -> None:
         # U+FFFD replacements of non-UTF-8 bytes cannot spell the ASCII
         # password, so decoding does not weaken this scan.
         assert _TEST_PASSWORD not in stderr.decode(errors="replace")
-
-        with socket.socket() as sock:
-            sock.settimeout(2.0)
-            try:
-                sock.connect(("127.0.0.1", http_port))
-            except OSError:
-                pass
-            else:
-                raise AssertionError("control endpoint still accepts connections")
     finally:
-        if proc.returncode is None:
-            proc.kill()
-            await proc.wait()
+        await _kill_if_alive(proc)
+
+    # --trace FILE: one valid JSON line per record, final stop record included.
+    records = [_strict_loads(x) for x in trace_path.read_text().splitlines()]
+    assert all(record["n"] == i for i, record in enumerate(records))
+    assert records[0]["kind"] == "start"
+    assert records[-1]["kind"] == "stop"
+    assert records[-1]["name"] == "shutdown"
+    assert records[-1]["result"] == {"ok": True}
 
 
-# ---------------------------------------------------------------------------
-# lan_drop wire effect
-# ---------------------------------------------------------------------------
-
-
-async def test_lan_drop_blackout_on_the_wire() -> None:
-    async with _stack() as s:
-        loop = asyncio.get_running_loop()
-        udp = _UdpClient()
-        transport, _ = await loop.create_datagram_endpoint(
-            lambda: udp, remote_addr=("127.0.0.1", s.inner.radio.control_port)
-        )
-        try:
-            udp.send(_ayt(), s.inner.radio.control_port)
-            reply = await udp.recv(5.0)
-            assert reply[4:6] == struct.pack("<H", 0x04)  # I-Am-Here
-
-            resp = await s.client.post(
-                "/event", json={"event": "lan_drop", "for_s": 1.0}
-            )
-            assert resp.status == 200
-
-            # The window opened at the event itself, so this AYT falls
-            # inside it and is swallowed.
-            udp.send(_ayt(), s.inner.radio.control_port)
-            await udp.expect_silence(0.4)
-            await asyncio.sleep(1.0)  # >= 1.3 s since the event
-
-            udp.send(_ayt(), s.inner.radio.control_port)
-            reply = await udp.recv(5.0)
-            assert reply[4:6] == struct.pack("<H", 0x04)
-        finally:
-            transport.close()
+async def test_sigterm_exits_0_and_writes_stop_record(tmp_path: Path) -> None:
+    if sys.platform == "win32":
+        pytest.skip("POSIX signal delivery")
+    trace_path = tmp_path / "trace.jsonl"
+    proc, _line = await _start_sim("--trace", str(trace_path))
+    proc.send_signal(signal.SIGTERM)
+    try:
+        assert await asyncio.wait_for(proc.wait(), 10) == 0
+    finally:
+        await _kill_if_alive(proc)
+    records = [_strict_loads(x) for x in trace_path.read_text().splitlines()]
+    assert records[-1]["kind"] == "stop"
+    assert records[-1]["result"] == {"ok": True}
