@@ -895,6 +895,8 @@ async def test_the_cap_is_counted_per_ip() -> None:
             controller.acquire("pro", "10.0.0.2")
         controller.acquire("pro")  # unknown peer is not counted
         controller.acquire("pro")
+        # an unknown-peer session does not use up a known IP's allowance
+        controller.acquire("pro", "10.0.0.3")
     finally:
         await close(controller, managed)
 
@@ -917,3 +919,10 @@ async def test_http_post_refuses_a_session_over_the_ip_cap(station) -> None:  # 
         server, "POST", "/api/v1/controller", {"kind": "pro"}, peer="192.168.1.9"
     )
     assert other.status == 201
+
+
+async def test_a_cap_below_one_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        stack(max_sessions_per_client=0)
+    with pytest.raises(ValueError):
+        server_module.WebConfig(max_controller_sessions_per_ip=0)
