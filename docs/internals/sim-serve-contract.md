@@ -71,15 +71,16 @@ Every `POST /event` (accepted or rejected) and process start/stop appends
 lines (`sort_keys`, `separators=(",",":")`), flushed per line — including
 the final `stop` record written during shutdown.
 
-Determinism rule: the same seed plus the same event sequence produces an
-identical trace once `t` is removed. `t` is real elapsed time (recovery
-timings need it) and is the only time-dependent field. The server itself
-adds no ephemeral ports to trace records (the start record carries the
-`--control` hint, port 0 included); extra keys a client sends in an event
-body are recorded in `args` with non-finite floats (any nesting depth,
-from permissively parsed `NaN`/`Infinity` literals) replaced by their
-string spellings — the snapshot, the `--trace` file and every HTTP
-response stay strict JSON.
+Determinism rule: with the same launcher arguments (`--seed`, `--bind`,
+`--control`, `--keepalive-hold-s`, `--username`) and the same event
+sequence, the trace is identical once the `t` field is removed. `t` is
+real elapsed time (recovery timings need it) and is the only
+time-dependent field. The server itself adds no ephemeral ports to trace
+records (the start record carries the `--control` hint, port 0 included);
+extra keys a client sends in an event body are recorded in `args` with
+non-finite floats (any nesting depth, from permissively parsed
+`NaN`/`Infinity` literals) replaced by their string spellings — the
+snapshot, the `--trace` file and every HTTP response stay strict JSON.
 
 ## Evidence labelling
 

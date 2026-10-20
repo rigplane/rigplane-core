@@ -4,8 +4,10 @@
 aiohttp control endpoint and every event handler — no threads. One JSON line
 goes to stdout once both listen (logs to stderr); every accepted or rejected
 control event, plus process start and stop, lands in a bounded trace
-(optionally a JSONL file). Same seed + same event sequence => identical
-records once the real-time ``t`` field is removed.
+(optionally a JSONL file). With the same launcher arguments (``--seed``,
+``--bind``, ``--control``, ``--keepalive-hold-s``, ``--username``) and the
+same event sequence, the trace is identical once the real-time ``t`` field
+is removed.
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ def _is_num(value: object) -> bool:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
     try:
-        return math.isfinite(value)
+        return math.isfinite(float(value))
     except OverflowError:
         return False  # an int too large for float conversion is rejected too
 
@@ -265,7 +267,10 @@ async def _handle_state(request: web.Request) -> web.Response:
 
 def _reject(trace: TraceLog, name: str, args: dict, result: dict) -> web.Response:
     """Trace a rejected event and answer it with HTTP 400."""
-    trace.append("event", name, args, result)
+    try:
+        trace.append("event", name, args, result)
+    except RecursionError:  # unrecordably nested args: trace the verdict only
+        trace.append("event", name, {}, result)
     return web.json_response(result, status=400, dumps=_dumps)
 
 
@@ -274,7 +279,7 @@ async def _handle_event(request: web.Request) -> web.Response:
     trace: TraceLog = request.app[_TRACE_KEY]
     try:
         body = await request.json()
-    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, RecursionError):
         body = None
     name = body.get("event") if isinstance(body, dict) else None
     if not isinstance(name, str):
@@ -287,6 +292,8 @@ async def _handle_event(request: web.Request) -> web.Response:
         )
     try:
         applied = handler(radio, body)
+        result = {"ok": True, "event": name, **applied}
+        trace.append("event", name, args, result)
     except InvalidArgs as exc:
         return _reject(
             trace,
@@ -294,8 +301,10 @@ async def _handle_event(request: web.Request) -> web.Response:
             args,
             {"ok": False, "error": "invalid_args", "event": name, "detail": str(exc)},
         )
-    result = {"ok": True, "event": name, **applied}
-    trace.append("event", name, args, result)
+    except RecursionError:  # the args sanitizer recurses per nesting level
+        return _reject(
+            trace, name, {}, {"ok": False, "error": "invalid_args", "event": name}
+        )
     return web.json_response(result, dumps=_dumps)
 
 
@@ -310,7 +319,8 @@ async def _handle_trace(request: web.Request) -> web.Response:
 
 async def _handle_stop(request: web.Request) -> web.Response:
     stop_event: asyncio.Event = request.app[_STOP_EVENT_KEY]
-    # Flush the response before teardown; a repeat POST only re-arms the drain.
+    # Flush the response before teardown. A repeat POST schedules another
+    # call_later timer, and Event.set is idempotent once the event is set.
     asyncio.get_running_loop().call_later(_STOP_DRAIN_S, stop_event.set)
     return web.json_response({"ok": True}, dumps=_dumps)
 
@@ -349,5 +359,7 @@ async def run_serve(args: argparse.Namespace) -> int:
         try:
             await stack.radio.stop()
         finally:
-            stack.trace.append("stop", "shutdown", {}, {"ok": True})
-            stack.trace.close()
+            try:
+                stack.trace.append("stop", "shutdown", {}, {"ok": True})
+            finally:
+                stack.trace.close()

@@ -49,7 +49,7 @@ _TEST_PASSWORD = "sim-e2e-pass-2f8d41"
 # that must never reach a radio timer as a duration; true and "5" pin the
 # bool/str rejection next to them. set_frequency adds 7.5 and "7".
 _BAD_NUMERIC_LITERALS = ("NaN", "Infinity", "-Infinity", "true", '"5"')
-_HZ_BAD_LITERALS = ("NaN", "Infinity", "true", "7.5", '"7"')
+_HZ_BAD_LITERALS = ("NaN", "Infinity", "-Infinity", "true", "7.5", '"7"')
 
 
 def _args(*extra: str) -> argparse.Namespace:
@@ -120,6 +120,8 @@ async def test_non_finite_or_mistyped_numbers_rejected() -> None:
                 assert resp.status == 400, literal
                 body = _strict_loads(await resp.text())
                 assert body["error"] == "invalid_args", literal
+                # event+detail present: a handler rejection, not a parse error.
+                assert body["event"] == event and body["detail"], literal
 
         for literal in _HZ_BAD_LITERALS:
             resp = await _post_raw(s, f'{{"event":"set_frequency","hz":{literal}}}')
@@ -151,6 +153,30 @@ async def test_non_finite_args_never_reach_trace_output(tmp_path: Path) -> None:
         assert [rec["args"]["down_for_s"] for rec in rejected] == ["NaN", "Infinity"]
         junked = [rec for rec in records if rec["name"] == "session_drop"]
         assert junked[0]["args"]["junk"] == {"deep": ["NaN", "Infinity", "-Infinity"]}
+
+
+async def test_huge_integers_rejected() -> None:
+    # 10**1000 parses to an exact int too large for any float conversion.
+    async with _stack() as s:
+        for event, arg in (
+            ("set_frequency", "hz"),
+            ("power_cycle", "down_for_s"),
+            ("keepalive_silence", "for_s"),
+        ):
+            resp = await _post_raw(s, json.dumps({"event": event, arg: 10**1000}))
+            assert resp.status == 400, event
+            assert (await resp.json())["error"] == "invalid_args", event
+
+
+async def test_deeply_nested_body_rejected_and_traced() -> None:
+    # 5000 levels: parsing itself exhausts the interpreter recursion limit.
+    async with _stack() as s:
+        deep = "[" * 5000 + "]" * 5000
+        resp = await _post_raw(s, f'{{"event":"session_drop","junk":{deep}}}')
+        assert resp.status == 400
+        assert (await resp.json()) == {"ok": False, "error": "invalid_args"}
+        last = (await (await s.client.get("/trace")).json())["events"][-1]
+        assert (last["kind"], last["name"], last["args"]) == ("event", "", {})
 
 
 async def test_set_frequency_changes_state() -> None:
