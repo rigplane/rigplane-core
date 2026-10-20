@@ -2,12 +2,13 @@ name: Codex findings alert
 
 # Pings the owner when the Codex review bot finds something on a PR: adds the
 # `codex-findings` label and sends a Telegram message (repo, PR, title, link,
-# P1/P2 badge when present, and the finding's headline). The merge script's
-# unresolved-review-thread guard stays the hard stop; this is only the alert.
-# Fan-out: every inline Codex finding sends its own message (N findings = N
-# messages). A comment counts as a finding only when it carries a P-badge or
-# Codex's finding marker (`codex-code-review-finding`); clean runs, status
-# replies, comments on plain issues and review summaries stay silent.
+# the P-badge when present, and the finding's headline). It is only an alert;
+# it does not block merges.
+# Fan-out: each Codex comment that carries a P-badge or Codex's finding marker
+# (`codex-code-review-finding`) sends one message, so N inline findings are N
+# messages (the first badge of a comment names its priority). Clean runs,
+# status replies, comments on plain issues and bodies without a badge or marker
+# stay silent.
 # The bot token and chat id are secrets (TELEGRAM_BOT_TOKEN,
 # TELEGRAM_HOME_CHANNEL), never printed. `workflow_dispatch` sends a test
 # alert for a given PR with a sample finding.
