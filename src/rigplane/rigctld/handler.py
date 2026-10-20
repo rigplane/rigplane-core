@@ -921,6 +921,13 @@ class RigctldHandler:
         self._key_down_backstop_task: asyncio.Task[None] | None = None
         self._key_down_backstop_token: int = 0
         self._key_down_backstop_session: str | None = None
+        # Serializes the single-RX A/B slot dance (split-TX writes)
+        # against VFO switches. The handler instance is shared across
+        # all client connections of one server, so without this another
+        # client's V could land between select-B and restore and strand
+        # the dial. Never nested: the dance calls the radio directly,
+        # and _execute_set_vfo never calls the dance.
+        self._vfo_slot_lock = asyncio.Lock()
         self._routing = create_routing(radio, getattr(config, "max_power_w", 100.0))
         if state_store is None and isinstance(radio, StateStoreCapable):
             state_store = radio.state_store
@@ -2412,6 +2419,12 @@ class RigctldHandler:
         return _ok()
 
     async def _execute_set_vfo(self, vfo: str) -> HamlibError:
+        # Shares the slot lock with the split-TX dance: a V landing
+        # between select-B and restore would strand the dial.
+        async with self._vfo_slot_lock:
+            return await self._execute_set_vfo_locked(vfo)
+
+    async def _execute_set_vfo_locked(self, vfo: str) -> HamlibError:
         info = self._profile_vfo_info()
         # Backwards-compat: unknown VFO names or profile-less radios → no-op
         if vfo not in ("VFOA", "VFOB") or info is None:
@@ -2446,9 +2459,8 @@ class RigctldHandler:
                     return HamlibError.ERJCTED
                 return HamlibError.OK
             target = "A" if vfo == "VFOA" else "B"
-        # Issue #1189: legacy backends (e.g. SerialMockRadio,
-        # 3rd-party Radio implementers) predate ``ReceiverBankCapable`` /
-        # ``VfoSlotCapable`` and only expose the legacy ``set_vfo``
+        # Issue #1189: legacy backends (e.g. 3rd-party Radio implementers
+        # predating #1170/#1172) only expose the legacy ``set_vfo``
         # overload.  Fall back to it so ``V VFOA`` / ``V VFOB`` actually
         # reach the radio instead of returning a silent ``RPRT 0``.  The
         # ``DeprecationWarning`` from ``IcomRadio.set_vfo`` (#1187) is
@@ -3139,24 +3151,25 @@ class RigctldHandler:
         set_vfo_slot = getattr(self._radio, "set_vfo_slot", None)
         if set_vfo_slot is None:
             return HamlibError.ENAVAIL
-        previous = await self._selected_vfo_slot()
-        target = "B" if previous == "A" else "A"
-        try:
-            await set_vfo_slot(target)
-            await write()
-        finally:
-            # Attempted even when the first switch raised: an ambiguous
-            # failure (ACK timeout / NAK after landing) may have switched
-            # the radio anyway, and leaving it on the TX slot would
-            # strand the dial.
+        async with self._vfo_slot_lock:
+            previous = await self._selected_vfo_slot()
+            target = "B" if previous == "A" else "A"
             try:
-                await asyncio.shield(set_vfo_slot(previous))
-            except Exception:
-                logger.exception(
-                    "split TX write: restoring VFO slot %s failed; "
-                    "radio may be on the TX slot",
-                    previous,
-                )
+                await set_vfo_slot(target)
+                await write()
+            finally:
+                # Attempted even when the first switch raised: an ambiguous
+                # failure (ACK timeout / NAK after landing) may have switched
+                # the radio anyway, and leaving it on the TX slot would
+                # strand the dial.
+                try:
+                    await asyncio.shield(set_vfo_slot(previous))
+                except Exception:
+                    logger.exception(
+                        "split TX write: restoring VFO slot %s failed; "
+                        "radio may be on the TX slot",
+                        previous,
+                    )
         return HamlibError.OK
 
     async def _cmd_get_split_freq(self, cmd: RigctldCommand) -> RigctldResponse:

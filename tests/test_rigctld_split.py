@@ -295,6 +295,35 @@ async def test_set_split_freq_cancel_mid_dance_still_restores_slot(
 
 
 @pytest.mark.asyncio
+async def test_split_dance_serializes_against_concurrent_set_vfo(
+    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+) -> None:
+    # Two clients on one handler (the server shares the instance across
+    # connections): a V issued mid-dance waits for the restore, so the
+    # radio sees select-B, restore-A, then the V — never the V between.
+    single_rx_radio.get_vfo_slot.return_value = "A"
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_write(freq_hz: int, receiver: int = 0) -> None:
+        entered.set()
+        await release.wait()
+
+    single_rx_radio.set_freq.side_effect = _slow_write
+    dance = asyncio.create_task(
+        single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
+    )
+    await asyncio.wait_for(entered.wait(), timeout=2.0)
+    vfo = asyncio.create_task(single_rx_handler.execute(set_cmd("set_vfo", "VFOB")))
+    await asyncio.sleep(0.05)
+    assert single_rx_radio.set_vfo_slot.await_count == 1
+    release.set()
+    assert (await dance).ok
+    assert (await vfo).ok
+    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A"), call("B")])
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("args", [(), ("abc",)], ids=["no-arg", "not-a-number"])
 async def test_set_split_freq_einval(
     single_rx_handler: RigctldHandler,
