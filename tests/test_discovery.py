@@ -8,7 +8,7 @@ import logging
 from contextlib import ExitStack, contextmanager
 from functools import partial
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -19,6 +19,7 @@ from rigplane.discovery import (
     SerialPortCandidate,
     _is_candidate,
     _is_xiegu_model_id_reply,
+    _local_ipv4_addresses,
     _parse_probe_response,
     build_setup_discovery_payload,
     _parse_yaesu_id_response,
@@ -1489,6 +1490,9 @@ class _FakeUdpSocket:
     response is delivered); ``recv_error_always`` is raised from every
     recvfrom call. They fake per-socket receive failures such as Windows
     ConnectionResetError (WSAECONNRESET) after an ICMP port-unreachable.
+
+    ``bind_error`` is raised from bind() to fake an address that can no
+    longer be bound (adapter vanished, address reassigned).
     """
 
     def __init__(
@@ -1497,10 +1501,12 @@ class _FakeUdpSocket:
         *,
         recv_errors: list[Exception] | None = None,
         recv_error_always: Exception | None = None,
+        bind_error: Exception | None = None,
     ) -> None:
         self._responses = {k: list(v) for k, v in responses.items()}
         self._recv_errors = list(recv_errors or [])
         self._recv_error_always = recv_error_always
+        self._bind_error = bind_error
         self.send_count = 0
         self.sent_to: list[tuple] = []
         self.bound_to: tuple | None = None
@@ -1514,6 +1520,8 @@ class _FakeUdpSocket:
         pass
 
     def bind(self, addr: tuple) -> None:
+        if self._bind_error is not None:
+            raise self._bind_error
         self.bound_to = addr
 
     def sendto(self, _data: bytes, addr: tuple) -> int:
@@ -1546,6 +1554,10 @@ def _patched_lan_socket(fake: _FakeUdpSocket, *, step: float = 0.05):
     with (
         patch.object(_socket, "socket", return_value=fake),
         patch.object(_time, "monotonic", _FakeClock(step=step)),
+        # The fake has no connect()/getsockname(); without this patch the
+        # single-socket tests would rely on the address probe raising
+        # AttributeError and pre-setting fake.closed via its finally-close.
+        patch("rigplane.discovery._local_ipv4_addresses", return_value=[]),
     ):
         yield
 
@@ -1637,8 +1649,9 @@ class TestDiscoverLanRadios:
 
     async def test_recvfrom_connection_reset_once_still_finds_radio(self) -> None:
         # Windows raises ConnectionResetError (WSAECONNRESET) from recvfrom
-        # after an ICMP port-unreachable; one such error must neither kill
-        # the scan nor lose an already-received radio.
+        # after an ICMP port-unreachable. The reset fires before the queued
+        # reply is delivered, so one such error must not kill the scan — the
+        # reply waiting behind it is still found.
         addr = ("192.168.1.81", 50001)
         fake = _FakeUdpSocket(
             {1: [(_i_am_here(0x0BADF00D), addr)]},
@@ -1715,6 +1728,94 @@ class TestDiscoverLanRadios:
 
         assert result == []
         assert all(fake.closed for fake in fakes)
+
+    async def test_bind_failure_closes_socket_and_probes_rest(self) -> None:
+        # A local address whose bind fails (address vanished, adapter
+        # removed) is skipped after its half-open socket is closed; the
+        # remaining sockets still probe and find the radio.
+        addr = ("192.168.1.84", 50001)
+        fakes = [
+            _FakeUdpSocket({}),
+            _FakeUdpSocket({}, bind_error=OSError("cannot assign requested address")),
+            _FakeUdpSocket({1: [(_i_am_here(0x0C0FFEE0), addr)]}),
+        ]
+        with _patched_lan_sockets(fakes, ["192.168.1.5", "10.8.0.2"]):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert result == [{"host": "192.168.1.84", "remote_id": 0x0C0FFEE0}]
+        assert fakes[1].closed is True  # the half-open socket was closed
+        assert fakes[1].send_count == 0  # and never used to probe
+        assert fakes[0].send_count >= 1
+        assert fakes[2].send_count >= 1
+
+
+class _FakeRouteSocket:
+    """Socket stand-in for the UDP-connect probe in _local_ipv4_addresses.
+
+    ``connect`` records nothing and sends nothing (as on a real UDP socket);
+    ``getsockname`` reports the scripted local address.
+    """
+
+    def __init__(self, local: str) -> None:
+        self._local = local
+        self.closed = False
+
+    def connect(self, _addr: tuple) -> None:
+        pass
+
+    def getsockname(self) -> tuple:
+        return (self._local, 0)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestLocalIpv4Addresses:
+    def test_windows_drops_loopback_unspecified_and_duplicates(self) -> None:
+        import socket as _socket
+
+        def _info(address: str) -> tuple:
+            return (_socket.AF_INET, _socket.SOCK_DGRAM, 0, "", (address, 0))
+
+        route_sock = _FakeRouteSocket("192.168.1.5")
+        getaddrinfo = MagicMock(
+            return_value=[
+                _info("10.8.0.2"),
+                _info("192.168.1.5"),  # duplicate of the route address
+                _info("127.0.0.1"),  # loopback dropped
+                _info("0.0.0.0"),  # unspecified dropped
+                _info("10.0.0.9"),
+            ]
+        )
+        with (
+            patch.object(_socket, "socket", return_value=route_sock),
+            patch.object(_socket, "getaddrinfo", getaddrinfo),
+            patch("sys.platform", "win32"),
+        ):
+            result = _local_ipv4_addresses()
+
+        assert result == ["192.168.1.5", "10.8.0.2", "10.0.0.9"]
+        assert route_sock.closed
+        getaddrinfo.assert_called_once()
+
+    def test_non_windows_skips_hostname_lookup(self) -> None:
+        # Outside Windows the hostname enumeration must not run at all: a
+        # locally unresolvable hostname (e.g. .local) would stall the
+        # resolver for seconds before the scan's clock starts.
+        import socket as _socket
+
+        route_sock = _FakeRouteSocket("192.168.1.5")
+        getaddrinfo = MagicMock()
+        with (
+            patch.object(_socket, "socket", return_value=route_sock),
+            patch.object(_socket, "getaddrinfo", getaddrinfo),
+            patch("sys.platform", "linux"),
+        ):
+            result = _local_ipv4_addresses()
+
+        assert result == ["192.168.1.5"]
+        assert route_sock.closed
+        getaddrinfo.assert_not_called()
 
 
 # MOR-3133: exercise the actual opener/read boundary on the old API as well.

@@ -730,20 +730,22 @@ def enumerate_serial_ports() -> list[SerialPortCandidate]:
 
 
 def _local_ipv4_addresses() -> list[str]:
-    """Enumerate the host's local IPv4 addresses (best-effort, stdlib only).
+    """Return a best-effort subset of the host's local IPv4 addresses.
 
     Combines the default-route address — a UDP ``connect`` sends no packet,
-    it only makes the OS pick the outbound interface — with every IPv4
-    address the hostname resolves to. Loopback and unspecified addresses
-    are dropped; duplicates are removed with a stable order.
+    it only makes the OS pick the outbound interface — with, on Windows,
+    the IPv4 addresses the hostname resolves to. Loopback and unspecified
+    addresses are dropped; duplicates are removed with a stable order.
     """
     import socket
+    import sys
 
     addresses: list[str] = []
 
     # UDP connect() transmits nothing; it just records the routing decision,
-    # so getsockname() reports the default-route interface's address.
-    # TEST-NET-1 is never routed, which keeps the probe side-effect free.
+    # so getsockname() reports the default-route interface's address. The
+    # target is TEST-NET-1 (RFC 5737, documentation only), so no real
+    # traffic can leave the host.
     try:
         probe_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -754,13 +756,17 @@ def _local_ipv4_addresses() -> list[str]:
     except OSError:
         pass
 
-    # The hostname resolves to every configured IPv4 address, including
-    # adapters the default route does not use (second NIC, VPN).
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            addresses.append(info[4][0])
-    except OSError:
-        pass
+    # Windows-only: there the hostname resolves locally to every adapter's
+    # address, and Windows is where the single-adapter broadcast problem is;
+    # elsewhere getaddrinfo(gethostname()) can stall for seconds on a name
+    # that does not resolve locally (e.g. .local) before the scan's clock
+    # even starts. The UDP-connect probe above runs on every platform.
+    if sys.platform == "win32":
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                addresses.append(info[4][0])
+        except OSError:
+            pass
 
     unique: list[str] = []
     for address in addresses:
@@ -774,9 +780,11 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
     """Discover Icom radios on LAN via UDP broadcast ("Are You There").
 
     The probe is sent from one unbound socket and from one socket bound to
-    each local IPv4 address, so the limited broadcast (255.255.255.255)
-    leaves through every adapter — on Windows an unbound socket sends it out
-    of a single interface only. Per-socket receive errors (including the
+    each enumerated local IPv4 address (best-effort). On Windows an unbound
+    socket sends the limited broadcast (255.255.255.255) out of a single
+    interface only, while a socket bound to an adapter's address sends it
+    through that adapter; on other platforms the extra bound sockets are
+    harmless duplicates. Per-socket receive errors (including the
     WSAECONNRESET Windows raises after an ICMP port-unreachable) are
     tolerated.
 
@@ -795,8 +803,8 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
     # not hide a radio for the entire scan. A radio that only answers a later
     # probe is still discovered; responses are deduplicated by host.
     RESEND_INTERVAL = 0.6
-    # Per-socket receive poll: short enough that polling every socket each
-    # loop iteration still keeps the overall deadline.
+    # Per-socket receive poll. Polling N sockets costs up to N × 50 ms per
+    # loop iteration, so the scan may overshoot its deadline by that much.
     RECV_POLL_INTERVAL = 0.05
 
     def _scan() -> list[dict[str, object]]:
@@ -812,7 +820,7 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
         struct.pack_into("<I", pkt, 8, my_id)  # sender_id (non-zero!)
         struct.pack_into("<I", pkt, 0x0C, 0)  # remote_id=0 (unknown)
 
-        # Enumeration is best-effort: any failure (a chroot without routing,
+        # Enumeration is best-effort: any exception (a chroot without routing,
         # exotic resolver errors) falls back to the unbound socket alone.
         try:
             local_addresses = _local_ipv4_addresses()
@@ -821,34 +829,52 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
 
         def _open_probe_socket(address: str | None) -> socket.socket:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            if address is not None:
-                sock.bind((address, 0))
-            sock.settimeout(RECV_POLL_INTERVAL)
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                if address is not None:
+                    sock.bind((address, 0))
+                sock.settimeout(RECV_POLL_INTERVAL)
+            except BaseException:
+                sock.close()
+                raise
             return sock
 
-        # One unbound socket as before, plus one per local address so the
-        # limited broadcast leaves through every adapter. A socket that
-        # fails to create/bind (address vanished, adapter removed) is
-        # logged and skipped; the remaining adapters still get probed.
-        sockets: list[socket.socket] = []
-        try:
-            sockets.append(_open_probe_socket(None))
-        except OSError as exc:
-            logger.debug("discover: could not open unbound socket: %s", exc)
-        for address in local_addresses:
-            try:
-                sockets.append(_open_probe_socket(address))
-            except OSError as exc:
-                logger.debug("discover: could not bind %s: %s", address, exc)
-
         found: dict[str, dict[str, object]] = {}
+        sockets: list[socket.socket] = []
+        # Bound address per socket ("unbound" for the unbound socket), for
+        # send-failure log lines.
+        labels: dict[socket.socket, str] = {}
 
         try:
-            # Broadcast on the Icom discovery port. Returns False only if the
-            # very first send fails on every socket (no usable socket); a
-            # later transient send failure is logged and tolerated so
-            # listening continues.
+            # One unbound socket as before, plus one per local address so
+            # that, on Windows, the limited broadcast also leaves through
+            # each bound adapter; on other platforms the bound sockets are
+            # harmless duplicates (coverage is best-effort). A socket that
+            # fails to create/bind (address vanished, adapter removed) is
+            # logged and skipped; the remaining adapters still get probed.
+            try:
+                sock = _open_probe_socket(None)
+            except OSError as exc:
+                logger.debug("discover: could not open unbound socket: %s", exc)
+            else:
+                sockets.append(sock)
+                labels[sock] = "unbound"
+            for address in local_addresses:
+                try:
+                    sock = _open_probe_socket(address)
+                except OSError as exc:
+                    logger.debug("discover: could not bind %s: %s", address, exc)
+                else:
+                    sockets.append(sock)
+                    labels[sock] = address
+
+            # Broadcast on the Icom discovery port. Returns False only if
+            # the very first send fails on every socket (no usable socket);
+            # a send failure on one socket is logged — the first failure at
+            # WARNING with the bound address, repeats at DEBUG — and
+            # tolerated so listening continues.
+            send_failed: set[socket.socket] = set()
+
             def _broadcast(*, first: bool) -> bool:
                 sent_any = False
                 for sock in sockets:
@@ -856,7 +882,19 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
                         sock.sendto(bytes(pkt), ("255.255.255.255", 50001))
                         sent_any = True
                     except OSError as exc:
-                        logger.warning("discover: broadcast failed: %s", exc)
+                        if sock in send_failed:
+                            logger.debug(
+                                "discover: broadcast failed again on %s: %s",
+                                labels[sock],
+                                exc,
+                            )
+                        else:
+                            send_failed.add(sock)
+                            logger.warning(
+                                "discover: broadcast failed on %s: %s",
+                                labels[sock],
+                                exc,
+                            )
                 return sent_any or not first
 
             if not _broadcast(first=True):
