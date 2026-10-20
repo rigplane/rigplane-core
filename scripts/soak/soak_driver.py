@@ -71,12 +71,13 @@ VERDICT_INCOMPLETE = "INCOMPLETE"
 STABILITY_TOLERANCE = 5
 _STABILITY_PROBE_COUNT = 3
 # A post-reconnect median above pre + tolerance may be teardown still
-# draining rather than a leak (MOR-3575): the driver then settles — gc
-# once, then resamples in small steps until neither count decreases —
-# and takes the median again. The window bounds that wait so a run
-# whose counts never settle cannot stall the driver.
+# draining (MOR-3575): settle first — gc once, then resample in small
+# steps until _STABILITY_SETTLE_STABLE_READINGS consecutive resamples
+# show no decrease — and take the median again. The window bounds the
+# settle wait (its samples and step sleeps), not the re-probe after it.
 _STABILITY_SETTLE_WINDOW_S = 5.0
 _STABILITY_SETTLE_STEP_S = 0.25
+_STABILITY_SETTLE_STABLE_READINGS = 3
 _DRIVER_TASK_PREFIX = "soak-"
 
 TUNE_INTERVAL_S = 2.0
@@ -1805,24 +1806,46 @@ class SoakDriver:
             diagnostics.medians[phase] = _diagnostic_sample_values(result)
         return result
 
-    async def _settle_stability_counts(self) -> None:
-        """Resample until FD/task counts stop decreasing, within a window.
+    async def _settle_sample(self, deadline: float) -> ProcessSample | None:
+        """One settle sample, bounded by the remaining window (None past it)."""
+        assert self._sampler is not None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        with contextlib.suppress(asyncio.TimeoutError):
+            return await asyncio.wait_for(
+                self._sampler.sample(self._elapsed()), remaining
+            )
+        return None
 
-        Closed sockets and tasks drain a few event-loop turns after the
-        reconnect; a genuine leak never drains, so it still shows in the
-        median taken after this returns. The monotonic deadline (the
-        ``_wait_ptt`` shape, not ``_elapsed``) bounds the wait even when
-        counts fall forever.
+    async def _settle_stability_counts(self) -> None:
+        """Resample while the counts still decrease, within a window.
+
+        A flat pair may be a plateau before further decay: settle only
+        after _STABILITY_SETTLE_STABLE_READINGS consecutive resamples
+        without a decrease. The deadline bounds the first sample, every
+        resample and the step sleeps; a timeout ends the settle and the
+        caller re-probes regardless.
         """
         assert self._sampler is not None
         gc.collect()
         deadline = time.monotonic() + _STABILITY_SETTLE_WINDOW_S
-        previous = await self._sampler.sample(self._elapsed())
-        while time.monotonic() < deadline:
-            await asyncio.sleep(_STABILITY_SETTLE_STEP_S)
-            current = await self._sampler.sample(self._elapsed())
-            if not _stability_counts_decreased(previous, current):
+        previous = await self._settle_sample(deadline)
+        if previous is None:
+            return
+        calm = 0
+        while calm < _STABILITY_SETTLE_STABLE_READINGS:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 return
+            await asyncio.sleep(min(_STABILITY_SETTLE_STEP_S, remaining))
+            current = await self._settle_sample(deadline)
+            if current is None:
+                return
+            if _stability_counts_decreased(previous, current):
+                calm = 0
+            else:
+                calm += 1
             previous = current
 
     def _record_unrecovered_cycle(self, reason: str) -> None:
@@ -1965,12 +1988,10 @@ class SoakDriver:
                 and _stability_surplus(pre, post)
             ):
                 # A surplus right after recovery may be teardown still
-                # draining rather than a leak (MOR-3575): settle, then take
-                # the median again. Skipped under probe/task capture, whose
-                # 6-probe budget the extra samples would overflow — and whose
-                # raw probes are the diagnosis. A genuine leak never
-                # decreases, so the second median still shows the surplus
-                # and still fails.
+                # draining (MOR-3575): settle, then take the median again.
+                # Skipped under probe/task capture: the extra samples would
+                # overflow its 6-probe budget, and the raw probes there are
+                # the diagnosis. A surplus surviving the settle still fails.
                 await self._settle_stability_counts()
                 post = await self._stability_probe()
             entry["fdsPost"] = post.fds
