@@ -97,8 +97,7 @@ async def test_event_error_responses() -> None:
         }
 
         resp = await s.client.post("/event", json={"event": "set_frequency", "hz": "x"})
-        assert resp.status == 400
-        assert (await resp.json())["error"] == "invalid_args"
+        assert resp.status == 400 and (await resp.json())["error"] == "invalid_args"
 
         resp = await s.client.post(
             "/event", data=b"not json", headers={"Content-Type": "application/json"}
@@ -169,14 +168,16 @@ async def test_huge_integers_rejected() -> None:
 
 
 async def test_deeply_nested_body_rejected_and_traced() -> None:
-    # 5000 levels: parsing itself exhausts the interpreter recursion limit.
+    # 5000 levels: parsing survives; the args sanitizer's recursion gives up.
     async with _stack() as s:
         deep = "[" * 5000 + "]" * 5000
         resp = await _post_raw(s, f'{{"event":"session_drop","junk":{deep}}}')
         assert resp.status == 400
-        assert (await resp.json()) == {"ok": False, "error": "invalid_args"}
-        last = (await (await s.client.get("/trace")).json())["events"][-1]
-        assert (last["kind"], last["name"], last["args"]) == ("event", "", {})
+        verdict = {"ok": False, "error": "invalid_args", "event": "session_drop"}
+        assert (await resp.json()) == verdict
+        rec = (await (await s.client.get("/trace")).json())["events"][-1]
+        assert (rec["kind"], rec["name"], rec["args"]) == ("event", "session_drop", {})
+        assert rec["result"] == verdict
 
 
 async def test_set_frequency_changes_state() -> None:
@@ -411,8 +412,7 @@ async def test_subprocess_end_to_end(tmp_path: Path) -> None:
     records = [_strict_loads(x) for x in trace_path.read_text().splitlines()]
     assert all(record["n"] == i for i, record in enumerate(records))
     assert records[0]["kind"] == "start"
-    assert records[-1]["kind"] == "stop"
-    assert records[-1]["name"] == "shutdown"
+    assert (records[-1]["kind"], records[-1]["name"]) == ("stop", "shutdown")
     assert records[-1]["result"] == {"ok": True}
 
 
