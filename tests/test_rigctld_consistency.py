@@ -50,14 +50,32 @@ from rigplane.rigctld.protocol import parse_line
 # Canonical list of short commands Hamlib prefixes with VFO under
 # chk_vfo=1, per the rigctl(1) spec.
 #
-#   GET  f m t j s l u
-#   SET  F M T L U S
+#   GET  f m t j s l u i x
+#   SET  F M T L U S I X
 #
 # (``v``/``V`` and ``\get_vfo``/``\set_vfo`` are not in this set —
 # they explicitly *take* a VFO as their primary argument and were
 # already supported pre-#722.)
 VFO_PREFIXABLE_SHORTS: frozenset[str] = frozenset(
-    {"f", "m", "t", "j", "s", "l", "u", "F", "M", "T", "L", "U", "S"}
+    {
+        "f",
+        "m",
+        "t",
+        "j",
+        "s",
+        "l",
+        "u",
+        "i",
+        "x",
+        "F",
+        "M",
+        "T",
+        "L",
+        "U",
+        "S",
+        "I",
+        "X",
+    }
 )
 
 
@@ -79,6 +97,8 @@ def test_chk_vfo_implies_parser_accepts_vfo_arg(short: str) -> None:
         "L": " RFPOWER 0.5",
         "U": " NB 1",
         "S": " 1 VFOB",
+        "I": " 14080100",
+        "X": " USB 2400",
     }
     wire = f"{short} VFOA{extra.get(short, '')}".encode("ascii")
     # The contract: no ValueError. The exact ``cmd.args`` shape is up to
@@ -96,8 +116,8 @@ def test_vfo_prefixable_set_documented() -> None:
     parser-side support is present.
     """
     # GET shorts (Hamlib's "Reading" group).
-    assert {"f", "m", "t", "j", "s", "l", "u"} <= VFO_PREFIXABLE_SHORTS
+    assert {"f", "m", "t", "j", "s", "l", "u", "i", "x"} <= VFO_PREFIXABLE_SHORTS
     # SET shorts (Hamlib's "Writing" group).
-    assert {"F", "M", "T", "L", "U", "S"} <= VFO_PREFIXABLE_SHORTS
-    # Total = 13 commands (7 GET + 6 SET).
-    assert len(VFO_PREFIXABLE_SHORTS) == 13
+    assert {"F", "M", "T", "L", "U", "S", "I", "X"} <= VFO_PREFIXABLE_SHORTS
+    # Total = 17 commands (9 GET + 8 SET).
+    assert len(VFO_PREFIXABLE_SHORTS) == 17

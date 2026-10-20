@@ -658,29 +658,38 @@ class _RigctldCommandExecutor:
             ticket.authority.validate(ticket)
         params = intent.params
         if intent.name == "set_freq":
-            await self.handler._radio.set_freq(
-                int(params["freq_hz"]),
-                receiver=int(params.get("receiver", 0)),
-            )
+            # Shares the slot lock with the split-TX dance: an F landing
+            # between select-B and restore would write the TX slot and
+            # lose the caller's RX write. Held only around the radio
+            # call — never across the predecessor wait above or the
+            # reply formatting in the _cmd_* caller.
+            async with self.handler._vfo_slot_lock:
+                await self.handler._radio.set_freq(
+                    int(params["freq_hz"]),
+                    receiver=int(params.get("receiver", 0)),
+                )
         elif intent.name == "set_mode":
             receiver = int(params.get("receiver", 0))
             mode = str(params["mode"])
             filter_width = params.get("filter_width")
             if filter_width is not None:
                 filter_width = int(filter_width)
-            if receiver == 0:
-                await self.handler._radio.set_mode(
-                    mode,
-                    filter_width=filter_width,
-                )
-            else:
-                await self.handler._radio.set_mode(
-                    mode,
-                    filter_width=filter_width,
-                    receiver=receiver,
-                )
-            if bool(params.get("packet_mode", False)):
-                await self.handler._apply_packet_data_mode(receiver=receiver)
+            # Same slot lock as set_freq above: the mode write plus its
+            # DATA step stay on the restored RX slot as one unit.
+            async with self.handler._vfo_slot_lock:
+                if receiver == 0:
+                    await self.handler._radio.set_mode(
+                        mode,
+                        filter_width=filter_width,
+                    )
+                else:
+                    await self.handler._radio.set_mode(
+                        mode,
+                        filter_width=filter_width,
+                        receiver=receiver,
+                    )
+                if bool(params.get("packet_mode", False)):
+                    await self.handler._apply_packet_data_mode(receiver=receiver)
         elif intent.name == "set_ptt":
             # The owner identity rides on the intent, not on the handler's
             # context var: the ingress recorded it there, ``CommandService``
@@ -922,11 +931,13 @@ class RigctldHandler:
         self._key_down_backstop_token: int = 0
         self._key_down_backstop_session: str | None = None
         # Serializes the single-RX A/B slot dance (split-TX writes)
-        # against VFO switches. The handler instance is shared across
-        # all client connections of one server, so without this another
-        # client's V could land between select-B and restore and strand
-        # the dial. Never nested: the dance calls the radio directly,
-        # and _execute_set_vfo never calls the dance.
+        # against VFO switches and main-VFO freq/mode writes. The
+        # handler instance is shared across all client connections of
+        # one server, so without this another client's V/F/M could land
+        # between select-B and restore and strand the dial or lose the
+        # caller's write. Never nested: the dance calls the radio
+        # directly, the F/M/V paths take this only around the radio
+        # call, and none of them calls the dance.
         self._vfo_slot_lock = asyncio.Lock()
         self._routing = create_routing(radio, getattr(config, "max_power_w", 100.0))
         if state_store is None and isinstance(radio, StateStoreCapable):

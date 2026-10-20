@@ -324,6 +324,80 @@ async def test_split_dance_serializes_against_concurrent_set_vfo(
 
 
 @pytest.mark.asyncio
+async def test_split_dance_serializes_against_concurrent_set_freq(
+    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+) -> None:
+    # Two clients on one handler: client 2's F issued mid-dance waits
+    # for the restore, so its write lands on the restored selected
+    # slot (A) — never on the dance's slot B, and the caller's RX
+    # write is not lost.
+    single_rx_radio.get_vfo_slot.return_value = "A"
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_write(freq_hz: int, receiver: int = 0) -> None:
+        entered.set()
+        await release.wait()
+
+    single_rx_radio.set_freq.side_effect = _slow_write
+    parent = MagicMock()
+    parent.attach_mock(single_rx_radio.set_vfo_slot, "slot")
+    parent.attach_mock(single_rx_radio.set_freq, "freq")
+    dance = asyncio.create_task(
+        single_rx_handler.execute(
+            set_cmd("set_split_freq", "14080100"), session_id="client-1"
+        )
+    )
+    await asyncio.wait_for(entered.wait(), timeout=2.0)
+    freq = asyncio.create_task(
+        single_rx_handler.execute(set_cmd("set_freq", "14250000"), session_id="client-2")
+    )
+    await asyncio.sleep(0.05)
+    assert single_rx_radio.set_vfo_slot.await_count == 1
+    assert single_rx_radio.set_freq.await_count == 1
+    release.set()
+    assert (await dance).ok
+    assert (await freq).ok
+    assert parent.mock_calls == [
+        call.slot("B"),
+        call.freq(14080100, receiver=0),
+        call.slot("A"),
+        call.freq(14250000, receiver=0),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_split_freq_then_main_freq_same_client_does_not_deadlock(
+    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
+) -> None:
+    # Sequential I then F from one client: the dance releases the slot
+    # lock, so the F that follows is never stuck behind it. The
+    # wait_for turns a hang into a failure instead of a stuck suite.
+    single_rx_radio.get_vfo_slot.return_value = "A"
+    parent = MagicMock()
+    parent.attach_mock(single_rx_radio.set_vfo_slot, "slot")
+    parent.attach_mock(single_rx_radio.set_freq, "freq")
+
+    async def _run_both() -> None:
+        resp_split = await single_rx_handler.execute(
+            set_cmd("set_split_freq", "14080100"), session_id="client-1"
+        )
+        assert resp_split.ok
+        resp_main = await single_rx_handler.execute(
+            set_cmd("set_freq", "14250000"), session_id="client-1"
+        )
+        assert resp_main.ok
+
+    await asyncio.wait_for(_run_both(), timeout=5.0)
+    assert parent.mock_calls == [
+        call.slot("B"),
+        call.freq(14080100, receiver=0),
+        call.slot("A"),
+        call.freq(14250000, receiver=0),
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("args", [(), ("abc",)], ids=["no-arg", "not-a-number"])
 async def test_set_split_freq_einval(
     single_rx_handler: RigctldHandler,
