@@ -261,7 +261,7 @@ only_mutate = [
 # the mutated modules: the import closure (~84 files) makes popular
 # functions inherit hundreds of slow integration tests and pushed
 # per-mutant runs past a minute, while this list keeps the full
-# 15-module sweep near an estimated fifteen minutes (from a 590 s
+# baseline fifteen-module sweep near an estimated fifteen minutes (from a 590 s
 # bounded window on the builder's Linux test host, not the CI runner;
 # see docs/development/mutation-testing.md). Source-introspection tests
 # (census/inventory scans such as tests/test_command_map_parity.py)

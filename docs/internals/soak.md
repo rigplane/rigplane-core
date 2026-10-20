@@ -5,8 +5,9 @@ A nightly 1-hour soak operates the real web stack — `WebServer`,
 (`rigplane_testkit.icom.simulator.MockIcomRadio`) from one process:
 tuning with readback, mode changes, a rigctld replay
 (`F`/`f`/`M`/`m`/`t`), forced radio disconnect/connect cycles, and a
-WebSocket client subscribed to state and audio throughout, and, 20 s after the
-last one ended, a multi-session TX cycle: two controller sessions race to key, one holder ends
+WebSocket client subscribed to state and audio throughout, and, independently
+(first at run start, then 20 s after the previous TX cycle ended; none run while a
+reconnect cycle is in progress), a multi-session TX cycle: two controller sessions race to key, one holder ends
 by unkey, delete, a cut link or silence, the other keys next (MOR-3538).
 
 The driver lives in `scripts/soak/soak_driver.py`; the run instructions,
