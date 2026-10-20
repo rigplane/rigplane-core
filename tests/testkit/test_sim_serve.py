@@ -72,6 +72,9 @@ class _Stack:
 
     async def __aexit__(self, *exc: object) -> None:
         assert self.client is not None
+        # Mirror run_serve's shutdown: no lan_drop restore may outlive the
+        # radio (it would mutate a stopped radio's fault plan).
+        self.inner.lan_drop.cancel()
         await self.client.close()
         await self.inner.radio.stop()
         self.inner.trace.close()
@@ -144,15 +147,70 @@ async def test_set_frequency_changes_state() -> None:
 async def test_lan_drop_installs_full_blackout_rules() -> None:
     async with _stack() as s:
         seed_before = s.inner.radio.fault_plan.seed
-        resp = await s.client.post("/event", json={"event": "lan_drop", "for_s": 2.5})
-        assert resp.status == 200
         plan = s.inner.radio.fault_plan
         assert plan is not None
+        saved = {stream: getattr(plan, stream) for stream in _LAN_DROP_STREAMS}
+        resp = await s.client.post("/event", json={"event": "lan_drop", "for_s": 0.2})
+        assert resp.status == 200
         assert plan.seed == seed_before
         for stream in _LAN_DROP_STREAMS:
             rule = getattr(plan, stream)
             assert rule.drop_probability == 1.0, stream
-            assert rule.duration_s == 2.5, stream
+            # The window is exact: serve.py restores the rules itself, so
+            # the rules carry no duration bound of their own.
+            assert rule.duration_s is None, stream
+        # After exactly for_s the ORIGINAL rule objects are back.
+        await asyncio.sleep(0.4)
+        for stream in _LAN_DROP_STREAMS:
+            assert getattr(plan, stream) is saved[stream], stream
+
+
+async def test_overlapping_lan_drop_restores_once_at_later_deadline() -> None:
+    async with _stack() as s:
+        plan = s.inner.radio.fault_plan
+        assert plan is not None
+        saved = {stream: getattr(plan, stream) for stream in _LAN_DROP_STREAMS}
+        await s.client.post("/event", json={"event": "lan_drop", "for_s": 5.0})
+        first_timer = s.inner.lan_drop.timer
+        assert first_timer is not None
+
+        await asyncio.sleep(0.1)
+        resp = await s.client.post("/event", json={"event": "lan_drop", "for_s": 0.2})
+        assert resp.status == 200
+        # The first restore is gone; the blackout runs until the SECOND
+        # deadline and then restores the ORIGINAL rules once.
+        assert first_timer.cancelled()
+        for stream in _LAN_DROP_STREAMS:
+            assert getattr(plan, stream).drop_probability == 1.0, stream
+
+        await asyncio.sleep(0.4)
+        for stream in _LAN_DROP_STREAMS:
+            assert getattr(plan, stream) is saved[stream], stream
+        body = await (await s.client.get("/trace")).json()
+        ends = [rec for rec in body["events"] if rec["name"] == "lan_drop_end"]
+        assert len(ends) == 1
+
+
+async def test_lan_drop_end_record_in_trace() -> None:
+    async with _stack() as s:
+        await s.client.post("/event", json={"event": "lan_drop", "for_s": 0.2})
+        await asyncio.sleep(0.4)
+        body = await (await s.client.get("/trace")).json()
+        rec = next(rec for rec in body["events"] if rec["name"] == "lan_drop_end")
+        assert rec["kind"] == "event"
+        assert rec["args"] == {}
+        assert rec["result"] == {"ok": True}
+
+
+async def test_shutdown_cancels_pending_lan_drop_restore() -> None:
+    async with _stack() as s:
+        await s.client.post("/event", json={"event": "lan_drop", "for_s": 30.0})
+        timer = s.inner.lan_drop.timer
+        assert timer is not None
+        assert not timer.cancelled()
+    # Teardown ran the serve shutdown path: no scheduled restore remains.
+    assert timer.cancelled()
+    assert s.inner.lan_drop.timer is None
 
 
 async def test_trace_records_and_since_filter() -> None:
@@ -317,11 +375,11 @@ async def test_lan_drop_blackout_on_the_wire() -> None:
             )
             assert resp.status == 200
 
-            # The rule's duration_s starts on the first matched packet, so
-            # this AYT both opens the window and is swallowed by it.
+            # The window opened at the event itself, so this AYT falls
+            # inside it and is swallowed.
             udp.send(_ayt(), s.inner.radio.control_port)
             await udp.expect_silence(0.4)
-            await asyncio.sleep(1.2)
+            await asyncio.sleep(1.0)  # >= 1.3 s since the event
 
             udp.send(_ayt(), s.inner.radio.control_port)
             reply = await udp.recv(5.0)

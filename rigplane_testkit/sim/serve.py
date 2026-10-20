@@ -5,8 +5,9 @@ aiohttp control endpoint and every event handler run on it — no threads. The
 process prints exactly one JSON line on stdout once both are listening; all
 logs go to stderr. Every accepted or rejected control event, plus process
 start and stop, lands in a bounded in-memory trace (optionally appended to a
-JSONL file). Same seed + same event sequence => identical trace records once
-the real-time ``t`` field is removed.
+JSONL file); the end of a ``lan_drop`` window appends its own
+``lan_drop_end`` recovery marker. Same seed + same event sequence =>
+identical trace records once the real-time ``t`` field is removed.
 """
 
 from __future__ import annotations
@@ -41,10 +42,41 @@ _LAN_DROP_STREAMS = (
     "civ_from_client",
 )
 
-# Event name -> handler(radio, body) -> extra response fields.
+
+@dataclass
+class LanDropState:
+    """Serve-side bookkeeping for the exact-N-second lan_drop window.
+
+    ``saved`` holds the pre-blackout rules of the ACTIVE window (across an
+    overlap it stays the very first, pre-blackout set); ``timer`` is the
+    pending restore callback. Both live here, not on the plan, because the
+    window is a serve-layer concept: the plan only ever sees whole rules.
+    """
+
+    trace: TraceLog
+    saved: dict[str, FaultRule] | None = None
+    timer: asyncio.TimerHandle | None = None
+
+    def cancel(self) -> None:
+        """Shutdown: forget the pending restore so nothing fires later."""
+        if self.timer is not None:
+            self.timer.cancel()
+            self.timer = None
+        self.saved = None
+
+
+@dataclass
+class EventContext:
+    """Per-serve objects an event handler may need beyond the radio."""
+
+    trace: TraceLog
+    lan_drop: LanDropState
+
+
+# Event name -> handler(radio, ctx, body) -> extra response fields.
 # Every handler takes effect immediately (at=0) and raises InvalidArgs on a
 # bad argument; unknown names are the caller's "unsupported" branch.
-EventFn = Callable[[MockIcomRadio, dict], dict]
+EventFn = Callable[[MockIcomRadio, EventContext, dict], dict]
 
 
 class InvalidArgs(Exception):
@@ -55,7 +87,7 @@ def _is_num(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _ev_set_frequency(radio: MockIcomRadio, body: dict) -> dict:
+def _ev_set_frequency(radio: MockIcomRadio, ctx: EventContext, body: dict) -> dict:
     hz = body.get("hz")
     # 9_999_999_999 is the 10-digit BCD ceiling of the CI-V freq encoding.
     if not isinstance(hz, int) or isinstance(hz, bool) or not 1 <= hz <= 9_999_999_999:
@@ -64,7 +96,18 @@ def _ev_set_frequency(radio: MockIcomRadio, body: dict) -> dict:
     return {"frequency_hz": hz}
 
 
-def _ev_lan_drop(radio: MockIcomRadio, body: dict) -> dict:
+def _restore_lan_drop_rules(radio: MockIcomRadio, state: LanDropState) -> None:
+    """End the blackout: put the saved rules back and trace the recovery."""
+    state.timer = None
+    plan = radio.fault_plan
+    if plan is not None and state.saved is not None:
+        for stream, rule in state.saved.items():
+            setattr(plan, stream, rule)
+    state.saved = None
+    state.trace.append("event", "lan_drop_end", {}, {"ok": True})
+
+
+def _ev_lan_drop(radio: MockIcomRadio, ctx: EventContext, body: dict) -> dict:
     for_s = body.get("for_s")
     if not _is_num(for_s) or for_s <= 0:
         raise InvalidArgs("for_s must be a number > 0")
@@ -72,14 +115,27 @@ def _ev_lan_drop(radio: MockIcomRadio, body: dict) -> dict:
     if plan is None:
         plan = FaultPlan()
         radio.fault_plan = plan
+    state = ctx.lan_drop
+    if state.timer is not None:
+        # Overlap: forget the pending restore but keep the ORIGINAL saved
+        # rules (not the blackout rules) for the new deadline.
+        state.timer.cancel()
+    else:
+        state.saved = {stream: getattr(plan, stream) for stream in _LAN_DROP_STREAMS}
+    # No duration_s on the rules: FaultRule.duration_s counts from the first
+    # matched packet, which would stagger the two directions into up to 2N.
+    # serve.py owns the window and restores the saved rules itself.
     for stream in _LAN_DROP_STREAMS:
-        setattr(plan, stream, FaultRule(drop_probability=1.0, duration_s=for_s))
+        setattr(plan, stream, FaultRule(drop_probability=1.0))
     if radio.enable_audio:
         radio.audio_port_silence(0.0, for_s)
+    state.timer = asyncio.get_running_loop().call_later(
+        for_s, _restore_lan_drop_rules, radio, state
+    )
     return {"for_s": for_s}
 
 
-def _ev_session_drop(radio: MockIcomRadio, body: dict) -> dict:
+def _ev_session_drop(radio: MockIcomRadio, ctx: EventContext, body: dict) -> dict:
     notice = body.get("notice", True)
     if not isinstance(notice, bool):
         raise InvalidArgs("notice must be a boolean")
@@ -87,7 +143,7 @@ def _ev_session_drop(radio: MockIcomRadio, body: dict) -> dict:
     return {"notice": notice}
 
 
-def _ev_power_cycle(radio: MockIcomRadio, body: dict) -> dict:
+def _ev_power_cycle(radio: MockIcomRadio, ctx: EventContext, body: dict) -> dict:
     down_for_s = body.get("down_for_s", 5.0)
     if not _is_num(down_for_s) or down_for_s < 0:
         raise InvalidArgs("down_for_s must be a number >= 0")
@@ -98,7 +154,7 @@ def _ev_power_cycle(radio: MockIcomRadio, body: dict) -> dict:
     return {"down_for_s": down_for_s, "notice": notice}
 
 
-def _ev_keepalive_silence(radio: MockIcomRadio, body: dict) -> dict:
+def _ev_keepalive_silence(radio: MockIcomRadio, ctx: EventContext, body: dict) -> dict:
     for_s = body.get("for_s")
     if not _is_num(for_s) or for_s <= 0:
         raise InvalidArgs("for_s must be a number > 0")
@@ -162,6 +218,15 @@ class TraceLog:
             self._file = None
 
 
+# aiohttp 3.13 AppKeys instead of plain string keys (NotAppKeyWarning);
+# defined after the classes they name because the constructor takes the
+# class object.
+_RADIO_KEY: web.AppKey[MockIcomRadio] = web.AppKey("radio", MockIcomRadio)
+_TRACE_KEY: web.AppKey[TraceLog] = web.AppKey("trace", TraceLog)
+_STOP_EVENT_KEY: web.AppKey[asyncio.Event] = web.AppKey("stop_event", asyncio.Event)
+_EVENT_CTX_KEY: web.AppKey[EventContext] = web.AppKey("event_ctx", EventContext)
+
+
 @dataclass
 class ServeStack:
     """The objects one serve process is made of (no I/O before start())."""
@@ -170,6 +235,7 @@ class ServeStack:
     trace: TraceLog
     app: web.Application
     stop_event: asyncio.Event
+    lan_drop: LanDropState
 
 
 def build_radio(args: argparse.Namespace) -> MockIcomRadio:
@@ -192,8 +258,8 @@ def build_radio(args: argparse.Namespace) -> MockIcomRadio:
     )
 
 
-def _handle_state(request: web.Request) -> web.Response:
-    radio: MockIcomRadio = request.app["radio"]
+async def _handle_state(request: web.Request) -> web.Response:
+    radio: MockIcomRadio = request.app[_RADIO_KEY]
     # The simulator exposes setters but no frequency/mode accessors; the
     # private attributes are the state the wire reads (no public property).
     return web.json_response(
@@ -211,9 +277,10 @@ def _event_args(body: dict) -> dict:
     return {key: value for key, value in body.items() if key != "event"}
 
 
-def _handle_event(request: web.Request) -> web.Response:
-    radio: MockIcomRadio = request.app["radio"]
-    trace: TraceLog = request.app["trace"]
+async def _handle_event(request: web.Request) -> web.Response:
+    radio: MockIcomRadio = request.app[_RADIO_KEY]
+    ctx: EventContext = request.app[_EVENT_CTX_KEY]
+    trace = ctx.trace
     try:
         body = await request.json()
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
@@ -230,7 +297,7 @@ def _handle_event(request: web.Request) -> web.Response:
         trace.append("event", name, args, result)
         return web.json_response(result, status=400)
     try:
-        applied = handler(radio, body)
+        applied = handler(radio, ctx, body)
     except InvalidArgs as exc:
         result = {
             "ok": False,
@@ -245,8 +312,8 @@ def _handle_event(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
-def _handle_trace(request: web.Request) -> web.Response:
-    trace: TraceLog = request.app["trace"]
+async def _handle_trace(request: web.Request) -> web.Response:
+    trace: TraceLog = request.app[_TRACE_KEY]
     try:
         since = int(request.query.get("since", "0"))
     except ValueError:
@@ -256,20 +323,24 @@ def _handle_trace(request: web.Request) -> web.Response:
     )
 
 
-def _handle_stop(request: web.Request) -> web.Response:
-    stop_event: asyncio.Event = request.app["stop_event"]
+async def _handle_stop(request: web.Request) -> web.Response:
+    stop_event: asyncio.Event = request.app[_STOP_EVENT_KEY]
     # Let the response flush before run_serve tears the site down.
     asyncio.get_running_loop().call_later(_STOP_DRAIN_S, stop_event.set)
     return web.json_response({"ok": True})
 
 
 def build_control_app(
-    radio: MockIcomRadio, trace: TraceLog, stop_event: asyncio.Event
+    radio: MockIcomRadio,
+    trace: TraceLog,
+    stop_event: asyncio.Event,
+    lan_drop: LanDropState,
 ) -> web.Application:
     app = web.Application()
-    app["radio"] = radio
-    app["trace"] = trace
-    app["stop_event"] = stop_event
+    app[_RADIO_KEY] = radio
+    app[_TRACE_KEY] = trace
+    app[_STOP_EVENT_KEY] = stop_event
+    app[_EVENT_CTX_KEY] = EventContext(trace=trace, lan_drop=lan_drop)
     app.router.add_get("/state", _handle_state)
     app.router.add_post("/event", _handle_event)
     app.router.add_get("/trace", _handle_trace)
@@ -282,9 +353,16 @@ def build_stack(args: argparse.Namespace) -> ServeStack:
     radio = build_radio(args)
     trace = TraceLog(args.trace)
     stop_event = asyncio.Event()
-    app = build_control_app(radio, trace, stop_event)
+    lan_drop = LanDropState(trace=trace)
+    app = build_control_app(radio, trace, stop_event, lan_drop)
     trace.append("start", "serve", _start_trace_args(args), {"ok": True})
-    return ServeStack(radio=radio, trace=trace, app=app, stop_event=stop_event)
+    return ServeStack(
+        radio=radio,
+        trace=trace,
+        app=app,
+        stop_event=stop_event,
+        lan_drop=lan_drop,
+    )
 
 
 def startup_line(
@@ -367,6 +445,8 @@ async def run_serve(
         await stack.stop_event.wait()
         return 0
     finally:
+        # No lan_drop restore may fire after the radio stops.
+        stack.lan_drop.cancel()
         with contextlib.suppress(Exception):
             await runner.cleanup()
         try:
