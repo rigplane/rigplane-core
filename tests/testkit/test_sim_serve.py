@@ -358,7 +358,10 @@ async def test_subprocess_end_to_end() -> None:
         assert await asyncio.wait_for(proc.wait(), 10) == 0
         # Nothing else was ever printed on stdout; no password anywhere.
         assert await proc.stdout.read() == b""
-        assert _TEST_PASSWORD not in await proc.stderr.read()
+        stderr = await proc.stderr.read()
+        # U+FFFD replacements of non-UTF-8 bytes cannot spell the ASCII
+        # password, so decoding does not weaken this scan.
+        assert _TEST_PASSWORD not in stderr.decode(errors="replace")
 
         with socket.socket() as sock:
             sock.settimeout(2.0)
