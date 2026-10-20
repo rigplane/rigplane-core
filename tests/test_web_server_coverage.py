@@ -3472,11 +3472,10 @@ async def test_scope_health_monitor_recovers_after_tx_ends(
         await asyncio.sleep(0.15)  # long TX consumes any pre-fix retry budget
         assert queued == []
         srv._managed_tx_keyed = False  # noqa: SLF001 — de-key, traffic resumes
-        srv._scope_health_check(SimpleNamespace(pixels=b"\x00\x01"))  # noqa: SLF001
-        await asyncio.sleep(0.015)
-        srv._scope_health_check(SimpleNamespace(pixels=b"\x00\x01"))  # noqa: SLF001
-        await asyncio.sleep(0.02)  # first post-TX interval stays quiet
-        assert queued == []
+        for _ in range(17):  # ~50 ms of live traffic, ~3 ms between frames
+            srv._scope_health_check(SimpleNamespace(pixels=b"\x00\x01"))  # noqa: SLF001
+            await asyncio.sleep(0.003)
+        assert queued == []  # live traffic after TX stays quiet
         # Genuine RX stall: frames stop again.
         srv._scope_last_nonzero = time.monotonic() - 1.0
         await _await_condition(lambda: len(queued) > 0, timeout=5.0)
