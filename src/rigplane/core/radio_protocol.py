@@ -86,6 +86,7 @@ __all__ = [
     "ReceiverBankCapable",
     "TransceiverBankCapable",
     "VfoSlotCapable",
+    "VfoSlotConfirmedCapable",
     "RelativeVfoReadbackCapable",
     "RelativeVfoState",
     "StateCacheCapable",
@@ -1593,6 +1594,30 @@ class VfoSlotCapable(Protocol):
 
     async def equalize_vfo_ab(self, receiver: int = 0) -> None:
         """Copy the active VFO's state to the inactive VFO on ``receiver``."""
+        ...
+
+
+@runtime_checkable
+class VfoSlotConfirmedCapable(VfoSlotCapable, Protocol):
+    """Radio confirms VFO slot selection before the caller proceeds.
+
+    Narrower than :class:`VfoSlotCapable`: plain ``set_vfo_slot`` is
+    fire-and-forget on some transports, so state-sensitive callers (the
+    rigctld split-TX dance, the VFO binding) need a seam that only
+    returns once the radio is on the requested slot.
+    """
+
+    async def set_vfo_slot_confirmed(self, slot: str, receiver: int = 0) -> None:
+        """Make ``slot`` active on ``receiver``; return only once confirmed.
+
+        Backends with a transport-level acknowledgement (Icom CI-V
+        ACK/NAK) implement the ACK-checked path; others select via
+        ``set_vfo_slot`` and confirm with a ``get_vfo_slot`` readback,
+        raising :class:`~rigplane.core.exceptions.CommandError` when
+        the radio is not on the requested slot afterwards. Callers fall
+        back to select-plus-readback themselves when the radio lacks
+        this seam.
+        """
         ...
 
 

@@ -3140,6 +3140,28 @@ class RigctldHandler:
                 return cast(Literal["A", "B"], slot.upper())
         return "B" if self._active_vfo_name() == "VFOB" else "A"
 
+    async def _select_vfo_slot_confirmed(self, slot: str) -> bool:
+        """Select A/B ``slot``; True only when the radio is on it.
+
+        Prefers the radio's ACK-confirmed seam
+        (``set_vfo_slot_confirmed``) when it provides one; otherwise
+        selects via fire-and-forget ``set_vfo_slot`` and confirms with
+        a ``get_vfo_slot`` readback. Radio errors propagate to the
+        seat's normal mapping; a lost or unverifiable switch returns
+        False so the caller aborts without writing.
+        """
+        confirmed_select = getattr(self._radio, "set_vfo_slot_confirmed", None)
+        if confirmed_select is not None:
+            await confirmed_select(slot)
+            return True
+        set_vfo_slot = getattr(self._radio, "set_vfo_slot", None)
+        assert set_vfo_slot is not None  # entry check guarantees a seam
+        await set_vfo_slot(slot)
+        get_vfo_slot = getattr(self._radio, "get_vfo_slot", None)
+        if get_vfo_slot is None:
+            return False
+        return str(await get_vfo_slot()).upper() == slot
+
     async def _run_on_split_tx_slot(
         self, write: Callable[[], Awaitable[None]]
     ) -> HamlibError:
@@ -3149,38 +3171,62 @@ class RigctldHandler:
         The VFO-slot dance (hamlib icom-backend precedent): select the
         complement of the currently selected slot, write through the
         normal receiver-0 setter, and restore the selected slot even when
-        the first switch or the write fails. Answers ENAVAIL when the
-        backend cannot switch slots; radio errors from the switches or
-        the write itself propagate to the seat's normal mapping
-        (refusals → ERJCTED, timeouts → ETIMEOUT).
+        the first switch or the write fails. The select is confirmed
+        before anything is written — via the radio's ACK-confirmed seam
+        when it provides one, otherwise via a ``get_vfo_slot`` readback —
+        and an unconfirmed select aborts with EIO: the write never runs,
+        so a lost select-B cannot retune the RX VFO and still answer
+        success. Answers ENAVAIL when the backend cannot switch slots;
+        radio errors from the switches or the write itself propagate to
+        the seat's normal mapping (refusals → ERJCTED, timeouts →
+        ETIMEOUT).
 
         The restore is best-effort and shielded: a command-timeout
         cancellation mid-dance still runs it, and a restore failure is
         logged but never replaces the original outcome — including an
-        in-flight cancellation.
+        in-flight cancellation. The restore is confirmed the same way
+        when a readback is available; a mismatch there is logged but
+        likewise never fails the command.
         """
-        set_vfo_slot = getattr(self._radio, "set_vfo_slot", None)
-        if set_vfo_slot is None:
+        if (
+            getattr(self._radio, "set_vfo_slot_confirmed", None) is None
+            and getattr(self._radio, "set_vfo_slot", None) is None
+        ):
             return HamlibError.ENAVAIL
         async with self._vfo_slot_lock:
             previous = await self._selected_vfo_slot()
             target = "B" if previous == "A" else "A"
             try:
-                await set_vfo_slot(target)
+                if not await self._select_vfo_slot_confirmed(target):
+                    logger.warning(
+                        "split TX write: VFO slot %s select unconfirmed; "
+                        "aborting without writing",
+                        target,
+                    )
+                    return HamlibError.EIO
                 await write()
             finally:
-                # Attempted even when the first switch raised: an ambiguous
-                # failure (ACK timeout / NAK after landing) may have switched
-                # the radio anyway, and leaving it on the TX slot would
-                # strand the dial.
+                # Attempted even when the select was aborted or raised: an
+                # ambiguous failure (ACK timeout / NAK after landing) may
+                # have switched the radio anyway, and leaving it on the TX
+                # slot would strand the dial.
                 try:
-                    await asyncio.shield(set_vfo_slot(previous))
+                    restored = await asyncio.shield(
+                        self._select_vfo_slot_confirmed(previous)
+                    )
                 except Exception:
                     logger.exception(
                         "split TX write: restoring VFO slot %s failed; "
                         "radio may be on the TX slot",
                         previous,
                     )
+                else:
+                    if not restored:
+                        logger.warning(
+                            "split TX write: restore to VFO slot %s "
+                            "unconfirmed; radio may be on the TX slot",
+                            previous,
+                        )
         return HamlibError.OK
 
     async def _cmd_get_split_freq(self, cmd: RigctldCommand) -> RigctldResponse:

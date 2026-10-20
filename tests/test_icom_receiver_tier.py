@@ -20,8 +20,13 @@ from __future__ import annotations
 
 import pytest
 
+from rigplane.exceptions import CommandError
 from rigplane.radio import IcomRadio
-from rigplane.radio_protocol import ReceiverBankCapable, VfoSlotCapable
+from rigplane.radio_protocol import (
+    ReceiverBankCapable,
+    VfoSlotCapable,
+    VfoSlotConfirmedCapable,
+)
 
 from test_radio import MockTransport, _wrap_civ_in_udp
 
@@ -111,6 +116,8 @@ SLOT_B_705 = b"\xfe\xfe\xa4\xe0\x07\x01\xfd"
 # CI-V ACK frames per rig (FB) wrapped in UDP for MockTransport.receive_packet.
 ACK_IC7610 = _wrap_civ_in_udp(b"\xfe\xfe\xe0\x98\xfb\xfd")
 ACK_IC9700 = _wrap_civ_in_udp(b"\xfe\xfe\xe0\xa2\xfb\xfd")
+ACK_IC7300 = _wrap_civ_in_udp(b"\xfe\xfe\xe0\x94\xfb\xfd")
+NAK_IC7300 = _wrap_civ_in_udp(b"\xfe\xfe\xe0\x94\xfa\xfd")
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +145,17 @@ class TestProtocolSatisfaction:
     def test_ic705_satisfies_both_protocols(self, ic705: IcomRadio) -> None:
         assert isinstance(ic705, ReceiverBankCapable)
         assert isinstance(ic705, VfoSlotCapable)
+
+    def test_all_rigs_satisfy_confirmed_slot_capable(
+        self,
+        ic7610: IcomRadio,
+        ic9700: IcomRadio,
+        ic7300: IcomRadio,
+        ic705: IcomRadio,
+    ) -> None:
+        """Every Icom rig exposes the ACK-confirmed slot seam (MOR-3115)."""
+        for rig in (ic7610, ic9700, ic7300, ic705):
+            assert isinstance(rig, VfoSlotConfirmedCapable)
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +425,32 @@ class TestSetVfoSlot:
     async def test_invalid_slot_raises_value_error(self, ic7300: IcomRadio) -> None:
         with pytest.raises(ValueError, match="slot must be"):
             await ic7300.set_vfo_slot("C", receiver=0)
+
+
+# ---------------------------------------------------------------------------
+# set_vfo_slot_confirmed — ACK-checked select
+# ---------------------------------------------------------------------------
+
+
+class TestSetVfoSlotConfirmed:
+    @pytest.mark.asyncio
+    async def test_ic7300_ack_confirms_select(
+        self, ic7300: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        mock_transport.queue_response(ACK_IC7300)
+        await ic7300.set_vfo_slot_confirmed("B")
+        frames = _civ_bytes(mock_transport.sent_packets)
+        assert SLOT_B_7300 in frames
+        assert await ic7300.get_vfo_slot() == "B"
+
+    @pytest.mark.asyncio
+    async def test_ic7300_nak_rejects_select_without_landing(
+        self, ic7300: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        mock_transport.queue_response(NAK_IC7300)
+        with pytest.raises(CommandError, match="rejected VFO slot"):
+            await ic7300.set_vfo_slot_confirmed("B")
+        assert await ic7300.get_vfo_slot() == "A"
 
 
 # ---------------------------------------------------------------------------

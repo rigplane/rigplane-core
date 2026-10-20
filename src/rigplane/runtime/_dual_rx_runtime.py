@@ -547,10 +547,22 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """
         await self._set_vfo_slot_impl(slot, receiver=receiver, confirmed=False)
 
-    async def _set_vfo_slot_confirmed(self, slot: str, receiver: int = 0) -> None:
-        """Private ACK-confirmed path; public ``set_vfo_slot`` stays fire-and-forget."""
+    async def set_vfo_slot_confirmed(self, slot: str, receiver: int = 0) -> None:
+        """Make ``slot`` active on ``receiver``, ACK-confirmed.
+
+        Unlike fire-and-forget :meth:`set_vfo_slot`, waits for the
+        CI-V ACK/NAK and raises when the radio rejects the switch or
+        the reply times out. State-sensitive callers (the rigctld
+        split-TX dance, the VFO binding) prefer this seam so a lost
+        select can never silently retune the wrong VFO.
+        """
 
         await self._set_vfo_slot_impl(slot, receiver=receiver, confirmed=True)
+
+    async def _set_vfo_slot_confirmed(self, slot: str, receiver: int = 0) -> None:
+        """Private alias for the observation poller; prefer :meth:`set_vfo_slot_confirmed`."""
+
+        await self.set_vfo_slot_confirmed(slot, receiver=receiver)
 
     async def _set_vfo_slot_impl(
         self, slot: str, *, receiver: int, confirmed: bool

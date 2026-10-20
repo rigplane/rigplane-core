@@ -682,6 +682,22 @@ class SerialMockRadio:
         target.active_slot = normalized
         self._sync_radio_state_from_rx(receiver)
 
+    async def set_vfo_slot_confirmed(self, slot: str, receiver: int = 0) -> None:
+        """Confirmed select (``VfoSlotConfirmedCapable`` mirror).
+
+        No transport ACK exists on the stub, so this selects via
+        ``set_vfo_slot`` and confirms with a ``get_vfo_slot`` readback,
+        raising :class:`CommandError` on a mismatch — the same seam
+        confirmed-selection callers prefer on the Icom backend.
+        """
+        await self.set_vfo_slot(slot, receiver=receiver)
+        actual = await self.get_vfo_slot(receiver)
+        if actual != slot.strip().upper():
+            raise CommandError(
+                "VFO slot select not confirmed: requested "
+                f"{slot!r}, radio reports {actual!r}"
+            )
+
     async def read_relative_vfo(self, *, selected: bool) -> RelativeVfoState:
         """Selected/unselected tuple for receiver 0 without switching slots."""
         active = self._vfo_slot[0]
