@@ -2,8 +2,8 @@
 
 In-process tests build the same objects ``serve.py`` builds (via
 ``build_stack``) and drive the control endpoint through the aiohttp test
-client; subprocess tests run the real entry point against a production
-``IcomRadio``.
+client; subprocess tests start the real entry point — one end to end
+against a production ``IcomRadio``, the rest checking signals and --trace.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import asyncio
 import json
 import signal
 import sys
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,7 +24,12 @@ from aiohttp.test_utils import TestClient, TestServer
 from rigplane.radio import IcomRadio
 
 from rigplane_testkit.sim.__main__ import _control_arg, build_parser
-from rigplane_testkit.sim.serve import build_stack, format_control_host
+from rigplane_testkit.sim.serve import (
+    TRACE_RECORD_LIMIT,
+    TraceLog,
+    build_stack,
+    format_control_host,
+)
 
 from _perf_helpers import fast_connect
 
@@ -42,8 +47,9 @@ _TEST_PASSWORD = "sim-e2e-pass-2f8d41"
 
 # JSON literals a permissive parser (aiohttp's request.json()) accepts but
 # that must never reach a radio timer as a duration; true and "5" pin the
-# bool/str rejection next to them.
+# bool/str rejection next to them. set_frequency adds 7.5 and "7".
 _BAD_NUMERIC_LITERALS = ("NaN", "Infinity", "-Infinity", "true", '"5"')
+_HZ_BAD_LITERALS = ("NaN", "Infinity", "true", "7.5", '"7"')
 
 
 def _args(*extra: str) -> argparse.Namespace:
@@ -55,6 +61,12 @@ def _strict_loads(text: str) -> dict:
         raise AssertionError(f"non-finite JSON literal in body: {literal}")
 
     return json.loads(text, parse_constant=_reject)
+
+
+async def _post_raw(s, data: str):
+    return await s.client.post(
+        "/event", data=data, headers={"Content-Type": "application/json"}
+    )
 
 
 @asynccontextmanager
@@ -104,14 +116,41 @@ async def test_non_finite_or_mistyped_numbers_rejected() -> None:
         cases = (("power_cycle", "down_for_s"), ("keepalive_silence", "for_s"))
         for event, arg in cases:
             for literal in _BAD_NUMERIC_LITERALS:
-                resp = await s.client.post(
-                    "/event",
-                    data=f'{{"event":"{event}","{arg}":{literal}}}',
-                    headers={"Content-Type": "application/json"},
-                )
+                resp = await _post_raw(s, f'{{"event":"{event}","{arg}":{literal}}}')
                 assert resp.status == 400, literal
                 body = _strict_loads(await resp.text())
                 assert body["error"] == "invalid_args", literal
+
+        for literal in _HZ_BAD_LITERALS:
+            resp = await _post_raw(s, f'{{"event":"set_frequency","hz":{literal}}}')
+            assert resp.status == 400, literal
+            body = _strict_loads(await resp.text())
+            # event+detail present: a handler rejection, not a parse error.
+            assert body["error"] == "invalid_args", literal
+            assert body["event"] == "set_frequency" and body["detail"], literal
+
+
+async def test_non_finite_args_never_reach_trace_output(tmp_path: Path) -> None:
+    # NaN/Infinity must not surface verbatim in GET /trace or the --trace file.
+    trace_path = tmp_path / "trace.jsonl"
+    async with _stack("--trace", str(trace_path)) as s:
+        for literal in ("NaN", "Infinity"):
+            resp = await _post_raw(
+                s, f'{{"event":"power_cycle","down_for_s":{literal}}}'
+            )
+            assert resp.status == 400, literal
+        # An accepted event with non-finite floats nested in an extra key.
+        resp = await _post_raw(
+            s, '{"event":"session_drop","junk":{"deep":[NaN, Infinity, -Infinity]}}'
+        )
+        assert resp.status == 200
+        body = _strict_loads(await (await s.client.get("/trace")).text())
+    file_records = [_strict_loads(x) for x in trace_path.read_text().splitlines()]
+    for records in (body["events"], file_records):
+        rejected = [rec for rec in records if rec["name"] == "power_cycle"]
+        assert [rec["args"]["down_for_s"] for rec in rejected] == ["NaN", "Infinity"]
+        junked = [rec for rec in records if rec["name"] == "session_drop"]
+        assert junked[0]["args"]["junk"] == {"deep": ["NaN", "Infinity", "-Infinity"]}
 
 
 async def test_set_frequency_changes_state() -> None:
@@ -139,10 +178,37 @@ async def test_set_frequency_changes_state() -> None:
 
 async def test_second_stop_is_harmless() -> None:
     async with _stack() as s:
+        # Every POST arms stop_event.set; count the real 0->1 flips.
+        transitions = 0
+        original_set = s.inner.stop_event.set
+
+        def _counting_set() -> None:
+            nonlocal transitions
+            transitions += 0 if s.inner.stop_event.is_set() else 1
+            original_set()
+
+        s.inner.stop_event.set = _counting_set  # type: ignore[method-assign]
         for _ in range(2):
             resp = await s.client.post("/stop")
             assert resp.status == 200
             assert await resp.json() == {"ok": True}
+        await asyncio.sleep(0.3)  # longer than the 0.25 s stop drain
+        assert s.inner.stop_event.is_set() and transitions == 1
+
+
+def test_trace_log_is_bounded_but_n_keeps_counting() -> None:
+    trace = TraceLog()
+    for i in range(TRACE_RECORD_LIMIT + 5):
+        trace.append("event", "tick", {"i": i}, {"ok": True})
+    snapshot = trace.snapshot(0)
+    # Only the last TRACE_RECORD_LIMIT records stay in memory, while n
+    # keeps counting past the dropped records (no reuse).
+    assert len(snapshot["events"]) == TRACE_RECORD_LIMIT
+    assert snapshot["events"][0]["n"] == 5
+    assert snapshot["events"][-1]["n"] == TRACE_RECORD_LIMIT + 4
+    assert snapshot["next"] == TRACE_RECORD_LIMIT + 5
+    # since past the end: an empty list.
+    assert trace.snapshot(snapshot["next"])["events"] == []
 
 
 def test_control_host_forms() -> None:
@@ -238,7 +304,14 @@ async def _start_sim(*extra: str) -> tuple[asyncio.subprocess.Process, dict]:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    line = json.loads(await asyncio.wait_for(proc.stdout.readline(), 20))
+    try:
+        line = json.loads(await asyncio.wait_for(proc.stdout.readline(), 20))
+    except BaseException:
+        # The caller never received proc: it must not leak.
+        with suppress(ProcessLookupError):
+            proc.kill()
+        await proc.wait()
+        raise
     return proc, line
 
 
@@ -317,12 +390,13 @@ async def test_subprocess_end_to_end(tmp_path: Path) -> None:
     assert records[-1]["result"] == {"ok": True}
 
 
-async def test_sigterm_exits_0_and_writes_stop_record(tmp_path: Path) -> None:
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
+async def test_signal_exits_0_and_writes_stop_record(tmp_path: Path, sig) -> None:
     if sys.platform == "win32":
         pytest.skip("POSIX signal delivery")
     trace_path = tmp_path / "trace.jsonl"
     proc, _line = await _start_sim("--trace", str(trace_path))
-    proc.send_signal(signal.SIGTERM)
+    proc.send_signal(sig)
     try:
         assert await asyncio.wait_for(proc.wait(), 10) == 0
     finally:

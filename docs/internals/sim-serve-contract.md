@@ -76,7 +76,10 @@ identical trace once `t` is removed. `t` is real elapsed time (recovery
 timings need it) and is the only time-dependent field. The server itself
 adds no ephemeral ports to trace records (the start record carries the
 `--control` hint, port 0 included); extra keys a client sends in an event
-body are recorded verbatim in `args`.
+body are recorded in `args` with non-finite floats (any nesting depth,
+from permissively parsed `NaN`/`Infinity` literals) replaced by their
+string spellings — the snapshot, the `--trace` file and every HTTP
+response stay strict JSON.
 
 ## Evidence labelling
 

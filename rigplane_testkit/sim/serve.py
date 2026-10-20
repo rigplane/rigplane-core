@@ -48,6 +48,29 @@ def _is_num(value: object) -> bool:
         return False  # an int too large for float conversion is rejected too
 
 
+def _json_safe(value: object) -> object:
+    """Replace non-finite floats (any dict/list depth) with their string
+    spellings — strict JSON cannot emit them as numbers."""
+    if isinstance(value, float):
+        if math.isnan(value):
+            return "NaN"
+        if value == math.inf:
+            return "Infinity"
+        if value == -math.inf:
+            return "-Infinity"
+        return value
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _dumps(value: object) -> str:
+    """Strict JSON for HTTP responses: a non-finite float raises here."""
+    return json.dumps(value, allow_nan=False)
+
+
 def _ev_set_frequency(radio: MockIcomRadio, body: dict) -> dict:
     hz = body.get("hz")
     # 9_999_999_999 is the 10-digit BCD ceiling of the CI-V freq encoding.
@@ -96,7 +119,8 @@ _EVENTS: dict[str, Callable[[MockIcomRadio, dict], dict]] = {
 class TraceLog:
     """Bounded in-memory event trace with an optional JSONL file. Records are
     ``{"n", "t", "kind", "name", "args", "result"}``; ``t`` is real seconds
-    since construction — the only time-dependent field.
+    since construction — the only time-dependent field. ``args``/``result``
+    are sanitised: non-finite floats become string spellings (strict JSON).
     """
 
     def __init__(self, path: str | None = None) -> None:
@@ -111,13 +135,15 @@ class TraceLog:
             "t": round(time.monotonic() - self._t0, 3),
             "kind": kind,
             "name": name,
-            "args": args,
-            "result": result,
+            "args": _json_safe(args),
+            "result": _json_safe(result),
         }
         self._next += 1
         self._records.append(record)
         if self._file is not None:
-            line = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            line = json.dumps(
+                record, sort_keys=True, separators=(",", ":"), allow_nan=False
+            )
             self._file.write(line + "\n")
             self._file.flush()
         return record
@@ -142,7 +168,8 @@ _STOP_EVENT_KEY: web.AppKey[asyncio.Event] = web.AppKey("stop_event", asyncio.Ev
 
 @dataclass
 class ServeStack:
-    """The objects one serve process is made of (no I/O before start())."""
+    """The objects one serve process is made of (no sockets before start();
+    a --trace file, when given, opens at construction)."""
 
     radio: MockIcomRadio
     trace: TraceLog
@@ -231,14 +258,15 @@ async def _handle_state(request: web.Request) -> web.Response:
             "ptt": radio.ptt_on,
             "session_held": radio.session_held,
             "login_count": radio.login_count,
-        }
+        },
+        dumps=_dumps,
     )
 
 
 def _reject(trace: TraceLog, name: str, args: dict, result: dict) -> web.Response:
     """Trace a rejected event and answer it with HTTP 400."""
     trace.append("event", name, args, result)
-    return web.json_response(result, status=400)
+    return web.json_response(result, status=400, dumps=_dumps)
 
 
 async def _handle_event(request: web.Request) -> web.Response:
@@ -268,7 +296,7 @@ async def _handle_event(request: web.Request) -> web.Response:
         )
     result = {"ok": True, "event": name, **applied}
     trace.append("event", name, args, result)
-    return web.json_response(result)
+    return web.json_response(result, dumps=_dumps)
 
 
 async def _handle_trace(request: web.Request) -> web.Response:
@@ -277,14 +305,14 @@ async def _handle_trace(request: web.Request) -> web.Response:
         since = int(request.query.get("since", "0"))
     except ValueError:
         since = 0
-    return web.json_response(trace.snapshot(max(0, since)))
+    return web.json_response(trace.snapshot(max(0, since)), dumps=_dumps)
 
 
 async def _handle_stop(request: web.Request) -> web.Response:
     stop_event: asyncio.Event = request.app[_STOP_EVENT_KEY]
     # Flush the response before teardown; a repeat POST only re-arms the drain.
     asyncio.get_running_loop().call_later(_STOP_DRAIN_S, stop_event.set)
-    return web.json_response({"ok": True})
+    return web.json_response({"ok": True}, dumps=_dumps)
 
 
 async def run_serve(args: argparse.Namespace) -> int:
