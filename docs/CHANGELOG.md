@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b18] — 2026-10-20
+
+Republishes 3.0.0b17 to PyPI. The 3.0.0b17 tag exists on GitHub but its
+PyPI publish stopped in the pre-publish test run, so 3.0.0b17 was never
+uploaded. The runtime code is identical to 3.0.0b17.
+
+### Tests
+
+- **Make the soak detach-sabotage test deterministic (MOR-3565, #4263).** On
+  slower runners one soak cycle lasted about two seconds and the sabotaged
+  session's lease expired inside the check window, so the negative control
+  passed instead of failing. The soak driver now renews live sessions' leases
+  before closing clients.
+
 ## [3.0.0b17] — 2026-10-20
 
 ### Added
@@ -4540,7 +4554,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b17...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b18...HEAD
+[3.0.0b18]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b17...v3.0.0b18
 [3.0.0b17]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b16...v3.0.0b17
 [3.0.0b16]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b15...v3.0.0b16
 [3.0.0b15]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b14...v3.0.0b15
