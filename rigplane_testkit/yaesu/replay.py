@@ -8,8 +8,8 @@ way the real radio did — a data line, the ``?;`` refusal, or silence.
 
 A Yaesu radio is strictly request/reply and the Core transport keeps one
 query outstanding, so a reply belongs to the latest unanswered request. A
-reply is attributed to it when it is ``?;`` or carries the request's two
-letter verb (``FA;`` -> ``FA014074000;``); any other line is unsolicited
+reply is attributed to it when :func:`reply_closes` says so (``?;`` or a
+line that starts with the whole request body); any other line is unsolicited
 (an auto-information push) and is not an answer. A request that the next
 request overtakes without a reply is recorded as silence — the recorded
 fact "this read timed out".
@@ -22,6 +22,25 @@ from dataclasses import dataclass
 from typing import Any
 
 REFUSAL = "?;"
+
+# The one recorded exception to "a data reply starts with the whole request
+# body": the radio answers the SUB S-meter read ``SM1;`` with the side digit
+# echoed as 0 (rigs/ftx1.toml: get_s_meter_sub).
+_ECHO_EXCEPTIONS = {"SM1;": "SM0"}
+
+
+def reply_closes(request: str, reply: str) -> bool:
+    """True when *reply* (with its ``;``) can be the radio's answer to *request*.
+
+    A data reply starts with the whole request body (``NA1;`` -> ``NA1x;``) or
+    is the ``?;`` refusal. A late reply to an earlier request that merely
+    shares the two-letter verb (``NA00;`` for ``NA1;``) is not one.
+    """
+    return (
+        reply == REFUSAL
+        or reply.startswith(request[:-1])
+        or reply.startswith(_ECHO_EXCEPTIONS.get(request, "\0"))
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +83,7 @@ class RecordedCatAnswerTable:
                     table._answers[pending] = RecordedCatAnswer("silence", None)
                 pending = line
             elif row["dir"] == "r2c":
-                if pending is not None and (line == REFUSAL or line[:2] == pending[:2]):
+                if pending is not None and reply_closes(pending, line):
                     kind = "refusal" if line == REFUSAL else "data"
                     table._answers[pending] = RecordedCatAnswer(kind, line)
                     pending = None
@@ -83,4 +102,4 @@ class RecordedCatAnswerTable:
         return tuple(self._answers)
 
 
-__all__ = ["REFUSAL", "RecordedCatAnswer", "RecordedCatAnswerTable"]
+__all__ = ["REFUSAL", "RecordedCatAnswer", "RecordedCatAnswerTable", "reply_closes"]

@@ -114,3 +114,57 @@ def test_extract_keeps_first_closed_read_pair_per_window(tmp_path) -> None:
         ("r2c", "ID0840;"),
     ]
     assert {r["window"] for r in got} == {"w"}
+
+
+def test_reply_closes_needs_the_whole_request_body() -> None:
+    from rigplane_testkit.yaesu.replay import reply_closes
+
+    assert reply_closes("BP01;", "BP01012;")
+    assert reply_closes("KS;", "?;")
+    assert reply_closes("SM1;", "SM0000;")  # the recorded SUB echo quirk
+    assert not reply_closes("BP01;", "BP00001;")  # a late BP00 reply
+    assert not reply_closes("NA1;", "NA00;")
+
+
+def test_table_does_not_attribute_a_late_same_verb_reply() -> None:
+    table = RecordedCatAnswerTable.from_cat_pairs(
+        _rows(
+            ("c2r", "BP00;"), ("c2r", "BP01;"), ("r2c", "BP00001;"), ("r2c", "BP01002;")
+        )
+    )
+    assert table.lookup("BP00;") == RecordedCatAnswer("silence", None)
+    assert table.lookup("BP01;") == RecordedCatAnswer("data", "BP01002;")
+    assert table.unsolicited == ["BP00001;"]
+
+
+def test_extract_rejects_a_late_same_verb_reply(tmp_path) -> None:
+    import json
+    from pathlib import Path
+
+    from rigplane.profiles.rig_loader import load_rig
+
+    from rigplane_testkit.yaesu import CatReadOnlyGuard
+    from rigplane_testkit.yaesu.fixtures import extract_cat_pairs
+
+    def row(t, d, text):
+        return {"t": t, "dir": d, "port": "serial", "hex": text.encode().hex()}
+
+    rec = tmp_path / "rec.jsonl"
+    rec.write_text(
+        "".join(
+            json.dumps(r) + "\n"
+            for r in (
+                row(0.1, "c2r", "BP00;"),  # its reply is late
+                row(0.2, "c2r", "BP01;"),
+                row(0.3, "r2c", "BP00001;"),  # belongs to BP00, not BP01
+                row(0.4, "r2c", "BP01002;"),
+            )
+        )
+    )
+    guard = CatReadOnlyGuard.from_config(
+        load_rig(Path(__file__).parents[2] / "rigs" / "ftx1.toml")
+    )
+    assert [(r["dir"], r["line"]) for r in extract_cat_pairs(rec, "w", guard)] == [
+        ("c2r", "BP01;"),
+        ("r2c", "BP01002;"),
+    ]

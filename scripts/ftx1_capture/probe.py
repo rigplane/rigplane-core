@@ -30,6 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rigplane.core.serial_open import open_serial_port
 from rigplane.profiles.rig_loader import load_rig
 
+from rigplane_testkit.yaesu.replay import reply_closes
+
 from probe_list import Probe, build_probe_list
 
 # Reads whose answers must be identical before and after the run.
@@ -46,12 +48,6 @@ SNAPSHOT_READS = (
     "AI;",
     "TX;",
 )
-
-# A data reply starts with the whole request body (``NA1;`` -> ``NA1x;``), so a
-# late reply to the previous request that merely shares the verb is rejected.
-# The one recorded exception: the radio answers the SUB S-meter read with the
-# side digit echoed as 0 (rigs/ftx1.toml: get_s_meter_sub).
-_ECHO_EXCEPTIONS = {"SM1;": "SM0"}
 
 EXIT_DIFF = 1
 EXIT_ABORT = 2
@@ -85,9 +81,7 @@ def classify(line: str, reply: str | None) -> str:
         return "silence"
     if reply == "?;":
         return "refusal"
-    if reply.startswith(line[:-1]) or reply.startswith(
-        _ECHO_EXCEPTIONS.get(line, "\0")
-    ):
+    if reply_closes(line, reply):
         return "data"
     raise Abort(f"unexpected reply to {line}: {reply!r}")
 

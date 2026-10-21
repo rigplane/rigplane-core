@@ -5,7 +5,7 @@ rigplane_testkit.yaesu record``) into ``cat_pairs.jsonl`` rows — the CAT
 sibling of the IC-7610 ``civ_pairs.jsonl`` pipeline. The trim rule: per
 window, the FIRST occurrence of every distinct request line and the reply
 that closes it. A reply closes the pending request when it is ``?;`` or
-carries the request's two-letter verb; any other line (an auto-information
+starts with the whole request body (``replay.reply_closes``); any other line (an auto-information
 push, a stale late reply) is skipped. A request with no closing reply is
 not emitted: silence needs an explicit recording of the timeout, not a
 guess. Only requests the rig profile declares as READS are emitted, so a
@@ -32,6 +32,7 @@ from rigplane.profiles.rig_loader import load_rig
 
 from rigplane_testkit.yaesu.cat_fake import _RIGS_DIR
 from rigplane_testkit.yaesu.recorder import CatReadOnlyGuard, cat_lines
+from rigplane_testkit.yaesu.replay import reply_closes
 
 
 def extract_cat_pairs(
@@ -48,7 +49,7 @@ def extract_cat_pairs(
         if pending is None:
             continue
         request_t, request = pending
-        if line != "?;" and line[:2] != request[:2]:
+        if not reply_closes(request, line):
             continue  # unsolicited or stale: not the answer to this request
         pending = None
         if request in seen:
