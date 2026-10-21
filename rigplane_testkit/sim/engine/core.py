@@ -19,6 +19,9 @@ __all__ = (
     "SetMode SetPtt SetSelector SetSplit SetSwitch SimEngine SimState Unsupported"
 ).split()
 
+# Irregular plurals: ``switch`` collects ``switches``, not ``switchs``.
+_READ_PLURALS = {"level": "levels", "switch": "switches", "selector": "selectors"}
+
 
 class Clock(Protocol):
     def __call__(self) -> float: ...
@@ -262,14 +265,14 @@ class SimEngine:
                 return target
             return Ok(getattr(target, name))
         prefix, _, key = name.partition(":")
-        if prefix in ("level", "switch", "selector"):
-            known = getattr(self._caps, f"{prefix}s")
+        if prefix in _READ_PLURALS:
+            known = getattr(self._caps, _READ_PLURALS[prefix])
             if key not in known:
                 return Unsupported(f"{prefix} {key!r}")
             target = self._target(receiver)
             if isinstance(target, OutOfRange):
                 return target
-            values = getattr(target, f"{prefix}s")
+            values = getattr(target, _READ_PLURALS[prefix])
             return Ok(values.get(key))
         if prefix == "meter":
             return Ok(self._state.meters.get(key))

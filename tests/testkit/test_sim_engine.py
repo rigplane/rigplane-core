@@ -320,5 +320,6 @@ def test_trace_records_are_json_serialisable() -> None:
     engine.apply(SetFrequency(0, object()))  # rejected with a non-JSON value
     payload = [asdict(r) for r in engine.trace]
     assert json.loads(json.dumps(payload)) == payload
-    assert payload[3]["args"]["value"] == "<object>"
+    assert payload[3]["args"]["value"] == 3
+    assert payload[4]["args"]["value"] == "<object>"
     assert payload[-1]["args"]["hz"] == "<object>"
