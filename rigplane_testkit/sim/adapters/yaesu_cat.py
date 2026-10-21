@@ -9,8 +9,8 @@
 
 Wire rules (this module's own deliberately dumb splitter; no production
 parser runs here): host bytes split on ``;`` and a partial line is held
-until its terminator. A run longer than 64 bytes without a ``;`` is
-answered with ``?;`` once, then discarded up to and including the next
+until its terminator. A buffered partial run longer than 64 bytes without
+a ``;`` is answered with ``?;`` once, then discarded up to and including the next
 ``;``; bytes after that ``;`` start a fresh line. Each complete line goes
 to ``YaesuCatModel.handle``; a returned reply line is delivered to that
 connection as ASCII bytes, ``None`` delivers nothing. Echo is OFF. While
@@ -18,6 +18,9 @@ silenced, lines are consumed, nothing is answered and nothing is applied
 — a mute radio changes no state, like ``FakeCatRadio.silence``. While
 vanished, opens raise ``OSError(ENODEV)`` and live connections fail like
 the CI-V fake's.
+
+Replies are delivered immediately; the profile's reply_latency_ms is not
+applied, tracked in MOR-3670.
 
 The ``frequency_hz`` setter is the control-event path, not the wire: it
 applies ``SetFrequency`` directly on the engine, bypassing the wire's
@@ -70,13 +73,20 @@ _RIG_REL = Path("rigs/ftx1.toml")
 
 
 def _recorded_table(root: Path, profile: SimProfile) -> RecordedCatAnswerTable:
-    """The recorded answer table of the profile's first [answers] entry."""
+    """Load the first [answers] recording; require at least one paired reply."""
     if not profile.answers.recorded:
         raise ValueError(f"{profile.sim.id}: an [answers] recorded entry is required")
     file, _transport = profile.answers.recorded[0]
-    lines = (root / file).read_text(encoding="utf-8").splitlines()
+    path = root / file
+    lines = path.read_text(encoding="utf-8").splitlines()
     rows = [json.loads(line) for line in lines if line.strip()]
-    return RecordedCatAnswerTable.from_cat_pairs(rows)
+    table = RecordedCatAnswerTable.from_cat_pairs(rows)
+    if not any(
+        (answer := table.lookup(request)) is not None and answer.reply is not None
+        for request in table.requests()
+    ):
+        raise ValueError(f"{path}: no request/reply evidence")
+    return table
 
 
 def _build_seeded_model(
@@ -106,15 +116,22 @@ def recorded_divergences(
     model: YaesuCatModel, table: RecordedCatAnswerTable
 ) -> dict[str, dict[str, str | None]]:
     """Replay every recorded request against *model*; return the mismatches
-    as ``{request: {"recorded": ..., "model": ...}}``."""
+    as ``{request: {"recorded": ..., "model": ...}}``.
+
+    Raise ``ValueError`` if no recorded requests can be compared.
+    """
     live: dict[str, dict[str, str | None]] = {}
+    compared = 0
     for request in table.requests():
         recorded = table.lookup(request)
         if recorded is None:
             continue
         got = model.handle(request)
+        compared += 1
         if got != recorded.reply:
             live[request] = {"recorded": recorded.reply, "model": got}
+    if not compared:
+        raise ValueError("recorded answer table has no request/reply evidence")
     return live
 
 
@@ -123,14 +140,23 @@ def unledgered_divergences(
     table: RecordedCatAnswerTable,
     ledger_path: Path,
 ) -> dict[str, dict[str, str | None]]:
-    """The divergences of a FRESH seeded model that *ledger_path* does not list.
+    """The divergences of a FRESH seeded model not exactly covered by the ledger.
 
     *model_factory* takes the recorded table and returns a fresh model
     seeded from it, so one replay can never bleed state into the next.
+    Both the recorded and model replies must match the entry in *ledger_path*.
     """
     live = recorded_divergences(model_factory(table), table)
     ledger = json.loads(Path(ledger_path).read_text(encoding="utf-8"))
-    return {request: diff for request, diff in live.items() if request not in ledger}
+    return {
+        request: diff
+        for request, diff in live.items()
+        if request not in ledger
+        or any(
+            key not in ledger[request] or diff[key] != ledger[request][key]
+            for key in ("recorded", "model")
+        )
+    }
 
 
 def _fresh_seeded_model(
@@ -144,8 +170,10 @@ def _fresh_seeded_model(
 
 def fidelity_for_banner(fake: YaesuCatSerialFake, ledger_path: Path) -> str:
     """The profile's fidelity tier, dropped to ``"B"`` when a fresh model
-    seeded from the recording diverges from it anywhere the ledger at
-    *ledger_path* does not list (the MOR-3598 banner rule)."""
+    seeded from the recording has a divergence not exactly covered by
+    *ledger_path*, or the table is empty (the MOR-3598 banner rule)."""
+    if not fake._recorded.requests():
+        return "B"
     divergences = unledgered_divergences(
         lambda table: _fresh_seeded_model(fake, table), fake._recorded, ledger_path
     )

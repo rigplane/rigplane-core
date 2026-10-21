@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import os
 import select
 import time
@@ -24,6 +25,7 @@ from rigplane_testkit.sim.adapters.yaesu_cat import (
     YaesuCatSerialFake,
     fidelity_for_banner,
 )
+from rigplane_testkit.yaesu.replay import RecordedCatAnswerTable
 
 ROOT = Path(__file__).resolve().parents[2]
 LEDGER = ROOT / "tests" / "fixtures" / "ftx1" / "model_conformance_ledger.json"
@@ -260,6 +262,64 @@ def test_banner_fidelity_drops_to_B_on_an_unledgered_divergence(monkeypatch) -> 
         return model
 
     monkeypatch.setattr(adapter, "_fresh_seeded_model", _mutating)
+    assert fidelity_for_banner(fake, LEDGER) == "B"
+
+
+@pytest.mark.parametrize(
+    ("recorded_reply", "model_reply", "expected"),
+    [
+        ("ID0840;", "ID9999;", "A"),
+        ("ID0840;", "ID1234;", "B"),
+        ("ID1234;", "ID9999;", "B"),
+    ],
+)
+def test_banner_requires_both_ledger_values_to_match(
+    monkeypatch, tmp_path, recorded_reply, model_reply, expected
+) -> None:
+    fake = _fake()
+    real_fresh = adapter._fresh_seeded_model
+
+    def _mutating(fake: YaesuCatSerialFake, table):
+        model = real_fresh(fake, table)
+        original = model.handle
+        model.handle = lambda line: "ID9999;" if line == "ID;" else original(line)
+        return model
+
+    ledger = tmp_path / "ledger.json"
+    ledger.write_text(
+        json.dumps({"ID;": {"recorded": recorded_reply, "model": model_reply}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(adapter, "_fresh_seeded_model", _mutating)
+    assert fidelity_for_banner(fake, ledger) == expected
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",
+        " \t\n\n ",
+        '{"dir": "r2c", "line": "ID0840;"}\n',
+        '{"dir": "c2r", "line": "ID;"}\n',
+        '{"dir": "c2r", "line": "ID;"}\n{"dir": "r2c", "line": "FA147225000;"}\n',
+    ],
+    ids=["empty", "whitespace", "unsolicited-only", "request-only", "unpaired"],
+)
+def test_recording_requires_request_reply_evidence(tmp_path, content) -> None:
+    profile = adapter.load_sim_profile(ROOT / adapter._PROFILE_REL, root=ROOT)
+    recording = tmp_path / profile.answers.recorded[0][0]
+    recording.parent.mkdir(parents=True)
+    recording.write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError) as error:
+        adapter._recorded_table(tmp_path, profile)
+    assert str(recording) in str(error.value)
+
+
+def test_empty_table_cannot_pass_conformance_or_banner() -> None:
+    fake = _fake()
+    fake._recorded = RecordedCatAnswerTable()
+    with pytest.raises(ValueError, match="no request/reply evidence"):
+        adapter.recorded_divergences(fake.model, fake._recorded)
     assert fidelity_for_banner(fake, LEDGER) == "B"
 
 

@@ -73,9 +73,6 @@ def test_model_diverges_from_the_recording_only_where_the_ledger_says() -> None:
     assert not stale, f"ledger entries that no longer diverge (delete them): {stale}"
     for request, entry in ledger.items():
         assert entry.get("ticket") and entry.get("why"), request
-        assert {k: live[request][k] for k in ("recorded", "model")} == {
-            k: entry[k] for k in ("recorded", "model")
-        }, request
 
 
 def test_every_native_read_is_recorded_as_data() -> None:
