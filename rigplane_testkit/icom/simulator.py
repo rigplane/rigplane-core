@@ -436,10 +436,9 @@ class MockIcomRadio(AudioPortMixin):
         scope_stream: opt-in replay of recorded ``27 00`` scope waves at
             the measured MAIN/SUB cadence. Off by default. Only complete
             frames from the committed ``scope`` window are emitted.
-        rx_source: optional RX audio source for the audio port
-            (:class:`~rigplane_testkit.icom.rx_source.WavSource`) played
-            in place of the byte ramp; None (default) keeps the ramp
-            byte-for-byte. Restarts from its head on each stream start.
+        rx_source: optional RX audio source (``rx_source.WavSource``)
+            played in place of the byte ramp; None (default) keeps the
+            ramp. Restarts from its head on each stream start.
     """
 
     def __init__(

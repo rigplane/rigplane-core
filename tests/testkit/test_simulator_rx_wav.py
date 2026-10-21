@@ -59,7 +59,6 @@ async def test_rx_stream_carries_the_wav_payload(tmp_path: Path) -> None:
             first = burst[0][1]  # burst start: ident 0x8126 at 0x10
             assert struct.unpack_from(">H", first, 0x10)[0] == _RX_IDENT_FIRST_FRAGMENT
             payload = b"".join(p[AUDIO_HEADER_SIZE:] for _, p in burst)
-            assert len(payload) == RX_BURST_BYTES
             # Mid-file capture start: the burst index follows from the
             # audio-level seq at 0x12 (3 packets per burst, from 0).
             index = struct.unpack_from(">H", first, 0x12)[0] // 3

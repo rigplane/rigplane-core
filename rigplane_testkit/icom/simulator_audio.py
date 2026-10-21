@@ -43,10 +43,6 @@ import logging
 import struct
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from rigplane_testkit.icom.rx_source import RxSource
 
 logger = logging.getLogger(__name__)
 
@@ -128,9 +124,9 @@ class AudioPortMixin:
         self.audio_tx_frames: list[ClientAudioFrame] = []
         self._audio_last_client_seq: int | None = None
         self._audio_retransmit_requests_received: int = 0
-        # Optional RX audio source (``rx_source.py``); None keeps the ramp.
-        self._rx_source: RxSource | None = getattr(self, "_rx_source", None)
-        self._rx_burst: bytes | None = None  # the current burst's payload
+        # Optional RX audio source (``rxplane_testkit/icom/rx_source.py``),
+        # set by the radio constructor; None keeps the synthetic ramp.
+        self._rx_source = getattr(self, "_rx_source", None)
 
     async def _audio_start(self) -> None:
         """Bind the audio port at the CI-V port + 1 when free (else any).
@@ -417,6 +413,10 @@ class AudioPortMixin:
                 if client is None or self._audio_udp is None:
                     continue
                 addr, client_id = client
+                # Fetch per burst BEFORE scheduling: catch-up bursts queued
+                # together must not share one payload buffer.
+                src = self._rx_source
+                burst = src.read_burst() if src is not None else None
                 for position, offset in enumerate(_AUDIO_IN_BURST_OFFSETS_S):
                     loop.call_later(
                         offset,
@@ -424,6 +424,7 @@ class AudioPortMixin:
                         position,
                         addr,
                         client_id,
+                        burst,
                     )
         except asyncio.CancelledError:
             raise
@@ -431,28 +432,25 @@ class AudioPortMixin:
             logger.exception("Mock: audio RX loop error")
 
     def _audio_emit_rx_packet(
-        self, position: int, addr: tuple[str, int], client_id: int
+        self, position: int, addr: tuple[str, int], client_id: int, burst: bytes | None
     ) -> None:
-        """Build and send one RX packet (dropped unless the stream lives).
-
-        The emission slot still steps both sequences when the packet is
-        suppressed (silence/reboot window), so the client sees the gap;
-        only actually-sent packets advance ``audio_rx_frames_sent``.
-        """
+        """Build and send one RX packet (dropped unless the stream lives)."""
         if self._audio_client is None:
             return  # the stream stopped after this emission was scheduled
-        pkt = self._audio_rx_packet(position, client_id)
+        pkt = self._audio_rx_packet(position, client_id, burst)
         if self._audio_send(pkt, addr):
             self._audio_rx_frames_sent += 1
 
-    def _audio_rx_packet(self, position: int, client_id: int) -> bytes:
+    def _audio_rx_packet(
+        self, position: int, client_id: int, burst: bytes | None
+    ) -> bytes:
         """Build one RX packet with the recorded header layout.
 
         ``position`` is the packet's place in its burst (0..2): the first
         packet of a burst carries the first-fragment ident. Both sequences
         step 1 per packet (wrap at 0xFFFF). The payload is the byte ramp
-        seeded by the inner sequence, unless an RX source is set: position
-        0 pulls the next 20 ms and the burst is sliced by the recorded
+        seeded by the inner sequence, unless an RX source is set: the
+        burst's 20 ms (fetched by the loop) is sliced by the recorded
         payload split.
         """
         import rigplane_testkit.icom.simulator as _sim
@@ -470,13 +468,9 @@ class AudioPortMixin:
         struct.pack_into(">H", pkt, 0x12, self._audio_rx_inner_seq)
         struct.pack_into(">H", pkt, 0x14, 0)  # recorded: always 0
         struct.pack_into(">H", pkt, 0x16, payload_len)
-        if self._rx_source is not None:
-            if position == 0:
-                self._rx_burst = self._rx_source.read_burst()
+        if burst is not None:
             start_off = sum(_AUDIO_BURST_PAYLOADS[:position])  # 0/1364/2728
-            pkt[AUDIO_HEADER_SIZE:] = self._rx_burst[
-                start_off : start_off + payload_len
-            ]
+            pkt[AUDIO_HEADER_SIZE:] = burst[start_off : start_off + payload_len]
         else:
             start = self._audio_rx_inner_seq & 0xFF
             pkt[AUDIO_HEADER_SIZE:] = (_PCM_RAMP * (payload_len // 256 + 2))[

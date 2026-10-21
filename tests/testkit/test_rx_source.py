@@ -51,8 +51,8 @@ def test_burst_size_and_48k_stereo_passthrough_bit_exact(tmp_path: Path) -> None
     assert RX_BURST_BYTES == 3840
     raw = _stereo_wav(tmp_path / "rx.wav", bursts=3)
     src = WavSource(tmp_path / "rx.wav")
-    for _ in range(5):  # past the end too: still exactly one burst
-        assert len(src.read_burst()) == RX_BURST_BYTES
+    # Past the end too (once mode): every read is still exactly one burst.
+    assert {len(src.read_burst()) for _ in range(5)} == {RX_BURST_BYTES}
     src.reset()
     assert src.read_burst() == raw[:RX_BURST_BYTES]
     assert src.read_burst() == raw[RX_BURST_BYTES : 2 * RX_BURST_BYTES]
@@ -92,8 +92,7 @@ def test_slot_start_waits_for_the_boundary(tmp_path: Path) -> None:
     raw = _stereo_wav(tmp_path / "slot.wav", bursts=2)
     src = WavSource(tmp_path / "slot.wav", start="slot", slot_s=15.0, utc=lambda: 3.0)
     silence = bytes(RX_BURST_BYTES)
-    # The mixer emits burst k at reset + 20 ms * k, so the burst exactly
-    # AT the boundary (k = 600) carries the file's first sample.
+    # Burst k of the mixer lands at reset + 20 ms·k; the burst AT the boundary (k=600) carries the first sample.
     assert [src.read_burst() for _ in range(599)] == [silence] * 599
     assert src.read_burst() == raw[:RX_BURST_BYTES]
     # Within 20 ms of a boundary (modulo): starts immediately.

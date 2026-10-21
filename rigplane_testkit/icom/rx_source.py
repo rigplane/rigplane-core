@@ -1,9 +1,9 @@
 """A WAV file as the IC-7610 simulator's RX audio (testkit, dev-only).
 
-``WavSource`` (MOR-3603) loads a WAV file at construction, converts it
-to the audio port's fixed output format — 48 kHz stereo s16le — and
-serves the audio mixin one 3840-byte burst per 20 ms, so a downstream
-decoder (WSJT-X on the dogfood bench) hears the recording, not the ramp.
+``WavSource`` (MOR-3603) loads a WAV at construction, converts it to
+the audio port's output format — 48 kHz stereo s16le — and serves the
+audio mixer one 3840-byte burst per 20 ms, so a downstream decoder
+(WSJT-X) hears the recording, not the synthetic ramp.
 
 Resampling is linear interpolation (``numpy.interp``) over the whole
 file at load time, rounded to int16 with clipping: test quality, not
@@ -60,8 +60,8 @@ class RxSource(Protocol):
 class WavSource:
     """A WAV file as the simulator's RX audio (pure data, no sockets/asyncio).
 
-    The mixer pulls one burst per 20 ms via :meth:`read_burst`;
-    :meth:`reset` restarts the file and recomputes the slot wait.
+    The mixer pulls one burst per 20 ms via :meth:`read_burst`; the
+    conversion and alignment rules live in the module docstring.
     """
 
     def __init__(
