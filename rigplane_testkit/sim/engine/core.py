@@ -163,6 +163,8 @@ def _is_int(value: object) -> bool:
 
 
 def _field_dict(obj: object) -> dict:
+    if not hasattr(obj, "__dataclass_fields__"):
+        return {}
     return {f.name: getattr(obj, f.name) for f in fields(obj)}
 
 
@@ -184,7 +186,15 @@ class SimEngine:
         self._clock = clock
         self._seed = seed
         if initial is None:
-            initial = SimState([ReceiverState() for _ in range(caps.receiver_count)])
+            lo, hi = caps.frequency_range_hz
+            default_hz = min(max(14_074_000, lo), hi)
+            default_mode = caps.modes[0]
+            initial = SimState(
+                [
+                    ReceiverState(frequency_hz=default_hz, mode=default_mode)
+                    for _ in range(caps.receiver_count)
+                ]
+            )
         self._state = initial
         self._now = float(clock())
         self._queue: list[tuple[float, int, object]] = []
@@ -306,16 +316,22 @@ class SimEngine:
                 return target
             if op.name not in self._caps.switches:
                 return Unsupported(f"switch {op.name!r}")
+            if not isinstance(op.on, bool):
+                return OutOfRange(f"switch {op.name}", op.on)
             target.switches[op.name] = op.on
         elif isinstance(op, SetPtt):
             if not self._caps.has_ptt:
                 return Unsupported("ptt")
+            if not isinstance(op.on, bool):
+                return OutOfRange("ptt", op.on)
             if op.on and not self._state.power_on:
                 return Refused("power off")
             self._state.ptt = op.on
         elif isinstance(op, SetSplit):
             if not self._caps.has_split:
                 return Unsupported("split")
+            if not isinstance(op.on, bool):
+                return OutOfRange("split", op.on)
             self._state.split = op.on
         elif isinstance(op, SelectReceiver):
             err = self._target(op.receiver)

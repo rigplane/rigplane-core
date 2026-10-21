@@ -77,6 +77,9 @@ def test_apply_ok_mutates_state_and_records_op() -> None:
         (SetLevel(0, "vol", 5), Unsupported, "unsupported"),  # unknown level
         (SetLevel(0, "af", 256), OutOfRange, "out_of_range"),  # above level max
         (SetSwitch(0, "turbo", True), Unsupported, "unsupported"),  # unknown switch
+        (SetSwitch(0, "nb", 1), OutOfRange, "out_of_range"),  # int where bool required
+        (SetPtt("yes"), OutOfRange, "out_of_range"),  # str where bool required
+        ("not-an-op", Unsupported, "unsupported"),  # non-dataclass op still records
         (SelectReceiver(-1), OutOfRange, "out_of_range"),
     ],
 )
@@ -101,6 +104,13 @@ def test_caps_gated_ptt_split_and_power_off_refusal() -> None:
     assert dark.apply(SetPtt(True)) == Refused(reason="power off")
     assert dark.state.ptt is False
     assert dark.trace[0].result["outcome"] == "refused"
+
+
+def test_default_state_derives_from_caps() -> None:
+    caps = Capabilities(modes=("FM",), frequency_range_hz=(118_000_000, 137_000_000))
+    engine, _ = _engine(caps=caps)
+    assert engine.read("mode") == Ok("FM")
+    assert engine.read("frequency_hz") == Ok(118_000_000)  # clamped to band edge
 
 
 def test_failed_apply_never_mutates_state() -> None:
