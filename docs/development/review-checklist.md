@@ -1,8 +1,9 @@
 # Builder review checklist
 
-Goal: a PR needs one or two Codex review rounds, not four to ten. Codex posts only
-its top few findings per pass, and every fix is new code that gets new findings,
-so the cheap way to save rounds is to find the defects before the first push.
+Goal: a PR needs one or two Codex review rounds, not four to ten. Before the
+Code Review Rules in `AGENTS.md` existed, Codex's GitHub reviews posted a median
+of two findings per pass, and every fix is new code that gets new findings, so
+the cheap way to save rounds is to find the defects before the first push.
 Walk this list against your own diff, then run the local pre-review, then push.
 
 ## Measured basis (2026-10-20 to 2026-10-21, merged PRs in Core and Pro)
