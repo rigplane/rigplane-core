@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import gc
 import json
 import os
 import select
 import time
+import weakref
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -342,3 +345,187 @@ def test_adapter_imports_only_the_allowed_modules() -> None:
         assert module.split(".")[0] != "tests", module
         if module == "rigplane" or module.startswith("rigplane."):
             assert module.startswith("rigplane.profiles"), module
+
+
+class _DeliveryClock:
+    def __init__(self) -> None:
+        self.now = 10.0
+        self.handles: list[asyncio.TimerHandle] = []
+
+    def time(self) -> float:
+        return self.now
+
+    def call_at(self, when, callback) -> asyncio.TimerHandle:
+        handle = asyncio.TimerHandle(when, callback, (), asyncio.get_running_loop())
+        self.handles.append(handle)
+        return handle
+
+    @property
+    def active(self) -> list[asyncio.TimerHandle]:
+        return [handle for handle in self.handles if not handle.cancelled()]
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+        while due := [handle for handle in self.active if handle.when() <= self.now]:
+            handle = min(due, key=lambda handle: handle.when())
+            self.handles.remove(handle)
+            handle._run()
+
+
+def _with_latency(milliseconds: float | None) -> YaesuCatSerialFake:
+    fake = _fake()
+    fake._profile = replace(
+        fake._profile,
+        timing=replace(fake._profile.timing, reply_latency_ms=milliseconds),
+    )
+    return fake
+
+
+async def _scheduled_connection(fake):
+    reader, writer = await fake.open_serial_connection()
+    connection = writer._connection
+    clock = _DeliveryClock()
+    connection._loop = clock
+    return reader, writer, connection, clock
+
+
+async def test_reply_latency_comes_from_loaded_profile(tmp_path) -> None:
+    profile = tmp_path / "latency.toml"
+    profile.write_text(
+        (ROOT / adapter._PROFILE_REL)
+        .read_text()
+        .replace("reply_latency_ms = 9", "reply_latency_ms = 250")
+    )
+    fake = YaesuCatSerialFake.from_profile(ROOT, profile)
+    reader, writer = await fake.open_serial_connection()
+    connection = writer._connection
+    assert connection._loop is asyncio.get_running_loop()
+    writer.write(b"ID;")
+    assert isinstance(connection._timer, asyncio.TimerHandle)
+    assert not reader._buffer
+    assert connection._latency == 0.25
+    writer.close()
+
+    reader, writer, connection, clock = await _scheduled_connection(fake)
+    writer.write(b"ID;")
+    assert len(clock.active) == 1
+    clock.advance(0.249)
+    assert not reader._buffer
+    clock.advance(0.002)
+    assert bytes(reader._buffer) == b"ID0840;"
+    assert connection._timer is None
+    assert not connection._pending
+    assert not clock.active
+    writer.close()
+
+
+@pytest.mark.parametrize("chunks", [(b"ID;FA;MD0;",), (b"ID;", b"FA;", b"MD0;")])
+async def test_delayed_replies_keep_fifo_at_equal_deadlines(chunks) -> None:
+    fake = _with_latency(100)
+    reader, writer, connection, clock = await _scheduled_connection(fake)
+    for chunk in chunks:
+        writer.write(chunk)
+    assert len(clock.active) == 1
+    assert len({due for due, _ in connection._pending}) == 1
+    assert not reader._buffer
+    clock.advance(0.101)
+    assert bytes(reader._buffer) == b"ID0840;FA147225000;MD04;"
+    assert not clock.active
+    assert connection._timer is None
+    writer.close()
+
+
+async def test_separate_deadlines_schedule_only_the_fifo_head() -> None:
+    fake = _with_latency(100)
+    reader, writer, connection, clock = await _scheduled_connection(fake)
+    writer.write(b"ID;")
+    clock.advance(0.05)
+    writer.write(b"FA;")
+    assert len(clock.active) == 1
+    clock.advance(0.051)
+    assert bytes(reader._buffer) == b"ID0840;"
+    assert len(clock.active) == 1
+    clock.advance(0.05)
+    assert bytes(reader._buffer) == b"ID0840;FA147225000;"
+    assert connection._timer is None
+    assert not clock.active
+    writer.close()
+
+
+@pytest.mark.parametrize("retire", ["close", "fail", "vanish", "gc"])
+async def test_retirement_drops_pending_delivery(retire) -> None:
+    fake = _with_latency(100)
+    reader, writer, connection, clock = await _scheduled_connection(fake)
+    writer.write(b"ID;")
+    handle = connection._timer
+    fake_ref = weakref.ref(fake)
+    if retire == "close":
+        writer.close()
+    elif retire == "fail":
+        connection.fail(OSError("direct failure"))
+    elif retire == "vanish":
+        fake._vanish_now()
+        fake._reappear_now()
+        new_reader, new_writer, _, new_clock = await _scheduled_connection(fake)
+        new_writer.write(b"FA;")
+        new_clock.advance(0.101)
+        assert bytes(new_reader._buffer) == b"FA147225000;"
+        new_writer.close()
+    else:
+        del fake
+        gc.collect()
+        assert fake_ref() is None
+    assert handle.cancelled()
+    assert connection._timer is None
+    assert not connection._pending
+    assert not clock.active
+    clock.advance(1)
+    assert not reader._buffer
+    if retire in ("fail", "vanish"):
+        with pytest.raises(OSError):
+            await reader.read()
+    else:
+        assert reader.at_eof()
+    writer.close()
+
+
+@pytest.mark.parametrize("milliseconds", [None, 0.0])
+async def test_absent_or_zero_latency_delivers_synchronously(milliseconds) -> None:
+    fake = _with_latency(milliseconds)
+    reader, writer, connection, clock = await _scheduled_connection(fake)
+    writer.write(b"ID;FA;")
+    assert bytes(reader._buffer) == b"ID0840;FA147225000;"
+    assert connection._timer is None
+    assert not clock.active
+    writer.close()
+
+
+@pytest.mark.parametrize("wire_bytes", [b"QQ;", b"\xff;", b"X" * 65, b"ID;"])
+async def test_refusal_paths_share_reply_latency(wire_bytes, monkeypatch) -> None:
+    fake = _with_latency(100)
+    if wire_bytes == b"ID;":
+
+        def broken_model(_line):
+            raise RuntimeError("model failure")
+
+        monkeypatch.setattr(fake.model, "handle", broken_model)
+    reader, writer, _, clock = await _scheduled_connection(fake)
+    writer.write(wire_bytes)
+    assert not reader._buffer
+    clock.advance(0.101)
+    assert bytes(reader._buffer) == b"?;"
+    assert not clock.active
+    writer.close()
+
+
+async def test_silence_preserves_scheduled_replies_but_suppresses_new_lines() -> None:
+    fake = _with_latency(100)
+    reader, writer, _, clock = await _scheduled_connection(fake)
+    writer.write(b"ID;")
+    fake.silence(60)
+    writer.write(b"FB007074000;FA;")
+    clock.advance(0.101)
+    assert bytes(reader._buffer) == b"ID0840;"
+    assert fake.model.engine.state.receivers[1].frequency_hz == 52_900_000
+    assert not clock.active
+    writer.close()

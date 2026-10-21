@@ -14,13 +14,13 @@ a ``;`` is answered with ``?;`` once, then discarded up to and including the nex
 ``;``; bytes after that ``;`` start a fresh line. Each complete line goes
 to ``YaesuCatModel.handle``; a returned reply line is delivered to that
 connection as ASCII bytes, ``None`` delivers nothing. Echo is OFF. While
-silenced, lines are consumed, nothing is answered and nothing is applied
-— a mute radio changes no state, like ``FakeCatRadio.silence``. While
+silenced, newly accepted lines are consumed without answering or applying;
+already scheduled replies remain scheduled. While
 vanished, opens raise ``OSError(ENODEV)`` and live connections fail like
 the CI-V fake's.
 
-Replies are delivered immediately; the profile's reply_latency_ms is not
-applied, tracked in MOR-3670.
+Replies use the profile's reply_latency_ms, in request order per connection;
+zero or absent latency delivers synchronously.
 
 The ``frequency_hz`` setter is the control-event path, not the wire: it
 applies ``SetFrequency`` directly on the engine, bypassing the wire's
@@ -35,6 +35,8 @@ import errno
 import json
 import logging
 import time
+import weakref
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -290,7 +292,7 @@ class YaesuCatSerialFake:
     # ------------------------------------------------------------------
 
     def silence(self, for_seconds: float) -> None:
-        """The link stays open; nothing answers and nothing applies for the window."""
+        """Suppress new wire lines, preserving already scheduled replies."""
         self._silent_until = time.monotonic() + max(0.0, for_seconds)
 
     def usb_vanish(self, at: float = 0.0) -> None:
@@ -360,7 +362,12 @@ class _CatConnection:
     """One open session of the fake: an asyncio reader/writer pair."""
 
     def __init__(self, fake: YaesuCatSerialFake, ordinal: int) -> None:
-        self._fake = fake
+        self._fake = weakref.ref(fake, self._fake_gone)
+        self._loop = asyncio.get_running_loop()
+        self._latency = (fake._profile.timing.reply_latency_ms or 0.0) / 1000.0
+        self._pending: deque[tuple[float, bytes]] = deque()
+        self._timer: asyncio.TimerHandle | None = None
+        self._closed = False
         self.ordinal = ordinal
         self.reader = asyncio.StreamReader()
         self.writer = _FakeCatWriter(fake, self)
@@ -368,12 +375,44 @@ class _CatConnection:
 
     def fail(self, error: OSError) -> None:
         """Kill this session: pending and later reads raise *error*."""
+        self._retire()
         self.error = error
         self.reader.set_exception(error)
 
-    def deliver(self, data: bytes) -> None:
+    def _fake_gone(self, _reference: weakref.ReferenceType[YaesuCatSerialFake]) -> None:
+        self.close()
+
+    def _retire(self) -> None:
+        self._closed = True
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+        self._pending.clear()
+
+    def close(self) -> None:
+        self._retire()
         if self.error is None:
+            self.reader.feed_eof()
+
+    def deliver(self, data: bytes) -> None:
+        if self._closed:
+            return
+        if self._latency == 0:
             self.reader.feed_data(data)
+            return
+        self._pending.append((self._loop.time() + self._latency, data))
+        if self._timer is None:
+            self._timer = self._loop.call_at(self._pending[0][0], self._deliver_due)
+
+    def _deliver_due(self) -> None:
+        self._timer = None
+        if self._closed:
+            return
+        while self._pending and self._pending[0][0] <= self._loop.time():
+            _, data = self._pending.popleft()
+            self.reader.feed_data(data)
+        if self._pending:
+            self._timer = self._loop.call_at(self._pending[0][0], self._deliver_due)
 
 
 class _FakeCatWriter:
@@ -385,7 +424,7 @@ class _FakeCatWriter:
     """
 
     def __init__(self, fake: YaesuCatSerialFake, connection: _CatConnection) -> None:
-        self._fake = fake
+        self._fake = weakref.ref(fake)
         self._connection = connection
         self._buf = bytearray()
         self._discard = False  # inside an oversize run: drop through the next ';'
@@ -396,6 +435,9 @@ class _FakeCatWriter:
             raise self._connection.error
         if self.closed:
             raise RuntimeError("write to a closed fake CAT writer")
+        fake = self._fake()
+        if fake is None:
+            raise RuntimeError("write to a retired fake CAT connection")
         self._buf += bytes(data)
         while True:
             if self._discard:
@@ -411,19 +453,18 @@ class _FakeCatWriter:
                 if len(self._buf) > _MAX_RUN:
                     self._buf.clear()
                     self._discard = True
-                    self._fake._on_oversize_run(self._connection)
+                    fake._on_oversize_run(self._connection)
                 return
             line = bytes(self._buf[: end + 1])
             del self._buf[: end + 1]
-            self._fake._on_wire_line(self._connection, line)
+            fake._on_wire_line(self._connection, line)
 
     async def drain(self) -> None:
         pass
 
     def close(self) -> None:
         self.closed = True
-        if self._connection.error is None:
-            self._connection.reader.feed_eof()
+        self._connection.close()
 
     async def wait_closed(self) -> None:
         pass
