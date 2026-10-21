@@ -110,7 +110,7 @@ class SimState:
     receivers: list[ReceiverState]
     selected_receiver: int; split: bool; ptt: bool; power_on: bool
     meters: dict[str, int]    # "s", "swr", "alc", "po", "vd" (read-only for the wire)
-    extra: dict[str, object]  # radio-specific fields declared in the sim profile [state.extra]
+    extra: dict[str, object]  # radio-specific fields: the sim profile's [state.extra] plus registered names
 
 class SimEngine:
     def __init__(self, profile: SimProfile, *, clock: Clock, seed: int) -> None: ...
@@ -259,12 +259,17 @@ transport = "usb_device"         # lan_stream | usb_device (a simulation choice)
 [scope]                          # simulation-only parameters of the scope source
 rate_hz = 10                     # frame rate the simulator emits (not a capability value)
 frame = "icom_27_00"             # framing family used by the model
-# bins / span_hz: omit to take the capability profile's values (spectrum/scope sections)
+bins = 475                       # REQUIRED here: the capability profile declares a maximum data
+                                 # length, not a bin count, so the simulation profile selects it
+span_hz = 50000                  # REQUIRED here; when the capability profile lists span presets
+                                 # it must be one of them (there is no inherited default span)
 ```
 
 Precedence for overlapping data: the capability profile BOUNDS (what the radio can
-do), the simulation profile SELECTS within those bounds, and omitted values default to
-the capability profile's. A simulation profile never restates a capability value just
+do), the simulation profile SELECTS within those bounds, and a value the capability
+profile fixes unambiguously (for example one declared sample rate) may be omitted and is
+then taken from it; where the capability profile offers no unique value (scope bins and
+span, as above) the simulation profile must state it. A simulation profile never restates a capability value just
 to repeat it.
 
 Contradiction examples the loader refuses: `echo` set with a non-serial
