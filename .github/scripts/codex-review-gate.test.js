@@ -59,6 +59,8 @@ test('a dismissed Codex review invalidates the summary until a fresh review exis
   const fresh = {user: CODEX, commit_id: HEAD, state: 'COMMENTED'};
   assert.equal(codexReviewedHead({reviews: [dismissed], comments: [summary(HEAD), receipt('dae01ac3d5')], headSha: HEAD}).reviewed, false);
   assert.equal(codexReviewedHead({reviews: [dismissed, fresh], comments: [], headSha: HEAD}).via, 'review');
+  // The later review wins: an older valid review does not survive a later dismissal.
+  assert.equal(codexReviewedHead({reviews: [fresh, dismissed], comments: [summary(HEAD)], headSha: HEAD}).reviewed, false);
 });
 
 test('summary comment counts only when completed and for the exact head', () => {
