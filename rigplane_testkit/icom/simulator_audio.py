@@ -413,31 +413,30 @@ class AudioPortMixin:
                 if client is None or self._audio_udp is None:
                     continue
                 addr, client_id = client
-                # Fetch per burst BEFORE scheduling: catch-up bursts queued
-                # together must not share one payload buffer.
-                src = self._rx_source
-                burst = src.read_burst() if src is not None else None
-                for position, offset in enumerate(_AUDIO_IN_BURST_OFFSETS_S):
-                    loop.call_later(
-                        offset,
-                        self._audio_emit_rx_packet,
-                        position,
-                        addr,
-                        client_id,
-                        burst,
-                    )
+                self._audio_queue_rx_burst(addr, client_id)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Mock: audio RX loop error")
 
-    def _audio_emit_rx_packet(
-        self, position: int, addr: tuple[str, int], client_id: int, burst: bytes | None
-    ) -> None:
-        """Build and send one RX packet (dropped unless the stream lives)."""
+    def _audio_queue_rx_burst(self, addr: tuple[str, int], client_id: int) -> None:
+        """Build one burst now and schedule only the three sends.
+
+        Building in the loop iteration (in position order, stepping both
+        sequences) keeps catch-up iterations queued together from
+        interleaving fragments of two bursts.
+        """
+        src = self._rx_source
+        burst = src.read_burst() if src is not None else None
+        loop = asyncio.get_running_loop()
+        for position, offset in enumerate(_AUDIO_IN_BURST_OFFSETS_S):
+            pkt = self._audio_rx_packet(position, client_id, burst)
+            loop.call_later(offset, self._audio_emit_prebuilt, pkt, addr)
+
+    def _audio_emit_prebuilt(self, pkt: bytes, addr: tuple[str, int]) -> None:
+        """Send one prebuilt RX packet (dropped unless the stream lives)."""
         if self._audio_client is None:
             return  # the stream stopped after this emission was scheduled
-        pkt = self._audio_rx_packet(position, client_id, burst)
         if self._audio_send(pkt, addr):
             self._audio_rx_frames_sent += 1
 

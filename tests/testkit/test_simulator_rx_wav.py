@@ -27,6 +27,7 @@ from testkit.test_simulator_audio import (
     _recorded_burst_shape,
     _udp,
 )
+from testkit.test_simulator_faults import _CLIENT_ID, _HOST
 
 
 def _stereo_wav(path: Path, bursts: int) -> bytes:
@@ -70,6 +71,37 @@ async def test_rx_stream_carries_the_wav_payload(tmp_path: Path) -> None:
         flat = [p for burst in bursts for _, p in burst]
         seqs = [struct.unpack_from("<H", p, 6)[0] for p in flat]
         assert all((c - p) & 0xFFFF == 1 for p, c in zip(seqs, seqs[1:]))
+    finally:
+        client.close()
+        await server.stop()
+
+
+async def test_catchup_bursts_keep_file_order(tmp_path: Path) -> None:
+    """Three loop iterations with no yield between them still emit the
+    file's bursts in order. Red mutation: build the packets at emission
+    time (in the scheduled callback) instead of in the loop iteration."""
+    wav = tmp_path / "rx.wav"
+    raw = _stereo_wav(wav, bursts=50)
+    server = MockIcomRadio(enable_audio=True, rx_source=WavSource(wav))
+    await server.start()
+    client = await _udp()
+    try:
+        addr = (_HOST, client.transport.get_extra_info("sockname")[1])
+        server._audio_client = (addr, _CLIENT_ID)
+        server._audio_queue_rx_burst(addr, _CLIENT_ID)
+        server._audio_queue_rx_burst(addr, _CLIENT_ID)
+        server._audio_queue_rx_burst(addr, _CLIENT_ID)
+        packets = await asyncio.wait_for(_collect_audio(client, 0.2), 5.0)
+        frames = sorted(
+            (p for _, p in packets if len(p) > AUDIO_HEADER_SIZE),
+            key=lambda p: struct.unpack_from(">H", p, 0x12)[0],
+        )
+        assert len(frames) == 9
+        inner = [struct.unpack_from(">H", p, 0x12)[0] for p in frames]
+        assert all((c - p) & 0xFFFF == 1 for p, c in zip(inner, inner[1:]))
+        for i in range(3):
+            payload = b"".join(p[AUDIO_HEADER_SIZE:] for p in frames[3 * i : 3 * i + 3])
+            assert payload == raw[i * RX_BURST_BYTES : (i + 1) * RX_BURST_BYTES]
     finally:
         client.close()
         await server.stop()
