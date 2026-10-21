@@ -27,6 +27,15 @@ Engine state keys are the capability profile's exact control names
 (rigs/ftx1.toml), no aliases: the levels ``af_level``/``rf_gain``/
 ``squelch``/``nb_level`` and the selectors ``agc``/``preamp``.
 
+The engine stores whatever a scenario sets (``SetMeter`` is only checked to
+be an int, and ``state.extra`` is free-form), but the wire always reports a
+value inside its field's domain: an S-meter reading is clamped to 000-255
+when encoded, and an out-of-domain ``extra`` value (``memory_channel``,
+``if_offset_hz``, ``if_tone_mode``, ``auto_information``) or selector
+readback falls back to its default, so the fixed-width replies keep their
+exact field widths. Seeding from a recording ignores an S-meter reading
+outside 000-255.
+
 FTX-1 facts fixed by tests/fixtures/ftx1/cat_pairs.jsonl: ``SM1;`` reads
 the SUB meter (``s_meter_sub``; MAIN's is ``s_meter_main``) but echoes
 the side digit as 0; a receiver's S-meter reads 0 while its AGC is OFF
@@ -42,7 +51,7 @@ import logging
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Any, Protocol
 
 from rigplane_testkit.sim.engine import (
     Capabilities,
@@ -65,9 +74,6 @@ from rigplane_testkit.sim.engine import (
 )
 from rigplane_testkit.sim.profiles import SimProfile
 from rigplane_testkit.yaesu.replay import REFUSAL, RecordedCatAnswerTable
-
-if TYPE_CHECKING:
-    from rigplane.profiles.rig_loader import RigConfig
 
 __all__ = [
     "NATIVE_READS",
@@ -126,6 +132,24 @@ _EXTRA_MODE_CODES = "cat_mode_codes"
 # offset(4) clarifier rx/tx mode memory tone tail(3). The tail is seeded
 # and echoed verbatim; its meaning is not decoded.
 _IF_REPLY = re.compile(r"IF(.{5})(\d{9})([+-])(\d{4}).{2}(.)(.)(.)(.{3});")
+
+
+class _RigData(Protocol):
+    """The resolved rig data :func:`build_ftx1_engine` reads, structurally.
+
+    Profile resolution belongs to the loader/factory boundary
+    (docs/internals/sim-architecture.md section 3), so the model imports
+    nothing from ``rigplane``; a real ``RigConfig`` satisfies this protocol
+    without being named here.
+    """
+
+    model: str
+    receiver_count: int
+    modes: tuple[str, ...]
+    mode_codes: tuple[str, ...] | None
+    agc_readback_modes: tuple[int, ...] | None
+    pre_values: tuple[int, ...] | None
+    freq_ranges: tuple[Mapping[str, Any], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -386,7 +410,11 @@ class YaesuCatModel:
 
     def _auto_information(self, body: str) -> str | None:
         if body == "AI":
-            return f"AI{self._extra_int('auto_information')};"
+            value = self._extra_int("auto_information")
+            if value not in (0, 1):
+                # extra is free-form; the wire field is the one digit 0/1.
+                value = 0
+            return f"AI{value};"
         if body in ("AI0", "AI1"):
             # No engine op covers this flag; extra is its documented home.
             # No unsolicited pushes are sent in this PR either way.
@@ -424,6 +452,10 @@ class YaesuCatModel:
         rest = body[2:]
         if len(rest) == 1 and rest.isdigit() and int(rest) in codec.sides:
             value = self._read_int(f"selector:{codec.name}", int(rest))
+            if not 0 <= value <= 9:
+                # The engine validates against the capability domain, but
+                # the wire field is one digit: fall back to the default.
+                value = 0
             return f"{codec.verb}{rest}{value};"
         if (
             len(rest) == 2
@@ -448,7 +480,10 @@ class YaesuCatModel:
         agc = self._read_int("selector:agc", side)
         meter = "s_meter_main" if side == 0 else "s_meter_sub"
         value = 0 if agc == 0 else self._read_int(f"meter:{meter}")
-        return f"SM0{value:03d};"
+        # The engine stores whatever the scenario sets (SetMeter is only
+        # checked to be an int); the CAT wire domain is 000-255, so the
+        # reply reports the clamped value.
+        return f"SM0{min(max(value, 0), 255):03d};"
 
     def _information(self, body: str) -> str:
         if body != "IF":
@@ -456,7 +491,15 @@ class YaesuCatModel:
         code = self._mode_code(0)
         if code is None:
             return REFUSAL  # unreachable: engine modes all have codes
+        # extra is free-form (scenario data); every field that falls
+        # outside its wire width falls back to the default so the reply
+        # keeps the exact 5/9/4-digit field widths.
+        channel = self._extra_int("memory_channel")
+        if not 0 <= channel <= 99_999:
+            channel = 0
         offset = self._extra_int("if_offset_hz")
+        if not -9_999 <= offset <= 9_999:
+            offset = 0
         sign = "+" if offset >= 0 else "-"
         tone = min(max(self._extra_int("if_tone_mode", 2), 0), 9)
         tail = self._engine.state.extra.get("if_tail", "003")
@@ -464,7 +507,7 @@ class YaesuCatModel:
             tail = "003"
         memory = "1" if self._extra_bool("main_memory_mode") else "0"
         return (
-            f"IF{self._extra_int('memory_channel'):05d}"
+            f"IF{channel:05d}"
             f"{self._read_int('frequency_hz', 0):09d}"
             f"{sign}{abs(offset):04d}00{code}{memory}{tone}{tail};"
         )
@@ -514,7 +557,8 @@ class YaesuCatModel:
         if verb == "SM":
             if request in ("SM0;", "SM1;"):  # each side seeds its own meter
                 digits = reply[3:-1]
-                if len(digits) == 3 and digits.isdigit():
+                # A reading outside the 000-255 wire domain is not seeded.
+                if len(digits) == 3 and digits.isdigit() and int(digits) <= 255:
                     meter = "s_meter_main" if request == "SM0;" else "s_meter_sub"
                     self._applied(SetMeter(meter, int(digits)))
             return
@@ -550,7 +594,7 @@ class YaesuCatModel:
 
 
 def build_ftx1_engine(
-    profile: SimProfile, rig: RigConfig, *, clock: Clock, seed: int = 0
+    profile: SimProfile, rig: _RigData, *, clock: Clock, seed: int = 0
 ) -> SimEngine:
     """Build the FTX-1 engine: capabilities from *rig* (the loaded
     ``rigs/ftx1.toml``), receiver-0 initial state from *profile*."""

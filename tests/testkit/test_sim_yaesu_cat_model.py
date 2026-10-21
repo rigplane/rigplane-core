@@ -390,6 +390,68 @@ def test_seed_from_recording_uses_the_own_codec() -> None:
     assert model.handle("FA014074000;") == "?;"
 
 
+def test_s_meter_wire_value_is_clamped_but_the_engine_keeps_what_was_set() -> None:
+    model = _model()
+    assert model.handle("GT01;") is None  # AGC on: the reading is reported
+    assert model.handle("GT11;") is None
+    model.engine.apply(SetMeter("s_meter_main", 1000))
+    model.engine.apply(SetMeter("s_meter_sub", -1))
+    # The CAT wire domain is 000-255: the reply reports the clamped value.
+    assert model.handle("SM0;") == "SM0255;"
+    assert model.handle("SM1;") == "SM0000;"
+    # The engine stores whatever the scenario set.
+    assert model.engine.read("meter:s_meter_main") == Ok(1000)
+    assert model.engine.read("meter:s_meter_sub") == Ok(-1)
+
+
+def test_seeding_ignores_an_s_meter_reading_outside_the_wire_domain() -> None:
+    rows = [
+        {"dir": "c2r", "line": "SM0;"},
+        {"dir": "r2c", "line": "SM0300;"},  # outside 000-255: not seeded
+        {"dir": "c2r", "line": "SM1;"},
+        {"dir": "r2c", "line": "SM0255;"},  # top of the domain: seeded
+    ]
+    model = _model()
+    seed_from_recording(model, RecordedCatAnswerTable.from_cat_pairs(rows))
+    assert model.engine.read("meter:s_meter_main") == Ok(0)
+    assert model.engine.read("meter:s_meter_sub") == Ok(255)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("memory_channel", 123456),  # wider than the 5-digit field
+        ("memory_channel", -1),
+        ("if_offset_hz", 12345),  # wider than the 4-digit field
+        ("if_offset_hz", -12345),
+    ],
+)
+def test_out_of_domain_extra_values_fall_back_to_the_default_in_the_if_reply(
+    key: str, value: int
+) -> None:
+    model = _model()
+    model.engine.state.extra[key] = value
+    # Identical to the default reply: the exact 5/9/4-digit field widths.
+    assert model.handle("IF;") == "IF00000147225000+000000402003;"
+
+
+def test_if_tone_mode_is_clamped_into_its_one_digit_field() -> None:
+    model = _model()
+    model.engine.state.extra["if_tone_mode"] = 12
+    assert model.handle("IF;") == "IF00000147225000+000000409003;"
+    model.engine.state.extra["if_tone_mode"] = -3
+    assert model.handle("IF;") == "IF00000147225000+000000400003;"
+
+
+def test_out_of_domain_selector_and_flag_readbacks_fall_back_to_zero() -> None:
+    model = _model()
+    # The wire fields are one digit; engine state must not widen them.
+    model.engine.state.receivers[0].selectors["agc"] = 12
+    assert model.handle("GT0;") == "GT00;"
+    model.engine.state.extra["auto_information"] = 7
+    assert model.handle("AI;") == "AI0;"
+
+
 def test_model_imports_only_the_allowed_modules() -> None:
     tree = ast.parse(MODEL_PATH.read_text())
     modules: set[str] = set()
@@ -404,11 +466,12 @@ def test_model_imports_only_the_allowed_modules() -> None:
     assert "CatCommandParser" not in names
     assert "format_command" not in names
     for module in modules:
-        assert not module.startswith("rigplane.backends"), module
-        assert not module.startswith("rigplane.commands"), module
+        # The model imports NOTHING from rigplane, not even under
+        # TYPE_CHECKING: profile resolution belongs to the loader/factory
+        # boundary (sim-architecture.md section 3). rigplane_testkit.*
+        # imports stay allowed.
+        assert module != "rigplane" and not module.startswith("rigplane."), module
         assert module.split(".")[0] != "tests", module
-        if module == "rigplane" or module.startswith("rigplane."):
-            assert module.startswith("rigplane.profiles"), module
 
 
 def test_same_seed_same_request_sequence_gives_identical_replies_and_trace() -> None:
