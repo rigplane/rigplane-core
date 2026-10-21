@@ -3,8 +3,8 @@
  * `SemanticRadioSurfaces` and mounted on the `desktop-v2` zone.
  *
  * Unlike every other family in this file's siblings, `memory` carries no
- * MOR-1262 RadioViewModel group: the radio cannot report memory-channel
- * contents at all (`MemorySurface.svelte`'s own header), so the surface
+ * MOR-1262 RadioViewModel group: its local catalogue is browser-side
+ * (`MemorySurface.svelte`'s own header), so the surface
  * mounts unconditionally and `facts`/handlers come from
  * `deriveMemoryPanelProps()` / `getMemoryHandlers()` — the SAME
  * panel-adapters singleton the legacy `MemoryPanel.svelte` already uses, not

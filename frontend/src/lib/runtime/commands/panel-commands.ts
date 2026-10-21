@@ -270,6 +270,13 @@ export function makeMemoryHandlers() {
       dispatchRadioIntent({ name: 'memory_to_vfo', params: { channel } });
       return true;
     },
+    /** Recall of a channel listed from the radio itself (MOR-3627); an explicit click, never automatic. */
+    onRecallListed: (group: number, channel: number): boolean => {
+      if (!hasCapability('memory_read') || !Number.isSafeInteger(group) || group < 0
+        || !Number.isSafeInteger(channel) || channel < 0) return false;
+      dispatchRadioIntent({ name: 'set_memory_mode', params: { channel, group } });
+      return true;
+    },
     onStore: (channel: number, frequencyHz: number, mode: string): boolean => {
       const snapshot = currentMemorySnapshot();
       if (!validMemoryChannel(channel) || !snapshot || snapshot.frequencyHz === null

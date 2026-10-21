@@ -41,6 +41,7 @@
   import { getFieldStatus } from '$lib/state/field-status';
   import { getCommandLifecycle } from '$lib/stores/commands.svelte';
   import { getScopeSource, hasCapability } from '$lib/stores/capabilities.svelte';
+  import { MemoryListController, trackMemoryList } from '$lib/runtime/memory-list.svelte';
   import { presentationResources, runtime } from '$lib/runtime';
   import * as componentKitActivation from '../../component-kits/activation';
   import { ScopeFrameHost, type ScopeFramePresentation } from '$lib/runtime/scope-frame-host';
@@ -726,13 +727,25 @@
   let ritDomain = $derived(toRitXitProps(runtime.state, runtime.caps).ritDomain);
   /**
    * MOR-2425 (Memory lane, phase B2). Memory channels are not in the
-   * MOR-1262 RadioViewModel vocabulary (the radio cannot report their
-   * contents), so `memorySurface` below reads `deriveMemoryPanelProps()` /
+   * MOR-1262 RadioViewModel vocabulary (the local catalogue is browser-side;
+   * the radio's own stored channels come from `radioMemories` below), so
+   * `memorySurface` below reads `deriveMemoryPanelProps()` /
    * `getMemoryHandlers()` directly — the SAME panel-adapters singleton the
    * legacy `MemoryPanel.svelte` wires to, not a second instance.
    */
   let memoryFacts = $derived(deriveMemoryPanelProps());
   const memoryHandlers = getMemoryHandlers();
+  /** MOR-3627: the radio's stored channels, read-only; loaded once the profile declares `memory_read`. */
+  const radioMemoryList = new MemoryListController();
+  let memoryReadable = $derived(runtime.caps?.capabilities?.includes('memory_read') ?? false);
+  trackMemoryList(radioMemoryList, () => memoryReadable);
+  let radioMemories = $derived(memoryReadable ? {
+    status: radioMemoryList.status, error: radioMemoryList.error, entries: radioMemoryList.entries,
+    group: radioMemoryList.group, groups: radioMemoryList.groups, recall: radioMemoryList.recall,
+    onGroupChange: (group: number) => void radioMemoryList.load(group),
+    onReload: () => void radioMemoryList.load(radioMemoryList.group ?? undefined),
+    onRecall: memoryHandlers.onRecallListed,
+  } : undefined);
   /**
    * MOR-1310 (slice 9B). The CW intent vocabulary, composed from the SHIPPED
    * `makeCwPanelHandlers` rather than forked. MOR-1606 wires its existing
@@ -2763,8 +2776,8 @@
 
   <!--
     MOR-2425 (Memory lane, phase B2). Unlike every surface above, `memory`
-    carries no MOR-1262 RadioViewModel group — the radio cannot report
-    memory-channel contents at all (`MemorySurface.svelte`'s own header) —
+    carries no MOR-1262 RadioViewModel group — its local catalogue is
+    browser-side (`MemorySurface.svelte`'s own header) —
     so there is no `view?.memory` to structurally gate on, and the surface
     mounts unconditionally, exactly as the legacy `MemoryPanel` always has.
     `facts`/`onRecall`/`onStore`/`onClear` route through the SAME
@@ -2778,6 +2791,7 @@
       onRecall={memoryHandlers.onRecall}
       onStore={memoryHandlers.onStore}
       onClear={memoryHandlers.onClear}
+      {radioMemories}
     />
   {/snippet}
 

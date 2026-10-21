@@ -65,6 +65,7 @@ describe('the memory surface owns no radio state and duplicates no storage logic
     expect([...new Set(specifiers)].sort()).toEqual([
       '../components-v2/display/frequency-format',
       '../lib/runtime/props/panel-props',
+      './RadioMemoryList.svelte',
       './memory-channels',
     ]);
   });
@@ -309,5 +310,22 @@ describe('unpopulated channels render as empty rows (MOR-2682)', () => {
     const rule = /\.channel-row\s*\{([^}]*)\}/.exec(SOURCE)?.[1] ?? '';
     expect(rule).toContain('display: flex');
     expect(rule).toContain('align-items: center');
+  });
+});
+
+describe('the radio\'s own stored channels (MOR-3627)', () => {
+  it('renders a stored channel through the surface and passes the explicit recall click on', () => {
+    const onRecall = vi.fn(() => true);
+    const r = render(KNOWN, {
+      radioMemories: {
+        status: 'ready', error: null, group: 0, groups: { first: 0, last: 99 }, recall: true, onRecall,
+        entries: [{ group: 0, channel: 4, empty: false, name: 'TEST RPT', frequencyHz: 146_940_000, mode: 'FM' }],
+      },
+    });
+    const row = r.target.querySelector('[data-testid="radio-memory-4"]') as HTMLElement;
+    expect(row.textContent).toContain('TEST RPT');
+    (r.target.querySelector('[data-testid="radio-memory-4-recall"]') as HTMLButtonElement).click();
+    expect(onRecall).toHaveBeenCalledWith(0, 4);
+    r.dispose();
   });
 });
