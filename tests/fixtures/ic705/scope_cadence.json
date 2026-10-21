@@ -1,0 +1,28 @@
+{
+ "civ_addr": "0xA4",
+ "radio": "IC-705",
+ "radio_wave": {
+  "complete_sweeps": 255,
+  "first_sweep_t": 26.571,
+  "last_sweep_t": 88.098,
+  "segments_per_sweep": 11,
+  "sweep_interval_max_s": 0.2466,
+  "sweep_interval_median_s": 0.2422,
+  "sweep_interval_p95_s": 0.2433,
+  "sweeps_per_s": 4.128,
+  "wave_frames_27_00": 2813
+ },
+ "source": "serial bridge recording usb-web-session.jsonl (rigplane web --backend serial through SerialCivRecorder)",
+ "transport": "usb_civ",
+ "web_scope_ws": {
+  "fps": 4.152,
+  "frame_len_bytes": [
+   491
+  ],
+  "frames": 247,
+  "interval_max_s": 0.2571,
+  "interval_median_s": 0.2422,
+  "interval_p95_s": 0.247,
+  "window_s": 59.496
+ }
+}
