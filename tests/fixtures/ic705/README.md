@@ -57,4 +57,5 @@ No PTT-on, tune, frequency, mode or power command was sent. The shutdown release
 
 - **LAN / Wi-Fi capture**: `rigplane discover` found no IC-705 on the network. Needs the radio's Wi-Fi/Network Control switched on with a network user; then control/CI-V/audio phases, login, keep-alive cadence and RX audio layout are captured the same way.
 - **VHF/UHF reads**: the radio sat on HF, so duplex offset (`0C`), DCS and FM-width reads on a VHF/UHF FM channel are not covered (`get_freq_offset` NAKs on HF). Needs the owner to put VFO A on a VHF or UHF FM channel; no frequency or mode change is made by the capture itself.
+- **USB audio samples**: the capture host denies microphone access to processes started over ssh (a webcam microphone reads exact zero too), so no RX audio over USB was recorded; the `usb_audio.json` zero probe says nothing about the radio. Needs the microphone permission granted on the host, or the LAN audio path.
 - Firmware version.

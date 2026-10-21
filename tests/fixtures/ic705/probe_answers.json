@@ -2,762 +2,114 @@
  "radio": "IC-705",
  "transport": "usb_civ",
  "started_utc": "2026-10-21T12:24:06.237849+00:00",
- "summary": {
-  "data": 85,
-  "ack": 0,
-  "nak": 19,
-  "silence": 2,
-  "error": 1
- },
+ "summary": {"data": 85, "ack": 0, "nak": 19, "silence": 2, "error": 1},
  "answers": [
-  {
-   "name": "get_af_level",
-   "frame": "fefea4e01401fd",
-   "class": "data",
-   "latency_ms": 4.4,
-   "reply": "fefee0a414010082fd"
-  },
-  {
-   "name": "get_agc",
-   "frame": "fefea4e01612fd",
-   "class": "data",
-   "latency_ms": 2.9,
-   "reply": "fefee0a4161203fd"
-  },
-  {
-   "name": "get_agc_time_constant",
-   "frame": "fefea4e01a04fd",
-   "class": "data",
-   "latency_ms": 3.7,
-   "reply": "fefee0a41a0413fd"
-  },
-  {
-   "name": "get_alc",
-   "frame": "fefea4e01513fd",
-   "class": "data",
-   "latency_ms": 4.2,
-   "reply": "fefee0a415130000fd"
-  },
-  {
-   "name": "get_anti_vox_gain",
-   "frame": "fefea4e01417fd",
-   "class": "data",
-   "latency_ms": 3.2,
-   "reply": "fefee0a414170151fd"
-  },
-  {
-   "name": "get_attenuator",
-   "frame": "fefea4e011fd",
-   "class": "data",
-   "latency_ms": 3.4,
-   "reply": "fefee0a41100fd"
-  },
-  {
-   "name": "get_auto_notch",
-   "frame": "fefea4e01641fd",
-   "class": "data",
-   "latency_ms": 3.6,
-   "reply": "fefee0a4164100fd"
-  },
-  {
-   "name": "get_band_edge_freq",
-   "frame": "fefea4e002fd",
-   "class": "data",
-   "latency_ms": 3.3,
-   "reply": "fefee0a40200000300002d9999999901fd"
-  },
-  {
-   "name": "get_break_in",
-   "frame": "fefea4e01647fd",
-   "class": "data",
-   "latency_ms": 2.4,
-   "reply": "fefee0a4164702fd"
-  },
-  {
-   "name": "get_break_in_delay",
-   "frame": "fefea4e0140ffd",
-   "class": "data",
-   "latency_ms": 3.3,
-   "reply": "fefee0a4140f0128fd"
-  },
-  {
-   "name": "get_bsr",
-   "frame": "fefea4e01a01fd",
-   "class": "nak",
-   "latency_ms": 3.5,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "get_civ_transceive",
-   "frame": "fefea4e01a050131fd",
-   "class": "data",
-   "latency_ms": 3.1,
-   "reply": "fefee0a41a05013101fd"
-  },
-  {
-   "name": "get_command_error_fa",
-   "frame": "fefea4e0fafd",
-   "class": "silence",
-   "latency_ms": 2001.8,
-   "reply": null
-  },
-  {
-   "name": "get_command_ok_fb",
-   "frame": "fefea4e0fbfd",
-   "class": "silence",
-   "latency_ms": 2002.9,
-   "reply": null
-  },
-  {
-   "name": "get_comp_meter",
-   "frame": "fefea4e01514fd",
-   "class": "error",
-   "latency_ms": 0.1,
-   "reply": null
-  },
-  {
-   "name": "get_compressor",
-   "frame": "fefea4e01644fd",
-   "class": "data",
-   "latency_ms": 3.0,
-   "reply": "fefee0a4164401fd"
-  },
-  {
-   "name": "get_compressor_level",
-   "frame": "fefea4e0140efd",
-   "class": "data",
-   "latency_ms": 2.9,
-   "reply": "fefee0a4140e0151fd"
-  },
-  {
-   "name": "get_csql",
-   "frame": "fefea4e01b07fd",
-   "class": "data",
-   "latency_ms": 2.4,
-   "reply": "fefee0a41b0700fd"
-  },
-  {
-   "name": "get_cw_pitch",
-   "frame": "fefea4e01409fd",
-   "class": "data",
-   "latency_ms": 4.3,
-   "reply": "fefee0a414090128fd"
-  },
-  {
-   "name": "get_dash_ratio",
-   "frame": "fefea4e01a050252fd",
-   "class": "data",
-   "latency_ms": 3.3,
-   "reply": "fefee0a41a05025230fd"
-  },
-  {
-   "name": "get_data1_mod_input",
-   "frame": "fefea4e01a050119fd",
-   "class": "data",
-   "latency_ms": 3.3,
-   "reply": "fefee0a41a05011901fd"
-  },
-  {
-   "name": "get_data_mode",
-   "frame": "fefea4e01a06fd",
-   "class": "data",
-   "latency_ms": 3.3,
-   "reply": "fefee0a41a060000fd"
-  },
-  {
-   "name": "get_data_off_mod_input",
-   "frame": "fefea4e01a050118fd",
-   "class": "data",
-   "latency_ms": 3.2,
-   "reply": "fefee0a41a05011802fd"
-  },
-  {
-   "name": "get_dial_lock",
-   "frame": "fefea4e01650fd",
-   "class": "data",
-   "latency_ms": 3.9,
-   "reply": "fefee0a4165000fd"
-  },
-  {
-   "name": "get_dtcs",
-   "frame": "fefea4e01b02fd",
-   "class": "data",
-   "latency_ms": 3.0,
-   "reply": "fefee0a41b02000023fd"
-  },
-  {
-   "name": "get_filter_shape",
-   "frame": "fefea4e01656fd",
-   "class": "data",
-   "latency_ms": 3.3,
-   "reply": "fefee0a4165601fd"
-  },
-  {
-   "name": "get_filter_width",
-   "frame": "fefea4e01a03fd",
-   "class": "data",
-   "latency_ms": 6.4,
-   "reply": "fefee0a41a0334fd"
-  },
-  {
-   "name": "get_freq",
-   "frame": "fefea4e003fd",
-   "class": "data",
-   "latency_ms": 2.9,
-   "reply": "fefee0a4030040071400fd"
-  },
-  {
-   "name": "get_freq_offset",
-   "frame": "fefea4e00dfd",
-   "class": "nak",
-   "latency_ms": 2.4,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "get_id_meter",
-   "frame": "fefea4e01516fd",
-   "class": "data",
-   "latency_ms": 3.0,
-   "reply": "fefee0a415160000fd"
-  },
-  {
-   "name": "get_key_speed",
-   "frame": "fefea4e0140cfd",
-   "class": "data",
-   "latency_ms": 4.0,
-   "reply": "fefee0a4140c0085fd"
-  },
-  {
-   "name": "get_lan_mod_level",
-   "frame": "fefea4e01a050117fd",
-   "class": "data",
-   "latency_ms": 3.2,
-   "reply": "fefee0a41a0501170161fd"
-  },
-  {
-   "name": "get_manual_notch",
-   "frame": "fefea4e01648fd",
-   "class": "data",
-   "latency_ms": 2.6,
-   "reply": "fefee0a4164800fd"
-  },
-  {
-   "name": "get_manual_notch_width",
-   "frame": "fefea4e01657fd",
-   "class": "data",
-   "latency_ms": 3.8,
-   "reply": "fefee0a4165701fd"
-  },
-  {
-   "name": "get_mic_gain",
-   "frame": "fefea4e0140bfd",
-   "class": "data",
-   "latency_ms": 4.0,
-   "reply": "fefee0a4140b0179fd"
-  },
-  {
-   "name": "get_mode",
-   "frame": "fefea4e004fd",
-   "class": "data",
-   "latency_ms": 2.9,
-   "reply": "fefee0a4040101fd"
-  },
-  {
-   "name": "get_monitor",
-   "frame": "fefea4e01645fd",
-   "class": "data",
-   "latency_ms": 3.4,
-   "reply": "fefee0a4164500fd"
-  },
-  {
-   "name": "get_monitor_gain",
-   "frame": "fefea4e01415fd",
-   "class": "data",
-   "latency_ms": 2.8,
-   "reply": "fefee0a414150008fd"
-  },
-  {
-   "name": "get_nb",
-   "frame": "fefea4e01622fd",
-   "class": "data",
-   "latency_ms": 4.1,
-   "reply": "fefee0a4162201fd"
-  },
-  {
-   "name": "get_nb_depth",
-   "frame": "fefea4e01a050357fd",
-   "class": "data",
-   "latency_ms": 5.4,
-   "reply": "fefee0a41a05035707fd"
-  },
-  {
-   "name": "get_nb_level",
-   "frame": "fefea4e01412fd",
-   "class": "data",
-   "latency_ms": 3.2,
-   "reply": "fefee0a414120013fd"
-  },
-  {
-   "name": "get_nb_width",
-   "frame": "fefea4e01a050358fd",
-   "class": "data",
-   "latency_ms": 2.0,
-   "reply": "fefee0a41a0503580128fd"
-  },
-  {
-   "name": "get_notch_filter",
-   "frame": "fefea4e0140dfd",
-   "class": "data",
-   "latency_ms": 2.2,
-   "reply": "fefee0a4140d0128fd"
-  },
-  {
-   "name": "get_nr",
-   "frame": "fefea4e01640fd",
-   "class": "data",
-   "latency_ms": 2.5,
-   "reply": "fefee0a4164001fd"
-  },
-  {
-   "name": "get_nr_level",
-   "frame": "fefea4e01406fd",
-   "class": "data",
-   "latency_ms": 3.1,
-   "reply": "fefee0a414060072fd"
-  },
-  {
-   "name": "get_overflow_status",
-   "frame": "fefea4e01507fd",
-   "class": "data",
-   "latency_ms": 2.8,
-   "reply": "fefee0a4150700fd"
-  },
-  {
-   "name": "get_pbt_inner",
-   "frame": "fefea4e01407fd",
-   "class": "data",
-   "latency_ms": 3.7,
-   "reply": "fefee0a414070128fd"
-  },
-  {
-   "name": "get_pbt_outer",
-   "frame": "fefea4e01408fd",
-   "class": "data",
-   "latency_ms": 3.6,
-   "reply": "fefee0a414080128fd"
-  },
-  {
-   "name": "get_power_meter",
-   "frame": "fefea4e01511fd",
-   "class": "data",
-   "latency_ms": 2.7,
-   "reply": "fefee0a415110000fd"
-  },
-  {
-   "name": "get_preamp",
-   "frame": "fefea4e01602fd",
-   "class": "data",
-   "latency_ms": 3.9,
-   "reply": "fefee0a4160200fd"
-  },
-  {
-   "name": "get_quick_split",
-   "frame": "fefea4e01a050045fd",
-   "class": "data",
-   "latency_ms": 3.7,
-   "reply": "fefee0a41a05004501fd"
-  },
-  {
-   "name": "get_ref_adjust",
-   "frame": "fefea4e01a050089fd",
-   "class": "data",
-   "latency_ms": 3.7,
-   "reply": "fefee0a41a0500890260fd"
-  },
-  {
-   "name": "get_repeater_shift",
-   "frame": "fefea4e00ffd",
-   "class": "data",
-   "latency_ms": 3.5,
-   "reply": "fefee0a40f00fd"
-  },
-  {
-   "name": "get_repeater_tone",
-   "frame": "fefea4e01642fd",
-   "class": "data",
-   "latency_ms": 3.4,
-   "reply": "fefee0a4164200fd"
-  },
-  {
-   "name": "get_repeater_tsql",
-   "frame": "fefea4e01643fd",
-   "class": "data",
-   "latency_ms": 3.3,
-   "reply": "fefee0a4164300fd"
-  },
-  {
-   "name": "get_rf_gain",
-   "frame": "fefea4e01402fd",
-   "class": "data",
-   "latency_ms": 2.6,
-   "reply": "fefee0a414020255fd"
-  },
-  {
-   "name": "get_rf_power",
-   "frame": "fefea4e0140afd",
-   "class": "data",
-   "latency_ms": 4.3,
-   "reply": "fefee0a4140a0255fd"
-  },
-  {
-   "name": "get_rit_frequency",
-   "frame": "fefea4e02100fd",
-   "class": "data",
-   "latency_ms": 4.4,
-   "reply": "fefee0a42100000000fd"
-  },
-  {
-   "name": "get_rit_status",
-   "frame": "fefea4e02101fd",
-   "class": "data",
-   "latency_ms": 2.9,
-   "reply": "fefee0a4210100fd"
-  },
-  {
-   "name": "get_rit_tx_status",
-   "frame": "fefea4e02102fd",
-   "class": "data",
-   "latency_ms": 3.7,
-   "reply": "fefee0a4210200fd"
-  },
-  {
-   "name": "get_s_meter",
-   "frame": "fefea4e01502fd",
-   "class": "data",
-   "latency_ms": 3.5,
-   "reply": "fefee0a415020000fd"
-  },
-  {
-   "name": "get_s_meter_sql_status",
-   "frame": "fefea4e01501fd",
-   "class": "data",
-   "latency_ms": 3.5,
-   "reply": "fefee0a4150101fd"
-  },
-  {
-   "name": "get_scope_center_type",
-   "frame": "fefea4e0271cfd",
-   "class": "data",
-   "latency_ms": 2.4,
-   "reply": "fefee0a4271c02fd"
-  },
-  {
-   "name": "get_scope_during_tx",
-   "frame": "fefea4e0271bfd",
-   "class": "data",
-   "latency_ms": 5.0,
-   "reply": "fefee0a4271b01fd"
-  },
-  {
-   "name": "get_scope_edge",
-   "frame": "fefea4e02716fd",
-   "class": "nak",
-   "latency_ms": 2.1,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "get_scope_fixed_edge",
-   "frame": "fefea4e0271efd",
-   "class": "nak",
-   "latency_ms": 2.2,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "get_scope_hold",
-   "frame": "fefea4e02717fd",
-   "class": "nak",
-   "latency_ms": 2.4,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "get_scope_main_sub",
-   "frame": "fefea4e02712fd",
-   "class": "data",
-   "latency_ms": 3.9,
-   "reply": "fefee0a4271200fd"
-  },
-  {
-   "name": "get_scope_mode",
-   "frame": "fefea4e02714fd",
-   "class": "nak",
-   "latency_ms": 2.2,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "get_scope_ref",
-   "frame": "fefea4e02719fd",
-   "class": "nak",
-   "latency_ms": 2.5,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "get_scope_single_dual",
-   "frame": "fefea4e02713fd",
-   "class": "data",
-   "latency_ms": 3.9,
-   "reply": "fefee0a4271300fd"
-  },
-  {
-   "name": "get_scope_span",
-   "frame": "fefea4e02715fd",
-   "class": "nak",
-   "latency_ms": 3.1,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "get_scope_speed",
-   "frame": "fefea4e0271afd",
-   "class": "nak",
-   "latency_ms": 2.4,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "get_scope_vbw",
-   "frame": "fefea4e0271dfd",
-   "class": "nak",
-   "latency_ms": 2.4,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "get_scope_wave",
-   "frame": "fefea4e02700fd",
-   "class": "nak",
-   "latency_ms": 2.9,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "get_selected_freq",
-   "frame": "fefea4e02500fd",
-   "class": "data",
-   "latency_ms": 3.3,
-   "reply": "fefee0a425000040071400fd"
-  },
-  {
-   "name": "get_selected_mode",
-   "frame": "fefea4e02600fd",
-   "class": "data",
-   "latency_ms": 3.1,
-   "reply": "fefee0a42600010001fd"
-  },
-  {
-   "name": "get_speech",
-   "frame": "fefea4e013fd",
-   "class": "nak",
-   "latency_ms": 3.2,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "get_split",
-   "frame": "fefea4e00ffd",
-   "class": "data",
-   "latency_ms": 4.1,
-   "reply": "fefee0a40f00fd"
-  },
-  {
-   "name": "get_squelch",
-   "frame": "fefea4e01403fd",
-   "class": "data",
-   "latency_ms": 3.8,
-   "reply": "fefee0a414030082fd"
-  },
-  {
-   "name": "get_ssb_tx_bandwidth",
-   "frame": "fefea4e01658fd",
-   "class": "data",
-   "latency_ms": 3.4,
-   "reply": "fefee0a4165801fd"
-  },
-  {
-   "name": "get_swr",
-   "frame": "fefea4e01512fd",
-   "class": "data",
-   "latency_ms": 2.7,
-   "reply": "fefee0a415120000fd"
-  },
-  {
-   "name": "get_system_date",
-   "frame": "fefea4e01a050165fd",
-   "class": "data",
-   "latency_ms": 1.8,
-   "reply": "fefee0a41a05016520261021fd"
-  },
-  {
-   "name": "get_system_time",
-   "frame": "fefea4e01a050166fd",
-   "class": "data",
-   "latency_ms": 1.9,
-   "reply": "fefee0a41a0501661224fd"
-  },
-  {
-   "name": "get_tone_freq",
-   "frame": "fefea4e01b00fd",
-   "class": "data",
-   "latency_ms": 10.2,
-   "reply": "fefee0a41b00000885fd"
-  },
-  {
-   "name": "get_tone_squelch_type",
-   "frame": "fefea4e0165dfd",
-   "class": "data",
-   "latency_ms": 2.5,
-   "reply": "fefee0a4165d00fd"
-  },
-  {
-   "name": "get_transceiver_id",
-   "frame": "fefea4e01900fd",
-   "class": "data",
-   "latency_ms": 2.5,
-   "reply": "fefee0a41900a4fd"
-  },
-  {
-   "name": "get_tsql_freq",
-   "frame": "fefea4e01b01fd",
-   "class": "data",
-   "latency_ms": 29.7,
-   "reply": "fefee0a41b01000885fd"
-  },
-  {
-   "name": "get_tuning_step",
-   "frame": "fefea4e010fd",
-   "class": "data",
-   "latency_ms": 13.4,
-   "reply": "fefee0a41003fd"
-  },
-  {
-   "name": "get_twin_peak_filter",
-   "frame": "fefea4e0164ffd",
-   "class": "data",
-   "latency_ms": 1.7,
-   "reply": "fefee0a4164f00fd"
-  },
-  {
-   "name": "get_tx_band_count",
-   "frame": "fefea4e01e00fd",
-   "class": "data",
-   "latency_ms": 1.9,
-   "reply": "fefee0a41e0013fd"
-  },
-  {
-   "name": "get_tx_band_edge",
-   "frame": "fefea4e01e01fd",
-   "class": "nak",
-   "latency_ms": 1.6,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "get_unselected_freq",
-   "frame": "fefea4e02501fd",
-   "class": "data",
-   "latency_ms": 2.9,
-   "reply": "fefee0a425010040070700fd"
-  },
-  {
-   "name": "get_unselected_mode",
-   "frame": "fefea4e02601fd",
-   "class": "data",
-   "latency_ms": 2.0,
-   "reply": "fefee0a42601010102fd"
-  },
-  {
-   "name": "get_usb_mod_level",
-   "frame": "fefea4e01a050116fd",
-   "class": "data",
-   "latency_ms": 1.9,
-   "reply": "fefee0a41a0501160128fd"
-  },
-  {
-   "name": "get_utc_offset",
-   "frame": "fefea4e01a050170fd",
-   "class": "data",
-   "latency_ms": 2.3,
-   "reply": "fefee0a41a050170000000fd"
-  },
-  {
-   "name": "get_various_squelch",
-   "frame": "fefea4e01505fd",
-   "class": "data",
-   "latency_ms": 3.2,
-   "reply": "fefee0a4150501fd"
-  },
-  {
-   "name": "get_vd_meter",
-   "frame": "fefea4e01515fd",
-   "class": "data",
-   "latency_ms": 4.3,
-   "reply": "fefee0a415150127fd"
-  },
-  {
-   "name": "get_vox",
-   "frame": "fefea4e01646fd",
-   "class": "data",
-   "latency_ms": 3.4,
-   "reply": "fefee0a4164600fd"
-  },
-  {
-   "name": "get_vox_delay",
-   "frame": "fefea4e01a050359fd",
-   "class": "data",
-   "latency_ms": 1.7,
-   "reply": "fefee0a41a05035902fd"
-  },
-  {
-   "name": "get_vox_gain",
-   "frame": "fefea4e01416fd",
-   "class": "data",
-   "latency_ms": 2.2,
-   "reply": "fefee0a414160138fd"
-  },
-  {
-   "name": "cmd29:get_freq:0",
-   "frame": "fefea4e0290003fd",
-   "class": "nak",
-   "latency_ms": 1.5,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "cmd29:get_freq:1",
-   "frame": "fefea4e0290103fd",
-   "class": "nak",
-   "latency_ms": 1.7,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "unknown:1a050999",
-   "frame": "fefea4e01a050999fd",
-   "class": "nak",
-   "latency_ms": 2.6,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "unknown:7f",
-   "frame": "fefea4e07ffd",
-   "class": "nak",
-   "latency_ms": 38.9,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "unknown:147e",
-   "frame": "fefea4e0147efd",
-   "class": "nak",
-   "latency_ms": 1.9,
-   "reply": "fefee0a4fafd"
-  },
-  {
-   "name": "unknown:277f",
-   "frame": "fefea4e0277ffd",
-   "class": "nak",
-   "latency_ms": 3.2,
-   "reply": "fefee0a4fafd"
-  }
+  {"name":"get_af_level","frame":"fefea4e01401fd","class":"data","latency_ms":4.4,"reply":"fefee0a414010082fd"},
+  {"name":"get_agc","frame":"fefea4e01612fd","class":"data","latency_ms":2.9,"reply":"fefee0a4161203fd"},
+  {"name":"get_agc_time_constant","frame":"fefea4e01a04fd","class":"data","latency_ms":3.7,"reply":"fefee0a41a0413fd"},
+  {"name":"get_alc","frame":"fefea4e01513fd","class":"data","latency_ms":4.2,"reply":"fefee0a415130000fd"},
+  {"name":"get_anti_vox_gain","frame":"fefea4e01417fd","class":"data","latency_ms":3.2,"reply":"fefee0a414170151fd"},
+  {"name":"get_attenuator","frame":"fefea4e011fd","class":"data","latency_ms":3.4,"reply":"fefee0a41100fd"},
+  {"name":"get_auto_notch","frame":"fefea4e01641fd","class":"data","latency_ms":3.6,"reply":"fefee0a4164100fd"},
+  {"name":"get_band_edge_freq","frame":"fefea4e002fd","class":"data","latency_ms":3.3,"reply":"fefee0a40200000300002d9999999901fd"},
+  {"name":"get_break_in","frame":"fefea4e01647fd","class":"data","latency_ms":2.4,"reply":"fefee0a4164702fd"},
+  {"name":"get_break_in_delay","frame":"fefea4e0140ffd","class":"data","latency_ms":3.3,"reply":"fefee0a4140f0128fd"},
+  {"name":"get_bsr","frame":"fefea4e01a01fd","class":"nak","latency_ms":3.5,"reply":"fefee0a4fafd"},
+  {"name":"get_civ_transceive","frame":"fefea4e01a050131fd","class":"data","latency_ms":3.1,"reply":"fefee0a41a05013101fd"},
+  {"name":"get_command_error_fa","frame":"fefea4e0fafd","class":"silence","latency_ms":2001.8,"reply":null},
+  {"name":"get_command_ok_fb","frame":"fefea4e0fbfd","class":"silence","latency_ms":2002.9,"reply":null},
+  {"name":"get_comp_meter","frame":"fefea4e01514fd","class":"error","latency_ms":0.1,"reply":null},
+  {"name":"get_compressor","frame":"fefea4e01644fd","class":"data","latency_ms":3.0,"reply":"fefee0a4164401fd"},
+  {"name":"get_compressor_level","frame":"fefea4e0140efd","class":"data","latency_ms":2.9,"reply":"fefee0a4140e0151fd"},
+  {"name":"get_csql","frame":"fefea4e01b07fd","class":"data","latency_ms":2.4,"reply":"fefee0a41b0700fd"},
+  {"name":"get_cw_pitch","frame":"fefea4e01409fd","class":"data","latency_ms":4.3,"reply":"fefee0a414090128fd"},
+  {"name":"get_dash_ratio","frame":"fefea4e01a050252fd","class":"data","latency_ms":3.3,"reply":"fefee0a41a05025230fd"},
+  {"name":"get_data1_mod_input","frame":"fefea4e01a050119fd","class":"data","latency_ms":3.3,"reply":"fefee0a41a05011901fd"},
+  {"name":"get_data_mode","frame":"fefea4e01a06fd","class":"data","latency_ms":3.3,"reply":"fefee0a41a060000fd"},
+  {"name":"get_data_off_mod_input","frame":"fefea4e01a050118fd","class":"data","latency_ms":3.2,"reply":"fefee0a41a05011802fd"},
+  {"name":"get_dial_lock","frame":"fefea4e01650fd","class":"data","latency_ms":3.9,"reply":"fefee0a4165000fd"},
+  {"name":"get_dtcs","frame":"fefea4e01b02fd","class":"data","latency_ms":3.0,"reply":"fefee0a41b02000023fd"},
+  {"name":"get_filter_shape","frame":"fefea4e01656fd","class":"data","latency_ms":3.3,"reply":"fefee0a4165601fd"},
+  {"name":"get_filter_width","frame":"fefea4e01a03fd","class":"data","latency_ms":6.4,"reply":"fefee0a41a0334fd"},
+  {"name":"get_freq","frame":"fefea4e003fd","class":"data","latency_ms":2.9,"reply":"fefee0a4030040071400fd"},
+  {"name":"get_freq_offset","frame":"fefea4e00dfd","class":"nak","latency_ms":2.4,"reply":"fefee0a4fafd"},
+  {"name":"get_id_meter","frame":"fefea4e01516fd","class":"data","latency_ms":3.0,"reply":"fefee0a415160000fd"},
+  {"name":"get_key_speed","frame":"fefea4e0140cfd","class":"data","latency_ms":4.0,"reply":"fefee0a4140c0085fd"},
+  {"name":"get_lan_mod_level","frame":"fefea4e01a050117fd","class":"data","latency_ms":3.2,"reply":"fefee0a41a0501170161fd"},
+  {"name":"get_manual_notch","frame":"fefea4e01648fd","class":"data","latency_ms":2.6,"reply":"fefee0a4164800fd"},
+  {"name":"get_manual_notch_width","frame":"fefea4e01657fd","class":"data","latency_ms":3.8,"reply":"fefee0a4165701fd"},
+  {"name":"get_mic_gain","frame":"fefea4e0140bfd","class":"data","latency_ms":4.0,"reply":"fefee0a4140b0179fd"},
+  {"name":"get_mode","frame":"fefea4e004fd","class":"data","latency_ms":2.9,"reply":"fefee0a4040101fd"},
+  {"name":"get_monitor","frame":"fefea4e01645fd","class":"data","latency_ms":3.4,"reply":"fefee0a4164500fd"},
+  {"name":"get_monitor_gain","frame":"fefea4e01415fd","class":"data","latency_ms":2.8,"reply":"fefee0a414150008fd"},
+  {"name":"get_nb","frame":"fefea4e01622fd","class":"data","latency_ms":4.1,"reply":"fefee0a4162201fd"},
+  {"name":"get_nb_depth","frame":"fefea4e01a050357fd","class":"data","latency_ms":5.4,"reply":"fefee0a41a05035707fd"},
+  {"name":"get_nb_level","frame":"fefea4e01412fd","class":"data","latency_ms":3.2,"reply":"fefee0a414120013fd"},
+  {"name":"get_nb_width","frame":"fefea4e01a050358fd","class":"data","latency_ms":2.0,"reply":"fefee0a41a0503580128fd"},
+  {"name":"get_notch_filter","frame":"fefea4e0140dfd","class":"data","latency_ms":2.2,"reply":"fefee0a4140d0128fd"},
+  {"name":"get_nr","frame":"fefea4e01640fd","class":"data","latency_ms":2.5,"reply":"fefee0a4164001fd"},
+  {"name":"get_nr_level","frame":"fefea4e01406fd","class":"data","latency_ms":3.1,"reply":"fefee0a414060072fd"},
+  {"name":"get_overflow_status","frame":"fefea4e01507fd","class":"data","latency_ms":2.8,"reply":"fefee0a4150700fd"},
+  {"name":"get_pbt_inner","frame":"fefea4e01407fd","class":"data","latency_ms":3.7,"reply":"fefee0a414070128fd"},
+  {"name":"get_pbt_outer","frame":"fefea4e01408fd","class":"data","latency_ms":3.6,"reply":"fefee0a414080128fd"},
+  {"name":"get_power_meter","frame":"fefea4e01511fd","class":"data","latency_ms":2.7,"reply":"fefee0a415110000fd"},
+  {"name":"get_preamp","frame":"fefea4e01602fd","class":"data","latency_ms":3.9,"reply":"fefee0a4160200fd"},
+  {"name":"get_quick_split","frame":"fefea4e01a050045fd","class":"data","latency_ms":3.7,"reply":"fefee0a41a05004501fd"},
+  {"name":"get_ref_adjust","frame":"fefea4e01a050089fd","class":"data","latency_ms":3.7,"reply":"fefee0a41a0500890260fd"},
+  {"name":"get_repeater_shift","frame":"fefea4e00ffd","class":"data","latency_ms":3.5,"reply":"fefee0a40f00fd"},
+  {"name":"get_repeater_tone","frame":"fefea4e01642fd","class":"data","latency_ms":3.4,"reply":"fefee0a4164200fd"},
+  {"name":"get_repeater_tsql","frame":"fefea4e01643fd","class":"data","latency_ms":3.3,"reply":"fefee0a4164300fd"},
+  {"name":"get_rf_gain","frame":"fefea4e01402fd","class":"data","latency_ms":2.6,"reply":"fefee0a414020255fd"},
+  {"name":"get_rf_power","frame":"fefea4e0140afd","class":"data","latency_ms":4.3,"reply":"fefee0a4140a0255fd"},
+  {"name":"get_rit_frequency","frame":"fefea4e02100fd","class":"data","latency_ms":4.4,"reply":"fefee0a42100000000fd"},
+  {"name":"get_rit_status","frame":"fefea4e02101fd","class":"data","latency_ms":2.9,"reply":"fefee0a4210100fd"},
+  {"name":"get_rit_tx_status","frame":"fefea4e02102fd","class":"data","latency_ms":3.7,"reply":"fefee0a4210200fd"},
+  {"name":"get_s_meter","frame":"fefea4e01502fd","class":"data","latency_ms":3.5,"reply":"fefee0a415020000fd"},
+  {"name":"get_s_meter_sql_status","frame":"fefea4e01501fd","class":"data","latency_ms":3.5,"reply":"fefee0a4150101fd"},
+  {"name":"get_scope_center_type","frame":"fefea4e0271cfd","class":"data","latency_ms":2.4,"reply":"fefee0a4271c02fd"},
+  {"name":"get_scope_during_tx","frame":"fefea4e0271bfd","class":"data","latency_ms":5.0,"reply":"fefee0a4271b01fd"},
+  {"name":"get_scope_edge","frame":"fefea4e02716fd","class":"nak","latency_ms":2.1,"reply":"fefee0a4fafd"},
+  {"name":"get_scope_fixed_edge","frame":"fefea4e0271efd","class":"nak","latency_ms":2.2,"reply":"fefee0a4fafd"},
+  {"name":"get_scope_hold","frame":"fefea4e02717fd","class":"nak","latency_ms":2.4,"reply":"fefee0a4fafd"},
+  {"name":"get_scope_main_sub","frame":"fefea4e02712fd","class":"data","latency_ms":3.9,"reply":"fefee0a4271200fd"},
+  {"name":"get_scope_mode","frame":"fefea4e02714fd","class":"nak","latency_ms":2.2,"reply":"fefee0a4fafd"},
+  {"name":"get_scope_ref","frame":"fefea4e02719fd","class":"nak","latency_ms":2.5,"reply":"fefee0a4fafd"},
+  {"name":"get_scope_single_dual","frame":"fefea4e02713fd","class":"data","latency_ms":3.9,"reply":"fefee0a4271300fd"},
+  {"name":"get_scope_span","frame":"fefea4e02715fd","class":"nak","latency_ms":3.1,"reply":"fefee0a4fafd"},
+  {"name":"get_scope_speed","frame":"fefea4e0271afd","class":"nak","latency_ms":2.4,"reply":"fefee0a4fafd"},
+  {"name":"get_scope_vbw","frame":"fefea4e0271dfd","class":"nak","latency_ms":2.4,"reply":"fefee0a4fafd"},
+  {"name":"get_scope_wave","frame":"fefea4e02700fd","class":"nak","latency_ms":2.9,"reply":"fefee0a4fafd"},
+  {"name":"get_selected_freq","frame":"fefea4e02500fd","class":"data","latency_ms":3.3,"reply":"fefee0a425000040071400fd"},
+  {"name":"get_selected_mode","frame":"fefea4e02600fd","class":"data","latency_ms":3.1,"reply":"fefee0a42600010001fd"},
+  {"name":"get_speech","frame":"fefea4e013fd","class":"nak","latency_ms":3.2,"reply":"fefee0a4fafd"},
+  {"name":"get_split","frame":"fefea4e00ffd","class":"data","latency_ms":4.1,"reply":"fefee0a40f00fd"},
+  {"name":"get_squelch","frame":"fefea4e01403fd","class":"data","latency_ms":3.8,"reply":"fefee0a414030082fd"},
+  {"name":"get_ssb_tx_bandwidth","frame":"fefea4e01658fd","class":"data","latency_ms":3.4,"reply":"fefee0a4165801fd"},
+  {"name":"get_swr","frame":"fefea4e01512fd","class":"data","latency_ms":2.7,"reply":"fefee0a415120000fd"},
+  {"name":"get_system_date","frame":"fefea4e01a050165fd","class":"data","latency_ms":1.8,"reply":"fefee0a41a05016520261021fd"},
+  {"name":"get_system_time","frame":"fefea4e01a050166fd","class":"data","latency_ms":1.9,"reply":"fefee0a41a0501661224fd"},
+  {"name":"get_tone_freq","frame":"fefea4e01b00fd","class":"data","latency_ms":10.2,"reply":"fefee0a41b00000885fd"},
+  {"name":"get_tone_squelch_type","frame":"fefea4e0165dfd","class":"data","latency_ms":2.5,"reply":"fefee0a4165d00fd"},
+  {"name":"get_transceiver_id","frame":"fefea4e01900fd","class":"data","latency_ms":2.5,"reply":"fefee0a41900a4fd"},
+  {"name":"get_tsql_freq","frame":"fefea4e01b01fd","class":"data","latency_ms":29.7,"reply":"fefee0a41b01000885fd"},
+  {"name":"get_tuning_step","frame":"fefea4e010fd","class":"data","latency_ms":13.4,"reply":"fefee0a41003fd"},
+  {"name":"get_twin_peak_filter","frame":"fefea4e0164ffd","class":"data","latency_ms":1.7,"reply":"fefee0a4164f00fd"},
+  {"name":"get_tx_band_count","frame":"fefea4e01e00fd","class":"data","latency_ms":1.9,"reply":"fefee0a41e0013fd"},
+  {"name":"get_tx_band_edge","frame":"fefea4e01e01fd","class":"nak","latency_ms":1.6,"reply":"fefee0a4fafd"},
+  {"name":"get_unselected_freq","frame":"fefea4e02501fd","class":"data","latency_ms":2.9,"reply":"fefee0a425010040070700fd"},
+  {"name":"get_unselected_mode","frame":"fefea4e02601fd","class":"data","latency_ms":2.0,"reply":"fefee0a42601010102fd"},
+  {"name":"get_usb_mod_level","frame":"fefea4e01a050116fd","class":"data","latency_ms":1.9,"reply":"fefee0a41a0501160128fd"},
+  {"name":"get_utc_offset","frame":"fefea4e01a050170fd","class":"data","latency_ms":2.3,"reply":"fefee0a41a050170000000fd"},
+  {"name":"get_various_squelch","frame":"fefea4e01505fd","class":"data","latency_ms":3.2,"reply":"fefee0a4150501fd"},
+  {"name":"get_vd_meter","frame":"fefea4e01515fd","class":"data","latency_ms":4.3,"reply":"fefee0a415150127fd"},
+  {"name":"get_vox","frame":"fefea4e01646fd","class":"data","latency_ms":3.4,"reply":"fefee0a4164600fd"},
+  {"name":"get_vox_delay","frame":"fefea4e01a050359fd","class":"data","latency_ms":1.7,"reply":"fefee0a41a05035902fd"},
+  {"name":"get_vox_gain","frame":"fefea4e01416fd","class":"data","latency_ms":2.2,"reply":"fefee0a414160138fd"},
+  {"name":"cmd29:get_freq:0","frame":"fefea4e0290003fd","class":"nak","latency_ms":1.5,"reply":"fefee0a4fafd"},
+  {"name":"cmd29:get_freq:1","frame":"fefea4e0290103fd","class":"nak","latency_ms":1.7,"reply":"fefee0a4fafd"},
+  {"name":"unknown:1a050999","frame":"fefea4e01a050999fd","class":"nak","latency_ms":2.6,"reply":"fefee0a4fafd"},
+  {"name":"unknown:7f","frame":"fefea4e07ffd","class":"nak","latency_ms":38.9,"reply":"fefee0a4fafd"},
+  {"name":"unknown:147e","frame":"fefea4e0147efd","class":"nak","latency_ms":1.9,"reply":"fefee0a4fafd"},
+  {"name":"unknown:277f","frame":"fefea4e0277ffd","class":"nak","latency_ms":3.2,"reply":"fefee0a4fafd"}
  ]
 }

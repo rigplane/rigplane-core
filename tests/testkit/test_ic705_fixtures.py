@@ -18,12 +18,19 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "ic705"
 RADIO = 0xA4
 CONTROLLER = 0xE0
 
-# Command bytes that key, tune, power, or write radio state; none may appear
-# in a recorded client request except what the production client sent on its
-# own (VFO A select at start, PTT and tuner state reads, PTT release and CW cancel at
-# shutdown, and the scope switches 27 10/11).
-_REFUSED = {0x00, 0x01, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0B, 0x0E, 0x17, 0x18, 0x1C}
-_CLIENT_OWN = {b"\x07\x00", b"\x17\xff", b"\x1c\x00", b"\x1c\x01", b"\x1c\x00\x00"}
+# Request bodies the capture may contain besides the probe's GET list: reads
+# the production client makes on its own, and the few writes it makes itself
+# (VFO A select at start, PTT release and CW cancel at shutdown, scope output
+# switches). Anything else, including any setter, fails the safety pin.
+_CLIENT_READS = {
+    bytes.fromhex(s)
+    for s in (
+        "1c00 1c01 2710 2711 271400 271500 271600 271700 271900 271a00 271d00 271e0101"
+    ).split()
+}
+_CLIENT_WRITES = {
+    bytes.fromhex(s) for s in ("0700 17ff 1c0000 271001 271101 271100").split()
+}
 _SCOPE_SWITCHES = {bytes.fromhex(s) for s in ("271001", "271101", "271100")}
 
 
@@ -45,11 +52,13 @@ def test_civ_pairs_are_wellformed_usb_frames() -> None:
 
 
 def test_no_recorded_request_transmits_or_writes() -> None:
+    answers = json.loads((FIXTURES / "probe_answers.json").read_text())["answers"]
+    probe_gets = {bytes.fromhex(a["frame"])[4:-1] for a in answers}
+    allowed = probe_gets | _CLIENT_READS | _CLIENT_WRITES
     for row in _rows():
-        if row["dir"] != "c2r":
-            continue
-        body = bytes.fromhex(row["frame"])[4:-1]
-        assert body[0] not in _REFUSED or body in _CLIENT_OWN, body.hex()
+        if row["dir"] == "c2r":
+            body = bytes.fromhex(row["frame"])[4:-1]
+            assert body in allowed, body.hex()
 
 
 def test_scope_window_has_whole_sweeps_and_the_documented_switches() -> None:

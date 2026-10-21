@@ -13,7 +13,7 @@
   "core_capture": {
     "opened_as": "2 ch, 48000 Hz, 20 ms blocks (device-native)",
     "delivered_as": "1 ch (requested 1)",
-    "rx_probe": {"bytes_delivered": 48000, "gap_frames": 0, "rms": 0.0, "note": "1 s probe during rigplane validate --read-only; digital silence at the time (no signal path active), not a statement about the radio's audio level"}
+    "rx_probe": {"bytes_delivered": 48000, "gap_frames": 0, "rms": 0.0, "note": "0.5 s probe (25 frames of 20 ms) during rigplane validate --read-only; digital silence. Later checks on the same host showed the host denies microphone access to ssh-started processes, so this zero is not a statement about the radio's audio level"}
   },
   "source": "system_profiler SPAudioDataType on the capture host; validate-readonly.json audio.rx.rms check",
   "date": "2026-10-21"
