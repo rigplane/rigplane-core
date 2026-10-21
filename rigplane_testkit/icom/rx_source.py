@@ -88,22 +88,27 @@ class WavSource:
     @staticmethod
     def _load(path: str | Path) -> bytes:
         """Read the WAV and convert it to 48 kHz stereo s16le bytes."""
-        with wave.open(str(path), "rb") as w:
-            channels = w.getnchannels()
-            width = w.getsampwidth()
-            rate = w.getframerate()
-            frames = w.getnframes()
-            if w.getcomptype() != "NONE":
-                raise ValueError(f"{path}: compressed WAV (need PCM)")
-            if width != 2:
-                raise ValueError(f"{path}: {width * 8}-bit samples (need 16-bit PCM)")
-            if channels not in (1, 2):
-                raise ValueError(f"{path}: {channels} channels (need 1 or 2)")
-            if not 8000 <= rate <= 96000:
-                raise ValueError(f"{path}: sample rate {rate} (need 8000..96000)")
-            if frames < 1:
-                raise ValueError(f"{path}: no frames (empty file)")
-            raw = w.readframes(frames)
+        try:
+            with wave.open(str(path), "rb") as w:
+                channels = w.getnchannels()
+                width = w.getsampwidth()
+                rate = w.getframerate()
+                frames = w.getnframes()
+                if w.getcomptype() != "NONE":
+                    raise ValueError(f"{path}: compressed WAV (need PCM)")
+                if width != 2:
+                    raise ValueError(
+                        f"{path}: {width * 8}-bit samples (need 16-bit PCM)"
+                    )
+                if channels not in (1, 2):
+                    raise ValueError(f"{path}: {channels} channels (need 1 or 2)")
+                if not 8000 <= rate <= 96000:
+                    raise ValueError(f"{path}: sample rate {rate} (need 8000..96000)")
+                if frames < 1:
+                    raise ValueError(f"{path}: no frames (empty file)")
+                raw = w.readframes(frames)
+        except (wave.Error, EOFError) as exc:
+            raise ValueError(f"{path}: {exc}") from exc
 
         src = np.frombuffer(raw, dtype="<i2").astype(np.float64)
         # max(1, ...): a 1-frame 96 kHz file would round to zero frames.

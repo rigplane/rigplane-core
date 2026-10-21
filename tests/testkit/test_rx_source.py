@@ -136,6 +136,42 @@ def test_rejects_unsupported_wav(
         WavSource(p)
 
 
+def test_rejects_float_format_wav(tmp_path: Path) -> None:
+    """IEEE-float WAV (format tag 3) raises ValueError, not wave.Error."""
+    p = tmp_path / "float.wav"
+    frames = 8
+    data = bytes(4 * frames)  # 32-bit float silence
+    p.write_bytes(
+        struct.pack(
+            "<4sI4s4sIHHIIHH4sI",
+            b"RIFF",
+            36 + len(data),
+            b"WAVE",
+            b"fmt ",
+            16,
+            3,  # IEEE float, not PCM
+            1,
+            8000,
+            8000 * 4,
+            4,
+            32,
+            b"data",
+            len(data),
+        )
+        + data
+    )
+    with pytest.raises(ValueError):
+        WavSource(p)
+
+
+def test_rejects_non_wav_bytes(tmp_path: Path) -> None:
+    """A file that is not a WAV at all raises ValueError, not wave.Error."""
+    p = tmp_path / "nope.wav"
+    p.write_bytes(b"not a wav")
+    with pytest.raises(ValueError):
+        WavSource(p)
+
+
 def test_rejects_missing_file_and_bad_arguments(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         WavSource(tmp_path / "does-not-exist.wav")

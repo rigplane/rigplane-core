@@ -422,9 +422,9 @@ class AudioPortMixin:
     def _audio_queue_rx_burst(self, addr: tuple[str, int], client_id: int) -> None:
         """Build one burst now and schedule only the three sends.
 
-        Building in the loop iteration (in position order, stepping both
-        sequences) keeps catch-up iterations queued together from
-        interleaving fragments of two bursts.
+        Each burst's three fragments are built together in order, so
+        every fragment's content and sequence number belong to one
+        burst (the sends may still be scheduled late).
         """
         src = self._rx_source
         burst = src.read_burst() if src is not None else None
