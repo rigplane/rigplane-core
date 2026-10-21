@@ -122,7 +122,7 @@ function buildCodexVerdict({codex, unresolved, backup, headSha, gptBuilt = false
   if (codexCounts) {
     return {
       state: 'success',
-      description: `Codex reviewed ${short} (${codex.via}); no open P1/P2 threads.`,
+      description: `Codex reviewed ${short} (${codex.via}); no open P0-P2 threads.`,
     };
   }
   if (backup.pass) {

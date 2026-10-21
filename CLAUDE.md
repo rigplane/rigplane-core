@@ -149,8 +149,8 @@ before merge; the implementation agent never reviews its own work.
 
 Codex (`chatgpt-codex-connector[bot]`) is the primary reviewer. The gate is
 green when Codex reviewed the exact head SHA and every Codex P0-P2 review
-thread is resolved, or, when Codex has not reviewed it within about 20 minutes,
-when the cross-family backup reviewer posted the exact-head `Agent Review:
+thread is resolved, or, when Codex did not review that head (the lane script
+waits about 20 minutes for it first), when the cross-family backup reviewer posted the exact-head `Agent Review:
 PASS` directive below (never while a Codex P0-P2 thread is open). A push needs
 a new Codex review, requested with a `@codex review` comment from a person's
 account (the workflow cannot request it). A PR built by a GPT/Codex-family
