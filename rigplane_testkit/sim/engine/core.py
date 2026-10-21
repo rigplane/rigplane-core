@@ -316,8 +316,7 @@ class SimEngine:
         return rng
 
     def apply(self, op: object) -> Outcome:
-        """Validate ``op``; mutate state only on Ok. One record per apply
-        (unknown ops included) — unless the injected clock raises."""
+        """Validate; mutate only on Ok. One record per apply unless the clock raises."""
         return self._apply_recorded(op)[0]
 
     def read(self, name: str, receiver: int | None = None) -> Outcome:
@@ -350,6 +349,9 @@ class SimEngine:
 
     def schedule(self, at_s: float, event: object) -> None:
         """Queue at absolute engine time; equal times keep insertion order."""
+        # Reject here: an unknown queued event would block later events forever.
+        if not isinstance(event, (ScheduledOp, Marker)):
+            raise TypeError(f"unknown event: {type(event).__name__}")
         self._clock_now()
         at = float(at_s)
         if not isfinite(at) or at < self._now:
