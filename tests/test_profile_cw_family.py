@@ -40,7 +40,9 @@ def test_profile_with_cw_mode_declares_cw_family(path: Path) -> None:
     if not cw_modes:
         pytest.skip(f"{path.name} lists no CW mode")
     families = modes.get("families")
-    assert isinstance(families, dict), f"{path.name}: CW modes {cw_modes} but no families"
+    assert isinstance(families, dict), (
+        f"{path.name}: CW modes {cw_modes} but no families"
+    )
     assert "cw" in families, f"{path.name}: CW modes {cw_modes} but no families.cw"
     assert sorted(families["cw"]) == sorted(cw_modes), path.name
 
