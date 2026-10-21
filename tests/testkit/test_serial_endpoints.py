@@ -116,11 +116,13 @@ async def test_production_open_and_link_identity_through_socket_url() -> None:
     link = SerialCivLink(device=endpoint.device_url, baudrate=115200)
     try:
         await link.connect()
-        assert fake.open_count == 1  # one TCP client, its own fake connection
         await link.send_written(_ident(fake))
         reply = await _link_reply(link)
         assert reply is not None
         assert reply.data == fake.model_id
+        # The reply proves the server side opened its fake connection; at
+        # bare TCP connect time the accept callback may not have run yet.
+        assert fake.open_count == 1  # one TCP client, its own fake connection
     finally:
         await link.disconnect()
         await endpoint.stop()
