@@ -249,10 +249,14 @@ def test_banner_fidelity_is_A_for_the_committed_ledger() -> None:
 
 
 @pytest.mark.parametrize("ledger_request", ["ID;", "QQ;"])
-def test_banner_fidelity_drops_to_B_on_a_stale_ledger_entry(
-    tmp_path, ledger_request
+@pytest.mark.parametrize(("tier", "expected"), [("A", "B"), ("B", "B"), ("C", "C")])
+def test_banner_fidelity_never_upgrades_on_a_stale_ledger_entry(
+    tmp_path, ledger_request, tier, expected
 ) -> None:
     fake = _fake()
+    fake._profile = replace(
+        fake._profile, sim=replace(fake._profile.sim, fidelity=tier)
+    )
     ledger = tmp_path / "ledger.json"
     ledger.write_text(
         json.dumps({ledger_request: {"recorded": "ID0840;", "model": "ID9999;"}}),
@@ -261,7 +265,7 @@ def test_banner_fidelity_drops_to_B_on_a_stale_ledger_entry(
     assert adapter.unledgered_divergences(
         lambda table: adapter._fresh_seeded_model(fake, table), fake._recorded, ledger
     ) == {ledger_request: None}
-    assert fidelity_for_banner(fake, ledger) == "B"
+    assert fidelity_for_banner(fake, ledger) == expected
 
 
 def test_banner_fidelity_is_A_with_no_divergences_or_ledger_entries(tmp_path) -> None:
@@ -270,8 +274,14 @@ def test_banner_fidelity_is_A_with_no_divergences_or_ledger_entries(tmp_path) ->
     assert fidelity_for_banner(_fake(), ledger) == "A"
 
 
-def test_banner_fidelity_drops_to_B_on_an_unledgered_divergence(monkeypatch) -> None:
+@pytest.mark.parametrize(("tier", "expected"), [("A", "B"), ("B", "B"), ("C", "C")])
+def test_banner_fidelity_never_upgrades_on_an_unledgered_divergence(
+    monkeypatch, tier, expected
+) -> None:
     fake = _fake()
+    fake._profile = replace(
+        fake._profile, sim=replace(fake._profile.sim, fidelity=tier)
+    )
     real_fresh = adapter._fresh_seeded_model
 
     def _mutating(fake: YaesuCatSerialFake, table) -> object:
@@ -287,7 +297,7 @@ def test_banner_fidelity_drops_to_B_on_an_unledgered_divergence(monkeypatch) -> 
         return model
 
     monkeypatch.setattr(adapter, "_fresh_seeded_model", _mutating)
-    assert fidelity_for_banner(fake, LEDGER) == "B"
+    assert fidelity_for_banner(fake, LEDGER) == expected
 
 
 @pytest.mark.parametrize(
@@ -340,12 +350,16 @@ def test_recording_requires_request_reply_evidence(tmp_path, content) -> None:
     assert str(recording) in str(error.value)
 
 
-def test_empty_table_cannot_pass_conformance_or_banner() -> None:
+@pytest.mark.parametrize(("tier", "expected"), [("A", "B"), ("B", "B"), ("C", "C")])
+def test_empty_table_cannot_pass_conformance_or_upgrade_banner(tier, expected) -> None:
     fake = _fake()
+    fake._profile = replace(
+        fake._profile, sim=replace(fake._profile.sim, fidelity=tier)
+    )
     fake._recorded = RecordedCatAnswerTable()
     with pytest.raises(ValueError, match="no request/reply evidence"):
         adapter.recorded_divergences(fake.model, fake._recorded)
-    assert fidelity_for_banner(fake, LEDGER) == "B"
+    assert fidelity_for_banner(fake, LEDGER) == expected
 
 
 def test_adapter_imports_only_the_allowed_modules() -> None:
@@ -561,6 +575,8 @@ async def test_retirement_drops_pending_delivery(retire) -> None:
         del fake
         gc.collect()
         assert fake_ref() is None
+    if retire != "gc":
+        assert not fake._connections
     assert handle.cancelled()
     assert connection._timer is None
     assert not connection._pending
@@ -573,6 +589,57 @@ async def test_retirement_drops_pending_delivery(retire) -> None:
     else:
         assert reader.at_eof()
     writer.close()
+
+
+@pytest.mark.parametrize("retire", ["close", "fail"])
+async def test_retired_sessions_are_not_retained_by_live_fake(retire) -> None:
+    fake = _fake()
+    for _ in range(5):
+        reader, writer = await fake.open_serial_connection()
+        connection_ref = weakref.ref(writer._connection)
+        assert len(fake._connections) == 1
+        if retire == "close":
+            writer.close()
+        else:
+            writer._connection.fail(OSError("direct failure"))
+        assert not fake._connections
+        del reader, writer
+        gc.collect()
+        assert connection_ref() is None
+    assert fake.open_count == 5
+
+
+async def test_closed_session_keeps_eof_after_repeated_retirement_and_vanish() -> None:
+    fake = _fake()
+    reader, writer = await fake.open_serial_connection()
+    writer.close()
+    writer.close()
+    writer._connection.fail(OSError("late failure"))
+    fake._vanish_now()
+    assert not fake._connections
+    assert writer._connection.error is None
+    assert reader.exception() is None
+    assert reader.at_eof()
+    assert await reader.read() == b""
+
+
+async def test_vanish_fails_every_live_session_and_retires_them() -> None:
+    fake = _fake()
+    sessions = [await fake.open_serial_connection() for _ in range(3)]
+    assert len(fake._connections) == len(sessions)
+    fake._vanish_now()
+    assert not fake._connections
+    for reader, writer in sessions:
+        error = reader.exception()
+        assert isinstance(error, OSError)
+        assert error.errno == adapter._VANISH_ERRNO
+        with pytest.raises(OSError) as raised:
+            await reader.read()
+        assert raised.value is error
+        writer._connection.fail(OSError("late failure"))
+        writer.close()
+        writer.close()
+        assert reader.exception() is error
 
 
 @pytest.mark.parametrize("milliseconds", [None, 0.0])

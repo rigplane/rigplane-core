@@ -175,15 +175,17 @@ def _fresh_seeded_model(
 
 
 def fidelity_for_banner(fake: YaesuCatSerialFake, ledger_path: Path) -> str:
-    """The profile's fidelity tier, dropped to ``"B"`` when a fresh model
+    """The profile's fidelity tier, capped at ``"B"`` when a fresh model
     seeded from the recording has a divergence not exactly covered by
     *ledger_path*, a stale ledger key, or an empty table (MOR-3598)."""
+    tier = fake._profile.sim.fidelity
+    fallback = "B" if tier == "A" else tier
     if not fake._recorded.requests():
-        return "B"
+        return fallback
     divergences = unledgered_divergences(
         lambda table: _fresh_seeded_model(fake, table), fake._recorded, ledger_path
     )
-    return fake._profile.sim.fidelity if not divergences else "B"
+    return tier if not divergences else fallback
 
 
 def _finite_delay(value: float, field: str, *, clamp_negative: bool = False) -> float:
@@ -335,7 +337,7 @@ class YaesuCatSerialFake:
     def _vanish_now(self) -> None:
         self._vanished = True
         error = OSError(_VANISH_ERRNO, "Yaesu CAT fake: USB device disappeared")
-        for connection in self._connections:
+        for connection in tuple(self._connections):
             connection.fail(error)
 
     def _reappear_now(self) -> None:
@@ -403,23 +405,31 @@ class _CatConnection:
         self.error: OSError | None = None
 
     def fail(self, error: OSError) -> None:
-        """Kill this session: pending and later reads raise *error*."""
-        self._retire()
+        """Fail an open session; leave an already retired session unchanged."""
+        if not self._retire():
+            return
         self.error = error
         self.reader.set_exception(error)
 
     def _fake_gone(self, _reference: weakref.ReferenceType[YaesuCatSerialFake]) -> None:
         self.close()
 
-    def _retire(self) -> None:
+    def _retire(self) -> bool:
+        if self._closed:
+            return False
         self._closed = True
         if self._timer is not None:
             self._timer.cancel()
             self._timer = None
         self._pending.clear()
+        fake = self._fake()
+        if fake is not None:
+            fake._connections.remove(self)
+        return True
 
     def close(self) -> None:
-        self._retire()
+        if not self._retire():
+            return
         if self.error is None:
             self.reader.feed_eof()
 
