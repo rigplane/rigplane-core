@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from rigplane.commands.command_spec import CatCommandSpec
@@ -34,7 +34,32 @@ _TERMINATOR = b";"
 # longer unterminated run is garbage, not a line waiting for its ';'.
 _MAX_LINE = 64
 
-_FIELD = re.compile(r"\{[^{}]*\}")
+# A template field: ``{name}`` is one letter or digit, ``{name:09d}`` is
+# nine digits. Any other format spec does not match and so never allows a line.
+_FIELD = re.compile(r"\{[^{}:]*(?::0?(\d*)d)?\}")
+
+# The only writes a capture may be allowed to forward: re-tuning the receive
+# VFOs. Nothing here keys the transmitter or touches power or any setting.
+RX_TUNING_WRITES = (
+    "set_freq",
+    "set_freq_sub",
+    "set_mode",
+    "set_mode_sub",
+    "set_filter_width",
+)
+
+
+def _template_regex(template: str) -> re.Pattern[str]:
+    """The regex matching exactly the wire lines one command template makes."""
+    parts: list[str] = []
+    pos = 0
+    for field in _FIELD.finditer(template):
+        parts.append(re.escape(template[pos : field.start()]))
+        width = field.group(1)
+        parts.append(f"[0-9]{{{width}}}" if width else "[0-9A-Za-z]")
+        pos = field.end()
+    parts.append(re.escape(template[pos:]))
+    return re.compile("".join(parts))
 
 
 def cat_lines(path: str | Path) -> Iterator[tuple[float, str, str]]:
@@ -70,29 +95,55 @@ class CatReadOnlyGuard:
     ``OS0;`` is a read while ``OS01;`` — the write that shares its prefix —
     is not. Build one per rig profile with :meth:`from_config`; hand
     :meth:`new_filter` to ``SerialCivRecorder(client_filter=...)``.
+
+    A capture that must re-tune the receiver (a calibration clip on another
+    band or mode) may additionally allow the named :data:`RX_TUNING_WRITES`;
+    their templates are matched field by field (``FA{freq:09d};`` is ``FA``
+    plus exactly nine digits). No other write can be allowed.
     """
 
-    def __init__(self, read_templates: frozenset[str]) -> None:
+    def __init__(
+        self,
+        read_templates: frozenset[str],
+        write_templates: frozenset[str] = frozenset(),
+    ) -> None:
         if not read_templates:
             raise ValueError("the profile declares no CAT read commands")
         self._allowed = tuple(
-            re.compile("[0-9A-Za-z]".join(re.escape(p) for p in _FIELD.split(tpl)))
-            for tpl in sorted(read_templates)
+            _template_regex(tpl) for tpl in sorted(read_templates | write_templates)
         )
 
     @classmethod
-    def from_config(cls, config: RigConfig) -> CatReadOnlyGuard:
-        """The guard for the READ templates of one loaded rig profile."""
+    def from_config(
+        cls, config: RigConfig, allow_writes: Iterable[str] = ()
+    ) -> CatReadOnlyGuard:
+        """The guard for the READ templates of one loaded rig profile.
+
+        ``allow_writes`` names :data:`RX_TUNING_WRITES` commands to allow too;
+        any other name, or a name the profile has no write template for, is a
+        ``ValueError``.
+        """
+        writes: set[str] = set()
+        for name in allow_writes:
+            spec = config.commands.get(name)
+            if (
+                name not in RX_TUNING_WRITES
+                or not isinstance(spec, CatCommandSpec)
+                or not spec.write
+            ):
+                raise ValueError(f"{name!r} is not an allowable RX tuning write")
+            writes.add(spec.write)
         return cls(
             frozenset(
                 spec.read
                 for spec in config.commands.values()
                 if isinstance(spec, CatCommandSpec) and spec.read
-            )
+            ),
+            frozenset(writes),
         )
 
     def allows(self, line: bytes) -> bool:
-        """True when *line* (with its ``;``) is exactly one profile read."""
+        """True when *line* (with its ``;``) is exactly one allowed command."""
         try:
             text = line.decode("ascii")
         except UnicodeDecodeError:
@@ -134,4 +185,4 @@ class CatLineFilter:
         return lines
 
 
-__all__ = ["CatLineFilter", "CatReadOnlyGuard", "cat_lines"]
+__all__ = ["CatLineFilter", "CatReadOnlyGuard", "RX_TUNING_WRITES", "cat_lines"]

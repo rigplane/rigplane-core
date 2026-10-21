@@ -6,6 +6,17 @@ surface so callers can write ``from rigplane_testkit.yaesu import FakeCatRadio``
 """
 
 from rigplane_testkit.yaesu.cat_fake import FakeCatRadio
-from rigplane_testkit.yaesu.recorder import CatLineFilter, CatReadOnlyGuard, cat_lines
+from rigplane_testkit.yaesu.recorder import (
+    RX_TUNING_WRITES,
+    CatLineFilter,
+    CatReadOnlyGuard,
+    cat_lines,
+)
 
-__all__ = ["CatLineFilter", "CatReadOnlyGuard", "FakeCatRadio", "cat_lines"]
+__all__ = [
+    "RX_TUNING_WRITES",
+    "CatLineFilter",
+    "CatReadOnlyGuard",
+    "FakeCatRadio",
+    "cat_lines",
+]

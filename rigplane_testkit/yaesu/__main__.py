@@ -18,13 +18,13 @@ from rigplane.profiles.rig_loader import load_rig
 
 from rigplane_testkit.serial.recorder import SerialCivRecorder
 from rigplane_testkit.yaesu.cat_fake import _RIGS_DIR
-from rigplane_testkit.yaesu.recorder import CatReadOnlyGuard
+from rigplane_testkit.yaesu.recorder import RX_TUNING_WRITES, CatReadOnlyGuard
 
 
 async def _record(args: argparse.Namespace) -> None:
     profile = Path(args.profile)
     config = load_rig(profile if profile.suffix else _RIGS_DIR / f"{args.profile}.toml")
-    guard = CatReadOnlyGuard.from_config(config)
+    guard = CatReadOnlyGuard.from_config(config, args.allow_write)
     rec = SerialCivRecorder(
         args.device,
         args.out,
@@ -57,6 +57,14 @@ def main() -> None:
     )
     rec.add_argument(
         "--baud", type=int, default=0, help="baud rate (default: the profile's)"
+    )
+    rec.add_argument(
+        "--allow-write",
+        action="append",
+        default=[],
+        choices=RX_TUNING_WRITES,
+        help="also forward this receive-tuning write (repeatable); all other "
+        "writes stay blocked",
     )
     rec.add_argument("--listen-host", default="127.0.0.1", help="TCP bind address")
     rec.add_argument(
