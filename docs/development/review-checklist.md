@@ -45,8 +45,10 @@ valid answer; skipping the question is not.
 2. **Failure paths.** For every call that can raise, time out or return an
    error: is it caught where the caller expects an outcome (a failed receipt, an
    abort), not a traceback? When many steps must all run (restore settings,
-   remove files), does one failed step skip the rest? Use one `try/finally` per
-   step.
+   remove files), does one failed step skip the rest? Every step must be attempted even
+   when an earlier one fails: nest the `finally` blocks, or run each step and
+   collect its exception, then re-raise after all of them ran. A failed key-up
+   must not skip restoring power or settings.
 3. **State restored or cleaned up on interrupt.** Can SIGTERM, SIGINT, kill or
    a crash arrive between any two statements? Are signal handlers installed
    before the first side effect? Does `BaseException` (cancellation, a custom
@@ -129,9 +131,11 @@ valid answer; skipping the question is not.
 - Read every thread of the current head before changing anything. Group them by
   root cause, fix the class (grep for siblings), answer each thread, and push
   all fixes in one commit.
-- Fix every valid P0-P2 finding with a test, or answer it with evidence that it
-  is not a bug, before resolving the thread. A false documentation claim is a
-  P2 and gets fixed. A builder never defers a valid P0-P2 to a ticket.
+- Fix every valid P0-P2 finding, or answer it with evidence that it is not a
+  bug, before resolving the thread. A behavior fix gets a regression test. A
+  false documentation claim is a P2 and gets corrected in place; a wrong
+  PR-body or comment claim is corrected by editing the PR body or comment, with
+  no commit. A builder never defers a valid P0-P2 to a ticket.
 - Ticket-only follow-ups are for P3 suggestions (naming, style, refactors),
   which never block. A valid P0-P2 finding is never resolved by a ticket, for
   internal test and bench tooling too: a wrong verdict, dirty state, lost data,
