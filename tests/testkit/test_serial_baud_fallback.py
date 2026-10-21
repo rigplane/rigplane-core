@@ -11,6 +11,7 @@ the identity gate; only the answer window is compressed.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from functools import partial
@@ -138,7 +139,7 @@ async def test_all_bauds_silent_names_the_cause_and_stays_bounded(
             "another program",
             "different speed",
             "switched off",
-            "restart the radio",
+            "Restart the radio",
             "CI-V USB Baud Rate",
         ):
             assert fragment in message
@@ -173,36 +174,52 @@ async def test_low_found_baud_warns_that_scope_needs_115200(
         await radio.disconnect()
 
 
-class _RefusingPort:
+class _FlakyPort:
+    """A port that takes a rate and then raises, or refuses some rates."""
+
+    def __init__(self, refuse: set[int], fail_reset: bool = False) -> None:
+        self._baud = 115200
+        self._refuse = refuse
+        self._fail_reset = fail_reset
+
     @property
     def baudrate(self) -> int:
-        return 19200
+        return self._baud
 
     @baudrate.setter
     def baudrate(self, value: int) -> None:
-        raise OSError("port refused the baud")
+        if value in self._refuse:
+            self._baud = value  # pyserial caches the rate before reconfiguring
+            raise OSError("port refused the baud")
+        self._baud = value
+
+    def reset_input_buffer(self) -> None:
+        if self._fail_reset:
+            raise OSError("reset failed")
 
 
-async def test_link_retunes_only_a_live_port_that_takes_the_rate() -> None:
+async def test_link_retune_contract() -> None:
     fake = ic7300_usb_fake(answers_at_baud=_PROFILE_BAUD)
     link = SerialCivLink(
         device=_DEVICE,
-        baudrate=_PROFILE_BAUD,
-        open_serial_connection=partial(
-            fake.open_serial_connection, baudrate=_PROFILE_BAUD
-        ),
+        open_serial_connection=partial(fake.open_serial_connection, baudrate=115200),
     )
     assert not link.set_baudrate(19200)  # closed: nothing to retune
     await link.connect()
     try:
-        assert link.set_baudrate(19200)
-        assert link._writer.transport.serial.baudrate == 19200
-        link._writer.transport.serial = _RefusingPort()
-        assert not link.set_baudrate(9600)  # the port refused: rate unchanged
-        assert link._baudrate == 19200
+        link._frames.put_nowait(b"old-rate frame")
+        assert link.set_baudrate(19200) and link._baudrate == 19200
+        assert link._frames.empty()  # input from the old rate is dropped
+        port = link._writer.transport.serial = _FlakyPort({9600})
+        port.baudrate = 19200
+        assert not link.set_baudrate(9600)  # refused: rolled back to the old rate
+        assert port.baudrate == 19200 and link._baudrate == 19200 and link.healthy
+        port._fail_reset = True
+        assert link.set_baudrate(4800) and link._baudrate == 4800  # best effort
+        port._refuse = {1200, 4800}
+        assert not link.set_baudrate(1200) and not link.healthy  # no rollback
     finally:
         await link.disconnect()
-
     plain = SerialCivLink(
         device=_DEVICE, open_serial_connection=CivSerialFake().open_serial_connection
     )
@@ -211,3 +228,74 @@ async def test_link_retunes_only_a_live_port_that_takes_the_rate() -> None:
         assert not plain.set_baudrate(19200)  # no pyserial object behind it
     finally:
         await plain.disconnect()
+
+
+async def test_wrong_model_at_a_fallback_baud_is_held_without_a_connected_claim() -> (
+    None
+):
+    fake = ic7300_usb_fake(answers_at_baud=_RECORDED_BAUD)
+    fake.wrong_model_id()
+    radio = _radio(fake)
+    try:
+        await radio.connect()
+
+        assert not radio.connected
+        assert radio.connection_identity is not None
+        assert radio.connection_identity.status is RadioIdentityStatus.IDENTITY_MISMATCH
+        assert radio.serial_baud_notice is None
+    finally:
+        await radio.disconnect()
+
+
+async def test_notice_is_dropped_with_the_connection() -> None:
+    radio = _radio(ic7300_usb_fake(answers_at_baud=_RECORDED_BAUD))
+    await radio.connect()
+    assert radio.serial_baud_notice is not None
+    await radio.disconnect()
+    assert radio.serial_baud_notice is None
+
+
+async def test_retired_attempt_does_not_sweep() -> None:
+    """A disconnect during the first read leaves the link to its successor."""
+    fake = ic7300_usb_fake(answers_at_baud=57600)
+    radio = _radio(fake)
+    first_read = radio._read_serial_identity_payload
+
+    async def read_then_retire() -> bytes | None:
+        result = await first_read()
+        radio._owner_stop_epoch += 1  # what disconnect() does first
+        return result
+
+    radio._read_serial_identity_payload = read_then_retire  # type: ignore[method-assign]
+    try:
+        await radio.connect()
+        assert set(fake.frame_bauds) == {_PROFILE_BAUD}  # no retune, no query
+        assert radio.serial_baudrate == _PROFILE_BAUD
+    finally:
+        await radio.disconnect()
+
+
+async def test_interrupted_sweep_puts_the_starting_baud_back() -> None:
+    fake = ic7300_usb_fake(answers_at_baud=57600)
+    radio = _radio(fake)
+    try:
+        # 0.2 s first read, then the cancel lands inside the 19200 trial read.
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(radio.connect(), timeout=0.3)
+        assert _SWEEP[0] in fake.frame_bauds  # the trial query was sent
+        assert radio.serial_baudrate == _PROFILE_BAUD
+        assert radio._serial_civ_link._baudrate == _PROFILE_BAUD
+    finally:
+        await radio.disconnect()
+
+
+async def test_refused_return_reports_the_baud_the_port_really_has() -> None:
+    radio = _radio(ic7300_usb_fake(answers_at_baud=57600))
+    link = radio._serial_civ_link
+    retune = link.set_baudrate
+    link.set_baudrate = lambda baud: baud != _PROFILE_BAUD and retune(baud)  # type: ignore[method-assign]
+    try:
+        await radio.connect()
+        assert radio.serial_baudrate == _SWEEP[-1] == link._baudrate
+    finally:
+        await radio.disconnect()
