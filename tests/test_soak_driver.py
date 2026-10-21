@@ -49,7 +49,9 @@ radio disconnect/connect, and pins:
   settle's own bound adds no task to the counts it takes: on the live
   loop a task delta exactly at tolerance must still settle, measured by
   both count routes with the CI interpreter's task-wrapping
-  ``wait_for`` semantics emulated (Python 3.11; 3.12+ await in-task).
+  ``wait_for`` semantics emulated (Python 3.11; 3.12+ await in-task);
+ * the probe's own instruments cannot mask a real leak (MOR-3575 round
+   2), over a live HTTP probe path with per-route assertions.
 """
 
 from __future__ import annotations
@@ -65,6 +67,7 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
+import aiohttp
 
 from scripts.soak import soak_driver
 
@@ -1401,7 +1404,8 @@ def _module_linger(module_name: str) -> Any:
 
 class _OverlayWeb:
     """A minimal web object the overlay can install on (methods live on
-    the class, so ``install`` sees a clean instance ``vars``)."""
+    the class, so ``install`` sees a clean instance ``vars``);
+    ``_serve_runtime`` writes a real HTTP response over the socket."""
 
     _radio = None
     _reconnects_total = 0
@@ -1409,8 +1413,18 @@ class _OverlayWeb:
     def _runtime_process_payload(self) -> dict[str, Any]:
         return {"rssBytes": 1, "openFds": 9, "asyncioTasks": 3}
 
-    async def _serve_runtime(self, *args: Any) -> None:  # pragma: no cover
-        ...
+    async def _serve_runtime(
+        self, writer: Any, headers: dict[str, str] | None = None
+    ) -> None:
+        body = json.dumps(
+            {"pid": os.getpid(), "process": self._runtime_process_payload()}
+        ).encode()
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+            + body
+        )
+        await writer.drain()
 
 
 async def test_leaked_run_owned_tasks_fail_the_stability_criterion() -> None:
@@ -1453,64 +1467,160 @@ async def test_leaked_run_owned_tasks_fail_the_stability_criterion() -> None:
             adapter.close()
 
 
-async def test_runtime_outage_keeps_one_owned_population_and_verdict() -> None:
-    """One population for every in-process route (MOR-3575): switching
-    only the runtime document's availability — resources unchanged —
-    keeps the fallback's owned FD/task counts and the criterion verdict
-    identical to the runtime route's; an over-tolerance owned leak fails
-    through either route.
-    """
+class _LiveProbeStack:
+    """The live probe path in miniature (MOR-3575, round 2): one
+    ``asyncio.start_server`` with ``WebServer``'s per-request lifecycle
+    (a task per connection, the wrapped ``_serve_runtime`` awaited, the
+    connection closed in a ``finally``), a real aiohttp session, and a
+    second owned listener as the leak target. ``serving["up"] = False``
+    answers 503 — the runtime-payload outage that switches ``sample``
+    onto its driver-side fallback."""
 
-    owned = _listener(backlog=soak_driver.STABILITY_TOLERANCE + 2)
-    stack = SimpleNamespace(
-        web=_OverlayWeb(),
-        radio=SimpleNamespace(),
-        rigctld=SimpleNamespace(),
-        web_port=owned.getsockname()[1],
-    )
-    adapter = soak_driver._RuntimeTaskAdapter(stack, None)
-    adapter.install()
-    sampler = soak_driver.ProcessMetricsSampler(None, "http://127.0.0.1:1")
-    sampler._runtime_task_adapter = adapter
-    runtime_up = True
+    def __init__(self) -> None:
+        self.serving = {"up": True}
+        self.web = _OverlayWeb()
+        self.leak_listener = _listener(backlog=soak_driver.STABILITY_TOLERANCE + 2)
+        self.leak_addr = self.leak_listener.getsockname()
+        self.adapter: soak_driver._RuntimeTaskAdapter | None = None
+        self.sampler: soak_driver.ProcessMetricsSampler | None = None
+        self._server: asyncio.AbstractServer | None = None
+        self._session: aiohttp.ClientSession | None = None
 
-    async def fetch_runtime() -> dict[str, Any] | None:
-        if runtime_up:
-            return {"pid": os.getpid(), "process": stack.web._runtime_process_payload()}
-        return None
+    async def start(self) -> "_LiveProbeStack":
+        async def handle(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            try:
+                request = await reader.readline()
+                while line := await reader.readline():
+                    if line in (b"\r\n", b"\n"):
+                        break
+                path = request.decode("ascii", "replace").split(" ")[1:2]
+                if self.serving["up"] and path == ["/api/v1/runtime"]:
+                    await self.web._serve_runtime(writer, {})
+                else:
+                    status = "200 OK" if self.serving["up"] else "503 Unavailable"
+                    writer.write(
+                        f"HTTP/1.1 {status}\r\nContent-Length: 2\r\n"
+                        "Connection: close\r\n\r\n{}".encode()
+                    )
+                    await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
 
-    async def status() -> None:
-        return None
+        self._server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        port = self._server.sockets[0].getsockname()[1]
+        stack = SimpleNamespace(
+            web=self.web,
+            radio=SimpleNamespace(),
+            rigctld=SimpleNamespace(),
+            web_port=port,
+            sim=SimpleNamespace(control_port=self.leak_addr[1]),
+        )
+        self.adapter = soak_driver._RuntimeTaskAdapter(stack, None)
+        self.adapter.install()
+        self._session = aiohttp.ClientSession()
+        self.sampler = soak_driver.ProcessMetricsSampler(
+            self._session, f"http://127.0.0.1:{port}"
+        )
+        self.sampler._runtime_task_adapter = self.adapter
+        return self
 
-    sampler.fetch_runtime = fetch_runtime
-    sampler.fetch_connection_status = status
+    async def probe(
+        self, t_s: float
+    ) -> tuple[soak_driver.ProcessSample, tuple[str, str]]:
+        """One sampled probe plus the (fds, tasks) route it really used."""
+        assert self.sampler is not None
+        capture = soak_driver._ProbeDiagnostics().begin("pre")
+        sample = await self.sampler.sample(t_s, capture)
+        selections = capture.selections or {}
+        return sample, (
+            selections["fds"]["route"],
+            selections["asyncioTasks"]["route"],
+        )
+
+    async def aclose(self) -> None:
+        if self._session is not None:
+            await self._session.close()
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+        if self.adapter is not None:
+            self.adapter.close()
+        self.leak_listener.close()
+
+
+async def test_probe_overhead_cannot_mask_a_real_leak() -> None:
+    """The probe's own instruments stay out of the measured population
+    (MOR-3575 round 2): over the whole live HTTP path, a leak of the
+    smallest detectable size (tolerance + 1 sockets) still fails the
+    criterion when the pre probe rides the runtime route and the post
+    probe switches to the fallback."""
+    live = await _LiveProbeStack().start()
     leaks: list[socket.socket] = []
     try:
-        up = await sampler.sample(1.0)
-        runtime_up = False
-        down = await sampler.sample(2.0)
-        assert (down.fds, down.asyncio_tasks) == (up.fds, up.asyncio_tasks)
+        pre, routes = await live.probe(1.0)
+        assert routes == ("runtime", "runtime")
         for _ in range(soak_driver.STABILITY_TOLERANCE + 1):
-            leaks.append(socket.create_connection(owned.getsockname()))
-        post_up = await sampler.sample(4.0)
-        runtime_up = False
-        post_down = await sampler.sample(5.0)
-        assert (post_down.fds, post_down.asyncio_tasks) == (
-            post_up.fds,
-            post_up.asyncio_tasks,
+            leaks.append(socket.create_connection(live.leak_addr))
+        live.serving["up"] = False
+        post, routes = await live.probe(2.0)
+        assert routes == ("driver", "driver")
+        assert post.fds == pre.fds + soak_driver.STABILITY_TOLERANCE + 1
+        assert (
+            _stability_criteria_for(
+                pre.fds, post.fds, pre.asyncio_tasks, post.asyncio_tasks
+            )["fdsStability"]["status"]
+            == "FAIL"
         )
-        assert post_up.fds == up.fds + soak_driver.STABILITY_TOLERANCE + 1
-        up_verdict = _stability_criteria_for(
-            up.fds, post_up.fds, up.asyncio_tasks, post_up.asyncio_tasks
-        )
-        assert up_verdict == _stability_criteria_for(
-            up.fds, post_down.fds, up.asyncio_tasks, post_down.asyncio_tasks
-        )
-        assert up_verdict["fdsStability"]["status"] == "FAIL"
-        assert up_verdict["tasksStability"]["status"] == "PASS"
     finally:
         for sock in leaks:
             sock.close()
-        owned.close()
-        adapter.close()
-    assert "_runtime_process_payload" not in vars(stack.web)
+        await live.aclose()
+
+
+async def test_runtime_outage_keeps_one_owned_population_and_verdict() -> None:
+    """One population for every in-process route (MOR-3575): switching
+    only the runtime document's availability — resources unchanged —
+    keeps the fallback's owned counts identical to the runtime route's,
+    each sample's route asserted; a leak made after the outage/recovery,
+    measured by the fallback against the recovered runtime route's real
+    owned baseline (not fallback against fallback), fails both
+    stability criteria at the smallest over-tolerance size."""
+    live = await _LiveProbeStack().start()
+    leaks: list[socket.socket] = []
+    leak_tasks: list[asyncio.Task[None]] = []
+    try:
+        up, routes = await live.probe(1.0)
+        assert routes == ("runtime", "runtime")
+        live.serving["up"] = False
+        down, routes = await live.probe(2.0)
+        assert routes == ("driver", "driver")
+        assert (down.fds, down.asyncio_tasks) == (up.fds, up.asyncio_tasks)
+        live.serving["up"] = True
+        recovered, routes = await live.probe(3.0)
+        assert routes == ("runtime", "runtime")
+        for _ in range(soak_driver.STABILITY_TOLERANCE + 1):
+            leaks.append(socket.create_connection(live.leak_addr))
+            leak_tasks.append(asyncio.create_task(asyncio.sleep(3600.0)))
+        live.serving["up"] = False
+        post, routes = await live.probe(4.0)
+        assert routes == ("driver", "driver")
+        assert (post.fds, post.asyncio_tasks) == (
+            recovered.fds + soak_driver.STABILITY_TOLERANCE + 1,
+            recovered.asyncio_tasks + soak_driver.STABILITY_TOLERANCE + 1,
+        )
+        verdict = _stability_criteria_for(
+            recovered.fds, post.fds, recovered.asyncio_tasks, post.asyncio_tasks
+        )
+        assert verdict["fdsStability"]["status"] == "FAIL"
+        assert verdict["tasksStability"]["status"] == "FAIL"
+    finally:
+        for sock in leaks:
+            sock.close()
+        for task in leak_tasks:
+            task.cancel()
+        await asyncio.gather(*leak_tasks, return_exceptions=True)
+        await live.aclose()
+    assert "_runtime_process_payload" not in vars(live.web)

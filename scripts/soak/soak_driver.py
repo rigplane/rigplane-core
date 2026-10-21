@@ -586,6 +586,9 @@ class _RuntimeTaskAdapter:
         self._producer: ContextVar[dict[str, Any] | None] = ContextVar(
             "soak_task_producer", default=None
         )
+        self._probe_conn: ContextVar[frozenset[int] | None] = ContextVar(
+            "soak_probe_conn", default=None
+        )
         self._installed = False
 
     def owned_task_population(self) -> set[asyncio.Task[Any]]:
@@ -619,17 +622,34 @@ class _RuntimeTaskAdapter:
             probe = self._pending.pop((headers or {}).get(_TASK_HEADER, ""), None)
             state = {"probe": probe, "calls": 0} if probe is not None else None
             context = self._producer.set(state)
+            conn = self._probe_conn.set(_probe_connection_ports(writer))
             try:
                 await original_handler(writer, headers)
             finally:
+                self._probe_conn.reset(conn)
                 self._producer.reset(context)
 
         def payload() -> dict[str, Any]:
             result = original_payload()
-            owned_tasks = self.owned_task_population()
+            # The probe's own instruments stay out of the measurement:
+            # the request's handler task (this very task — the fallback
+            # route runs in a ``soak-`` task and never has it) and the
+            # probe connection's own two sockets, else a
+            # runtime-pre/fallback-post pair subtracts them from a real
+            # leak's delta (MOR-3575).
+            handler_task = asyncio.current_task()
+            owned_tasks = {
+                task
+                for task in self.owned_task_population()
+                if task is not handler_task
+            }
             if _proc_int(result, "asyncioTasks") is not None:
                 result["asyncioTasks"] = len(owned_tasks)
-            fds = _owned_socket_fd_count(self._ports) if self._ports else None
+            fds = (
+                _owned_socket_fd_count(self._ports, skip_ports=self._probe_conn.get())
+                if self._ports
+                else None
+            )
             if fds is not None and _proc_int(result, "openFds") is not None:
                 result["openFds"] = fds
             state = self._producer.get()
@@ -789,13 +809,37 @@ def _run_owned_ports(stack: Any) -> frozenset[int]:
     )
 
 
-def _owned_socket_fd_count(ports: frozenset[int]) -> int | None:
+def _probe_connection_ports(writer: Any) -> frozenset[int] | None:
+    """The two endpoint ports of the probe request's own connection.
+
+    The handler's ``writer`` carries the server side; its endpoint
+    ports name the connection exactly (two open sockets cannot share a
+    pair), covering the client side too. ``None`` when unreadable.
+    """
+    try:
+        sock = None if writer is None else writer.get_extra_info("socket")
+        local = _socket_port(sock.getsockname())
+        peer = _socket_port(sock.getpeername())
+    except (AttributeError, OSError):
+        return None
+    if local is None or peer is None:
+        return None
+    return frozenset((local, peer))
+
+
+def _owned_socket_fd_count(
+    ports: frozenset[int], skip_ports: frozenset[int] | None = None
+) -> int | None:
     """Socket FDs whose local or peer port is one of ``ports``.
 
     Sockets on the harness-created ports are the run's stability signal;
     the count makes no claim about the rest of the process. ``None``
     when no FD directory can be listed, so the caller keeps the
-    reported value.
+    reported value. ``skip_ports`` names the endpoint ports of one
+    connection — the live probe's own request — and removes exactly
+    that connection's sockets: counting them would inflate a
+    runtime-route baseline by two FDs the fallback route cannot see and
+    mask a real leak of the smallest detectable size (MOR-3575).
     """
     for fd_dir in ("/proc/self/fd", "/dev/fd"):
         try:
@@ -831,6 +875,8 @@ def _owned_socket_fd_count(ports: frozenset[int]) -> int | None:
                 with contextlib.suppress(OSError):
                     peer = _socket_port(probe.getpeername())
             if local in ports or peer in ports:
+                if skip_ports and {local, peer} == skip_ports:
+                    continue
                 count += 1
         return count
     return None
@@ -892,12 +938,14 @@ class ProcessMetricsSampler:
     ``asyncioTasks``, the names of PR #4044; ``rssBytes`` is null where
     neither ``/proc/self/statm`` nor macOS ``proc_pidinfo`` is available)
     wins when present, and any field the runtime did not report is
-    measured driver-side for this process (the stack runs in-process;
-    with the overlay installed, FDs and tasks come from its owned
-    population): RSS via ``/proc`` or ``ps``, FDs via ``/proc`` or
-    ``/dev/fd``, tasks via ``_server_asyncio_task_count``. The
-    connection column comes from the state document
-    (``_state_connection_status``), not the runtime payload.
+    measured driver-side for this process (the stack runs in-process):
+    RSS via ``/proc`` or ``ps``; FDs and tasks — with the overlay
+    installed — from its owned population, the same population the
+    runtime payload reports (``owned_fd_count`` /
+    ``owned_task_population``), without it via ``/proc`` or ``/dev/fd``
+    and ``_server_asyncio_task_count``. The connection column comes
+    from the state document (``_state_connection_status``), not the
+    runtime payload.
     """
 
     def __init__(self, session: aiohttp.ClientSession, base_url: str) -> None:
@@ -974,6 +1022,11 @@ class ProcessMetricsSampler:
                     _runtime_missing_reason(runtime, runtime_field),
                 )
         if rss is None or fds is None:
+            # Give a just-finished or refused probe request one loop
+            # pass to finish closing its transport, so the fallback
+            # never counts its own dying socket (on a /proc host the
+            # metrics helper below takes no await that would do it).
+            await asyncio.sleep(0)
             d_rss, d_fds = await _driver_side_process_metrics(os.getpid())
             if rss is None:
                 rss = d_rss
