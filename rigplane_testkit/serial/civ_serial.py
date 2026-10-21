@@ -44,15 +44,12 @@ fact unless ``echo=`` is passed explicitly; without a table the default
 stays on.
 
 The CI-V USB baud rate is modelled on request (MOR-3620): ``answers_at_baud=N``
-makes the radio hear only a connection running at N baud (a radio fixed at
-that rate), ``locks_to_first_baud=True`` makes it follow the baud of the first
-frame it hears and ignore every other rate afterwards (``CI-V USB Baud Rate =
-Auto``, recorded in ``tests/fixtures/ic7300/evidence.json``). The connection
-baud comes from the opener's ``baudrate`` keyword (``open_serial_connection``
-takes it as an optional keyword) and follows ``transport.serial.baudrate``
-writes, the way ``SerialCivLink.set_baudrate`` retunes a live port. Without
-either option the fake hears every rate and its writer has no
-``transport.serial``, as before.
+hears only a connection at N baud (a radio fixed at that rate),
+``locks_to_first_baud=True`` follows the first frame's baud and ignores every
+other rate (``CI-V USB Baud Rate = Auto``, ``tests/fixtures/ic7300/evidence.json``).
+The connection baud comes from the opener's ``baudrate`` keyword and from
+``transport.serial.baudrate`` writes (``SerialCivLink.set_baudrate``); without
+either option the fake hears every rate and its writer has no ``transport``.
 
 Faults are scriptable and deterministic: ``delay_identity_answer``,
 ``answer_identity_after_reconnect_only``, ``wrong_model_id``, ``silence``
@@ -218,17 +215,17 @@ class CivSerialFake:
 
     @property
     def models_baud(self) -> bool:
-        """Whether the radio only hears the baud it is fixed or locked to."""
+        """Whether the radio hears only the baud it is fixed or locked to."""
         return self._answers_at_baud is not None or self._locks_to_first_baud
 
     @property
     def locked_baud(self) -> int | None:
-        """The baud an Auto radio locked to (``None`` until a frame arrives)."""
+        """The baud an Auto radio locked to, ``None`` before the first frame."""
         return self._locked_baud
 
     @property
     def frame_bauds(self) -> tuple[int | None, ...]:
-        """The baud of the connection each inbound frame arrived on, in order."""
+        """The connection baud of every inbound frame, in order."""
         return tuple(self._frame_bauds)
 
     @property
@@ -307,11 +304,8 @@ class CivSerialFake:
     async def open_serial_connection(
         self, baudrate: int | None = None
     ) -> tuple[asyncio.StreamReader, Any]:
-        """Opener for ``SerialCivLink(open_serial_connection=...)``.
-
-        The link calls it with no arguments; a test that models the baud
-        binds the link's baud with ``functools.partial(..., baudrate=N)``.
-        """
+        """Opener for ``SerialCivLink(open_serial_connection=...)``; a test that
+        models the baud binds it with ``functools.partial(..., baudrate=N)``."""
         return self._open(baudrate)
 
     async def opener(
@@ -521,8 +515,7 @@ class _FakeSerialWriter:
         self._connection = connection
         self._buf = bytearray()
         self.closed = False
-        # ``writer.transport.serial`` is where production retunes a live
-        # port; present only when the fake models the radio's baud.
+        # ``writer.transport.serial``: where production retunes a live port.
         self.transport: _FakeTransport | None = (
             _FakeTransport(connection) if fake.models_baud else None
         )
