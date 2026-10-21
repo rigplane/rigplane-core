@@ -9,19 +9,9 @@
   "simulator": "answers instantly (no reply delay)",
   "ticket": "MOR-3597"
  },
- "usb:fefe94e0271001fd": {
-  "recorded": "ack",
-  "simulator": "nak",
-  "ticket": "MOR-3597"
- },
- "usb:fefe94e02710fd": {
-  "recorded": "data rx=- cmd=0x27 sub=0x10 len=1",
-  "simulator": "nak",
-  "ticket": "MOR-3597"
- },
- "usb:fefe94e02711fd": {
-  "recorded": "data rx=- cmd=0x27 sub=0x11 len=1",
-  "simulator": "nak",
+ "scope_wave": {
+  "recorded": "4.085 sweeps/s of 11 packets (median gap 250.0 ms) after wave output on, at 115200",
+  "simulator": "no wave frames after wave-on",
   "ticket": "MOR-3597"
  }
 }

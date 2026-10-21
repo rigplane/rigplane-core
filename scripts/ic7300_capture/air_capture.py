@@ -47,7 +47,7 @@ import winshim  # noqa: E402
 
 winshim.apply()
 
-from bridge import make_guard  # noqa: E402
+from bridge import SCOPE_SWITCH_BODIES, make_guard  # noqa: E402
 
 from rigplane.backends.config import SerialBackendConfig  # noqa: E402
 from rigplane.backends.factory import create_radio  # noqa: E402
@@ -141,17 +141,22 @@ class AirGuard:
     t0: float = field(default_factory=time.monotonic)
 
     def allows(self, frame: bytes) -> bool:
-        if self.base.allows(frame):
-            return True
         if len(frame) < 6 or frame[2] != self.radio_addr or frame[3] != CONTROLLER_ADDR:
             return False
         body = frame[4:-1]
+        if self.base.allows(frame):
+            if body in SCOPE_SWITCH_BODIES:  # state-changing: log it like the others
+                self._log(body)
+            return True
         if not write_allowed(body):
             return False
+        self._log(body)
+        return True
+
+    def _log(self, body: bytes) -> None:
         self.writes.append(
             {"t": round(time.monotonic() - self.t0, 3), "body": body.hex()}
         )
-        return True
 
 
 class AudioRecorder(Protocol):

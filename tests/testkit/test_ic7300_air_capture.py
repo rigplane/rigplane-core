@@ -180,3 +180,12 @@ async def test_a_failed_restore_step_does_not_stop_the_others() -> None:
     errors = await air._restore(radio, before, tuned_preamp=0)
     assert radio.calls == ["preamp", "mode", "data_mode", "freq"]
     assert len(errors) == 1 and errors[0].startswith("preamp: TimeoutError")
+
+
+def test_scope_switch_writes_are_logged_like_the_tuning_writes() -> None:
+    guard = air.AirGuard(0x94, air.make_guard("IC-7300", 0x94))
+    assert guard.allows(bytes.fromhex("fefe94e0271001fd"))  # scope panel on
+    assert guard.allows(bytes.fromhex("fefe94e003fd"))  # a read: not logged
+    assert guard.allows(bytes.fromhex("fefe94e0050040071400fd"))  # tuning
+    assert not guard.allows(bytes.fromhex("fefe94e01c0001fd"))  # PTT
+    assert [w["body"] for w in guard.writes] == ["271001", "050040071400"]

@@ -16,6 +16,7 @@ missing from the ledger fails, and so does a ledger entry no longer observed.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import statistics
@@ -39,10 +40,9 @@ from testkit.test_ic7610_conformance import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 RADIO_ADDR = 0x94
-WINDOWS = (
-    "probe",
-    "server_poll",
-)  # probe: allow-list GETs; server_poll: Core server polling
+# probe: allow-list GETs; server_poll: Core server polling (19200);
+# scope_session: Core server with the scope on (115200).
+WINDOWS = ("probe", "server_poll", "scope_session")
 
 # Probes the real IC-7300 NAKed (probe_answers.json), by cause:
 #   * bare scope reads: Core sends these with a selector byte, so the NAK is a
@@ -107,15 +107,7 @@ def _pairs(windows: tuple[str, ...] = WINDOWS) -> list[tuple[bytes, bytes | None
     return pairs
 
 
-_NAMED_IDS = frozenset({"latency", "baud_gate"})
-
-
-def _evidence_pairs() -> list[tuple[bytes, bytes | None]]:
-    """The scope-enable attempt at 19200 baud (evidence.json), as pairs."""
-    return [
-        (bytes.fromhex(p["request"]), bytes.fromhex(p["reply"]))
-        for p in _evidence()["scope_enable_at_19200"]["pairs"]
-    ]
+_NAMED_IDS = frozenset({"latency", "baud_gate", "scope_wave"})
 
 
 def _is_usb_key(key: str) -> bool:
@@ -137,7 +129,7 @@ def _evidence() -> dict:
 
 def test_fixture_framing_addressing_and_no_echo() -> None:
     rows = _rows()
-    assert {row["window"] for row in rows} == set(WINDOWS)
+    assert {row["window"] for row in rows} == {*WINDOWS, "scope_session_scope"}
     for row in rows:
         assert set(row) == {"window", "transport", "t", "dir", "frame"}
         assert row["transport"] == "usb"
@@ -211,7 +203,7 @@ async def _collect_usb_divergences(table_rows=None) -> dict[str, tuple[str, str]
     reader, writer = await fake.opener(url="socket://conformance", baudrate=19200)
     observed: dict[str, tuple[str, str]] = {}
     try:
-        for request, reply in [*_pairs(), *_evidence_pairs()]:
+        for request, reply in _pairs():
             writer.write(request)
             await writer.drain()
             sim_class, _ = await _ask_serial_fake(reader, request)
@@ -258,6 +250,29 @@ async def _collect_structural_divergences() -> dict[str, tuple[str, str]]:
             )
     finally:
         writer.close()
+
+    stream = _evidence()["scope_stream_115200"]
+    rows = [r for r in _rows() if r["window"] == "scope_session_scope"]
+    assert rows and all(r["dir"] == "r2c" for r in rows)  # recorded whole sweeps
+    fake = ic7300_usb_fake()
+    reader, writer = await fake.opener(url="socket://conformance", baudrate=115200)
+    try:
+        for switch in ("fefe94e0271001fd", "fefe94e0271101fd"):
+            writer.write(bytes.fromhex(switch))
+        await writer.drain()
+        try:
+            got = bytes(await asyncio.wait_for(reader.read(8192), 0.3))
+        except TimeoutError:
+            got = b""
+    finally:
+        writer.close()
+    if b"\xfe\xfe\xe0\x94\x27\x00" not in got:
+        observed["scope_wave"] = (
+            f"{stream['sweeps_per_s']} sweeps/s of {stream['seq_max']} packets "
+            f"(median gap {stream['sweep_gap_ms']['median']} ms) after wave output on, "
+            "at 115200",
+            "no wave frames after wave-on",
+        )
 
     baud = _evidence()["baud"]
     try:

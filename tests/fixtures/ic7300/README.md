@@ -14,10 +14,11 @@ longer diverges).
 | | |
 |---|---|
 | Radio | Icom IC-7300 (CI-V address 0x94, `19 00` answers `94`), no antenna connected, receiving only |
-| Link | USB, Silicon Labs CP210x bridge as COM3 on the Windows host GTR7; **CI-V USB baud rate set to 19200 on the radio** (silent at 115200, 9600, 4800; profile default is 115200 -> MOR-3620) |
+| Link | USB, Silicon Labs CP210x bridge as COM3 on the Windows host GTR7; **CI-V USB Baud Rate was set to Auto on the radio (owner, 13:57Z); it answered only at 19200** (silent at 115200, 9600, 4800; profile default is 115200 -> MOR-3620). Hypothesis, unconfirmed: Auto locked to the first host baud after power-on, which was 19200 in the first sweep |
 | Date | 2026-10-21, 08:30-09:12 EDT |
 | Radio firmware | not read (CI-V has no firmware query on this radio; front-panel reading not taken) |
 | `probe` window | `scripts/ic7610_capture/probe.py` (profile allow-list GETs + 4 unknown commands) through `SerialCivRecorder` (`python -m rigplane_testkit.serial record`), 168 distinct requests; recorded by the radio-simulators session; raw recording SHA-256 `81cbcbb0afa4b2b971879a9fd236ffad913db6e0bc17fe1e35c3df5cc58d7a8a`, kept in private storage |
+| `scope_session` window | the same server session at **115200** (owner switched the radio from Auto to 115200 at 13:58Z): 122 s with the scope on; 144 pair rows; `scope_session_scope` holds 5 whole sweeps (55 packets) of raw `27 00` frames, kept apart so pair adjacency stays intact |
 | `server_poll` window | Core web server (`rigplane ... web`, serial backend, 19200) driven only through its API, behind the guarded bridge `scripts/ic7300_capture/server_session.py`: 388 s of the server's own polling; 67 distinct requests |
 | Trim rule | `python -m rigplane_testkit.serial.fixtures extract`: per window the first occurrence of every distinct request and the reply that closes it; pipelined requests are paired in order; the radio does not echo |
 | Redaction | `python -m rigplane_testkit.redaction_gate` clean over all files (no deny strings applied: serial CI-V carries no credentials; no ASCII text appears in any reply) |
@@ -42,7 +43,9 @@ No command was ignored (0 silent). The server's own startup also tried the
 write-shaped `07 00` and, at shutdown, force-receive writes; the bridge dropped
 them (recorded as `blocked`, never sent).
 
-## Not captured yet
+## Scope (S10 baseline)
 
-- Scope wave stream and its frame rate: the radio refuses wave output at 19200 baud. Needs the radio at 115200.
-- USB audio sample format and RX air recordings (HF master set): need the antenna and the 115200 setting for the scope.
+At 115200 the radio streams 4.085 sweeps/s (498 sweeps in 121.9 s, 11 packets of seq 1..11 each, median gap 250 ms, p95 266 ms, max 282 ms); through Core's web scope socket 4.107 frames/s (489 frames in 120 s, 491-byte frames, median 250 ms, p95 266 ms, max 297 ms). No antenna was connected, so this is the noise floor display; the cadence does not depend on the signal. At 19200 the radio NAKs `27 11 01` and sends nothing (`evidence.json`).
+
+## Not captured yet
+- USB audio sample format is in the private air clip manifest (44.1 kHz, 2 ch, s16 on Windows MME); the diverse HF master set needs an antenna.
