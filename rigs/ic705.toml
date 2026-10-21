@@ -860,8 +860,12 @@ memory_to_vfo = [0x0A]                     # source: IC-705 CI-V Reference Guide
 memory_clear = [0x0B]                      # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3 -- payload MOR-2055, see commands/memory.py: build_memory_clear
 
 # ── Offset / Scan / Split ──
-get_freq_offset = [0x0D]
-set_freq_offset = [0x0D]
+# Duplex offset: the guide's own rows read 0C = "Read frequency offset" and
+# 0D = "Send frequency offset" (IC-705 CI-V Reference Guide p.3, format p.17).
+# The read used to be mapped to 0D (the send opcode), which the radio NAKs.
+# 0C answered on the bench IC-705 (MOR-3650): 00 50 00 = 500 kHz.
+get_freq_offset = [0x0C]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
+set_freq_offset = [0x0D]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
 get_scan = [0x0E]
 set_scan = [0x0E]
 get_split = [0x0F]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
