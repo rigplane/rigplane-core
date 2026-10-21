@@ -95,8 +95,7 @@ def guard_factory():
     "line", ["ID;", "IF;", "FA;", "FB;", "MD0;", "MD1;", "TX;", "PS;", "SM0;", "RM1;"]
 )
 def test_guard_forwards_profile_reads(guard_factory, line) -> None:
-    forward, blocked = guard_factory().feed(line.encode())
-    assert (forward, blocked) == (line.encode(), [])
+    assert guard_factory().feed(line.encode()) == [(line.encode(), True)]
 
 
 @pytest.mark.parametrize(
@@ -118,31 +117,37 @@ def test_guard_forwards_profile_reads(guard_factory, line) -> None:
 def test_guard_blocks_everything_that_is_not_a_profile_read(
     guard_factory, line
 ) -> None:
-    forward, blocked = guard_factory().feed(line.encode())
-    assert (forward, blocked) == (b"", [line.encode()])
+    assert guard_factory().feed(line.encode()) == [(line.encode(), False)]
 
 
 def test_guard_handles_split_joined_and_partial_lines(guard_factory) -> None:
     guard = guard_factory()
-    assert guard.feed(b"F") == (b"", [])  # partial line held back
-    assert guard.feed(b"A;ID;TX") == (b"FA;ID;", [])
-    assert guard.feed(b"1;PS;") == (b"PS;", [b"TX1;"])
+    assert guard.feed(b"F") == []  # partial line held back
+    assert guard.feed(b"A;ID;TX") == [(b"FA;", True), (b"ID;", True)]
+    assert guard.feed(b"1;PS;") == [(b"TX1;", False), (b"PS;", True)]
+
+
+def test_guard_keeps_wire_order_of_allowed_and_blocked_lines(guard_factory) -> None:
+    assert guard_factory().feed(b"ID;FA014074000;TX1;FA;") == [
+        (b"ID;", True),
+        (b"FA014074000;", False),
+        (b"TX1;", False),
+        (b"FA;", True),
+    ]
 
 
 def test_guard_blocks_unterminated_garbage_instead_of_buffering_forever(
     guard_factory,
 ) -> None:
     guard = guard_factory()
-    forward, blocked = guard.feed(b"A" * 200)
-    assert forward == b""
-    assert blocked == [b"A" * 200]
-    assert guard.feed(b"FA;") == (b"FA;", [])  # the stream recovers
+    assert guard.feed(b"A" * 200) == [(b"A" * 200, False)]
+    assert guard.feed(b"FA;") == [(b"FA;", True)]  # the stream recovers
 
 
 def test_guard_filters_are_per_connection(guard_factory) -> None:
     first, second = guard_factory(), guard_factory()
     first.feed(b"F")
-    assert second.feed(b"A;") == (b"", [b"A;"])  # no leftover from `first`
+    assert second.feed(b"A;") == [(b"A;", False)]  # no leftover from `first`
 
 
 async def test_bridge_never_forwards_a_write_and_logs_it(tmp_path) -> None:
@@ -182,6 +187,14 @@ async def test_bridge_never_forwards_a_write_and_logs_it(tmp_path) -> None:
         b"FA014074000;",
         b"TX1;",
     ]
+    # Wire order survives one coalesced TCP read: ID, then the two blocked
+    # writes, then FA (the radio's replies interleave by timing only).
+    client_rows = [
+        r["dir"] + ":" + bytes.fromhex(r["hex"]).decode()
+        for r in rows
+        if r["dir"] in ("c2r", "blocked")
+    ]
+    assert client_rows == ["c2r:ID;", "blocked:FA014074000;", "blocked:TX1;", "c2r:FA;"]
     lines = [(d, text) for _, d, text in cat_lines(out)]
     # Per direction: the interleaving of the two directions is timing.
     assert [t for d, t in lines if d == "c2r"] == ["ID;", "FA;"]

@@ -105,33 +105,29 @@ class CatReadOnlyGuard:
 
 
 class CatLineFilter:
-    """Splits a client byte stream into lines and forwards only allowed ones."""
+    """Splits a client byte stream into lines and marks the allowed ones."""
 
     def __init__(self, guard: CatReadOnlyGuard) -> None:
         self._guard = guard
         self._buf = bytearray()
 
-    def feed(self, data: bytes) -> tuple[bytes, list[bytes]]:
-        """Consume one chunk; return ``(forward, blocked_lines)``.
+    def feed(self, data: bytes) -> list[tuple[bytes, bool]]:
+        """Consume one chunk; return ``[(line, allowed)]`` in wire order.
 
         A partial line is held until its ``;`` arrives. An unterminated run
-        longer than a CAT line can be is blocked whole, so the stream
-        recovers at the next ``;``.
+        longer than a CAT line can be is returned whole as one blocked entry,
+        so the stream recovers at the next ``;``.
         """
         self._buf += data
-        forward = bytearray()
-        blocked: list[bytes] = []
+        lines: list[tuple[bytes, bool]] = []
         while (end := self._buf.find(_TERMINATOR)) >= 0:
             line = bytes(self._buf[: end + 1])
             del self._buf[: end + 1]
-            if self._guard.allows(line):
-                forward += line
-            else:
-                blocked.append(line)
+            lines.append((line, self._guard.allows(line)))
         if len(self._buf) > _MAX_LINE:
-            blocked.append(bytes(self._buf))
+            lines.append((bytes(self._buf), False))
             self._buf.clear()
-        return bytes(forward), blocked
+        return lines
 
 
 __all__ = ["CatLineFilter", "CatReadOnlyGuard", "cat_lines"]
