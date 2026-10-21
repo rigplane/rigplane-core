@@ -41,7 +41,7 @@ rigplane_testkit/sim/
   engine/                    state dataclasses, SimEngine, clock, seeded RNG, event queue, trace
   model/                     protocol families: icom_civ.py, yaesu_cat.py (decode -> engine op -> encode)
   profiles/                  loader + schema for rigplane-sim-profile/1; data files <profile-id>.toml
-  adapters/                  icom_lan.py, icom_serial.py (socket:// and PTY), yaesu_cat.py
+  adapters/                  icom_network.py, icom_serial.py (socket:// and PTY), yaesu_cat.py
   audio/                     sources, sinks, backends, air-recording renderer (section 9)
   scenario/                  seeded event schedules and the shared fault vocabulary
   radios/<radio>/            OPTIONAL radio-specific python (only when data cannot express it)
@@ -295,7 +295,7 @@ receiver profile and extends the schema version if it changes existing keys.
 
 ## 7. Adapters and the process interface
 
-Adapters own transport only. `icom_lan` is the extracted LAN part of
+Adapters own transport only. `icom_network` is the extracted LAN part of
 `MockIcomRadio` (login, token, ping, CI-V and audio ports, sequence-gap
 recovery, fault plan). `icom_serial` and `yaesu_cat` expose real endpoints:
 `socket://host:port` TCP (works on every OS where the app accepts a pyserial
