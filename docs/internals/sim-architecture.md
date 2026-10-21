@@ -122,8 +122,12 @@ class SimEngine:
     trace: Sequence[Record]
 ```
 
-`Outcome` is one of `Ok(value)`, `Unsupported` (the capability profile does not
-declare the feature), `OutOfRange`, `Refused(reason)` (state forbids it, for
+`Outcome` is one of `Ok(value)`, `Unsupported(reason)` with `reason` either
+`"capability"` (the capability profile does not declare the feature: the radio would
+refuse it too) or `"not_modelled"` (the profile declares it but the simulator has no
+native handler and no recording: a coverage gap, same default wire answer as a
+refusal but counted and named in the trace and report so it cannot pass for radio
+behaviour), `OutOfRange`, `Refused(reason)` (state forbids it, for
 example TX while locked). A protocol model maps these to the radio's own
 answer (NAK, `?;`, silence) as the simulation profile says. There is no
 outcome that is implicit or silent.
@@ -169,9 +173,11 @@ becomes `ic7300`), and one package serves every simulation profile of that radio
 passes in a registry with `override(command_name, handler)` (replace the
 model's answer for one named command) and `add_state(name, default)`.
 `override` takes `handler(request) -> reply`: `request` carries the command
-name (from the capability profile's command map) and its decoded arguments
+name (from the set of command declarations the capability profile exposes for the
+radio's protocol family: CI-V command-map entries and Yaesu CAT command specs alike;
+absent declarations excluded) and its decoded arguments
 (argument names and decoding are defined by the model family's own contract, not
-by the capability profile, whose command map holds only command bytes), `reply`
+by the capability profile, whose declarations hold only command bytes or templates), `reply`
 is the model family's reply value; that contract is frozen in the model PR
 (MOR-3601 for Icom, MOR-3602 for Yaesu) before any radio extension consumes it. An
 `override` for a command the capability profile does not declare is an error at
@@ -182,8 +188,7 @@ nowhere: the conflict is reported at load).
 A radio PR that needs another shared hook opens or comments on a shared issue
 first. A radio PR never edits the IC-7610 files or another radio's folders.
 Refusal hooks are scenario events (`refuse`, section 7), not registrations. A
-request with no native handler and no recording is `Unsupported` with
-`source = "no_recording"`.
+request with no native handler and no recording is `Unsupported("not_modelled")`.
 
 Order of precedence for a wire request, per radio: refusal hook, native model
 handler (engine-backed), recorded answer table (`[answers]`), explicit
@@ -237,8 +242,10 @@ reply_latency_ms = 15
 
 [audio.rx]                       # SELECTION among what the capability profile declares (section 9)
 transport = "usb_device"         # lan_stream | usb_device (a simulation choice)
-# sample_rate_hz / channels / sample_format: omit to take the capability profile's value;
-# when given they must be one of the values it declares, else the loader refuses
+# sample_rate_hz / channels / sample_format: omit to take the capability profile's value (a codec
+# preference is resolved through the audio stream resolver's codec table); when the capability
+# profile declares neither a value nor a codec, the field is REQUIRED here and the loader
+# refuses a profile that leaves it out; when given it must be one the capability profile allows
 
 [scope]                          # simulation-only parameters of the scope source
 rate_hz = 10                     # frame rate the simulator emits (not a capability value)
