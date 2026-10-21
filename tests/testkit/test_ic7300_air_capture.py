@@ -189,3 +189,68 @@ def test_scope_switch_writes_are_logged_like_the_tuning_writes() -> None:
     assert guard.allows(bytes.fromhex("fefe94e0050040071400fd"))  # tuning
     assert not guard.allows(bytes.fromhex("fefe94e01c0001fd"))  # PTT
     assert [w["body"] for w in guard.writes] == ["271001", "050040071400"]
+
+
+class _FakeStream:
+    log: list[str] = []
+
+    def __init__(self, **kwargs) -> None:
+        self.callback = kwargs["callback"]
+        _FakeStream.log.append("built")
+
+    def start(self) -> None:
+        _FakeStream.log.append("started")
+
+    def stop(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+class _FakeSd:
+    RawInputStream = _FakeStream
+
+    @staticmethod
+    def query_devices(index):
+        return {
+            "name": "fake codec",
+            "default_samplerate": 8000,
+            "max_input_channels": 2,
+        }
+
+
+def _chunk() -> bytes:
+    return b"\x01\x00\x02\x00" * 80
+
+
+def test_prepare_builds_the_stream_and_start_only_starts_it(tmp_path) -> None:
+    _FakeStream.log = []
+    rec = air.UsbAudioRecorder(1, tmp_path / "a.wav", sd_module=_FakeSd)
+    rec.prepare()
+    assert _FakeStream.log == ["built"]
+    rec.start()
+    assert _FakeStream.log == ["built", "started"]
+    rec._callback(_chunk(), 80, None, None)
+    stats = rec.stop()
+    assert stats["valid"] is True and stats["frames"] == 80
+
+
+def test_callback_status_flags_make_the_audio_invalid(tmp_path) -> None:
+    rec = air.UsbAudioRecorder(1, tmp_path / "a.wav", sd_module=_FakeSd)
+    rec.start()
+    rec._callback(_chunk(), 80, None, "input overflow")
+    stats = rec.stop()
+    assert stats["valid"] is False
+    assert stats["callback_status"] == {"input overflow": 1}
+
+
+def test_a_failed_wav_write_is_reported_not_swallowed(tmp_path) -> None:
+    rec = air.UsbAudioRecorder(1, tmp_path / "missing-dir" / "a.wav", sd_module=_FakeSd)
+    rec.start()
+    rec._thread.join(timeout=5)  # the writer thread dies on open
+    rec._callback(_chunk(), 80, None, None)
+    stats = rec.stop()
+    assert stats["valid"] is False
+    assert stats["writer_error"].startswith("FileNotFoundError")
+    assert stats["frames"] == 0  # nothing is queued for a dead writer

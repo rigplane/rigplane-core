@@ -19,7 +19,8 @@ CW send and every menu write stay refused. Whatever was changed is restored
 and read back; a mismatch is reported and the exit code is 4.
 
 Exit codes: 0 done, 3 connect failed, 4 radio state did not read back
-identical.
+identical, 5 the audio is not usable (callback overflow/underflow or a failed
+WAV write; the radio is still restored).
 """
 
 from __future__ import annotations
@@ -160,18 +161,28 @@ class AirGuard:
 
 
 class AudioRecorder(Protocol):
+    def prepare(self) -> None: ...
     def start(self) -> None: ...
     def stop(self) -> dict: ...
 
 
 class UsbAudioRecorder:
-    """Native-format USB audio capture to WAV (sounddevice)."""
+    """Native-format USB audio capture to WAV (sounddevice).
 
-    def __init__(self, device_index: int, wav_path: Path) -> None:
-        import sounddevice as sd
+    ``prepare()`` opens the writer and builds the input stream (the slow part);
+    ``start()`` only starts it, so it can be called on the slot boundary.
+    ``stop()`` reports problems instead of hiding them: PortAudio callback
+    status flags (overflow, underflow) and a failed WAV write both make the
+    returned stats ``valid: false``.
+    """
 
-        info = sd.query_devices(device_index)
-        self._sd = sd
+    def __init__(
+        self, device_index: int, wav_path: Path, *, sd_module: Any = None
+    ) -> None:
+        if sd_module is None:
+            import sounddevice as sd_module
+        info = sd_module.query_devices(device_index)
+        self._sd = sd_module
         self._index = device_index
         self.device_name = str(info["name"])
         self.rate = int(info["default_samplerate"])
@@ -182,10 +193,17 @@ class UsbAudioRecorder:
         self._frames = 0
         self._stream: Any = None
         self._thread: threading.Thread | None = None
+        self._writer_error: str | None = None
+        self._callback_status: dict[str, int] = {}
         self.first_callback_wall: float | None = None
         self.start_wall: float | None = None
 
     def _callback(self, indata: Any, frames: int, time_info: Any, status: Any) -> None:
+        if status:
+            key = str(status)
+            self._callback_status[key] = self._callback_status.get(key, 0) + 1
+        if self._writer_error is not None:
+            return  # the file is broken: do not pile up a queue nobody drains
         if self.first_callback_wall is None:
             self.first_callback_wall = _now()
         self._frames += frames
@@ -195,14 +213,17 @@ class UsbAudioRecorder:
         self._queue.put(bytes(indata))
 
     def _writer(self) -> None:
-        with wave.open(str(self._path), "wb") as wav:
-            wav.setnchannels(self.channels)
-            wav.setsampwidth(2)
-            wav.setframerate(self.rate)
-            while (chunk := self._queue.get()) is not None:
-                wav.writeframes(chunk)
+        try:
+            with self._path.open("wb") as out, wave.open(out, "wb") as wav:
+                wav.setnchannels(self.channels)
+                wav.setsampwidth(2)
+                wav.setframerate(self.rate)
+                while (chunk := self._queue.get()) is not None:
+                    wav.writeframes(chunk)
+        except Exception as exc:  # disk full, NAS gone, bad path
+            self._writer_error = f"{type(exc).__name__}: {exc}"
 
-    def start(self) -> None:
+    def prepare(self) -> None:
         self._thread = threading.Thread(target=self._writer, daemon=True)
         self._thread.start()
         self._stream = self._sd.RawInputStream(
@@ -212,6 +233,10 @@ class UsbAudioRecorder:
             dtype="int16",
             callback=self._callback,
         )
+
+    def start(self) -> None:
+        if self._stream is None:
+            self.prepare()
         self.start_wall = _now()
         self._stream.start()
 
@@ -222,6 +247,11 @@ class UsbAudioRecorder:
         self._queue.put(None)
         if self._thread is not None:
             self._thread.join(timeout=10)
+            if self._thread.is_alive():
+                self._writer_error = (
+                    self._writer_error or "writer thread did not finish"
+                )
+        valid = self._writer_error is None and not self._callback_status
         return {
             "device": self.device_name,
             "format": f"s16le {self.rate} Hz {self.channels} ch",
@@ -232,6 +262,9 @@ class UsbAudioRecorder:
             "peak_fraction_of_full_scale": round(self._peak / 32768, 4),
             "start_wall_utc": _iso(self.start_wall),
             "first_callback_wall_utc": _iso(self.first_callback_wall),
+            "callback_status": self._callback_status,
+            "writer_error": self._writer_error,
+            "valid": valid,
         }
 
 
@@ -401,6 +434,8 @@ async def run_clip(
             manifest["state_tuned"] = await _snapshot(
                 radio, with_scope=not args.no_scope
             )
+            if audio is not None and hasattr(audio, "prepare"):
+                audio.prepare()  # the slow part happens before the boundary
             if args.start_at:
                 manifest["slot_start_wall_utc"] = _iso(await _wait_until(args.start_at))
             elif args.slot_s:
@@ -424,6 +459,8 @@ async def run_clip(
             if audio is not None:
                 manifest["audio"] = audio.stop()
                 audio = None
+                if manifest["audio"].get("valid") is False:
+                    exit_code = 5  # radio restored below, but the audio is not usable
             manifest["state_end_of_clip"] = await _snapshot(
                 radio, with_scope=not args.no_scope
             )
