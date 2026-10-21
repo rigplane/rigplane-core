@@ -4,15 +4,18 @@ name: Agent Review Gate
 # exact head and no Codex P1/P2 thread is open, or, when Codex did not review,
 # when the cross-family backup reviewer posted the strict exact-head
 # `Agent Review: PASS <sha>` directive (never while a Codex P1/P2 thread is
-# open). Codex does not review pushes by itself and ignores review requests
-# posted by github-actions[bot], so this workflow cannot ask for one: a person's
-# account (the lane scripts, with the coordinator token) posts `@codex review`.
+# open). A PR labelled `built-by-gpt` (GPT/Codex-family builder) does not count
+# the Codex review as a verdict and needs the backup PASS. Codex does not review
+# pushes by itself and ignores review requests posted by github-actions[bot],
+# so this workflow cannot ask for one: a person's account (the lane scripts,
+# with the coordinator token) posts `@codex review`.
 # Rules and logic: .github/scripts/codex-review-gate.js
 # (shared verbatim with rigplane-pro), .github/scripts/agent-review-gate.js
 # (the directive parser), AGENTS.md "Protected main and review gate".
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
+    # labeled/unlabeled: the `built-by-gpt` label changes the verdict.
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
   pull_request_review:
     types: [submitted, dismissed]
   issue_comment:
@@ -89,6 +92,10 @@ jobs:
             });
             core.setOutput('number', String(number));
             core.setOutput('head_sha', pull.head.sha);
+            // Same name as GPT_BUILT_LABEL in codex-review-gate.js (pinned by a test). It is spelled
+            // out here, not required from the module, because this step runs before the checkout:
+            // the exact-head failure status below must not depend on the checkout succeeding.
+            core.setOutput('gpt_built', String(pull.labels.some((label) => label.name === 'built-by-gpt')));
             const {data: commit} = await github.rest.repos.getCommit({
               owner,
               repo,
@@ -188,6 +195,7 @@ jobs:
                     description: status.description,
                   },
                   headSha: head_sha,
+                  gptBuilt: '${{ steps.pr.outputs.gpt_built }}' === 'true',
                 });
                 status = {...status, state: verdict.state, description: verdict.description};
               }

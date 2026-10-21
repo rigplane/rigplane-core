@@ -292,7 +292,10 @@ head, ask the backup reviewer for the exact-head PASS.
 Resolving a review thread fires no workflow event, so after resolving threads
 re-run the gate: `gh workflow run agent-review-gate.yml -f pr_number=N`.
 If the builder is itself a GPT/Codex-family model, Codex is not independent:
-use the backup path with a reviewer from another family.
+label the PR `built-by-gpt`. The gate then ignores the Codex review as a
+verdict (open Codex P1/P2 threads still block) and needs the backup PASS from
+a reviewer of another family. Adding or removing the label re-evaluates the
+gate.
 
 Every non-trivial PR requires independent agent review before merge. The
 implementation agent may not be the review agent.

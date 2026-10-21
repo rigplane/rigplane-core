@@ -13,6 +13,8 @@
 
 const CODEX_LOGIN = 'chatgpt-codex-connector';
 const WAIT_MINUTES = 20;
+// Set on a PR built by a GPT/Codex-family agent: Codex is then not an independent reviewer.
+const GPT_BUILT_LABEL = 'built-by-gpt';
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const BADGE_PATTERN = /!\[P([12]) Badge\]/u;
 const STATE_PATTERN = /<!-- codex-review-state:v1 (\{.*?\}) -->/su;
@@ -91,8 +93,9 @@ function unresolvedCodexFindings(threads) {
 
 // `backup`: {pass, blocked, description} from the repository's own directive
 // parser. A BLOCKED directive wins over everything, as it does today.
-function buildCodexVerdict({codex, unresolved, backup, headSha}) {
+function buildCodexVerdict({codex, unresolved, backup, headSha, gptBuilt = false}) {
   const short = headSha.slice(0, 7);
+  const codexCounts = codex.reviewed && !gptBuilt;
   if (backup.blocked) {
     return {state: 'failure', description: backup.description};
   }
@@ -106,7 +109,7 @@ function buildCodexVerdict({codex, unresolved, backup, headSha}) {
       description: `${unresolved.length} unresolved Codex P1/P2 thread(s): ${list}`.slice(0, 140),
     };
   }
-  if (codex.reviewed) {
+  if (codexCounts) {
     return {
       state: 'success',
       description: `Codex reviewed ${short} (${codex.via}); no open P1/P2 threads.`,
@@ -116,6 +119,12 @@ function buildCodexVerdict({codex, unresolved, backup, headSha}) {
     return {
       state: 'success',
       description: `Backup cross-family PASS for ${short}; Codex did not review it.`,
+    };
+  }
+  if (gptBuilt) {
+    return {
+      state: 'failure',
+      description: `Label ${GPT_BUILT_LABEL}: Codex is not independent; backup PASS needed for ${short}.`,
     };
   }
   return {
@@ -155,6 +164,7 @@ async function readReviewThreads({github, owner, repo, number}) {
 
 module.exports = {
   CODEX_LOGIN,
+  GPT_BUILT_LABEL,
   WAIT_MINUTES,
   buildCodexVerdict,
   codexReviewedHead,

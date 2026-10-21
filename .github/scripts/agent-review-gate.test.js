@@ -115,11 +115,17 @@ function coreMock() {
   };
 }
 
-function updaterScript({number = '2321', head = HEAD, committedAt = '2026-08-08T04:50:00Z'} = {}) {
+function updaterScript({
+  number = '2321',
+  head = HEAD,
+  committedAt = '2026-08-08T04:50:00Z',
+  gptBuilt = 'false',
+} = {}) {
   return workflowScript('Update required Agent Review Gate status')
     .replace("Number('${{ steps.pr.outputs.number }}')", `Number('${number}')`)
     .replace("'${{ steps.pr.outputs.head_sha }}'", `'${head}'`)
-    .replace("'${{ steps.pr.outputs.committed_at }}'", `'${committedAt}'`);
+    .replace("'${{ steps.pr.outputs.committed_at }}'", `'${committedAt}'`)
+    .replace("'${{ steps.pr.outputs.gpt_built }}'", `'${gptBuilt}'`);
 }
 
 function workflowContext(runId = 1) {
@@ -186,12 +192,13 @@ async function runGate({
   comments = [],
   reviews = [],
   threads = [],
+  gptBuilt = 'false',
   overrides = {},
   runId = 20,
 } = {}) {
   const fake = gateGithub({comments, reviews, threads, overrides});
   const core = coreMock();
-  await runWorkflowScript(updaterScript(), {
+  await runWorkflowScript(updaterScript({gptBuilt}), {
     github: fake.github,
     context: workflowContext(runId),
     core,
@@ -525,7 +532,7 @@ test('status targets only the resolved head and malformed blockers fail closed',
 
 test('workflow preserves triggers, workflow revision checkout, pagination, and exact target', () => {
   const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
-  assert.match(workflow, /types: \[opened, reopened, synchronize, ready_for_review\]/);
+  assert.match(workflow, /types: \[opened, reopened, synchronize, ready_for_review, labeled, unlabeled\]/);
   assert.match(workflow, /types: \[created, edited, deleted\]/);
   // Codex's verdict arrives as a review; thread resolution fires no event, so a
   // manual dispatch re-evaluates (GitHub Actions has no review-thread trigger).
@@ -784,7 +791,7 @@ test('known head survives getCommit failure and receives exact-head FAILURE', as
   const resolverCore = coreMock();
   const resolverGithub = {
     rest: {
-      pulls: {get: async () => ({data: {head: {sha: HEAD}}})},
+      pulls: {get: async () => ({data: {head: {sha: HEAD}, labels: []}})},
       repos: {getCommit: async () => { throw new Error('commit API unavailable'); }},
     },
   };
@@ -1188,7 +1195,7 @@ test('the resolver reads the PR number from a manual dispatch', async () => {
       rest: {
         pulls: {get: async ({pull_number}) => {
           assert.equal(pull_number, 2321);
-          return {data: {head: {sha: HEAD}, updated_at: '2026-08-08T04:50:00Z'}};
+          return {data: {head: {sha: HEAD}, labels: [], updated_at: '2026-08-08T04:50:00Z'}};
         }},
         repos: {getCommit: async () => ({data: {commit: {committer: {date: '2026-08-08T04:50:00Z'}}}})},
       },
@@ -1214,7 +1221,7 @@ test('REST call budget matches the number the workflow comment states', async ()
   const core = coreMock();
   const resolverGithub = {
     rest: {
-      pulls: {get: async () => { restCalls.push('pulls.get'); return {data: {head: {sha: HEAD}}}; }},
+      pulls: {get: async () => { restCalls.push('pulls.get'); return {data: {head: {sha: HEAD}, labels: []}}; }},
       repos: {getCommit: async () => {
         restCalls.push('repos.getCommit');
         return {data: {commit: {committer: {date: '2026-08-08T04:50:00Z'}}}};
@@ -1246,8 +1253,97 @@ test('AGENTS documents the Codex-primary gate rules', () => {
   assert.match(section, /P1\/P2/u);
   assert.match(section, /@codex review/u);
   assert.match(section, /cannot request it/u);
+  assert.match(section, /built-by-gpt/u);
   assert.match(section, /person's account/u);
   assert.match(section, /20 minutes/u);
   assert.match(section, /family differs from the builder/u);
   assert.match(section, /gh workflow run agent-review-gate\.yml -f pr_number=N/u);
+});
+
+test('a built-by-gpt PR ignores the Codex review as a verdict and needs the backup PASS', async () => {
+  const labelled = {gptBuilt: 'true'};
+
+  const reviewOnly = await runGate({...labelled, reviews: [codexReview()]});
+  assert.equal(reviewOnly.statuses.length, 1);
+  assert.equal(reviewOnly.statuses[0].sha, HEAD);
+  assert.equal(reviewOnly.statuses[0].state, 'failure');
+  assert.match(reviewOnly.statuses[0].description, /built-by-gpt: Codex is not independent; backup PASS needed for 1234567/u);
+
+  const withPass = await runGate({
+    ...labelled,
+    reviews: [codexReview()],
+    comments: [comment(directive('PASS'))],
+  });
+  assert.equal(withPass.statuses[0].state, 'success');
+  assert.match(withPass.statuses[0].description, /Backup cross-family PASS for 1234567/u);
+
+  // Open Codex P1/P2 threads still block the backup path, and BLOCKED still wins.
+  const withThread = await runGate({
+    ...labelled,
+    reviews: [codexReview()],
+    comments: [comment(directive('PASS'))],
+    threads: [codexThread('P1')],
+  });
+  assert.equal(withThread.statuses[0].state, 'failure');
+  assert.match(withThread.statuses[0].description, /unresolved Codex P1\/P2/u);
+
+  const blocked = await runGate({
+    ...labelled,
+    comments: [comment(directive('PASS')), comment(`${directive('BLOCKED')}\nConcrete blocker`)],
+  });
+  assert.equal(blocked.statuses[0].state, 'failure');
+  assert.match(blocked.statuses[0].description, /BLOCKED directive is active/u);
+
+  // Without the label the same Codex review is a verdict.
+  const unlabelled = await runGate({reviews: [codexReview()]});
+  assert.equal(unlabelled.statuses[0].state, 'success');
+});
+
+test('the resolver reports the built-by-gpt label; its spelling matches the module constant', async () => {
+  assert.equal(codexGate.GPT_BUILT_LABEL, 'built-by-gpt');
+  const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+  assert.ok(workflow.includes(`label.name === '${codexGate.GPT_BUILT_LABEL}'`));
+  // pull_request carries labeled/unlabeled so toggling the label re-evaluates.
+  assert.match(workflow, /types: \[opened, reopened, synchronize, ready_for_review, labeled, unlabeled\]/u);
+
+  for (const [labels, expected] of [
+    [[{name: 'built-by-gpt'}], 'true'],
+    [[{name: 'bug'}, {name: 'built-by-gpt'}], 'true'],
+    [[{name: 'bug'}], 'false'],
+    [[], 'false'],
+  ]) {
+    const core = coreMock();
+    const github = {
+      rest: {
+        pulls: {get: async () => ({data: {head: {sha: HEAD}, labels, updated_at: '2026-08-08T04:50:00Z'}})},
+        repos: {getCommit: async () => ({data: {commit: {committer: {date: '2026-08-08T04:50:00Z'}}}})},
+      },
+    };
+    await runWorkflowScript(workflowScript('Resolve pull request number'), {
+      github,
+      context: {payload: {pull_request: {number: 2321}}, repo: {owner: 'rigplane', repo: 'rigplane-core'}},
+      core,
+      workspace: path.join(__dirname, '..', '..'),
+    });
+    assert.equal(core.outputs.gpt_built, expected, JSON.stringify(labels));
+  }
+
+  // The label is read before getCommit, so a commit-API failure cannot lose it
+  // (and an unknown commit time already fails the gate closed).
+  const core = coreMock();
+  await assert.rejects(
+    runWorkflowScript(workflowScript('Resolve pull request number'), {
+      github: {
+        rest: {
+          pulls: {get: async () => ({data: {head: {sha: HEAD}, labels: [{name: 'built-by-gpt'}]}})},
+          repos: {getCommit: async () => { throw new Error('commit API unavailable'); }},
+        },
+      },
+      context: {payload: {pull_request: {number: 2321}}, repo: {owner: 'rigplane', repo: 'rigplane-core'}},
+      core,
+      workspace: path.join(__dirname, '..', '..'),
+    }),
+    /commit API unavailable/,
+  );
+  assert.equal(core.outputs.gpt_built, 'true');
 });

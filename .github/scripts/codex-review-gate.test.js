@@ -126,6 +126,14 @@ test('a backup BLOCKED directive beats a Codex review', () => {
   assert.deepEqual(v, {state: 'failure', description: 'BLOCKED is active.'});
 });
 
+test('a GPT-built PR does not take Codex as its independent reviewer', () => {
+  const gpt = {codex: reviewed, unresolved: [], backup: none, headSha: HEAD, gptBuilt: true};
+  const v = buildCodexVerdict(gpt);
+  assert.equal(v.state, 'failure');
+  assert.match(v.description, /^Label built-by-gpt: Codex is not independent/u);
+  assert.equal(buildCodexVerdict({...gpt, backup: {...none, pass: true}}).state, 'success');
+});
+
 test('every description fits the 140-character status limit', () => {
   const open = Array.from({length: 9}, () => ({priority: 'P1', path: 'x'.repeat(80), line: 100}));
   const v = buildCodexVerdict({codex: reviewed, unresolved: open, backup: none, headSha: HEAD});
