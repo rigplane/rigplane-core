@@ -162,17 +162,14 @@ test('a trusted exact-head directive on the first non-blank line counts', () => 
   assert.equal(hasDirective({comments: [note(`Agent Review: BLOCKED ${HEAD}\nConcrete blocker`)], verdict: 'BLOCKED', headSha: HEAD}), true);
 });
 
-test('a BLOCKED line below the explanation stays binding; quoted, fenced or foreign ones do not', () => {
+test('a BLOCKED line anywhere in a trusted comment stays binding (fail closed), at any age', () => {
   const blocked = (body, extra = {}) => hasDirective({comments: [note(body, extra)], verdict: 'BLOCKED', headSha: HEAD});
   assert.equal(blocked(`Concrete blocker remains.\nAgent Review: BLOCKED ${HEAD}`), true);
-  assert.equal(blocked(`Agent Review: BLOCKED ${HEAD}`, {created_at: '2020-01-01T00:00:00Z', updated_at: '2020-01-01T00:00:00Z'}), true);
-  // A longer fence wrapping a short one closes correctly: the directive after it is a real blocker.
+  assert.equal(blocked('```\nAgent Review: BLOCKED ' + HEAD + '\n```'), true);
   assert.equal(blocked('````text\n```\n````\nAgent Review: BLOCKED ' + HEAD), true);
-  assert.equal(blocked('```\nAgent Review: BLOCKED ' + HEAD + '\n```\nAgent Review: BLOCKED ' + HEAD), true);
-  assert.equal(blocked('~~~\n```\nAgent Review: BLOCKED ' + HEAD + '\n~~~'), false);
-  assert.equal(blocked('````\n```\nAgent Review: BLOCKED ' + HEAD + '\n```\n'), false);
+  assert.equal(blocked(`Agent Review: BLOCKED ${HEAD}`, {created_at: '2020-01-01T00:00:00Z', updated_at: '2020-01-01T00:00:00Z'}), true);
+  // Not binding: a quote, another author class, another sha or an extended token.
   assert.equal(blocked(`> Agent Review: BLOCKED ${HEAD}`), false);
-  assert.equal(blocked('```\nAgent Review: BLOCKED ' + HEAD + '\n```'), false);
   assert.equal(blocked(`Agent Review: BLOCKED ${HEAD}`, {author_association: 'NONE'}), false);
   assert.equal(blocked(`Agent Review: BLOCKED ${HEAD}x`), false);
   assert.equal(blocked(`Agent Review: BLOCKED ${'e'.repeat(40)}`), false);
