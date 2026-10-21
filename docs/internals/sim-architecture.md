@@ -161,6 +161,15 @@ becomes `ic7300`), and one package serves every simulation profile of that radio
 `model/registry.py` imports that package for the profile's radio if it exists and
 passes in a registry with `override(command_name, handler)` (replace the
 model's answer for one named command) and `add_state(name, default)`.
+`override` takes `handler(request) -> reply`: `request` carries the command
+name and its decoded arguments (names from the capability profile's command
+map, values already decoded by the model), `reply` is the model family's reply
+value; the exact types are frozen in the model PR (MOR-3601 for Icom). An
+`override` for a command the capability profile does not declare is an error at
+registration. `add_state(name, default)` adds `name` to `SimState.extra`; a
+name already declared in the profile's `[state.extra]` with the same default is
+accepted, with a different default it is an error (the profile file wins
+nowhere: the conflict is reported at load).
 A radio PR that needs another shared hook opens or comments on a shared issue
 first. A radio PR never edits the IC-7610 files or another radio's folders.
 Refusal hooks are scenario events (`refuse`, section 7), not registrations. A
