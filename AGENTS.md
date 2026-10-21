@@ -283,7 +283,8 @@ it with the coordinator's token; put `@codex review` at the end of the
    style, test-only polish, nits in internal tooling that cannot change a verdict or leave state
    dirty) is answered with
    `deferred to MOR-xxxx` (one follow-up ticket per PR collects them) and
-   resolved; P0, P1 and behaviour-changing P2 are never deferred. P3 never
+   resolved; P0, P1, behaviour-changing P2 and a false safety or support claim
+   in user-facing documentation are never deferred. P3 never
    blocks. This holds on both paths: a backup PASS does not override an open
    Codex P0-P2 thread that is neither fixed, disproved nor deferred this way.
 
