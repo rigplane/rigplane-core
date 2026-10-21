@@ -16,9 +16,10 @@ the recorded table. A well-formed request with no native handler and no
 recorded entry is the ``Unsupported("not_modelled")`` coverage gap: it
 answers ``?;``, is counted per request line in ``not_modelled``, and is
 reported to the ``on_not_modelled`` observer callback when one was
-given. The callback is best-effort instrumentation: its failures are
-logged and swallowed, it never changes the reply, and the model never
-touches the engine for it (no trace record is written and no scheduled
+given. The callback is best-effort instrumentation: an ordinary
+``Exception`` from it is logged and swallowed and never changes the
+reply (a ``BaseException`` such as ``KeyboardInterrupt`` propagates),
+and the model never touches the engine for it (no trace record is written and no scheduled
 operation is drained). ``handle_with_outcome`` returns the reply
 together with its explicit engine ``Outcome``.
 
@@ -179,7 +180,8 @@ class YaesuCatModel:
     ``build_ftx1_engine``: the mode name/code mapping travels in its
     ``state.extra``. *on_not_modelled* is an observer called with the
     request line each time a well-formed request hits the coverage gap;
-    it is best-effort instrumentation and never changes the reply.
+    it is best-effort instrumentation: an ordinary ``Exception`` from it
+    never changes the reply, a ``BaseException`` propagates.
     """
 
     def __init__(
@@ -287,8 +289,8 @@ class YaesuCatModel:
 
         The callback is best-effort instrumentation: a failure in it is
         logged and swallowed (``Exception`` only — a ``BaseException``
-        such as a cancellation propagates), and it never changes the
-        reply. The engine is not involved at all.
+        such as a cancellation propagates); an ``Exception`` never changes
+        the reply. The engine is not involved at all.
         """
         self._not_modelled[line] = self._not_modelled.get(line, 0) + 1
         if self._on_not_modelled is None:

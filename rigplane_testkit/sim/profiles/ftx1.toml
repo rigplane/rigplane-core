@@ -11,7 +11,7 @@ radio = "FTX-1"
 fidelity = "A"
 evidence = ["tests/fixtures/ftx1/cat_pairs.jsonl", "tests/golden/wire_oracle/ftx1.toml"]
 gaps = [
-    "writes are not recorded: only the natively served SET verbs (FA FB MD TX AI ST VS AG RG SQ NL GT PA) are modelled, from the manual oracle rows; every other SET verb in the oracle (AC BI KS MG PC PL RA RL VX) answers ?; until its handler and evidence exist",
+    "writes are not recorded: only the natively served SET verbs (FA FB MD TX AI ST VS AG RG SQ NL GT PA) are modelled (oracle rows exist for all of them except AI and VS, which follow the CAT command shape and the recorded read replies); every other SET verb in the oracle (AC BI KS MG PC PL RA RL VX) answers ?; until its handler and evidence exist",
     "verbs answered only from the recorded table: AC BC BI BP CF CN CO CS CT FR FT IS KS KP LK MG NA OS PC PL PR RA RL RM SD SH VX",
     "FA SET refused with ?; in MEMORY mode is observed on the MAIN side only; FB in MEMORY mode is unobserved",
     "no scope or hardware spectrum",
