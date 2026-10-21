@@ -1,15 +1,12 @@
 """Real byte-stream endpoints for ``CivSerialFake``: TCP and PTY (MOR-3594).
 
-:class:`TcpEndpoint` serves pyserial's ``socket://`` URL with one fake
-connection per accepted client; :class:`PtyEndpoint` exposes a
-pseudo-terminal slave path (macOS/Linux).
-Only the fake's public surface is used (``open_serial_connection()``,
-``usb_vanish``/``usb_reappear``, ``silence``): a vanished fake raises
-``OSError(ENODEV)`` from opens and fails live reads/writes. The TCP
-endpoint maps that to the wire: live clients drop and new opens close
-until ``usb_reappear``; the PTY drops only the fake connection, keeping
-the slave node for the process's lifetime (a node disappear would
-renumber the path, like a USB replug).
+:class:`TcpEndpoint` serves pyserial's ``socket://`` URL with one fake connection per accepted
+client; :class:`PtyEndpoint` exposes a pseudo-terminal slave path (macOS/Linux). Only the fake's
+public surface is used (``open_serial_connection()``, ``usb_vanish``/``usb_reappear``,
+``silence``): a vanished fake raises ``OSError(ENODEV)`` from opens and fails live reads/writes.
+The TCP endpoint maps that to the wire: live clients drop and new opens close until
+``usb_reappear``; the PTY drops only the fake connection, keeping the slave node for the process's
+lifetime (a node disappear would renumber the path, like a USB replug).
 """
 
 from __future__ import annotations

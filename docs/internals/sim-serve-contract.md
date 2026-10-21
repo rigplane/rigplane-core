@@ -66,22 +66,19 @@ booleans and strings.
 
 ## Serial radios (`--radio ic7300`, MOR-3594)
 
-The IC-7300 is served by the stateful serial CI-V fake
-(`rigplane_testkit/serial/civ_serial.py`) on real endpoints: a TCP
-listener usable through pyserial's `socket://` URL — the same open the
-production link performs — and, on macOS and Linux, a pseudo-terminal
-slave path a serial app opens like a device node. On Windows there is
-no PTY serial simulation: `pty` is `null` and the TCP endpoint keeps
-serving; use `socket://` and test whether the target app accepts it.
-During a `usb_vanish` window the PTY's fake connection is dropped while
-the slave path stays open: an app can still open it, and reads return
-no data until the reappear (bytes written inside the window are
-dropped; the first bytes after it reopen the fake connection). On TCP,
-live clients are dropped (EOF), and a client connecting while vanished
-is accepted and closed immediately — the open itself does not fail.
+The IC-7300 is served by the stateful serial CI-V fake (`rigplane_testkit/serial/civ_serial.py`) on
+real endpoints: a TCP listener usable through pyserial's `socket://` URL — the same open the
+production link performs — and, on macOS and Linux, a pseudo-terminal slave path a serial app opens
+like a device node. On Windows there is no PTY serial simulation: `pty` is `null` and the TCP
+endpoint keeps serving; use `socket://` and test whether the target app accepts it. During a
+`usb_vanish` window the PTY's fake connection is dropped while the slave path stays open: an app can
+still open it, and reads return no data until the reappear (bytes written inside the window are
+dropped; the first bytes after it reopen the fake connection). On TCP, live clients are dropped
+(EOF), and a client connecting while vanished is accepted and closed immediately — the open itself
+does not fail.
 
-Startup line: same envelope, but `device` (the `socket://` URL) and
-`pty` (the slave path, or `null`) replace `host`/`control_port`/`username`.
+Startup line: same envelope, but `device` (the `socket://` URL) and `pty` (the slave path, or
+`null`) replace `host`/`control_port`/`username`.
 
 `GET /state` → `{"frequency_hz":int,"mode":int,"ptt":bool,"s_meter":int,"open_count":int,"vanished":bool}`.
 
@@ -94,11 +91,10 @@ Startup line: same envelope, but `device` (the `socket://` URL) and
 | `usb_reappear` | none | The device opens again immediately. |
 | `silence` | `for_s` (finite number > 0) | The port stays open and nothing answers for the window. |
 
-These events validate through the same code path as the IC-7610 ones:
-a body that cannot be parsed or sanitised, or names no known event,
-never reaches a handler, and each handler validates its arguments
-before changing anything (400 `invalid_args` on rejection), so a
-rejected body changes nothing. IC-7610-only events answer `unsupported`.
+These events validate through the same code path as the IC-7610 ones: a body that cannot be parsed
+or sanitised, or names no known event, never reaches a handler, and each handler validates its
+arguments before changing anything (400 `invalid_args` on rejection), so a rejected body changes
+nothing. IC-7610-only events answer `unsupported`.
 
 ## Trace
 
