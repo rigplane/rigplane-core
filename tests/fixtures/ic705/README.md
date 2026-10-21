@@ -53,9 +53,21 @@ No PTT-on, tune, frequency, mode or power command was sent. The shutdown release
 - The scope settings answer when asked with the receiver byte (`27 14 00`, `27 15 00`, `27 16 00`, ... in the `scope` window), and `27 10` / `27 11` answer bare. The profile's bare `get_scope_*` forms are therefore not what this radio accepts (ledger material for the conformance replay).
 - On USB the radio does not echo requests and sent no unsolicited frames in 90 s idle although CI-V transceive reads back ON (`1A 05 01 31` = 01).
 
+## VHF/UHF reads (2026-10-21, ~13:45-14:00 UTC)
+
+Same probe, same bridge, after tuning with `set_mode FM` + `set_freq` only (no antenna; frequency, mode and AGC memory were restored and verified, see below): 145.500 MHz and 433.500 MHz.
+`civ_pairs_vhf_uhf.jsonl` (windows `probe_2m_fm_145500`, `probe_70cm_fm_433500`, same keys and `transport: "usb"` as `civ_pairs.jsonl`) keeps only the requests whose answer differs from the HF probe, ignoring the S-meter, the radio clock and the AF level knob; it is kept apart from `civ_pairs.jsonl` because the same request has different answers per band, so the two must not be mounted as one answer table. `vhf_uhf_state.json` holds the server-API state read on each band.
+
+What the radio showed, FM versus the HF (USB) probe:
+
+- Same on every band: `get_freq_offset` (`0C`) still NAKs, so no duplex offset is readable by that command; `0F` read `00` on both (the server state shows repeater shift 0, split off); tone type off, tone and TSQL frequency 88.5 Hz; `get_dtcs` answered the same as on HF. The radio held whatever repeater settings it already had, and those read as off/default, so offset, tone and DCS values for a configured repeater channel are still unrecorded.
+- Reads that stop working in FM (NAK): `get_agc_time_constant`, `get_filter_shape`, `get_filter_width` (FM width is fixed), `get_manual_notch_width`, `get_pbt_inner`, `get_pbt_outer`. Total NAK 25 versus 19 on HF.
+- Changes with the band: mode `04 05 01` / selected mode `26 00 05 00 01` (FM), AGC `16 12 01` (fast), tuning step `10 11`, `get_s_meter_sql_status` and `get_various_squelch` (the squelch status bit is 0 in FM), band edge (`02`) on 70 cm (2 m answered like HF).
+- After restoring 14.074 MHz USB, the probe again matched the first one except S-meter, clock and the AF level (the owner turned the knob between runs).
+
 ## Open (needs the owner or later)
 
 - **LAN / Wi-Fi capture**: `rigplane discover` found no IC-705 on the network. Needs the radio's Wi-Fi/Network Control switched on with a network user; then control/CI-V/audio phases, login, keep-alive cadence and RX audio layout are captured the same way.
-- **VHF/UHF reads**: the radio sat on HF, so duplex offset (`0C`), DCS and FM-width reads on a VHF/UHF FM channel are not covered (`get_freq_offset` NAKs on HF). Needs the owner to put VFO A on a VHF or UHF FM channel; no frequency or mode change is made by the capture itself.
+- **Configured repeater channel**: offset, tone and DCS values are only recorded at factory defaults; a memory channel with duplex, offset and CTCSS/DCS would give real values.
 - **USB audio samples**: the capture host denies microphone access to processes started over ssh (a webcam microphone reads exact zero too), so no RX audio over USB was recorded; the `usb_audio.json` zero probe says nothing about the radio. Needs the microphone permission granted on the host, or the LAN audio path.
 - Firmware version.

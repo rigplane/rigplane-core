@@ -97,3 +97,22 @@ def test_scope_cadence_is_a_per_transport_baseline() -> None:
 def test_redaction_gate_clean_without_a_deny_list() -> None:
     paths = [str(p) for p in sorted(FIXTURES.glob("*.json*"))]
     assert scan(paths) == []
+
+
+def test_vhf_uhf_rows_are_wellformed_reads_only() -> None:
+    rows = [
+        json.loads(line)
+        for line in (FIXTURES / "civ_pairs_vhf_uhf.jsonl").read_text().splitlines()
+        if line
+    ]
+    assert {r["window"] for r in rows} == {
+        "probe_2m_fm_145500",
+        "probe_70cm_fm_433500",
+    }
+    answers = json.loads((FIXTURES / "probe_answers.json").read_text())["answers"]
+    probe_gets = {bytes.fromhex(a["frame"])[4:-1] for a in answers}
+    for row in rows:
+        frame = bytes.fromhex(row["frame"])
+        assert frame[:2] == b"\xfe\xfe" and frame[-1:] == b"\xfd"
+        if row["dir"] == "c2r":
+            assert frame[4:-1] in probe_gets, frame.hex()  # exact GET, no setter
