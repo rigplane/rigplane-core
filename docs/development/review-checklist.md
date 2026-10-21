@@ -42,8 +42,7 @@ Walk this list against your own diff, then run the local pre-review, then push.
 
 ## 2. Defect classes to walk, unit by unit
 
-Code is written by Kimi via `route run`; Claude orchestrates and checks. Which findings
-must be fixed is decided by the severity policy in section 4.
+Which findings must be fixed is decided by the severity policy in section 4.
 
 For each changed or added unit (a function, a workflow step, a configuration or
 schema declaration, a shell command, a documentation claim), ask every question. "Not applicable" is a
@@ -126,7 +125,9 @@ valid answer; skipping the question is not.
    `PRE-REVIEW: CLEAN`. The script runs Codex read-only on the branch diff and
    prints the findings that must be fixed (section 4), grouped by file, as its
    output, followed by a short list of deferrable items. Fix all the
-   must-fix ones, put the deferrable ones in the PR body under "Deferred", fix
+   must-fix ones, put the deferrable ones in the PR body under a "Deferred"
+   heading (one line each; the coordinator files the one follow-up ticket per PR
+   before merge), fix
    the siblings of each that lie inside your assigned scope (list the others
    in the PR body), commit, and run it again until it prints
    `PRE-REVIEW: CLEAN`. If a finding is wrong, pass the evidence with
@@ -159,11 +160,16 @@ It applies to the local pre-review and to Codex threads on GitHub alike.
   cannot change a verdict or leave state dirty. On a GitHub thread reply
   `deferred to MOR-xxxx` and resolve it; the gate accepts a resolved thread.
   One follow-up ticket per PR collects the deferred items (builders list them in
-  the PR body, the coordinator files the ticket). Prose fixes ride along with the
-  next code change; a prose-only PR gets one backup review pass, no Codex loop.
+  the PR body under "Deferred", the coordinator files the ticket before merge).
+  Prose fixes ride along with the next code change; a prose-only PR may take the
+  backup review path (one backup pass) instead of waiting for further Codex
+  rounds. Before you push, section 2 item 9 still holds: never push a claim you
+  know is false. This section covers wording-level findings raised afterwards.
 - P3: ticket or ignore.
-- At most two Codex rounds per PR. If a third would be needed, escalate to the
-  coordinator.
+- At most two Codex rounds per PR (a round is one Codex review of a pushed
+  head; local pre-review iterations do not count). If a third would be needed,
+  escalate to the coordinator. Escalation changes who works on it, not the merge
+  bar: P0, P1 and behaviour-changing P2 findings are always fixed.
 - When Codex reports on GitHub: read every thread of the current head, group
   them by root cause, fix the class that must be fixed (grep for siblings),
   answer every thread, re-run `tmp/pre-review.sh`, and push all fixes of the

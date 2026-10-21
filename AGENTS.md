@@ -280,7 +280,8 @@ it with the coordinator's token; put `@codex review` at the end of the
 2. no Codex P0-P2 review thread is unresolved. Fix it with a test, or reply
    with the reason it is not a bug, then resolve the thread. A P2 that does not
    change behaviour (documentation wording, comments, PR-body text, naming,
-   style, test-only polish, nits in internal tooling) is answered with
+   style, test-only polish, nits in internal tooling that cannot change a verdict or leave state
+   dirty) is answered with
    `deferred to MOR-xxxx` (one follow-up ticket per PR collects them) and
    resolved; P0, P1 and behaviour-changing P2 are never deferred. P3 never
    blocks. This holds on both paths: a backup PASS does not override an open
