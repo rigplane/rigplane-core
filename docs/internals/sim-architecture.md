@@ -97,6 +97,9 @@ class ReceiverState:          # one per receiver (profile receiver_count)
     selectors: dict[str, int]   # controls with a declared set of more than two values:
                                 # "preamp" (0/1/2), "agc" (1/2/3), "attenuator" (steps),
                                 # "apf" (0..3 where the capability profile declares 0..3), ...
+    # A two-valued domain [a, b] is a bool: False = a, True = b (IC-7300 attenuator
+    # [0, 20]: False = 0 dB, True = 20 dB); engine reads return the bool, and the model
+    # maps it to the wire value through the declared domain.
     # Classification rule: each control goes by the domain its capability profile
     # declares (two values -> switches, a value set -> selectors, a range -> levels);
     # the same control name can therefore be a switch on one radio and a selector on
@@ -166,9 +169,11 @@ becomes `ic7300`), and one package serves every simulation profile of that radio
 passes in a registry with `override(command_name, handler)` (replace the
 model's answer for one named command) and `add_state(name, default)`.
 `override` takes `handler(request) -> reply`: `request` carries the command
-name and its decoded arguments (names from the capability profile's command
-map, values already decoded by the model), `reply` is the model family's reply
-value; the exact types are frozen in the model PR (MOR-3601 for Icom). An
+name (from the capability profile's command map) and its decoded arguments
+(argument names and decoding are defined by the model family's own contract, not
+by the capability profile, whose command map holds only command bytes), `reply`
+is the model family's reply value; that contract is frozen in the model PR
+(MOR-3601 for Icom, MOR-3602 for Yaesu) before any radio extension consumes it. An
 `override` for a command the capability profile does not declare is an error at
 registration. `add_state(name, default)` adds `name` to `SimState.extra`; a
 name already declared in the profile's `[state.extra]` with the same default is
@@ -230,18 +235,21 @@ reply_latency_ms = 15
 
 [state.extra]                    # radio-specific fields not in SimState (name = default)
 
-[audio.rx]                       # native audio of this radio (section 9)
-transport = "usb_device"         # lan_stream | usb_device
-sample_rate_hz = 48000
-channels = 1
-sample_format = "s16le"
+[audio.rx]                       # SELECTION among what the capability profile declares (section 9)
+transport = "usb_device"         # lan_stream | usb_device (a simulation choice)
+# sample_rate_hz / channels / sample_format: omit to take the capability profile's value;
+# when given they must be one of the values it declares, else the loader refuses
 
-[scope]                          # native scope of this radio (section 9)
-bins = 475
-span_hz = 50000
-rate_hz = 10
+[scope]                          # simulation-only parameters of the scope source
+rate_hz = 10                     # frame rate the simulator emits (not a capability value)
 frame = "icom_27_00"             # framing family used by the model
+# bins / span_hz: omit to take the capability profile's values (spectrum/scope sections)
 ```
+
+Precedence for overlapping data: the capability profile BOUNDS (what the radio can
+do), the simulation profile SELECTS within those bounds, and omitted values default to
+the capability profile's. A simulation profile never restates a capability value just
+to repeat it.
 
 Contradiction examples the loader refuses: `echo` set with a non-serial
 transport, a `[scope]` section for a radio whose capability profile has no
