@@ -34,6 +34,7 @@ CASES = (
     "transport.serial.baud: must be a positive integer, got 'fast'|[transport.serial]\nbaud = 'fast'",
     "transport.lan.echo: unknown key|!schema = 'rigplane-sim-profile/1'\n[sim]\nid = 'x'\nradio = 'IC-7610'\nfidelity = 'C'\ngaps = ['g']\n[transport.lan]\necho = true",
     "transport.lan: 'IC-7300' capability profile declares no LAN|[transport.lan]",
+    "transport.yaesu_cat: 'IC-7300' speaks 'civ', not yaesu_cat|[transport.yaesu_cat]\nbaud = 9600",
     "transport.serial.identity: must be one of ('94',), got '98'|[transport.serial]\nbaud = 19200\nidentity = '98'",
     "transport.serial.identity: required, no expected identity ids declared|!schema = 'rigplane-sim-profile/1'\n[sim]\nid = 'x'\nradio = 'IC-7300MK2'\nfidelity = 'C'\ngaps = ['g']\n[transport.serial]\nbaud = 19200",
     "initial.frequency_hz: must be an integer, got True|[transport.serial]\nbaud = 19200\n[initial]\nfrequency_hz = true",

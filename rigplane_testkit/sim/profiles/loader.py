@@ -234,6 +234,9 @@ def load_sim_profile(path: Path, *, root: Path) -> SimProfile:
     p = f"transport.{kind}"
     keys = {"serial": _K_SERIAL, "lan": _K_LAN}.get(kind, frozenset({"baud"}))
     t = _section(tr_t[kind], p, keys)
+    civ_like = {"civ": ("serial", "lan"), "yaesu_cat": ("yaesu_cat",)}
+    if kind not in civ_like.get(radio.protocol_type, ()):
+        _fail(f"{p}: {radio.model!r} speaks {radio.protocol_type!r}, not {kind}")
     baud = _scalar(t, "baud", p, int, 1, kind != "lan")
     echo = _scalar(t, "echo", p, bool) if kind == "serial" else None
     port = hold = owner = None
