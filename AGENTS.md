@@ -252,56 +252,37 @@ missing, short, uppercase, or stale SHA is not a directive. Use this status
 instead of GitHub required approving reviews; same-user approval restrictions
 break automated agent flow.
 
-### Primary reviewer: Codex
+### Review verdict: local Codex CLI review
 
-Owner decision 2026-10-21 (MOR-3616): Codex's GitHub review
-(`chatgpt-codex-connector[bot]`) is the primary reviewer of every PR. The
-exact-head directive above is the backup, posted by a cross-family reviewer
-(GLM, Spark, ...) whose family differs from the builder's.
+Owner decision 2026-10-21 (supersedes the Codex-primary gate of MOR-3616):
+the merge verdict comes from a LOCAL review of the exact head, never from
+waiting for GitHub. The builder runs `tmp/pre-review.sh` before pushing (Codex
+CLI on the owner's ChatGPT subscription, read-only, exhaustive). When it prints
+`PRE-REVIEW: CLEAN` for the pushed head SHA, the lane script `pro-gate.sh` (or
+the coordinator) posts the exact-head `Agent Review: PASS <head sha>` directive
+with the model, the number of rounds and "local Codex CLI pre-review". The
+reviewer's model family differs from the builder's: Codex reviews what Kimi,
+Claude, GLM or Spark built; if Codex built the change, Spark reviews it. A new
+push needs a new local verdict for the new head.
 
-Codex reviews a PR when it is opened and when a draft is marked ready. It does
-not review a push by itself and it does not review drafts. A push needs a new
-Codex review of the new head, requested with a `@codex review` comment. The
-comment must come from a person's account: Codex ignores requests posted by
-`github-actions[bot]` (measured on rigplane-pro PR 1779, it answers "create a
-Codex account"), so the gate workflow cannot request it. The lane scripts post
-it with the coordinator's token; put `@codex review` at the end of the
-`Agent Review: PASS` comment, or run `pro-gate.sh`, which asks once per head.
+`Agent Review Gate` is green when a valid, trusted, non-minimized exact-head
+`PASS` directive exists (as described above) and no active `BLOCKED` directive
+for the head exists. Codex's GitHub review (`chatgpt-codex-connector[bot]`) is
+advisory and asynchronous: it still reviews when a PR is opened or a draft is
+marked ready and answers `@codex review`, its review and open P0-P2 threads show
+in the status text, and nobody waits for it. If it later finds a P0 or P1 (or a
+behaviour-changing P2) on a PR, the owning session opens a fix PR; that is part of
+its done. The severity policy in "Code Review Rules" says what must be fixed and
+what is deferred (`deferred to MOR-xxxx`, resolve the thread); the gate does not
+read those threads.
 
-`Agent Review Gate` is green when:
-
-1. Codex reviewed the exact head SHA: a PR review whose `commit_id` is the
-   head, or Codex's summary comment (`codex-review-state:v1`) naming the head
-   with status `completed`, or a Codex receipt comment
-   (`codex-review-receipt:v1`) naming a prefix of at least 10 characters of the
-   head. A bare thumbs-up names no commit and is not enough. **Or** Codex did
-   not review the head and the backup directive
-   `Agent Review: PASS <head sha>` is present and valid as described above; and
-2. no Codex P0-P2 review thread is unresolved. Fix it with a test, or reply
-   with the reason it is not a bug, then resolve the thread. A P2 that does not
-   change behaviour (documentation wording, comments, PR-body text, naming,
-   style, test-only polish, nits in internal tooling that cannot change a verdict or leave state
-   dirty) is answered with
-   `deferred to MOR-xxxx` (one follow-up ticket per PR collects them) and
-   resolved; P0, P1, behaviour-changing P2 and a false safety or support claim
-   in user-facing documentation are never deferred. P3 never
-   blocks. This holds on both paths: a backup PASS does not override an open
-   Codex P0-P2 thread that is neither fixed, disproved nor deferred this way.
-
-A trusted, active (or malformed) `BLOCKED` directive for the head still wins
-and the status is red. If anything fails to evaluate (an API or GraphQL error),
-the status is red as well; there is no silent pass. While Codex has not
-reviewed the head the status reads "Waiting for Codex review". Codex normally
-answers in a few minutes; after about 20 minutes without a Codex review of the
-head, ask the backup reviewer for the exact-head PASS.
-
-Resolving a review thread fires no workflow event, so after resolving threads
-re-run the gate: `gh workflow run agent-review-gate.yml -f pr_number=N`.
-If the builder is itself a GPT/Codex-family model, Codex is not independent:
-label the PR `built-by-gpt`. The gate then ignores the Codex review as a
-verdict (open Codex P0-P2 threads still block) and needs the backup PASS from
-a reviewer of another family. Adding or removing the label re-evaluates the
-gate.
+A trusted, active (or malformed) `BLOCKED` directive for the head still wins and
+the status is red. If anything fails to evaluate (an API or GraphQL error), the
+status is red as well; there is no silent pass. While no PASS exists the status
+reads "Waiting for the local review PASS". After a comment edit or other change
+that fires no workflow event, re-run the gate:
+`gh workflow run agent-review-gate.yml -f pr_number=N`. The `built-by-gpt` label
+no longer changes the verdict; the lane script picks the reviewer family.
 
 Every non-trivial PR requires independent agent review before merge. The
 implementation agent may not be the review agent.
@@ -339,10 +320,8 @@ implementation agent may not be the review agent.
   comment, or writing the corrected squash body at merge — and say in the PR
   that it did.
 - A failed `Agent Review Gate` without valid exact-head BLOCKED feedback usually
-  means Codex has not reviewed the current head yet (a person's account asks with
-  `@codex review`, then wait), an unresolved Codex P0-P2 thread remains, or, on the backup path,
-  no fresh, valid exact-head PASS directive exists; perform or refresh the
-  review instead of skipping the PR.
+  means no fresh, valid exact-head PASS directive exists for the current head:
+  run `pro-gate.sh` (local review of the head) instead of skipping the PR.
 - A PR based on a branch other than `main` shows a partly-populated check
   list, which is more misleading than an empty one:
   `agent-review-gate.yml`'s `pull_request` trigger carries no `branches:`

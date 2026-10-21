@@ -126,8 +126,8 @@ valid answer; skipping the question is not.
    prints the findings that must be fixed (section 4), grouped by file, as its
    output, followed by a short list of deferrable items. Fix all the
    must-fix ones, put the deferrable ones in the PR body under a "Deferred"
-   heading (one line each; the coordinator files the one follow-up ticket per PR
-   before merge), fix
+   heading (one line each; the builder session files the one follow-up ticket per
+   PR before merge, the coordinator when the builder has no tracker access), fix
    the siblings of each that lie inside your assigned scope (list the others
    in the PR body), commit, and run it again until it prints
    `PRE-REVIEW: CLEAN`. If a finding is wrong, pass the evidence with
@@ -142,13 +142,16 @@ valid answer; skipping the question is not.
    size or scope limits, or a fix needs a decision outside your scope. Never
    push before CLEAN.
 3. Push only when the local pre-review has printed `PRE-REVIEW: CLEAN`, and push
-   once. Never push a fix per finding or an intermediate state: each push can
-   start a new GitHub review. After a GitHub review round, push all fixes of
-   that round together (section 4).
+   once. Never push a fix per finding or an intermediate state.
+4. Get the verdict: `pro-gate.sh <repo> <pr> <builder-family>` posts
+   `Agent Review: PASS <head sha>` from the recorded local verdict (the reviewer
+   family differs from the builder's; if Codex built the change, Spark reviews),
+   then merge. Do not wait for the GitHub Codex bot: it is advisory and
+   asynchronous. A new push needs a new local verdict.
 
 ## 4. Severity policy: what to fix, what to defer
 
-It applies to the local pre-review and to Codex threads on GitHub alike.
+It applies to the local pre-review and to any Codex bot thread on GitHub alike.
 
 - Always fix before merge: P0, P1, and a P2 that changes behaviour (a wrong
   result or verdict, data loss, state left dirty, a hang, a security or
@@ -159,18 +162,16 @@ It applies to the local pre-review and to Codex threads on GitHub alike.
   naming, style, test-only polish, or robustness nits in internal tooling that
   cannot change a verdict or leave state dirty. On a GitHub thread reply
   `deferred to MOR-xxxx` and resolve it; the gate accepts a resolved thread.
-  One follow-up ticket per PR collects the deferred items (builders list them in
-  the PR body under "Deferred", the coordinator files the ticket before merge).
-  Prose fixes ride along with the next code change; a prose-only PR may take the
-  backup review path (one backup pass) instead of waiting for further Codex
-  rounds. Before you push, section 2 item 9 still holds: never push a claim you
+  One follow-up ticket per PR collects the deferred items (listed in the PR body
+  under "Deferred"; the builder session files it, the coordinator when the
+  builder has no tracker access). Prose fixes ride along with the next code
+  change. Before you push, section 2 item 9 still holds: never push a claim you
   know is false. This section covers wording-level findings raised afterwards.
 - P3: ticket or ignore.
-- At most two Codex rounds per PR (a round is one Codex review of a pushed
-  head; local pre-review iterations do not count). If a third would be needed,
-  escalate to the coordinator. Escalation changes who works on it, not the merge
-  bar: P0, P1 and behaviour-changing P2 findings are always fixed.
-- When Codex reports on GitHub: read every thread of the current head, group
-  them by root cause, fix the class that must be fixed (grep for siblings),
-  answer every thread, re-run `tmp/pre-review.sh`, and push all fixes of the
-  round in one commit.
+- There is no Codex round to wait for: the verdict is the local pre-review. If
+  the GitHub Codex bot later reports a P0 or P1 (or a behaviour-changing P2) on
+  your PR, open a fix PR; that is part of the task's done. A bot thread that is
+  wording-level is answered `deferred to MOR-xxxx` and resolved.
+- Push once per fix round, after `tmp/pre-review.sh` printed CLEAN: group the
+  findings by root cause, fix the class that must be fixed (grep for siblings),
+  answer every GitHub thread, and push all fixes in one commit.

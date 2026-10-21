@@ -1,19 +1,17 @@
 'use strict';
 
-// Codex-primary review verdict for the `Agent Review Gate` status (MOR-3616).
+// Local-verdict gate (owner directive 2026-10-21, supersedes the Codex-primary gate of MOR-3616).
 // Pure functions plus one paginated GraphQL reader; the workflow scripts in
 // rigplane-pro and rigplane-core call them. Keep the two copies identical.
 //
-// PASS needs one of:
-//   1. Codex (chatgpt-codex-connector[bot]) reviewed the exact head SHA, or
-//   2. the repository's existing exact-head `Agent Review: PASS` directive from
-//      the cross-family backup reviewer (GLM / Spark) -- never silent: a person
-//      or lane script posts it only after the Codex window closed.
-// and in both cases no Codex P0/P1/P2 review thread may be unresolved.
+// PASS needs one thing: the repository's exact-head `Agent Review: PASS` directive,
+// posted by the lane script (pro-gate.sh) after a LOCAL review of that exact head
+// (Codex CLI on the owner's subscription; Spark when Codex built the change). Nobody
+// waits for the GitHub Codex bot: its review and its threads are advisory and only
+// appear in the status text. A BLOCKED directive for the head still wins.
 
 const CODEX_LOGIN = 'chatgpt-codex-connector';
-const WAIT_MINUTES = 20;
-// Set on a PR built by a GPT/Codex-family agent: Codex is then not an independent reviewer.
+// Kept for old PR labels: the label no longer changes the verdict (the lane script picks the reviewer family).
 const GPT_BUILT_LABEL = 'built-by-gpt';
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const BADGE_PATTERN = /!\[P([012]) Badge\]/u;
@@ -102,45 +100,26 @@ function unresolvedCodexFindings(threads) {
 }
 
 // `backup`: {pass, blocked, description} from the repository's own directive
-// parser. A BLOCKED directive wins over everything, as it does today.
-function buildCodexVerdict({codex, unresolved, backup, headSha, gptBuilt = false}) {
+// parser. A BLOCKED directive wins over everything. `codex` and `unresolved`
+// (the GitHub Codex bot) are advisory: they never change the state.
+function buildCodexVerdict({codex, unresolved, backup, headSha}) {
   const short = headSha.slice(0, 7);
-  const codexCounts = codex.reviewed && !gptBuilt;
   if (backup.blocked) {
     return {state: 'failure', description: backup.description};
   }
-  if (unresolved.length > 0) {
-    const list = unresolved
-      .slice(0, 3)
-      .map((f) => `${f.priority} ${f.path}:${f.line}`)
-      .join(', ');
-    return {
-      state: 'failure',
-      description: `${unresolved.length} unresolved Codex P0-P2 thread(s): ${list}`.slice(0, 140),
-    };
-  }
-  if (codexCounts) {
-    return {
-      state: 'success',
-      description: `Codex reviewed ${short} (${codex.via}); no open P0-P2 threads.`,
-    };
-  }
   if (backup.pass) {
+    const open = unresolved.length;
+    const note = open > 0
+      ? `Codex bot advisory: ${open} open P0-P2 thread(s).`
+      : codex.reviewed ? 'Codex bot reviewed it.' : 'Codex bot advisory.';
     return {
       state: 'success',
-      description: `Backup cross-family PASS for ${short}; Codex did not review it.`,
-    };
-  }
-  if (gptBuilt) {
-    return {
-      state: 'failure',
-      description: `Label ${GPT_BUILT_LABEL}: Codex is not independent; backup PASS needed for ${short}.`,
+      description: `Local review PASS for ${short}. ${note}`.slice(0, 140),
     };
   }
   return {
     state: 'failure',
-    description:
-      `Waiting for Codex review of ${short}; backup review after ${WAIT_MINUTES} min.`,
+    description: `Waiting for the local review PASS for ${short} (pro-gate.sh posts it).`,
   };
 }
 
@@ -175,7 +154,6 @@ async function readReviewThreads({github, owner, repo, number}) {
 module.exports = {
   CODEX_LOGIN,
   GPT_BUILT_LABEL,
-  WAIT_MINUTES,
   buildCodexVerdict,
   codexReviewedHead,
   isCodexUser,

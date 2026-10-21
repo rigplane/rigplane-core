@@ -1,14 +1,12 @@
 name: Agent Review Gate
 
-# Codex-primary gate (MOR-3616): the status is green when Codex reviewed the
-# exact head and no Codex P0-P2 thread is open, or, when Codex did not review,
-# when the cross-family backup reviewer posted the strict exact-head
-# `Agent Review: PASS <sha>` directive (never while a Codex P0-P2 thread is
-# open). A PR labelled `built-by-gpt` (GPT/Codex-family builder) does not count
-# the Codex review as a verdict and needs the backup PASS. Codex does not review
-# pushes by itself and ignores review requests posted by github-actions[bot],
-# so this workflow cannot ask for one: a person's account (the lane scripts,
-# with the coordinator token) posts `@codex review`.
+# Local-verdict gate (owner directive 2026-10-21, supersedes MOR-3616): the status
+# is green when the strict exact-head `Agent Review: PASS <sha>` directive exists
+# (posted by pro-gate.sh after a LOCAL review of that head: Codex CLI, or Spark
+# when Codex built the change) and no BLOCKED directive is active. The GitHub
+# Codex bot review and its open P0-P2 threads are advisory: they only appear in
+# the status text, nobody waits for them. The `built-by-gpt` label no longer
+# changes the verdict.
 # Rules and logic: .github/scripts/codex-review-gate.js
 # (shared verbatim with rigplane-pro), .github/scripts/agent-review-gate.js
 # (the directive parser), AGENTS.md "Protected main and review gate".

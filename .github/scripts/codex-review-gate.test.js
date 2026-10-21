@@ -107,49 +107,46 @@ const none = {pass: false, blocked: false, description: ''};
 const reviewed = {reviewed: true, via: 'review'};
 const absent = {reviewed: false, via: null};
 
-test('Codex reviewed + no open threads -> success', () => {
+test('a Codex bot review alone is advisory: no PASS means failure that names the local PASS', () => {
   const v = buildCodexVerdict({codex: reviewed, unresolved: [], backup: none, headSha: HEAD});
-  assert.equal(v.state, 'success');
-  assert.match(v.description, /^Codex reviewed dae01ac/u);
+  assert.equal(v.state, 'failure');
+  assert.match(v.description, /Waiting for the local review PASS for dae01ac/u);
+  const nothing = buildCodexVerdict({codex: absent, unresolved: [], backup: none, headSha: HEAD});
+  assert.equal(nothing.state, 'failure');
+  assert.match(nothing.description, /Waiting for the local review PASS for dae01ac/u);
 });
 
-test('Codex reviewed but a P1/P2 thread is open -> failure even with a backup PASS', () => {
+test('the local PASS turns the gate green whether or not the Codex bot reviewed', () => {
+  for (const codex of [absent, reviewed]) {
+    const v = buildCodexVerdict({codex, unresolved: [], backup: {...none, pass: true}, headSha: HEAD});
+    assert.equal(v.state, 'success');
+    assert.match(v.description, /^Local review PASS for dae01ac\./u);
+  }
+});
+
+test('open Codex bot threads are advisory: they appear in the text, never block a PASS', () => {
   const open = [{priority: 'P2', path: 'a.py', line: 3}];
   const v = buildCodexVerdict({codex: reviewed, unresolved: open, backup: {...none, pass: true}, headSha: HEAD});
-  assert.equal(v.state, 'failure');
-  assert.match(v.description, /1 unresolved Codex P0-P2 thread\(s\): P2 a\.py:3/u);
-});
-
-test('no Codex review and no backup -> failure that names the wait', () => {
-  const v = buildCodexVerdict({codex: absent, unresolved: [], backup: none, headSha: HEAD});
-  assert.equal(v.state, 'failure');
-  assert.match(v.description, /Waiting for Codex review of dae01ac; backup review after 20 min/u);
-});
-
-test('backup PASS turns the gate green only when Codex did not review', () => {
-  const v = buildCodexVerdict({codex: absent, unresolved: [], backup: {...none, pass: true}, headSha: HEAD});
   assert.equal(v.state, 'success');
-  assert.match(v.description, /^Backup cross-family PASS/u);
+  assert.match(v.description, /Codex bot advisory: 1 open P0-P2 thread/u);
 });
 
-test('a backup BLOCKED directive beats a Codex review', () => {
-  const blocked = {pass: false, blocked: true, description: 'BLOCKED is active.'};
+test('a BLOCKED directive beats a PASS and a Codex review', () => {
+  const blocked = {pass: true, blocked: true, description: 'BLOCKED is active.'};
   const v = buildCodexVerdict({codex: reviewed, unresolved: [], backup: blocked, headSha: HEAD});
   assert.deepEqual(v, {state: 'failure', description: 'BLOCKED is active.'});
 });
 
-test('a GPT-built PR does not take Codex as its independent reviewer', () => {
-  const gpt = {codex: reviewed, unresolved: [], backup: none, headSha: HEAD, gptBuilt: true};
-  const v = buildCodexVerdict(gpt);
-  assert.equal(v.state, 'failure');
-  assert.match(v.description, /^Label built-by-gpt: Codex is not independent/u);
-  assert.equal(buildCodexVerdict({...gpt, backup: {...none, pass: true}}).state, 'success');
+test('the built-by-gpt label no longer changes the verdict', () => {
+  const v = buildCodexVerdict({codex: reviewed, unresolved: [], backup: {...none, pass: true}, headSha: HEAD, gptBuilt: true});
+  assert.equal(v.state, 'success');
 });
 
 test('every description fits the 140-character status limit', () => {
   const open = Array.from({length: 9}, () => ({priority: 'P1', path: 'x'.repeat(80), line: 100}));
-  const v = buildCodexVerdict({codex: reviewed, unresolved: open, backup: none, headSha: HEAD});
+  const v = buildCodexVerdict({codex: reviewed, unresolved: open, backup: {...none, pass: true}, headSha: HEAD});
   assert.ok(v.description.length <= 140);
+  assert.ok(buildCodexVerdict({codex: absent, unresolved: [], backup: none, headSha: HEAD}).description.length <= 140);
 });
 
 test('review threads are read page by page', async () => {
