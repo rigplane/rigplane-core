@@ -110,23 +110,27 @@ class CatLineFilter:
     def __init__(self, guard: CatReadOnlyGuard) -> None:
         self._guard = guard
         self._buf = bytearray()
+        self._discarding = False  # inside an oversized line, up to its ';'
 
     def feed(self, data: bytes) -> list[tuple[bytes, bool]]:
         """Consume one chunk; return ``[(line, allowed)]`` in wire order.
 
         A partial line is held until its ``;`` arrives. An unterminated run
-        longer than a CAT line can be is returned whole as one blocked entry,
-        so the stream recovers at the next ``;``.
+        longer than a CAT line can be is returned as a blocked entry, and
+        everything up to the ``;`` that ends that oversized line is blocked
+        too — its tail is not a fresh line, whatever it looks like.
         """
         self._buf += data
         lines: list[tuple[bytes, bool]] = []
         while (end := self._buf.find(_TERMINATOR)) >= 0:
             line = bytes(self._buf[: end + 1])
             del self._buf[: end + 1]
-            lines.append((line, self._guard.allows(line)))
-        if len(self._buf) > _MAX_LINE:
+            lines.append((line, not self._discarding and self._guard.allows(line)))
+            self._discarding = False
+        if self._buf and (self._discarding or len(self._buf) > _MAX_LINE):
             lines.append((bytes(self._buf), False))
             self._buf.clear()
+            self._discarding = True
         return lines
 
 

@@ -141,7 +141,19 @@ def test_guard_blocks_unterminated_garbage_instead_of_buffering_forever(
 ) -> None:
     guard = guard_factory()
     assert guard.feed(b"A" * 200) == [(b"A" * 200, False)]
-    assert guard.feed(b"FA;") == [(b"FA;", True)]  # the stream recovers
+    assert guard.feed(b"B" * 200) == [(b"B" * 200, False)]  # still the same line
+    # The tail of the oversized line is blocked up to its ';', whatever it
+    # looks like; the stream recovers at the next line.
+    assert guard.feed(b"ID;FA;") == [(b"ID;", False), (b"FA;", True)]
+
+
+def test_guard_does_not_let_a_split_oversized_line_end_in_a_valid_read(
+    guard_factory,
+) -> None:
+    guard = guard_factory()
+    assert guard.feed(b"C" * 70) == [(b"C" * 70, False)]
+    assert guard.feed(b"TX") == [(b"TX", False)]
+    assert guard.feed(b";ID;") == [(b";", False), (b"ID;", True)]
 
 
 def test_guard_filters_are_per_connection(guard_factory) -> None:
