@@ -117,10 +117,12 @@ valid answer; skipping the question is not.
    checkout, in a private directory of the coordinator's lane scripts, and
    deletes them when it prints CLEAN; nothing is written into the repository.
    If round four still reports findings, do not push: the change is usually
-   too big or has a design flaw, so report what is left to the coordinator, who decides whether another
-   round is allowed.
-3. Push once per round. Never push a fix per finding: each push can start a new
-   GitHub review.
+   too big or has a design flaw, so report what is left to the coordinator,
+   who decides whether another round is allowed.
+3. Push only when the local pre-review has printed `PRE-REVIEW: CLEAN`, and push
+   once. Never push a fix per finding or an intermediate state: each push can
+   start a new GitHub review. After a GitHub review round, push all fixes of
+   that round together (section 4).
 
 ## 4. When Codex still reports on GitHub
 
