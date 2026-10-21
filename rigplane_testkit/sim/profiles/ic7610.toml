@@ -1,6 +1,6 @@
-# IC-7610 simulation profile (LAN, tier A). Capability facts live in
-# rigs/ic7610.toml, never repeated here. Sourcing: tests/fixtures/ic7610/README.md,
-# docs/internals/ic7610-fake-fidelity.md. Unsourced keys are omitted.
+# IC-7610 simulation profile (LAN, tier A). Wire facts stay in
+# rigs/ic7610.toml; identity/audio/scope select among its values. Sourcing:
+# tests/fixtures/ic7610/README.md, docs/internals/ic7610-fake-fidelity.md. Unsourced keys are omitted.
 
 schema = "rigplane-sim-profile/1"
 

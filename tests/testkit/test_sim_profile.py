@@ -112,3 +112,14 @@ def test_optional_sections_and_free_tables(tmp_path):
         p.unsolicited["x"] = 1
     with pytest.raises(FrozenInstanceError):
         p.transport.kind = "serial"
+
+
+def test_identity_accepted_when_radio_declares_none(tmp_path):
+    body = (
+        "schema = 'rigplane-sim-profile/1'\n[sim]\nid = 'x'\n"
+        "radio = 'IC-7300MK2'\nfidelity = 'C'\ngaps = ['g']\n"
+        "[transport.serial]\nbaud = 19200\nidentity = 'A4'\n"
+    )
+    (tmp_path / "sim.toml").write_text(body)
+    p = load_sim_profile(tmp_path / "sim.toml", root=tmp_path)
+    assert p.transport.identity == "A4"

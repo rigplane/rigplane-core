@@ -166,7 +166,7 @@ def _identity(table, path, radio):
         return None
     ids = radio.expected_identity_ids
     ok = isinstance(value, str) and _HEX.fullmatch(value) and not len(value) % 2
-    if not ok or value not in ids:
+    if not ok or (ids and value not in ids):
         what = "an even-length hex string" if not ok else f"one of {ids}"
         _fail(f"{path}.identity: must be {what}, got {value!r}")
     return value
