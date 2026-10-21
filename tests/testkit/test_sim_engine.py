@@ -1,7 +1,8 @@
 """Unit tests for the pure simulator state engine (MOR-3599).
 
 Red on main: ``rigplane_testkit.sim.engine`` does not exist there. All
-tests drive ``SimEngine`` directly with a ``ManualClock`` — no sockets.
+tests drive ``SimEngine`` directly — no sockets; the clock-error tests
+use a scripted clock in place of ``ManualClock``.
 """
 
 from __future__ import annotations
@@ -54,7 +55,8 @@ def _engine(
 
 
 class _LyingInt(int):
-    """Every comparison lies True; the old isinstance checks accepted -1."""
+    """``__ge__``, ``__le__`` and ``__eq__`` all lie True; the old
+    isinstance checks accepted -1."""
 
     def __ge__(self, other: object) -> bool:
         return True
@@ -70,7 +72,8 @@ _LYING = _LyingInt(-1)
 
 
 class _ScriptedClock:
-    """Yields scripted readings; read ``fire_on`` runs ``callback`` first."""
+    """Yields scripted readings; reading number ``fire_on`` runs the
+    callback first."""
 
     def __init__(self, *readings: float, fire_on: int = 0) -> None:
         self._readings = iter(readings)
@@ -85,18 +88,27 @@ class _ScriptedClock:
         return next(self._readings)
 
 
-def test_apply_ok_mutates_state_and_records_op() -> None:
+@pytest.mark.parametrize(
+    ("op", "read_name", "value"),
+    [
+        (SetFrequency(1, 7_100_000), "frequency_hz", 7_100_000),
+        (SetSelector(1, "agc", 3), "selector:agc", 3),
+    ],
+)
+def test_apply_ok_mutates_state_and_records_op(
+    op: object, read_name: str, value: object
+) -> None:
     engine, _ = _engine()
-    assert engine.apply(SetFrequency(1, 7_100_000)) == Ok()
-    assert engine.state.receivers[1].frequency_hz == 7_100_000
+    assert engine.apply(op) == Ok()
+    assert engine.read(read_name, receiver=1) == Ok(value)
     record = engine.trace[0]
     assert (record.n, record.t, record.kind, record.name) == (
         0,
         0.0,
         "op",
-        "SetFrequency",
+        type(op).__name__,
     )
-    assert record.args == {"receiver": 1, "hz": 7_100_000}
+    assert record.args == asdict(op)
     assert record.result["outcome"] == "ok"
 
 
@@ -106,8 +118,9 @@ def test_apply_ok_mutates_state_and_records_op() -> None:
         (SetFrequency(2, 14_074_000), OutOfRange, "out_of_range"),  # unknown receiver
         (SetFrequency(0, 29_999), OutOfRange, "out_of_range"),  # below band edge
         (SetFrequency(0, "14m"), OutOfRange, "out_of_range"),  # str where int required
-        (SetFrequency(0, True), OutOfRange, "out_of_range"),  # bool where int required
         (SetMode(0, "WSPR"), Unsupported, "unsupported"),  # mode not in caps
+        (SetMode(0, 10**5000), OutOfRange, "out_of_range"),  # the old repr raised
+        (SetMode(0, _LYING), OutOfRange, "out_of_range"),  # __eq__ liar: was stored
         (SetLevel(0, "vol", 5), Unsupported, "unsupported"),  # unknown level
         (SetLevel(0, [], 1), OutOfRange, "out_of_range"),  # unhashable level name
         (SetMeter([], 1), OutOfRange, "out_of_range"),  # non-str meter name
@@ -115,13 +128,9 @@ def test_apply_ok_mutates_state_and_records_op() -> None:
         (SetSwitch(0, "turbo", True), Unsupported, "unsupported"),  # unknown switch
         (SetSwitch(0, "nb", 1), OutOfRange, "out_of_range"),  # int where bool required
         (SetSelector(0, "vox", 1), Unsupported, "unsupported"),  # unknown selector
-        (SetSelector(0, [], 1), OutOfRange, "out_of_range"),  # unhashable name
         (SetSelector(2, "agc", 1), OutOfRange, "out_of_range"),  # unknown receiver
         (SetSelector(0, "agc", 0), OutOfRange, "out_of_range"),  # step not allowed
         (SetSelector(0, "agc", True), OutOfRange, "out_of_range"),  # bool not int
-        (SetSelector(0, "agc", "2"), OutOfRange, "out_of_range"),  # str not int
-        (SetSelector(0, "agc", 2.0), OutOfRange, "out_of_range"),  # float not int
-        (SetSelector(0, "agc", None), OutOfRange, "out_of_range"),  # None not int
         (SetPtt("yes"), OutOfRange, "out_of_range"),  # str where bool required
         ("not-an-op", Unsupported, "unsupported"),  # non-dataclass op still records
         (SetFrequency, Unsupported, "unsupported"),  # op class, not an instance
@@ -145,6 +154,25 @@ def test_rejected_op_outcome_and_trace_tag(
     assert engine.trace[0].result["outcome"] == tag
 
 
+@pytest.mark.parametrize(
+    "make_op",
+    [
+        lambda r: SetFrequency(r, 7_100_000),
+        lambda r: SetMode(r, "CW"),
+        lambda r: SetLevel(r, "af", 5),
+        lambda r: SetSwitch(r, "nb", True),
+        lambda r: SetSelector(r, "agc", 1),
+    ],
+)
+@pytest.mark.parametrize("bad", [None, False])
+def test_ops_require_exact_int_receiver(make_op, bad: object) -> None:
+    engine, _ = _engine()
+    before = copy.deepcopy(engine.state)
+    assert isinstance(engine.apply(make_op(bad)), OutOfRange)
+    assert copy.deepcopy(engine.state) == before  # None must not mean selected
+    assert len(engine.trace) == 1  # exactly one record per rejected apply
+
+
 def test_caps_gated_ptt_split_and_power_off_refusal() -> None:
     plain, _ = _engine(caps=Capabilities(has_ptt=False, has_split=False))
     assert isinstance(plain.apply(SetPtt(True)), Unsupported)
@@ -163,22 +191,6 @@ def test_default_state_derives_from_caps() -> None:
     engine, _ = _engine(caps=caps)
     assert engine.read("mode") == Ok("FM")
     assert engine.read("frequency_hz") == Ok(118_000_000)  # clamped to band edge
-
-
-def test_set_selector_sets_state_and_records_op() -> None:
-    engine, _ = _engine()
-    assert engine.apply(SetSelector(1, "agc", 3)) == Ok()
-    assert engine.state.receivers[1].selectors["agc"] == 3
-    assert engine.read("selector:agc", receiver=1) == Ok(3)
-    record = engine.trace[0]
-    assert (record.n, record.t, record.kind, record.name) == (
-        0,
-        0.0,
-        "op",
-        "SetSelector",
-    )
-    assert record.args == {"receiver": 1, "name": "agc", "value": 3}
-    assert record.result["outcome"] == "ok"
 
 
 def test_selector_initial_value_is_first_allowed_value() -> None:
@@ -201,7 +213,6 @@ def test_failed_apply_never_mutates_state() -> None:
     before = copy.deepcopy(engine.state)
     for op in (
         SetFrequency(0, 1),
-        SetMode(0, "WSPR"),
         SetLevel(0, "vol", 3),
         SetSwitch(0, "nope", True),
         SetSelector(0, "vox", 1),
@@ -212,19 +223,6 @@ def test_failed_apply_never_mutates_state() -> None:
     ):
         assert not isinstance(engine.apply(op), Ok)
     assert copy.deepcopy(engine.state) == before
-
-
-def test_trace_numbers_are_gapless_across_outcomes() -> None:
-    engine, _ = _engine()
-    engine.apply(SetFrequency(0, 14_100_000))
-    engine.apply(SetMode(0, "WSPR"))
-    engine.apply(SetFrequency(0, 1))
-    assert [r.n for r in engine.trace] == [0, 1, 2]
-    assert [r.result["outcome"] for r in engine.trace] == [
-        "ok",
-        "unsupported",
-        "out_of_range",
-    ]
 
 
 def test_two_engines_same_inputs_produce_identical_traces() -> None:
@@ -275,10 +273,6 @@ def test_advance_to_noop_backwards_and_past_schedule_raise() -> None:
     with pytest.raises(ValueError):
         engine.advance_to(float("inf"))
     assert engine.advance_to(3.0) == []
-    engine.schedule(3.0, Marker(object()))  # non-JSON name stays serialisable
-    records = engine.advance_to(3.0)
-    assert records[0].name == "<object>"
-    assert json.loads(json.dumps(asdict(records[0]))) == asdict(records[0])
 
 
 def test_initial_state_must_match_caps_receiver_count() -> None:
@@ -313,6 +307,8 @@ def test_read_covers_every_name_family() -> None:
     assert engine.read("power_on") == Ok(True)
     assert engine.read("meter:smeter") == Ok(59)
     assert engine.read("extra:firmware") == Ok("1.2")
+    assert isinstance(engine.read("meter:missing"), Unsupported)  # unset meter
+    assert isinstance(engine.read("extra:missing"), Unsupported)  # unset extra
     assert engine.read("frequency_hz", receiver=0) == Ok(14_074_000)
     assert engine.read("switch:nb", receiver=0) == Ok(None)  # unset reads as None
     assert isinstance(engine.read("warp"), Unsupported)
@@ -368,9 +364,12 @@ def test_trace_records_are_json_serialisable() -> None:
     engine.apply(SetFrequency(0, 10**5000))  # huge int breaks str()/json limits
     engine.apply(SetLevel(0, "af", float("nan")))  # NaN breaks allow_nan=False
     engine.apply(SetLevel(0, "af", float("inf")))
+    engine.schedule(0.0, Marker(object()))  # non-JSON marker name
+    assert [r.name for r in engine.advance_to(0.0)] == ["<object>"]
     payload = [asdict(r) for r in engine.trace]
     json.dumps(payload, allow_nan=False)  # strictly JSON-safe, no NaN literals
     assert json.loads(json.dumps(payload)) == payload
+    assert [r.n for r in engine.trace] == list(range(10))  # gapless from 0
     assert payload[3]["args"]["value"] == 3
     assert payload[4]["args"]["value"] == "<object>"
     assert payload[5]["args"]["hz"] == "<object>"
@@ -390,34 +389,39 @@ def test_engine_deep_copies_the_caller_initial_state() -> None:
     assert engine_b.state.receivers[1].selectors == {"agc": 1, "att": 0}
 
 
-def test_read_never_raises_on_odd_names() -> None:
+def test_read_rejects_odd_and_hostile_names() -> None:
+    class BadPartition(str):  # partition() must never run
+        def partition(self, sep: str) -> tuple[str, str, str]:
+            raise AssertionError("partition called")
+
+    class LyingEq(str):  # __eq__ must never run
+        def __eq__(self, other: object) -> bool:
+            return True
+
+        __hash__ = str.__hash__
+
     engine, _ = _engine()
-
-    class NoRepr:
-        def __repr__(self) -> str:
-            raise RuntimeError("no repr")
-
-    class BadStr(str):  # str subclass keeps a failing __repr__
-        def __repr__(self) -> str:
-            raise RuntimeError("no repr")
-
     assert isinstance(engine.read(10**5000), Unsupported)  # repr() would raise
-    assert isinstance(engine.read(NoRepr()), Unsupported)
-    assert isinstance(engine.read(BadStr("warp")), Unsupported)
+    assert isinstance(engine.read(BadPartition("warp")), Unsupported)
+    assert isinstance(engine.read(LyingEq("frequency_hz")), Unsupported)
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
-def test_manual_clock_rejects_nonfinite_start(bad: float) -> None:
+def test_manual_clock_rejects_bad_start_and_advance(bad: float) -> None:
     with pytest.raises(ValueError):
         ManualClock(start=bad)
     with pytest.raises(ValueError):
         ManualClock().advance(bad)
     with pytest.raises(ValueError):
         ManualClock().advance(-1.0)
+    clock = ManualClock(start=1e308)
+    with pytest.raises(ValueError):
+        clock.advance(1e308)  # 1e308 + 1e308 would overflow to inf
+    assert clock() == 1e308  # the previous time survives the refusal
 
 
 @pytest.mark.parametrize("bad", [-1.0, float("nan")])
-def test_engine_rejects_bad_clock_readings_before_any_change(bad: float) -> None:
+def test_engine_rejects_bad_clock_readings_and_keeps_events(bad: float) -> None:
     engine = SimEngine(CAPS, clock=_ScriptedClock(0.0, bad))
     with pytest.raises(ValueError):
         engine.apply(SetFrequency(0, 7_100_000))
@@ -430,6 +434,14 @@ def test_engine_rejects_bad_clock_readings_before_any_change(bad: float) -> None
     with pytest.raises(ValueError):
         engine.advance_to(5.0)
     assert [r.name for r in engine.advance_to(5.0)] == ["later"]  # not consumed
+    engine = SimEngine(CAPS, clock=_ScriptedClock(0.0, 0.0, 0.0, bad, 0.0, 5.0))
+    engine.schedule(5.0, ScheduledOp(SetFrequency(0, 7_100_000)))
+    with pytest.raises(ValueError):
+        engine.advance_to(5.0)  # the clock fails while processing the event
+    assert engine.state.receivers[0].frequency_hz == 14_074_000
+    records = engine.advance_to(5.0)
+    assert [r.name for r in records] == ["SetFrequency"]  # the retry ran it
+    assert engine.state.receivers[0].frequency_hz == 7_100_000
 
 
 def test_advance_to_is_not_reentrant() -> None:

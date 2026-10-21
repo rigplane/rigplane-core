@@ -50,7 +50,10 @@ class ManualClock:
         step = float(dt)
         if not isfinite(step) or step < 0:
             raise ValueError(f"advance dt must be finite and non-negative: {step}")
-        self._now += step
+        moved = self._now + step
+        if not isfinite(moved):
+            raise ValueError(f"advance to non-finite time: {self._now} + {step}")
+        self._now = moved
         return self._now
 
 
@@ -297,12 +300,13 @@ class SimEngine:
         return rng
 
     def apply(self, op: object) -> Outcome:
-        """Validate ``op``; mutate state only on Ok; append one record."""
+        """Validate ``op``; mutate state only on Ok. One record per apply
+        (unknown ops included) — unless the injected clock raises."""
         return self._apply_recorded(op)[0]
 
     def read(self, name: str, receiver: int | None = None) -> Outcome:
         """Query state by name; unknown names give ``Unsupported``."""
-        if not isinstance(name, str):
+        if type(name) is not str:
             return Unsupported(f"read {type(name).__name__}")
         if name in ("ptt", "split", "selected_receiver", "power_on"):
             return Ok(getattr(self._state, name))
@@ -321,10 +325,11 @@ class SimEngine:
                 return target
             values = getattr(target, _READ_PLURALS[prefix])
             return Ok(values.get(key))
-        if prefix == "meter":
-            return Ok(self._state.meters.get(key))
-        if prefix == "extra":
-            return Ok(self._state.extra.get(key))
+        if prefix == "meter" or prefix == "extra":
+            store = self._state.meters if prefix == "meter" else self._state.extra
+            if key not in store:
+                return Unsupported(f"{prefix} {key}")
+            return Ok(store[key])
         return Unsupported(f"read {type(name).__name__}")
 
     def schedule(self, at_s: float, event: object) -> None:
@@ -349,27 +354,30 @@ class SimEngine:
             self._clock_now()
             produced: list[Record] = []
             while self._queue and self._queue[0][0] <= now:
-                at, _, event = heapq.heappop(self._queue)
+                at, order, event = heapq.heappop(self._queue)
                 self._now = at
-                if isinstance(event, ScheduledOp):
-                    produced.append(self._apply_recorded(event.op)[1])
-                elif isinstance(event, Marker):
-                    label = (
-                        event.name
-                        if isinstance(event.name, str)
-                        else f"<{type(event.name).__name__}>"
-                    )
-                    produced.append(
-                        self._record(
-                            self._clock_now(), "marker", label, {}, {"outcome": "ok"}
-                        )
-                    )
-                else:
-                    raise TypeError(f"unknown event: {event!r}")
+                try:
+                    produced.append(self._run_event(event))
+                except ValueError:
+                    # A rejected clock read must not consume the event:
+                    # re-queue it, so a retry with a working clock runs it.
+                    heapq.heappush(self._queue, (at, order, event))
+                    raise
             self._now = now
         finally:
             self._advancing = False
         return produced
+
+    def _run_event(self, event: object) -> Record:
+        if isinstance(event, ScheduledOp):
+            return self._apply_recorded(event.op)[1]
+        if isinstance(event, Marker):
+            name = event.name
+            label = name if type(name) is str else f"<{type(name).__name__}>"
+            return self._record(
+                self._clock_now(), "marker", label, {}, {"outcome": "ok"}
+            )
+        raise TypeError(f"unknown event: {type(event).__name__}")
 
     def _apply_recorded(self, op: object) -> tuple[Outcome, Record]:
         now = self._clock_now()
@@ -381,7 +389,7 @@ class SimEngine:
 
     def _apply(self, op: object) -> Outcome:
         if isinstance(op, SetFrequency):
-            target = self._target(op.receiver)
+            target = self._op_target(op.receiver)
             if isinstance(target, OutOfRange):
                 return target
             lo, hi = self._caps.frequency_range_hz
@@ -389,47 +397,49 @@ class SimEngine:
                 return OutOfRange("frequency_hz", op.hz)
             target.frequency_hz = op.hz
         elif isinstance(op, SetMode):
-            target = self._target(op.receiver)
+            target = self._op_target(op.receiver)
             if isinstance(target, OutOfRange):
                 return target
+            if type(op.mode) is not str:
+                return OutOfRange("mode", op.mode)
             if op.mode not in self._caps.modes:
-                return Unsupported(f"mode {op.mode!r}")
+                return Unsupported(f"mode {op.mode}")
             if op.filter is not None and not _is_int(op.filter):
                 return OutOfRange("filter", op.filter)
             target.mode = op.mode
             target.filter = op.filter if op.filter is not None else target.filter
         elif isinstance(op, SetLevel):
-            target = self._target(op.receiver)
+            target = self._op_target(op.receiver)
             if isinstance(target, OutOfRange):
                 return target
-            if not isinstance(op.name, str):
+            if type(op.name) is not str:
                 return OutOfRange("level name", op.name)
             bounds = self._caps.levels.get(op.name)
             if bounds is None:
-                return Unsupported(f"level {op.name!r}")
+                return Unsupported(f"level {op.name}")
             if not _is_int(op.value) or not bounds[0] <= op.value <= bounds[1]:
                 return OutOfRange(f"level {op.name}", op.value)
             target.levels[op.name] = op.value
         elif isinstance(op, SetSwitch):
-            target = self._target(op.receiver)
+            target = self._op_target(op.receiver)
             if isinstance(target, OutOfRange):
                 return target
-            if not isinstance(op.name, str):
+            if type(op.name) is not str:
                 return OutOfRange("switch name", op.name)
             if op.name not in self._caps.switches:
-                return Unsupported(f"switch {op.name!r}")
+                return Unsupported(f"switch {op.name}")
             if not isinstance(op.on, bool):
                 return OutOfRange(f"switch {op.name}", op.on)
             target.switches[op.name] = op.on
         elif isinstance(op, SetSelector):
-            target = self._target(op.receiver)
+            target = self._op_target(op.receiver)
             if isinstance(target, OutOfRange):
                 return target
-            if not isinstance(op.name, str):
+            if type(op.name) is not str:
                 return OutOfRange("selector name", op.name)
             allowed = self._caps.selectors.get(op.name)
             if allowed is None:
-                return Unsupported(f"selector {op.name!r}")
+                return Unsupported(f"selector {op.name}")
             if not _is_int(op.value) or op.value not in allowed:
                 return OutOfRange(f"selector {op.name}", op.value)
             target.selectors[op.name] = op.value
@@ -455,7 +465,7 @@ class SimEngine:
                 return OutOfRange("receiver", op.receiver)
             self._state.selected_receiver = op.receiver
         elif isinstance(op, SetMeter):
-            if not isinstance(op.name, str):
+            if type(op.name) is not str:
                 return OutOfRange("meter name", op.name)
             if not _is_int(op.value):
                 return OutOfRange(f"meter {op.name}", op.value)
@@ -463,6 +473,12 @@ class SimEngine:
         else:
             return Unsupported(f"op {type(op).__name__}")
         return Ok()
+
+    def _op_target(self, receiver: object) -> ReceiverState | OutOfRange:
+        """Exact int receiver required; ``read`` alone maps ``None`` to selected."""
+        if not _is_int(receiver) or not 0 <= receiver < self._caps.receiver_count:
+            return OutOfRange("receiver", receiver)
+        return self._state.receivers[receiver]
 
     def _target(self, receiver: int | None) -> ReceiverState | OutOfRange:
         index = self._state.selected_receiver if receiver is None else receiver
