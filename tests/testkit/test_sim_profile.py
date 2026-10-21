@@ -23,6 +23,7 @@ CASES = (
     "sim.civ_addr: unknown key|!schema = 'rigplane-sim-profile/1'\n[sim]\nid = 'x'\nradio = 'IC-7300'\nfidelity = 'C'\nciv_addr = 0x98\ngaps = ['g']",
     "sim.radio: Unknown radio profile 'IC-999'|!schema = 'rigplane-sim-profile/1'\n[sim]\nid = 'x'\nradio = 'IC-999'\nfidelity = 'C'\ngaps = ['g']",
     "sim.evidence: tier A requires a path under tests/fixtures/|!schema = 'rigplane-sim-profile/1'\n[sim]\nid = 'x'\nradio = 'IC-7300'\nfidelity = 'A'\nevidence = ['tests/golden/wire_oracle/g.toml']\ngaps = ['g']",
+    "sim.evidence: tier A requires a path under tests/fixtures/|!schema = 'rigplane-sim-profile/1'\n[sim]\nid = 'x'\nradio = 'IC-7300'\nfidelity = 'A'\nevidence = ['tests/fixtures/../golden/wire_oracle/g.toml']\ngaps = ['g']",
     "sim.evidence: tier B requires a path under tests/golden/wire_oracle/|!schema = 'rigplane-sim-profile/1'\n[sim]\nid = 'x'\nradio = 'IC-7300'\nfidelity = 'B'\nevidence = ['tests/fixtures/e.jsonl']\ngaps = ['g']",
     "sim.evidence: 'tests/fixtures/missing.jsonl' missing under root|!schema = 'rigplane-sim-profile/1'\n[sim]\nid = 'x'\nradio = 'IC-7300'\nfidelity = 'C'\nevidence = ['tests/fixtures/missing.jsonl']\ngaps = ['g']",
     "sim.gaps: must be non-empty for fidelity tier 'B'|!schema = 'rigplane-sim-profile/1'\n[sim]\nid = 'x'\nradio = 'IC-7300'\nfidelity = 'B'\nevidence = ['tests/golden/wire_oracle/g.toml']\ngaps = []",
@@ -35,6 +36,8 @@ CASES = (
     "transport.serial.identity: must be one of ('94',), got '98'|[transport.serial]\nbaud = 19200\nidentity = '98'",
     "transport.serial.identity: required, no expected identity ids declared|!schema = 'rigplane-sim-profile/1'\n[sim]\nid = 'x'\nradio = 'IC-7300MK2'\nfidelity = 'C'\ngaps = ['g']\n[transport.serial]\nbaud = 19200",
     "initial.frequency_hz: must be an integer, got True|[transport.serial]\nbaud = 19200\n[initial]\nfrequency_hz = true",
+    "initial.mode: must be one of ('USB',|[transport.serial]\nbaud = 19200\n[initial]\nmode = 'BOGUS'",
+    "initial.filter: must be 0..3, got 99|[transport.serial]\nbaud = 19200\n[initial]\nfilter = 99",
     "initial.frequency_hz: 14074000000 outside the profile frequency ranges|!schema = 'rigplane-sim-profile/1'\n[sim]\nid = 'x'\nradio = 'IC-7610'\nfidelity = 'C'\ngaps = ['g']\n[transport.serial]\nbaud = 19200\n[initial]\nfrequency_hz = 14_074_000_000",
     "initial.sub: unknown key|[transport.serial]\nbaud = 19200\n[initial.sub]\nfrequency_hz = 7_000_000",
     "scope: 'FTX-1' capability profile declares no scope|!schema = 'rigplane-sim-profile/1'\n[sim]\nid = 'x'\nradio = 'FTX-1'\nfidelity = 'C'\ngaps = ['g']\n[transport.yaesu_cat]\nbaud = 9600\n[scope]\nbins = 100",
@@ -102,5 +105,7 @@ def test_optional_sections_and_free_tables(tmp_path):
         "note": "bench"
     }
     assert p.answers.recorded == (("rec.jsonl", "lan"),)
+    with pytest.raises(TypeError):
+        p.unsolicited["x"] = 1
     with pytest.raises(FrozenInstanceError):
         p.transport.kind = "serial"

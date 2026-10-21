@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import re
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 
 from rigplane.profiles import resolve_radio_profile
 
@@ -97,9 +99,9 @@ class SimProfile:
     timing: TimingConfig = field(default_factory=TimingConfig)
     audio_rx: AudioRxConfig = field(default_factory=AudioRxConfig)
     scope: ScopeConfig = field(default_factory=ScopeConfig)
-    unsolicited: dict[str, bool | int | float] = field(default_factory=dict)
-    faults_defaults: dict[str, bool | int | float] = field(default_factory=dict)
-    state_extra: dict[str, object] = field(default_factory=dict)
+    unsolicited: Mapping[str, bool | int | float] = field(default_factory=dict)
+    faults_defaults: Mapping[str, bool | int | float] = field(default_factory=dict)
+    state_extra: Mapping[str, object] = field(default_factory=dict)
 
 
 def _fail(message: str):
@@ -178,7 +180,7 @@ def _flags(raw, path, nonempty_keys=False):
         if not isinstance(value, (bool, int, float)):
             _fail(f"{path}.{key}: must be a boolean or number, got {value!r}")
         values[key] = value
-    return values
+    return MappingProxyType(values)
 
 
 def load_sim_profile(path: Path, *, root: Path) -> SimProfile:
@@ -208,14 +210,16 @@ def load_sim_profile(path: Path, *, root: Path) -> SimProfile:
     evidence = _string_list(sim_t.get("evidence", []), "sim.evidence")
     gaps = _string_list(sim_t.get("gaps", []), "sim.gaps")
     sim = SimInfo(sim_id, model, fidelity, evidence, gaps)
-    for entry in evidence:
-        if not (root / entry).exists():
+    base = root.resolve()
+    resolved = [(base / entry).resolve() for entry in evidence]
+    for entry, path in zip(evidence, resolved):
+        if not path.exists() or not path.is_relative_to(base):
             _fail(f"sim.evidence: {entry!r} missing under root")
-    has_fixtures = any(e.startswith("tests/fixtures/") for e in evidence)
-    has_golden = any(e.startswith("tests/golden/wire_oracle/") for e in evidence)
-    if fidelity == "A" and not has_fixtures:
+    fixtures = (base / "tests" / "fixtures").resolve()
+    golden = (base / "tests" / "golden" / "wire_oracle").resolve()
+    if fidelity == "A" and not any(p.is_relative_to(fixtures) for p in resolved):
         _fail("sim.evidence: tier A requires a path under tests/fixtures/")
-    if fidelity == "B" and not has_golden:
+    if fidelity == "B" and not any(p.is_relative_to(golden) for p in resolved):
         _fail("sim.evidence: tier B requires a path under tests/golden/wire_oracle/")
     if fidelity in ("B", "C") and not gaps:
         _fail(f"sim.gaps: must be non-empty for fidelity tier {fidelity!r}")
@@ -249,7 +253,11 @@ def load_sim_profile(path: Path, *, root: Path) -> SimProfile:
     if in_freq and not any(b.start <= frequency <= b.end for b in radio.freq_ranges):
         _fail(f"initial.frequency_hz: {frequency} outside the profile frequency ranges")
     mode = _scalar(initial_t, "mode", "initial", str)
+    if mode is not None and radio.modes and mode not in radio.modes:
+        _fail(f"initial.mode: must be one of {radio.modes}, got {mode!r}")
     flt = _scalar(initial_t, "filter", "initial", int, 0)
+    if flt is not None and radio.filters and flt > len(radio.filters):
+        _fail(f"initial.filter: must be 0..{len(radio.filters)}, got {flt}")
     dmode = _scalar(initial_t, "data_mode", "initial", bool)
     initial = InitialConfig(frequency, mode, flt, dmode)
     answers_t = _section(data.get("answers", {}), "answers", frozenset({"recorded"}))
@@ -314,5 +322,5 @@ def load_sim_profile(path: Path, *, root: Path) -> SimProfile:
         scope=scope,
         unsolicited=_flags(data.get("unsolicited", {}), "unsolicited", True),
         faults_defaults=_flags(faults_t.get("defaults", {}), "faults.defaults"),
-        state_extra=dict(extra),
+        state_extra=MappingProxyType(dict(extra)),
     )
