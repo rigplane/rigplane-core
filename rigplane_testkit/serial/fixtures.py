@@ -16,9 +16,12 @@ frames addressed to the controller with no request outstanding) are not
 pair rows; they are summarised separately, first sight and count.
 
 Scope wave frames (``27 00``) are a stream, not replies: they close no
-request. The first ``scope_sweeps`` complete sweeps (sequence 1 through the
-sequence maximum) are kept as ``r2c`` rows; every wave frame seen feeds the
-cadence summary (frame count and first/last time), which is what a
+request and are NOT mixed into the pair rows (``RecordedAnswerTable`` pairs
+each ``c2r`` row with the next ``r2c`` row). The first ``scope_sweeps``
+complete sweeps - sequence 1, 2, ... up to the sequence maximum with no gap -
+are kept as ``r2c`` rows of the separate window ``<window>_scope``; a sweep
+with a missing or reordered packet is dropped whole. Every wave frame seen
+feeds the cadence summary (frame count and first/last time), which is what a
 frames-per-second baseline is computed from.
 
 Chunks the bridge refused (``blocked`` rows) are never rows; their count is
@@ -59,6 +62,7 @@ class WindowExtract:
     """What :func:`extract_window` found in one recording."""
 
     rows: list[dict] = field(default_factory=list)
+    scope_rows: list[dict] = field(default_factory=list)
     unsolicited: list[dict] = field(default_factory=list)
     scope: dict = field(default_factory=dict)
     blocked_frames: int = 0
@@ -96,22 +100,23 @@ def extract_window(
     seen: set[bytes] = set()
     unsolicited: dict[bytes, dict] = {}
     pending: list[dict] = []  # oldest first: {req, kept, t, echo_t}
-    started = False
+    sweep: list[dict] = []  # contiguous packets of the sweep being assembled
     sweeps = 0
     wave_count = 0
     wave_first: float | None = None
     wave_last: float | None = None
 
+    def make_row(t: float, direction: str, frame: bytes, name: str) -> dict:
+        return {
+            "dir": direction,
+            "frame": frame.hex(),
+            "t": round(t, 3),
+            "transport": transport,
+            "window": name,
+        }
+
     def row(t: float, direction: str, frame: bytes) -> None:
-        out.rows.append(
-            {
-                "dir": direction,
-                "frame": frame.hex(),
-                "t": round(t, 3),
-                "transport": transport,
-                "window": window,
-            }
-        )
+        out.rows.append(make_row(t, direction, frame, window))
 
     def emit_request(item: dict) -> None:
         if item["kept"]:
@@ -152,12 +157,17 @@ def extract_window(
             wave_last = t
             data = frame[6:-1]  # receiver byte, sequence, sequence max, ...
             seq, seq_max = (_bcd(data[1]), _bcd(data[2])) if len(data) > 2 else (0, 0)
-            if seq == 1 and sweeps < scope_sweeps:
-                started = True
-            if started and sweeps < scope_sweeps:
-                row(t, "r2c", frame)
+            if seq == 1:
+                sweep = []  # a new sweep starts; a partial one is dropped
+            if seq >= 1 and len(sweep) == seq - 1:
+                sweep.append(make_row(t, "r2c", frame, f"{window}_scope"))
                 if seq == seq_max:
-                    sweeps += 1
+                    if sweeps < scope_sweeps:
+                        out.scope_rows.extend(sweep)
+                        sweeps += 1
+                    sweep = []
+            else:
+                sweep = []  # gap or reorder: this sweep is not whole
             continue
         echoed = next((item for item in pending if item["req"] == frame), None)
         if echoed is not None and echoed["echo_t"] is None:
@@ -207,8 +217,9 @@ def merge_window(out_dir: Path, window: str, extract: WindowExtract) -> None:
     """Replace ``window`` in ``civ_pairs.jsonl`` / ``unsolicited.jsonl``."""
     out_dir.mkdir(parents=True, exist_ok=True)
     pairs = out_dir / "civ_pairs.jsonl"
-    kept = [r for r in _read_rows(pairs) if r["window"] != window]
-    pairs.write_text(_dump(kept + extract.rows))
+    names = (window, f"{window}_scope")
+    kept = [r for r in _read_rows(pairs) if r["window"] not in names]
+    pairs.write_text(_dump(kept + extract.rows + extract.scope_rows))
     unsol = out_dir / "unsolicited.jsonl"
     kept_u = [r for r in _read_rows(unsol) if r["window"] != window]
     new_u = [{"window": window, **entry} for entry in extract.unsolicited]
@@ -239,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "window": args.window,
                 "rows": len(result.rows),
+                "scope_rows": len(result.scope_rows),
                 "unsolicited_distinct": len(result.unsolicited),
                 "echo": result.echo,
                 "blocked_frames": result.blocked_frames,

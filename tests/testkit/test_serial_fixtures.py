@@ -98,7 +98,7 @@ def test_unsolicited_frames_are_summarised_not_paired(tmp_path) -> None:
     assert out.unsolicited == [{"frame": broadcast, "first_t": 0.05, "count": 2}]
 
 
-def test_scope_keeps_whole_sweeps_and_counts_every_wave_frame(tmp_path) -> None:
+def test_scope_keeps_whole_sweeps_apart_from_the_pair_rows(tmp_path) -> None:
     rows = [(0.1, "c2r", "fefe94e0271101fd"), (0.15, "r2c", ACK)]
     t = 0.2
     rows.append((t, "r2c", _wave(3, 3)))  # tail of a sweep already running
@@ -108,10 +108,47 @@ def test_scope_keeps_whole_sweeps_and_counts_every_wave_frame(tmp_path) -> None:
             rows.append((t, "r2c", _wave(seq, 3)))
     path = _recording(tmp_path, rows)
     out = extract_window(path, "scope", radio_addr=RADIO, scope_sweeps=2)
-    waves = [r for r in out.rows if r["frame"].startswith("fefee094270")]
-    assert len(waves) == 6  # two whole sweeps, the partial tail skipped
+    assert len(out.scope_rows) == 6  # two whole sweeps, the partial tail skipped
+    assert {r["window"] for r in out.scope_rows} == {"scope_scope"}
+    assert [r["dir"] for r in out.rows] == ["c2r", "r2c"]  # pairs untouched
     assert out.scope["frames"] == 10
     assert out.scope["sweeps_kept"] == 2
+
+
+def test_a_wave_packet_between_request_and_reply_does_not_break_the_pair(
+    tmp_path,
+) -> None:
+    path = _recording(
+        tmp_path,
+        [
+            (0.1, "c2r", FREQ_REQ),
+            (0.11, "r2c", _wave(1, 1)),  # the stream interleaves with the reply
+            (0.12, "r2c", FREQ_REPLY),
+        ],
+    )
+    out = extract_window(path, "poll", radio_addr=RADIO)
+    assert [(r["dir"], r["frame"]) for r in out.rows] == [
+        ("c2r", FREQ_REQ),
+        ("r2c", FREQ_REPLY),
+    ]
+    table = RecordedAnswerTable.from_civ_pairs(out.rows, "usb")
+    assert table.answer(bytes.fromhex(FREQ_REQ)) == bytes.fromhex(FREQ_REPLY)
+
+
+def test_a_sweep_with_a_lost_or_reordered_packet_is_dropped_whole(tmp_path) -> None:
+    rows = []
+    t = 0.0
+    for seq in (1, 3, 4):  # packet 2 lost
+        t += 0.01
+        rows.append((t, "r2c", _wave(seq, 4)))
+    for seq in (1, 2, 3, 4):  # a clean sweep follows
+        t += 0.01
+        rows.append((t, "r2c", _wave(seq, 4)))
+    for seq in (1, 3, 2, 4):  # reordered
+        t += 0.01
+        rows.append((t, "r2c", _wave(seq, 4)))
+    out = extract_window(_recording(tmp_path, rows), "scope", radio_addr=RADIO)
+    assert len(out.scope_rows) == 4 and out.scope["sweeps_kept"] == 1
 
 
 def test_blocked_frames_are_counted_and_never_rows(tmp_path) -> None:

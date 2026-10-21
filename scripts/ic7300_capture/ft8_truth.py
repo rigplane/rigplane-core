@@ -107,6 +107,11 @@ def main(argv: list[str] | None = None) -> int:
                 text=True,
                 check=False,
             )
+            if out.returncode != 0:
+                raise SystemExit(
+                    f"jt9 failed on slot {name} (exit {out.returncode}): "
+                    f"{(out.stderr or out.stdout)[-300:]!r}"
+                )
             lines = [
                 ln.strip()
                 for ln in out.stdout.splitlines()

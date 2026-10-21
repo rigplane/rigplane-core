@@ -24,6 +24,7 @@ import argparse
 import asyncio
 import json
 import os
+import socket
 import statistics
 import subprocess
 import sys
@@ -58,12 +59,24 @@ async def _get(session: aiohttp.ClientSession, base: str, path: str) -> object:
         return await resp.json()
 
 
+def _free_port() -> int:
+    """A currently free loopback TCP port (the server must own the one it uses)."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
 async def _wait_ready(
-    session: aiohttp.ClientSession, base: str, seconds: float
+    session: aiohttp.ClientSession,
+    base: str,
+    seconds: float,
+    server: subprocess.Popen,
 ) -> object:
     deadline = time.monotonic() + seconds
     last: Exception | None = None
     while time.monotonic() < deadline:
+        if server.poll() is not None:
+            raise RuntimeError(f"server exited early with code {server.returncode}")
         try:
             return await _get(session, base, "/api/v1/info")
         except Exception as exc:  # server not listening yet
@@ -130,17 +143,18 @@ async def run(args: argparse.Namespace, *, opener: object = None) -> int:
     summary["civ_t0_wall_utc"] = datetime.fromtimestamp(
         time.time() - (time.monotonic() - rec._t0), timezone.utc
     ).isoformat()
+    web_port = args.web_port or _free_port()
     argv = [
         "--model", args.model,
         "--backend", "serial",
         "--serial-port", f"socket://127.0.0.1:{rec.listen_port}",
         "--serial-baud", str(args.baud),
-        "web", "--listen", "127.0.0.1", "--port", str(args.web_port),
+        "web", "--listen", "127.0.0.1", "--port", str(web_port),
         "--no-rigctld", "--no-discovery",
     ]  # fmt: skip
     env = dict(os.environ, ICOM_SERIAL_SCOPE_ALLOW_LOW_BAUD="1")
     code = _SERVER_BOOT.format(here=str(Path(__file__).resolve().parent), argv=argv)
-    base = f"http://127.0.0.1:{args.web_port}"
+    base = f"http://127.0.0.1:{web_port}"
     exit_code = 0
     with log_path.open("w", encoding="utf-8") as log:
         server = subprocess.Popen(
@@ -149,7 +163,7 @@ async def run(args: argparse.Namespace, *, opener: object = None) -> int:
         try:
             async with aiohttp.ClientSession() as session:
                 _say("waiting for the server")
-                summary["info"] = await _wait_ready(session, base, 40)
+                summary["info"] = await _wait_ready(session, base, 40, server)
                 _say("server up")
                 await asyncio.sleep(8)  # let the first full poll cycle land
                 summary["capabilities_keys"] = sorted(
@@ -257,7 +271,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--model", default="IC-7300")
     parser.add_argument("--radio-addr", type=lambda s: int(s, 0), default=0x94)
-    parser.add_argument("--web-port", type=int, default=18099)
+    parser.add_argument(
+        "--web-port", type=int, default=0, help="0 = pick a free loopback port"
+    )
     parser.add_argument("--state-seconds", type=float, default=20.0)
     parser.add_argument("--scope-seconds", type=float, default=60.0)
     args = parser.parse_args(argv)

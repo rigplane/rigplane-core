@@ -9,9 +9,19 @@
   "simulator": "answers instantly (no reply delay)",
   "ticket": "MOR-3597"
  },
- "scope_wave": {
-  "recorded": "wave output on NAKed at 19200, no 27 00 frame recorded",
-  "simulator": "no wave frames after wave-on",
+ "usb:fefe94e0271001fd": {
+  "recorded": "ack",
+  "simulator": "nak",
+  "ticket": "MOR-3597"
+ },
+ "usb:fefe94e02710fd": {
+  "recorded": "data rx=- cmd=0x27 sub=0x10 len=1",
+  "simulator": "nak",
+  "ticket": "MOR-3597"
+ },
+ "usb:fefe94e02711fd": {
+  "recorded": "data rx=- cmd=0x27 sub=0x11 len=1",
+  "simulator": "nak",
   "ticket": "MOR-3597"
  }
 }

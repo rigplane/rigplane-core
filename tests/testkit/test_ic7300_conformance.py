@@ -108,7 +108,15 @@ def _pairs(windows: tuple[str, ...] = WINDOWS) -> list[tuple[bytes, bytes | None
     return pairs
 
 
-_NAMED_IDS = frozenset({"latency", "scope_wave", "baud_gate"})
+_NAMED_IDS = frozenset({"latency", "baud_gate"})
+
+
+def _evidence_pairs() -> list[tuple[bytes, bytes | None]]:
+    """The scope-enable attempt at 19200 baud (evidence.json), as pairs."""
+    return [
+        (bytes.fromhex(p["request"]), bytes.fromhex(p["reply"]))
+        for p in _evidence()["scope_enable_at_19200"]["pairs"]
+    ]
 
 
 def _is_usb_key(key: str) -> bool:
@@ -204,7 +212,7 @@ async def _collect_usb_divergences(table_rows=None) -> dict[str, tuple[str, str]
     reader, writer = await fake.opener(url="socket://conformance", baudrate=19200)
     observed: dict[str, tuple[str, str]] = {}
     try:
-        for request, reply in _pairs():
+        for request, reply in [*_pairs(), *_evidence_pairs()]:
             writer.write(request)
             await writer.drain()
             sim_class, _ = await _ask_serial_fake(reader, request)
@@ -249,21 +257,6 @@ async def _collect_structural_divergences() -> dict[str, tuple[str, str]]:
                 recorded_latency,
                 "answers instantly (no reply delay)",
             )
-
-        # Scope: the recorded radio NAKs wave output at 19200 and never streams.
-        pairs = _evidence()["scope_enable_at_19200"]["pairs"]
-        for pair in pairs:
-            writer.write(bytes.fromhex(pair["request"]))
-        await writer.drain()
-        try:
-            got = bytes(await asyncio.wait_for(reader.read(8192), 0.3))
-        except TimeoutError:
-            got = b""
-        if b"\xfe\xfe\xe0\x94\x27\x00" not in got:
-            observed["scope_wave"] = (
-                "wave output on NAKed at 19200, no 27 00 frame recorded",
-                "no wave frames after wave-on",
-            )
     finally:
         writer.close()
 
@@ -297,7 +290,7 @@ def test_every_ledger_key_has_exactly_one_owner_and_a_ticket() -> None:
 
 async def test_ratchet_fails_when_a_ledger_entry_is_deleted() -> None:
     ledger = _ledger()
-    ledger.pop("scope_wave")
+    ledger.pop("latency")
     with pytest.raises(AssertionError, match="missing from the ledger"):
         _assert_ledger_exact(
             await _collect_structural_divergences(), _is_named_key, ledger=ledger
