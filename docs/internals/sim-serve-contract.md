@@ -109,12 +109,11 @@ Every `POST /event` (accepted or rejected) and process start/stop appends
 lines (`sort_keys`, `separators=(",",":")`), flushed per line — including
 the final `stop` record written during shutdown.
 
-Determinism rule: with the same launcher arguments (`--seed`, `--bind`,
-`--control`, `--keepalive-hold-s`, `--username`), the same events in the
-same order and no pending timers at the moment the trace is read, the
-trace is identical once the `t` field is removed. `t` is
-real elapsed time (recovery timings need it) and is the only
-time-dependent field. The server itself adds no ephemeral ports to trace
+`t` (real elapsed seconds) is the only time field; records appended by a
+restore timer (`usb_reappear` after `usb_vanish` with `for_s`) appear at
+their deadline unless an explicit `usb_reappear` cancelled the timer
+first, so the trace is a log of what happened, not a replay script. The
+server itself adds no ephemeral ports to trace
 records (the start record carries the `--control` hint, port 0 included);
 extra keys a client sends in an event body are recorded in `args` with
 non-finite floats (from permissively parsed `NaN`/`Infinity` literals)

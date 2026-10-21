@@ -171,22 +171,28 @@ class PtyEndpoint:
         # succeed, so a failure leaves nothing behind.
         reader, writer = await self._fake.open_serial_connection()
         loop = asyncio.get_running_loop()
-        master = slave = -1
+        master: int | None = None
+        slave: int | None = None
+        reader_added = False
+        complete = False
         try:
             master, slave = os.openpty()
             tty.setraw(slave)
             os.set_blocking(master, False)
             path = os.ttyname(slave)
             loop.add_reader(master, self._on_master_readable)
-        except BaseException:
-            loop.remove_reader(master)  # a never-registered fd is a no-op
-            for fd in (master, slave):
-                if fd >= 0:
-                    with contextlib.suppress(OSError):
-                        os.close(fd)
-            with contextlib.suppress(Exception):
-                writer.close()
-            raise
+            reader_added = True
+            complete = True
+        finally:
+            if not complete:  # roll back only what exists, never masking
+                with contextlib.suppress(Exception):
+                    if reader_added:
+                        loop.remove_reader(master)
+                    for fd in (master, slave):
+                        if fd is not None:
+                            os.close(fd)
+                with contextlib.suppress(Exception):
+                    writer.close()
         self._master, self._slave = master, slave
         self._path = path
         self._reader, self._writer = reader, writer

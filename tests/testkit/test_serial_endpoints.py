@@ -10,6 +10,8 @@ and the no-leak lifecycle pinned on the real streams.
 from __future__ import annotations
 
 import asyncio
+import errno
+import os
 import sys
 import time
 
@@ -60,6 +62,19 @@ async def _until(condition, timeout: float = 5.0) -> None:
             await asyncio.sleep(0.01)
 
     await asyncio.wait_for(_poll(), timeout)
+
+
+async def _pty_ident_reply(fake: CivSerialFake, device: str) -> None:
+    port = await asyncio.to_thread(serial.Serial, device, 115200, timeout=3)
+    try:
+        await asyncio.to_thread(port.write, _ident(fake))
+        for _ in range(2):  # the USB CI-V echo, then the radio's reply
+            frame = await asyncio.wait_for(
+                asyncio.to_thread(port.read_until, b"\xfd"), 5.0
+            )
+        assert parse_civ_frame(bytes(frame)).data == fake.model_id
+    finally:
+        await asyncio.to_thread(port.close)
 
 
 async def test_tcp_echo_identity_and_frequency_over_raw_sockets() -> None:
@@ -192,21 +207,38 @@ async def test_pty_start_is_transactional_while_fake_vanished() -> None:
     fake.usb_reappear()
     await _until(lambda: not fake._vanished)
     await endpoint.start()
-    port = await asyncio.to_thread(serial.Serial, endpoint.device, 115200, timeout=3)
-    try:
-        ident = _ident(fake)
-
-        def _read() -> bytes:
-            return bytes(port.read_until(b"\xfd"))
-
-        await asyncio.to_thread(port.write, ident)
-        await asyncio.wait_for(asyncio.to_thread(_read), 5.0)  # USB echo
-        reply = parse_civ_frame(await asyncio.wait_for(asyncio.to_thread(_read), 5.0))
-        assert reply.data == fake.model_id
-    finally:
-        await asyncio.to_thread(port.close)
-        await endpoint.stop()
+    await _pty_ident_reply(fake, endpoint.device)
+    await endpoint.stop()
     assert fake.open_count == 1  # the failed start never opened the fake
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no os.openpty on Windows")
+async def test_pty_openpty_failure_never_masks_or_leaks(monkeypatch) -> None:
+    fake = CivSerialFake()
+    endpoint = PtyEndpoint(fake)
+    opened: list = []
+    real_open = fake.open_serial_connection
+
+    async def _record():
+        pair = await real_open()
+        opened.append(pair[1])
+        return pair
+
+    def _emfile():
+        raise OSError(errno.EMFILE, "descriptor table full")
+
+    monkeypatch.setattr(fake, "open_serial_connection", _record)
+    monkeypatch.setattr(os, "openpty", _emfile)
+    with pytest.raises(OSError) as exc:
+        await endpoint.start()
+    assert exc.value.errno == errno.EMFILE
+    assert opened[0].closed  # the connection start() opened was closed
+    with pytest.raises(RuntimeError):
+        _ = endpoint.device  # nothing was published
+    monkeypatch.undo()
+    await endpoint.start()
+    await _pty_ident_reply(fake, endpoint.device)
+    await endpoint.stop()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="no os.openpty on Windows")
@@ -227,45 +259,16 @@ async def test_pty_identity_and_reappear_through_pyserial() -> None:
     fake = CivSerialFake()
     endpoint = PtyEndpoint(fake)
     await endpoint.start()
-    loop = asyncio.get_running_loop()
-    port = await loop.run_in_executor(
-        None, lambda: serial.Serial(endpoint.device, 115200, timeout=3)
-    )
     try:
-
-        def _read() -> bytes:
-            return bytes(port.read_until(b"\xfd"))
-
-        ident = _ident(fake)
-        await loop.run_in_executor(None, port.write, ident)
-        echo = await asyncio.wait_for(loop.run_in_executor(None, _read), 5.0)
-        assert echo == ident
-        assert (
-            parse_civ_frame(
-                await asyncio.wait_for(loop.run_in_executor(None, _read), 5.0)
-            ).data
-            == fake.model_id
-        )
-
-        # usb_vanish closes the lifetime connection; after usb_reappear
-        # the next bytes open a fresh one and are answered again.
+        await _pty_ident_reply(fake, endpoint.device)
         opens = fake.open_count
         fake.usb_vanish()
         await _until(lambda: fake._vanished)
         fake.usb_reappear(after=0.05)
         await _until(lambda: not fake._vanished)
-        await loop.run_in_executor(None, port.write, ident)
-        echo = await asyncio.wait_for(loop.run_in_executor(None, _read), 5.0)
-        assert echo == ident
-        assert (
-            parse_civ_frame(
-                await asyncio.wait_for(loop.run_in_executor(None, _read), 5.0)
-            ).data
-            == fake.model_id
-        )
+        await _pty_ident_reply(fake, endpoint.device)
         assert fake.open_count == opens + 1
     finally:
-        await loop.run_in_executor(None, port.close)
         await endpoint.stop()
     with pytest.raises(RuntimeError):
         _ = endpoint.device
