@@ -10,14 +10,17 @@ it ships in `rigplane_testkit`, not in the published `rigplane` wheel.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--radio` | (required) | Model to simulate. Choices: `ic7610`. |
+| `--radio` | (required) | Model to simulate. Choices: `ic7610`, `ic7300`. |
 | `--seed` | `0` | `FaultPlan(seed=...)` for the simulator; makes fault decisions reproducible. |
-| `--bind` | `127.0.0.1` | Simulator bind address. `0.0.0.0` is an explicit opt-in to be reachable from another machine. |
+| `--bind` | `127.0.0.1` | Simulator bind address. `0.0.0.0` is an explicit opt-in to be reachable from another machine. For `ic7300`: the serial fake's TCP listener bind. |
 | `--control` | `127.0.0.1:0` | Control endpoint `HOST:PORT`; IPv6 literals bracketed as `[host]:port` (a bare literal is a CLI error). Port 0 = ephemeral, reported on stdout. |
 | `--trace` | off | Append the trace as JSON lines to this file. |
 | `--keepalive-hold-s` | `85.0` | Dead-session hold; the recorded real IC-7610 holds 83.4–85.9 s. The simulator's constructor default (0.5 s) is for fast unit tests. |
 | `--username` | constructor default | Login username the simulator accepts (otherwise `MockIcomRadio`'s fixed test value). |
 | `--password` | constructor default | Login password the simulator accepts. Never printed, logged or returned. |
+
+With `--radio ic7300`, `--keepalive-hold-s`, `--username` and `--password`
+are IC-7610-only: accepted and ignored.
 
 ## Startup line
 
@@ -61,6 +64,43 @@ Numeric arguments must be finite: `NaN`, `Infinity`, `-Infinity` (which
 permissive JSON parsers accept) are rejected as `invalid_args`, as are
 booleans and strings.
 
+## Serial radios (`--radio ic7300`, MOR-3594)
+
+The IC-7300 is served by the stateful serial CI-V fake
+(`rigplane_testkit/serial/civ_serial.py`) on real endpoints: a TCP
+listener usable through pyserial's `socket://` URL — the same
+`open_serial_port` open the production link performs — and, on macOS and
+Linux, a pseudo-terminal slave path a serial app opens like a device
+node. The PTY endpoint is macOS/Linux only: on Windows there is no PTY
+serial simulation — `pty` is `null` there and the TCP endpoint keeps
+serving; use `socket://` and test whether the target app accepts it.
+
+Startup line (same envelope; instead of `host`/`control_port`/`username`
+it carries `device`, the `socket://` URL, and `pty`, the slave path or
+`null`):
+
+```json
+{"sim":"rigplane-sim/1","radio":"IC-7300","fidelity":"B","evidence":"simulated",
+ "transport":"serial","device":"socket://127.0.0.1:12345","pty":"/dev/ttys021",
+ "control":"http://127.0.0.1:54321","seed":0}
+```
+
+`GET /state` →
+`{"frequency_hz":int,"mode":int,"ptt":bool,"s_meter":int,"open_count":int,"vanished":bool}`.
+
+### Events (all take effect immediately)
+
+| Event | Arguments | Effect |
+| --- | --- | --- |
+| `set_frequency` | `hz` (int, 1..9999999999) | Sets the fake's frequency. |
+| `usb_vanish` | optional `for_s` (finite number > 0) | The device disappears: live connections drop, new opens fail until it reappears. With `for_s` the reappear is scheduled that far out (cancelled on shutdown) and traced as a `usb_reappear` record when it fires. |
+| `usb_reappear` | none | The device opens again immediately. |
+| `silence` | `for_s` (finite number > 0) | The port stays open and nothing answers for the window. |
+
+These events validate through the same code path as the IC-7610 ones
+(finite numbers only, sanitised trace, 400 `invalid_args`, no handler
+runs on a rejected body); IC-7610-only events answer `unsupported` here.
+
 ## Trace
 
 Every `POST /event` (accepted or rejected) and process start/stop appends
@@ -91,3 +131,4 @@ model (the IC-7610 simulator has recorded conformance);
 **B** — manual oracles only; **C** — profile declarations only.
 
 Planned: `lan_drop` (exact N-second UDP blackout), tracked in MOR-3593.
+Planned: PTY serial simulation on Windows (no `os.openpty` there today).

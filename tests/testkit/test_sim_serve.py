@@ -2,7 +2,8 @@
 
 In-process tests use ``build_stack`` and the aiohttp test client;
 subprocess tests start the real entry point — one end to end against a
-production ``IcomRadio``, the rest checking signals and --trace.
+production ``IcomRadio``, one against the IC-7300 serial fake's real
+socket endpoint, the rest checking signals and --trace.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import pytest
 from aiohttp import ClientSession
 from aiohttp.test_utils import TestClient, TestServer
 
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.radio import IcomRadio
 
 from rigplane_testkit.sim.__main__ import _control_arg, build_parser
@@ -36,6 +38,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _STARTUP_KEYS = (
     "sim radio fidelity evidence transport host control_port username control seed"
+).split()
+
+_SERIAL_STARTUP_KEYS = (
+    "sim radio fidelity evidence transport device pty control seed"
 ).split()
 
 # Obvious test-only credentials for the subprocess run: only --password can
@@ -69,14 +75,14 @@ async def _post_raw(s, data: str):
 @asynccontextmanager
 async def _stack(*extra: str):
     stack = build_stack(_args(*extra))
-    await stack.radio.start()
+    await stack.backend.start()
     client = TestClient(TestServer(stack.app))
     await client.start_server()
     try:
         yield SimpleNamespace(inner=stack, client=client)
     finally:
         await client.close()
-        await stack.radio.stop()
+        await stack.backend.stop()
         stack.trace.close()
 
 
@@ -165,7 +171,7 @@ async def test_deeply_nested_body_rejected_and_traced() -> None:
     async with _stack() as s:
         deep = "[" * 5000 + "]" * 5000
         before = await (await s.client.get("/state")).json()
-        token = s.inner.radio.token
+        token = s.inner.backend.radio.token
         resp = await _post_raw(s, f'{{"event":"session_drop","junk":{deep}}}')
         assert resp.status == 400
         body = _strict_loads(await resp.text())
@@ -175,7 +181,7 @@ async def test_deeply_nested_body_rejected_and_traced() -> None:
         assert rec["name"] in ("", "session_drop")
         # No handler ran: /state unchanged; a drop that ran rotates the token.
         assert await (await s.client.get("/state")).json() == before
-        assert s.inner.radio.token == token
+        assert s.inner.backend.radio.token == token
 
 
 async def test_set_frequency_changes_state() -> None:
@@ -319,14 +325,16 @@ async def test_same_seed_and_events_produce_identical_trace() -> None:
 # --- Subprocess end to end ----------------------------------------------------
 
 
-async def _start_sim(*extra: str) -> tuple[asyncio.subprocess.Process, dict]:
+async def _start_sim(
+    *extra: str, radio: str = "ic7610"
+) -> tuple[asyncio.subprocess.Process, dict]:
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
         "rigplane_testkit.sim",
         "serve",
         "--radio",
-        "ic7610",
+        radio,
         *extra,
         cwd=_REPO_ROOT,
         stdout=asyncio.subprocess.PIPE,
@@ -429,3 +437,100 @@ async def test_signal_exits_0_and_writes_stop_record(tmp_path: Path, sig) -> Non
     records = [_strict_loads(x) for x in trace_path.read_text().splitlines()]
     assert records[-1]["kind"] == "stop"
     assert records[-1]["result"] == {"ok": True}
+
+
+async def _wire_identity(reader, writer, ident: bytes) -> bytes:
+    """Send *ident* on a raw stream; return the parsed reply past the echo."""
+    writer.write(ident)
+    await writer.drain()
+    echo = await asyncio.wait_for(reader.readuntil(b"\xfd"), 5)
+    assert echo == ident
+    return parse_civ_frame(bytes(await asyncio.wait_for(reader.readuntil(b"\xfd"), 5)))
+
+
+async def test_subprocess_serial_end_to_end(tmp_path: Path) -> None:
+    if sys.platform == "win32":
+        pytest.skip("POSIX signal delivery")
+    trace_path = tmp_path / "trace.jsonl"
+    proc, line = await _start_sim("--trace", str(trace_path), radio="ic7300")
+    try:
+        assert list(line) == _SERIAL_STARTUP_KEYS
+        assert line["sim"] == "rigplane-sim/1" and line["radio"] == "IC-7300"
+        assert line["fidelity"] == "B" and line["evidence"] == "simulated"
+        assert line["transport"] == "serial" and line["seed"] == 0
+        host, port = line["device"].removeprefix("socket://").rsplit(":", 1)
+        assert host == "127.0.0.1" and int(port) > 0
+        assert isinstance(line["pty"], str) and line["pty"].startswith("/dev/")
+
+        # rigs/ic7300.toml pins the address and the model id this wire speaks.
+        ident = build_civ_frame(0x94, CONTROLLER_ADDR, 0x19, sub=0x00)
+        reader, writer = await asyncio.open_connection(host, int(port))
+        assert (await _wire_identity(reader, writer, ident)).data == b"\x94"
+
+        # usb_vanish with a reappear window: the live client drops now, a
+        # new client is closed while gone, and the window answers again.
+        async with ClientSession() as http:
+            async with http.post(
+                f"{line['control']}/event",
+                json={"event": "usb_vanish", "for_s": 0.3},
+            ) as resp:
+                assert resp.status == 200
+        assert await asyncio.wait_for(reader.read(), 5) == b""
+        gone_reader, gone_writer = await asyncio.open_connection(host, int(port))
+        assert await asyncio.wait_for(gone_reader.read(), 5) == b""
+        gone_writer.close()
+        await asyncio.sleep(0.7)  # the 0.3 s window plus a wide margin
+
+        reader2, writer2 = await asyncio.open_connection(host, int(port))
+        assert (await _wire_identity(reader2, writer2, ident)).data == b"\x94"
+        writer.close()
+        writer2.close()
+
+        async with ClientSession() as http:
+            state = await (await http.get(f"{line['control']}/state")).json()
+            trace_body = await (await http.get(f"{line['control']}/trace")).text()
+            # The serial /state key set; IC-7610-only events answer unsupported.
+            assert set(state) == {
+                "frequency_hz",
+                "mode",
+                "ptt",
+                "s_meter",
+                "open_count",
+                "vanished",
+            }
+            assert state["frequency_hz"] == 14_074_000
+            assert state["vanished"] is False
+            async with http.post(
+                f"{line['control']}/event", json={"event": "session_drop"}
+            ) as resp:
+                assert resp.status == 400
+                assert (await resp.json())["error"] == "unsupported"
+            # A rejected body runs no handler: state unchanged through the storm.
+            async with http.post(
+                f"{line['control']}/event",
+                data='{"event":"set_frequency","hz":NaN}',
+                headers={"Content-Type": "application/json"},
+            ) as resp:
+                assert resp.status == 400
+            assert (await (await http.get(f"{line['control']}/state")).json())[
+                "frequency_hz"
+            ] == 14_074_000
+        records = [
+            rec
+            for rec in _strict_loads(trace_body)["events"]
+            if rec["name"] == "usb_reappear"
+        ]
+        assert records and records[0]["kind"] == "event"
+        assert records[0]["result"] == {"ok": True}
+
+        proc.send_signal(signal.SIGTERM)
+        assert await asyncio.wait_for(proc.wait(), 10) == 0
+    finally:
+        await _kill_if_alive(proc)
+
+    file_records = [_strict_loads(x) for x in trace_path.read_text().splitlines()]
+    assert (file_records[-1]["kind"], file_records[-1]["name"]) == (
+        "stop",
+        "shutdown",
+    )
+    assert file_records[-1]["result"] == {"ok": True}
