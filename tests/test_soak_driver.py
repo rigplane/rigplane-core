@@ -472,13 +472,13 @@ async def test_soak_smoke_report_shape_and_incomplete_verdict() -> None:
 
     fds = report["criteria"]["fdsStability"]
     assert fds["status"] == "PASS"
-    assert fds["tolerance"] == 5
+    assert fds["tolerance"] == 0  # the owned-socket population compares exactly
     assert fds["checks"], "expected at least one completed reconnect check"
     assert all(check["ok"] for check in fds["checks"])
 
     tasks = report["criteria"]["tasksStability"]
     assert tasks["status"] == "PASS"
-    assert tasks["tolerance"] == 5
+    assert tasks["tolerance"] == 2  # the reconnect's task-rebuild bound
     assert tasks["checks"], "expected at least one completed reconnect check"
 
     rss = report["criteria"]["rssGrowth"]
@@ -1287,16 +1287,21 @@ async def test_stability_post_probe_still_fails_a_persistent_tasks_surplus(
 
 
 # ---------------------------------------------------------------------------
-# MOR-3575 step 3: the in-process provider counts only what the run owns
+# MOR-3575 step 3: the in-process provider counts the owned population —
+# the pending tasks created after the run's baseline, and sockets on the
+# harness-created ports
 # ---------------------------------------------------------------------------
 
 
 def _stability_criteria_for(
     fds_pre: int, fds_post: int, tasks_pre: int, tasks_post: int
 ) -> dict[str, Any]:
-    """The report's own criterion math (unchanged tolerance) on one cycle."""
+    """The report's own criterion math on one in-process cycle: the
+    entry carries ``ownedPopulation``, so fds compare exactly and tasks
+    within the rebuild bound, with the constants as committed."""
     entry = _one_reconnect(300.0, 320.0)
     entry.update(
+        ownedPopulation=True,
         fdsPre=fds_pre,
         fdsPost=fds_post,
         tasksPre=tasks_pre,
@@ -1317,8 +1322,9 @@ def _listener(backlog: int = 1) -> socket.socket:
 
 
 def test_owned_socket_fd_count_sees_only_run_owned_ports() -> None:
-    """Unrelated listeners and pipes are invisible; owned sockets count
-    while open, by exactly one each, and stop counting once closed."""
+    """Unrelated listener sockets and a pipe are invisible (no regular
+    file is covered by this test); owned sockets count while open, by
+    exactly one each, and stop counting once closed."""
     unrelated = _listener()
     read_fd, write_fd = os.pipe()
     owned = _listener()
@@ -1342,13 +1348,13 @@ def test_owned_socket_fd_count_sees_only_run_owned_ports() -> None:
 
 
 def test_leaked_run_owned_sockets_fail_the_stability_criterion() -> None:
-    """Negative controls through the real criterion (MOR-3575).
+    """Negative control through the real criterion (MOR-3575).
 
-    Six leaked run-owned sockets — the smallest leak over the unchanged
-    tolerance — FAIL the criterion; one leak registers its exact delta of
-    one (the live signal carries legitimate +-1 transients, so failing
-    on a single one would re-introduce the flake this change removes).
-    An unrelated FD between the probes must not change the verdict.
+    One leaked run-owned socket FAILs the criterion — the in-process
+    owned-socket comparison is exact, no tolerance — and registers its
+    exact delta of one. An unrelated listener socket and a pipe between
+    the probes change nothing: the count returns to pre and the verdict
+    to PASS once the leak closes.
     """
     owned = _listener(backlog=8)
     ports = frozenset({owned.getsockname()[1]})
@@ -1362,18 +1368,8 @@ def test_leaked_run_owned_sockets_fail_the_stability_criterion() -> None:
         assert one == pre + 1
         one_leak = _stability_criteria_for(pre, one, 25, 25)
         assert one_leak["fdsStability"]["checks"][0]["delta"] == 1
-        assert one_leak["fdsStability"]["status"] == "PASS"
-        for _ in range(soak_driver.STABILITY_TOLERANCE):
-            leaks.append(socket.create_connection(owned.getsockname()))
-        post = soak_driver._owned_socket_fd_count(ports)
-        assert post == pre + 1 + soak_driver.STABILITY_TOLERANCE
-        criteria = _stability_criteria_for(pre, post, 25, 25)
-        assert criteria["fdsStability"]["status"] == "FAIL"
-        assert criteria["fdsStability"]["checks"][0]["delta"] == (
-            1 + soak_driver.STABILITY_TOLERANCE
-        )
-        for leak in leaks:
-            leak.close()
+        assert one_leak["fdsStability"]["status"] == "FAIL"
+        leaks[0].close()
         leaks.clear()
         post = soak_driver._owned_socket_fd_count(ports)
         assert post == pre  # the unrelated listener and pipe never counted
@@ -1428,11 +1424,15 @@ class _OverlayWeb:
 
 async def test_leaked_run_owned_tasks_fail_the_stability_criterion() -> None:
     """Production selector, no patched constants (MOR-3575): a real
-    ``_RuntimeTaskAdapter`` baseline counts six leaked run-owned
-    standard-library tasks (``asyncio.wait_for``-style helpers, one
-    registering its exact delta) and FAILs the criterion on the smallest
-    over-tolerance leak; a matching-product-module task predating the
-    run never enters the population; the overlay reports the same count.
+    ``_RuntimeTaskAdapter`` baseline counts each leaked run-owned
+    standard-library task (``asyncio.sleep``-style helpers) exactly, and
+    the criterion FAILs on the smallest over-tolerance leak of three —
+    the reconnect's own task rebuild churns the count by up to two in
+    both directions, so one leaked task is under the count criterion's
+    floor (measured on the end-to-end runs; see
+    ``IN_PROCESS_TASK_STABILITY_TOLERANCE``). A matching-product-module
+    task predating the run never enters the population; the overlay
+    reports the same count.
     """
 
     foreign = asyncio.create_task(_module_linger("rigplane.core.transport")())
@@ -1448,10 +1448,10 @@ async def test_leaked_run_owned_tasks_fail_the_stability_criterion() -> None:
         assert pre == 0  # the product-module task predates the run
         leaks.append(asyncio.create_task(asyncio.sleep(3600.0)))
         assert len(adapter.owned_task_population()) == pre + 1
-        for _ in range(soak_driver.STABILITY_TOLERANCE):
+        for _ in range(soak_driver.IN_PROCESS_TASK_STABILITY_TOLERANCE):
             leaks.append(asyncio.create_task(asyncio.sleep(3600.0)))
         post = len(adapter.owned_task_population())
-        assert post == pre + 1 + soak_driver.STABILITY_TOLERANCE
+        assert post == pre + 1 + soak_driver.IN_PROCESS_TASK_STABILITY_TOLERANCE
         assert (
             _stability_criteria_for(20, 20, pre, post)["tasksStability"]["status"]
             == "FAIL"
@@ -1478,7 +1478,11 @@ class _LiveProbeStack:
     def __init__(self) -> None:
         self.serving = {"up": True}
         self.web = _OverlayWeb()
-        self.leak_listener = _listener(backlog=soak_driver.STABILITY_TOLERANCE + 2)
+        # Headroom over the largest leak these tests make (three
+        # never-accepted connections in the outage regression).
+        self.leak_listener = _listener(
+            backlog=soak_driver.IN_PROCESS_TASK_STABILITY_TOLERANCE + 2
+        )
         self.leak_addr = self.leak_listener.getsockname()
         self.adapter: soak_driver._RuntimeTaskAdapter | None = None
         self.sampler: soak_driver.ProcessMetricsSampler | None = None
@@ -1553,20 +1557,19 @@ class _LiveProbeStack:
 async def test_probe_overhead_cannot_mask_a_real_leak() -> None:
     """The probe's own instruments stay out of the measured population
     (MOR-3575 round 2): over the whole live HTTP path, a leak of the
-    smallest detectable size (tolerance + 1 sockets) still fails the
-    criterion when the pre probe rides the runtime route and the post
-    probe switches to the fallback."""
+    smallest detectable size — one owned socket, the exact in-process
+    comparison — still fails the criterion when the pre probe rides the
+    runtime route and the post probe switches to the fallback."""
     live = await _LiveProbeStack().start()
     leaks: list[socket.socket] = []
     try:
         pre, routes = await live.probe(1.0)
         assert routes == ("runtime", "runtime")
-        for _ in range(soak_driver.STABILITY_TOLERANCE + 1):
-            leaks.append(socket.create_connection(live.leak_addr))
+        leaks.append(socket.create_connection(live.leak_addr))
         live.serving["up"] = False
         post, routes = await live.probe(2.0)
         assert routes == ("driver", "driver")
-        assert post.fds == pre.fds + soak_driver.STABILITY_TOLERANCE + 1
+        assert post.fds == pre.fds + 1
         assert (
             _stability_criteria_for(
                 pre.fds, post.fds, pre.asyncio_tasks, post.asyncio_tasks
@@ -1586,7 +1589,8 @@ async def test_runtime_outage_keeps_one_owned_population_and_verdict() -> None:
     each sample's route asserted; a leak made after the outage/recovery,
     measured by the fallback against the recovered runtime route's real
     owned baseline (not fallback against fallback), fails both
-    stability criteria at the smallest over-tolerance size."""
+    stability criteria at the smallest over-tolerance size (the in-process
+    task tolerance + 1)."""
     live = await _LiveProbeStack().start()
     leaks: list[socket.socket] = []
     leak_tasks: list[asyncio.Task[None]] = []
@@ -1600,15 +1604,16 @@ async def test_runtime_outage_keeps_one_owned_population_and_verdict() -> None:
         live.serving["up"] = True
         recovered, routes = await live.probe(3.0)
         assert routes == ("runtime", "runtime")
-        for _ in range(soak_driver.STABILITY_TOLERANCE + 1):
+        leak_size = soak_driver.IN_PROCESS_TASK_STABILITY_TOLERANCE + 1
+        for _ in range(leak_size):
             leaks.append(socket.create_connection(live.leak_addr))
             leak_tasks.append(asyncio.create_task(asyncio.sleep(3600.0)))
         live.serving["up"] = False
         post, routes = await live.probe(4.0)
         assert routes == ("driver", "driver")
         assert (post.fds, post.asyncio_tasks) == (
-            recovered.fds + soak_driver.STABILITY_TOLERANCE + 1,
-            recovered.asyncio_tasks + soak_driver.STABILITY_TOLERANCE + 1,
+            recovered.fds + leak_size,
+            recovered.asyncio_tasks + leak_size,
         )
         verdict = _stability_criteria_for(
             recovered.fds, post.fds, recovered.asyncio_tasks, post.asyncio_tasks

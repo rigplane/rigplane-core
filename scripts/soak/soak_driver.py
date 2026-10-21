@@ -70,7 +70,25 @@ RSS_MIN_FIT_SPAN_S = 600.0
 # The verdict of a run with no error and no FAIL in which not every criterion
 # PASSed.
 VERDICT_INCOMPLETE = "INCOMPLETE"
+# Process-wide counts — a remote server's pid observed through the
+# runtime document — carry churn this run did not create, so their
+# comparison keeps a tolerance (MOR-3575).
 STABILITY_TOLERANCE = 5
+# In-process owned sockets: the forced reconnect replaces the radio's
+# connection sockets one-for-one and the listeners persist, so a
+# surviving extra owned socket is a leak — the comparison is exact
+# (measured: 0 nonzero deltas in 90 end-to-end reconnects, MOR-3575).
+IN_PROCESS_FD_STABILITY_TOLERANCE = 0
+# In-process owned tasks: the forced reconnect tears down and recreates
+# every transport loop set (ping/retransmit/idle/rx loops across three
+# transports, the commander, the token renewer, on-demand web and
+# stdlib helper tasks), so the probe-time count legitimately differs by
+# the rebuild's last spawn/drain step in either direction. Measured:
+# |delta| <= 2 in 90 end-to-end reconnects (0:41, +-1:44, +-2:5); two
+# is the smallest tolerance that evidence justifies. Removing the churn
+# by identity would have to exclude the stack's own task classes — the
+# leak surface this criterion watches — or need creation-time ancestry.
+IN_PROCESS_TASK_STABILITY_TOLERANCE = 2
 _STABILITY_PROBE_COUNT = 3
 # A post-reconnect median above pre + tolerance may be teardown still
 # draining (MOR-3575): settle first — gc once, then resample in small
@@ -1229,6 +1247,29 @@ def _linear_slope_per_hour(points: list[tuple[float, float]]) -> float | None:
     return sxy / sxx * 3600.0
 
 
+def _entry_tolerance(entry: dict[str, Any], field: str) -> int:
+    """The comparison tolerance one reconnect entry's field was measured under.
+
+    ``ownedPopulation`` marks the in-process run's counts (the adapter's
+    owned population): exact for sockets, within the measured rebuild
+    bound for tasks. Anything else — the remote-pid path — keeps the
+    process-wide tolerance.
+    """
+    if entry.get("ownedPopulation"):
+        if field == "fds":
+            return IN_PROCESS_FD_STABILITY_TOLERANCE
+        return IN_PROCESS_TASK_STABILITY_TOLERANCE
+    return STABILITY_TOLERANCE
+
+
+def _run_tolerance(reconnects: list[dict[str, Any]], field: str) -> int:
+    """The tolerance a whole report's counts were measured under."""
+    for entry in reconnects:
+        if entry.get("ownedPopulation"):
+            return _entry_tolerance(entry, field)
+    return STABILITY_TOLERANCE
+
+
 def _stability_checks(
     reconnects: list[dict[str, Any]], field: str
 ) -> list[dict[str, Any]]:
@@ -1248,18 +1289,20 @@ def _stability_checks(
                 "pre": pre,
                 "post": post,
                 "delta": delta,
-                "ok": abs(delta) <= STABILITY_TOLERANCE,
+                "ok": abs(delta) <= _entry_tolerance(entry, field),
             }
         )
     return checks
 
 
-def _stability_criterion(checks: list[dict[str, Any]]) -> dict[str, Any]:
+def _stability_criterion(
+    checks: list[dict[str, Any]], tolerance: int = STABILITY_TOLERANCE
+) -> dict[str, Any]:
     if checks:
         status = "PASS" if all(check["ok"] for check in checks) else "FAIL"
     else:
         status = "NOT_EVALUATED"
-    return {"status": status, "tolerance": STABILITY_TOLERANCE, "checks": checks}
+    return {"status": status, "tolerance": tolerance, "checks": checks}
 
 
 def _stability_counts_decreased(before: ProcessSample, after: ProcessSample) -> bool:
@@ -1272,17 +1315,32 @@ def _stability_counts_decreased(before: ProcessSample, after: ProcessSample) -> 
     return False
 
 
-def _stability_surplus(pre: ProcessSample, post: ProcessSample) -> bool:
-    """Either post count above pre + tolerance; missing fields never count."""
-    for field in ("fds", "asyncio_tasks"):
-        before = getattr(pre, field)
-        after = getattr(post, field)
-        if (
-            before is not None
-            and after is not None
-            and after - before > STABILITY_TOLERANCE
-        ):
-            return True
+def _stability_surplus(
+    pre: ProcessSample, post: ProcessSample, owned_counts: bool
+) -> bool:
+    """Either post count above pre + its tolerance; missing fields never count.
+
+    ``owned_counts`` selects the in-process tolerances (exact for owned
+    sockets, the rebuild bound for owned tasks); the process-wide
+    tolerance otherwise.
+    """
+    fds_tolerance, tasks_tolerance = (
+        (IN_PROCESS_FD_STABILITY_TOLERANCE, IN_PROCESS_TASK_STABILITY_TOLERANCE)
+        if owned_counts
+        else (STABILITY_TOLERANCE, STABILITY_TOLERANCE)
+    )
+    if (
+        pre.fds is not None
+        and post.fds is not None
+        and post.fds - pre.fds > fds_tolerance
+    ):
+        return True
+    if (
+        pre.asyncio_tasks is not None
+        and post.asyncio_tasks is not None
+        and post.asyncio_tasks - pre.asyncio_tasks > tasks_tolerance
+    ):
+        return True
     return False
 
 
@@ -1344,8 +1402,12 @@ def evaluate_report(
         recovery["status"] = "NOT_EVALUATED"
     return {
         "rssGrowth": rss,
-        "fdsStability": _stability_criterion(fds_checks),
-        "tasksStability": _stability_criterion(tasks_checks),
+        "fdsStability": _stability_criterion(
+            fds_checks, _run_tolerance(reconnects, "fds")
+        ),
+        "tasksStability": _stability_criterion(
+            tasks_checks, _run_tolerance(reconnects, "tasks")
+        ),
         "recovery": recovery,
     }
 
@@ -2098,7 +2160,7 @@ class SoakDriver:
                 calm += 1
             previous = current
             if calm >= _STABILITY_SETTLE_STABLE_READINGS and not _stability_surplus(
-                pre, current
+                pre, current, self._runtime_task_adapter is not None
             ):
                 return
 
@@ -2216,6 +2278,11 @@ class SoakDriver:
             "budgetS": self._cfg.reconnect_budget_s,
             "windowStartS": round(window_start_s, 3),
             "windowEndS": None,
+            # Marks the pre/post counts as the in-process owned
+            # population, so the criterion compares them exactly (fds)
+            # / within the rebuild bound (tasks), not with the
+            # process-wide tolerance.
+            "ownedPopulation": self._runtime_task_adapter is not None,
             "fdsPre": pre.fds,
             "tasksPre": pre.asyncio_tasks,
             "fdsPost": None,
@@ -2230,7 +2297,7 @@ class SoakDriver:
             if diagnostics is not None:
                 diagnostics.boundary("settleEnd")
             post = await self._stability_probe("post")
-            if _stability_surplus(pre, post):
+            if _stability_surplus(pre, post, self._runtime_task_adapter is not None):
                 # A surplus right after recovery may be teardown still
                 # draining (MOR-3575): settle, then take the median again.
                 # The settle's own samples are uncaptured; the transient
