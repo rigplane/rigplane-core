@@ -40,7 +40,13 @@ _FIELD = re.compile(r"\{[^{}:]*(?::0?(\d*)d)?\}")
 
 # The only writes a capture may be allowed to forward: re-tuning the receive
 # VFOs. Nothing here keys the transmitter or touches power or any setting.
-RX_TUNING_WRITES = ("set_freq", "set_freq_sub", "set_mode", "set_mode_sub")
+RX_TUNING_WRITES = (
+    "set_freq",
+    "set_freq_sub",
+    "set_mode",
+    "set_mode_sub",
+    "set_filter_width",
+)
 
 
 def _template_regex(template: str) -> re.Pattern[str]:

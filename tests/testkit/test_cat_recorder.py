@@ -253,3 +253,13 @@ def test_unlisted_tuning_write_stays_blocked() -> None:
 def test_only_rx_tuning_writes_can_be_allowed(name) -> None:
     with pytest.raises(ValueError):
         CatReadOnlyGuard.from_config(load_rig(_RIGS / "ftx1.toml"), [name])
+
+
+def test_filter_width_write_is_main_side_only_and_exact() -> None:
+    filt = _tuning_filter("set_filter_width")
+    assert filt.feed(b"SH0018;SH1018;SH018;SH0;") == [
+        (b"SH0018;", True),
+        (b"SH1018;", False),  # the SUB-side width is not allowed
+        (b"SH018;", False),  # code must be three digits
+        (b"SH0;", True),  # the read stays a read
+    ]
