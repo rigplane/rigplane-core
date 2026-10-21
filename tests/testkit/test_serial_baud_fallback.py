@@ -23,6 +23,7 @@ from rigplane.backends.ic7300 import Ic7300SerialRadio
 from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
 from rigplane.cli import _print_serial_identity_no_response
 from rigplane.core.radio_protocol import RadioIdentityStatus
+from rigplane.exceptions import CommandRejectedError
 from rigplane.exceptions import ConnectionError as RigplaneConnectionError
 
 from rigplane_testkit.serial import CivSerialFake
@@ -116,6 +117,28 @@ async def test_reconnect_after_a_radio_restart_goes_back_to_the_profile_baud() -
         assert fake.locked_baud == _PROFILE_BAUD and radio.serial_baud_notice is None
 
 
+async def test_late_reply_from_the_starting_baud_is_not_taken_for_a_new_baud() -> None:
+    fake = ic7300_usb_fake(answers_at_baud=_PROFILE_BAUD)
+    fake.delay_identity_answer(0.3)  # past the 0.2 s answer window
+    async with _connected(fake) as radio:
+        assert not radio.connected and radio.serial_baudrate == _PROFILE_BAUD
+
+
+async def test_a_refused_identity_read_is_not_silence() -> None:
+    fake = ic7300_usb_fake(answers_at_baud=_PROFILE_BAUD)
+    radio = _radio(fake)
+
+    async def nak(*_args: object, **_kwargs: object) -> None:
+        raise CommandRejectedError("NAK")
+
+    radio._execute_civ_raw = nak  # type: ignore[method-assign]
+    try:
+        await radio.connect()
+        assert fake.frame_bauds == () and radio.serial_baudrate == _PROFILE_BAUD
+    finally:
+        await radio.disconnect()
+
+
 async def test_answer_at_the_profile_baud_does_not_sweep() -> None:
     fake = ic7300_usb_fake(answers_at_baud=_PROFILE_BAUD)
     async with _connected(fake) as radio:
@@ -148,6 +171,18 @@ async def test_all_bauds_silent_names_the_cause_and_stays_bounded(
             assert fragment in (radio.last_error or "")
         _print_serial_identity_no_response(radio)
         assert "another program" in capsys.readouterr().out
+
+
+async def test_low_baud_override_keeps_the_scope_requirement_in_the_notice() -> None:
+    fake = ic7300_usb_fake(answers_at_baud=_RECORDED_BAUD)
+    radio = _radio(fake)
+    radio._allow_low_baud_scope = True
+    try:
+        await radio.connect()
+        assert "scope needs 115200" in (radio.serial_baud_notice or "")
+        assert "override" in (radio.serial_baud_notice or "")
+    finally:
+        await radio.disconnect()
 
 
 async def test_low_found_baud_warns_that_scope_needs_115200(

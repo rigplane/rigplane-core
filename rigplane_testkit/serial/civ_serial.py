@@ -369,7 +369,13 @@ class CivSerialFake:
             return
         delay = self._identity_delay_s if parsed.command == _CMD_TRANSCEIVER_ID else 0.0
         if delay > 0.0:
-            asyncio.get_running_loop().call_later(delay, connection.deliver, reply)
+            baud = connection.baud  # a reply sent at this rate is noise at another
+
+            def deliver_late() -> None:
+                if connection.baud == baud:
+                    connection.deliver(reply)
+
+            asyncio.get_running_loop().call_later(delay, deliver_late)
         else:
             connection.deliver(reply)
 
