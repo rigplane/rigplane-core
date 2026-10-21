@@ -1,0 +1,34 @@
+{
+ "be_u16_0x10_hist": {
+  "0x8006": 5104,
+  "0x8106": 5104
+ },
+ "burst_interval_median_s": 0.0201,
+ "burst_interval_p95_s": 0.0326,
+ "burst_shapes": {
+  "(1388, 580)": 4151,
+  "(1388, 580, 1388, 580)": 369,
+  "(1388,)": 68,
+  "(580, 1388, 580)": 54
+ },
+ "bursts_per_s": 45.91,
+ "format": "PCM 1 channel 16-bit, 48 kHz (960 samples = 20 ms per burst)",
+ "header_seq_0x06_step_hist": {
+  "1": 10207
+ },
+ "header_seq_0x12_step_hist": {
+  "256": 10168,
+  "257": 39
+ },
+ "note": "RX only, 100 s web session with the audio WebSocket open; no samples are kept",
+ "packet_lengths": {
+  "580": 5104,
+  "1388": 5104
+ },
+ "packets_per_s": 100.1,
+ "payload_bytes_per_burst": 1920,
+ "radio": "IC-705",
+ "rx_packets": 10208,
+ "transport": "lan",
+ "window_s": 101.98
+}

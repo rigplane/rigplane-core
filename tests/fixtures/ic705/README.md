@@ -1,10 +1,9 @@
-# IC-705 recorded fixtures (USB CI-V)
+# IC-705 recorded fixtures (USB CI-V and LAN)
 
 Data from the real bench IC-705, recorded receive-side only through the
 production `rigplane` client behind the serial bridge recorder
 (`rigplane_testkit.serial.recorder`). **Data, never edited by hand.** The LAN
-(Wi-Fi) half is not here yet: the radio was not on the network when this was
-captured (see "Open"). Linear: MOR-3609 (capture), MOR-3605 (personality).
+(Wi-Fi) half is added in the section "LAN over Wi-Fi". Linear: MOR-3609 (capture), MOR-3605 (personality).
 
 ## Provenance
 
@@ -65,9 +64,18 @@ What the radio showed, FM versus the HF (USB) probe:
 - Changes with the band: mode `04 05 01` / selected mode `26 00 05 00 01` (FM), AGC `16 12 01` (fast), tuning step `10 11`, `get_s_meter_sql_status` and `get_various_squelch` (the squelch status bit is 0 in FM), band edge (`02`) on 70 cm (2 m answered like HF).
 - After restoring 14.074 MHz USB, the probe again matched the first one except S-meter, clock and the AF level (the owner turned the knob between runs).
 
+## LAN over Wi-Fi (2026-10-21, ~14:10-14:16 UTC)
+
+The radio on the bench network over Wi-Fi (network control on), recorded through the redacting UDP proxy `python -m rigplane_testkit.icom record` (login, token, device name, computer name and IP are masked in the recording; the credentials were read from the secret store at run time and never written down), driven by the production client from the Mac mini. One login attempt per phase; RX only. Same three steps as USB: the probe (107 requests, `lan_probe`), a 100 s `rigplane web` session with the scope and audio sockets open (`lan_scope`, plus the control/audio files), and the probe again.
+
+- `civ_pairs.jsonl`: rows with `transport: "lan"`, windows `lan_probe` and `lan_scope` (first occurrence of each request, the radio's byte-identical **echo** of it, and the reply that closes it; five whole scope sweeps). The client wrote the same non-read requests as on USB (VFO A select, scope output switches, PTT off and CW cancel at shutdown); nothing else.
+- `probe_answers_lan.json`: answer class and latency per probe. The LAN answers equal the USB ones for 106 of 107 requests; the difference is `get_comp_meter` (`15 14`), which answers data (`15 14 00 00`) on LAN while the USB run recorded a client-side error. Latency: data replies median 11.4 ms over LAN (p95 33.5 ms), 3.3 ms over USB.
+- Scope: over LAN a sweep is ONE `27 00` frame (sequence 1 of 1, 497 bytes), 30.0 sweeps/s (interval median 0.033 s, p95 0.046 s, max 0.137 s); the web scope socket delivered 30.1 frames/s (`scope_cadence.json`, key `lan`). Over USB the same radio sends 11 segments per sweep at 4.13 sweeps/s.
+- `control_windows.jsonl`: the handshake window (control packets that are not pings or idle), no payload bytes. `lan_session_cadence.json`: ping, token-renew and retransmit statistics of the 100 s session (a session with scope and audio running, not an idle window); the one token renewal was answered after 0.01 s, no retransmit requests.
+- RX audio on the radio's audio port (`audio_stream.json`, `audio_headers.jsonl`, `audio_rx_headers.jsonl`): each 20 ms burst is two packets of 1388 and 580 bytes (0x18-byte header + 1364 and 556 payload bytes = 1920 bytes = 960 samples of PCM 1 channel 16-bit at 48 kHz), 50 bursts/s; sequences at 0x06 and 0x12 step 1; the BE u16 at 0x10 is 0x8106 on the first packet of a burst and 0x8006 on the second. No samples are kept. The audio WebSocket of the server delivered Opus 48 kHz mono 20 ms frames (the server's transcode), not this native format.
+
 ## Open (needs the owner or later)
 
-- **LAN / Wi-Fi capture**: `rigplane discover` found no IC-705 on the network. Needs the radio's Wi-Fi/Network Control switched on with a network user; then control/CI-V/audio phases, login, keep-alive cadence and RX audio layout are captured the same way.
 - **Configured repeater channel**: offset, tone and DCS values are only recorded at factory defaults; a memory channel with duplex, offset and CTCSS/DCS would give real values.
-- **USB audio samples**: the capture host denies microphone access to processes started over ssh (a webcam microphone reads exact zero too), so no RX audio over USB was recorded; the `usb_audio.json` zero probe says nothing about the radio. Needs the microphone permission granted on the host, or the LAN audio path.
+- **USB audio samples**: none in this directory. Over ssh the host returned digital silence (macOS microphone permission), so `usb_audio.json` only records the device format; real USB audio of this radio was recorded later through a Terminal-launched job, kept private (callsigns on the air) and referenced by SHA-256, not stored here.
 - Firmware version.

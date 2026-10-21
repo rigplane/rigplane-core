@@ -42,16 +42,28 @@ def _rows() -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line]
 
 
-def test_civ_pairs_are_wellformed_usb_frames() -> None:
+def test_civ_pairs_are_wellformed_frames() -> None:
     rows = _rows()
-    assert {r["window"] for r in rows} == {"probe", "readonly_session", "scope"}
+    windows = {
+        "usb": {"probe", "readonly_session", "scope"},
+        "lan": {"lan_probe", "lan_scope"},
+    }
+    assert {(r["transport"], r["window"]) for r in rows} == {
+        (t, w) for t, ws in windows.items() for w in ws
+    }
+    requests: set[tuple[str, str]] = set()
     for row in rows:
-        assert row["transport"] == "usb"
         assert row["dir"] in ("c2r", "r2c")
         frame = bytes.fromhex(row["frame"])
         assert frame[:2] == b"\xfe\xfe" and frame[-1:] == b"\xfd"
-        to, src = (RADIO, CONTROLLER) if row["dir"] == "c2r" else (CONTROLLER, RADIO)
-        assert (frame[2], frame[3]) == (to, src)
+        key = (row["window"], row["frame"])
+        if row["dir"] == "c2r":
+            assert (frame[2], frame[3]) == (RADIO, CONTROLLER)
+            requests.add(key)
+        elif row["transport"] == "lan" and key in requests:
+            assert (frame[2], frame[3]) == (RADIO, CONTROLLER)  # echo of a request
+        else:
+            assert (frame[2], frame[3]) == (CONTROLLER, RADIO)
 
 
 def test_no_recorded_request_transmits_or_writes() -> None:
@@ -120,3 +132,36 @@ def test_vhf_uhf_rows_are_wellformed_reads_only() -> None:
         assert (frame[2], frame[3]) == (to, src)
         if row["dir"] == "c2r":
             assert frame[4:-1] in probe_gets, frame.hex()  # exact GET, no setter
+
+
+def test_lan_scope_window_has_five_whole_sweeps() -> None:
+    frames = [
+        bytes.fromhex(r["frame"])
+        for r in _rows()
+        if r["window"] == "lan_scope" and r["dir"] == "r2c"
+    ]
+    assert (
+        len([f for f in frames if f[4:6] == b"\x27\x00"]) == 5
+    )  # one frame per LAN sweep
+
+
+def test_lan_files_are_consistent() -> None:
+    data = json.loads((FIXTURES / "probe_answers_lan.json").read_text())
+    classes: dict[str, int] = {}
+    for item in data["answers"]:
+        classes[item["class"]] = classes.get(item["class"], 0) + 1
+    assert classes == {k: v for k, v in data["summary"].items() if v}
+    audio = json.loads((FIXTURES / "audio_stream.json").read_text())
+    assert audio["packet_lengths"] == {"1388": 5104, "580": 5104}
+    assert audio["payload_bytes_per_burst"] == 1920  # 960 mono s16 samples = 20 ms
+    cadence = json.loads((FIXTURES / "scope_cadence.json").read_text())
+    assert 25 < cadence["lan"]["web_scope_ws"]["fps"] < 35
+    control = [
+        json.loads(line)
+        for line in (FIXTURES / "control_windows.jsonl").read_text().splitlines()
+    ]
+    assert {r["window"] for r in control} == {"handshake"}
+    assert all(
+        set(r) == {"dir", "len", "reqtype", "t", "transport", "type", "window"}
+        for r in control
+    )
