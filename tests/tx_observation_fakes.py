@@ -169,6 +169,10 @@ class ScriptedCivLink:
     def set_device(self, device: str) -> None:
         """Reconnection seam the serial base class calls."""
 
+    def set_baudrate(self, baudrate: int) -> bool:
+        """Baud-sweep seam (MOR-3620): no pyserial object here, so no retune."""
+        return False
+
     async def connect(self) -> None:
         self.connected = self.ready = self.healthy = True
 

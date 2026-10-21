@@ -4409,20 +4409,25 @@ def _print_serial_identity_no_response(radio: Radio) -> None:
 
     The connect already returned by the time web/station starts, so a radio
     that never answered the identity read is reported once, plainly, with
-    the port, the profile model and the baud; the background re-read is the
-    "Waiting for it to answer." part.
+    the port, the profile model, the bauds tried and the likely causes
+    (the radio's own ``last_error``, MOR-3620); the background re-read is
+    the "Waiting for it to answer." part.
     """
     if serial_identity_hold(radio) is not RadioIdentityStatus.NO_RESPONSE:
         return
-    device = getattr(radio, "_serial_device", None) or "the configured port"
-    model = getattr(radio, "model", None) or "this"
-    baud = getattr(radio, "_serial_baudrate", None)
-    baud_text = f", {baud} baud" if isinstance(baud, int) else ""
-    print(
-        f"No answer from the radio on {device} ({model} profile{baud_text}): "
-        "another radio may be on this port, or it is switched off. "
-        "Waiting for it to answer."
-    )
+    reason = getattr(radio, "last_error", None)
+    if not isinstance(reason, str) or not reason:
+        device = getattr(radio, "_serial_device", None) or "the configured port"
+        model = getattr(radio, "model", None) or "this"
+        reason = f"No answer from the radio on {device} ({model} profile)."
+    print(f"{reason} Waiting for it to answer.")
+
+
+def _print_serial_baud_notice(radio: Radio) -> None:
+    """One plain line when a serial radio answered at another baud (MOR-3620)."""
+    notice = getattr(radio, "serial_baud_notice", None)
+    if isinstance(notice, str) and notice:
+        print(notice)
 
 
 def _serial_identity_holds(radio: Radio) -> bool:
@@ -4567,6 +4572,7 @@ async def _cmd_web(
     config_kwargs["await_initial_state"] = True
     config = WebConfig(**config_kwargs)
     _print_serial_identity_no_response(radio)
+    _print_serial_baud_notice(radio)
     server = WebServer(radio, config)
     if managed_tx_composition is not None:
         from rigplane.web.web_startup import (

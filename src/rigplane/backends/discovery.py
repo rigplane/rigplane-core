@@ -163,6 +163,11 @@ class CivProbeDiagnostic:
     open_failure_codes: tuple[_ProbeCode, ...] = ()
 
 
+# Documented CI-V baud rates, in the order a port is swept (MOR-3620: also the
+# retry order of a serial connect that gets silence at the configured baud).
+SERIAL_PROBE_BAUD_RATES: tuple[int, ...] = (19200, 9600, 115200, 4800)
+
+
 async def probe_serial_civ(
     port: str,
     baud_rates: list[int] | None = None,
@@ -179,7 +184,7 @@ async def probe_serial_civ(
     Args:
         port: Serial device path (e.g. ``/dev/ttyUSB0``).
         baud_rates: Baud rates to try, in order. Defaults to
-            ``[19200, 9600, 115200, 4800]``.
+            :data:`SERIAL_PROBE_BAUD_RATES`.
         timeout: Per-baud timeout in seconds.
         _open_serial: Overrides the open step of :func:`rigplane.core.serial_open.open_serial_port`;
             post-open control-line deassert still applies (used in tests).
@@ -189,7 +194,7 @@ async def probe_serial_civ(
         :class:`CivProbeResult` on success, or ``None`` if no radio responded.
     """
     if baud_rates is None:
-        baud_rates = [19200, 9600, 115200, 4800]
+        baud_rates = list(SERIAL_PROBE_BAUD_RATES)
 
     if diagnostics is not None:
         diagnostics.status = "not_attempted"

@@ -41,6 +41,7 @@ This guide shows how to control the IC-7300 via **USB serial CI-V + USB audio de
     - `115200` baud is recommended for scope/waterfall capability
     - Lower baud rates (19200, 9600) work for basic control (freq, mode, PTT) but scope/waterfall is disabled by a guardrail due to high packet rate
     - CI-V baud rate IS significant on IC-7300 — it must match between radio and library
+    - With `Auto`, the radio keeps the baud rate of the first program that talks to it until it is restarted. If the first connect gets no answer, rigplane tries 19200, 9600 and 4800 once and connects at the one that answers (it says so, and warns that the scope needs 115200). To get back to 115200, restart the radio, or set `115200` on the radio
 
 !!! info "IC-7300 Single Receiver"
     The IC-7300 has a single receiver (unlike IC-7610's dual receiver or IC-9700's dual). The library automatically enforces this via the IC-7300 profile — operations on `receiver=1` will fail with `CommandError`.
