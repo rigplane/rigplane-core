@@ -2,7 +2,7 @@
 
 Goal: a PR needs one or two Codex review rounds, not four to ten. Before the
 Code Review Rules in `AGENTS.md` existed, Codex's GitHub reviews posted a median
-of two findings per pass, and every fix is new code that gets new findings, so
+of one finding per pass (mean 1.6, at most 6), and every fix is new code that gets new findings, so
 the cheap way to save rounds is to find the defects before the first push.
 Walk this list against your own diff, then run the local pre-review, then push.
 
@@ -128,9 +128,11 @@ valid answer; skipping the question is not.
    keeps its working files (prompt, diff, round reports, rebuttals) outside the
    checkout, in a private directory of the coordinator's lane scripts, and
    deletes them when it prints CLEAN; nothing is written into the repository.
-   If round four still reports findings, do not push: the change is usually
-   too big or has a design flaw, so report what is left to the coordinator,
-   who decides whether another round is allowed.
+   Keep going while each round brings new evidence and your fixes stay inside
+   your scope. If a round repeats a class you already fixed, the diff keeps
+   growing, or the fix needs a decision outside your scope, stop and report what
+   is left to the coordinator (the change is usually too big or has a design
+   flaw). Never push before CLEAN.
 3. Push only when the local pre-review has printed `PRE-REVIEW: CLEAN`, and push
    once. Never push a fix per finding or an intermediate state: each push can
    start a new GitHub review. After a GitHub review round, push all fixes of
