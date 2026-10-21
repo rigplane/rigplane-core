@@ -19,12 +19,16 @@ Walk this list against your own diff, then run the local pre-review, then push.
 
 - Target: additions plus deletions at most 500, and at most 6 files. Above that,
   split before you push; do not ask for review of a 1,500-line PR. The only
-  exceptions are listed in this section (generated baselines, fixtures, pure
-  moves).
+  exceptions are listed in this section: generated baselines, fixtures, pure
+  file moves, and an indivisible change (one cohesive fix and its test with no
+  independently mergeable seam). Say which exception applies in the PR body.
 - Split along seams that can merge alone: schema/data model with its tests, then
-  the runtime that uses it, then docs and CI wiring. A stacked PR is fine.
-- A fix and its test stay in one PR. Generated baselines, fixtures and pure file
-  moves may exceed the target; say so in the PR body.
+  the runtime that uses it, then docs and CI wiring.
+- Stacked PRs: CI workflows run only for PRs based on `main`, so a child PR that
+  targets its predecessor's branch is not verified. Retarget it to `main` after
+  the predecessor merges, then push or close and reopen it so the checks start;
+  do not treat it as a verified candidate before that.
+- A fix and its test stay in one PR.
 - This is a review-efficiency target below the limits in `CLAUDE.md` (soft
   threshold 6 files and 600 changed lines, hard ceiling 10 files and 1,000
   lines); it does not replace them. The exceptions above change the target
@@ -116,7 +120,8 @@ valid answer; skipping the question is not.
    checkout, in a private directory of the coordinator's lane scripts, and
    deletes them when it prints CLEAN; nothing is written into the repository.
    If round four still reports findings, do not push: the change is usually
-   too big or has a design flaw, so report what is left to the coordinator.
+   too big or has a design flaw, so report what is left to the coordinator, who decides whether another
+   round is allowed.
 3. Push once per round. Never push a fix per finding: each push can start a new
    GitHub review.
 
