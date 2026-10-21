@@ -157,3 +157,33 @@ async def test_main_probes_the_whole_profile_and_reports_an_unchanged_snapshot(
     assert report["changed"] == {}
     assert len(report["results"]) == len(probe_list.build_probe_list(load_rig(PROFILE)))
     assert rec.blocked_lines == 0
+
+
+async def test_main_exits_2_when_a_snapshot_read_is_garbled(tmp_path) -> None:
+    import argparse
+
+    radio = FakeCatRadio()
+    await radio.start()
+    radio.garble_next_reply("IF")  # the first snapshot read
+    rec = SerialCivRecorder(
+        radio.device_url,
+        tmp_path / "bridge.jsonl",
+        baudrate=38400,
+        client_filter=CatReadOnlyGuard.from_config(load_rig(PROFILE)).new_filter,
+    )
+    await rec.start()
+    args = argparse.Namespace(
+        device=f"socket://127.0.0.1:{rec.listen_port}",
+        profile=str(PROFILE),
+        baud=38400,
+        pace=0.0,
+        timeout=0.3,
+        out=str(tmp_path / "results.json"),
+    )
+    try:
+        code = await probe.main_async(args)
+    finally:
+        await rec.stop()
+        await radio.stop()
+    assert code == probe.EXIT_ABORT
+    assert not (tmp_path / "results.json").exists()

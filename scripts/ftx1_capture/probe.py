@@ -113,13 +113,13 @@ async def main_async(args: argparse.Namespace) -> int:
     probes = build_probe_list(config)
     reader, writer = await open_serial_port(args.device, baudrate=args.baud)
     try:
-        before = await snapshot(reader, writer, args.timeout)
         try:
+            before = await snapshot(reader, writer, args.timeout)
             results = await run_probes(reader, writer, probes, args.pace, args.timeout)
+            after = await snapshot(reader, writer, args.timeout)
         except Abort as error:
             print(f"ABORT: {error}", file=sys.stderr)
             return EXIT_ABORT
-        after = await snapshot(reader, writer, args.timeout)
     finally:
         writer.close()
     counts = {
