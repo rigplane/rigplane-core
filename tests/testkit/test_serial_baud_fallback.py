@@ -139,6 +139,26 @@ async def test_a_refused_identity_read_is_not_silence() -> None:
         await radio.disconnect()
 
 
+async def test_a_refusal_at_a_trial_baud_ends_the_sweep_there() -> None:
+    fake = ic7300_usb_fake(answers_at_baud=_NO_BAUD)
+    radio = _radio(fake)
+    execute = radio._execute_civ_raw
+
+    async def nak_at_19200(*args: Any, **kwargs: Any) -> Any:
+        if radio.serial_baudrate == _SWEEP[0]:
+            raise CommandRejectedError("NAK")
+        return await execute(*args, **kwargs)
+
+    radio._execute_civ_raw = nak_at_19200  # type: ignore[method-assign]
+    try:
+        await radio.connect()
+        assert not radio.connected
+        assert fake.frame_bauds == (_PROFILE_BAUD,)  # heard at 19200: no more trials
+        assert radio.serial_baudrate == _SWEEP[0]  # the hold keeps asking there
+    finally:
+        await radio.disconnect()
+
+
 async def test_answer_at_the_profile_baud_does_not_sweep() -> None:
     fake = ic7300_usb_fake(answers_at_baud=_PROFILE_BAUD)
     async with _connected(fake) as radio:
