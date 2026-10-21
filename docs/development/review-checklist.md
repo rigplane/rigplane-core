@@ -14,6 +14,15 @@ Walk this list against your own diff, then run the local pre-review, then push.
 - The classes in section 2 are clusters of the 188 top-level Codex findings on
   five repositories since 2026-10-07 (infra-control included); most recur on
   several PRs.
+- Method: Codex findings come from `gh api --paginate
+  repos/<owner>/<repo>/pulls/<n>/comments`, keeping comments by
+  `chatgpt-codex-connector[bot]` with no `in_reply_to_id`; a finding round is one
+  head (`commit_id`) with at least one such comment. The PR set is the merged
+  PRs listed by `gh pr list --state merged --search "merged:>=2026-10-20"`
+  (changed lines = additions plus deletions from `--json additions,deletions`),
+  filtered to merges after the Codex app was installed on the organization
+  (2026-10-20 16:36 UTC). The findings corpus used `--search "updated:>=2026-10-07"`
+  on each repository. The per-PR table is in Linear MOR-3621.
 
 ## 1. Size: at most 500 changed lines per PR
 
@@ -93,8 +102,9 @@ valid answer; skipping the question is not.
     restart with persisted state, after a secret rotates, when upgrading from
     the previous deployment, when a limit is lowered, when the task runs twice?
     Is the rerun idempotent, and does a retry keep what it must?
-11. **Tests can fail.** Each fix has a test that fails on the old code; name the
-    mutation that turns it red. Test the failure path, not only the happy path.
+11. **Tests can fail.** Each behavior fix has a test that fails on the old code;
+    name the mutation that turns it red. (A documentation-only correction needs no
+    test.) Test the failure path, not only the happy path.
 12. **Process.** Change class and Linear id in the PR body (freeze rules), no
     personal data (user names, host names, addresses, keys) in code, fixtures or
     text, nothing private in a public repository, no secret exposed to fork PRs.
