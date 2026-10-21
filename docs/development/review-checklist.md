@@ -23,11 +23,8 @@ Walk this list against your own diff, then run the local pre-review, then push.
   file moves, and an indivisible change (one cohesive fix and its test with no
   independently mergeable seam). Say which exception applies in the PR body.
 - Split along seams that can merge alone: schema/data model with its tests, then
-  the runtime that uses it, then docs and CI wiring.
-- Stacked PRs: CI workflows run only for PRs based on `main`, so a child PR that
-  targets its predecessor's branch is not verified. Retarget it to `main` after
-  the predecessor merges, then push or close and reopen it so the checks start;
-  do not treat it as a verified candidate before that.
+  the runtime that uses it, then docs and CI wiring. Each piece must be
+  mergeable and verifiable on its own.
 - A fix and its test stay in one PR.
 - This is a review-efficiency target below the limits in `CLAUDE.md` (soft
   threshold 6 files and 600 changed lines, hard ceiling 10 files and 1,000
