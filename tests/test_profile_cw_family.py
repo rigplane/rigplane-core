@@ -2,9 +2,10 @@
 ``[modes] families.cw``, so no client keeps its own list of CW mode names
 (MOR-3678: Pro's {CW, CWR, CW-R} missed the FTX-1's CW-U/CW-L).
 
-Reads the profile TOML directly: the guard covers the data in ``rigs/``
-whatever loader version validates it. Vendor expectations are literals,
-never read back from the profile under test.
+The guard reads the profile TOML directly, so it sees every CW* name as
+written; the vendor checks go through the loader and the runtime profile.
+Vendor expectations are literals, never read back from the profile under
+test.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ import tomllib
 from pathlib import Path
 
 import pytest
+
+from rigplane.rig_loader import load_rig
 
 _RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 _PROFILES = sorted(
@@ -58,12 +61,9 @@ def test_profile_with_cw_mode_declares_cw_family(path: Path) -> None:
 def test_vendor_cw_family_exact(
     vendor: str, profile_file: str, cw: list[str], not_cw: list[str]
 ) -> None:
-    modes = _modes(_RIGS_DIR / profile_file)
-    families = modes["families"]
-    assert isinstance(families, dict)
-    assert families["cw"] == cw, vendor
-    mode_list = modes["list"]
-    assert isinstance(mode_list, list)
+    rig = load_rig(_RIGS_DIR / profile_file)
+    cw_family = rig.to_profile().mode_families["cw"]
+    assert cw_family == tuple(cw), vendor
     for mode in not_cw:
-        assert mode in mode_list
-        assert mode not in families["cw"]
+        assert mode in rig.modes
+        assert mode not in cw_family
