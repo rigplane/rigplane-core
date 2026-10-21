@@ -61,7 +61,8 @@ The complete matrix of `rigplane` imports under `rigplane_testkit/sim/`
 
 | `sim/` area | `rigplane.profiles` (resolve a capability profile) | `rigplane.commands` (`parse_civ_frame`, `build_civ_frame`, `CONTROLLER_ADDR`) and `rigplane.core.types.CivFrame` |
 | --- | --- | --- |
-| `profiles/` (loader) and `serve.py` | yes | |
+| `profiles/` (loader) | yes | |
+| `serve.py` (gets resolved data from the loader) | | |
 | `engine/` | | |
 | `model/icom_civ.py`, `adapters/icom_*.py` | | yes |
 | `model/yaesu_cat.py`, `adapters/yaesu_cat.py`, `audio/`, `scenario/` | | |
@@ -91,7 +92,8 @@ radio agents should code to, names may get one rename pass in that PR.
 class ReceiverState:          # one per receiver (profile receiver_count)
     frequency_hz: int; mode: str; filter: int; data_mode: bool
     # named fields; names and allowed values come from the capability profile:
-    levels: dict[str, int]      # ranged integers: "af", "rf", "squelch", "nr_level", ...
+    levels: dict[str, int]      # ranged integers keyed by the capability profile's control names:
+                                # "af_level", "rf_gain", "squelch", "nr_level", ... (no aliases)
     switches: dict[str, bool]   # two-state controls: "nb", "nr", "apf", ...
     selectors: dict[str, int]   # multi-valued controls with an allowed-value set:
                                 # "preamp" (0/1/2), "agc" (1/2/3), "att" (steps), ...
@@ -189,11 +191,12 @@ gaps      = ["no write command recorded", "scope waves not recorded"]   # shown 
 [transport.serial]               # or [transport.lan] / [transport.yaesu_cat]
 baud      = 19200                # as recorded, not as the capability profile's default
 echo      = false
-# identity = "a4"               # ONLY for a radio whose capability profile has no
-                                 # [identity].expected_ids (for example the IC-705, recorded
-                                 # 19 00 -> A4); when the profile declares ids, omit it or
-                                 # give one of them. Never invented: a radio with no
-                                 # documented id stays unsupported until one is.
+# identity = "a4"               # Rule (one): if the capability profile declares
+                                 # [identity].expected_ids, `identity` is optional and, when
+                                 # present, must be one of them; if it declares none (the IC-705,
+                                 # recorded 19 00 -> A4), `identity` is required and must come
+                                 # from a recording or documentation, never be invented. A radio
+                                 # with no documented id has no simulation profile until one is.
 
 [initial]                        # starting state, all optional
 frequency_hz = 14263000
