@@ -45,6 +45,7 @@ CASES = (
     "scope: 'FTX-1' capability profile declares no scope|!schema = 'rigplane-sim-profile/1'\n[sim]\nid = 'x'\nradio = 'FTX-1'\nfidelity = 'C'\ngaps = ['g']\n[transport.yaesu_cat]\nbaud = 9600\n[scope]\nbins = 100",
     "answers.recorded[0].file: 'rec.jsonl' missing under root|[transport.serial]\nbaud = 19200\n[answers]\nrecorded = [{ file = 'rec.jsonl', transport = 'lan' }]",
     "answers.recorded[0].transport: required non-empty string, got None|[transport.serial]\nbaud = 19200\n[answers]\nrecorded = [{ file = 'e.jsonl' }]",
+    "audio.rx.transport: lan_stream needs a LAN radio, 'IC-7300' has none|[transport.serial]\nbaud = 19200\n[audio.rx]\ntransport = 'lan_stream'",
 )
 
 

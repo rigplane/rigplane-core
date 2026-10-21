@@ -297,6 +297,10 @@ def load_sim_profile(path: Path, *, root: Path) -> SimProfile:
     atp = _scalar(rx, "transport", "audio.rx", str)
     if atp not in (None, "lan_stream", "usb_device"):
         _fail(f"audio.rx.transport: must be lan_stream or usb_device, got {atp!r}")
+    if atp == "lan_stream" and not radio.has_lan:
+        _fail(
+            f"audio.rx.transport: lan_stream needs a LAN radio, {radio.model!r} has none"
+        )
     channels = rx.get("channels")
     if channels is not None and (not _is_num(channels, True) or channels not in (1, 2)):
         _fail(f"audio.rx.channels: must be 1 or 2, got {channels!r}")
