@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from rigplane_testkit.icom.replay import RecordedAnswerTable
 from rigplane_testkit.redaction_gate import scan
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "ic705"
@@ -165,3 +166,25 @@ def test_lan_files_are_consistent() -> None:
         set(r) == {"dir", "len", "reqtype", "t", "transport", "type", "window"}
         for r in control
     )
+
+
+def test_lan_rows_replay_to_the_recorded_probe_answers() -> None:
+    """The LAN rows are request/echo/reply groups: the answer table built
+    from them reproduces every recorded probe answer class and reply."""
+    table = RecordedAnswerTable.from_civ_pairs(_rows(), "lan")
+    answers = json.loads((FIXTURES / "probe_answers_lan.json").read_text())["answers"]
+    for item in answers:
+        reply = table.answer(bytes.fromhex(item["frame"]))
+        if item["class"] == "data":
+            assert reply is not None and reply.hex() == item["reply"], item["name"]
+        elif item["class"] == "nak":
+            assert reply is not None and reply[4:-1] == b"\xfa", item["name"]
+        else:
+            assert reply is None, item["name"]
+
+
+def test_audio_stream_baseline_matches_the_burst_markers() -> None:
+    audio = json.loads((FIXTURES / "audio_stream.json").read_text())
+    assert audio["bursts"] == audio["rx_packets"] // 2 == 5104
+    assert abs(audio["bursts_per_s"] - audio["bursts"] / audio["window_s"]) < 0.05
+    assert audio["header_seq_0x12_step_hist"] == {"1": 10207}
