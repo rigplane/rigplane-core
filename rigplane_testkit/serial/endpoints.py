@@ -65,7 +65,9 @@ class TcpEndpoint:
         """The pyserial ``socket://`` URL (``start()`` must have run)."""
         if self._server is None:
             raise RuntimeError("TcpEndpoint.start() must have run")
-        return f"socket://{self._host}:{self.port}"
+        # Bracket an IPv6 literal, or the colons read as port delimiters.
+        host = f"[{self._host}]" if ":" in self._host else self._host
+        return f"socket://{host}:{self.port}"
 
     async def stop(self) -> None:
         """Close every client and the listener (idempotent)."""

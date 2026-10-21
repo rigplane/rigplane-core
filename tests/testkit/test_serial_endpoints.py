@@ -95,6 +95,17 @@ async def test_tcp_echo_identity_and_frequency_over_raw_sockets() -> None:
     await endpoint.stop()
 
 
+async def test_tcp_device_url_brackets_ipv6_literal() -> None:
+    # An IPv6 bind must advertise the bracketed authority, or the URL's
+    # colons read as port delimiters and no open can parse it.
+    endpoint = TcpEndpoint(CivSerialFake(), host="::1")
+    await endpoint.start()
+    try:
+        assert endpoint.device_url == f"socket://[::1]:{endpoint.port}"
+    finally:
+        await endpoint.stop()
+
+
 async def test_production_open_and_link_identity_through_socket_url() -> None:
     fake = CivSerialFake()
     endpoint = TcpEndpoint(fake)

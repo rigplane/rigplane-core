@@ -74,6 +74,11 @@ Linux, a pseudo-terminal slave path a serial app opens like a device
 node. The PTY endpoint is macOS/Linux only: on Windows there is no PTY
 serial simulation — `pty` is `null` there and the TCP endpoint keeps
 serving; use `socket://` and test whether the target app accepts it.
+During a `usb_vanish` window the fake's connection drops but the PTY
+node itself stays: an app can still open the slave path, and bytes
+written inside the window are dropped (the fake's connection is reopened
+by the first bytes after the reappear). Open-failure semantics — live
+connections drop and new opens fail — are the TCP endpoint's.
 
 Startup line (same envelope; instead of `host`/`control_port`/`username`
 it carries `device`, the `socket://` URL, and `pty`, the slave path or
@@ -93,7 +98,7 @@ it carries `device`, the `socket://` URL, and `pty`, the slave path or
 | Event | Arguments | Effect |
 | --- | --- | --- |
 | `set_frequency` | `hz` (int, 1..9999999999) | Sets the fake's frequency. |
-| `usb_vanish` | optional `for_s` (finite number > 0) | The device disappears: live connections drop, new opens fail until it reappears. With `for_s` the reappear is scheduled that far out (cancelled on shutdown) and traced as a `usb_reappear` record when it fires. |
+| `usb_vanish` | optional `for_s` (finite number > 0) | The device disappears: live connections drop, and through `device` (TCP) new opens fail until it reappears. With `for_s` the reappear is scheduled that far out (cancelled on shutdown) and traced as a `usb_reappear` record when it fires. |
 | `usb_reappear` | none | The device opens again immediately. |
 | `silence` | `for_s` (finite number > 0) | The port stays open and nothing answers for the window. |
 
