@@ -345,7 +345,9 @@ class _IcomSerialRadioBase(CoreRadio):
 
     @property
     def serial_baudrate(self) -> int:
-        """The baud the link runs at: the configured one, or the one that answered."""
+        """The baud currently selected for the link: the configured one,
+        or the one kept by the connect-time sweep.
+        """
         return self._serial_baudrate
 
     @property
@@ -1067,7 +1069,8 @@ class _IcomSerialRadioBase(CoreRadio):
         link (the port is retuned in place, never reopened), reads only
         ``19 00`` and stops at the first answer, keeping that baud. Without
         an answer — also on cancellation or an error — the starting baud is
-        put back, unless the attempt was retired meanwhile (its link then
+        put back unless the port refuses the return (then it stays where it
+        is and warns), unless the attempt was retired meanwhile (its link then
         belongs to the successor). Returns the answered payload, or ``None``.
         """
         from .discovery import SERIAL_PROBE_BAUD_RATES

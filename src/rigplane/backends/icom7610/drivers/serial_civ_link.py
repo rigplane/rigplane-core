@@ -267,8 +267,10 @@ class SerialCivLink:
         or the port refuses the rate (a refusal
         is rolled back; if even that fails the link is marked unhealthy so
         the watchdog reopens it at the old rate). On success the rate is also
-        what a later reopen uses, and input received at the old rate is
-        dropped.
+        what a later reopen uses. Queued frames, codec state and the OS input
+        buffer are dropped, and a read that already returned old-rate bytes
+        is discarded; bytes already sitting in the asyncio reader buffer are
+        not fenced (MOR-3657).
         """
         if baudrate <= 0:
             raise ValueError("baudrate must be > 0")
@@ -296,7 +298,7 @@ class SerialCivLink:
             return False
         self._baudrate = baudrate
         self._receive_generation += 1
-        # Restart an empty pending read before it consumes the new baud's reply.
+        # Restart the in-flight pending read before it consumes the new baud's reply.
         if self._read_task is not None:
             self._read_task.cancel()
         with contextlib.suppress(Exception):
