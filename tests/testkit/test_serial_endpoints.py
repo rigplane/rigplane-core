@@ -185,7 +185,7 @@ async def test_tcp_stop_admits_no_handler_queued_before_shutdown() -> None:
     endpoint = TcpEndpoint(CivSerialFake())
     await endpoint.start()
     reader, _writer = await asyncio.open_connection("127.0.0.1", endpoint.port)
-    await endpoint.stop()
+    await asyncio.wait_for(endpoint.stop(), 5.0)
     assert await asyncio.wait_for(reader.read(), 3.0) == b""  # EOF, no hang
     # stop() may return before the accepted handler has run its first
     # step, so it can finish one loop iteration after the EOF; wait for
