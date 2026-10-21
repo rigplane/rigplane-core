@@ -3,9 +3,8 @@
 In-process, real UDP on loopback, reusing the client harness of
 ``tests/testkit/test_simulator_audio.py``. With a source set, the RX
 payload is the FILE's bytes; with ``rx_source=None`` it stays on the
-recorded byte ramp (regression pin). Red mutations: point
-``_audio_rx_packet`` back at the ramp while a source is set, or fetch
-the burst per packet instead of once per burst.
+recorded byte ramp (regression pin). Red mutation: point
+``_audio_rx_packet`` back at the ramp while a source is set.
 """
 
 from __future__ import annotations
@@ -61,8 +60,8 @@ async def test_rx_stream_carries_the_wav_payload(tmp_path: Path) -> None:
             assert struct.unpack_from(">H", first, 0x10)[0] == _RX_IDENT_FIRST_FRAGMENT
             payload = b"".join(p[AUDIO_HEADER_SIZE:] for _, p in burst)
             assert len(payload) == RX_BURST_BYTES
-            # The capture may start mid-file: the burst index follows from
-            # the audio-level sequence at 0x12 (3 packets per burst, from 0).
+            # Mid-file capture start: the burst index follows from the
+            # audio-level seq at 0x12 (3 packets per burst, from 0).
             index = struct.unpack_from(">H", first, 0x12)[0] // 3
             assert (
                 payload == raw[index * RX_BURST_BYTES : (index + 1) * RX_BURST_BYTES]

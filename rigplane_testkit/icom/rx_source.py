@@ -150,10 +150,9 @@ class WavSource:
             return chunk
         if not self._loop:
             return chunk.ljust(RX_BURST_BYTES, b"\x00")
-        # Loop wrap mid-burst: repeat the file from its head until the
-        # burst is exactly full (a file shorter than one burst wraps
-        # several times within one burst).
-        self._pos = (RX_BURST_BYTES - len(chunk)) // 4
+        # Loop wrap mid-burst: repeat the head until the burst is exactly
+        # full, resuming at the wrapped offset (modulo the file length).
+        self._pos = ((RX_BURST_BYTES - len(chunk)) // 4) % self._frames
         out = bytearray(chunk)
         while len(out) < RX_BURST_BYTES:
             out += self._pcm[: RX_BURST_BYTES - len(out)]

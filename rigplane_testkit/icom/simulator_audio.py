@@ -453,8 +453,7 @@ class AudioPortMixin:
         step 1 per packet (wrap at 0xFFFF). The payload is the byte ramp
         seeded by the inner sequence, unless an RX source is set: position
         0 pulls the next 20 ms and the burst is sliced by the recorded
-        payload split. Building never counts: the caller counts only
-        packets the funnel actually sent.
+        payload split.
         """
         import rigplane_testkit.icom.simulator as _sim
 

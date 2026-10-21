@@ -2,7 +2,7 @@
 
 WAVs are generated into ``tmp_path`` (nothing committed). Red mutation:
 skip the 48 kHz stereo conversion in ``_load``, or ignore the slot wait
-/ loop wrap in ``read_burst`` — everything below goes red.
+/ loop wrap in ``read_burst`` — all expectations go red.
 """
 
 from __future__ import annotations
@@ -75,12 +75,17 @@ def test_loop_wraps_to_the_first_burst(tmp_path: Path) -> None:
     first = src.read_burst()
     assert first == raw
     assert src.read_burst() == first  # wrapped to the file start
-    # A file SHORTER than one burst still fills it exactly.
-    short = raw[: RX_BURST_BYTES // 2]  # 480 frames
+    short = raw[: RX_BURST_BYTES // 2]  # shorter than one burst: 480 frames
     _write_wav(tmp_path / "short.wav", rate=48000, channels=2, samples=short)
     tiny = WavSource(tmp_path / "short.wav", loop=True)
     assert tiny.read_burst() == short + short
     assert len(tiny.read_burst()) == RX_BURST_BYTES
+    # Sub-burst loop keeps the wrapped offset: 300 frames resume at 60.
+    sub = raw[: 300 * 4]
+    _write_wav(tmp_path / "sub.wav", rate=48000, channels=2, samples=sub)
+    wrapped = WavSource(tmp_path / "sub.wav", loop=True)
+    assert len(wrapped.read_burst()) == RX_BURST_BYTES
+    assert wrapped.read_burst() == sub[240:] + sub[:2880]
 
 
 def test_slot_start_waits_for_the_boundary(tmp_path: Path) -> None:
@@ -90,8 +95,7 @@ def test_slot_start_waits_for_the_boundary(tmp_path: Path) -> None:
     silence = bytes(RX_BURST_BYTES)
     # The mixer emits burst k at reset + 20 ms * k, so the burst exactly
     # AT the boundary (k = 600) carries the file's first sample.
-    served = [src.read_burst() for _ in range(599)]
-    assert served == [silence] * 599
+    assert [src.read_burst() for _ in range(599)] == [silence] * 599
     assert src.read_burst() == raw[:RX_BURST_BYTES]
     # Within 20 ms of a boundary (modulo): starts immediately.
     near = WavSource(
