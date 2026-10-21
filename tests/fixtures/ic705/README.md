@@ -48,7 +48,7 @@ No PTT-on, tune, frequency, mode or power command was sent. The shutdown release
 
 ## Facts for the personality (MOR-3605)
 
-- Answer classes of the 107 probes: 85 data, 19 NAK, 2 silence (`get_command_error_fa`/`get_command_ok_fb`, synthetic), 1 client-side error (`get_comp_meter`, no frame built).
+- Answer classes of the 107 probes: 85 data, 19 NAK, 2 silence (`get_command_error_fa`/`get_command_ok_fb`, synthetic), 1 client-side error (`get_comp_meter`: the frame was built, the client's transaction raised after 0.1 ms, so whether it reached the radio is not established).
 - NAKed: `get_bsr`, `get_freq_offset`, `get_speech`, `get_tx_band_edge`, the `cmd29` forms (single receiver: 0x29 is not understood), the four unknown probes, and the nine `get_scope_*` forms **without a receiver byte**.
 - The scope settings answer when asked with the receiver byte (`27 14 00`, `27 15 00`, `27 16 00`, ... in the `scope` window), and `27 10` / `27 11` answer bare. The profile's bare `get_scope_*` forms are therefore not what this radio accepts (ledger material for the conformance replay).
 - On USB the radio does not echo requests and sent no unsolicited frames in 90 s idle although CI-V transceive reads back ON (`1A 05 01 31` = 01).
