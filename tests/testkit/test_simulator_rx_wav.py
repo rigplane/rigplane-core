@@ -5,8 +5,7 @@ In-process, real UDP on loopback, reusing the client harness of
 payload is the FILE's bytes; with ``rx_source=None`` it stays on the
 recorded byte ramp (regression pin). Red mutations: point
 ``_audio_rx_packet`` back at the ramp while a source is set, or fetch
-the burst per packet instead of once per burst (the payload split
-breaks).
+the burst per packet instead of once per burst.
 """
 
 from __future__ import annotations
@@ -58,8 +57,7 @@ async def test_rx_stream_carries_the_wav_payload(tmp_path: Path) -> None:
         assert len(bursts) >= 4, f"only {len(bursts)} complete bursts captured"
 
         for burst in bursts:
-            first = burst[0][1]
-            # Burst start alignment: the BE u16 ident at 0x10 is 0x8126.
+            first = burst[0][1]  # burst start: ident 0x8126 at 0x10
             assert struct.unpack_from(">H", first, 0x10)[0] == _RX_IDENT_FIRST_FRAGMENT
             payload = b"".join(p[AUDIO_HEADER_SIZE:] for _, p in burst)
             assert len(payload) == RX_BURST_BYTES

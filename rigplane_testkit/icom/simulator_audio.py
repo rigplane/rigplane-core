@@ -399,11 +399,10 @@ class AudioPortMixin:
     async def _audio_rx_loop(self) -> None:
         """Emit the recorded RX stream: three packets every 20 ms.
 
-        Bursts sit at ABSOLUTE deadlines (start + n * 20 ms on the loop
-        clock): a relative ``sleep(0.02)`` per burst accumulates its
-        overshoot and stretches playback by several percent, breaking
-        slot alignment for file sources. More than five bursts behind,
-        resynchronise to now instead of firing a burst storm.
+        Bursts sit at ABSOLUTE deadlines on the loop clock (a relative
+        ``sleep(0.02)`` accumulates overshoot and stretches playback,
+        breaking slot alignment for file sources); more than five bursts
+        behind, resynchronise to now.
         """
         try:
             loop = asyncio.get_running_loop()
@@ -452,10 +451,10 @@ class AudioPortMixin:
         ``position`` is the packet's place in its burst (0..2): the first
         packet of a burst carries the first-fragment ident. Both sequences
         step 1 per packet (wrap at 0xFFFF). The payload is the byte ramp
-        seeded by the inner sequence, unless an RX source is set: then
-        position 0 pulls the next 20 ms (``read_burst``) and the positions
-        slice it by the recorded payload split. Building never counts: the
-        caller counts only packets the funnel actually sent.
+        seeded by the inner sequence, unless an RX source is set: position
+        0 pulls the next 20 ms and the burst is sliced by the recorded
+        payload split. Building never counts: the caller counts only
+        packets the funnel actually sent.
         """
         import rigplane_testkit.icom.simulator as _sim
 

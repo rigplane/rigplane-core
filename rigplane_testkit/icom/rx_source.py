@@ -2,25 +2,22 @@
 
 ``WavSource`` (MOR-3603) loads a WAV file at construction, converts it
 to the audio port's fixed output format — 48 kHz stereo s16le — and
-serves :class:`rigplane_testkit.icom.simulator_audio.AudioPortMixin`
-one 3840-byte burst per 20 ms, so a downstream decoder (WSJT-X on the
-dogfood bench) hears the recording instead of the synthetic byte ramp.
+serves the audio mixin one 3840-byte burst per 20 ms, so a downstream
+decoder (WSJT-X on the dogfood bench) hears the recording, not the ramp.
 
 Resampling is linear interpolation (``numpy.interp``) over the whole
 file at load time, rounded to int16 with clipping: test quality, not
-mastering quality. Mono input is duplicated to both channels; 48 kHz
-stereo passes through bit-exactly. Anything else — non-16-bit PCM, more
-than two channels, a rate outside 8000..96000, an empty file — raises
-``ValueError`` (no silent conversion); a missing path raises
-``FileNotFoundError``.
+mastering quality. Mono is duplicated to both channels; 48 kHz stereo
+passes through bit-exactly; anything else (non-16-bit PCM, >2 channels,
+a rate outside 8000..96000, an empty file) raises ``ValueError`` — no
+silent conversion — and a missing path ``FileNotFoundError``.
 
 Alignment: ``start="slot"`` holds the file's first sample for the next
 UTC slot boundary (``slot_s`` seconds, default 15 — FT8's slot) counted
 from :meth:`WavSource.reset`, which the simulator calls when the audio
-stream (re)starts; bursts before the boundary are silence, and a clock
-within 20 ms of a boundary starts immediately. With ``loop=True`` the
-file wraps at its end — for FT8 keep the recording a whole number of
-slots long so every wrap stays aligned.
+stream (re)starts; bursts before the boundary are silence and a clock
+within 20 ms of one starts immediately. With ``loop=True`` the file
+wraps at its end — keep the recording a whole number of slots long.
 
 Do NOT commit recordings containing third-party callsigns: test WAVs
 are generated into ``tmp_path`` at runtime.
@@ -63,9 +60,8 @@ class RxSource(Protocol):
 class WavSource:
     """A WAV file as the simulator's RX audio (pure data, no sockets/asyncio).
 
-    The audio mixin pulls one burst per 20 ms slot via :meth:`read_burst`;
-    :meth:`reset` restarts the file and recomputes the slot wait. See the
-    module docstring for the conversion and alignment rules.
+    The mixer pulls one burst per 20 ms via :meth:`read_burst`;
+    :meth:`reset` restarts the file and recomputes the slot wait.
     """
 
     def __init__(
@@ -110,7 +106,8 @@ class WavSource:
             raw = w.readframes(frames)
 
         src = np.frombuffer(raw, dtype="<i2").astype(np.float64)
-        n_out = int(round(frames * _TARGET_RATE / rate))
+        # max(1, ...): a 1-frame 96 kHz file would round to zero frames.
+        n_out = max(1, int(round(frames * _TARGET_RATE / rate)))
         x_src = np.arange(frames, dtype=np.float64)
         x_out = np.arange(n_out, dtype=np.float64) * (rate / _TARGET_RATE)
         if channels == 1:
@@ -130,7 +127,10 @@ class WavSource:
         if self._start == "slot":
             phase = self._utc() % self._slot_s
             wait_s = 0.0 if phase < _SLOT_START_EPS_S else self._slot_s - phase
-            self._silent_bursts = math.ceil(wait_s / _AUDIO_BURST_PERIOD_S)
+            # The mixer emits burst k at reset + 20 ms * k, so the burst
+            # AT the boundary carries the first sample; k - 1 silent.
+            n = math.ceil(wait_s / _AUDIO_BURST_PERIOD_S)
+            self._silent_bursts = max(0, n - 1)
 
     def read_burst(self) -> bytes:
         """The next 20 ms: exactly ``RX_BURST_BYTES`` bytes — silence
@@ -150,8 +150,11 @@ class WavSource:
             return chunk
         if not self._loop:
             return chunk.ljust(RX_BURST_BYTES, b"\x00")
-        # Loop wrap mid-burst: the truncated tail is followed by the
-        # file's head, and playback continues from there.
-        head = self._pcm[: RX_BURST_BYTES - len(chunk)]
-        self._pos = len(head) // 4
-        return chunk + head
+        # Loop wrap mid-burst: repeat the file from its head until the
+        # burst is exactly full (a file shorter than one burst wraps
+        # several times within one burst).
+        self._pos = (RX_BURST_BYTES - len(chunk)) // 4
+        out = bytearray(chunk)
+        while len(out) < RX_BURST_BYTES:
+            out += self._pcm[: RX_BURST_BYTES - len(out)]
+        return bytes(out)

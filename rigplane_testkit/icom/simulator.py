@@ -438,9 +438,8 @@ class MockIcomRadio(AudioPortMixin):
             frames from the committed ``scope`` window are emitted.
         rx_source: optional RX audio source for the audio port
             (:class:`~rigplane_testkit.icom.rx_source.WavSource`) played
-            in place of the synthetic byte ramp. None (default) keeps the
-            ramp payload byte-for-byte. The source restarts from its
-            head every time the audio stream (re)starts.
+            in place of the byte ramp; None (default) keeps the ramp
+            byte-for-byte. Restarts from its head on each stream start.
     """
 
     def __init__(
@@ -581,9 +580,8 @@ class MockIcomRadio(AudioPortMixin):
         # Audio-port listener switch: default off, when the status reply
         # advertises the dummy port and nothing listens.
         self.enable_audio: bool = enable_audio
-        # Optional RX audio source (``rx_source.py``: ``WavSource``); None
-        # keeps the synthetic byte ramp. Must be set before ``_audio_init``
-        # reads it below.
+        # Optional RX audio source (``rx_source.py``); None keeps the ramp.
+        # Must be set before ``_audio_init`` reads it below.
         self._rx_source: RxSource | None = rx_source
         # Owner identity = (remote_addr, my_id); None when no session is held.
         self._owner: tuple[tuple[str, int], int] | None = None

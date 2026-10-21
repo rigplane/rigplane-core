@@ -1,8 +1,8 @@
 """Unit tests for ``rigplane_testkit.icom.rx_source.WavSource``.
 
 WAVs are generated into ``tmp_path`` (nothing committed). Red mutation:
-make ``_load`` skip the 48 kHz stereo conversion, or make ``read_burst``
-ignore the slot wait / loop wrap — every expectation below goes red.
+skip the 48 kHz stereo conversion in ``_load``, or ignore the slot wait
+/ loop wrap in ``read_burst`` — everything below goes red.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import pytest
 
 from rigplane_testkit.icom.rx_source import RX_BURST_BYTES, WavSource
 
-# 20 ms of 48 kHz stereo s16 = 3840 bytes = 960 frames.
 FRAMES_PER_BURST = RX_BURST_BYTES // 4
 
 
@@ -60,10 +59,9 @@ def test_burst_size_and_48k_stereo_passthrough_bit_exact(tmp_path: Path) -> None
 
 
 def test_12k_mono_resampled_to_48k_stereo(tmp_path: Path) -> None:
-    _write_wav(
-        tmp_path / "m12.wav", rate=12000, channels=1, samples=_mono_sine(12000, 1.0)
-    )
-    src = WavSource(tmp_path / "m12.wav")
+    wav = tmp_path / "m12.wav"
+    _write_wav(wav, rate=12000, channels=1, samples=_mono_sine(12000, 1.0))
+    src = WavSource(wav)
     served = b"".join(src.read_burst() for _ in range(50))  # 1 s at 48 kHz
     assert len(served) == 4 * 12000 * 4  # round(n * 48000 / 12000) stereo frames
     pairs = np.frombuffer(served, "<i2").reshape(-1, 2)
@@ -77,20 +75,24 @@ def test_loop_wraps_to_the_first_burst(tmp_path: Path) -> None:
     first = src.read_burst()
     assert first == raw
     assert src.read_burst() == first  # wrapped to the file start
+    # A file SHORTER than one burst still fills it exactly.
+    short = raw[: RX_BURST_BYTES // 2]  # 480 frames
+    _write_wav(tmp_path / "short.wav", rate=48000, channels=2, samples=short)
+    tiny = WavSource(tmp_path / "short.wav", loop=True)
+    assert tiny.read_burst() == short + short
+    assert len(tiny.read_burst()) == RX_BURST_BYTES
 
 
 def test_slot_start_waits_for_the_boundary(tmp_path: Path) -> None:
     raw = _stereo_wav(tmp_path / "slot.wav", bursts=2)
-    src = WavSource(
-        tmp_path / "slot.wav",
-        start="slot",
-        slot_s=15.0,
-        utc=lambda: 3.0,  # next boundary at 15.0: 12 s = 600 silent bursts
-    )
+    # Next boundary at 15.0 from UTC 3.0: 12 s away.
+    src = WavSource(tmp_path / "slot.wav", start="slot", slot_s=15.0, utc=lambda: 3.0)
     silence = bytes(RX_BURST_BYTES)
-    served = [src.read_burst() for _ in range(600)]
-    assert served == [silence] * 600
-    assert src.read_burst() == raw[:RX_BURST_BYTES]  # the file starts on the slot
+    # The mixer emits burst k at reset + 20 ms * k, so the burst exactly
+    # AT the boundary (k = 600) carries the file's first sample.
+    served = [src.read_burst() for _ in range(599)]
+    assert served == [silence] * 599
+    assert src.read_burst() == raw[:RX_BURST_BYTES]
     # Within 20 ms of a boundary (modulo): starts immediately.
     near = WavSource(
         tmp_path / "slot.wav", start="slot", slot_s=15.0, utc=lambda: 30.005
@@ -135,9 +137,8 @@ def test_rejects_unsupported_wav(
 def test_rejects_missing_file_and_bad_arguments(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         WavSource(tmp_path / "does-not-exist.wav")
-    p = tmp_path / "ok.wav"
-    _stereo_wav(p, bursts=1)
+    _stereo_wav(tmp_path / "ok.wav", bursts=1)
     with pytest.raises(ValueError, match="start"):
-        WavSource(p, start="soon")
+        WavSource(tmp_path / "ok.wav", start="soon")
     with pytest.raises(ValueError, match="slot_s"):
-        WavSource(p, slot_s=0.0)
+        WavSource(tmp_path / "ok.wav", slot_s=0.0)
