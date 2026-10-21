@@ -187,10 +187,17 @@ async def test_tcp_stop_admits_no_handler_queued_before_shutdown() -> None:
     reader, _writer = await asyncio.open_connection("127.0.0.1", endpoint.port)
     await endpoint.stop()
     assert await asyncio.wait_for(reader.read(), 3.0) == b""  # EOF, no hang
-    assert endpoint._clients == {}
-    assert not any(
-        "TcpEndpoint" in getattr(t.get_coro(), "__qualname__", "")
-        for t in asyncio.all_tasks()
+    # stop() may return before the accepted handler has run its first
+    # step, so it can finish one loop iteration after the EOF; wait for
+    # the end conditions instead of asserting them instantly.
+    await _until(lambda: endpoint._clients == {})
+    await _until(
+        lambda: (
+            not any(
+                "TcpEndpoint" in getattr(t.get_coro(), "__qualname__", "")
+                for t in asyncio.all_tasks()
+            )
+        )
     )
 
 
