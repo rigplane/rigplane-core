@@ -66,7 +66,9 @@ def blocked_summary(path: Path) -> dict[str, int]:
         row = json.loads(line)
         if row["dir"] == "blocked":
             raw = bytes.fromhex(row["hex"])
-            counts[f"{raw[4]:02x}" if raw[:2] == b"\xfe\xfe" and len(raw) > 4 else "junk"] += 1
+            counts[
+                f"{raw[4]:02x}" if raw[:2] == b"\xfe\xfe" and len(raw) > 4 else "junk"
+            ] += 1
     return dict(sorted(counts.items()))
 
 

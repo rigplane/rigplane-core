@@ -45,3 +45,17 @@ python -m rigplane_testkit.redaction_gate --deny-file DENY tests/fixtures/ic7300
 ```
 
 Raw recordings stay outside the repo.
+
+## HF air set (RX audio + scope + ground truth)
+
+`air_capture.py --clip ft8|cw|ssb --device DEV --out-dir PRIVATE_DIR` tunes the
+radio, records the radio's USB audio in its native format (device default
+rate/channels, s16) to a WAV, runs the scope, records the raw CI-V (scope
+frames included) through the guarded bridge, then restores and reads back the
+frequency, mode, data mode, filter and scope state. Writes allowed through the
+bridge for this tool: set frequency/mode/data mode, scope span/centre mode,
+scope switches; each one is listed in the clip manifest. FT8 clips start on a
+UTC 15 s slot. `ft8_truth.py MANIFEST` slices the WAV into slots at 12 kHz and
+decodes them with jt9 (the decode list holds third-party callsigns and stays
+private). Outputs go to a private directory (NAS), referenced in the repo only
+by SHA-256 from the manifest.
