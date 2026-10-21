@@ -223,6 +223,10 @@ class CivSerialFake:
         """The baud an Auto radio locked to, ``None`` before the first frame."""
         return self._locked_baud
 
+    def power_cycle(self) -> None:
+        """Restart the radio: an Auto radio forgets the baud it locked to."""
+        self._locked_baud = None
+
     @property
     def frame_bauds(self) -> tuple[int | None, ...]:
         """The connection baud of every inbound frame, in order."""

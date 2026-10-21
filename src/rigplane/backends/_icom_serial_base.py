@@ -485,6 +485,12 @@ class _IcomSerialRadioBase(CoreRadio):
         self._serial_identity_answer_epoch = None
         self._serial_identity_hold_reconnect_origin = False
         self._serial_deferred_audio = None
+        # MOR-3620: an owner connect starts at the configured baud again, so
+        # a restarted Auto radio relocks to it rather than to a past fallback.
+        self.serial_baud_notice = None
+        link = self._serial_civ_link
+        if link is not None and link.set_baudrate(self._serial_configured_baudrate):
+            self._serial_baudrate = self._serial_configured_baudrate
         self._conn_state = RadioConnectionState.CONNECTING
         self._civ_stream_ready = False
         self._civ_recovering = False
@@ -668,6 +674,7 @@ class _IcomSerialRadioBase(CoreRadio):
         if self._managed_tx_composition is not None:
             await self._park_managed_tx()
         self._count_serial_link_episode()
+        self.serial_baud_notice = None
         self._conn_state = RadioConnectionState.RECONNECTING
         self._civ_stream_ready = False
         self._civ_recovering = True
@@ -1022,7 +1029,7 @@ class _IcomSerialRadioBase(CoreRadio):
             f"{self._serial_configured_baudrate}; connected at {found}. Use "
             f"{found} baud for this radio."
         )
-        if found < _SERIAL_SCOPE_MIN_BAUD:
+        if found < _SERIAL_SCOPE_MIN_BAUD and not self._allow_low_baud_scope:
             text += " " + self._low_baud_scope_hint()
         return text
 
@@ -1060,7 +1067,6 @@ class _IcomSerialRadioBase(CoreRadio):
         if link is None or retired():
             return None
         start = self._serial_baudrate
-        self._serial_bauds_tried = (start,)
         payload: bytes | None = None
         try:
             for baud in SERIAL_PROBE_BAUD_RATES:
@@ -1100,6 +1106,7 @@ class _IcomSerialRadioBase(CoreRadio):
         re-read task, and returns False — CONNECTED must not latch.
         """
         self.serial_baud_notice = None
+        self._serial_bauds_tried = (self._serial_baudrate,)
         self._connection_identity = RadioIdentity(
             status=RadioIdentityStatus.CHECKING,
             expected_model=self.model,

@@ -14,8 +14,8 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections.abc import AsyncIterator
-from functools import partial
+from collections.abc import AsyncIterator, Awaitable
+from typing import Any
 
 import pytest
 
@@ -37,14 +37,20 @@ _NO_BAUD = 57600  # none of the documented bauds: the radio never answers
 assert _RECORDED_BAUD == _SWEEP[0] and _PROFILE_BAUD in _EVIDENCE["silent_at"]
 
 
-def _radio(fake: CivSerialFake) -> Ic7300SerialRadio:
+def _link(fake: CivSerialFake) -> SerialCivLink:
+    """A link whose opener opens the fake at the baud the link currently has."""
+
+    def opener() -> Awaitable[tuple[Any, Any]]:
+        return fake.open_serial_connection(baudrate=link._baudrate)
+
     link = SerialCivLink(
-        device=_DEVICE,
-        baudrate=_PROFILE_BAUD,
-        open_serial_connection=partial(
-            fake.open_serial_connection, baudrate=_PROFILE_BAUD
-        ),
+        device=_DEVICE, baudrate=_PROFILE_BAUD, open_serial_connection=opener
     )
+    return link
+
+
+def _radio(fake: CivSerialFake) -> Ic7300SerialRadio:
+    link = _link(fake)
     radio = Ic7300SerialRadio(
         device=_DEVICE,
         baudrate=_PROFILE_BAUD,
@@ -93,6 +99,21 @@ async def test_radio_locked_by_another_program_is_found_at_the_locked_baud() -> 
     async with _connected(fake) as radio:
         assert radio.connected and radio.serial_baudrate == _RECORDED_BAUD
         assert fake.locked_baud == _RECORDED_BAUD  # Core did not move the lock
+
+
+async def test_reconnect_after_a_radio_restart_goes_back_to_the_profile_baud() -> None:
+    """Same radio object: connect (fallback), restart the radio, connect again."""
+    fake = ic7300_usb_fake(locks_to_first_baud=True)
+    _, writer = await fake.opener(url=_DEVICE, baudrate=_RECORDED_BAUD)
+    writer.write(bytes.fromhex("fefe94e01900fd"))
+    writer.close()
+    async with _connected(fake) as radio:
+        assert radio.serial_baudrate == _RECORDED_BAUD
+        await radio.disconnect()
+        fake.power_cycle()
+        await radio.connect()
+        assert radio.connected and radio.serial_baudrate == _PROFILE_BAUD
+        assert fake.locked_baud == _PROFILE_BAUD and radio.serial_baud_notice is None
 
 
 async def test_answer_at_the_profile_baud_does_not_sweep() -> None:
@@ -181,11 +202,14 @@ async def test_retired_attempt_does_not_sweep() -> None:
 async def test_interrupted_sweep_puts_the_starting_baud_back() -> None:
     fake = ic7300_usb_fake(answers_at_baud=_NO_BAUD)
     radio = _radio(fake)
+    task = asyncio.create_task(radio.connect())
     try:
-        # 0.2 s first read, then the cancel lands inside the 19200 trial read.
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(radio.connect(), timeout=0.3)
-        assert _SWEEP[0] in fake.frame_bauds  # the trial query was sent
+        async with asyncio.timeout(5):  # hang guard only
+            while _SWEEP[0] not in fake.frame_bauds:  # the trial query was sent
+                await asyncio.sleep(0.01)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
         assert radio.serial_baudrate == radio._serial_civ_link._baudrate
         assert radio.serial_baudrate == _PROFILE_BAUD
     finally:
@@ -224,13 +248,9 @@ class _FlakyPort:
 
 async def test_link_retune_contract() -> None:
     fake = ic7300_usb_fake(answers_at_baud=_PROFILE_BAUD)
-    link = SerialCivLink(
-        device=_DEVICE,
-        open_serial_connection=partial(
-            fake.open_serial_connection, baudrate=_PROFILE_BAUD
-        ),
-    )
-    assert not link.set_baudrate(19200)  # closed: nothing to retune
+    link = _link(fake)
+    assert link.set_baudrate(19200) and link._baudrate == 19200  # closed: remembered
+    link.set_baudrate(_PROFILE_BAUD)
     await link.connect()
     try:
         link._frames.put_nowait(b"old-rate frame")
