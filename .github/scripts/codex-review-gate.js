@@ -18,7 +18,6 @@ const BADGE_PATTERN = /!\[P([12]) Badge\]/u;
 const STATE_PATTERN = /<!-- codex-review-state:v1 (\{.*?\}) -->/su;
 const RECEIPT_PATTERN =
   /<!-- codex-review-receipt:v1 -->[\s\S]*?\*\*Reviewed commit:\*\*\s*`([0-9a-f]{10,40})`/u;
-const REQUEST_PATTERN = /(?:^|\s)@codex review\b/iu;
 
 // REST users are `chatgpt-codex-connector[bot]` / type Bot; GraphQL authors
 // drop the `[bot]` suffix. `author_association` is NONE for the app, so the
@@ -126,21 +125,6 @@ function buildCodexVerdict({codex, unresolved, backup, headSha}) {
   };
 }
 
-// Codex reviews on PR open and on "draft marked ready" by itself, never on a
-// push. A push needs an explicit `@codex review` comment, once per head.
-function shouldRequestCodex({comments, committedAt, draft, reviewed}) {
-  if (draft || reviewed) {
-    return false;
-  }
-  return !comments.some(
-    (comment) =>
-      !isCodexUser(comment.user) &&
-      typeof comment.body === 'string' &&
-      REQUEST_PATTERN.test(comment.body) &&
-      new Date(comment.created_at) >= committedAt,
-  );
-}
-
 const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
@@ -176,6 +160,5 @@ module.exports = {
   codexReviewedHead,
   isCodexUser,
   readReviewThreads,
-  shouldRequestCodex,
   unresolvedCodexFindings,
 };

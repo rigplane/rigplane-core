@@ -115,25 +115,18 @@ function coreMock() {
   };
 }
 
-function updaterScript({
-  number = '2321',
-  head = HEAD,
-  committedAt = '2026-08-08T04:50:00Z',
-  draft = 'false',
-} = {}) {
+function updaterScript({number = '2321', head = HEAD, committedAt = '2026-08-08T04:50:00Z'} = {}) {
   return workflowScript('Update required Agent Review Gate status')
     .replace("Number('${{ steps.pr.outputs.number }}')", `Number('${number}')`)
     .replace("'${{ steps.pr.outputs.head_sha }}'", `'${head}'`)
-    .replace("'${{ steps.pr.outputs.committed_at }}'", `'${committedAt}'`)
-    .replace("'${{ steps.pr.outputs.draft }}'", `'${draft}'`);
+    .replace("'${{ steps.pr.outputs.committed_at }}'", `'${committedAt}'`);
 }
 
-function workflowContext(runId = 1, action = undefined) {
+function workflowContext(runId = 1) {
   return {
     repo: {owner: 'rigplane', repo: 'rigplane-core'},
     runId,
     serverUrl: 'https://github.test',
-    payload: {action},
   };
 }
 
@@ -143,7 +136,6 @@ const CODEX_BOT = {login: 'chatgpt-codex-connector[bot]', type: 'Bot'};
 // `paginate` routes by the REST function it is handed, as the real one does.
 function gateGithub({comments = [], reviews = [], threads = [], overrides = {}} = {}) {
   const statuses = [];
-  const created = [];
   const graphqlCalls = [];
   const restCalls = [];
   const listComments = () => {};
@@ -169,13 +161,7 @@ function gateGithub({comments = [], reviews = [], threads = [], overrides = {}} 
       };
     },
     rest: {
-      issues: {
-        listComments,
-        createComment: async (args) => {
-          restCalls.push('issues.createComment');
-          created.push(args);
-        },
-      },
+      issues: {listComments},
       pulls: {listReviews},
       repos: {
         createCommitStatus: async (status) => {
@@ -186,7 +172,7 @@ function gateGithub({comments = [], reviews = [], threads = [], overrides = {}} 
     },
     ...overrides,
   };
-  return {github, statuses, created, graphqlCalls, restCalls};
+  return {github, statuses, graphqlCalls, restCalls};
 }
 
 // Routes the codex module to the real one so the stubbed-parser scenarios still
@@ -200,16 +186,14 @@ async function runGate({
   comments = [],
   reviews = [],
   threads = [],
-  action = undefined,
-  draft = 'false',
   overrides = {},
   runId = 20,
 } = {}) {
   const fake = gateGithub({comments, reviews, threads, overrides});
   const core = coreMock();
-  await runWorkflowScript(updaterScript({draft}), {
+  await runWorkflowScript(updaterScript(), {
     github: fake.github,
-    context: workflowContext(runId, action),
+    context: workflowContext(runId),
     core,
     workspace: path.join(__dirname, '..', '..'),
   });
@@ -547,8 +531,11 @@ test('workflow preserves triggers, workflow revision checkout, pagination, and e
   // manual dispatch re-evaluates (GitHub Actions has no review-thread trigger).
   assert.match(workflow, /pull_request_review:\n {4}types: \[submitted, dismissed\]/);
   assert.match(workflow, /workflow_dispatch:\n {4}inputs:\n {6}pr_number:\n {8}description: [^\n]+\n {8}required: true/);
-  // `@codex review` is a PR comment: the token needs issues: write, nothing broader.
-  assert.match(workflow, /^permissions:\n {2}contents: read\n {2}issues: write\n {2}pull-requests: read\n {2}statuses: write\n/mu);
+  // Codex ignores review requests posted by github-actions[bot] (measured on
+  // rigplane-pro PR 1779), so the gate only reads: it never comments, and the
+  // token keeps read access to issues.
+  assert.match(workflow, /^permissions:\n {2}contents: read\n {2}issues: read\n {2}pull-requests: read\n {2}statuses: write\n/mu);
+  assert.doesNotMatch(workflow, /createComment|body: '@codex review|issues: write/u);
   assert.match(workflow, /github\.paginate\(github\.rest\.pulls\.listReviews/);
   assert.match(workflow, /readReviewThreads\(\{github, owner, repo, number: pull_number\}\)/);
   assert.match(workflow, /const \{data: pull\} = await github\.rest\.pulls\.get/);
@@ -1062,11 +1049,10 @@ test('an unresolved Codex P1/P2 thread denies even with Codex review and a valid
 });
 
 test('no Codex review of the head: a valid backup PASS succeeds', async () => {
-  const {statuses, created} = await runGate({comments: [comment(directive('PASS'))]});
+  const {statuses} = await runGate({comments: [comment(directive('PASS'))]});
   assert.equal(statuses.length, 1);
   assert.equal(statuses[0].state, 'success');
   assert.match(statuses[0].description, /Backup cross-family PASS for 1234567/u);
-  assert.deepEqual(created, []);
 
   // The existing strictness is untouched: untrusted, stale-SHA, and pre-commit PASS do not count.
   for (const bad of [
@@ -1129,50 +1115,7 @@ test('a BLOCKED directive wins over a Codex review and over a PASS', async () =>
   assert.equal(notBinding.statuses[0].state, 'success');
 });
 
-test('a push asks Codex exactly once; drafts, reviewed heads, and other events do not', async () => {
-  for (const action of ['synchronize', 'reopened']) {
-    const {created, statuses} = await runGate({action});
-    assert.equal(created.length, 1, action);
-    assert.deepEqual(created[0], {
-      owner: 'rigplane',
-      repo: 'rigplane-core',
-      issue_number: 2321,
-      body: '@codex review',
-    });
-    assert.equal(statuses.length, 1, action);
-    assert.equal(statuses[0].state, 'failure', action);
-  }
-
-  const none = [
-    ['draft', {action: 'synchronize', draft: 'true'}],
-    ['already reviewed head', {action: 'synchronize', reviews: [codexReview()]}],
-    [
-      'already requested for this head',
-      {
-        action: 'synchronize',
-        comments: [comment('@codex review', {author_association: 'NONE', created_at: '2026-08-08T04:51:00Z'})],
-      },
-    ],
-    ['opened', {action: 'opened'}],
-    ['ready_for_review', {action: 'ready_for_review'}],
-    ['review submitted', {action: 'submitted'}],
-    ['issue comment', {action: 'created'}],
-    ['dispatch', {action: undefined}],
-  ];
-  for (const [name, input] of none) {
-    const {created} = await runGate(input);
-    assert.deepEqual(created, [], name);
-  }
-
-  // A request made before the head commit does not count for the new head.
-  const stale = await runGate({
-    action: 'synchronize',
-    comments: [comment('@codex review', {created_at: '2026-08-08T04:49:00Z'})],
-  });
-  assert.equal(stale.created.length, 1);
-});
-
-async function runBrokenGate(breakIt, {action = undefined} = {}) {
+async function runBrokenGate(breakIt) {
   // Codex reviewed and a PASS exists: only a fail-closed rule can deny.
   const fake = gateGithub({
     comments: [comment(directive('PASS'))],
@@ -1182,14 +1125,14 @@ async function runBrokenGate(breakIt, {action = undefined} = {}) {
   const core = coreMock();
   await runWorkflowScript(updaterScript(), {
     github: fake.github,
-    context: workflowContext(21, action),
+    context: workflowContext(21),
     core,
     workspace: path.join(__dirname, '..', '..'),
   });
   return {...fake, core};
 }
 
-test('GraphQL, review-list, and request failures fail closed with a loud run failure', async () => {
+test('GraphQL and review-list failures fail closed with a loud run failure', async () => {
   const breakers = {
     graphql: (github) => {
       github.graphql = async () => { throw new Error('GraphQL unavailable'); };
@@ -1216,21 +1159,6 @@ test('GraphQL, review-list, and request failures fail closed with a loud run fai
     assert.equal(core.failures.length, 1, name);
     assert.equal(core.errors.length, 1, name);
   }
-
-  // The request comment failing is an evaluation failure, not a silent skip.
-  const noReview = gateGithub({comments: [comment(directive('PASS'))]});
-  noReview.github.rest.issues.createComment = async () => { throw new Error('comment API down'); };
-  const core = coreMock();
-  await runWorkflowScript(updaterScript(), {
-    github: noReview.github,
-    context: workflowContext(22, 'synchronize'),
-    core,
-    workspace: path.join(__dirname, '..', '..'),
-  });
-  assert.equal(noReview.statuses.length, 1);
-  assert.equal(noReview.statuses[0].state, 'failure');
-  assert.equal(noReview.statuses[0].description, 'Agent Review Gate evaluation failed closed.');
-  assert.equal(core.failures.length, 1);
 });
 
 test('review threads are read through every GraphQL page', async () => {
@@ -1253,14 +1181,14 @@ test('review threads are read through every GraphQL page', async () => {
   assert.match(statuses[0].description, /P2/u);
 });
 
-test('the resolver reads the PR number from a manual dispatch and reports the draft flag', async () => {
-  for (const draft of [true, false, undefined]) {
+test('the resolver reads the PR number from a manual dispatch', async () => {
+  {
     const core = coreMock();
     const github = {
       rest: {
         pulls: {get: async ({pull_number}) => {
           assert.equal(pull_number, 2321);
-          return {data: {head: {sha: HEAD}, draft, updated_at: '2026-08-08T04:50:00Z'}};
+          return {data: {head: {sha: HEAD}, updated_at: '2026-08-08T04:50:00Z'}};
         }},
         repos: {getCommit: async () => ({data: {commit: {committer: {date: '2026-08-08T04:50:00Z'}}}})},
       },
@@ -1273,7 +1201,7 @@ test('the resolver reads the PR number from a manual dispatch and reports the dr
     });
     assert.equal(core.outputs.number, '2321');
     assert.equal(core.outputs.head_sha, HEAD);
-    assert.equal(core.outputs.draft, String(draft === true));
+    assert.equal(core.outputs.draft, undefined);
   }
 });
 
@@ -1281,7 +1209,6 @@ test('REST call budget matches the number the workflow comment states', async ()
   const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
   assert.match(workflow, /Per-run REST calls, counted from the steps below: 3 fixed calls/u);
   assert.match(workflow, /\(pulls\.get, repos\.getCommit, repos\.createCommitStatus\)/u);
-  assert.match(workflow, /at most one issues\.createComment/u);
 
   const restCalls = [];
   const core = coreMock();
@@ -1301,11 +1228,12 @@ test('REST call budget matches the number the workflow comment states', async ()
     workspace: path.join(__dirname, '..', '..'),
   });
 
-  // Worst case: a synchronize on a non-draft PR that Codex has not reviewed.
-  const run = await runGate({action: 'synchronize'});
-  const fixed = [...restCalls, ...run.restCalls.filter((name) => name !== 'issues.createComment')];
-  assert.deepEqual(fixed.sort(), ['pulls.get', 'repos.createCommitStatus', 'repos.getCommit']);
-  assert.equal(run.restCalls.filter((name) => name === 'issues.createComment').length, 1);
+  const run = await runGate({});
+  assert.deepEqual([...restCalls, ...run.restCalls].sort(), [
+    'pulls.get',
+    'repos.createCommitStatus',
+    'repos.getCommit',
+  ]);
   assert.equal(run.graphqlCalls.length, 1);
 });
 
@@ -1317,7 +1245,8 @@ test('AGENTS documents the Codex-primary gate rules', () => {
   assert.match(section, /exact head SHA/u);
   assert.match(section, /P1\/P2/u);
   assert.match(section, /@codex review/u);
-  assert.match(section, /does not review drafts/u);
+  assert.match(section, /cannot request it/u);
+  assert.match(section, /person's account/u);
   assert.match(section, /20 minutes/u);
   assert.match(section, /family differs from the builder/u);
   assert.match(section, /gh workflow run agent-review-gate\.yml -f pr_number=N/u);

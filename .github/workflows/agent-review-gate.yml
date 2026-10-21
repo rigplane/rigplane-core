@@ -4,8 +4,10 @@ name: Agent Review Gate
 # exact head and no Codex P1/P2 thread is open, or, when Codex did not review,
 # when the cross-family backup reviewer posted the strict exact-head
 # `Agent Review: PASS <sha>` directive (never while a Codex P1/P2 thread is
-# open). Codex does not review pushes by itself, so a push asks it with
-# `@codex review`. Rules and logic: .github/scripts/codex-review-gate.js
+# open). Codex does not review pushes by itself and ignores review requests
+# posted by github-actions[bot], so this workflow cannot ask for one: a person's
+# account (the lane scripts, with the coordinator token) posts `@codex review`.
+# Rules and logic: .github/scripts/codex-review-gate.js
 # (shared verbatim with rigplane-pro), .github/scripts/agent-review-gate.js
 # (the directive parser), AGENTS.md "Protected main and review gate".
 on:
@@ -26,7 +28,7 @@ on:
 
 permissions:
   contents: read
-  issues: write
+  issues: read
   pull-requests: read
   statuses: write
 
@@ -46,9 +48,8 @@ concurrency:
   # Per-run REST calls, counted from the steps below: 3 fixed calls
   # (pulls.get, repos.getCommit, repos.createCommitStatus), plus one
   # issues.listComments page per 100 comments, plus one pulls.listReviews page
-  # per 100 reviews, plus at most one issues.createComment (the `@codex review`
-  # request, only on a synchronize/reopened run). The review threads come from
-  # GraphQL (one query page per 100 threads), which is not a REST call.
+  # per 100 reviews. The review threads come from GraphQL (one query page per
+  # 100 threads), which is not a REST call.
   group: agent-review-gate-${{ github.event.issue.pull_request && github.event.issue.number || github.event.pull_request.number || inputs.pr_number }}-${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review' || github.event_name == 'workflow_dispatch' || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:'))) || (github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]')) && 'eval' || github.run_id }}
   cancel-in-progress: true
 
@@ -88,7 +89,6 @@ jobs:
             });
             core.setOutput('number', String(number));
             core.setOutput('head_sha', pull.head.sha);
-            core.setOutput('draft', String(pull.draft === true));
             const {data: commit} = await github.rest.repos.getCommit({
               owner,
               repo,
@@ -115,7 +115,6 @@ jobs:
             const pull_number = Number('${{ steps.pr.outputs.number }}');
             const head_sha = '${{ steps.pr.outputs.head_sha }}';
             const committed_at = new Date('${{ steps.pr.outputs.committed_at }}');
-            const draft = '${{ steps.pr.outputs.draft }}' === 'true';
             const {owner, repo} = context.repo;
             let result = {state: 'failure', passCount: 0, blockedCount: 0, malformedBlockedCount: 0};
             let evaluationError = null;
@@ -145,7 +144,6 @@ jobs:
               const {
                 codexReviewedHead,
                 readReviewThreads,
-                shouldRequestCodex,
                 unresolvedCodexFindings,
               } = require(codexPath);
               const reviews = await github.paginate(github.rest.pulls.listReviews, {
@@ -156,19 +154,6 @@ jobs:
               });
               const threads = await readReviewThreads({github, owner, repo, number: pull_number});
               const codex = codexReviewedHead({reviews, comments, headSha: head_sha});
-              // Codex reviews a PR when it opens and when a draft becomes ready, never on a push:
-              // ask it once per pushed head (not for drafts, not when it already reviewed this head).
-              if (
-                ['synchronize', 'reopened'].includes(context.payload.action) &&
-                shouldRequestCodex({comments, committedAt: committed_at, draft, reviewed: codex.reviewed})
-              ) {
-                await github.rest.issues.createComment({
-                  owner,
-                  repo,
-                  issue_number: pull_number,
-                  body: '@codex review',
-                });
-              }
               codexParts = {codex, unresolved: unresolvedCodexFindings(threads)};
             } catch (error) {
               evaluationError = error;

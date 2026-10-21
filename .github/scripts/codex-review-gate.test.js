@@ -7,7 +7,6 @@ const {
   buildCodexVerdict,
   codexReviewedHead,
   readReviewThreads,
-  shouldRequestCodex,
   unresolvedCodexFindings,
 } = require('./codex-review-gate.js');
 
@@ -131,20 +130,6 @@ test('every description fits the 140-character status limit', () => {
   const open = Array.from({length: 9}, () => ({priority: 'P1', path: 'x'.repeat(80), line: 100}));
   const v = buildCodexVerdict({codex: reviewed, unresolved: open, backup: none, headSha: HEAD});
   assert.ok(v.description.length <= 140);
-});
-
-test('@codex review is requested once per head, never for drafts or reviewed heads', () => {
-  const committedAt = new Date('2026-10-21T10:00:00Z');
-  const ask = (created_at, user = HUMAN) => ({user, body: '@codex review', created_at});
-  const base = {comments: [], committedAt, draft: false, reviewed: false};
-  assert.equal(shouldRequestCodex(base), true);
-  assert.equal(shouldRequestCodex({...base, draft: true}), false);
-  assert.equal(shouldRequestCodex({...base, reviewed: true}), false);
-  assert.equal(shouldRequestCodex({...base, comments: [ask('2026-10-21T10:05:00Z')]}), false);
-  assert.equal(shouldRequestCodex({...base, comments: [ask('2026-10-21T09:00:00Z')]}), true);
-  // The lane's PASS comments end with the request.
-  const passWithAsk = {user: HUMAN, body: 'Agent Review: PASS abc (Spark). @codex review', created_at: '2026-10-21T10:05:00Z'};
-  assert.equal(shouldRequestCodex({...base, comments: [passWithAsk]}), false);
 });
 
 test('review threads are read page by page', async () => {
