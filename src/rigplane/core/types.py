@@ -450,14 +450,15 @@ class MemoryChannel:
     name: str = ""
 
 
-MemoryAddressing = Literal["group_channel", "band_channel"]
+MemoryAddressing = Literal["group_channel", "band_channel", "channel"]
 
 
 @dataclass(frozen=True, slots=True)
 class MemoryProfile:
     """How a radio's stored memory channels are addressed (MOR-3627).
 
-    ``group_channel`` is the IC-705 shape, ``band_channel`` the IC-9700's; the
+    ``group_channel`` is the IC-705 shape, ``band_channel`` the IC-9700's and
+    ``channel`` a single numbered list (FTX-1, group 0 only); the
     bounds limit the group number (or band code) and the channel, and
     ``recall`` says the profile's select commands recall a listed channel.
     """

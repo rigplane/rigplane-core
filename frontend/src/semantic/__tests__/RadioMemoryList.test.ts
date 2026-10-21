@@ -35,6 +35,15 @@ describe('formatShift / formatTone', () => {
     expect(formatTone({ ...stored, toneMode: 'tsql', tsqlCentiHz: 8_850 })).toBe('TSQL 88.5');
     expect(formatTone({ ...stored, toneMode: 'dtcs' })).toBe('DCS 023');
     expect(formatTone({ ...stored, toneMode: 'off' })).toBe('');
+    expect(formatTone({ ...stored, toneMode: 'pr_freq' })).toBe('PR FREQ');
+    expect(formatTone({ ...stored, toneMode: 'rev_tone' })).toBe('REV TONE');
+  });
+
+  it('keeps what the FTX-1 does not report unknown instead of printing zeros', () => {
+    const ftx1: MemoryEntryDto = { group: 0, channel: 25, empty: false, mode: 'FM', duplex: 'plus', offsetHz: null, toneMode: 'tone', toneCentiHz: null, dtcsCode: null };
+    expect(formatShift(ftx1)).toBe('+');
+    expect(formatTone(ftx1)).toBe('T');
+    expect(formatTone({ ...ftx1, toneMode: 'dtcs' })).toBe('DCS');
   });
 });
 

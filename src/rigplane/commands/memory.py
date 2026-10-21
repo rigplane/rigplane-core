@@ -415,6 +415,8 @@ def _encode_memory_address(memory: MemoryProfile, group: int, channel: int) -> b
             f"memory channel must be {memory.first_channel}-{memory.last_channel}, "
             f"got {channel}"
         )
+    if memory.addressing not in _ADDRESS_LEN:
+        raise ValueError(f"{memory.addressing} is not a CI-V memory layout")
     group_bytes = 2 if memory.addressing == "group_channel" else 1
     return bcd_encode_value(group, byte_count=group_bytes) + bcd_encode_value(
         channel, byte_count=2
@@ -501,6 +503,8 @@ def _parse_block(block: bytes, addressing: str, group: int) -> dict[str, Any]:
 
 def parse_memory_entry(data: bytes, memory: MemoryProfile) -> MemoryEntry:
     """Decode a ``1A 00`` reply body (the bytes after ``1A 00``) into a slot."""
+    if memory.addressing not in _ADDRESS_LEN:
+        raise ValueError(f"{memory.addressing} is not a CI-V memory layout")
     address_len = _ADDRESS_LEN[memory.addressing]
     group_len = address_len - 2
     if len(data) < address_len + 1:

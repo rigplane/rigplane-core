@@ -37,6 +37,16 @@ max_watts = 100
 # The backend clamps a lower request up to this floor before the wire.
 min_watts = 5
 
+# ── Memory channels (MOR-3628) ───────────────────────────────────
+# One numbered list read with MR/MT (CAT OM 2508-C p.19-20): channels 1-99 are
+# listed; PMS, 5 MHz and EMGCH slots are not.
+[memory]
+addressing = "channel"
+first_group = 0
+last_group = 0
+first_channel = 1
+last_channel = 99
+
 [capabilities]
 # NOTE: ``notch`` KEEPS the capability tag but intentionally declares NO
 # ``[notch] width_values`` domain (MOR-1551). The FTX-1's manual notch is a
@@ -62,6 +72,7 @@ features = [
     # value comes from the FR read the `global.tx_state.dual_watch` field
     # policy below declares.
     "dual_watch",
+    "memory_read",
     "af_level",
     "rf_gain",
     "squelch",
@@ -1475,6 +1486,15 @@ set_repeater_shift = { cat = { write = "OS{receiver}{shift};" } }
 # There is no PTT or split field in this response — those come from the
 # separate TX;/ST; commands.
 get_if_status  = { cat = { read = "IF;", parse = "IF{chan}{freq:09d}{sign}{offset:04d}{rx}{tx}{mode}{vfo}{tone}00{shift};" } }
+
+# ── Memory channels, read-only (MOR-3628) ──
+# MR reads a stored channel by number without selecting it, in the IF layout
+# (the P8 tone codes are MR's own: 0 off, 1 ENC/DEC, 2 ENC, 3 DCS, 4 PR FREQ,
+# 5 REV TONE; P10 0 simplex, 1 plus, 2 minus). MT reads its 12-character tag.
+# Real FTX-1 (MOR-3650 and the 2026-10-21 sweep): an unprogrammed channel
+# answers ``?;`` to both. MR carries no tone frequency, DCS code or offset.
+get_memory_channel = { cat = { read = "MR{chan};", parse = "MR{chan}{freq:09d}{sign}{offset:04d}{rx}{tx}{mode}{vfo}{tone}00{shift};" } }
+get_memory_tag = { cat = { read = "MT{chan};", parse = "MT{chan}{tag};" } }
 
 # ── System ──
 get_powerstat  = { cat = { read = "PS;", parse = "PS{state};" } }
