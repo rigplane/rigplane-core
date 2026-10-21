@@ -43,6 +43,10 @@ import logging
 import struct
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rigplane_testkit.icom.rx_source import RxSource
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +128,9 @@ class AudioPortMixin:
         self.audio_tx_frames: list[ClientAudioFrame] = []
         self._audio_last_client_seq: int | None = None
         self._audio_retransmit_requests_received: int = 0
+        # Optional RX audio source (``rx_source.py``); None keeps the ramp.
+        self._rx_source: RxSource | None = getattr(self, "_rx_source", None)
+        self._rx_burst: bytes | None = None  # the current burst's payload
 
     async def _audio_start(self) -> None:
         """Bind the audio port at the CI-V port + 1 when free (else any).
@@ -359,6 +366,9 @@ class AudioPortMixin:
         """
         self._audio_client = (addr, sender_id)
         if self._audio_rx_task is None or self._audio_rx_task.done():
+            if self._rx_source is not None:
+                # Stream (re)start: the file plays from its head again.
+                self._rx_source.reset()
             self._audio_rx_task = asyncio.get_running_loop().create_task(
                 self._audio_rx_loop()
             )
@@ -387,15 +397,27 @@ class AudioPortMixin:
         return False
 
     async def _audio_rx_loop(self) -> None:
-        """Emit the recorded RX stream: three packets every 20 ms."""
+        """Emit the recorded RX stream: three packets every 20 ms.
+
+        Bursts sit at ABSOLUTE deadlines (start + n * 20 ms on the loop
+        clock): a relative ``sleep(0.02)`` per burst accumulates its
+        overshoot and stretches playback by several percent, breaking
+        slot alignment for file sources. More than five bursts behind,
+        resynchronise to now instead of firing a burst storm.
+        """
         try:
+            loop = asyncio.get_running_loop()
+            next_t = loop.time() + _AUDIO_BURST_PERIOD_S
             while True:
-                await asyncio.sleep(_AUDIO_BURST_PERIOD_S)
+                now = loop.time()
+                if next_t - now < -5 * _AUDIO_BURST_PERIOD_S:
+                    next_t = now  # >5 bursts behind: resynchronise
+                await asyncio.sleep(max(0.0, next_t - now))
+                next_t += _AUDIO_BURST_PERIOD_S
                 client = self._audio_client
                 if client is None or self._audio_udp is None:
                     continue
                 addr, client_id = client
-                loop = asyncio.get_running_loop()
                 for position, offset in enumerate(_AUDIO_IN_BURST_OFFSETS_S):
                     loop.call_later(
                         offset,
@@ -429,9 +451,11 @@ class AudioPortMixin:
 
         ``position`` is the packet's place in its burst (0..2): the first
         packet of a burst carries the first-fragment ident. Both sequences
-        step 1 per packet (wrap at 0xFFFF); the payload is the byte ramp
-        seeded by the inner sequence. Building never counts: the caller
-        counts only packets the funnel actually sent.
+        step 1 per packet (wrap at 0xFFFF). The payload is the byte ramp
+        seeded by the inner sequence, unless an RX source is set: then
+        position 0 pulls the next 20 ms (``read_burst``) and the positions
+        slice it by the recorded payload split. Building never counts: the
+        caller counts only packets the funnel actually sent.
         """
         import rigplane_testkit.icom.simulator as _sim
 
@@ -448,10 +472,18 @@ class AudioPortMixin:
         struct.pack_into(">H", pkt, 0x12, self._audio_rx_inner_seq)
         struct.pack_into(">H", pkt, 0x14, 0)  # recorded: always 0
         struct.pack_into(">H", pkt, 0x16, payload_len)
-        start = self._audio_rx_inner_seq & 0xFF
-        pkt[AUDIO_HEADER_SIZE:] = (_PCM_RAMP * (payload_len // 256 + 2))[
-            start : start + payload_len
-        ]
+        if self._rx_source is not None:
+            if position == 0:
+                self._rx_burst = self._rx_source.read_burst()
+            start_off = sum(_AUDIO_BURST_PAYLOADS[:position])  # 0/1364/2728
+            pkt[AUDIO_HEADER_SIZE:] = self._rx_burst[
+                start_off : start_off + payload_len
+            ]
+        else:
+            start = self._audio_rx_inner_seq & 0xFF
+            pkt[AUDIO_HEADER_SIZE:] = (_PCM_RAMP * (payload_len // 256 + 2))[
+                start : start + payload_len
+            ]
         self._audio_rx_seq = (self._audio_rx_seq + 1) & 0xFFFF
         self._audio_rx_inner_seq = (self._audio_rx_inner_seq + 1) & 0xFFFF
         return bytes(pkt)
