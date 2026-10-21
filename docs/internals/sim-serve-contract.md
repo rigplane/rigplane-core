@@ -60,8 +60,9 @@ loop — one loop, no threads).
 | `power_cycle` | `down_for_s` (finite number, default 5.0), `notice` (bool, default false) | `radio.reboot(at=0.0, down_for=..., notice=...)`. |
 | `keepalive_silence` | `for_s` (finite number > 0) | `radio.keepalive_silence(at=0.0, for_seconds=...)`. |
 
-Numeric arguments must be finite numbers: `NaN`, `Infinity`, `-Infinity`,
-booleans and strings are rejected as `invalid_args`.
+Numeric arguments must be finite: `NaN`, `Infinity`, `-Infinity` (which
+permissive JSON parsers accept) are rejected as `invalid_args`, as are
+booleans and strings.
 
 ## Serial radios (`--radio ic7300`, MOR-3594)
 
@@ -89,7 +90,7 @@ Startup line: same envelope, but `device` (the `socket://` URL) and
 | Event | Arguments | Effect |
 | --- | --- | --- |
 | `set_frequency` | `hz` (int, 1..9999999999) | Sets the fake's frequency. |
-| `usb_vanish` | optional `for_s` (finite number > 0) | The device disappears (TCP and PTY behaviour as described above). With `for_s` the reappear is scheduled that far out (cancelled on shutdown) and traced as a `usb_reappear` record when it fires. |
+| `usb_vanish` | optional `for_s` (finite number > 0) | The device disappears: live TCP clients are dropped (EOF) and a client connecting while it is gone is accepted and closed at once until it reappears (the open does not fail; see the PTY wording above). With `for_s` the reappear is scheduled that far out (cancelled on shutdown) and traced as a `usb_reappear` record when it fires. |
 | `usb_reappear` | none | The device opens again immediately. |
 | `silence` | `for_s` (finite number > 0) | The port stays open and nothing answers for the window. |
 
@@ -111,9 +112,12 @@ the final `stop` record written during shutdown.
 `t` (real elapsed seconds) is the only time field; records appended by a
 restore timer (`usb_reappear` after `usb_vanish` with `for_s`) appear at
 their deadline unless an explicit `usb_reappear` cancelled the timer
-first, so the trace is a log of what happened, not a replay script. Extra keys a client sends in an event body are recorded in `args` with
+first, so the trace is a log of what happened, not a replay script. The
+server itself adds no ephemeral ports to trace
+records (the start record carries the `--control` hint, port 0 included);
+extra keys a client sends in an event body are recorded in `args` with
 non-finite floats (from permissively parsed `NaN`/`Infinity` literals)
-replaced by their string spellings, so the snapshot, the `--trace` file and
+replaced by their string spellings — the snapshot, the `--trace` file and
 every HTTP response stay strict JSON. Sanitising recurses per nesting
 level: past the Python recursion limit the event is rejected with 400
 `invalid_args` (traced with empty `args`) before any handler runs.
