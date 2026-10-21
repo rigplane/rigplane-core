@@ -40,8 +40,15 @@ were.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from ..core.types import (
+    MemoryEntry,
+    MemoryProfile,
+    Mode,
+    RepeaterShiftDirection,
+    ToneSquelchType,
+)
 from ..types import bcd_decode, bcd_encode
 from ._codec import _bcd_decode_value, bcd_encode_value
 from ._frame import (
@@ -329,3 +336,169 @@ def parse_band_stack_response(frame: CivFrame) -> BandStackRegister:
 # Backward-compat aliases
 build_band_stack_get = get_bsr
 build_band_stack_set = set_bsr
+
+
+# --- Read-only memory listing (MOR-3627) ----------------------------------
+#
+# CI-V ``1A 00`` (IC-705 guide p.18, IC-9700 p.14; real IC-705: MOR-3650). A
+# reply is the address (group 2 + channel 2 bytes, or band 1 + channel 2), a
+# select byte, the 47-byte channel block twice (the second is the split TX
+# copy), then a 16-byte name. A block is: frequency 5, mode 1, filter 1, data
+# mode 1, duplex|tone 1, digital squelch 1, TX tone 3, TSQL tone 3, DTCS 3, DV
+# code 1, duplex offset 3, UR/R1/R2 24. An empty slot answers address + ``FF``.
+
+_MEMORY_BLOCK_LEN = 47
+_MODE_DD = 0x22  # IC-9700 digital data mode (1.2 GHz)
+_MEMORY_NAME_LEN = 16
+_ADDRESS_LEN = {"group_channel": 4, "band_channel": 3}
+_DUPLEX_BY_NIBBLE = {
+    0: RepeaterShiftDirection.SIMPLEX,
+    1: RepeaterShiftDirection.MINUS,
+    2: RepeaterShiftDirection.PLUS,
+}
+_TONE_MODE_BY_NIBBLE = {
+    0: ToneSquelchType.OFF,
+    1: ToneSquelchType.TONE,
+    2: ToneSquelchType.TSQL,
+    3: ToneSquelchType.DTCS,
+}
+
+
+def _bcd_int(raw: bytes) -> int:
+    """Strict packed-BCD to int; a non-decimal nibble is a corrupt reply."""
+    digits = raw.hex()
+    if not digits.isdigit():
+        raise ValueError(f"not packed BCD: {digits}")
+    return int(digits)
+
+
+def _encode_memory_address(memory: MemoryProfile, group: int, channel: int) -> bytes:
+    """The ``1A 00`` address bytes for one slot, bounds-checked by the profile."""
+    if not memory.first_group <= group <= memory.last_group:
+        raise ValueError(
+            f"memory group must be {memory.first_group}-{memory.last_group}, got {group}"
+        )
+    if not memory.first_channel <= channel <= memory.last_channel:
+        raise ValueError(
+            f"memory channel must be {memory.first_channel}-{memory.last_channel}, "
+            f"got {channel}"
+        )
+    group_bytes = 2 if memory.addressing == "group_channel" else 1
+    return bcd_encode_value(group, byte_count=group_bytes) + bcd_encode_value(
+        channel, byte_count=2
+    )
+
+
+@expose_command_key(lambda cmd_map: "get_memory_contents")
+@require_cmd_map
+def build_memory_entry_read(
+    memory: MemoryProfile,
+    group: int,
+    channel: int,
+    to_addr: int,
+    from_addr: int = CONTROLLER_ADDR,
+    *,
+    cmd_map: CommandMap,
+) -> bytes:
+    """Build the read-only CI-V frame for one stored memory slot (``1A 00``)."""
+    return _build_from_map(
+        cmd_map,
+        "get_memory_contents",
+        to_addr=to_addr,
+        from_addr=from_addr,
+        data=_encode_memory_address(memory, group, channel),
+    )
+
+
+def _parse_block(block: bytes, addressing: str, group: int) -> dict[str, Any]:
+    """Validate one 47-byte channel block and return its decoded fields.
+
+    Fields the read model does not expose (filter, DTCS polarity, DV code,
+    call signs) are not validated: a listing must not drop a real channel over
+    a value it never shows.
+    """
+    mode_code = block[5]  # the guide's mode codes are raw bytes (DV = 0x17)
+    if block[7] not in (0, 1):
+        raise ValueError(f"data mode byte must be 00 or 01, got {block[7]:02X}")
+    if block[9] not in (0x00, 0x10, 0x20):  # digital squelch: off, DSQL, CSQL
+        raise ValueError(f"digital squelch byte must be X0, got {block[9]:02X}")
+    duplex_nibble, tone_nibble = block[8] >> 4, block[8] & 0x0F
+    tone_mode = _TONE_MODE_BY_NIBBLE.get(tone_nibble)
+    if tone_mode is None:
+        raise ValueError(f"unknown tone mode nibble {tone_nibble}")
+    # IC-705: duplex 0-2. IC-9700 adds 3 = RPS, which only DD mode has, and DD
+    # has no DUP-/DUP+.
+    dd = mode_code == _MODE_DD
+    if duplex_nibble > (2 if addressing == "group_channel" else 3) or (
+        (duplex_nibble == 3) != dd and duplex_nibble != 0
+    ):
+        raise ValueError(
+            f"duplex nibble {duplex_nibble} does not fit mode {mode_code:02X}"
+        )
+    if addressing == "group_channel" and block[4] >> 4:
+        raise ValueError("IC-705 frequency GHz digit is fixed 0")
+    # the offset's 10 MHz digit exists only on the IC-9700 1.2 GHz band (code 3)
+    if block[22] >> 4 and not (addressing == "band_channel" and group == 3):
+        raise ValueError("offset 10 MHz digit is only valid on the 1.2 GHz band")
+    # 100 MHz digit 0-4 (both radios); GHz digit 0-1 on the IC-9700 (fixed 0 above)
+    if block[4] & 0x0F > 4 or block[4] >> 4 > 1:
+        raise ValueError("frequency 100 MHz or GHz digit out of range")
+    # tone and TSQL frequencies: a fixed 00 byte, then a 100 Hz digit of 0-2
+    if block[10] or block[13] or block[11] >> 4 > 2 or block[14] >> 4 > 2:
+        raise ValueError("tone frequency digits out of range")
+    dtcs_digits = f"{block[17]:02x}{block[18]:02x}"
+    if not dtcs_digits.isdigit() or dtcs_digits[0] != "0" or max(dtcs_digits) > "7":
+        raise ValueError(f"DTCS code is not three octal digits: {dtcs_digits}")
+    try:
+        mode = Mode(mode_code).name.replace("_R", "-R")
+    except ValueError:
+        mode = "DD" if dd else f"0x{mode_code:02X}"
+    return {
+        "frequency_hz": _bcd_int(block[4::-1]),
+        "mode": mode,
+        "data_mode": block[7] == 1,
+        "duplex": _DUPLEX_BY_NIBBLE.get(duplex_nibble),
+        # [10 MHz|1 MHz][100 kHz|10 kHz][1 kHz|100 Hz], most significant first
+        "offset_hz": _bcd_int(block[22:19:-1]) * 100,
+        "tone_mode": tone_mode,
+        "tone_centihz": _bcd_int(block[10:13]) * 10,
+        "tsql_centihz": _bcd_int(block[13:16]) * 10,
+        "dtcs_code": int(dtcs_digits),
+    }
+
+
+def parse_memory_entry(data: bytes, memory: MemoryProfile) -> MemoryEntry:
+    """Decode a ``1A 00`` reply body (the bytes after ``1A 00``) into a slot."""
+    address_len = _ADDRESS_LEN[memory.addressing]
+    group_len = address_len - 2
+    if len(data) < address_len + 1:
+        raise ValueError(f"memory reply too short: {len(data)} bytes")
+    group = _bcd_int(data[:group_len])
+    channel = _bcd_int(data[group_len:address_len])
+    if not (
+        memory.first_group <= group <= memory.last_group
+        and memory.first_channel <= channel <= memory.last_channel
+    ):
+        raise ValueError(
+            f"memory reply address {group}/{channel} is outside the profile"
+        )
+    if len(data) == address_len + 1 and data[address_len] == 0xFF:
+        return MemoryEntry(group=group, channel=channel, empty=True)
+    select = data[address_len]  # split (high nibble 0/1) | select memory (0-3)
+    max_split = 1 if memory.addressing == "group_channel" else 0  # IC-9700: fixed 0
+    if select >> 4 > max_split or select & 0x0F > 3:
+        raise ValueError(f"unknown select/split byte {select:02X}")
+    start = address_len + 1
+    expected = start + 2 * _MEMORY_BLOCK_LEN + _MEMORY_NAME_LEN
+    if len(data) != expected:
+        raise ValueError(f"memory reply is {len(data)} bytes, expected {expected}")
+    fields = _parse_block(
+        data[start : start + _MEMORY_BLOCK_LEN], memory.addressing, group
+    )
+    tx_block = data[start + _MEMORY_BLOCK_LEN : expected - _MEMORY_NAME_LEN]
+    _parse_block(tx_block, memory.addressing, group)
+    name_raw = data[expected - _MEMORY_NAME_LEN : expected]
+    if not all(0x20 <= b <= 0x7E or b == 0 for b in name_raw):
+        raise ValueError("memory name is not printable ASCII")
+    name = name_raw.decode("ascii").replace("\x00", " ").rstrip()
+    return MemoryEntry(group=group, channel=channel, name=name, **fields)

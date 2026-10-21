@@ -49,6 +49,7 @@ from rigplane.commands._frame import decode_wire_tuple
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
 from rigplane.commands.vfo import set_dual_watch
+from rigplane.core.types import MemoryProfile
 from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.runtime.radio import CoreRadio
 from rigplane.types import BandStackRegister, MemoryChannel
@@ -352,6 +353,11 @@ _EXTRA_PROBE_KWARGS: dict[str, dict[str, Any]] = {
             datamode=0,
             tonemode=0,
         )
+    },
+    "build_memory_entry_read": {
+        "memory": MemoryProfile("group_channel", 0, 99, 0, 99),
+        "group": 0,
+        "channel": 0,
     },
     "set_bsr": {
         "bsr": BandStackRegister(

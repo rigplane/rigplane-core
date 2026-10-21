@@ -29,6 +29,7 @@ __all__ = [
     "bcd_encode",
     "bcd_decode",
     "MemoryChannel",
+    "MemoryEntry",
     "MemoryProfile",
     "BandStackRegister",
 ]
@@ -467,6 +468,30 @@ class MemoryProfile:
     first_channel: int
     last_channel: int
     recall: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryEntry:
+    """One stored memory channel as read from the radio (MOR-3627).
+
+    A read model, not what the write path (:class:`MemoryChannel`) sends.
+    ``group`` is the memory group (IC-705) or band code (IC-9700); an empty
+    slot carries only its address; tone values are centi-Hz (8850 = 88.5 Hz).
+    """
+
+    group: int
+    channel: int
+    empty: bool = False
+    frequency_hz: int | None = None
+    mode: str | None = None
+    data_mode: bool = False
+    duplex: RepeaterShiftDirection | None = None
+    offset_hz: int | None = None
+    tone_mode: ToneSquelchType | None = None
+    tone_centihz: int | None = None
+    tsql_centihz: int | None = None
+    dtcs_code: int | None = None
+    name: str = ""
 
 
 @dataclass
