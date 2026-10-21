@@ -28,7 +28,7 @@ import contextlib
 import json
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import IO, Any
 
@@ -93,6 +93,12 @@ class SerialCivRecorder:
         listen_port: Bind port (0 = ephemeral).
         opener: Replacement for the real serial open step; tests mount
             :class:`rigplane_testkit.serial.CivSerialFake` via ``fake.opener``.
+        client_filter: Optional factory called once per client connection;
+            the object it returns has ``feed(data) -> (forward, blocked)``.
+            Only ``forward`` reaches the device (and the ``c2r`` rows);
+            each ``blocked`` line is logged as a ``blocked`` row and counted
+            in ``blocked_lines``. :class:`rigplane_testkit.yaesu.CatReadOnlyGuard`
+            uses it to make a CAT capture RX-only.
     """
 
     def __init__(
@@ -104,6 +110,7 @@ class SerialCivRecorder:
         listen_host: str = "127.0.0.1",
         listen_port: int = 0,
         opener: Any = None,
+        client_filter: Callable[[], Any] | None = None,
     ) -> None:
         self._device = device
         self._baudrate = baudrate
@@ -111,10 +118,12 @@ class SerialCivRecorder:
         self._listen_host = listen_host
         self._listen_port = listen_port
         self._opener = opener
+        self._client_filter = client_filter
         self._file: IO[str] | None = None
         self._t0 = 0.0
         self.records_written = 0
         self.rejected_connections = 0
+        self.blocked_lines = 0
         self._server: asyncio.Server | None = None
         self._serial_reader: asyncio.StreamReader | None = None
         self._serial_writer: Any = None
@@ -205,11 +214,19 @@ class SerialCivRecorder:
             return
         self._client_writer = writer
         self._client_task = asyncio.current_task()
+        client_filter = self._client_filter() if self._client_filter else None
         try:
             while True:
                 data = await reader.read(_CHUNK)
                 if not data:
                     break
+                if client_filter is not None:
+                    data, blocked = client_filter.feed(data)
+                    for line in blocked:
+                        self.blocked_lines += 1
+                        self._record("blocked", line)
+                    if not data:
+                        continue
                 self._record("c2r", data)
                 self._serial_writer.write(data)
                 await self._serial_writer.drain()

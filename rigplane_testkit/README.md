@@ -190,6 +190,15 @@ What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fa
   processes, ahead of its reply if it has one (plus AI mode pushing info
   lines on state change).
   The implementation lives in `rigplane_testkit/yaesu/cat_fake.py`.
+- `rigplane_testkit.yaesu.recorder` — CAT recording on the same
+  `SerialCivRecorder` bridge (no second recorder). `cat_lines(path)`
+  reassembles a recording into `;`-terminated lines per direction.
+  `CatReadOnlyGuard` makes a capture on a real radio RX-only: the bridge
+  forwards only the rig profile's READ templates and logs every other line
+  (a frequency set, `TX1;`, a setting write) as a `blocked` row. CLI:
+  `python -m rigplane_testkit.yaesu record --device DEV --out FILE
+  [--profile ftx1] [--baud N]`; point the Core server at the printed
+  `socket://127.0.0.1:PORT`.
 - `rigplane_testkit.icom.recorder` — `IcomSessionRecorder`, an asyncio UDP
   proxy that sits between a client and a radio (real or simulated) and writes
   every datagram on the control/CI-V/audio ports to JSONL with direction,
