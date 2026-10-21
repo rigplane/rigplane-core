@@ -60,7 +60,7 @@ Same probe, same bridge, after tuning with `set_mode FM` + `set_freq` only (no a
 
 What the radio showed, FM versus the HF (USB) probe:
 
-- Same on every band: `get_freq_offset` (`0C`) still NAKs, so no duplex offset is readable by that command; `0F` read `00` on both (the server state shows repeater shift 0, split off); tone type off, tone and TSQL frequency 88.5 Hz; `get_dtcs` answered the same as on HF. The radio held whatever repeater settings it already had, and those read as off/default, so offset, tone and DCS values for a configured repeater channel are still unrecorded.
+- Same on every band: `get_freq_offset` (`0D`) still NAKs, so no duplex offset is readable by that command; `0F` read `00` on both (the server state shows repeater shift 0, split off); tone type off, tone and TSQL frequency 88.5 Hz; `get_dtcs` answered the same as on HF. The radio held whatever repeater settings it already had, and those read as off/default, so offset, tone and DCS values for a configured repeater channel are still unrecorded.
 - Reads that stop working in FM (NAK): `get_agc_time_constant`, `get_filter_shape`, `get_filter_width` (FM width is fixed), `get_manual_notch_width`, `get_pbt_inner`, `get_pbt_outer`. Total NAK 25 versus 19 on HF.
 - Changes with the band: mode `04 05 01` / selected mode `26 00 05 00 01` (FM), AGC `16 12 01` (fast), tuning step `10 11`, `get_s_meter_sql_status` and `get_various_squelch` (the squelch status bit is 0 in FM), band edge (`02`) on 70 cm (2 m answered like HF).
 - After restoring 14.074 MHz USB, the probe again matched the first one except S-meter, clock and the AF level (the owner turned the knob between runs).
