@@ -1,0 +1,41 @@
+# FTX-1 simulation profile (USB CAT, tier A). Wire facts stay in
+# rigs/ftx1.toml; identity comes from its [identity].expected_ids, so
+# transport.yaesu_cat carries no identity key. Sourcing and provenance:
+# tests/fixtures/ftx1/README.md. Unsourced keys are omitted.
+
+schema = "rigplane-sim-profile/1"
+
+[sim]
+id = "ftx1-usb"
+radio = "FTX-1"
+fidelity = "A"
+evidence = ["tests/fixtures/ftx1/cat_pairs.jsonl", "tests/golden/wire_oracle/ftx1.toml"]
+gaps = [
+    "writes are not recorded: every SET is modelled from the manual oracle rows, not from a capture",
+    "verbs answered only from the recorded table: AC BC BI BP CF CN CO CS CT FR FT IS KS KP LK MG NA OS PC PL PR RA RL RM SD SH VX",
+    "FA SET refused with ?; in MEMORY mode is observed on the MAIN side only; FB in MEMORY mode is unobserved",
+    "no scope or hardware spectrum",
+    "firmware unknown: not readable over CAT and the front panel was not inspected",
+    "SM1; is answered with the side digit echoed as 0 (recorded quirk)",
+    "AI auto-information stores state only; no unsolicited pushes are sent",
+    "PS SET is refused: the engine has no power op",
+]
+
+[transport.yaesu_cat]
+baud = 38400
+
+[initial]
+frequency_hz = 147_225_000
+mode = "FM"
+
+[answers]
+recorded = [{ file = "tests/fixtures/ftx1/cat_pairs.jsonl", transport = "usb" }]
+
+[timing]
+reply_latency_ms = 9
+
+[audio.rx]
+transport = "usb_device"
+sample_rate_hz = 48000
+channels = 2
+sample_format = "s16le"
