@@ -988,6 +988,46 @@ class TestReceivePacket:
         with pytest.raises(asyncio.TimeoutError):
             await transport.receive_packet(timeout=0.05)
 
+    @pytest.mark.asyncio
+    async def test_receive_zero_timeout_empty_queue_times_out(
+        self, transport: IcomTransport
+    ) -> None:
+        with pytest.raises(asyncio.TimeoutError):
+            await transport.receive_packet(timeout=0)
+
+    @pytest.mark.asyncio
+    async def test_receive_negative_timeout_empty_queue_times_out(
+        self, transport: IcomTransport
+    ) -> None:
+        with pytest.raises(asyncio.TimeoutError):
+            await transport.receive_packet(timeout=-0.5)
+
+    @pytest.mark.asyncio
+    async def test_receive_zero_timeout_leaves_queued_packet(
+        self, transport: IcomTransport
+    ) -> None:
+        """``timeout=0`` must time out without consuming, as the old
+        ``wait_for`` did (MOR-3575 re-review): the pre-3.12 ``wait_for``
+        cancelled the inner ``get()`` before it could run, so a queued
+        packet stayed queued.
+        """
+        transport._packet_queue.put_nowait(b"queued")
+        with pytest.raises(asyncio.TimeoutError):
+            await transport.receive_packet(timeout=0)
+        assert transport._packet_queue.get_nowait() == b"queued"
+
+    @pytest.mark.asyncio
+    async def test_receive_negative_timeout_leaves_queued_packet(
+        self, transport: IcomTransport
+    ) -> None:
+        """A negative timeout times out without consuming, exactly like
+        ``timeout=0`` and the old ``wait_for`` (MOR-3575 re-review).
+        """
+        transport._packet_queue.put_nowait(b"queued")
+        with pytest.raises(asyncio.TimeoutError):
+            await transport.receive_packet(timeout=-0.5)
+        assert transport._packet_queue.get_nowait() == b"queued"
+
 
 # ---------------------------------------------------------------------------
 # Disconnect

@@ -1346,10 +1346,9 @@ def test_leaked_run_owned_sockets_fail_the_stability_criterion() -> None:
 
     Six leaked run-owned sockets — the smallest leak over the unchanged
     tolerance — FAIL the criterion; one leak registers its exact delta of
-    one (the live signal carries legitimate +-1 transients, e.g. the web
-    server's delayed state broadcasts, so failing on a single one would
-    re-introduce the flake this change removes). An unrelated FD between
-    the probes must not change the verdict.
+    one (the live signal carries legitimate +-1 transients, so failing
+    on a single one would re-introduce the flake this change removes).
+    An unrelated FD between the probes must not change the verdict.
     """
     owned = _listener(backlog=8)
     ports = frozenset({owned.getsockname()[1]})

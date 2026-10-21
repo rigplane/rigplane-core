@@ -539,6 +539,13 @@ class IcomTransport:
             asyncio.TimeoutError: If no packet arrives within timeout.
         """
         pkt: bytes
+        if timeout is not None and timeout <= 0:
+            # wait_for(timeout <= 0) cancelled the inner get() before it
+            # could run and raised TimeoutError, leaving any queued packet
+            # for the next consumer. asyncio.timeout(0) would instead let
+            # the synchronous get() consume and return it (MOR-3575
+            # re-review), so keep the old outcome exactly.
+            raise asyncio.TimeoutError
         # asyncio.timeout runs in this task (unlike 3.11 wait_for's helper
         # task, which could swallow a delivered cancellation when the inner
         # get() completed in the same pass — the stop_pump deadlock of
