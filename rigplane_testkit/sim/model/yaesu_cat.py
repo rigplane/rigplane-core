@@ -7,14 +7,20 @@ Precedence for one request line (docs/internals/sim-architecture.md
 section 5): a native engine-backed handler's data reply or accepted SET
 wins immediately; a native ``?;`` refusal falls through to the recorded
 answer table, where recorded data, refusal or silence wins; with no
-recorded entry the refusal stands. A well-formed request with no native
-handler and no recorded entry is the ``Unsupported("not_modelled")``
-coverage gap: it answers ``?;``, is counted per request line in
-``not_modelled`` and, when the model was built with the engine's clock,
-is named in the engine trace as a ``marker`` record; a trace failure is
-counted in ``trace_failures`` and never changes the reply. Malformed
-lines (unterminated, non-ASCII, over 64 bytes, more than one ``;``)
-answer ``?;`` instead of raising and are not counted.
+recorded entry the refusal stands. Only a well-formed CAT command (two
+uppercase letters, then only digits, letters, ``+`` or ``-``) can reach
+that precedence chain; anything else (unterminated, non-ASCII, over 64
+bytes, more than one ``;``, a body outside that shape) is malformed: it
+answers ``?;`` instead of raising, is not counted, and never consults
+the recorded table. A well-formed request with no native handler and no
+recorded entry is the ``Unsupported("not_modelled")`` coverage gap: it
+answers ``?;``, is counted per request line in ``not_modelled``, and is
+reported to the ``on_not_modelled`` observer callback when one was
+given. The callback is best-effort instrumentation: its failures are
+logged and swallowed, it never changes the reply, and the model never
+touches the engine for it (no trace record is written and no scheduled
+operation is drained). ``handle_with_outcome`` returns the reply
+together with its explicit engine ``Outcome``.
 
 Engine state keys are the capability profile's exact control names
 (rigs/ftx1.toml), no aliases: the levels ``af_level``/``rf_gain``/
@@ -31,6 +37,7 @@ recording for the state seeded from it.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -39,9 +46,10 @@ from typing import TYPE_CHECKING
 from rigplane_testkit.sim.engine import (
     Capabilities,
     Clock,
-    Marker,
     Ok,
+    Outcome,
     ReceiverState,
+    Refused,
     SelectReceiver,
     SetFrequency,
     SetLevel,
@@ -52,6 +60,7 @@ from rigplane_testkit.sim.engine import (
     SetSplit,
     SimEngine,
     SimState,
+    Unsupported,
 )
 from rigplane_testkit.sim.profiles import SimProfile
 from rigplane_testkit.yaesu.replay import REFUSAL, RecordedCatAnswerTable
@@ -68,6 +77,13 @@ __all__ = [
 ]
 
 _MAX_LINE = 64  # bytes; a longer request answers ?;
+
+_LOG = logging.getLogger("rigplane_testkit.sim.model.yaesu_cat")
+
+#: Well-formed request body: two uppercase letters, then only digits,
+#: letters, ``+`` or ``-`` (the FTX-1 CAT OM frame shape). Anything else
+#: is malformed: refused, never counted, never looked up in the table.
+_BODY = re.compile(r"[A-Z]{2}[0-9A-Za-z+\-]*")
 
 #: Read lines the model serves from engine state (seed order).
 NATIVE_READS = (
@@ -158,10 +174,12 @@ class YaesuCatModel:
 
     ``handle`` takes one request line with its ``;`` and returns the reply
     line with its ``;``, or ``None`` for "no reply" (a served SET, or
-    recorded silence). The engine must come from ``build_ftx1_engine``:
-    the mode name/code mapping travels in its ``state.extra``. *clock* is
-    the clock the engine was built with; when given, each not-modelled
-    request is also named by a ``marker`` record in the engine trace.
+    recorded silence); ``handle_with_outcome`` also returns the explicit
+    engine ``Outcome`` behind that reply. The engine must come from
+    ``build_ftx1_engine``: the mode name/code mapping travels in its
+    ``state.extra``. *on_not_modelled* is an observer called with the
+    request line each time a well-formed request hits the coverage gap;
+    it is best-effort instrumentation and never changes the reply.
     """
 
     def __init__(
@@ -170,7 +188,7 @@ class YaesuCatModel:
         *,
         identity: str,
         recorded: RecordedCatAnswerTable | None = None,
-        clock: Clock | None = None,
+        on_not_modelled: Callable[[str], None] | None = None,
     ) -> None:
         if type(identity) is not str or not identity:
             raise ValueError(f"identity must be a non-empty string, got {identity!r}")
@@ -187,9 +205,8 @@ class YaesuCatModel:
         self._engine = engine
         self._identity = identity
         self._recorded = recorded
-        self._clock = clock
+        self._on_not_modelled = on_not_modelled
         self._not_modelled: dict[str, int] = {}
-        self._trace_failures = 0
         self._name_to_code = dict(zip(name_list, codes))
         self._code_to_name = {code: name for name, code in self._name_to_code.items()}
         self._handlers: dict[str, Callable[[str], str | None]] = {
@@ -219,64 +236,71 @@ class YaesuCatModel:
         """``Unsupported("not_modelled")`` replies per request line (a copy)."""
         return dict(self._not_modelled)
 
-    @property
-    def trace_failures(self) -> int:
-        """How often naming a not-modelled request in the trace itself failed."""
-        return self._trace_failures
-
     def handle(self, line: str) -> str | None:
         """Answer one request line (``;`` included); ``None`` means no reply."""
+        return self.handle_with_outcome(line)[0]
+
+    def handle_with_outcome(self, line: str) -> tuple[str | None, Outcome]:
+        """Answer one request line and name the explicit outcome.
+
+        The reply is exactly what :meth:`handle` returns; the outcome is
+        ``Ok()`` for a native data reply, an accepted SET or a recorded
+        answer, ``Refused("malformed")`` for malformed input,
+        ``Refused("native_refusal")`` for a native refusal that stood,
+        and ``Unsupported("not_modelled")`` for the coverage gap.
+        """
         if not isinstance(line, str):
-            return REFUSAL
+            return REFUSAL, Refused("malformed")
         if (
             not line.isascii()
             or len(line) > _MAX_LINE
             or not line.endswith(";")
             or ";" in line[:-1]
+            or _BODY.fullmatch(line[:-1]) is None
         ):
-            # Malformed input is its own class: refused, never not_modelled.
-            return REFUSAL
+            # Malformed input is its own class: refused, never counted,
+            # and the recorded table is never consulted for it.
+            return REFUSAL, Refused("malformed")
         body = line[:-1]
         handler = self._handlers.get(body[:2])
         if handler is not None:
             reply = handler(body)
             if reply != REFUSAL:
-                return reply  # native data or accepted SET (None) wins
+                return reply, Ok()  # native data or accepted SET (None) wins
             # A native refusal falls through to the recording (ADR section
             # 5): recorded data, refusal or silence wins over it.
             if self._recorded is not None:
                 answer = self._recorded.lookup(line)
                 if answer is not None:
-                    return answer.reply
-            return REFUSAL
+                    return answer.reply, Ok()
+            return REFUSAL, Refused("native_refusal")
         if self._recorded is not None:
             answer = self._recorded.lookup(line)
             if answer is not None:
-                return answer.reply  # data line, refusal, or None: recorded silence
+                # Data line, refusal, or None: recorded silence.
+                return answer.reply, Ok()
         self._note_not_modelled(line)
-        return REFUSAL
+        return REFUSAL, Unsupported("not_modelled")
+
+    def _note_not_modelled(self, line: str) -> None:
+        """Count the coverage gap, then report it to the observer callback.
+
+        The callback is best-effort instrumentation: a failure in it is
+        logged and swallowed (``Exception`` only — a ``BaseException``
+        such as a cancellation propagates), and it never changes the
+        reply. The engine is not involved at all.
+        """
+        self._not_modelled[line] = self._not_modelled.get(line, 0) + 1
+        if self._on_not_modelled is None:
+            return
+        try:
+            self._on_not_modelled(line)
+        except Exception:
+            _LOG.exception("on_not_modelled callback failed for %r", line)
 
     # ------------------------------------------------------------------
     # engine helpers
     # ------------------------------------------------------------------
-
-    def _note_not_modelled(self, line: str) -> None:
-        """Count the coverage gap; with a clock, name it in the engine trace.
-
-        Tracing goes through the engine's own public API
-        (``schedule``/``advance_to`` with a ``Marker``), so a failure
-        there (a non-monotonic clock reading, a re-entrant advance) is
-        counted in ``trace_failures`` and swallowed: it never changes the
-        reply and never reaches the caller.
-        """
-        self._not_modelled[line] = self._not_modelled.get(line, 0) + 1
-        if self._clock is None:
-            return
-        try:
-            self._engine.schedule(self._clock(), Marker(f"not_modelled {line}"))
-            self._engine.advance_to(self._clock())
-        except (ValueError, RuntimeError):
-            self._trace_failures += 1
 
     def _applied(self, op: object) -> str | None:
         """Apply a SET op: no reply on Ok, ``?;`` on any other outcome."""

@@ -7,13 +7,23 @@ profile loaded through the real loaders from explicit repo-root paths.
 from __future__ import annotations
 
 import ast
+import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from rigplane.profiles.rig_loader import load_rig
 
-from rigplane_testkit.sim.engine import ManualClock, Ok, SetMeter
+from rigplane_testkit.sim.engine import (
+    ManualClock,
+    Ok,
+    Refused,
+    ScheduledOp,
+    SetFrequency,
+    SetMeter,
+    Unsupported,
+)
 from rigplane_testkit.sim.model.yaesu_cat import (
     YaesuCatModel,
     build_ftx1_engine,
@@ -27,21 +37,19 @@ PROFILE_PATH = ROOT / "rigplane_testkit" / "sim" / "profiles" / "ftx1.toml"
 MODEL_PATH = ROOT / "rigplane_testkit" / "sim" / "model" / "yaesu_cat.py"
 
 
-def _model(recorded: RecordedCatAnswerTable | None = None) -> YaesuCatModel:
+def _model(
+    recorded: RecordedCatAnswerTable | None = None,
+    on_not_modelled: Callable[[str], None] | None = None,
+) -> YaesuCatModel:
     rig = load_rig(ROOT / "rigs" / "ftx1.toml")
     profile = load_sim_profile(PROFILE_PATH, root=ROOT)
     engine = build_ftx1_engine(profile, rig, clock=ManualClock(), seed=7)
     return YaesuCatModel(
-        engine, identity=rig.expected_identity_ids[0], recorded=recorded
+        engine,
+        identity=rig.expected_identity_ids[0],
+        recorded=recorded,
+        on_not_modelled=on_not_modelled,
     )
-
-
-def _model_with_clock() -> YaesuCatModel:
-    rig = load_rig(ROOT / "rigs" / "ftx1.toml")
-    profile = load_sim_profile(PROFILE_PATH, root=ROOT)
-    clock = ManualClock()
-    engine = build_ftx1_engine(profile, rig, clock=clock, seed=7)
-    return YaesuCatModel(engine, identity=rig.expected_identity_ids[0], clock=clock)
 
 
 def test_identity_read() -> None:
@@ -240,45 +248,110 @@ def test_non_string_input_answers_refusal_without_raising() -> None:
     assert _model().handle(None) == "?;"  # type: ignore[arg-type]
 
 
-def test_unmodelled_requests_are_counted_named_and_traced() -> None:
-    # ADR section 4/5: a request with no native handler and no recording
-    # is Unsupported("not_modelled"): it answers ?; and the gap is
-    # counted per line and named in the engine trace as a marker.
-    model = _model_with_clock()
-    assert model.handle("QQ;") == "?;"
+def test_unmodelled_requests_are_counted_and_reported_to_the_callback() -> None:
+    # ADR section 4/5: a well-formed request with no native handler and no
+    # recording is Unsupported("not_modelled"): it answers ?;, is counted
+    # per line, and the observer callback is called once per request with
+    # the request line. The engine trace is not written by the model.
+    seen: list[str] = []
+    model = _model(on_not_modelled=seen.append)
+    reply, outcome = model.handle_with_outcome("QQ;")
+    assert reply == "?;"
+    assert outcome == Unsupported("not_modelled")
     assert model.handle("ZZ;") == "?;"
     assert model.handle("QQ;") == "?;"
+    assert seen == ["QQ;", "ZZ;", "QQ;"]
     assert model.not_modelled == {"QQ;": 2, "ZZ;": 1}
-    markers = [r for r in model.engine.trace if r.kind == "marker"]
-    assert [r.name for r in markers] == [
-        "not_modelled QQ;",
-        "not_modelled ZZ;",
-        "not_modelled QQ;",
+    assert not [r for r in model.engine.trace if r.kind == "marker"]
+
+
+@pytest.mark.parametrize("error", [RuntimeError, TypeError, OSError])
+def test_a_failing_callback_still_answers_and_the_model_keeps_working(
+    error: type[Exception], caplog: pytest.LogCaptureFixture
+) -> None:
+    def callback(line: str) -> None:
+        raise error(f"boom on {line}")
+
+    model = _model(on_not_modelled=callback)
+    with caplog.at_level(logging.ERROR, "rigplane_testkit.sim.model.yaesu_cat"):
+        assert model.handle("QQ;") == "?;"  # the exception does not escape
+    assert model.not_modelled == {"QQ;": 1}
+    assert any(
+        record.levelno == logging.ERROR and "on_not_modelled" in record.getMessage()
+        for record in caplog.records
+    )
+    assert model.handle("FA;") == "FA147225000;"  # the model keeps working
+
+
+def test_a_base_exception_from_the_callback_propagates() -> None:
+    # Only Exception is swallowed: a cancellation (KeyboardInterrupt is a
+    # BaseException) must reach the caller. The gap is counted first.
+    def callback(line: str) -> None:
+        raise KeyboardInterrupt
+
+    model = _model(on_not_modelled=callback)
+    with pytest.raises(KeyboardInterrupt):
+        model.handle("QQ;")
+    assert model.not_modelled == {"QQ;": 1}
+
+
+@pytest.mark.parametrize("line", [";", "1;", "a;", "QQ?;", "QQ;;"])
+def test_malformed_bodies_are_never_counted_reported_or_looked_up(
+    line: str,
+) -> None:
+    # A body that is not a well-formed CAT command is Refused("malformed"):
+    # not a coverage gap, and the recorded table is not consulted for it
+    # (the table below even holds an answer to the very line asked).
+    seen: list[str] = []
+    rows = [
+        {"dir": "c2r", "line": line},
+        {"dir": "r2c", "line": "QQ1;"},
     ]
+    model = _model(
+        recorded=RecordedCatAnswerTable.from_cat_pairs(rows),
+        on_not_modelled=seen.append,
+    )
+    reply, outcome = model.handle_with_outcome(line)
+    assert reply == "?;"
+    assert outcome == Refused("malformed")
+    assert model.not_modelled == {}
+    assert seen == []
 
 
-def test_counting_needs_no_clock_and_modelled_answers_are_not_counted() -> None:
+def test_a_due_scheduled_op_is_not_drained_by_a_gap() -> None:
+    # The old engine-trace mechanism drained due scheduled operations as a
+    # side effect of sending an unsupported command; the callback design
+    # never touches the engine.
     model = _model()
-    assert model.handle("QQ;") == "?;"  # counted without a clock
+    model.engine.schedule(0.0, ScheduledOp(SetFrequency(0, 7_000_000)))
+    assert model.handle("QQ;") == "?;"
+    assert model.handle("FA;") == "FA147225000;"  # frequency unchanged
+    model.engine.advance_to(0.0)  # the op was merely pending; now it lands
+    assert model.handle("FA;") == "FA007000000;"
+
+
+def test_handle_with_outcome_names_every_reply_class() -> None:
+    rows = [
+        {"dir": "c2r", "line": "FR;"},
+        {"dir": "r2c", "line": "FR01;"},
+    ]
+    model = _model(recorded=RecordedCatAnswerTable.from_cat_pairs(rows))
+    assert model.handle_with_outcome("FA;") == ("FA147225000;", Ok())  # native data
+    assert model.handle_with_outcome("FA014074000;") == (None, Ok())  # accepted SET
+    assert model.handle_with_outcome("FR;") == ("FR01;", Ok())  # recorded answer
+    # A native refusal with no recorded entry stands (AUTO-speed readbacks
+    # 5/6 are not settable).
+    assert model.handle_with_outcome("GT05;") == ("?;", Refused("native_refusal"))
+
+
+def test_counting_needs_no_callback_and_modelled_answers_are_not_counted() -> None:
+    model = _model()
+    assert model.handle("QQ;") == "?;"  # counted without a callback
     assert model.handle("GT05;") == "?;"  # a modelled refusal, not a gap
     for line in ("FA;FB;", "FA", "FÁ;", "F" * 64 + ";"):
         assert model.handle(line) == "?;"  # malformed: never counted
     assert model.not_modelled == {"QQ;": 1}
     assert not [r for r in model.engine.trace if r.kind == "marker"]
-
-
-def test_a_trace_failure_still_answers_and_is_counted() -> None:
-    rig = load_rig(ROOT / "rigs" / "ftx1.toml")
-    profile = load_sim_profile(PROFILE_PATH, root=ROOT)
-    engine = build_ftx1_engine(profile, rig, clock=ManualClock(), seed=7)
-    # A clock behind the engine time makes schedule() raise ValueError;
-    # the reply and the counter must not change.
-    model = YaesuCatModel(
-        engine, identity=rig.expected_identity_ids[0], clock=lambda: -1.0
-    )
-    assert model.handle("QQ;") == "?;"
-    assert model.not_modelled == {"QQ;": 1}
-    assert model.trace_failures == 1
 
 
 def test_a_served_set_never_replies() -> None:

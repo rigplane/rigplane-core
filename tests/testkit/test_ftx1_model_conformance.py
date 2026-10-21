@@ -91,6 +91,15 @@ def test_every_native_read_is_recorded_as_data() -> None:
     assert not missing, f"native reads without a recorded data reply: {missing}"
 
 
+def test_handle_and_handle_with_outcome_agree_on_every_recorded_request() -> None:
+    # One code path: handle() is handle_with_outcome()[0], so the reply
+    # must be identical whichever entry point is used.
+    table = _table()
+    model = _seeded_model(table)
+    for request in table.requests():
+        assert model.handle(request) == model.handle_with_outcome(request)[0], request
+
+
 def test_oracle_set_frames_of_served_verbs_are_accepted() -> None:
     # Unseeded model: the recorded MEMORY-mode state would refuse FA SETs.
     model = _build(None)
