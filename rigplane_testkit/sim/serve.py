@@ -5,10 +5,8 @@ aiohttp control endpoint and every event handler — no threads. One JSON line
 goes to stdout once everything listens (logs to stderr); every accepted or
 rejected control event, plus start and stop, lands in a bounded trace
 (optionally a JSONL file). ``t`` (real elapsed seconds) is the only time
-field; records appended by a restore timer (``usb_reappear`` after
-``usb_vanish`` with ``for_s``) appear at their deadline unless an explicit
-``usb_reappear`` cancelled the timer first, so the trace is a log of what
-happened, not a replay script.
+field; the trace is a log of what happened, not a replay script (a restore
+timer's ``usb_reappear`` record appears only if the timer fires).
 
 Two radio kinds (MOR-3594): ``ic7610`` (LAN) and ``ic7300`` — the serial
 CI-V fake on a real TCP listener (``socket://``) plus a PTY where the
