@@ -238,6 +238,8 @@ def load_sim_profile(path: Path, *, root: Path) -> SimProfile:
     echo = _scalar(t, "echo", p, bool) if kind == "serial" else None
     port = hold = owner = None
     if kind == "lan":
+        if not radio.has_lan:
+            _fail(f"{p}: {radio.model!r} capability profile declares no LAN")
         port = t.get("control_port")
         if port is not None and (not _is_num(port, True) or not 1 <= port <= 65535):
             _fail(f"{p}.control_port: must be an integer in 1..65535, got {port!r}")
@@ -275,7 +277,8 @@ def load_sim_profile(path: Path, *, root: Path) -> SimProfile:
             _fail(f"{e}.file: required non-empty string, got {answer_file!r}")
         if not answer_transport:
             _fail(f"{e}.transport: required non-empty string, got {answer_transport!r}")
-        if not (root / answer_file).exists():
+        resolved = (base / answer_file).resolve()
+        if not resolved.is_file() or not resolved.is_relative_to(base):
             _fail(f"{e}.file: {answer_file!r} missing under root")
         recorded.append((answer_file, answer_transport))
     tm_t = _section(data.get("timing", {}), "timing", frozenset({"reply_latency_ms"}))
