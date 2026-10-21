@@ -220,6 +220,11 @@ export interface Capabilities {
    *  Present only when the profile declares `[ctcss]` (MOR-2111). */
   ctcssTones?: number[];
   modes: string[];
+  /** Profile-declared mode families (MOR-3679, `[modes] families`):
+   *  family name -> mode names from `modes`, e.g. `{ cw: ['CW-U', 'CW-L'] }`.
+   *  `{}` when the profile declares none; absent on older servers. Read the
+   *  radio's CW modes from here instead of a client-side list. */
+  modeFamilies?: Record<string, string[]>;
   filters: string[];
   filterWidthMin?: number;   // Min filter width in Hz (default 50)
   filterWidthMax?: number;   // Max filter width in Hz (default 9999)
@@ -662,6 +667,12 @@ export function validateCapabilities(value: unknown): Capabilities {
     }
   });
   requireStringArray(raw.modes, '$.modes');
+  if ('modeFamilies' in raw) {
+    const families = requireRecord(raw.modeFamilies, '$.modeFamilies');
+    for (const [name, members] of Object.entries(families)) {
+      requireStringArray(members, `$.modeFamilies.${name}`);
+    }
+  }
   requireStringArray(raw.filters, '$.filters');
   if ('ctcssTones' in raw) {
     if (!Array.isArray(raw.ctcssTones) || raw.ctcssTones.length === 0) {
