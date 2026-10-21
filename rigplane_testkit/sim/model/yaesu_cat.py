@@ -44,6 +44,22 @@ the side digit as 0; a receiver's S-meter reads 0 while its AGC is OFF
 refused while MAIN is in MEMORY mode (observed on the MAIN side only, so
 ``FB`` stays accepted). Reply formats are byte-identical to the
 recording for the state seeded from it.
+
+Keyer memory (MOR-3678), from the FTX-1 CAT Operation Reference Manual
+FTX-1_CAT_OM_ENG_2508-C, not from a recording: ``KM`` KEYING MEMORY
+(printed p.17, PDF p.18) writes ``KM P1 P2...;`` with P1 the channel 1-5
+and P2 up to 50 message characters, and reads ``KM P1;``; ``KY`` CW
+KEYING MEMORY PLAY (printed p.18, PDF p.19) sets ``KY P1 P2;`` with P1
+0 TEXT / 1 MESSAGE memory and P2 0 STOP / 1-5 playback, and has no read
+form (command list, printed p.5: Read X, Answer X). Where the manual is
+silent the model stays conservative: KM text is limited to the
+well-formed body charset above (the manual names no KM character set;
+a space or CW punctuation is malformed here), a read of a channel the
+sim never saw written is the ``not_modelled`` gap (no invented empty or
+padded answer), and KY only records the request: the manual does not
+say whether KM writes the TEXT or the MESSAGE memory, so playback is not
+linked to KM's text, and playback keys nothing (the engine PTT is
+untouched). The keyer memory lives in the model, not the engine.
 """
 
 from __future__ import annotations
@@ -129,7 +145,12 @@ NATIVE_READS = (
 )
 
 #: Two-letter verbs whose SET lines the model serves natively.
-NATIVE_SET_VERBS = frozenset("FA FB MD TX AI ST VS AG RG SQ NL GT PA".split())
+NATIVE_SET_VERBS = frozenset("FA FB MD TX AI ST VS AG RG SQ NL GT PA KM KY".split())
+
+# FTX-1 CAT OM 2508-C: KM P1 "1 - 5", P2 "up to 50 characters" (printed
+# p.17); KY P1 "0"/"1", P2 "0" STOP or "1"-"5" (printed p.18).
+_KEYER_CHANNELS = "12345"
+_KEYER_TEXT_MAX = 50
 
 # Static codec data the engine cannot express, handed over through
 # ``SimState.extra`` by ``build_ftx1_engine`` (scalar values only).
@@ -284,6 +305,8 @@ class YaesuCatModel:
         self._not_modelled: dict[str, int] = {}
         self._name_to_code = dict(zip(name_list, codes))
         self._code_to_name = {code: name for name, code in self._name_to_code.items()}
+        self._keying_memory: dict[int, str] = {}
+        self._keyer_play_requests: list[tuple[int, int]] = []
         self._handlers: dict[str, Callable[[str], str | None | _NotModelled]] = {
             "ID": self._identity_read,
             "IF": self._information,
@@ -296,6 +319,8 @@ class YaesuCatModel:
             "ST": self._split,
             "VS": self._vfo_select,
             "SM": self._s_meter,
+            "KM": self._keying_memory_command,
+            "KY": self._keyer_play,
         }
         for codec in _LEVELS:
             self._handlers[codec.verb] = lambda body, c=codec: self._level(body, c)
@@ -310,6 +335,16 @@ class YaesuCatModel:
     def not_modelled(self) -> Mapping[str, int]:
         """``Unsupported("not_modelled")`` replies per request line (a copy)."""
         return dict(self._not_modelled)
+
+    @property
+    def keying_memory(self) -> Mapping[int, str]:
+        """KM channel -> text the sim saw written (a copy)."""
+        return dict(self._keying_memory)
+
+    @property
+    def keyer_play_requests(self) -> tuple[tuple[int, int], ...]:
+        """Accepted ``KY P1 P2;`` requests as ``(P1, P2)``, in order."""
+        return tuple(self._keyer_play_requests)
 
     def handle(self, line: str) -> str | None:
         """Answer one request line (``;`` included); ``None`` means no reply."""
@@ -517,6 +552,32 @@ class YaesuCatModel:
                 return REFUSAL
             return self._applied(SetSelector(int(rest[0]), codec.name, value))
         return REFUSAL
+
+    def _keying_memory_command(self, body: str) -> str | None | _NotModelled:
+        # KM KEYING MEMORY, CAT OM 2508-C printed p.17.
+        if len(body) < 3 or body[2] not in _KEYER_CHANNELS:
+            return REFUSAL
+        channel = int(body[2])
+        text = body[3:]
+        if not text:
+            stored = self._keying_memory.get(channel)
+            # An unwritten channel has no sourced answer: coverage gap.
+            return _NOT_MODELLED if stored is None else f"KM{channel}{stored};"
+        if len(text) > _KEYER_TEXT_MAX:
+            return REFUSAL
+        self._keying_memory[channel] = text
+        return None
+
+    def _keyer_play(self, body: str) -> str | None:
+        # KY CW KEYING MEMORY PLAY, CAT OM 2508-C printed p.18: set-only.
+        if (
+            len(body) != 4
+            or body[2] not in "01"
+            or body[3] not in "0" + _KEYER_CHANNELS
+        ):
+            return REFUSAL
+        self._keyer_play_requests.append((int(body[2]), int(body[3])))
+        return None
 
     def _s_meter(self, body: str) -> str:
         if body not in ("SM0", "SM1"):
