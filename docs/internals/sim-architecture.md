@@ -122,12 +122,15 @@ class SimEngine:
     trace: Sequence[Record]
 ```
 
-`Outcome` is one of `Ok(value)`, `Unsupported(reason)` with `reason` either
-`"capability"` (the capability profile does not declare the feature: the radio would
-refuse it too) or `"not_modelled"` (the profile declares it but the simulator has no
-native handler and no recording: a coverage gap, same default wire answer as a
-refusal but counted and named in the trace and report so it cannot pass for radio
-behaviour), `OutOfRange`, `Refused(reason)` (state forbids it, for
+`Outcome` is one of `Ok(value)`, `Unsupported(reason)` with `reason`
+`"absent"` (the capability profile explicitly declares the feature absent: this is
+the one reason that may be reported as the radio's own refusal), `"undeclared"` (the
+capability profile is silent about it: uncharacterized, not evidence of absence) or
+`"not_modelled"` (declared, but the simulator has no native handler and no recording).
+`"undeclared"` and `"not_modelled"` are coverage gaps: they get the same default wire
+answer as a refusal so a client keeps running, but they are counted and named in the
+trace and report and never presented as radio behaviour. The other outcomes are
+`OutOfRange`, `Refused(reason)` (state forbids it, for
 example TX while locked). A protocol model maps these to the radio's own
 answer (NAK, `?;`, silence) as the simulation profile says. There is no
 outcome that is implicit or silent.
@@ -172,7 +175,9 @@ becomes `ic7300`), and one package serves every simulation profile of that radio
 `model/registry.py` imports that package for the profile's radio if it exists and
 passes in a registry with `override(command_name, handler)` (replace the
 model's answer for one named command) and `add_state(name, default)`.
-`override` takes `handler(request) -> reply`: `request` carries the command
+`override` takes `handler(request, ctx) -> reply`: `ctx` gives the handler the engine
+(`ctx.engine.read(...)` / `ctx.engine.apply(...)`) and the extra-state mapping
+(`ctx.extra`, read/write), and nothing else (no globals, no sockets); `request` carries the command
 name (from the set of command declarations the capability profile exposes for the
 radio's protocol family: CI-V command-map entries and Yaesu CAT command specs alike;
 absent declarations excluded) and its decoded arguments
@@ -181,10 +186,11 @@ by the capability profile, whose declarations hold only command bytes or templat
 is the model family's reply value; that contract is frozen in the model PR
 (MOR-3601 for Icom, MOR-3602 for Yaesu) before any radio extension consumes it. An
 `override` for a command the capability profile does not declare is an error at
-registration. `add_state(name, default)` adds `name` to `SimState.extra`; a
-name already declared in the profile's `[state.extra]` with the same default is
-accepted, with a different default it is an error (the profile file wins
-nowhere: the conflict is reported at load).
+registration. `add_state(name, default)` adds `name` to `SimState.extra` before the engine is
+constructed: the resolved extra schema is the profile's `[state.extra]` plus every
+registered name; a name in both with the same default is accepted, with a different
+default it is an error reported at load. The loader validates `[state.extra]` names
+and values but does not require it to list registered fields.
 A radio PR that needs another shared hook opens or comments on a shared issue
 first. A radio PR never edits the IC-7610 files or another radio's folders.
 Refusal hooks are scenario events (`refuse`, section 7), not registrations. A
