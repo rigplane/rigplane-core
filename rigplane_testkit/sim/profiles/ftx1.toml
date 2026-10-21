@@ -18,7 +18,9 @@ gaps = [
     "firmware unknown: not readable over CAT and the front panel was not inspected",
     "SM1; is answered with the side digit echoed as 0 (recorded quirk)",
     "AI auto-information stores state only; no unsolicited pushes are sent",
-    "PS SET is refused: the engine has no power op",
+    "PS SET and VHF/UHF PA SET are not modelled: recorded answers win; without one they answer ?; and report a not_modelled coverage gap",
+    "mode (MD) and split (ST) writes are accepted while TX is active; the measured radio refuses them with ?; (rigs/ftx1.toml [tx_policy])",
+    "SUB AGC is stored per receiver, not per mode; the measured radio keeps it per mode (rigs/ftx1.toml SUB DSP controls)",
 ]
 
 [transport.yaesu_cat]

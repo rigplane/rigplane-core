@@ -12,8 +12,10 @@ uppercase letters, then only digits, letters, ``+`` or ``-``) can reach
 that precedence chain; anything else (unterminated, non-ASCII, over 64
 bytes, more than one ``;``, a body outside that shape) is malformed: it
 answers ``?;`` instead of raising, is not counted, and never consults
-the recorded table. A well-formed request with no native handler and no
-recorded entry is the ``Unsupported("not_modelled")`` coverage gap: it
+the recorded table. Declared but unimplemented forms use a private sentinel,
+distinct from a native refusal. Like requests with no native handler, they
+consult the recorded table first; without an entry they are the
+``Unsupported("not_modelled")`` coverage gap: each
 answers ``?;``, is counted per request line in ``not_modelled``, and is
 reported to the ``on_not_modelled`` observer callback when one was
 given. The callback is best-effort instrumentation: an ordinary
@@ -85,6 +87,13 @@ __all__ = [
 _MAX_LINE = 64  # bytes; a longer request answers ?;
 
 _LOG = logging.getLogger("rigplane_testkit.sim.model.yaesu_cat")
+
+
+class _NotModelled:
+    """A declared command form without native implementation, not a refusal."""
+
+
+_NOT_MODELLED = _NotModelled()
 
 #: Well-formed request body: two uppercase letters, then only digits,
 #: letters, ``+`` or ``-`` (the FTX-1 CAT OM frame shape). Anything else
@@ -229,7 +238,7 @@ _SELECTORS = (
     # rigs/ftx1.toml [agc]: 0-4 settable; 5/6 are AUTO-speed readbacks the
     # radio only answers with, so a SET of 5/6 is refused.
     _SelectorCodec("GT", "agc", (0, 1), 4),
-    _SelectorCodec("PA", "preamp", (0,), 2),  # 0 IPO, 1 AMP1, 2 AMP2; MAIN only
+    _SelectorCodec("PA", "preamp", (0,), 2),  # HF/50 MHz only; 0 IPO, 1/2 AMP1/2
 )
 _SELECTOR_BY_VERB = {codec.verb: codec for codec in _SELECTORS}
 
@@ -275,7 +284,7 @@ class YaesuCatModel:
         self._not_modelled: dict[str, int] = {}
         self._name_to_code = dict(zip(name_list, codes))
         self._code_to_name = {code: name for name, code in self._name_to_code.items()}
-        self._handlers: dict[str, Callable[[str], str | None]] = {
+        self._handlers: dict[str, Callable[[str], str | None | _NotModelled]] = {
             "ID": self._identity_read,
             "IF": self._information,
             "FA": lambda body: self._frequency(body, "FA", 0),
@@ -329,22 +338,18 @@ class YaesuCatModel:
             return REFUSAL, Refused("malformed")
         body = line[:-1]
         handler = self._handlers.get(body[:2])
-        if handler is not None:
-            reply = handler(body)
-            if reply != REFUSAL:
-                return reply, Ok()  # native data or accepted SET (None) wins
-            # A native refusal falls through to the recording (ADR section
-            # 5): recorded data, refusal or silence wins over it.
-            if self._recorded is not None:
-                answer = self._recorded.lookup(line)
-                if answer is not None:
-                    return answer.reply, Ok()
-            return REFUSAL, Refused("native_refusal")
+        reply = handler(body) if handler is not None else _NOT_MODELLED
+        if not isinstance(reply, _NotModelled) and reply != REFUSAL:
+            return reply, Ok()  # native data or accepted SET (None) wins
+        # Both native refusals and unimplemented forms defer to recorded
+        # data, refusal or silence before choosing their distinct outcomes.
         if self._recorded is not None:
             answer = self._recorded.lookup(line)
             if answer is not None:
                 # Data line, refusal, or None: recorded silence.
                 return answer.reply, Ok()
+        if reply == REFUSAL:
+            return REFUSAL, Refused("native_refusal")
         self._note_not_modelled(line)
         return REFUSAL, Unsupported("not_modelled")
 
@@ -442,10 +447,11 @@ class YaesuCatModel:
             return self._applied(SetPtt(body == "TX1"))
         return REFUSAL  # TX2 (self-keyed readback) is not settable
 
-    def _power(self, body: str) -> str:
+    def _power(self, body: str) -> str | _NotModelled:
         if body == "PS":
             return "PS1;" if self._read_bool("power_on", True) else "PS0;"
-        # The engine has no power op: PS SET is refused, state unchanged.
+        if body in ("PS0", "PS1"):
+            return _NOT_MODELLED  # declared SET; the engine has no power op
         return REFUSAL
 
     def _auto_information(self, body: str) -> str | None:
@@ -484,8 +490,17 @@ class YaesuCatModel:
             return self._applied(SetLevel(int(rest[0]), codec.name, value))
         return REFUSAL
 
-    def _selector(self, body: str, codec: _SelectorCodec) -> str | None:
+    def _selector(self, body: str, codec: _SelectorCodec) -> str | None | _NotModelled:
         rest = body[2:]
+        # rigs/ftx1.toml set_preamp selects a band, not a receiver. Only
+        # band 0 (HF/50 MHz) is backed by the engine's preamp selector.
+        if (
+            codec.verb == "PA"
+            and len(rest) == 2
+            and rest[0] in "12"
+            and rest[1] in "012"
+        ):
+            return _NOT_MODELLED
         if len(rest) == 1 and rest.isdigit() and int(rest) in codec.sides:
             # The engine enforces the capability domain on every write, so
             # the one-digit readback field cannot widen.

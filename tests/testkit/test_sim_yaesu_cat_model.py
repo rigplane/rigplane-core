@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import logging
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
@@ -114,7 +115,6 @@ def test_boundary_values() -> None:
         "FA01407400;",  # 8 digits
         "FA0140740000;",  # 10 digits
         "SM0000;",  # S-meter is read-only
-        "PS0;",  # the engine has no power op
         "IF00025147225000+000000412003;",  # SET on IF is refused
     ):
         assert model.handle(line) == "?;", line
@@ -270,6 +270,76 @@ def test_unmodelled_requests_are_counted_and_reported_to_the_callback() -> None:
     assert seen == ["QQ;", "ZZ;", "QQ;"]
     assert model.not_modelled == {"QQ;": 2, "ZZ;": 1}
     assert not [r for r in model.engine.trace if r.kind == "marker"]
+
+
+@pytest.mark.parametrize(
+    "line", ["PS0;", "PS1;", "PA10;", "PA11;", "PA12;", "PA20;", "PA21;", "PA22;"]
+)
+def test_unimplemented_forms_are_counted_without_touching_the_engine(line: str) -> None:
+    seen: list[str] = []
+    model = _model(on_not_modelled=seen.append)
+    model.engine.schedule(0.0, ScheduledOp(SetFrequency(0, 7_000_000)))
+    state = deepcopy(model.engine.state)
+    trace = model.engine.trace
+    for _ in range(2):
+        assert model.handle_with_outcome(line) == ("?;", Unsupported("not_modelled"))
+    assert model.not_modelled == {line: 2}
+    assert seen == [line, line]
+    assert model.engine.state == state
+    assert model.engine.trace == trace
+    model.engine.advance_to(0.0)
+    assert model.handle("FA;") == "FA007000000;"
+
+
+@pytest.mark.parametrize("line", ["PS0;", "PS1;", "PA11;", "PA21;"])
+@pytest.mark.parametrize("reply", [None, "?;", "data"])
+def test_recorded_answers_win_over_unimplemented_forms(
+    line: str, reply: str | None
+) -> None:
+    expected = line if reply == "data" else reply
+    rows = [{"dir": "c2r", "line": line}]
+    if expected is not None:
+        rows.append({"dir": "r2c", "line": expected})
+    seen: list[str] = []
+    model = _model(
+        recorded=RecordedCatAnswerTable.from_cat_pairs(rows),
+        on_not_modelled=seen.append,
+    )
+    assert model.handle_with_outcome(line) == (expected, Ok())
+    assert model.not_modelled == {}
+    assert seen == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "TX2;",
+        "PS2;",
+        "PS00;",
+        "PA13;",
+        "PA23;",
+        "PA31;",
+        "PA111;",
+        "PA1;",
+        "PA2;",
+        "ID0840;",
+        "SM0000;",
+        "SM1255;",
+        "IF00025147225000+000000412003;",
+        "AG2255;",
+        "RG2255;",
+        "SQ2255;",
+        "NL2010;",
+        "GT21;",
+        "GT15;",
+    ],
+)
+def test_invalid_or_read_only_forms_stay_native_refusals(line: str) -> None:
+    seen: list[str] = []
+    model = _model(on_not_modelled=seen.append)
+    assert model.handle_with_outcome(line) == ("?;", Refused("native_refusal"))
+    assert model.not_modelled == {}
+    assert seen == []
 
 
 @pytest.mark.parametrize("error", [RuntimeError, TypeError, OSError])
