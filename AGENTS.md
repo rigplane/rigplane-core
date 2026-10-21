@@ -414,6 +414,56 @@ implementation agent may not be the review agent.
   `visual` jobs. Finish focused development checks first, then open or mark the
   final candidate Ready; the `ready_for_review` event starts its required CI.
 
+## Code Review Rules
+
+Rules for Codex code review on GitHub. Builders: the same classes are the
+pre-push checklist in
+[`docs/development/review-checklist.md`](docs/development/review-checklist.md).
+
+### One pass, everything at once
+
+- Report every P0, P1 and P2 finding in a single review pass. Do not stop at
+  the first few; every finding left for a later pass costs the team another
+  15-30 minute round. There is no cap on the number of findings.
+- Group findings by file. Give `file:line`, the concrete input or sequence that
+  breaks, and the concrete fix.
+- One comment per root cause. When the same defect appears in several places,
+  report it once and list the places.
+- Review the lines added by fix commits with the same rigor as the first
+  commit, and search for siblings of a finding (the same defect class in a
+  second code path) in the same pass.
+- Do not repeat a finding that was fixed or that a thread already answered
+  with evidence.
+
+### Severity scope
+
+- Do not raise P3 polish (naming, style, formatting, "could be refactored").
+- For internal test and bench tooling, do not harden against attackers who do
+  not exist in the deployment; report what causes a wrong verdict, dirty state,
+  lost data or a hung run.
+- Report a comment, docstring, README or PR-body claim that is false or
+  overstates what the code does as P2.
+
+### Defect classes to check on every change
+
+- Untrusted or dynamic input: wrong types, NaN, path escapes, IPv6 brackets,
+  stale or truncated device replies, validation applied to one path but not its
+  siblings.
+- Failure paths: an error that becomes a traceback instead of the documented
+  outcome; one failed step that skips the remaining restore or cleanup steps.
+- State left dirty on interrupt: SIGTERM or cancellation between two
+  statements, handlers installed late, `BaseException` bypassing `except`.
+- Concurrency and cancellation: two instances at once, stale lock or reused
+  PID, cancel before start, fire-and-forget followed by a dependent step.
+- Time: fixed sleeps as synchronization, measurement windows that start at the
+  wrong moment, timeouts shorter than the callee's own bounds.
+- Verdicts that fail open: `|| true`, empty or unmeasurable results counted as
+  PASS, `any()` where `all()` is meant, success without observed evidence.
+- Contract fidelity: code that disagrees with the pinned contract, schema,
+  profile or fixture; sibling files (docs, allow-lists, label lists, tests that
+  pin literals) that must change with the change.
+- Restart, upgrade and rerun behavior of services and deploy code.
+
 ## Release branches
 
 Use release branches only when a public/core release needs stabilization while
@@ -429,5 +479,10 @@ back to `main`.
 - Prefer tests before implementation for bugs and behavior changes.
 - Do not add new layers, abstractions, or broad refactors unless the issue
   explicitly requires it.
+- Before the first push and before every re-push, walk
+  `docs/development/review-checklist.md` against your diff and run
+  `tmp/pre-review.sh` (a local exhaustive Codex pass) until it prints
+  `PRE-REVIEW: CLEAN`. Keep a PR at or below 500 changed lines; split larger
+  work (the guardrails in `CLAUDE.md` stay the hard limits).
 - Keep hardware-dependent work mockable where possible; otherwise mark the
   issue as requiring human/hardware validation.
