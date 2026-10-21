@@ -148,13 +148,20 @@ function hasDirective({comments, verdict, headSha, notBefore = null}) {
         return false;
       }
     } else {
-      let fenced = false;
+      // Markdown fences: an opener of >= 3 backticks or tildes is closed only by a bare line of the
+      // same character and at least the same length; nothing inside counts.
+      let fence = null;
       let found = false;
       for (const line of lines) {
-        if (/^\s*(```|~~~)/u.test(line)) {
-          fenced = !fenced;
-        } else if (!fenced && line === wanted) {
-          found = true;
+        const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(line);
+        if (fence === null) {
+          if (marker !== null) {
+            fence = {char: marker[1][0], length: marker[1].length};
+          } else if (line === wanted) {
+            found = true;
+          }
+        } else if (marker !== null && marker[1][0] === fence.char && marker[1].length >= fence.length && marker[2].trim() === '') {
+          fence = null;
         }
       }
       if (!found) {
