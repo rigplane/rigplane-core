@@ -123,6 +123,52 @@ function buildCodexVerdict({codex, unresolved, backup, headSha}) {
   };
 }
 
+// Trusted commenters only (the lane script and the coordinator post with the owner's account, whose
+// association is OWNER); a PR author without write access cannot satisfy the gate by commenting.
+const TRUSTED_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+// True when a trusted, non-minimized comment carries `Agent Review: <VERDICT> <full head sha>`.
+// PASS: the directive must be the first non-blank line, exactly (a quoted or fenced example, a line below
+// prose, an extended sha token or another head do not count) and the comment must be newer than the head
+// commit (`notBefore`), so it cannot outlive a force-push.
+// BLOCKED: any unquoted, unfenced line equal to the directive counts (a blocker written below the
+// explanation stays binding), and its age does not matter; a new head retires it by changing the sha.
+function hasDirective({comments, verdict, headSha, notBefore = null}) {
+  if (!SHA_PATTERN.test(headSha)) {
+    return false;
+  }
+  const wanted = `Agent Review: ${verdict} ${headSha}`;
+  return comments.some((comment) => {
+    if (comment.minimized || !TRUSTED_ASSOCIATIONS.has(comment.author_association) || typeof comment.body !== 'string') {
+      return false;
+    }
+    const lines = comment.body.replace(/\r\n/gu, '\n').split('\n');
+    if (verdict === 'PASS') {
+      if (lines.find((line) => line.trim() !== '') !== wanted) {
+        return false;
+      }
+    } else {
+      let fenced = false;
+      let found = false;
+      for (const line of lines) {
+        if (/^\s*(```|~~~)/u.test(line)) {
+          fenced = !fenced;
+        } else if (!fenced && line === wanted) {
+          found = true;
+        }
+      }
+      if (!found) {
+        return false;
+      }
+    }
+    if (notBefore === null) {
+      return true;
+    }
+    const stamp = new Date(comment.updated_at ?? comment.created_at);
+    return !Number.isNaN(stamp.valueOf()) && stamp >= notBefore;
+  });
+}
+
 const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
@@ -156,6 +202,7 @@ module.exports = {
   GPT_BUILT_LABEL,
   buildCodexVerdict,
   codexReviewedHead,
+  hasDirective,
   isCodexUser,
   readReviewThreads,
   unresolvedCodexFindings,

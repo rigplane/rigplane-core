@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 const {
   buildCodexVerdict,
   codexReviewedHead,
+  hasDirective,
   readReviewThreads,
   unresolvedCodexFindings,
 } = require('./codex-review-gate.js');
@@ -90,7 +91,7 @@ test('a non-sha head never matches', () => {
   assert.equal(codexReviewedHead({reviews: [], comments: [receipt('dae01ac3d5')], headSha: 'dae01ac3d5'}).reviewed, false);
 });
 
-test('only unresolved Codex P1/P2 threads are findings', () => {
+test('only unresolved Codex P0-P2 threads are findings', () => {
   const found = unresolvedCodexFindings([
     thread(P0),
     thread(P1),
@@ -138,8 +139,59 @@ test('a BLOCKED directive beats a PASS and a Codex review', () => {
 });
 
 test('the built-by-gpt label no longer changes the verdict', () => {
-  const v = buildCodexVerdict({codex: reviewed, unresolved: [], backup: {...none, pass: true}, headSha: HEAD, gptBuilt: true});
-  assert.equal(v.state, 'success');
+  for (const backup of [none, {...none, pass: true}]) {
+    const unlabelled = buildCodexVerdict({codex: reviewed, unresolved: [], backup, headSha: HEAD, gptBuilt: false});
+    const labelled = buildCodexVerdict({codex: reviewed, unresolved: [], backup, headSha: HEAD, gptBuilt: true});
+    assert.deepEqual(labelled, unlabelled);
+  }
+});
+
+const STAMP = '2026-10-21T12:00:00Z';
+const BEFORE = new Date('2026-10-21T11:00:00Z');
+const note = (body, extra = {}) => ({
+  body,
+  author_association: 'OWNER',
+  created_at: STAMP,
+  updated_at: STAMP,
+  ...extra,
+});
+
+test('a trusted exact-head directive on the first non-blank line counts', () => {
+  assert.equal(hasDirective({comments: [note(`Agent Review: PASS ${HEAD}`)], verdict: 'PASS', headSha: HEAD, notBefore: BEFORE}), true);
+  assert.equal(hasDirective({comments: [note(`\n  \r\nAgent Review: PASS ${HEAD}\nReviewer: local review`)], verdict: 'PASS', headSha: HEAD, notBefore: BEFORE}), true);
+  assert.equal(hasDirective({comments: [note(`Agent Review: BLOCKED ${HEAD}\nConcrete blocker`)], verdict: 'BLOCKED', headSha: HEAD}), true);
+});
+
+test('a BLOCKED line below the explanation stays binding; quoted, fenced or foreign ones do not', () => {
+  const blocked = (body, extra = {}) => hasDirective({comments: [note(body, extra)], verdict: 'BLOCKED', headSha: HEAD});
+  assert.equal(blocked(`Concrete blocker remains.\nAgent Review: BLOCKED ${HEAD}`), true);
+  assert.equal(blocked(`Agent Review: BLOCKED ${HEAD}`, {created_at: '2020-01-01T00:00:00Z', updated_at: '2020-01-01T00:00:00Z'}), true);
+  assert.equal(blocked(`> Agent Review: BLOCKED ${HEAD}`), false);
+  assert.equal(blocked('```\nAgent Review: BLOCKED ' + HEAD + '\n```'), false);
+  assert.equal(blocked(`Agent Review: BLOCKED ${HEAD}`, {author_association: 'NONE'}), false);
+  assert.equal(blocked(`Agent Review: BLOCKED ${HEAD}x`), false);
+  assert.equal(blocked(`Agent Review: BLOCKED ${'e'.repeat(40)}`), false);
+});
+
+test('untrusted authors, quoted or fenced examples, other heads and stale PASS comments do not count', () => {
+  const bad = [
+    note(`Agent Review: PASS ${HEAD}`, {author_association: 'NONE'}),
+    note(`Agent Review: PASS ${HEAD}`, {author_association: 'CONTRIBUTOR'}),
+    note(`Agent Review: PASS ${HEAD}`, {minimized: {reason: 'outdated'}}),
+    note(`> Agent Review: PASS ${HEAD}`),
+    note('```\nAgent Review: PASS ' + HEAD + '\n```'),
+    note(`Looks good.\nAgent Review: PASS ${HEAD}`),
+    note(`Agent Review: PASS ${HEAD}0`),
+    note(`Agent Review: PASS ${HEAD.slice(0, 39)}`),
+    note(`Agent Review: PASS ${'f'.repeat(40)}`),
+    note(`agent review: pass ${HEAD}`),
+    note(`Agent Review: PASS ${HEAD}`, {updated_at: '2026-10-21T10:59:59Z', created_at: '2026-10-21T10:00:00Z'}),
+  ];
+  for (const [index, comment] of bad.entries()) {
+    assert.equal(hasDirective({comments: [comment], verdict: 'PASS', headSha: HEAD, notBefore: BEFORE}), false, String(index));
+  }
+  assert.equal(hasDirective({comments: [note(`Agent Review: PASS ${HEAD}`)], verdict: 'PASS', headSha: 'not-a-sha', notBefore: BEFORE}), false);
+  assert.equal(hasDirective({comments: [note(`Agent Review: PASS ${HEAD}`)], verdict: 'BLOCKED', headSha: HEAD}), false);
 });
 
 test('every description fits the 140-character status limit', () => {
