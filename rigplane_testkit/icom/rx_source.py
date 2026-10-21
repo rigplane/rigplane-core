@@ -42,8 +42,7 @@ from rigplane_testkit.icom.simulator_audio import (
     _AUDIO_BURST_PAYLOADS,
 )
 
-# One 20 ms RX burst: 960 frames of 48 kHz stereo s16le = the recorded
-# per-packet payload split (1364 + 1364 + 1112).
+# One 20 ms RX burst: 960 frames of 48 kHz stereo s16le (1364+1364+1112).
 RX_BURST_BYTES = sum(_AUDIO_BURST_PAYLOADS)
 
 _TARGET_RATE = 48000
