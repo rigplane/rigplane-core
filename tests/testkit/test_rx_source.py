@@ -90,7 +90,6 @@ def test_loop_wraps_to_the_first_burst(tmp_path: Path) -> None:
 
 def test_slot_start_waits_for_the_boundary(tmp_path: Path) -> None:
     raw = _stereo_wav(tmp_path / "slot.wav", bursts=2)
-    # Next boundary at 15.0 from UTC 3.0: 12 s away.
     src = WavSource(tmp_path / "slot.wav", start="slot", slot_s=15.0, utc=lambda: 3.0)
     silence = bytes(RX_BURST_BYTES)
     # The mixer emits burst k at reset + 20 ms * k, so the burst exactly
