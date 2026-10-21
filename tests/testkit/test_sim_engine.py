@@ -184,6 +184,10 @@ def test_advance_to_noop_backwards_and_past_schedule_raise() -> None:
         engine.advance_to(2.0)
     with pytest.raises(ValueError):
         engine.schedule(1.0, Marker("past"))
+    with pytest.raises(ValueError):
+        engine.schedule(float("nan"), Marker("nan"))  # would poison the queue
+    with pytest.raises(ValueError):
+        engine.advance_to(float("inf"))
     assert engine.advance_to(3.0) == []
 
 
@@ -235,5 +239,7 @@ def test_trace_records_are_json_serialisable() -> None:
     engine.apply(SetFrequency(0, 14_074_000))
     engine.apply(SetMode(0, "FM", filter=2))
     engine.apply(SetFrequency(0, 1))  # failed record carries the rejected value
+    engine.apply(SetFrequency(0, object()))  # rejected with a non-JSON value
     payload = [asdict(r) for r in engine.trace]
     assert json.loads(json.dumps(payload)) == payload
+    assert payload[-1]["args"]["hz"] == "<object>"

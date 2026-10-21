@@ -10,6 +10,7 @@ import heapq
 import random
 from dataclasses import dataclass, field, fields
 from itertools import count
+from math import isfinite
 from typing import Protocol
 
 
@@ -162,10 +163,16 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _jsonable(value: object) -> object:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return f"<{type(value).__name__}>"  # keep the trace JSON-serialisable
+
+
 def _field_dict(obj: object) -> dict:
     if not hasattr(obj, "__dataclass_fields__"):
         return {}
-    return {f.name: getattr(obj, f.name) for f in fields(obj)}
+    return {f.name: _jsonable(getattr(obj, f.name)) for f in fields(obj)}
 
 
 def _outcome_result(outcome: Outcome) -> dict:
@@ -251,14 +258,14 @@ class SimEngine:
     def schedule(self, at_s: float, event: object) -> None:
         """Queue at absolute engine time; equal times keep insertion order."""
         at = float(at_s)
-        if at < self._now:
+        if not isfinite(at) or at < self._now:
             raise ValueError(f"cannot schedule {at} before engine time {self._now}")
         heapq.heappush(self._queue, (at, next(self._order), event))
 
     def advance_to(self, now_s: float) -> list[Record]:
         """Run every event with ``at <= now_s`` in (time, insertion) order."""
         now = float(now_s)
-        if now < self._now:
+        if not isfinite(now) or now < self._now:
             raise ValueError(f"cannot advance to {now} before current time {self._now}")
         produced: list[Record] = []
         while self._queue and self._queue[0][0] <= now:
