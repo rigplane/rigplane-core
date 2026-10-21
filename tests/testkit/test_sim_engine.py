@@ -75,6 +75,8 @@ def test_apply_ok_mutates_state_and_records_op() -> None:
         (SetFrequency(0, True), OutOfRange, "out_of_range"),  # bool where int required
         (SetMode(0, "WSPR"), Unsupported, "unsupported"),  # mode not in caps
         (SetLevel(0, "vol", 5), Unsupported, "unsupported"),  # unknown level
+        (SetLevel(0, [], 1), OutOfRange, "out_of_range"),  # unhashable level name
+        (SetMeter([], 1), OutOfRange, "out_of_range"),  # non-str meter name
         (SetLevel(0, "af", 256), OutOfRange, "out_of_range"),  # above level max
         (SetSwitch(0, "turbo", True), Unsupported, "unsupported"),  # unknown switch
         (SetSwitch(0, "nb", 1), OutOfRange, "out_of_range"),  # int where bool required
@@ -189,6 +191,16 @@ def test_advance_to_noop_backwards_and_past_schedule_raise() -> None:
     with pytest.raises(ValueError):
         engine.advance_to(float("inf"))
     assert engine.advance_to(3.0) == []
+    engine.schedule(3.0, Marker(object()))  # non-JSON name stays serialisable
+    records = engine.advance_to(3.0)
+    assert records[0].name == "<object>"
+    assert json.loads(json.dumps(asdict(records[0]))) == asdict(records[0])
+
+
+def test_initial_state_must_match_caps_receiver_count() -> None:
+    short = SimState(receivers=[ReceiverState()])  # caps say 2 receivers
+    with pytest.raises(ValueError):
+        SimEngine(CAPS, clock=ManualClock(), initial=short)
 
 
 def test_read_covers_every_name_family() -> None:

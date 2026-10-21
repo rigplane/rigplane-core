@@ -202,6 +202,8 @@ class SimEngine:
                     for _ in range(caps.receiver_count)
                 ]
             )
+        elif len(initial.receivers) != caps.receiver_count:
+            raise ValueError("initial.receivers must match caps.receiver_count")
         self._state = initial
         self._now = float(clock())
         self._queue: list[tuple[float, int, object]] = []
@@ -232,6 +234,8 @@ class SimEngine:
 
     def read(self, name: str, receiver: int | None = None) -> Outcome:
         """Query state by name; unknown names give ``Unsupported``."""
+        if not isinstance(name, str):
+            return Unsupported(f"read {name!r}")
         if name in ("ptt", "split", "selected_receiver", "power_on"):
             return Ok(getattr(self._state, name))
         if name in ("frequency_hz", "mode", "filter", "data_mode"):
@@ -273,9 +277,12 @@ class SimEngine:
             if isinstance(event, ScheduledOp):
                 produced.append(self._apply_recorded(event.op)[1])
             elif isinstance(event, Marker):
-                produced.append(
-                    self._record("marker", event.name, {}, {"outcome": "ok"})
+                label = (
+                    event.name
+                    if isinstance(event.name, str)
+                    else f"<{type(event.name).__name__}>"
                 )
+                produced.append(self._record("marker", label, {}, {"outcome": "ok"}))
             else:
                 raise TypeError(f"unknown event: {event!r}")
         self._now = now
@@ -311,6 +318,8 @@ class SimEngine:
             target = self._target(op.receiver)
             if isinstance(target, OutOfRange):
                 return target
+            if not isinstance(op.name, str):
+                return OutOfRange("level name", op.name)
             bounds = self._caps.levels.get(op.name)
             if bounds is None:
                 return Unsupported(f"level {op.name!r}")
@@ -321,6 +330,8 @@ class SimEngine:
             target = self._target(op.receiver)
             if isinstance(target, OutOfRange):
                 return target
+            if not isinstance(op.name, str):
+                return OutOfRange("switch name", op.name)
             if op.name not in self._caps.switches:
                 return Unsupported(f"switch {op.name!r}")
             if not isinstance(op.on, bool):
@@ -346,6 +357,8 @@ class SimEngine:
                 return err
             self._state.selected_receiver = op.receiver
         elif isinstance(op, SetMeter):
+            if not isinstance(op.name, str):
+                return OutOfRange("meter name", op.name)
             if not _is_int(op.value):
                 return OutOfRange(f"meter {op.name}", op.value)
             self._state.meters[op.name] = op.value
