@@ -86,13 +86,45 @@ def build_memory_mode_set(
     from_addr: int = CONTROLLER_ADDR,
     *,
     cmd_map: CommandMap,
+    memory: MemoryProfile | None = None,
 ) -> bytes:
-    """Build CI-V frame to set memory mode (0x08)."""
-    if not 1 <= channel <= 101:
-        raise ValueError(f"Channel must be 1-101, got {channel}")
+    """Build CI-V frame to set memory mode (0x08).
+
+    With a profile's ``[memory]`` section the channel is bounded by it;
+    otherwise by the IC-7610 range 1-101.
+    """
+    first, last = (
+        (1, 101) if memory is None else (memory.first_channel, memory.last_channel)
+    )
+    if not first <= channel <= last:
+        raise ValueError(f"Channel must be {first}-{last}, got {channel}")
     data = bcd_encode_value(channel, byte_count=2)
     return _build_from_map(
         cmd_map, "set_memory_mode", to_addr=to_addr, from_addr=from_addr, data=data
+    )
+
+
+@expose_command_key(lambda cmd_map: "set_memory_group")
+@require_cmd_map
+def build_memory_group_set(
+    memory: MemoryProfile,
+    group: int,
+    to_addr: int,
+    from_addr: int = CONTROLLER_ADDR,
+    *,
+    cmd_map: CommandMap,
+) -> bytes:
+    """Build CI-V frame to select a memory group (``08 A0 gggg``, IC-705)."""
+    if not memory.first_group <= group <= memory.last_group:
+        raise ValueError(
+            f"memory group must be {memory.first_group}-{memory.last_group}, got {group}"
+        )
+    return _build_from_map(
+        cmd_map,
+        "set_memory_group",
+        to_addr=to_addr,
+        from_addr=from_addr,
+        data=bcd_encode_value(group, byte_count=2),
     )
 
 

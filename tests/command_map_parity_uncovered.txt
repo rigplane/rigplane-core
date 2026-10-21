@@ -34,7 +34,7 @@ census	frames_identical	0
 census	hardcode_only_builders	0
 census	profile_builder_map_gaps	0
 census	profiles	9
-census	public_builders	244
+census	public_builders	245
 census	sites_compared	0
 cat-only	FTX-1	128
 requires-map	antenna.py:get_antenna_1
@@ -162,6 +162,7 @@ requires-map	memory.py:build_memory_clear
 requires-map	memory.py:build_memory_contents_get
 requires-map	memory.py:build_memory_contents_set
 requires-map	memory.py:build_memory_entry_read
+requires-map	memory.py:build_memory_group_set
 requires-map	memory.py:build_memory_mode_get
 requires-map	memory.py:build_memory_mode_set
 requires-map	memory.py:build_memory_to_vfo

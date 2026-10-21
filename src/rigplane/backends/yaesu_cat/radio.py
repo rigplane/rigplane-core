@@ -3837,7 +3837,7 @@ class YaesuCatRadio:
 
     # -- Memory (not supported on Yaesu) ----------------------------------------
 
-    async def set_memory_mode(self, channel: int) -> None:
+    async def set_memory_mode(self, channel: int, group: int | None = None) -> None:
         raise NotImplementedError("Memory mode not supported on this radio")
 
     async def memory_write(self) -> None:

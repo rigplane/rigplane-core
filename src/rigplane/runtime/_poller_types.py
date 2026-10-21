@@ -752,6 +752,7 @@ class SetRxAntenna:
 @dataclass(frozen=True, slots=True)
 class SetMemoryMode:
     channel: int
+    group: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

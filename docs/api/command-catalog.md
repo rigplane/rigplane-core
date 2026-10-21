@@ -259,7 +259,7 @@ the memory protocol reject these commands.
 
 | Command | Params | Capability | Batch | Notes |
 |---------|--------|------------|-------|-------|
-| `set_memory_mode` | `channel: int` (1–101) | MemoryCapable | Yes | Switch to memory channel mode. |
+| `set_memory_mode` | `channel: int` (1–101), optional `group: int` | MemoryCapable | Yes | Switch to memory channel mode. Without `group`: the channel-only form (1–101). With `group`: select a listed channel on a profile whose `[memory]` section has `recall = true` (IC-705: group 0–99, channel 0–99; IC-9700 and IC-7610 refuse it); bounds come from the profile. |
 | `memory_write` | — | MemoryCapable | Yes | Write current VFO state to the active memory channel. |
 | `memory_to_vfo` | `channel: int` (1–101) | MemoryCapable | Yes | Recall channel to VFO. |
 | `memory_clear` | `channel: int` (1–101) | MemoryCapable | Yes | Clear a memory channel. |

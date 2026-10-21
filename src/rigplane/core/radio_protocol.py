@@ -2148,8 +2148,8 @@ class MemoryCapable(Protocol):
     radios) do not support GET variants for these commands.
     """
 
-    async def set_memory_mode(self, channel: int) -> None:
-        """Select a memory channel (1-101)."""
+    async def set_memory_mode(self, channel: int, group: int | None = None) -> None:
+        """Select a memory channel (1-101); with ``group``, a listed one (profile-bounded)."""
         ...
 
     async def memory_write(self) -> None:

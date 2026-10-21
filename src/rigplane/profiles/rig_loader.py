@@ -2136,6 +2136,10 @@ def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
     recall = raw.get("recall", False)
     if not isinstance(recall, bool):
         raise RigLoadError(f"{filename}: [memory].recall must be a boolean")
+    if recall and addressing != "group_channel":
+        raise RigLoadError(
+            f"{filename}: [memory].recall is only implemented for group_channel"
+        )
     return MemoryProfile(addressing=addressing, recall=recall, **bounds)  # type: ignore[arg-type]
 
 

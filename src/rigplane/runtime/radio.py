@@ -551,6 +551,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._civ_recovering: bool = False
         self._last_civ_data_received: float | None = None
         self._civ_recovery_lock = asyncio.Lock()
+        # Group select + channel select must not interleave with another recall.
+        self._memory_select_lock = asyncio.Lock()
         self._civ_recovery_wait_timeout: float = float(
             os.environ.get("ICOM_CIV_RECOVERY_WAIT_TIMEOUT_S", "12.0")
         )
@@ -6197,13 +6199,42 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             "See IC-7610 CI-V Reference Manual page 4."
         )
 
-    async def set_memory_mode(self, channel: int) -> None:
-        """Select memory channel (1-101)."""
-        if not 1 <= channel <= 101:
-            raise ValueError(f"Channel must be 1-101, got {channel}")
-        await self._send_fire_and_forget(
-            self._commands.build_memory_mode_set(channel, to_addr=self._radio_addr)
-        )
+    async def set_memory_mode(self, channel: int, group: int | None = None) -> None:
+        """Select a memory channel (1-101 on the IC-7610).
+
+        With ``group`` this selects a listed channel (MOR-3627) on a profile
+        whose ``[memory]`` section has ``recall = true`` and group+channel
+        addressing (IC-705): the memory group (``08 A0``), then the channel
+        (``08``), each answered with an ACK. It writes no memory contents and
+        sends no transmit-start command; the operating frequency and mode
+        become the stored channel's.
+        """
+        if group is None:
+            if not 1 <= channel <= 101:
+                raise ValueError(f"Channel must be 1-101, got {channel}")
+            await self._send_fire_and_forget(
+                self._commands.build_memory_mode_set(channel, to_addr=self._radio_addr)
+            )
+            return
+        memory = self._profile.memory
+        if memory is None or not memory.recall or memory.addressing != "group_channel":
+            raise CommandError(f"{self._profile.model} does not support memory recall")
+        self._check_connected()
+        frames = [
+            self._commands.build_memory_group_set(
+                memory, group, to_addr=self._radio_addr
+            ),
+            self._commands.build_memory_mode_set(
+                channel, to_addr=self._radio_addr, memory=memory
+            ),
+        ]
+        async with self._memory_select_lock:
+            for civ in frames:
+                resp = await self._send_civ_expect(civ, label="recall_memory_channel")
+                if parse_ack_nak(resp) is False:
+                    raise CommandError(
+                        f"Radio rejected memory recall {group}/{channel}"
+                    )
 
     async def memory_write(self) -> None:
         """Write current VFO state to selected memory channel."""

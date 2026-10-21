@@ -499,6 +499,7 @@ first_group = 0
 last_group = 99
 first_channel = 0
 last_channel = 99
+recall = true  # 08 A0 selects the group, 08 the channel (guide p.3); not yet bench-verified
 
 [ctcss]
 table = "standard_50"

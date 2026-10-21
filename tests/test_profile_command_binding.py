@@ -354,6 +354,10 @@ _EXTRA_PROBE_KWARGS: dict[str, dict[str, Any]] = {
             tonemode=0,
         )
     },
+    "build_memory_group_set": {
+        "memory": MemoryProfile("group_channel", 0, 99, 0, 99),
+        "group": 0,
+    },
     "build_memory_entry_read": {
         "memory": MemoryProfile("group_channel", 0, 99, 0, 99),
         "group": 0,

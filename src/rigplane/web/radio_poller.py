@@ -3169,9 +3169,12 @@ class RadioPoller:
                         await radio.set_rx_antenna_ant1(on)
                     else:
                         await radio.set_rx_antenna_ant2(on)
-            case SetMemoryMode(channel=channel):
+            case SetMemoryMode(channel=channel, group=group):
                 if isinstance(radio, MemoryCapable):
-                    await radio.set_memory_mode(channel)
+                    if group is None:
+                        await radio.set_memory_mode(channel)
+                    else:
+                        await radio.set_memory_mode(channel, group=group)
             case MemoryWrite():
                 if isinstance(radio, MemoryCapable):
                     await radio.memory_write()

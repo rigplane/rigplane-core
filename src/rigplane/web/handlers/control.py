@@ -31,6 +31,7 @@ from ...core.command_dispatch import (
 from ...core.exceptions import CommandError, CommandRejectedError
 from ...core.exceptions import TimeoutError as RigplaneTimeoutError
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource, FieldPath
+from ...core.types import MemoryProfile
 from ...runtime.controller_authority import ControllerAuthority, ControllerError
 from ...core.state_store import FreshnessState, StateStore
 from ..monitor_mute import MonitorMuteState, apply_monitor_mute  # noqa: TID251
@@ -3509,10 +3510,31 @@ class ControlHandler:
                         "(missing MemoryCapable)"
                     )
                 channel = _int_param(params["channel"], "channel")
-                if not 1 <= channel <= 101:
-                    raise ValueError(f"channel must be 1-101, got {channel}")
-                q.put(SetMemoryMode(channel))
-                return {"channel": channel}
+                if "group" not in params:
+                    # The channel-only form every radio has always taken.
+                    if not 1 <= channel <= 101:
+                        raise ValueError(f"channel must be 1-101, got {channel}")
+                    q.put(SetMemoryMode(channel))
+                    return {"channel": channel}
+                # Recall of a listed channel (MOR-3627): profile-declared bounds.
+                memory = getattr(getattr(radio, "profile", None), "memory", None)
+                if not isinstance(memory, MemoryProfile):
+                    raise ValueError("this radio's memory has no groups")
+                if not memory.recall:
+                    raise ValueError("this radio's profile does not support recall")
+                group = _int_param(params["group"], "group")
+                if not memory.first_group <= group <= memory.last_group:
+                    raise ValueError(
+                        f"group must be {memory.first_group}-{memory.last_group}, "
+                        f"got {group}"
+                    )
+                if not memory.first_channel <= channel <= memory.last_channel:
+                    raise ValueError(
+                        f"channel must be {memory.first_channel}-"
+                        f"{memory.last_channel}, got {channel}"
+                    )
+                q.put(SetMemoryMode(channel, group))
+                return {"group": group, "channel": channel}
             case "memory_write":
                 if not isinstance(radio, MemoryCapable):
                     raise ValueError(
