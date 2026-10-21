@@ -16,6 +16,10 @@ from pathlib import Path
 
 from rigplane.profiles.rig_loader import load_rig
 
+from rigplane_testkit.sim.adapters.yaesu_cat import (
+    recorded_divergences,
+    unledgered_divergences,
+)
 from rigplane_testkit.sim.engine import ManualClock
 from rigplane_testkit.sim.model.yaesu_cat import (
     NATIVE_READS,
@@ -59,16 +63,9 @@ def _seeded_model(table: RecordedCatAnswerTable) -> YaesuCatModel:
 
 def test_model_diverges_from_the_recording_only_where_the_ledger_says() -> None:
     table = _table()
-    model = _seeded_model(table)
-    live: dict[str, dict[str, str | None]] = {}
-    for request in table.requests():
-        recorded = table.lookup(request)
-        assert recorded is not None
-        got = model.handle(request)
-        if got != recorded.reply:
-            live[request] = {"recorded": recorded.reply, "model": got}
+    live = recorded_divergences(_seeded_model(table), table)
     ledger = json.loads(LEDGER.read_text())
-    new = {k: v for k, v in live.items() if k not in ledger}
+    new = unledgered_divergences(_seeded_model, table, LEDGER)
     stale = sorted(k for k in ledger if k not in live)
     assert not new, (
         f"divergences missing from the ledger (fix the model or list them): {new}"
