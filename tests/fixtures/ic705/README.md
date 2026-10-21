@@ -42,7 +42,7 @@ No PTT-on, tune, frequency, mode or power command was sent. The shutdown release
 ## Files
 
 - `civ_pairs.jsonl` - keys `window`, `transport` (`usb`), `t`, `dir` (`c2r`/`r2c`), `frame`. Windows `probe` (208 rows), `scope` (203), `readonly_session` (14). Reads `RecordedAnswerTable.from_civ_pairs`.
-- `probe_answers.json` - answer class (`data`/`ack`/`nak`/`silence`/`error`), latency and reply for each of the 107 probes; this is the class table a simulator must reproduce, including the two silent synthetic probes.
+- `probe_answers.json` - answer class (`data`/`ack`/`nak`/`silence`/`error`), latency and reply for each of the 107 probes; this is the class table a simulator must reproduce for the radio outcomes `data`, `ack`, `nak` and `silence` (the two silent synthetic probes included). The one `error` row (`get_comp_meter`) is a client-side failure, not radio behaviour, and is excluded from that contract.
 - `scope_cadence.json` - per-transport scope baseline (USB CI-V): the radio sweeps 11 segments per sweep at 4.13 sweeps/s (interval median 0.242 s, p95 0.243 s, max 0.247 s); the web scope socket delivered 4.15 frames/s (491-byte frames, interval p95 0.247 s). Feeds the bench scorecard row S10.
 - `usb_audio.json` - the radio's USB audio device as the OS and Core see it (class-compliant, 48 kHz, 2 channels). No samples are kept.
 

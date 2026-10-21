@@ -3,8 +3,11 @@
 ``tests/fixtures/ic705/`` holds the bench IC-705's USB CI-V traffic, recorded
 receive-side only (see its README).  These tests pin what a later conformance
 replay may rely on: the files parse, every client frame is a well-formed CI-V
-frame for the IC-705, and no recorded client frame is a transmit-side or
-state-changing request except the four documented scope switches.
+frame for the IC-705, and every recorded client frame is either an exact read
+or one of the production client's own writes, all documented in the README:
+VFO A select (07 00), scope output switches (27 10 01, 27 11 01, 27 11 00),
+and the shutdown steps PTT off (1C 00 00) and CW cancel (17 FF). No PTT-on,
+tune, frequency, mode or power write is present.
 """
 
 from __future__ import annotations
