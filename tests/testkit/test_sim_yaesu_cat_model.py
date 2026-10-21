@@ -13,7 +13,7 @@ import pytest
 
 from rigplane.profiles.rig_loader import load_rig
 
-from rigplane_testkit.sim.engine import ManualClock, SetMeter
+from rigplane_testkit.sim.engine import ManualClock, Ok, SetMeter
 from rigplane_testkit.sim.model.yaesu_cat import (
     YaesuCatModel,
     build_ftx1_engine,
@@ -34,6 +34,14 @@ def _model(recorded: RecordedCatAnswerTable | None = None) -> YaesuCatModel:
     return YaesuCatModel(
         engine, identity=rig.expected_identity_ids[0], recorded=recorded
     )
+
+
+def _model_with_clock() -> YaesuCatModel:
+    rig = load_rig(ROOT / "rigs" / "ftx1.toml")
+    profile = load_sim_profile(PROFILE_PATH, root=ROOT)
+    clock = ManualClock()
+    engine = build_ftx1_engine(profile, rig, clock=clock, seed=7)
+    return YaesuCatModel(engine, identity=rig.expected_identity_ids[0], clock=clock)
 
 
 def test_identity_read() -> None:
@@ -116,15 +124,54 @@ def test_out_of_range_frequency_is_refused() -> None:
     assert model.handle("FA;") == "FA147225000;"
 
 
-def test_s_meter_zero_while_agc_off_and_sub_echoes_side_zero() -> None:
+def test_engine_state_keys_are_the_profile_control_names() -> None:
+    # rigs/ftx1.toml declares af_level/rf_gain/squelch/nb_level; the codec
+    # keys engine state with exactly those names, no aliases (ADR section
+    # 4, docs/internals/sim-architecture.md).
     model = _model()
-    model.engine.apply(SetMeter("s", 120))
+    assert model.handle("AG0100;") is None
+    assert model.engine.read("level:af_level", 0) == Ok(100)
+    assert model.handle("RG1080;") is None
+    assert model.engine.read("level:rf_gain", 1) == Ok(80)
+    assert model.handle("SQ0030;") is None
+    assert model.engine.read("level:squelch", 0) == Ok(30)
+    assert model.handle("NL0005;") is None
+    assert model.engine.read("level:nb_level", 0) == Ok(5)
+    assert model.handle("GT01;") is None
+    assert model.engine.read("selector:agc", 0) == Ok(1)
+    assert model.handle("PA02;") is None
+    assert model.engine.read("selector:preamp", 0) == Ok(2)
+
+
+def test_fa_fb_accept_the_full_cat_domain() -> None:
+    # The oracle (rows vfo_a_freq/vfo_b_freq) declares 000030000-470000000
+    # Hz for FA/FB: the lower bound is the CAT domain, not the lowest
+    # [freq_ranges] receive range (100 kHz).
+    model = _model()
+    assert model.handle("FA000030000;") is None
+    assert model.handle("FA;") == "FA000030000;"
+    assert model.handle("FB000030000;") is None
+    assert model.handle("FB;") == "FB000030000;"
+    assert model.handle("FA470000000;") is None
+    assert model.handle("FA;") == "FA470000000;"
+    assert model.handle("FA000029999;") == "?;"  # below the CAT domain
+    assert model.handle("FB470000001;") == "?;"  # above it
+    assert model.handle("FA;") == "FA470000000;"  # refused SETs keep state
+
+
+def test_s_meters_are_per_receiver_and_read_zero_while_agc_is_off() -> None:
+    model = _model()
+    model.engine.apply(SetMeter("s_meter_main", 120))
+    model.engine.apply(SetMeter("s_meter_sub", 30))
     # Fresh engines have AGC 0 (OFF) on both receivers: the reading is 0.
     assert model.handle("SM0;") == "SM0000;"
+    assert model.handle("SM1;") == "SM0000;"
     assert model.handle("GT01;") is None
-    assert model.handle("SM0;") == "SM0120;"
     assert model.handle("GT11;") is None
-    assert model.handle("SM1;") == "SM0120;"  # SUB read, side digit echoed as 0
+    # Both AGCs on: each receiver reads its own meter, and the SUB read
+    # still echoes the side digit as 0 (recorded quirk).
+    assert model.handle("SM0;") == "SM0120;"
+    assert model.handle("SM1;") == "SM0030;"
 
 
 def test_unserved_verb_falls_to_the_recorded_table() -> None:
@@ -153,6 +200,27 @@ def test_native_handler_wins_over_the_recorded_table() -> None:
     assert model.handle("FA;") == "FA147225000;"  # engine state, not the table
 
 
+def test_native_refusal_falls_through_to_the_recorded_table() -> None:
+    # ADR section 5: native data/ACK wins; a native NAK falls to the
+    # recording. GT05;/PA03; are refused natively (AUTO-speed readback /
+    # preamp 0-2), so the recorded answer decides.
+    rows = [
+        {"dir": "c2r", "line": "GT05;"},
+        {"dir": "r2c", "line": "GT05;"},  # recorded data for a refused line
+        {"dir": "c2r", "line": "PA03;"},  # overtaken below: recorded silence
+        {"dir": "c2r", "line": "FA;"},
+        {"dir": "r2c", "line": "FA147225000;"},
+    ]
+    model = _model(recorded=RecordedCatAnswerTable.from_cat_pairs(rows))
+    assert model.handle("GT05;") == "GT05;"  # recorded data beats ?;
+    assert model.handle("PA03;") is None  # recorded silence beats ?;
+    # No recorded FA SET exists, so the MEMORY-mode refusal stands.
+    model.engine.state.extra["main_memory_mode"] = True
+    assert model.handle("FA014074000;") == "?;"
+    # Every line above had a native handler: nothing was not_modelled.
+    assert model.not_modelled == {}
+
+
 @pytest.mark.parametrize(
     "line",
     [
@@ -170,6 +238,47 @@ def test_malformed_lines_answer_refusal_without_raising(line: str) -> None:
 
 def test_non_string_input_answers_refusal_without_raising() -> None:
     assert _model().handle(None) == "?;"  # type: ignore[arg-type]
+
+
+def test_unmodelled_requests_are_counted_named_and_traced() -> None:
+    # ADR section 4/5: a request with no native handler and no recording
+    # is Unsupported("not_modelled"): it answers ?; and the gap is
+    # counted per line and named in the engine trace as a marker.
+    model = _model_with_clock()
+    assert model.handle("QQ;") == "?;"
+    assert model.handle("ZZ;") == "?;"
+    assert model.handle("QQ;") == "?;"
+    assert model.not_modelled == {"QQ;": 2, "ZZ;": 1}
+    markers = [r for r in model.engine.trace if r.kind == "marker"]
+    assert [r.name for r in markers] == [
+        "not_modelled QQ;",
+        "not_modelled ZZ;",
+        "not_modelled QQ;",
+    ]
+
+
+def test_counting_needs_no_clock_and_modelled_answers_are_not_counted() -> None:
+    model = _model()
+    assert model.handle("QQ;") == "?;"  # counted without a clock
+    assert model.handle("GT05;") == "?;"  # a modelled refusal, not a gap
+    for line in ("FA;FB;", "FA", "FÁ;", "F" * 64 + ";"):
+        assert model.handle(line) == "?;"  # malformed: never counted
+    assert model.not_modelled == {"QQ;": 1}
+    assert not [r for r in model.engine.trace if r.kind == "marker"]
+
+
+def test_a_trace_failure_still_answers_and_is_counted() -> None:
+    rig = load_rig(ROOT / "rigs" / "ftx1.toml")
+    profile = load_sim_profile(PROFILE_PATH, root=ROOT)
+    engine = build_ftx1_engine(profile, rig, clock=ManualClock(), seed=7)
+    # A clock behind the engine time makes schedule() raise ValueError;
+    # the reply and the counter must not change.
+    model = YaesuCatModel(
+        engine, identity=rig.expected_identity_ids[0], clock=lambda: -1.0
+    )
+    assert model.handle("QQ;") == "?;"
+    assert model.not_modelled == {"QQ;": 1}
+    assert model.trace_failures == 1
 
 
 def test_a_served_set_never_replies() -> None:

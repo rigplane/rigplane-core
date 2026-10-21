@@ -1,30 +1,45 @@
 """Yaesu CAT protocol model (MOR-3602): one wire line in, one reply line out.
 
-Pure, socket-free and clock-free. Replies come from this module's own
-codec tables, never from the production parser/formatter, so the same
-code cannot pass both sides of a test. Precedence for one request line:
-a native engine-backed handler, then the recorded answer table, then the
-``?;`` refusal. Malformed lines (unterminated, non-ASCII, over 64 bytes,
-more than one ``;``) answer ``?;`` instead of raising.
+Pure and socket-free; no wall clock decides a reply. Replies come from
+this module's own codec tables, never from the production
+parser/formatter, so the same code cannot pass both sides of a test.
+Precedence for one request line (docs/internals/sim-architecture.md
+section 5): a native engine-backed handler's data reply or accepted SET
+wins immediately; a native ``?;`` refusal falls through to the recorded
+answer table, where recorded data, refusal or silence wins; with no
+recorded entry the refusal stands. A well-formed request with no native
+handler and no recorded entry is the ``Unsupported("not_modelled")``
+coverage gap: it answers ``?;``, is counted per request line in
+``not_modelled`` and, when the model was built with the engine's clock,
+is named in the engine trace as a ``marker`` record; a trace failure is
+counted in ``trace_failures`` and never changes the reply. Malformed
+lines (unterminated, non-ASCII, over 64 bytes, more than one ``;``)
+answer ``?;`` instead of raising and are not counted.
 
-FTX-1 facts fixed by tests/fixtures/ftx1/cat_pairs.jsonl: ``SM1;`` is
-answered with the side digit echoed as 0; a receiver's S-meter reads 0
-while its AGC is OFF (the AGC link is the likely cause, not proven);
-every ``FA`` SET is refused while MAIN is in MEMORY mode (observed on the
-MAIN side only, so ``FB`` stays accepted). Reply formats are
-byte-identical to the recording for the state seeded from it.
+Engine state keys are the capability profile's exact control names
+(rigs/ftx1.toml), no aliases: the levels ``af_level``/``rf_gain``/
+``squelch``/``nb_level`` and the selectors ``agc``/``preamp``.
+
+FTX-1 facts fixed by tests/fixtures/ftx1/cat_pairs.jsonl: ``SM1;`` reads
+the SUB meter (``s_meter_sub``; MAIN's is ``s_meter_main``) but echoes
+the side digit as 0; a receiver's S-meter reads 0 while its AGC is OFF
+(the AGC link is the likely cause, not proven); every ``FA`` SET is
+refused while MAIN is in MEMORY mode (observed on the MAIN side only, so
+``FB`` stays accepted). Reply formats are byte-identical to the
+recording for the state seeded from it.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from rigplane_testkit.sim.engine import (
     Capabilities,
     Clock,
+    Marker,
     Ok,
     ReceiverState,
     SelectReceiver,
@@ -106,9 +121,13 @@ class _LevelCodec:
 
 
 # Ranges from tests/golden/wire_oracle/ftx1.toml (NL: "000 OFF, 001-010").
+# The engine state key is the capability profile's exact control name
+# (docs/internals/sim-architecture.md section 4): rigs/ftx1.toml declares
+# [controls.af_level] / [controls.rf_gain] / [controls.squelch] /
+# [controls.nb_level].
 _LEVELS = (
-    _LevelCodec("AG", "af", 255),
-    _LevelCodec("RG", "rf", 255),
+    _LevelCodec("AG", "af_level", 255),
+    _LevelCodec("RG", "rf_gain", 255),
     _LevelCodec("SQ", "squelch", 255),
     _LevelCodec("NL", "nb_level", 10),
 )
@@ -140,7 +159,9 @@ class YaesuCatModel:
     ``handle`` takes one request line with its ``;`` and returns the reply
     line with its ``;``, or ``None`` for "no reply" (a served SET, or
     recorded silence). The engine must come from ``build_ftx1_engine``:
-    the mode name/code mapping travels in its ``state.extra``.
+    the mode name/code mapping travels in its ``state.extra``. *clock* is
+    the clock the engine was built with; when given, each not-modelled
+    request is also named by a ``marker`` record in the engine trace.
     """
 
     def __init__(
@@ -149,6 +170,7 @@ class YaesuCatModel:
         *,
         identity: str,
         recorded: RecordedCatAnswerTable | None = None,
+        clock: Clock | None = None,
     ) -> None:
         if type(identity) is not str or not identity:
             raise ValueError(f"identity must be a non-empty string, got {identity!r}")
@@ -165,6 +187,9 @@ class YaesuCatModel:
         self._engine = engine
         self._identity = identity
         self._recorded = recorded
+        self._clock = clock
+        self._not_modelled: dict[str, int] = {}
+        self._trace_failures = 0
         self._name_to_code = dict(zip(name_list, codes))
         self._code_to_name = {code: name for name, code in self._name_to_code.items()}
         self._handlers: dict[str, Callable[[str], str | None]] = {
@@ -189,6 +214,16 @@ class YaesuCatModel:
     def engine(self) -> SimEngine:
         return self._engine
 
+    @property
+    def not_modelled(self) -> Mapping[str, int]:
+        """``Unsupported("not_modelled")`` replies per request line (a copy)."""
+        return dict(self._not_modelled)
+
+    @property
+    def trace_failures(self) -> int:
+        """How often naming a not-modelled request in the trace itself failed."""
+        return self._trace_failures
+
     def handle(self, line: str) -> str | None:
         """Answer one request line (``;`` included); ``None`` means no reply."""
         if not isinstance(line, str):
@@ -199,20 +234,49 @@ class YaesuCatModel:
             or not line.endswith(";")
             or ";" in line[:-1]
         ):
+            # Malformed input is its own class: refused, never not_modelled.
             return REFUSAL
         body = line[:-1]
         handler = self._handlers.get(body[:2])
         if handler is not None:
-            return handler(body)
+            reply = handler(body)
+            if reply != REFUSAL:
+                return reply  # native data or accepted SET (None) wins
+            # A native refusal falls through to the recording (ADR section
+            # 5): recorded data, refusal or silence wins over it.
+            if self._recorded is not None:
+                answer = self._recorded.lookup(line)
+                if answer is not None:
+                    return answer.reply
+            return REFUSAL
         if self._recorded is not None:
             answer = self._recorded.lookup(line)
             if answer is not None:
                 return answer.reply  # data line, refusal, or None: recorded silence
+        self._note_not_modelled(line)
         return REFUSAL
 
     # ------------------------------------------------------------------
     # engine helpers
     # ------------------------------------------------------------------
+
+    def _note_not_modelled(self, line: str) -> None:
+        """Count the coverage gap; with a clock, name it in the engine trace.
+
+        Tracing goes through the engine's own public API
+        (``schedule``/``advance_to`` with a ``Marker``), so a failure
+        there (a non-monotonic clock reading, a re-entrant advance) is
+        counted in ``trace_failures`` and swallowed: it never changes the
+        reply and never reaches the caller.
+        """
+        self._not_modelled[line] = self._not_modelled.get(line, 0) + 1
+        if self._clock is None:
+            return
+        try:
+            self._engine.schedule(self._clock(), Marker(f"not_modelled {line}"))
+            self._engine.advance_to(self._clock())
+        except (ValueError, RuntimeError):
+            self._trace_failures += 1
 
     def _applied(self, op: object) -> str | None:
         """Apply a SET op: no reply on Ok, ``?;`` on any other outcome."""
@@ -350,10 +414,14 @@ class YaesuCatModel:
     def _s_meter(self, body: str) -> str:
         if body not in ("SM0", "SM1"):
             return REFUSAL
-        # AGC OFF pins the reading at 0 (recorded; cause likely, not
-        # proven). SM1; echoes the side digit as 0 (recorded quirk).
-        agc = self._read_int("selector:agc", int(body[2]))
-        value = 0 if agc == 0 else self._read_int("meter:s")
+        # Each receiver reads its own meter (s_meter_main / s_meter_sub);
+        # AGC OFF pins that receiver's reading at 0 (recorded; cause
+        # likely, not proven). Both sides echo the side digit as 0
+        # (recorded quirk).
+        side = int(body[2])
+        agc = self._read_int("selector:agc", side)
+        meter = "s_meter_main" if side == 0 else "s_meter_sub"
+        value = 0 if agc == 0 else self._read_int(f"meter:{meter}")
         return f"SM0{value:03d};"
 
     def _information(self, body: str) -> str:
@@ -418,10 +486,11 @@ class YaesuCatModel:
                 self._applied(SelectReceiver(int(reply[2])))
             return
         if verb == "SM":
-            if request == "SM0;":  # SM1 reads the same meter through the quirk
+            if request in ("SM0;", "SM1;"):  # each side seeds its own meter
                 digits = reply[3:-1]
                 if len(digits) == 3 and digits.isdigit():
-                    self._applied(SetMeter("s", int(digits)))
+                    meter = "s_meter_main" if request == "SM0;" else "s_meter_sub"
+                    self._applied(SetMeter(meter, int(digits)))
             return
         level = _LEVEL_BY_VERB.get(verb)
         if level is not None:
@@ -467,7 +536,12 @@ def build_ftx1_engine(
         raise ValueError(f"{rig.model!r}: mode names must not contain commas")
     if not rig.agc_readback_modes or not rig.pre_values:
         raise ValueError(f"{rig.model!r}: [agc]/[preamp] domains are required")
-    lo = min(entry["start_hz"] for entry in rig.freq_ranges)
+    # FA/FB accept the whole CAT domain, which is wider than any single
+    # [freq_ranges] entry: the wire oracle (tests/golden/wire_oracle/
+    # ftx1.toml, rows vfo_a_freq/vfo_b_freq, FTX-1 CAT OM 2508-C p. 16)
+    # declares 000030000-470000000 Hz, so the lower bound is the oracle's
+    # 30 kHz, not the lowest profile range start (100 kHz).
+    lo = 30_000
     hi = max(entry["end_hz"] for entry in rig.freq_ranges)
     caps = Capabilities(
         receiver_count=rig.receiver_count,
@@ -493,7 +567,7 @@ def build_ftx1_engine(
             ReceiverState(frequency_hz=main_hz, mode=main_mode),
             ReceiverState(frequency_hz=default_hz, mode=caps.modes[0]),
         ],
-        meters={"s": 0},
+        meters={"s_meter_main": 0, "s_meter_sub": 0},
         extra={
             "auto_information": 0,
             "main_memory_mode": False,
