@@ -178,10 +178,10 @@ async def test_tcp_vanish_drops_clients_and_closes_new_opens_until_reappear() ->
 
 
 async def test_tcp_stop_admits_no_handler_queued_before_shutdown() -> None:
-    # No loop yield between connect and stop(): depending on scheduling
-    # the accepted handler may or may not have started when stop() runs —
-    # both outcomes must end clean (EOF, no registered client, no
-    # leftover TcpEndpoint task).
+    # Stop right after the connect: depending on scheduling the accepted
+    # handler may or may not have started when stop() runs — both
+    # outcomes must end clean (EOF, no registered client, no leftover
+    # TcpEndpoint task).
     endpoint = TcpEndpoint(CivSerialFake())
     await endpoint.start()
     reader, _writer = await asyncio.open_connection("127.0.0.1", endpoint.port)
