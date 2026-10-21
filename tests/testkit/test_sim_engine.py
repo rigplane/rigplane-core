@@ -28,6 +28,7 @@ from rigplane_testkit.sim.engine import (
     SetMeter,
     SetMode,
     SetPtt,
+    SetSelector,
     SetSplit,
     SetSwitch,
     SimEngine,
@@ -39,6 +40,7 @@ CAPS = Capabilities(
     receiver_count=2,
     levels={"af": (0, 255), "rf": (0, 255)},
     switches=frozenset({"nb", "preamp"}),
+    selectors={"agc": (1, 2, 3), "att": (0, 2, 10, 20)},
 )
 
 
@@ -80,6 +82,14 @@ def test_apply_ok_mutates_state_and_records_op() -> None:
         (SetLevel(0, "af", 256), OutOfRange, "out_of_range"),  # above level max
         (SetSwitch(0, "turbo", True), Unsupported, "unsupported"),  # unknown switch
         (SetSwitch(0, "nb", 1), OutOfRange, "out_of_range"),  # int where bool required
+        (SetSelector(0, "vox", 1), Unsupported, "unsupported"),  # unknown selector
+        (SetSelector(0, [], 1), OutOfRange, "out_of_range"),  # unhashable name
+        (SetSelector(2, "agc", 1), OutOfRange, "out_of_range"),  # unknown receiver
+        (SetSelector(0, "agc", 0), OutOfRange, "out_of_range"),  # step not allowed
+        (SetSelector(0, "agc", True), OutOfRange, "out_of_range"),  # bool not int
+        (SetSelector(0, "agc", "2"), OutOfRange, "out_of_range"),  # str not int
+        (SetSelector(0, "agc", 2.0), OutOfRange, "out_of_range"),  # float not int
+        (SetSelector(0, "agc", None), OutOfRange, "out_of_range"),  # None not int
         (SetPtt("yes"), OutOfRange, "out_of_range"),  # str where bool required
         ("not-an-op", Unsupported, "unsupported"),  # non-dataclass op still records
         (SetFrequency, Unsupported, "unsupported"),  # op class, not an instance
@@ -116,6 +126,36 @@ def test_default_state_derives_from_caps() -> None:
     assert engine.read("frequency_hz") == Ok(118_000_000)  # clamped to band edge
 
 
+def test_set_selector_sets_state_and_records_op() -> None:
+    engine, _ = _engine()
+    assert engine.apply(SetSelector(1, "agc", 3)) == Ok()
+    assert engine.state.receivers[1].selectors["agc"] == 3
+    assert engine.read("selector:agc", receiver=1) == Ok(3)
+    record = engine.trace[0]
+    assert (record.n, record.t, record.kind, record.name) == (
+        0,
+        0.0,
+        "op",
+        "SetSelector",
+    )
+    assert record.args == {"receiver": 1, "name": "agc", "value": 3}
+    assert record.result["outcome"] == "ok"
+
+
+def test_selector_initial_value_is_first_allowed_value() -> None:
+    engine, _ = _engine()
+    assert engine.read("selector:agc") == Ok(1)
+    assert engine.state.receivers[1].selectors == {"agc": 1, "att": 0}
+    custom, _ = _engine(
+        initial=SimState(
+            receivers=[ReceiverState(selectors={"agc": 3}), ReceiverState()]
+        )
+    )
+    assert custom.read("selector:agc", receiver=0) == Ok(3)  # caller value kept
+    assert custom.read("selector:agc", receiver=1) == Ok(1)  # missing ones seeded
+    assert custom.state.receivers[0].selectors == {"agc": 3, "att": 0}
+
+
 def test_failed_apply_never_mutates_state() -> None:
     engine, _ = _engine()
     engine.apply(SetFrequency(0, 14_100_000))
@@ -125,6 +165,8 @@ def test_failed_apply_never_mutates_state() -> None:
         SetMode(0, "WSPR"),
         SetLevel(0, "vol", 3),
         SetSwitch(0, "nope", True),
+        SetSelector(0, "vox", 1),
+        SetSelector(0, "agc", 9),
         SelectReceiver(9),
         SetMeter("smeter", "loud"),
     ):
@@ -153,6 +195,7 @@ def test_two_engines_same_inputs_produce_identical_traces() -> None:
         engine.schedule(1.0, Marker("mid"))
         engine.schedule(1.0, ScheduledOp(SetMode(0, "CW", filter=2)))
         engine.schedule(2.0, ScheduledOp(SetLevel(0, "af", 12)))
+        engine.schedule(2.0, ScheduledOp(SetSelector(0, "agc", 2)))
         clock.advance(1.0)
         engine.advance_to(1.0)
         clock.advance(1.0)
@@ -162,7 +205,7 @@ def test_two_engines_same_inputs_produce_identical_traces() -> None:
     engine_a = build_and_run()
     engine_b = build_and_run()
     assert engine_a.trace == engine_b.trace
-    assert [r.t for r in engine_a.trace] == [0.0, 1.0, 1.0, 2.0]
+    assert [r.t for r in engine_a.trace] == [0.0, 1.0, 1.0, 2.0, 2.0]
     assert engine_a.state == engine_b.state
 
 
@@ -211,6 +254,7 @@ def test_read_covers_every_name_family() -> None:
     engine.apply(SetFrequency(1, 7_030_000))
     engine.apply(SetLevel(1, "af", 42))
     engine.apply(SetSwitch(1, "nb", True))
+    engine.apply(SetSelector(1, "agc", 2))
     engine.apply(SelectReceiver(1))
     engine.apply(SetSplit(True))
     engine.apply(SetMeter("smeter", 59))
@@ -221,6 +265,8 @@ def test_read_covers_every_name_family() -> None:
     assert engine.read("data_mode") == Ok(False)
     assert engine.read("level:af") == Ok(42)
     assert engine.read("switch:nb") == Ok(True)
+    assert engine.read("selector:agc") == Ok(2)  # selected receiver is 1
+    assert engine.read("selector:agc", receiver=0) == Ok(1)  # seeded first allowed
     assert engine.read("ptt") == Ok(False)
     assert engine.read("split") == Ok(True)
     assert engine.read("selected_receiver") == Ok(1)
@@ -231,7 +277,9 @@ def test_read_covers_every_name_family() -> None:
     assert engine.read("switch:nb", receiver=0) == Ok(None)  # unset reads as None
     assert isinstance(engine.read("warp"), Unsupported)
     assert isinstance(engine.read("level:vol"), Unsupported)
+    assert isinstance(engine.read("selector:vox"), Unsupported)
     assert isinstance(engine.read("frequency_hz", receiver=9), OutOfRange)
+    assert isinstance(engine.read("selector:agc", receiver=9), OutOfRange)
 
 
 def test_rng_same_stream_identity_and_cross_stream_independence() -> None:
@@ -259,7 +307,7 @@ def test_star_export_does_not_leak_core_module_imports() -> None:
         "isfinite",
         "Protocol",
     }
-    assert {"SimEngine", "Ok", "Marker"} <= exported
+    assert {"SimEngine", "Ok", "Marker", "SetSelector"} <= exported
 
 
 def test_trace_records_are_json_serialisable() -> None:
@@ -267,7 +315,10 @@ def test_trace_records_are_json_serialisable() -> None:
     engine.apply(SetFrequency(0, 14_074_000))
     engine.apply(SetMode(0, "FM", filter=2))
     engine.apply(SetFrequency(0, 1))  # failed record carries the rejected value
+    engine.apply(SetSelector(0, "agc", 3))  # ok op with a JSON value
+    engine.apply(SetSelector(0, "agc", object()))  # rejected with a non-JSON value
     engine.apply(SetFrequency(0, object()))  # rejected with a non-JSON value
     payload = [asdict(r) for r in engine.trace]
     assert json.loads(json.dumps(payload)) == payload
+    assert payload[3]["args"]["value"] == "<object>"
     assert payload[-1]["args"]["hz"] == "<object>"

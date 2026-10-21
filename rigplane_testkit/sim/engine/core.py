@@ -16,7 +16,7 @@ from typing import Protocol
 __all__ = (
     "Capabilities Clock ManualClock Marker Ok Outcome OutOfRange ReceiverState "
     "Record Refused ScheduledOp SelectReceiver SetFrequency SetLevel SetMeter "
-    "SetMode SetPtt SetSplit SetSwitch SimEngine SimState Unsupported"
+    "SetMode SetPtt SetSelector SetSplit SetSwitch SimEngine SimState Unsupported"
 ).split()
 
 
@@ -48,6 +48,7 @@ class Capabilities:
     frequency_range_hz: tuple[int, int] = (30_000, 74_800_000)
     levels: dict[str, tuple[int, int]] = field(default_factory=dict)  # (min, max)
     switches: frozenset[str] = frozenset()
+    selectors: dict[str, tuple[int, ...]] = field(default_factory=dict)
     has_split: bool = True
     has_ptt: bool = True
 
@@ -60,6 +61,7 @@ class ReceiverState:
     data_mode: bool = False
     levels: dict[str, int] = field(default_factory=dict)
     switches: dict[str, bool] = field(default_factory=dict)
+    selectors: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -98,6 +100,13 @@ class SetSwitch:
     receiver: int
     name: str
     on: bool
+
+
+@dataclass(frozen=True)
+class SetSelector:
+    receiver: int
+    name: str
+    value: int
 
 
 @dataclass(frozen=True)
@@ -211,6 +220,9 @@ class SimEngine:
         elif len(initial.receivers) != caps.receiver_count:
             raise ValueError("initial.receivers must match caps.receiver_count")
         self._state = initial
+        for rx_state in self._state.receivers:
+            for name, values in caps.selectors.items():
+                rx_state.selectors.setdefault(name, values[0])
         self._now = float(clock())
         self._queue: list[tuple[float, int, object]] = []
         self._order = count()
@@ -250,14 +262,14 @@ class SimEngine:
                 return target
             return Ok(getattr(target, name))
         prefix, _, key = name.partition(":")
-        if prefix in ("level", "switch"):
-            known = self._caps.levels if prefix == "level" else self._caps.switches
+        if prefix in ("level", "switch", "selector"):
+            known = getattr(self._caps, f"{prefix}s")
             if key not in known:
                 return Unsupported(f"{prefix} {key!r}")
             target = self._target(receiver)
             if isinstance(target, OutOfRange):
                 return target
-            values = target.levels if prefix == "level" else target.switches
+            values = getattr(target, f"{prefix}s")
             return Ok(values.get(key))
         if prefix == "meter":
             return Ok(self._state.meters.get(key))
@@ -343,6 +355,18 @@ class SimEngine:
             if not isinstance(op.on, bool):
                 return OutOfRange(f"switch {op.name}", op.on)
             target.switches[op.name] = op.on
+        elif isinstance(op, SetSelector):
+            target = self._target(op.receiver)
+            if isinstance(target, OutOfRange):
+                return target
+            if not isinstance(op.name, str):
+                return OutOfRange("selector name", op.name)
+            allowed = self._caps.selectors.get(op.name)
+            if allowed is None:
+                return Unsupported(f"selector {op.name!r}")
+            if not _is_int(op.value) or op.value not in allowed:
+                return OutOfRange(f"selector {op.name}", op.value)
+            target.selectors[op.name] = op.value
         elif isinstance(op, SetPtt):
             if not self._caps.has_ptt:
                 return Unsupported("ptt")
