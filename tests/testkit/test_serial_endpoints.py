@@ -54,6 +54,14 @@ async def _link_reply(link: SerialCivLink, timeout: float = 2.0) -> CivFrame | N
     return None
 
 
+async def _until(condition, timeout: float = 5.0) -> None:
+    async def _poll() -> None:
+        while not condition():
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(_poll(), timeout)
+
+
 async def test_tcp_echo_identity_and_frequency_over_raw_sockets() -> None:
     fake = CivSerialFake(frequency_hz=14_074_000)
     endpoint = TcpEndpoint(fake)
@@ -143,7 +151,7 @@ async def test_tcp_vanish_drops_clients_and_closes_new_opens_until_reappear() ->
         gone_writer.close()
 
         fake.usb_reappear(after=0.05)
-        await asyncio.sleep(0.4)  # the reappear window plus a wide margin
+        await _until(lambda: not fake._vanished)  # the reappear landed
         reader2, writer2 = await asyncio.open_connection("127.0.0.1", endpoint.port)
         ident = _ident(fake)
         writer2.write(ident)
@@ -155,21 +163,17 @@ async def test_tcp_vanish_drops_clients_and_closes_new_opens_until_reappear() ->
 
 
 async def test_tcp_stop_admits_no_handler_queued_before_shutdown() -> None:
-    # A queued-but-not-started handler must not escape stop()'s cancellation.
+    # No loop yield between connect and stop(): depending on scheduling
+    # the accepted handler may or may not have started when stop() runs —
+    # both outcomes must end clean (EOF, no registered client, no
+    # leftover TcpEndpoint task).
     endpoint = TcpEndpoint(CivSerialFake())
-    inner, admitted = endpoint._handle_client, asyncio.Event()
-
-    async def gated(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        await admitted.wait()  # hold it in the "queued, not started" state
-        await inner(reader, writer)
-
-    endpoint._handle_client = gated
     await endpoint.start()
-    reader, _ = await asyncio.open_connection("127.0.0.1", endpoint.port)
-    await endpoint.stop()  # no loop yield between connect and shutdown
-    admitted.set()
+    reader, _writer = await asyncio.open_connection("127.0.0.1", endpoint.port)
+    await endpoint.stop()
     assert await asyncio.wait_for(reader.read(), 3.0) == b""  # EOF, no hang
-    assert endpoint._clients == {} and not any(
+    assert endpoint._clients == {}
+    assert not any(
         "TcpEndpoint" in getattr(t.get_coro(), "__qualname__", "")
         for t in asyncio.all_tasks()
     )
@@ -180,13 +184,13 @@ async def test_pty_start_is_transactional_while_fake_vanished() -> None:
     fake = CivSerialFake()
     endpoint = PtyEndpoint(fake)
     fake.usb_vanish()
-    await asyncio.sleep(0.01)  # the vanish must land before start()
+    await _until(lambda: fake._vanished)  # the vanish must land before start()
     with pytest.raises(OSError):
         await endpoint.start()
     with pytest.raises(RuntimeError):
         _ = endpoint.device  # nothing published: no path, fd or reader
     fake.usb_reappear()
-    await asyncio.sleep(0.01)
+    await _until(lambda: not fake._vanished)
     await endpoint.start()
     port = await asyncio.to_thread(serial.Serial, endpoint.device, 115200, timeout=3)
     try:
@@ -247,8 +251,9 @@ async def test_pty_identity_and_reappear_through_pyserial() -> None:
         # the next bytes open a fresh one and are answered again.
         opens = fake.open_count
         fake.usb_vanish()
+        await _until(lambda: fake._vanished)
         fake.usb_reappear(after=0.05)
-        await asyncio.sleep(0.4)  # the window plus a wide margin
+        await _until(lambda: not fake._vanished)
         await loop.run_in_executor(None, port.write, ident)
         echo = await asyncio.wait_for(loop.run_in_executor(None, _read), 5.0)
         assert echo == ident

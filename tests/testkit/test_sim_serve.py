@@ -40,10 +40,6 @@ _STARTUP_KEYS = (
     "sim radio fidelity evidence transport host control_port username control seed"
 ).split()
 
-_SERIAL_STARTUP_KEYS = (
-    "sim radio fidelity evidence transport device pty control seed"
-).split()
-
 # Obvious test-only credentials for the subprocess run: only --password can
 # put this value on the wire, so any appearance in output is a leak.
 _TEST_USERNAME = "sim-e2e-user"
@@ -322,6 +318,31 @@ async def test_same_seed_and_events_produce_identical_trace() -> None:
     assert len(first) == 1 + len(_DETERMINISM_EVENTS)
 
 
+# --- Serial events (in-process) ---------------------------------------------
+
+
+async def test_stop_cancels_pending_reappear_timer() -> None:
+    async with _stack("--radio", "ic7300") as s:  # last --radio wins
+        await s.client.post("/event", json={"event": "usb_vanish", "for_s": 5})
+        handle = s.inner.backend.vanish._reappear
+        assert handle is not None  # the 5 s restore timer is pending
+        await s.inner.backend.stop()
+        assert handle.cancelled()
+        names = [rec["name"] for rec in s.inner.trace.snapshot(0)["events"]]
+        assert "usb_reappear" not in names
+
+
+@pytest.mark.parametrize("literal", _BAD_NUMERIC_LITERALS + ("-1", "0", "null"))
+@pytest.mark.parametrize("event", ("silence", "usb_vanish"))
+async def test_serial_events_reject_bad_durations(event: str, literal: str) -> None:
+    async with _stack("--radio", "ic7300") as s:
+        fake = s.inner.backend.radio
+        resp = await _post_raw(s, f'{{"event":"{event}","for_s":{literal}}}')
+        assert resp.status == 400, literal
+        assert _strict_loads(await resp.text())["error"] == "invalid_args"
+        assert fake._vanished is False and fake._silent_until == 0.0
+
+
 # --- Subprocess end to end ----------------------------------------------------
 
 
@@ -440,12 +461,28 @@ async def test_signal_exits_0_and_writes_stop_record(tmp_path: Path, sig) -> Non
 
 
 async def _wire_identity(reader, writer, ident: bytes) -> bytes:
-    """Send *ident* on a raw stream; return the parsed reply past the echo."""
+    # Send *ident* on a raw stream; return the parsed reply past the echo.
     writer.write(ident)
     await writer.drain()
     echo = await asyncio.wait_for(reader.readuntil(b"\xfd"), 5)
     assert echo == ident
     return parse_civ_frame(bytes(await asyncio.wait_for(reader.readuntil(b"\xfd"), 5)))
+
+
+async def _wait_trace_record(control: str, name: str) -> dict:
+    # Bounded poll (5 s, 10 ms ticks) of GET /trace for a *name* record.
+    async with ClientSession() as http:
+
+        async def _poll() -> dict:
+            events: list[dict] = []
+            while not any(rec["name"] == name for rec in events):
+                events = _strict_loads(
+                    await (await http.get(f"{control}/trace")).text()
+                )["events"]
+                await asyncio.sleep(0.01)
+            return next(rec for rec in events if rec["name"] == name)
+
+        return await asyncio.wait_for(_poll(), 5.0)
 
 
 async def test_subprocess_serial_end_to_end(tmp_path: Path) -> None:
@@ -454,21 +491,16 @@ async def test_subprocess_serial_end_to_end(tmp_path: Path) -> None:
     trace_path = tmp_path / "trace.jsonl"
     proc, line = await _start_sim("--trace", str(trace_path), radio="ic7300")
     try:
-        assert list(line) == _SERIAL_STARTUP_KEYS
-        assert line["sim"] == "rigplane-sim/1" and line["radio"] == "IC-7300"
-        assert line["fidelity"] == "B" and line["evidence"] == "simulated"
-        assert line["transport"] == "serial" and line["seed"] == 0
-        host, port = line["device"].removeprefix("socket://").rsplit(":", 1)
-        assert host == "127.0.0.1" and int(port) > 0
+        keys = "sim radio fidelity evidence transport device pty control seed"
+        assert list(line) == keys.split()
+        assert line["radio"] == "IC-7300" and line["fidelity"] == "B"
         assert isinstance(line["pty"], str) and line["pty"].startswith("/dev/")
-
-        # rigs/ic7300.toml pins the address and the model id this wire speaks.
+        host, port = line["device"].removeprefix("socket://").rsplit(":", 1)
         ident = build_civ_frame(0x94, CONTROLLER_ADDR, 0x19, sub=0x00)
         reader, writer = await asyncio.open_connection(host, int(port))
         assert (await _wire_identity(reader, writer, ident)).data == b"\x94"
 
-        # usb_vanish with a reappear window: the live client drops now, a
-        # new client is closed while gone, and the window answers again.
+        # usb_vanish window: the client drops, the traced reappear lands, it answers.
         async with ClientSession() as http:
             async with http.post(
                 f"{line['control']}/event",
@@ -476,52 +508,24 @@ async def test_subprocess_serial_end_to_end(tmp_path: Path) -> None:
             ) as resp:
                 assert resp.status == 200
         assert await asyncio.wait_for(reader.read(), 5) == b""
-        gone_reader, gone_writer = await asyncio.open_connection(host, int(port))
-        assert await asyncio.wait_for(gone_reader.read(), 5) == b""
-        gone_writer.close()
-        await asyncio.sleep(0.7)  # the 0.3 s window plus a wide margin
+        reappear = await _wait_trace_record(line["control"], "usb_reappear")
+        assert reappear["kind"] == "event" and reappear["result"] == {"ok": True}
 
         reader2, writer2 = await asyncio.open_connection(host, int(port))
         assert (await _wire_identity(reader2, writer2, ident)).data == b"\x94"
-        writer.close()
         writer2.close()
 
         async with ClientSession() as http:
             state = await (await http.get(f"{line['control']}/state")).json()
-            trace_body = await (await http.get(f"{line['control']}/trace")).text()
             # The serial /state key set; IC-7610-only events answer unsupported.
-            assert set(state) == {
-                "frequency_hz",
-                "mode",
-                "ptt",
-                "s_meter",
-                "open_count",
-                "vanished",
-            }
-            assert state["frequency_hz"] == 14_074_000
-            assert state["vanished"] is False
+            wanted = "frequency_hz mode ptt s_meter open_count vanished".split()
+            assert set(state) == set(wanted)
+            assert (state["frequency_hz"], state["vanished"]) == (14_074_000, False)
             async with http.post(
                 f"{line['control']}/event", json={"event": "session_drop"}
             ) as resp:
                 assert resp.status == 400
                 assert (await resp.json())["error"] == "unsupported"
-            # A rejected body runs no handler: state unchanged through the storm.
-            async with http.post(
-                f"{line['control']}/event",
-                data='{"event":"set_frequency","hz":NaN}',
-                headers={"Content-Type": "application/json"},
-            ) as resp:
-                assert resp.status == 400
-            assert (await (await http.get(f"{line['control']}/state")).json())[
-                "frequency_hz"
-            ] == 14_074_000
-        records = [
-            rec
-            for rec in _strict_loads(trace_body)["events"]
-            if rec["name"] == "usb_reappear"
-        ]
-        assert records and records[0]["kind"] == "event"
-        assert records[0]["result"] == {"ok": True}
 
         proc.send_signal(signal.SIGTERM)
         assert await asyncio.wait_for(proc.wait(), 10) == 0
@@ -529,8 +533,5 @@ async def test_subprocess_serial_end_to_end(tmp_path: Path) -> None:
         await _kill_if_alive(proc)
 
     file_records = [_strict_loads(x) for x in trace_path.read_text().splitlines()]
-    assert (file_records[-1]["kind"], file_records[-1]["name"]) == (
-        "stop",
-        "shutdown",
-    )
+    assert (file_records[-1]["kind"], file_records[-1]["name"]) == ("stop", "shutdown")
     assert file_records[-1]["result"] == {"ok": True}

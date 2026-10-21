@@ -19,8 +19,8 @@ it ships in `rigplane_testkit`, not in the published `rigplane` wheel.
 | `--username` | constructor default | Login username the simulator accepts (otherwise `MockIcomRadio`'s fixed test value). |
 | `--password` | constructor default | Login password the simulator accepts. Never printed, logged or returned. |
 
-With `--radio ic7300`, `--keepalive-hold-s`, `--username` and `--password`
-are IC-7610-only: accepted and ignored.
+With `--radio ic7300` the IC-7610-only flags (`--keepalive-hold-s`,
+`--username`, `--password`) are accepted and ignored.
 
 ## Startup line
 
@@ -68,43 +68,37 @@ booleans and strings.
 
 The IC-7300 is served by the stateful serial CI-V fake
 (`rigplane_testkit/serial/civ_serial.py`) on real endpoints: a TCP
-listener usable through pyserial's `socket://` URL — the same
-`open_serial_port` open the production link performs — and, on macOS and
-Linux, a pseudo-terminal slave path a serial app opens like a device
-node. The PTY endpoint is macOS/Linux only: on Windows there is no PTY
-serial simulation — `pty` is `null` there and the TCP endpoint keeps
+listener usable through pyserial's `socket://` URL — the same open the
+production link performs — and, on macOS and Linux, a pseudo-terminal
+slave path a serial app opens like a device node. On Windows there is
+no PTY serial simulation: `pty` is `null` and the TCP endpoint keeps
 serving; use `socket://` and test whether the target app accepts it.
-During a `usb_vanish` window the fake's connection drops but the PTY
-node itself stays: an app can still open the slave path, and bytes
-written inside the window are dropped (the fake's connection is reopened
-by the first bytes after the reappear). Open-failure semantics — live
-connections drop and new opens fail — are the TCP endpoint's.
+During a `usb_vanish` window the PTY's fake connection is dropped while
+the slave path stays open: an app can still open it, and reads return
+no data until the reappear (bytes written inside the window are
+dropped; the first bytes after it reopen the fake connection). On TCP,
+live clients are dropped (EOF), and a client connecting while vanished
+is accepted and closed immediately — the open itself does not fail.
 
-Startup line (same envelope; instead of `host`/`control_port`/`username`
-it carries `device`, the `socket://` URL, and `pty`, the slave path or
-`null`):
+Startup line: same envelope, but `device` (the `socket://` URL) and
+`pty` (the slave path, or `null`) replace `host`/`control_port`/`username`.
 
-```json
-{"sim":"rigplane-sim/1","radio":"IC-7300","fidelity":"B","evidence":"simulated",
- "transport":"serial","device":"socket://127.0.0.1:12345","pty":"/dev/ttys021",
- "control":"http://127.0.0.1:54321","seed":0}
-```
-
-`GET /state` →
-`{"frequency_hz":int,"mode":int,"ptt":bool,"s_meter":int,"open_count":int,"vanished":bool}`.
+`GET /state` → `{"frequency_hz":int,"mode":int,"ptt":bool,"s_meter":int,"open_count":int,"vanished":bool}`.
 
 ### Events (all take effect immediately)
 
 | Event | Arguments | Effect |
 | --- | --- | --- |
 | `set_frequency` | `hz` (int, 1..9999999999) | Sets the fake's frequency. |
-| `usb_vanish` | optional `for_s` (finite number > 0) | The device disappears: live connections drop, and through `device` (TCP) new opens fail until it reappears. With `for_s` the reappear is scheduled that far out (cancelled on shutdown) and traced as a `usb_reappear` record when it fires. |
+| `usb_vanish` | optional `for_s` (finite number > 0) | The device disappears: live TCP clients are dropped (EOF) and a client connecting while it is gone is accepted and closed at once until it reappears (the open does not fail; see the PTY wording above). With `for_s` the reappear is scheduled that far out (cancelled on shutdown) and traced as a `usb_reappear` record when it fires. |
 | `usb_reappear` | none | The device opens again immediately. |
 | `silence` | `for_s` (finite number > 0) | The port stays open and nothing answers for the window. |
 
-These events validate through the same code path as the IC-7610 ones
-(finite numbers only, sanitised trace, 400 `invalid_args`, no handler
-runs on a rejected body); IC-7610-only events answer `unsupported` here.
+These events validate through the same code path as the IC-7610 ones:
+a body that cannot be parsed or sanitised, or names no known event,
+never reaches a handler, and each handler validates its arguments
+before changing anything (400 `invalid_args` on rejection), so a
+rejected body changes nothing. IC-7610-only events answer `unsupported`.
 
 ## Trace
 
@@ -116,8 +110,9 @@ lines (`sort_keys`, `separators=(",",":")`), flushed per line — including
 the final `stop` record written during shutdown.
 
 Determinism rule: with the same launcher arguments (`--seed`, `--bind`,
-`--control`, `--keepalive-hold-s`, `--username`) and the same event
-sequence, the trace is identical once the `t` field is removed. `t` is
+`--control`, `--keepalive-hold-s`, `--username`), the same events in the
+same order and no pending timers at the moment the trace is read, the
+trace is identical once the `t` field is removed. `t` is
 real elapsed time (recovery timings need it) and is the only
 time-dependent field. The server itself adds no ephemeral ports to trace
 records (the start record carries the `--control` hint, port 0 included);
@@ -136,4 +131,3 @@ model (the IC-7610 simulator has recorded conformance);
 **B** — manual oracles only; **C** — profile declarations only.
 
 Planned: `lan_drop` (exact N-second UDP blackout), tracked in MOR-3593.
-Planned: PTY serial simulation on Windows (no `os.openpty` there today).

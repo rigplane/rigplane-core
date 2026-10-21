@@ -5,14 +5,14 @@ aiohttp control endpoint and every event handler — no threads. One JSON line
 goes to stdout once everything listens (logs to stderr); every accepted or
 rejected control event, plus start and stop, lands in a bounded trace
 (optionally a JSONL file). With the same launcher arguments (``--seed``,
-``--bind``, ``--control``, ``--keepalive-hold-s``, ``--username``) and the
-same event sequence, the trace is identical once the real-time ``t`` field
-is removed.
+``--bind``, ``--control``, ``--keepalive-hold-s``, ``--username``), the
+same events in the same order and no pending timers at the moment the
+trace is read, the trace is identical once the real-time ``t`` field is
+removed.
 
-Two radio kinds (MOR-3594): ``ic7610`` — the LAN simulator — and ``ic7300``
-— the serial CI-V fake on a real TCP listener (``socket://``) plus a PTY
-slave path where the platform has one. :class:`RadioBackend` is the seam
-carrying what one serve process needs to run either kind.
+Two radio kinds (MOR-3594): ``ic7610`` (LAN) and ``ic7300`` — the serial
+CI-V fake on a real TCP listener (``socket://``) plus a PTY where the
+platform has one; :class:`RadioBackend` is the seam between them.
 """
 
 from __future__ import annotations
@@ -197,10 +197,8 @@ class TraceLog:
 
 @dataclass
 class RadioBackend:
-    """The seam serving two radio kinds: the simulator object (handed to
-    event handlers), its async lifecycle, the transport-specific
-    startup-line fields (called after ``start``), the ``GET /state`` body
-    and the control-event handlers."""
+    """One radio kind's seam: radio, lifecycle, startup fields (key order
+    is the contract), /state body and event handlers."""
 
     radio: Any
     start: Callable[[], Awaitable[None]]
@@ -208,6 +206,7 @@ class RadioBackend:
     startup_fields: Callable[[], dict]
     state: Callable[[], dict]
     events: dict[str, Callable[[Any, dict], dict]]
+    vanish: _VanishController | None = None  # serial: restore-timer seam
 
 
 # aiohttp 3.13 AppKeys instead of plain string keys (NotAppKeyWarning).
@@ -217,10 +216,9 @@ _STOP_EVENT_KEY: web.AppKey[asyncio.Event] = web.AppKey("stop_event", asyncio.Ev
 
 
 class _VanishController:
-    """Serve-owned ``usb_vanish``/``usb_reappear`` bookkeeping for a serial
-    radio: the fake exposes no public readback of its vanished flag, so
-    serve tracks it for ``GET /state``; the scheduled reappear is
-    cancellable on shutdown and traced when it fires."""
+    """Serve-owned usb_vanish/reappear bookkeeping: the fake has no public
+    vanished-flag readback, serve tracks it for ``GET /state``, and a
+    scheduled reappear is cancellable on shutdown and traced on fire."""
 
     def __init__(self, fake: CivSerialFake, trace: TraceLog) -> None:
         self._fake = fake
@@ -370,7 +368,7 @@ def _ic7300_backend(args: argparse.Namespace, trace: TraceLog) -> RadioBackend:
         "usb_reappear": _ev_usb_reappear,
         "silence": _ev_serial_silence,
     }
-    return RadioBackend(fake, _start, _stop, _startup_fields, _state, events)
+    return RadioBackend(fake, _start, _stop, _startup_fields, _state, events, vanish)
 
 
 def build_stack(args: argparse.Namespace) -> ServeStack:
@@ -411,8 +409,6 @@ def format_control_host(host: str) -> str:
 def startup_line(
     backend: RadioBackend, args: argparse.Namespace, http_port: int
 ) -> dict:
-    # Common envelope + the backend's transport fields; key order is the
-    # contract, so the backend dict must keep its own order.
     return {
         "sim": "rigplane-sim/1",
         **backend.startup_fields(),
