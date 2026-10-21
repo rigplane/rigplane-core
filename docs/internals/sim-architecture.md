@@ -94,9 +94,14 @@ class ReceiverState:          # one per receiver (profile receiver_count)
     # named fields; names and allowed values come from the capability profile:
     levels: dict[str, int]      # ranged integers keyed by the capability profile's control names:
                                 # "af_level", "rf_gain", "squelch", "nr_level", ... (no aliases)
-    switches: dict[str, bool]   # two-state controls: "nb", "nr", "apf", ...
-    selectors: dict[str, int]   # multi-valued controls with an allowed-value set:
-                                # "preamp" (0/1/2), "agc" (1/2/3), "att" (steps), ...
+    switches: dict[str, bool]   # controls whose declared domain is exactly two states: "nb", "nr", ...
+    selectors: dict[str, int]   # controls with a declared set of more than two values:
+                                # "preamp" (0/1/2), "agc" (1/2/3), "attenuator" (steps),
+                                # "apf" (0..3 where the capability profile declares 0..3), ...
+    # Classification rule: each control goes by the domain its capability profile
+    # declares (two values -> switches, a value set -> selectors, a range -> levels);
+    # the same control name can therefore be a switch on one radio and a selector on
+    # another. Keys are the capability profile's control names (`attenuator`, not `att`).
 
 @dataclass
 class SimState:
@@ -258,7 +263,11 @@ a known gap. Today `serve` accepts `--radio ic7610` only; the target is that
 startup JSON line, control endpoint and trace are the contract in
 `sim-serve-contract.md`. The event vocabulary is shared across radios
 (`set_frequency`, `session_drop`, `power_cycle`, `keepalive_silence`,
-`lan_drop`, `usb_vanish`, `usb_reappear`, `silence`, `nak_next`, ...); an event
+`lan_drop`, `usb_vanish`, `usb_reappear`, `silence`, `nak_next`, `refuse`, ...). `refuse`
+`{command, count}` makes the radio answer the named capability-profile command with
+its refusal outcome (NAK, `?;` or silence per profile) for the next `count`
+occurrences; `nak_next` is the CI-V-only shorthand for `refuse` with the NAK
+outcome. Argument shapes are frozen in the scenario PR (MOR-3608); an event
 a radio cannot do returns `unsupported`, never silence.
 
 ## 8. Fidelity tiers and honesty
@@ -269,9 +278,10 @@ passes; B = manual-transcribed oracles only; C = profile declarations only.
 A tier is per profile and carries its own `gaps`. A simulated run is never
 recorded as a real-radio result; hardware claims stay in the validation matrix.
 No RF behaviour is simulated: TX is accepted as state and captured as frames.
-Identity bytes are never invented: when neither the capability profile nor a
-recording has them, the profile says `identity` unverified and the radio owner
-must supply a documented source.
+Identity bytes are never invented, and there is no "unverified identity" value in
+the schema: when neither the capability profile nor a recording or a manual
+documents them, the radio has no simulation profile until its owner supplies a
+documented source (the rule in section 6).
 
 ## 9. Air recordings (MOR-3603): real signals as RX audio and scope
 
