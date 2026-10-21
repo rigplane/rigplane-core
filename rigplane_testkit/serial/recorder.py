@@ -94,10 +94,10 @@ class SerialCivRecorder:
         opener: Replacement for the real serial open step; tests mount
             :class:`rigplane_testkit.serial.CivSerialFake` via ``fake.opener``.
         client_filter: Optional factory called once per client connection;
-            the object it returns has ``feed(data) -> (forward, blocked)``.
-            Only ``forward`` reaches the device (and the ``c2r`` rows);
-            each ``blocked`` line is logged as a ``blocked`` row and counted
-            in ``blocked_lines``. :class:`rigplane_testkit.yaesu.CatReadOnlyGuard`
+            the object it returns has ``feed(data) -> [(line, allowed)]``,
+            in wire order. An allowed line reaches the device and is logged
+            as its own ``c2r`` row; a blocked one is logged as a ``blocked``
+            row and counted in ``blocked_lines``. :class:`rigplane_testkit.yaesu.CatReadOnlyGuard`
             uses it to make a CAT capture RX-only.
     """
 
@@ -221,12 +221,15 @@ class SerialCivRecorder:
                 if not data:
                     break
                 if client_filter is not None:
-                    data, blocked = client_filter.feed(data)
-                    for line in blocked:
-                        self.blocked_lines += 1
-                        self._record("blocked", line)
-                    if not data:
-                        continue
+                    for line, allowed in client_filter.feed(data):
+                        if allowed:
+                            self._record("c2r", line)
+                            self._serial_writer.write(line)
+                        else:
+                            self.blocked_lines += 1
+                            self._record("blocked", line)
+                    await self._serial_writer.drain()
+                    continue
                 self._record("c2r", data)
                 self._serial_writer.write(data)
                 await self._serial_writer.drain()
