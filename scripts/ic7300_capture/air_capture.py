@@ -42,6 +42,7 @@ from typing import Any, Protocol
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import numpy as np  # noqa: E402
 import winshim  # noqa: E402
 
 winshim.apply()
@@ -52,6 +53,15 @@ from rigplane.backends.config import SerialBackendConfig  # noqa: E402
 from rigplane.backends.factory import create_radio  # noqa: E402
 from rigplane.commands import CONTROLLER_ADDR  # noqa: E402
 from rigplane_testkit.serial import CivFrameGuard, SerialCivRecorder  # noqa: E402
+
+#: Seconds this host's clock runs AHEAD of true UTC (``--clock-offset-s``).
+_CLOCK_OFFSET_S = 0.0
+
+
+def _now() -> float:
+    """Wall-clock seconds corrected to true UTC."""
+    return time.time() - _CLOCK_OFFSET_S
+
 
 #: Clip presets; every field can be overridden on the command line.
 CLIPS: dict[str, dict[str, Any]] = {
@@ -170,9 +180,11 @@ class UsbAudioRecorder:
 
     def _callback(self, indata: Any, frames: int, time_info: Any, status: Any) -> None:
         if self.first_callback_wall is None:
-            self.first_callback_wall = time.time()
+            self.first_callback_wall = _now()
         self._frames += frames
-        self._peak = max(self._peak, int(abs(indata).max()))
+        samples = np.frombuffer(indata, dtype=np.int16)
+        if samples.size:
+            self._peak = max(self._peak, int(np.abs(samples.astype(np.int32)).max()))
         self._queue.put(bytes(indata))
 
     def _writer(self) -> None:
@@ -193,7 +205,7 @@ class UsbAudioRecorder:
             dtype="int16",
             callback=self._callback,
         )
-        self.start_wall = time.time()
+        self.start_wall = _now()
         self._stream.start()
 
     def stop(self) -> dict:
@@ -264,10 +276,24 @@ async def _restore(radio: Any, before: dict) -> None:
 
 async def _wait_for_slot(slot_s: int) -> float:
     """Sleep to the next UTC multiple of *slot_s* seconds; return that wall time."""
-    now = time.time()
+    now = _now()
     target = (int(now // slot_s) + 1) * slot_s
     await asyncio.sleep(max(0.0, target - now - 0.05))
-    while time.time() < target:
+    while _now() < target:
+        await asyncio.sleep(0.001)
+    return target
+
+
+async def _wait_until(start_at: str) -> float:
+    """Sleep to the given UTC instant (ISO 8601); refuse one already past."""
+    target = datetime.fromisoformat(start_at).astimezone(timezone.utc).timestamp()
+    now = _now()
+    if target < now:
+        raise ValueError(
+            f"--start-at {start_at} is already {now - target:.1f} s in the past"
+        )
+    await asyncio.sleep(max(0.0, target - now - 0.05))
+    while _now() < target:
         await asyncio.sleep(0.001)
     return target
 
@@ -294,7 +320,7 @@ async def run_clip(
         client_filter=CivFrameGuard(guard.allows).new_filter,
     )
     await rec.start()
-    wall_at_rec_t0 = time.time() - (time.monotonic() - rec._t0)
+    wall_at_rec_t0 = _now() - (time.monotonic() - rec._t0)
     radio = create_radio(
         SerialBackendConfig(
             device=f"socket://127.0.0.1:{rec.listen_port}",
@@ -310,7 +336,8 @@ async def run_clip(
         "seconds": args.seconds,
         "slot_s": args.slot_s,
         "civ_t0_wall_utc": _iso(wall_at_rec_t0),
-        "started_utc": datetime.now(timezone.utc).isoformat(),
+        "started_utc": _iso(_now()),
+        "clock_offset_s": _CLOCK_OFFSET_S,
     }
     exit_code = 0
     try:
@@ -341,7 +368,18 @@ async def run_clip(
                 )
             if audio is not None:
                 audio.start()
-            await asyncio.sleep(args.seconds)
+            samples: list[dict] = []
+            end = time.monotonic() + args.seconds
+            while (left := end - time.monotonic()) > 0:
+                await asyncio.sleep(min(5.0, left))
+                with contextlib.suppress(Exception):  # a read, never a write
+                    samples.append(
+                        {
+                            "t_wall_utc": _iso(_now()),
+                            "s_meter": await radio.get_s_meter(),
+                        }
+                    )
+            manifest["s_meter_samples"] = samples
             if audio is not None:
                 manifest["audio"] = audio.stop()
                 audio = None
@@ -399,6 +437,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--scope-span", type=int, help="scope span value for set_scope_span"
     )
+    parser.add_argument(
+        "--start-at",
+        help="ISO 8601 UTC instant to start the audio (for a common start across radios)",
+    )
+    parser.add_argument(
+        "--clock-offset-s",
+        type=float,
+        default=0.0,
+        help="seconds this host's clock is ahead of true UTC (corrected in all anchors)",
+    )
     parser.add_argument("--no-scope", action="store_true")
     parser.add_argument("--no-audio", action="store_true")
     args = parser.parse_args(argv)
@@ -410,6 +458,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    global _CLOCK_OFFSET_S
+    _CLOCK_OFFSET_S = args.clock_offset_s
     factory: Callable[[Path], AudioRecorder] | None = None
     if not args.no_audio:
         from rigplane.audio._usb_resolve import resolve_audio_for_serial_port

@@ -93,6 +93,7 @@ async def test_clip_on_the_fake_tunes_records_and_restores(tmp_path) -> None:
         data=False,
         seconds=0.3,
         slot_s=0,
+        start_at=None,
         scope_span=None,
         no_scope=True,
         no_audio=False,
