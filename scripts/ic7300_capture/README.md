@@ -59,3 +59,9 @@ UTC 15 s slot. `ft8_truth.py MANIFEST` slices the WAV into slots at 12 kHz and
 decodes them with jt9 (the decode list holds third-party callsigns and stays
 private). Outputs go to a private directory (NAS), referenced in the repo only
 by SHA-256 from the manifest.
+
+`air_pack.py MANIFEST OUT_DIR --kind hf_master [--decodes ...]` turns a clip into the
+`rigplane-air/1` directory of the simulator ADR (manifest.json, audio.wav, scope.jsonl
+of RAW radio `27 00` frames on the audio sample clock, truth.json); alignment is
+`wall_clock_ms`. The scope part needs the radio at 115200 baud (the radio refuses wave
+output below that, MOR-3620).
