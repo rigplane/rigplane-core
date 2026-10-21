@@ -82,6 +82,7 @@ def test_apply_ok_mutates_state_and_records_op() -> None:
         (SetSwitch(0, "nb", 1), OutOfRange, "out_of_range"),  # int where bool required
         (SetPtt("yes"), OutOfRange, "out_of_range"),  # str where bool required
         ("not-an-op", Unsupported, "unsupported"),  # non-dataclass op still records
+        (SetFrequency, Unsupported, "unsupported"),  # op class, not an instance
         (SelectReceiver(-1), OutOfRange, "out_of_range"),
     ],
 )
@@ -244,6 +245,21 @@ def test_rng_same_stream_identity_and_cross_stream_independence() -> None:
     assert stream_a != stream_b
     assert stream_a == twin_a
     assert stream_a[0] == random.Random("5:jitter").random()  # spec derivation
+
+
+def test_star_export_does_not_leak_core_module_imports() -> None:
+    import rigplane_testkit.sim.engine as engine_pkg
+
+    exported = set(vars(engine_pkg))
+    assert not exported & {
+        "heapq",
+        "random",
+        "dataclass",
+        "count",
+        "isfinite",
+        "Protocol",
+    }
+    assert {"SimEngine", "Ok", "Marker"} <= exported
 
 
 def test_trace_records_are_json_serialisable() -> None:

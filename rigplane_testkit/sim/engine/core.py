@@ -13,6 +13,12 @@ from itertools import count
 from math import isfinite
 from typing import Protocol
 
+__all__ = (
+    "Capabilities Clock ManualClock Marker Ok Outcome OutOfRange ReceiverState "
+    "Record Refused ScheduledOp SelectReceiver SetFrequency SetLevel SetMeter "
+    "SetMode SetPtt SetSplit SetSwitch SimEngine SimState Unsupported"
+).split()
+
 
 class Clock(Protocol):
     def __call__(self) -> float: ...
@@ -170,7 +176,7 @@ def _jsonable(value: object) -> object:
 
 
 def _field_dict(obj: object) -> dict:
-    if not hasattr(obj, "__dataclass_fields__"):
+    if isinstance(obj, type) or not hasattr(obj, "__dataclass_fields__"):
         return {}
     return {f.name: _jsonable(getattr(obj, f.name)) for f in fields(obj)}
 
