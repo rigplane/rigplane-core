@@ -25,15 +25,43 @@ import argparse
 import asyncio
 import collections
 import contextlib
+import importlib
 import json
 import signal
 import sys
 from pathlib import Path
+from types import ModuleType
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ic7610_capture"))
 
-from probe import load_profile  # noqa: E402
-from probe_list import build_allowed_bodies, is_forbidden  # noqa: E402
+def _load_siblings(directory: Path, names: tuple[str, ...]) -> dict[str, ModuleType]:
+    """Import top-level script modules from *directory* without leaving a trace.
+
+    The capture scripts of several radios share module names (``probe``,
+    ``probe_list``) and import each other by those bare names, so a plain
+    ``sys.path`` import would collide with another radio's copy when both are
+    loaded in one process (one pytest run). Load ours with the names free,
+    then put whatever was registered before back.
+    """
+    saved = {name: sys.modules.pop(name, None) for name in names}
+    sys.path.insert(0, str(directory))
+    try:
+        return {name: importlib.import_module(name) for name in names}
+    finally:
+        sys.path.remove(str(directory))
+        for name in names:
+            sys.modules.pop(name, None)
+            if saved[name] is not None:
+                sys.modules[name] = saved[name]
+
+
+_IC7610 = _load_siblings(
+    Path(__file__).resolve().parents[1] / "ic7610_capture", ("probe_list", "probe")
+)
+PROBE = _IC7610["probe"]
+PROBE_LIST = _IC7610["probe_list"]
+load_profile = PROBE.load_profile
+build_allowed_bodies = PROBE_LIST.build_allowed_bodies
+is_forbidden = PROBE_LIST.is_forbidden
 
 from rigplane.commands import CONTROLLER_ADDR  # noqa: E402
 from rigplane_testkit.serial import CivFrameGuard, SerialCivRecorder  # noqa: E402
