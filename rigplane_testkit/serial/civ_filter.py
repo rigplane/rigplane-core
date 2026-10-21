@@ -74,6 +74,14 @@ class CivFrameFilter:
                     out.append((bytes(self._buf), False))
                     self._buf.clear()
                 break
+            # A truncated frame followed by a valid one: the first FD belongs to
+            # the later preamble. Block the broken head, restart at the last
+            # preamble before the FD.
+            restart = self._buf.rfind(_PREAMBLE, 2, end)
+            if restart > 0:
+                out.append((bytes(self._buf[:restart]), False))
+                del self._buf[:restart]
+                end -= restart
             frame = bytes(self._buf[: end + 1])
             del self._buf[: end + 1]
             out.append((frame, self._guard.allows(frame)))

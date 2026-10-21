@@ -214,3 +214,13 @@ def test_pipelined_requests_pair_in_order_and_older_silent_ones_are_marked(
         ("r2c", NAK),
     ]
     assert out.unsolicited == []
+
+
+def test_a_sweep_whose_sequence_maximum_changes_midway_is_dropped(tmp_path) -> None:
+    rows = [
+        (0.01, "r2c", _wave(1, 3)),
+        (0.02, "r2c", _wave(2, 3)),
+        (0.03, "r2c", _wave(3, 4)),  # mixed in from another sweep: 3 of 4
+    ]
+    out = extract_window(_recording(tmp_path, rows), "scope", radio_addr=RADIO)
+    assert out.scope_rows == [] and out.scope["sweeps_kept"] == 0

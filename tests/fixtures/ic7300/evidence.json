@@ -3,8 +3,8 @@
   "answers_at": [
    19200
   ],
+  "auto_locks_to_first_baud": "confirmed by the owner (known IC-7300 behaviour): Auto locks to the first baud contacted until power cycle; the first sweep started at 19200",
   "configured_on_radio": "Auto (owner, 2026-10-21 13:57Z); answered only at 19200",
-  "hypothesis": "Auto locked to the first host baud seen after power-on (the first sweep started at 19200); unconfirmed",
   "silent_at": [
    115200,
    9600,

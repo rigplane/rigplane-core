@@ -101,6 +101,7 @@ def extract_window(
     unsolicited: dict[bytes, dict] = {}
     pending: list[dict] = []  # oldest first: {req, kept, t, echo_t}
     sweep: list[dict] = []  # contiguous packets of the sweep being assembled
+    sweep_max = 0  # the sequence maximum packet 1 announced
     sweeps = 0
     wave_count = 0
     wave_first: float | None = None
@@ -159,7 +160,8 @@ def extract_window(
             seq, seq_max = (_bcd(data[1]), _bcd(data[2])) if len(data) > 2 else (0, 0)
             if seq == 1:
                 sweep = []  # a new sweep starts; a partial one is dropped
-            if seq >= 1 and len(sweep) == seq - 1:
+                sweep_max = seq_max
+            if seq >= 1 and len(sweep) == seq - 1 and seq_max == sweep_max:
                 sweep.append(make_row(t, "r2c", frame, f"{window}_scope"))
                 if seq == seq_max:
                     if sweeps < scope_sweeps:

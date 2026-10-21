@@ -79,3 +79,9 @@ async def test_refused_frame_never_reaches_the_radio_through_the_bridge(
     rows = [json.loads(line) for line in out.read_text().splitlines()]
     assert [bytes.fromhex(r["hex"]) for r in rows if r["dir"] == "blocked"] == [SET]
     assert [bytes.fromhex(r["hex"]) for r in rows if r["dir"] == "c2r"] == [READ]
+
+
+def test_a_truncated_frame_does_not_swallow_the_next_valid_one() -> None:
+    flt = CivFrameGuard(_only_reads).new_filter()
+    truncated = bytes.fromhex("fefe94e003")  # no FD
+    assert flt.feed(truncated + READ) == [(truncated, False), (READ, True)]

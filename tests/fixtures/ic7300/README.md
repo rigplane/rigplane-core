@@ -14,7 +14,7 @@ longer diverges).
 | | |
 |---|---|
 | Radio | Icom IC-7300 (CI-V address 0x94, `19 00` answers `94`), no antenna connected, receiving only |
-| Link | USB, Silicon Labs CP210x bridge as COM3 on the Windows host GTR7; **CI-V USB Baud Rate was set to Auto on the radio (owner, 13:57Z); it answered only at 19200** (silent at 115200, 9600, 4800; profile default is 115200 -> MOR-3620). Hypothesis, unconfirmed: Auto locked to the first host baud after power-on, which was 19200 in the first sweep |
+| Link | USB, Silicon Labs CP210x bridge as COM3 on the Windows host GTR7; **CI-V USB Baud Rate was set to Auto on the radio (owner, 13:57Z); it answered only at 19200** (silent at 115200, 9600, 4800; profile default is 115200 -> MOR-3620). Known IC-7300 behaviour confirmed by the owner: with Auto the radio locks to the first baud it is contacted at until power cycle; here that was 19200 (first rate of the first sweep) |
 | Date | 2026-10-21, 08:30-09:12 EDT |
 | Radio firmware | not read (CI-V has no firmware query on this radio; front-panel reading not taken) |
 | `probe` window | `scripts/ic7610_capture/probe.py` (profile allow-list GETs + 4 unknown commands) through `SerialCivRecorder` (`python -m rigplane_testkit.serial record`), 168 distinct requests; recorded by the radio-simulators session; raw recording SHA-256 `81cbcbb0afa4b2b971879a9fd236ffad913db6e0bc17fe1e35c3df5cc58d7a8a`, kept in private storage |

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import statistics
 import sys
@@ -75,7 +76,14 @@ async def _run(args: argparse.Namespace) -> int:
             await asyncio.sleep(args.seconds)
         finally:
             radio.on_scope_data(None)
-            await radio.restore_scope_session_state(before)
+            try:
+                await radio.restore_scope_session_state(before)
+            except Exception as exc:
+                document["restore_error"] = f"{type(exc).__name__}: {exc}"
+                exit_code = 4
+                if not before[1]:  # the wave output was off: at least stop it
+                    with contextlib.suppress(Exception):
+                        await radio.disable_scope()
         await asyncio.sleep(0.5)
         after = await radio.get_scope_session_state()
         document["state_after"] = {"panel": after[0], "wave_output": after[1]}
