@@ -42,6 +42,10 @@ from typing import Any, Protocol
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import winshim  # noqa: E402
+
+winshim.apply()
+
 from bridge import make_guard  # noqa: E402
 
 from rigplane.backends.config import SerialBackendConfig  # noqa: E402

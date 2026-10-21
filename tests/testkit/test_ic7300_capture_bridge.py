@@ -32,6 +32,13 @@ def test_reads_the_profile_declares_pass() -> None:
         assert guard(frame(read)), read
 
 
+def test_status_reads_pass_but_their_write_forms_do_not() -> None:
+    for read in ("1c00", "1c01", "271400", "271500", "271a00", "271e0101"):
+        assert guard(frame(read)), read
+    for write in ("1c0001", "1c0100", "1c0101", "1c0102", "27140001", "271e010100"):
+        assert not guard(frame(write)), write
+
+
 def test_scope_switches_pass_and_other_scope_writes_do_not() -> None:
     assert guard(frame("271001")) and guard(frame("271100"))
     assert not guard(frame("271502"))  # scope span write-shaped

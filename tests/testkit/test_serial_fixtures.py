@@ -49,17 +49,19 @@ def test_first_occurrence_pairs_with_replies_and_silence(tmp_path) -> None:
         ],
     )
     out = extract_window(path, "probe", radio_addr=RADIO)
+    # An ACK/NAK closes the OLDEST outstanding request, so the silent MODE_REQ
+    # takes the NAK and BAD_REQ is left unanswered: silence is only provable
+    # by a later data reply.
     assert [(r["dir"], r["frame"]) for r in out.rows] == [
         ("c2r", FREQ_REQ),
         ("r2c", FREQ_REPLY),
         ("c2r", MODE_REQ),
-        ("c2r", BAD_REQ),
         ("r2c", NAK),
+        ("c2r", BAD_REQ),
     ]
     assert not out.echo
     table = RecordedAnswerTable.from_civ_pairs(out.rows, "usb")
     assert table.answer(bytes.fromhex(FREQ_REQ)) == bytes.fromhex(FREQ_REPLY)
-    assert table.answer(bytes.fromhex(BAD_REQ)) == bytes.fromhex(NAK)
 
 
 def test_echo_is_detected_and_kept_once(tmp_path) -> None:
@@ -151,3 +153,27 @@ def test_cli_merges_windows_and_replaces_a_rerun(tmp_path, capsys) -> None:
     ]
     assert [r["window"] for r in rows] == ["readonly_session"] * 2 + ["probe"] * 2
     assert capsys.readouterr().out.count('"window"') == 3
+
+
+def test_pipelined_requests_pair_in_order_and_older_silent_ones_are_marked(
+    tmp_path,
+) -> None:
+    path = _recording(
+        tmp_path,
+        [
+            (0.10, "c2r", MODE_REQ),  # silent: never answered
+            (0.11, "c2r", FREQ_REQ),
+            (0.12, "c2r", BAD_REQ),
+            (0.13, "r2c", FREQ_REPLY),  # closes FREQ_REQ; MODE_REQ is silent
+            (0.14, "r2c", NAK),  # closes BAD_REQ (oldest remaining)
+        ],
+    )
+    out = extract_window(path, "poll", radio_addr=RADIO)
+    assert [(r["dir"], r["frame"]) for r in out.rows] == [
+        ("c2r", MODE_REQ),
+        ("c2r", FREQ_REQ),
+        ("r2c", FREQ_REPLY),
+        ("c2r", BAD_REQ),
+        ("r2c", NAK),
+    ]
+    assert out.unsolicited == []

@@ -24,8 +24,13 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from rigplane.backends.config import SerialBackendConfig
-from rigplane.backends.factory import create_radio
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import winshim  # noqa: E402
+
+winshim.apply()
+
+from rigplane.backends.config import SerialBackendConfig  # noqa: E402
+from rigplane.backends.factory import create_radio  # noqa: E402
 
 
 def interval_stats(stamps: list[float]) -> dict:

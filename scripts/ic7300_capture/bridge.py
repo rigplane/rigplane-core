@@ -5,7 +5,7 @@ frame guard, so a client pointed at ``socket://HOST:PORT`` (the Core server,
 ``rigplane validate --read-only``, ``probe.py``) can only send the commands
 the capture allows. The allowed set is the IC-7610 capture's allow-list
 (``scripts/ic7610_capture/probe_list.py``: every ``get_*`` body of the rig
-profile, minus the refused command families) plus the four scope switches
+profile, minus the refused command families) plus the exact status/scope reads in ``READ_EXTRA_BODIES`` and the four scope switches
 ``27 10 00/01`` (panel) and ``27 11 00/01`` (wave data output), which the
 scope window needs and which the product's own scope session restores.
 
@@ -44,6 +44,21 @@ SCOPE_SWITCH_BODIES = frozenset(
 )
 
 
+#: Exact read bodies the Core server issues that the probe list leaves out: the
+#: PTT and tuner status reads (``1C 00``, ``1C 01`` with NO data byte: a read
+#: cannot key; any value byte makes it a write and is refused) and the scope
+#: panel / wave-output state reads (``27 10``, ``27 11``) and the scope
+#: setting reads with their selector byte (``27 14..1D 00``, ``27 1E rr ee``).
+READ_EXTRA_BODIES = frozenset(
+    [bytes((0x1C, 0x00)), bytes((0x1C, 0x01)), bytes((0x27, 0x10)), bytes((0x27, 0x11))]
+    + [
+        bytes((0x27, sub, 0x00))
+        for sub in (0x14, 0x15, 0x16, 0x17, 0x19, 0x1A, 0x1B, 0x1C, 0x1D)
+    ]
+    + [bytes((0x27, 0x1E, rng, edge)) for rng in (1, 2, 3) for edge in (1, 2, 3)]
+)
+
+
 def make_guard(model: str, radio_addr: int) -> CivFrameGuard:
     """The frame guard for ``SerialCivRecorder(client_filter=guard.new_filter)``."""
     allowed = build_allowed_bodies(load_profile(model))
@@ -52,7 +67,7 @@ def make_guard(model: str, radio_addr: int) -> CivFrameGuard:
         if len(frame) < 6 or frame[2] != radio_addr or frame[3] != CONTROLLER_ADDR:
             return False  # not a controller request for this radio
         body = frame[4:-1]
-        if body in SCOPE_SWITCH_BODIES:
+        if body in SCOPE_SWITCH_BODIES or body in READ_EXTRA_BODIES:
             return True
         return not is_forbidden(body, allowed)
 

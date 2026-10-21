@@ -82,11 +82,20 @@ def extract_window(
     transport: str = "usb",
     scope_sweeps: int = 5,
 ) -> WindowExtract:
-    """Trim one bridge recording into ``civ_pairs`` rows (module docstring)."""
+    """Trim one bridge recording into ``civ_pairs`` rows (module docstring).
+
+    Requests may be pipelined (a polling client sends several before the
+    first reply). The radio answers in order, so a data reply is paired with
+    the oldest outstanding request whose body it extends (or, failing that,
+    whose command and sub-command it repeats); every older outstanding
+    request is then silent. An ACK/NAK closes the oldest outstanding
+    request. Rows are emitted request-then-reply at reply time, so adjacent
+    pairs stay adjacent whatever the interleaving.
+    """
     out = WindowExtract()
     seen: set[bytes] = set()
     unsolicited: dict[bytes, dict] = {}
-    pending: tuple[bytes, bool] | None = None  # (request, kept)
+    pending: list[dict] = []  # oldest first: {req, kept, t, echo_t}
     started = False
     sweeps = 0
     wave_count = 0
@@ -104,6 +113,28 @@ def extract_window(
             }
         )
 
+    def emit_request(item: dict) -> None:
+        if item["kept"]:
+            row(item["t"], "c2r", item["req"])
+            if item["echo_t"] is not None:
+                row(item["echo_t"], "r2c", item["req"])
+
+    def match(frame: bytes) -> int | None:
+        """Index in ``pending`` that this radio reply closes, else None."""
+        if frame[2] != _CONTROLLER or frame[3] != radio_addr:
+            return None
+        if frame[4] in (_ACK, _NAK):
+            return 0 if pending else None
+        body = frame[4:-1]
+        for index, item in enumerate(pending):
+            if body.startswith(item["req"][4:-1]):
+                return index
+        for index, item in enumerate(pending):
+            req_body = item["req"][4:-1]
+            if body[:1] == req_body[:1] and body[1:2] == req_body[1:2]:
+                return index
+        return None
+
     for t, direction, frame in civ_frames(path):
         if direction == "blocked":
             out.blocked_frames += 1
@@ -111,9 +142,7 @@ def extract_window(
         if direction == "c2r":
             kept = frame not in seen
             seen.add(frame)
-            pending = (frame, kept)
-            if kept:
-                row(t, "c2r", frame)
+            pending.append({"req": frame, "kept": kept, "t": t, "echo_t": None})
             continue
         if direction != "r2c":
             continue
@@ -130,25 +159,27 @@ def extract_window(
                 if seq == seq_max:
                     sweeps += 1
             continue
-        if pending is not None and frame == pending[0]:
+        echoed = next((item for item in pending if item["req"] == frame), None)
+        if echoed is not None and echoed["echo_t"] is None:
             out.echo = True
-            if pending[1]:
-                row(t, "r2c", frame)
+            echoed["echo_t"] = t
             continue
-        if (
-            pending is not None
-            and frame[2] == _CONTROLLER
-            and frame[3] == radio_addr
-            and frame[4] in (_ACK, _NAK, pending[0][4])
-        ):
-            if pending[1]:
-                row(t, "r2c", frame)
-            pending = None
+        index = match(frame)
+        if index is None:
+            entry = unsolicited.setdefault(
+                frame, {"frame": frame.hex(), "first_t": round(t, 3), "count": 0}
+            )
+            entry["count"] += 1
             continue
-        entry = unsolicited.setdefault(
-            frame, {"frame": frame.hex(), "first_t": round(t, 3), "count": 0}
-        )
-        entry["count"] += 1
+        for item in pending[:index]:  # in-order radio: older requests got nothing
+            emit_request(item)
+        item = pending[index]
+        del pending[: index + 1]
+        emit_request(item)
+        if item["kept"]:
+            row(t, "r2c", frame)
+    for item in pending:
+        emit_request(item)
 
     out.unsolicited = list(unsolicited.values())
     out.scope = {
