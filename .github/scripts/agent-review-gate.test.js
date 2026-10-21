@@ -8,6 +8,9 @@ const {
   evaluateReviewGate,
   parseReviewDirectives,
 } = require('./agent-review-gate');
+// quick.yml runs only this file and is a trusted control (not editable from a PR), so the Codex
+// verdict tests ride along here.
+require('./codex-review-gate.test.js');
 const codexGate = require('./codex-review-gate');
 
 const HEAD = '1234567890abcdef1234567890abcdef12345678';
