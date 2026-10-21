@@ -1,7 +1,6 @@
 """Pure deterministic simulator state engine (MOR-3599): plain-value state,
-capability-validated operations, injected clock, seeded per-stream RNG,
-ordered event queue, JSON-friendly trace. No sockets/asyncio/rigplane
-imports; the caller derives Capabilities from a profile (no TOML here).
+capability-validated ops, injected clock, seeded RNG, ordered event queue,
+JSON-friendly trace. No sockets/asyncio/rigplane imports; no TOML here.
 """
 
 from __future__ import annotations
@@ -9,7 +8,7 @@ from __future__ import annotations
 import copy
 import heapq
 import random
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from itertools import count
 from math import isfinite
 from types import MappingProxyType
@@ -59,12 +58,7 @@ class ManualClock:
 
 @dataclass(frozen=True)
 class Capabilities:
-    """Static rig capabilities.
-
-    The ``levels`` and ``selectors`` dict fields must not be mutated after
-    construction. The dataclass is frozen but not hashable (its dict fields
-    are unhashable), so share an instance instead of hashing it.
-    """
+    """Static rig capabilities; frozen but unhashable (dict fields)."""
 
     receiver_count: int = 1
     modes: tuple[str, ...] = ("USB", "LSB", "CW", "CWR", "AM", "FM", "RTTY", "RTTYR")
@@ -201,6 +195,21 @@ def _is_int(value: object) -> bool:
     return type(value) is int  # exact built-in int: no bool, no int subclasses
 
 
+# Exact op classes: no subclass is an accepted op — it can carry unvalidated
+# fields (e.g. an unset init=False field whose trace extraction would raise).
+_OP_CLASSES = (
+    SetFrequency,
+    SetMode,
+    SetLevel,
+    SetSwitch,
+    SetSelector,
+    SetPtt,
+    SelectReceiver,
+    SetSplit,
+    SetMeter,
+)
+
+
 _HUGE_INT = 10**18  # 19+ digit ints become a placeholder to stay JSON-safe
 _LOG10_2 = 0.30102999566398119521
 
@@ -232,10 +241,17 @@ def _jsonable(value: object) -> object:
     return f"<{type(value).__name__}>"  # keep the trace JSON-serialisable
 
 
+_UNSET = object()  # getattr default: a declared field that was never assigned
+
+
 def _field_dict(obj: object) -> dict:
     if isinstance(obj, type) or not hasattr(obj, "__dataclass_fields__"):
         return {}
-    return {f.name: _jsonable(getattr(obj, f.name)) for f in fields(obj)}
+    args: dict = {}
+    for name in obj.__dataclass_fields__:
+        value = getattr(obj, name, _UNSET)
+        args[name] = _jsonable(value) if value is not _UNSET else "<unset>"
+    return args
 
 
 def _outcome_result(outcome: Outcome) -> dict:
@@ -358,9 +374,9 @@ class SimEngine:
                 self._now = at
                 try:
                     produced.append(self._run_event(event))
-                except ValueError:
-                    # A rejected clock read must not consume the event:
-                    # re-queue it, so a retry with a working clock runs it.
+                except Exception:
+                    # Any failure in the clock read or validation must not
+                    # consume the event: re-queue it, committed ops stay.
                     heapq.heappush(self._queue, (at, order, event))
                     raise
             self._now = now
@@ -381,13 +397,18 @@ class SimEngine:
 
     def _apply_recorded(self, op: object) -> tuple[Outcome, Record]:
         now = self._clock_now()
+        # Trace args are built before the mutation: nothing that can fail may
+        # run after the state changed; non-exact ops record no field values.
+        args = _field_dict(op) if type(op) in _OP_CLASSES else {}
         outcome = self._apply(op)
         record = self._record(
-            now, "op", type(op).__name__, _field_dict(op), _outcome_result(outcome)
+            now, "op", type(op).__name__, args, _outcome_result(outcome)
         )
         return outcome, record
 
     def _apply(self, op: object) -> Outcome:
+        if type(op) not in _OP_CLASSES:  # subclasses are not accepted ops
+            return Unsupported(f"op {type(op).__name__}")
         if isinstance(op, SetFrequency):
             target = self._op_target(op.receiver)
             if isinstance(target, OutOfRange):

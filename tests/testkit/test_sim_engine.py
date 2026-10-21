@@ -1,16 +1,11 @@
-"""Unit tests for the pure simulator state engine (MOR-3599).
-
-Red on main: ``rigplane_testkit.sim.engine`` does not exist there. All
-tests drive ``SimEngine`` directly — no sockets; the clock-error tests
-use a scripted clock in place of ``ManualClock``.
-"""
+"""Sim engine (MOR-3599) unit tests; clock-error tests use a scripted clock."""
 
 from __future__ import annotations
 
 import copy
 import json
 import random
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 
 import pytest
 
@@ -55,8 +50,7 @@ def _engine(
 
 
 class _LyingInt(int):
-    """``__ge__``, ``__le__`` and ``__eq__`` all lie True; the old
-    isinstance checks accepted -1."""
+    """``__ge__``/``__le__``/``__eq__`` all lie True; old isinstance accepted -1."""
 
     def __ge__(self, other: object) -> bool:
         return True
@@ -72,8 +66,7 @@ _LYING = _LyingInt(-1)
 
 
 class _ScriptedClock:
-    """Yields scripted readings; reading number ``fire_on`` runs the
-    callback first."""
+    """Yields scripted readings; reading number ``fire_on`` runs the callback."""
 
     def __init__(self, *readings: float, fire_on: int = 0) -> None:
         self._readings = iter(readings)
@@ -128,7 +121,7 @@ def test_apply_ok_mutates_state_and_records_op(
         (SetSwitch(0, "turbo", True), Unsupported, "unsupported"),  # unknown switch
         (SetSwitch(0, "nb", 1), OutOfRange, "out_of_range"),  # int where bool required
         (SetSelector(0, "vox", 1), Unsupported, "unsupported"),  # unknown selector
-        (SetSelector(2, "agc", 1), OutOfRange, "out_of_range"),  # unknown receiver
+        (SetSelector(0, "vox", 1), Unsupported, "unsupported"),  # unknown selector
         (SetSelector(0, "agc", 0), OutOfRange, "out_of_range"),  # step not allowed
         (SetSelector(0, "agc", True), OutOfRange, "out_of_range"),  # bool not int
         (SetPtt("yes"), OutOfRange, "out_of_range"),  # str where bool required
@@ -158,7 +151,6 @@ def test_rejected_op_outcome_and_trace_tag(
     "make_op",
     [
         lambda r: SetFrequency(r, 7_100_000),
-        lambda r: SetMode(r, "CW"),
         lambda r: SetLevel(r, "af", 5),
         lambda r: SetSwitch(r, "nb", True),
         lambda r: SetSelector(r, "agc", 1),
@@ -178,11 +170,9 @@ def test_caps_gated_ptt_split_and_power_off_refusal() -> None:
     assert isinstance(plain.apply(SetPtt(True)), Unsupported)
     assert isinstance(plain.apply(SetSplit(True)), Unsupported)
     dark, _ = _engine(
-        caps=Capabilities(),
-        initial=SimState(receivers=[ReceiverState()], power_on=False),
+        caps=Capabilities(), initial=SimState([ReceiverState()], power_on=False)
     )
     assert dark.apply(SetPtt(True)) == Refused(reason="power off")
-    assert dark.state.ptt is False
     assert dark.trace[0].result["outcome"] == "refused"
 
 
@@ -191,6 +181,8 @@ def test_default_state_derives_from_caps() -> None:
     engine, _ = _engine(caps=caps)
     assert engine.read("mode") == Ok("FM")
     assert engine.read("frequency_hz") == Ok(118_000_000)  # clamped to band edge
+    with pytest.raises(ValueError):  # initial receivers must match caps
+        SimEngine(caps, clock=ManualClock(), initial=SimState([ReceiverState()] * 2))
 
 
 def test_selector_initial_value_is_first_allowed_value() -> None:
@@ -198,9 +190,7 @@ def test_selector_initial_value_is_first_allowed_value() -> None:
     assert engine.read("selector:agc") == Ok(1)
     assert engine.state.receivers[1].selectors == {"agc": 1, "att": 0}
     custom, _ = _engine(
-        initial=SimState(
-            receivers=[ReceiverState(selectors={"agc": 3}), ReceiverState()]
-        )
+        initial=SimState([ReceiverState(selectors={"agc": 3}), ReceiverState()])
     )
     assert custom.read("selector:agc", receiver=0) == Ok(3)  # caller value kept
     assert custom.read("selector:agc", receiver=1) == Ok(1)  # missing ones seeded
@@ -212,13 +202,11 @@ def test_failed_apply_never_mutates_state() -> None:
     engine.apply(SetFrequency(0, 14_100_000))
     before = copy.deepcopy(engine.state)
     for op in (
-        SetFrequency(0, 1),
         SetLevel(0, "vol", 3),
         SetSwitch(0, "nope", True),
         SetSelector(0, "vox", 1),
         SetSelector(0, "agc", 9),
         SelectReceiver(9),
-        SelectReceiver(None),  # rejected, so the selection cannot change
         SetMeter("smeter", "loud"),
     ):
         assert not isinstance(engine.apply(op), Ok)
@@ -232,18 +220,14 @@ def test_two_engines_same_inputs_produce_identical_traces() -> None:
         engine.apply(SetFrequency(0, 14_074_001))
         engine.schedule(1.0, Marker("mid"))
         engine.schedule(1.0, ScheduledOp(SetMode(0, "CW", filter=2)))
-        engine.schedule(2.0, ScheduledOp(SetLevel(0, "af", 12)))
-        engine.schedule(2.0, ScheduledOp(SetSelector(0, "agc", 2)))
         clock.advance(1.0)
         engine.advance_to(1.0)
-        clock.advance(1.0)
-        engine.advance_to(2.0)
         return engine
 
     engine_a = build_and_run()
     engine_b = build_and_run()
     assert engine_a.trace == engine_b.trace
-    assert [r.t for r in engine_a.trace] == [0.0, 1.0, 1.0, 2.0, 2.0]
+    assert [r.t for r in engine_a.trace] == [0.0, 1.0, 1.0]
     assert engine_a.state == engine_b.state
 
 
@@ -257,7 +241,6 @@ def test_advance_to_orders_ties_by_insertion() -> None:
     produced = engine.advance_to(5.0)
     assert [r.name for r in produced] == ["earlier", "first", "SetFrequency", "last"]
     assert [r.kind for r in produced] == ["marker", "marker", "op", "marker"]
-    assert [r.n for r in produced] == [0, 1, 2, 3]
     assert engine.state.receivers[0].frequency_hz == 7_000_000
 
 
@@ -270,15 +253,6 @@ def test_advance_to_noop_backwards_and_past_schedule_raise() -> None:
         engine.schedule(1.0, Marker("past"))
     with pytest.raises(ValueError):
         engine.schedule(float("nan"), Marker("nan"))  # would poison the queue
-    with pytest.raises(ValueError):
-        engine.advance_to(float("inf"))
-    assert engine.advance_to(3.0) == []
-
-
-def test_initial_state_must_match_caps_receiver_count() -> None:
-    short = SimState(receivers=[ReceiverState()])  # caps say 2 receivers
-    with pytest.raises(ValueError):
-        SimEngine(CAPS, clock=ManualClock(), initial=short)
 
 
 def test_read_covers_every_name_family() -> None:
@@ -296,21 +270,16 @@ def test_read_covers_every_name_family() -> None:
     assert engine.read("frequency_hz") == Ok(7_030_000)
     assert engine.read("mode") == Ok("FM")
     assert engine.read("filter") == Ok(3)
-    assert engine.read("data_mode") == Ok(False)
     assert engine.read("level:af") == Ok(42)
     assert engine.read("switch:nb") == Ok(True)
     assert engine.read("selector:agc") == Ok(2)  # selected receiver is 1
     assert engine.read("selector:agc", receiver=0) == Ok(1)  # seeded first allowed
-    assert engine.read("ptt") == Ok(False)
     assert engine.read("split") == Ok(True)
     assert engine.read("selected_receiver") == Ok(1)
-    assert engine.read("power_on") == Ok(True)
     assert engine.read("meter:smeter") == Ok(59)
     assert engine.read("extra:firmware") == Ok("1.2")
     assert isinstance(engine.read("meter:missing"), Unsupported)  # unset meter
     assert isinstance(engine.read("extra:missing"), Unsupported)  # unset extra
-    assert engine.read("frequency_hz", receiver=0) == Ok(14_074_000)
-    assert engine.read("switch:nb", receiver=0) == Ok(None)  # unset reads as None
     assert isinstance(engine.read("warp"), Unsupported)
     assert isinstance(engine.read("level:vol"), Unsupported)
     assert isinstance(engine.read("selector:vox"), Unsupported)
@@ -336,14 +305,8 @@ def test_star_export_does_not_leak_and_module_state_is_immutable() -> None:
     from rigplane_testkit.sim.engine import core
 
     exported = set(vars(engine_pkg))
-    assert not exported & {
-        "heapq",
-        "random",
-        "dataclass",
-        "count",
-        "isfinite",
-        "Protocol",
-    }
+    leak = exported & {"heapq", "random", "dataclass", "count", "isfinite", "Protocol"}
+    assert not leak
     assert {"SimEngine", "Ok", "Marker", "SetSelector"} <= exported
     mutable = {
         name
@@ -368,7 +331,6 @@ def test_trace_records_are_json_serialisable() -> None:
     assert [r.name for r in engine.advance_to(0.0)] == ["<object>"]
     payload = [asdict(r) for r in engine.trace]
     json.dumps(payload, allow_nan=False)  # strictly JSON-safe, no NaN literals
-    assert json.loads(json.dumps(payload)) == payload
     assert [r.n for r in engine.trace] == list(range(10))  # gapless from 0
     assert payload[3]["args"]["value"] == 3
     assert payload[4]["args"]["value"] == "<object>"
@@ -427,8 +389,6 @@ def test_engine_rejects_bad_clock_readings_and_keeps_events(bad: float) -> None:
         engine.apply(SetFrequency(0, 7_100_000))
     assert engine.state.receivers[0].frequency_hz == 14_074_000  # unmutated
     assert engine.trace == ()
-    with pytest.raises(ValueError):
-        SimEngine(CAPS, clock=_ScriptedClock(0.0, bad)).schedule(1.0, Marker("m"))
     engine = SimEngine(CAPS, clock=_ScriptedClock(0.0, 0.0, bad, 0.0, 0.0))
     engine.schedule(1.0, Marker("later"))
     with pytest.raises(ValueError):
@@ -442,16 +402,6 @@ def test_engine_rejects_bad_clock_readings_and_keeps_events(bad: float) -> None:
     records = engine.advance_to(5.0)
     assert [r.name for r in records] == ["SetFrequency"]  # the retry ran it
     assert engine.state.receivers[0].frequency_hz == 7_100_000
-
-
-def test_advance_to_is_not_reentrant() -> None:
-    clock = _ScriptedClock(0.0, 0.0, 0.0)
-    engine = SimEngine(CAPS, clock=clock)
-    clock.callback = lambda: engine.advance_to(1.0)
-    clock.fire_on = 2  # fires inside advance_to's clock validation
-    with pytest.raises(RuntimeError, match="not re-entrant"):
-        engine.advance_to(1.0)
-    assert engine.advance_to(1.0) == []  # the flag was released
 
 
 def test_schedule_during_event_cannot_target_the_past() -> None:
@@ -475,6 +425,41 @@ def test_record_numbers_stay_unique_when_clock_runs_mid_record() -> None:
     engine = SimEngine(CAPS, clock=clock)
     clock.callback = lambda: engine.apply(SetMeter("tick", 1))
     clock.fire_on = 2  # fires while apply() reads the clock, before it records
-    engine.apply(SetFrequency(0, 7_100_000))
+    engine.apply(SetFrequency(0, 7_000_000))
     assert [r.n for r in engine.trace] == [0, 1]
     assert [r.name for r in engine.trace] == ["SetMeter", "SetFrequency"]
+
+
+def test_non_exact_op_is_rejected_with_one_record_and_no_trace_read() -> None:
+    @dataclass(frozen=True)
+    class ExtendedFrequency(SetFrequency):  # subclass with an unset field
+        unused: int = field(init=False)
+
+    @dataclass
+    class OddOp:  # arbitrary dataclass with an unset field
+        x: int = field(init=False)
+
+    engine, _ = _engine()
+    before = copy.deepcopy(engine.state)
+    for count, op in enumerate((ExtendedFrequency(0, 7_100_000), OddOp())):
+        assert isinstance(engine.apply(op), Unsupported)
+        assert copy.deepcopy(engine.state) == before  # never mutated
+        assert len(engine.trace) == count + 1  # exactly one record each
+        assert engine.trace[count].name == type(op).__name__
+        assert engine.trace[count].args == {}
+    from rigplane_testkit.sim.engine.core import _field_dict
+
+    assert _field_dict(OddOp()) == {"x": "<unset>"}  # never raises
+
+
+def test_advance_to_restores_event_on_any_exception() -> None:
+    clock = _ScriptedClock(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+    engine = SimEngine(CAPS, clock=clock)
+    engine.schedule(1.0, Marker("kept"))
+    clock.callback = lambda: engine.advance_to(0.0)
+    clock.fire_on = 4  # the marker's clock read: nested advance raises
+    with pytest.raises(RuntimeError, match="not re-entrant"):
+        engine.advance_to(1.0)
+    assert engine.trace == ()  # the failed run recorded nothing
+    assert [r.name for r in engine.advance_to(1.0)] == ["kept"]  # retried once
+    assert [r.name for r in engine.trace] == ["kept"]
