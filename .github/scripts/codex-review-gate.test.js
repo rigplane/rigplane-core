@@ -54,6 +54,13 @@ test('a pending, dismissed or human review does not count', () => {
   assert.equal(codexReviewedHead({reviews: [pending, dismissed, human], comments: [], headSha: HEAD}).reviewed, false);
 });
 
+test('a dismissed Codex review invalidates the summary until a fresh review exists', () => {
+  const dismissed = {user: CODEX, commit_id: HEAD, state: 'DISMISSED'};
+  const fresh = {user: CODEX, commit_id: HEAD, state: 'COMMENTED'};
+  assert.equal(codexReviewedHead({reviews: [dismissed], comments: [summary(HEAD), receipt('dae01ac3d5')], headSha: HEAD}).reviewed, false);
+  assert.equal(codexReviewedHead({reviews: [dismissed, fresh], comments: [], headSha: HEAD}).via, 'review');
+});
+
 test('summary comment counts only when completed and for the exact head', () => {
   assert.equal(codexReviewedHead({reviews: [], comments: [summary(HEAD)], headSha: HEAD}).via, 'summary');
   assert.equal(codexReviewedHead({reviews: [], comments: [summary(OTHER)], headSha: HEAD}).reviewed, false);

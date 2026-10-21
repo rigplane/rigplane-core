@@ -37,15 +37,20 @@ function codexReviewedHead({reviews, comments, headSha}) {
   if (!SHA_PATTERN.test(headSha)) {
     return {reviewed: false, via: null};
   }
+  // A dismissed Codex review of this head invalidates the summary and receipt
+  // comments too, until Codex posts a fresh (non-dismissed) review of the head.
+  let dismissed = false;
   for (const review of reviews) {
-    if (
-      isCodexUser(review.user) &&
-      review.commit_id === headSha &&
-      review.state !== 'PENDING' &&
-      review.state !== 'DISMISSED'
-    ) {
-      return {reviewed: true, via: 'review'};
+    if (isCodexUser(review.user) && review.commit_id === headSha) {
+      if (review.state === 'DISMISSED') {
+        dismissed = true;
+      } else if (review.state !== 'PENDING') {
+        return {reviewed: true, via: 'review'};
+      }
     }
+  }
+  if (dismissed) {
+    return {reviewed: false, via: null};
   }
   for (const comment of comments) {
     if (!isCodexUser(comment.user) || typeof comment.body !== 'string') {
