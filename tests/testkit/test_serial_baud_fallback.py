@@ -124,6 +124,96 @@ async def test_late_reply_from_the_starting_baud_is_not_taken_for_a_new_baud() -
         assert not radio.connected and radio.serial_baudrate == _PROFILE_BAUD
 
 
+async def test_reply_read_before_retune_is_discarded_before_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = ic7300_usb_fake(answers_at_baud=_PROFILE_BAUD)
+    radio = _radio(fake)
+    link = radio._serial_civ_link
+    read_once = link._read_once
+    feed = link._codec.feed
+    old_reply_held = asyncio.Event()
+    release_old_reply = asyncio.Event()
+    fresh_read_started = asyncio.Event()
+    release_fresh_reply = asyncio.Event()
+    old_reply: bytes | None = None
+    parsed_chunks: list[bytes] = []
+
+    async def hold_reply() -> bytes | None:
+        nonlocal old_reply
+        if old_reply is None:
+            old_reply = await read_once()
+            old_reply_held.set()
+            # Bytes already returned by the reader can outlive read cancellation.
+            while not release_old_reply.is_set():
+                with contextlib.suppress(asyncio.CancelledError):
+                    await release_old_reply.wait()
+            return old_reply
+        fresh_read_started.set()
+        await release_fresh_reply.wait()
+        return await read_once()
+
+    def record_feed(chunk: bytes) -> list[bytes]:
+        parsed_chunks.append(chunk)
+        return feed(chunk)
+
+    monkeypatch.setattr(link, "_read_once", hold_reply)
+    monkeypatch.setattr(link._codec, "feed", record_feed)
+    task = asyncio.create_task(radio.connect())
+    try:
+        async with asyncio.timeout(5):
+            await old_reply_held.wait()
+            while _SWEEP[0] not in fake.frame_bauds:
+                await asyncio.sleep(0)
+            release_old_reply.set()
+            await fresh_read_started.wait()
+            assert parsed_chunks == []
+            assert not radio.connected and not task.done()
+            assert fake.frame_bauds == (_PROFILE_BAUD, _SWEEP[0])
+            assert old_reply is not None
+            # The next identical reply must come from a read at the trial baud.
+            link._reader.feed_data(old_reply)
+            release_fresh_reply.set()
+            await task
+        assert radio.connected and radio.serial_baudrate == _SWEEP[0]
+        assert parsed_chunks[0] == old_reply
+    finally:
+        release_old_reply.set()
+        release_fresh_reply.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await radio.disconnect()
+
+
+async def test_refused_trial_baud_with_healthy_rollback_keeps_sweeping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = ic7300_usb_fake(answers_at_baud=9600)
+    radio = _radio(fake)
+    link = radio._serial_civ_link
+    await link.connect()
+    port = link._writer.transport.serial
+    baudrate = type(port).baudrate
+    attempted: list[int] = []
+
+    def refuse_19200(port: Any, baud: int) -> None:
+        attempted.append(baud)
+        baudrate.fset(port, baud)  # pyserial caches the rate before raising
+        if baud == 19200:
+            raise OSError("port refused the baud")
+
+    monkeypatch.setattr(type(port), "baudrate", property(baudrate.fget, refuse_19200))
+    try:
+        await radio.connect()
+        assert radio.connected and radio.serial_baudrate == 9600
+        assert link.healthy and port.baudrate == link._baudrate == 9600
+        assert attempted == [_PROFILE_BAUD, 19200, _PROFILE_BAUD, 9600]
+        assert fake.frame_bauds == (_PROFILE_BAUD, 9600)
+    finally:
+        await radio.disconnect()
+
+
 async def test_a_refused_identity_read_is_not_silence() -> None:
     fake = ic7300_usb_fake(answers_at_baud=_PROFILE_BAUD)
     radio = _radio(fake)

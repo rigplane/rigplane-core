@@ -1077,7 +1077,12 @@ class _IcomSerialRadioBase(CoreRadio):
                 epoch != self._civ_epoch or owner_stop_epoch != self._owner_stop_epoch
             )
 
-        if self._serial_civ_link is None or retired():
+        link = self._serial_civ_link
+        if (
+            link is None
+            or retired()
+            or not callable(getattr(link, "set_baudrate", None))
+        ):
             return None
         start = self._serial_baudrate
         payload: bytes | None = None
@@ -1085,8 +1090,12 @@ class _IcomSerialRadioBase(CoreRadio):
             for baud in SERIAL_PROBE_BAUD_RATES:
                 if baud == start:
                     continue
-                if retired() or not self._retune_serial_link(baud):
+                if retired() or not link.connected or not link.healthy:
                     return None
+                if not self._retune_serial_link(baud):
+                    if retired() or not link.connected or not link.healthy:
+                        return None
+                    continue
                 self._serial_baudrate = baud
                 self._serial_bauds_tried += (baud,)
                 payload = await self._read_serial_identity_payload()

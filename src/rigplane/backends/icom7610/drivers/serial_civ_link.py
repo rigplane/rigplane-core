@@ -200,6 +200,8 @@ class SerialCivLink:
         self._healthy = False
         self._max_write_queue = max_write_queue
         self._frames: asyncio.Queue[bytes] = asyncio.Queue()
+        self._receive_generation = 0
+        self._read_task: asyncio.Task[bytes | None] | None = None
         self._write_queue: asyncio.Queue[bytes | _WriteRequest | None] = asyncio.Queue(
             maxsize=max_write_queue
         )
@@ -272,6 +274,7 @@ class SerialCivLink:
             raise ValueError("baudrate must be > 0")
         if not self._connected:
             self._baudrate = baudrate  # what the next open uses
+            self._receive_generation += 1
             return True
         port = getattr(getattr(self._writer, "transport", None), "serial", None)
         if port is None:
@@ -292,6 +295,10 @@ class SerialCivLink:
                 self._healthy = False
             return False
         self._baudrate = baudrate
+        self._receive_generation += 1
+        # Restart an empty pending read before it consumes the new baud's reply.
+        if self._read_task is not None:
+            self._read_task.cancel()
         with contextlib.suppress(Exception):
             port.reset_input_buffer()
         while not self._frames.empty():
@@ -470,11 +477,23 @@ class SerialCivLink:
                     )
                 return None
 
+            generation = self._receive_generation
+            read_task = asyncio.create_task(self._read_once())
+            self._read_task = read_task
             try:
                 chunk = await asyncio.wait_for(
-                    self._read_once(),
+                    read_task,
                     timeout=remaining,
                 )
+            except asyncio.CancelledError:
+                receiver = asyncio.current_task()
+                if (
+                    generation == self._receive_generation
+                    or receiver is None
+                    or receiver.cancelling()
+                ):
+                    raise
+                continue
             except asyncio.TimeoutError:
                 if self._codec.expire_partial():
                     self._healthy = False
@@ -482,7 +501,12 @@ class SerialCivLink:
                         "Timed out waiting for complete frame."
                     )
                 return None
+            finally:
+                if self._read_task is read_task:
+                    self._read_task = None
 
+            if generation != self._receive_generation:
+                continue
             if chunk is None:
                 return None
             for parsed in self._codec.feed(chunk):
