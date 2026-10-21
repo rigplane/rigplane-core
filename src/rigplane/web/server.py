@@ -4177,6 +4177,10 @@ class WebServer:
             capabilities.update(
                 {
                     "modes": list(profile.modes),
+                    "modeFamilies": {
+                        name: list(members)
+                        for name, members in profile.mode_families.items()
+                    },
                     "filters": list(profile.filters),
                     "filterWidthMin": profile.filter_width_min,
                     "filterWidthMax": profile.filter_width_max,
@@ -4890,6 +4894,10 @@ class WebServer:
                         else {}
                     ),
                     "modes": list(profile.modes),
+                    "modeFamilies": {
+                        name: list(members)
+                        for name, members in profile.mode_families.items()
+                    },
                     "filters": list(profile.filters),
                     "filterWidthMin": profile.filter_width_min,
                     "filterWidthMax": profile.filter_width_max,

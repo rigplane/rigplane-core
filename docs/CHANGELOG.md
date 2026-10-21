@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Radio profiles name their CW modes in one place (MOR-3679, MOR-3678).**
+  Clients guessed CW mode names and missed the FTX-1's `CW-U`/`CW-L`, so
+  the Pro CW console never left "Waiting for CW mode". A profile can now
+  declare `[modes] families = { cw = [...] }`; the loader rejects a member
+  that is not in `[modes].list` or is listed twice, and `/api/v1/info` and
+  `/api/v1/capabilities` publish it as `modeFamilies` (`{}` when absent).
+
 ## [3.0.0b19] — 2026-10-20
 
 ### Added

@@ -344,6 +344,9 @@ class RadioProfile:
     has_lan: bool = False
     freq_ranges: tuple[FreqRangeInfo, ...] = ()
     modes: tuple[str, ...] = ()
+    # ``[modes] families`` (MOR-3679): family name -> member modes, e.g.
+    # ``{"cw": ("CW-U", "CW-L")}``. Empty when the profile declares none.
+    mode_families: dict[str, tuple[str, ...]] = field(default_factory=dict)
     filters: tuple[str, ...] = ()
     command_names: frozenset[str] = frozenset()
     # Command names this radio is confirmed NOT to have, per a named source
