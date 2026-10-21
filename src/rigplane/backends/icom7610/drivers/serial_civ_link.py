@@ -255,6 +255,39 @@ class SerialCivLink:
             self._writer_loop(self._write_queue, writer), name="serial-civ-writer"
         )
 
+    def set_baudrate(self, baudrate: int) -> bool:
+        """Retune the open port to *baudrate* without reopening it (MOR-3620).
+
+        A reopen toggles the modem control lines; the live pyserial object
+        takes a new rate in place. Returns ``False`` and changes nothing
+        when the link is closed, the transport exposes no pyserial object
+        (test fakes, bespoke openers) or the port refuses the rate. On
+        success the rate is also what a later reopen uses, and bytes held
+        from the old rate are dropped.
+        """
+        if baudrate <= 0:
+            raise ValueError("baudrate must be > 0")
+        port = getattr(getattr(self._writer, "transport", None), "serial", None)
+        if not self._connected or port is None:
+            return False
+        try:
+            port.baudrate = baudrate
+            reset_input = getattr(port, "reset_input_buffer", None)
+            if callable(reset_input):
+                reset_input()
+        except Exception:
+            logger.warning(
+                "serial CI-V: %s refused baud %d; keeping %d",
+                self._device,
+                baudrate,
+                self._baudrate,
+                exc_info=True,
+            )
+            return False
+        self._baudrate = baudrate
+        self._codec.reset()
+        return True
+
     async def disconnect(self) -> None:
         """Close serial CI-V transport and worker tasks."""
         if not self._connected and self._writer is None:

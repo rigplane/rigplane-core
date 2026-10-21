@@ -195,6 +195,12 @@ class _IcomSerialRadioBase(CoreRadio):
         )
         self._serial_device = device
         self._serial_baudrate = baudrate
+        # MOR-3620: the baud the caller asked for, the bauds the connect-time
+        # sweep tried in vain, and the plain-words note when the radio
+        # answered at another rate than configured.
+        self._serial_configured_baudrate = baudrate
+        self._serial_bauds_tried: tuple[int, ...] = (baudrate,)
+        self.serial_baud_notice: str | None = None
         self._serial_rx_device_override = rx_device
         self._serial_tx_device_override = tx_device
         # MOR-1453: rediscovery seams for a renumbered device node. Glob is
@@ -335,6 +341,11 @@ class _IcomSerialRadioBase(CoreRadio):
     # ------------------------------------------------------------------
     # Backend identity
     # ------------------------------------------------------------------
+
+    @property
+    def serial_baudrate(self) -> int:
+        """The baud the link runs at: the configured one, or the one that answered."""
+        return self._serial_baudrate
 
     @property
     def backend_id(self) -> str:
@@ -533,7 +544,7 @@ class _IcomSerialRadioBase(CoreRadio):
         # the radio-not-answering state.
         self._serial_identity_gate_running = True
         try:
-            identity_answered = await self._gate_serial_identity()
+            identity_answered = await self._gate_serial_identity(sweep_bauds=True)
         except Exception as exc:
             # MOR-3071 round 5: what the gate does not translate itself
             # (a write OSError on an opened-but-wrong port, CI-V runtime
@@ -983,16 +994,86 @@ class _IcomSerialRadioBase(CoreRadio):
                 f"the selected {self.model} profile."
             )
         elif status is RadioIdentityStatus.NO_RESPONSE:
-            self.last_error = (
-                f"No answer from the radio on {self._serial_device} "
-                f"({self.model} profile, {self._serial_baudrate} baud): another "
-                "radio may be on this port, or it is switched off."
-            )
+            self.last_error = self._serial_no_answer_message()
         else:
             self.last_error = None
         return status in (RadioIdentityStatus.VERIFIED, RadioIdentityStatus.UNVERIFIED)
 
-    async def _gate_serial_identity(self) -> bool:
+    def _serial_no_answer_message(self) -> str:
+        """Plain-words "no answer" text naming the likely causes (MOR-3620)."""
+        bauds = ", ".join(str(b) for b in self._serial_bauds_tried)
+        return (
+            f"No answer from the radio on {self._serial_device} "
+            f"({self.model} profile, {bauds} baud). Likely causes: the radio "
+            "is switched off or unplugged, another radio is on this port, or "
+            "another program connected to the radio first at a different "
+            "speed (an Icom radio left on CI-V USB Baud Rate = Auto keeps "
+            "that speed until it is restarted) or the radio's CI-V USB Baud "
+            "Rate is fixed at a speed this profile does not use. Switch the "
+            "radio off and on (restart the radio), or set CI-V USB Baud Rate "
+            "to Auto or 115200 in its CI-V menu."
+        )
+
+    def _serial_baud_found_notice(self, found: int) -> str:
+        """Note for a radio that answered at *found*, not the configured baud."""
+        text = (
+            f"The radio answered at {found} baud, not the configured "
+            f"{self._serial_configured_baudrate}; connected at {found}. Use "
+            f"{found} baud for this radio."
+        )
+        if found < _SERIAL_SCOPE_MIN_BAUD:
+            text += " " + self._low_baud_scope_hint()
+        return text
+
+    @staticmethod
+    def _low_baud_scope_hint() -> str:
+        return (
+            f"The scope needs {_SERIAL_SCOPE_MIN_BAUD} baud and is off at a "
+            "lower speed: restart the radio, or set CI-V USB Baud Rate to "
+            f"Auto or {_SERIAL_SCOPE_MIN_BAUD} in its CI-V menu, then "
+            "connect again."
+        )
+
+    async def _sweep_serial_baud(
+        self, epoch: int, owner_stop_epoch: int
+    ) -> bytes | None:
+        """Retry the identity read at the other documented bauds, once each.
+
+        MOR-3620: an Icom radio on ``CI-V USB Baud Rate = Auto`` keeps the
+        speed of the first host that talks to it, so silence at the current
+        baud is often the radio answering at another one. Runs on the open
+        link (the port is retuned in place, never reopened), reads only
+        ``19 00`` and stops at the first answer, keeping that baud. On no
+        answer the starting baud is put back for the re-read task. Returns
+        the answered payload, or ``None``.
+        """
+        from .discovery import SERIAL_PROBE_BAUD_RATES
+
+        link = self._serial_civ_link
+        if link is None:
+            return None
+        start = self._serial_baudrate
+        tried = [start]
+        payload: bytes | None = None
+        for baud in SERIAL_PROBE_BAUD_RATES:
+            if baud == start:
+                continue
+            if not link.set_baudrate(baud):
+                break
+            self._serial_baudrate = baud
+            tried.append(baud)
+            payload = await self._read_serial_identity_payload()
+            if epoch != self._civ_epoch or owner_stop_epoch != self._owner_stop_epoch:
+                return None  # retired link: its owner writes the state
+            if payload is not None:
+                break
+        self._serial_bauds_tried = tuple(tried)
+        if payload is None and self._serial_baudrate != start:
+            link.set_baudrate(start)
+            self._serial_baudrate = start
+        return payload
+
+    async def _gate_serial_identity(self, *, sweep_bauds: bool = False) -> bool:
         """Run the identity read gate; True when the connect may proceed.
 
         Resets the identity to ``checking``, sends the read once, and on a
@@ -1011,10 +1092,19 @@ class _IcomSerialRadioBase(CoreRadio):
         epoch = self._civ_epoch
         owner_stop_epoch = self._owner_stop_epoch
         payload = await self._read_serial_identity_payload()
+        if payload is None and sweep_bauds:
+            payload = await self._sweep_serial_baud(epoch, owner_stop_epoch)
         if epoch != self._civ_epoch or owner_stop_epoch != self._owner_stop_epoch:
             if self._connection_identity is probe_identity:
                 self._connection_identity = None
             return False
+        if payload is not None and self._serial_baudrate != (
+            self._serial_configured_baudrate
+        ):
+            self.serial_baud_notice = self._serial_baud_found_notice(
+                self._serial_baudrate
+            )
+            logger.warning("rigplane (%s): %s", self.model, self.serial_baud_notice)
         if self._record_serial_identity_payload(payload):
             return True
         logger.warning(
@@ -2124,7 +2214,8 @@ class _IcomSerialRadioBase(CoreRadio):
             raise ConnectionError(
                 f"Scope unavailable at {self._serial_baudrate} baud "
                 f"(minimum {_SERIAL_SCOPE_MIN_BAUD}). "
-                f"Set allow_low_baud_scope=True to override."
+                f"{self._low_baud_scope_hint()} "
+                f"Or set allow_low_baud_scope=True to override."
             )
 
     def _serial_audio_channels_for_codec(self) -> int:

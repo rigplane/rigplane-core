@@ -42,7 +42,8 @@ class Icom7610SerialRadio(_IcomSerialRadioBase):
         msg = (
             "Scope over serial requires baudrate >= "
             f"{_SERIAL_SCOPE_MIN_BAUD} for stable command path; got baudrate="
-            f"{self._serial_baudrate}. Set allow_low_baud_scope=True to override."
+            f"{self._serial_baudrate}. {self._low_baud_scope_hint()} "
+            "Or set allow_low_baud_scope=True to override."
         )
         if not self._allow_low_baud_scope:
             raise CommandError(msg)
