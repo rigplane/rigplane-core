@@ -28,6 +28,8 @@ import logging
 import os
 import random
 import secrets
+import socket
+import stat
 import sys
 import tempfile
 import time
@@ -69,6 +71,9 @@ RSS_MIN_FIT_SPAN_S = 600.0
 # PASSed.
 VERDICT_INCOMPLETE = "INCOMPLETE"
 STABILITY_TOLERANCE = 5
+# Modules whose coroutines belong to the in-process run: the web server,
+# the radio, the rigctld server, the simulator, and this driver.
+_OWNED_TASK_MODULE_PREFIXES = ("rigplane", "rigplane_testkit", "scripts.soak")
 _STABILITY_PROBE_COUNT = 3
 # A post-reconnect median above pre + tolerance may be teardown still
 # draining (MOR-3575): settle first — gc once, then resample in small
@@ -553,9 +558,19 @@ class _TaskProvenance:
 
 
 class _RuntimeTaskAdapter:
-    def __init__(self, stack: Any, collector: _TaskProvenance) -> None:
+    """In-process runtime overlay: the payload reports owned counts.
+
+    ``run_soak`` installs this on the in-process stack so the stability
+    probes read the soak's own signal (sockets on the harness-created
+    ports, tasks from the run's component modules), not the shared
+    pytest worker's process-wide noise; with a provenance collector it
+    also correlates one request per probe for task capture, as before.
+    """
+
+    def __init__(self, stack: Any, collector: _TaskProvenance | None) -> None:
         self._stack = stack
         self._collector = collector
+        self._ports = _run_owned_ports(stack)
         self._loop = asyncio.get_running_loop()
         self._pid = os.getpid()
         self._pending: dict[str, dict[str, Any]] = {}
@@ -584,6 +599,12 @@ class _RuntimeTaskAdapter:
 
         def payload() -> dict[str, Any]:
             result = original_payload()
+            owned_tasks = _owned_task_population()
+            if _proc_int(result, "asyncioTasks") is not None:
+                result["asyncioTasks"] = len(owned_tasks)
+            fds = _owned_socket_fd_count(self._ports) if self._ports else None
+            if fds is not None and _proc_int(result, "openFds") is not None:
+                result["openFds"] = fds
             state = self._producer.get()
             if state is not None:
                 probe = state["probe"]
@@ -598,7 +619,6 @@ class _RuntimeTaskAdapter:
                     and os.getpid() == self._pid
                     and asyncio.get_running_loop() is self._loop
                 ):
-                    population = asyncio.all_tasks()
                     try:
                         bindings = []
                         for name, role in (
@@ -614,7 +634,11 @@ class _RuntimeTaskAdapter:
                             if isinstance(task, asyncio.Task)
                         )
                         self._collector.capture(
-                            probe, "runtime", count, tasks=population, bindings=bindings
+                            probe,
+                            "runtime",
+                            count,
+                            tasks=owned_tasks,
+                            bindings=bindings,
                         )
                     except Exception:
                         self._collector.unknown(probe, "runtime", count)
@@ -713,6 +737,102 @@ def _fd_count(pid: int) -> int | None:
             except OSError:
                 return None
         return None
+
+
+def _socket_port(name: Any) -> int | None:
+    """The port of a socket address, or None for non-internet names."""
+    if isinstance(name, tuple) and len(name) >= 2 and type(name[1]) is int:
+        return name[1]
+    return None
+
+
+def _run_owned_ports(stack: Any) -> frozenset[int]:
+    """Bound ports of the listeners the in-process harness itself created."""
+    sim = getattr(stack, "sim", None)
+    candidates = [
+        getattr(stack, "web_port", None),
+        getattr(stack, "rigctld_port", None),
+        *(
+            getattr(sim, name, None)
+            for name in ("control_port", "civ_port", "audio_port")
+        ),
+    ]
+    return frozenset(
+        port for port in candidates if type(port) is int and 0 < port < 65536
+    )
+
+
+def _owned_socket_fd_count(ports: frozenset[int]) -> int | None:
+    """Socket FDs whose local or peer port is one of ``ports``.
+
+    Everything else the process holds — pipes, files, sockets to foreign
+    ports — is noise the in-process run does not own. ``None`` when no FD
+    directory can be listed, so the caller keeps the reported value.
+    """
+    for fd_dir in ("/proc/self/fd", "/dev/fd"):
+        try:
+            names = os.listdir(fd_dir)
+        except OSError:
+            continue
+        count = 0
+        for name in names:
+            try:
+                fd = int(name)
+            except ValueError:
+                continue
+            try:
+                dup = os.dup(fd)
+            except OSError:
+                # The listing can name its own, already closed, directory
+                # descriptor; transient reuse is skipped alike.
+                continue
+            try:
+                if not stat.S_ISSOCK(os.fstat(dup).st_mode):
+                    os.close(dup)
+                    continue
+                # From here the probe socket owns the dup and closes it.
+                probe = socket.socket(fileno=dup)
+            except OSError:
+                with contextlib.suppress(OSError):
+                    os.close(dup)
+                continue
+            local = peer = None
+            with probe:
+                with contextlib.suppress(OSError):
+                    local = _socket_port(probe.getsockname())
+                with contextlib.suppress(OSError):
+                    peer = _socket_port(probe.getpeername())
+            if local in ports or peer in ports:
+                count += 1
+        return count
+    return None
+
+
+def _coroutine_module(coro: Any) -> str | None:
+    """Defining module of a coroutine object, best-effort."""
+    for frame_attr in ("cr_frame", "gi_frame"):
+        frame = getattr(coro, frame_attr, None)
+        module = frame.f_globals.get("__name__") if frame is not None else None
+        if isinstance(module, str):
+            return module
+    module = getattr(coro, "__module__", None)
+    return module if isinstance(module, str) else None
+
+
+def _owned_task_population() -> set[asyncio.Task[Any]]:
+    """``asyncio.all_tasks`` filtered to the run's own components.
+
+    The in-process stack shares the pytest worker's loop with the test
+    harness and neighbouring tests' late teardown; a raw count measures
+    their noise too. A task belongs to the run when its coroutine was
+    defined in a run module (server, radio, simulator, driver).
+    """
+    return {
+        task
+        for task in asyncio.all_tasks()
+        if (module := _coroutine_module(task.get_coro()))
+        and module.startswith(_OWNED_TASK_MODULE_PREFIXES)
+    }
 
 
 async def _driver_side_process_metrics(pid: int) -> tuple[int | None, int | None]:
@@ -2320,14 +2440,19 @@ async def run_soak(config: SoakConfig) -> dict[str, Any]:
         )
         if driver._task_provenance is not None:
             adapter = _RuntimeTaskAdapter(stack, driver._task_provenance)
-            adapter.install()
             driver._runtime_task_adapter = adapter
+        else:
+            # No provenance, still overlay the owned counts: the in-process
+            # stability probes must not read the shared worker's noise.
+            adapter = _RuntimeTaskAdapter(stack, None)
+        adapter.install()
         report = await driver.run()
         return report
     finally:
         if adapter is not None:
             adapter.close()
-            driver._task_provenance.close()
+            if driver._task_provenance is not None:
+                driver._task_provenance.close()
         if config.report_path and report is not None:
             Path(config.report_path).write_text(
                 json.dumps(report, indent=2) + "\n", encoding="utf-8"

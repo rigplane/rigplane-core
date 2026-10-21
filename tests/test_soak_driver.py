@@ -57,6 +57,8 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import os
+import socket
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -1279,3 +1281,198 @@ async def test_stability_post_probe_still_fails_a_persistent_tasks_surplus(
     assert _stability_status(entry, "fds")["status"] == "PASS"
     assert _stability_status(entry, "tasks")["status"] == "FAIL"
     assert sleeps == [3.0] + [soak_driver._STABILITY_SETTLE_STEP_S] * 20
+
+
+# ---------------------------------------------------------------------------
+# MOR-3575 step 3: the in-process provider counts only what the run owns
+# ---------------------------------------------------------------------------
+
+
+def _stability_criteria_for(
+    fds_pre: int, fds_post: int, tasks_pre: int, tasks_post: int
+) -> dict[str, Any]:
+    """The report's own criterion math (unchanged tolerance) on one cycle."""
+    entry = _one_reconnect(300.0, 320.0)
+    entry.update(
+        fdsPre=fds_pre,
+        fdsPost=fds_post,
+        tasksPre=tasks_pre,
+        tasksPost=tasks_post,
+    )
+    return soak_driver.evaluate_report(
+        _smoke_config(duration_s=3600.0),
+        _hour_of_samples(slope_bytes_per_s=1000.0),
+        [entry],
+    )
+
+
+def _listener(backlog: int = 1) -> socket.socket:
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(backlog)
+    return sock
+
+
+def test_owned_socket_fd_count_sees_only_run_owned_ports() -> None:
+    """Unrelated listeners and pipes are invisible; owned sockets count
+    while open, by exactly one each, and stop counting once closed."""
+    unrelated = _listener()
+    read_fd, write_fd = os.pipe()
+    owned = _listener()
+    ports = frozenset({owned.getsockname()[1]})
+    client = accepted = None
+    try:
+        assert soak_driver._owned_socket_fd_count(frozenset()) == 0
+        assert soak_driver._owned_socket_fd_count(ports) == 1
+        client = socket.create_connection(owned.getsockname())
+        accepted, _ = owned.accept()
+        assert soak_driver._owned_socket_fd_count(ports) == 3
+        accepted.close()
+        client.close()
+        assert soak_driver._owned_socket_fd_count(ports) == 1
+    finally:
+        for resource in (client, accepted, owned, unrelated):
+            if resource is not None:
+                resource.close()
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_leaked_run_owned_sockets_fail_the_stability_criterion() -> None:
+    """Negative controls through the real criterion (MOR-3575).
+
+    Six leaked run-owned sockets — the smallest leak over the unchanged
+    tolerance — FAIL the criterion; one leak registers its exact delta of
+    one (the live signal carries legitimate +-1 transients, e.g. the web
+    server's delayed state broadcasts, so failing on a single one would
+    re-introduce the flake this change removes). An unrelated FD between
+    the probes must not change the verdict — that FD is the CI flake
+    (run 39451768550).
+    """
+    owned = _listener(backlog=8)
+    ports = frozenset({owned.getsockname()[1]})
+    unrelated = _listener()
+    read_fd, write_fd = os.pipe()
+    leaks: list[socket.socket] = []
+    try:
+        pre = soak_driver._owned_socket_fd_count(ports)
+        leaks.append(socket.create_connection(owned.getsockname()))
+        one = soak_driver._owned_socket_fd_count(ports)
+        assert one == pre + 1
+        one_leak = _stability_criteria_for(pre, one, 25, 25)
+        assert one_leak["fdsStability"]["checks"][0]["delta"] == 1
+        assert one_leak["fdsStability"]["status"] == "PASS"
+        for _ in range(soak_driver.STABILITY_TOLERANCE):
+            leaks.append(socket.create_connection(owned.getsockname()))
+        post = soak_driver._owned_socket_fd_count(ports)
+        assert post == pre + 1 + soak_driver.STABILITY_TOLERANCE
+        criteria = _stability_criteria_for(pre, post, 25, 25)
+        assert criteria["fdsStability"]["status"] == "FAIL"
+        assert criteria["fdsStability"]["checks"][0]["delta"] == (
+            1 + soak_driver.STABILITY_TOLERANCE
+        )
+        for leak in leaks:
+            leak.close()
+        leaks.clear()
+        post = soak_driver._owned_socket_fd_count(ports)
+        assert post == pre  # the unrelated listener and pipe never counted
+        assert (
+            _stability_criteria_for(pre, post, 25, 25)["fdsStability"]["status"]
+            == "PASS"
+        )
+    finally:
+        for leak in leaks:
+            leak.close()
+        owned.close()
+        unrelated.close()
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+async def test_leaked_run_owned_tasks_fail_the_stability_criterion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Six leaked run-owned tasks FAIL the criterion; one registers its
+    exact delta; a foreign-module task (asyncio's own sleep — the
+    late-teardown noise the CI flake counted) never moves the count."""
+
+    async def linger() -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(soak_driver, "_OWNED_TASK_MODULE_PREFIXES", (__name__,))
+    leaks: list[asyncio.Task[None]] = []
+    foreign: asyncio.Task[None] | None = None
+    try:
+        pre = len(soak_driver._owned_task_population())
+        leaks.append(asyncio.create_task(linger()))
+        one = len(soak_driver._owned_task_population())
+        assert one == pre + 1
+        one_leak = _stability_criteria_for(20, 20, pre, one)
+        assert one_leak["tasksStability"]["checks"][0]["delta"] == 1
+        assert one_leak["tasksStability"]["status"] == "PASS"
+        for _ in range(soak_driver.STABILITY_TOLERANCE):
+            leaks.append(asyncio.create_task(linger()))
+        post = len(soak_driver._owned_task_population())
+        assert post == pre + 1 + soak_driver.STABILITY_TOLERANCE
+        assert (
+            _stability_criteria_for(20, 20, pre, post)["tasksStability"]["status"]
+            == "FAIL"
+        )
+        foreign = asyncio.create_task(asyncio.sleep(30.0))
+        assert len(soak_driver._owned_task_population()) == post
+    finally:
+        pending = [*leaks]
+        if foreign is not None:
+            pending.append(foreign)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+
+async def test_in_process_runtime_payload_reports_owned_counts_only() -> None:
+    """Through the harness overlay the runtime ``process`` block reports
+    owned counts: an unrelated FD leaves it unchanged, a run-owned-port
+    socket moves it by one while open (MOR-3575)."""
+
+    class Web:
+        _radio = None
+        _reconnects_total = 0
+
+        def _runtime_process_payload(self) -> dict[str, Any]:
+            return soak_driver.WebServer._runtime_process_payload(self)
+
+        async def _serve_runtime(self, *args: Any) -> None:  # pragma: no cover
+            ...
+
+    web = Web()
+    owned = _listener()
+    port = owned.getsockname()[1]
+    stack = SimpleNamespace(
+        web=web, radio=SimpleNamespace(), rigctld=SimpleNamespace(), web_port=port
+    )
+    adapter = soak_driver._RuntimeTaskAdapter(stack, None)
+    adapter.install()
+    unrelated = client = None
+    try:
+        baseline = web._runtime_process_payload()
+        assert baseline["openFds"] is not None
+        unrelated = _listener()
+        before = web._runtime_process_payload()
+        # The unrelated listener must not move the owned FD count — the
+        # process-wide number the payload used to report moved by one.
+        assert before["openFds"] == baseline["openFds"]
+        assert before["asyncioTasks"] == baseline["asyncioTasks"]
+        client = socket.create_connection(("127.0.0.1", port))
+        after = web._runtime_process_payload()
+        assert after["openFds"] == before["openFds"] + 1
+        assert after["asyncioTasks"] == before["asyncioTasks"]
+        client.close()
+        assert web._runtime_process_payload()["openFds"] == before["openFds"]
+    finally:
+        for resource in (client, unrelated, owned):
+            if resource is not None:
+                resource.close()
+        adapter.close()
+    assert "_runtime_process_payload" not in vars(web)
+    assert "_serve_runtime" not in vars(web)
