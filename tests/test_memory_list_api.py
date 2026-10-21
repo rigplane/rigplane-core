@@ -12,15 +12,30 @@ from urllib.parse import parse_qs
 
 import pytest
 
+from rigplane.backends.rigctld_client import RigctldClientRadio
+from rigplane.commands import CONTROLLER_ADDR
+from rigplane.commands._frame import build_civ_frame
 from rigplane.commands.commander import Priority
 from rigplane.core.exceptions import CommandError
 from rigplane.core.radio_protocol import MemoryReadCapable
 from rigplane.radio import IcomRadio
 from rigplane.types import CivFrame
 from rigplane.web.server import WebConfig, WebServer
-from test_icom_memory_entry import _IC705_GOLDEN
+from _helpers import wrap_civ_in_udp
+from test_icom_memory_entry import _IC705_GOLDEN, _block, _ic9700_reply
 from test_mor2899_api_info_rigctld import _MemoryWriter, _status_and_json
 from test_radio import MockTransport
+
+
+_RADIOS: list[IcomRadio] = []
+
+
+@pytest.fixture(autouse=True)
+def _disconnect_radios():
+    yield
+    for radio in _RADIOS:
+        radio._connected = False  # keeps the "collected while connected" warning quiet
+    _RADIOS.clear()
 
 
 def _radio(model: str = "IC-705", answers: dict[tuple[int, int], bytes] | None = None):
@@ -29,6 +44,7 @@ def _radio(model: str = "IC-705", answers: dict[tuple[int, int], bytes] | None =
     radio._civ_transport = MockTransport()
     radio._ctrl_transport = radio._civ_transport
     radio._connected = True
+    _RADIOS.append(radio)
     sent: list[tuple[bytes, Priority]] = []
     answers = {(0, 4): _IC705_GOLDEN} if answers is None else answers
 
@@ -155,3 +171,64 @@ async def test_memories_endpoint_maps_radio_failures() -> None:
     status, body = await _get(radio, "/api/v1/memories?count=1")
     assert (status, body["error"]) == (503, "not_connected")
     json.dumps(body)
+
+
+def _reply(radio_addr: int, data: bytes) -> bytes:
+    civ = build_civ_frame(CONTROLLER_ADDR, radio_addr, 0x1A, sub=0x00, data=data)
+    return wrap_civ_in_udp(civ)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "addr", "group", "replies"),
+    [
+        ("IC-705", 0xA4, 0, [bytes.fromhex("00000003ff"), _IC705_GOLDEN]),
+        (
+            "IC-9700",
+            0xA2,
+            2,
+            [
+                bytes.fromhex("020001ff"),
+                _ic9700_reply(
+                    _block(freq="0439000000"), band=2, channel=2, name=b"UHF TEST"
+                ),
+            ],
+        ),
+    ],
+)
+async def test_reads_settle_through_the_real_request_tracker(
+    model: str, addr: int, group: int, replies: list[bytes]
+) -> None:
+    """A 1A 00 read waits for the data reply, not for an ACK (no timeout)."""
+    transport = MockTransport()
+    radio = IcomRadio("192.168.1.100", timeout=2.0, model=model)
+    radio._civ_transport = radio._ctrl_transport = transport
+    radio._connected = True
+    first = 1 if model == "IC-9700" else 3
+    for send, reply in enumerate(replies, start=1):
+        transport.queue_response_on_send(send, _reply(addr, reply))
+    try:
+        entries = await radio.read_memory_entries(group, [first, first + 1])
+    finally:
+        radio._connected = False
+    assert [e.empty for e in entries] == [True, False]
+    assert entries[1].name in ("TEST RPT", "UHF TEST")
+
+
+@pytest.mark.asyncio
+async def test_memories_endpoint_refuses_a_backend_without_a_profile() -> None:
+    radio = RigctldClientRadio(host="127.0.0.1", port=0)
+    status, body = await _get(radio, "/api/v1/memories")
+    assert (status, body["error"]) == (404, "unsupported")
+
+
+@pytest.mark.asyncio
+async def test_memories_endpoint_maps_a_serial_io_failure_to_503() -> None:
+    radio = _radio()
+
+    async def broken(frame: bytes, **_: Any) -> CivFrame:
+        raise OSError(5, "Input/output error")
+
+    radio._send_civ_raw = broken  # type: ignore[method-assign]
+    status, body = await _get(radio, "/api/v1/memories?count=1")
+    assert (status, body["error"]) == (503, "not_connected")

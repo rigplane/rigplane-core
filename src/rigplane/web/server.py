@@ -5030,13 +5030,12 @@ class WebServer:
                 {"error": "no_radio", "message": "No radio configured"},
             )
             return
-        profile = self._resolve_profile_if_identified()
-        memory = getattr(profile, "memory", None)
-        if (
-            memory is None
-            or "memory_read" not in self._projected_runtime_capabilities()
-            or not isinstance(radio, MemoryReadCapable)
+        memory = None
+        if "memory_read" in self._projected_runtime_capabilities() and isinstance(
+            radio, MemoryReadCapable
         ):
+            memory = getattr(self._resolve_profile_if_identified(), "memory", None)
+        if memory is None:
             await self._send_json(
                 writer,
                 404,
@@ -5056,7 +5055,7 @@ class WebServer:
             return
         try:
             entries = await radio.read_memory_entries(group, channels)
-        except (ConnectionError, RadioConnectionError) as exc:
+        except (OSError, RadioConnectionError) as exc:
             await self._send_json(
                 writer,
                 503,

@@ -4134,6 +4134,15 @@ class CivRuntime:
         if frame.command == 0x1A and frame.sub == 0x01 and len(frame.data) == 2:
             # Band Stacking Register read: 1A 01 <band> <register>
             return True
+        if (
+            frame.command == 0x1A
+            and frame.sub == 0x00
+            and len(frame.data) in (3, 4)
+            and frame.data[-1] != 0xFF
+        ):
+            # Memory channel read: 1A 00 + band/group and channel. A clear
+            # writes FF after the address, a write carries a whole record.
+            return True
         if frame.command == 0x17:
             return False
         if frame.command == 0x27:
