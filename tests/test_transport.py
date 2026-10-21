@@ -1428,3 +1428,81 @@ async def test_receive_during_cancellation_cleanup_returns_the_packet() -> None:
     got = await task
     assert got == b"cleanup-pkt"
     assert not task.cancelled()
+
+
+@pytest.mark.parametrize("timeout", [0, -0.5])
+async def test_receive_nonpositive_timeout_with_pending_cancel_ends_cancelled(
+    timeout: float,
+) -> None:
+    """A cancel requested before a zero/negative-timeout receive must be
+    delivered, not answered with the guard's TimeoutError (MOR-3575
+    review round 2): the old ``wait_for`` suspended while cancelling its
+    helper, so the pending cancel was delivered there.
+    """
+    transport = IcomTransport()
+
+    async def self_cancelling_receiver() -> bytes:
+        asyncio.current_task().cancel()
+        return await transport.receive_packet(timeout=timeout)
+
+    task = asyncio.create_task(self_cancelling_receiver())
+    done, _pending = await asyncio.wait({task}, timeout=2.0)
+    assert task in done, "receiver never finished"
+    assert task.cancelled(), (
+        "a fresh pending cancel lost to the nonpositive-timeout TimeoutError"
+    )
+    assert transport._packet_queue.empty()
+
+
+@pytest.mark.parametrize("timeout", [0, -0.5])
+async def test_receive_nonpositive_timeout_pending_cancel_leaves_queued_packet(
+    timeout: float,
+) -> None:
+    """The cancelled zero/negative-timeout receive must leave the queued
+    packet for the next consumer (MOR-3575 review round 2).
+    """
+    transport = IcomTransport()
+    transport._packet_queue.put_nowait(b"queued")
+
+    async def self_cancelling_receiver() -> bytes:
+        asyncio.current_task().cancel()
+        return await transport.receive_packet(timeout=timeout)
+
+    task = asyncio.create_task(self_cancelling_receiver())
+    done, _pending = await asyncio.wait({task}, timeout=2.0)
+    assert task in done, "receiver never finished"
+    assert task.cancelled(), (
+        "a fresh pending cancel lost to the nonpositive-timeout TimeoutError"
+    )
+    assert transport._packet_queue.get_nowait() == b"queued"
+
+
+async def test_receive_none_timeout_pending_then_packet_returns_it() -> None:
+    """A ``timeout=None`` receive parks until a packet arrives and then
+    returns it (MOR-3575 review round 2): no deadline replaces the
+    unbounded wait.
+    """
+    transport = IcomTransport()
+
+    task = asyncio.create_task(transport.receive_packet(timeout=None))
+    await asyncio.sleep(0)  # the receiver runs to its first real suspension
+    assert _parked_on_queue_get(task), "receiver is not parked on the queue get"
+    transport._packet_queue.put_nowait(b"late")
+
+    assert await task == b"late"
+
+
+async def test_receive_none_timeout_cancel_while_pending_ends_cancelled() -> None:
+    """A cancel of a pending ``timeout=None`` receive must end it
+    cancelled (MOR-3575 review round 2).
+    """
+    transport = IcomTransport()
+
+    task = asyncio.create_task(transport.receive_packet(timeout=None))
+    await asyncio.sleep(0)  # the receiver runs to its first real suspension
+    assert _parked_on_queue_get(task), "receiver is not parked on the queue get"
+    task.cancel()
+
+    done, _pending = await asyncio.wait({task}, timeout=2.0)
+    assert task in done, "receiver never finished: cancel was swallowed"
+    assert task.cancelled(), "a cancel of a parked unbounded receive was not delivered"
