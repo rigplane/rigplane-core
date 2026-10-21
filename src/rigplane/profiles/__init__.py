@@ -37,6 +37,7 @@ __all__ = [
     "resolve_radio_profile",
     "KeyboardBinding",
     "KeyboardConfig",
+    "MemoryProfile",
 ]
 
 logger = logging.getLogger(__name__)
@@ -310,6 +311,26 @@ class TxPolicy:
         return self.tx_state_map.get(raw_value)
 
 
+MemoryAddressing = Literal["group_channel", "band_channel"]
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryProfile:
+    """How a radio's stored memory channels are addressed (MOR-3627).
+
+    ``group_channel`` is the IC-705 shape, ``band_channel`` the IC-9700's; the
+    bounds limit the group number (or band code) and the channel, and
+    ``recall`` says the profile's select commands recall a listed channel.
+    """
+
+    addressing: MemoryAddressing
+    first_group: int
+    last_group: int
+    first_channel: int
+    last_channel: int
+    recall: bool = False
+
+
 @dataclass(frozen=True, slots=True)
 class RadioProfile:
     """Runtime radio profile used by command routing and capability checks."""
@@ -536,6 +557,10 @@ class RadioProfile:
     # unverified identity configuration; the loader validates shape only.
     # Appended to preserve the positional constructor contract.
     expected_identity_ids: tuple[str, ...] = ()
+    # Memory channel addressing from the optional ``[memory]`` section
+    # (MOR-3627); None when the profile declares none. Appended for the same
+    # reason as the fields above.
+    memory: MemoryProfile | None = None
 
     @property
     def vfo_swap_code(self) -> int | None:
