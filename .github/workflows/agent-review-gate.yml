@@ -144,22 +144,30 @@ jobs:
                 headSha: head_sha,
                 committedAt: committed_at,
               });
-              // Codex-primary layer (MOR-3616): the module is shared verbatim with rigplane-pro.
+              // Advisory Codex bot layer: the module is shared verbatim with rigplane-pro.
               const codexPath = `${process.env.GITHUB_WORKSPACE}/.github/scripts/codex-review-gate.js`;
               const {
                 codexReviewedHead,
                 readReviewThreads,
                 unresolvedCodexFindings,
               } = require(codexPath);
-              const reviews = await github.paginate(github.rest.pulls.listReviews, {
-                owner,
-                repo,
-                pull_number,
-                per_page: 100,
-              });
-              const threads = await readReviewThreads({github, owner, repo, number: pull_number});
-              const codex = codexReviewedHead({reviews, comments, headSha: head_sha});
-              codexParts = {codex, unresolved: unresolvedCodexFindings(threads)};
+              // Bot data is advisory: its unavailability must never change the verdict, so it is
+              // read best-effort and the authoritative PASS/BLOCKED comments above decide alone.
+              codexParts = {codex: {reviewed: false, via: null}, unresolved: []};
+              try {
+                const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                  owner,
+                  repo,
+                  pull_number,
+                  per_page: 100,
+                });
+                const threads = await readReviewThreads({github, owner, repo, number: pull_number});
+                const codex = codexReviewedHead({reviews, comments, headSha: head_sha});
+                codexParts = {codex, unresolved: unresolvedCodexFindings(threads)};
+              } catch (advisoryError) {
+                const advisoryMessage = advisoryError instanceof Error ? advisoryError.message : String(advisoryError);
+                core.notice(`Codex bot data unavailable (advisory only): ${advisoryMessage}`);
+              }
             } catch (error) {
               evaluationError = error;
               const message = error instanceof Error ? error.message : String(error);

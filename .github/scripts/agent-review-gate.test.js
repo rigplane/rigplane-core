@@ -1139,7 +1139,7 @@ async function runBrokenGate(breakIt) {
   return {...fake, core};
 }
 
-test('GraphQL and review-list failures fail closed with a loud run failure', async () => {
+test('GraphQL and review-list failures are advisory: a valid PASS still succeeds, without a run failure', async () => {
   const breakers = {
     graphql: (github) => {
       github.graphql = async () => { throw new Error('GraphQL unavailable'); };
@@ -1161,10 +1161,41 @@ test('GraphQL and review-list failures fail closed with a loud run failure', asy
     const {statuses, core} = await runBrokenGate(breakIt);
     assert.equal(statuses.length, 1, name);
     assert.equal(statuses[0].sha, HEAD, name);
-    assert.equal(statuses[0].state, 'failure', name);
-    assert.equal(statuses[0].description, 'Agent Review Gate evaluation failed closed.', name);
-    assert.equal(core.failures.length, 1, name);
-    assert.equal(core.errors.length, 1, name);
+    assert.equal(statuses[0].state, 'success', name);
+    assert.match(statuses[0].description, /^Local review PASS for 1234567\./u, name);
+    assert.deepEqual(core.failures, [], name);
+    assert.deepEqual(core.errors, [], name);
+    assert.equal(core.notices.length, 1, name);
+    assert.match(core.notices[0], /Codex bot data unavailable \(advisory only\)/u, name);
+  }
+
+  // Authoritative failures stay fail-closed: no PASS stays red, BLOCKED stays red.
+  for (const [name, breakIt] of Object.entries(breakers)) {
+    const noPass = gateGithub({comments: [], reviews: [codexReview()]});
+    breakIt(noPass.github);
+    const core = coreMock();
+    await runWorkflowScript(updaterScript(), {
+      github: noPass.github,
+      context: workflowContext(22),
+      core,
+      workspace: path.join(__dirname, '..', '..'),
+    });
+    assert.equal(noPass.statuses[0].state, 'failure', name);
+    assert.match(noPass.statuses[0].description, /^Waiting for the local review PASS/u, name);
+
+    const blocked = gateGithub({
+      comments: [comment(directive('PASS')), comment(`${directive('BLOCKED')}\nConcrete blocker`)],
+      reviews: [],
+    });
+    breakIt(blocked.github);
+    await runWorkflowScript(updaterScript(), {
+      github: blocked.github,
+      context: workflowContext(23),
+      core: coreMock(),
+      workspace: path.join(__dirname, '..', '..'),
+    });
+    assert.equal(blocked.statuses[0].state, 'failure', name);
+    assert.match(blocked.statuses[0].description, /BLOCKED directive is active/u, name);
   }
 });
 
