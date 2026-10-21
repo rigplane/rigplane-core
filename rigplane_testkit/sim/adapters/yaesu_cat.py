@@ -34,6 +34,7 @@ import asyncio
 import errno
 import json
 import logging
+import math
 import time
 import weakref
 from collections import deque
@@ -141,16 +142,17 @@ def unledgered_divergences(
     model_factory: Callable[[RecordedCatAnswerTable], YaesuCatModel],
     table: RecordedCatAnswerTable,
     ledger_path: Path,
-) -> dict[str, dict[str, str | None]]:
-    """The divergences of a FRESH seeded model not exactly covered by the ledger.
+) -> dict[str, dict[str, str | None] | None]:
+    """Live divergences not exactly ledgered, plus stale ledger keys as ``None``.
 
     *model_factory* takes the recorded table and returns a fresh model
     seeded from it, so one replay can never bleed state into the next.
     Both the recorded and model replies must match the entry in *ledger_path*.
+    Every ledger key must still diverge in the fresh replay.
     """
     live = recorded_divergences(model_factory(table), table)
     ledger = json.loads(Path(ledger_path).read_text(encoding="utf-8"))
-    return {
+    mismatches: dict[str, dict[str, str | None] | None] = {
         request: diff
         for request, diff in live.items()
         if request not in ledger
@@ -159,6 +161,8 @@ def unledgered_divergences(
             for key in ("recorded", "model")
         )
     }
+    mismatches.update(dict.fromkeys(ledger.keys() - live.keys()))
+    return mismatches
 
 
 def _fresh_seeded_model(
@@ -173,13 +177,26 @@ def _fresh_seeded_model(
 def fidelity_for_banner(fake: YaesuCatSerialFake, ledger_path: Path) -> str:
     """The profile's fidelity tier, dropped to ``"B"`` when a fresh model
     seeded from the recording has a divergence not exactly covered by
-    *ledger_path*, or the table is empty (the MOR-3598 banner rule)."""
+    *ledger_path*, a stale ledger key, or an empty table (MOR-3598)."""
     if not fake._recorded.requests():
         return "B"
     divergences = unledgered_divergences(
         lambda table: _fresh_seeded_model(fake, table), fake._recorded, ledger_path
     )
     return fake._profile.sim.fidelity if not divergences else "B"
+
+
+def _finite_delay(value: float, field: str, *, clamp_negative: bool = False) -> float:
+    message = f"{field}: must be a finite number >= 0, got {value!r}"
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(message)
+    try:
+        finite = math.isfinite(value)
+    except OverflowError:
+        finite = False
+    if not finite or (value < 0 and not clamp_negative):
+        raise ValueError(message)
+    return max(0.0, value)
 
 
 class YaesuCatSerialFake:
@@ -200,6 +217,13 @@ class YaesuCatSerialFake:
         recorded: RecordedCatAnswerTable,
         seed: int = 0,
     ) -> None:
+        latency = profile.timing.reply_latency_ms
+        self._reply_latency = (
+            _finite_delay(
+                0.0 if latency is None else latency, "profile timing.reply_latency_ms"
+            )
+            / 1000.0
+        )
         self._model = model
         self._profile = profile
         self._rig = rig
@@ -293,15 +317,20 @@ class YaesuCatSerialFake:
 
     def silence(self, for_seconds: float) -> None:
         """Suppress new wire lines, preserving already scheduled replies."""
-        self._silent_until = time.monotonic() + max(0.0, for_seconds)
+        duration = _finite_delay(
+            for_seconds, "silence for_seconds", clamp_negative=True
+        )
+        self._silent_until = time.monotonic() + duration
 
     def usb_vanish(self, at: float = 0.0) -> None:
         """Make the device disappear *at* seconds from now (needs a running loop)."""
-        asyncio.get_running_loop().call_later(max(0.0, at), self._vanish_now)
+        delay = _finite_delay(at, "usb_vanish at", clamp_negative=True)
+        asyncio.get_running_loop().call_later(delay, self._vanish_now)
 
     def usb_reappear(self, after: float = 0.0) -> None:
         """Make the device openable again *after* seconds from now."""
-        asyncio.get_running_loop().call_later(max(0.0, after), self._reappear_now)
+        delay = _finite_delay(after, "usb_reappear after", clamp_negative=True)
+        asyncio.get_running_loop().call_later(delay, self._reappear_now)
 
     def _vanish_now(self) -> None:
         self._vanished = True
@@ -364,7 +393,7 @@ class _CatConnection:
     def __init__(self, fake: YaesuCatSerialFake, ordinal: int) -> None:
         self._fake = weakref.ref(fake, self._fake_gone)
         self._loop = asyncio.get_running_loop()
-        self._latency = (fake._profile.timing.reply_latency_ms or 0.0) / 1000.0
+        self._latency = fake._reply_latency
         self._pending: deque[tuple[float, bytes]] = deque()
         self._timer: asyncio.TimerHandle | None = None
         self._closed = False

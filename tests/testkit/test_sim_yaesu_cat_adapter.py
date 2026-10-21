@@ -248,6 +248,28 @@ def test_banner_fidelity_is_A_for_the_committed_ledger() -> None:
     assert fidelity_for_banner(_fake(), LEDGER) == "A"
 
 
+@pytest.mark.parametrize("ledger_request", ["ID;", "QQ;"])
+def test_banner_fidelity_drops_to_B_on_a_stale_ledger_entry(
+    tmp_path, ledger_request
+) -> None:
+    fake = _fake()
+    ledger = tmp_path / "ledger.json"
+    ledger.write_text(
+        json.dumps({ledger_request: {"recorded": "ID0840;", "model": "ID9999;"}}),
+        encoding="utf-8",
+    )
+    assert adapter.unledgered_divergences(
+        lambda table: adapter._fresh_seeded_model(fake, table), fake._recorded, ledger
+    ) == {ledger_request: None}
+    assert fidelity_for_banner(fake, ledger) == "B"
+
+
+def test_banner_fidelity_is_A_with_no_divergences_or_ledger_entries(tmp_path) -> None:
+    ledger = tmp_path / "ledger.json"
+    ledger.write_text("{}", encoding="utf-8")
+    assert fidelity_for_banner(_fake(), ledger) == "A"
+
+
 def test_banner_fidelity_drops_to_B_on_an_unledgered_divergence(monkeypatch) -> None:
     fake = _fake()
     real_fresh = adapter._fresh_seeded_model
@@ -374,11 +396,75 @@ class _DeliveryClock:
 
 def _with_latency(milliseconds: float | None) -> YaesuCatSerialFake:
     fake = _fake()
-    fake._profile = replace(
-        fake._profile,
-        timing=replace(fake._profile.timing, reply_latency_ms=milliseconds),
+    return YaesuCatSerialFake(
+        fake.model,
+        profile=replace(
+            fake._profile,
+            timing=replace(fake._profile.timing, reply_latency_ms=milliseconds),
+        ),
+        rig=fake._rig,
+        recorded=fake._recorded,
     )
-    return fake
+
+
+@pytest.mark.parametrize(
+    "milliseconds", [float("inf"), float("-inf"), float("nan"), -1, True, False, "9"]
+)
+def test_constructor_rejects_invalid_reply_latency(milliseconds) -> None:
+    with pytest.raises(ValueError, match=r"^profile timing\.reply_latency_ms:"):
+        _with_latency(milliseconds)
+
+
+@pytest.mark.parametrize("milliseconds", [None, 0, 9, 250.5])
+def test_constructor_accepts_absent_or_finite_nonnegative_latency(milliseconds) -> None:
+    fake = _with_latency(milliseconds)
+    assert fake._reply_latency == (milliseconds or 0.0) / 1000.0
+
+
+def test_factory_rejects_infinite_profile_latency(tmp_path) -> None:
+    profile = tmp_path / "latency.toml"
+    profile.write_text(
+        (ROOT / adapter._PROFILE_REL)
+        .read_text()
+        .replace("reply_latency_ms = 9", "reply_latency_ms = inf")
+    )
+    with pytest.raises(ValueError, match=r"^profile timing\.reply_latency_ms:"):
+        YaesuCatSerialFake.from_profile(ROOT, profile)
+
+
+@pytest.mark.parametrize("method", ["silence", "usb_vanish", "usb_reappear"])
+@pytest.mark.parametrize(
+    "duration", [float("inf"), float("-inf"), float("nan"), True, "1"]
+)
+def test_fault_durations_reject_invalid_values_before_scheduling(
+    method, duration
+) -> None:
+    fake = _fake()
+    with pytest.raises(ValueError, match=rf"^{method} "):
+        getattr(fake, method)(duration)
+    assert fake._silent_until == 0.0
+    assert not fake._vanished
+
+
+@pytest.mark.parametrize("method", ["silence", "usb_vanish", "usb_reappear"])
+@pytest.mark.parametrize("duration", [-1, 0, 0.5])
+async def test_fault_durations_accept_finite_values(
+    method, duration, monkeypatch
+) -> None:
+    fake = _fake()
+    scheduled = []
+    monkeypatch.setattr(
+        asyncio.get_running_loop(),
+        "call_later",
+        lambda delay, callback: scheduled.append(delay),
+    )
+    monkeypatch.setattr(adapter.time, "monotonic", lambda: 10.0)
+    getattr(fake, method)(duration)
+    if method == "silence":
+        assert fake._silent_until == 10.0 + max(0.0, duration)
+        assert not scheduled
+    else:
+        assert scheduled == [max(0.0, duration)]
 
 
 async def _scheduled_connection(fake):
