@@ -260,10 +260,15 @@ async def _collect_structural_divergences() -> dict[str, tuple[str, str]]:
         for switch in ("fefe94e0271001fd", "fefe94e0271101fd"):
             writer.write(bytes.fromhex(switch))
         await writer.drain()
-        try:
-            got = bytes(await asyncio.wait_for(reader.read(8192), 0.3))
-        except TimeoutError:
-            got = b""
+        got = b""
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while (left := deadline - asyncio.get_running_loop().time()) > 0:
+            try:  # keep reading: the switch ACKs come first, the wave after them
+                got += bytes(await asyncio.wait_for(reader.read(8192), left))
+            except TimeoutError:
+                break
+            if b"\xfe\xfe\xe0\x94\x27\x00" in got:
+                break
     finally:
         writer.close()
     if b"\xfe\xfe\xe0\x94\x27\x00" not in got:
@@ -275,18 +280,23 @@ async def _collect_structural_divergences() -> dict[str, tuple[str, str]]:
         )
 
     baud = _evidence()["baud"]
+    silent_baud = baud["silent_at"][0]
+    reader2, writer2 = await ic7300_usb_fake().opener(
+        url="socket://conformance", baudrate=silent_baud
+    )
     try:
-        reader2, writer2 = await ic7300_usb_fake().opener(
-            url="socket://conformance", baudrate=baud["silent_at"][0]
-        )
+        identity = bytes.fromhex("fefe94e01900fd")
+        writer2.write(identity)
+        await writer2.drain()
+        answered, _ = await _ask_serial_fake(reader2, identity)
+    finally:
         writer2.close()
+    if answered != ("silence",):  # the recorded radio stays silent at that baud
         observed["baud_gate"] = (
             f"answers only at {baud['answers_at'][0]} baud, silent at "
             + ", ".join(str(b) for b in baud["silent_at"]),
             "answers at any baud",
         )
-    except OSError:
-        pass
     return observed
 
 
