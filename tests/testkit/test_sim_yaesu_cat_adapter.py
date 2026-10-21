@@ -248,12 +248,40 @@ def test_banner_fidelity_is_A_for_the_committed_ledger() -> None:
     assert fidelity_for_banner(_fake(), LEDGER) == "A"
 
 
+def _banner_fake(tmp_path, fixture_only: bool) -> YaesuCatSerialFake:
+    if not fixture_only:
+        return _fake()
+    recording = Path("tests/fixtures/ftx1/cat_pairs.jsonl")
+    for relative in (recording, adapter._RIG_REL):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / relative).read_bytes())
+    profile = tmp_path / "fixture-only.toml"
+    profile.write_text(
+        'schema = "rigplane-sim-profile/1"\n'
+        "[sim]\n"
+        'id = "fixture-only"\n'
+        'radio = "FTX-1"\n'
+        'fidelity = "A"\n'
+        f'evidence = ["{recording.as_posix()}"]\n'
+        "[transport.yaesu_cat]\n"
+        "baud = 38400\n"
+        "[answers]\n"
+        f'recorded = [{{ file = "{recording.as_posix()}", transport = "usb" }}]\n',
+        encoding="utf-8",
+    )
+    return YaesuCatSerialFake.from_profile(tmp_path, profile)
+
+
 @pytest.mark.parametrize("ledger_request", ["ID;", "QQ;"])
-@pytest.mark.parametrize(("tier", "expected"), [("A", "B"), ("B", "B"), ("C", "C")])
+@pytest.mark.parametrize(
+    ("fixture_only", "tier", "expected"),
+    [(True, "A", "C"), (False, "A", "B"), (False, "B", "B"), (False, "C", "C")],
+)
 def test_banner_fidelity_never_upgrades_on_a_stale_ledger_entry(
-    tmp_path, ledger_request, tier, expected
+    tmp_path, ledger_request, fixture_only, tier, expected
 ) -> None:
-    fake = _fake()
+    fake = _banner_fake(tmp_path, fixture_only)
     fake._profile = replace(
         fake._profile, sim=replace(fake._profile.sim, fidelity=tier)
     )
@@ -274,11 +302,14 @@ def test_banner_fidelity_is_A_with_no_divergences_or_ledger_entries(tmp_path) ->
     assert fidelity_for_banner(_fake(), ledger) == "A"
 
 
-@pytest.mark.parametrize(("tier", "expected"), [("A", "B"), ("B", "B"), ("C", "C")])
+@pytest.mark.parametrize(
+    ("fixture_only", "tier", "expected"),
+    [(True, "A", "C"), (False, "A", "B"), (False, "B", "B"), (False, "C", "C")],
+)
 def test_banner_fidelity_never_upgrades_on_an_unledgered_divergence(
-    monkeypatch, tier, expected
+    monkeypatch, tmp_path, fixture_only, tier, expected
 ) -> None:
-    fake = _fake()
+    fake = _banner_fake(tmp_path, fixture_only)
     fake._profile = replace(
         fake._profile, sim=replace(fake._profile.sim, fidelity=tier)
     )
@@ -350,9 +381,14 @@ def test_recording_requires_request_reply_evidence(tmp_path, content) -> None:
     assert str(recording) in str(error.value)
 
 
-@pytest.mark.parametrize(("tier", "expected"), [("A", "B"), ("B", "B"), ("C", "C")])
-def test_empty_table_cannot_pass_conformance_or_upgrade_banner(tier, expected) -> None:
-    fake = _fake()
+@pytest.mark.parametrize(
+    ("fixture_only", "tier", "expected"),
+    [(True, "A", "C"), (False, "A", "B"), (False, "B", "B"), (False, "C", "C")],
+)
+def test_empty_table_cannot_pass_conformance_or_upgrade_banner(
+    tmp_path, fixture_only, tier, expected
+) -> None:
+    fake = _banner_fake(tmp_path, fixture_only)
     fake._profile = replace(
         fake._profile, sim=replace(fake._profile.sim, fidelity=tier)
     )

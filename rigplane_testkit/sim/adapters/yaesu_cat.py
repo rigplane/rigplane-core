@@ -175,11 +175,19 @@ def _fresh_seeded_model(
 
 
 def fidelity_for_banner(fake: YaesuCatSerialFake, ledger_path: Path) -> str:
-    """The profile's fidelity tier, capped at ``"B"`` when a fresh model
-    seeded from the recording has a divergence not exactly covered by
-    *ledger_path*, a stale ledger key, or an empty table (MOR-3598)."""
+    """Cap fidelity at B with declared oracle evidence, otherwise C,
+    on an unledgered divergence, stale ledger key, or empty table (MOR-3598).
+    Never exceed the profile's configured tier.
+    """
     tier = fake._profile.sim.fidelity
-    fallback = "B" if tier == "A" else tier
+    fallback = tier
+    if tier == "A":
+        golden = (fake._root / "tests" / "golden" / "wire_oracle").resolve()
+        has_oracle = any(
+            (fake._root / entry).resolve().is_relative_to(golden)
+            for entry in fake._profile.sim.evidence
+        )
+        fallback = "B" if has_oracle else "C"
     if not fake._recorded.requests():
         return fallback
     divergences = unledgered_divergences(
@@ -218,6 +226,7 @@ class YaesuCatSerialFake:
         rig: RigConfig,
         recorded: RecordedCatAnswerTable,
         seed: int = 0,
+        root: Path | None = None,
     ) -> None:
         latency = profile.timing.reply_latency_ms
         self._reply_latency = (
@@ -231,6 +240,7 @@ class YaesuCatSerialFake:
         self._rig = rig
         self._recorded = recorded
         self._seed = seed
+        self._root = (Path.cwd() if root is None else Path(root)).resolve()
         self._silent_until = 0.0
         self._vanished = False
         self._open_count = 0
@@ -269,7 +279,9 @@ class YaesuCatSerialFake:
             seed=seed,
             on_not_modelled=on_not_modelled,
         )
-        return cls(model, profile=profile, rig=rig, recorded=recorded, seed=seed)
+        return cls(
+            model, profile=profile, rig=rig, recorded=recorded, seed=seed, root=root
+        )
 
     # ------------------------------------------------------------------
     # Identity / state surface
