@@ -103,12 +103,15 @@ valid answer; skipping the question is not.
    root. The coordinator's lane scripts copy that file into every builder
    worktree when they start the lane, and it needs the Codex CLI logged in with
    the ChatGPT subscription. If the file is missing (the worktree was not
-   created by a lane script), do not skip the step silently: write
-   `pre-review: not run (no helper)` in the PR body so the coordinator can run
-   it. The script runs Codex read-only on the branch diff and writes every P0-P2
+   created by a lane script), stop and ask the coordinator to provision it (a
+   copy of the lane scripts' `pre-review.sh`) before you push; push without it
+   only when the coordinator waives the step in writing, and then write
+   `pre-review: not run (waived)` in the PR body. The script runs Codex read-only on the branch diff and writes every P0-P2
    finding, grouped by file, to `tmp/pre-review.md`. Fix all of them, fix the
    siblings of each that lie inside your assigned scope (list the others in the
-   PR body), commit, and run it again until it prints `PRE-REVIEW: CLEAN`. If a
+   PR body), commit, and run it again until it prints `PRE-REVIEW: CLEAN`. The
+   files under `tmp/` are transient scratch (git-ignored, deleted with the
+   worktree): do not copy them into the PR, a handoff or a checkpoint. If a
    finding is wrong, put the evidence in `tmp/pre-review-reply.md`. If round
    four still reports findings, do not push: the change is usually too big or
    has a design flaw, so report what is left to the coordinator.
@@ -123,8 +126,9 @@ valid answer; skipping the question is not.
 - Fix every valid P0-P2 finding with a test, or answer it with evidence that it
   is not a bug, before resolving the thread. A false documentation claim is a
   P2 and gets fixed. A builder never defers a valid P0-P2 to a ticket.
-- Only the coordinator may defer: for internal test and bench tooling, P2 polish
-  that cannot cause a wrong verdict, dirty state, lost data or a hung run may go
-  to a ticket, and the coordinator records the ticket id in the thread before
-  resolving it. P3 never blocks.
+- Ticket-only follow-ups are for P3 suggestions (naming, style, refactors),
+  which never block. A valid P0-P2 finding is never resolved by a ticket, for
+  internal test and bench tooling too: a wrong verdict, dirty state, lost data,
+  a hung run or a false claim in a README or comment gets fixed (or disproved)
+  before the thread is resolved.
 - Re-run `tmp/pre-review.sh` before the re-push.
