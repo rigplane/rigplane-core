@@ -40,7 +40,7 @@ rigplane_testkit/sim/
   __main__.py, serve.py      CLI and the serve process (exists, MOR-3593)
   engine/                    state dataclasses, SimEngine, clock, seeded RNG, event queue, trace
   model/                     protocol families: icom_civ.py, yaesu_cat.py (decode -> engine op -> encode)
-  profiles/                  loader + schema for rigplane-sim-profile/1; data files <radio>.toml
+  profiles/                  loader + schema for rigplane-sim-profile/1; data files <profile-id>.toml
   adapters/                  icom_lan.py, icom_serial.py (socket:// and PTY), yaesu_cat.py
   audio/                     sources, sinks, backends, air-recording renderer (section 9)
   scenario/                  seeded event schedules and the shared fault vocabulary
@@ -96,7 +96,7 @@ class ReceiverState:          # one per receiver (profile receiver_count)
     active: VfoState            # the VFO the radio is operating on
     unselected: VfoState        # the other VFO slot (profiles that declare `unselected` fields,
                                 # for example IC-7300/IC-705; equal to `active` where there is none)
-    meters: dict[str, int]      # receiver-scoped readings, e.g. "s_meter" (FTX-1 declares MAIN and SUB)
+    meters: dict[str, int]      # receiver-scoped readings, e.g. "s_meter" (the FTX-1 has a MAIN and a SUB receiver, each with its own)
     # named fields; names and allowed values come from the capability profile:
     levels: dict[str, int]      # ranged integers keyed by the capability profile's control names:
                                 # "af_level", "rf_gain", "squelch", "nr_level", ... (no aliases)
@@ -116,7 +116,7 @@ class ReceiverState:          # one per receiver (profile receiver_count)
 class SimState:
     receivers: list[ReceiverState]
     selected_receiver: int; split: bool; ptt: bool; power_on: bool
-    # Controls that belong to the radio, not to a receiver (power, mic gain, compressor, VOX,
+    # Controls that belong to the radio, not to a receiver (RF power level, mic gain, compressor, VOX,
     # RIT/XIT, tuner, dial lock, CW settings, TX target, ...): the same three families and the
     # same classification rule as in ReceiverState, keyed by the capability profile's names.
     levels: dict[str, int]; switches: dict[str, bool]; selectors: dict[str, int]
@@ -257,7 +257,7 @@ reply_latency_ms = 15
 # session_hold_s = 85.0
 # refusal = "nak"                # wire answer to a refused or unsupported request: "nak" (CI-V
                                  # default), "error_reply" (Yaesu `?;`, the Yaesu default) or
-                                 # "silence"; the `refuse` scenario event may override it per event
+                                 # "silence"; the `refuse` scenario event may add an `outcome` argument to override it
 
 [state.extra]                    # radio-specific fields not in SimState (name = default)
 
@@ -301,7 +301,7 @@ recovery, fault plan). `icom_serial` and `yaesu_cat` expose real endpoints:
 `socket://host:port` TCP (works on every OS where the app accepts a pyserial
 URL) and a PTY slave path (macOS and Linux only). Windows serial simulation is
 a known gap. Today `serve` accepts `--radio ic7610` only; the target is that
-`--radio` takes any simulation profile id (MOR-3594 adds `ic7300` first). Its
+`--radio` takes any simulation profile id (MOR-3594 adds the `ic7300` radio first, served by its profile `ic7300-usb`). Its
 startup JSON line, control endpoint and trace are the contract in
 `sim-serve-contract.md`. The event vocabulary is shared across radios
 (`set_frequency`, `session_drop`, `power_cycle`, `keepalive_silence`,
