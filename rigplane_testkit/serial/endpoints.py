@@ -1,13 +1,15 @@
 """Real byte-stream endpoints for ``CivSerialFake``: TCP and PTY (MOR-3594).
 
-:class:`TcpEndpoint` serves pyserial's ``socket://`` URL (the production
-``open_serial_port`` open) with one fake connection per accepted client;
-:class:`PtyEndpoint` exposes a pseudo-terminal slave path (macOS/Linux).
+:class:`TcpEndpoint` serves pyserial's ``socket://`` URL with one fake
+connection per accepted client; :class:`PtyEndpoint` exposes a
+pseudo-terminal slave path (macOS/Linux).
 Only the fake's public surface is used (``open_serial_connection()``,
 ``usb_vanish``/``usb_reappear``, ``silence``): a vanished fake raises
-``OSError(ENODEV)`` from opens and fails live reads/writes, which the
-endpoints map to closing the client side, so a vanished device looks
-vanished on the wire.
+``OSError(ENODEV)`` from opens and fails live reads/writes. The TCP
+endpoint maps that to the wire: live clients drop and new opens close
+until ``usb_reappear``; the PTY drops only the fake connection, keeping
+the slave node for the process's lifetime (a node disappear would
+renumber the path, like a USB replug).
 """
 
 from __future__ import annotations
@@ -26,17 +28,11 @@ _CHUNK = 4096  # read size for both pump directions
 
 def pty_supported() -> bool:
     """Whether this platform can host :class:`PtyEndpoint` (macOS/Linux)."""
-    return sys.platform != "win32"
+    return sys.platform == "darwin" or sys.platform.startswith("linux")
 
 
 class TcpEndpoint:
-    """Serve a :class:`CivSerialFake` on a real TCP listener.
-
-    When either side of a bridge ends (client disconnect, ``usb_vanish``,
-    :meth:`stop`) its tasks are cancelled and both sides closed. While
-    the fake is vanished a new client's open raises ``ENODEV``, so it is
-    accepted and closed with no answer.
-    """
+    """Serve a :class:`CivSerialFake` on a real TCP listener."""
 
     def __init__(self, fake: CivSerialFake, host: str = "127.0.0.1", port: int = 0):
         self._fake = fake
@@ -44,11 +40,13 @@ class TcpEndpoint:
         self._port = port
         self._server: asyncio.Server | None = None
         self._clients: dict[asyncio.Task[None], asyncio.StreamWriter] = {}
+        self._stopping = False
 
     async def start(self) -> None:
         """Bind the listener (idempotent)."""
         if self._server is not None:
             return
+        self._stopping = False
         self._server = await asyncio.start_server(
             self._handle_client, self._host, self._port
         )
@@ -71,6 +69,7 @@ class TcpEndpoint:
 
     async def stop(self) -> None:
         """Close every client and the listener (idempotent)."""
+        self._stopping = True  # first: handlers admitted later close themselves
         server, self._server = self._server, None
         if server is None:
             return
@@ -81,18 +80,18 @@ class TcpEndpoint:
             task.cancel()
         server.close()
         await server.wait_closed()
-        for task in clients:
-            with contextlib.suppress(asyncio.CancelledError, OSError):
-                await task
+        await asyncio.gather(*clients, return_exceptions=True)
 
     async def _handle_client(
         self, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter
     ) -> None:
         task = asyncio.current_task()
         assert task is not None
-        self._clients[task] = client_writer
+        self._clients[task] = client_writer  # register before any yield
         fake_writer: Any = None
         try:
+            if self._stopping:
+                return  # admitted mid-shutdown: close with no answer
             try:
                 fake_reader, fake_writer = await self._fake.open_serial_connection()
             except OSError:
@@ -135,9 +134,7 @@ class PtyEndpoint:
 
     One fake connection serves the endpoint's lifetime: ``usb_vanish``
     closes it, and the first bytes after ``usb_reappear`` open a fresh
-    one (CI-V is command/response, so no reply is lost to the lazy
-    reopen). The slave is held in raw mode so no echo or line discipline
-    mangles CI-V bytes. macOS/Linux only; :meth:`start` raises
+    one. macOS/Linux only; :meth:`start` raises
     :class:`NotImplementedError` elsewhere.
     """
 
@@ -170,22 +167,30 @@ class PtyEndpoint:
             )
         import tty
 
+        # Transactional: open the fake first, publish only after all steps
+        # succeed, so a failure leaves nothing behind.
+        reader, writer = await self._fake.open_serial_connection()
+        loop = asyncio.get_running_loop()
         master = slave = -1
         try:
             master, slave = os.openpty()
             tty.setraw(slave)
             os.set_blocking(master, False)
+            path = os.ttyname(slave)
+            loop.add_reader(master, self._on_master_readable)
         except BaseException:
+            loop.remove_reader(master)  # a never-registered fd is a no-op
             for fd in (master, slave):
                 if fd >= 0:
                     with contextlib.suppress(OSError):
                         os.close(fd)
+            with contextlib.suppress(Exception):
+                writer.close()
             raise
         self._master, self._slave = master, slave
-        self._path = os.ttyname(slave)
-        asyncio.get_running_loop().add_reader(master, self._on_master_readable)
-        self._reader, self._writer = await self._fake.open_serial_connection()
-        self._pump = asyncio.get_running_loop().create_task(self._pump_fake_to_master())
+        self._path = path
+        self._reader, self._writer = reader, writer
+        self._pump = loop.create_task(self._pump_fake_to_master())
 
     async def stop(self) -> None:
         """Close the pty pair and the fake connection (idempotent)."""
@@ -224,8 +229,8 @@ class PtyEndpoint:
             return
         writer = self._writer
         if writer is None:
-            # No live connection (vanished earlier): reopen for these
-            # bytes; while still gone they die with the device.
+            # No live connection: reopen for these bytes; while still
+            # gone they die with the device.
             self._inbox += data
             if self._reopen is None:
                 self._reopen = asyncio.get_running_loop().create_task(

@@ -1,11 +1,10 @@
 """Real TCP and PTY endpoints for ``CivSerialFake`` (MOR-3594).
 
-The endpoints give the in-memory serial fake real byte streams, and these
-tests drive them the way an installed app would: raw TCP clients, the
-production ``open_serial_port`` open over pyserial's ``socket://`` handler
-through an unmodified ``SerialCivLink``, and (macOS/Linux) a real
-pseudo-terminal slave opened with pyserial. Vanish/reappear teardown and
-the no-leak lifecycle are pinned on the real streams.
+The tests drive the endpoints the way an installed app would: raw TCP
+clients, the production ``open_serial_port`` open over pyserial's
+``socket://`` handler via an unmodified ``SerialCivLink``, and on
+macOS/Linux a real pseudo-terminal slave, with vanish/reappear teardown
+and the no-leak lifecycle pinned on the real streams.
 """
 
 from __future__ import annotations
@@ -96,8 +95,7 @@ async def test_tcp_echo_identity_and_frequency_over_raw_sockets() -> None:
 
 
 async def test_tcp_device_url_brackets_ipv6_literal() -> None:
-    # An IPv6 bind must advertise the bracketed authority, or the URL's
-    # colons read as port delimiters and no open can parse it.
+    # An IPv6 bind must advertise the bracketed authority.
     endpoint = TcpEndpoint(CivSerialFake(), host="::1")
     await endpoint.start()
     try:
@@ -110,9 +108,8 @@ async def test_production_open_and_link_identity_through_socket_url() -> None:
     fake = CivSerialFake()
     endpoint = TcpEndpoint(fake)
     await endpoint.start()
-    # No open_serial_connection seam: the link's default opener runs the
-    # production open_serial_port on the socket:// URL (pyserial socket
-    # handler) against the endpoint's real TCP listener.
+    # No open_serial_connection seam: the production open_serial_port runs
+    # on the socket:// URL against the endpoint's real TCP listener.
     link = SerialCivLink(device=endpoint.device_url, baudrate=115200)
     try:
         await link.connect()
@@ -120,8 +117,7 @@ async def test_production_open_and_link_identity_through_socket_url() -> None:
         reply = await _link_reply(link)
         assert reply is not None
         assert reply.data == fake.model_id
-        # The reply proves the server side opened its fake connection; at
-        # bare TCP connect time the accept callback may not have run yet.
+        # The reply proves the server side opened its fake connection.
         assert fake.open_count == 1  # one TCP client, its own fake connection
     finally:
         await link.disconnect()
@@ -139,8 +135,7 @@ async def test_tcp_vanish_drops_clients_and_closes_new_opens_until_reappear() ->
         assert await asyncio.wait_for(reader.read(), 5.0) == b""
         writer.close()
 
-        # While vanished, a new client is accepted then closed at once:
-        # the fake refuses its open with ENODEV, so nothing answers.
+        # While vanished, a new client is accepted then closed at once.
         gone_reader, gone_writer = await asyncio.open_connection(
             "127.0.0.1", endpoint.port
         )
@@ -157,6 +152,70 @@ async def test_tcp_vanish_drops_clients_and_closes_new_opens_until_reappear() ->
         writer2.close()
     finally:
         await endpoint.stop()
+
+
+async def test_tcp_stop_admits_no_handler_queued_before_shutdown() -> None:
+    # A queued-but-not-started handler must not escape stop()'s cancellation.
+    endpoint = TcpEndpoint(CivSerialFake())
+    inner, admitted = endpoint._handle_client, asyncio.Event()
+
+    async def gated(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await admitted.wait()  # hold it in the "queued, not started" state
+        await inner(reader, writer)
+
+    endpoint._handle_client = gated
+    await endpoint.start()
+    reader, _ = await asyncio.open_connection("127.0.0.1", endpoint.port)
+    await endpoint.stop()  # no loop yield between connect and shutdown
+    admitted.set()
+    assert await asyncio.wait_for(reader.read(), 3.0) == b""  # EOF, no hang
+    assert endpoint._clients == {} and not any(
+        "TcpEndpoint" in getattr(t.get_coro(), "__qualname__", "")
+        for t in asyncio.all_tasks()
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no os.openpty on Windows")
+async def test_pty_start_is_transactional_while_fake_vanished() -> None:
+    fake = CivSerialFake()
+    endpoint = PtyEndpoint(fake)
+    fake.usb_vanish()
+    await asyncio.sleep(0.01)  # the vanish must land before start()
+    with pytest.raises(OSError):
+        await endpoint.start()
+    with pytest.raises(RuntimeError):
+        _ = endpoint.device  # nothing published: no path, fd or reader
+    fake.usb_reappear()
+    await asyncio.sleep(0.01)
+    await endpoint.start()
+    port = await asyncio.to_thread(serial.Serial, endpoint.device, 115200, timeout=3)
+    try:
+        ident = _ident(fake)
+
+        def _read() -> bytes:
+            return bytes(port.read_until(b"\xfd"))
+
+        await asyncio.to_thread(port.write, ident)
+        await asyncio.wait_for(asyncio.to_thread(_read), 5.0)  # USB echo
+        reply = parse_civ_frame(await asyncio.wait_for(asyncio.to_thread(_read), 5.0))
+        assert reply.data == fake.model_id
+    finally:
+        await asyncio.to_thread(port.close)
+        await endpoint.stop()
+    assert fake.open_count == 1  # the failed start never opened the fake
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no os.openpty on Windows")
+@pytest.mark.parametrize("platform_name", ["linux", "darwin", "win32", "freebsd14"])
+async def test_pty_guard_platform_matrix(monkeypatch, platform_name: str) -> None:
+    monkeypatch.setattr(sys, "platform", platform_name)
+    endpoint = PtyEndpoint(CivSerialFake())
+    if platform_name in ("darwin", "linux"):
+        await endpoint.start()  # the only two platforms that may start
+        await endpoint.stop()
+        return
+    with pytest.raises(NotImplementedError):
+        await endpoint.start()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="no os.openpty on Windows")
@@ -184,8 +243,8 @@ async def test_pty_identity_and_reappear_through_pyserial() -> None:
             == fake.model_id
         )
 
-        # usb_vanish closes the lifetime connection; after usb_reappear the
-        # next bytes open a fresh one and are answered again.
+        # usb_vanish closes the lifetime connection; after usb_reappear
+        # the next bytes open a fresh one and are answered again.
         opens = fake.open_count
         fake.usb_vanish()
         fake.usb_reappear(after=0.05)
