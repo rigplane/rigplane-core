@@ -111,7 +111,11 @@ async def snapshot(reader: Any, writer: Any, timeout: float) -> dict[str, str | 
 async def main_async(args: argparse.Namespace) -> int:
     config = load_rig(Path(args.profile))
     probes = build_probe_list(config)
-    reader, writer = await open_serial_port(args.device, baudrate=args.baud)
+    try:
+        reader, writer = await open_serial_port(args.device, baudrate=args.baud)
+    except OSError as error:  # serial.SerialException is an OSError
+        print(f"ABORT: cannot open {args.device}: {error}", file=sys.stderr)
+        return EXIT_ABORT
     try:
         try:
             before = await snapshot(reader, writer, args.timeout)

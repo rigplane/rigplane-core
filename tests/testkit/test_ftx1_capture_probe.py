@@ -187,3 +187,21 @@ async def test_main_exits_2_when_a_snapshot_read_is_garbled(tmp_path) -> None:
         await radio.stop()
     assert code == probe.EXIT_ABORT
     assert not (tmp_path / "results.json").exists()
+
+
+async def test_main_exits_2_when_the_bridge_cannot_be_opened(tmp_path) -> None:
+    import argparse
+    import socket
+
+    with socket.socket() as sock:  # a port nobody listens on
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    args = argparse.Namespace(
+        device=f"socket://127.0.0.1:{port}",
+        profile=str(PROFILE),
+        baud=38400,
+        pace=0.0,
+        timeout=0.3,
+        out=str(tmp_path / "results.json"),
+    )
+    assert await probe.main_async(args) == probe.EXIT_ABORT
