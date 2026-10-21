@@ -259,9 +259,10 @@ class SerialCivLink:
         """Retune the open port to *baudrate* without reopening it (MOR-3620).
 
         A reopen toggles the modem control lines; the live pyserial object
-        takes a new rate in place. Returns ``False`` and keeps the old rate
-        when the link is closed, the transport exposes no pyserial object
-        (test fakes, bespoke openers) or the port refuses the rate (a refusal
+        takes a new rate in place. A closed link just remembers the rate for
+        its next open. Returns ``False`` and keeps the old rate when the
+        transport exposes no pyserial object (test fakes, bespoke openers)
+        or the port refuses the rate (a refusal
         is rolled back; if even that fails the link is marked unhealthy so
         the watchdog reopens it at the old rate). On success the rate is also
         what a later reopen uses, and input received at the old rate is
@@ -269,8 +270,11 @@ class SerialCivLink:
         """
         if baudrate <= 0:
             raise ValueError("baudrate must be > 0")
+        if not self._connected:
+            self._baudrate = baudrate  # what the next open uses
+            return True
         port = getattr(getattr(self._writer, "transport", None), "serial", None)
-        if not self._connected or port is None:
+        if port is None:
             return False
         try:
             port.baudrate = baudrate
