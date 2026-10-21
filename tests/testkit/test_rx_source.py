@@ -85,7 +85,7 @@ def test_loop_wraps_to_the_first_burst(tmp_path: Path) -> None:
     _write_wav(tmp_path / "sub.wav", rate=48000, channels=2, samples=sub)
     wrapped = WavSource(tmp_path / "sub.wav", loop=True)
     assert len(wrapped.read_burst()) == RX_BURST_BYTES
-    assert wrapped.read_burst() == sub[240:] + sub[:2880]
+    assert wrapped.read_burst() == (sub * 4)[240 : 240 + RX_BURST_BYTES]
 
 
 def test_slot_start_waits_for_the_boundary(tmp_path: Path) -> None:
