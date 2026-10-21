@@ -604,6 +604,7 @@ class _IcomSerialRadioBase(CoreRadio):
         # (which increments it itself), and the connect/soft_reconnect
         # audio tails read it to skip recovery against a torn-down radio.
         self._owner_stop_epoch += 1
+        self.serial_baud_notice = None
         # Always stop watchdog first to avoid orphan retry loops on failed reconnects.
         self._cancel_serial_identity_reread()
         self._connection_identity = None
@@ -1005,13 +1006,13 @@ class _IcomSerialRadioBase(CoreRadio):
         return (
             f"No answer from the radio on {self._serial_device} "
             f"({self.model} profile, {bauds} baud). Likely causes: the radio "
-            "is switched off or unplugged, another radio is on this port, or "
+            "is switched off or unplugged, another radio is on this port, "
             "another program connected to the radio first at a different "
-            "speed (an Icom radio left on CI-V USB Baud Rate = Auto keeps "
-            "that speed until it is restarted) or the radio's CI-V USB Baud "
-            "Rate is fixed at a speed this profile does not use. Switch the "
-            "radio off and on (restart the radio), or set CI-V USB Baud Rate "
-            "to Auto or 115200 in its CI-V menu."
+            "speed (CI-V USB Baud Rate = Auto keeps the first speed until "
+            "the radio is restarted), or the radio's CI-V USB Baud Rate is "
+            "fixed at a speed this profile does not use. Restart the radio "
+            "and connect rigplane to it first, or set CI-V USB Baud Rate to "
+            "Auto or 115200 in its CI-V menu."
         )
 
     def _serial_baud_found_notice(self, found: int) -> str:
@@ -1029,9 +1030,9 @@ class _IcomSerialRadioBase(CoreRadio):
     def _low_baud_scope_hint() -> str:
         return (
             f"The scope needs {_SERIAL_SCOPE_MIN_BAUD} baud and is off at a "
-            "lower speed: restart the radio, or set CI-V USB Baud Rate to "
-            f"Auto or {_SERIAL_SCOPE_MIN_BAUD} in its CI-V menu, then "
-            "connect again."
+            f"lower speed: set CI-V USB Baud Rate to {_SERIAL_SCOPE_MIN_BAUD} "
+            "in the radio's CI-V menu (or restart the radio and connect "
+            "rigplane to it first), then connect again."
         )
 
     async def _sweep_serial_baud(
@@ -1043,35 +1044,49 @@ class _IcomSerialRadioBase(CoreRadio):
         speed of the first host that talks to it, so silence at the current
         baud is often the radio answering at another one. Runs on the open
         link (the port is retuned in place, never reopened), reads only
-        ``19 00`` and stops at the first answer, keeping that baud. On no
-        answer the starting baud is put back for the re-read task. Returns
-        the answered payload, or ``None``.
+        ``19 00`` and stops at the first answer, keeping that baud. Without
+        an answer — also on cancellation or an error — the starting baud is
+        put back, unless the attempt was retired meanwhile (its link then
+        belongs to the successor). Returns the answered payload, or ``None``.
         """
         from .discovery import SERIAL_PROBE_BAUD_RATES
 
+        def retired() -> bool:
+            return (
+                epoch != self._civ_epoch or owner_stop_epoch != self._owner_stop_epoch
+            )
+
         link = self._serial_civ_link
-        if link is None:
+        if link is None or retired():
             return None
         start = self._serial_baudrate
-        tried = [start]
+        self._serial_bauds_tried = (start,)
         payload: bytes | None = None
-        for baud in SERIAL_PROBE_BAUD_RATES:
-            if baud == start:
-                continue
-            if not link.set_baudrate(baud):
-                break
-            self._serial_baudrate = baud
-            tried.append(baud)
-            payload = await self._read_serial_identity_payload()
-            if epoch != self._civ_epoch or owner_stop_epoch != self._owner_stop_epoch:
-                return None  # retired link: its owner writes the state
-            if payload is not None:
-                break
-        self._serial_bauds_tried = tuple(tried)
-        if payload is None and self._serial_baudrate != start:
-            link.set_baudrate(start)
-            self._serial_baudrate = start
-        return payload
+        try:
+            for baud in SERIAL_PROBE_BAUD_RATES:
+                if baud == start:
+                    continue
+                if retired() or not link.set_baudrate(baud):
+                    return None
+                self._serial_baudrate = baud
+                self._serial_bauds_tried += (baud,)
+                payload = await self._read_serial_identity_payload()
+                if payload is not None or retired():
+                    return None if retired() else payload
+            return None
+        finally:
+            if payload is None and self._serial_baudrate != start and not retired():
+                if link.set_baudrate(start):
+                    self._serial_baudrate = start
+                else:
+                    logger.warning(
+                        "rigplane (%s): %s refused going back to %d baud; "
+                        "staying at %d",
+                        self.model,
+                        self._serial_device,
+                        start,
+                        self._serial_baudrate,
+                    )
 
     async def _gate_serial_identity(self, *, sweep_bauds: bool = False) -> bool:
         """Run the identity read gate; True when the connect may proceed.
@@ -1084,6 +1099,7 @@ class _IcomSerialRadioBase(CoreRadio):
         plain ``last_error`` sentence, hands the link to the background
         re-read task, and returns False — CONNECTED must not latch.
         """
+        self.serial_baud_notice = None
         self._connection_identity = RadioIdentity(
             status=RadioIdentityStatus.CHECKING,
             expected_model=self.model,
@@ -1098,13 +1114,6 @@ class _IcomSerialRadioBase(CoreRadio):
             if self._connection_identity is probe_identity:
                 self._connection_identity = None
             return False
-        if payload is not None and self._serial_baudrate != (
-            self._serial_configured_baudrate
-        ):
-            self.serial_baud_notice = self._serial_baud_found_notice(
-                self._serial_baudrate
-            )
-            logger.warning("rigplane (%s): %s", self.model, self.serial_baud_notice)
         if self._record_serial_identity_payload(payload):
             return True
         logger.warning(
@@ -1134,6 +1143,11 @@ class _IcomSerialRadioBase(CoreRadio):
         self._civ_recovering = not self._civ_stream_ready
         self._capture_serial_identity()
         self._civ_watchdog_rebaseline()
+        if self._serial_baudrate != self._serial_configured_baudrate:
+            self.serial_baud_notice = self._serial_baud_found_notice(
+                self._serial_baudrate
+            )
+            logger.warning("rigplane (%s): %s", self.model, self.serial_baud_notice)
         logger.info(
             "Connected to %s over serial (%s @ %d baud)",
             self.model,
