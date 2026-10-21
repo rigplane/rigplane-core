@@ -1090,11 +1090,18 @@ class _IcomSerialRadioBase(CoreRadio):
                 self._serial_baudrate = baud
                 self._serial_bauds_tried += (baud,)
                 payload = await self._read_serial_identity_payload()
-                if payload is not None or retired():
-                    return None if retired() else payload
+                if retired():
+                    return None
+                if payload is not None or self._serial_identity_read_refused:
+                    return payload  # heard: a NAK keeps this baud for the hold too
             return None
         finally:
-            if payload is None and self._serial_baudrate != start and not retired():
+            if (
+                payload is None
+                and not self._serial_identity_read_refused
+                and self._serial_baudrate != start
+                and not retired()
+            ):
                 if self._retune_serial_link(start):
                     self._serial_baudrate = start
                 else:
