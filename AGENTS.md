@@ -440,7 +440,7 @@ pre-push checklist in
 - Do not raise P3 polish (naming, style, formatting, "could be refactored").
 - For internal test and bench tooling, do not harden against attackers who do
   not exist in the deployment; report what causes a wrong verdict, dirty state,
-  lost data or a hung run.
+  lost data or a hung run (these are P1/P2, never P3).
 - Report a comment, docstring, README or PR-body claim that is false or
   overstates what the code does as P2.
 
@@ -479,10 +479,11 @@ back to `main`.
 - Prefer tests before implementation for bugs and behavior changes.
 - Do not add new layers, abstractions, or broad refactors unless the issue
   explicitly requires it.
-- Before the first push and before every re-push, walk
-  `docs/development/review-checklist.md` against your diff and run
-  `tmp/pre-review.sh` (a local exhaustive Codex pass) until it prints
-  `PRE-REVIEW: CLEAN`. Keep a PR at or below 500 changed lines; split larger
-  work (the guardrails in `CLAUDE.md` stay the hard limits).
+- Pre-push review: walk `docs/development/review-checklist.md` against your
+  diff and run `tmp/pre-review.sh` (a local exhaustive Codex pass; the lane
+  scripts put it in the worktree, see the checklist if it is missing) before
+  the first push and before every re-push, until it prints
+  `PRE-REVIEW: CLEAN`. Target at most 500 changed lines per PR, with the
+  exceptions and limits stated in the checklist; split larger work.
 - Keep hardware-dependent work mockable where possible; otherwise mark the
   issue as requiring human/hardware validation.

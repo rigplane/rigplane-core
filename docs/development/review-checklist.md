@@ -17,14 +17,17 @@ Walk this list against your own diff, then run the local pre-review, then push.
 ## 1. Size: at most 500 changed lines per PR
 
 - Target: additions plus deletions at most 500, and at most 6 files. Above that,
-  split before you push; do not ask for review of a 1,500-line PR.
+  split before you push; do not ask for review of a 1,500-line PR. The only
+  exceptions are listed in this section (generated baselines, fixtures, pure
+  moves).
 - Split along seams that can merge alone: schema/data model with its tests, then
   the runtime that uses it, then docs and CI wiring. A stacked PR is fine.
 - A fix and its test stay in one PR. Generated baselines, fixtures and pure file
   moves may exceed the target; say so in the PR body.
-- This is a review-efficiency target below the hard ceilings in `CLAUDE.md`
-  (Core) and the guardrails in the repo instructions (Pro); it does not replace
-  them.
+- This is a review-efficiency target below the limits in `CLAUDE.md` (soft
+  threshold 6 files and 600 changed lines, hard ceiling 10 files and 1,000
+  lines); it does not replace them. The exceptions above change the target
+  only, never the hard ceiling.
 
 ## 2. Defect classes to walk, function by function
 
@@ -71,7 +74,8 @@ valid answer; skipping the question is not.
    instead of remembering it: status-only endpoints, which field holds the model,
    byte values, whether the radio or transport supports the feature at all.
    When you tighten one matcher or validator, grep for every other path that
-   does the same job and fix them together.
+   does the same job and fix the ones inside your assigned scope in the same
+   change; report the ones outside it in the PR body.
 8. **Siblings and companion files.** Grep for every place that names or branches
    on the thing you changed: docs and runbooks, allow-lists, label lists,
    topology whitelists, Makefile `.PHONY`, tests that pin literals, other
@@ -96,12 +100,18 @@ valid answer; skipping the question is not.
 1. Walk section 2 against the whole diff, including the lines your latest fix
    added: new code gets new findings.
 2. Commit, then run the local pre-review: `tmp/pre-review.sh` from the worktree
-   root (lane workers get that file; other builders use the coordinator's
-   `pre-review.sh`). It runs Codex read-only on the branch diff and writes every
-   P0-P2 finding, grouped by file, to `tmp/pre-review.md`. Fix all of them, fix
-   the siblings of each, commit, run it again until it prints
-   `PRE-REVIEW: CLEAN` (at most four rounds). If a finding is wrong, put the
-   evidence in `tmp/pre-review-reply.md`.
+   root. The coordinator's lane scripts copy that file into every builder
+   worktree when they start the lane, and it needs the Codex CLI logged in with
+   the ChatGPT subscription. If the file is missing (the worktree was not
+   created by a lane script), do not skip the step silently: write
+   `pre-review: not run (no helper)` in the PR body so the coordinator can run
+   it. The script runs Codex read-only on the branch diff and writes every P0-P2
+   finding, grouped by file, to `tmp/pre-review.md`. Fix all of them, fix the
+   siblings of each that lie inside your assigned scope (list the others in the
+   PR body), commit, and run it again until it prints `PRE-REVIEW: CLEAN`. If a
+   finding is wrong, put the evidence in `tmp/pre-review-reply.md`. If round
+   four still reports findings, do not push: the change is usually too big or
+   has a design flaw, so report what is left to the coordinator.
 3. Push once per round. Never push a fix per finding: each push can start a new
    GitHub review.
 
@@ -110,7 +120,11 @@ valid answer; skipping the question is not.
 - Read every thread of the current head before changing anything. Group them by
   root cause, fix the class (grep for siblings), answer each thread, and push
   all fixes in one commit.
-- Internal test and bench tooling: fix findings that cause a wrong verdict,
-  dirty state or lost data (P1, and P2 of that kind). Other P2 polish goes to a
-  ticket; resolve the thread with the ticket id.
+- Fix every valid P0-P2 finding with a test, or answer it with evidence that it
+  is not a bug, before resolving the thread. A false documentation claim is a
+  P2 and gets fixed. A builder never defers a valid P0-P2 to a ticket.
+- Only the coordinator may defer: for internal test and bench tooling, P2 polish
+  that cannot cause a wrong verdict, dirty state, lost data or a hung run may go
+  to a ticket, and the coordinator records the ticket id in the thread before
+  resolving it. P3 never blocks.
 - Re-run `tmp/pre-review.sh` before the re-push.
