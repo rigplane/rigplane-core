@@ -1,0 +1,329 @@
+# Universal radio simulator: architecture and extension contract (ADR, MOR-3592)
+
+Status: draft for review, 2026-10-21. Epic MOR-3496. Boundary: open-core
+candidate (Core testkit; dev-only, not in the published `rigplane` wheel).
+Companion document: [`sim-serve-contract.md`](sim-serve-contract.md) (the
+`serve` process interface, already implemented for the IC-7610).
+
+## 1. Decision in one paragraph
+
+There is one simulator, not one per radio. A single deterministic **engine**
+holds the radio state; a protocol **model** per family (Icom CI-V, Yaesu CAT)
+turns wire requests into engine operations and engine state into wire
+replies; **adapters** own transport framing and session rules (Icom LAN UDP,
+serial over `socket://` TCP and PTY, Yaesu CAT lines). What makes it a given
+radio is data: the existing **capability profile** (`rigs/<radio>.toml`,
+read-only) plus a new **simulation profile** (`rigplane-sim-profile/1`, below)
+plus recorded fixtures. Adding a radio means adding files in that radio's own
+folders, not editing shared code. Simulated results are always labelled
+`simulated` with a fidelity tier and never count as a hardware PASS.
+
+## 2. Context (what exists, what failed before)
+
+Several independent fakes already exist (`MockIcomRadio` LAN simulator,
+`CivSerialFake`, `FakeCatRadio`, `tests/serial_stub.py`, `tests/civ_fake.py`,
+`tests/fake_rigctld.py`), each with its own copy of frequency/mode/PTT state.
+Earlier attempts (MOR-2010, MOR-2492) stopped at a first slice because the
+cost was in migrating tests, not in the design. Therefore this design is a
+strangler: each step ships value on its own, old imports keep working
+(`tests/mock_server.py`, `rigplane_testkit.icom.MockIcomRadio`), and no step
+requires retiring the old doubles.
+
+## 3. Module layout
+
+New code lives under `rigplane_testkit/sim/`. Nothing below is shipped in the
+wheel.
+
+```
+rigplane_testkit/sim/
+  __main__.py, serve.py      CLI and the serve process (exists, MOR-3593)
+  engine/                    state dataclasses, SimEngine, clock, seeded RNG, event queue, trace
+  model/                     protocol families: icom_civ.py, yaesu_cat.py (decode -> engine op -> encode)
+  profiles/                  loader + schema for rigplane-sim-profile/1; data files <radio>.toml
+  adapters/                  icom_lan.py, icom_serial.py (socket:// and PTY), yaesu_cat.py
+  audio/                     sources, sinks, backends, air-recording renderer (section 9)
+  scenario/                  seeded event schedules and the shared fault vocabulary
+  radios/<radio>/            OPTIONAL radio-specific python (only when data cannot express it)
+tests/fixtures/<radio>/      recorded data of that radio (owned by that radio's agent)
+tests/testkit/test_<radio>_*.py   that radio's conformance tests
+```
+
+The existing `rigplane_testkit/icom/`, `serial/`, `yaesu/` packages stay until
+their content has moved behind `adapters/` and `model/`; they keep working
+meanwhile.
+
+### Dependency rules (enforced by an import-linter contract in a later PR)
+
+1. `engine` and `model` import nothing from `rigplane` except the profile
+   **loader** (declarations). Never a driver, a runtime, a state store, a
+   web or rigctld module.
+2. The frame envelope helpers (`parse_civ_frame`, `build_civ_frame`) may be
+   shared (documented ringfence); `CatCommandParser` and `format_command`
+   must NOT generate the simulator's replies, because the same code under test
+   would then pass both sides.
+3. The simulator's replies come from the model's own codec table and, below
+   it, from recorded answers. They are checked against hand-transcribed
+   oracles (`tests/golden/wire_oracle/<radio>.toml`) and recordings.
+4. Fixtures and profile data are found through explicit paths (constructor or
+   `--fixtures`), never `Path(__file__).parents[...]`.
+5. `rigplane_testkit.sim` never imports from `tests/`.
+
+## 4. Engine contract (what radio code is written against)
+
+The engine API is **draft until MOR-3599 merges**; the shape below is what the
+radio agents should code to, names may get one rename pass in that PR.
+
+```python
+@dataclass
+class ReceiverState:          # one per receiver (profile receiver_count)
+    frequency_hz: int; mode: str; filter: int; data_mode: bool
+    # levels/switches are named fields with ranges taken from the capability profile:
+    levels: dict[str, int]    # "af", "rf", "squelch", "nr_level", ...
+    switches: dict[str, bool] # "nb", "nr", "preamp", "att", ...
+
+@dataclass
+class SimState:
+    receivers: list[ReceiverState]
+    selected_receiver: int; split: bool; ptt: bool; power_on: bool
+    meters: dict[str, int]    # "s", "swr", "alc", "po", "vd" (read-only for the wire)
+    extra: dict[str, object]  # radio-specific fields declared in the sim profile [state.extra]
+
+class SimEngine:
+    def __init__(self, profile: SimProfile, *, clock: Clock, seed: int) -> None: ...
+    state: SimState                                   # read-only view
+    def apply(self, op: Op) -> Outcome: ...           # SetFrequency, SetMode, SetLevel, SetSwitch, SetPtt, SelectReceiver, ...
+    def read(self, name: str, receiver: int | None = None) -> Outcome: ...
+    def schedule(self, at_s: float, event: Event) -> None: ...   # unsolicited changes, faults, power cycle
+    def advance(self, dt_s: float) -> list[Event]: ...           # pure; no sleeping, no sockets
+    trace: Sequence[Record]
+```
+
+`Outcome` is one of `Ok(value)`, `Unsupported` (the capability profile does not
+declare the feature), `OutOfRange`, `Refused(reason)` (state forbids it, for
+example TX while locked). A protocol model maps these to the radio's own
+answer (NAK, `?;`, silence) as the simulation profile says. There is no
+outcome that is implicit or silent.
+
+Rules: the engine never owns a `StateStore` (a store asserts freshness about
+real readings, and a simulator is not a real reading); same profile + seed +
+event schedule gives the same trace; `t` is the only wall-clock field in any
+output.
+
+## 5. Per-radio extension contract
+
+A radio is added by its owner with these files and no others:
+
+| File | Content | Required |
+| --- | --- | --- |
+| `rigplane_testkit/sim/profiles/<radio>.toml` | the simulation profile (section 6) | yes |
+| `tests/fixtures/<radio>/*.jsonl` + `README.md` | recordings, provenance, trim rule; redaction gate clean | for tier A |
+| `tests/golden/wire_oracle/<radio>.toml` | hand-transcribed manual rows (never generated from code) | yes (tier B+) |
+| `tests/fixtures/<radio>/conformance_ledger.json` | divergences between simulator and recording; ratchet | for tier A |
+| `tests/testkit/test_<radio>_*.py` | radio-specific tests (generic conformance is parametrized by radio) | as needed |
+| `rigplane_testkit/sim/radios/<radio>/` | only for behaviour data cannot express (a quirky command); registers through `register(model)` | optional |
+
+Anything shared (engine, model families, adapters, schema, `serve`, scenario
+vocabulary, audio and air renderer) goes through the engine owner (MOR-3592
+and its children), not through a radio PR. A radio PR that needs a shared
+change opens or comments on a shared issue first. A radio PR never edits the
+IC-7610 files or another radio's folders.
+
+Order of precedence for a wire request, per radio: refusal hook, native model
+handler (engine-backed), recorded answer table (`[answers]`), explicit
+unsupported outcome. This is the rule the IC-7610 simulator already follows
+(native data/ACK wins; a native NAK falls to the recording).
+
+## 6. Simulation profile schema `rigplane-sim-profile/1`
+
+TOML. The loader rejects unknown keys, a capability model that does not exist,
+contradictory settings, and a fidelity tier without its evidence list. It
+references the capability profile by model name and never copies its fields.
+
+```toml
+schema = "rigplane-sim-profile/1"
+
+[sim]
+id        = "ic7300-usb"
+radio     = "IC-7300"            # capability profile model (rigs/ic7300.toml)
+fidelity  = "A"                  # A recorded / B manual oracle only / C declarations only
+evidence  = ["tests/fixtures/ic7300/civ_pairs.jsonl", "tests/golden/wire_oracle/ic7300.toml"]
+gaps      = ["no write command recorded", "scope waves not recorded"]   # shown in banner and report
+
+[transport.serial]               # or [transport.lan] / [transport.yaesu_cat]
+baud      = 19200                # as recorded, not as the capability profile's default
+echo      = false
+identity  = "94"                 # only when the capability profile has no [identity].expected_ids
+
+[initial]                        # starting state, all optional
+frequency_hz = 14263000
+mode = "USB"
+filter = 2
+
+[answers]                        # recorded answer tables mounted under the native handlers
+recorded = [{ file = "tests/fixtures/ic7300/civ_pairs.jsonl", transport = "usb" }]
+
+[timing]                         # used in real-time mode only; never asserted as a value
+reply_latency_ms = 15
+
+[unsolicited]                    # periodic or event-driven pushes the real radio makes
+# transceive = false
+
+[faults.defaults]                # radio-specific fault behaviour (hold times, reboot time)
+# session_hold_s = 85.0
+
+[state.extra]                    # radio-specific fields not in SimState (name = default)
+
+[audio.rx]                       # native audio of this radio (section 9)
+transport = "usb_device"         # lan_stream | usb_device
+sample_rate_hz = 48000
+channels = 1
+sample_format = "s16le"
+
+[scope]                          # native scope of this radio (section 9)
+bins = 475
+span_hz = 50000
+rate_hz = 10
+frame = "icom_27_00"             # framing family used by the model
+```
+
+Contradiction examples the loader refuses: a second receiver state for a
+one-receiver radio, `echo` set when the transport has no echo concept, a
+`[scope]` section for a radio whose capability profile has no scope, tier `A`
+without any recording in `evidence`.
+
+## 7. Adapters and the process interface
+
+Adapters own transport only. `icom_lan` is the extracted LAN part of
+`MockIcomRadio` (login, token, ping, CI-V and audio ports, sequence-gap
+recovery, fault plan). `icom_serial` and `yaesu_cat` expose real endpoints:
+`socket://host:port` TCP (works on every OS where the app accepts a pyserial
+URL) and a PTY slave path (macOS and Linux only). Windows serial simulation is
+a known gap. The `serve` command accepts `--radio <any profile id>`; its
+startup JSON line, control endpoint and trace are the contract in
+`sim-serve-contract.md`. The event vocabulary is shared across radios
+(`set_frequency`, `session_drop`, `power_cycle`, `keepalive_silence`,
+`lan_drop`, `usb_vanish`, `usb_reappear`, `silence`, `nak_next`, ...); an event
+a radio cannot do returns `unsupported`, never silence.
+
+## 8. Fidelity tiers and honesty
+
+Every banner, trace and report carries `evidence: "simulated"` and the tier.
+A = replay against a recording of this exact model and its divergence ledger
+passes; B = manual-transcribed oracles only; C = profile declarations only.
+A tier is per profile and carries its own `gaps`. A simulated run is never
+recorded as a real-radio result; hardware claims stay in the validation matrix.
+No RF behaviour is simulated: TX is accepted as state and captured as frames.
+Identity bytes are never invented: when neither the capability profile nor a
+recording has them, the profile says `identity` unverified and the radio owner
+must supply a documented source.
+
+## 9. Air recordings (MOR-3603): real signals as RX audio and scope
+
+Goal: test runs measure what Pro does with real air (decode rate, AGC, scope
+cadence), not with synthetic tones. Principle: the air is radio-independent, so
+ONE **master recording** is rendered per radio by that radio's simulation
+profile.
+
+### 9.1 Format `rigplane-air/1` (a directory)
+
+```
+<name>/
+  manifest.json     schema, id, kind (hf_master | vhf_uhf_fm_master | calibration), duration_s,
+                    audio {sample_rate_hz, channels, sample_format, file, sha256},
+                    scope {frames_file, bins, span_hz, center_hz, rate_hz, sha256},
+                    state {frequency_hz, mode, filter, preamp, att, agc} at start,
+                    time base: sample 0 == scope frame 0 == slot 0,
+                    source {radio, firmware, path (usb|lan), date, operator note},
+                    provenance {tool, commit, command}
+  audio.wav         RX audio, native format of the source radio, lossless
+  scope.jsonl       time-aligned scope frames: {"t_samples": N, "frame": "<hex or base64>"} (native framing)
+  truth.json        ground truth: for FT8/FT4 slots the reference decode list (jt9/WSJT-X output with slot index),
+                    for CW the reference text, for SSB nothing required
+```
+
+All timing is expressed on one sample clock (`t_samples` at the audio rate), so
+audio and scope cannot drift apart and the engine's deterministic clock can
+replay them. FT8/FT4 recordings start on a slot boundary (15 s / 7.5 s) and
+`truth.json` indexes decodes by slot.
+
+### 9.2 Master sets and calibration clips
+
+- **HF master** (recorded once, on the IC-7300 bench radio): at least 5
+  slot-aligned minutes of FT8, plus CW and SSB segments, with scope frames and
+  truth.
+- **VHF/UHF FM master** (separate, from the FTX-1 / IC-705; the IC-7300 has no
+  VHF).
+- **Calibration clips** (1-2 minutes) from each other radio, recorded on the
+  same air or a steady signal: used only to FIT the per-radio conversion and to
+  prove it in the divergence ledger (level, passband, AGC, scope amplitude).
+
+### 9.3 Rendering per radio
+
+The simulation profile (`[audio.rx]`, `[scope]`, plus an `[air.render]` section
+added with MOR-3603: gain offset dB, passband, AGC model parameters, scope
+amplitude mapping) converts the master into what that radio delivers: sample
+rate, bit depth and channels (for example the FTX-1 USB codec with RX on the
+left channel only and a quiet level), passband and level, scope bin count, span,
+rate and framing. Rendering is a pure function (master + profile + seed ->
+frames), so a run is reproducible and a render can be diffed.
+
+### 9.4 Storage and privacy
+
+Recordings carry third-party callsigns, so audio files do NOT go into the
+public Core repository. They live on private storage (the NAS) and tests
+reference them by SHA-256 plus a size; a test that cannot find the file
+skips with a clear reason locally and is required in the bench run. CI uses a
+small public synthetic sample generated by code (tones, an FT8-like frame
+built from a published encoder with a fictional callsign). `manifest.json`
+may be public if it contains no callsign; `truth.json` is private with the
+audio.
+
+### 9.5 Engine and adapter roles
+
+The renderer is an `audio` source/`scope` source plugged into the adapters:
+LAN radios stream it through the audio port (codec and rate from the profile),
+USB radios expose it through a virtual audio device (spike MOR-3604) while the
+CI-V side keeps answering from the engine. TX audio from the client is
+captured to a WAV file for inspection; no TX is claimed as recorded.
+
+## 10. Determinism and the clock
+
+The engine has an injectable clock. In deterministic mode `advance(dt)` is the
+only way time passes and the same profile + seed + schedule yields the same
+trace. Real UDP/TCP scheduling in adapters is not globally deterministic and
+is not claimed to be. Replay of air recordings uses the sample clock.
+
+## 11. Packaging and extraction
+
+`rigplane_testkit` stays dev-only. A separately installable CLI would need a
+packaging decision (own distribution name, pinned `rigplane` extra for the
+profile loader, fixtures shipped separately) that is out of scope here.
+Criteria to extract later: no import from `tests/` or repo-relative paths, the
+profile loader is the only `rigplane` dependency, all fixtures addressed by
+explicit paths. Licence and provenance of `rigs/*.toml` (some cite wfview
+`.rig` sources) and of recordings must be assessed before any publication; no
+publication is authorised by this document.
+
+## 12. Migration and ownership
+
+| Step | Owner |
+| --- | --- |
+| ADR (this), engine skeleton (MOR-3599), profile schema + loader (MOR-3600), IcomCivModel extraction (MOR-3601), serial endpoints + `serve` for any profile (MOR-3594), scenario/fault vocabulary (MOR-3608), air format and renderer (MOR-3603) | shared engine owner |
+| IC-7300 captures, fixtures, conformance, simulation profile | IC-7300 radio agent |
+| FTX-1 CAT recorder and capture, conformance, Yaesu model on the engine (MOR-3602), simulation profile | FTX-1 radio agent |
+| IC-705 capture (USB and LAN), personality (MOR-3605), simulation profile | IC-705 radio agent |
+
+Until the engine API merges, radio agents work on what needs no engine:
+captures, recorders, fixtures, oracle rows, conformance of the existing fakes,
+and a first draft of their simulation profile against section 6. After it
+merges they port their personality to the engine.
+
+## 13. Open questions
+
+1. Does the installed Pro app accept a `socket://` serial URL by hand? (PTY
+   works on macOS and Linux; Windows serial simulation stays unavailable until
+   this is tested.)
+2. Exact `[air.render]` parameter set: fitted from the first calibration clips,
+   then frozen in the MOR-3603 PR.
+3. Whether the Wi-Fi/LAN IC-705 audio codec matches the profile's mono policy
+   (needs the Wi-Fi capture).
