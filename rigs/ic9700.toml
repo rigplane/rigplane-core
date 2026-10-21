@@ -102,6 +102,7 @@ features = [
     "agc",
     "tuning_step",
     "band_edge",
+    "memory_read",
     "xfc",
     # System
     "system_settings",
@@ -332,6 +333,17 @@ width_max = 255
 
 [power]
 max_watts = 100
+
+# ── Memory channels (MOR-3627) ───────────────────────────────────
+# CI-V 1A 00 reads a channel by band code (01 144, 02 430 MHz, 03 1.2 GHz) and
+# channel 0001-0099 (guide p.14); scan edges, call channels and satellite
+# memories are not listed. No recording of this model exists (tier B-).
+[memory]
+addressing = "band_channel"
+first_group = 1
+last_group = 3
+first_channel = 1
+last_channel = 99
 
 [ctcss]
 table = "standard_50"

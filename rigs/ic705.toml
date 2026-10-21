@@ -100,6 +100,7 @@ features = [
     "agc",
     "tuning_step",
     "band_edge",
+    "memory_read",
     "xfc",
     # System
     "system_settings",
@@ -488,6 +489,16 @@ width_max = 255
 
 [power]
 max_watts = 10
+
+# ── Memory channels (MOR-3627) ───────────────────────────────────
+# CI-V 1A 00 reads a channel by group and channel (guide p.18; empty slot
+# answers FF, real radio MOR-3650). Group 0100 (call channels) is not listed.
+[memory]
+addressing = "group_channel"
+first_group = 0
+last_group = 99
+first_channel = 0
+last_channel = 99
 
 [ctcss]
 table = "standard_50"

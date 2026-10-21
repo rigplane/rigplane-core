@@ -612,6 +612,16 @@ These optional sections provide detailed configuration for specific capabilities
 | `[cw]`         | CW pitch, speed, dash ratio ranges             |
 | `[nb]`         | Noise blanker depth and width ranges            |
 | `[power]`      | Maximum TX power in watts                      |
+| `[memory]`     | How stored memory channels are addressed       |
+
+### `[memory]`
+
+Optional: how stored memory channels are addressed, for the read-only listing
+(capability `memory_read`; the read is the profile's `get_memory_contents`).
+`addressing` is `"group_channel"` (IC-705) or `"band_channel"` (IC-9700) and
+also picks the `1A 00` record layout; `first_group`/`last_group` bound the
+group number or band code, `first_channel`/`last_channel` the channel;
+`recall = true` marks profiles whose select commands recall a listed channel.
 
 ## Wire Byte Format
 
