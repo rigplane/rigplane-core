@@ -1346,8 +1346,7 @@ def test_leaked_run_owned_sockets_fail_the_stability_criterion() -> None:
     one (the live signal carries legitimate +-1 transients, e.g. the web
     server's delayed state broadcasts, so failing on a single one would
     re-introduce the flake this change removes). An unrelated FD between
-    the probes must not change the verdict — that FD is the CI flake
-    (run 39451768550).
+    the probes must not change the verdict.
     """
     owned = _listener(backlog=8)
     ports = frozenset({owned.getsockname()[1]})
@@ -1389,90 +1388,129 @@ def test_leaked_run_owned_sockets_fail_the_stability_criterion() -> None:
         os.close(write_fd)
 
 
-async def test_leaked_run_owned_tasks_fail_the_stability_criterion(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Six leaked run-owned tasks FAIL the criterion; one registers its
-    exact delta; a foreign-module task (asyncio's own sleep — the
-    late-teardown noise the CI flake counted) never moves the count."""
+def _module_linger(module_name: str) -> Any:
+    """A linger coroutine whose defining module is ``module_name`` (an
+    ``exec`` stand-in for a product-module task; no product code runs)."""
+    namespace: dict[str, Any] = {"__name__": module_name}
+    exec(
+        "async def linger():\n    import asyncio\n    await asyncio.Event().wait()\n",
+        namespace,
+    )
+    return namespace["linger"]
 
-    async def linger() -> None:
-        await asyncio.Event().wait()
 
-    monkeypatch.setattr(soak_driver, "_OWNED_TASK_MODULE_PREFIXES", (__name__,))
+class _OverlayWeb:
+    """A minimal web object the overlay can install on (methods live on
+    the class, so ``install`` sees a clean instance ``vars``)."""
+
+    _radio = None
+    _reconnects_total = 0
+
+    def _runtime_process_payload(self) -> dict[str, Any]:
+        return {"rssBytes": 1, "openFds": 9, "asyncioTasks": 3}
+
+    async def _serve_runtime(self, *args: Any) -> None:  # pragma: no cover
+        ...
+
+
+async def test_leaked_run_owned_tasks_fail_the_stability_criterion() -> None:
+    """Production selector, no patched constants (MOR-3575): a real
+    ``_RuntimeTaskAdapter`` baseline counts six leaked run-owned
+    standard-library tasks (``asyncio.wait_for``-style helpers, one
+    registering its exact delta) and FAILs the criterion on the smallest
+    over-tolerance leak; a matching-product-module task predating the
+    run never enters the population; the overlay reports the same count.
+    """
+
+    foreign = asyncio.create_task(_module_linger("rigplane.core.transport")())
     leaks: list[asyncio.Task[None]] = []
-    foreign: asyncio.Task[None] | None = None
+    adapter: soak_driver._RuntimeTaskAdapter | None = None
     try:
-        pre = len(soak_driver._owned_task_population())
-        leaks.append(asyncio.create_task(linger()))
-        one = len(soak_driver._owned_task_population())
-        assert one == pre + 1
-        one_leak = _stability_criteria_for(20, 20, pre, one)
-        assert one_leak["tasksStability"]["checks"][0]["delta"] == 1
-        assert one_leak["tasksStability"]["status"] == "PASS"
+        stack = SimpleNamespace(
+            web=_OverlayWeb(), radio=SimpleNamespace(), rigctld=SimpleNamespace()
+        )
+        adapter = soak_driver._RuntimeTaskAdapter(stack, None)
+        adapter.install()
+        pre = len(adapter.owned_task_population())
+        assert pre == 0  # the product-module task predates the run
+        leaks.append(asyncio.create_task(asyncio.sleep(3600.0)))
+        assert len(adapter.owned_task_population()) == pre + 1
         for _ in range(soak_driver.STABILITY_TOLERANCE):
-            leaks.append(asyncio.create_task(linger()))
-        post = len(soak_driver._owned_task_population())
+            leaks.append(asyncio.create_task(asyncio.sleep(3600.0)))
+        post = len(adapter.owned_task_population())
         assert post == pre + 1 + soak_driver.STABILITY_TOLERANCE
         assert (
             _stability_criteria_for(20, 20, pre, post)["tasksStability"]["status"]
             == "FAIL"
         )
-        foreign = asyncio.create_task(asyncio.sleep(30.0))
-        assert len(soak_driver._owned_task_population()) == post
+        assert stack.web._runtime_process_payload()["asyncioTasks"] == post
     finally:
-        pending = [*leaks]
-        if foreign is not None:
-            pending.append(foreign)
-        for task in pending:
+        for task in leaks:
             task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+        foreign.cancel()
+        await asyncio.gather(foreign, *leaks, return_exceptions=True)
+        if adapter is not None:
+            adapter.close()
 
 
-async def test_in_process_runtime_payload_reports_owned_counts_only() -> None:
-    """Through the harness overlay the runtime ``process`` block reports
-    owned counts: an unrelated FD leaves it unchanged, a run-owned-port
-    socket moves it by one while open (MOR-3575)."""
+async def test_runtime_outage_keeps_one_owned_population_and_verdict() -> None:
+    """One population for every in-process route (MOR-3575): switching
+    only the runtime document's availability — resources unchanged —
+    keeps the fallback's owned FD/task counts and the criterion verdict
+    identical to the runtime route's; an over-tolerance owned leak fails
+    through either route.
+    """
 
-    class Web:
-        _radio = None
-        _reconnects_total = 0
-
-        def _runtime_process_payload(self) -> dict[str, Any]:
-            return soak_driver.WebServer._runtime_process_payload(self)
-
-        async def _serve_runtime(self, *args: Any) -> None:  # pragma: no cover
-            ...
-
-    web = Web()
-    owned = _listener()
-    port = owned.getsockname()[1]
+    owned = _listener(backlog=soak_driver.STABILITY_TOLERANCE + 2)
     stack = SimpleNamespace(
-        web=web, radio=SimpleNamespace(), rigctld=SimpleNamespace(), web_port=port
+        web=_OverlayWeb(),
+        radio=SimpleNamespace(),
+        rigctld=SimpleNamespace(),
+        web_port=owned.getsockname()[1],
     )
     adapter = soak_driver._RuntimeTaskAdapter(stack, None)
     adapter.install()
-    unrelated = client = None
+    sampler = soak_driver.ProcessMetricsSampler(None, "http://127.0.0.1:1")
+    sampler._runtime_task_adapter = adapter
+    runtime_up = True
+
+    async def fetch_runtime() -> dict[str, Any] | None:
+        if runtime_up:
+            return {"pid": os.getpid(), "process": stack.web._runtime_process_payload()}
+        return None
+
+    async def status() -> None:
+        return None
+
+    sampler.fetch_runtime = fetch_runtime
+    sampler.fetch_connection_status = status
+    leaks: list[socket.socket] = []
     try:
-        baseline = web._runtime_process_payload()
-        assert baseline["openFds"] is not None
-        unrelated = _listener()
-        before = web._runtime_process_payload()
-        # The unrelated listener must not move the owned FD count — the
-        # process-wide number the payload used to report moved by one.
-        assert before["openFds"] == baseline["openFds"]
-        assert before["asyncioTasks"] == baseline["asyncioTasks"]
-        client = socket.create_connection(("127.0.0.1", port))
-        after = web._runtime_process_payload()
-        assert after["openFds"] == before["openFds"] + 1
-        assert after["asyncioTasks"] == before["asyncioTasks"]
-        client.close()
-        assert web._runtime_process_payload()["openFds"] == before["openFds"]
+        up = await sampler.sample(1.0)
+        runtime_up = False
+        down = await sampler.sample(2.0)
+        assert (down.fds, down.asyncio_tasks) == (up.fds, up.asyncio_tasks)
+        for _ in range(soak_driver.STABILITY_TOLERANCE + 1):
+            leaks.append(socket.create_connection(owned.getsockname()))
+        post_up = await sampler.sample(4.0)
+        runtime_up = False
+        post_down = await sampler.sample(5.0)
+        assert (post_down.fds, post_down.asyncio_tasks) == (
+            post_up.fds,
+            post_up.asyncio_tasks,
+        )
+        assert post_up.fds == up.fds + soak_driver.STABILITY_TOLERANCE + 1
+        up_verdict = _stability_criteria_for(
+            up.fds, post_up.fds, up.asyncio_tasks, post_up.asyncio_tasks
+        )
+        assert up_verdict == _stability_criteria_for(
+            up.fds, post_down.fds, up.asyncio_tasks, post_down.asyncio_tasks
+        )
+        assert up_verdict["fdsStability"]["status"] == "FAIL"
+        assert up_verdict["tasksStability"]["status"] == "PASS"
     finally:
-        for resource in (client, unrelated, owned):
-            if resource is not None:
-                resource.close()
+        for sock in leaks:
+            sock.close()
+        owned.close()
         adapter.close()
-    assert "_runtime_process_payload" not in vars(web)
-    assert "_serve_runtime" not in vars(web)
+    assert "_runtime_process_payload" not in vars(stack.web)

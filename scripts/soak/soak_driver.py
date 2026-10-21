@@ -71,9 +71,6 @@ RSS_MIN_FIT_SPAN_S = 600.0
 # PASSed.
 VERDICT_INCOMPLETE = "INCOMPLETE"
 STABILITY_TOLERANCE = 5
-# Modules whose coroutines belong to the in-process run: the web server,
-# the radio, the rigctld server, the simulator, and this driver.
-_OWNED_TASK_MODULE_PREFIXES = ("rigplane", "rigplane_testkit", "scripts.soak")
 _STABILITY_PROBE_COUNT = 3
 # A post-reconnect median above pre + tolerance may be teardown still
 # draining (MOR-3575): settle first — gc once, then resample in small
@@ -558,19 +555,31 @@ class _TaskProvenance:
 
 
 class _RuntimeTaskAdapter:
-    """In-process runtime overlay: the payload reports owned counts.
+    """In-process overlay keeping every count on one owned population.
 
-    ``run_soak`` installs this on the in-process stack so the stability
-    probes read the soak's own signal (sockets on the harness-created
-    ports, tasks from the run's component modules), not the shared
-    pytest worker's process-wide noise; with a provenance collector it
-    also correlates one request per probe for task capture, as before.
+    The runtime payload and the driver-side fallbacks in
+    ``ProcessMetricsSampler.sample`` all read the same population: socket
+    FDs on the harness-created ports, and tasks attributed by run
+    ownership (pending tasks that appeared after the run's baseline,
+    minus the driver's ``soak-`` prefixed tasks) — never by coroutine
+    origin module. With a provenance collector it also correlates one
+    request per probe for task capture, as before.
     """
 
-    def __init__(self, stack: Any, collector: _TaskProvenance | None) -> None:
+    def __init__(
+        self,
+        stack: Any,
+        collector: _TaskProvenance | None,
+        task_baseline: frozenset[asyncio.Task[Any]] | None = None,
+    ) -> None:
         self._stack = stack
         self._collector = collector
         self._ports = _run_owned_ports(stack)
+        # Identities alive before the run started (``run_soak`` snapshots
+        # before starting the stack, so the stack's tasks are run-owned).
+        self._task_baseline = (
+            frozenset(asyncio.all_tasks()) if task_baseline is None else task_baseline
+        )
         self._loop = asyncio.get_running_loop()
         self._pid = os.getpid()
         self._pending: dict[str, dict[str, Any]] = {}
@@ -578,6 +587,24 @@ class _RuntimeTaskAdapter:
             "soak_task_producer", default=None
         )
         self._installed = False
+
+    def owned_task_population(self) -> set[asyncio.Task[Any]]:
+        """Pending tasks the run owns, attributed by creation not origin.
+
+        Run-owned: appeared after the baseline (the stack's startup
+        tasks, per-request handlers, and standard-library helpers the
+        run's tasks spawned, whatever module defines the coroutine) and
+        not one of the driver's ``soak-`` prefixed traffic tasks.
+        """
+        return {
+            task
+            for task in asyncio.all_tasks()
+            if task not in self._task_baseline and _task_counted(task)
+        }
+
+    def owned_fd_count(self) -> int | None:
+        """The owned-socket FD count; None when it cannot be measured."""
+        return _owned_socket_fd_count(self._ports) if self._ports else None
 
     def install(self) -> None:
         web = self._stack.web
@@ -599,7 +626,7 @@ class _RuntimeTaskAdapter:
 
         def payload() -> dict[str, Any]:
             result = original_payload()
-            owned_tasks = _owned_task_population()
+            owned_tasks = self.owned_task_population()
             if _proc_int(result, "asyncioTasks") is not None:
                 result["asyncioTasks"] = len(owned_tasks)
             fds = _owned_socket_fd_count(self._ports) if self._ports else None
@@ -765,9 +792,10 @@ def _run_owned_ports(stack: Any) -> frozenset[int]:
 def _owned_socket_fd_count(ports: frozenset[int]) -> int | None:
     """Socket FDs whose local or peer port is one of ``ports``.
 
-    Everything else the process holds — pipes, files, sockets to foreign
-    ports — is noise the in-process run does not own. ``None`` when no FD
-    directory can be listed, so the caller keeps the reported value.
+    Sockets on the harness-created ports are the run's stability signal;
+    the count makes no claim about the rest of the process. ``None``
+    when no FD directory can be listed, so the caller keeps the
+    reported value.
     """
     for fd_dir in ("/proc/self/fd", "/dev/fd"):
         try:
@@ -806,33 +834,6 @@ def _owned_socket_fd_count(ports: frozenset[int]) -> int | None:
                 count += 1
         return count
     return None
-
-
-def _coroutine_module(coro: Any) -> str | None:
-    """Defining module of a coroutine object, best-effort."""
-    for frame_attr in ("cr_frame", "gi_frame"):
-        frame = getattr(coro, frame_attr, None)
-        module = frame.f_globals.get("__name__") if frame is not None else None
-        if isinstance(module, str):
-            return module
-    module = getattr(coro, "__module__", None)
-    return module if isinstance(module, str) else None
-
-
-def _owned_task_population() -> set[asyncio.Task[Any]]:
-    """``asyncio.all_tasks`` filtered to the run's own components.
-
-    The in-process stack shares the pytest worker's loop with the test
-    harness and neighbouring tests' late teardown; a raw count measures
-    their noise too. A task belongs to the run when its coroutine was
-    defined in a run module (server, radio, simulator, driver).
-    """
-    return {
-        task
-        for task in asyncio.all_tasks()
-        if (module := _coroutine_module(task.get_coro()))
-        and module.startswith(_OWNED_TASK_MODULE_PREFIXES)
-    }
 
 
 async def _driver_side_process_metrics(pid: int) -> tuple[int | None, int | None]:
@@ -891,11 +892,12 @@ class ProcessMetricsSampler:
     ``asyncioTasks``, the names of PR #4044; ``rssBytes`` is null where
     neither ``/proc/self/statm`` nor macOS ``proc_pidinfo`` is available)
     wins when present, and any field the runtime did not report is
-    measured driver-side for this process (the stack runs in-process):
-    RSS via ``/proc`` or ``ps``, FDs via ``/proc`` or ``/dev/fd``, tasks
-    via ``_server_asyncio_task_count``. The connection column comes from
-    the state document (``_state_connection_status``), not the runtime
-    payload.
+    measured driver-side for this process (the stack runs in-process;
+    with the overlay installed, FDs and tasks come from its owned
+    population): RSS via ``/proc`` or ``ps``, FDs via ``/proc`` or
+    ``/dev/fd``, tasks via ``_server_asyncio_task_count``. The
+    connection column comes from the state document
+    (``_state_connection_status``), not the runtime payload.
     """
 
     def __init__(self, session: aiohttp.ClientSession, base_url: str) -> None:
@@ -945,8 +947,9 @@ class ProcessMetricsSampler:
         task_probe: dict[str, Any] | None = None,
     ) -> ProcessSample:
         collector = self._task_provenance if task_probe is not None else None
-        if collector is not None and self._runtime_task_adapter is not None:
-            with self._runtime_task_adapter.request(task_probe):
+        adapter = self._runtime_task_adapter
+        if collector is not None and adapter is not None:
+            with adapter.request(task_probe):
                 runtime = await self.fetch_runtime()
         else:
             runtime = await self.fetch_runtime()
@@ -981,7 +984,12 @@ class ProcessMetricsSampler:
                         _runtime_missing_reason(runtime, "rssBytes"),
                     )
             if fds is None:
-                fds = d_fds
+                # In-process run: measure the same owned-socket population
+                # the runtime payload reports, so a failed runtime request
+                # cannot switch populations between the pre and post probes.
+                fds = adapter.owned_fd_count() if adapter is not None else None
+                if fds is None:
+                    fds = d_fds
                 if capture is not None:
                     capture.select(
                         "fds",
@@ -989,11 +997,15 @@ class ProcessMetricsSampler:
                         _runtime_missing_reason(runtime, "openFds"),
                     )
         if tasks is None:
-            tasks = (
-                collector.fallback(task_probe)
-                if collector is not None
-                else _server_asyncio_task_count()
-            )
+            if adapter is not None:
+                population = adapter.owned_task_population()
+                tasks = len(population)
+                if collector is not None:
+                    collector.capture(task_probe, "driver", tasks, tasks=population)
+            elif collector is not None:
+                tasks = collector.fallback(task_probe)
+            else:
+                tasks = _server_asyncio_task_count()
             if capture is not None:
                 capture.select(
                     "asyncioTasks",
@@ -1972,10 +1984,10 @@ class SoakDriver:
         The bound is an in-task timeout, not ``wait_for``: on Python
         3.11 (the CI quick suite's interpreter) ``wait_for`` runs the
         awaited coroutine as a task of its own, which both task-count
-        routes count — the runtime route's ``len(asyncio.all_tasks())``
-        and the fallback's non-``soak-`` filter — so the settle would
-        measure one task above the probe-time population and read a
-        delta sitting exactly at tolerance as a surplus.
+        routes count — the owned population includes it (post-baseline,
+        not ``soak-`` prefixed) — so the settle would measure one task
+        above the probe-time population and read a delta sitting exactly
+        at tolerance as a surplus.
         ``asyncio.timeout`` cancels without creating a task on every
         supported version: the sampler runs on the settle's own
         ``soak-`` task, the same task the probes run on, so the
@@ -2065,7 +2077,6 @@ class SoakDriver:
         if self._task_provenance is not None:
             self._task_provenance.begin_cycle(self._counts["forcedReconnects"])
             self._sampler._task_provenance = self._task_provenance
-            self._sampler._runtime_task_adapter = self._runtime_task_adapter
         outcome = "recovered"
         try:
             await self._reconnect_cycle_inner()
@@ -2096,7 +2107,6 @@ class SoakDriver:
                     outcome = "unrecovered"
                 self._task_provenance.finish_cycle(entry, outcome)
                 self._sampler._task_provenance = None
-                self._sampler._runtime_task_adapter = None
             self._capture_cycle = False
             self._cycle_active = False
 
@@ -2287,6 +2297,8 @@ class SoakDriver:
             self._ws_session = ws_session
             self._session = session
             self._sampler = ProcessMetricsSampler(session, self._base_url)
+            # Run-wide, so the fallback fields read the owned population.
+            self._sampler._runtime_task_adapter = self._runtime_task_adapter
             if not await self._wait_ready(
                 max(60.0, self._cfg.reconnect_budget_s * 2.0)
             ):
@@ -2427,6 +2439,9 @@ async def run_soak(config: SoakConfig) -> dict[str, Any]:
     ``run_soak`` returns, so a raising teardown still loses that line.
     """
     managed_tx = config.tx_sessions_interval_s > 0
+    # Baseline of task identities alive before the run creates anything;
+    # taken before the stack starts so the stack's tasks are run-owned.
+    task_baseline = frozenset(asyncio.all_tasks())
     stack = await _start_simulator_stack(managed_tx=managed_tx)
     report: dict[str, Any] | None = None
     adapter: _RuntimeTaskAdapter | None = None
@@ -2438,13 +2453,9 @@ async def run_soak(config: SoakConfig) -> dict[str, Any]:
             sim=stack.sim,
             session_count=stack.session_count if managed_tx else None,
         )
-        if driver._task_provenance is not None:
-            adapter = _RuntimeTaskAdapter(stack, driver._task_provenance)
-            driver._runtime_task_adapter = adapter
-        else:
-            # No provenance, still overlay the owned counts: the in-process
-            # stability probes must not read the shared worker's noise.
-            adapter = _RuntimeTaskAdapter(stack, None)
+        # Always installed in-process: every route reads owned counts.
+        adapter = _RuntimeTaskAdapter(stack, driver._task_provenance, task_baseline)
+        driver._runtime_task_adapter = adapter
         adapter.install()
         report = await driver.run()
         return report
