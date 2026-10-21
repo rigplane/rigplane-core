@@ -45,37 +45,36 @@ class CivFrameFilter:
         self._guard = guard
         self._buf = bytearray()
 
-    def feed(self, data: bytes) -> tuple[bytes, list[bytes]]:
-        """Consume one chunk; return ``(forward, blocked_chunks)``.
+    def feed(self, data: bytes) -> list[tuple[bytes, bool]]:
+        """Consume one chunk; return ``[(chunk, allowed)]`` in wire order.
 
-        A partial frame is held until its ``FD`` arrives. Bytes before a
-        ``FE FE`` preamble, and an unterminated run longer than a frame can
-        be, are blocked; a trailing lone ``FE`` is kept for the next chunk.
+        The ``client_filter`` contract of ``SerialCivRecorder``: an allowed
+        entry is one complete frame, a blocked entry is a refused frame or
+        bytes outside any frame. A partial frame is held until its ``FD``
+        arrives. Bytes before a ``FE FE`` preamble, and an unterminated run
+        longer than a frame can be, are blocked (a new preamble starts a
+        fresh frame); a trailing lone ``FE`` is kept for the next chunk.
         """
         self._buf += data
-        forward = bytearray()
-        blocked: list[bytes] = []
+        out: list[tuple[bytes, bool]] = []
         while True:
             start = self._buf.find(_PREAMBLE)
             if start < 0:
                 keep = 1 if self._buf[-1:] == _PREAMBLE[:1] else 0
                 if len(self._buf) > keep:
-                    blocked.append(bytes(self._buf[: len(self._buf) - keep]))
+                    out.append((bytes(self._buf[: len(self._buf) - keep]), False))
                 del self._buf[: len(self._buf) - keep]
                 break
             if start:
-                blocked.append(bytes(self._buf[:start]))
+                out.append((bytes(self._buf[:start]), False))
                 del self._buf[:start]
             end = self._buf.find(_TERMINATOR, 2)
             if end < 0:
                 if len(self._buf) > _MAX_FRAME:
-                    blocked.append(bytes(self._buf))
+                    out.append((bytes(self._buf), False))
                     self._buf.clear()
                 break
             frame = bytes(self._buf[: end + 1])
             del self._buf[: end + 1]
-            if self._guard.allows(frame):
-                forward += frame
-            else:
-                blocked.append(frame)
-        return bytes(forward), blocked
+            out.append((frame, self._guard.allows(frame)))
+        return out

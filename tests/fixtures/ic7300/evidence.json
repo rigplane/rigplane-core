@@ -1,0 +1,40 @@
+{
+ "baud": {
+  "answers_at": [
+   19200
+  ],
+  "configured_on_radio": 19200,
+  "silent_at": [
+   115200,
+   9600,
+   4800
+  ],
+  "source": "engine session sweep 2026-10-21 (GTR7 COM3); profile default_baud is 115200",
+  "ticket": "MOR-3620"
+ },
+ "scope_enable_at_19200": {
+  "pairs": [
+   {
+    "note": "panel was ON before the session",
+    "reply": "fefee094271001fd",
+    "request": "fefe94e02710fd"
+   },
+   {
+    "note": "wave output was OFF before the session",
+    "reply": "fefee094271100fd",
+    "request": "fefe94e02711fd"
+   },
+   {
+    "note": "panel on: ACK",
+    "reply": "fefee094fbfd",
+    "request": "fefe94e0271001fd"
+   },
+   {
+    "note": "wave output on: NAK at 19200, no 27 00 frame ever followed (retried 4x by the server)",
+    "reply": "fefee094fafd",
+    "request": "fefe94e0271101fd"
+   }
+  ],
+  "source": "Core web server through the guarded bridge, GTR7, 2026-10-21 09:05 EDT; state read back unchanged afterwards (27 10 = 01, 27 11 = 00)"
+ }
+}

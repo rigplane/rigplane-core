@@ -25,22 +25,30 @@ def _only_reads(frame: bytes) -> bool:
 
 def test_split_and_joined_chunks_forward_only_allowed_frames() -> None:
     flt = CivFrameGuard(_only_reads).new_filter()
-    assert flt.feed(READ[:3]) == (b"", [])  # partial frame held
-    assert flt.feed(READ[3:] + SET + ID_REQUEST) == (READ + ID_REQUEST, [SET])
+    assert flt.feed(READ[:3]) == []  # partial frame held
+    assert flt.feed(READ[3:] + SET + ID_REQUEST) == [
+        (READ, True),
+        (SET, False),
+        (ID_REQUEST, True),
+    ]
 
 
 def test_junk_before_a_preamble_is_blocked_and_a_lone_fe_is_kept() -> None:
     flt = CivFrameGuard(_only_reads).new_filter()
-    assert flt.feed(b"\xaa\xbb" + READ + b"\xfe") == (READ, [b"\xaa\xbb"])
-    assert flt.feed(b"\xfe\x94\xe0\x03\xfd") == (READ, [])  # FE + FE... completes it
+    assert flt.feed(b"\xaa\xbb" + READ + b"\xfe") == [
+        (b"\xaa\xbb", False),
+        (READ, True),
+    ]
+    assert flt.feed(b"\xfe\x94\xe0\x03\xfd") == [
+        (READ, True)
+    ]  # FE + FE... completes it
 
 
 def test_an_endless_unterminated_run_is_blocked_whole() -> None:
     flt = CivFrameGuard(_only_reads).new_filter()
     run = b"\xfe\xfe" + b"\x94" * 200
-    forward, blocked = flt.feed(run)
-    assert forward == b"" and blocked == [run]
-    assert flt.feed(READ) == (READ, [])  # the stream recovered
+    assert flt.feed(run) == [(run, False)]
+    assert flt.feed(READ) == [(READ, True)]  # a new preamble starts a fresh frame
 
 
 async def test_refused_frame_never_reaches_the_radio_through_the_bridge(

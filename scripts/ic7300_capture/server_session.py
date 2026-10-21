@@ -182,8 +182,8 @@ async def run(args: argparse.Namespace, *, opener: object = None) -> int:
                     scope_end = time.monotonic() + args.scope_seconds
                     while time.monotonic() < scope_end:
                         try:
-                            msg = await ws.receive(
-                                timeout=max(0.1, scope_end - time.monotonic())
+                            msg = await asyncio.wait_for(
+                                ws.receive(), max(0.1, scope_end - time.monotonic())
                             )
                         except asyncio.TimeoutError:
                             break

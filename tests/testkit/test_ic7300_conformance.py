@@ -16,9 +16,12 @@ missing from the ledger fails, and so does a ledger entry no longer observed.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
+import statistics
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -37,7 +40,10 @@ from testkit.test_ic7610_conformance import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 RADIO_ADDR = 0x94
-WINDOWS = ("probe",)
+WINDOWS = (
+    "probe",
+    "server_poll",
+)  # probe: allow-list GETs; server_poll: Core server polling
 
 # Probes the real IC-7300 NAKed (probe_answers.json), by cause:
 #   * bare scope reads: Core sends these with a selector byte, so the NAK is a
@@ -80,9 +86,9 @@ def _ledger() -> dict:
     return json.loads((FIXTURES / "conformance_ledger.json").read_text())
 
 
-def _pairs() -> list[tuple[bytes, bytes | None]]:
+def _pairs(windows: tuple[str, ...] = WINDOWS) -> list[tuple[bytes, bytes | None]]:
     """First-occurrence (request, closing reply) pairs, file order, no echo."""
-    rows = [r for r in _rows() if r["window"] in WINDOWS]
+    rows = [r for r in _rows() if r["window"] in windows]
     pairs: list[tuple[bytes, bytes | None]] = []
     seen: set[bytes] = set()
     i = 0
@@ -102,8 +108,19 @@ def _pairs() -> list[tuple[bytes, bytes | None]]:
     return pairs
 
 
+_NAMED_IDS = frozenset({"latency", "scope_wave", "baud_gate"})
+
+
 def _is_usb_key(key: str) -> bool:
     return key.startswith("usb:")
+
+
+def _is_named_key(key: str) -> bool:
+    return key in _NAMED_IDS
+
+
+def _evidence() -> dict:
+    return json.loads((FIXTURES / "evidence.json").read_text())
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +152,7 @@ def test_recorded_request_set_is_the_profile_probe_list() -> None:
     expected = {
         bytes(probe.frame_body) for probe in probe_list.build_probe_list(profile)
     }
-    recorded = {request[4:-1] for request, _ in _pairs()}
+    recorded = {request[4:-1] for request, _ in _pairs(("probe",))}
     assert recorded == expected, (
         "fixture drifted from rigs/ic7300.toml: "
         f"only recorded {sorted(h.hex() for h in recorded - expected)}, "
@@ -146,7 +163,7 @@ def test_recorded_request_set_is_the_profile_probe_list() -> None:
 def test_pairs_agree_with_probe_answers_and_naks_are_pinned() -> None:
     answers = json.loads((FIXTURES / "probe_answers.json").read_text())
     by_frame = {a["frame_hex"]: a for a in answers["probes"]}
-    for request, reply in _pairs():
+    for request, reply in _pairs(("probe",)):
         entry = by_frame[request.hex()]
         assert reply is not None
         assert (entry["class"] == "nak") == (parse_civ_frame(reply).command == 0xFA), (
@@ -208,20 +225,82 @@ async def test_usb_replay_divergences_match_ledger() -> None:
     )
 
 
-def test_every_ledger_key_is_usb_and_ticketed() -> None:
+async def _collect_structural_divergences() -> dict[str, tuple[str, str]]:
+    observed: dict[str, tuple[str, str]] = {}
+    answers = json.loads((FIXTURES / "probe_answers.json").read_text())
+    lat = sorted(a["latency_ms"] for a in answers["probes"] if a["class"] == "data")
+    recorded_latency = (
+        f"median {statistics.median(lat)} ms (min {lat[0]}, max {lat[-1]})"
+    )
+
+    fake = ic7300_usb_fake()
+    reader, writer = await fake.opener(url="socket://conformance", baudrate=115200)
+    try:
+        timings = []
+        for request, _ in _pairs(("probe",))[:25]:
+            started = time.monotonic()
+            writer.write(request)
+            await writer.drain()
+            await _ask_serial_fake(reader, request)
+            timings.append((time.monotonic() - started) * 1000)
+        sim_median = statistics.median(timings)
+        if sim_median < 0.5 * lat[0]:
+            observed["latency"] = (
+                recorded_latency,
+                "answers instantly (no reply delay)",
+            )
+
+        # Scope: the recorded radio NAKs wave output at 19200 and never streams.
+        pairs = _evidence()["scope_enable_at_19200"]["pairs"]
+        for pair in pairs:
+            writer.write(bytes.fromhex(pair["request"]))
+        await writer.drain()
+        try:
+            got = bytes(await asyncio.wait_for(reader.read(8192), 0.3))
+        except TimeoutError:
+            got = b""
+        if b"\xfe\xfe\xe0\x94\x27\x00" not in got:
+            observed["scope_wave"] = (
+                "wave output on NAKed at 19200, no 27 00 frame recorded",
+                "no wave frames after wave-on",
+            )
+    finally:
+        writer.close()
+
+    baud = _evidence()["baud"]
+    try:
+        reader2, writer2 = await ic7300_usb_fake().opener(
+            url="socket://conformance", baudrate=baud["silent_at"][0]
+        )
+        writer2.close()
+        observed["baud_gate"] = (
+            f"answers only at {baud['answers_at'][0]} baud, silent at "
+            + ", ".join(str(b) for b in baud["silent_at"]),
+            "answers at any baud",
+        )
+    except OSError:
+        pass
+    return observed
+
+
+async def test_structural_divergences_match_ledger() -> None:
+    _assert_ledger_exact(
+        await _collect_structural_divergences(), _is_named_key, ledger=_ledger()
+    )
+
+
+def test_every_ledger_key_has_exactly_one_owner_and_a_ticket() -> None:
     for key, value in _ledger().items():
-        assert _is_usb_key(key), key
+        assert _is_usb_key(key) != _is_named_key(key), key
         assert set(value) == {"recorded", "simulator", "ticket"}
 
 
 async def test_ratchet_fails_when_a_ledger_entry_is_deleted() -> None:
     ledger = _ledger()
-    if not ledger:
-        pytest.skip("empty ledger: nothing to delete")
-    ledger.pop(next(iter(ledger)))
+    ledger.pop("scope_wave")
     with pytest.raises(AssertionError, match="missing from the ledger"):
         _assert_ledger_exact(
-            await _collect_usb_divergences(), _is_usb_key, ledger=ledger
+            await _collect_structural_divergences(), _is_named_key, ledger=ledger
         )
 
 
