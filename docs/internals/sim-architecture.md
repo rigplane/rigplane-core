@@ -25,7 +25,7 @@ Several independent fakes already exist (`MockIcomRadio` LAN simulator,
 `tests/fake_rigctld.py`), and the first five keep their own copy of
 frequency/mode/PTT state; `tests/civ_fake.py` (`CivRadioFake`) only models
 identity and records requests. Earlier attempts (MOR-2010, MOR-2492) were
-closed after a first slice while the older doubles remain in the tree, so this
+marked Done in Linear while the older doubles remain in the tree, so this
 design does not make retiring them a prerequisite. It is a strangler: each
 step ships value on its own, old imports keep working (`tests/mock_server.py`,
 `rigplane_testkit.icom.MockIcomRadio`), and no step requires retiring the old
@@ -56,23 +56,24 @@ meanwhile.
 
 ### Dependency rules (enforced by an import-linter contract in a later PR)
 
-The complete allowlist of `rigplane` imports for everything under
-`rigplane_testkit/sim/` is:
+The complete matrix of `rigplane` imports under `rigplane_testkit/sim/`
+(a blank cell means forbidden):
 
-- the profile resolver/loader (`rigplane.profiles`: declarations only), allowed
-  everywhere under `sim/`;
-- the CI-V frame envelope helpers (`rigplane.commands`: `parse_civ_frame`,
-  `build_civ_frame`, `CONTROLLER_ADDR`, and the `CivFrame` type), allowed only in
-  `model/icom_civ.py` and `adapters/icom_*.py`; `engine/` imports no `rigplane`
-  module at all.
+| `sim/` area | `rigplane.profiles` (resolve a capability profile) | `rigplane.commands` (`parse_civ_frame`, `build_civ_frame`, `CONTROLLER_ADDR`) and `rigplane.core.types.CivFrame` |
+| --- | --- | --- |
+| `profiles/` (loader) and `serve.py` | yes | |
+| `engine/` | | |
+| `model/icom_civ.py`, `adapters/icom_*.py` | | yes |
+| `model/yaesu_cat.py`, `adapters/yaesu_cat.py`, `audio/`, `scenario/` | | |
 
-Everything else under `rigplane` (drivers, runtime, state store, web, rigctld,
-`CatCommandParser`, `format_command`) is forbidden. The Yaesu parser and
-formatter must NOT generate the simulator's replies, because the same code
-under test would then pass both sides.
-
-1. The allowlist above is the whole rule; section 11 repeats it.
-2. A new `rigplane` import under `sim/` needs a change to this section first.
+The loader (the only place that resolves a capability profile) hands the
+engine and the models plain resolved data (the engine's `Capabilities`
+dataclass, the model's command table); `engine/` imports no `rigplane` module
+at all. Everything else under `rigplane` (drivers, runtime, state store, web,
+rigctld, `CatCommandParser`, `format_command`) is forbidden. The Yaesu parser
+and formatter must NOT generate the simulator's replies, because the same code
+under test would then pass both sides. A new `rigplane` import under `sim/`
+needs a change to this table first; section 11 refers to this table.
 3. The simulator's replies come from the model's own codec table and, below
    it, from recorded answers. They are checked against hand-transcribed
    oracles (`tests/golden/wire_oracle/<radio>.toml`) and recordings.
@@ -125,7 +126,8 @@ output.
 
 ## 5. Per-radio extension contract
 
-A radio is added by its owner with these files and no others:
+A radio is added by its owner with these files; shared files are listed in the
+ownership table below and are not part of a radio's own set:
 
 | File | Content | Required |
 | --- | --- | --- |
@@ -134,7 +136,7 @@ A radio is added by its owner with these files and no others:
 | `tests/golden/wire_oracle/<radio>.toml` | hand-transcribed manual rows (never generated from code) | yes (tier B+) |
 | `tests/fixtures/<radio>/conformance_ledger.json` | divergences between simulator and recording; ratchet | for tier A |
 | `tests/testkit/test_<radio>_*.py` | radio-specific tests (generic conformance is parametrized by radio) | as needed |
-| `rigplane_testkit/sim/radios/<radio>/` | only for behaviour data cannot express (a quirky command); registers through `register(model)` | optional |
+| `rigplane_testkit/sim/radios/<radio>/` | only for behaviour data cannot express (a quirky command); registers through `register(registry)` (below) | optional |
 
 Shared files have exactly one owner each (a change by anyone else goes
 through the owner's review, as a PR to that owner's file with the owner as
@@ -144,13 +146,17 @@ reviewer):
 | --- | --- |
 | `sim/engine/`, `sim/profiles/` loader and schema, `sim/model/icom_civ.py`, `sim/model/registry.py`, `sim/adapters/icom_*.py`, `sim/serve.py`, `sim/scenario/`, `sim/audio/`, IC-7610 files | engine owner |
 | `sim/model/yaesu_cat.py`, `sim/adapters/yaesu_cat.py`, `rigplane_testkit/yaesu/` (CAT recorder, read guard, CAT answer table) | FTX-1 agent |
-| `rigplane_testkit/serial/recorder.py` and its `client_filter` hook, `scripts/<radio>_capture/` | the agent whose PR introduced it; later edits need that agent's review |
+| `rigplane_testkit/serial/recorder.py` and its `client_filter` hook | FTX-1 agent (PR #4283 introduces the hook); until #4283 merges no one else edits this file, the IC-7300 agent adopts the hook after the merge; later edits need the FTX-1 agent's review |
+| `scripts/<radio>_capture/` | that radio's agent (not shared) |
 | `tests/testkit/test_usb_radio_conformance.py` (generic conformance, parametrized by radio) | IC-7300 agent |
 
 Extension registration: a radio's optional python package
-`rigplane_testkit/sim/radios/<radio>/__init__.py` exposes
-`register(registry: ModelRegistry) -> None`; the engine owner's
-`model/registry.py` imports that package by profile id if it exists and
+`rigplane_testkit/sim/radios/<radio>/__init__.py` exposes the single signature
+`register(registry: ModelRegistry) -> None`. The package name is the radio slug
+(the capability model lowercased with non-alphanumerics removed: `IC-7300`
+becomes `ic7300`), and one package serves every simulation profile of that radio
+(`ic7300-usb` and any later `ic7300-*` profile). The engine owner's
+`model/registry.py` imports that package for the profile's radio if it exists and
 passes in a registry with `override(command_name, handler)` (replace the
 model's answer for one named command) and `add_state(name, default)`.
 A radio PR that needs another shared hook opens or comments on a shared issue
@@ -325,10 +331,11 @@ audio.
 
 ### 9.4a Capture notes
 
-- Audio can only be captured on the bench Mac mini from a process that macOS
-  lets use the microphone: launch the capture job from a Terminal window
-  (`open -a Terminal job.command`). The same job started through ssh or
-  `osascript` records silence because of the macOS microphone permission.
+- Observed on the bench Mac mini (IC-705 agent, 2026-10-21): an audio capture
+  job started through ssh or `osascript` recorded silence, while the same kind
+  of job started with `open -a Terminal job.command` recorded audio; the likely
+  cause is the macOS microphone permission, not verified. Start audio capture
+  jobs that way there.
 - Scope frames come from the radio-side bridge recording (the serial recorder
   or the LAN recorder), not from the web scope endpoint, so the stored frames
   are the radio's own bytes and the renderer can re-time them.
@@ -356,7 +363,7 @@ is not claimed to be. Replay of air recordings uses the sample clock.
 packaging decision (own distribution name, pinned `rigplane` extra for the
 profile loader, fixtures shipped separately) that is out of scope here.
 Criteria to extract later: no import from `tests/` or repo-relative paths, the
-the only `rigplane` dependencies are the allowlist in section 3 (profile
+the only `rigplane` dependencies are the matrix in section 3 (profile
 resolver, CI-V frame helpers), all fixtures addressed by explicit paths. Licence and provenance of `rigs/*.toml` (some cite wfview
 `.rig` sources) and of recordings must be assessed before any publication; no
 publication is authorised by this document.
