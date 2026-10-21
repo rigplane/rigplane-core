@@ -988,6 +988,46 @@ class TestReceivePacket:
         with pytest.raises(asyncio.TimeoutError):
             await transport.receive_packet(timeout=0.05)
 
+    @pytest.mark.asyncio
+    async def test_receive_zero_timeout_empty_queue_times_out(
+        self, transport: IcomTransport
+    ) -> None:
+        with pytest.raises(asyncio.TimeoutError):
+            await transport.receive_packet(timeout=0)
+
+    @pytest.mark.asyncio
+    async def test_receive_negative_timeout_empty_queue_times_out(
+        self, transport: IcomTransport
+    ) -> None:
+        with pytest.raises(asyncio.TimeoutError):
+            await transport.receive_packet(timeout=-0.5)
+
+    @pytest.mark.asyncio
+    async def test_receive_zero_timeout_leaves_queued_packet(
+        self, transport: IcomTransport
+    ) -> None:
+        """``timeout=0`` must time out without consuming, as the old
+        ``wait_for`` did (MOR-3575 re-review): the pre-3.12 ``wait_for``
+        cancelled the inner ``get()`` before it could run, so a queued
+        packet stayed queued.
+        """
+        transport._packet_queue.put_nowait(b"queued")
+        with pytest.raises(asyncio.TimeoutError):
+            await transport.receive_packet(timeout=0)
+        assert transport._packet_queue.get_nowait() == b"queued"
+
+    @pytest.mark.asyncio
+    async def test_receive_negative_timeout_leaves_queued_packet(
+        self, transport: IcomTransport
+    ) -> None:
+        """A negative timeout times out without consuming, exactly like
+        ``timeout=0`` and the old ``wait_for`` (MOR-3575 re-review).
+        """
+        transport._packet_queue.put_nowait(b"queued")
+        with pytest.raises(asyncio.TimeoutError):
+            await transport.receive_packet(timeout=-0.5)
+        assert transport._packet_queue.get_nowait() == b"queued"
+
 
 # ---------------------------------------------------------------------------
 # Disconnect
@@ -1294,3 +1334,97 @@ async def test_unanswered_discovery_raises_discovery_timeout(
     assert isinstance(excinfo.value, TimeoutError)
     message = str(excinfo.value)
     assert message == "Radio did not respond to discovery after 2 attempts"
+
+
+def _parked_on_queue_get(task: asyncio.Task[object]) -> bool:
+    """True when ``task`` is suspended awaiting a Future at the bottom of
+    its coroutine chain — the queue getter the receiver parks on when the
+    queue is empty. Cancelling after this check lands on a genuinely
+    pending receive on every supported Python version, not on one that
+    already finished. In CPython ``await future`` bottoms out at the
+    C-level ``FutureIter`` wrapper rather than the Future itself, so the
+    FutureIter shape counts as parked-on-a-future too (nothing can have
+    woken the receiver at the points this is used).
+    """
+    coro: object = task.get_coro()
+    for _ in range(8):
+        nxt = getattr(coro, "cr_await", None)
+        if nxt is None:
+            return False
+        if isinstance(nxt, asyncio.Future):
+            return not nxt.done()
+        if type(nxt).__name__ == "FutureIter":
+            return not task.done()
+        coro = nxt
+    return False
+
+
+async def test_receive_cancel_while_pending_on_empty_queue_ends_cancelled() -> None:
+    """A cancel of a receiver genuinely parked on the empty queue must end
+    the receive as cancelled on every supported Python (MOR-3575).
+    """
+    transport = IcomTransport()
+
+    task = asyncio.create_task(transport.receive_packet(timeout=5.0))
+    await asyncio.sleep(0)  # the receiver runs to its first real suspension
+    assert _parked_on_queue_get(task), "receiver is not parked on the queue get"
+    task.cancel()
+
+    done, _pending = await asyncio.wait({task}, timeout=2.0)
+    assert task in done, "receiver never finished: cancel was swallowed"
+    assert task.cancelled(), "a cancel of a parked receiver was not delivered"
+
+
+async def test_receive_cancel_racing_a_delivered_packet_ends_cancelled() -> None:
+    """A cancel arriving in the same loop pass as packet delivery must win
+    (MOR-3575): the receive ends cancelled and the packet stays queued
+    for the next consumer instead of being lost.
+
+    This is the race the serial soak teardowns deadlocked in (a pump
+    cancelled inside ``receive_packet`` never exited and ``stop_pump``
+    awaited it forever), restated deterministically: the packet resolves
+    the getter, and the cancel is requested before the receiver's wakeup
+    runs — exactly one wakeup, no scheduling lottery.
+    """
+    transport = IcomTransport()
+
+    task = asyncio.create_task(transport.receive_packet(timeout=5.0))
+    await asyncio.sleep(0)  # the receiver runs to its first real suspension
+    assert _parked_on_queue_get(task), "receiver is not parked on the queue get"
+    transport._packet_queue.put_nowait(b"pkt")
+    # No yield here: the getter is resolved but the receiver has not run,
+    # so the cancel is requested into the same wakeup the packet scheduled.
+    task.cancel()
+
+    done, _pending = await asyncio.wait({task}, timeout=2.0)
+    assert task in done, "receiver never finished: cancel was swallowed"
+    assert task.cancelled(), "a cancel racing a delivered packet was swallowed"
+    assert transport._packet_queue.get_nowait() == b"pkt", (
+        "the racing packet was consumed or lost"
+    )
+
+
+async def test_receive_during_cancellation_cleanup_returns_the_packet() -> None:
+    """A receiver that caught CancelledError and awaits an already queued
+    packet during cleanup must get that packet, not a fresh CancelledError
+    (MOR-3575). The old ``Task.cancelling()`` guard broke exactly this:
+    the historical count made every later receive look cancelled.
+    """
+    transport = IcomTransport()
+    transport._packet_queue.put_nowait(b"cleanup-pkt")
+
+    async def cleanup_receiver() -> bytes:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            pass  # cleanup begins; the cancel request count stays raised
+        return await transport.receive_packet(timeout=5.0)
+
+    task = asyncio.create_task(cleanup_receiver())
+    await asyncio.sleep(0)  # the receiver parks in the sleep
+    assert not task.done()
+    task.cancel()
+
+    got = await task
+    assert got == b"cleanup-pkt"
+    assert not task.cancelled()
