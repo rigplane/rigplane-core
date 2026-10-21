@@ -101,15 +101,20 @@ async def _run(args: argparse.Namespace) -> int:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop.set)
+        with contextlib.suppress(
+            NotImplementedError
+        ):  # Windows: Ctrl-C cancels the task
+            loop.add_signal_handler(sig, stop.set)
     serve = asyncio.ensure_future(rec.serve_forever())
     stopper = asyncio.ensure_future(stop.wait())
-    await asyncio.wait({serve, stopper}, return_when=asyncio.FIRST_COMPLETED)
-    await rec.stop()
-    for task in (serve, stopper):
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+    try:
+        await asyncio.wait({serve, stopper}, return_when=asyncio.FIRST_COMPLETED)
+    finally:  # also on cancellation (Windows Ctrl-C): never leave the port open
+        await rec.stop()
+        for task in (serve, stopper):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
     print(
         json.dumps(
             {
@@ -131,7 +136,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--listen-port", type=int, default=0)
-    return asyncio.run(_run(parser.parse_args(argv)))
+    try:
+        return asyncio.run(_run(parser.parse_args(argv)))
+    except KeyboardInterrupt:  # Windows Ctrl-C; _run already closed the port
+        return 0
 
 
 if __name__ == "__main__":

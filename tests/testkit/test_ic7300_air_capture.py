@@ -152,3 +152,31 @@ async def test_start_at_overrides_the_slot_wait_and_is_recorded(tmp_path) -> Non
     manifest = json.loads(next(tmp_path.glob("*.manifest.json")).read_text())
     started = datetime.fromisoformat(manifest["slot_start_wall_utc"])
     assert abs((started - target).total_seconds()) < 0.01
+
+
+class _FlakyRadio:
+    """Records the restore calls; the preamp restore fails."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def set_preamp(self, level):
+        self.calls.append("preamp")
+        raise TimeoutError("CI-V response timed out")
+
+    async def set_mode(self, mode, filt):
+        self.calls.append("mode")
+
+    async def set_data_mode(self, on):
+        self.calls.append("data_mode")
+
+    async def set_freq(self, hz):
+        self.calls.append("freq")
+
+
+async def test_a_failed_restore_step_does_not_stop_the_others() -> None:
+    radio = _FlakyRadio()
+    before = {"freq_hz": 14_263_000, "mode": "USB", "filter": 2, "data_mode": False}
+    errors = await air._restore(radio, before, tuned_preamp=0)
+    assert radio.calls == ["preamp", "mode", "data_mode", "freq"]
+    assert len(errors) == 1 and errors[0].startswith("preamp: TimeoutError")

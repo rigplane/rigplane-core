@@ -264,18 +264,40 @@ async def _snapshot(radio: Any, *, with_scope: bool) -> dict:
     return snap
 
 
-async def _restore(radio: Any, before: dict) -> None:
-    await radio.set_mode(before["mode"], before["filter"])
+async def _restore(radio: Any, before: dict, tuned_preamp: int | None) -> list[str]:
+    """Put every changed setting back; one failed step never stops the others.
+
+    The preamp goes first, while the radio is still on the target band (it is
+    stored per band); the rest follow in the order a mode set cannot undo.
+    Returns one message per failed step (empty = all restored).
+    """
+    steps: list[tuple[str, Any]] = []
+    if tuned_preamp is not None:
+        steps.append(("preamp", lambda: radio.set_preamp(tuned_preamp)))
+    steps.append(("mode", lambda: radio.set_mode(before["mode"], before["filter"])))
     if "data_mode" in before:  # after the mode: a mode set can clear it
-        await radio.set_data_mode(before["data_mode"])
-    await radio.set_freq(before["freq_hz"])
+        steps.append(("data_mode", lambda: radio.set_data_mode(before["data_mode"])))
+    steps.append(("freq", lambda: radio.set_freq(before["freq_hz"])))
     for name in ("scope_span", "scope_mode"):
         if name in before:
-            await getattr(radio, f"set_{name}")(before[name])
+            setter = getattr(radio, f"set_{name}")
+            steps.append((name, lambda setter=setter, name=name: setter(before[name])))
     if "scope_panel" in before:
-        await radio.restore_scope_session_state(
-            (before["scope_panel"], before["scope_wave_output"])
+        steps.append(
+            (
+                "scope_session",
+                lambda: radio.restore_scope_session_state(
+                    (before["scope_panel"], before["scope_wave_output"])
+                ),
+            )
         )
+    errors: list[str] = []
+    for name, step in steps:
+        try:
+            await step()
+        except Exception as exc:
+            errors.append(f"{name}: {type(exc).__name__}: {exc}")
+    return errors
 
 
 async def _wait_for_slot(slot_s: int) -> float:
@@ -402,12 +424,15 @@ async def run_clip(
             )
         finally:
             if audio is not None:
-                manifest["audio"] = audio.stop()
+                with contextlib.suppress(Exception):
+                    manifest["audio"] = audio.stop()
             if tuned_preamp is None:
                 tuned_preamp = manifest.get("preamp_on_target_band_before")
-            if tuned_preamp is not None:
-                await radio.set_preamp(tuned_preamp)  # still on the target band
-            await _restore(radio, before)
+            restore_errors = await _restore(radio, before, tuned_preamp)
+            manifest["restore_errors"] = restore_errors
+            if restore_errors:
+                exit_code = 4
+                print(json.dumps({"restore_errors": restore_errors}), flush=True)
         await asyncio.sleep(0.5)
         after = await _snapshot(radio, with_scope=not args.no_scope)
         manifest["state_after"] = after
