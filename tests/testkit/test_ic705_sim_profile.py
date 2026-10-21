@@ -1,7 +1,11 @@
 """Shipped IC-705 simulation profiles (MOR-3605): USB and LAN, tier A.
 
-Every asserted value is read back from the fixture it was sourced from
-(tests/fixtures/ic705/*), not restated by hand.
+Echo, audio formats, scope rates and the answer files are read back from
+the fixtures they were sourced from (tests/fixtures/ic705/*). The identity
+`A4`, the initial state (14.074 MHz, USB, filter 1) and the scope shape
+(475 bins, 50 kHz span) are restated here as literals of the recorded
+facts (README "Radio state", the probe replies, the `27 00` and `27 15`
+frames); a mistaken profile value that matches these literals would pass.
 """
 
 import json
