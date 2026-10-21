@@ -53,6 +53,38 @@ def _engine(
     return SimEngine(caps, clock=clock, seed=seed, initial=initial), clock
 
 
+class _LyingInt(int):
+    """Every comparison lies True; the old isinstance checks accepted -1."""
+
+    def __ge__(self, other: object) -> bool:
+        return True
+
+    def __le__(self, other: object) -> bool:
+        return True
+
+    def __eq__(self, other: object) -> bool:
+        return True
+
+
+_LYING = _LyingInt(-1)
+
+
+class _ScriptedClock:
+    """Yields scripted readings; read ``fire_on`` runs ``callback`` first."""
+
+    def __init__(self, *readings: float, fire_on: int = 0) -> None:
+        self._readings = iter(readings)
+        self.callback = lambda: None
+        self.fire_on = fire_on
+        self._reads = 0
+
+    def __call__(self) -> float:
+        self._reads += 1
+        if self._reads == self.fire_on:
+            self.callback()
+        return next(self._readings)
+
+
 def test_apply_ok_mutates_state_and_records_op() -> None:
     engine, _ = _engine()
     assert engine.apply(SetFrequency(1, 7_100_000)) == Ok()
@@ -94,6 +126,13 @@ def test_apply_ok_mutates_state_and_records_op() -> None:
         ("not-an-op", Unsupported, "unsupported"),  # non-dataclass op still records
         (SetFrequency, Unsupported, "unsupported"),  # op class, not an instance
         (SelectReceiver(-1), OutOfRange, "out_of_range"),
+        (SelectReceiver(None), OutOfRange, "out_of_range"),  # None is not an index
+        (SetFrequency(0, _LYING), OutOfRange, "out_of_range"),  # lying subclass
+        (SetLevel(0, "af", _LYING), OutOfRange, "out_of_range"),
+        (SetSelector(0, "agc", _LYING), OutOfRange, "out_of_range"),
+        (SetMode(0, "USB", filter=_LYING), OutOfRange, "out_of_range"),
+        (SelectReceiver(_LYING), OutOfRange, "out_of_range"),
+        (SetMeter("smeter", _LYING), OutOfRange, "out_of_range"),
     ],
 )
 def test_rejected_op_outcome_and_trace_tag(
@@ -168,6 +207,7 @@ def test_failed_apply_never_mutates_state() -> None:
         SetSelector(0, "vox", 1),
         SetSelector(0, "agc", 9),
         SelectReceiver(9),
+        SelectReceiver(None),  # rejected, so the selection cannot change
         SetMeter("smeter", "loud"),
     ):
         assert not isinstance(engine.apply(op), Ok)
@@ -295,8 +335,9 @@ def test_rng_same_stream_identity_and_cross_stream_independence() -> None:
     assert stream_a[0] == random.Random("5:jitter").random()  # spec derivation
 
 
-def test_star_export_does_not_leak_core_module_imports() -> None:
+def test_star_export_does_not_leak_and_module_state_is_immutable() -> None:
     import rigplane_testkit.sim.engine as engine_pkg
+    from rigplane_testkit.sim.engine import core
 
     exported = set(vars(engine_pkg))
     assert not exported & {
@@ -308,6 +349,12 @@ def test_star_export_does_not_leak_core_module_imports() -> None:
         "Protocol",
     }
     assert {"SimEngine", "Ok", "Marker", "SetSelector"} <= exported
+    mutable = {
+        name
+        for name, value in vars(core).items()
+        if not name.startswith("__") and type(value) in (list, dict, set)
+    }
+    assert mutable == set()  # _READ_PLURALS proxies, __all__ is a tuple
 
 
 def test_trace_records_are_json_serialisable() -> None:
@@ -318,8 +365,104 @@ def test_trace_records_are_json_serialisable() -> None:
     engine.apply(SetSelector(0, "agc", 3))  # ok op with a JSON value
     engine.apply(SetSelector(0, "agc", object()))  # rejected with a non-JSON value
     engine.apply(SetFrequency(0, object()))  # rejected with a non-JSON value
+    engine.apply(SetFrequency(0, 10**5000))  # huge int breaks str()/json limits
+    engine.apply(SetLevel(0, "af", float("nan")))  # NaN breaks allow_nan=False
+    engine.apply(SetLevel(0, "af", float("inf")))
     payload = [asdict(r) for r in engine.trace]
+    json.dumps(payload, allow_nan=False)  # strictly JSON-safe, no NaN literals
     assert json.loads(json.dumps(payload)) == payload
     assert payload[3]["args"]["value"] == 3
     assert payload[4]["args"]["value"] == "<object>"
-    assert payload[-1]["args"]["hz"] == "<object>"
+    assert payload[5]["args"]["hz"] == "<object>"
+    assert payload[6]["args"]["hz"] == "<int:5001 digits>"
+    assert payload[7]["args"]["value"] == "NaN"
+    assert payload[8]["args"]["value"] == "Infinity"
+
+
+def test_engine_deep_copies_the_caller_initial_state() -> None:
+    initial = SimState(receivers=[ReceiverState(), ReceiverState()])
+    engine_a, _ = _engine(initial=initial)
+    engine_b, _ = _engine(initial=initial)
+    engine_a.apply(SetFrequency(0, 7_100_000))
+    assert initial.receivers[0].frequency_hz == 14_074_000  # caller untouched
+    assert initial.receivers[0].selectors == {}  # selector seeding did not leak
+    assert engine_b.state.receivers[0].frequency_hz == 14_074_000  # independent
+    assert engine_b.state.receivers[1].selectors == {"agc": 1, "att": 0}
+
+
+def test_read_never_raises_on_odd_names() -> None:
+    engine, _ = _engine()
+
+    class NoRepr:
+        def __repr__(self) -> str:
+            raise RuntimeError("no repr")
+
+    class BadStr(str):  # str subclass keeps a failing __repr__
+        def __repr__(self) -> str:
+            raise RuntimeError("no repr")
+
+    assert isinstance(engine.read(10**5000), Unsupported)  # repr() would raise
+    assert isinstance(engine.read(NoRepr()), Unsupported)
+    assert isinstance(engine.read(BadStr("warp")), Unsupported)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_manual_clock_rejects_nonfinite_start(bad: float) -> None:
+    with pytest.raises(ValueError):
+        ManualClock(start=bad)
+    with pytest.raises(ValueError):
+        ManualClock().advance(bad)
+    with pytest.raises(ValueError):
+        ManualClock().advance(-1.0)
+
+
+@pytest.mark.parametrize("bad", [-1.0, float("nan")])
+def test_engine_rejects_bad_clock_readings_before_any_change(bad: float) -> None:
+    engine = SimEngine(CAPS, clock=_ScriptedClock(0.0, bad))
+    with pytest.raises(ValueError):
+        engine.apply(SetFrequency(0, 7_100_000))
+    assert engine.state.receivers[0].frequency_hz == 14_074_000  # unmutated
+    assert engine.trace == ()
+    with pytest.raises(ValueError):
+        SimEngine(CAPS, clock=_ScriptedClock(0.0, bad)).schedule(1.0, Marker("m"))
+    engine = SimEngine(CAPS, clock=_ScriptedClock(0.0, 0.0, bad, 0.0, 0.0))
+    engine.schedule(1.0, Marker("later"))
+    with pytest.raises(ValueError):
+        engine.advance_to(5.0)
+    assert [r.name for r in engine.advance_to(5.0)] == ["later"]  # not consumed
+
+
+def test_advance_to_is_not_reentrant() -> None:
+    clock = _ScriptedClock(0.0, 0.0, 0.0)
+    engine = SimEngine(CAPS, clock=clock)
+    clock.callback = lambda: engine.advance_to(1.0)
+    clock.fire_on = 2  # fires inside advance_to's clock validation
+    with pytest.raises(RuntimeError, match="not re-entrant"):
+        engine.advance_to(1.0)
+    assert engine.advance_to(1.0) == []  # the flag was released
+
+
+def test_schedule_during_event_cannot_target_the_past() -> None:
+    clock = _ScriptedClock(0.0, 0.0, 5.0, 5.0, 5.0)
+    engine = SimEngine(CAPS, clock=clock)
+    engine.schedule(5.0, Marker("at-five"))
+
+    def schedule_early() -> None:
+        with pytest.raises(ValueError):
+            engine.schedule(2.0, Marker("too-early"))
+
+    clock.callback = schedule_early
+    clock.fire_on = 4  # the marker's record read, with engine time at 5.0
+    produced = engine.advance_to(5.0)
+    assert [r.name for r in produced] == ["at-five"]
+    assert [r.t for r in produced] == [5.0]
+
+
+def test_record_numbers_stay_unique_when_clock_runs_mid_record() -> None:
+    clock = _ScriptedClock(0.0, 0.0, 0.0)
+    engine = SimEngine(CAPS, clock=clock)
+    clock.callback = lambda: engine.apply(SetMeter("tick", 1))
+    clock.fire_on = 2  # fires while apply() reads the clock, before it records
+    engine.apply(SetFrequency(0, 7_100_000))
+    assert [r.n for r in engine.trace] == [0, 1]
+    assert [r.name for r in engine.trace] == ["SetMeter", "SetFrequency"]
