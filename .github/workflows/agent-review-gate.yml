@@ -1,9 +1,9 @@
 name: Agent Review Gate
 
 # Codex-primary gate (MOR-3616): the status is green when Codex reviewed the
-# exact head and no Codex P1/P2 thread is open, or, when Codex did not review,
+# exact head and no Codex P0-P2 thread is open, or, when Codex did not review,
 # when the cross-family backup reviewer posted the strict exact-head
-# `Agent Review: PASS <sha>` directive (never while a Codex P1/P2 thread is
+# `Agent Review: PASS <sha>` directive (never while a Codex P0-P2 thread is
 # open). A PR labelled `built-by-gpt` (GPT/Codex-family builder) does not count
 # the Codex review as a verdict and needs the backup PASS. Codex does not review
 # pushes by itself and ignores review requests posted by github-actions[bot],

@@ -1013,6 +1013,7 @@ test('Codex evidence for another commit, from another author, or not final prove
     {reviews: [codexReview({user: {login: 'someone', type: 'User'}})]},
     {reviews: [codexReview({user: {login: 'chatgpt-codex-connector[bot]', type: 'User'}})]},
     {reviews: [codexReview({state: 'PENDING'})]},
+    {reviews: [codexReview({state: 'DISMISSED'})]},
     {comments: [CODEX_SUMMARY(STALE)]},
     {comments: [CODEX_SUMMARY(HEAD, 'in_progress')]},
     {comments: [{...CODEX_SUMMARY(HEAD), user: {login: 'someone', type: 'User'}}]},
@@ -1025,15 +1026,15 @@ test('Codex evidence for another commit, from another author, or not final prove
   }
 });
 
-test('an unresolved Codex P1/P2 thread denies even with Codex review and a valid PASS', async () => {
-  for (const priority of ['P1', 'P2']) {
+test('an unresolved Codex P0-P2 thread denies even with Codex review and a valid PASS', async () => {
+  for (const priority of ['P0', 'P1', 'P2']) {
     const withCodex = await runGate({
       reviews: [codexReview()],
       comments: [comment(directive('PASS'))],
       threads: [codexThread(priority)],
     });
     assert.equal(withCodex.statuses[0].state, 'failure', priority);
-    assert.match(withCodex.statuses[0].description, new RegExp(`1 unresolved Codex P1/P2 thread.*${priority} src/rigplane/example.py:12`, 'u'));
+    assert.match(withCodex.statuses[0].description, new RegExp(`1 unresolved Codex P0-P2 thread.*${priority} src/rigplane/example.py:12`, 'u'));
 
     const backupOnly = await runGate({
       comments: [comment(directive('PASS'))],
@@ -1250,7 +1251,7 @@ test('AGENTS documents the Codex-primary gate rules', () => {
   const section = /^### Primary reviewer: Codex$([\s\S]*?)(?=^#{1,3} )/mu.exec(instructions)[1];
   assert.match(section, /chatgpt-codex-connector\[bot\]/u);
   assert.match(section, /exact head SHA/u);
-  assert.match(section, /P1\/P2/u);
+  assert.match(section, /P0-P2/u);
   assert.match(section, /@codex review/u);
   assert.match(section, /cannot request it/u);
   assert.match(section, /built-by-gpt/u);
@@ -1277,7 +1278,7 @@ test('a built-by-gpt PR ignores the Codex review as a verdict and needs the back
   assert.equal(withPass.statuses[0].state, 'success');
   assert.match(withPass.statuses[0].description, /Backup cross-family PASS for 1234567/u);
 
-  // Open Codex P1/P2 threads still block the backup path, and BLOCKED still wins.
+  // Open Codex P0-P2 threads still block the backup path, and BLOCKED still wins.
   const withThread = await runGate({
     ...labelled,
     reviews: [codexReview()],
@@ -1285,7 +1286,7 @@ test('a built-by-gpt PR ignores the Codex review as a verdict and needs the back
     threads: [codexThread('P1')],
   });
   assert.equal(withThread.statuses[0].state, 'failure');
-  assert.match(withThread.statuses[0].description, /unresolved Codex P1\/P2/u);
+  assert.match(withThread.statuses[0].description, /unresolved Codex P0-P2/u);
 
   const blocked = await runGate({
     ...labelled,

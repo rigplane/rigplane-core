@@ -277,10 +277,10 @@ it with the coordinator's token; put `@codex review` at the end of the
    head. A bare thumbs-up names no commit and is not enough. **Or** Codex did
    not review the head and the backup directive
    `Agent Review: PASS <head sha>` is present and valid as described above; and
-2. no Codex P1/P2 review thread is unresolved. Fix it with a test, or reply
+2. no Codex P0-P2 review thread is unresolved. Fix it with a test, or reply
    with the reason it is not a bug, then resolve the thread. P3 never blocks.
    This holds on both paths: a backup PASS does not override an open Codex
-   P1/P2.
+   P0-P2.
 
 A trusted, active (or malformed) `BLOCKED` directive for the head still wins
 and the status is red. If anything fails to evaluate (an API or GraphQL error),
@@ -293,7 +293,7 @@ Resolving a review thread fires no workflow event, so after resolving threads
 re-run the gate: `gh workflow run agent-review-gate.yml -f pr_number=N`.
 If the builder is itself a GPT/Codex-family model, Codex is not independent:
 label the PR `built-by-gpt`. The gate then ignores the Codex review as a
-verdict (open Codex P1/P2 threads still block) and needs the backup PASS from
+verdict (open Codex P0-P2 threads still block) and needs the backup PASS from
 a reviewer of another family. Adding or removing the label re-evaluates the
 gate.
 
@@ -334,7 +334,7 @@ implementation agent may not be the review agent.
   that it did.
 - A failed `Agent Review Gate` without valid exact-head BLOCKED feedback usually
   means Codex has not reviewed the current head yet (a person's account asks with
-  `@codex review`, then wait), an unresolved Codex P1/P2 thread remains, or, on the backup path,
+  `@codex review`, then wait), an unresolved Codex P0-P2 thread remains, or, on the backup path,
   no fresh, valid exact-head PASS directive exists; perform or refresh the
   review instead of skipping the PR.
 - A PR based on a branch other than `main` shows a partly-populated check

@@ -36,6 +36,7 @@ const thread = (body, {resolved = false, author = {login: 'chatgpt-codex-connect
   line: 7,
   comments: {nodes: [{url: 'https://x/1', body, author}]},
 });
+const P0 = '**<sub><sub>![P0 Badge](https://img.shields.io/badge/P0-red?style=flat)</sub></sub>  Bug**';
 const P1 = '**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Bug**';
 const P2 = '**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Bug**';
 const P3 = '**<sub><sub>![P3 Badge](https://img.shields.io/badge/P3-green?style=flat)</sub></sub>  Nit**';
@@ -46,10 +47,11 @@ test('review object at the exact head counts, any other sha does not', () => {
   assert.equal(codexReviewedHead({reviews: [review(OTHER)], comments: [], headSha: HEAD}).reviewed, false);
 });
 
-test('a pending review or a human review does not count', () => {
+test('a pending, dismissed or human review does not count', () => {
   const pending = {user: CODEX, commit_id: HEAD, state: 'PENDING'};
+  const dismissed = {user: CODEX, commit_id: HEAD, state: 'DISMISSED'};
   const human = {user: HUMAN, commit_id: HEAD, state: 'COMMENTED'};
-  assert.equal(codexReviewedHead({reviews: [pending, human], comments: [], headSha: HEAD}).reviewed, false);
+  assert.equal(codexReviewedHead({reviews: [pending, dismissed, human], comments: [], headSha: HEAD}).reviewed, false);
 });
 
 test('summary comment counts only when completed and for the exact head', () => {
@@ -81,6 +83,7 @@ test('a non-sha head never matches', () => {
 
 test('only unresolved Codex P1/P2 threads are findings', () => {
   const found = unresolvedCodexFindings([
+    thread(P0),
     thread(P1),
     thread(P2),
     thread(P3),
@@ -88,7 +91,7 @@ test('only unresolved Codex P1/P2 threads are findings', () => {
     thread(P1, {author: {login: 'morozsm', __typename: 'User'}}),
     {isResolved: false, comments: {nodes: []}},
   ]);
-  assert.deepEqual(found.map((f) => f.priority), ['P1', 'P2']);
+  assert.deepEqual(found.map((f) => f.priority), ['P0', 'P1', 'P2']);
 });
 
 const none = {pass: false, blocked: false, description: ''};
@@ -105,7 +108,7 @@ test('Codex reviewed but a P1/P2 thread is open -> failure even with a backup PA
   const open = [{priority: 'P2', path: 'a.py', line: 3}];
   const v = buildCodexVerdict({codex: reviewed, unresolved: open, backup: {...none, pass: true}, headSha: HEAD});
   assert.equal(v.state, 'failure');
-  assert.match(v.description, /1 unresolved Codex P1\/P2 thread\(s\): P2 a\.py:3/u);
+  assert.match(v.description, /1 unresolved Codex P0-P2 thread\(s\): P2 a\.py:3/u);
 });
 
 test('no Codex review and no backup -> failure that names the wait', () => {

@@ -9,14 +9,14 @@
 //   2. the repository's existing exact-head `Agent Review: PASS` directive from
 //      the cross-family backup reviewer (GLM / Spark) -- never silent: a person
 //      or lane script posts it only after the Codex window closed.
-// and in both cases no Codex P1/P2 review thread may be unresolved.
+// and in both cases no Codex P0/P1/P2 review thread may be unresolved.
 
 const CODEX_LOGIN = 'chatgpt-codex-connector';
 const WAIT_MINUTES = 20;
 // Set on a PR built by a GPT/Codex-family agent: Codex is then not an independent reviewer.
 const GPT_BUILT_LABEL = 'built-by-gpt';
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
-const BADGE_PATTERN = /!\[P([12]) Badge\]/u;
+const BADGE_PATTERN = /!\[P([012]) Badge\]/u;
 const STATE_PATTERN = /<!-- codex-review-state:v1 (\{.*?\}) -->/su;
 const RECEIPT_PATTERN =
   /<!-- codex-review-receipt:v1 -->[\s\S]*?\*\*Reviewed commit:\*\*\s*`([0-9a-f]{10,40})`/u;
@@ -41,7 +41,8 @@ function codexReviewedHead({reviews, comments, headSha}) {
     if (
       isCodexUser(review.user) &&
       review.commit_id === headSha &&
-      review.state !== 'PENDING'
+      review.state !== 'PENDING' &&
+      review.state !== 'DISMISSED'
     ) {
       return {reviewed: true, via: 'review'};
     }
@@ -70,7 +71,7 @@ function codexReviewedHead({reviews, comments, headSha}) {
 }
 
 // Threads come from GraphQL `reviewThreads`. A thread counts when Codex wrote
-// its first comment with a P1/P2 badge and it is not resolved, outdated or not.
+// its first comment with a P0/P1/P2 badge and it is not resolved, outdated or not.
 function unresolvedCodexFindings(threads) {
   const open = [];
   for (const thread of threads) {
@@ -106,7 +107,7 @@ function buildCodexVerdict({codex, unresolved, backup, headSha, gptBuilt = false
       .join(', ');
     return {
       state: 'failure',
-      description: `${unresolved.length} unresolved Codex P1/P2 thread(s): ${list}`.slice(0, 140),
+      description: `${unresolved.length} unresolved Codex P0-P2 thread(s): ${list}`.slice(0, 140),
     };
   }
   if (codexCounts) {
