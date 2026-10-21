@@ -24,8 +24,7 @@ Several independent fakes already exist (`MockIcomRadio` LAN simulator,
 `CivSerialFake`, `FakeCatRadio`, `tests/serial_stub.py`,
 `tests/fake_rigctld.py`), and the first five keep their own copy of
 frequency/mode/PTT state; `tests/civ_fake.py` (`CivRadioFake`) only models
-identity and records requests. Earlier attempts (MOR-2010, MOR-2492) were
-marked Done in Linear while the older doubles remain in the tree, so this
+identity and records requests. The older doubles remain in the tree, so this
 design does not make retiring them a prerequisite. It is a strangler: each
 step ships value on its own, old imports keep working (`tests/mock_server.py`,
 `rigplane_testkit.icom.MockIcomRadio`), and no step requires retiring the old
@@ -264,7 +263,7 @@ startup JSON line, control endpoint and trace are the contract in
 `sim-serve-contract.md`. The event vocabulary is shared across radios
 (`set_frequency`, `session_drop`, `power_cycle`, `keepalive_silence`,
 `lan_drop`, `usb_vanish`, `usb_reappear`, `silence`, `nak_next`, `refuse`, ...). `refuse`
-`{command, count}` makes the radio answer the named capability-profile command with
+`{command, count}` (its payload is deferred to MOR-3608; this is the intended shape) makes the radio answer the named capability-profile command with
 its refusal outcome (NAK, `?;` or silence per profile) for the next `count`
 occurrences; `nak_next` is the CI-V-only shorthand for `refuse` with the NAK
 outcome. Argument shapes are frozen in the scenario PR (MOR-3608); an event
@@ -309,15 +308,16 @@ profile.
                     for CW the reference text, for SSB nothing required
 ```
 
-All timing is expressed on one sample clock (`t_samples` at the audio rate), so
-audio and scope cannot drift apart and the engine's deterministic clock can
-replay them. `manifest.json` records how the alignment was obtained in
-`align`: `sample_exact` (one capture process stamps both streams against the
+Replay uses one timeline: every scope frame carries `t_samples` on the
+audio sample clock, and the engine's deterministic clock replays both from it.
+That timeline says nothing about how well the two streams were aligned at
+capture. `manifest.json` records that in `align`: `sample_exact` (one capture process stamps both streams against the
 same audio sample counter), `wall_clock_ms` (two processes, aligned by wall
 clock, accuracy about a few ms to tens of ms) or `approximate`. A renderer may
 use any of them; the divergence ledger states which one a calibration relied
-on, and a `wall_clock_ms` recording is not used to prove scope-to-audio timing. FT8/FT4 recordings start on a slot boundary (15 s / 7.5 s) and
-`truth.json` indexes decodes by slot.
+on, and a `wall_clock_ms` recording is not used to prove scope-to-audio timing.
+FT8/FT4 recordings start on a slot boundary (15 s / 7.5 s) and `truth.json`
+indexes decodes by slot.
 
 ### 9.2 Master sets and calibration clips
 
