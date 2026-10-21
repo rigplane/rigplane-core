@@ -279,6 +279,37 @@ async def test_cancelled_async_iteration_raises_cancelled_error(bus, mock_radio)
     await sub.aclose()
 
 
+async def test_next_does_not_swallow_a_delivered_cancel(bus, mock_radio):
+    """A cancel landing in ``wait_for``'s result-ready window must end the
+    iteration (MOR-3575 soak-teardown deadlock).
+
+    Python 3.11 ``wait_for`` discards a delivered cancellation when the
+    awaited ``get()`` completed in the same pass: it returns
+    ``fut.result()`` without re-raising. ``__anext__`` then answers
+    normally, the relay-stop path that cancelled and awaits the relay
+    task never returns, and the web server's bounded stop wedges in
+    ``_cancel_and_wait`` — the exact deadlock the serial soak runs hung
+    in. The choreography below parks the consumer, completes the inner
+    get() so its done-callback is queued but not yet run, and cancels in
+    that window.
+    """
+    sub = bus.subscribe(name="swallow")
+    await sub.start()
+
+    task = asyncio.create_task(sub.__anext__())
+    await asyncio.sleep(0)  # consumer parks inside wait_for's waiter
+    await asyncio.sleep(0)  # the inner get() parks on the empty queue
+    bus._on_opus_packet(AudioPacket(ident=0x80, send_seq=1, data=b"x"))
+    await asyncio.sleep(0)  # get() completes; its done-callback is queued
+    task.cancel()  # waiter still pending: the cancel is delivered...
+
+    done, _pending = await asyncio.wait({task}, timeout=2.0)
+    assert task in done, "consumer never finished: cancel was swallowed"
+    assert task.cancelled(), "a delivered cancellation was swallowed by __anext__"
+
+    await sub.aclose()
+
+
 async def test_stopped_empty_subscription_ends_async_iteration(bus, mock_radio):
     sub = bus.subscribe(name="s1")
     await sub.start()

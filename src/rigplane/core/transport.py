@@ -538,7 +538,19 @@ class IcomTransport:
         Raises:
             asyncio.TimeoutError: If no packet arrives within timeout.
         """
-        return await asyncio.wait_for(self._packet_queue.get(), timeout=timeout)
+        pkt = await asyncio.wait_for(self._packet_queue.get(), timeout=timeout)
+        me = asyncio.current_task()
+        if me is not None and me.cancelling():
+            # Python 3.11 wait_for discards a delivered cancellation when
+            # the inner get() completed in the same pass (it returns
+            # fut.result() without re-raising): a consumer cancelled
+            # inside receive_packet then never exits, and the teardown
+            # that cancelled and awaits it — stop_pump in the radio
+            # disconnect of an in-process soak stack — hangs forever
+            # (MOR-3575). Restore the cancellation; a pending cancel
+            # request is only visible here after such a swallow.
+            raise asyncio.CancelledError
+        return pkt
 
     # --- Internal helpers ---
 

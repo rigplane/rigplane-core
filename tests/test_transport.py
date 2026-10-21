@@ -1294,3 +1294,32 @@ async def test_unanswered_discovery_raises_discovery_timeout(
     assert isinstance(excinfo.value, TimeoutError)
     message = str(excinfo.value)
     assert message == "Radio did not respond to discovery after 2 attempts"
+
+
+async def test_receive_packet_does_not_swallow_a_delivered_cancel() -> None:
+    """A cancel landing in ``wait_for``'s result-ready window must end the
+    receive (MOR-3575 soak-teardown deadlock).
+
+    Python 3.11 ``wait_for`` discards a delivered cancellation when the
+    awaited ``get()`` completed in the same pass: it returns
+    ``fut.result()`` without re-raising. A pump cancelled inside
+    ``receive_packet`` then never exits, and the teardown that cancelled
+    and awaits it (``stop_pump`` during the radio disconnect of an
+    in-process soak stack) hangs forever — the deadlock the serial soak
+    runs were caught in, with the pump still parked in the next
+    ``receive_packet`` and ``stop_pump`` awaiting it. Same choreography
+    as the audio-subscription test: complete the inner get() so its
+    done-callback is queued but not yet run, then cancel.
+    """
+    transport = IcomTransport()
+
+    task = asyncio.create_task(transport.receive_packet(timeout=5.0))
+    await asyncio.sleep(0)  # receiver parks inside wait_for's waiter
+    await asyncio.sleep(0)  # the inner get() parks on the empty queue
+    transport._packet_queue.put_nowait(b"pkt")
+    await asyncio.sleep(0)  # get() completes; its done-callback is queued
+    task.cancel()  # waiter still pending: the cancel is delivered...
+
+    done, _pending = await asyncio.wait({task}, timeout=2.0)
+    assert task in done, "receiver never finished: cancel was swallowed"
+    assert task.cancelled(), "a delivered cancellation was swallowed by receive_packet"

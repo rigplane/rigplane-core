@@ -268,12 +268,23 @@ class AudioSubscription:
         if not self._active and self._queue.empty():
             raise StopAsyncIteration
         try:
-            return await asyncio.wait_for(self._queue.get(), timeout=1.0)
+            pkt = await asyncio.wait_for(self._queue.get(), timeout=1.0)
         except asyncio.TimeoutError:
             if not self._active:
                 raise StopAsyncIteration
             # Still active — just no data yet, keep iterating
             return None
+        me = asyncio.current_task()
+        if me is not None and me.cancelling():
+            # Python 3.11 wait_for discards a delivered cancellation when
+            # the inner get() completed in the same pass (it returns
+            # fut.result() without re-raising): a stop path that cancelled
+            # and awaits this iteration then never returns — the relay-stop
+            # deadlock the serial soak teardowns hung in (MOR-3575).
+            # A pending cancel request is only visible here after such a
+            # swallow, so restore the cancellation instead of iterating on.
+            raise asyncio.CancelledError
+        return pkt
 
     async def __aenter__(self) -> AudioSubscription:
         await self.start()
