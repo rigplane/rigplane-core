@@ -154,19 +154,30 @@ jobs:
               // Bot data is advisory: its unavailability must never change the verdict, so it is
               // read best-effort and the authoritative PASS/BLOCKED comments above decide alone.
               codexParts = {codex: {reviewed: false, via: null}, unresolved: []};
+              let advisoryTimer;
               try {
-                const reviews = await github.paginate(github.rest.pulls.listReviews, {
-                  owner,
-                  repo,
-                  pull_number,
-                  per_page: 100,
-                });
-                const threads = await readReviewThreads({github, owner, repo, number: pull_number});
-                const codex = codexReviewedHead({reviews, comments, headSha: head_sha});
-                codexParts = {codex, unresolved: unresolvedCodexFindings(threads)};
+                // Bounded, so a stalled advisory request cannot hold the status past the job timeout.
+                await Promise.race([
+                  (async () => {
+                    const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                      owner,
+                      repo,
+                      pull_number,
+                      per_page: 100,
+                    });
+                    const threads = await readReviewThreads({github, owner, repo, number: pull_number});
+                    const codex = codexReviewedHead({reviews, comments, headSha: head_sha});
+                    codexParts = {codex, unresolved: unresolvedCodexFindings(threads)};
+                  })(),
+                  new Promise((_, reject) => {
+                    advisoryTimer = setTimeout(() => reject(new Error('timed out after 30 s')), 30000);
+                  }),
+                ]);
               } catch (advisoryError) {
                 const advisoryMessage = advisoryError instanceof Error ? advisoryError.message : String(advisoryError);
                 core.notice(`Codex bot data unavailable (advisory only): ${advisoryMessage}`);
+              } finally {
+                clearTimeout(advisoryTimer);
               }
             } catch (error) {
               evaluationError = error;
