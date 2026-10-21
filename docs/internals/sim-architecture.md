@@ -88,8 +88,15 @@ radio agents should code to, names may get one rename pass in that PR.
 
 ```python
 @dataclass
-class ReceiverState:          # one per receiver (profile receiver_count)
+class VfoState:               # one tuned slot
     frequency_hz: int; mode: str; filter: int; data_mode: bool
+
+@dataclass
+class ReceiverState:          # one per receiver (profile receiver_count)
+    active: VfoState            # the VFO the radio is operating on
+    unselected: VfoState        # the other VFO slot (profiles that declare `unselected` fields,
+                                # for example IC-7300/IC-705; equal to `active` where there is none)
+    meters: dict[str, int]      # receiver-scoped readings, e.g. "s_meter" (FTX-1 declares MAIN and SUB)
     # named fields; names and allowed values come from the capability profile:
     levels: dict[str, int]      # ranged integers keyed by the capability profile's control names:
                                 # "af_level", "rf_gain", "squelch", "nr_level", ... (no aliases)
@@ -109,7 +116,11 @@ class ReceiverState:          # one per receiver (profile receiver_count)
 class SimState:
     receivers: list[ReceiverState]
     selected_receiver: int; split: bool; ptt: bool; power_on: bool
-    meters: dict[str, int]    # "s", "swr", "alc", "po", "vd" (read-only for the wire)
+    # Controls that belong to the radio, not to a receiver (power, mic gain, compressor, VOX,
+    # RIT/XIT, tuner, dial lock, CW settings, TX target, ...): the same three families and the
+    # same classification rule as in ReceiverState, keyed by the capability profile's names.
+    levels: dict[str, int]; switches: dict[str, bool]; selectors: dict[str, int]
+    meters: dict[str, int]    # radio-scoped readings: "swr", "alc", "po", "vd" (read-only for the wire)
     extra: dict[str, object]  # radio-specific fields: the sim profile's [state.extra] plus registered names
 
 class SimEngine:
@@ -147,7 +158,7 @@ ownership table below and are not part of a radio's own set:
 
 | File | Content | Required |
 | --- | --- | --- |
-| `rigplane_testkit/sim/profiles/<radio>.toml` | the simulation profile (section 6) | yes |
+| `rigplane_testkit/sim/profiles/<profile-id>.toml` | the simulation profile (section 6), one file per profile id (`ic7300-usb.toml`; a radio may have several) | yes |
 | `tests/fixtures/<radio>/*.jsonl` + `README.md` | recordings, provenance, trim rule; redaction gate clean | for tier A |
 | `tests/golden/wire_oracle/<radio>.toml` | hand-transcribed manual rows (never generated from code) | yes (tier B+) |
 | `tests/fixtures/<radio>/conformance_ledger.json` | divergences between simulator and recording; ratchet | for tier A |
@@ -244,6 +255,9 @@ reply_latency_ms = 15
 
 [faults.defaults]                # radio-specific fault behaviour (hold times, reboot time)
 # session_hold_s = 85.0
+# refusal = "nak"                # wire answer to a refused or unsupported request: "nak" (CI-V
+                                 # default), "error_reply" (Yaesu `?;`, the Yaesu default) or
+                                 # "silence"; the `refuse` scenario event may override it per event
 
 [state.extra]                    # radio-specific fields not in SimState (name = default)
 
