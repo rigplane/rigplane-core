@@ -57,8 +57,11 @@ class Abort(Exception):
 
 async def _query(reader: Any, writer: Any, line: str, timeout: float) -> str | None:
     """Send one line; return the ';'-terminated reply, or None on silence."""
-    writer.write(line.encode("ascii"))
-    await writer.drain()
+    try:
+        writer.write(line.encode("ascii"))
+        await writer.drain()
+    except OSError as error:  # BrokenPipeError, ConnectionResetError, SerialException
+        raise Abort(f"transport error sending {line}: {error!r}") from error
     try:
         raw = await asyncio.wait_for(reader.readuntil(b";"), timeout=timeout)
     except asyncio.TimeoutError:
@@ -103,9 +106,12 @@ async def run_probes(
 
 
 async def snapshot(reader: Any, writer: Any, timeout: float) -> dict[str, str | None]:
-    return {
-        line: await _query(reader, writer, line, timeout) for line in SNAPSHOT_READS
-    }
+    out: dict[str, str | None] = {}
+    for line in SNAPSHOT_READS:
+        reply = await _query(reader, writer, line, timeout)
+        classify(line, reply)  # an unsolicited or stale line aborts, it is not stored
+        out[line] = reply
+    return out
 
 
 async def main_async(args: argparse.Namespace) -> int:

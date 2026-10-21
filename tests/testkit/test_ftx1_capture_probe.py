@@ -7,6 +7,7 @@ bridge, the shape the real capture uses.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 from pathlib import Path
@@ -205,3 +206,28 @@ async def test_main_exits_2_when_the_bridge_cannot_be_opened(tmp_path) -> None:
         out=str(tmp_path / "results.json"),
     )
     assert await probe.main_async(args) == probe.EXIT_ABORT
+
+
+class _Writer:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+
+    def write(self, data: bytes) -> None:
+        if self.error is not None:
+            raise self.error
+
+    async def drain(self) -> None:
+        return None
+
+
+async def test_send_side_transport_errors_are_aborts() -> None:
+    for error in (BrokenPipeError(), ConnectionResetError()):
+        with pytest.raises(probe.Abort):
+            await probe._query(None, _Writer(error), "FA;", 0.1)
+
+
+async def test_a_stale_line_in_a_snapshot_aborts_instead_of_being_stored() -> None:
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"MD02;")  # not the answer to IF;
+    with pytest.raises(probe.Abort):
+        await probe.snapshot(reader, _Writer(), 0.1)
