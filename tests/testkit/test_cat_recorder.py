@@ -211,3 +211,45 @@ async def test_bridge_never_forwards_a_write_and_logs_it(tmp_path) -> None:
     # Per direction: the interleaving of the two directions is timing.
     assert [t for d, t in lines if d == "c2r"] == ["ID;", "FA;"]
     assert [t for d, t in lines if d == "r2c"] == ["ID0840;", "FA007074000;"]
+
+
+def _tuning_filter(*names: str):
+    config = load_rig(_RIGS / "ftx1.toml")
+    return CatReadOnlyGuard.from_config(config, names).new_filter()
+
+
+@pytest.mark.parametrize("line", ["FA014074000;", "FB007074000;", "MD02;", "MD1C;"])
+def test_allowed_tuning_writes_pass_with_their_exact_shape(line) -> None:
+    filt = _tuning_filter("set_freq", "set_freq_sub", "set_mode", "set_mode_sub")
+    assert filt.feed(line.encode()) == [(line.encode(), True)]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "FA01407400;",  # one digit short
+        "FA0140740000;",  # one digit long
+        "FA01407400X;",  # not digits
+        "MD0;",  # a read stays a read
+        "MD022;",  # one character too many
+        "TX1;",  # never allowed
+        "PS0;",
+        "AI1;",
+    ],
+)
+def test_tuning_writes_do_not_widen_anything_else(line) -> None:
+    filt = _tuning_filter("set_freq", "set_mode")
+    expected = line == "MD0;"
+    assert filt.feed(line.encode()) == [(line.encode(), expected)]
+
+
+def test_unlisted_tuning_write_stays_blocked() -> None:
+    assert _tuning_filter("set_mode").feed(b"FA014074000;") == [
+        (b"FA014074000;", False)
+    ]
+
+
+@pytest.mark.parametrize("name", ["set_ptt", "set_powerstat", "get_freq", "nope"])
+def test_only_rx_tuning_writes_can_be_allowed(name) -> None:
+    with pytest.raises(ValueError):
+        CatReadOnlyGuard.from_config(load_rig(_RIGS / "ftx1.toml"), [name])
