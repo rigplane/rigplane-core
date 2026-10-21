@@ -38,6 +38,8 @@ air = _load()
         "1a060101",  # data mode on, filter 1
         "2715000000500000",  # scope span
         "271400",  # scope mode centre
+        "160202",  # preamp 2
+        "160200",  # preamp off
     ],
 )
 def test_tuning_writes_are_allowed(body: str) -> None:
@@ -94,6 +96,7 @@ async def test_clip_on_the_fake_tunes_records_and_restores(tmp_path) -> None:
         seconds=0.3,
         slot_s=0,
         start_at=None,
+        preamp=None,
         scope_span=None,
         no_scope=True,
         no_audio=False,

@@ -120,6 +120,8 @@ def write_allowed(body: bytes) -> bool:
         return 1 <= len(rest) <= 2 and rest[0] in _VALID_MODES
     if cmd == 0x26:  # selected-VFO mode, data mode, filter
         return len(rest) == 4 and rest[0] == 0x00 and rest[1] in _VALID_MODES
+    if cmd == 0x16 and rest[:1] == b"\x02":  # preamp: 00 off, 01 P.AMP1, 02 P.AMP2
+        return len(rest) == 2 and rest[1] in (0x00, 0x01, 0x02)
     if cmd == 0x1A and rest[:1] == b"\x06":  # data mode (+ filter)
         return 2 <= len(rest) <= 3 and rest[1] in (0x00, 0x01)
     if cmd == 0x27 and rest[:1] == b"\x15":  # scope span
@@ -249,6 +251,8 @@ async def _snapshot(radio: Any, *, with_scope: bool) -> dict:
         "mode": str(mode),
         "filter": filt,
     }
+    with contextlib.suppress(Exception):
+        snap["preamp"] = int(await radio.get_preamp())
     with contextlib.suppress(Exception):  # a radio that NAKs the read: leave it alone
         snap["data_mode"] = bool(await radio.get_data_mode())
     if with_scope:
@@ -346,6 +350,7 @@ async def run_clip(
         except Exception as exc:
             print(f"connect failed: {type(exc).__name__}", file=sys.stderr)
             return 3
+        tuned_preamp: int | None = None
         before = await _snapshot(radio, with_scope=not args.no_scope)
         manifest["state_before"] = before
         print(json.dumps({"state_before": before}), flush=True)
@@ -354,6 +359,13 @@ async def run_clip(
             if "data_mode" in before:
                 await radio.set_data_mode(args.data)
             await radio.set_freq(args.freq_hz)
+            await asyncio.sleep(0.5)
+            # The preamp is stored per band: change it only after tuning, and
+            # put it back while still on the target band, before restoring.
+            if args.preamp is not None:
+                tuned_preamp = int(await radio.get_preamp())
+                manifest["preamp_on_target_band_before"] = tuned_preamp
+                await radio.set_preamp(args.preamp)
             if not args.no_scope:
                 if args.scope_span:
                     await radio.set_scope_span(args.scope_span)
@@ -389,6 +401,10 @@ async def run_clip(
         finally:
             if audio is not None:
                 manifest["audio"] = audio.stop()
+            if tuned_preamp is None:
+                tuned_preamp = manifest.get("preamp_on_target_band_before")
+            if tuned_preamp is not None:
+                await radio.set_preamp(tuned_preamp)  # still on the target band
             await _restore(radio, before)
         await asyncio.sleep(0.5)
         after = await _snapshot(radio, with_scope=not args.no_scope)
@@ -446,6 +462,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=0.0,
         help="seconds this host's clock is ahead of true UTC (corrected in all anchors)",
+    )
+    parser.add_argument(
+        "--preamp",
+        type=int,
+        choices=(0, 1, 2),
+        help="preamp for the clip (restored after)",
     )
     parser.add_argument("--no-scope", action="store_true")
     parser.add_argument("--no-audio", action="store_true")
