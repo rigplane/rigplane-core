@@ -278,9 +278,13 @@ it with the coordinator's token; put `@codex review` at the end of the
    not review the head and the backup directive
    `Agent Review: PASS <head sha>` is present and valid as described above; and
 2. no Codex P0-P2 review thread is unresolved. Fix it with a test, or reply
-   with the reason it is not a bug, then resolve the thread. P3 never blocks.
-   This holds on both paths: a backup PASS does not override an open Codex
-   P0-P2.
+   with the reason it is not a bug, then resolve the thread. A P2 that does not
+   change behaviour (documentation wording, comments, PR-body text, naming,
+   style, test-only polish, nits in internal tooling) is answered with
+   `deferred to MOR-xxxx` (one follow-up ticket per PR collects them) and
+   resolved; P0, P1 and behaviour-changing P2 are never deferred. P3 never
+   blocks. This holds on both paths: a backup PASS does not override an open
+   Codex P0-P2 thread that is neither fixed, disproved nor deferred this way.
 
 A trusted, active (or malformed) `BLOCKED` directive for the head still wins
 and the status is red. If anything fails to evaluate (an API or GraphQL error),
@@ -422,9 +426,10 @@ pre-push checklist in
 
 ### One pass, everything at once
 
-- Report every P0, P1 and P2 finding in a single review pass. Do not stop at
-  the first few; every finding left for a later pass costs the team another
-  15-30 minute round. There is no cap on the number of findings.
+- Report every finding that must be fixed (P0, P1 and behaviour-changing P2,
+  see the severity policy below) in a single review pass. Do not stop at the
+  first few; every finding left for a later pass costs the team another 15-30
+  minute round. There is no cap on the number of findings.
 - Group findings by file. Give `file:line`, the concrete input or sequence that
   breaks, and the concrete fix.
 - One comment per root cause. When the same defect appears in several places,
@@ -435,14 +440,18 @@ pre-push checklist in
 - Do not repeat a finding that was fixed or that a thread already answered
   with evidence.
 
-### Severity scope
+### Severity policy
 
-- Do not raise P3 polish (naming, style, formatting, "could be refactored").
+- Raise P0 and P1. Raise a P2 only when it changes behaviour: a wrong result or
+  verdict, data loss, state left dirty, a hang, a security or radio-transmit
+  safety defect, or a false claim about safety or support in user-facing
+  documentation.
+- Do not raise documentation wording, comments, PR-body phrasing, naming,
+  style, formatting, test-only polish, or robustness nits in internal test and
+  bench tooling that cannot change a verdict or leave state dirty. If you must
+  mention one, mark it P3.
 - For internal test and bench tooling, do not harden against attackers who do
-  not exist in the deployment; report what causes a wrong verdict, dirty state,
-  lost data or a hung run (these are P1/P2, never P3).
-- Report a comment, docstring, README or PR-body claim that is false or
-  overstates what the code does as P2.
+  not exist in the deployment.
 
 ### Defect classes to check on every change
 
