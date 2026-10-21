@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,8 @@ from rigplane_testkit.sim.engine import (
     ScheduledOp,
     SetFrequency,
     SetMeter,
+    SetSelector,
+    SimEngine,
     Unsupported,
 )
 from rigplane_testkit.sim.model.yaesu_cat import (
@@ -37,15 +40,19 @@ PROFILE_PATH = ROOT / "rigplane_testkit" / "sim" / "profiles" / "ftx1.toml"
 MODEL_PATH = ROOT / "rigplane_testkit" / "sim" / "model" / "yaesu_cat.py"
 
 
+def _engine_with(**profile_changes: object) -> SimEngine:
+    rig = load_rig(ROOT / "rigs" / "ftx1.toml")
+    profile = replace(load_sim_profile(PROFILE_PATH, root=ROOT), **profile_changes)
+    return build_ftx1_engine(profile, rig, clock=ManualClock(), seed=7)
+
+
 def _model(
     recorded: RecordedCatAnswerTable | None = None,
     on_not_modelled: Callable[[str], None] | None = None,
 ) -> YaesuCatModel:
     rig = load_rig(ROOT / "rigs" / "ftx1.toml")
-    profile = load_sim_profile(PROFILE_PATH, root=ROOT)
-    engine = build_ftx1_engine(profile, rig, clock=ManualClock(), seed=7)
     return YaesuCatModel(
-        engine,
+        _engine_with(),
         identity=rig.expected_identity_ids[0],
         recorded=recorded,
         on_not_modelled=on_not_modelled,
@@ -390,6 +397,30 @@ def test_seed_from_recording_uses_the_own_codec() -> None:
     assert model.handle("FA014074000;") == "?;"
 
 
+def test_seeding_an_if_reply_with_a_wire_safe_tail() -> None:
+    rows = [
+        {"dir": "c2r", "line": "IF;"},
+        {"dir": "r2c", "line": "IF00025147225000+000000412XYZ;"},
+    ]
+    model = _model()
+    seed_from_recording(model, RecordedCatAnswerTable.from_cat_pairs(rows))
+    assert model.engine.state.extra["if_tail"] == "XYZ"
+    assert model.handle("IF;") == "IF00025147225000+000000412XYZ;"
+
+
+def test_seeding_ignores_an_if_tail_that_breaks_the_wire_field() -> None:
+    # The recorded tail would inject a CAT terminator: it is not seeded, so
+    # the validated default stays.
+    rows = [
+        {"dir": "c2r", "line": "IF;"},
+        {"dir": "r2c", "line": "IF00025147225000+000000412A;B;"},
+    ]
+    model = _model()
+    seed_from_recording(model, RecordedCatAnswerTable.from_cat_pairs(rows))
+    assert model.engine.state.extra["if_tail"] == "003"
+    assert model.handle("IF;") == "IF00025147225000+000000412003;"
+
+
 def test_s_meter_wire_value_is_clamped_but_the_engine_keeps_what_was_set() -> None:
     model = _model()
     assert model.handle("GT01;") is None  # AGC on: the reading is reported
@@ -417,39 +448,62 @@ def test_seeding_ignores_an_s_meter_reading_outside_the_wire_domain() -> None:
     assert model.engine.read("meter:s_meter_sub") == Ok(255)
 
 
+def test_profile_initial_filter_and_data_mode_reach_receiver_0() -> None:
+    profile = load_sim_profile(PROFILE_PATH, root=ROOT)
+    initial = replace(profile.initial, filter=2, data_mode=True)
+    engine = _engine_with(initial=initial)
+    assert engine.read("filter", 0) == Ok(2)
+    assert engine.read("data_mode", 0) == Ok(True)
+    # Receiver 1 keeps the defaults.
+    assert engine.read("filter", 1) == Ok(1)
+    assert engine.read("data_mode", 1) == Ok(False)
+
+
+def test_profile_state_extra_overlays_the_model_defaults() -> None:
+    # [state.extra] calibration = 7: an unknown key passes through
+    # untouched; a model-owned key is overridden by the profile.
+    engine = _engine_with(state_extra={"calibration": 7, "if_tone_mode": 4})
+    assert engine.read("extra:calibration") == Ok(7)
+    assert engine.read("extra:if_tone_mode") == Ok(4)
+    assert engine.read("extra:memory_channel") == Ok(0)  # default kept
+
+
 @pytest.mark.parametrize(
     ("key", "value"),
     [
-        ("memory_channel", 123456),  # wider than the 5-digit field
+        ("memory_channel", 100_000),  # wider than the 5-digit field
         ("memory_channel", -1),
-        ("if_offset_hz", 12345),  # wider than the 4-digit field
-        ("if_offset_hz", -12345),
+        ("memory_channel", True),  # a bool is not an int here
+        ("if_offset_hz", 10_000),  # wider than the signed 4-digit field
+        ("if_offset_hz", -10_000),
+        ("if_tone_mode", 10),  # wider than the one-digit field
+        ("if_tone_mode", -1),
+        ("auto_information", 2),
+        ("auto_information", False),
+        ("main_memory_mode", 1),  # an int is not a bool here
+        ("if_tail", "A;B"),  # would inject a CAT terminator
+        ("if_tail", "ééé"),  # non-ASCII
+        ("if_tail", "AB"),  # not exactly 3 chars
+        ("if_tail", 3),
     ],
 )
-def test_out_of_domain_extra_values_fall_back_to_the_default_in_the_if_reply(
-    key: str, value: int
-) -> None:
+def test_build_rejects_an_out_of_domain_extra_value(key: str, value: object) -> None:
+    with pytest.raises(ValueError, match=f"state.extra.{key}"):
+        _engine_with(state_extra={key: value})
+
+
+def test_selector_domain_is_enforced_by_the_engine_on_every_write() -> None:
+    # GT05; (an AUTO-speed readback) is refused at SET, and a scenario op
+    # outside the capability domain is refused as well: the one-digit
+    # readback field can never widen, so the reply needs no guard.
     model = _model()
-    model.engine.state.extra[key] = value
-    # Identical to the default reply: the exact 5/9/4-digit field widths.
-    assert model.handle("IF;") == "IF00000147225000+000000402003;"
-
-
-def test_if_tone_mode_is_clamped_into_its_one_digit_field() -> None:
-    model = _model()
-    model.engine.state.extra["if_tone_mode"] = 12
-    assert model.handle("IF;") == "IF00000147225000+000000409003;"
-    model.engine.state.extra["if_tone_mode"] = -3
-    assert model.handle("IF;") == "IF00000147225000+000000400003;"
-
-
-def test_out_of_domain_selector_and_flag_readbacks_fall_back_to_zero() -> None:
-    model = _model()
-    # The wire fields are one digit; engine state must not widen them.
-    model.engine.state.receivers[0].selectors["agc"] = 12
+    assert model.handle("GT05;") == "?;"
+    outcome = model.engine.apply(SetSelector(0, "agc", 7))  # readback domain 0-6
+    assert not isinstance(outcome, Ok)
+    outcome = model.engine.apply(SetSelector(0, "preamp", 3))  # domain 0-2
+    assert not isinstance(outcome, Ok)
     assert model.handle("GT0;") == "GT00;"
-    model.engine.state.extra["auto_information"] = 7
-    assert model.handle("AI;") == "AI0;"
+    assert model.handle("PA0;") == "PA00;"
 
 
 def test_model_imports_only_the_allowed_modules() -> None:

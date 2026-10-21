@@ -27,14 +27,13 @@ Engine state keys are the capability profile's exact control names
 (rigs/ftx1.toml), no aliases: the levels ``af_level``/``rf_gain``/
 ``squelch``/``nb_level`` and the selectors ``agc``/``preamp``.
 
-The engine stores whatever a scenario sets (``SetMeter`` is only checked to
-be an int, and ``state.extra`` is free-form), but the wire always reports a
-value inside its field's domain: an S-meter reading is clamped to 000-255
-when encoded, and an out-of-domain ``extra`` value (``memory_channel``,
-``if_offset_hz``, ``if_tone_mode``, ``auto_information``) or selector
-readback falls back to its default, so the fixed-width replies keep their
-exact field widths. Seeding from a recording ignores an S-meter reading
-outside 000-255.
+The engine stores whatever a scenario sets. The one wire-side guard is the
+S-meter: ``SetMeter`` is only checked to be an int, so the reply reports the
+reading clamped to the 000-255 wire domain, and seeding from a recording
+ignores a reading outside it. The model-owned ``state.extra`` keys are
+validated once, when :func:`build_ftx1_engine` builds the engine (a bad
+value raises ``ValueError``), and every SET or seeding write to them stays
+in-domain, so the fixed-width replies need no fallback.
 
 FTX-1 facts fixed by tests/fixtures/ftx1/cat_pairs.jsonl: ``SM1;`` reads
 the SUB meter (``s_meter_sub``; MAIN's is ``s_meter_main``) but echoes
@@ -132,6 +131,47 @@ _EXTRA_MODE_CODES = "cat_mode_codes"
 # offset(4) clarifier rx/tx mode memory tone tail(3). The tail is seeded
 # and echoed verbatim; its meaning is not decoded.
 _IF_REPLY = re.compile(r"IF(.{5})(\d{9})([+-])(\d{4}).{2}(.)(.)(.)(.{3});")
+
+#: Domains of the model-owned ``state.extra`` int keys, enforced once by
+#: ``build_ftx1_engine`` (a bad value raises ``ValueError``) and kept by
+#: every SET/seeding write, so no reply re-checks them.
+_EXTRA_INT_DOMAINS = {
+    "memory_channel": (0, 99_999),  # 5-digit IF field
+    "if_offset_hz": (-9_999, 9_999),  # sign plus 4-digit IF field
+    "if_tone_mode": (0, 9),  # 1-digit IF field
+    "auto_information": (0, 1),  # 1-digit AI field
+}
+
+
+def _is_valid_if_tail(value: object) -> bool:
+    """The IF tail is exactly 3 printable-ASCII bytes; ``;`` would end the
+    reply early and anything non-ASCII would break the 3-byte field."""
+    return (
+        type(value) is str
+        and len(value) == 3
+        and all(" " <= ch <= "~" and ch != ";" for ch in value)
+    )
+
+
+def _validate_extra(extra: Mapping[str, object]) -> None:
+    """Reject an out-of-domain model-owned ``state.extra`` value."""
+    for key, (lo, hi) in _EXTRA_INT_DOMAINS.items():
+        value = extra.get(key)
+        if type(value) is not int or not lo <= value <= hi:
+            raise ValueError(
+                f"state.extra.{key}: expected an int in {lo}..{hi}, got {value!r}"
+            )
+    memory_mode = extra.get("main_memory_mode")
+    if type(memory_mode) is not bool:
+        raise ValueError(
+            f"state.extra.main_memory_mode: expected a bool, got {memory_mode!r}"
+        )
+    tail = extra.get("if_tail")
+    if not _is_valid_if_tail(tail):
+        raise ValueError(
+            "state.extra.if_tail: expected exactly 3 printable-ASCII chars "
+            f"other than ';', got {tail!r}"
+        )
 
 
 class _RigData(Protocol):
@@ -410,11 +450,7 @@ class YaesuCatModel:
 
     def _auto_information(self, body: str) -> str | None:
         if body == "AI":
-            value = self._extra_int("auto_information")
-            if value not in (0, 1):
-                # extra is free-form; the wire field is the one digit 0/1.
-                value = 0
-            return f"AI{value};"
+            return f"AI{self._extra_int('auto_information')};"
         if body in ("AI0", "AI1"):
             # No engine op covers this flag; extra is its documented home.
             # No unsolicited pushes are sent in this PR either way.
@@ -451,11 +487,9 @@ class YaesuCatModel:
     def _selector(self, body: str, codec: _SelectorCodec) -> str | None:
         rest = body[2:]
         if len(rest) == 1 and rest.isdigit() and int(rest) in codec.sides:
+            # The engine enforces the capability domain on every write, so
+            # the one-digit readback field cannot widen.
             value = self._read_int(f"selector:{codec.name}", int(rest))
-            if not 0 <= value <= 9:
-                # The engine validates against the capability domain, but
-                # the wire field is one digit: fall back to the default.
-                value = 0
             return f"{codec.verb}{rest}{value};"
         if (
             len(rest) == 2
@@ -491,25 +525,18 @@ class YaesuCatModel:
         code = self._mode_code(0)
         if code is None:
             return REFUSAL  # unreachable: engine modes all have codes
-        # extra is free-form (scenario data); every field that falls
-        # outside its wire width falls back to the default so the reply
-        # keeps the exact 5/9/4-digit field widths.
-        channel = self._extra_int("memory_channel")
-        if not 0 <= channel <= 99_999:
-            channel = 0
+        # The extra fields are validated when the engine is built and every
+        # write to them stays in-domain, so each already fits its exact wire
+        # width (5/9/sign+4 digits, 1 digit, 3 bytes).
         offset = self._extra_int("if_offset_hz")
-        if not -9_999 <= offset <= 9_999:
-            offset = 0
         sign = "+" if offset >= 0 else "-"
-        tone = min(max(self._extra_int("if_tone_mode", 2), 0), 9)
-        tail = self._engine.state.extra.get("if_tail", "003")
-        if type(tail) is not str or len(tail) != 3:
-            tail = "003"
         memory = "1" if self._extra_bool("main_memory_mode") else "0"
         return (
-            f"IF{channel:05d}"
+            f"IF{self._extra_int('memory_channel'):05d}"
             f"{self._read_int('frequency_hz', 0):09d}"
-            f"{sign}{abs(offset):04d}00{code}{memory}{tone}{tail};"
+            f"{sign}{abs(offset):04d}00{code}{memory}"
+            f"{self._extra_int('if_tone_mode', 2)}"
+            f"{self._engine.state.extra.get('if_tail', '003')};"
         )
 
     # ------------------------------------------------------------------
@@ -590,14 +617,22 @@ class YaesuCatModel:
         extra["main_memory_mode"] = memory == "1"
         if tone.isdigit():
             extra["if_tone_mode"] = int(tone)
-        extra["if_tail"] = tail
+        # A recorded tail that would break the 3-byte wire field is ignored.
+        if _is_valid_if_tail(tail):
+            extra["if_tail"] = tail
 
 
 def build_ftx1_engine(
     profile: SimProfile, rig: _RigData, *, clock: Clock, seed: int = 0
 ) -> SimEngine:
     """Build the FTX-1 engine: capabilities from *rig* (the loaded
-    ``rigs/ftx1.toml``), receiver-0 initial state from *profile*."""
+    ``rigs/ftx1.toml``), receiver-0 initial state from *profile*.
+
+    The profile's ``[state.extra]`` is overlaid on the model's own extra
+    defaults (profile values win, unknown keys pass through untouched) and
+    the model-owned keys are then validated: a bad value raises
+    ``ValueError``.
+    """
     if rig.receiver_count != 2:
         raise ValueError(f"{rig.model!r}: the model expects 2 receivers")
     if not rig.mode_codes or len(rig.mode_codes) != len(rig.modes):
@@ -632,22 +667,32 @@ def build_ftx1_engine(
     main_mode = profile.initial.mode
     if main_mode is None:
         main_mode = caps.modes[0]
+    main_filter = profile.initial.filter
+    main_data_mode = profile.initial.data_mode
+    extra = {
+        "auto_information": 0,
+        "main_memory_mode": False,
+        "memory_channel": 0,
+        "if_offset_hz": 0,
+        "if_tone_mode": 2,
+        "if_tail": "003",
+        _EXTRA_MODE_NAMES: ",".join(rig.modes),
+        _EXTRA_MODE_CODES: "".join(rig.mode_codes),
+    }
+    extra.update(dict(profile.state_extra))  # profile values win
+    _validate_extra(extra)
     initial = SimState(
         receivers=[
-            ReceiverState(frequency_hz=main_hz, mode=main_mode),
+            ReceiverState(
+                frequency_hz=main_hz,
+                mode=main_mode,
+                filter=1 if main_filter is None else main_filter,
+                data_mode=False if main_data_mode is None else main_data_mode,
+            ),
             ReceiverState(frequency_hz=default_hz, mode=caps.modes[0]),
         ],
         meters={"s_meter_main": 0, "s_meter_sub": 0},
-        extra={
-            "auto_information": 0,
-            "main_memory_mode": False,
-            "memory_channel": 0,
-            "if_offset_hz": 0,
-            "if_tone_mode": 2,
-            "if_tail": "003",
-            _EXTRA_MODE_NAMES: ",".join(rig.modes),
-            _EXTRA_MODE_CODES: "".join(rig.mode_codes),
-        },
+        extra=extra,
     )
     return SimEngine(caps, clock=clock, seed=seed, initial=initial)
 
