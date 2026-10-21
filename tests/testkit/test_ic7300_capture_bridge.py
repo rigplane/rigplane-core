@@ -20,7 +20,7 @@ def _load(name: str):
 
 
 bridge = _load("bridge")
-guard = bridge.make_guard("IC-7300", 0x94)
+guard = bridge.make_guard("IC-7300", 0x94).allows
 
 
 def frame(body_hex: str) -> bytes:
@@ -82,7 +82,7 @@ async def test_probe_driver_through_the_guarded_bridge_is_never_blocked(
         "fake-tty",
         out,
         opener=fake.opener,
-        c2r_guard=bridge.make_guard("IC-7300", 0x94),
+        client_filter=bridge.make_guard("IC-7300", 0x94).new_filter,
     )
     await rec.start()
     radio = create_radio(
@@ -106,5 +106,5 @@ async def test_probe_driver_through_the_guarded_bridge_is_never_blocked(
     finally:
         await radio.disconnect()
         await rec.stop()
-    assert rec.blocked_frames == 0
+    assert rec.blocked_lines == 0
     assert {r["class"] for r in results} <= {"data", "nak", "ack"}

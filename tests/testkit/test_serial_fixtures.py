@@ -116,7 +116,7 @@ def test_blocked_frames_are_counted_and_never_rows(tmp_path) -> None:
     path = _recording(
         tmp_path,
         [
-            (0.1, "c2r_blocked", "fefe94e0050000071400fd"),
+            (0.1, "blocked", "fefe94e0050000071400fd"),
             (0.2, "c2r", FREQ_REQ),
             (0.3, "r2c", FREQ_REPLY),
         ],

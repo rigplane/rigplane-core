@@ -8,12 +8,12 @@ unchanged for this radio (`--model IC-7300 --radio-addr 0x94`).
 ## Pieces
 
 - `bridge.py` — `SerialCivRecorder` (TCP↔serial bridge, JSONL) with a client
-  frame guard. A client pointed at `socket://HOST:PORT` reaches the radio only
+  frame guard (`CivFrameGuard` on the recorder's `client_filter`). A client pointed at `socket://HOST:PORT` reaches the radio only
   with frames the guard accepts: every `get_*` body of `rigs/ic7300.toml`
   (minus the refused families PTT/tuner/power/set-frequency/VFO/memory
   write/CW/scan, same allow-list as the IC-7610 probe) and the four scope
   switches `27 10 00/01`, `27 11 00/01`. Anything else is dropped before the
-  serial port and recorded as `c2r_blocked`; the exit summary counts blocked
+  serial port and recorded as `blocked`; the exit summary counts blocked
   frames per command byte.
 - `scope_session.py` — production client through the bridge: read the scope
   panel/wave-output state (reads), enable the scope, count completed scope

@@ -19,14 +19,6 @@ and the file is flushed after every line. CI-V serial traffic carries no
 credentials, so no ``redacted`` key exists. One TCP client is served at a
 time; a second concurrent connection is closed immediately and counted in
 ``rejected_connections``.
-
-An optional ``c2r_guard`` makes the bridge a read-only gate for a bench
-radio: client bytes are re-assembled into complete ``FE FE ... FD`` frames,
-a frame the guard accepts is recorded as ``c2r`` and forwarded, a refused
-one is recorded as ``c2r_blocked``, counted in ``blocked_frames`` and never
-reaches the device. The reply stays silent (the client sees a timeout), so a
-client that wants to write simply gets no answer. Bytes outside a frame are
-dropped and counted the same way.
 """
 
 from __future__ import annotations
@@ -101,9 +93,12 @@ class SerialCivRecorder:
         listen_port: Bind port (0 = ephemeral).
         opener: Replacement for the real serial open step; tests mount
             :class:`rigplane_testkit.serial.CivSerialFake` via ``fake.opener``.
-        c2r_guard: Predicate over one complete client frame; ``False``
-            blocks it (see the module docstring). ``None`` forwards raw
-            chunks untouched, as before.
+        client_filter: Optional factory called once per client connection;
+            the object it returns has ``feed(data) -> (forward, blocked)``.
+            Only ``forward`` reaches the device (and the ``c2r`` rows);
+            each ``blocked`` line is logged as a ``blocked`` row and counted
+            in ``blocked_lines``. :class:`rigplane_testkit.yaesu.CatReadOnlyGuard`
+            uses it to make a CAT capture RX-only.
     """
 
     def __init__(
@@ -115,7 +110,7 @@ class SerialCivRecorder:
         listen_host: str = "127.0.0.1",
         listen_port: int = 0,
         opener: Any = None,
-        c2r_guard: Callable[[bytes], bool] | None = None,
+        client_filter: Callable[[], Any] | None = None,
     ) -> None:
         self._device = device
         self._baudrate = baudrate
@@ -123,12 +118,12 @@ class SerialCivRecorder:
         self._listen_host = listen_host
         self._listen_port = listen_port
         self._opener = opener
+        self._client_filter = client_filter
         self._file: IO[str] | None = None
         self._t0 = 0.0
         self.records_written = 0
         self.rejected_connections = 0
-        self.blocked_frames = 0
-        self._c2r_guard = c2r_guard
+        self.blocked_lines = 0
         self._server: asyncio.Server | None = None
         self._serial_reader: asyncio.StreamReader | None = None
         self._serial_writer: Any = None
@@ -219,18 +214,22 @@ class SerialCivRecorder:
             return
         self._client_writer = writer
         self._client_task = asyncio.current_task()
-        guard_buf = bytearray()
+        client_filter = self._client_filter() if self._client_filter else None
         try:
             while True:
                 data = await reader.read(_CHUNK)
                 if not data:
                     break
-                if self._c2r_guard is None:
-                    self._record("c2r", data)
-                    self._serial_writer.write(data)
-                    await self._serial_writer.drain()
-                else:
-                    await self._forward_guarded(guard_buf, data)
+                if client_filter is not None:
+                    data, blocked = client_filter.feed(data)
+                    for line in blocked:
+                        self.blocked_lines += 1
+                        self._record("blocked", line)
+                    if not data:
+                        continue
+                self._record("c2r", data)
+                self._serial_writer.write(data)
+                await self._serial_writer.drain()
         except OSError as error:
             logger.warning("client→serial pump ended: %s", error)
         finally:
@@ -238,38 +237,6 @@ class SerialCivRecorder:
             if self._client_writer is writer:
                 self._client_writer = None
             self._client_task = None
-
-    async def _forward_guarded(self, buf: bytearray, data: bytes) -> None:
-        """Split client bytes into frames; forward the accepted, block the rest."""
-        assert self._c2r_guard is not None
-        buf += data
-        while True:
-            start = buf.find(_PREAMBLE)
-            if start < 0:
-                # A trailing FE may be the first half of the next preamble.
-                keep = 1 if buf and buf[-1] == _PREAMBLE[0] else 0
-                if len(buf) > keep:
-                    self._block(bytes(buf[: len(buf) - keep]))
-                del buf[: len(buf) - keep]
-                return
-            if start:
-                self._block(bytes(buf[:start]))
-                del buf[:start]
-            end = buf.find(_TERMINATOR, 2)
-            if end < 0:
-                return
-            frame = bytes(buf[: end + 1])
-            del buf[: end + 1]
-            if self._c2r_guard(frame):
-                self._record("c2r", frame)
-                self._serial_writer.write(frame)
-                await self._serial_writer.drain()
-            else:
-                self._block(frame)
-
-    def _block(self, data: bytes) -> None:
-        self.blocked_frames += 1
-        self._record("c2r_blocked", data)
 
     async def _pump_serial_to_client(self) -> None:
         try:

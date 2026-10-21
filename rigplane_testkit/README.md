@@ -176,9 +176,6 @@ What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fa
   complete `FE FE ... FD` frames per direction. CLI:
   `python -m rigplane_testkit.serial record --device DEV --out FILE
   [--baud 115200] [--listen-host H] [--listen-port P]`.
-  An optional `c2r_guard=` predicate turns the bridge into a read-only gate:
-  client bytes are re-assembled into frames, a refused frame never reaches
-  the device and is recorded as `c2r_blocked` (counted in `blocked_frames`).
   `python -m rigplane_testkit.serial.fixtures extract` trims a bridge
   recording into `civ_pairs.jsonl` rows (first occurrence per request, echo,
   closing reply, scope sweeps; unsolicited frames summarised apart); the

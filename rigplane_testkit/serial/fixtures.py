@@ -21,7 +21,7 @@ sequence maximum) are kept as ``r2c`` rows; every wave frame seen feeds the
 cadence summary (frame count and first/last time), which is what a
 frames-per-second baseline is computed from.
 
-Frames the bridge refused (``c2r_blocked``) are never rows; their count is
+Chunks the bridge refused (``blocked`` rows) are never rows; their count is
 returned so a capture log can say what a client tried and was not allowed.
 
 CLI::
@@ -105,7 +105,7 @@ def extract_window(
         )
 
     for t, direction, frame in civ_frames(path):
-        if direction == "c2r_blocked":
+        if direction == "blocked":
             out.blocked_frames += 1
             continue
         if direction == "c2r":

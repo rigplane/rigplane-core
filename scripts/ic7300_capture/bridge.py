@@ -10,7 +10,7 @@ profile, minus the refused command families) plus the four scope switches
 scope window needs and which the product's own scope session restores.
 
 Everything else is dropped before the serial port and written to the
-recording as ``c2r_blocked``; the exit summary prints blocked-frame counts
+recording as ``blocked``; the exit summary prints blocked-chunk counts
 per command, never frame contents.
 
 Usage::
@@ -36,7 +36,7 @@ from probe import load_profile  # noqa: E402
 from probe_list import build_allowed_bodies, is_forbidden  # noqa: E402
 
 from rigplane.commands import CONTROLLER_ADDR  # noqa: E402
-from rigplane_testkit.serial.recorder import SerialCivRecorder  # noqa: E402
+from rigplane_testkit.serial import CivFrameGuard, SerialCivRecorder  # noqa: E402
 
 #: Scope panel / wave-output switches (``27 10 xx``, ``27 11 xx``).
 SCOPE_SWITCH_BODIES = frozenset(
@@ -44,8 +44,8 @@ SCOPE_SWITCH_BODIES = frozenset(
 )
 
 
-def make_guard(model: str, radio_addr: int):
-    """Predicate over one client frame: ``True`` = forward to the radio."""
+def make_guard(model: str, radio_addr: int) -> CivFrameGuard:
+    """The frame guard for ``SerialCivRecorder(client_filter=guard.new_filter)``."""
     allowed = build_allowed_bodies(load_profile(model))
 
     def guard(frame: bytes) -> bool:
@@ -56,7 +56,7 @@ def make_guard(model: str, radio_addr: int):
             return True
         return not is_forbidden(body, allowed)
 
-    return guard
+    return CivFrameGuard(guard)
 
 
 def blocked_summary(path: Path) -> dict[str, int]:
@@ -64,9 +64,9 @@ def blocked_summary(path: Path) -> dict[str, int]:
     counts: collections.Counter[str] = collections.Counter()
     for line in path.read_text().splitlines():
         row = json.loads(line)
-        if row["dir"] == "c2r_blocked":
+        if row["dir"] == "blocked":
             raw = bytes.fromhex(row["hex"])
-            counts[f"{raw[4]:02x}" if len(raw) > 4 else "junk"] += 1
+            counts[f"{raw[4]:02x}" if raw[:2] == b"\xfe\xfe" and len(raw) > 4 else "junk"] += 1
     return dict(sorted(counts.items()))
 
 
@@ -77,7 +77,7 @@ async def _run(args: argparse.Namespace) -> int:
         baudrate=args.baud,
         listen_host=args.listen_host,
         listen_port=args.listen_port,
-        c2r_guard=make_guard(args.model, args.radio_addr),
+        client_filter=make_guard(args.model, args.radio_addr).new_filter,
     )
     await rec.start()
     print(f"bridge up: socket://{args.listen_host}:{rec.listen_port}", flush=True)
@@ -97,7 +97,7 @@ async def _run(args: argparse.Namespace) -> int:
         json.dumps(
             {
                 "records": rec.records_written,
-                "blocked_frames": rec.blocked_frames,
+                "blocked_chunks": rec.blocked_lines,
                 "blocked_by_command": blocked_summary(Path(args.out)),
             }
         )
