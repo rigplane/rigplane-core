@@ -18,7 +18,7 @@ import logging
 import os
 import socket as _socket
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace as _replace_dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -158,6 +158,7 @@ from rigplane.commands import (
     parse_ack_nak,
     parse_band_stack_response,
     parse_bool_response,
+    parse_memory_entry,
     parse_data_mode_response,
     parse_frequency_response,
     parse_level_response,
@@ -217,6 +218,7 @@ from rigplane.core.types import (
     CivFrame,
     FilterShape,
     MemoryChannel,
+    MemoryEntry,
     Mode,
     RepeaterShiftDirection,
     ScopeCompletionPolicy,
@@ -6250,6 +6252,46 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         await self._send_fire_and_forget(
             self._commands.build_memory_contents_set(mem, to_addr=self._radio_addr)
         )
+
+    async def read_memory_entries(
+        self, group: int, channels: Sequence[int]
+    ) -> list[MemoryEntry]:
+        """Read stored memory channels without selecting them (``1A 00``).
+
+        One read per channel at background priority, in order, so polls and
+        PTT stay ahead of a sweep. ``group`` is the memory group (IC-705) or
+        band code (IC-9700) per the profile's ``[memory]`` section; an empty
+        slot comes back as an empty entry. Raises :class:`CommandError` when
+        the profile declares no memory channels or the radio answers a
+        different slot than asked.
+        """
+        self._check_connected()
+        memory = self._profile.memory
+        if memory is None:
+            raise CommandError(f"{self._profile.model} declares no memory channels")
+        entries: list[MemoryEntry] = []
+        for channel in channels:
+            civ = self._commands.build_memory_entry_read(
+                memory, group, channel, to_addr=self._radio_addr
+            )
+            resp = await self._send_civ_expect(
+                civ,
+                label=f"read_memory_entry {group}/{channel}",
+                priority=Priority.BACKGROUND,
+            )
+            try:
+                entry = parse_memory_entry(resp.data, memory)
+            except ValueError as exc:
+                raise CommandError(
+                    f"unreadable memory slot {group}/{channel}: {exc}"
+                ) from exc
+            if (entry.group, entry.channel) != (group, channel):
+                raise CommandError(
+                    f"radio answered memory slot {entry.group}/{entry.channel} "
+                    f"to a read of {group}/{channel}"
+                )
+            entries.append(entry)
+        return entries
 
     async def get_bsr(self, band: int, register: int) -> BandStackRegister:
         """Read band stacking register (band 0-24, register 1-3).

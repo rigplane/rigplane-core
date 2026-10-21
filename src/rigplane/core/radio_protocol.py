@@ -71,7 +71,7 @@ if TYPE_CHECKING:
     from rigplane.runtime._poller_types import CommandQueue
     from rigplane.scope import ScopeFrame
     from .tx_observation import TxStateReading
-    from .types import BandStackRegister, MemoryChannel, ScopeFixedEdge
+    from .types import BandStackRegister, MemoryChannel, MemoryEntry, ScopeFixedEdge
 
 __all__ = [
     "Radio",
@@ -128,6 +128,7 @@ __all__ = [
     "UsbAudioCapable",
     "ProviderOwnedStateCapable",
     "MemoryCapable",
+    "MemoryReadCapable",
     "RadioIdentity",
     "RadioIdentityStatus",
 ]
@@ -2119,6 +2120,21 @@ class RitXitCapable(Protocol):
 
     async def set_rit_tx_status(self, on: bool) -> None:
         """Set RIT TX (XIT) on/off status."""
+        ...
+
+
+@runtime_checkable
+class MemoryReadCapable(Protocol):
+    """Radio can read its stored memory channels without selecting them.
+
+    Read-only (MOR-3627): the write path is :class:`MemoryCapable`. ``group``
+    is the memory group or band code the profile's ``[memory]`` section names.
+    """
+
+    async def read_memory_entries(
+        self, group: int, channels: Sequence[int]
+    ) -> list[MemoryEntry]:
+        """Read the given channels of one group, in order."""
         ...
 
 

@@ -84,6 +84,7 @@ These are primarily used by automation, deployment scripts, and operator tooling
 | `POST` | `/api/v1/band-plan/config` | Change region + reload band plans |
 | `GET` | `/api/v1/band-plan/layers` | Loaded overlay layers |
 | `GET` | `/api/v1/band-plan/segments?...` | Band-plan segments for selected range |
+| `GET` | `/api/v1/memories?group=&start=&count=` | Stored memory channels, read-only (radios whose profile has `[memory]`) |
 | `POST` | `/api/v1/eibi/fetch` | Download/refresh EiBi DB |
 | `GET` | `/api/v1/eibi/status` | EiBi loader status |
 | `GET` | `/api/v1/eibi/stations` | EiBi station list (paged/filterable) |

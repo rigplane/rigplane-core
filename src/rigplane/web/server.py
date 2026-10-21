@@ -67,6 +67,7 @@ from ..core.command_dispatch import (
     prepare_command_intent,
 )
 from ..core.exceptions import CommandError, CommandRejectedError
+from ..core.exceptions import ConnectionError as RadioConnectionError
 from ..core.state_pipeline_contracts import (
     CommandIntent,
     CommandLifecycleEvent,
@@ -5006,6 +5007,72 @@ class WebServer:
         await _send_response(
             writer, 200, "OK", body, {"Content-Type": "application/json"}
         )
+
+    async def _serve_memories(
+        self,
+        writer: asyncio.StreamWriter,
+        query: dict[str, list[str]],
+    ) -> None:
+        """GET /api/v1/memories?group=<n>&start=<n>&count=<n> (read-only, MOR-3627).
+
+        Reads stored memory channels from the radio without selecting them.
+        """
+        from rigplane.core.radio_protocol import MemoryReadCapable
+
+        from .memory_api import page_payload, parse_memory_query  # noqa: TID251
+
+        radio = self._radio
+        if radio is None:
+            await self._send_json(
+                writer,
+                503,
+                "Service Unavailable",
+                {"error": "no_radio", "message": "No radio configured"},
+            )
+            return
+        profile = self._resolve_profile_if_identified()
+        memory = getattr(profile, "memory", None)
+        if (
+            memory is None
+            or "memory_read" not in self._projected_runtime_capabilities()
+            or not isinstance(radio, MemoryReadCapable)
+        ):
+            await self._send_json(
+                writer,
+                404,
+                "Not Found",
+                {"error": "unsupported", "message": "Radio has no memory listing"},
+            )
+            return
+        try:
+            group, channels = parse_memory_query(query, memory)
+        except ValueError as exc:
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {"error": "bad_request", "message": str(exc)},
+            )
+            return
+        try:
+            entries = await radio.read_memory_entries(group, channels)
+        except (ConnectionError, RadioConnectionError) as exc:
+            await self._send_json(
+                writer,
+                503,
+                "Service Unavailable",
+                {"error": "not_connected", "message": str(exc)},
+            )
+            return
+        except (CommandError, RigplaneTimeoutError) as exc:
+            await self._send_json(
+                writer,
+                502,
+                "Bad Gateway",
+                {"error": "memory_read_failed", "message": str(exc)},
+            )
+            return
+        await self._send_json(writer, 200, "OK", page_payload(memory, group, entries))
 
     async def _serve_band_plan_layers(self, writer: asyncio.StreamWriter) -> None:
         """GET /api/v1/band-plan/layers"""

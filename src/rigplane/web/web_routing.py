@@ -718,6 +718,8 @@ async def _dispatch_http_routes(
         await server._serve_band_plan_segments(writer, query or {})
     elif path == "/api/v1/band-plan/layers":
         await server._serve_band_plan_layers(writer)
+    elif path == "/api/v1/memories":
+        await server._serve_memories(writer, query or {})
     elif path == "/api/v1/audio/analysis":
         await server._serve_audio_analysis(writer, headers)
     elif path == "/" or path == "/index.html":
