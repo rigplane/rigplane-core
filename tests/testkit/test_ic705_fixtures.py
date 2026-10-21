@@ -112,7 +112,11 @@ def test_vhf_uhf_rows_are_wellformed_reads_only() -> None:
     answers = json.loads((FIXTURES / "probe_answers.json").read_text())["answers"]
     probe_gets = {bytes.fromhex(a["frame"])[4:-1] for a in answers}
     for row in rows:
+        assert row["transport"] == "usb"
+        assert row["dir"] in ("c2r", "r2c")
         frame = bytes.fromhex(row["frame"])
         assert frame[:2] == b"\xfe\xfe" and frame[-1:] == b"\xfd"
+        to, src = (RADIO, CONTROLLER) if row["dir"] == "c2r" else (CONTROLLER, RADIO)
+        assert (frame[2], frame[3]) == (to, src)
         if row["dir"] == "c2r":
             assert frame[4:-1] in probe_gets, frame.hex()  # exact GET, no setter
