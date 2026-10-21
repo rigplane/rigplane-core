@@ -41,6 +41,6 @@ sample_format = "s16le" # usb_audio.json core_capture (device-native PCM)
 
 [scope]
 frame = "27 00"
-bins = 475          # 27 00 sweep payload in the scope window: 1+9*50+25 bytes over 11 USB segments
+bins = 475          # 27 00 pixels in the scope window: nine 50-byte middle segments + one 25-byte final segment (segment 1 carries only scope metadata)
 span_hz = 50_000    # recorded 27 15 00 reply 00 00 05 00 00 (BCD) in the scope window
 rate_hz = 4.128     # scope_cadence.json radio_wave.sweeps_per_s (usb_civ)
