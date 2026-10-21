@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
 import sys
@@ -118,3 +119,36 @@ async def test_clip_on_the_fake_tunes_records_and_restores(tmp_path) -> None:
     bodies = [w["body"] for w in manifest["writes_through_bridge"]]
     assert any(b.startswith("05") for b in bodies)  # tune
     assert manifest["files"].keys() >= {audios[0].path.name}
+
+
+async def test_start_at_overrides_the_slot_wait_and_is_recorded(tmp_path) -> None:
+    """``--start-at`` must set the audio start, not the next 15 s slot boundary."""
+    fake = CivSerialFake(echo=False, frequency_hz=7_100_000, mode=0x00)
+    target = datetime.now(timezone.utc) + timedelta(seconds=2.5)
+    args = argparse.Namespace(
+        clip="ft8",
+        device="fake-tty",
+        out_dir=str(tmp_path),
+        baud=115200,
+        radio_addr=0x94,
+        freq_hz=14_074_000,
+        mode="USB",
+        data=False,
+        seconds=0.2,
+        slot_s=15,  # would wait for the next :00/:15/:30/:45 without start_at
+        start_at=target.isoformat(),
+        preamp=None,
+        scope_span=None,
+        no_scope=True,
+        no_audio=False,
+    )
+    audios: list[_StubAudio] = []
+
+    def factory(path: Path) -> _StubAudio:
+        audios.append(_StubAudio(path))
+        return audios[-1]
+
+    assert await air.run_clip(args, opener=fake.opener, audio_factory=factory) == 0
+    manifest = json.loads(next(tmp_path.glob("*.manifest.json")).read_text())
+    started = datetime.fromisoformat(manifest["slot_start_wall_utc"])
+    assert abs((started - target).total_seconds()) < 0.01

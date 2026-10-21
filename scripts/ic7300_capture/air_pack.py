@@ -30,9 +30,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from rigplane.commands import parse_civ_frame
-from rigplane.scope import ScopeAssembler
-from rigplane_testkit.serial.recorder import civ_frames
+sys.path.insert(
+    0, str(Path(__file__).resolve().parents[2])
+)  # repo root: rigplane_testkit
+
+from rigplane.commands import parse_civ_frame  # noqa: E402
+from rigplane.scope import ScopeAssembler  # noqa: E402
+from rigplane_testkit.serial.recorder import civ_frames  # noqa: E402
 
 _SCOPE_CMD, _WAVE_SUB = 0x27, 0x00
 

@@ -374,7 +374,9 @@ async def run_clip(
             manifest["state_tuned"] = await _snapshot(
                 radio, with_scope=not args.no_scope
             )
-            if args.slot_s:
+            if args.start_at:
+                manifest["slot_start_wall_utc"] = _iso(await _wait_until(args.start_at))
+            elif args.slot_s:
                 manifest["slot_start_wall_utc"] = _iso(
                     await _wait_for_slot(args.slot_s)
                 )
