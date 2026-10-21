@@ -105,19 +105,17 @@ valid answer; skipping the question is not.
    the ChatGPT subscription. If the file is missing (the worktree was not
    created by a lane script), stop and ask the coordinator to provision it (a
    copy of the lane scripts' `pre-review.sh`), and do not push until it prints
-   `PRE-REVIEW: CLEAN`. The script runs Codex read-only on the branch diff and writes every P0-P2
-   finding, grouped by file, to `tmp/pre-review.md`. Fix all of them, fix the
-   siblings of each that lie inside your assigned scope (list the others in the
-   PR body), commit, and run it again until it prints `PRE-REVIEW: CLEAN`. The
-   reports are working files, not retained reports: they stay in the git-ignored
-   `tmp/` only while findings are open, and the script deletes them when it
-   prints CLEAN (only a one-line verdict outside the worktree stays). A builder
-   whose environment can read outside the checkout may set
-   `PRE_REVIEW_OUT_DIR` to a private directory outside it. Do not copy the
-   reports into the PR, a handoff or a checkpoint. If a
-   finding is wrong, put the evidence in `tmp/pre-review-reply.md`. If round
-   four still reports findings, do not push: the change is usually too big or
-   has a design flaw, so report what is left to the coordinator.
+   `PRE-REVIEW: CLEAN`. The script runs Codex read-only on the branch diff and
+   prints every P0-P2 finding, grouped by file, as its output. Fix all of them,
+   fix the siblings of each that lie inside your assigned scope (list the others
+   in the PR body), commit, and run it again until it prints
+   `PRE-REVIEW: CLEAN`. If a finding is wrong, pass the evidence with
+   `tmp/pre-review.sh -R '<evidence>'`; the next round reads it. The script
+   keeps its working files (prompt, diff, round reports, rebuttals) outside the
+   checkout, in a private directory of the coordinator's lane scripts, and
+   deletes them when it prints CLEAN; nothing is written into the repository.
+   If round four still reports findings, do not push: the change is usually
+   too big or has a design flaw, so report what is left to the coordinator.
 3. Push once per round. Never push a fix per finding: each push can start a new
    GitHub review.
 
