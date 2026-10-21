@@ -47,6 +47,12 @@ SNAPSHOT_READS = (
     "TX;",
 )
 
+# A data reply starts with the whole request body (``NA1;`` -> ``NA1x;``), so a
+# late reply to the previous request that merely shares the verb is rejected.
+# The one recorded exception: the radio answers the SUB S-meter read with the
+# side digit echoed as 0 (rigs/ftx1.toml: get_s_meter_sub).
+_ECHO_EXCEPTIONS = {"SM1;": "SM0"}
+
 EXIT_DIFF = 1
 EXIT_ABORT = 2
 
@@ -79,7 +85,9 @@ def classify(line: str, reply: str | None) -> str:
         return "silence"
     if reply == "?;":
         return "refusal"
-    if reply[:2] == line[:2]:
+    if reply.startswith(line[:-1]) or reply.startswith(
+        _ECHO_EXCEPTIONS.get(line, "\0")
+    ):
         return "data"
     raise Abort(f"unexpected reply to {line}: {reply!r}")
 

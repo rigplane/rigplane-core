@@ -62,6 +62,11 @@ def test_classify() -> None:
     assert probe.classify("KS;", None) == "silence"
     with pytest.raises(probe.Abort):
         probe.classify("FA;", "MD02;")
+    assert probe.classify("SM1;", "SM0000;") == "data"  # recorded SUB echo quirk
+    with pytest.raises(probe.Abort):  # a late reply that only shares the verb
+        probe.classify("NA1;", "NA00;")
+    with pytest.raises(probe.Abort):
+        probe.classify("CT1;", "CT000;")
 
 
 async def _bridge(tmp_path, radio):
