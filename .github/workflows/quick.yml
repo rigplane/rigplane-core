@@ -195,7 +195,7 @@ jobs:
 
       - name: Agent Review Gate parser tests
         if: needs.classify.outputs.ci == 'true'
-        run: node --test .github/scripts/agent-review-gate.test.js
+        run: node --test .github/scripts/agent-review-gate.test.js .github/scripts/codex-review-gate.test.js
 
       - name: Merge queue gate tests
         if: needs.classify.outputs.ci == 'true'

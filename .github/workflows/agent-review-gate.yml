@@ -1,14 +1,32 @@
 name: Agent Review Gate
 
+# Codex-primary gate (MOR-3616): the status is green when Codex reviewed the
+# exact head and no Codex P1/P2 thread is open, or, when Codex did not review,
+# when the cross-family backup reviewer posted the strict exact-head
+# `Agent Review: PASS <sha>` directive (never while a Codex P1/P2 thread is
+# open). Codex does not review pushes by itself, so a push asks it with
+# `@codex review`. Rules and logic: .github/scripts/codex-review-gate.js
+# (shared verbatim with rigplane-pro), .github/scripts/agent-review-gate.js
+# (the directive parser), AGENTS.md "Protected main and review gate".
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
   issue_comment:
     types: [created, edited, deleted]
+  # Resolving a review thread fires no workflow event and GitHub Actions has no
+  # pull_request_review_thread trigger: re-evaluate on demand with
+  # `gh workflow run agent-review-gate.yml -f pr_number=N`.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request to re-evaluate
+        required: true
 
 permissions:
   contents: read
-  issues: read
+  issues: write
   pull-requests: read
   statuses: write
 
@@ -21,11 +39,17 @@ concurrency:
   # every non-qualifying run lands in its own github.run_id group and cancels
   # nothing. cancel-in-progress stays true for qualifying runs because a
   # newer qualifying run re-lists and re-evaluates every PR comment, so the
-  # superseded evaluation's verdict is recomputed from scratch.
-  # Per-run REST calls, counted from the steps below: 3
-  # fixed calls (pulls.get, repos.getCommit, repos.createCommitStatus) plus
-  # one issues.listComments page per 100 comments.
-  group: agent-review-gate-${{ github.event.issue.pull_request && github.event.issue.number || github.event.pull_request.number }}-${{ (github.event_name == 'pull_request' || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:')))) && 'eval' || github.run_id }}
+  # superseded evaluation's verdict is recomputed from scratch. The predicate
+  # also covers the events that carry Codex's verdict: a Codex PR review, any
+  # comment by the Codex bot (its summary comment is edited in place on every
+  # review, so `edited` matters), and the manual re-evaluation dispatch.
+  # Per-run REST calls, counted from the steps below: 3 fixed calls
+  # (pulls.get, repos.getCommit, repos.createCommitStatus), plus one
+  # issues.listComments page per 100 comments, plus one pulls.listReviews page
+  # per 100 reviews, plus at most one issues.createComment (the `@codex review`
+  # request, only on a synchronize/reopened run). The review threads come from
+  # GraphQL (one query page per 100 threads), which is not a REST call.
+  group: agent-review-gate-${{ github.event.issue.pull_request && github.event.issue.number || github.event.pull_request.number || inputs.pr_number }}-${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review' || github.event_name == 'workflow_dispatch' || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:'))) || (github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]')) && 'eval' || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -36,13 +60,15 @@ jobs:
     # it on the first non-blank line; contains() is case-insensitive, a
     # superset). An edit that turns a directive into prose is caught through
     # the pre-edit body github.event.changes.body.from; a deletion carries
-    # the deleted comment's body in github.event.comment.body.
-    if: github.event_name == 'pull_request' || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:')))
+    # the deleted comment's body in github.event.comment.body. Codex's own
+    # comments (summary, receipt) carry no directive, so they are matched by
+    # author instead; its reviews arrive as pull_request_review events.
+    if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review' || github.event_name == 'workflow_dispatch' || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:'))) || (github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]')
     # API-only workflow via actions/github-script -- no compile/test toolchain
     # needed. Keep this on GitHub-hosted runners so PR merges are not blocked
     # when self-hosted build runners are offline or occupied.
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
 
     steps:
       - name: Resolve pull request number
@@ -50,7 +76,10 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const number = context.payload.pull_request?.number ?? context.payload.issue?.number;
+            const number =
+              context.payload.pull_request?.number ??
+              context.payload.issue?.number ??
+              Number(context.payload.inputs?.pr_number);
             const {owner, repo} = context.repo;
             const {data: pull} = await github.rest.pulls.get({
               owner,
@@ -59,6 +88,7 @@ jobs:
             });
             core.setOutput('number', String(number));
             core.setOutput('head_sha', pull.head.sha);
+            core.setOutput('draft', String(pull.draft === true));
             const {data: commit} = await github.rest.repos.getCommit({
               owner,
               repo,
@@ -85,10 +115,18 @@ jobs:
             const pull_number = Number('${{ steps.pr.outputs.number }}');
             const head_sha = '${{ steps.pr.outputs.head_sha }}';
             const committed_at = new Date('${{ steps.pr.outputs.committed_at }}');
+            const draft = '${{ steps.pr.outputs.draft }}' === 'true';
             const {owner, repo} = context.repo;
             let result = {state: 'failure', passCount: 0, blockedCount: 0, malformedBlockedCount: 0};
             let evaluationError = null;
+            let codexParts = null;
             try {
+              if (Number.isNaN(committed_at.valueOf())) {
+                // The resolver step could not read the commit time. Codex's verdict does not
+                // depend on it, so without this guard a Codex-reviewed head would go green
+                // although the run is red; the directive path alone already denies in this case.
+                throw new Error('the head commit time is unknown');
+              }
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner,
                 repo,
@@ -102,11 +140,42 @@ jobs:
                 headSha: head_sha,
                 committedAt: committed_at,
               });
+              // Codex-primary layer (MOR-3616): the module is shared verbatim with rigplane-pro.
+              const codexPath = `${process.env.GITHUB_WORKSPACE}/.github/scripts/codex-review-gate.js`;
+              const {
+                codexReviewedHead,
+                readReviewThreads,
+                shouldRequestCodex,
+                unresolvedCodexFindings,
+              } = require(codexPath);
+              const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                owner,
+                repo,
+                pull_number,
+                per_page: 100,
+              });
+              const threads = await readReviewThreads({github, owner, repo, number: pull_number});
+              const codex = codexReviewedHead({reviews, comments, headSha: head_sha});
+              // Codex reviews a PR when it opens and when a draft becomes ready, never on a push:
+              // ask it once per pushed head (not for drafts, not when it already reviewed this head).
+              if (
+                ['synchronize', 'reopened'].includes(context.payload.action) &&
+                shouldRequestCodex({comments, committedAt: committed_at, draft, reviewed: codex.reviewed})
+              ) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: pull_number,
+                  body: '@codex review',
+                });
+              }
+              codexParts = {codex, unresolved: unresolvedCodexFindings(threads)};
             } catch (error) {
               evaluationError = error;
               const message = error instanceof Error ? error.message : String(error);
               core.error(`Agent Review Gate evaluation failed closed: ${message}`);
             }
+            const target_url = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
             let status;
             try {
               const parserPath = `${process.env.GITHUB_WORKSPACE}/.github/scripts/agent-review-gate.js`;
@@ -115,10 +184,28 @@ jobs:
                 owner,
                 repo,
                 headSha: head_sha,
-                targetUrl: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+                targetUrl: target_url,
                 result,
                 evaluationFailed: evaluationError !== null,
               });
+              // buildCommitStatus fails closed on an evaluation error or an invalid result (the
+              // two cases share this description); only a trustworthy directive result is composed
+              // with the Codex verdict.
+              if (status.description !== 'Agent Review Gate evaluation failed closed.') {
+                const {buildCodexVerdict} = require(
+                  `${process.env.GITHUB_WORKSPACE}/.github/scripts/codex-review-gate.js`,
+                );
+                const verdict = buildCodexVerdict({
+                  ...codexParts,
+                  backup: {
+                    pass: result.state === 'success',
+                    blocked: result.blockedCount > 0 || result.malformedBlockedCount > 0,
+                    description: status.description,
+                  },
+                  headSha: head_sha,
+                });
+                status = {...status, state: verdict.state, description: verdict.description};
+              }
             } catch (error) {
               evaluationError ??= error;
               status = {
@@ -128,12 +215,12 @@ jobs:
                 state: 'failure',
                 context: 'Agent Review Gate',
                 description: 'Agent Review Gate evaluation failed closed.',
-                target_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+                target_url,
               };
             }
             await github.rest.repos.createCommitStatus(status);
-            if (result.state !== 'success') {
-              core.notice(`Agent Review Gate denied: ${result.passCount} eligible PASS, ${result.blockedCount} binding BLOCKED, ${result.malformedBlockedCount} malformed BLOCKED.`);
+            if (status.state !== 'success') {
+              core.notice(`Agent Review Gate denied: ${status.description} (${result.passCount} eligible PASS, ${result.blockedCount} binding BLOCKED, ${result.malformedBlockedCount} malformed BLOCKED).`);
             }
             if (evaluationError !== null) {
               core.setFailed('Agent Review Gate evaluation failed; a failure status was published.');
