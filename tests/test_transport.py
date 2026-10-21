@@ -1296,30 +1296,95 @@ async def test_unanswered_discovery_raises_discovery_timeout(
     assert message == "Radio did not respond to discovery after 2 attempts"
 
 
-async def test_receive_packet_does_not_swallow_a_delivered_cancel() -> None:
-    """A cancel landing in ``wait_for``'s result-ready window must end the
-    receive (MOR-3575 soak-teardown deadlock).
+def _parked_on_queue_get(task: asyncio.Task[object]) -> bool:
+    """True when ``task`` is suspended awaiting a Future at the bottom of
+    its coroutine chain — the queue getter the receiver parks on when the
+    queue is empty. Cancelling after this check lands on a genuinely
+    pending receive on every supported Python version, not on one that
+    already finished. In CPython ``await future`` bottoms out at the
+    C-level ``FutureIter`` wrapper rather than the Future itself, so the
+    FutureIter shape counts as parked-on-a-future too (nothing can have
+    woken the receiver at the points this is used).
+    """
+    coro: object = task.get_coro()
+    for _ in range(8):
+        nxt = getattr(coro, "cr_await", None)
+        if nxt is None:
+            return False
+        if isinstance(nxt, asyncio.Future):
+            return not nxt.done()
+        if type(nxt).__name__ == "FutureIter":
+            return not task.done()
+        coro = nxt
+    return False
 
-    Python 3.11 ``wait_for`` discards a delivered cancellation when the
-    awaited ``get()`` completed in the same pass: it returns
-    ``fut.result()`` without re-raising. A pump cancelled inside
-    ``receive_packet`` then never exits, and the teardown that cancelled
-    and awaits it (``stop_pump`` during the radio disconnect of an
-    in-process soak stack) hangs forever — the deadlock the serial soak
-    runs were caught in, with the pump still parked in the next
-    ``receive_packet`` and ``stop_pump`` awaiting it. Same choreography
-    as the audio-subscription test: complete the inner get() so its
-    done-callback is queued but not yet run, then cancel.
+
+async def test_receive_cancel_while_pending_on_empty_queue_ends_cancelled() -> None:
+    """A cancel of a receiver genuinely parked on the empty queue must end
+    the receive as cancelled on every supported Python (MOR-3575).
     """
     transport = IcomTransport()
 
     task = asyncio.create_task(transport.receive_packet(timeout=5.0))
-    await asyncio.sleep(0)  # receiver parks inside wait_for's waiter
-    await asyncio.sleep(0)  # the inner get() parks on the empty queue
-    transport._packet_queue.put_nowait(b"pkt")
-    await asyncio.sleep(0)  # get() completes; its done-callback is queued
-    task.cancel()  # waiter still pending: the cancel is delivered...
+    await asyncio.sleep(0)  # the receiver runs to its first real suspension
+    assert _parked_on_queue_get(task), "receiver is not parked on the queue get"
+    task.cancel()
 
     done, _pending = await asyncio.wait({task}, timeout=2.0)
     assert task in done, "receiver never finished: cancel was swallowed"
-    assert task.cancelled(), "a delivered cancellation was swallowed by receive_packet"
+    assert task.cancelled(), "a cancel of a parked receiver was not delivered"
+
+
+async def test_receive_cancel_racing_a_delivered_packet_ends_cancelled() -> None:
+    """A cancel arriving in the same loop pass as packet delivery must win
+    (MOR-3575): the receive ends cancelled and the packet stays queued
+    for the next consumer instead of being lost.
+
+    This is the race the serial soak teardowns deadlocked in (a pump
+    cancelled inside ``receive_packet`` never exited and ``stop_pump``
+    awaited it forever), restated deterministically: the packet resolves
+    the getter, and the cancel is requested before the receiver's wakeup
+    runs — exactly one wakeup, no scheduling lottery.
+    """
+    transport = IcomTransport()
+
+    task = asyncio.create_task(transport.receive_packet(timeout=5.0))
+    await asyncio.sleep(0)  # the receiver runs to its first real suspension
+    assert _parked_on_queue_get(task), "receiver is not parked on the queue get"
+    transport._packet_queue.put_nowait(b"pkt")
+    # No yield here: the getter is resolved but the receiver has not run,
+    # so the cancel is requested into the same wakeup the packet scheduled.
+    task.cancel()
+
+    done, _pending = await asyncio.wait({task}, timeout=2.0)
+    assert task in done, "receiver never finished: cancel was swallowed"
+    assert task.cancelled(), "a cancel racing a delivered packet was swallowed"
+    assert transport._packet_queue.get_nowait() == b"pkt", (
+        "the racing packet was consumed or lost"
+    )
+
+
+async def test_receive_during_cancellation_cleanup_returns_the_packet() -> None:
+    """A receiver that caught CancelledError and awaits an already queued
+    packet during cleanup must get that packet, not a fresh CancelledError
+    (MOR-3575). The old ``Task.cancelling()`` guard broke exactly this:
+    the historical count made every later receive look cancelled.
+    """
+    transport = IcomTransport()
+    transport._packet_queue.put_nowait(b"cleanup-pkt")
+
+    async def cleanup_receiver() -> bytes:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            pass  # cleanup begins; the cancel request count stays raised
+        return await transport.receive_packet(timeout=5.0)
+
+    task = asyncio.create_task(cleanup_receiver())
+    await asyncio.sleep(0)  # the receiver parks in the sleep
+    assert not task.done()
+    task.cancel()
+
+    got = await task
+    assert got == b"cleanup-pkt"
+    assert not task.cancelled()

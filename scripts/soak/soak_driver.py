@@ -812,9 +812,10 @@ def _run_owned_ports(stack: Any) -> frozenset[int]:
 def _probe_connection_ports(writer: Any) -> frozenset[int] | None:
     """The two endpoint ports of the probe request's own connection.
 
-    The handler's ``writer`` carries the server side; its endpoint
-    ports name the connection exactly (two open sockets cannot share a
-    pair), covering the client side too. ``None`` when unreadable.
+    The handler's ``writer`` carries the server side. Port numbers alone
+    do not identify a connection across addresses and protocols, so the
+    pair is only a best-effort match for the probe's sockets, not an
+    exact connection identity. ``None`` when unreadable.
     """
     try:
         sock = None if writer is None else writer.get_extra_info("socket")
@@ -836,10 +837,12 @@ def _owned_socket_fd_count(
     the count makes no claim about the rest of the process. ``None``
     when no FD directory can be listed, so the caller keeps the
     reported value. ``skip_ports`` names the endpoint ports of one
-    connection — the live probe's own request — and removes exactly
-    that connection's sockets: counting them would inflate a
-    runtime-route baseline by two FDs the fallback route cannot see and
-    mask a real leak of the smallest detectable size (MOR-3575).
+    connection — the live probe's own request — and removes every
+    socket matched by those ports (a port-based best-effort match, not
+    a unique connection identity): counting the probe's sockets would
+    inflate a runtime-route baseline by two FDs the fallback route
+    cannot see and mask a real leak of the smallest detectable size
+    (MOR-3575).
     """
     for fd_dir in ("/proc/self/fd", "/dev/fd"):
         try:
@@ -1023,9 +1026,11 @@ class ProcessMetricsSampler:
                 )
         if rss is None or fds is None:
             # Give a just-finished or refused probe request one loop
-            # pass to finish closing its transport, so the fallback
-            # never counts its own dying socket (on a /proc host the
-            # metrics helper below takes no await that would do it).
+            # pass to finish closing its transport: this reduces the
+            # chance that the fallback counts the probe's own dying
+            # socket, but one pass is not a guarantee of closure
+            # (on a /proc host the metrics helper below takes no await
+            # that would do it either).
             await asyncio.sleep(0)
             d_rss, d_fds = await _driver_side_process_metrics(os.getpid())
             if rss is None:
