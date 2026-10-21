@@ -40,9 +40,10 @@ Walk this list against your own diff, then run the local pre-review, then push.
   lines); it does not replace them. The exceptions above change the target
   only, never the hard ceiling.
 
-## 2. Defect classes to walk, function by function
+## 2. Defect classes to walk, unit by unit
 
-For each changed or added function, ask every question. "Not applicable" is a
+For each changed or added unit (a function, a workflow step, a configuration or
+schema declaration, a shell command, a documentation claim), ask every question. "Not applicable" is a
 valid answer; skipping the question is not.
 
 1. **Untrusted or dynamic input.** Does the value come from a file, socket,
