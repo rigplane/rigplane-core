@@ -51,6 +51,15 @@ closes it (`python -m rigplane_testkit.yaesu.fixtures extract`).
   (same value, 2 m and HF values, FM and USB mode); `MD0` SETs were accepted
   (the change shows in `IF;`). The fake accepts `FA` sets silently — a known
   divergence of the write path (MOR-3602).
+- **AGC state of the capture: MAIN AGC was OFF** (`GT00;` in every snapshot
+  and in the 10-minute session; SUB read `GT14;` = AUTO). `SM0;` (MAIN
+  S-meter) answered `SM0000;` for the whole capture, and so did `SM1;` (SUB,
+  AGC AUTO, no antenna). The likely cause of the MAIN reading is AGC OFF
+  (on most rigs the S-meter is driven by AGC) — not proven: no signal was
+  present on SUB either. The simulator should reproduce "MAIN S-meter stays
+  0 while MAIN AGC is OFF" (pinned for the recording by
+  `test_recording_pins_smeter_zero_with_main_agc_off`); the AGC setting was
+  not changed.
 - Calibration clips (mode-only, current frequency) are private audio, not in
   this repository.
 

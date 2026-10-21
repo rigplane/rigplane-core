@@ -105,3 +105,9 @@ def test_the_recording_pins_the_radio_identity_and_the_one_refusal() -> None:
 @pytest.mark.parametrize("request_line", ["FA;", "MD0;", "TX;", "PS;", "AI;", "ID;"])
 def test_state_the_fake_holds_is_seeded_from_the_recording(request_line) -> None:
     assert _table().lookup(request_line) is not None
+
+
+def test_recording_pins_smeter_zero_with_main_agc_off() -> None:
+    table = _table()
+    assert table.lookup("GT0;").reply == "GT00;"  # type: ignore[union-attr]  # MAIN AGC OFF
+    assert table.lookup("SM0;").reply == "SM0000;"  # type: ignore[union-attr]
