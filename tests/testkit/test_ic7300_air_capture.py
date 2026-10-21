@@ -100,6 +100,7 @@ async def test_clip_on_the_fake_tunes_records_and_restores(tmp_path) -> None:
         preamp=None,
         scope_span=None,
         no_scope=True,
+        no_data_mode=True,
         no_audio=False,
     )
     audios: list[_StubAudio] = []
@@ -140,6 +141,7 @@ async def test_start_at_overrides_the_slot_wait_and_is_recorded(tmp_path) -> Non
         preamp=None,
         scope_span=None,
         no_scope=True,
+        no_data_mode=True,
         no_audio=False,
     )
     audios: list[_StubAudio] = []
@@ -254,3 +256,70 @@ def test_a_failed_wav_write_is_reported_not_swallowed(tmp_path) -> None:
     assert stats["valid"] is False
     assert stats["writer_error"].startswith("FileNotFoundError")
     assert stats["frames"] == 0  # nothing is queued for a dead writer
+
+
+def _args(tmp_path, **over):
+    base = dict(
+        clip="ft8", device="fake-tty", out_dir=str(tmp_path), baud=115200,
+        radio_addr=0x94, freq_hz=14_074_000, mode="USB", data=False,
+        seconds=0.1, slot_s=0, start_at=None, preamp=None, scope_span=None,
+        no_scope=True, no_data_mode=False, no_audio=False,
+    )  # fmt: skip
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+async def test_unreadable_data_mode_refuses_before_changing_anything(tmp_path) -> None:
+    fake = CivSerialFake(echo=False, frequency_hz=7_100_000, mode=0x00)  # no 1A 06
+    with pytest.raises(RuntimeError, match="data mode"):
+        await air.run_clip(_args(tmp_path), opener=fake.opener)
+    assert fake.frequency_hz == 7_100_000 and fake.mode == 0x00  # untouched
+
+
+class _ScopeRadio:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def restore_scope_session_state(self, state):
+        self.calls.append("restore")
+        raise TimeoutError("panel write timed out")
+
+    async def disable_scope(self):
+        self.calls.append("disable")
+
+
+async def test_a_failed_panel_restore_still_turns_the_wave_output_off() -> None:
+    radio = _ScopeRadio()
+    before = {
+        "freq_hz": 1, "mode": "USB", "filter": 1,
+        "scope_panel": True, "scope_wave_output": False,
+    }  # fmt: skip
+    radio.set_mode = radio.set_freq = lambda *a: _noop()
+    errors = await air._restore(radio, before, tuned_preamp=None)
+    assert radio.calls == ["restore", "disable"]
+    assert len(errors) == 1 and errors[0].startswith("scope_session: TimeoutError")
+
+
+async def _noop() -> None:
+    return None
+
+
+def test_air_pack_refuses_a_clip_whose_audio_is_invalid(tmp_path) -> None:
+    import importlib.util as iu
+
+    path = REPO_ROOT / "scripts" / "ic7300_capture" / "air_pack.py"
+    spec = iu.spec_from_file_location("ic7300_air_pack_t", path)
+    mod = iu.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    manifest = tmp_path / "x.manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "clip": "ft8",
+                "audio": {"valid": False, "callback_status": {"input overflow": 2}},
+            }
+        )
+    )
+    with pytest.raises(SystemExit, match="invalid"):
+        mod.pack(manifest, tmp_path / "out", kind="hf_master")

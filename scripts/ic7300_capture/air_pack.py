@@ -101,6 +101,12 @@ def pack(
     wav = base.with_suffix(".wav")
     civ = base.with_suffix(".civ.jsonl")
     audio = manifest["audio"]
+    if audio.get("valid") is False:
+        raise SystemExit(
+            "refusing to pack: the clip's audio is marked invalid "
+            f"(callback_status={audio.get('callback_status')}, "
+            f"writer_error={audio.get('writer_error')})"
+        )
     rate = audio["sample_rate_hz"]
     total = audio["frames"]
     audio_start = _wall(audio["start_wall_utc"])

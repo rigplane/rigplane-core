@@ -321,14 +321,21 @@ async def _restore(radio: Any, before: dict, tuned_preamp: int | None) -> list[s
             setter = getattr(radio, f"set_{name}")
             steps.append((name, lambda setter=setter, name=name: setter(before[name])))
     if "scope_panel" in before:
-        steps.append(
-            (
-                "scope_session",
-                lambda: radio.restore_scope_session_state(
+
+        async def restore_scope() -> None:
+            try:
+                await radio.restore_scope_session_state(
                     (before["scope_panel"], before["scope_wave_output"])
-                ),
-            )
-        )
+                )
+            except Exception:
+                # The composite call stops at its first failed write; the wave
+                # output must not stay on because the panel write failed.
+                if not before["scope_wave_output"]:
+                    with contextlib.suppress(Exception):
+                        await radio.disable_scope()
+                raise
+
+        steps.append(("scope_session", restore_scope))
     errors: list[str] = []
     for name, step in steps:
         try:
@@ -414,9 +421,21 @@ async def run_clip(
         before = await _snapshot(radio, with_scope=not args.no_scope)
         manifest["state_before"] = before
         print(json.dumps({"state_before": before}), flush=True)
+        # Refuse BEFORE touching the radio when something we are about to
+        # change cannot be read back and restored, or the requested mode cannot
+        # be established.
+        if "data_mode" not in before and not args.no_data_mode:
+            raise RuntimeError(
+                "cannot read the data mode; refusing to capture "
+                "(--no-data-mode skips it for a radio without that setting)"
+            )
+        if args.scope_span and "scope_span" not in before:
+            raise RuntimeError(
+                "cannot read the scope span, so it could not be restored"
+            )
         try:
             await radio.set_mode(args.mode)
-            if "data_mode" in before:
+            if not args.no_data_mode:
                 await radio.set_data_mode(args.data)
             await radio.set_freq(args.freq_hz)
             await asyncio.sleep(0.5)
@@ -537,6 +556,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         choices=(0, 1, 2),
         help="preamp for the clip (restored after)",
+    )
+    parser.add_argument(
+        "--no-data-mode",
+        action="store_true",
+        help="do not set or restore the data mode (radio without that setting)",
     )
     parser.add_argument("--no-scope", action="store_true")
     parser.add_argument("--no-audio", action="store_true")
