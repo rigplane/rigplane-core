@@ -252,7 +252,8 @@ def _banner_fake(tmp_path, fixture_only: bool) -> YaesuCatSerialFake:
     if not fixture_only:
         return _fake()
     recording = Path("tests/fixtures/ftx1/cat_pairs.jsonl")
-    for relative in (recording, adapter._RIG_REL):
+    # The rig loader reads the CTCSS catalog next to the profile.
+    for relative in (recording, adapter._RIG_REL, Path("rigs/_ctcss_tables_v1.toml")):
         target = tmp_path / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((ROOT / relative).read_bytes())
