@@ -16,7 +16,6 @@ missing from the ledger fails, and so does a ledger entry no longer observed.
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import json
 import statistics
