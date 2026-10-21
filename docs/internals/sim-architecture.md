@@ -220,12 +220,13 @@ gaps      = ["no write command recorded", "scope waves not recorded"]   # shown 
 [transport.serial]               # or [transport.lan] / [transport.yaesu_cat]
 baud      = 19200                # as recorded, not as the capability profile's default
 echo      = false
-# identity = "a4"               # Rule (one): if the capability profile declares
+# identity = "xx"               # Rule (one): if the capability profile declares
                                  # [identity].expected_ids, `identity` is optional and, when
-                                 # present, must be one of them; if it declares none (the IC-705,
-                                 # recorded 19 00 -> A4), `identity` is required and must come
-                                 # from a recording or documentation, never be invented. A radio
-                                 # with no documented id has no simulation profile until one is.
+                                 # present, must be one of them; if it declares none, `identity`
+                                 # is required and its bytes must come from a recording or from
+                                 # documentation named in `evidence`, never be invented ("xx"
+                                 # is a placeholder, not a value). A radio with no documented id
+                                 # has no simulation profile until one is.
 
 [initial]                        # starting state, all optional
 frequency_hz = 14263000
@@ -248,10 +249,12 @@ reply_latency_ms = 15
 
 [audio.rx]                       # SELECTION among what the capability profile declares (section 9)
 transport = "usb_device"         # lan_stream | usb_device (a simulation choice)
-# sample_rate_hz / channels / sample_format: omit to take the capability profile's value (a codec
-# preference is resolved through the audio stream resolver's codec table); when the capability
-# profile declares neither a value nor a codec, the field is REQUIRED here and the loader
-# refuses a profile that leaves it out; when given it must be one the capability profile allows
+# sample_rate_hz / channels / sample_format: omit to take the capability profile's value; when it
+# declares only a codec preference, the simulator's own audio module resolves the codec name to
+# rate/channels/format through a small table it owns (frozen in the audio PR, MOR-3603; no
+# import of the production audio resolver, see the matrix in section 3); when the capability
+# profile declares neither, the field is REQUIRED here and the loader refuses a profile that
+# leaves it out; when given it must be one the capability profile allows
 
 [scope]                          # simulation-only parameters of the scope source
 rate_hz = 10                     # frame rate the simulator emits (not a capability value)
