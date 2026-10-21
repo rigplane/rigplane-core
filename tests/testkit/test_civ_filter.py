@@ -85,3 +85,11 @@ def test_a_truncated_frame_does_not_swallow_the_next_valid_one() -> None:
     flt = CivFrameGuard(_only_reads).new_filter()
     truncated = bytes.fromhex("fefe94e003")  # no FD
     assert flt.feed(truncated + READ) == [(truncated, False), (READ, True)]
+
+
+def test_an_oversized_prefix_does_not_swallow_a_frame_that_is_still_arriving() -> None:
+    flt = CivFrameGuard(_only_reads).new_filter()
+    junk = b"\xfe\xfe" + b"\x94" * 200
+    started = bytes.fromhex("fefe94e003")  # a valid read, FD not here yet
+    assert flt.feed(junk + started) == [(junk, False)]
+    assert flt.feed(b"\xfd") == [(READ, True)]

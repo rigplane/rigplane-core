@@ -54,6 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     wav = manifest_path.with_name(
         next(n for n in manifest["files"] if n.endswith(".wav"))
     )
+    if manifest["audio"].get("valid") is False:
+        raise SystemExit(
+            "refusing to decode: the clip's audio is marked invalid "
+            f"(callback_status={manifest['audio'].get('callback_status')}, "
+            f"writer_error={manifest['audio'].get('writer_error')})"
+        )
     frames = manifest["audio"]["frames"]
     rate = manifest["audio"]["sample_rate_hz"]
     slots = slot_names(manifest["slot_start_wall_utc"], frames / rate)

@@ -71,8 +71,15 @@ class CivFrameFilter:
             end = self._buf.find(_TERMINATOR, 2)
             if end < 0:
                 if len(self._buf) > _MAX_FRAME:
-                    out.append((bytes(self._buf), False))
-                    self._buf.clear()
+                    # Oversized and unterminated: block it, but keep a later
+                    # preamble (the start of a valid frame whose FD has not
+                    # arrived yet).
+                    restart = self._buf.rfind(_PREAMBLE, 2)
+                    cut = restart if restart > 0 else len(self._buf)
+                    out.append((bytes(self._buf[:cut]), False))
+                    del self._buf[:cut]
+                    if restart > 0:
+                        continue
                 break
             # A truncated frame followed by a valid one: the first FD belongs to
             # the later preamble. Block the broken head, restart at the last

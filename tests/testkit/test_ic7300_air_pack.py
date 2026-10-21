@@ -89,3 +89,20 @@ def test_pack_puts_scope_frames_on_the_audio_sample_clock(tmp_path) -> None:
     assert doc["audio"]["sample_rate_hz"] == rate
     assert doc["state"]["frequency_hz"] == 14_074_000
     assert (tmp_path / "air" / "truth.json").exists()
+
+
+def test_ft8_truth_refuses_a_clip_whose_audio_is_invalid(tmp_path) -> None:
+    import pytest
+
+    path = REPO_ROOT / "scripts" / "ic7300_capture" / "ft8_truth.py"
+    spec = importlib.util.spec_from_file_location("ic7300_ft8_truth", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    manifest = tmp_path / "x.manifest.json"
+    manifest.write_text(
+        json.dumps({"files": {"x.wav": {}}, "audio": {"valid": False, "frames": 1}})
+    )
+    with pytest.raises(SystemExit, match="invalid"):
+        mod.main([str(manifest)])
