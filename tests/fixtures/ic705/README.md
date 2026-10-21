@@ -19,12 +19,12 @@ captured (see "Open"). Linear: MOR-3609 (capture), MOR-3605 (personality).
 
 Capture steps (each behind its own recorder instance):
 
-1. `probe` - `scripts/ic7610_capture/probe.py --backend serial --model IC-705 --radio-addr 0xA4`: every `get_*` of `rigs/ic705.toml` once, paced 0.3 s, plus four unknown commands (answer class and latency per command: `probe_answers.json`).
+1. `probe` - `scripts/ic7610_capture/probe.py --backend serial --model IC-705 --radio-addr 0xA4`: the safe subset of `rigs/ic705.toml` getters once, paced 0.3 s (the probe driver deliberately leaves out the 0x07, 0x0E and 0x1C families and `1A 00`: `get_vfo`, `get_scan`, `get_transceiver_status`, `get_tuner_status`, `get_xfc_status`, `get_memory_contents` and similar were NOT asked, so they are untested on hardware), plus four unknown commands (answer class and latency per command: `probe_answers.json`).
 2. `scope` - `rigplane --backend serial ... web --no-rigctld --no-discovery` for ~90 s; a client of `/api/v1/ws` and `/api/v1/scope` counted frames for 60 s. The recording keeps the client's startup reads, the scope switches and five complete scope sweeps.
 3. `readonly_session` - `rigplane validate --hardware --allow-hardware --read-only`.
 4. Probe repeated after steps 2-3 to prove nothing stayed changed: 105 of 107 answers identical, the two differences are the S-meter and the radio clock.
 
-Trim rule: `python -m rigplane_testkit.serial.fixtures extract` (first occurrence of every distinct client request and the reply that closes it; five whole scope sweeps; on this port the radio does NOT echo requests, so there is no echo row). Raw recordings stay private.
+Trim rule, applied with the serial extractor of Core PR #4284 (`rigplane_testkit.serial.fixtures extract`, MOR-3595; not on main when this was written, the rule is stated here so the output can be reproduced by hand): first occurrence of every distinct client request and the reply that closes it; five whole scope sweeps; on this port the radio does NOT echo requests, so there is no echo row. Raw recordings stay private.
 
 Redaction: `python -m rigplane_testkit.redaction_gate` was run over every file here with a private deny list (host names, user names, the radio's USB serial number); clean. The CI-V `1A 05` items in the files are clock, date, UTC offset and a few menu values only; no network item (IP, user, password) was read.
 
