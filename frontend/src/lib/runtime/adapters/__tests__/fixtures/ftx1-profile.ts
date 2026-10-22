@@ -17,6 +17,9 @@
  * values are the serializer's own output. MOR-2530 updates the selector
  * projection to match the empty `rigs/ftx1.toml` `[filters].list`; the
  * endpoint contract is pinned in `tests/test_web_capability_guards.py`.
+ * MOR-3679 adds `modeFamilies` (`{"cw": ["CW-U", "CW-L"]}`), the value the
+ * same handler serves once `rigs/ftx1.toml` declares `[modes] families`
+ * (pinned by `tests/web/test_state_wire_goldens.py`).
  */
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';

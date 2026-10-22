@@ -295,7 +295,7 @@ directly and/or use `asyncio`). They are **not** batch-eligible. Use
 | `get_system_time` | — | `system_settings` | No | Returns `{hour, minute}`. |
 | `get_dual_watch` | — | `dual_watch` | No | Returns `{on: bool}`. |
 | `get_tuner_status` | — | `tuner` | No | Returns `{status: int, label: str}`. `label`: `"OFF"`, `"ON"`, or `"TUNING"`. |
-| `send_cw_text` | `text: str` (≤512 chars) | `cw` | No | Sends CW keyed text. TX command — rejected in read-only mode. |
+| `send_cw_text` | `text: str` (≤ `cwText.maxLength`) | `cw` | No | Sends CW keyed text when `cwText.supported`; longer text is refused (`invalid_request`), never truncated; a radio with `cwText.supported: false` answers `unsupported_command`. TX command — rejected in read-only mode. |
 | `stop_cw_text` | — | `cw` | No | Stops CW text transmission. TX command — rejected in read-only mode. |
 | `get_break_in_delay` | — | `break_in` | No | Returns `{level: int}`. |
 | `get_dash_ratio` | — | `cw` | No | Returns `{value: int}`. |

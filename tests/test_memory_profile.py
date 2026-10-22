@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
 
 from rigplane.profiles import MemoryProfile, get_radio_profile
-from rigplane.profiles.rig_loader import RigLoadError, load_rig
+from rigplane.profiles import RadioProfile
+from rigplane.profiles.rig_loader import RigConfig, RigLoadError, load_rig
 from test_profile_identity_metadata import _minimal_toml, _write_toml
 
 
@@ -78,3 +80,9 @@ def test_recall_is_accepted_only_for_group_channel_addressing(tmp_path: Path) ->
         "last_channel = 99", "last_channel = 99\nrecall = true"
     )
     assert _load(tmp_path, group).to_profile().memory.recall is True
+
+
+@pytest.mark.parametrize("cls", [RigConfig, RadioProfile])
+def test_memory_is_keyword_only_so_no_positional_argument_shifts(cls: type) -> None:
+    by_name = {f.name: f for f in dataclasses.fields(cls)}
+    assert by_name["memory"].kw_only is True

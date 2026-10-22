@@ -537,6 +537,8 @@ max_watts = 100
 
 [modes]
 list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R", "PSK", "PSK-R"]
+# MOR-3679: the CW modes, named once here for every client.
+families = { cw = ["CW", "CW-R"] }
 
 [data_mode]
 # CI-V 0x1A 0x06: DATA sub-mode (0=OFF, 1=DATA1, 2=DATA2, 3=DATA3)
