@@ -1654,7 +1654,9 @@ async def test_stability_probe_drains_replay_without_hiding_socket_leaks(
             driver._t0 = time.monotonic()
             driver._connection_state = "connected"
             driver._runtime_task_adapter = adapter
-            driver._sampler = soak_driver.ProcessMetricsSampler(session, driver._base_url)
+            driver._sampler = soak_driver.ProcessMetricsSampler(
+                session, driver._base_url
+            )
             driver._sampler._runtime_task_adapter = adapter
             command = driver._rigctld_cmd
 
