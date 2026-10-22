@@ -97,7 +97,7 @@ def test_family_error_names_profile_and_mode(
         pytest.param('families = ["CW"]', id="not-a-table"),
         pytest.param("families = { cw = [] }", id="empty-family"),
         pytest.param('families = { cw = "CW" }', id="family-not-a-list"),
-        pytest.param("families = { cw = [1] }", id="member-not-a-string"),
+        pytest.param('families = { cw = ["CW", 1] }', id="member-not-a-string"),
         pytest.param('families = { cw = ["CW-U"] }', id="member-not-in-list"),
         pytest.param('families = { cw = ["CW", "CW"] }', id="duplicate-member"),
         pytest.param('families = { CW = ["CW"] }', id="unknown-family-name"),
@@ -106,6 +106,17 @@ def test_family_error_names_profile_and_mode(
 def test_malformed_families_rejected(tmp_path: Path, modes_extra: str) -> None:
     with pytest.raises(RigLoadError, match=r"\[modes\]"):
         _load(tmp_path, modes_extra)
+
+
+def test_family_members_must_be_strings(tmp_path: Path) -> None:
+    # ``["CW", 1]``: the string check must answer, not the later membership
+    # check (``1`` is not in [modes].list either).
+    with pytest.raises(
+        RigLoadError,
+        match=r"family_test\.toml: \[modes\]\.families\.cw must be a non-empty "
+        r"list of strings",
+    ):
+        _load(tmp_path, 'families = { cw = ["CW", 1] }')
 
 
 @pytest.mark.parametrize("cls", [RigConfig, RadioProfile])
