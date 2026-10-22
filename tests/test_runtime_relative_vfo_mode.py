@@ -58,9 +58,7 @@ async def test_omitted_fields_are_preserved_from_target_readback(
         response(addr, f"26 01 01 {payload}"),
     ]
     await radio.write_relative_vfo_mode(0x01, selected=False, **fields)
-    assert wire.frames[2] == bytes.fromhex(
-        f"FE FE {addr:02X} E0 26 01 01 {payload} FD"
-    )
+    assert wire.frames[2] == bytes.fromhex(f"FE FE {addr:02X} E0 26 01 01 {payload} FD")
     assert all(frame[4] in (0x25, 0x26) for frame in wire.frames)
 
 
@@ -119,9 +117,7 @@ async def test_invalid_tuple_refuses_before_io(route, mode, fields):
     assert wire.frames == []
 
 
-@pytest.mark.parametrize(
-    "reply", ["26 01 01", "26 01 01 02 03", "26 00 01 01 03"]
-)
+@pytest.mark.parametrize("reply", ["26 01 01", "26 01 01 02 03", "26 00 01 01 03"])
 async def test_invalid_preservation_readback_does_not_write(route, reply):
     radio, wire, addr = route
     wire.replies = [response(addr, "25 01 00 40 07 14 00"), response(addr, reply)]
