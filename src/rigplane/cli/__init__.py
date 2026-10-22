@@ -76,7 +76,6 @@ from rigplane.core.capabilities import (  # noqa: E402
     CAP_ANTENNA,
     CAP_ATTENUATOR,
     CAP_AUDIO,
-    CAP_CW,
     CAP_DUAL_WATCH,
     CAP_METERS,
     CAP_POWER_CONTROL,
@@ -2692,12 +2691,9 @@ async def _run(args: argparse.Namespace) -> int:
             elif args.command == "ptt":
                 return await _cmd_ptt(radio, args)
             elif args.command == "cw":
-                if CAP_CW not in radio.capabilities:
-                    print(
-                        "Error: this radio does not support CW control.",
-                        file=sys.stderr,
-                    )
-                    return 1
+                # MOR-3678: send_cw_text's own admission (the profile's
+                # cw_text) decides, the same check HTTP and WebSocket use;
+                # the cw tag is not a second gate.
                 return await _cmd_cw(radio, args)
             elif args.command == "att":
                 if CAP_ATTENUATOR not in radio.capabilities:

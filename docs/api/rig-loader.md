@@ -218,6 +218,7 @@ except RigLoadError as e:
 | `[cw_text].supported = true` only with a `send_cw` command the protocol can write (CI-V bytes on `civ`, a CAT write template on `yaesu_cat`) | `[cw_text].supported = true needs a send_cw command <protocol> can write` |
 | Without `[cw_text].supported`, CW text is supported only on CI-V profiles with a `send_cw` command; Yaesu CAT and Kenwood CAT default to `false` | — |
 | Kenwood CAT: `[cw_text].supported = true` is refused (no backend sends CW text) | `[cw_text].supported = true is not available for kenwood_cat profiles: ...` |
+| Yaesu CAT: `[cw_text].max_length` is at most 50 (one KM write) and required when `supported = true` | `[cw_text].max_length must be at most 50 (one KM write), got <n>` / `[cw_text].max_length is required when [cw_text].supported = true ...` |
 | Yaesu CAT: `[cw_text].memory_channel` is a keyer memory 1-5 | `[cw_text].memory_channel must be a keyer memory channel 1-5, got <n>` |
 | Yaesu CAT: `[cw_text].supported = true` needs `memory_channel` and a `write_keyer_memory` CAT write template | `[cw_text].supported = true needs [cw_text].memory_channel (keyer memory 1-5)` / `... needs a writable write_keyer_memory command` |
 

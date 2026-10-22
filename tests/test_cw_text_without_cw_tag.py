@@ -20,9 +20,10 @@ from rigplane.core.capabilities import CAP_CW
 from rigplane.rig_loader import load_rig
 from rigplane.runtime.callable_support import supports_callable
 from rigplane.runtime.radio import IcomRadio
-from rigplane.web.server import _serialize_cw_text
+from rigplane.web.server import WebConfig, WebServer, _serialize_cw_text
 from test_cw_text_admission import _cli, _http, _ws
 from test_cw_text_capability import _MINIMAL_TOML
+from test_web_cw_http_control import _FakeWriter, _reader_for
 
 UNSUPPORTED = "CW Text Test does not support sending CW text yet"
 
@@ -117,3 +118,24 @@ async def test_disabled_profile_refused_alike_over_cli(
     assert f"Error: {UNSUPPORTED}" in captured.err
     assert "CW:" not in captured.out
     assert _sent(radio) == 0
+
+
+@pytest.mark.asyncio
+async def test_http_stop_works_where_cw_text_can_be_sent(tmp_path: Path) -> None:
+    # A radio that sends CW text must also stop it over the same endpoint
+    # set, cw tag or not (#4317 gate review).
+    radio = _radio(tmp_path)
+    radio._send_civ_raw = AsyncMock(  # type: ignore[method-assign]  # noqa: SLF001
+        return_value=SimpleNamespace(command=0xFB)
+    )
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))  # type: ignore[arg-type]
+    writer = _FakeWriter()
+    await srv._handle_http(  # noqa: SLF001
+        writer,  # type: ignore[arg-type]
+        "POST",
+        "/api/v1/radio/cw/stop",
+        headers={"content-length": "0"},
+        reader=_reader_for(b""),
+    )
+    assert writer.response_status == 200, writer.response_body
+    radio._send_civ_raw.assert_awaited_once()  # type: ignore[attr-defined]  # noqa: SLF001

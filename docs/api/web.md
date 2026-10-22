@@ -1205,7 +1205,9 @@ when no profile is resolved (a provider-owned backend).
 
 `cwText` is separate from the `cw` tag and `hasCw`, which keep driving the
 CW decoder, console and keyer controls: the FTX-1 publishes `hasCw: true`
-and `cwText.supported: false`. The server enforces both facts in one place
+and `cwText.supported: false`. The `cw` tag does not gate sending: a radio
+with `cwText.supported: true` sends (and `POST /api/v1/radio/cw/stop`
+stops) without it. The server enforces both facts in one place
 (the radio's `send_cw_text`), so `POST /api/v1/radio/cw/send`, the
 WebSocket `send_cw_text` command and the CLI `cw` command refuse the same
 requests with the same message:

@@ -2164,6 +2164,8 @@ def _is_writable(spec: CommandSpec | None, protocol_type: str) -> bool:
 
 # KM P1 is one digit, keyer memory channel 1-5 (FTX-1 CAT 2508-C printed p.17).
 _YAESU_KEYER_MEMORY_CHANNELS = range(1, 6)
+# KM P2 stores up to 50 characters (FTX-1 CAT 2508-C printed p.17).
+_YAESU_KEYER_MEMORY_MAX_CHARS = 50
 
 
 def _parse_cw_text(
@@ -2185,8 +2187,8 @@ def _parse_cw_text(
     * ``yaesu_cat``: the backend writes the text into a keyer memory
       (``write_keyer_memory``, KM, CAT 2508-C printed p.17) and plays it
       (``send_cw``, KY, printed p.18). ``supported`` defaults to false;
-      ``supported = true`` needs ``memory_channel`` 1-5 and both commands
-      as CAT write templates. ``memory_channel`` outside 1-5 is an error either way.
+      ``supported = true`` needs ``memory_channel`` 1-5, ``max_length``
+      (at most 50, one KM write) and both commands as CAT write templates. ``memory_channel`` outside 1-5 is an error either way.
     * ``kenwood_cat``: core has no backend that sends CW text, so it is
       never supported and ``supported = true`` is an error.
 
@@ -2238,6 +2240,19 @@ def _parse_cw_text(
             f'{filename}: [cw_text].memory_type must be "text" or "message"'
         )
     if protocol_type == "yaesu_cat":
+        # The text is one KM write, so the limit is the KM limit: required
+        # when sending is enabled, never above it (#4317 gate review).
+        if supported and "max_length" not in raw:
+            raise RigLoadError(
+                f"{filename}: [cw_text].max_length is required when "
+                "[cw_text].supported = true (one KM write holds at most "
+                f"{_YAESU_KEYER_MEMORY_MAX_CHARS} characters)"
+            )
+        if "max_length" in raw and max_length > _YAESU_KEYER_MEMORY_MAX_CHARS:
+            raise RigLoadError(
+                f"{filename}: [cw_text].max_length must be at most "
+                f"{_YAESU_KEYER_MEMORY_MAX_CHARS} (one KM write), got {max_length}"
+            )
         if channel is not None and channel not in _YAESU_KEYER_MEMORY_CHANNELS:
             raise RigLoadError(
                 f"{filename}: [cw_text].memory_channel must be a keyer memory "

@@ -35,8 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only the profile default). Profiles without a `send_cw` command (TX-500,
   X6100, X6200) publish `supported: false`. Yaesu CAT and Kenwood CAT
   profiles without `[cw_text].supported = true` publish `supported: false`;
-  a Yaesu enable without keyer memory channel 1-5 and writable `KM`/`KY`
-  commands, or any Kenwood enable, does not load.
+  a Yaesu enable without keyer memory channel 1-5, a `max_length` of at
+  most 50 (one `KM` write) and writable `KM`/`KY` commands, or any Kenwood
+  enable, does not load. The `cw` tag no longer gates sending or stopping
+  CW text over HTTP, WebSocket or the CLI; `cwText` alone decides.
 
 ## [3.0.0b19] — 2026-10-20
 

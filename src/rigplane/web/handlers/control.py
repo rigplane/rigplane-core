@@ -2322,11 +2322,10 @@ class ControlHandler:
     ) -> dict[str, Any]:
         if radio is None:
             raise RuntimeError("radio connection not available")
-        if CAP_CW not in radio.capabilities:
-            raise RuntimeError("radio does not support this command")
         # MOR-3678: the radio's send_cw_text admits the text against its
         # profile's ``cw_text`` (``admit_cw_text``), the one check shared
-        # with the CLI; the handler passes the text through unchanged.
+        # with the CLI; the handler passes the text through unchanged. The
+        # ``cw`` tag (decoder, console, keyer controls) is not a second gate.
         text = str(params.get("text", ""))
         await radio.send_cw_text(text)
         return {"text": text}
@@ -2336,7 +2335,10 @@ class ControlHandler:
     ) -> dict[str, Any]:
         if radio is None:
             raise RuntimeError("radio connection not available")
-        if CAP_CW not in radio.capabilities:
+        profile = getattr(radio, "profile", None)
+        sends_cw_text = isinstance(profile, RadioProfile) and profile.cw_text.supported
+        # MOR-3678: a radio that can send CW text can stop it, cw tag or not.
+        if CAP_CW not in radio.capabilities and not sends_cw_text:
             raise RuntimeError("radio does not support this command")
         await radio.stop_cw_text()
         return {}
