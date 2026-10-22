@@ -520,3 +520,82 @@ async def test_managed_cw_abort_ends_a_send_whose_memory_write_is_in_flight() ->
         call.args[0] for call in radio._transport._raw_write.await_args_list
     ]
     assert wire_commands == ["KM5CQ;", "KY00;"]
+
+
+async def _stale_cw_abort(radio: YaesuCatRadio, is_current: Callable[[], bool]) -> None:
+    # A stale abort is refused at the transport; how actuate reports that
+    # is not under test here, only that nothing reached the wire.
+    try:
+        await radio.actuate(
+            _effect_token(), AbortOperation.STOP_CW, is_current=is_current
+        )
+    except CatTransportError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_stale_managed_cw_abort_leaves_an_in_flight_send_alone() -> None:
+    # MOR-3678 (#4317 review): an abort refused as stale at the transport
+    # never reached the radio, so it must not end a newer send.
+    radio = _fenced_radio(None)
+    first_drain_started = asyncio.Event()
+    release_first_drain = asyncio.Event()
+    drain_calls = 0
+
+    async def drain(_command: str) -> int:
+        nonlocal drain_calls
+        drain_calls += 1
+        if drain_calls == 1:
+            first_drain_started.set()
+            await release_first_drain.wait()
+        return 0
+
+    radio._transport._drain_responses = drain
+    sending = asyncio.create_task(radio.send_cw_text("CQ"))
+    await first_drain_started.wait()
+    aborting = asyncio.create_task(_stale_cw_abort(radio, lambda: False))
+    await asyncio.sleep(0)
+    release_first_drain.set()
+
+    await aborting
+    await sending
+    wire_commands = [
+        call.args[0] for call in radio._transport._raw_write.await_args_list
+    ]
+    assert wire_commands == ["KM5CQ;", "KY05;"]
+
+
+@pytest.mark.asyncio
+async def test_managed_cw_abort_superseded_while_queued_leaves_sends_alone() -> None:
+    # The abort was current when issued but was superseded while it waited
+    # for the transport; the in-flight and the queued send both still play.
+    radio = _fenced_radio(None)
+    first_drain_started = asyncio.Event()
+    release_first_drain = asyncio.Event()
+    drain_calls = 0
+    abort_current = True
+
+    async def drain(_command: str) -> int:
+        nonlocal drain_calls
+        drain_calls += 1
+        if drain_calls == 1:
+            first_drain_started.set()
+            await release_first_drain.wait()
+        return 0
+
+    radio._transport._drain_responses = drain
+    first = asyncio.create_task(radio.send_cw_text("AA"))
+    await first_drain_started.wait()
+    aborting = asyncio.create_task(_stale_cw_abort(radio, lambda: abort_current))
+    second = asyncio.create_task(radio.send_cw_text("BB"))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    abort_current = False
+    release_first_drain.set()
+
+    await aborting
+    await asyncio.gather(first, second)
+    wire_commands = [
+        call.args[0] for call in radio._transport._raw_write.await_args_list
+    ]
+    assert wire_commands == ["KM5AA;", "KY05;", "KM5BB;", "KY05;"]
