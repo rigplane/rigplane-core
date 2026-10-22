@@ -1260,9 +1260,13 @@ class YaesuCatRadio:
         *,
         is_current: Callable[[], bool] | None = None,
         tier: ExchangeTier = ExchangeTier.ORDINARY,
+        on_committed: Callable[[], None] | None = None,
         **kwargs: Any,
     ) -> None:
         """Format and send a write command (no response expected).
+
+        *on_committed* is handed to the transport, which runs it only for a
+        write that passed its final currency check (MOR-3678).
 
         Raises:
             CommandRejectedError: If the radio rejects the command with
@@ -1285,7 +1289,11 @@ class YaesuCatRadio:
 
         cmd = format_command(spec.write, **kwargs)
         try:
-            if is_current is None and tier is ExchangeTier.ORDINARY:
+            if on_committed is not None:
+                await self._transport.write(
+                    cmd, is_current=is_current, tier=tier, on_committed=on_committed
+                )
+            elif is_current is None and tier is ExchangeTier.ORDINARY:
                 await self._transport.write(cmd)
             else:
                 await self._transport.write(cmd, is_current=is_current, tier=tier)
@@ -1545,6 +1553,7 @@ class YaesuCatRadio:
     ) -> ActuationResult:
         """Execute one profile-backed runtime-managed transmit operation."""
         del token
+        on_committed: Callable[[], None] | None = None
         if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
             command, params, tier = "set_ptt", {"state": "1"}, ExchangeTier.ORDINARY
         elif operation is ActuationOperation.FORCE_RECEIVE:
@@ -1555,7 +1564,9 @@ class YaesuCatRadio:
             )
         elif operation is AbortOperation.STOP_CW:
             # KY P1 P2 with P2 0 = STOP (CAT 2508-C printed p.18), MOR-3678.
-            is_current = self._cw_abort_currency(is_current)
+            # Only a stop the transport lets out ends earlier sends; a
+            # stale or superseded one leaves them alone (#4317 review).
+            on_committed = self._end_earlier_cw_text_sends
             command, params, tier = (
                 "send_cw",
                 {"type": self._cw_text_memory_type_code(), "mem": "0"},
@@ -1571,7 +1582,13 @@ class YaesuCatRadio:
             return ActuationResult.REJECTED
 
         try:
-            await self._write(command, is_current=is_current, tier=tier, **params)
+            await self._write(
+                command,
+                is_current=is_current,
+                tier=tier,
+                on_committed=on_committed,
+                **params,
+            )
         except CommandError:
             return ActuationResult.REJECTED
         if operation is not ActuationOperation.FORCE_RECEIVE:
@@ -3653,25 +3670,12 @@ class YaesuCatRadio:
         """Stop keyer memory playback: ``KY P1 0;`` (printed p.18, P2 0 STOP)."""
         # Ends every send admitted before this stop, then writes the stop
         # unfenced (stopping never keys).
-        self._cw_text_generation += 1
+        self._end_earlier_cw_text_sends()
         await self._write("send_cw", type=self._cw_text_memory_type_code(), mem="0")
 
-    def _cw_abort_currency(self, is_current: Callable[[], bool]) -> Callable[[], bool]:
-        """Currency check for a managed CW stop that also ends earlier sends.
-
-        The transport asks this immediately before the stop's bytes go out
-        (the last check runs with no await before the write), so a stop
-        refused as stale or superseded never ends a send_cw_text: only a
-        stop the transport accepted bumps the generation (MOR-3678).
-        """
-
-        def current_and_claim() -> bool:
-            if not is_current():
-                return False
-            self._cw_text_generation += 1
-            return True
-
-        return current_and_claim
+    def _end_earlier_cw_text_sends(self) -> None:
+        """End every send_cw_text admitted before now (MOR-3678)."""
+        self._cw_text_generation += 1
 
     def _cw_text_memory_type_code(self) -> str:
         """KY P1: ``1`` CW MESSAGE memory, else ``0`` CW TEXT (printed p.18)."""

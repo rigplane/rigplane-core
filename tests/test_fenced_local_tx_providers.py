@@ -492,6 +492,7 @@ async def test_managed_cw_abort_ends_a_send_whose_memory_write_is_in_flight() ->
     # MOR-3678: the managed STOP_CW abort (force-off / shutdown) ends an
     # earlier send_cw_text like stop_cw_text does; its KY never follows.
     radio = _fenced_radio(None)
+    writer = _real_wire(radio)
     first_drain_started = asyncio.Event()
     release_first_drain = asyncio.Event()
     drain_calls = 0
@@ -516,10 +517,28 @@ async def test_managed_cw_abort_ends_a_send_whose_memory_write_is_in_flight() ->
     await aborting
     with pytest.raises(CatTransportError, match="no longer current"):
         await sending
-    wire_commands = [
-        call.args[0] for call in radio._transport._raw_write.await_args_list
-    ]
-    assert wire_commands == ["KM5CQ;", "KY00;"]
+    assert writer.frames == [b"KM5CQ;", b"KY00;"]
+
+
+class _RecordingWriter:
+    def __init__(self) -> None:
+        self.frames: list[bytes] = []
+
+    def write(self, data: bytes) -> None:
+        self.frames.append(data)
+
+    async def drain(self) -> None:
+        return None
+
+
+def _real_wire(radio: YaesuCatRadio) -> _RecordingWriter:
+    """Use the transport's real write path, down to the bytes written."""
+    transport = radio._transport
+    writer = _RecordingWriter()
+    transport._writer = writer
+    transport._reader = object()
+    del transport._raw_write
+    return writer
 
 
 async def _stale_cw_abort(radio: YaesuCatRadio, is_current: Callable[[], bool]) -> None:
@@ -538,6 +557,7 @@ async def test_stale_managed_cw_abort_leaves_an_in_flight_send_alone() -> None:
     # MOR-3678 (#4317 review): an abort refused as stale at the transport
     # never reached the radio, so it must not end a newer send.
     radio = _fenced_radio(None)
+    writer = _real_wire(radio)
     first_drain_started = asyncio.Event()
     release_first_drain = asyncio.Event()
     drain_calls = 0
@@ -559,10 +579,7 @@ async def test_stale_managed_cw_abort_leaves_an_in_flight_send_alone() -> None:
 
     await aborting
     await sending
-    wire_commands = [
-        call.args[0] for call in radio._transport._raw_write.await_args_list
-    ]
-    assert wire_commands == ["KM5CQ;", "KY05;"]
+    assert writer.frames == [b"KM5CQ;", b"KY05;"]
 
 
 @pytest.mark.asyncio
@@ -570,6 +587,7 @@ async def test_managed_cw_abort_superseded_while_queued_leaves_sends_alone() -> 
     # The abort was current when issued but was superseded while it waited
     # for the transport; the in-flight and the queued send both still play.
     radio = _fenced_radio(None)
+    writer = _real_wire(radio)
     first_drain_started = asyncio.Event()
     release_first_drain = asyncio.Event()
     drain_calls = 0
@@ -595,21 +613,7 @@ async def test_managed_cw_abort_superseded_while_queued_leaves_sends_alone() -> 
 
     await aborting
     await asyncio.gather(first, second)
-    wire_commands = [
-        call.args[0] for call in radio._transport._raw_write.await_args_list
-    ]
-    assert wire_commands == ["KM5AA;", "KY05;", "KM5BB;", "KY05;"]
-
-
-class _RecordingWriter:
-    def __init__(self) -> None:
-        self.frames: list[bytes] = []
-
-    def write(self, data: bytes) -> None:
-        self.frames.append(data)
-
-    async def drain(self) -> None:
-        return None
+    assert writer.frames == [b"KM5AA;", b"KY05;", b"KM5BB;", b"KY05;"]
 
 
 @pytest.mark.asyncio
@@ -621,10 +625,7 @@ async def test_cw_abort_expiring_between_transport_checks_leaves_the_send_alone(
     # never reaches the wire, so it must not end the pending send either.
     radio = _fenced_radio(None)
     transport = radio._transport
-    writer = _RecordingWriter()
-    transport._writer = writer
-    transport._reader = object()
-    del transport._raw_write  # the real write path, down to the bytes
+    writer = _real_wire(radio)
     first_drain_started = asyncio.Event()
     release_first_drain = asyncio.Event()
     drain_calls = 0

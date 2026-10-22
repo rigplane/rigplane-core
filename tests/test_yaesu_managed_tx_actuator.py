@@ -180,12 +180,13 @@ async def test_managed_abort_uses_urgent_profile_command(
         format_command(_PROFILE_TEMPLATES[profile_key].write, **params),
     )
     assert call.kwargs["tier"] is ExchangeTier.ABORT
+    assert call.kwargs["is_current"] is current
     if operation is AbortOperation.STOP_CW:
-        # MOR-3678: the CW stop's check delegates to the managed one and
-        # also ends earlier sends once the transport accepts it.
-        assert call.kwargs["is_current"]() is True
+        # MOR-3678: the CW stop ends earlier sends only once the transport
+        # lets it out (on_committed), never at issue.
+        assert call.kwargs["on_committed"] == radio._end_earlier_cw_text_sends
     else:
-        assert call.kwargs["is_current"] is current
+        assert "on_committed" not in call.kwargs
 
 
 @pytest.mark.asyncio
@@ -237,27 +238,21 @@ async def test_managed_cw_abort_stops_the_profile_memory_kind(
     call = radio._transport.write.await_args
     assert call.args == (frame,)
     assert call.kwargs["tier"] is ExchangeTier.ABORT
-    assert call.kwargs["is_current"]() is True
+    assert call.kwargs["is_current"] is current
 
 
 @pytest.mark.asyncio
 async def test_managed_cw_abort_ends_earlier_sends_only_once_accepted() -> None:
     # MOR-3678 (#4317 review): issuing the stop changes nothing; only the
-    # transport accepting its currency ends earlier sends, and a stale
-    # stop never does.
+    # transport running on_committed (after its final currency check)
+    # ends earlier sends.
     radio = _profile_radio()
-    managed_current = True
+    before = radio._cw_text_generation
     result = await radio.actuate(
-        _token(), AbortOperation.STOP_CW, is_current=lambda: managed_current
+        _token(), AbortOperation.STOP_CW, is_current=lambda: True
     )
     assert result is ActuationResult.ACCEPTED
-    stop_check = radio._transport.write.await_args.kwargs["is_current"]
-    before = radio._cw_text_generation
-
-    managed_current = False
-    assert stop_check() is False
     assert radio._cw_text_generation == before
 
-    managed_current = True
-    assert stop_check() is True
+    radio._transport.write.await_args.kwargs["on_committed"]()
     assert radio._cw_text_generation != before
