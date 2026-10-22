@@ -165,6 +165,17 @@ export type ControlDomain = ScalarControlDomain | CenteredControlDomain | Lookup
 export type VfoScheme = 'single' | 'ab' | 'ab_shared' | 'main_sub';
 export type VfoReadback = 'absolute' | 'selected_unselected' | 'none';
 
+/** Whether send_cw_text works on this radio (MOR-3678), from the profile's
+ *  `[cw_text]`. Separate from the `cw` tag, which drives the decoder and
+ *  keyer controls. The server enforces `maxLength`; clients only display. */
+export interface CwTextCapability {
+  supported: boolean;
+  maxLength: number;
+  /** Keyer memory channel the text is written to; null when the radio
+   *  sends text directly. */
+  memoryChannel: number | null;
+}
+
 export interface WebRtcCapabilities {
   available: boolean;
   enabled: boolean;
@@ -211,6 +222,8 @@ export interface Capabilities {
    *  the capability for the RF-power level only. Absent on older servers
    *  (treated as unknown, not false). */
   powerOnCommand?: boolean;
+  /** Absent on older servers. */
+  cwText?: CwTextCapability;
   receivers: number;
   vfoScheme: VfoScheme;
   /** Provider identity semantics; absent on older compatible servers. */
@@ -694,6 +707,15 @@ export function validateCapabilities(value: unknown): Capabilities {
   requireInteger(audioConfig.sampleRate, '$.audioConfig.sampleRate', true);
   requireInteger(audioConfig.channels, '$.audioConfig.channels', true);
   requireStringArray(audioConfig.codecs, '$.audioConfig.codecs');
+
+  if (Object.prototype.hasOwnProperty.call(raw, 'cwText')) {
+    const cwText = requireRecord(raw.cwText, '$.cwText');
+    requireBoolean(cwText.supported, '$.cwText.supported');
+    requireInteger(cwText.maxLength, '$.cwText.maxLength', true);
+    if (cwText.memoryChannel !== null) {
+      requireInteger(cwText.memoryChannel, '$.cwText.memoryChannel', true);
+    }
+  }
 
   const webrtc = requireRecord(raw.webrtc, '$.webrtc');
   requireBoolean(webrtc.available, '$.webrtc.available');
