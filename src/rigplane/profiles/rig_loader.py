@@ -2150,13 +2150,16 @@ _CW_TEXT_KEYS = frozenset({"supported", "max_length", "memory_channel", "memory_
 _CW_TEXT_MEMORY_TYPES = frozenset({"text", "message"})
 
 
-def _is_writable(spec: CommandSpec | None) -> bool:
-    """A command the backend can write: present, not absent, with a write."""
-    if spec is None or isinstance(spec, AbsentCommandSpec):
-        return False
-    if isinstance(spec, CatCommandSpec):
-        return spec.write is not None
-    return True
+def _is_writable(spec: CommandSpec | None, protocol_type: str) -> bool:
+    """A command this protocol's backend can write (#4317 review).
+
+    CI-V needs CI-V bytes; Yaesu and Kenwood CAT need a CAT write template.
+    A declared-absent command, or one in the other protocol's form, is not
+    writable: the backend could not send it.
+    """
+    if protocol_type == "civ":
+        return isinstance(spec, CivCommandSpec)
+    return isinstance(spec, CatCommandSpec) and spec.write is not None
 
 
 # KM P1 is one digit, keyer memory channel 1-5 (FTX-1 CAT 2508-C printed p.17).
@@ -2177,13 +2180,13 @@ def _parse_cw_text(
     on what the protocol's backend needs (#4317 gate review):
 
     * ``civ``: the backend sends the text with ``send_cw`` (0x17), so
-      ``supported`` defaults to whether that command is declared, and
-      ``supported = true`` without it is an error.
+      ``supported`` defaults to whether that command is declared as CI-V
+      bytes, and ``supported = true`` without it is an error.
     * ``yaesu_cat``: the backend writes the text into a keyer memory
       (``write_keyer_memory``, KM, CAT 2508-C printed p.17) and plays it
       (``send_cw``, KY, printed p.18). ``supported`` defaults to false;
       ``supported = true`` needs ``memory_channel`` 1-5 and both commands
-      writable. ``memory_channel`` outside 1-5 is an error either way.
+      as CAT write templates. ``memory_channel`` outside 1-5 is an error either way.
     * ``kenwood_cat``: core has no backend that sends CW text, so it is
       never supported and ``supported = true`` is an error.
 
@@ -2191,7 +2194,7 @@ def _parse_cw_text(
     longer requests are rejected, never truncated or split.
     ``memory_type`` (``"text"`` / ``"message"``) picks the Yaesu memory kind.
     """
-    has_send_cw = _is_writable(commands.get("send_cw"))
+    has_send_cw = _is_writable(commands.get("send_cw"), protocol_type)
     default_supported = protocol_type == "civ" and has_send_cw
     if raw is None:
         return CwTextSpec(supported=default_supported)
@@ -2208,7 +2211,8 @@ def _parse_cw_text(
         )
     if supported and not has_send_cw:
         raise RigLoadError(
-            f"{filename}: [cw_text].supported = true needs a send_cw command"
+            f"{filename}: [cw_text].supported = true needs a send_cw command "
+            f"{protocol_type} can write"
         )
     max_length = raw.get("max_length", CwTextSpec().max_length)
     if (
@@ -2244,7 +2248,9 @@ def _parse_cw_text(
                 f"{filename}: [cw_text].supported = true needs "
                 "[cw_text].memory_channel (keyer memory 1-5)"
             )
-        if supported and not _is_writable(commands.get("write_keyer_memory")):
+        if supported and not _is_writable(
+            commands.get("write_keyer_memory"), protocol_type
+        ):
             raise RigLoadError(
                 f"{filename}: [cw_text].supported = true needs a writable "
                 "write_keyer_memory command"

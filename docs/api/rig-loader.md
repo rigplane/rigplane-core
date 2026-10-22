@@ -215,11 +215,11 @@ except RigLoadError as e:
 | `[modes].families` members are in `[modes].list`, each at most once | `[modes].families.cw names mode 'X' that is not in [modes].list`, `[modes].families.cw repeats mode 'X' (already in family 'cw')` |
 | `[filters].list` present (may be empty: a radio without a selectable IF filter) | `missing required [filters].list` |
 | `[cw_text]` keys known and typed (if present): `supported` bool, `max_length` and `memory_channel` positive integers, `memory_type` `"text"` or `"message"` | `[cw_text].<key> must be ...` / `[cw_text] unknown key '<key>'` |
-| `[cw_text].supported = true` only with a `send_cw` command | `[cw_text].supported = true needs a send_cw command` |
+| `[cw_text].supported = true` only with a `send_cw` command the protocol can write (CI-V bytes on `civ`, a CAT write template on `yaesu_cat`) | `[cw_text].supported = true needs a send_cw command <protocol> can write` |
 | Without `[cw_text].supported`, CW text is supported only on CI-V profiles with a `send_cw` command; Yaesu CAT and Kenwood CAT default to `false` | — |
 | Kenwood CAT: `[cw_text].supported = true` is refused (no backend sends CW text) | `[cw_text].supported = true is not available for kenwood_cat profiles: ...` |
 | Yaesu CAT: `[cw_text].memory_channel` is a keyer memory 1-5 | `[cw_text].memory_channel must be a keyer memory channel 1-5, got <n>` |
-| Yaesu CAT: `[cw_text].supported = true` needs `memory_channel` and a writable `write_keyer_memory` command | `[cw_text].supported = true needs [cw_text].memory_channel (keyer memory 1-5)` / `... needs a writable write_keyer_memory command` |
+| Yaesu CAT: `[cw_text].supported = true` needs `memory_channel` and a `write_keyer_memory` CAT write template | `[cw_text].supported = true needs [cw_text].memory_channel (keyer memory 1-5)` / `... needs a writable write_keyer_memory command` |
 
 Unknown sections or extra fields are silently ignored (forward-compatible).
 

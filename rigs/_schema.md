@@ -621,7 +621,7 @@ from the `cw` capability tag (decoder, console, keyer controls).
 
 | Key              | Type   | Default | Description |
 |------------------|--------|---------|-------------|
-| `supported`      | bool   | CI-V: whether `[commands]` has `send_cw`; Yaesu CAT and Kenwood CAT: `false` | `false` refuses `send_cw_text`. `true` is a load error without a writable `send_cw` command; on Yaesu CAT also without `memory_channel` 1-5 or a writable `write_keyer_memory` command; on Kenwood CAT always (no backend sends CW text) |
+| `supported`      | bool   | CI-V: whether `[commands]` has `send_cw` as CI-V bytes; Yaesu CAT and Kenwood CAT: `false` | `false` refuses `send_cw_text`. `true` is a load error without a `send_cw` the protocol can write (CI-V bytes on CI-V, a CAT write template on Yaesu CAT); on Yaesu CAT also without `memory_channel` 1-5 or a `write_keyer_memory` CAT write template; on Kenwood CAT always (no backend sends CW text) |
 | `max_length`     | int    | `512`   | Longest text one request may carry (positive); longer text is refused, never truncated |
 | `memory_channel` | int    | absent  | Keyer memory channel the text is written to (positive; 1-5 on Yaesu CAT, KM printed p.17); for radios that send text by writing a memory and playing it |
 | `memory_type`    | string | absent  | `"text"` or `"message"`: which keyer memory kind is played |
