@@ -1362,6 +1362,7 @@ class CivCommandCapable(Protocol):
         wait_response: bool = True,
         priority: Any = ...,
         wait_dispatch: bool = True,
+        is_current: Callable[[], bool] | None = None,
     ) -> Any:
         """Send a CI-V command through the active backend transport.
 
@@ -1699,6 +1700,7 @@ class RelativeVfoFrequencyWritable(Protocol):
         freq_hz: int,
         *,
         selected: bool,
+        before_set: Callable[[], None] | None = None,
         after_ack: Callable[[], None] | None = None,
         after_readback: Callable[[], None] | None = None,
     ) -> int:

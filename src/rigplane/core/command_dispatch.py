@@ -131,15 +131,21 @@ class CommandDescriptor:
 
 
 def _bind_split_freq(params: Mapping[str, Any]) -> dict[str, Any]:
-    return {"freq_hz": _int_param(params["freq_hz"], "freq_hz"), "selected": False}
+    freq_hz = params["freq_hz"]
+    if isinstance(freq_hz, bool) or not isinstance(freq_hz, int):
+        raise ValueError("freq_hz must be an integer")
+    return {"freq_hz": freq_hz, "selected": False}
 
 
 def _bind_split_mode(params: Mapping[str, Any]) -> dict[str, Any]:
-    mode = _int_param(params["mode"], "mode")
-    raw_filter = params.get("filter_width")
-    filter_width = (
-        None if raw_filter is None else _int_param(raw_filter, "filter_width")
-    )
+    mode = params["mode"]
+    if isinstance(mode, bool) or not isinstance(mode, int):
+        raise ValueError("mode must be an integer")
+    filter_width = params.get("filter_width")
+    if filter_width is not None and (
+        isinstance(filter_width, bool) or not isinstance(filter_width, int)
+    ):
+        raise ValueError("filter_width must be an integer or None")
     if filter_width is not None and filter_width not in (1, 2, 3):
         raise ValueError("filter_width must be a CI-V filter number 1-3")
     data = params.get("data")
@@ -792,6 +798,9 @@ async def execute_command_intent(
     if validate_currency is not None:
         validate_currency()
     arguments = {name: intent.params[name] for name in descriptor.argument_names}
-    if descriptor.name == "set_split_mode" and validate_currency is not None:
+    if (
+        descriptor.name in ("set_split_freq", "set_split_mode")
+        and validate_currency is not None
+    ):
         arguments["before_set"] = validate_currency
     await method(**arguments)

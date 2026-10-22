@@ -36,6 +36,7 @@ from rigplane.commands import (
 from rigplane.core.exceptions import (
     CommandError,
     CommandRejectedError,
+    ConnectionError,
     TimeoutError,
 )
 from rigplane.core.types import Mode, bcd_encode
@@ -336,13 +337,14 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         freq_hz: int,
         *,
         selected: bool,
+        before_set: Callable[[], None] | None = None,
         after_ack: Callable[[], None] | None = None,
         after_readback: Callable[[], None] | None = None,
     ) -> int:
         """Write a profile-declared relative frequency and return its readback Hz.
 
-        Synchronous hooks run after a positive ACK and after the readback I/O,
-        before decoding. Hook exceptions propagate without further I/O.
+        SET currency reuses the synchronous before_set validator at dispatch.
+        Other hooks run after a positive ACK and after readback I/O.
         """
         role = "selected" if selected else "unselected"
         cmd_map = self._profile.command_map
@@ -354,10 +356,27 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             or not all(cmd_map.has(f"{verb}_{role}_freq") for verb in ("set", "get"))
         ):
             raise CommandError("direct VFO frequency is unavailable")
+
+        def is_current() -> bool:
+            if before_set is not None:
+                before_set()
+            return True
+
         opcode, sub, prefix = decode_wire_tuple(cmd_map.get(f"set_{role}_freq"))
-        response = await self.send_civ(
-            opcode, sub, data=prefix + bcd_encode(freq_hz), wait_response=True
-        )
+        if before_set is not None:
+            before_set()
+        try:
+            response = await self.send_civ(
+                opcode,
+                sub,
+                data=prefix + bcd_encode(freq_hz),
+                wait_response=True,
+                is_current=is_current if before_set is not None else None,
+            )
+        except ConnectionError:
+            if before_set is not None:
+                before_set()
+            raise
         ack = None if response is None else parse_ack_nak(response)
         if ack is False:
             raise CommandRejectedError("Radio rejected direct VFO frequency")
@@ -385,7 +404,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         filter_width: int | None = None,
         before_set: Callable[[], None] | None = None,
     ) -> RelativeVfoState:
-        """Write a mode tuple; validate synchronously after preservation, before SET."""
+        """Preserve omitted fields; carry before_set validation through dispatch."""
         role = "selected" if selected else "unselected"
         cmd_map = self._profile.command_map
         required = (f"set_{role}_mode", f"get_{role}_mode", f"get_{role}_freq")
@@ -431,6 +450,12 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         if data is None or filter_width is None or filter_width not in (1, 2, 3):
             raise CommandError("direct VFO filter readback is unavailable")
         opcode, sub, prefix = decode_wire_tuple(cmd_map.get(f"set_{role}_mode"))
+
+        def is_current() -> bool:
+            if before_set is not None:
+                before_set()
+            return True
+
         if before_set is not None:
             before_set()
         if selection_epoch is not None and (
@@ -443,12 +468,18 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         # no await between the epoch check and the send; nothing can interleave there
         # before the SET enters the commander queue. This covers runtime VFO
         # selection, swap and equalize calls from rigctld and HTTP/WS pollers.
-        response = await self.send_civ(
-            opcode,
-            sub,
-            data=prefix + bytes([mode_code, int(data), filter_width]),
-            wait_response=True,
-        )
+        try:
+            response = await self.send_civ(
+                opcode,
+                sub,
+                data=prefix + bytes([mode_code, int(data), filter_width]),
+                wait_response=True,
+                is_current=is_current if before_set is not None else None,
+            )
+        except ConnectionError:
+            if before_set is not None:
+                before_set()
+            raise
         ack = None if response is None else parse_ack_nak(response)
         if ack is False:
             raise CommandRejectedError("Radio rejected direct VFO mode")

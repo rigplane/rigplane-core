@@ -2597,6 +2597,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         wait_response: bool = True,
         priority: Priority = Priority.NORMAL,
         wait_dispatch: bool = True,
+        is_current: Callable[[], bool] | None = None,
     ) -> CivFrame | None:
         """Send a CI-V command.
 
@@ -2614,6 +2615,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 the poll loop on the commander future (the response still
                 arrives via the RX path). Defaults to True so user commands
                 keep their blocking contract.
+            is_current: Optional request currency predicate for wire dispatch.
 
         Returns:
             Parsed response CivFrame, or None if wait_response=False.
@@ -2622,6 +2624,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         frame = build_civ_frame(
             self._radio_addr, CONTROLLER_ADDR, command, sub=sub, data=data
         )
+        if is_current is not None:
+            return await self._send_civ_raw(
+                frame,
+                wait_response=wait_response,
+                priority=priority,
+                wait_dispatch=wait_dispatch,
+                is_current=is_current,
+            )
         return await self._send_civ_raw(
             frame,
             wait_response=wait_response,

@@ -2124,6 +2124,7 @@ class RadioPoller:
                 observed_freq = await radio.write_relative_vfo_frequency(
                     cmd.freq,
                     selected=selected,
+                    before_set=after_ack,
                     after_ack=after_ack,
                     after_readback=after_readback,
                 )

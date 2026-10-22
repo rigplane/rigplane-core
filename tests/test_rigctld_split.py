@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import replace
 
 import pytest
 
+from rigplane.commands import parse_civ_frame
 from rigplane.commands.command_map import CommandMap
+from rigplane.commands.commander import IcomCommander
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -24,6 +27,33 @@ from test_rigctld_wsjtx_split_mk2 import (
     _peer,
     _rf_state,
 )
+
+
+@asynccontextmanager
+async def _hold_commander_before_set(monkeypatch, radio, peer):
+    commander = radio._commander = IcomCommander(radio._execute_civ_raw)
+    commander.start()
+    release = peer.relative_mode_read_gate = asyncio.Event()
+    queued = asyncio.Event()
+    blocker = asyncio.create_task(radio.send_civ(0x26, data=b"\x00"))
+    send = commander.send
+
+    async def observe_send(payload, **kwargs):
+        frame = parse_civ_frame(payload)
+        if frame.command in (0x25, 0x26) and len(frame.data) > 1:
+            queued.set()
+        return await send(payload, **kwargs)
+
+    monkeypatch.setattr(commander, "send", observe_send)
+    try:
+        await asyncio.wait_for(peer.relative_mode_read.wait(), 1)
+        yield queued, release
+    finally:
+        release.set()
+        await asyncio.gather(blocker, return_exceptions=True)
+        await commander.stop()
+        radio._commander = None
+        peer.relative_mode_read_gate = None
 
 
 def _pause_mode_preservation(monkeypatch, radio):
@@ -281,3 +311,48 @@ async def test_split_mode_authority_change_during_preservation_never_sets(
             if not reply.done():
                 reply.cancel()
             await asyncio.gather(reply, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
+@pytest.mark.parametrize("command", [b"I 14080100\n", b"X USB 2400\n"])
+async def test_split_authority_change_while_commander_queued_never_sets(
+    monkeypatch, model, command
+):
+    controller = Safety().authority()
+
+    def configure(radio):
+        radio._controller_authority = controller
+        return {}
+
+    async with _peer(model, configure=configure) as (
+        radio,
+        peer,
+        server,
+        reader,
+        writer,
+    ):
+        before = dict(peer.slots)
+        async with _hold_commander_before_set(monkeypatch, radio, peer) as (
+            queued,
+            release,
+        ):
+            reply = asyncio.create_task(_exchange(writer, reader, command))
+            try:
+                await asyncio.wait_for(queued.wait(), 1)
+                assert radio._commander._queue.qsize() == 1
+                await controller.set_mode("remote")
+                release.set()
+                assert await reply == b"RPRT -22\n"
+                assert not any(
+                    cmd in (0x25, 0x26) and len(data) > 1
+                    for cmd, _sub, data in peer.requests
+                )
+                assert peer.slots == before
+                assert peer.selected == "A"
+                _assert_no_relative_overlays(server)
+            finally:
+                release.set()
+                if not reply.done():
+                    reply.cancel()
+                await asyncio.gather(reply, return_exceptions=True)

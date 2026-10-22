@@ -779,7 +779,9 @@ class _RigctldCommandExecutor:
             if error is not HamlibError.OK:
                 raise _RigctldCommandFailure(error)
         elif intent.name == "set_split_freq":
-            return await self.handler._execute_set_split_freq(int(params["freq_hz"]))
+            return await self.handler._execute_set_split_freq(
+                int(params["freq_hz"]), before_set=validate_controller
+            )
         elif intent.name == "set_split_mode":
             return await self.handler._execute_set_split_mode(
                 int(params["mode"]),
@@ -3170,13 +3172,22 @@ class RigctldHandler:
         await self._execute_write(intent)
         return _ok()
 
-    async def _execute_set_split_freq(self, freq_hz: int) -> CommandExecutionResult:
+    async def _execute_set_split_freq(
+        self,
+        freq_hz: int,
+        *,
+        before_set: Callable[[], None] | None = None,
+    ) -> CommandExecutionResult:
         if not isinstance(self._radio, RelativeVfoFrequencyWritable):
             raise _RigctldCommandFailure(HamlibError.ENAVAIL)
         try:
-            await self._radio.write_relative_vfo_frequency(freq_hz, selected=False)
+            await self._radio.write_relative_vfo_frequency(
+                freq_hz, selected=False, before_set=before_set
+            )
         except CommandRejectedError:
             raise
+        except ControllerError as exc:
+            raise _RigctldCommandFailure(HamlibError.EACCESS) from exc
         except CommandError as exc:
             raise _RigctldCommandFailure(HamlibError.ENAVAIL) from exc
         return CommandExecutionResult()

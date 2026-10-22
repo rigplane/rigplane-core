@@ -19,7 +19,7 @@ from rigplane.runtime.managed_tx_state import ActuationOperation, ActuationResul
 from serial_stub import SerialMockRadio
 from test_managed_tx_authority import authority
 from test_controller_authority import Safety
-from test_rigctld_split import _pause_mode_preservation
+from test_rigctld_split import _hold_commander_before_set, _pause_mode_preservation
 from test_rigctld_wsjtx_split_mk2 import MODELS, _assert_no_relative_overlays, _client, _exchange, _peer, _rf_state
 _FREQUENCY, _WAIT = 14_074_000, 2.0
 class _NoTruthProbe:
@@ -807,6 +807,7 @@ async def managed_split(request):
                     server=server,
                     reader=reader,
                     writer=writer,
+                    clock=asyncio.get_running_loop().time,
                 )
         finally:
             if "authority" in refs:
@@ -820,7 +821,7 @@ async def _drain_split_entry(rig, entry):
         def validate():
             validate_command_queue_entry_currency(
                 claimed,
-                now=asyncio.get_running_loop().time(),
+                now=rig.clock(),
                 provider_generation=rig.radio.state_store.provider_generation,
                 connection_generation="split-connection",
                 session_is_live=rig.queue.session_is_live,
@@ -836,6 +837,70 @@ async def _drain_split_entry(rig, entry):
         )
 
     await execute_command_queue_entry(entry, execute)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", [b"I 14080100\n", b"X USB 2400\n"])
+@pytest.mark.parametrize(
+    "change", [None, "authority", "provider", "session", "deadline"]
+)
+async def test_managed_split_currency_change_while_commander_queued_never_sets(
+    managed_split, monkeypatch, command, change
+):
+    rig = managed_split
+    before = dict(rig.peer.slots)
+    async with _hold_commander_before_set(monkeypatch, rig.radio, rig.peer) as (
+        queued,
+        release,
+    ):
+        reply = asyncio.create_task(_exchange(rig.writer, rig.reader, command))
+        drain = None
+        try:
+            await rig.queue.wait(1)
+            entry = rig.queue.take_entry()
+            assert entry is not None and entry.future is not None
+            drain = asyncio.create_task(_drain_split_entry(rig, entry))
+            await asyncio.wait_for(queued.wait(), 1)
+            assert rig.radio._commander._queue.qsize() == 1
+            assert not entry.future.done()
+            if change == "authority":
+                await rig.radio._controller_authority.set_mode("remote")
+            elif change == "provider":
+                rig.radio.state_store.begin_provider_generation()
+            elif change == "session":
+                assert entry.session_id is not None
+                assert rig.queue.session_is_live(entry.session_id)
+                rig.queue.unregister_session(entry.session_id)
+            elif change == "deadline":
+                assert entry.expires_at_monotonic is not None
+                rig.clock = lambda: entry.expires_at_monotonic + 1
+            assert not entry.future.done()
+            release.set()
+            await asyncio.wait_for(asyncio.gather(drain, return_exceptions=True), 2)
+            if change is None:
+                assert await reply == b"RPRT 0\n"
+                assert rig.peer.slots["B"] != before["B"]
+            else:
+                expected = b"RPRT -22\n" if change == "authority" else b"RPRT -11\n"
+                assert await reply == expected
+                assert not any(
+                    cmd in (0x25, 0x26) and len(data) > 1
+                    for cmd, _sub, data in rig.peer.requests
+                )
+                assert rig.peer.slots == before
+            assert rig.peer.slots["A"] == before["A"]
+            assert rig.peer.selected == "A"
+            assert not rig.default.calls
+            _assert_no_relative_overlays(rig.server)
+        finally:
+            release.set()
+            for task in (reply, drain):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *(task for task in (reply, drain) if task is not None),
+                return_exceptions=True,
+            )
 
 
 @pytest.mark.asyncio

@@ -63,9 +63,13 @@ class SplitIcomTransport:
     async def receive_packet(self, timeout: float = 5.0) -> bytes:
         return await asyncio.wait_for(self._responses.get(), timeout)
 
-    async def send_tracked(self, packet: bytes) -> None:
+    async def send_tracked(
+        self, packet: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
         from _helpers import wrap_civ_in_udp
 
+        if is_current is not None and not is_current():
+            raise CommandError("Split CI-V write is no longer current")
         request = parse_civ_frame(packet[packet.index(b"\xfe\xfe") :])
         command, data = request.command, request.data
         self.requests.append((command, request.sub, data))
