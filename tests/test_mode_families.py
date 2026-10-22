@@ -108,15 +108,22 @@ def test_malformed_families_rejected(tmp_path: Path, modes_extra: str) -> None:
         _load(tmp_path, modes_extra)
 
 
-def test_family_members_must_be_strings(tmp_path: Path) -> None:
-    # ``["CW", 1]``: the string check must answer, not the later membership
-    # check (``1`` is not in [modes].list either).
+@pytest.mark.parametrize(
+    "modes_extra",
+    [
+        pytest.param('families = { cw = ["CW", 1] }', id="member-not-a-string"),
+        pytest.param('families = { cw = "CW" }', id="family-not-a-list"),
+    ],
+)
+def test_family_must_be_a_list_of_strings(tmp_path: Path, modes_extra: str) -> None:
+    # The shape check must answer, not the later membership check: ``1`` is
+    # not in [modes].list, and a scalar ``"CW"`` would be iterated as "C", "W".
     with pytest.raises(
         RigLoadError,
         match=r"family_test\.toml: \[modes\]\.families\.cw must be a non-empty "
         r"list of strings",
     ):
-        _load(tmp_path, 'families = { cw = ["CW", 1] }')
+        _load(tmp_path, modes_extra)
 
 
 @pytest.mark.parametrize("cls", [RigConfig, RadioProfile])
