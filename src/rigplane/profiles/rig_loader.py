@@ -2191,7 +2191,9 @@ def _parse_cw_text(filename: str, raw: Any, *, has_send_cw: bool) -> CwTextSpec:
             f"{filename}: [cw_text].memory_channel must be a positive integer"
         )
     memory_type = raw.get("memory_type")
-    if memory_type is not None and memory_type not in _CW_TEXT_MEMORY_TYPES:
+    if memory_type is not None and (
+        not isinstance(memory_type, str) or memory_type not in _CW_TEXT_MEMORY_TYPES
+    ):
         raise RigLoadError(
             f'{filename}: [cw_text].memory_type must be "text" or "message"'
         )

@@ -181,6 +181,9 @@ class YaesuCatRadio:
         """
         self._config: RigConfig = _load_config(profile)
         self._profile_cache: RadioProfile | None = None
+        # MOR-3678: one send_cw_text at a time, so each KM memory write
+        # stays paired with the KY that plays it.
+        self._cw_text_lock = asyncio.Lock()
         self._tuner_provider_generation: Callable[[], int] | None = None
         self._device = device
         self._transport = YaesuCatTransport(device=device, baudrate=baudrate)
@@ -3586,7 +3589,9 @@ class YaesuCatRadio:
         KY has no free-text form. Channel, memory type and the length limit
         come from the profile's ``[cw_text]``; nothing is chunked, truncated
         or split. Text with a ``;`` or an ASCII control code is rejected:
-        CAT parameters may not contain them (general rules, printed p.4).
+        CAT parameters may not contain them (general rules, printed p.4;
+        DEL 7Fh included). Sends are serialized so each KM stays paired with
+        its KY; stop_cw_text does not wait for the lock.
 
         Raises:
             RuntimeError: The profile does not enable CW text sending.
@@ -3597,14 +3602,16 @@ class YaesuCatRadio:
 
         admit_cw_text(self.profile, text)
         spec = self.profile.cw_text
-        if spec.memory_channel is None:
+        if spec.memory_channel is None or not 1 <= spec.memory_channel <= 5:
+            # KM P1 is one digit, keyer memory 1-5 (printed p.17).
             raise CwTextUnsupportedError(
                 f"{self.profile.model} does not support sending CW text yet: "
-                "its profile names no [cw_text].memory_channel"
+                f"[cw_text].memory_channel {spec.memory_channel} is not a "
+                "KM keyer memory channel 1-5"
             )
         if not text:
             raise ValueError("CW text is empty")
-        if any(ch == ";" or ord(ch) < 0x20 for ch in text):
+        if any(ch == ";" or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
             raise ValueError("CW text cannot contain ';' or control characters")
         msg_type = "1" if spec.memory_type == "message" else "0"
         channel = str(spec.memory_channel)
@@ -3619,10 +3626,11 @@ class YaesuCatRadio:
                 "send_cw", type=msg_type, mem=channel, is_current=is_current
             )
 
-        if self._local_tx_work is None:
-            await write(None)
-        else:
-            await self._local_tx_work.run(write)
+        async with self._cw_text_lock:
+            if self._local_tx_work is None:
+                await write(None)
+            else:
+                await self._local_tx_work.run(write)
 
     async def stop_cw_text(self) -> None:
         """Stop keyer memory playback: ``KY P1 0;`` (printed p.18, P2 0 STOP)."""

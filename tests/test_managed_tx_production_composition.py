@@ -121,6 +121,7 @@ async def test_yaesu_install_shares_runner_and_poison_suppresses_queued_cw_chunk
     radio._profile_cache = dataclasses.replace(
         rig, cw_text=dataclasses.replace(rig.cw_text, supported=True)
     ).to_profile()
+    radio._cw_text_lock = asyncio.Lock()
 
     async def raw_set_ptt(_on: bool) -> None:
         raise AssertionError("raw PTT must be replaced")
