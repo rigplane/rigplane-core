@@ -369,3 +369,47 @@ async def test_icom_unmanaged_calls_and_public_signatures_stay_direct() -> None:
     assert "is_current" not in inspect.signature(CoreRadio.send_cw_text).parameters
     assert "is_current" not in inspect.signature(CoreRadio.stop_cw_text).parameters
     assert "is_current" not in inspect.signature(CoreRadio.set_tuner_status).parameters
+
+
+@pytest.mark.asyncio
+async def test_force_receive_cancels_a_cw_send_still_waiting_for_the_keyer_lock() -> (
+    None
+):
+    # MOR-3678: send B waits for send A's KM+KY pair. A force-off must end
+    # B too: nothing submitted before the forced receive may key afterwards.
+    fence = TxAbortFence()
+    radio = _fenced_radio(fence)
+    first_drain_started = asyncio.Event()
+    release_first_drain = asyncio.Event()
+    drain_calls = 0
+
+    async def drain(_command: str) -> int:
+        nonlocal drain_calls
+        drain_calls += 1
+        if drain_calls == 1:
+            first_drain_started.set()
+            await release_first_drain.wait()
+        return 0
+
+    radio._transport._drain_responses = drain
+    first = asyncio.create_task(radio.send_cw_text("AA"))
+    await first_drain_started.wait()
+    second = asyncio.create_task(radio.send_cw_text("BB"))
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    cleanup = fence.force_off()
+    force_receive = asyncio.create_task(_force_receive(radio))
+    await asyncio.sleep(0)
+    release_first_drain.set()
+
+    assert await force_receive is ActuationResult.ACCEPTED
+    results = await asyncio.gather(first, second, return_exceptions=True)
+    await cleanup
+    assert all(isinstance(r, BaseException) for r in results), results
+
+    wire_commands = [
+        call.args[0] for call in radio._transport._raw_write.await_args_list
+    ]
+    assert not any(c.startswith("KY0") for c in wire_commands), wire_commands
+    assert not any(c.startswith("KM5BB") for c in wire_commands), wire_commands
