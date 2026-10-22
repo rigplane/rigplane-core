@@ -7,7 +7,12 @@ import pytest
 from rigplane import IC_7610_ADDR
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.commander import Priority
-from rigplane.exceptions import CommandError, ConnectionError, TimeoutError
+from rigplane.exceptions import (
+    CommandError,
+    CommandRejectedError,
+    ConnectionError,
+    TimeoutError,
+)
 from rigplane.radio import IcomRadio
 from rigplane.types import CivFrame, Mode, bcd_encode
 
@@ -488,9 +493,17 @@ class TestReceiverAwareContract:
     ) -> None:
         # Issue #1172: receiver-VFO fallback now goes through the
         # internal ``_set_vfo_wire`` so the legacy ``set_vfo`` overload
-        # does not self-trigger its DeprecationWarning.
+        # does not self-trigger its DeprecationWarning. The MAIN write
+        # inside the fallback waits for the radio's answer, so the mock
+        # must hand it an ACK frame.
         radio._set_vfo_wire = AsyncMock()  # type: ignore[method-assign]
-        radio._send_civ_raw = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        radio._send_civ_raw = AsyncMock(  # type: ignore[method-assign]
+            return_value=CivFrame(
+                to_addr=CONTROLLER_ADDR,
+                from_addr=IC_7610_ADDR,
+                command=0xFB,
+            )
+        )
 
         await radio.set_freq(14_074_000, receiver=1)
 
@@ -514,6 +527,44 @@ class TestReceiverAwareContract:
         r = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):
             await r.stop_cw_text()
+
+
+class TestSetFrequencyMainAnswer:
+    """The MAIN ``0x05`` write waits for the radio's answer (MOR-3004).
+
+    A refusal (bare ``FA``) must fail the command instead of settling a
+    fire-and-forget ACK sink: ``_set_frequency_main`` waits for the
+    answer and raises ``CommandRejectedError`` on a NAK — the exception
+    class the caller surfaces already map (web WS/HTTP ``radio_nak``,
+    rigctld ``RPRT -9``, command lifecycle ``failed``). With an ACK the
+    write completes, and the frame on the wire is exactly the one the
+    blind send used to put there.
+    """
+
+    @pytest.mark.asyncio
+    async def test_nak_raises_command_rejected_and_keeps_the_mirror(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        mock_transport.queue_response(_nak_response())
+
+        with pytest.raises(CommandRejectedError, match="rejected MAIN set_frequency"):
+            await radio.set_freq(14_074_000)
+
+        assert radio._last_freq_hz != 14_074_000  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_ack_completes_and_the_frame_is_unchanged(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        mock_transport.queue_response(_ack_response())
+
+        await radio.set_freq(14_074_000)
+
+        assert radio._last_freq_hz == 14_074_000  # noqa: SLF001
+        expected = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, 0x05, data=bcd_encode(14_074_000)
+        )
+        assert mock_transport.sent_packets[-1].endswith(expected)
 
 
 # ---------------------------------------------------------------------------

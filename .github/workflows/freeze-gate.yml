@@ -1,0 +1,42 @@
+name: Freeze gate
+
+on:
+  pull_request:
+    types:
+      [
+        opened,
+        edited,
+        synchronize,
+        reopened,
+        labeled,
+        unlabeled,
+        ready_for_review,
+      ]
+
+permissions:
+  contents: read
+
+jobs:
+  freeze-gate:
+    name: Evaluate stabilization-freeze PR contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Check out the PR head
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Run freeze-gate unit tests
+        run: node --test .github/scripts/freeze-gate.test.js
+
+      - name: Evaluate PR against the freeze contract
+        env:
+          # Untrusted PR fields are passed via env, never interpolated into
+          # run: text, so a crafted title/body cannot inject shell code.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+        run: node .github/scripts/freeze-gate.js

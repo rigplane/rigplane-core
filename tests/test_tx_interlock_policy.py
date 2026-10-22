@@ -1,6 +1,6 @@
 """Focused contract tests for the shared TX interlock policy."""
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import pytest
 
@@ -16,6 +16,12 @@ from rigplane.core.tx_interlock_contract import (
 from rigplane.core.tx_interlock_contract import (
     TxInterlockDisposition as CoreTxInterlockDisposition,
 )
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
 from rigplane.runtime._poller_types import (
     MemoryToVfo,
     PttOff,
@@ -53,9 +59,13 @@ from rigplane.runtime.tx_interlock import (
     TxInterlockDeferredOutcome,
     TxInterlockDecision,
     TxInterlockDisposition,
+    classify_raw_civ_frame_tx_family,
     classify_tx_interlock,
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
+    is_exact_raw_dekey_frame,
+    is_exact_raw_transmission_end_frame,
+    resolve_rf_state,
 )
 
 
@@ -412,3 +422,217 @@ def test_deferred_lane_rejects_non_deferred_commands() -> None:
         assert "DEFER" in str(error)
     else:
         raise AssertionError("only DEFER commands may enter the deferred lane")
+
+
+def _ptt_store(
+    *, value: object = False, max_age: float | None = 1.0
+) -> tuple[StateStore, FreshnessClock]:
+    """Store holding one tx_state.ptt observation at t0=10.0 (manual clock)."""
+
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=value,
+            source=SourceMetadata(
+                source="poll_response",
+                provider="test",
+                transport="fake",
+                native_id="test",
+            ),
+            timestamp_monotonic=clock.now(),
+            max_age=max_age,
+        )
+    )
+    return store, clock
+
+
+def test_resolve_rf_state_reads_known_rx_inside_ttl() -> None:
+    store, _clock = _ptt_store(value=False, max_age=1.0)
+
+    assert resolve_rf_state(store.snapshot()) is RfState.RX
+
+
+def test_resolve_rf_state_reads_known_tx_inside_ttl() -> None:
+    store, _clock = _ptt_store(value=True, max_age=1.0)
+
+    assert resolve_rf_state(store.snapshot()) is RfState.TX
+
+
+def test_resolve_rf_state_recomputes_age_past_ttl_despite_fresh_flag() -> None:
+    store, clock = _ptt_store(value=False, max_age=1.0)
+    clock.advance(1.03)
+    snapshot = store.snapshot()
+    assert (
+        snapshot.field(FieldPath.global_("tx_state", "ptt")).freshness
+        is FreshnessState.FRESH
+    )
+
+    assert resolve_rf_state(snapshot) is RfState.UNKNOWN
+
+
+def test_resolve_rf_state_treats_ttl_boundary_as_expired() -> None:
+    store, clock = _ptt_store(value=False, max_age=1.0)
+    clock.advance(1.0)
+
+    assert resolve_rf_state(store.snapshot()) is RfState.UNKNOWN
+
+
+def test_resolve_rf_state_without_ptt_field_is_unknown() -> None:
+    store = StateStore(freshness_clock=FreshnessClock(start=10.0))
+
+    assert resolve_rf_state(store.snapshot()) is RfState.UNKNOWN
+
+
+def test_resolve_rf_state_without_max_age_is_unknown() -> None:
+    store, _clock = _ptt_store(value=False, max_age=None)
+
+    assert resolve_rf_state(store.snapshot()) is RfState.UNKNOWN
+
+
+def test_resolve_rf_state_with_non_bool_value_is_unknown() -> None:
+    store, _clock = _ptt_store(value=1, max_age=1.0)
+
+    assert resolve_rf_state(store.snapshot()) is RfState.UNKNOWN
+
+
+def test_resolve_rf_state_with_negative_snapshot_generation_is_unknown() -> None:
+    store, _clock = _ptt_store(value=False, max_age=1.0)
+    snapshot = store.snapshot()
+    path = FieldPath.global_("tx_state", "ptt")
+    field = replace(snapshot.field(path), provider_generation=-1)
+    negative = replace(snapshot, fields=(field,), provider_generation=-1)
+
+    assert resolve_rf_state(negative) is RfState.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("frame_hex", "expected"),
+    (
+        ("FEFE98E01CFD", None),
+        ("FEFE98E0290029001C0001FD", True),
+        ("FEFE98E029001C00FD", False),
+    ),
+    ids=(
+        "short-1c-frame-unparseable",
+        "doubly-wrapped-cmd29-fails-closed",
+        "cmd29-ptt-read-passes",
+    ),
+)
+def test_raw_frame_classifier_pins_fail_closed_branches(
+    frame_hex: str, expected: bool | None
+) -> None:
+    """Pin the byte-level TX-family verdict on edge frames.
+
+    A 0x1C frame with no sub byte cannot be parsed, a cmd29 wrapper
+    around another cmd29 wrapper cannot be unwrapped to a known inner
+    command, and a cmd29 wrapper around a PTT read is a read: the first
+    two fail closed (refused in managed mode), the read passes.
+    """
+    assert classify_raw_civ_frame_tx_family(bytes.fromhex(frame_hex)) is expected
+
+
+@pytest.mark.parametrize(
+    ("frame_hex", "expected"),
+    (
+        ("FEFE98E0280001FD", True),
+        ("FEFE98E0280008FD", True),
+        ("FEFE98E02900280001FD", True),
+        ("FEFE98E0280000FD", True),
+        ("FEFE98E02800FD", True),
+        ("FEFE98E028000000FD", True),
+        ("FEFE98E0280101FD", False),
+        ("FEFE98E01741FD", False),
+    ),
+    ids=(
+        "voice-memory-tx-01",
+        "voice-memory-tx-08",
+        "cmd29-voice-memory-tx",
+        "voice-memory-stop-is-family",
+        "voice-memory-no-data-stays-in-family",
+        "voice-stop-extra-byte-stays-in-family",
+        "other-28-sub-not-family",
+        "cw-text-not-family",
+    ),
+)
+def test_raw_frame_classifier_voice_tx_memory_rows(
+    frame_hex: str, expected: bool
+) -> None:
+    """MOR-3374: the voice TX memory command 0x28 sub 0x00 is TX-family.
+
+    A non-zero data byte starts RF with no operator key-down, so it is a
+    TX-start like PTT-on; its stop form ``28 00 00`` stays in the family
+    (managed mode refuses it like every de-key), and the no-data and
+    multi-data forms stay in the family too — they must not be classified
+    as de-keys.  A different 0x28 sub and raw CW text ``0x17`` are not
+    family: the typed ``send_cw_text`` path is not interlocked, so raw
+    0x17 keeps passing as before.
+    """
+    assert classify_raw_civ_frame_tx_family(bytes.fromhex(frame_hex)) is expected
+
+
+@pytest.mark.parametrize(
+    ("frame_hex", "expected"),
+    (
+        ("FEFE98E0280000FD", True),
+        ("FEFE98E02900280000FD", True),
+        ("FEFE98E0280001FD", False),
+        ("FEFE98E028000000FD", False),
+        ("FEFE98E02800FD", False),
+        ("FEFE98E0280101FD", False),
+    ),
+    ids=(
+        "voice-memory-stop",
+        "cmd29-voice-memory-stop",
+        "voice-memory-tx-not-dekey",
+        "voice-stop-extra-byte-not-dekey",
+        "voice-memory-no-data-not-dekey",
+        "other-28-sub-not-dekey",
+    ),
+)
+def test_exact_raw_dekey_voice_tx_memory_rows(frame_hex: str, expected: bool) -> None:
+    """MOR-3374: exactly ``28 00 00`` (bare or cmd29-wrapped) is a de-key.
+
+    The stop form has one data byte equal to zero; a transmit payload, a
+    second data byte, no data byte, or another 0x28 sub is not a de-key.
+    """
+    assert is_exact_raw_dekey_frame(bytes.fromhex(frame_hex)) is expected
+
+
+@pytest.mark.parametrize(
+    ("frame_hex", "expected"),
+    (
+        ("FEFE98E01C0000FD", True),
+        ("FEFE98E029001C0000FD", True),
+        ("FEFE98E0280000FD", True),
+        ("FEFE98E02900280000FD", True),
+        ("FEFE98E01C0100FD", False),
+        ("FEFE98E029001C0100FD", False),
+        ("FEFE98E01C0001FD", False),
+        ("FEFE98E01C000000FD", False),
+        ("FEFE98E0280001FD", False),
+        ("FEFE98E01CFD", False),
+    ),
+    ids=(
+        "ptt-off",
+        "cmd29-ptt-off",
+        "voice-memory-stop",
+        "cmd29-voice-memory-stop",
+        "tuner-off-not-transmission-end",
+        "cmd29-tuner-off-not-transmission-end",
+        "ptt-on-not-transmission-end",
+        "ptt-off-extra-byte",
+        "voice-stop-tx-payload",
+        "short-1c-frame-unparseable",
+    ),
+)
+def test_exact_raw_transmission_end_rows(frame_hex: str, expected: bool) -> None:
+    """MOR-3380: the frames that end a transmission, exactly.
+
+    PTT off (``1C 00 00``) and the voice TX memory stop (``28 00 00``),
+    bare or cmd29-wrapped, end a transmission; the tuner-off actuation
+    (``1C 01 00``), any other payload, and an unparseable envelope do
+    not.
+    """
+    assert is_exact_raw_transmission_end_frame(bytes.fromhex(frame_hex)) is expected

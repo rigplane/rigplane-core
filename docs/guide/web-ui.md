@@ -497,6 +497,8 @@ a backend name. Direct hardware or external keying is not an owned browser
 PTT intent. Final operator/hardware acceptance is separate from these API
 contracts.
 
+Typed `send_cw_text` keys the rig without managed-authority admission by owner decision (2026-10-12), because its frames run through the abort fence (`src/rigplane/runtime/managed_tx_fence.py`: `TxAbortFence`) that a managed force-off cancels, as pinned by `test_icom_force_off_suppresses_late_cw_write_and_remaining_chunks` in `tests/test_fenced_local_tx_providers.py`.
+
 ## Frontend Runtime Workflow (Current Implementation)
 
 The browser app startup path is implemented in `frontend/src/App.svelte`
@@ -548,6 +550,26 @@ otherwise the profile's default policy. It is emitted by
 `core/acquisition_scheduler.py: StateFreshnessService.tick`
 (`AcquisitionScheduler.ensure_fresh` and `.prime_unobserved` also enqueue
 requests, outside this cadence).
+
+A CI-V observation of a field the profile neither declares in
+`[state_acquisition.field_policies]` nor polls is stamped with the
+rig-blind `_OBSERVATION_MAX_AGE_SECONDS` entry where one exists and
+otherwise with the profile's default-policy TTL
+(`runtime/_civ_rx.py: _observation_max_age`), so it decays to stale when
+nothing refreshes it (`core/state_store.py: StateStore.mark_stale_due`).
+A polled field (or one with a declared field policy) instead takes its
+policy's TTL — for a polled field with no entry of its own, its
+acquisition class's TTL, which is no expiry for the setting and menu
+classes (`core/state_acquisition_policy.py: ACQUISITION_CLASS_TABLE`,
+`AcquisitionClassPolicy.expires_by_time`). A field policy on a
+capability that cannot poll must declare
+`freshness_ttl_seconds = "never"`, because no cadence read refreshes it
+(`tests/test_state_acquisition_policy.py: test_non_polling_field_policies_declare_no_freshness_expiry`).
+`tests/test_civ_observation_ttl_census.py: test_every_civ_observation_path_has_a_ttl_or_an_explicit_never`
+fails if an enumerated CI-V ingress path on a `rigs/` CI-V profile is
+stamped with anything other than a finite positive TTL, unless the
+profile declares `"never"` for it or it is polled and its class does not
+expire by time.
 
 ### Conditional requests on `/api/v1/state`
 

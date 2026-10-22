@@ -89,8 +89,9 @@ that class of defect is release-blocking by definition and is not on this list.
 - **The radios validated on 3.0 hardware are the IC-7300 over USB, the
   FTX-1 over USB and the IC-7610 over LAN.** The IC-7610 was validated on
   3.0 builds up to 2026-09-27; later changes were not re-run on it. Not
-  validated on 3.0 hardware: the IC-705, the IC-9700, the X6200 and the
-  X6100. For the IC-9700, one reporter tested the POWER ON fix of #3862
+  validated on 3.0 hardware: the IC-705, the IC-9700, the X6200, the
+  X6100 and the IC-7300MK2 — a dedicated manual-based profile. For the
+  IC-9700, one reporter tested the POWER ON fix of #3862
   over LAN.
 
 ## Dual-receiver topology
@@ -112,15 +113,5 @@ not treat any other dual-receiver path as hardware-certified.
 
 ## Web UI
 
-- **On a phone, the panorama's frequency labels overlap at its two
-  edges.** (MOR-3011)
 - **The LCD skin's VFO control panel shows the A↔B and A=B keys without
   checking whether the radio's VFO scheme supports them.** (MOR-2912)
-
-## Command-line output
-
-- **CLI output is lost when standard output is a pipe.** The CLI ends its
-  radio commands with `os._exit`, which skips the flush of block-buffered
-  stdout, so a command that prints — `status`, `freq`, `mode`, `meter` —
-  exits 0 with empty output when piped; on a terminal stdout is
-  line-buffered and nothing is lost. (MOR-3010)

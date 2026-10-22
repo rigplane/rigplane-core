@@ -15,6 +15,7 @@ exclude_docs: |
   parity/
   plans/
   internals/rfc-audio-v1-mini.md
+  overrides/
 
 theme:
   name: material

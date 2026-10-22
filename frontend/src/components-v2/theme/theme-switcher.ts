@@ -210,7 +210,8 @@ export function setThemeUserChoice(id: string): void {
 
 function applyTheme(id: string, explicit: boolean): void {
   // Validate theme ID
-  if (!THEMES.some((theme) => theme.id === id)) {
+  const theme = THEMES.find((theme) => theme.id === id);
+  if (!theme) {
     console.warn(`Unknown theme ID: ${id}`);
     return;
   }
@@ -232,6 +233,8 @@ function applyTheme(id: string, explicit: boolean): void {
   } else {
     document.documentElement.dataset.theme = id;
   }
+  // Native selects and their options must use the app's polarity, not the OS default.
+  document.documentElement.style.colorScheme = theme.category === 'light' ? 'light' : 'dark';
 }
 
 export function getVfoTheme(): string | null {

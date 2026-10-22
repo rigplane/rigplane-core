@@ -7,10 +7,12 @@ TOML file with zero Python changes.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Never, NotRequired, Required, TypedDict
+from collections.abc import Awaitable, Callable
+from typing import Literal, Never, NotRequired, Required, TypedDict, cast
 
 from rigplane.commands._codec import (
     bcd_encode_value,
@@ -20,9 +22,14 @@ from rigplane.commands._codec import (
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
-from rigplane.core.types import ToneSquelchType
+from rigplane.core.types import MemoryProfile, ToneSquelchType
 
 __all__ = [
+    "CwTextSendCancelledError",
+    "CwTextSpec",
+    "CwTextUnsupportedError",
+    "await_fenced_cw_text",
+    "admit_cw_text",
     "ControlLookupPoint",
     "EncodedControlChoice",
     "ControlDomainSpec",
@@ -37,6 +44,7 @@ __all__ = [
     "resolve_radio_profile",
     "KeyboardBinding",
     "KeyboardConfig",
+    "MemoryProfile",
 ]
 
 logger = logging.getLogger(__name__)
@@ -311,6 +319,28 @@ class TxPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class CwTextSpec:
+    """Whether and how a radio sends typed CW text (MOR-3678).
+
+    Separate from the ``cw`` capability tag, which drives the CW decoder,
+    console and keyer controls: a radio can have ``cw`` and still not
+    accept ``send_cw_text``. Published as ``cwText`` on ``/api/v1/info``
+    and ``/api/v1/capabilities``.
+
+    ``max_length`` is the longest text one ``send_cw_text`` accepts; a
+    longer request is rejected, never truncated or split.
+    ``memory_channel`` and ``memory_type`` are set only for radios that
+    send text by writing a keyer memory and playing it back (Yaesu KM +
+    KY); ``memory_type`` is ``"text"`` or ``"message"``.
+    """
+
+    supported: bool = True
+    max_length: int = 512
+    memory_channel: int | None = None
+    memory_type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RadioProfile:
     """Runtime radio profile used by command routing and capability checks."""
 
@@ -536,6 +566,19 @@ class RadioProfile:
     # unverified identity configuration; the loader validates shape only.
     # Appended to preserve the positional constructor contract.
     expected_identity_ids: tuple[str, ...] = ()
+    # Memory channel addressing from the optional ``[memory]`` section
+    # (MOR-3627); None when the profile declares none. Appended for the same
+    # reason as the fields above.
+    memory: MemoryProfile | None = field(default=None, kw_only=True)
+    # ``[modes] families`` (MOR-3679): family name -> member modes, e.g.
+    # ``{"cw": ("CW-U", "CW-L")}``. Empty when the profile declares none.
+    # Keyword-only and appended so no positional argument shifts.
+    mode_families: dict[str, tuple[str, ...]] = field(
+        default_factory=dict, kw_only=True
+    )
+    # Typed CW text sending (MOR-3678), from the profile's ``[cw_text]``.
+    # Keyword-only so the positional constructor contract cannot shift.
+    cw_text: CwTextSpec = field(default_factory=CwTextSpec, kw_only=True)
 
     @property
     def vfo_swap_code(self) -> int | None:
@@ -826,3 +869,89 @@ def reload_profiles() -> None:
     global _profiles
     _profiles = None
     _ensure_loaded()
+
+
+class CwTextUnsupportedError(RuntimeError):
+    """The radio's profile does not enable ``send_cw_text`` (MOR-3678).
+
+    A ``RuntimeError`` whose text says "does not support", so the web layer
+    answers it with the existing ``unsupported_command`` path (HTTP 409,
+    WebSocket ``unsupported_command``).
+    """
+
+
+class CwTextSendCancelledError(RuntimeError):
+    """A CW stop or a transmit abort ended a send_cw_text (MOR-3700).
+
+    A send that was still pending (queued behind another send, or waiting
+    to write) when a CW stop or a transmit abort arrived. A transmit abort
+    is the managed TX abort fence going stale: a force-off, the radio
+    transport going away, or shutdown. It is a defined refusal, not a
+    failure: HTTP answers 409 ``command_cancelled``,
+    the WebSocket command ``ok: false`` with ``command_cancelled``, the CLI
+    ``Error: <message>`` with exit 1. Raise it with :func:`cw_text_cancelled`
+    so every backend uses the same text.
+    """
+
+
+def cw_text_cancelled(
+    model: str, by: Literal["stop", "abort"]
+) -> CwTextSendCancelledError:
+    """The refusal for a send a CW stop or a transmit abort ended (MOR-3700)."""
+    cause = "a CW stop" if by == "stop" else "a transmit abort"
+    return CwTextSendCancelledError(f"CW text send to {model} was cancelled by {cause}")
+
+
+async def await_fenced_cw_text(work: Awaitable[None], model: str) -> None:
+    """Await a send's abort-fenced TX work; an abort is a refusal (MOR-3700).
+
+    A transmit abort (force-off, transport gone) cancels the fenced work task, and the runner hands
+    that on as ``CancelledError``; left alone it would cancel the caller's
+    request too (HTTP closed the connection unanswered). That cancellation
+    becomes :class:`CwTextSendCancelledError`. A cancellation of the caller
+    itself (server shutdown, a client gone) is not a refusal and stays a
+    cancellation.
+    """
+    try:
+        await work
+    except asyncio.CancelledError:
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise
+        raise cw_text_cancelled(model, "abort") from None
+
+
+def cw_text_sender(radio: object) -> Callable[[str], Awaitable[None]] | None:
+    """The backend's ``send_cw_text``, or ``None`` when it has none (MOR-3678).
+
+    The one check for "can this backend run send_cw_text at all": the HTTP
+    and WebSocket handler and the CLI refuse when it is ``None``, and the
+    published ``cwText.supported`` is false then, so what is advertised and
+    what runs cannot drift apart (external rigctld has no CW text sending).
+    """
+    send = getattr(radio, "send_cw_text", None)
+    return cast("Callable[[str], Awaitable[None]]", send) if callable(send) else None
+
+
+def admit_cw_text(profile: RadioProfile, text: str) -> None:
+    """The one admission check every ``send_cw_text`` passes (MOR-3678).
+
+    Called first thing by each backend's ``send_cw_text``, so the HTTP
+    endpoint, the WebSocket command and the CLI refuse the same requests
+    with the same text. The profile's ``cw_text`` is the only source of the
+    limit. Text over the limit is rejected, never truncated or split.
+
+    Raises:
+        CwTextUnsupportedError: ``cw_text.supported`` is false.
+        ValueError: The text is longer than ``cw_text.max_length``.
+    """
+    spec = profile.cw_text
+    if not spec.supported:
+        raise CwTextUnsupportedError(
+            f"{profile.model} does not support sending CW text yet"
+        )
+    if len(text) > spec.max_length:
+        raise ValueError(
+            f"CW text too long for {profile.model}: got {len(text)} characters, "
+            f"limit is {spec.max_length}"
+        )

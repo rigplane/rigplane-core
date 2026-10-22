@@ -1,0 +1,221 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+const {
+  buildCodexVerdict,
+  codexReviewedHead,
+  hasDirective,
+  readReviewThreads,
+  unresolvedCodexFindings,
+} = require('./codex-review-gate.js');
+
+const HEAD = 'dae01ac3d5ee33985356568c688636c3fc8d8824';
+const OTHER = '0123456789abcdef0123456789abcdef01234567';
+const CODEX = {login: 'chatgpt-codex-connector[bot]', type: 'Bot'};
+const HUMAN = {login: 'morozsm', type: 'User'};
+
+const summary = (sha, status = 'completed') => ({
+  user: CODEX,
+  body:
+    '<!-- codex-pull-request-review-summary -->\n' +
+    `<!-- codex-review-state:v1 {"code_review":{"commit_sha":${JSON.stringify(sha)},` +
+    `"has_any_findings":true,"has_unresolved_findings":true,"status":"${status}"},` +
+    '"security_review":{"commit_sha":null,"has_any_findings":null,' +
+    '"has_unresolved_findings":null,"status":null}} -->\n\n## Codex Review Summary',
+});
+const receipt = (short) => ({
+  user: CODEX,
+  body:
+    "<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn't find any major issues. Bravo.\n\n" +
+    `**Reviewed commit:** \`${short}\`\n`,
+});
+const thread = (body, {resolved = false, author = {login: 'chatgpt-codex-connector', __typename: 'Bot'}} = {}) => ({
+  isResolved: resolved,
+  path: 'src/a.py',
+  line: 7,
+  comments: {nodes: [{url: 'https://x/1', body, author}]},
+});
+const P0 = '**<sub><sub>![P0 Badge](https://img.shields.io/badge/P0-red?style=flat)</sub></sub>  Bug**';
+const P1 = '**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Bug**';
+const P2 = '**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Bug**';
+const P3 = '**<sub><sub>![P3 Badge](https://img.shields.io/badge/P3-green?style=flat)</sub></sub>  Nit**';
+
+test('review object at the exact head counts, any other sha does not', () => {
+  const review = (sha) => ({user: CODEX, commit_id: sha, state: 'COMMENTED'});
+  assert.deepEqual(codexReviewedHead({reviews: [review(HEAD)], comments: [], headSha: HEAD}), {reviewed: true, via: 'review'});
+  assert.equal(codexReviewedHead({reviews: [review(OTHER)], comments: [], headSha: HEAD}).reviewed, false);
+});
+
+test('a pending, dismissed or human review does not count', () => {
+  const pending = {user: CODEX, commit_id: HEAD, state: 'PENDING'};
+  const dismissed = {user: CODEX, commit_id: HEAD, state: 'DISMISSED'};
+  const human = {user: HUMAN, commit_id: HEAD, state: 'COMMENTED'};
+  assert.equal(codexReviewedHead({reviews: [pending, dismissed, human], comments: [], headSha: HEAD}).reviewed, false);
+});
+
+test('a dismissed Codex review invalidates the summary until a fresh review exists', () => {
+  const dismissed = {user: CODEX, commit_id: HEAD, state: 'DISMISSED'};
+  const fresh = {user: CODEX, commit_id: HEAD, state: 'COMMENTED'};
+  assert.equal(codexReviewedHead({reviews: [dismissed], comments: [summary(HEAD), receipt('dae01ac3d5')], headSha: HEAD}).reviewed, false);
+  assert.equal(codexReviewedHead({reviews: [dismissed, fresh], comments: [], headSha: HEAD}).via, 'review');
+  // The later review wins: an older valid review does not survive a later dismissal.
+  assert.equal(codexReviewedHead({reviews: [fresh, dismissed], comments: [summary(HEAD)], headSha: HEAD}).reviewed, false);
+});
+
+test('summary comment counts only when completed and for the exact head', () => {
+  assert.equal(codexReviewedHead({reviews: [], comments: [summary(HEAD)], headSha: HEAD}).via, 'summary');
+  assert.equal(codexReviewedHead({reviews: [], comments: [summary(OTHER)], headSha: HEAD}).reviewed, false);
+  assert.equal(codexReviewedHead({reviews: [], comments: [summary(HEAD, 'in_progress')], headSha: HEAD}).reviewed, false);
+});
+
+test('clean receipt matches the abbreviated head, a short or wrong prefix does not', () => {
+  assert.equal(codexReviewedHead({reviews: [], comments: [receipt('dae01ac3d5')], headSha: HEAD}).via, 'receipt');
+  assert.equal(codexReviewedHead({reviews: [], comments: [receipt('dae01ac')], headSha: HEAD}).reviewed, false);
+  assert.equal(codexReviewedHead({reviews: [], comments: [receipt('0123456789')], headSha: HEAD}).reviewed, false);
+});
+
+test('a human quoting Codex markers is not Codex', () => {
+  const fake = {...summary(HEAD), user: HUMAN};
+  const fakeReceipt = {...receipt('dae01ac3d5'), user: {login: 'chatgpt-codex-connector', type: 'User'}};
+  assert.equal(codexReviewedHead({reviews: [], comments: [fake, fakeReceipt], headSha: HEAD}).reviewed, false);
+});
+
+test('a malformed state block is ignored', () => {
+  const broken = {user: CODEX, body: '<!-- codex-review-state:v1 {"code_review": -->'};
+  assert.equal(codexReviewedHead({reviews: [], comments: [broken], headSha: HEAD}).reviewed, false);
+});
+
+test('a non-sha head never matches', () => {
+  assert.equal(codexReviewedHead({reviews: [], comments: [receipt('dae01ac3d5')], headSha: 'dae01ac3d5'}).reviewed, false);
+});
+
+test('only unresolved Codex P0-P2 threads are findings', () => {
+  const found = unresolvedCodexFindings([
+    thread(P0),
+    thread(P1),
+    thread(P2),
+    thread(P3),
+    thread(P1, {resolved: true}),
+    thread(P1, {author: {login: 'morozsm', __typename: 'User'}}),
+    {isResolved: false, comments: {nodes: []}},
+  ]);
+  assert.deepEqual(found.map((f) => f.priority), ['P0', 'P1', 'P2']);
+});
+
+const none = {pass: false, blocked: false, description: ''};
+const reviewed = {reviewed: true, via: 'review'};
+const absent = {reviewed: false, via: null};
+
+test('a Codex bot review alone is advisory: no PASS means failure that names the local PASS', () => {
+  const v = buildCodexVerdict({codex: reviewed, unresolved: [], backup: none, headSha: HEAD});
+  assert.equal(v.state, 'failure');
+  assert.match(v.description, /Waiting for the local review PASS for dae01ac/u);
+  const nothing = buildCodexVerdict({codex: absent, unresolved: [], backup: none, headSha: HEAD});
+  assert.equal(nothing.state, 'failure');
+  assert.match(nothing.description, /Waiting for the local review PASS for dae01ac/u);
+});
+
+test('the local PASS turns the gate green whether or not the Codex bot reviewed', () => {
+  for (const codex of [absent, reviewed]) {
+    const v = buildCodexVerdict({codex, unresolved: [], backup: {...none, pass: true}, headSha: HEAD});
+    assert.equal(v.state, 'success');
+    assert.match(v.description, /^Local review PASS for dae01ac\./u);
+  }
+});
+
+test('open Codex bot threads are advisory: they appear in the text, never block a PASS', () => {
+  const open = [{priority: 'P2', path: 'a.py', line: 3}];
+  const v = buildCodexVerdict({codex: reviewed, unresolved: open, backup: {...none, pass: true}, headSha: HEAD});
+  assert.equal(v.state, 'success');
+  assert.match(v.description, /Codex bot advisory: 1 open P0-P2 thread/u);
+});
+
+test('a BLOCKED directive beats a PASS and a Codex review', () => {
+  const blocked = {pass: true, blocked: true, description: 'BLOCKED is active.'};
+  const v = buildCodexVerdict({codex: reviewed, unresolved: [], backup: blocked, headSha: HEAD});
+  assert.deepEqual(v, {state: 'failure', description: 'BLOCKED is active.'});
+});
+
+test('the built-by-gpt label no longer changes the verdict', () => {
+  for (const backup of [none, {...none, pass: true}]) {
+    const unlabelled = buildCodexVerdict({codex: reviewed, unresolved: [], backup, headSha: HEAD, gptBuilt: false});
+    const labelled = buildCodexVerdict({codex: reviewed, unresolved: [], backup, headSha: HEAD, gptBuilt: true});
+    assert.deepEqual(labelled, unlabelled);
+  }
+});
+
+const STAMP = '2026-10-21T12:00:00Z';
+const BEFORE = new Date('2026-10-21T11:00:00Z');
+const note = (body, extra = {}) => ({
+  body,
+  author_association: 'OWNER',
+  created_at: STAMP,
+  updated_at: STAMP,
+  ...extra,
+});
+
+test('a trusted exact-head directive on the first non-blank line counts', () => {
+  assert.equal(hasDirective({comments: [note(`Agent Review: PASS ${HEAD}`)], verdict: 'PASS', headSha: HEAD, notBefore: BEFORE}), true);
+  assert.equal(hasDirective({comments: [note(`\n  \r\nAgent Review: PASS ${HEAD}\nReviewer: local review`)], verdict: 'PASS', headSha: HEAD, notBefore: BEFORE}), true);
+  assert.equal(hasDirective({comments: [note(`Agent Review: BLOCKED ${HEAD}\nConcrete blocker`)], verdict: 'BLOCKED', headSha: HEAD}), true);
+});
+
+test('a BLOCKED line anywhere in a trusted comment stays binding (fail closed), at any age', () => {
+  const blocked = (body, extra = {}) => hasDirective({comments: [note(body, extra)], verdict: 'BLOCKED', headSha: HEAD});
+  assert.equal(blocked(`Concrete blocker remains.\nAgent Review: BLOCKED ${HEAD}`), true);
+  assert.equal(blocked('```\nAgent Review: BLOCKED ' + HEAD + '\n```'), true);
+  assert.equal(blocked('````text\n```\n````\nAgent Review: BLOCKED ' + HEAD), true);
+  assert.equal(blocked(`Agent Review: BLOCKED ${HEAD}`, {created_at: '2020-01-01T00:00:00Z', updated_at: '2020-01-01T00:00:00Z'}), true);
+  // Not binding: a quote, another author class, another sha or an extended token.
+  assert.equal(blocked(`> Agent Review: BLOCKED ${HEAD}`), false);
+  assert.equal(blocked(`Agent Review: BLOCKED ${HEAD}`, {author_association: 'NONE'}), false);
+  assert.equal(blocked(`Agent Review: BLOCKED ${HEAD}x`), false);
+  assert.equal(blocked(`Agent Review: BLOCKED ${'e'.repeat(40)}`), false);
+});
+
+test('untrusted authors, quoted or fenced examples, other heads and stale PASS comments do not count', () => {
+  const bad = [
+    note(`Agent Review: PASS ${HEAD}`, {author_association: 'NONE'}),
+    note(`Agent Review: PASS ${HEAD}`, {author_association: 'CONTRIBUTOR'}),
+    note(`Agent Review: PASS ${HEAD}`, {minimized: {reason: 'outdated'}}),
+    note(`> Agent Review: PASS ${HEAD}`),
+    note('```\nAgent Review: PASS ' + HEAD + '\n```'),
+    note(`Looks good.\nAgent Review: PASS ${HEAD}`),
+    note(`Agent Review: PASS ${HEAD}0`),
+    note(`Agent Review: PASS ${HEAD.slice(0, 39)}`),
+    note(`Agent Review: PASS ${'f'.repeat(40)}`),
+    note(`agent review: pass ${HEAD}`),
+    note(`Agent Review: PASS ${HEAD}`, {updated_at: '2026-10-21T10:59:59Z', created_at: '2026-10-21T10:00:00Z'}),
+  ];
+  for (const [index, comment] of bad.entries()) {
+    assert.equal(hasDirective({comments: [comment], verdict: 'PASS', headSha: HEAD, notBefore: BEFORE}), false, String(index));
+  }
+  assert.equal(hasDirective({comments: [note(`Agent Review: PASS ${HEAD}`)], verdict: 'PASS', headSha: 'not-a-sha', notBefore: BEFORE}), false);
+  assert.equal(hasDirective({comments: [note(`Agent Review: PASS ${HEAD}`)], verdict: 'BLOCKED', headSha: HEAD}), false);
+});
+
+test('every description fits the 140-character status limit', () => {
+  const open = Array.from({length: 9}, () => ({priority: 'P1', path: 'x'.repeat(80), line: 100}));
+  const v = buildCodexVerdict({codex: reviewed, unresolved: open, backup: {...none, pass: true}, headSha: HEAD});
+  assert.ok(v.description.length <= 140);
+  assert.ok(buildCodexVerdict({codex: absent, unresolved: [], backup: none, headSha: HEAD}).description.length <= 140);
+});
+
+test('review threads are read page by page', async () => {
+  const pages = [
+    {pageInfo: {hasNextPage: true, endCursor: 'c1'}, nodes: [{id: 1}]},
+    {pageInfo: {hasNextPage: false, endCursor: null}, nodes: [{id: 2}]},
+  ];
+  const cursors = [];
+  const github = {
+    graphql: async (_query, vars) => {
+      cursors.push(vars.after);
+      return {repository: {pullRequest: {reviewThreads: pages.shift()}}};
+    },
+  };
+  const threads = await readReviewThreads({github, owner: 'o', repo: 'r', number: 1});
+  assert.deepEqual(threads, [{id: 1}, {id: 2}]);
+  assert.deepEqual(cursors, [null, 'c1']);
+});

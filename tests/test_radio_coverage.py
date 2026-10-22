@@ -874,19 +874,21 @@ async def test_snapshot_state_returns_dict_with_basics(
     assert "frequency" in snap or len(snap) >= 0  # best-effort
 
 
-async def test_snapshot_state_uses_cache_on_failure(
+async def test_snapshot_state_omits_keys_when_reads_fail(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """When CI-V times out, snapshot falls back to cached values."""
+    """Failed freq/mode/power reads record nothing, never the mirrors."""
     radio._last_freq_hz = 7_074_000
     radio._last_mode = Mode.LSB
     radio._last_power = 100
-    # No responses queued → all get* will timeout → cache fallback
+    radio.get_freq = AsyncMock(side_effect=TimeoutError("no response"))
+    radio.get_mode_info = AsyncMock(side_effect=TimeoutError("no response"))
+    radio.get_rf_power = AsyncMock(side_effect=TimeoutError("no response"))
 
     snap = await radio.snapshot_state()
-    assert snap.get("frequency") == 7_074_000
-    assert snap.get("mode") == Mode.LSB
-    assert snap.get("power") == 100
+    assert "frequency" not in snap
+    assert "mode" not in snap
+    assert "power" not in snap
 
 
 async def test_snapshot_state_includes_packet_data_settings(
@@ -1653,10 +1655,9 @@ async def test_soft_reconnect_handles_connect_failure(radio: IcomRadio) -> None:
     assert radio._civ_transport is None
 
 
-async def test_soft_reconnect_retries_ephemeral_port_when_saved_local_port_busy(
+async def test_soft_reconnect_retries_saved_local_port_when_busy(
     radio: IcomRadio,
 ) -> None:
-    """A stale CI-V socket can briefly keep the previous local port busy."""
     from rigplane.runtime._connection_state import RadioConnectionState
 
     radio._civ_transport = None
@@ -1692,7 +1693,7 @@ async def test_soft_reconnect_retries_ephemeral_port_when_saved_local_port_busy(
     busy_transport.connect.assert_awaited_once()
     retry_transport.connect.assert_awaited_once()
     assert busy_transport.connect.await_args.kwargs["local_port"] == 52002
-    assert retry_transport.connect.await_args.kwargs["local_port"] == 0
+    assert retry_transport.connect.await_args.kwargs["local_port"] == 52002
     assert radio._conn_state == RadioConnectionState.CONNECTED
     assert radio._civ_transport is retry_transport
 
@@ -1887,50 +1888,41 @@ async def test_reconnect_loop_retries_on_failure(radio: IcomRadio) -> None:
 async def test_reconnect_loop_stops_audio_transport_on_reconnect(
     radio: IcomRadio,
 ) -> None:
-    """_reconnect_loop disconnects audio transport during retry (lines 559-561)."""
+    """The reconnect release tears the audio transport down via the lifecycle.
+
+    This drives the real release: the lifecycle is placed into a claimed
+    CONNECTED session directly — a bare fixture radio never logged in, so
+    ``_teardown`` would treat the disconnect as an idempotent no-op and
+    never reach ``ControlPhaseRuntime.release``.
+    """
+    from types import SimpleNamespace
+
     from rigplane.runtime._connection_state import RadioConnectionState
+    from rigplane.runtime.session_lifecycle import LifecycleState
 
     radio._conn_state = RadioConnectionState.RECONNECTING
+    radio._session_lifecycle._state = LifecycleState.CONNECTED
+    radio._session_lifecycle._claimed = True
 
-    audio_transport = MagicMock()
-    audio_transport.disconnect = AsyncMock()
+    audio_transport = SimpleNamespace(
+        my_id=0x00010001,
+        remote_id=0xDEADBEEF,
+        send_tracked=AsyncMock(),
+        disconnect=AsyncMock(),
+    )
     radio._audio_transport = audio_transport
 
     async def fake_connect() -> None:
         radio._conn_state = RadioConnectionState.CONNECTED
 
     with (
-        patch("rigplane.radio.IcomTransport", return_value=MagicMock()),
+        patch("rigplane.radio.IcomTransport", return_value=SimpleNamespace()),
         patch.object(radio, "connect", side_effect=fake_connect),
-        patch.object(radio, "_stop_token_renewal"),
         patch.object(radio._audio_runtime, "capture_snapshot", return_value=None),
     ):
         await radio._reconnect_loop()
 
     audio_transport.disconnect.assert_awaited_once()
-
-
-async def test_reconnect_loop_stops_civ_transport_on_reconnect(
-    radio: IcomRadio,
-) -> None:
-    """_reconnect_loop disconnects civ transport during retry (lines 564-567)."""
-    from rigplane.runtime._connection_state import RadioConnectionState
-
-    radio._conn_state = RadioConnectionState.RECONNECTING
-
-    async def fake_connect() -> None:
-        radio._conn_state = RadioConnectionState.CONNECTED
-
-    with (
-        patch("rigplane.radio.IcomTransport", return_value=MagicMock()),
-        patch.object(radio, "connect", side_effect=fake_connect),
-        patch.object(radio, "_stop_token_renewal"),
-        patch.object(radio._audio_runtime, "capture_snapshot", return_value=None),
-    ):
-        await radio._reconnect_loop()
-
-    # _civ_transport was disconnected during reconnect
-    assert radio._civ_transport is None
 
 
 async def test_reconnect_loop_stops_ctrl_transport_on_reconnect(
@@ -1952,33 +1944,6 @@ async def test_reconnect_loop_stops_ctrl_transport_on_reconnect(
     ):
         await radio._reconnect_loop()
     # No assertion needed — just verify it doesn't raise
-
-
-async def test_reconnect_loop_attempts_token_remove(
-    radio: IcomRadio,
-) -> None:
-    """_reconnect_loop sends token-remove before ctrl transport disconnect."""
-    from rigplane.runtime._connection_state import RadioConnectionState
-
-    radio._conn_state = RadioConnectionState.RECONNECTING
-    radio._audio_transport = None
-    radio._civ_transport = None
-    radio._ctrl_transport = MagicMock()
-    radio._ctrl_transport.disconnect = AsyncMock()
-
-    async def fake_connect() -> None:
-        radio._conn_state = RadioConnectionState.CONNECTED
-
-    with (
-        patch("rigplane.radio.IcomTransport", return_value=MagicMock()),
-        patch.object(radio, "connect", side_effect=fake_connect),
-        patch.object(radio, "_stop_token_renewal"),
-        patch.object(radio._audio_runtime, "capture_snapshot", return_value=None),
-        patch.object(radio, "_send_token", new=AsyncMock()) as send_token,
-    ):
-        await radio._reconnect_loop()
-
-    send_token.assert_awaited_once_with(0x01)
 
 
 # ---------------------------------------------------------------------------
@@ -2247,65 +2212,77 @@ async def test_get_ip_plus_returns_false_on_empty_data(
 
 
 # ---------------------------------------------------------------------------
-# snapshot_state — cached attribute fallback paths (lines 1520, 1530, 1532, 1534, 1536)
+# snapshot_state — unconfirmed mirrors are never recorded (MOR-1818)
 # ---------------------------------------------------------------------------
 
 
-async def test_snapshot_state_includes_cached_filter(
+async def test_snapshot_state_omits_filter_when_mode_read_fails(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """snapshot_state() includes _filter_width when mode fails (line 1520)."""
+    """A failed mode read omits mode/filter, never the mirrors."""
     radio._last_mode = Mode.USB
     radio._filter_width = 2  # cached filter
-    radio._last_freq_hz = 14_074_000
-    radio._last_power = 100
+    radio.get_mode_info = AsyncMock(side_effect=TimeoutError("no response"))
 
     snap = await radio.snapshot_state()
-    assert snap.get("filter") == 2
+    assert "mode" not in snap
+    assert "filter" not in snap
 
 
-async def test_snapshot_state_includes_last_split(
+async def test_snapshot_state_omits_split_when_read_fails(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """snapshot_state() includes _last_split when set (line 1530)."""
+    """A failed strict split read omits split, never the _last_split mirror."""
     radio._last_split = True
-    radio._last_freq_hz = 14_074_000
+    # No queued reply: the real get_split(strict=True) raises, the default
+    # read still returns the mirror for every other caller.
+    with pytest.raises((CommandError, TimeoutError)):
+        await radio.get_split(strict=True)
+    assert await radio.get_split() is True
 
     snap = await radio.snapshot_state()
-    assert snap.get("split") is True
+    assert "split" not in snap
 
 
-async def test_snapshot_state_includes_last_vfo(
+async def test_snapshot_state_never_records_vfo(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """snapshot_state() includes _last_vfo when set (line 1532)."""
+    """Snapshots carry no vfo key: no radio read exists for the VFO slot."""
     radio._last_vfo = "VFOB"
-    radio._last_freq_hz = 14_074_000
+    assert await radio.get_vfo_slot() == "A"  # optimistic, reads no radio
 
     snap = await radio.snapshot_state()
-    assert snap.get("vfo") == "VFOB"
+    assert "vfo" not in snap
 
 
-async def test_snapshot_state_includes_attenuator_state(
+async def test_snapshot_state_omits_attenuator_when_read_fails(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """snapshot_state() includes _attenuator_state when set (line 1534)."""
+    """A failed strict attenuator read omits attenuator, never the mirror."""
     radio._attenuator_state = True
-    radio._last_freq_hz = 14_074_000
+    # No queued reply: the real get_attenuator(strict=True) raises, the
+    # default read still returns the mirror for every other caller.
+    with pytest.raises((CommandError, TimeoutError)):
+        await radio.get_attenuator(strict=True)
+    assert await radio.get_attenuator() is True
 
     snap = await radio.snapshot_state()
-    assert snap.get("attenuator") is True
+    assert "attenuator" not in snap
 
 
-async def test_snapshot_state_includes_preamp_level(
+async def test_snapshot_state_omits_preamp_when_read_fails(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """snapshot_state() includes _preamp_level when set (line 1536)."""
+    """A failed strict preamp read omits preamp, never the _preamp_level mirror."""
     radio._preamp_level = 1
-    radio._last_freq_hz = 14_074_000
+    # No queued reply: the real get_preamp(strict=True) raises, the default
+    # read still returns the mirror for every other caller.
+    with pytest.raises((CommandError, TimeoutError)):
+        await radio.get_preamp(strict=True)
+    assert await radio.get_preamp() == 1
 
     snap = await radio.snapshot_state()
-    assert snap.get("preamp") == 1
+    assert "preamp" not in snap
 
 
 # ---------------------------------------------------------------------------

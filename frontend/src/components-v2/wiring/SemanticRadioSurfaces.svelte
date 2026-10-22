@@ -1827,6 +1827,7 @@
   let pendingNotchWidth = $derived(activeReceiverIndex === null ? null : getPendingManualNotchWidth(activeReceiverIndex));
 
   function requestKey(): void {
+    if (runtime.remoteController) return;
     tx.transmitOn();
   }
   /** Unconditional HTTP ForceOFF remains reachable in stale/faulted states. */
@@ -2334,6 +2335,7 @@
   {#snippet rxTxSurface(standard = false)}
     {#if view}
       <RxTxSurface {view} tx={txState} {standard}
+        momentary={runtime.remoteController} onPttDown={tx.pttOn} onPttUp={tx.pttOff}
         onRequestKey={requestKey} onRequestUnkey={requestUnkey} />
     {/if}
   {/snippet}

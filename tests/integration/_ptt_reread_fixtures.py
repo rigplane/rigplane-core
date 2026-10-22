@@ -67,7 +67,7 @@ from rigplane.core.state_pipeline_contracts import (
 )
 from rigplane.core.state_store import StateStore
 from rigplane.runtime import tx_interlock
-from rigplane.runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
+from rigplane.runtime._civ_rx import _observation_max_age
 from rigplane.types import CivFrame
 
 if TYPE_CHECKING:
@@ -77,7 +77,17 @@ if TYPE_CHECKING:
     from rigplane.rigctld.server import RigctldServer
 
 _PTT_PATH = FieldPath.global_("tx_state", "ptt")
-_PTT_TTL_SECONDS = _OBSERVATION_MAX_AGE_SECONDS[("global", "tx_state", "ptt")]
+
+
+def _ptt_ttl_seconds(profile: Any) -> float | None:
+    """PTT freshness TTL from the double's own profile, not the table.
+
+    Mirrors what the real CI-V ingress stamps for ``global.tx_state.ptt``
+    through ``runtime/_civ_rx._observation_max_age`` — the profile's field
+    policy, pollable-class policy, table entry, or default — so the re-read
+    answer expires on the same schedule production observations do.
+    """
+    return _observation_max_age(profile, _PTT_PATH)
 
 
 class PttAnsweringSerialMockRadio(SerialMockRadio):
@@ -117,7 +127,7 @@ class PttAnsweringSerialMockRadio(SerialMockRadio):
                         native_id="ptt_reread",
                     ),
                     timestamp_monotonic=time.monotonic(),
-                    max_age=_PTT_TTL_SECONDS,
+                    max_age=_ptt_ttl_seconds(self._profile),
                 )
             )
             return

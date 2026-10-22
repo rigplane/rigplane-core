@@ -5,7 +5,7 @@
  */
 import { expect, test, type Page } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
-import { mockCapabilities, mockInfo, mockState } from './fixtures';
+import { fulfillControllerRoute, mockCapabilities, mockControllerHeartbeatAck, mockInfo, mockLocalControllerStatus, mockState } from './fixtures';
 import type { Capabilities } from '../../../src/lib/types/capabilities';
 import type { ServerState } from '../../../src/lib/types/state';
 
@@ -82,6 +82,9 @@ async function prepare(page: Page) {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
     if (request.method() !== 'GET') {
+      // Controller session admission (MOR-3534: one local session per
+      // browser, docs/api/web.md) is transport, not a radio write.
+      if (pathname === '/api/v1/controller') return fulfillControllerRoute(route);
       await route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
       return;
     }
@@ -90,11 +93,19 @@ async function prepare(page: Page) {
       '/api/v1/capabilities': capabilities,
       '/api/v1/managed-transmit': managedTransmit,
       '/api/v1/info': mockInfo,
+      '/api/v1/controller': mockLocalControllerStatus,
     };
     await route.fulfill({ status: pathname.startsWith('/api/local/') ? 404 : 200,
       contentType: 'application/json', body: JSON.stringify(responses[pathname] ?? {}) });
   });
   await page.routeWebSocket(/.*/, (socket) => {
+    socket.onMessage((message) => {
+      // Real Core acks session heartbeats (`controller_authority.py:
+      // heartbeat`); without acks the client drops the session once the
+      // 6 s TTL passes.
+      const frame = JSON.parse(String(message));
+      if (frame.type === 'controller_heartbeat') socket.send(JSON.stringify(mockControllerHeartbeatAck));
+    });
     if (new URL(socket.url()).pathname === '/api/v1/ws') {
       socket.send(JSON.stringify({ type: 'state_update', data: {
         ...server.state, type: 'full', data: server.state,

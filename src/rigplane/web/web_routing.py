@@ -19,7 +19,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
+from rigplane.runtime.controller_authority import ControllerAuthority, ControllerError
+from rigplane.runtime.tx_interlock import (
+    is_exact_raw_transmission_end_frame,
+    send_civ_frame,
+)
 
 from .host_guard import (  # noqa: TID251
     MISDIRECTED_BODY,
@@ -34,6 +40,245 @@ if TYPE_CHECKING:
 __all__ = ["dispatch_http_request"]
 
 logger = logging.getLogger(__name__)
+
+
+def _raw_transaction_frame_from_payload(payload: object) -> bytes | None:
+    """Build the frame a raw CI-V transaction body would send, raise-free.
+
+    Parses command/sub/data with the handler's own parsers; anything
+    malformed returns None and keeps today's route refusal.
+    """
+
+    from . import server as _server_mod  # noqa: TID251
+
+    if not isinstance(payload, dict):
+        return None
+    try:
+        command = _server_mod.WebServer._parse_civ_byte(  # noqa: SLF001
+            payload.get("command"), "command"
+        )
+        sub = _server_mod.WebServer._parse_civ_byte(  # noqa: SLF001
+            payload.get("sub"), "sub", required=False
+        )
+        data = _server_mod.WebServer._parse_civ_hex_data(  # noqa: SLF001
+            payload.get("data", "")
+        )
+    except ValueError:
+        return None
+    if command is None:
+        return None
+    # Annotated local: under the web-scoped mypy run the runtime import
+    # resolves to Any, and a bare return would trip no-any-return while
+    # the value is real bytes-or-None.
+    frame: bytes | None = send_civ_frame(command, sub, data)
+    return frame
+
+
+def _single_command_body_ends_transmission(payload: object) -> bool:
+    """True when the body is one typed command that only ends a transmission.
+
+    Mirrors :meth:`WebServer._handle_http_single_command` parsing — the same
+    JSON value the handler executes, the same name lookup against
+    ``ControlHandler._COMMANDS``, the same params-object rule, the same
+    level-unit normalization — so no body reads as a transmission end here
+    and as keying in the handler.
+    """
+    from .handlers.control import (  # noqa: TID251
+        ControlHandler,
+        _consume_normalized_level_unit,
+        is_typed_transmission_end_command,
+    )
+
+    if not isinstance(payload, dict):
+        return False
+    raw_name = payload.get("name")
+    if not isinstance(raw_name, str) or not raw_name:
+        return False
+    if raw_name not in ControlHandler._COMMANDS:  # noqa: SLF001
+        return False
+    raw_params = payload.get("params", {})
+    if not isinstance(raw_params, dict):
+        return False
+    try:
+        params = _consume_normalized_level_unit(raw_name, raw_params)
+    except ValueError:
+        return False
+    return is_typed_transmission_end_command(raw_name, params)
+
+
+def _batch_transaction_step_ends_transmission(raw_step: Any) -> bool:
+    """True when a raw batch step sends exactly a transmission-end frame.
+
+    Mirrors :meth:`WebServer._prepare_http_batch_transaction_step` frame
+    parsing with the handler's own parsers; anything malformed returns
+    False and keeps today's route refusal.
+    """
+    from . import server as _server_mod  # noqa: TID251
+
+    if not isinstance(raw_step, dict):
+        return False
+    if set(raw_step) - _server_mod._CIV_TRANSACTION_BATCH_STEP_KEYS:
+        return False
+    try:
+        command = _server_mod.WebServer._parse_civ_byte(  # noqa: SLF001
+            raw_step.get("command"), "command"
+        )
+        sub = _server_mod.WebServer._parse_civ_byte(  # noqa: SLF001
+            raw_step.get("sub"), "sub", required=False
+        )
+        data = _server_mod.WebServer._parse_civ_hex_data(  # noqa: SLF001
+            raw_step.get("data", "")
+        )
+    except ValueError:
+        return False
+    if command is None:
+        return False
+    frame: bytes | None = send_civ_frame(command, sub, data)
+    if frame is None:
+        return False
+    # Annotated local, as below: the predicate resolves to Any under the
+    # web-scoped mypy run while the value is a real bool.
+    ends: bool = is_exact_raw_transmission_end_frame(frame)
+    return ends
+
+
+def _batch_step_ends_transmission(raw_step: Any) -> bool:
+    """True when one batch step, as executed, only ends a transmission."""
+    from . import server as _server_mod  # noqa: TID251
+    from .handlers.control import (  # noqa: TID251
+        ControlHandler,
+        _consume_normalized_level_unit,
+        is_typed_transmission_end_command,
+    )
+
+    if _server_mod.WebServer._is_http_batch_transaction_step(raw_step):  # noqa: SLF001
+        return _batch_transaction_step_ends_transmission(raw_step)
+    if not isinstance(raw_step, dict):
+        return False
+    if "type" in raw_step and "name" not in raw_step:
+        # The handler answers unknown_step_type and executes nothing.
+        return False
+    raw_name = raw_step.get("name")
+    if not isinstance(raw_name, str) or not raw_name:
+        return False
+    if raw_name not in ControlHandler._COMMANDS:  # noqa: SLF001
+        return False
+    if raw_name in ControlHandler._READ_ONLY_HANDLERS:  # noqa: SLF001
+        # The handler rejects queue-bypass commands in a batch.
+        return False
+    raw_params = raw_step.get("params", {})
+    if not isinstance(raw_params, dict):
+        return False
+    try:
+        params = _consume_normalized_level_unit(raw_name, raw_params)
+    except ValueError:
+        return False
+    return is_typed_transmission_end_command(raw_name, params)
+
+
+def _batch_body_all_transmission_end(payload: object) -> bool:
+    """True when the body is a batch whose every step ends a transmission.
+
+    An empty or malformed batch never counts, so it keeps today's
+    credential requirement.
+    """
+    if not isinstance(payload, dict):
+        return False
+    raw_steps = payload.get("steps")
+    if not isinstance(raw_steps, list) or not raw_steps:
+        return False
+    return all(_batch_step_ends_transmission(step) for step in raw_steps)
+
+
+def _exhausted_reader(prefix: bytes = b"") -> asyncio.StreamReader:
+    """A reader yielding *prefix* then EOF — a failed peek's bytes, spent.
+
+    The downstream handler's capped read fails on it at once instead of
+    waiting out a second read timeout.
+    """
+    spent = asyncio.StreamReader()
+    if prefix:
+        spent.feed_data(prefix)
+    spent.feed_eof()
+    return spent
+
+
+async def _peek_http_body(
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    is_exempt: Callable[[object], bool],
+) -> tuple[asyncio.StreamReader | None, bool]:
+    """Read the body once, re-buffer it, and report if its payload is exempt.
+
+    Returns a fresh reader over the same bytes plus whether the parsed
+    payload is exempt for the route.  The reader is None when the body is
+    missing, oversize, or has no length — the caller then keeps today's
+    credential/refusal path with the original reader.  A non-exempt but
+    readable body still returns its bytes, so a request that goes on to
+    present a credential is handled from the same bytes it sent: the
+    downstream handler re-parses them, and the peek and the handler always
+    classify one payload.  When the read itself fails, the returned
+    reader is spent — EOF after whatever bytes the peek saw — so the
+    handler fails at once instead of waiting out a second read timeout.
+    An unparsable body (including pathological nesting) is not exempt.
+    """
+
+    from . import server as _server_mod  # noqa: TID251
+
+    try:
+        content_length = int((headers or {}).get("content-length", "0"))
+    except ValueError:
+        return None, False
+    if reader is None or content_length <= 0:
+        return None, False
+    try:
+        body = await _server_mod._read_capped_body(reader, content_length)
+    except asyncio.IncompleteReadError as exc:
+        return _exhausted_reader(exc.partial), False
+    except Exception:  # noqa: BLE001 — any other read failure keeps the refusal
+        return _exhausted_reader(), False
+    if body is None:
+        return None, False
+    try:
+        payload = json.loads(body)
+    except (ValueError, RecursionError):
+        payload = None
+    buffered = asyncio.StreamReader()
+    buffered.feed_data(body)
+    buffered.feed_eof()
+    try:
+        exempt = payload is not None and is_exempt(payload)
+    except Exception:  # noqa: BLE001 — any classifier failure keeps the refusal
+        return buffered, False
+    return buffered, exempt
+
+
+def _raw_transaction_body_ends_transmission(payload: object) -> bool:
+    """True when a raw CI-V transaction body sends a transmission-end frame."""
+    frame = _raw_transaction_frame_from_payload(payload)
+    if frame is None:
+        return False
+    # Annotated local, as above: the predicate resolves to Any under the
+    # web-scoped mypy run while the value is a real bool.
+    ends: bool = is_exact_raw_transmission_end_frame(frame)
+    return ends
+
+
+async def _buffered_reader_for_transmission_end_frame(
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+) -> asyncio.StreamReader | None:
+    """Re-buffer the body when it is exactly a transmission-end frame.
+
+    Returns a fresh reader over the same bytes for the handler, or None
+    when the body does not build to a frame that ends a transmission —
+    missing, oversize, unreadable, or malformed — so the caller keeps
+    today's route refusal.
+    """
+    buffered, exempt = await _peek_http_body(
+        headers, reader, _raw_transaction_body_ends_transmission
+    )
+    return buffered if exempt else None
 
 
 async def dispatch_http_request(
@@ -122,16 +367,22 @@ async def _dispatch_http_request(
     # state-changing request, before any handler. A missing Origin is
     # admitted (non-browser clients; Pro's proxy sends none on its HTTP
     # leg); a present one must be same-origin with the request and its
-    # host must pass the Host rule above. GET /clearcache is covered
-    # too: it changes client state (Clear-Site-Data wipes the browser's
-    # storage for this origin) though it is a GET.
+    # host must pass the Host rule above — or match the explicit trusted
+    # public-Origin allowlist (MOR-3108), which never bypasses the Host
+    # rule above. GET /clearcache is covered too: it changes client
+    # state (Clear-Site-Data wipes the browser's storage for this
+    # origin) though it is a GET.
     origin = (headers or {}).get("origin")
     if origin is not None and (
         method in ("POST", "PUT", "PATCH", "DELETE") or path == "/clearcache"
     ):
         scheme = "https" if server._config.tls else "http"
         if not same_origin_allowed(
-            origin, raw_host, scheme, server._config.allowed_hosts
+            origin,
+            raw_host,
+            scheme,
+            server._config.allowed_hosts,
+            server._config.trusted_origins,
         ):
             server._log_refused_request("http origin", path, headers or {})
             await _send_response(
@@ -143,6 +394,112 @@ async def _dispatch_http_request(
             )
             return
 
+    if path in ("/api/v1/controller", "/api/v1/controller/mode"):
+        await server._handle_http_controller(method, path, writer, headers, reader)
+        return
+    controller = getattr(server, "_controller", None)
+    if not isinstance(controller, ControllerAuthority):
+        await _dispatch_http_routes(
+            server, writer, method, path, headers, reader, query
+        )
+        return
+    if controller.mode == "remote" and method in ("POST", "PUT", "PATCH", "DELETE"):
+        if path == "/api/v1/managed-transmit/command":
+            await _dispatch_http_routes(
+                server, writer, method, path, headers, reader, query
+            )
+            return
+        try:
+            if path == "/api/v1/civ/transaction":
+                # A raw transaction whose frame ends a transmission
+                # is exempt from the route refusal, matching the
+                # executor's capture exemption: the peek rebuilds
+                # the exact bytes the handler would send, so a
+                # malformed or non-exempt body keeps today's
+                # refusal below.
+                replacement = await _buffered_reader_for_transmission_end_frame(
+                    headers, reader
+                )
+                if replacement is not None:
+                    await _dispatch_http_routes(
+                        server, writer, method, path, headers, replacement, query
+                    )
+                    return
+                raise ControllerError("controller_local_required")
+            if path in ("/api/v1/commands", "/api/v1/commands/batch"):
+                # A typed transmission end passes the same way: the peek
+                # classifies the body with the handler's own parsing, so a
+                # malformed, oversize, unreadable, or keying body keeps
+                # today's credential requirement below.  A batch is exempt
+                # only when every step ends a transmission.  The peeked
+                # bytes are replayed downstream either way, so a request
+                # that goes on to present a credential is handled from the
+                # same bytes it sent.  Only POST is peeked — the only
+                # method these paths serve — so other methods keep
+                # today's credential-first refusal.  A failed peek hands
+                # downstream a spent reader, bounding the hold to one
+                # read timeout.
+                buffered: asyncio.StreamReader | None = None
+                exempt = False
+                if method == "POST":
+                    if path == "/api/v1/commands/batch":
+                        is_exempt: Callable[[object], bool] = (
+                            _batch_body_all_transmission_end
+                        )
+                    else:
+                        is_exempt = _single_command_body_ends_transmission
+                    buffered, exempt = await _peek_http_body(headers, reader, is_exempt)
+                if exempt:
+                    assert buffered is not None
+                    await _dispatch_http_routes(
+                        server, writer, method, path, headers, buffered, query
+                    )
+                    return
+                if buffered is not None:
+                    reader = buffered
+            else:
+                raise ControllerError("controller_local_required")
+            ticket = controller.credential((headers or {}).get("x-rigplane-controller"))
+            with controller.bind(ticket):
+                await _dispatch_http_routes(
+                    server, writer, method, path, headers, reader, query
+                )
+        except ControllerError as exc:
+            await server._send_json(
+                writer, exc.status, "Forbidden", {"error": exc.code}
+            )
+        return
+    if controller.mode == "remote":
+        await _dispatch_http_routes(
+            server, writer, method, path, headers, reader, query
+        )
+        return
+    # Capture local HTTP currency too: a handoff cannot revive its delayed work.
+    # A request naming a multi-client session acts as that session (MOR-3534).
+    key = (headers or {}).get("x-rigplane-controller")
+    try:
+        ticket = controller.capture() if key is None else controller.credential(key)
+    except ControllerError as exc:
+        await server._send_json(writer, exc.status, "Forbidden", {"error": exc.code})
+        return
+    with controller.bind(ticket):
+        await _dispatch_http_routes(
+            server, writer, method, path, headers, reader, query
+        )
+
+
+async def _dispatch_http_routes(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    from . import server as _server_mod  # noqa: TID251
+
+    _send_response = _server_mod._send_response
     if path == "/healthz":
         if method not in ("GET", "HEAD"):
             await _send_response(writer, 405, "Method Not Allowed", b"", {})

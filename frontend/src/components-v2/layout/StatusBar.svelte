@@ -79,6 +79,7 @@
     getRadioHealth,
   } from '$lib/stores/connection.svelte';
   import { getActiveFrequencyHz } from '$lib/runtime/adapters/panel-adapters';
+  import { deriveRadioHealthLabel } from '$lib/runtime/adapters/radio-health-label';
   import { getAudioState } from '$lib/stores/audio.svelte';
   import { hasAnyScope, hasAudio, hasSpectrum, hasCapability } from '$lib/stores/capabilities.svelte';
   import { getLayoutMode, setLayoutMode, type CanonicalLayoutMode, type LayoutMode } from '$lib/stores/layout.svelte';
@@ -203,7 +204,7 @@
   let radioHealth = $derived(getRadioHealth());
   // Effective radio indicator: downgrade to 'disconnected' when rigCtld reports radio offline
   let radioIndicatorState = $derived.by(() => {
-    if (radioHealth?.likelyCause === 'radio_network_lost' || radioHealth?.likelyCause === 'radio_powered_off_likely') {
+    if (radioHealth?.likelyCause === 'radio_network_lost' || radioHealth?.likelyCause === 'radio_powered_off_likely' || radioHealth?.likelyCause === 'operator_disconnected') {
       return 'disconnected';
     }
     if (radioHealth?.readiness === 'delayed' || radioHealth?.readiness === 'stalled') {
@@ -215,32 +216,9 @@
     // that combination, so there is nothing left to downgrade here.
     return radioState;
   });
-  let radioHealthLabel = $derived.by(() => {
-    switch (radioHealth?.likelyCause) {
-      case 'radio_network_lost':
-        return t('core.statusbar.health.radioLinkLost');
-      case 'radio_not_responding':
-        return radioHealth.readiness === 'delayed'
-          ? t('core.statusbar.health.radioResponseDelayed')
-          : t('core.statusbar.health.radioNotResponding');
-      case 'radio_powered_off_likely':
-        return t('core.statusbar.health.radioPoweredOff');
-      case 'server_unreachable':
-        return t('core.statusbar.health.serverUnreachable');
-      default:
-        // MOR-1526 F4: `radioState` now emits 'degraded' itself (not
-        // 'connected') for this exact combination — see `radioLinkSteady`
-        // in connection.svelte.ts — so these checks key off 'degraded' to
-        // keep both MOR-620 labels reachable instead of dead.
-        if (!rigConnected && radioState === 'degraded') {
-          return t('core.statusbar.health.rigOffline');
-        }
-        if (!radioReady && radioState === 'degraded') {
-          return t('core.statusbar.health.radioNotReady');
-        }
-        return '';
-    }
-  });
+  let radioHealthLabel = $derived(
+    deriveRadioHealthLabel({ health: radioHealth, rigConnected, radioReady, radioState }),
+  );
 
   let connectionTooltip = $derived(
     controlState === 'connected'
@@ -335,7 +313,7 @@
   function handlePowerToggle() {
     // Defence in depth: never confirm or dispatch when the power state is
     // unknown.
-    if (radioPowerOn === null) return;
+    if (runtime.remoteController || radioPowerOn === null) return;
     if (radioPowerOn === true) {
       requestConfirm({
         message: t('core.statusbar.power.confirmTurnOff'),
@@ -454,7 +432,7 @@
      AppGlobalHost's powered-off overlay consumes it in CSS. -->
 <div class="status-bar" bind:this={barEl}>
   <div class="status-indicators">
-    <span class="indicator" role="status" title={radioHealthLabel ? t('core.statusbar.indicator.radioWithReason', { state: radioState, reason: radioHealthLabel }) : t('core.statusbar.indicator.radio', { state: radioState })} style="--indicator-color: {stateColor(radioIndicatorState)}">
+    <span class="indicator" role="status" title={radioHealthLabel ? t('core.statusbar.indicator.radioWithReason', { state: radioHealth?.likelyCause === 'operator_disconnected' ? radioIndicatorState : radioState, reason: radioHealthLabel }) : t('core.statusbar.indicator.radio', { state: radioState })} style="--indicator-color: {stateColor(radioIndicatorState)}">
       <span class="indicator-dot"></span>
       <Radio size={12} color="currentColor" strokeWidth={2.5} />
     </span>
@@ -543,6 +521,7 @@
     {#if showManagedTotControl}
       <ManagedTotStatusControl />
     {/if}
+    {#if !runtime.remoteController}
     <button
       type="button"
       class="control-btn report-btn"
@@ -553,7 +532,8 @@
       <Bug size={14} strokeWidth={2} />
       <span class="btn-label">{t('core.statusbar.report.button')}</span>
     </button>
-    {#if onSettings}
+    {/if}
+    {#if onSettings && !runtime.remoteController}
       <button
         type="button"
         class="control-btn settings-btn"
@@ -592,7 +572,7 @@
       <Unplug size={14} strokeWidth={2} />
       <span class="btn-label">{controlState === 'connected' ? t('core.statusbar.connection.actionDisconnect') : t('core.statusbar.connection.actionConnect')}</span>
     </button>
-    {#if powerControlSupported}
+    {#if powerControlSupported && !runtime.remoteController}
       <button
         type="button"
         class="control-btn power-toggle-btn"
@@ -610,7 +590,7 @@
   </div>
 </div>
 
-<SendReportDialog open={reportOpen} onClose={() => (reportOpen = false)} />
+<SendReportDialog open={reportOpen && !runtime.remoteController} onClose={() => (reportOpen = false)} />
 
 <ConfirmDialog
   open={confirmOpen}

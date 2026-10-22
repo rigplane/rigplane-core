@@ -160,6 +160,37 @@ describe('MOR-1425 tuning accumulator', () => {
     expect(emit).toHaveBeenLastCalledWith(0, 18_101_000);
   });
 
+  it('an anchored jump retains its target for a relative step before echo', () => {
+    acc.jump(0, 7_128_000, 7_047_500, 1);
+    vi.advanceTimersByTime(500); // Display-only hold may expire before readback.
+    acc.step(0, 7_047_500, 7_048_500, 1);
+    vi.advanceTimersByTime(60);
+    expect(emit.mock.calls).toEqual([[0, 7_128_000], [0, 7_129_000]]);
+  });
+
+  it.each(['failure', 'epoch', 'generation', 'context', 'quiet'] as const)(
+    'an anchored jump stops accumulating after %s invalidation', (invalidation) => {
+      let epoch = 1;
+      let generation = 1;
+      let context = 'A';
+      const lifecycle = { status: 'pending' };
+      const send = vi.fn(() => lifecycle);
+      const guarded = createTuningAccumulator({
+        emit: send, epoch: () => epoch, generation: () => generation,
+        context: () => context,
+      });
+      guarded.jump(0, 7_128_000, 7_047_500, 1);
+      if (invalidation === 'failure') lifecycle.status = 'failed';
+      if (invalidation === 'epoch') epoch++;
+      if (invalidation === 'generation') generation++;
+      if (invalidation === 'context') context = 'B';
+      if (invalidation === 'quiet') vi.advanceTimersByTime(4_000);
+      guarded.step(0, 7_047_500, 7_048_500, 1);
+      expect(send.mock.calls).toEqual([[0, 7_128_000], [0, 7_048_500]]);
+      guarded.cancel();
+    },
+  );
+
   it('(h) an intermediate own-write echo mid-burst rebases without reset — accumulation survives and emitted targets never go backward (review B2)', () => {
     const confirmed = 14_074_000;
     const step = 1_000;

@@ -7,16 +7,18 @@
   } from '../../lib/renderers/spectrum-renderer';
   import { canvasBackingSize, watchDevicePixelRatio, watchStageScale } from '../../lib/canvas/backing-store.svelte';
   import { getStageScale } from '../../primitives/stage/stage-scale';
+  import type { ScopeRenderTrace, TraceToken } from '../../lib/runtime/scope-render-trace';
   interface Props {
     data: Uint8Array | null;
     options?: SpectrumOptions;
     spanHz?: number;
     enableAvg?: boolean;
     enablePeakHold?: boolean;
-    onRegisterPush?: (fn: (data: Uint8Array) => void) => void;
+    trace?: ScopeRenderTrace | null;
+    onRegisterPush?: (fn: (data: Uint8Array, token?: TraceToken | null) => void) => void;
   }
 
-  let { data, options = defaultSpectrumOptions, spanHz = 0, enableAvg = true, enablePeakHold = true, onRegisterPush }: Props = $props();
+  let { data, options = defaultSpectrumOptions, spanHz = 0, enableAvg = true, enablePeakHold = true, onRegisterPush, trace = null }: Props = $props();
 
   const renderer = new SpectrumRenderer();
 
@@ -40,9 +42,12 @@
 
   // Latest scope pixels — updated directly from WS binary, not via Svelte props
   let latestPixels: Uint8Array | null = null;
+  let latestToken: TraceToken | null = null;
+  let scheduledAt = 0;
 
   function scheduleDraw(): void {
     if (!mounted || !visible || rafId !== 0) return;
+    if (trace?.status === 'recording') scheduledAt = performance.now();
     rafId = requestAnimationFrame(draw);
   }
 
@@ -62,10 +67,19 @@
     rafId = 0;
     if (!visible) return; // restarted by visibilitychange
     const pixels = latestPixels ?? data;
+    const token = latestToken;
+    const measuring = trace?.status === 'recording';
+    if (measuring && canvas) trace?.recordGeometry('spectrum', cssWidth, cssHeight, canvas.width, canvas.height, window.devicePixelRatio || 1);
+    const drawAt = measuring ? performance.now() : 0;
+    if (measuring && scheduledAt) trace?.record('raf', token, drawAt - scheduledAt);
     if (canvas && pixels && cssWidth > 0 && cssHeight > 0) {
       const ctx = canvas.getContext('2d');
-      if (ctx) renderer.render(ctx, pixels, cssWidth, cssHeight, options);
+      if (ctx) {
+        renderer.render(ctx, pixels, cssWidth, cssHeight, options);
+        if (measuring) trace?.record('spectrum_render', token, performance.now() - drawAt);
+      }
     }
+    scheduledAt = 0;
   }
 
   function onVisibilityChange() {
@@ -85,8 +99,14 @@
 
   onMount(() => {
     // Register push callback with parent — parent handles WS subscription
-    onRegisterPush?.((pixels: Uint8Array) => {
+    onRegisterPush?.((pixels: Uint8Array, token?: TraceToken | null) => {
+      const measuring = trace?.status === 'recording';
+      if (measuring && rafId !== 0 && latestToken && token && latestToken !== token) {
+        trace?.record('coalesced', latestToken, 0, true);
+      }
       latestPixels = pixels;
+      latestToken = token ?? null;
+      if (measuring) trace?.record('spectrum_push', latestToken);
       scheduleDraw();
     });
 

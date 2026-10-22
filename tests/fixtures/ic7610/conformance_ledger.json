@@ -1,0 +1,8 @@
+{
+ "handshake_10": {"recorded": "c2r len=0x90 type=0x00 reqtype=0x03", "simulator": "r2c len=0x50 type=0x00 reqtype=0x00", "ticket": "MOR-3310"},
+ "handshake_11": {"recorded": "r2c len=0x50 type=0x00 reqtype=0x03", "simulator": "absent", "ticket": "MOR-3310"},
+ "handshake_12": {"recorded": "r2c len=0x90 type=0x00 reqtype=0x00", "simulator": "absent", "ticket": "MOR-3310"},
+ "handshake_8": {"recorded": "r2c len=0xa8 type=0x00 reqtype=0x02", "simulator": "r2c len=0x90 type=0x00 reqtype=0x00", "ticket": "MOR-3310"},
+ "handshake_9": {"recorded": "r2c len=0x90 type=0x00 reqtype=0x00", "simulator": "c2r len=0x90 type=0x00 reqtype=0x03", "ticket": "MOR-3310"},
+ "scope_wave": {"recorded": "5 complete 27 00 wave frames follow the wave-on requests", "simulator": "0 complete 27 00 wave frames after wave-on", "ticket": "MOR-3310"}
+}

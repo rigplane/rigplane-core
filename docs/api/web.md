@@ -134,7 +134,7 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `GET` | `/api/v1/bridge` | Audio bridge status |
 | `POST` | `/api/v1/bridge` | Start audio bridge |
 | `DELETE` | `/api/v1/bridge` | Stop audio bridge |
-| `POST` | `/api/v1/commands` | Enqueue one structured radio command |
+| `POST` | `/api/v1/commands` | Apply one structured radio command and answer with its outcome |
 | `POST` | `/api/v1/commands/batch` | Apply a stateless ordered command batch |
 
 ### Other Web UI Endpoints
@@ -160,7 +160,7 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `POST` | `/api/v1/radio/connect` | Connect/reconnect radio control path |
 | `POST` | `/api/v1/radio/disconnect` | Disconnect radio control path |
 | `POST` | `/api/v1/radio/power` | Power on/off (body `{"state": "on"}` or `{"state": "off"}`) through the backend's `set_powerstat` |
-| `POST` | `/api/v1/commands` | Enqueue one structured radio command |
+| `POST` | `/api/v1/commands` | Apply one structured radio command and answer with its outcome |
 | `POST` | `/api/v1/commands/batch` | Apply a stateless ordered command batch |
 | `POST` | `/api/v1/civ/transaction` | Send one scoped raw CI-V transaction |
 | `POST` | `/api/v1/band-plan/config` | Change active region and reload band plans (only when running from a source checkout: the wheel does not include `band-plans/`) |
@@ -176,6 +176,33 @@ Stable supervisor routes:
 | `/api/v1/scope` | Hardware or audio FFT spectrum stream | when scope or audio FFT is available |
 | `/api/v1/audio` | Audio control and media frames | when radio/audio backend supports audio |
 | `/api/v1/audio-scope` | Audio FFT spectrum stream | when audio FFT is available |
+
+### Keepalive
+
+The `/api/v1/ws`, `/api/v1/scope`, and `/api/v1/audio-scope` routes answer a JSON `{"type":"ping"}` text frame with `{"type":"pong"}`: the control route in `src/rigplane/web/handlers/control.py: ControlHandler._handle_text`, and both scope routes in `src/rigplane/web/handlers/scope.py: ScopeHandler._handle_control` (`/api/v1/audio-scope` is served by `ScopeHandler` with `audio_mode=True`; see `src/rigplane/web/server.py: WebServer._handle_websocket`). `/api/v1/audio` does not answer ping frames: `src/rigplane/web/handlers/audio.py: AudioHandler._handle_control` handles only `audio_start`, `audio_stop`, `audio_config`, and `audio_stats`. The browser client sends that ping every 15 s on the channels that use `WsChannel` (`frontend/src/lib/transport/ws-client.ts: KEEPALIVE_INTERVAL_MS`) — the control channel and the named `scope` and `audio-scope` channels (`getChannel`, wired in `scope-controller.svelte.ts: ScopeController`) — and closes and reconnects a channel when no frame of any kind arrives for 30 s (`HEARTBEAT_TIMEOUT_MS`).
+
+### Multi-client sessions and TX ownership
+
+Every client may read state, scope and audio, and any client may command the radio. Between clients the server enforces one rule: one transmitter holder at a time. Whoever keys holds TX until it is released; keying from anyone else is refused. The server authenticates no client: a controller session key correlates one client's channels and is not a credential.
+
+- `POST /api/v1/controller` with `{"kind": "browser"}` or `{"kind": "pro"}` opens a session (`201` with `controller_key`, `generation`, `ttl_ms` 6000 and `heartbeat_ms` 2000). Any number of sessions may exist.
+- WebSocket channels join a session with the subprotocol `rigplane-controller-v1.<controller_key>`. The session's first `/api/v1/ws` channel is its primary (`controller_role=primary`, the default) and sends `{"type": "controller_heartbeat"}` every 2 s; further channels are auxiliaries (`controller_role=auxiliary` on `/api/v1/ws`; `/api/v1/audio`, `/api/v1/scope` and `/api/v1/audio-scope` always). An HTTP request acts for the session when it carries `X-RigPlane-Controller: <controller_key>`. An unknown or ended key is refused with `403 {"error": "controller_invalid"}`; `DELETE /api/v1/controller` with the header ends the session.
+- The session owns the TX it keys: `ptt_on` from any of its control channels, and `transmit_on` on `POST /api/v1/managed-transmit/command` sent with its header. While one owner holds TX, `ptt_on` and `transmit_on` from any other owner are rejected (`transmit_on` answers `409`), and `send_cw_text`, `set_vox` with `on` not `false`, and `set_tuner_status` with `value` 2 and `set_break_in` with `mode` not 0 are refused with `controller_tx_unsupported`, and refused again if another owner keys before they run. `force_off` is accepted from anyone.
+- While no owner holds or owes TX, a TX the radio's PTT readback reports is never keyed over. It is `radio_tx_unreleased` when no RX was observed since Core's own TX last ended (Core's own TX the radio did not release, or a poll taken before the release landed), and `radio_tx_unowned` after an RX, before Core's first TX, or when that history is no longer known (for example the operator's own microphone or PTT at the radio). Either way `ptt_on` and `transmit_on` from anyone are refused with that code (`transmit_on` answers `409`); so are `send_cw_text`, `set_vox` with `on` not `false`, `set_tuner_status` with `value` 2 and `set_break_in` with `mode` not 0, when received and again when they run. Over rigctld, `T 1` and `U VOX 1` answer `RPRT -9`. `force_off` is never refused: it unkeys whoever keyed, the operator's own TX included. `stop_cw_text` is not refused. Core's own CW text still being sent while no owner holds TX reads the same way, so further CW text is refused until the radio reports RX. Keying works again once the radio reports RX.
+- A session ends when its primary channel closes or when its primary sends no heartbeat for 6 s (checked every 2 s, so TX on a silent link is released within about 8 s). An ended session's channels are closed and the TX it holds is released; other sessions are not affected. Closing an auxiliary `/api/v1/ws` channel releases the session's TX only when that channel's own last PTT request was a key (`ptt_on`, or `ptt` with `state` true).
+- While a session holds TX, TX audio on the WebSocket route `/api/v1/audio` is admitted only from that session's own channel; frames from any other `/api/v1/audio` channel, sessionless ones included, are dropped (logged as `action=dropped_tx_gate_closed`). TX audio over the optional WebRTC `audio` DataChannel is not pinned to the holder.
+- The per-client WebSocket limit (9 per channel path) counts a session's channels against that session and sessionless channels against their IP, so clients behind one gateway IP do not evict each other. Channels of the TX holder's session, and the control channel of a sessionless socket that keyed PTT, are never evicted.
+- Clients without a session keep the earlier behaviour. Each sessionless control socket is its own TX owner, and the rule above applies to it. Their TX audio is not pinned to their own keying: while a sessionless socket holds TX, any sessionless audio channel may feed it. The bundled web frontend currently connects without a session in local mode. A sessionless `transmit_on` has no owner: a later sessionless `transmit_on` is accepted, a session's is rejected, and no disconnect releases it (`force_off` and the TOT do).
+
+### rigctl channel (`/api/v1/rigctl`)
+
+A remote CAT client (WSJT-X, a logger) can run the Hamlib rigctld protocol over a WebSocket that joins its session, so its keying and its TX audio belong to the same owner. The channel is served by the bundled rigctld server (`src/rigplane/rigctld/server.py: RigctldServer.open_channel`); only the transport is new (`src/rigplane/web/handlers/rigctl.py`).
+
+- Attach with the session subprotocol `rigplane-controller-v1.<controller_key>` (an auxiliary channel: the session needs its primary). A request without a session is refused before the upgrade with `403 {"error": "controller_session_required"}`; so is any request in the exclusive remote mode. A sessionless rigctld client uses the TCP port instead.
+- Each text message carries one or more rigctld command lines; a missing final newline is implied and a line never spans two messages. Each reply comes back as one text message, in command order. A binary message closes the channel (`1003`).
+- Commands run through the same parser, handler and managed-PTT path as a TCP client, with the session as owner: `T 1` keys as the session, the session's `/api/v1/audio` channel then feeds that TX, and another owner's `T 1` is refused with `RPRT -9` while the session holds. Closing the channel releases the TX the session holds only when the channel's own last `T` keyed (any value but `0`); the session ending releases it either way.
+- Limits are rigctld's: the channel counts against `max_clients` (10 by default, shared with TCP clients), lines over 1024 bytes and 300 s of silence close it, and a configured command rate limit applies. One rigctl channel per session; a second is closed with `1013`, as is one over `max_clients`. The per-session WebSocket cap above also applies.
+- Available only when the bundled rigctld runs with managed TX (`web` and `station`); otherwise the channel closes with `1008`.
 
 ### Optional WebRTC DataChannels
 
@@ -258,6 +285,23 @@ and HTTP `503` while the process is alive but the station is not ready.
 }
 ```
 
+While the first LAN connect waits out a busy session reject, the probe
+returns HTTP `503` with a `session_busy` reason and the hold's retry
+number in `retryInSeconds` — the live cooldown remainder while a
+re-login waits, else the hold's cooldown between attempts (pinned by
+`test_web_serves_session_busy_during_startup_busy_hold`,
+`test_not_ready_between_busy_passes_keeps_the_hold_retry_number` and
+`test_busy_retry_number_inside_cooldown_is_the_live_remainder`):
+
+```json
+{
+  "status": "not_ready",
+  "radioReady": false,
+  "reason": "session_busy",
+  "retryInSeconds": 30.0
+}
+```
+
 ## `GET /api/v1/runtime`
 
 Machine-readable runtime status for managed local supervisors and diagnostics.
@@ -292,17 +336,42 @@ Machine-readable runtime status for managed local supervisors and diagnostics.
     "enabled": false,
     "running": false
   },
+  "process": {
+    "rssBytes": 187654144,
+    "openFds": 41,
+    "threads": 6,
+    "asyncioTasks": 23,
+    "reconnectsTotal": 0
+  },
   "lastError": null
 }
 ```
+
+`process` carries process metrics, read when the request is served
+(`server.py: WebServer._runtime_process_payload`). A value the platform cannot
+report is `null`.
+
+| Field | Source |
+|---|---|
+| `rssBytes` | Current resident set size in bytes: from `/proc/self/statm` on Linux, from `proc_pidinfo` (`PROC_PIDTASKINFO`, `pti_resident_size`) on macOS; `null` where neither is available (for example Windows). |
+| `openFds` | Open file descriptors listed in `/proc/self/fd` or `/dev/fd`; `null` where neither can be listed (Windows). |
+| `threads` | Python threads, `threading.active_count()`. |
+| `asyncioTasks` | Unfinished tasks on the server's event loop, `asyncio.all_tasks()`. |
+| `reconnectsTotal` | Link-loss episodes since the relevant component was created. LAN radios count `reconnecting` edges reported to `WebServer._on_reconnect_status`. Serial CI-V radios count CONNECTED-to-RECONNECTING edges in `_IcomSerialRadioBase._count_serial_link_episode` (called from `_declare_serial_link_down` and `soft_reconnect`). Yaesu CAT radios count the first reconnect after the last successful exchange in `TransportStats.record_reconnect_attempt` (exposed as `YaesuCatRadio.serial_reconnects_total`). `null` when the radio has neither source — no started LAN watchdog and no serial episode counter. |
 
 ## `POST /api/v1/commands`
 
 HTTP command envelope for automation clients that do not need WebSocket
 delivery. The command names and `params` match the `/api/v1/ws` command channel.
-The endpoint runs the command through the same `ControlHandler` path as the
-WebSocket command channel and returns that path's `result` object in an
-`{ok, name, result}` envelope (plus `id` when the request has one).
+The endpoint answers only after the command executes, returning the
+command's `result` object in an `{ok, name, result}` envelope (plus `id`
+when the request has one) — the same body `ControlHandler._enqueue_command`
+returns for that request. When the poller reports the write refused, the
+endpoint answers HTTP `409` with `error: "radio_nak"`; a command the poller
+never settles answers HTTP `504` with `error: "command_timeout"`. Writes the
+backend sends without waiting for a reply (such as the `CoreRadio` AF/RF
+level, mode and power writes in `runtime/radio.py`) still answer `200` when
+the radio NAKs them, because the NAK is never observed.
 
 Request:
 
@@ -346,7 +415,7 @@ Low-level CI-V escape hatch:
 `send_civ` is for Icom/vendor-specific commands that are not yet exposed as
 structured RigPlane commands. `command` and `sub` are byte values from `0` to
 `255`; `sub` may be omitted. `data` is an even-length hexadecimal string. The
-HTTP command is fire-and-forget: RigPlane enqueues the CI-V write through the
+HTTP command waits for the poller to execute the CI-V write through the
 same single-owner command queue, but does not return CI-V response bytes or
 claim readback verification. `wait_response` is rejected when `true`; use
 `POST /api/v1/civ/transaction` when the caller needs an ACK, NAK, or data
@@ -925,6 +994,8 @@ Current readiness values are:
 - `no_usb_radio_connected`
 - `lan_radio_unsupported_or_not_found`
 - `requires_configuration_or_auth`
+- `radio_session_busy`
+- `operator_disconnected`
 
 `requires_configuration_or_auth` retains its compatibility spelling and refers
 to radio target configuration, not an application credential prompt
@@ -1016,6 +1087,7 @@ Version, model, capability summary, and connection metadata.
     "hasDualReceiver": false,
     "hasTuner": true,
     "hasCw": true,
+    "cwText": { "supported": true, "maxLength": 512, "memoryChannel": null },
     "maxReceivers": 1,
     "modes": ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R"],
     "filters": ["FIL1", "FIL2", "FIL3"],
@@ -1027,10 +1099,19 @@ Version, model, capability summary, and connection metadata.
     "rigConnected": true,
     "radioReady": true,
     "controlConnected": true,
+    "session": { "busy": false, "retryInSeconds": null },
     "wsClients": 2
   }
 }
 ```
+
+`connection.session` is always present: it reports a start-up busy hold
+(`busy` with the hold's retry number in `retryInSeconds` — the live
+cooldown remainder while a re-login waits, else the hold's cooldown
+between attempts) and reads `{"busy": false, "retryInSeconds": null}`
+otherwise (pinned by
+`test_web_serves_session_busy_during_startup_busy_hold` and
+`test_granted_busy_hold_becomes_ready_and_marks_transport_once`).
 
 ## `GET /api/v1/state`
 
@@ -1085,6 +1166,8 @@ Canonical full state payload for web consumers (camelCase keys).
 | `radio_not_responding` | Radio link still exists, but CI-V/control data is delayed or stalled. |
 | `radio_powered_off_likely` | Server is reachable and either the radio was previously available and repeated timeout/recovery evidence suggests it is off or unreachable, or the server started against a radio that has not answered at all. |
 | `radio_not_connected` | Server is reachable. It started while the radio's serial port could not be opened, the latest attempt to open the port failed, and the radio has not answered since. |
+| `radio_session_busy` | The radio's LAN session is held by another client during a start-up busy hold; the first connect keeps retrying. |
+| `operator_disconnected` | The operator disconnected the radio on purpose; health readiness is `idle`, which appears only with this cause (`src/rigplane/web/runtime_helpers.py: classify_radio_health`). |
 | `unknown` | Insufficient evidence or healthy/ready state. |
 
 ## `GET /api/v1/capabilities`
@@ -1096,12 +1179,73 @@ Notable fields:
 | Field | Type | Notes |
 |------|------|-------|
 | `receivers` | `int` | Receiver count from active profile |
+| `modeFamilies` | `object` | Profile `[modes] families`: family name -> mode names, e.g. `{"cw": ["CW-U", "CW-L"]}`. `{}` when the profile declares none. Also in `/api/v1/info` `capabilities`. Use it instead of guessing a radio's CW mode names. |
 | `vfoScheme` | `"ab"` \| `"main_sub"` \| `"ab_shared"` \| `"single"` | VFO label scheme |
 | `freqRanges[].bands[].bsrCode` | `int` (optional) | Band Stack Register code for `set_band` |
 | `scopeSource` | `"hardware"` \| `"audio_fft"` \| `null` | Spectrum data source |
 | `scopeConfig.defaultSpan` | `int` | Audio FFT bandwidth in Hz (48000 if unset) when the audio FFT scope exists, otherwise the constant 500000 |
 | `audioConfig` | object | Web audio transport defaults |
 | `webrtc.available` | `bool` | Whether the optional `rigplane[webrtc]` backend is importable; this does not indicate that the default-off `WebConfig.webrtc_enabled` transport gate is enabled |
+
+| `cwText` | object | Whether `send_cw_text` works on this radio; see below. Required whenever a profile is resolved |
+
+### `cwText`
+
+`cwText` (MOR-3678) says whether typed CW text can be sent, from the
+profile's `[cw_text]` section. It is inside `capabilities` on
+`/api/v1/info` (next to `hasCw`) and a top-level key on
+`/api/v1/capabilities`; both carry the same three fields. It is absent only
+when no profile is resolved (a provider-owned backend).
+
+| Field | Type | Notes |
+|------|------|-------|
+| `supported` | `bool` | `false`: `send_cw_text` is refused |
+| `maxLength` | `int` | Longest text one request may carry; longer text is refused, never truncated or split |
+| `memoryChannel` | `int` \| `null` | Keyer memory channel the text is written to and played from (FTX-1: KM then KY); `null` when the radio sends text directly (Icom) |
+
+`cwText.supported` is true only when the profile enables CW text and the
+active backend can send it: an external-rigctld backend publishes `false`
+even with an IC-7300 profile (the limits still come from the profile), the
+same check that makes it refuse the send.
+
+`cwText` is separate from the `cw` tag and `hasCw`, which keep driving the
+CW decoder, console and keyer controls: the FTX-1 publishes `hasCw: true`
+and `cwText.supported: false`. The `cw` tag does not gate sending: a radio
+with `cwText.supported: true` sends (and `POST /api/v1/radio/cw/stop`
+stops) without it. The server enforces both facts in one place
+(the radio's `send_cw_text`), so `POST /api/v1/radio/cw/send`, the
+WebSocket `send_cw_text` command and the CLI `cw` command refuse the same
+requests with the same message:
+
+| Refusal | Message | HTTP | WebSocket | CLI |
+|------|------|------|------|------|
+| Text too long | `CW text too long for <model>: got <n> characters, limit is <maxLength>` | `400` `invalid_request` | `command_failed` | `Error: <message>`, exit 1 |
+| Not supported | `<model> does not support sending CW text yet` | `409` `unsupported_command` | `unsupported_command` | `Error: <message>`, exit 1 |
+| Backend cannot send CW text (external rigctld) | `radio does not support this command` | `409` `unsupported_command` | `unsupported_command` | `Error: <message>`, exit 1 |
+| Ended by a CW stop before it was sent (Yaesu CAT only) | `CW text send to <model> was cancelled by a CW stop` | `409` `command_cancelled` | `command_cancelled` | `Error: <message>`, exit 1 |
+| Ended by a transmit abort before it was sent | `CW text send to <model> was cancelled by a transmit abort` | `409` `command_cancelled` | `command_cancelled` | not reached (see below) |
+
+Clients only display these values.
+
+The last two rows are sends that were accepted but still pending when a
+stop or a transmit abort arrived; the HTTP rows apply to
+`POST /api/v1/radio/cw/send` and to `send_cw_text` on
+`POST /api/v1/commands` (there in its `ok: false` envelope).
+
+- CW stop (`POST /api/v1/radio/cw/stop`, WebSocket `stop_cw_text`): on a
+  Yaesu CAT radio it ends every send admitted before it, including one
+  waiting behind another send; none of them writes its keyer memory or
+  plays it after the stop. On a CI-V radio the stop is sent at once but
+  does not end a multi-frame send in progress: its remaining frames are
+  still sent and it answers success.
+- Transmit abort (the managed TX abort fence going stale: `force_off` on
+  `POST /api/v1/managed-transmit/command`, the radio transport going away,
+  or shutdown): on both backends no frame or write of the send follows the
+  abort; what the radio already received stays sent.
+
+The CLI `cw` command runs without the managed TX composition, so no abort
+reaches it. A request whose own connection or server task is cancelled
+(shutdown, client gone) still ends without a response.
 
 When radio has audio but no hardware scope support, backend enables `AudioFftScope`
 and reports `scopeSource: "audio_fft"`. The same FFT frames are also available
@@ -1177,6 +1321,17 @@ like a command that was never rate-limited:
 
 ```json
 {"type":"response","id":"42","ok":true,"result":{"freq":14074000,"receiver":0}}
+```
+
+For queued (legacy and coalesced) commands such as `set_freq`, the
+`response` frame acknowledges enqueue only, never the outcome: a command
+the radio later refuses still answers `ok: true` here. The outcome arrives as
+a `command_lifecycle` frame correlated by `commandId` — `failed` when the
+radio NAKs the write — delivered to clients subscribed to the `events` (or
+`state`) stream:
+
+```json
+{"type":"command_lifecycle","commandId":"42","state":"failed","message":"..."}
 ```
 
 ### State update stream (`/api/v1/ws`)

@@ -5,9 +5,12 @@ tree into ``<out>/<version>/``. The source is the working tree (``.``) or a
 git ref, exported with ``git archive`` and built in its own environment from
 its own ``uv.lock``, so a released version renders its own docstrings with its
 own toolchain. A throwaway overlay config (``INHERIT: mkdocs.yml``) sets the
-version's ``site_url`` and turns on Material's version selector
-(``extra.version.provider: mike``), so no source tree needs versioning
-settings in its own ``mkdocs.yml``.
+version's ``site_url``, turns on Material's version selector
+(``extra.version.provider: mike``) and turns on the site analytics
+(``extra.analytics.provider: custom``), so no source tree needs versioning or
+analytics settings in its own ``mkdocs.yml``. Every exported version gets this
+checkout's analytics partial, so the whole published site shares one snippet
+and a plain ``mkdocs build`` or ``mkdocs serve`` never loads it.
 
 The site root then gets ``versions.json`` (read by the version selector), a
 redirect page for every page path of every version (the unversioned URL goes
@@ -49,6 +52,9 @@ from urllib.parse import urlsplit
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OVERLAY_NAME = ".mkdocs-versioned.yml"
 WORKING_TREE = "."
+# Material includes partials/integrations/analytics/<provider>.html from the
+# theme custom_dir (docs/overrides) when extra.analytics.provider is set.
+ANALYTICS_PARTIAL = Path("docs/overrides/partials/integrations/analytics/custom.html")
 
 REDIRECT_TEMPLATE = """\
 <!DOCTYPE html>
@@ -85,7 +91,21 @@ def overlay_config(site_url: str, version_id: str, default_id: str) -> str:
         "  version:\n"
         "    provider: mike\n"
         f"    default: '{default_id}'\n"
+        "  analytics:\n"
+        "    provider: custom\n"
     )
+
+
+def install_analytics_partial(repo: Path, source: Path) -> None:
+    """Copy this checkout's analytics partial into an exported version.
+
+    A released tag predates the partial or carries an older copy of it; the
+    overlay enables the ``custom`` provider for every version, so each one
+    needs the current file.
+    """
+    target = source / ANALYTICS_PARTIAL
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(repo / ANALYTICS_PARTIAL, target)
 
 
 def page_dirs(version_root: Path) -> set[str]:
@@ -211,6 +231,7 @@ def _build_version(
         source = workdir / version.id
         source.mkdir(parents=True)
         _export(repo, version.source, source)
+        install_analytics_partial(repo, source)
         subprocess.run(
             ["uv", "sync", "--frozen", "--only-group", "dev", "--quiet"],
             cwd=source,

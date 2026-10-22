@@ -11,6 +11,7 @@
   colors. Idle receiving and unknown states do not reserve an indicator row.
 -->
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import '../components-v2/controls/control-button.css';
   import { t } from '$lib/i18n';
   import { renderSlot } from './design-language-renderers';
@@ -41,10 +42,13 @@
     view: RadioViewModel;
     tx: TxAuthoritySnapshot;
     standard?: boolean;
+    momentary?: boolean;
+    onPttDown?: () => void;
+    onPttUp?: () => void;
     onRequestKey: () => void;
     onRequestUnkey: () => void;
   }
-  let { view, tx, standard = false, onRequestKey, onRequestUnkey }: Props = $props();
+  let { view, tx, standard = false, momentary = false, onPttDown = () => {}, onPttUp = () => {}, onRequestKey, onRequestUnkey }: Props = $props();
 
   const blockedId = nextSurfaceId();
   let rf = $derived(rfState(tx));
@@ -65,6 +69,26 @@
   let keyUnavailable = $derived(
     tx.fresh === false || tx.phase !== 'idle',
   );
+  // Input ownership only; displayed TX state remains the server projection.
+  let held = $state(false);
+  // Retain the matching release synchronously, independent of render batches.
+  let releaseHeld: (() => void) | null = null;
+  let alive = true;
+  function beginHold(): void {
+    if (!alive || !momentary || releaseHeld !== null || keyUnavailable) return;
+    releaseHeld = onPttUp;
+    held = true;
+    onPttDown();
+  }
+  function endHold(): void {
+    const release = releaseHeld;
+    if (release === null) return;
+    releaseHeld = null;
+    held = false;
+    release();
+  }
+  $effect(() => { if (!momentary || tx.fresh === false) endHold(); });
+  onDestroy(() => { alive = false; endHold(); });
   let pressed = $derived(tx.phase !== 'idle' && tx.phase !== 'failed');
   let showTxState = $derived(
     tx.phase !== 'idle' || rf === 'transmitting' || rf === 'uncertain' || tx.fault !== null,
@@ -154,6 +178,32 @@
          the shared `control-button.css` vocabulary, applied to this existing
          button; they add no gate and change no handler. `data-active` restates
          `pressed`, the same value `aria-pressed` already carries. -->
+    {#if momentary}
+    <button
+      type="button" class="rx-tx-key v2-control-button v2-control-button--pill" data-testid="rx-tx-key"
+      data-surface="hardware" data-indicator-style="dot" data-indicator-color="red" data-active={pressed}
+      disabled={keyUnavailable && !held} aria-pressed={pressed}
+      aria-describedby={blockedDescription ? blockedId : undefined}
+      aria-label="PTT"
+      onpointerdown={(event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+        beginHold();
+      }}
+      onpointerup={endHold} onpointercancel={endHold} onlostpointercapture={endHold} onblur={endHold}
+      onkeydown={(event) => {
+        if (event.key !== ' ' && event.key !== 'Enter') return;
+        event.preventDefault();
+        if (!event.repeat) beginHold();
+      }}
+      onkeyup={(event) => {
+        if (event.key !== ' ' && event.key !== 'Enter') return;
+        event.preventDefault();
+        endHold();
+      }}
+    >PTT</button>
+    {:else}
     <button
       type="button" class="rx-tx-key v2-control-button v2-control-button--pill" data-testid="rx-tx-key"
       data-surface="hardware" data-indicator-style="dot" data-indicator-color="red" data-active={pressed}
@@ -162,6 +212,7 @@
       onclick={onRequestKey}
       aria-label="Key transmitter"
     >{standard ? 'PTT' : 'Key transmitter'}</button>
+    {/if}
     <!-- Never gated: no `disabled`, no `{#if}`, no guard in the handler. -->
     <button
       type="button" class="rx-tx-unkey v2-control-button v2-control-button--pill" data-testid="rx-tx-unkey"

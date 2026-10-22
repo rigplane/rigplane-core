@@ -21,3 +21,16 @@ export function authenticatedWsUrl(url: string): string {
   resolved.searchParams.set('token', token);
   return resolved.toString();
 }
+
+/**
+ * Set one query parameter without losing the URL's form. A same-origin
+ * relative URL (`/api/v1/ws`, the unauthenticated local default) stays
+ * relative so the WebSocket constructor resolves its scheme; `new URL(url)`
+ * on it would throw.
+ */
+export function withWsSearchParam(url: string, key: string, value: string): string {
+  const resolved = resolveWsUrl(url);
+  resolved.searchParams.set(key, value);
+  if (/^wss?:/i.test(url)) return resolved.toString();
+  return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+}

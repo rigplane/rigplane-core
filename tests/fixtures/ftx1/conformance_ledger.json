@@ -1,0 +1,8 @@
+{
+  "IF;": {
+    "recorded": "IF00025147225000+000000412003;",
+    "fake": "IF00000147225000+000000400000;",
+    "ticket": "MOR-3602",
+    "why": "the fake builds the IF clarifier/channel/vfo/tone/shift fields from fixed neutral values; the real radio reports channel 00025, vfo 1, tone 2, shift 003"
+  }
+}

@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from rigplane.core.radio_protocol import ManagedTxSupervisor
-from rigplane.core.state_store import StateStore
+from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_store import StateSnapshot, StateStore
 from rigplane.core.tx_safety import (
     RadioTx,
     TxOutcome,
@@ -20,7 +21,11 @@ from rigplane.core.tx_safety import (
     TxTransition,
 )
 from rigplane.runtime.local_tx_work import LocalTxWorkRunner
-from rigplane.runtime.managed_tx_authority import ManagedTxAuthority, ShutdownResult
+from rigplane.runtime.managed_tx_authority import (
+    ManagedTxAuthority,
+    RadioTxOrigin,
+    ShutdownResult,
+)
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfigStore
 from rigplane.runtime.managed_tx_effect_lane import (
     ManagedTxActuator,
@@ -28,6 +33,9 @@ from rigplane.runtime.managed_tx_effect_lane import (
 )
 from rigplane.runtime.managed_tx_fence import TxAbortFence
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
+from rigplane.runtime.tx_interlock import RfState, resolve_rf_state
+
+_PTT_PATH = FieldPath.global_("tx_state", "ptt")
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +128,9 @@ class ManagedTxComposition:
         self._abort_fence = TxAbortFence()
         self._local_tx_work_runner = LocalTxWorkRunner(self._abort_fence)
         self._tot_config_store = ManagedTxTotConfigStore(config_path)
+        # MOR-3537: the store as it stood when Core's own TX last ended, and
+        # when Core keyed that TX.
+        self._released: tuple[StateSnapshot, float] | None = None
         self._effect_lane = ManagedTxEffectLane(
             actuator, poison_generation=self._poison_tx_generation
         )
@@ -128,6 +139,7 @@ class ManagedTxComposition:
             self._tot_config_store,
             self._abort_fence,
             provider_generation=None,
+            radio_tx=self,
         )
         self._legacy_supervisor = _LegacyManagedTxCutoverGate(self._authority)
         self._state_store: StateStore | None = None
@@ -167,6 +179,54 @@ class ManagedTxComposition:
                 self._provider_generation_changed
             )
             await self._ensure_current_locked()
+
+    def radio_released(self, keyed_at: float) -> None:
+        """Remember the readback as Core's own TX ends (MOR-3537)."""
+        store = self._state_store
+        self._released = None if store is None else (store.snapshot(), keyed_at)
+
+    def radio_tx_since(self, since: float) -> RadioTxOrigin | None:
+        """Origin of a TX the radio reported in an observation newer than ``since``.
+
+        MOR-3537: the observed-RF truth every TX seat already resolves; the
+        observation time is read from the same validated field, on the
+        ``time.monotonic`` clock the authority reads (see
+        ``RigctldHandler._ptt_observed_after`` for the clock-domain note). The
+        TX is Core's own, unreleased, unless an RX was observed since Core's
+        own TX last ended: an RX reading at that moment taken after Core
+        keyed, or a change to RX in the store's history after it. Before
+        Core's first TX, or when the store cannot replay that history (trimmed,
+        or a new provider generation), it reads as foreign. Either origin
+        refuses every TX start; neither gates force_off.
+        """
+        store = self._state_store
+        if store is None:
+            return None
+        snapshot = store.snapshot()
+        if resolve_rf_state(snapshot) is not RfState.TX:
+            return None
+        if snapshot.field(_PTT_PATH).last_observed_monotonic <= since:
+            return None
+        if self._released is None:
+            return RadioTxOrigin.FOREIGN
+        released, keyed_at = self._released
+        try:
+            at_release = released.field(_PTT_PATH)
+        except KeyError:
+            pass
+        else:
+            if (
+                at_release.value is False
+                and at_release.last_observed_monotonic > keyed_at
+            ):
+                return RadioTxOrigin.FOREIGN
+        delta = store.delta_since(released)
+        if delta.requires_full_snapshot or any(
+            change.path == _PTT_PATH and change.current is False
+            for change in delta.changes
+        ):
+            return RadioTxOrigin.FOREIGN
+        return RadioTxOrigin.UNRELEASED
 
     def _provider_generation_changed(self, generation: int) -> None:
         self._observation_generation = int(generation)

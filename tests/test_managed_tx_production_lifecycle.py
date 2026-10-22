@@ -107,6 +107,8 @@ async def test_full_reconnect_retires_then_services_pending_off_debt(tmp_path) -
     radio._lan_identity_answer_epoch = None
     radio._lan_identity_completed_epoch = None
     radio._lan_identity_revalidate_origin = False
+    radio._hard_reconnect_deferred_audio = None
+    radio._owner_stop_epoch = 0
     radio._token_task = None
     radio._auto_reconnect = False
     radio._start_civ_data_watchdog = lambda: None
@@ -294,12 +296,20 @@ async def test_terminal_shutdown_then_actual_core_disconnect_is_idempotent(
     radio._managed_tx_arm_lock = asyncio.Lock()
     radio._civ_transport = transport
     radio._session_lifecycle = SimpleNamespace(disconnect=AsyncMock())
+    stopped: list[str] = []
+    radio._control_phase = SimpleNamespace(
+        _stop_watchdog=lambda: stopped.append("watchdog"),
+        _stop_reconnect=lambda: stopped.append("reconnect"),
+    )
     radio._conn_state = RadioConnectionState.DISCONNECTED
+    radio._owner_stop_epoch = 0
+    radio._audio_silence_repair_task = None
     await radio.disconnect()
 
     assert result is ShutdownResult.TERMINATED
     assert composition._active_provider is None
     assert retired == [1]
+    assert stopped == ["watchdog", "reconnect"]
     radio._session_lifecycle.disconnect.assert_awaited_once()
 
 

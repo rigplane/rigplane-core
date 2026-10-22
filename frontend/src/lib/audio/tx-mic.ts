@@ -25,6 +25,11 @@ type NavigatorWithLegacyMedia = Navigator & {
 
 export type TxCodec = 'opus' | 'pcm16';
 
+const CAPTURE_ERROR_NAMES = new Set([
+  'NotAllowedError', 'NotFoundError', 'NotReadableError', 'OverconstrainedError',
+  'AbortError', 'SecurityError', 'InvalidStateError', 'TypeError',
+]);
+
 /** Outcome of adopting a server-advertised TX codec. */
 export interface TxCodecSwitch {
   /** True when a live capture was actually moved onto PCM16. */
@@ -51,6 +56,12 @@ export class TxMic {
   private sendFn: TxSendFn;
   // Capture-local identity also cancels getUserMedia that settles after stop().
   private captureGeneration = 0;
+  private _lastCaptureFailureCategory: string | null = null;
+
+  /** Safe last acquisition failure; retained across stop/retry for diagnostics. */
+  get lastCaptureFailureCategory(): string | null {
+    return this._lastCaptureFailureCategory;
+  }
   private removeTrackEnded: (() => void) | null = null;
   // Sticky: the server told us it cannot decode Opus (MOR-1791). Kept across
   // start/stop so every later PTT opens on PCM16 from the very first frame.
@@ -192,8 +203,16 @@ export class TxMic {
           noiseSuppression: true,
         },
       });
-    } catch {
-      return 'TX MIC: permission denied';
+    } catch (error: unknown) {
+      const name = typeof error === 'object' && error !== null && 'name' in error
+        ? error.name : undefined;
+      const category = typeof name === 'string' && CAPTURE_ERROR_NAMES.has(name)
+        ? name : 'unknown';
+      this._lastCaptureFailureCategory = category;
+      console.warn(`[TxMic] getUserMedia rejected: ${category}`);
+      return category === 'NotAllowedError'
+        ? 'TX MIC: permission denied'
+        : `TX MIC: capture failed (${category})`;
     }
 
     if (generation !== this.captureGeneration) {

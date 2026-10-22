@@ -22,9 +22,11 @@ from ..audio import AudioPacket
 from ..audio.lan_stream import SYNTHETIC_RX_IDENT
 from ..commands import parse_ack_nak
 from ..core.radio_protocol import RadioIdentity, RadioIdentityStatus
+from ..core.serial_open import serial_open_diagnostic
 from ..exceptions import (
     AudioFormatError,
     CommandError,
+    CommandRejectedError,
     ConnectionError,
     TimeoutError as RigplaneTimeoutError,
 )
@@ -193,6 +195,13 @@ class _IcomSerialRadioBase(CoreRadio):
         )
         self._serial_device = device
         self._serial_baudrate = baudrate
+        # MOR-3620: the baud the caller asked for, the bauds the connect-time
+        # sweep tried in vain, and the plain-words note when the radio
+        # answered at another rate than configured.
+        self._serial_configured_baudrate = baudrate
+        self._serial_bauds_tried: tuple[int, ...] = (baudrate,)
+        self.serial_baud_notice: str | None = None
+        self._serial_identity_read_refused = False
         self._serial_rx_device_override = rx_device
         self._serial_tx_device_override = tx_device
         # MOR-1453: rediscovery seams for a renumbered device node. Glob is
@@ -282,9 +291,14 @@ class _IcomSerialRadioBase(CoreRadio):
         # 2026-09-28) — while the fact that the radio answered nothing
         # survives for the web startup gate to read.
         self._civ_link_down_ever_declared = False
+        # Link-loss episodes (CONNECTED -> RECONNECTING edges), served as
+        # ``serial_reconnects_total``. Retries inside one episode do not
+        # recount; user connects from DISCONNECTED are no episode.
+        self._serial_reconnects_total = 0
         # MOR-2876: text of the latest failed port open; None once an open
         # succeeds.
         self.last_error: str | None = None
+        self.serial_open_error: str | None = None
         # MOR-2876: set once a port open succeeds; no sibling-port search
         # before that (``_maybe_rediscover_serial_device``).
         self._has_connected_once = False
@@ -319,10 +333,22 @@ class _IcomSerialRadioBase(CoreRadio):
         # tail. Cleared everywhere a new attempt, a teardown or an
         # abandonment retires the hold it was recorded for.
         self._serial_identity_hold_reconnect_origin = False
+        # MOR-3436: (audio snapshot, CI-V epoch, owner-stop epoch) — audio
+        # recovery deferred while the identity hold owned the open link (a
+        # connect or soft_reconnect that returned into the hold); the
+        # hold's completion (``_serial_identity_reread_loop``) consumes it.
+        self._serial_deferred_audio: tuple[object, int, int] | None = None
 
     # ------------------------------------------------------------------
     # Backend identity
     # ------------------------------------------------------------------
+
+    @property
+    def serial_baudrate(self) -> int:
+        """The baud currently selected for the link: the configured one,
+        or the one kept by the connect-time sweep.
+        """
+        return self._serial_baudrate
 
     @property
     def backend_id(self) -> str:
@@ -404,6 +430,22 @@ class _IcomSerialRadioBase(CoreRadio):
         return self._serial_session.connected
 
     @property
+    def serial_reconnects_total(self) -> int:
+        """Link-loss episodes since this radio was created."""
+        return self._serial_reconnects_total
+
+    def _count_serial_link_episode(self) -> None:
+        """Count one link-loss episode (a CONNECTED -> RECONNECTING edge).
+
+        Both link-down paths funnel through here:
+        ``_declare_serial_link_down`` and ``soft_reconnect``. Retries
+        inside the same episode (already RECONNECTING) and user connects
+        from DISCONNECTED do not count.
+        """
+        if self._conn_state == RadioConnectionState.CONNECTED:
+            self._serial_reconnects_total += 1
+
+    @property
     def radio_ready(self) -> bool:
         if not self.connected:
             return False
@@ -445,15 +487,27 @@ class _IcomSerialRadioBase(CoreRadio):
         self._cancel_serial_identity_reread()
         self._serial_identity_answer_epoch = None
         self._serial_identity_hold_reconnect_origin = False
+        self._serial_deferred_audio = None
+        # MOR-3620: an owner connect starts at the configured baud again, so
+        # a restarted Auto radio relocks to it rather than to a past fallback.
+        self.serial_baud_notice = None
+        if self._retune_serial_link(self._serial_configured_baudrate):
+            self._serial_baudrate = self._serial_configured_baudrate
         self._conn_state = RadioConnectionState.CONNECTING
         self._civ_stream_ready = False
         self._civ_recovering = False
         self._last_status_error = 0
         self._last_status_disconnected = False
         attempt_epoch = self._civ_epoch
+        # MOR-3436: per-attempt owner-stop epoch, captured before any
+        # await — the audio tail below skips recovery when the owner tore
+        # the radio down mid-connect (``disconnect`` moves it on every
+        # teardown branch).
+        owner_stop_epoch = self._owner_stop_epoch
         try:
             await self._serial_session.connect()
         except Exception as exc:
+            diagnostic = serial_open_diagnostic(exc)
             message = (
                 f"Failed to connect serial session on {self._serial_device}: {exc}"
             )
@@ -461,11 +515,13 @@ class _IcomSerialRadioBase(CoreRadio):
                 self._conn_state = RadioConnectionState.DISCONNECTED
                 self._civ_stream_ready = False
                 self._civ_recovering = False
-                self.last_error = message
+                self.last_error = f"Failed to connect serial session: {diagnostic}"
+                self.serial_open_error = diagnostic
             raise ConnectionError(message) from exc
         if self._civ_epoch != attempt_epoch:
             return
         self.last_error = None
+        self.serial_open_error = None
         self._has_connected_once = True
 
         # A connect() over a runtime whose CI-V worker and RX pump still
@@ -496,7 +552,7 @@ class _IcomSerialRadioBase(CoreRadio):
         # the radio-not-answering state.
         self._serial_identity_gate_running = True
         try:
-            identity_answered = await self._gate_serial_identity()
+            identity_answered = await self._gate_serial_identity(sweep_bauds=True)
         except Exception as exc:
             # MOR-3071 round 5: what the gate does not translate itself
             # (a write OSError on an opened-but-wrong port, CI-V runtime
@@ -519,6 +575,17 @@ class _IcomSerialRadioBase(CoreRadio):
             if self._civ_epoch == attempt_epoch:
                 self._serial_identity_gate_running = False
         if not identity_answered:
+            # MOR-3436: connect() returns into the identity hold — the
+            # tail stashes the recovery for the hold's completion. The
+            # resident reconnect loop (``radio_reconnect.reconnect_loop``)
+            # runs its own recovery after this connect returns, so it is
+            # excluded by the same ``_reconnect_task`` identity test
+            # ``CoreRadio.connect`` uses — the guard mirrors it
+            # defensively.
+            if asyncio.current_task() is not getattr(self, "_reconnect_task", None):
+                await self._recover_serial_audio_after_connect(
+                    owner_stop_epoch, attempt_epoch
+                )
             return
         self._latch_serial_connected()
         if (
@@ -527,16 +594,31 @@ class _IcomSerialRadioBase(CoreRadio):
             and self._civ_transport is not None
         ):
             await self._arm_managed_tx()
+        # MOR-3436: an owner connect re-establishes session audio demand
+        # that survived its teardown, unless the resident reconnect loop
+        # — which recovers from its own snapshot — is the caller.
+        if asyncio.current_task() is not getattr(self, "_reconnect_task", None):
+            await self._recover_serial_audio_after_connect(
+                owner_stop_epoch, attempt_epoch
+            )
 
     async def soft_disconnect(self) -> None:
         await self.disconnect()
 
     async def disconnect(self) -> None:
+        self.serial_open_error = None
+        # MOR-3436: move the owner-stop counter on EVERY teardown branch.
+        # The two early returns below never reach ``CoreRadio.disconnect``
+        # (which increments it itself), and the connect/soft_reconnect
+        # audio tails read it to skip recovery against a torn-down radio.
+        self._owner_stop_epoch += 1
+        self.serial_baud_notice = None
         # Always stop watchdog first to avoid orphan retry loops on failed reconnects.
         self._cancel_serial_identity_reread()
         self._connection_identity = None
         self._serial_identity_answer_epoch = None
         self._serial_identity_hold_reconnect_origin = False
+        self._serial_deferred_audio = None
         await self._stop_civ_data_watchdog()
         await self._stop_serial_audio_driver()
         if (
@@ -588,8 +670,13 @@ class _IcomSerialRadioBase(CoreRadio):
             # before.
             return
 
+        # MOR-3436: per-attempt owner-stop epoch, captured before the
+        # first await, for the audio tail at this reconnect's completion.
+        owner_stop_epoch = self._owner_stop_epoch
         if self._managed_tx_composition is not None:
             await self._park_managed_tx()
+        self._count_serial_link_episode()
+        self.serial_baud_notice = None
         self._conn_state = RadioConnectionState.RECONNECTING
         self._civ_stream_ready = False
         self._civ_recovering = True
@@ -599,6 +686,7 @@ class _IcomSerialRadioBase(CoreRadio):
         self._cancel_serial_identity_reread()
         self._serial_identity_answer_epoch = None
         self._serial_identity_hold_reconnect_origin = True
+        self._serial_deferred_audio = None
         self._advance_civ_generation("serial-soft-reconnect")
         # MOR-3064: the generation this attempt committed to. A gate or
         # open that comes back retired (a ``disconnect`` or teardown ran
@@ -617,6 +705,7 @@ class _IcomSerialRadioBase(CoreRadio):
             # MOR-3064: a retired attempt (its generation was replaced
             # underneath it) writes no state — whoever replaced the link
             # owns the connection state now.
+            diagnostic = serial_open_diagnostic(exc)
             message = (
                 f"Failed to reconnect serial session on {self._serial_device}: {exc}"
             )
@@ -624,11 +713,13 @@ class _IcomSerialRadioBase(CoreRadio):
                 self._conn_state = RadioConnectionState.RECONNECTING
                 self._civ_stream_ready = False
                 self._civ_recovering = True
-                self.last_error = message
+                self.last_error = f"Failed to reconnect serial session: {diagnostic}"
+                self.serial_open_error = diagnostic
             raise ConnectionError(message) from exc
         if self._civ_epoch != attempt_epoch:
             return
         self.last_error = None
+        self.serial_open_error = None
         self._has_connected_once = True
 
         self._ctrl_transport = self._serial_session.control_transport  # type: ignore[assignment]
@@ -656,7 +747,10 @@ class _IcomSerialRadioBase(CoreRadio):
             message = (
                 f"Failed to read the radio identity on {self._serial_device}: {exc}"
             )
-            if self._civ_epoch == attempt_epoch:
+            if (
+                self._civ_epoch == attempt_epoch
+                and self._owner_stop_epoch == owner_stop_epoch
+            ):
                 self._connection_identity = None
                 self._serial_identity_hold_reconnect_origin = False
                 self._conn_state = RadioConnectionState.RECONNECTING
@@ -668,13 +762,26 @@ class _IcomSerialRadioBase(CoreRadio):
             if self._civ_epoch == attempt_epoch:
                 self._serial_identity_gate_running = False
         if not identity_answered:
-            if self._civ_epoch == attempt_epoch:
+            if (
+                self._civ_epoch == attempt_epoch
+                and self._owner_stop_epoch == owner_stop_epoch
+            ):
                 # MOR-3064: only the attempt that still owns the current
                 # generation may park the radio in the hold state — a
                 # retired gate must not overwrite whatever replaced it
                 # (``disconnect``'s DISCONNECTED, a successor's latched
                 # CONNECTED), which left a hold nobody drives.
                 self._conn_state = RadioConnectionState.CONNECTING
+                # MOR-3436: this reconnect returned into the identity
+                # hold — stash the recovery for the hold's completion.
+                await self._recover_serial_audio_after_connect(
+                    owner_stop_epoch, attempt_epoch
+                )
+            return
+        if (
+            self._civ_epoch != attempt_epoch
+            or self._owner_stop_epoch != owner_stop_epoch
+        ):
             return
         self._latch_serial_connected()
         # MOR-1440 review round 2 (B1 item 2): this is the RECONNECTING ->
@@ -699,6 +806,10 @@ class _IcomSerialRadioBase(CoreRadio):
                     "serial soft_reconnect: _on_reconnect callback failed",
                     exc_info=True,
                 )
+        # MOR-3436: the backend's own reconnect path re-establishes the
+        # session audio demand that survived the link-down teardown (the
+        # watchdog's ``_declare_serial_link_down`` stopped the driver).
+        await self._recover_serial_audio_after_connect(owner_stop_epoch, attempt_epoch)
 
     def start_reconnect_recovery(self) -> None:
         """Keep retrying the port after :meth:`connect` failed to open it.
@@ -833,6 +944,7 @@ class _IcomSerialRadioBase(CoreRadio):
         payload bytes after the ``19 00`` echo when the addressed radio
         answers, and ``None`` when nothing answered.
         """
+        self._serial_identity_read_refused = False
         builder = getattr(self._commands, "get_transceiver_id", None)
         if not callable(builder):
             return b""
@@ -844,10 +956,19 @@ class _IcomSerialRadioBase(CoreRadio):
             return b""
         try:
             resp = await self._execute_civ_raw(request, wait_response=True)
+        except CommandRejectedError:
+            self._serial_identity_read_refused = True  # heard, not silent
+            return None
         except (RigplaneTimeoutError, asyncio.TimeoutError):
             # ``_execute_civ_raw`` raises rigplane's TimeoutError (not
             # asyncio's) when the answer window runs out — both are caught
             # so a silent link reads as silence, never as a connect crash.
+            # A refused 19 00 read counts as no answer the same way: a
+            # ``CommandRejectedError`` escaping here would become "Failed
+            # to read the radio identity" out of ``connect`` and abandon
+            # the hold in ``_serial_identity_reread_loop`` (its edge
+            # catches only ``Exception``), handing the link to the
+            # watchdog's port reopen.
             return None
         except ConnectionError:
             return None
@@ -887,16 +1008,125 @@ class _IcomSerialRadioBase(CoreRadio):
                 f"the selected {self.model} profile."
             )
         elif status is RadioIdentityStatus.NO_RESPONSE:
-            self.last_error = (
-                f"No answer from the radio on {self._serial_device} "
-                f"({self.model} profile, {self._serial_baudrate} baud): another "
-                "radio may be on this port, or it is switched off."
-            )
+            self.last_error = self._serial_no_answer_message()
         else:
             self.last_error = None
         return status in (RadioIdentityStatus.VERIFIED, RadioIdentityStatus.UNVERIFIED)
 
-    async def _gate_serial_identity(self) -> bool:
+    def _retune_serial_link(self, baud: int) -> bool:
+        """Retune the open link; False for links that cannot (bespoke doubles)."""
+        retune = getattr(self._serial_civ_link, "set_baudrate", None)
+        return bool(retune(baud)) if callable(retune) else False
+
+    def _serial_no_answer_message(self) -> str:
+        """Plain-words "no answer" text naming the likely causes (MOR-3620)."""
+        bauds = ", ".join(str(b) for b in self._serial_bauds_tried)
+        return (
+            f"No answer from the radio on {self._serial_device} "
+            f"({self.model} profile, {bauds} baud). Likely causes: the radio "
+            "is switched off or unplugged, another radio is on this port, "
+            "another program connected to the radio first at a different "
+            "speed (CI-V USB Baud Rate = Auto keeps the first speed until "
+            "the radio is restarted), or the radio's CI-V USB Baud Rate is "
+            "fixed at a speed this profile does not use. Restart the radio "
+            "and connect rigplane to it first, or set CI-V USB Baud Rate to "
+            "Auto or 115200 in its CI-V menu."
+        )
+
+    def _serial_baud_found_notice(self, found: int) -> str:
+        """Note for a radio that answered at *found*, not the configured baud."""
+        text = (
+            f"The radio answered at {found} baud, not the configured "
+            f"{self._serial_configured_baudrate}; connected at {found}. Use "
+            f"{found} baud for this radio."
+        )
+        if found < _SERIAL_SCOPE_MIN_BAUD:
+            text += " " + self._low_baud_scope_hint()
+        return text
+
+    def _low_baud_scope_hint(self) -> str:
+        if self._allow_low_baud_scope:
+            return (
+                f"The scope needs {_SERIAL_SCOPE_MIN_BAUD} baud; the low-baud "
+                "override is on, so it is attempted at this speed but may "
+                "time out."
+            )
+        return (
+            f"The scope needs {_SERIAL_SCOPE_MIN_BAUD} baud and is off at a "
+            f"lower speed: set CI-V USB Baud Rate to {_SERIAL_SCOPE_MIN_BAUD} "
+            "in the radio's CI-V menu (or restart the radio and connect "
+            "rigplane to it first), then connect again."
+        )
+
+    async def _sweep_serial_baud(
+        self, epoch: int, owner_stop_epoch: int
+    ) -> bytes | None:
+        """Retry the identity read at the other documented bauds, once each.
+
+        MOR-3620: an Icom radio on ``CI-V USB Baud Rate = Auto`` keeps the
+        speed of the first host that talks to it, so silence at the current
+        baud is often the radio answering at another one. Runs on the open
+        link (the port is retuned in place, never reopened), reads only
+        ``19 00`` and stops at the first answer, keeping that baud. Without
+        an answer — also on cancellation or an error — the starting baud is
+        put back unless the port refuses the return (then it stays where it
+        is and warns), unless the attempt was retired meanwhile (its link then
+        belongs to the successor). Returns the answered payload, or ``None``.
+        """
+        from .discovery import SERIAL_PROBE_BAUD_RATES
+
+        def retired() -> bool:
+            return (
+                epoch != self._civ_epoch or owner_stop_epoch != self._owner_stop_epoch
+            )
+
+        link = self._serial_civ_link
+        if (
+            link is None
+            or retired()
+            or not callable(getattr(link, "set_baudrate", None))
+        ):
+            return None
+        start = self._serial_baudrate
+        payload: bytes | None = None
+        try:
+            for baud in SERIAL_PROBE_BAUD_RATES:
+                if baud == start:
+                    continue
+                if retired() or not link.connected or not link.healthy:
+                    return None
+                if not self._retune_serial_link(baud):
+                    if retired() or not link.connected or not link.healthy:
+                        return None
+                    continue
+                self._serial_baudrate = baud
+                self._serial_bauds_tried += (baud,)
+                payload = await self._read_serial_identity_payload()
+                if retired():
+                    return None
+                if payload is not None or self._serial_identity_read_refused:
+                    return payload  # heard: a NAK keeps this baud for the hold too
+            return None
+        finally:
+            if (
+                payload is None
+                and not self._serial_identity_read_refused
+                and self._serial_baudrate != start
+                and not retired()
+            ):
+                if self._retune_serial_link(start):
+                    self._serial_baudrate = start
+                else:
+                    logger.warning(
+                        "rigplane (%s): %s refused going back to %d baud; "
+                        "staying at %d",
+                        self.model,
+                        self._serial_device,
+                        start,
+                        self._serial_baudrate,
+                    )
+
+    async def _gate_serial_identity(self, *, sweep_bauds: bool = False) -> bool:
         """Run the identity read gate; True when the connect may proceed.
 
         Resets the identity to ``checking``, sends the read once, and on a
@@ -907,14 +1137,19 @@ class _IcomSerialRadioBase(CoreRadio):
         plain ``last_error`` sentence, hands the link to the background
         re-read task, and returns False — CONNECTED must not latch.
         """
+        self.serial_baud_notice = None
+        self._serial_bauds_tried = (self._serial_baudrate,)
         self._connection_identity = RadioIdentity(
             status=RadioIdentityStatus.CHECKING,
             expected_model=self.model,
         )
         probe_identity = self._connection_identity
         epoch = self._civ_epoch
+        owner_stop_epoch = self._owner_stop_epoch
         payload = await self._read_serial_identity_payload()
-        if epoch != self._civ_epoch:
+        if payload is None and sweep_bauds and not self._serial_identity_read_refused:
+            payload = await self._sweep_serial_baud(epoch, owner_stop_epoch)
+        if epoch != self._civ_epoch or owner_stop_epoch != self._owner_stop_epoch:
             if self._connection_identity is probe_identity:
                 self._connection_identity = None
             return False
@@ -947,6 +1182,11 @@ class _IcomSerialRadioBase(CoreRadio):
         self._civ_recovering = not self._civ_stream_ready
         self._capture_serial_identity()
         self._civ_watchdog_rebaseline()
+        if self._serial_baudrate != self._serial_configured_baudrate:
+            self.serial_baud_notice = self._serial_baud_found_notice(
+                self._serial_baudrate
+            )
+            logger.warning("rigplane (%s): %s", self.model, self.serial_baud_notice)
         logger.info(
             "Connected to %s over serial (%s @ %d baud)",
             self.model,
@@ -994,6 +1234,7 @@ class _IcomSerialRadioBase(CoreRadio):
         self._connection_identity = None
         self._serial_identity_answer_epoch = None
         self._serial_identity_hold_reconnect_origin = False
+        self._serial_deferred_audio = None
         self._conn_state = RadioConnectionState.RECONNECTING
         self._civ_stream_ready = False
         self._civ_recovering = True
@@ -1099,6 +1340,10 @@ class _IcomSerialRadioBase(CoreRadio):
                             self._serial_device,
                             exc_info=True,
                         )
+                # MOR-3436: the hold completed — run the audio recovery a
+                # connect/soft_reconnect deferred here, once, if the link
+                # and the owner are unchanged.
+                await self._run_serial_deferred_audio()
                 return
         except asyncio.CancelledError:
             pass
@@ -1110,6 +1355,70 @@ class _IcomSerialRadioBase(CoreRadio):
             self._abandon_serial_identity_hold(
                 f"the identity re-read failed: {exc}", exc=exc
             )
+
+    # ------------------------------------------------------------------
+    # Audio tail of a completed (re)connect (MOR-3436)
+    # ------------------------------------------------------------------
+
+    async def _recover_serial_audio_after_connect(
+        self, owner_stop_epoch: int, attempt_epoch: int
+    ) -> None:
+        """Re-establish audio demand an owner teardown left held (MOR-3436).
+
+        ``disconnect()`` stops the USB audio driver while ``AudioSession``
+        demand survives it, and before this tail neither ``connect()`` nor
+        ``soft_reconnect()`` re-armed it. Runs the same recovery the LAN
+        tail of ``CoreRadio.connect`` runs — ``_audio_runtime.recover``
+        with a live-demand snapshot, which reports through
+        ``on_audio_recovery`` — and, when the identity hold owns the open
+        link, defers it to the hold's completion exactly like
+        ``CoreRadio._recover_audio_after_connect``: recovering into the
+        hold would run ``start_rx`` into ``_check_connected``'s hold
+        refusal and report FAILED. Skipped when the attempt was retired
+        (a new CI-V generation owns the link) or the owner stopped the
+        radio mid-attempt (the owner-stop counter moved).
+        """
+        if not self._auto_recover_audio:
+            return
+        if (
+            self._civ_epoch != attempt_epoch
+            or self._owner_stop_epoch != owner_stop_epoch
+        ):
+            return
+        snapshot = self._audio_runtime.capture_snapshot()
+        if snapshot is None:
+            return
+        if self._identity_phase_owns_open_link():
+            self._serial_deferred_audio = (
+                snapshot,
+                self._civ_epoch,
+                owner_stop_epoch,
+            )
+            return
+        await self._audio_runtime.recover(snapshot)
+
+    async def _run_serial_deferred_audio(self) -> None:
+        """Recover audio a connect/soft_reconnect deferred, exactly once.
+
+        They stashed it because they returned while the identity hold
+        owned the open link; the hold's completion (the re-read loop)
+        runs it. Dropped — never run — when the link moved on (a new
+        CI-V generation) or the owner stopped the radio. ``recover``
+        reports its own failures through ``on_audio_recovery``; the guard
+        below only keeps a raising callback from failing the hold
+        completion it runs inside.
+        """
+        tail = self._serial_deferred_audio
+        if tail is None:
+            return
+        self._serial_deferred_audio = None
+        snapshot, tail_epoch, owner_stop_epoch = tail
+        if tail_epoch != self._civ_epoch or self._owner_stop_epoch != owner_stop_epoch:
+            return
+        try:
+            await self._audio_runtime.recover(snapshot)
+        except Exception:
+            logger.warning("serial deferred audio recovery failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Renumbered-node rediscovery (MOR-1453)
@@ -1910,6 +2219,7 @@ class _IcomSerialRadioBase(CoreRadio):
             self._serial_device,
             self._civ_link_down_note,
         )
+        self._count_serial_link_episode()
         self._conn_state = RadioConnectionState.RECONNECTING
         self._civ_link_down_ever_declared = True
         self._civ_stream_ready = False
@@ -1957,7 +2267,8 @@ class _IcomSerialRadioBase(CoreRadio):
             raise ConnectionError(
                 f"Scope unavailable at {self._serial_baudrate} baud "
                 f"(minimum {_SERIAL_SCOPE_MIN_BAUD}). "
-                f"Set allow_low_baud_scope=True to override."
+                f"{self._low_baud_scope_hint()} "
+                f"Or set allow_low_baud_scope=True to override."
             )
 
     def _serial_audio_channels_for_codec(self) -> int:

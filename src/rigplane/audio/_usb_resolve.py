@@ -90,6 +90,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+from rigplane.audio._windows_devnode import DevNodeRow, present_devnodes
 from rigplane.audio.backend import _ALSA_HW_RE
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,9 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "AudioDeviceMapping",
     "WindowsPnpDevice",
+    "WindowsAudioAmbiguityError",
+    "WindowsAudioEndpointNameError",
+    "WindowsAudioTopologyError",
     "resolve_audio_for_serial_port",
 ]
 
@@ -124,7 +128,7 @@ class AudioDeviceMapping:
 
 @dataclass(frozen=True, slots=True)
 class WindowsPnpDevice:
-    """One USB PnP function enumerated by the Windows PnP/WMI subsystem.
+    """One USB PnP function enumerated by the Windows PnP subsystem.
 
     Each entry models a single child function of a USB composite device — the
     serial (CDC/COM) function or the USB Audio Class function. The
@@ -154,6 +158,22 @@ class WindowsPnpDevice:
     pid: str | None
     com_port: str | None
     audio_endpoint_name: str | None
+
+
+class WindowsAudioTopologyError(RuntimeError):
+    """Windows topology cannot identify a safe audio pair for this serial port."""
+
+
+class WindowsAudioAmbiguityError(WindowsAudioTopologyError):
+    """More than one radio or audio device fits the topology; none is chosen."""
+
+
+class WindowsAudioEndpointNameError(WindowsAudioTopologyError):
+    """The radio's codec is identified, but no host API lists its RX/TX pair."""
+
+
+# MME device names were cut to 31 characters on GTR7 (MOR-3526).
+_MME_NAME_LIMIT = 31
 
 
 def resolve_audio_for_serial_port(
@@ -305,7 +325,7 @@ def _resolve_windows(
         pnp_query: Injected zero-arg callable returning a list of
             :class:`WindowsPnpDevice` (for testing without a Windows host).
             Defaults to :func:`_query_windows_pnp_devices`, the real
-            PowerShell/WMI enumeration. Isolating the OS call here keeps the
+            enumeration. Isolating the OS call here keeps the
             resolver body testable on non-Windows hosts.
 
     Algorithm:
@@ -347,6 +367,13 @@ def _resolve_windows(
         logger.warning("usb-audio-resolve: no PnP serial function for %r", serial_port)
         return None
 
+    # A known IC-7300 is a separate serial/codec family. Resolve its graph
+    # before a co-parented unrelated audio device can trigger generic fallback.
+    if re.fullmatch(
+        r"USB\\VID_10C4&PID_EA60\\IC-7300_[^\\]+", serial_dev.pnp_device_id.upper()
+    ):
+        return _resolve_ic7300_hub(serial_dev, records, sounddevice_module)
+
     # 1. Topology link: audio endpoints sharing the serial function's parent.
     audio_devs: list[WindowsPnpDevice] = []
     if serial_dev.parent_pnp_id:
@@ -356,6 +383,10 @@ def _resolve_windows(
             if r.audio_endpoint_name is not None
             and r.parent_pnp_id == serial_dev.parent_pnp_id
         ]
+    if not audio_devs:
+        family_mapping = _resolve_ic7300_hub(serial_dev, records, sounddevice_module)
+        if family_mapping is not None:
+            return family_mapping
     # 2. Robust-identity fallback: link by shared VID:PID when topology is
     #    ambiguous (no parent or no co-parented audio function).
     if not audio_devs and serial_dev.vid is not None and serial_dev.pid is not None:
@@ -365,7 +396,14 @@ def _resolve_windows(
             if r.audio_endpoint_name is not None
             and r.vid == serial_dev.vid
             and r.pid == serial_dev.pid
+            and (not serial_dev.parent_pnp_id or not r.parent_pnp_id)
         ]
+        identities = {r.parent_pnp_id or r.pnp_device_id for r in audio_devs}
+        if len(identities) > 1:
+            raise WindowsAudioAmbiguityError(
+                "Windows USB audio identity is ambiguous; "
+                "select explicit RX/TX devices."
+            )
         if audio_devs:
             logger.info(
                 "usb-audio-resolve: %s linked to audio by VID:PID %s:%s "
@@ -376,6 +414,13 @@ def _resolve_windows(
             )
 
     if not audio_devs:
+        if serial_dev.parent_pnp_id and any(
+            r.audio_endpoint_name is not None and r.parent_pnp_id for r in records
+        ):
+            raise WindowsAudioTopologyError(
+                "Windows USB audio parents do not match the serial radio; "
+                "select explicit RX/TX devices."
+            )
         logger.warning(
             "usb-audio-resolve: no audio endpoint shares parent/identity with %s",
             serial_port,
@@ -386,21 +431,15 @@ def _resolve_windows(
     audio_name = audio_dev.audio_endpoint_name
     assert audio_name is not None  # narrowed by the filters above
 
-    # Same-name rank: position of the matched endpoint among all same-named
-    # audio endpoints (ordered by PnP instance path), mirroring the macOS
-    # name + same-name-rank identity used by _pair_audio_device_for_location.
-    same_name = sorted(
-        (r for r in records if r.audio_endpoint_name == audio_name),
-        key=lambda r: r.pnp_device_id,
+    # Same-parent MEDIA/AudioEndpoint rows occupy one physical name rank.
+    same_name = list(
+        dict.fromkeys(
+            r.parent_pnp_id or r.pnp_device_id
+            for r in sorted(records, key=lambda r: r.pnp_device_id)
+            if r.audio_endpoint_name == audio_name
+        )
     )
-    same_name_rank = next(
-        (
-            i
-            for i, r in enumerate(same_name)
-            if r.pnp_device_id == audio_dev.pnp_device_id
-        ),
-        0,
-    )
+    same_name_rank = same_name.index(audio_dev.parent_pnp_id or audio_dev.pnp_device_id)
 
     # 3. Map to sounddevice indices by identity (reuses the MOR-230 cluster).
     sd: Any = sounddevice_module
@@ -443,63 +482,385 @@ def _resolve_windows(
     )
 
 
+def _resolve_ic7300_hub(
+    serial: WindowsPnpDevice,
+    records: list[WindowsPnpDevice],
+    sounddevice_module: object | None,
+) -> AudioDeviceMapping | None:
+    serial_id = serial.pnp_device_id.upper()
+    if not re.fullmatch(r"USB\\VID_10C4&PID_EA60\\IC-7300_[^\\]+", serial_id):
+        return None
+    nodes: dict[str, WindowsPnpDevice] = {}
+    for record in records:
+        key = record.pnp_device_id.upper()
+        if (
+            key in nodes
+            and nodes[key].parent_pnp_id.upper() != record.parent_pnp_id.upper()
+        ):
+            raise WindowsAudioTopologyError(
+                "Windows USB audio topology is conflicting."
+            )
+        nodes[key] = record
+
+    def ancestors(record: WindowsPnpDevice) -> list[str]:
+        path: list[str] = []
+        parent = record.parent_pnp_id.upper()
+        seen = {record.pnp_device_id.upper()}
+        for _ in range(8):
+            if not parent or parent not in nodes:
+                return path
+            if parent in seen:
+                raise WindowsAudioTopologyError(
+                    "Windows USB audio topology is cyclic; select explicit RX/TX devices."
+                )
+            seen.add(parent)
+            path.append(parent)
+            parent = nodes[parent].parent_pnp_id.upper()
+        raise WindowsAudioTopologyError(
+            "Windows USB audio topology is too deep; select explicit RX/TX devices."
+        )
+
+    def physical(record: WindowsPnpDevice) -> WindowsPnpDevice | None:
+        if record.pnp_device_id.upper().startswith("SWD\\"):
+            parent = nodes.get(record.parent_pnp_id.upper())
+            if parent is None:
+                return None
+            record = parent
+        if "&MI_" in record.pnp_device_id.upper():
+            parent = nodes.get(record.parent_pnp_id.upper())
+            if parent is None:
+                return None
+            record = parent
+        return record if record.pnp_device_id.upper().startswith("USB\\VID_") else None
+
+    codecs = {
+        p.pnp_device_id.upper(): p
+        for r in records
+        if r.audio_endpoint_name is not None and (p := physical(r)) is not None
+    }
+    # The nearest shared USB-device ancestor is structural evidence. Host/root
+    # hubs and PCI controllers cannot identify a radio. No hub VID is special.
+    for hub_id in ancestors(serial):
+        hub = nodes[hub_id]
+        if (
+            not re.fullmatch(r"USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}\\[^\\]+", hub_id)
+            or hub.com_port
+            or hub.audio_endpoint_name is not None
+        ):
+            continue
+        candidates = {
+            key: codec
+            for key, codec in codecs.items()
+            if re.fullmatch(r"USB\\VID_08BB&PID_2901\\[^\\]+", key)
+            and hub_id in ancestors(codec)
+        }
+        if not candidates:
+            continue
+        serials = {
+            r.pnp_device_id.upper()
+            for r in records
+            if r.com_port and hub_id in ancestors(r)
+        }
+        same_name_codecs = {
+            key
+            for key, codec in codecs.items()
+            if hub_id in ancestors(codec)
+            and any(
+                r.audio_endpoint_name is not None
+                and _windows_audio_product(r.audio_endpoint_name) == "USB Audio CODEC"
+                and physical(r) == codec
+                for r in records
+            )
+        }
+        if (
+            serials != {serial_id}
+            or len(candidates) != 1
+            or same_name_codecs != set(candidates)
+        ):
+            raise WindowsAudioAmbiguityError(
+                "IC-7300 USB association is ambiguous; select explicit RX/TX devices."
+            )
+        codec_id = next(iter(candidates))
+        break
+    else:
+        raise WindowsAudioTopologyError(
+            "IC-7300 USB association is unavailable; select explicit RX/TX devices."
+        )
+    media = [
+        r
+        for r in records
+        if re.fullmatch(
+            r"USB\\VID_08BB&PID_2901&MI_00\\[^\\]+", r.pnp_device_id.upper()
+        )
+        and r.parent_pnp_id.upper() == codec_id
+        and r.audio_endpoint_name is not None
+    ]
+    if not media or any(
+        r.audio_endpoint_name.strip() != "USB Audio CODEC" for r in media
+    ):
+        raise WindowsAudioTopologyError(
+            "IC-7300 USB audio interface identity is unavailable."
+        )
+    if any(
+        r.audio_endpoint_name is not None
+        and _windows_audio_product(r.audio_endpoint_name) == "USB Audio CODEC"
+        and physical(r) is None
+        for r in records
+    ):
+        raise WindowsAudioTopologyError(
+            "Windows USB codec rank identity is incomplete."
+        )
+    identities = sorted(
+        {
+            p.pnp_device_id.upper()
+            for r in records
+            if r.audio_endpoint_name is not None
+            and _windows_audio_product(r.audio_endpoint_name) == "USB Audio CODEC"
+            and (p := physical(r)) is not None
+        }
+    )
+    rank = identities.index(codec_id)
+    # Endpoint FriendlyNames can be localized, renamed or "2- "-prefixed. The
+    # SWD endpoint rows carry every device's names, keyed by its physical
+    # device (or the row itself); on GTR7 PortAudio listed the same strings,
+    # cut to 31 characters under MME (MOR-3526).
+    endpoint_names: dict[str, set[str]] = {}
+    for r in records:
+        if (
+            r.pnp_device_id.upper().startswith("SWD\\")
+            and r.audio_endpoint_name is not None
+        ):
+            owner = (physical(r) or r).pnp_device_id.upper()
+            endpoint_names.setdefault(owner, set()).add(
+                _endpoint_name_key(r.audio_endpoint_name)
+            )
+    family = set(identities)
+    sd: Any = sounddevice_module
+    if sd is None:
+        try:
+            import sounddevice as sd
+        except ImportError:
+            return None
+    devices = list(sd.query_devices())
+    query_hostapis = getattr(sd, "query_hostapis", None)
+    mme = {
+        i
+        for i, api in enumerate(query_hostapis() if callable(query_hostapis) else ())
+        if api.get("name") == "MME"
+    }
+
+    def owners(device: dict[str, Any]) -> set[str]:
+        name = str(device.get("name", ""))
+        key = _endpoint_name_key(name)
+        truncated = device.get("hostapi") in mme and len(name) == _MME_NAME_LIMIT
+        return {
+            codec
+            for codec, keys in endpoint_names.items()
+            if any(k == key or (truncated and k.startswith(key)) for k in keys)
+        }
+
+    def member(device: dict[str, Any]) -> bool:
+        return bool(owners(device) & family) or (
+            _windows_audio_product(str(device.get("name", ""))) == "USB Audio CODEC"
+        )
+
+    hostapis = dict.fromkeys(
+        d.get("hostapi")
+        for d in devices
+        if isinstance(d.get("hostapi"), int) and member(d)
+    )
+    contradicted = False
+    for hostapi in hostapis:
+        normalized = [
+            dict(d, name="USB Audio CODEC")
+            if d.get("hostapi") == hostapi and member(d)
+            else dict(d, name="")
+            for d in devices
+        ]
+        clusters = [
+            c
+            for c in _cluster_usb_audio_devices(normalized)
+            if c[0] == "USB Audio CODEC"
+        ]
+        if len(clusters) != len(identities):
+            continue
+        # With several radios, a stray half means the clusters may join pins
+        # of different radios, so the rank cannot pick from them.
+        if len(identities) > 1 and any(
+            rx is None or tx is None for _n, rx, tx in clusters
+        ):
+            contradicted = True
+            continue
+        pair = _pair_audio_cluster_by_name_rank(normalized, "USB Audio CODEC", rank)
+        if pair is None:
+            continue
+        # The rank picks the pair. Refuse it when PnP ties either name to
+        # another device (a shared truncated MME prefix included) or, with
+        # several radios, when only one half has an endpoint row behind it.
+        rx_owners, tx_owners = owners(devices[pair[0]]), owners(devices[pair[1]])
+        if (rx_owners | tx_owners) - {codec_id} or (
+            len(identities) > 1 and bool(rx_owners) != bool(tx_owners)
+        ):
+            contradicted = True
+            continue
+        return AudioDeviceMapping(pair[0], pair[1], serial.com_port or "", None)
+    if contradicted:
+        raise WindowsAudioAmbiguityError(
+            "IC-7300 USB audio endpoint names do not match the codec rank; "
+            "select explicit RX/TX devices."
+        )
+    raise WindowsAudioEndpointNameError(
+        "IC-7300 USB audio has no complete same-host-API pair."
+    )
+
+
+def _endpoint_name_key(name: str) -> str:
+    """Endpoint name without the spacing host APIs disagree on.
+
+    On GTR7 PnP reported ``Speakers (USB Audio CODEC )`` and WDM-KS
+    ``Speakers (USB Audio CODEC)`` for the same endpoint (MOR-3526).
+    """
+    return re.sub(r"\(\s+", "(", re.sub(r"\s+\)", ")", " ".join(name.split())))
+
+
+def _windows_audio_product(name: str) -> str:
+    match = re.fullmatch(r".*\((?:\d+-\s*)?([^()]+)\)", name.strip())
+    return match[1].strip() if match else name.strip()
+
+
 def _query_windows_pnp_devices() -> list[WindowsPnpDevice]:
     """Enumerate USB PnP functions on a real Windows host (best-effort).
 
-    Runs PowerShell ``Get-PnpDevice`` and joins each device with its parent
-    instance path and VID:PID parsed from the PnP instance id, plus the COM
-    port name (for serial functions) or the friendly audio endpoint name (for
-    USB Audio Class functions). Returns ``[]`` on any failure — the caller
-    treats an empty/raised result as "topology unavailable" and falls back to
-    name-based selection. This keeps the base install free of a hard PnP/WMI
-    dependency; the heavy lifting is shelled out to PowerShell, which ships
-    with Windows.
-
-    NOTE: This function is only ever executed on Windows. It is intentionally
-    NOT exercised by the unit tests (which inject a fake ``pnp_query``); its
-    exact field shape MUST be validated against a real Windows host + X6200
-    before relying on the topology path in production (see PR checklist).
+    Reads the present device tree from cfgmgr32 and keeps the nodes the
+    PowerShell query selects (:func:`_eligible_pnp_rows`). If cfgmgr32 fails,
+    falls back to that PowerShell query, which costs one WMI call per emitted
+    device: about 10-26 s in the interactive session on GTR7 (MOR-3526). Returns
+    ``[]`` on any failure — the caller treats an empty/raised result as
+    "topology unavailable".
     """
     if platform.system() != "Windows":
         return []
+    try:
+        nodes = present_devnodes()
+    except Exception as exc:  # noqa: BLE001 — any cfgmgr32 failure → PowerShell
+        logger.warning(
+            "usb-audio-resolve: cfgmgr32 device walk failed (%s); "
+            "falling back to the PowerShell PnP query",
+            exc,
+        )
+        return _query_windows_pnp_devices_powershell()
+    return _pnp_records_from_devnodes(nodes)
+
+
+_PNP_ELIGIBLE_NAME = re.compile(
+    r"\bCOM\d+\b|USB Audio CODEC|USB Audio Device|yaesu|kenwood|c-media|cmedia",
+    re.IGNORECASE,
+)
+_PNP_ELIGIBLE_CLASSES = frozenset({"audioendpoint", "media"})
+_PNP_ANCESTOR_DEPTH = 3
+
+
+def _eligible_pnp_rows(nodes: Sequence[DevNodeRow]) -> list[DevNodeRow]:
+    """The rows the PowerShell query emits, chosen from the full tree.
+
+    Mirrors the script in :func:`_query_windows_pnp_devices_powershell`:
+    eligible nodes plus up to three present ``USB\\VID_`` ancestors, each
+    once, with case-insensitive matching. The own id is upper-cased, as every
+    ``Get-PnpDevice`` ``InstanceId`` was on GTR7; the parent keeps the
+    spelling ``DEVPKEY_Device_Parent`` reports.
+    """
+    by_id = {node[0].upper(): node for node in nodes}
+    emitted: set[str] = set()
+    rows: list[DevNodeRow] = []
+
+    def emit(node: DevNodeRow) -> None:
+        key = node[0].upper()
+        if key not in emitted:
+            emitted.add(key)
+            rows.append((key, node[1], node[2], node[3]))
+
+    for node in nodes:
+        _instance_id, parent, dev_class, name = node
+        if not (
+            _PNP_ELIGIBLE_NAME.search(name)
+            or dev_class.casefold() in _PNP_ELIGIBLE_CLASSES
+        ):
+            continue
+        emit(node)
+        for _ in range(_PNP_ANCESTOR_DEPTH):
+            ancestor = by_id.get(parent.upper())
+            if ancestor is None or not parent.upper().startswith("USB\\VID_"):
+                break
+            emit(ancestor)
+            parent = ancestor[1]
+    return rows
+
+
+def _pnp_records_from_devnodes(nodes: Sequence[DevNodeRow]) -> list[WindowsPnpDevice]:
+    return _pnp_records_from_rows(_eligible_pnp_rows(nodes))
+
+
+def _query_windows_pnp_devices_powershell() -> list[WindowsPnpDevice]:
+    """The PowerShell ``Get-PnpDevice`` query; fallback for cfgmgr32 failures."""
     # PowerShell one-liner: emit one CSV-ish line per USB PnP device with the
     # fields we need. We parse the parent and VID:PID from the InstanceId.
     script = (
-        "Get-PnpDevice -PresentOnly | "
-        "ForEach-Object { "
-        "$id = $_.InstanceId; "
-        "$parent = (Get-PnpDeviceProperty -InstanceId $id "
-        "-KeyName 'DEVPKEY_Device_Parent' -ErrorAction SilentlyContinue).Data; "
-        "$friendly = $_.FriendlyName; "
-        "'{0}`t{1}`t{2}`t{3}' -f $id, $parent, $_.Class, $friendly }"
+        "$OutputEncoding = [Console]::OutputEncoding = "
+        "[System.Text.UTF8Encoding]::new(); "
+        "$present = @(Get-PnpDevice -PresentOnly); $nodes = @{}; "
+        "$present | ForEach-Object { $nodes[$_.InstanceId] = $_ }; "
+        "$eligible = @($present | Where-Object { "
+        "$_.FriendlyName -match '\\bCOM\\d+\\b' -or "
+        "$_.Class -in @('AudioEndpoint', 'MEDIA') -or "
+        "$_.FriendlyName -match "
+        "'USB Audio CODEC|USB Audio Device|yaesu|kenwood|c-media|cmedia' }); "
+        "$parents = @{}; $emitted = @{}; "
+        "function ParentOf($id) { "
+        "if (!$parents.ContainsKey($id)) { "
+        "$parents[$id] = (Get-PnpDeviceProperty -InstanceId $id "
+        "-KeyName 'DEVPKEY_Device_Parent' -ErrorAction SilentlyContinue).Data }; "
+        "return $parents[$id] }; "
+        "function EmitNode($d) { "
+        "if ($d -and !$emitted.ContainsKey($d.InstanceId)) { "
+        "$emitted[$d.InstanceId] = $true; $parent = ParentOf $d.InstanceId; "
+        '"{0}`t{1}`t{2}`t{3}" -f $d.InstanceId, $parent, $d.Class, $d.FriendlyName } }; '
+        "$eligible | ForEach-Object { "
+        "$id = $_.InstanceId; EmitNode $_; $parent = ParentOf $id; "
+        "for ($depth = 0; $depth -lt 3; $depth++) { "
+        "if ($parent -notmatch '^USB\\\\VID_' -or !$nodes.ContainsKey($parent)) { break }; "
+        "$node = $nodes[$parent]; EmitNode $node; $parent = ParentOf $parent } }"
     )
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
-            timeout=20,
+            timeout=5,
         )
         if result.returncode != 0:
-            logger.debug(
+            logger.warning(
                 "usb-audio-resolve: Get-PnpDevice exited %d", result.returncode
             )
             return []
         text = result.stdout.decode("utf-8", errors="replace")
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        logger.debug("usb-audio-resolve: PowerShell PnP query failed: %s", exc)
+        logger.warning("usb-audio-resolve: PowerShell PnP query failed: %s", exc)
         return []
+    return _pnp_records_from_powershell_text(text)
 
-    devices: list[WindowsPnpDevice] = []
+
+def _pnp_records_from_powershell_text(text: str) -> list[WindowsPnpDevice]:
+    rows: list[DevNodeRow] = []
     for line in text.splitlines():
         parts = line.split("\t")
-        if len(parts) < 4:
-            continue
-        instance_id, parent, dev_class, friendly = (
-            parts[0].strip(),
-            parts[1].strip(),
-            parts[2].strip(),
-            parts[3].strip(),
-        )
+        if len(parts) >= 4:
+            rows.append((parts[0], parts[1], parts[2], parts[3]))
+    return _pnp_records_from_rows(rows)
+
+
+def _pnp_records_from_rows(rows: Sequence[DevNodeRow]) -> list[WindowsPnpDevice]:
+    devices: list[WindowsPnpDevice] = []
+    for row in rows:
+        instance_id, parent, dev_class, friendly = (part.strip() for part in row)
         vid, pid = _parse_vid_pid(instance_id)
         com_port = _parse_com_port(friendly)
         # Audio Class functions report Class in {AudioEndpoint, MEDIA}; the
@@ -509,7 +870,11 @@ def _query_windows_pnp_devices() -> list[WindowsPnpDevice]:
             "MEDIA",
         } or _is_usb_audio_codec(friendly)
         audio_name = friendly if (is_audio and com_port is None) else None
-        if com_port is None and audio_name is None:
+        if (
+            com_port is None
+            and audio_name is None
+            and not instance_id.upper().startswith("USB\\VID_")
+        ):
             continue
         devices.append(
             WindowsPnpDevice(

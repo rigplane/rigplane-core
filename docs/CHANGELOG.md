@@ -11,6 +11,357 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A CW text send a stop or force-off ends gets a defined answer
+  (MOR-3700).** A pending `send_cw_text` that a CW stop ended answered HTTP
+  `500` with the transport's "Managed Yaesu CAT write is no longer current",
+  and one a managed force-off ended got no answer at all: the HTTP
+  connection closed and the WebSocket command never got a response. Both
+  now answer HTTP `409` with `error: "command_cancelled"` and a message
+  naming the cause (`CW text send to <model> was cancelled by a CW stop` /
+  `... by a transmit abort`); the WebSocket command answers `ok: false`
+  with the same code and message, and the CLI prints `Error: <message>`
+  and exits 1. The same holds for `send_cw_text` on `POST /api/v1/commands`
+  and for Icom (CI-V) sends a force-off ends (a CW stop does not end a
+  CI-V send in progress). See the refusal table in `docs/api/web.md`.
+- **Radio profiles name their CW modes in one place (MOR-3679, MOR-3678).**
+  Clients guessed CW mode names and missed the FTX-1's `CW-U`/`CW-L`, so
+  the Pro CW console never left "Waiting for CW mode". A profile can now
+  declare `[modes] families = { cw = [...] }`; the loader rejects a member
+  that is not in `[modes].list` or is listed twice, and `/api/v1/info` and
+  `/api/v1/capabilities` publish it as `modeFamilies` (`{}` when absent).
+- **FTX-1 CW text: no invalid `KY <text>;` frames; `cwText` capability
+  (MOR-3678).** The FTX-1 backend sent typed CW text as `KY <text>;` in
+  24-character chunks and stopped with `KY ;`; neither is a valid FTX-1 CAT
+  frame (CAT manual 2508-C printed p.18: `KY P1 P2;` plays a keyer memory).
+  It now writes the text with `KM` into a keyer memory channel and plays it
+  with `KY`, and stops with `KY00;`. Sending stays disabled on the FTX-1
+  until the memory type is checked on a radio. A new profile section
+  `[cw_text]` (`supported`, `max_length`, `memory_channel`, `memory_type`)
+  is published as `cwText` inside `capabilities` on `/api/v1/info` and at
+  the top level of `/api/v1/capabilities`; `hasCw` and the `cw` tag are
+  unchanged. One check in every radio's `send_cw_text` enforces it, so
+  HTTP, WebSocket and the CLI refuse the same requests with the same
+  message; the web handler's own 512-character limit is gone (512 is now
+  only the profile default). Profiles without a `send_cw` command (TX-500,
+  X6100, X6200) publish `supported: false`. Yaesu CAT and Kenwood CAT
+  profiles without `[cw_text].supported = true` publish `supported: false`;
+  a Yaesu enable without keyer memory channel 1-5, a `max_length` of at
+  most 50 (one `KM` write) and writable `KM`/`KY` commands, or any Kenwood
+  enable, does not load. The `cw` tag no longer gates sending or stopping
+  CW text over HTTP, WebSocket or the CLI; `cwText` alone decides. A
+  backend with no CW text sending (external rigctld) answers all three as an
+  unsupported command, and a rig profile that does not load is reported by
+  every CLI path (including `--model` and `audio probe`) as `Error: <file>:
+  <key> ...`, exit 1. `cwText.supported` is false when the active backend
+  cannot send CW text (external rigctld), with the profile's limits kept.
+
+## [3.0.0b19] — 2026-10-20
+
+### Added
+
+- **`rigplane web` accepts `--log-level` (MOR-3569, #4265, #1905).** Before,
+  the level of the web server could only be raised to DEBUG through the
+  `ICOM_DEBUG` environment variable. The flag takes `DEBUG`, `INFO`,
+  `WARNING`, `ERROR` or `CRITICAL`. Without it the loggers are left alone, so
+  `ICOM_DEBUG=1` still works.
+
+### Fixed
+
+- **LAN discovery finds radios behind a second network adapter and survives
+  receive errors (MOR-2968, #4270).** The probe is also sent from each local
+  IPv4 address, and a Windows `ConnectionResetError` while receiving no
+  longer aborts the scan and drops the radios already found.
+- **No scope-health writes while the radio is known to be transmitting
+  (MOR-2859, #4271).** With "scope during TX" off, the all-zero scope frames
+  made the server re-enable the scope three times during a transmit. The
+  watchdog now waits, and the panorama says the radio is transmitting instead
+  of "Scope disconnected".
+- **The LCD layout takes its TX look from the managed TX state, not from
+  the last `ptt` value (MOR-2855, #4272).** A stale PTT reading no longer
+  leaves the LCD showing a transmit that is not happening.
+
+### Tests
+
+- **Cover every holder-end mode of the soak detach-sabotage test (MOR-3565,
+  #4266).**
+- **Capture xdist worker hang evidence in the quick test run (MOR-3575,
+  #4273).**
+- **Settle file-descriptor and task counts before the soak stability
+  comparison (MOR-3575, #4274).** On a loaded test worker the soak driver
+  compared counts while sockets and tasks were still closing and failed a
+  healthy run.
+- **CI: merge queue triggers and gates (MOR-3571, #4268, #4269).**
+
+## [3.0.0b18] — 2026-10-20
+
+Republishes 3.0.0b17 to PyPI. The 3.0.0b17 tag exists on GitHub but its
+PyPI publish stopped in the pre-publish test run, so 3.0.0b17 was never
+uploaded. The runtime code is identical to 3.0.0b17.
+
+### Tests
+
+- **Make the soak detach-sabotage test deterministic (MOR-3565, #4263).** On
+  slower runners one soak cycle lasted about two seconds and the sabotaged
+  session's lease expired inside the check window, so the negative control
+  passed instead of failing. The soak driver now renews live sessions' leases
+  before closing clients.
+
+## [3.0.0b17] — 2026-10-20
+
+### Added
+
+- **Several clients can share one radio session; only one of them holds TX
+  at a time (MOR-3534, #4253, #4254).** The first client to press PTT holds
+  transmit until it releases; the others stay connected for receive, scope
+  and control. The web UI opens a controller session in every mode
+  (MOR-3535, #4255).
+- **rigctl over the WebSocket, bound to the client's session (MOR-3536,
+  #4256).** A remote client can drive CAT through the same session that
+  carries its audio and scope.
+- **Per-IP cap on controller sessions and channels (MOR-3557, #4258).**
+
+### Fixed
+
+- **Refuse CW text, VOX, TUNE and break-in while the radio transmits TX that
+  Core does not hold (MOR-3537, #4257).** Emergency TX release is never
+  gated; TX counts as foreign only after receive was seen since Core's own
+  unkey (MOR-3561).
+- **Closing an auxiliary channel no longer drops the session's TX
+  (MOR-3562, #4261).**
+- **Pair IC-7300 USB audio on Windows when endpoint names are localized,
+  renamed or re-plugged (MOR-3530, #4250).** The resolver matches the endpoint
+  names the Windows device topology reports for the radio's codec, including
+  MME's 31-character cut, instead of requiring `Microphone (USB Audio CODEC)`.
+  `/api/v1/info` `audioReceive.failure` gains an additive `reason` category
+  (`usb_topology_names`, `usb_topology_unavailable`, `usb_ambiguous`,
+  `open_timeout`, `format`, `other`), and topology query failures and timeouts
+  are logged at WARNING.
+- **Read the Windows USB audio topology primarily from cfgmgr32, keeping the
+  PowerShell PnP query as a fallback (MOR-3556, #4252).** Audio device
+  matching no longer waits on a slow PowerShell call in the normal case.
+- **Send diagnostic reports to the public `reports.rigplane.app` endpoint
+  (MOR-3533, #4251).** The built-in "Send" button and `rigplane diagnose
+  --upload` defaulted to `reports.msmsoft.net`, which does not resolve outside
+  the maintainer's private network, so uploads failed for every external user
+  with `getaddrinfo failed`. `RIGPLANE_REPORT_ENDPOINT` still overrides the
+  default.
+
+### Tests
+
+- Multi-session TX fault lanes, soak scenario and mutation targets
+  (MOR-3538, #4259, #4260).
+
+## [3.0.0b16] — 2026-10-15
+
+### Fixed
+
+- **Close and reconnect a silent control, scope or audio-scope WebSocket instead of showing a live link over a dead connection (MOR-1831, MOR-3276, #4043).** The Web UI now closes and reconnects the channel when the server goes silent for 30 s. A new Web UI talking to an older Core without the pong reply reconnects an idle control channel about every 31 s.
+
+- **Keep web and station listeners available during the LAN identity hold
+  (MOR-3363, #4102).** The bundled rigctld listener no longer aborts startup
+  while radio identity is pending; readiness remains false until the hold resolves.
+
+- **Re-login when the control session dies during a LAN identity hold
+  (MOR-3349, #4109, #4172).** The held session is probed before requesting
+  recovery; a live standby session does not trigger that escalation.
+
+- **Recover startup from a radio-held session with bounded fresh-login retries
+  (MOR-3391, #4176, #4178, #4197).** Web and station serve HTTP not-ready
+  during the startup busy hold. The busy retry budget is 600 seconds, with
+  a 90-second live-holder boundary and two retries for an unanswered first
+  discovery; a live holder ends the retry loop rather than being displaced.
+
+### Known issues
+
+- **MOR-3471 remains unresolved and is deferred to the next release:** the
+  waterfall can replay buffered frames at 4–5× after returning from an inactive
+  macOS Space. The added diagnostics (#4246) do not establish a fix.
+
+## [3.0.0b15] — 2026-10-11
+
+### Added
+
+- **Add an experimental SDR IQ panadapter as a scope source (MOR-3151,
+  MOR-3154, MOR-3155, MOR-3156, #4011, #4015, #4016, #4018).** A new
+  `rigplane.sdr` package defines the IQ source contract, and
+  `SoapyIqSource` implements it over SoapySDR through an optional `sdr`
+  extra, including a remote driver and reconnect. `IqFftScope` converts
+  IQ into scope frames, and a controller follows the radio VFO with
+  view shift or retune and freezes the scope during TX. The SDR scope
+  source is experimental in this beta and off by default unless
+  configured.
+
+- **Wire the SDR scope source into the server, CLI and Web UI
+  (MOR-3157, MOR-3158, MOR-3200, MOR-3201, MOR-3202, #4014, #4019,
+  #4020, #4021, #4022).** The Web UI renders the SDR scope source with
+  a status badge, a TX-frozen hold and a source selector, and a public
+  `sdr` status object exposes its state; environment configuration
+  controls the source. Zoom FFT gives real resolution for narrow spans,
+  and radios that have their own scope fall back between SDR and
+  hardware scopes at runtime.
+
+- **Add an experimental remote controller lease with admission and
+  transmit fences (MOR-3143, MOR-3144, #4002, #4003, #4012, #4013,
+  #4017).** One ephemeral controller capability with heartbeat and
+  expiry gates queued commands, and revocation fences new work before
+  retained cleanup completes. Admission is enforced across HTTP,
+  WebSocket and rigctld ingress and browser TX-audio ownership, and a
+  lost admission releases momentary holds. The remote controller lease
+  is experimental in this beta; its admission is enabled whenever the
+  managed TX composition is installed, which is the normal `rigplane web`
+  and `station` startup.
+
+- **Report a refused browser RX start through the existing info status
+  (MOR-3148, #4005).** `GET /api/v1/info` now retains the actual
+  RX-start refusal, including when no client WebSocket received the
+  error, and a confirmed successful start clears it.
+
+### Fixed
+
+- **Drop TX frames that lost admission during audio-session convergence
+  (MOR-3149, #4004).** A TX frame could pass admission, await audio
+  session convergence and reach the radio after revocation. The
+  submission guard is now rechecked immediately before the radio push,
+  and non-confirming results drop the frame.
+
+- **Declare the resolved audio route in server info (#4025).**
+  `/api/v1/info` omitted the active audio route, leaving remote
+  consumers unable to select one. The response now carries the
+  canonical route from the existing resolver, or null without an
+  attached radio; existing fields and protocol version 1 are unchanged.
+
+- **Request 50 ms input latency for Linux ALSA capture (MOR-3140,
+  #4001).** The Linux ALSA capture path now requests a 50 ms input
+  latency.
+
+### Known issues
+
+- Linux hardware audio acceptance remains pending.
+
+## [3.0.0b14] — 2026-10-06
+
+### Fixed
+
+- **Resolve Windows radio USB audio within the selection deadline
+  (MOR-3132, MOR-3136, #3988, #3990, #3993).** Optional device discovery
+  no longer consumes the entire startup budget. IC-7300 serial and audio
+  functions can be associated through their USB topology, including the
+  supported Parallels guest layout and split RX/TX endpoint names.
+  Ambiguous or conflicting identities are rejected instead of selecting
+  an unrelated device.
+
+- **Keep Windows native audio resources alive until streams close
+  (#3994).** Audio workers balance COM initialization, and streams retain
+  the Windows MTA while native handles are open. Failed starts and refused
+  closes retain cleanup ownership so a later cleanup can finish.
+
+- **Prevent overlapping audio opens after a timeout or cancellation
+  (#3995).** A pending native start keeps its endpoint reserved until it
+  settles and cleanup succeeds. An immediate retry cannot replace that
+  unfinished stream. Callbacks from a retired RX session are discarded
+  before reaching current subscribers or changing capture health.
+
+- **Report RX startup refusals and distinguish audio failure stages
+  (#3994).** The Web UI reports a refused radio capture start and permits
+  an explicit retry. Native playback failures are recorded separately
+  from decoder failures.
+
+- **Keep frequency values and their evidence coherent (#3996).** Public
+  frequency aliases use the value, timestamp and provenance of the same
+  winning observation. Keyboard tuning immediately after an absolute
+  frequency jump follows the requested destination while its radio echo
+  is pending.
+
+- **Wait for a complete CI-V discovery reply (MOR-3133, #3989).** Serial
+  discovery handles fragmented model-ID replies and skips unrelated
+  frames while preserving the probe's open, read, parse and close failure
+  distinctions.
+
+- **Match native selector colors to the selected theme
+  (MOR-3123, #3981).** Native selects and their options now use the
+  application's light or dark color scheme.
+
+- **Refuse unrelated Linux audio devices when radio USB auto selection
+  cannot resolve both endpoints (#3999).** Serial-bound automatic
+  selection fails before opening a stream when the radio's USB capture
+  or playback endpoint is missing. Explicit device selection remains
+  available.
+
+### Added
+
+- **Show the actual serial port-open failure category (MOR-3128).**
+  Startup and reconnect diagnostics distinguish permission denied, busy,
+  missing device, timeout and unknown failures through runtime health
+  and translated Web UI messages.
+
+- **Retain bounded local audio diagnostics (MOR-3130, #3987, #3991,
+  #3992).** Runtime diagnostics expose client-reported playback context
+  state, frame/decode/scheduling counters, PCM peak and safe resume
+  outcomes. Microphone acquisition failures retain their actual safe
+  category instead of treating every rejection as permission denied.
+  These reports do not establish audible output.
+
+### Known issues
+
+- Linux hardware audio acceptance remains pending.
+
+## [3.0.0b13] — 2026-10-02
+
+### Fixed
+
+- **Select the declared DATA1/LAN input for single-DATA radios such as
+  the IC-7300MK2 (MOR-3115, #3974).** When the direct backend declares
+  LAN input 5 and supports its DATA1 setter, the shared packet-audio
+  route selects DATA1 and that input instead of the legacy no-input
+  policy. A rejected input change still aborts packet-mode setup.
+
+- **Deliver freshness for accepted CI-V observations whose value stays
+  the same (MOR-3117, #3975).** The runtime now notifies Web delivery
+  about the state store's accepted observed paths, so an unchanged
+  observation can refresh `lastObserved` without inventing a semantic
+  value change. Generation rejection and existing Web throttling remain
+  in force.
+
+- **Complete LAN recovery cleanup and retain the advertised CI-V port
+  (MOR-3118, #3976).** Exhausted watchdog-owned recovery can release its
+  token and close its control transport without cancelling its own waiter.
+  Cancelled recovery does not rearm a watchdog. An occupied advertised
+  port uses the existing bounded retries instead of reporting success
+  on an unadvertised ephemeral port; external cancellation still works.
+
+- **Reject already completed shared acquisition requests (MOR-3116).**
+  A drain now checks the scheduler's pending request identity before
+  claiming an envelope captured before another drain completed it.
+  This prevents duplicate sends and orphan claims from that race.
+
+- **Keep grouped meter polling due after a client reads only SWR
+  (MOR-3116).** A successful singleton read no longer postpones the
+  shared cadence for unread Power, ALC, Comp and Id meters. Successful
+  partial replies accumulate across a grouped request before its
+  cadence advances; failed siblings do not count as acquired.
+
+### Known issues
+
+- IC-7300 Power, ALC and Id telemetry can intermittently be absent
+  while PTT is reported true (MOR-3116). Investigation remains open.
+  These source fixes do not establish physical-radio acceptance or
+  complete resolution of the reported audio and reconnect symptoms.
+
+## [3.0.0b12] — 2026-10-02
+
+### Fixed
+
+- **Complete the rigctld `get_lock_mode` reply for Hamlib clients
+  (MOR-3113, #3972).** A successful normal reply now sends the lock
+  value followed by `RPRT 0`, as expected by netrigctl, so its second
+  read can finish before the next CAT command. Ordinary GET replies
+  keep their existing framing, errors stay one status line, and
+  extended replies keep exactly one status footer.
+
+## [3.0.0b11] — 2026-10-01
+
 ### Added
 
 - **Serial discovery marks each probe's open and close in the DEBUG log
@@ -21,6 +372,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its own prefix — `probe_serial_civ`, `probe_xiegu_model_id` and
   `probe_serial_yaesu_cat` — and only the device name and the baud
   rate are logged. Discovery itself is unchanged.
+
+- **The IC-7300MK2 gets its own manual-derived profile (MOR-3091).**
+  It declares the MK2's identity, single-receiver topology, LAN/serial
+  routing and documented modulation, menu and scope commands instead
+  of borrowing the IC-7610 profile. IC-7300 and IC-7610 profiles stay
+  unchanged. The MK2 profile has not been validated on hardware.
+
+- **`WebConfig.trusted_origins` and `web --trusted-origin ORIGIN` opt
+  in to an explicit public HTTP(S) origin behind a reverse proxy
+  (MOR-3108).** Invalid bare origins fail startup. Origin matching uses
+  scheme, host case and effective port; Host, read-only, TX and CSRF
+  checks still apply, and forwarded headers confer no trust. The proxy
+  owns authentication and access control. See the
+  [remote-operation guide](guide/remote-operation.md).
 
 ### Changed
 
@@ -75,6 +440,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pip install --pre rigplane`, and the README's one-line comment says
   why. The guide's "No 3.0 build is on PyPI yet; to run 3.0, install
   from source" paragraph is gone.
+
+- **The Icom serial connect waits for the radio's identity answer and
+  publishes `connection.identity` (MOR-3071, MOR-3064).** The connect
+  reads the addressed radio's model ID before marking it connected.
+  Silence reports `no_response` while retaining the open port for a
+  later answer; polling and TX stay gated. `/api/v1/info` exposes the
+  expected and answered identity, including an unverified result when
+  the profile has no expected-ID metadata.
+
+- **A known model mismatch is rejected instead of used (MOR-3064).**
+  Icom serial/LAN and Yaesu CAT compare the native identity answer
+  with the selected profile before readiness. Held sessions can finish
+  on a matching late answer; reconnect keeps one current serial reader,
+  and teardown retires held readers and CI-V tasks. An answer from a
+  replaced connection cannot initialize the new connection's state.
+
+- **`rigplane web` keeps serving while the serial identity read gets
+  no answer (MOR-3081, MOR-3078).** Startup no longer exits with
+  "managed TX provider is not current" during `checking` or
+  `no_response`. TX remains refused, automatic bridge startup waits for
+  readiness, and a late answer completes the reconnect tail once.
+
+- **The web password warning suggests the supported flag (MOR-3092).**
+  `web --radio-password` and its `--password` alias now recommend
+  `--radio-pass-file PATH` rather than unsupported `--pass-file`.
+
+- **A radio that declares `vfoReadback: none` keeps its raw hardware
+  waterfall (MOR-3094).** Matching connected control and provider
+  generations allow the raw hardware-scope display without inventing
+  MAIN/SUB authority. Receiver-dependent controls remain unavailable.
+
+- **A managed-TX lifecycle release no longer switches the antenna tuner
+  off (MOR-3072).** Release, shutdown, disconnect and transport switch
+  preserve the idle persistent ATU setting instead of sending implicit
+  STOP_TUNE. Receive/CW safety and explicit STOP_TUNE stay unchanged;
+  active-tune and RF paths were not re-validated.
+
+- **`ICOM_DEBUG` enables DEBUG for the diagnostic log at startup
+  (MOR-3107).** When no embedding application has configured the named
+  `rigplane` logger's level, `ICOM_DEBUG` — any value other than empty,
+  `0`, `false` or `no` — now sets DEBUG, and the default stays INFO. An
+  explicitly configured level is respected: only the records that pass
+  it reach the diagnostic file.
 
 ## [3.0.0b10] — 2026-09-29
 
@@ -4229,7 +4637,17 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b9...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b19...HEAD
+[3.0.0b19]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b18...v3.0.0b19
+[3.0.0b18]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b17...v3.0.0b18
+[3.0.0b17]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b16...v3.0.0b17
+[3.0.0b16]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b15...v3.0.0b16
+[3.0.0b15]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b14...v3.0.0b15
+[3.0.0b14]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b13...v3.0.0b14
+[3.0.0b13]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b12...v3.0.0b13
+[3.0.0b12]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b11...v3.0.0b12
+[3.0.0b11]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b10...v3.0.0b11
+[3.0.0b10]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b9...v3.0.0b10
 [3.0.0b9]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b8...v3.0.0b9
 [3.0.0b7]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b6...v3.0.0b7
 [3.0.0b6]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b5...v3.0.0b6

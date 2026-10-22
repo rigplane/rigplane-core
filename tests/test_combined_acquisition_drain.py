@@ -546,3 +546,45 @@ async def test_pending_but_not_dispatchable_request_is_not_claimed() -> None:
     )
     await _drain(scheduler, tx_store, executor, _Reports("rigctld")).run_once()
     assert len(executor.calls) == 1
+
+
+async def test_completed_request_in_other_seats_snapshot_is_not_reclaimed() -> None:
+    scheduler = AcquisitionScheduler(profile=_profile(_PTT, _FREQ))
+    first = _queued(scheduler, _PTT, priority=AcquisitionPriority.USER)
+    second = _queued(scheduler, _FREQ, priority=AcquisitionPriority.NORMAL)
+    store = StateStore()
+    release = asyncio.Event()
+    entries: list[str] = []
+    first_executor = _Executor("web", entries, release=release)
+    first_drain = _drain(scheduler, store, first_executor, _Reports("web"))
+    second_executor = _Executor(
+        "rigctld",
+        entries,
+        before_await=lambda: scheduler.record_acquisition_result(second, _settlement()),
+    )
+    second_drain = _drain(scheduler, store, second_executor, _Reports("rigctld"))
+    first_task = asyncio.create_task(first_drain.run_once())
+    try:
+        # The first seat captures both requests before waiting for its first send.
+        while not first_executor.calls:
+            await asyncio.sleep(0)
+        assert first_executor.calls[0][0].id == first.id
+        await second_drain.run_once()
+        assert [call[0].id for call in second_executor.calls] == [second.id]
+        # A response can settle a request while its sender is still returning.
+        scheduler.record_acquisition_result(first, _settlement())
+        assert scheduler.pending_requests() == ()
+    finally:
+        release.set()
+        await first_task
+
+    # Let the normal next pass prune any seat-local ledger it retained.
+    await first_drain.run_once()
+    actual = (
+        tuple(call[0].id for call in first_executor.calls),
+        scheduler.diagnostics()["claimedRequestCount"],
+    )
+    assert actual == ((first.id,), 0), (
+        "completed request from a stale snapshot was resent or left an orphan claim"
+    )
+    assert scheduler.pending_requests() == ()

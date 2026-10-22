@@ -170,9 +170,26 @@ async def test_no_tx_codec_ack_when_tx_audio_is_unavailable() -> None:
     handler = AudioHandler(ws, None, None)
 
     await _start_tx(handler)
-
     assert ws.messages("audio_tx_format") == []
     assert handler._tx_active is False
+
+
+async def test_decoded_opus_playback_failure_is_not_reported_as_decoder_failure() -> (
+    None
+):
+    class PlaybackRefusingRadio(_SessionLanRadio):
+        async def push_tx(self, audio_data: bytes) -> None:
+            raise RuntimeError("literal playback start refusal")
+
+    radio = PlaybackRefusingRadio()
+    handler, _ = _make_handler(radio, opus_decode=True)
+    await _start_tx(handler)
+    try:
+        await handler._handle_tx_audio(_tx_frame(AUDIO_CODEC_OPUS, b"fixture-opus"))
+        assert handler._tx_warn_counts.get("push_tx_error") == 1
+        assert handler._tx_warn_counts.get("dropped_transcode_failed", 0) == 0
+    finally:
+        await handler._handle_control({"type": "audio_stop", "direction": "tx"})
 
 
 async def test_tx_start_refusal_is_logged_and_sent(caplog) -> None:

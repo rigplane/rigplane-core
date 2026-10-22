@@ -1,10 +1,16 @@
 """Audio WebSocket handlers — broadcaster + per-client handler."""
 
 from __future__ import annotations
+from ...runtime.controller_authority import (
+    ControllerAuthority,
+    ControllerError,
+    ControllerTicket,
+)
 
 import asyncio
 import inspect
 import logging
+import math
 import time
 from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass, field
@@ -15,11 +21,12 @@ from rigplane.audio._transcoder import PcmOpusTranscoder, create_pcm_opus_transc
 from ...audio import route as audio_route
 from ...audio.bus import STAGE_RX_POST_DSP
 from ...audio.session import RxSubscription
-from ...audio.usb_driver import AudioAlreadyStartedError
+from ...audio.usb_driver import AudioAlreadyStartedError, audio_start_failure_reason
 from ...dsp.tap_registry import TapHandle, TapRegistry
 from ...env_config import (
     get_audio_broadcaster_high_watermark,
 )
+from ...runtime.managed_tx_state import ManagedTxIntentKind
 from ...types import AudioCodec
 from ..protocol import (  # noqa: TID251
     AUDIO_CODEC_OPUS,
@@ -39,6 +46,7 @@ if TYPE_CHECKING:
     from ...audio.session import TxLease
     from ...dsp.pipeline import DSPPipeline
     from ...radio_protocol import Radio
+    from ...runtime.managed_tx_authority import ManagedTxAuthority
 
 from ...capabilities import CAP_AUDIO, CAP_LAN_DUAL_RX_AUDIO_ROUTING
 from ...capabilities import CAP_MOD_INPUT_ROUTING, CAP_TX
@@ -46,6 +54,110 @@ from ...capabilities import CAP_MOD_INPUT_ROUTING, CAP_TX
 __all__ = ["AudioBroadcaster", "AudioHandler", "RxPcmTapSource"]
 
 logger = logging.getLogger(__name__)
+
+_PLAYBACK_COUNTERS = {
+    "receivedFrames",
+    "validFrames",
+    "decodedFrames",
+    "scheduledFrames",
+    "suspendedDrops",
+}
+_PLAYBACK_KEYS = _PLAYBACK_COUNTERS | {
+    "schemaVersion",
+    "contextState",
+    "sampleRate",
+    "pcmPeak",
+    "resumeOutcome",
+    "lastResumeError",
+}
+_RESUME_ERROR_NAMES = {
+    "NotAllowedError",
+    "InvalidStateError",
+    "NotSupportedError",
+    "AbortError",
+    "SecurityError",
+    "UnknownError",
+}
+
+
+_CAPTURE_ERROR_NAMES = frozenset(
+    {
+        "NotAllowedError",
+        "NotFoundError",
+        "NotReadableError",
+        "OverconstrainedError",
+        "AbortError",
+        "SecurityError",
+        "InvalidStateError",
+        "TypeError",
+        "unknown",
+    }
+)
+
+
+def _bounded_audio_stats(message: dict[str, Any]) -> dict[str, Any]:
+    stats: dict[str, Any] = {}
+    category = message.get("microphoneCaptureError")
+    if isinstance(category, str) and category in _CAPTURE_ERROR_NAMES:
+        stats["microphoneCaptureError"] = category
+    for key, maximum in (
+        ("underruns", 0xFFFFFFFF),
+        ("dropped_frames", 0xFFFFFFFF),
+        ("buffer_depth_ms", 60000),
+    ):
+        value = message.get(key)
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and 0 <= value <= maximum
+            and math.isfinite(value)
+        ):
+            stats[key] = value
+    playback = message.get("playback")
+    if not isinstance(playback, dict) or set(playback) != _PLAYBACK_KEYS:
+        return stats
+    if type(playback["schemaVersion"]) is not int or playback["schemaVersion"] != 1:
+        return stats
+    for key in _PLAYBACK_COUNTERS:
+        if type(playback[key]) is not int or not 0 <= playback[key] <= 0xFFFFFFFF:
+            return stats
+    if playback["contextState"] not in (
+        "unavailable",
+        "running",
+        "suspended",
+        "closed",
+        "interrupted",
+        "unknown",
+    ):
+        return stats
+    if playback["resumeOutcome"] not in (
+        "not_attempted",
+        "pending",
+        "resolved",
+        "rejected",
+    ):
+        return stats
+    rate = playback["sampleRate"]
+    if rate is not None and (
+        not isinstance(rate, (int, float))
+        or isinstance(rate, bool)
+        or not 0 < rate <= 384000
+        or not math.isfinite(rate)
+    ):
+        return stats
+    peak = playback["pcmPeak"]
+    if peak is not None and (type(peak) is not int or not 0 <= peak <= 100):
+        return stats
+    error = playback["lastResumeError"]
+    if error is not None and (
+        not isinstance(error, str) or error not in _RESUME_ERROR_NAMES
+    ):
+        return stats
+    if (playback["resumeOutcome"] == "rejected") != (error is not None):
+        return stats
+    stats["playback"] = dict(playback)
+    return stats
+
 
 _TX_CLEANUP_STOP_TIMEOUT_SECONDS = 2.0
 _PCM_TAP_CODECS = frozenset(
@@ -198,6 +310,7 @@ def browser_tx_audio_facts(radio: "Radio | None") -> BrowserTxAudioFacts:
         source, policy = route.tx_audio_source, route.data_mode_policy
         if (source, policy) not in {
             (audio_route.TxAudioSource.LAN, audio_route.DataModePolicy.DATA2_LAN),
+            (audio_route.TxAudioSource.LAN, audio_route.DataModePolicy.DATA1_LAN),
             (audio_route.TxAudioSource.LAN, audio_route.DataModePolicy.LEGACY),
             (audio_route.TxAudioSource.USB, audio_route.DataModePolicy.DATA1_USB),
             (audio_route.TxAudioSource.ACC, audio_route.DataModePolicy.LEGACY),
@@ -316,6 +429,8 @@ class AudioBroadcaster:
         # same AudioPacket|None stream via ``async for``.
         self._subscription: _AudioSubscription | RxSubscription | None = None
         self._relay_task: asyncio.Task[None] | None = None
+        self._rx_start_attempt = 0
+        self._rx_start_failure: tuple[object, object, str] | None = None
         self._seq: int = 0
         self._web_codec: int = AUDIO_CODEC_PCM16
         self._radio_codec: AudioCodec | None = None
@@ -338,7 +453,10 @@ class AudioBroadcaster:
         # drop-oldest eviction counter for the bounded WS queue.  Stats
         # collection only — read by the step-19 adaptive egress codec
         # controller; nothing here changes codec selection or behavior.
-        self._client_link_quality: dict[int, dict[str, int | float]] = {}
+        self._client_link_quality: dict[int, dict[str, Any]] = {}
+        # One anonymous, allowlisted failure retained for this process lifetime.
+        # A client report is not proof of an OS permission denial or freshness.
+        self._last_capture_failure_category: str | None = None
         self._client_queue_drops: dict[int, int] = {}
         # Adaptive egress codec controller (MOR-588, ADR §3.6): per-client
         # PCM16↔Opus switching driven by the MOR-585 link-quality signals.
@@ -534,6 +652,45 @@ class AudioBroadcaster:
         if not callable(getattr(bus, "subscribe", None)):
             raise TypeError("audio_bus.subscribe must be callable")
         return ("bus", bus)
+
+    def invalidate_rx_start_status(self) -> None:
+        self._rx_start_attempt += 1
+        self._rx_start_failure = None
+
+    def rx_start_status(self) -> dict[str, Any]:
+        failure = self._rx_start_failure
+        if failure is not None:
+            try:
+                route = self._resolve_rx_route()
+            except Exception:
+                route = None
+            if (
+                self._radio is not failure[0]
+                or route is None
+                or route[1] is not failure[1]
+            ):
+                self._rx_start_failure = None
+        return {
+            "schemaVersion": 1,
+            "failure": (
+                {
+                    "stage": "rx_start",
+                    "code": "core_rx_start_failed",
+                    "reason": self._rx_start_failure[2],
+                }
+                if self._rx_start_failure is not None
+                else None
+            ),
+        }
+
+    def _rx_start_current(self, attempt: int, radio: object, source: object) -> bool:
+        if attempt != self._rx_start_attempt or radio is not self._radio:
+            return False
+        try:
+            route = self._resolve_rx_route()
+        except Exception:
+            return False
+        return route is not None and route[1] is source
 
     @property
     def rx_pcm_tap_source(self) -> RxPcmTapSource | None:
@@ -784,7 +941,7 @@ class AudioBroadcaster:
     def record_client_stats(
         self,
         queue: asyncio.Queue[bytes],
-        stats: dict[str, int | float],
+        stats: dict[str, Any],
     ) -> None:
         """Record one client's latest self-reported link-quality (MOR-585).
 
@@ -796,12 +953,14 @@ class AudioBroadcaster:
         client_id = id(queue)
         if client_id not in self._clients:
             return
-        self._client_link_quality[client_id] = dict(stats)
+        bounded = _bounded_audio_stats(stats)
+        self._client_link_quality[client_id] = bounded
+        category = bounded.get("microphoneCaptureError")
+        if category is not None:
+            self._last_capture_failure_category = category
         self._adaptive_evaluate(client_id)
 
-    def client_link_quality(
-        self, queue: asyncio.Queue[bytes]
-    ) -> dict[str, int | float]:
+    def client_link_quality(self, queue: asyncio.Queue[bytes]) -> dict[str, Any]:
         """One client's link-quality snapshot (MOR-585, ADR §3.6).
 
         The latest client-reported ``audio_stats`` fields merged with the
@@ -811,11 +970,53 @@ class AudioBroadcaster:
         taps read; nothing in this step consumes it.
         """
         client_id = id(queue)
-        snapshot: dict[str, int | float] = dict(
-            self._client_link_quality.get(client_id, {})
-        )
+        snapshot: dict[str, Any] = dict(self._client_link_quality.get(client_id, {}))
+        if "playback" in snapshot:
+            snapshot["playback"] = dict(snapshot["playback"])
         snapshot["ws_queue_drops"] = self._client_queue_drops.get(client_id, 0)
         return snapshot
+
+    def capture_diagnostics(self) -> dict[str, Any]:
+        """Last safe browser-reported failure, not a hardware or permission verdict."""
+        return {
+            "schemaVersion": 1,
+            "lastFailureCategory": self._last_capture_failure_category,
+        }
+
+    def playback_diagnostics(self) -> dict[str, Any]:
+        """Anonymous, bounded latest self-reports from current subscriptions.
+
+        Read synchronously on the server event loop. Revalidate retained data
+        at this public boundary; legacy clients have no playback report. These
+        counters do not establish freshness or audible speaker output.
+        """
+        clients: list[dict[str, Any]] = []
+        reported = 0
+        for client_id in self._clients:
+            retained = self._client_link_quality.get(client_id)
+            if not isinstance(retained, dict):
+                continue
+            playback = _bounded_audio_stats(retained).get("playback")
+            if playback is None:
+                continue
+            reported += 1
+            if len(clients) < 8:
+                clients.append(playback)
+        active = len(self._clients)
+        return {
+            "schemaVersion": 1,
+            "state": (
+                "available"
+                if reported
+                else "no_playback_reports"
+                if active
+                else "no_clients"
+            ),
+            "activeClients": min(active, 0xFFFFFFFF),
+            "reportedClients": min(reported, 0xFFFFFFFF),
+            "omittedClients": min(max(reported - len(clients), 0), 0xFFFFFFFF),
+            "clients": clients,
+        }
 
     def _adaptive_evaluate(self, client_id: int) -> None:
         """Run one adaptive controller step for one client (MOR-588).
@@ -1069,14 +1270,17 @@ class AudioBroadcaster:
     async def _start_relay(self) -> None:
         if self._radio is None:
             return
-
+        radio = self._radio
+        self._rx_start_attempt += 1
+        attempt = self._rx_start_attempt
+        source: object | None = None
         try:
             route = self._resolve_rx_route()
             if route is None:
                 return
+            route_kind, source = route
             await self._apply_phones_mix_off()
             self._refresh_codec_state(first=True)
-            route_kind, source = route
             if route_kind == "session":
                 # Session-routed RX demand (MOR-608, ADR §3.2 option a):
                 # subscribing through the radio-owned AudioSession registers
@@ -1084,17 +1288,34 @@ class AudioBroadcaster:
                 # the MOR-581 health watchdog covers browser-only listeners
                 # and reconnects go through ``AudioSession.reestablish()``.
                 # Mirrors the MOR-580 TX-lease pattern in AudioHandler.
-                self._subscription = await source.subscribe_rx("web-audio")
+                subscription = await route[1].subscribe_rx("web-audio")
             else:
                 # Legacy bus path for radios without a session (bare test
                 # doubles, not-yet-migrated backends).
                 subscription = cast(_AudioBus, source).subscribe(name="web-audio")
                 await subscription.start()
-                self._subscription = subscription
+            if not self._rx_start_current(attempt, radio, source):
+                if isinstance(subscription, RxSubscription):
+                    await subscription.release()
+                else:
+                    subscription.stop()
+                return
+            self._subscription = subscription
+            self._rx_start_failure = None
             self._relay_task = asyncio.create_task(self._relay_loop())
         except Exception as exc:
+            if source is not None and not self._rx_start_current(
+                attempt, radio, source
+            ):
+                return
             logger.exception("audio-broadcaster: failed to start relay")
             self._subscription = None
+            if source is not None:
+                self._rx_start_failure = (
+                    radio,
+                    source,
+                    audio_start_failure_reason(exc),
+                )
             await self._notify_relay_start_failure(exc)
 
     async def _notify_relay_start_failure(self, exc: Exception) -> None:
@@ -1271,6 +1492,7 @@ class AudioBroadcaster:
             subscription.stop()
 
     async def _stop_relay(self) -> None:
+        self._rx_start_attempt += 1
         if self._relay_task is not None:
             self._relay_task.cancel()
             try:
@@ -1311,11 +1533,26 @@ class AudioHandler:
         radio: "Radio | None",
         broadcaster: "AudioBroadcaster | None" = None,
         tx_gate: Callable[[], Awaitable[bool]] | None = None,
+        controller: ControllerAuthority | None = None,
+        controller_ticket: ControllerTicket | None = None,
+        controller_audio_source: object | None = None,
+        controller_audio_loss: Callable[[ControllerTicket, object], Awaitable[None]]
+        | None = None,
+        controller_track_stop: Callable[[Awaitable[None]], Awaitable[None]]
+        | None = None,
+        managed_tx_authority: ManagedTxAuthority | None = None,
     ) -> None:
         self._ws = ws
         self._radio = radio
         self._broadcaster = broadcaster
         self._tx_gate = tx_gate
+        self._controller = controller
+        self._controller_ticket = controller_ticket
+        self._controller_audio_source = controller_audio_source
+        self._controller_audio_loss = controller_audio_loss
+        self._controller_track_stop = controller_track_stop
+        self._managed_tx_authority = managed_tx_authority
+        self._controller_claimed = False
         self._rx_active = False
         self._tx_active = False
         # TX lease on the radio-owned AudioSession singleton (MOR-580,
@@ -1331,7 +1568,8 @@ class AudioHandler:
         # Latest client-reported link-quality snapshot from the periodic
         # ``audio_stats`` uplink (MOR-585) — mirrored per client on the
         # broadcaster while RX is subscribed.
-        self._link_quality: dict[str, int | float] = {}
+        self._link_quality: dict[str, Any] = {}
+        self._last_logged_capture_category: str | None = None
         self._frame_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._done = asyncio.Event()
         # Opus decoder for TX when radio uses PCM codec.
@@ -1354,6 +1592,7 @@ class AudioHandler:
             done, pending = await asyncio.wait(
                 {reader, sender}, return_when=asyncio.FIRST_COMPLETED
             )
+            await self._fence_controller_audio()
             # Log which task exited first
             for task in done:
                 exc = task.exception() if not task.cancelled() else None
@@ -1392,6 +1631,7 @@ class AudioHandler:
             sender.cancel()
         finally:
             self._done.set()
+            await self._fence_controller_audio()
             for task in (reader, sender):
                 if not task.done():
                     task.cancel()
@@ -1431,7 +1671,7 @@ class AudioHandler:
         logger.log(
             logging.DEBUG if msg_type == "audio_stats" else logging.INFO,
             "audio: control msg: %s",
-            msg,
+            _bounded_audio_stats(msg) if msg_type == "audio_stats" else msg,
         )
         direction = msg.get("direction", "rx")
 
@@ -1442,6 +1682,17 @@ class AudioHandler:
                     identity=_parse_client_identity(msg),
                 )
             elif direction == "tx":
+                if self._controller is not None and self._controller_ticket is not None:
+                    try:
+                        self._controller.validate(self._controller_ticket)
+                        if self._controller_ticket.remote:
+                            self._controller.claim_audio(
+                                self._controller_ticket, self._controller_audio_source
+                            )
+                            self._controller_claimed = True
+                    except ControllerError as exc:
+                        await self._send_error(exc.code)
+                        return
                 was_active = self._tx_active or self._tx_lease is not None
                 previous_facts = self._tx_facts
                 try:
@@ -1513,22 +1764,21 @@ class AudioHandler:
     def _handle_audio_stats(self, msg: dict[str, Any]) -> None:
         """Record the client's periodic link-quality report (MOR-585).
 
-        Stats collection only (ADR §3.6 step 18): the browser player
-        reports playback ``underruns``, ``buffer_depth_ms`` and
-        ``dropped_frames`` every ~1.5 s; only numeric fields are kept
-        (latest-wins), and unknown numeric fields pass through so future
-        carriers (WebRTC RTCP, step 19) can reuse the envelope.  Clients
-        that never send ``audio_stats`` are entirely unaffected.
+        Legacy link metrics and the additive playback object are filtered
+        by ``_bounded_audio_stats`` before retention.
         """
-        stats: dict[str, int | float] = {}
-        for key, value in msg.items():
-            if key == "type" or isinstance(value, bool):
-                continue
-            if isinstance(value, (int, float)):
-                stats[key] = value
+        stats = _bounded_audio_stats(msg)
         self._link_quality = stats
         if self._rx_active and self._broadcaster is not None:
             self._broadcaster.record_client_stats(self._frame_queue, stats)
+            category = stats.get("microphoneCaptureError")
+            if category is not None and category != self._last_logged_capture_category:
+                # This existing diagnostic log is collected in Support bundles.
+                # Never log the inbound message, labels, identifiers or raw error.
+                logger.info(
+                    "browser microphone capture rejected: category=%s", category
+                )
+                self._last_logged_capture_category = category
 
     async def _abort_tx_start(
         self, previous_facts: BrowserTxAudioFacts | None, was_active: bool
@@ -1536,6 +1786,30 @@ class AudioHandler:
         self._tx_facts = previous_facts if was_active else None
         if was_active:
             await self._stop_tx(reason="failed TX audio restart", force=True)
+        elif self._controller_claimed:
+            await self._fence_controller_audio()
+            self._release_controller_audio()
+
+    async def _fence_controller_audio(self) -> None:
+        if (
+            self._controller_claimed
+            and self._controller_audio_loss is not None
+            and self._controller_ticket is not None
+        ):
+            await self._controller_audio_loss(
+                self._controller_ticket, self._controller_audio_source
+            )
+
+    def _release_controller_audio(self) -> None:
+        if (
+            self._controller is not None
+            and self._controller_ticket is not None
+            and self._controller_claimed
+        ):
+            self._controller.release_audio(
+                self._controller_ticket, self._controller_audio_source
+            )
+            self._controller_claimed = False
 
     async def _stop_tx(
         self,
@@ -1547,8 +1821,10 @@ class AudioHandler:
     ) -> None:
         """Release this handler's active TX ownership, optionally bounded."""
         async with self._tx_stop_lock:
+            await self._fence_controller_audio()
             if not self._tx_active and self._tx_lease is None:
                 if not force or self._tx_facts is None:
+                    self._release_controller_audio()
                     return
             was_active = self._tx_active
             self._tx_active = False
@@ -1589,6 +1865,21 @@ class AudioHandler:
                         stop_tx = stop_tx_method()
                     else:
                         stop_tx = self._legacy_tx_lifecycle("stop")
+                if self._controller_track_stop is not None:
+                    owned_stop = asyncio.ensure_future(
+                        self._controller_track_stop(stop_tx)
+                    )
+
+                    def settled(done: asyncio.Future[None]) -> None:
+                        if (
+                            not done.cancelled()
+                            and done.exception() is None
+                            and (done.result() is None or done.result() is True)
+                        ):
+                            self._release_controller_audio()
+
+                    owned_stop.add_done_callback(settled)
+                    stop_tx = asyncio.shield(owned_stop)
                 if timeout is None:
                     await stop_tx
                 else:
@@ -1611,6 +1902,8 @@ class AudioHandler:
                 if not suppress_errors:
                     raise
             else:
+                if self._controller_track_stop is None:
+                    self._release_controller_audio()
                 logger.info("audio: TX stopped (%s)", reason)
 
     async def _await_bounded_tx_stop(
@@ -1674,6 +1967,12 @@ class AudioHandler:
         capability — e.g. IC-9700 (dual-RX but different menu layout)
         and FTX-1 (Yaesu CAT, no ``send_civ`` at all).  Issue #799.
         """
+        if self._controller is not None and self._controller_ticket is not None:
+            try:
+                self._controller.validate(self._controller_ticket)
+            except ControllerError as exc:
+                await self._send_error(exc.code)
+                return
         focus = msg.get("focus", "")
         split_stereo = bool(msg.get("split_stereo", False))
 
@@ -1837,13 +2136,69 @@ class AudioHandler:
         else:
             await self._radio.stop_audio_tx_opus()  # type: ignore[union-attr]
 
-    async def _push_tx(self, data: bytes, *, legacy_method: str) -> None:
+    def _remote_tx_currency(self) -> tuple[int, int, str] | None:
+        authority = self._managed_tx_authority
+        controller = self._controller
+        ticket = self._controller_ticket
+        source = self._controller_audio_source
+        if (
+            authority is None
+            or controller is None
+            or ticket is None
+            or not ticket.remote
+            or source is None
+        ):
+            return None
+        try:
+            controller.validate(ticket)
+            projection = authority.snapshot_nowait()
+            generation = projection.provider_generation
+            intent = projection.state.intent
+            if (
+                generation is None
+                or intent.kind is not ManagedTxIntentKind.PTT
+                or not intent.owner_token
+                or not controller.audio_matches(ticket, source, intent.owner_token)
+            ):
+                return None
+            return generation, projection.state.effect_epoch, intent.owner_token
+        except Exception:
+            return None
+
+    async def _push_tx(
+        self,
+        data: bytes,
+        *,
+        legacy_method: str,
+        tx_currency: tuple[int, int, str] | None = None,
+    ) -> None:
         """Push TX bytes via the held session lease (MOR-580); without one,
         via neutral ``push_tx``, falling back to the named legacy per-codec
         push method (MOR-544)."""
+        ticket = self._controller_ticket
+        remote = ticket is not None and ticket.remote
+
+        async def submission_guard() -> bool:
+            if self._tx_gate is None:
+                return not remote
+            if await self._tx_gate() is not True:
+                return False
+            return not remote or (
+                tx_currency is not None and self._remote_tx_currency() == tx_currency
+            )
+
+        if self._tx_gate is not None or remote:
+            try:
+                if await submission_guard() is not True:
+                    return
+            except Exception:
+                return
         lease = self._tx_lease
         if lease is not None and not lease.released:
-            await lease.push(data)
+            if self._tx_gate is None and not remote:
+                await lease.push(data)
+            else:
+                await lease.push(data, submission_guard=submission_guard)
             return
         facts = self._tx_facts
         if facts is not None and facts.lifecycle is not None:
@@ -1926,6 +2281,12 @@ class AudioHandler:
                 "audio: TX frame ignored (tx_active=False), size=%d", len(payload)
             )
             return
+        tx_currency = None
+        ticket = self._controller_ticket
+        if ticket is not None and ticket.remote:
+            tx_currency = self._remote_tx_currency()
+            if tx_currency is None:
+                return
         # MOR-2870: the web path gets the bridge's fail-closed rule — a
         # browser frame reaches the rig only while RigPlane holds the key
         # (managed intent keyed or a fresh ObservedPtt.ON). ``_tx_active``
@@ -1981,7 +2342,11 @@ class AudioHandler:
                     browser_codec == AUDIO_CODEC_PCM16
                     and tx_codec == AudioCodec.PCM_1CH_16BIT
                 ):
-                    await self._push_tx(audio_data, legacy_method="push_audio_tx_pcm")
+                    await self._push_tx(
+                        audio_data,
+                        legacy_method="push_audio_tx_pcm",
+                        tx_currency=tx_currency,
+                    )
                     tx_data_desc = f"{len(audio_data)} bytes pcm"
                 elif (
                     browser_codec == AUDIO_CODEC_OPUS
@@ -2000,8 +2365,6 @@ class AudioHandler:
                     try:
                         # Decode Opus → PCM16
                         pcm_data = self._transcoder.opus_to_pcm(audio_data)
-                        await self._push_tx(pcm_data, legacy_method="push_audio_tx_pcm")
-                        tx_data_desc = f"{len(pcm_data)} bytes pcm"
                     except Exception as e:
                         self._warn_tx_throttled(
                             "dropped_transcode_failed",
@@ -2013,9 +2376,21 @@ class AudioHandler:
                             e,
                         )
                         return
+                    # A native playback refusal belongs to the outer push
+                    # error boundary, not the successfully completed decoder.
+                    await self._push_tx(
+                        pcm_data,
+                        legacy_method="push_audio_tx_pcm",
+                        tx_currency=tx_currency,
+                    )
+                    tx_data_desc = f"{len(pcm_data)} bytes pcm"
                 elif browser_codec == AUDIO_CODEC_OPUS:
                     # Radio uses Opus or PCM_1CH_8BIT/etc → send Opus as-is
-                    await self._push_tx(audio_data, legacy_method="push_audio_tx_opus")
+                    await self._push_tx(
+                        audio_data,
+                        legacy_method="push_audio_tx_opus",
+                        tx_currency=tx_currency,
+                    )
                     tx_data_desc = f"{len(audio_data)} bytes opus"
                 else:
                     self._warn_tx_throttled(

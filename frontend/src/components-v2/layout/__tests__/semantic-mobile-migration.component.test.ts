@@ -135,6 +135,11 @@ vi.mock('$lib/stores/connection.svelte', () => ({
   getRadioPowerOn: vi.fn(() => null),
   // MOR-1279 slice 3B: the RX-audio snapshot reports audio-WS link health.
   isAudioConnected: vi.fn(() => false),
+  // The radio-link line's inputs; the defaults describe a healthy link.
+  getRadioLinkState: vi.fn(() => 'connected'),
+  getRigConnected: vi.fn(() => true),
+  getRadioReady: vi.fn(() => true),
+  getRadioHealth: vi.fn(() => null),
 }));
 vi.mock('$lib/stores/audio.svelte', () => ({
   getAudioState: vi.fn(() => ({ volume: 50, muted: false, rxEnabled: false, txEnabled: false, micEnabled: false, bridgeRunning: false })),

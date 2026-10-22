@@ -5,16 +5,23 @@ high-latency or constrained links (VPN, cloud VMs) can adjust audio
 and buffer behaviour without modifying code.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 __all__ = [
+    "SdrEnvOverrides",
     "get_audio_sample_rate",
     "get_audio_broadcaster_high_watermark",
     "get_audio_rx_jitter_floor_ms",
     "get_audio_rx_jitter_ceiling_ms",
     "get_managed_tx_enabled",
+    "get_sdr_env_overrides",
 ]
 
 logger = logging.getLogger(__name__)
@@ -231,3 +238,117 @@ def get_managed_tx_enabled() -> bool:
     logger.warning(msg)
     print(f"Warning: {msg}", file=sys.stderr)
     return True
+
+
+# ---------------------------------------------------------------------------
+# SDR panadapter env overrides (MOR-3201)
+# ---------------------------------------------------------------------------
+
+_SCOPE_SOURCE_VAR = "RIGPLANE_SCOPE_SOURCE"
+_SDR_DEVICE_VAR = "RIGPLANE_SDR_DEVICE"
+_SDR_SAMPLE_RATE_VAR = "RIGPLANE_SDR_SAMPLE_RATE"
+_SDR_GAIN_VAR = "RIGPLANE_SDR_GAIN"
+_SDR_PPM_VAR = "RIGPLANE_SDR_PPM"
+_SDR_OFFSET_VAR = "RIGPLANE_SDR_OFFSET_HZ"
+_SDR_SPAN_VAR = "RIGPLANE_SDR_SPAN_HZ"
+_SDR_INVERT_VAR = "RIGPLANE_SDR_INVERT"
+_SDR_SETTINGS_VAR = "RIGPLANE_SDR_SETTINGS"
+
+_SCOPE_SOURCES = frozenset({"auto", "hardware", "sdr", "audio_fft"})
+
+
+@dataclass(frozen=True)
+class SdrEnvOverrides:
+    """``RIGPLANE_SDR_*`` values set in the environment; ``None`` slot =
+    variable unset. The CLI merges these under its flags (a given flag
+    wins) through ``sdr.runtime.resolve_sdr_config``."""
+
+    scope_source: str | None = None
+    device_args: str | None = None
+    sample_rate_hz: int | None = None
+    gain: str | None = None
+    ppm: float | None = None
+    freq_offset_hz: int | None = None
+    span_hz: int | None = None
+    invert_spectrum: bool | None = None
+    settings: tuple[str, ...] | None = None
+
+
+def _sdr_error(var: str, raw: str, expected: str) -> ValueError:
+    return ValueError(f"{var}={raw!r} {expected}")
+
+
+def _read_optional_str(var: str) -> str | None:
+    """Read *var* as a non-empty string; unset or blank counts as unset."""
+    raw = os.environ.get(var)
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    return stripped or None
+
+
+def _read_sdr_number(var: str, convert: Callable[[str], Any], expected: str) -> Any:
+    raw = _read_optional_str(var)
+    if raw is None:
+        return None
+    try:
+        return convert(raw)
+    except ValueError:
+        raise _sdr_error(var, raw, expected) from None
+
+
+def get_sdr_env_overrides() -> SdrEnvOverrides:
+    """Read the ``RIGPLANE_SDR_*`` / ``RIGPLANE_SCOPE_SOURCE`` overrides;
+    a set-but-invalid value raises :class:`ValueError` naming the
+    variable (an SDR is an explicit opt-in, unlike the warn-and-fallback
+    audio knobs above). Cross-field rules stay in
+    ``sdr.runtime.resolve_sdr_config``."""
+    scope_source = _read_optional_str(_SCOPE_SOURCE_VAR)
+    if scope_source is not None and scope_source not in _SCOPE_SOURCES:
+        raise _sdr_error(
+            _SCOPE_SOURCE_VAR, scope_source, "must be auto/hardware/sdr/audio_fft"
+        )
+
+    gain = _read_optional_str(_SDR_GAIN_VAR)
+    if gain is not None and gain.strip().lower() != "auto":
+        try:
+            float(gain)
+        except ValueError:
+            raise _sdr_error(
+                _SDR_GAIN_VAR, gain, "is neither a number nor 'auto'"
+            ) from None
+
+    invert: bool | None = None
+    invert_raw = _read_optional_str(_SDR_INVERT_VAR)
+    if invert_raw is not None:
+        lowered = invert_raw.lower()
+        if lowered in _TRUTHY:
+            invert = True
+        elif lowered in _FALSY:
+            invert = False
+        else:
+            raise _sdr_error(_SDR_INVERT_VAR, invert_raw, "is not a boolean")
+
+    settings: tuple[str, ...] | None = None
+    settings_raw = _read_optional_str(_SDR_SETTINGS_VAR)
+    if settings_raw is not None:
+        items = tuple(item.strip() for item in settings_raw.split(",") if item.strip())
+        for item in items:
+            key, sep, _ = item.partition("=")
+            if not sep or not key:
+                raise _sdr_error(_SDR_SETTINGS_VAR, item, "items must be KEY=VAL pairs")
+        settings = items
+
+    return SdrEnvOverrides(
+        scope_source=scope_source,
+        device_args=_read_optional_str(_SDR_DEVICE_VAR),
+        sample_rate_hz=_read_sdr_number(
+            _SDR_SAMPLE_RATE_VAR, int, "is not a valid integer"
+        ),
+        gain=gain,
+        ppm=_read_sdr_number(_SDR_PPM_VAR, float, "is not a valid number"),
+        freq_offset_hz=_read_sdr_number(_SDR_OFFSET_VAR, int, "is not a valid integer"),
+        span_hz=_read_sdr_number(_SDR_SPAN_VAR, int, "is not a valid integer"),
+        invert_spectrum=invert,
+        settings=settings,
+    )

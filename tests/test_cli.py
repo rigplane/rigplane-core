@@ -6,7 +6,7 @@ import logging
 import signal
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import platformdirs
 import pytest
@@ -28,7 +28,9 @@ from rigplane.backends.config import (
     SerialBackendConfig,
     YaesuCatBackendConfig,
 )
+from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.runtime.managed_tx_authority import ManagedTxProjection, ShutdownResult
+from rigplane.runtime.managed_tx_composition import ManagedTxComposition
 from rigplane.runtime.managed_tx_state import (
     ActuationDiagnostic,
     ActuationOperation,
@@ -1337,11 +1339,12 @@ class TestWebRigctldDefault:
         started = []
 
         class FakeRigctldServer:
-            def __init__(self, _radio, cfg):
+            def __init__(self, _radio, cfg, *, allow_not_ready=False):
                 self.cfg = cfg
+                self.allow_not_ready = allow_not_ready
 
             async def start(self):
-                started.append(self.cfg.port)
+                started.append((self.cfg.port, self.allow_not_ready))
 
             async def stop(self):
                 pass
@@ -1364,7 +1367,9 @@ class TestWebRigctldDefault:
             rc = await _cmd_web(radio, args)
 
         assert rc == 0
-        assert started == [4532], "rigctld should start on default port 4532"
+        assert started == [(4532, True)], (
+            "rigctld should start on default port 4532 tolerating a not-ready radio"
+        )
         out = capsys.readouterr().out
         assert "rigctld:" in out
         assert "4532" in out
@@ -1383,6 +1388,8 @@ class TestWebRigctldDefault:
         composition.bind_state_store = AsyncMock()
         captured: dict[str, object] = {}
         web_stores: list[object] = []
+        attached: list[object] = []
+        rigctlds: list[object] = []
         command_queue = object()
 
         class FakeWebServer:
@@ -1392,6 +1399,9 @@ class TestWebRigctldDefault:
                 self.command_state_store = object()
                 web_stores.append(self.command_state_store)
 
+            def attach_rigctl_channel(self, open_channel):
+                attached.append(open_channel)
+
             async def serve_forever(self, *, on_started=None):
                 on_started()
                 raise asyncio.CancelledError
@@ -1399,6 +1409,10 @@ class TestWebRigctldDefault:
         class FakeRigctldServer:
             def __init__(self, _radio, _cfg, **kwargs):
                 captured.update(kwargs)
+                rigctlds.append(self)
+
+            def open_channel(self, _reader, _writer, _owner):
+                return None
 
             async def start(self):
                 pass
@@ -1424,10 +1438,13 @@ class TestWebRigctldDefault:
             )
 
         assert captured == {
+            "allow_not_ready": True,
             "managed_tx_authority": authority,
             "command_queue": command_queue,
             "command_service": command_service,
         }
+        # MOR-3536: the managed rigctld serves /api/v1/rigctl.
+        assert attached == [rigctlds[0].open_channel]
         composition.bind_state_store.assert_awaited_once_with(web_stores[0])
 
     @pytest.mark.asyncio
@@ -1447,7 +1464,7 @@ class TestWebRigctldDefault:
                 self.command_state_store = object()
 
         class LegacyOnlyRigctldServer:
-            def __init__(self, _radio, _cfg):
+            def __init__(self, _radio, _cfg, *, allow_not_ready=False):
                 pass
 
         args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
@@ -1478,7 +1495,7 @@ class TestWebRigctldDefault:
         captured = []
 
         class FakeRigctldServer:
-            def __init__(self, _radio, cfg):
+            def __init__(self, _radio, cfg, *, allow_not_ready=False):
                 self.cfg = cfg
                 captured.append(cfg)
 
@@ -1530,7 +1547,7 @@ class TestWebRigctldDefault:
         captured = []
 
         class FakeRigctldServer:
-            def __init__(self, _radio, cfg):
+            def __init__(self, _radio, cfg, *, allow_not_ready=False):
                 self.cfg = cfg
                 captured.append(cfg)
 
@@ -1593,7 +1610,7 @@ class TestWebRigctldDefault:
         captured = []
 
         class FakeRigctldServer:
-            def __init__(self, _radio, cfg):
+            def __init__(self, _radio, cfg, *, allow_not_ready=False):
                 self.cfg = cfg
                 captured.append(cfg)
 
@@ -1654,7 +1671,7 @@ class TestWebRigctldDefault:
         captured = []
 
         class FakeRigctldServer:
-            def __init__(self, _radio, cfg):
+            def __init__(self, _radio, cfg, *, allow_not_ready=False):
                 captured.append(cfg)
 
             async def start(self):
@@ -1754,7 +1771,7 @@ class TestWebRigctldDefault:
         radio.model = "IC-7610"
 
         class BusyRigctldServer:
-            def __init__(self, _radio, cfg):
+            def __init__(self, _radio, cfg, *, allow_not_ready=False):
                 self.cfg = cfg
 
             async def start(self):
@@ -1805,7 +1822,7 @@ class TestWebRigctldDefault:
         radio.model = "IC-7610"
 
         class PrivilegedRigctldServer:
-            def __init__(self, _radio, cfg):
+            def __init__(self, _radio, cfg, *, allow_not_ready=False):
                 self.cfg = cfg
 
             async def start(self):
@@ -1853,7 +1870,7 @@ class TestWebRigctldDefault:
         radio.model = "IC-7610"
 
         class ExhaustedRigctldServer:
-            def __init__(self, _radio, cfg):
+            def __init__(self, _radio, cfg, *, allow_not_ready=False):
                 self.cfg = cfg
 
             async def start(self):
@@ -2162,6 +2179,515 @@ class TestCheckPortsAvailable:
         assert str(occupied_rigctld_port) in captured.err
         assert "lsof" in captured.err.lower()
 
+    def test_second_resident_start_refuses_before_radio_open(self, capsys, tmp_path):
+        """MOR-3391: a second resident start for the same radio refuses with 1.
+
+        The holder is a separate process, as in production. The guard is
+        taken before the radio is constructed, the port preflight probes,
+        or any listener binds — the fake radio is never created and the
+        refusal message names the holding process's pid. The conftest
+        fixture redirects the guard's default lock directory at this test's
+        tmp dir, so the child and `_run` below share one lock file.
+        """
+        import asyncio
+        import os
+        import subprocess
+        import sys
+
+        from rigplane.cli import _run
+        from rigplane.cli._instance_guard import radio_lock_identity
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
+        identity = radio_lock_identity(
+            LanBackendConfig(host="1.2.3.4", port=args.control_port)
+        )
+        child_script = (
+            "import sys, time\n"
+            "from rigplane.cli._instance_guard import acquire_resident_lock\n"
+            "acquire_resident_lock(sys.argv[1], cache_dir=sys.argv[2])\n"
+            "print('READY', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        src_dir = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(
+            os.environ,
+            PYTHONPATH=src_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        )
+        holder = subprocess.Popen(
+            [sys.executable, "-c", child_script, identity, str(tmp_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        assert holder.stdout is not None
+        ready = holder.stdout.readline()
+        assert ready.strip() == "READY", (
+            f"holder child failed: {holder.stderr.read() if holder.stderr else ''}"
+        )
+        try:
+            with (
+                patch(
+                    "rigplane.cli.create_radio",
+                    side_effect=AssertionError("radio must not be created"),
+                ),
+                patch(
+                    "rigplane.cli.check_ports_available",
+                    side_effect=AssertionError("no listener probe may bind"),
+                ),
+            ):
+                try:
+                    result = asyncio.run(asyncio.wait_for(_run(args), timeout=10.0))
+                except AssertionError:
+                    pytest.fail("second resident start touched the radio or ports")
+        finally:
+            holder.kill()
+            holder.wait(timeout=30)
+
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "already serving this radio" in captured.err
+        assert str(holder.pid) in captured.err
+
+    def test_second_resident_start_refuses_before_busy_hold_starts(
+        self, capsys, tmp_path
+    ):
+        """MOR-3391 R4: a second resident start refuses before the busy-hold machinery starts.
+
+        The guard in `_run` returns 1 before the radio is constructed, so
+        the start-up busy-hold path (`_run_web_station_with_busy_hold`,
+        which spawns the background connect task and serves not-ready) is
+        never entered, `_cmd_web` never runs, and no listener binds. The
+        holder is a separate process, as in production; the conftest
+        fixture redirects the guard's default lock directory at this test's
+        tmp dir, so the child and `_run` below share one lock file.
+        """
+        import asyncio
+        import os
+        import subprocess
+        import sys
+
+        from rigplane.cli import _run
+        from rigplane.cli._instance_guard import radio_lock_identity
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
+        identity = radio_lock_identity(
+            LanBackendConfig(host="1.2.3.4", port=args.control_port)
+        )
+        child_script = (
+            "import sys, time\n"
+            "from rigplane.cli._instance_guard import acquire_resident_lock\n"
+            "acquire_resident_lock(sys.argv[1], cache_dir=sys.argv[2])\n"
+            "print('READY', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        src_dir = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(
+            os.environ,
+            PYTHONPATH=src_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        )
+        holder = subprocess.Popen(
+            [sys.executable, "-c", child_script, identity, str(tmp_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        assert holder.stdout is not None
+        ready = holder.stdout.readline()
+        assert ready.strip() == "READY", (
+            f"holder child failed: {holder.stderr.read() if holder.stderr else ''}"
+        )
+        try:
+            with (
+                patch(
+                    "rigplane.cli.create_radio",
+                    side_effect=AssertionError("radio must not be created"),
+                ),
+                patch(
+                    "rigplane.cli.check_ports_available",
+                    side_effect=AssertionError("no listener probe may bind"),
+                ),
+                patch(
+                    "rigplane.cli._run_web_station_with_busy_hold",
+                    side_effect=AssertionError("busy-hold machinery must not start"),
+                ),
+                patch(
+                    "rigplane.cli._cmd_web",
+                    side_effect=AssertionError("_cmd_web must not run"),
+                ),
+            ):
+                try:
+                    result = asyncio.run(asyncio.wait_for(_run(args), timeout=10.0))
+                except AssertionError as exc:
+                    pytest.fail(f"second resident start went past the guard: {exc}")
+        finally:
+            holder.kill()
+            holder.wait(timeout=30)
+
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "already serving this radio" in captured.err
+        assert str(holder.pid) in captured.err
+
+    @pytest.mark.parametrize(
+        ("argv", "expect"),
+        [
+            pytest.param(["--host", "1.2.3.4", "web"], "resident-refused", id="web"),
+            pytest.param(
+                ["--host", "1.2.3.4", "station"],
+                "resident-refused",
+                id="station",
+            ),
+            pytest.param(
+                ["--host", "1.2.3.4", "serve"], "resident-refused", id="serve"
+            ),
+            pytest.param(
+                ["--host", "1.2.3.4", "status"],
+                "one-shot-refused",
+                id="one-shot-status",
+            ),
+            pytest.param(
+                ["--backend", "rigctld", "--host", "127.0.0.1", "web"],
+                "rigctld-passes",
+                id="web-rigctld",
+            ),
+        ],
+    )
+    def test_run_guard_sits_behind_command_and_backend_filters(
+        self, argv, expect, capsys, tmp_path
+    ):
+        """MOR-3431: `_run` guards every command on guarded backends.
+
+        A child process holds the LAN lock for `--host 1.2.3.4` in the
+        per-test lock dir (conftest isolation active). Resident starts for
+        that radio refuse with 1 and the byte-identical resident message
+        before the radio is constructed; the one-shot `status` for the same
+        radio refuses with 1 and the one-shot message, also before
+        `create_radio`; `web` on the rigctld backend passes the guard and
+        reaches `create_radio` without creating a lock file. Mutations:
+        (m1) restoring the `args.command in RESIDENT_COMMANDS` filter on
+        the lock call site makes the one-shot row reach `create_radio`
+        instead of refusing; (m2, reviewer's) closing the lock right after
+        `create_radio(config)` for non-resident commands keeps the
+        `create_radio`-time probe refused but lets the in-command probe in
+        (pinned by `test_one_shot_holds_lock_for_its_run`); (m3) printing
+        the resident message for one-shot commands fails the one-shot
+        exact-message assertion below.
+        """
+        import asyncio
+        import os
+        import subprocess
+        import sys
+
+        from rigplane.cli import _run
+        from rigplane.cli._instance_guard import radio_lock_identity
+
+        lan_args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
+        identity = radio_lock_identity(
+            LanBackendConfig(host="1.2.3.4", port=lan_args.control_port)
+        )
+        child_script = (
+            "import sys, time\n"
+            "from rigplane.cli._instance_guard import acquire_resident_lock\n"
+            "acquire_resident_lock(sys.argv[1], cache_dir=sys.argv[2])\n"
+            "print('READY', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        src_dir = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(
+            os.environ,
+            PYTHONPATH=src_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        )
+        holder = subprocess.Popen(
+            [sys.executable, "-c", child_script, identity, str(tmp_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        assert holder.stdout is not None
+        ready = holder.stdout.readline()
+        assert ready.strip() == "READY", (
+            f"holder child failed: {holder.stderr.read() if holder.stderr else ''}"
+        )
+        try:
+            args = _build_parser().parse_args(argv)
+            if expect in ("resident-refused", "one-shot-refused"):
+                with patch("rigplane.cli.create_radio") as mock_create:
+                    result = asyncio.run(asyncio.wait_for(_run(args), timeout=10.0))
+                assert result == 1
+                mock_create.assert_not_called()
+                captured = capsys.readouterr()
+                if expect == "resident-refused":
+                    assert captured.err.strip() == (
+                        f"Error: another rigplane process (pid {holder.pid}) "
+                        "is already serving this radio on this computer; "
+                        "stop it first"
+                    )
+                else:
+                    assert captured.err.strip() == (
+                        f"Error: another rigplane process (pid {holder.pid}) "
+                        "is already using this radio on this computer; a "
+                        "second login from this computer makes the radio drop "
+                        "that process's session. Send commands to the running "
+                        "server instead (its HTTP API or rigctld; for a "
+                        "readiness check, GET /readyz), or stop it first."
+                    )
+            else:
+                locks_dir = tmp_path / "locks"
+                before = set(locks_dir.glob("*.lock")) if locks_dir.is_dir() else set()
+                with patch(
+                    "rigplane.cli.create_radio",
+                    side_effect=RuntimeError("guard-passed-marker"),
+                ):
+                    with pytest.raises(RuntimeError, match="guard-passed-marker"):
+                        asyncio.run(asyncio.wait_for(_run(args), timeout=10.0))
+                if expect == "rigctld-passes":
+                    after = (
+                        set(locks_dir.glob("*.lock")) if locks_dir.is_dir() else set()
+                    )
+                    assert after == before
+        finally:
+            holder.kill()
+            holder.wait(timeout=30)
+
+    def test_one_shot_holds_lock_for_its_run(self, capsys, tmp_path):
+        """MOR-3431: a one-shot command with no holder takes the lock for its run.
+
+        The lock is probed twice from child processes calling
+        `acquire_resident_lock` on the same identity: once from inside the
+        patched `create_radio`, and once from inside the patched command
+        step (`_cmd_status`) via a hand-written fake radio usable as
+        `async with` on the status path. Both probes must print REFUSED —
+        the lock is held for the life of the process, exactly as for
+        resident commands, so a resident start for the same radio during
+        the run refuses too. Reuses the subprocess holder pattern above,
+        inverted: here the child probes while the test process holds.
+        Mutation (m2, reviewer's): closing the lock right after
+        `create_radio(config)` for non-resident commands keeps the first
+        probe REFUSED but lets the in-command probe acquire it, printing
+        ACQUIRED instead of REFUSED.
+        """
+        import asyncio
+        import os
+        import subprocess
+        import sys
+
+        from rigplane.cli import _run
+        from rigplane.cli._instance_guard import radio_lock_identity
+
+        class _OneShotStatusRadio:
+            """Minimal hand-written fake radio for the status path."""
+
+            capabilities: set[str] = set()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get_freq(self) -> int:
+                return 14_074_000
+
+            async def get_mode(self) -> tuple[str, None]:
+                return ("USB", None)
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "status"])
+        identity = radio_lock_identity(
+            LanBackendConfig(host="1.2.3.4", port=args.control_port)
+        )
+        src_dir = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(
+            os.environ,
+            PYTHONPATH=src_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        )
+        probe_script = (
+            "import sys\n"
+            "from rigplane.cli._instance_guard import (\n"
+            "    ResidentAlreadyRunningError,\n"
+            "    acquire_resident_lock,\n"
+            ")\n"
+            "try:\n"
+            "    acquire_resident_lock(sys.argv[1], cache_dir=sys.argv[2])\n"
+            "except ResidentAlreadyRunningError:\n"
+            "    print('REFUSED', flush=True)\n"
+            "else:\n"
+            "    print('ACQUIRED', flush=True)\n"
+        )
+
+        def _run_probe(where: str) -> None:
+            probe = subprocess.Popen(
+                [sys.executable, "-c", probe_script, identity, str(tmp_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            assert probe.stdout is not None
+            verdict = probe.stdout.readline().strip()
+            probe.wait(timeout=30)
+            assert verdict == "REFUSED", (
+                f"rival probe {where} acquired the lock during a one-shot run: "
+                f"{probe.stderr.read() if probe.stderr else ''}"
+            )
+
+        create_verdicts: list[str] = []
+        command_verdicts: list[str] = []
+
+        def _create_while_probed(config):
+            _run_probe("inside create_radio")
+            create_verdicts.append("REFUSED")
+            return _OneShotStatusRadio()
+
+        async def _cmd_status_while_probed(radio, cmd_args):
+            _run_probe("inside the command step")
+            command_verdicts.append("REFUSED")
+            return 0
+
+        with (
+            patch("rigplane.cli.create_radio", side_effect=_create_while_probed),
+            patch("rigplane.cli._cmd_status", side_effect=_cmd_status_while_probed),
+        ):
+            result = asyncio.run(asyncio.wait_for(_run(args), timeout=30.0))
+        assert result == 0
+        assert create_verdicts == ["REFUSED"]
+        assert command_verdicts == ["REFUSED"]
+
+    def test_one_shot_serial_refuses_while_holder_serves_port(self, capsys, tmp_path):
+        """MOR-3431: a one-shot command refuses while another process holds the serial lock.
+
+        The child holds the serial identity for `--serial-port <tmp path>`
+        in the per-test lock dir; one-shot `status` for that port refuses
+        with 1 and the serial one-shot message before `create_radio` — the
+        serial reason (the port cannot be shared between two processes),
+        never the LAN login reason. Serial is guarded by reasoning — two
+        processes interleaving CI-V on one port would corrupt each other's
+        exchanges — not by bench evidence.
+        """
+        import asyncio
+        import os
+        import subprocess
+        import sys
+
+        from rigplane.cli import _run
+        from rigplane.cli._instance_guard import radio_lock_identity
+
+        device = tmp_path / "tty-fake"
+        device.write_bytes(b"")
+        args = _build_parser().parse_args(["--serial-port", str(device), "status"])
+        identity = radio_lock_identity(SerialBackendConfig(device=str(device)))
+        child_script = (
+            "import sys, time\n"
+            "from rigplane.cli._instance_guard import acquire_resident_lock\n"
+            "acquire_resident_lock(sys.argv[1], cache_dir=sys.argv[2])\n"
+            "print('READY', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        src_dir = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(
+            os.environ,
+            PYTHONPATH=src_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        )
+        holder = subprocess.Popen(
+            [sys.executable, "-c", child_script, identity, str(tmp_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        assert holder.stdout is not None
+        ready = holder.stdout.readline()
+        assert ready.strip() == "READY", (
+            f"holder child failed: {holder.stderr.read() if holder.stderr else ''}"
+        )
+        try:
+            with patch("rigplane.cli.create_radio") as mock_create:
+                result = asyncio.run(asyncio.wait_for(_run(args), timeout=10.0))
+            assert result == 1
+            mock_create.assert_not_called()
+            captured = capsys.readouterr()
+            assert captured.err.strip() == (
+                f"Error: another rigplane process (pid {holder.pid}) "
+                "is already using this radio on this computer; the "
+                "radio's serial port cannot be shared safely between two "
+                "processes. Send commands to the running "
+                "server instead (its HTTP API or rigctld; for a "
+                "readiness check, GET /readyz), or stop it first."
+            )
+            assert "login" not in captured.err
+        finally:
+            holder.kill()
+            holder.wait(timeout=30)
+
+    def test_default_location_holder_does_not_block_isolated_run(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """MOR-3391 R2/B1, R3: a default-location holder does not refuse this run.
+
+        The conftest fixture redirects the guard's default lock directory at
+        a per-test tmp dir, so a foreign holder in the default location must
+        not refuse this run: `_run` proceeds past the guard to radio
+        construction (probed here by a `create_radio` that raises). The
+        holder takes the lock through the default code path (no `cache_dir`),
+        with the default-directory seam pointed at a second tmp dir — so no
+        test touches the real user cache.
+        """
+        import asyncio
+        import os
+        import subprocess
+        import sys
+
+        from rigplane.cli import _run
+        from rigplane.cli import _instance_guard as _guard
+        from rigplane.cli._instance_guard import radio_lock_identity
+
+        fake_default = tmp_path / "fake-default-cache"
+        monkeypatch.setattr(_guard, "_default_lock_dir", lambda: fake_default)
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
+        identity = radio_lock_identity(
+            LanBackendConfig(host="1.2.3.4", port=args.control_port)
+        )
+        child_script = (
+            "import sys, time\n"
+            "from pathlib import Path\n"
+            "from rigplane.cli import _instance_guard as g\n"
+            "g._default_lock_dir = lambda: Path(sys.argv[2])\n"
+            "g.acquire_resident_lock(sys.argv[1])\n"
+            "print('READY', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        src_dir = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(
+            os.environ,
+            PYTHONPATH=src_dir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        )
+        holder = subprocess.Popen(
+            [sys.executable, "-c", child_script, identity, str(fake_default)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        assert holder.stdout is not None
+        ready = holder.stdout.readline()
+        assert ready.strip() == "READY", (
+            f"holder child failed: {holder.stderr.read() if holder.stderr else ''}"
+        )
+        # The isolated run under test keeps the conftest redirect.
+        monkeypatch.setattr(_guard, "_default_lock_dir", lambda: tmp_path)
+        try:
+            with patch(
+                "rigplane.cli.create_radio",
+                side_effect=RuntimeError("guard-passed"),
+            ):
+                with pytest.raises(RuntimeError, match="guard-passed"):
+                    asyncio.run(asyncio.wait_for(_run(args), timeout=10.0))
+        finally:
+            holder.kill()
+            holder.wait(timeout=30)
+
 
 class TestProductionManagedTxComposition:
     class _Radio:
@@ -2296,9 +2822,7 @@ class TestProductionManagedTxComposition:
         radio = self._Radio()
         radio.__aenter__ = AsyncMock(side_effect=RuntimeError("connect failed"))  # type: ignore[method-assign]
         radio.__aexit__ = AsyncMock(return_value=False)  # type: ignore[method-assign]
-        candidate = MagicMock()
-        candidate.transport_ready = AsyncMock()
-        candidate.shutdown = AsyncMock()
+        candidate = create_autospec(ManagedTxComposition, instance=True)
         with (
             patch("rigplane.cli.create_radio", return_value=radio),
             patch("rigplane.cli.check_ports_available"),
@@ -2308,6 +2832,613 @@ class TestProductionManagedTxComposition:
 
         candidate.shutdown.assert_awaited_once()
         radio.__aexit__.assert_not_awaited()
+
+
+class _BusyHoldRadio:
+    """A first connect that parks in the start-up busy hold until granted."""
+
+    backend_id = "rigplane"
+    model = "FAKE-BUSY-CLI"
+    capabilities: set[str] = set()
+
+    def __init__(self) -> None:
+        self.connected = False
+        self.control_connected = False
+        self.radio_ready = False
+        # Production ``CoreRadio.connect`` reports CHECKING before the
+        # lifecycle's first attempt, so a busy hold always reads CHECKING
+        # here until the grant lands.
+        self.connection_identity: Any = RadioIdentity(
+            status=RadioIdentityStatus.CHECKING,
+            expected_model="FAKE-BUSY-CLI",
+        )
+        self.startup_busy_hold_event: Any = None
+        self._grant: Any = None
+        self.fail_with: BaseException | None = None
+        self.enter_calls = 0
+        self.enter_cancelled = False
+        self.exits: list[tuple[Any, ...]] = []
+        self.events: list[str] = []
+        self._managed_tx_composition = None
+
+    def install_managed_tx_composition(self, composition: Any) -> None:
+        self._managed_tx_composition = composition
+
+    async def actuate(self, _token: Any, _operation: Any, *, is_current: Any) -> Any:
+        from rigplane.runtime.managed_tx_state import ActuationResult
+
+        return ActuationResult.ACCEPTED if is_current() else ActuationResult.REJECTED
+
+    async def set_ptt(self, _on: bool) -> None:
+        raise AssertionError("raw PTT must be replaced before connect")
+
+    async def __aenter__(self) -> "_BusyHoldRadio":
+        import asyncio
+
+        self.enter_calls += 1
+        self.events.append("enter-start")
+        try:
+            await self._grant.wait()
+        except asyncio.CancelledError:
+            self.enter_cancelled = True
+            raise
+        self.startup_busy_hold_event.clear()
+        if self.fail_with is not None:
+            raise self.fail_with
+        self.connected = True
+        self.control_connected = True
+        self.radio_ready = True
+        self.connection_identity = RadioIdentity(
+            status=RadioIdentityStatus.VERIFIED,
+            expected_model="FAKE-BUSY-CLI",
+            answered_model="FAKE-BUSY-CLI",
+        )
+        self.events.append("enter-done")
+        return self
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        self.exits.append(exc)
+        self.events.append("radio-exit")
+        return False
+
+
+class _BusyHoldWebServer:
+    """Stand-in for WebServer: records serve/finish without binding."""
+
+    instances: list["_BusyHoldWebServer"] = []
+
+    def __init__(self, radio: Any, _config: Any) -> None:
+        self._radio = radio
+        self.events: list[str] = []
+        self._runtime_rigctld_addr: str | None = None
+        self._runtime_last_error: str | None = None
+        self._runtime_log_path: str | None = None
+        self.command_state_store = MagicMock(
+            provider_generation=3,
+            begin_provider_generation=MagicMock(return_value=4),
+        )
+        self.command_queue = MagicMock()
+        self.command_service = MagicMock()
+        self._production_managed_tx_port: Any = None
+        self.finish_calls = 0
+        self._serve_done: Any = None
+        type(self).instances.append(self)
+
+    async def start_audio_bridge(self, **_kwargs: Any) -> None:
+        from rigplane.audio.bridge import LoopbackNotFoundError
+
+        raise LoopbackNotFoundError("no loopback in the busy-hold rows")
+
+    def defer_audio_bridge_start(self, **_kwargs: Any) -> None:
+        self.events.append("bridge-deferred")
+
+    def attach_rigctl_channel(self, open_channel: Any) -> None:
+        self.rigctl_channel = open_channel
+
+    async def serve_forever(self, **kwargs: Any) -> None:
+        import asyncio
+
+        self.events.append("serve-start")
+        assert callable(kwargs.get("on_started"))
+        kwargs["on_started"]()
+        if self._serve_done is None:
+            self._serve_done = asyncio.Event()
+        try:
+            await self._serve_done.wait()
+        except asyncio.CancelledError:
+            self.events.append("serve-cancelled")
+            raise
+        self.events.append("serve-returned")
+
+    async def finish_startup_busy_hold(self) -> None:
+        self.finish_calls += 1
+        self.events.append("finish")
+
+
+def _busy_hold_composition() -> Any:
+    composition = create_autospec(ManagedTxComposition, instance=True)
+    composition.bind_state_store = AsyncMock()
+    composition.authority = MagicMock()
+    return composition
+
+
+class TestStartupBusyHoldOrdering:
+    """MOR-3391 part 2: web/station serves not-ready during a busy hold."""
+
+    @staticmethod
+    def _args(*extra: str) -> Any:
+        return _build_parser().parse_args(
+            ["--host", "1.2.3.4", "web", "--no-rigctld", *extra]
+        )
+
+    @staticmethod
+    def _patches(radio: _BusyHoldRadio, composition: Any) -> Any:
+        import asyncio
+
+        radio.startup_busy_hold_event = asyncio.Event()
+        radio._grant = asyncio.Event()
+        return (
+            patch("rigplane.cli.create_radio", return_value=radio),
+            patch("rigplane.cli.check_ports_available"),
+            patch("rigplane.cli.ManagedTxComposition", return_value=composition),
+            patch("rigplane.web.server.WebServer", _BusyHoldWebServer),
+        )
+
+    @staticmethod
+    async def _wait_for(predicate: Any, *, timeout: float = 2.0) -> None:
+        import asyncio
+
+        async def _poll() -> None:
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(_poll(), timeout=timeout)
+
+    @pytest.mark.asyncio
+    async def test_normal_first_connect_is_awaited_before_cmd_web(self) -> None:
+        """Without a busy hold the first connect still completes first."""
+
+        import asyncio
+
+        from rigplane.cli import _run
+
+        radio = _BusyHoldRadio()
+        composition = _busy_hold_composition()
+        _BusyHoldWebServer.instances.clear()
+        args = self._args()
+        p1, p2, p3, p4 = self._patches(radio, composition)
+        with p1, p2, p3, p4:
+            run_task = asyncio.ensure_future(_run(args))
+            await self._wait_for(lambda: radio.enter_calls == 1, timeout=2.0)
+            await asyncio.sleep(0.2)
+            assert _BusyHoldWebServer.instances == []
+            radio._grant.set()
+            await self._wait_for(
+                lambda: (
+                    bool(_BusyHoldWebServer.instances)
+                    and "serve-start" in _BusyHoldWebServer.instances[-1].events
+                ),
+                timeout=5.0,
+            )
+            server = _BusyHoldWebServer.instances[-1]
+            server._serve_done.set()
+            result = await asyncio.wait_for(run_task, timeout=10.0)
+
+        assert result == 0
+        assert radio.events == ["enter-start", "enter-done", "radio-exit"]
+        assert server.events[0] == "serve-start"
+        assert server.finish_calls == 0
+        composition.transport_ready.assert_awaited_once_with(radio)
+        assert len(radio.exits) == 1
+
+    @pytest.mark.asyncio
+    async def test_busy_first_connect_starts_cmd_web_before_the_grant(self) -> None:
+        """A busy first connect lets _cmd_web start while it keeps running."""
+
+        import asyncio
+
+        from rigplane.cli import _run
+
+        radio = _BusyHoldRadio()
+        composition = _busy_hold_composition()
+        _BusyHoldWebServer.instances.clear()
+        args = self._args()
+        p1, p2, p3, p4 = self._patches(radio, composition)
+        with p1, p2, p3, p4:
+            radio.startup_busy_hold_event.set()
+            run_task = asyncio.ensure_future(_run(args))
+            try:
+                await self._wait_for(
+                    lambda: (
+                        bool(_BusyHoldWebServer.instances)
+                        and "serve-start" in _BusyHoldWebServer.instances[-1].events
+                    ),
+                    timeout=2.0,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                run_task.cancel()
+                pytest.fail("serve did not start while the connect held busy")
+            server = _BusyHoldWebServer.instances[-1]
+            assert not radio._grant.is_set()
+            assert radio.connected is False
+            assert server.finish_calls == 0
+
+            radio._grant.set()
+            await self._wait_for(lambda: server.finish_calls == 1, timeout=5.0)
+            composition.transport_ready.assert_awaited_once_with(radio)
+            server._serve_done.set()
+            result = await asyncio.wait_for(run_task, timeout=10.0)
+
+        assert result == 0
+        assert len(radio.exits) == 1
+
+    @pytest.mark.asyncio
+    async def test_busy_hold_give_up_returns_one_closes_and_exits(
+        self, capsys: Any
+    ) -> None:
+        """The live-holder give-up ends like today's failure: same text, rc 1."""
+
+        import asyncio
+
+        from rigplane.cli import _run
+        from rigplane.core.exceptions import ConnectionError as RigplaneConnectionError
+        from rigplane.runtime._control_phase import _session_reject_hint
+
+        radio = _BusyHoldRadio()
+        composition = _busy_hold_composition()
+        _BusyHoldWebServer.instances.clear()
+        import socket
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            rigctld_port = probe.getsockname()[1]
+        args = _build_parser().parse_args(
+            [
+                "--host",
+                "1.2.3.4",
+                "web",
+                "--managed",
+                "--port",
+                "8080",
+                "--rigctld-port",
+                str(rigctld_port),
+            ]
+        )
+        p1, p2, p3, p4 = self._patches(radio, composition)
+        with p1, p2, p3, p4:
+            radio.startup_busy_hold_event.set()
+            radio.fail_with = RigplaneConnectionError(
+                "radio busy: another client holds the session. "
+                f"{_session_reject_hint(0xFFFFFFFF)}"
+            )
+            run_task = asyncio.ensure_future(_run(args))
+            try:
+                await self._wait_for(
+                    lambda: (
+                        bool(_BusyHoldWebServer.instances)
+                        and "serve-start" in _BusyHoldWebServer.instances[-1].events
+                    ),
+                    timeout=2.0,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                run_task.cancel()
+                pytest.fail("serve did not start while the connect held busy")
+            server = _BusyHoldWebServer.instances[-1]
+            rigctld_addr = server._runtime_rigctld_addr
+            assert rigctld_addr is not None and rigctld_addr.startswith("127.0.0.1:")
+            radio._grant.set()
+            result = await asyncio.wait_for(run_task, timeout=10.0)
+
+        assert result == 1
+        err = capsys.readouterr().err
+        assert "Error: radio busy: another client holds the session" in err
+        assert "from this computer" in err
+        assert "One RigPlane server per radio" in err
+        assert "serve-cancelled" in server.events
+        composition.transport_ready.assert_not_awaited()
+        assert len(radio.exits) == 1
+        assert rigctld_addr == f"127.0.0.1:{rigctld_port}"
+        with pytest.raises(ConnectionRefusedError):
+            await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", rigctld_port), timeout=5.0
+            )
+
+    @pytest.mark.asyncio
+    async def test_shutdown_during_busy_hold_cancels_connect_and_exits_radio(
+        self,
+    ) -> None:
+        """Ctrl-C during the hold cancels the connect but still exits."""
+
+        import asyncio
+
+        from rigplane.cli import _run
+
+        radio = _BusyHoldRadio()
+        composition = _busy_hold_composition()
+        _BusyHoldWebServer.instances.clear()
+        args = self._args()
+        p1, p2, p3, p4 = self._patches(radio, composition)
+        with p1, p2, p3, p4:
+            radio.startup_busy_hold_event.set()
+            run_task = asyncio.ensure_future(_run(args))
+            try:
+                await self._wait_for(
+                    lambda: (
+                        bool(_BusyHoldWebServer.instances)
+                        and "serve-start" in _BusyHoldWebServer.instances[-1].events
+                    ),
+                    timeout=2.0,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                run_task.cancel()
+                pytest.fail("serve did not start while the connect held busy")
+            run_task.cancel()
+            result = await asyncio.wait_for(run_task, timeout=10.0)
+
+        assert result == 0
+        assert radio.enter_cancelled is True
+        assert len(radio.exits) == 1
+        composition.transport_ready.assert_not_awaited()
+
+
+class _GrantGatedLifecycleMechanism:
+    """Scripted first connect: one busy reject, then a grant-gated attempt.
+
+    The first attempt busy-rejects so a real lifecycle enters its
+    start-up hold; the next attempt parks until the test grants it, the
+    way a held session waits for release. With ``busy_first=False`` the
+    first attempt connects at once (the control: a normal start).
+    """
+
+    def __init__(self, *, busy_first: bool) -> None:
+        self._busy_first = busy_first
+        self.connect_calls = 0
+        self.release_calls = 0
+        self.grant: Any = None
+
+    async def connect_attempt(self) -> Any:
+        from rigplane.runtime.session_lifecycle import (
+            AttemptOutcome,
+            AttemptResult,
+        )
+
+        self.connect_calls += 1
+        if self._busy_first and self.connect_calls == 1:
+            return AttemptResult(AttemptOutcome.SESSION_BUSY_REJECT)
+        await self.grant.wait()
+        return AttemptResult(AttemptOutcome.CONNECTED)
+
+    async def release(self) -> None:
+        self.release_calls += 1
+
+
+class _LifecycleBusyHoldRadio:
+    """A busy-hold radio whose hold is a real lifecycle mid-loop.
+
+    The public busy surface delegates to the lifecycle and the session
+    enter drives ``lifecycle.connect()`` — so an operator ``disconnect()``
+    during the hold cancels the background enter exactly the way the
+    production ``CoreRadio`` does (MOR-3391 round 4 probe shape).
+    """
+
+    backend_id = "rigplane"
+    model = "FAKE-LIFECYCLE-CLI"
+    capabilities: set[str] = set()
+
+    def __init__(self, lifecycle: Any, mech: _GrantGatedLifecycleMechanism) -> None:
+        import asyncio
+
+        self._lifecycle = lifecycle
+        self._mech = mech
+        self.connected = False
+        self.control_connected = False
+        self.radio_ready = False
+        # Production ``CoreRadio.connect`` reports CHECKING before the
+        # lifecycle's first attempt, so a busy hold always reads CHECKING
+        # here until the grant lands.
+        self.connection_identity: Any = RadioIdentity(
+            status=RadioIdentityStatus.CHECKING,
+            expected_model="FAKE-LIFECYCLE-CLI",
+        )
+        self._grant = asyncio.Event()
+        mech.grant = self._grant
+        self.enter_calls = 0
+        self.exits: list[tuple[Any, ...]] = []
+        self.events: list[str] = []
+        self._managed_tx_composition = None
+
+    @property
+    def startup_busy_hold_event(self) -> Any:
+        return self._lifecycle.startup_busy_hold_event
+
+    @property
+    def startup_busy_hold_retry_in_seconds(self) -> Any:
+        return self._lifecycle.startup_busy_hold_retry_in_seconds
+
+    def install_managed_tx_composition(self, composition: Any) -> None:
+        self._managed_tx_composition = composition
+
+    async def actuate(self, _token: Any, _operation: Any, *, is_current: Any) -> Any:
+        from rigplane.runtime.managed_tx_state import ActuationResult
+
+        return ActuationResult.ACCEPTED if is_current() else ActuationResult.REJECTED
+
+    async def set_ptt(self, _on: bool) -> None:
+        raise AssertionError("raw PTT must be replaced before connect")
+
+    async def disconnect(self) -> None:
+        """Operator disconnect: the owner-level teardown path."""
+
+        await self._lifecycle.disconnect()
+
+    async def __aenter__(self) -> "_LifecycleBusyHoldRadio":
+        self.enter_calls += 1
+        self.events.append("enter-start")
+        await self._lifecycle.connect()
+        self.connected = True
+        self.control_connected = True
+        self.radio_ready = True
+        self.connection_identity = RadioIdentity(
+            status=RadioIdentityStatus.VERIFIED,
+            expected_model="FAKE-LIFECYCLE-CLI",
+            answered_model="FAKE-LIFECYCLE-CLI",
+        )
+        self.events.append("enter-done")
+        return self
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        self.exits.append(exc)
+        self.events.append("radio-exit")
+        return False
+
+
+class TestDisconnectDuringStartupBusyHold:
+    """MOR-3391 round 4 (BL-1): an operator disconnect during the hold.
+
+    Disconnecting while the first connect waits out a busy reject must
+    keep serving — the same as a disconnect after a normal start — and
+    only an intentional shutdown ends the process (rc 0, radio exit once).
+    """
+
+    @staticmethod
+    def _args() -> Any:
+        return _build_parser().parse_args(["--host", "1.2.3.4", "web", "--no-rigctld"])
+
+    @staticmethod
+    def _make(*, busy_first: bool) -> tuple[Any, Any, Any]:
+        from rigplane.runtime.session_lifecycle import CoreRadioSessionLifecycle
+
+        mech = _GrantGatedLifecycleMechanism(busy_first=busy_first)
+        lifecycle = CoreRadioSessionLifecycle(
+            mech,
+            reject_cooldown_s=30.0,
+            not_ready_cooldown_s=30.0,
+            max_connect_attempts=5,
+            first_connect_busy_cooldown_s=30.0,
+            first_connect_busy_budget_s=600.0,
+            first_connect_busy_live_holder_after_s=None,
+        )
+        radio = _LifecycleBusyHoldRadio(lifecycle, mech)
+        composition = _busy_hold_composition()
+        return radio, lifecycle, composition
+
+    @staticmethod
+    def _patches(radio: Any, composition: Any) -> Any:
+        return (
+            patch("rigplane.cli.create_radio", return_value=radio),
+            patch("rigplane.cli.check_ports_available"),
+            patch("rigplane.cli.ManagedTxComposition", return_value=composition),
+            patch("rigplane.web.server.WebServer", _BusyHoldWebServer),
+        )
+
+    @staticmethod
+    async def _wait_for(predicate: Any, *, timeout: float = 2.0) -> None:
+        import asyncio
+
+        async def _poll() -> None:
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(_poll(), timeout=timeout)
+
+    @pytest.mark.asyncio
+    async def test_disconnect_during_busy_hold_keeps_serving(self) -> None:
+        """The cancelled background enter ends serving only at shutdown."""
+
+        import asyncio
+
+        from rigplane.cli import _run
+
+        radio, lifecycle, composition = self._make(busy_first=True)
+        _BusyHoldWebServer.instances.clear()
+        args = self._args()
+        p1, p2, p3, p4 = self._patches(radio, composition)
+        with p1, p2, p3, p4:
+            run_task = asyncio.ensure_future(_run(args))
+            try:
+                await self._wait_for(
+                    lambda: (
+                        bool(_BusyHoldWebServer.instances)
+                        and "serve-start" in _BusyHoldWebServer.instances[-1].events
+                    ),
+                    timeout=5.0,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                run_task.cancel()
+                pytest.fail("serve did not start while the connect held busy")
+            server = _BusyHoldWebServer.instances[-1]
+            assert lifecycle.startup_busy_hold_event.is_set()
+
+            # The operator disconnect path (HTTP/WS) calls disconnect()
+            # even when not connected: the background enter ends
+            # cancelled here.
+            await radio.disconnect()
+            await self._wait_for(
+                lambda: (
+                    lifecycle.state is not None
+                    and lifecycle.state.name == "DISCONNECTED"
+                ),
+                timeout=5.0,
+            )
+
+            # Still serving after a bounded wait: no Error, no exit, the
+            # listener task still held.
+            await asyncio.sleep(1.0)
+            assert not run_task.done()
+            assert "serve-cancelled" not in server.events
+            assert "serve-returned" not in server.events
+            assert radio.exits == []
+
+            # Intentional shutdown ends cleanly: rc 0, radio exit once.
+            run_task.cancel()
+            result = await asyncio.wait_for(run_task, timeout=10.0)
+
+        assert result == 0
+        assert len(radio.exits) == 1
+        composition.transport_ready.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_after_normal_start_keeps_serving(self) -> None:
+        """Control: the same disconnect after a normal start keeps serving."""
+
+        import asyncio
+
+        from rigplane.cli import _run
+
+        radio, lifecycle, composition = self._make(busy_first=False)
+        radio._grant.set()
+        _BusyHoldWebServer.instances.clear()
+        args = self._args()
+        p1, p2, p3, p4 = self._patches(radio, composition)
+        with p1, p2, p3, p4:
+            run_task = asyncio.ensure_future(_run(args))
+            try:
+                await self._wait_for(
+                    lambda: (
+                        bool(_BusyHoldWebServer.instances)
+                        and "serve-start" in _BusyHoldWebServer.instances[-1].events
+                    ),
+                    timeout=5.0,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                run_task.cancel()
+                pytest.fail("serve did not start after the normal connect")
+            server = _BusyHoldWebServer.instances[-1]
+            assert lifecycle.startup_busy_hold_event.is_set() is False
+
+            await radio.disconnect()
+
+            await asyncio.sleep(1.0)
+            assert not run_task.done()
+            assert "serve-cancelled" not in server.events
+            assert "serve-returned" not in server.events
+
+            run_task.cancel()
+            result = await asyncio.wait_for(run_task, timeout=10.0)
+
+        assert result == 0
+        assert len(radio.exits) == 1
+        composition.transport_ready.assert_awaited_once_with(radio)
 
 
 class TestFirstSignalShutdownBound:
@@ -2848,3 +3979,239 @@ class TestListenFlag:
             if line.strip().startswith("--host ") or line.strip().startswith("--host\t")
         )
         assert "deprecat" in host_line.lower()
+
+
+class _AlwaysBusyMechanism:
+    """A mechanism that busy-rejects every attempt (a live owner holds)."""
+
+    def __init__(self) -> None:
+        self.connect_calls = 0
+        self.release_calls = 0
+
+    async def connect_attempt(self) -> Any:
+        from rigplane.runtime.session_lifecycle import (
+            AttemptOutcome,
+            AttemptResult,
+        )
+
+        self.connect_calls += 1
+        return AttemptResult(AttemptOutcome.SESSION_BUSY_REJECT)
+
+    async def release(self) -> None:
+        self.release_calls += 1
+
+
+class _StartupClock:
+    """Virtual clock seam for the start-up busy-cap row.
+
+    The lifecycle sizes the start-up busy wait in its own clock seam
+    (``session_lifecycle.time.monotonic`` and ``session_lifecycle.asyncio.sleep``);
+    advancing it inside the fake cooldown sleep plays a full budget in
+    real milliseconds.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.now += delay
+
+
+class _RecordingCapRadio(_LifecycleBusyHoldRadio):
+    """A lifecycle radio that records the connect error before re-raising."""
+
+    def __init__(self, lifecycle: Any, mech: Any) -> None:
+        super().__init__(lifecycle, mech)
+        self.connect_error: BaseException | None = None
+
+    async def __aenter__(self) -> "_RecordingCapRadio":
+        try:
+            return await super().__aenter__()
+        except BaseException as exc:
+            self.connect_error = exc
+            raise
+
+
+class TestLiveOwnerExitCode:
+    """The live-owner stop exits 3 through the real exit path.
+
+    The rows drive ``_run`` itself (not only a mapping helper) with a
+    radio whose first connect runs a real lifecycle into the live-holder
+    stop: the awaited start-up path (``status``) and the background
+    start-up path (``web`` serving not-ready during the busy hold). An
+    ordinary connection error still exits 1.
+    """
+
+    @staticmethod
+    def _lifecycle_radio() -> Any:
+        from rigplane.runtime.session_lifecycle import CoreRadioSessionLifecycle
+
+        mech = _AlwaysBusyMechanism()
+        lifecycle = CoreRadioSessionLifecycle(
+            mech,
+            reject_cooldown_s=0.05,
+            not_ready_cooldown_s=0.05,
+            max_connect_attempts=100,
+            first_connect_busy_cooldown_s=0.05,
+            first_connect_busy_budget_s=600.0,
+            first_connect_busy_live_holder_after_s=0.1,
+        )
+        return _LifecycleBusyHoldRadio(lifecycle, mech)
+
+    @staticmethod
+    def _cap_lifecycle_radio() -> "_RecordingCapRadio":
+        from rigplane.runtime.session_lifecycle import CoreRadioSessionLifecycle
+
+        mech = _AlwaysBusyMechanism()
+        lifecycle = CoreRadioSessionLifecycle(
+            mech,
+            reject_cooldown_s=0.2,
+            not_ready_cooldown_s=0.2,
+            max_connect_attempts=100,
+            first_connect_busy_cooldown_s=0.2,
+            first_connect_busy_budget_s=1.0,
+            first_connect_busy_live_holder_after_s=None,
+        )
+        return _RecordingCapRadio(lifecycle, mech)
+
+    @staticmethod
+    def _patches(radio: Any, composition: Any) -> Any:
+        # Like ``TestStartupBusyHoldOrdering._patches`` but without assigning
+        # the hold event: the real lifecycle owns it here.
+        return (
+            patch("rigplane.cli.create_radio", return_value=radio),
+            patch("rigplane.cli.check_ports_available"),
+            patch("rigplane.cli.ManagedTxComposition", return_value=composition),
+            patch("rigplane.web.server.WebServer", _BusyHoldWebServer),
+        )
+
+    @staticmethod
+    async def _wait_for(predicate: Any, *, timeout: float = 10.0) -> None:
+        import asyncio
+
+        async def _poll() -> None:
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(_poll(), timeout=timeout)
+
+    @pytest.mark.asyncio
+    async def test_awaited_live_owner_stop_exits_three(self, capsys: Any) -> None:
+        """The awaited first connect maps the live-owner stop to 3."""
+        from rigplane.cli import _run
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "status"])
+        radio = self._lifecycle_radio()
+        with patch("rigplane.cli.create_radio", return_value=radio):
+            result = await _run(args)
+
+        assert result == 3
+        assert radio.enter_calls == 1
+        err = capsys.readouterr().err
+        assert "Error: radio busy: another client holds the session" in err
+        assert "Check for another active radio client before retrying." in err
+        assert "from this computer" not in err
+
+    @pytest.mark.asyncio
+    async def test_background_live_owner_stop_exits_three(self, capsys: Any) -> None:
+        """The background connect during a busy hold maps the stop to 3."""
+        import asyncio
+
+        from rigplane.cli import _run
+
+        radio = self._lifecycle_radio()
+        composition = _busy_hold_composition()
+        _BusyHoldWebServer.instances.clear()
+        args = TestStartupBusyHoldOrdering._args()
+        p1, p2, p3, p4 = self._patches(radio, composition)
+        with p1, p2, p3, p4:
+            run_task = asyncio.ensure_future(_run(args))
+            try:
+                await self._wait_for(
+                    lambda: (
+                        bool(_BusyHoldWebServer.instances)
+                        and "serve-start" in _BusyHoldWebServer.instances[-1].events
+                    ),
+                    timeout=10.0,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                run_task.cancel()
+                pytest.fail("serve did not start while the connect held busy")
+            result = await asyncio.wait_for(run_task, timeout=30.0)
+
+        assert result == 3
+        err = capsys.readouterr().err
+        assert "Error: radio busy: another client holds the session" in err
+        assert "Check for another active radio client before retrying." in err
+        assert "from this computer" not in err
+        composition.transport_ready.assert_not_awaited()
+        assert len(radio.exits) == 1
+
+    @pytest.mark.asyncio
+    async def test_ordinary_connection_error_exits_one(self, capsys: Any) -> None:
+        """An ordinary connection error on the same path still exits 1."""
+        from rigplane.cli import _run
+        from rigplane.core.exceptions import (
+            ConnectionError as RigplaneConnectionError,
+        )
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "status"])
+
+        class _RefusedRadio:
+            capabilities: set[str] = set()
+
+            async def __aenter__(self) -> "_RefusedRadio":
+                raise RigplaneConnectionError(
+                    "Radio session never became ready after 4 resident attempts; "
+                    "a foreign client may hold it."
+                )
+
+            async def __aexit__(self, *exc: Any) -> bool:
+                return False
+
+        with patch("rigplane.cli.create_radio", return_value=_RefusedRadio()):
+            result = await _run(args)
+
+        assert result == 1
+        err = capsys.readouterr().err
+        assert "Error: Radio session never became ready" in err
+
+    @pytest.mark.asyncio
+    async def test_busy_budget_cap_exits_one_not_held(
+        self, capsys: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The start-up busy-budget cap maps to 1, not to the held subclass.
+
+        Without the live-holder threshold the real lifecycle runs the busy
+        loop into its budget cap, which raises the base connection error —
+        so ``_run`` reports it as an ordinary runtime error (exit 1), and
+        the cap error is not a ``RadioSessionHeldError``.
+        """
+        from rigplane.cli import _run
+        from rigplane.core.exceptions import (
+            ConnectionError as RigplaneConnectionError,
+        )
+        from rigplane.core.exceptions import RadioSessionHeldError
+
+        clock = _StartupClock()
+        monkeypatch.setattr(
+            "rigplane.runtime.session_lifecycle.time.monotonic", clock.monotonic
+        )
+        monkeypatch.setattr(
+            "rigplane.runtime.session_lifecycle.asyncio.sleep", clock.sleep
+        )
+        radio = self._cap_lifecycle_radio()
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "status"])
+        with patch("rigplane.cli.create_radio", return_value=radio):
+            result = await _run(args)
+
+        assert result == 1
+        err = capsys.readouterr().err
+        assert "Error: Radio session never became ready: still busy" in err
+        assert radio.enter_calls == 1
+        assert radio.connect_error is not None
+        assert not isinstance(radio.connect_error, RadioSessionHeldError)
+        assert isinstance(radio.connect_error, RigplaneConnectionError)

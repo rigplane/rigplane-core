@@ -130,6 +130,9 @@ from ..runtime.tx_interlock import (
     TxInterlockRefusal,
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
+    is_exact_raw_dekey_frame,
+    resolve_rf_state,
+    send_civ_frame,
 )
 
 if TYPE_CHECKING:
@@ -525,9 +528,11 @@ class RadioPoller:
         acquisition_executor: AcquisitionExecutor | None = None,
         managed_tx_authority: ManagedWriteAdmission | None = None,
         tx_active_hint: Callable[[], bool] | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         queue = legacy_queue if legacy_queue is not None else command_queue
         self._radio = radio
+        self._clock = clock
         self._radio_state = radio_state
         self._state_diagnostics = diagnostics
         self._state_store = state_store or StateStore()
@@ -627,21 +632,9 @@ class RadioPoller:
     def _current_rf_state(self, snapshot: StateSnapshot | None = None) -> RfState:
         """Return RF truth only from a fresh current-provider PTT observation."""
         snapshot = snapshot or self._state_store.snapshot()
-        try:
-            field = snapshot.field(_PTT_PATH)
-        except KeyError:
+        if snapshot.provider_generation != self._provider_generation():
             return RfState.UNKNOWN
-        now = snapshot.generated_at_monotonic
-        if (
-            field.freshness is not FreshnessState.FRESH
-            or type(field.value) is not bool
-            or field.provider_generation != self._provider_generation()
-            or field.max_age is None
-            or now < field.last_observed_monotonic
-            or now >= field.last_observed_monotonic + field.max_age
-        ):
-            return RfState.UNKNOWN
-        return RfState.TX if field.value else RfState.RX
+        return resolve_rf_state(snapshot)
 
     def _enforce_tx_interlock(self, cmd: Command) -> None:
         if self._managed_tx_authority is not None and not isinstance(
@@ -654,6 +647,17 @@ class RadioPoller:
             and metadata.base_disposition is not TxInterlockDisposition.DEFER
         ):
             return
+        if isinstance(cmd, SendCiv):
+            frame = send_civ_frame(cmd.command, cmd.sub, cmd.data)
+            if frame is not None and is_exact_raw_dekey_frame(frame):
+                # An exact raw de-key — the wider set that includes the
+                # raw tuner off, unlike the controller-capture gates —
+                # skips this RF-state refusal, as the typed PttOff
+                # always does: a raw unkey must never get harder
+                # because the observed PTT read TX or went stale
+                # (MOR-3378). The managed early return above keeps
+                # managed send_civ on its own ingress refusal.
+                return
         rf_state = self._current_rf_state()
         decision = evaluate_tx_interlock(cmd, rf_state=rf_state)
         if not decision.allowed:
@@ -790,7 +794,7 @@ class RadioPoller:
         def validate_currency() -> None:
             validate_command_queue_entry_currency(
                 entry,
-                now=time.monotonic(),
+                now=self._clock(),
                 provider_generation=self._provider_generation(),
                 connection_generation=getattr(self._radio, "_civ_epoch", None),
                 session_is_live=self._queue.session_is_live,
@@ -852,7 +856,7 @@ class RadioPoller:
         command_service: CommandService | None,
         provider_generation: int,
     ) -> None:
-        observed_at = time.monotonic()
+        observed_at = self._clock()
         metadata = SourceMetadata(
             source="poll_response",
             provider="web_poller",
@@ -1406,7 +1410,7 @@ class RadioPoller:
                 command_source=source,
                 session_id=session_id,
             ),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=self._clock(),
             correlation_id=f"{command_id}:{name}" if command_id else None,
             provider_generation=provider_generation,
         )
@@ -1454,7 +1458,7 @@ class RadioPoller:
                 command_source=source,
                 session_id=session_id,
             ),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=self._clock(),
             correlation_id=f"{command_id}:{name}" if command_id else None,
             provider_generation=provider_generation,
         )
@@ -2087,7 +2091,7 @@ class RadioPoller:
                     field.freshness is not FreshnessState.FRESH
                     or (
                         field.max_age is not None
-                        and time.monotonic() - field.last_observed_monotonic
+                        and self._clock() - field.last_observed_monotonic
                         > field.max_age
                     )
                     or field.provider_generation != provider_generation
@@ -2148,7 +2152,7 @@ class RadioPoller:
                         session_id=session_id,
                         native_id="direct_vfo_frequency_readback",
                     ),
-                    timestamp_monotonic=time.monotonic(),
+                    timestamp_monotonic=self._clock(),
                     correlation_id=command_id,
                     provider_generation=provider_generation,
                 )
@@ -2167,7 +2171,7 @@ class RadioPoller:
                     await radio.set_freq(freq, receiver=rx)
                 else:
                     # No lower-layer equivalent for a VFO-aware MAIN write:
-                    # CoreRadio.set_freq(freq, receiver=0) sends a blind,
+                    # CoreRadio.set_freq(freq, receiver=0) sends a
                     # VFO-unaware 0x05 regardless of which VFO is selected.
                     # When SUB is active the poller must still switch to
                     # MAIN, write, and switch back — routed through the
@@ -2183,16 +2187,23 @@ class RadioPoller:
                                 "lacks select_receiver; skipping "
                                 "restore-to-MAIN switch",
                             )
-                    await radio.set_freq(freq)
-                    if current != "MAIN" and self._profile.vfo_sub_code is not None:
-                        if select_receiver is not None:
-                            await select_receiver(1)
-                        else:
-                            logger.warning(
-                                "radio-poller: set_freq receiver=0 — backend "
-                                "lacks select_receiver; skipping "
-                                "restore-to-SUB switch",
-                            )
+                    # The write waits for the radio's answer, so it can
+                    # raise (a NAK maps to CommandRejectedError, silence to
+                    # TimeoutError); the restore of the SUB selection must
+                    # run on every exit, with the write's own error
+                    # propagating.
+                    try:
+                        await radio.set_freq(freq)
+                    finally:
+                        if current != "MAIN" and self._profile.vfo_sub_code is not None:
+                            if select_receiver is not None:
+                                await select_receiver(1)
+                            else:
+                                logger.warning(
+                                    "radio-poller: set_freq receiver=0 — backend "
+                                    "lacks select_receiver; skipping "
+                                    "restore-to-SUB switch",
+                                )
                 # Compatibility mirror until web state delivery reads StateStore.
                 if self._radio_state:
                     target = (
@@ -3907,7 +3918,7 @@ class RadioPoller:
         target = self._compute_tx_target()
         path = FieldPath.global_("tx_state", "tx_target")
         max_age = self._tx_target_max_age()
-        now = time.monotonic()
+        now = self._clock()
         try:
             current = self._state_store.snapshot().field(path)
         except KeyError:
@@ -3963,7 +3974,7 @@ class RadioPoller:
                     session_id=session_id,
                     native_id="explicit_slot_ack_readback",
                 ),
-                timestamp_monotonic=time.monotonic(),
+                timestamp_monotonic=self._clock(),
                 correlation_id=command_id,
                 provider_generation=provider_generation,
             )

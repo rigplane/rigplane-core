@@ -14,9 +14,61 @@
 # explaining WHY the reference is intentional. Anything NOT on the list that
 # matches the pattern fails CI.
 #
+# The same script also carries the MOR-3533 shipped-code guards below (single
+# definition of the report endpoint, no internal hosts).
+#
 # Usage: run from the repository root with no arguments.
 
 set -euo pipefail
+
+# MOR-3533 guards (shipped code only: src/ and frontend/src). The diagnostic
+# upload endpoint reached external users as a tailnet-only host because the
+# address was written out in two places. These two checks keep that class of
+# bug out: the endpoint lives in exactly one constant, and no internal domain
+# is named in shipped code. Arguments after the hint are the allowed paths;
+# the internal-host guard allows none.
+SHIPPED_CODE=(src frontend/src)
+
+check_shipped_code() {
+    local label="$1" pattern="$2" hint="$3"
+    shift 3
+    local found file allowed skip leaks=""
+    found=$(git grep -lEi "$pattern" -- "${SHIPPED_CODE[@]}" || true)
+    while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        skip=false
+        for allowed in "$@"; do
+            if [ "$file" = "$allowed" ]; then
+                skip=true
+            fi
+        done
+        if [ "$skip" = false ]; then
+            leaks="${leaks}${file}"$'\n'
+        fi
+    done <<LISTEOF
+$found
+LISTEOF
+    if [ -n "$(printf '%s' "$leaks" | tr -d '[:space:]')" ]; then
+        {
+            echo "::error::${label} - found in shipped code:"
+            printf '%s' "$leaks"
+            echo "$hint"
+        } >&2
+        exit 1
+    fi
+}
+
+# Single definition: only DEFAULT_ENDPOINT may spell the report address.
+check_shipped_code "MOR-3533 single-definition guard: report endpoint written out" \
+    'reports\.(rigplane\.app|msmsoft\.net)|/v1/diagnostics/upload' \
+    "Import DEFAULT_ENDPOINT from rigplane.diagnostics.endpoint instead of repeating the address." \
+    src/rigplane/diagnostics/endpoint.py
+
+# Internal hosts are reachable only inside the maintainer's network.
+# Examples and comments use example.com / example.net.
+check_shipped_code "MOR-3533 internal-host guard: internal domain named" \
+    'msmsoft\.net|\.ts\.net' \
+    "Use an example.com / example.net name; internal hosts must not ship."
 
 ALLOWLIST=(
     # Shim package (PR-2B) — re-exports rigplane with DeprecationWarning.
@@ -78,6 +130,9 @@ ALLOWLIST=(
     'tests/test_backend_factory.py'                   # cosmetic test fn name (PR-2A)
     'tests/test_diagnostics_logging.py'               # cosmetic test fn name
     'tests/test_compat_v211_witnesses.py'             # asserts the preserved icom-lan console-script alias (2.11 compat witness)
+    # Imports helpers from the existing test_icom_lan_identity_gate module;
+    # the import line is the only brand reference in the file.
+    'tests/test_owner_reconnect_audio_demand.py'
     # This script itself: contains literal pattern in its grep regex and
     # docstring.
     '.github/scripts/check-rebrand-allowlist.sh'

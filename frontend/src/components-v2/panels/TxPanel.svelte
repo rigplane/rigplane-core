@@ -21,6 +21,7 @@
     HBarIssuedStatusSnapshot,
   } from '../controls/value-control/skin';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+  import { runtime } from '$lib/runtime';
   import { createManagedTxGesture } from '../wiring/managed-tx-gesture';
   import {
     deriveAutoLanModInputProps,
@@ -186,6 +187,7 @@
     {
       latched: () => tx.snapshot().intent === 'latched',
       transmitAvailable: () => tx.snapshot().fresh,
+      latchAllowed: () => !runtime.remoteController,
     },
     { pttOn: tx.pttOn, pttOff: tx.pttOff, transmitOn: tx.transmitOn, forceOff: tx.forceOff },
     {

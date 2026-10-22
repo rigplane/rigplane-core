@@ -92,6 +92,7 @@ export interface ServerStatePublic {
   radioHealth?: RadioHealthPublic;
   wsClients?: WsClientsPublic;
   monitorMute?: MonitorMutePublic | null;
+  sdr?: SdrStatusPublic | null;
   fieldStatus?: {
     [k: string]: FieldStatusPublic;
   };
@@ -197,6 +198,20 @@ export interface ReceiverStatePublic {
   toneFreq?: number | null;
   tsqlFreq?: number | null;
   repeaterShift?: number | null;
+  toneSquelchType?:
+    | (
+        | "off"
+        | "tone"
+        | "tsql"
+        | "dtcs"
+        | "dtcs_t"
+        | "tone_t_dtcs_r"
+        | "dtcs_t_tsql_r"
+        | "tone_t_tsql_r"
+        | "pr_freq"
+        | "rev_tone"
+      )
+    | null;
   dcd?: boolean | null;
 }
 /**
@@ -232,7 +247,7 @@ export interface RadioDetailPublic {
 export interface RadioHealthPublic {
   serverReachable: boolean;
   radioLink: "connected" | "reconnecting" | "disconnected" | "unknown";
-  readiness: "ready" | "delayed" | "stalled" | "recovering";
+  readiness: "ready" | "delayed" | "stalled" | "recovering" | "idle";
   likelyCause:
     | "server_unreachable"
     | "radio_network_lost"
@@ -240,6 +255,8 @@ export interface RadioHealthPublic {
     | "radio_not_responding"
     | "radio_powered_off_likely"
     | "radio_not_connected"
+    | "radio_session_busy"
+    | "operator_disconnected"
     | "unknown";
   sinceMs: number;
   lastError: string | null;
@@ -271,6 +288,20 @@ export interface MonitorMutePublic {
 export interface MonitorMuteSavedAfPublic {
   main?: number | null;
   sub?: number | null;
+}
+/**
+ * Live SDR panadapter status (MOR-3201), injected by the web server
+ * into every public state payload; absent on server-less payloads, so
+ * the field on :class:`ServerStatePublic` is optional.
+ */
+export interface SdrStatusPublic {
+  state: "disabled" | "starting" | "streaming" | "reconnecting" | "error";
+  device: string;
+  sampleRateHz: number;
+  spanHz: number;
+  txFrozen: boolean;
+  overflowCount: number;
+  lastError: string | null;
 }
 /**
  * Per-field freshness / availability entry (snapshot path only).

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +10,8 @@ from typing import Any
 
 import aiohttp
 
+from rigplane.diagnostics.endpoint import DEFAULT_ENDPOINT as DEFAULT_ENDPOINT
+from rigplane.diagnostics.endpoint import resolve_endpoint as _resolve_endpoint
 from rigplane.diagnostics._errors import (
     BundleTooLarge,
     ForbiddenContent,
@@ -19,9 +20,6 @@ from rigplane.diagnostics._errors import (
     RateLimited,
     UploadFailed,
 )
-
-DEFAULT_ENDPOINT = "https://reports.msmsoft.net/v1/diagnostics/upload"
-"""Default diagnostic-bundle upload endpoint. Override via ``RIGPLANE_REPORT_ENDPOINT``."""
 
 HeaderProvider = Callable[[], Awaitable[dict[str, str]]]
 """Optional async hook returning extra HTTP headers (e.g. Authorization for Pro)."""
@@ -35,12 +33,6 @@ class ReportSubmitted:
     support_url: str
     received_at_unix: int
     auth_class: str  # "anonymous" | "authenticated"
-
-
-def _resolve_endpoint(endpoint: str | None) -> str:
-    if endpoint is not None:
-        return endpoint
-    return os.environ.get("RIGPLANE_REPORT_ENDPOINT", DEFAULT_ENDPOINT)
 
 
 def _raise_for_error(status: int, body: dict[str, Any]) -> None:

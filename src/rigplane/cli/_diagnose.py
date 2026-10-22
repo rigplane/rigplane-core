@@ -25,7 +25,6 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 import sys
 import time
 import uuid
@@ -152,23 +151,12 @@ def _default_config_dir() -> Path:
     return Path(platformdirs.user_config_path("rigplane"))
 
 
-_FALLBACK_ENDPOINT = "https://reports.msmsoft.net/v1/diagnostics/upload"
-
-
 def _resolve_endpoint(endpoint_arg: str | None) -> str:
-    if endpoint_arg:
-        return endpoint_arg
-    env = os.environ.get("RIGPLANE_REPORT_ENDPOINT")
-    if env:
-        return env
-    # Try the canonical constant from the diagnostics package. Keep the local
-    # fallback so endpoint resolution can still run in constrained/broken
-    # environments where the upload module cannot be imported.
-    try:
-        from rigplane.diagnostics import DEFAULT_ENDPOINT
-    except ImportError:
-        return _FALLBACK_ENDPOINT
-    return str(DEFAULT_ENDPOINT)
+    # ``endpoint`` holds only stdlib code, so this stays importable without
+    # aiohttp (see module-level NOTE about deferring the upload stack).
+    from rigplane.diagnostics.endpoint import resolve_endpoint
+
+    return resolve_endpoint(endpoint_arg or None)
 
 
 def _is_tty() -> bool:

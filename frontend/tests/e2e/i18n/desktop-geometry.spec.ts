@@ -1,7 +1,7 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { fixtureById } from '../../../fixtures/catalog';
-import { mockCapabilities, mockInfo, mockState } from './fixtures';
+import { fulfillControllerRoute, mockCapabilities, mockInfo, mockState } from './fixtures';
 import type { Capabilities } from '../../../src/lib/types/capabilities';
 import type { FieldStatusPublic, ServerState } from '../../../src/lib/types/state';
 
@@ -166,11 +166,16 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
     class Socket extends EventTarget {
       static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
       readyState = 0; binaryType = 'arraybuffer'; bufferedAmount = 0;
+      // Real local Core accepts the client's controller subprotocol
+      // (docs/api/web.md); without the echo `ws-client.ts: _openSocket`
+      // closes the channel right after open.
+      protocol = '';
       onopen: ((e: Event) => void) | null = null;
       onmessage: ((e: MessageEvent) => void) | null = null;
       onclose: ((e: Event) => void) | null = null;
-      constructor(public url: string) {
+      constructor(public url: string, protocols: string[] = []) {
         super();
+        this.protocol = protocols[0] ?? '';
         queueMicrotask(() => {
           this.readyState = 1;
           const open = new Event('open'); this.dispatchEvent(open); this.onopen?.(open);
@@ -188,13 +193,25 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
           }
         });
       }
-      send(data: string) { commands.push(JSON.parse(data)); }
+      send(data: string) {
+        const frame = JSON.parse(data);
+        commands.push(frame);
+        if (frame.type === 'controller_heartbeat') {
+          // Real Core acks primary heartbeats; without acks the client
+          // drops the session once the 6 s TTL passes. The generation is
+          // the frozen `mockControllerGrant.generation`.
+          const e = new MessageEvent('message', { data: JSON.stringify({ type: 'controller_heartbeat', generation: 0 }) });
+          this.dispatchEvent(e); this.onmessage?.(e);
+        }
+      }
       close() { this.readyState = 3; const e = new Event('close'); this.dispatchEvent(e); this.onclose?.(e); }
     }
     Object.assign(window, { WebSocket: Socket });
   }, { state, layout, language, theme, locale });
   await page.route('**/api/**', route => {
-    const name = new URL(route.request().url()).pathname.split('/').pop();
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/api/v1/controller') return fulfillControllerRoute(route);
+    const name = pathname.split('/').pop();
     if (name === 'managed-transmit' && options.staleTot) {
       // MOR-2674: a failed refresh invalidates the TOT snapshot — the
       // trigger must stay unread (unlit), never a dash run.

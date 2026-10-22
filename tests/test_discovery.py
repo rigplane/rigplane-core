@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 from contextlib import ExitStack, contextmanager
 from functools import partial
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -18,6 +19,7 @@ from rigplane.discovery import (
     SerialPortCandidate,
     _is_candidate,
     _is_xiegu_model_id_reply,
+    _local_ipv4_addresses,
     _parse_probe_response,
     build_setup_discovery_payload,
     _parse_yaesu_id_response,
@@ -1483,11 +1485,31 @@ class _FakeUdpSocket:
     Each scripted response is delivered exactly once; otherwise recvfrom raises
     socket.timeout so the scan keeps looping until the clock passes the
     deadline.
+
+    ``recv_errors`` are raised from recvfrom (one per call, before any queued
+    response is delivered); ``recv_error_always`` is raised from every
+    recvfrom call. They fake per-socket receive failures such as Windows
+    ConnectionResetError (WSAECONNRESET) after an ICMP port-unreachable.
+
+    ``bind_error`` is raised from bind() to fake an address that can no
+    longer be bound (adapter vanished, address reassigned).
     """
 
-    def __init__(self, responses: dict[int, list[tuple[bytes, tuple]]]) -> None:
+    def __init__(
+        self,
+        responses: dict[int, list[tuple[bytes, tuple]]],
+        *,
+        recv_errors: list[Exception] | None = None,
+        recv_error_always: Exception | None = None,
+        bind_error: Exception | None = None,
+    ) -> None:
         self._responses = {k: list(v) for k, v in responses.items()}
+        self._recv_errors = list(recv_errors or [])
+        self._recv_error_always = recv_error_always
+        self._bind_error = bind_error
         self.send_count = 0
+        self.sent_to: list[tuple] = []
+        self.bound_to: tuple | None = None
         self.closed = False
         self._pending: list[tuple[bytes, tuple]] = []
 
@@ -1497,8 +1519,14 @@ class _FakeUdpSocket:
     def settimeout(self, *_a: object, **_k: object) -> None:
         pass
 
-    def sendto(self, _data: bytes, _addr: tuple) -> int:
+    def bind(self, addr: tuple) -> None:
+        if self._bind_error is not None:
+            raise self._bind_error
+        self.bound_to = addr
+
+    def sendto(self, _data: bytes, addr: tuple) -> int:
         self.send_count += 1
+        self.sent_to.append(addr)
         # Queue any responses unlocked by reaching this probe count.
         self._pending.extend(self._responses.pop(self.send_count, []))
         return len(_data)
@@ -1506,6 +1534,10 @@ class _FakeUdpSocket:
     def recvfrom(self, _bufsize: int) -> tuple[bytes, tuple]:
         import socket as _socket
 
+        if self._recv_error_always is not None:
+            raise self._recv_error_always
+        if self._recv_errors:
+            raise self._recv_errors.pop(0)
         if self._pending:
             return self._pending.pop(0)
         raise _socket.timeout()
@@ -1522,6 +1554,32 @@ def _patched_lan_socket(fake: _FakeUdpSocket, *, step: float = 0.05):
     with (
         patch.object(_socket, "socket", return_value=fake),
         patch.object(_time, "monotonic", _FakeClock(step=step)),
+        # The fake has no connect()/getsockname(); without this patch the
+        # single-socket tests would rely on the address probe raising
+        # AttributeError and pre-setting fake.closed via its finally-close.
+        patch("rigplane.discovery._local_ipv4_addresses", return_value=[]),
+    ):
+        yield
+
+
+@contextmanager
+def _patched_lan_sockets(
+    fakes: list[_FakeUdpSocket], local_addresses: list[str], *, step: float = 0.05
+):
+    """Multi-socket variant of ``_patched_lan_socket``.
+
+    Every ``socket.socket()`` call returns the next fake from ``fakes`` (the
+    first call is the unbound socket, then one per local address in order),
+    and the address-enumeration helper is patched to return
+    ``local_addresses``.
+    """
+    import socket as _socket
+    import time as _time
+
+    with (
+        patch.object(_socket, "socket", side_effect=list(fakes)),
+        patch.object(_time, "monotonic", _FakeClock(step=step)),
+        patch("rigplane.discovery._local_ipv4_addresses", return_value=local_addresses),
     ):
         yield
 
@@ -1588,3 +1646,589 @@ class TestDiscoverLanRadios:
         assert result == []
         assert fake.send_count >= 2  # still retransmitted across the window
         assert fake.closed
+
+    async def test_recvfrom_connection_reset_once_still_finds_radio(self) -> None:
+        # Windows raises ConnectionResetError (WSAECONNRESET) from recvfrom
+        # after an ICMP port-unreachable. The reset fires before the queued
+        # reply is delivered, so one such error must not kill the scan — the
+        # reply waiting behind it is still found.
+        addr = ("192.168.1.81", 50001)
+        fake = _FakeUdpSocket(
+            {1: [(_i_am_here(0x0BADF00D), addr)]},
+            recv_errors=[ConnectionResetError()],
+        )
+        with _patched_lan_socket(fake):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert result == [{"host": "192.168.1.81", "remote_id": 0x0BADF00D}]
+
+    async def test_recvfrom_connection_reset_every_time_returns_empty(self) -> None:
+        # A socket in a permanent reset state must not raise out of the scan.
+        fake = _FakeUdpSocket({}, recv_error_always=ConnectionResetError())
+        with _patched_lan_socket(fake):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert result == []
+
+    async def test_probe_leaves_through_every_local_adapter(self) -> None:
+        # One unbound socket plus one bound to each local address; every
+        # socket sends the limited broadcast (on Windows an unbound socket
+        # emits it through a single adapter only).
+        fakes = [_FakeUdpSocket({}) for _ in range(3)]
+        with _patched_lan_sockets(fakes, ["192.168.1.5", "10.8.0.2"]):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert result == []
+        assert fakes[0].bound_to is None
+        assert fakes[1].bound_to == ("192.168.1.5", 0)
+        assert fakes[2].bound_to == ("10.8.0.2", 0)
+        for fake in fakes:
+            assert fake.send_count >= 1  # every socket retransmits
+            assert all(dest == ("255.255.255.255", 50001) for dest in fake.sent_to)
+
+    async def test_reply_on_second_adapter_socket_is_found(self) -> None:
+        # A radio reachable only through the second local address replies on
+        # the socket bound to it; the receive loop must poll every socket.
+        addr = ("192.168.1.82", 50001)
+        fakes = [
+            _FakeUdpSocket({}),
+            _FakeUdpSocket({}),
+            _FakeUdpSocket({1: [(_i_am_here(0x55667788), addr)]}),
+        ]
+        with _patched_lan_sockets(fakes, ["192.168.1.5", "10.8.0.2"]):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert result == [{"host": "192.168.1.82", "remote_id": 0x55667788}]
+
+    async def test_address_enumeration_error_falls_back_to_unbound(self) -> None:
+        # If enumerating local addresses raises, the scan still runs on the
+        # plain unbound socket.
+        addr = ("192.168.1.83", 50001)
+        fake = _FakeUdpSocket({1: [(_i_am_here(0x9ABCDEF0), addr)]})
+        with (
+            _patched_lan_socket(fake),
+            patch(
+                "rigplane.discovery._local_ipv4_addresses",
+                side_effect=RuntimeError("enumeration boom"),
+            ),
+        ):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert result == [{"host": "192.168.1.83", "remote_id": 0x9ABCDEF0}]
+
+    async def test_all_sockets_closed_despite_recv_oserror(self) -> None:
+        # Every created socket is closed even while one keeps raising an
+        # unexpected OSError from recvfrom.
+        fakes = [
+            _FakeUdpSocket({}),
+            _FakeUdpSocket({}, recv_error_always=OSError("adapter vanished")),
+        ]
+        with _patched_lan_sockets(fakes, ["192.168.1.5"]):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert result == []
+        assert all(fake.closed for fake in fakes)
+
+    async def test_bind_failure_closes_socket_and_probes_rest(self) -> None:
+        # A local address whose bind fails (address vanished, adapter
+        # removed) is skipped after its half-open socket is closed; the
+        # remaining sockets still probe and find the radio.
+        addr = ("192.168.1.84", 50001)
+        fakes = [
+            _FakeUdpSocket({}),
+            _FakeUdpSocket({}, bind_error=OSError("cannot assign requested address")),
+            _FakeUdpSocket({1: [(_i_am_here(0x0C0FFEE0), addr)]}),
+        ]
+        with _patched_lan_sockets(fakes, ["192.168.1.5", "10.8.0.2"]):
+            result = await discover_lan_radios(timeout=3.0)
+
+        assert result == [{"host": "192.168.1.84", "remote_id": 0x0C0FFEE0}]
+        assert fakes[1].closed is True  # the half-open socket was closed
+        assert fakes[1].send_count == 0  # and never used to probe
+        assert fakes[0].send_count >= 1
+        assert fakes[2].send_count >= 1
+
+
+class _FakeRouteSocket:
+    """Socket stand-in for the UDP-connect probe in _local_ipv4_addresses.
+
+    ``connect`` records nothing and sends nothing (as on a real UDP socket);
+    ``getsockname`` reports the scripted local address.
+    """
+
+    def __init__(self, local: str) -> None:
+        self._local = local
+        self.closed = False
+
+    def connect(self, _addr: tuple) -> None:
+        pass
+
+    def getsockname(self) -> tuple:
+        return (self._local, 0)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestLocalIpv4Addresses:
+    def test_windows_drops_loopback_unspecified_and_duplicates(self) -> None:
+        import socket as _socket
+
+        def _info(address: str) -> tuple:
+            return (_socket.AF_INET, _socket.SOCK_DGRAM, 0, "", (address, 0))
+
+        route_sock = _FakeRouteSocket("192.168.1.5")
+        getaddrinfo = MagicMock(
+            return_value=[
+                _info("10.8.0.2"),
+                _info("192.168.1.5"),  # duplicate of the route address
+                _info("127.0.0.1"),  # loopback dropped
+                _info("0.0.0.0"),  # unspecified dropped
+                _info("10.0.0.9"),
+            ]
+        )
+        with (
+            patch.object(_socket, "socket", return_value=route_sock),
+            patch.object(_socket, "getaddrinfo", getaddrinfo),
+            patch("sys.platform", "win32"),
+        ):
+            result = _local_ipv4_addresses()
+
+        assert result == ["192.168.1.5", "10.8.0.2", "10.0.0.9"]
+        assert route_sock.closed
+        getaddrinfo.assert_called_once()
+
+    def test_non_windows_skips_hostname_lookup(self) -> None:
+        # Outside Windows the hostname enumeration must not run at all: a
+        # locally unresolvable hostname (e.g. .local) would stall the
+        # resolver for seconds before the scan's clock starts.
+        import socket as _socket
+
+        route_sock = _FakeRouteSocket("192.168.1.5")
+        getaddrinfo = MagicMock()
+        with (
+            patch.object(_socket, "socket", return_value=route_sock),
+            patch.object(_socket, "getaddrinfo", getaddrinfo),
+            patch("sys.platform", "linux"),
+        ):
+            result = _local_ipv4_addresses()
+
+        assert result == ["192.168.1.5"]
+        assert route_sock.closed
+        getaddrinfo.assert_not_called()
+
+
+# MOR-3133: exercise the actual opener/read boundary on the old API as well.
+def _diagnostic_sink():
+    from rigplane.backends import discovery
+
+    sink_type = getattr(discovery, "CivProbeDiagnostic", None)
+    if sink_type is not None:
+        return sink_type()
+    return SimpleNamespace(
+        status="not_attempted", stage=None, code=None, open_failure_codes=()
+    )
+
+
+async def _probe_with_diagnostics(sink, opener, bauds=None):
+    import inspect
+
+    kwargs = {"baud_rates": bauds or [19200], "timeout": 0.01, "_open_serial": opener}
+    if "diagnostics" in inspect.signature(probe_serial_civ).parameters:
+        kwargs["diagnostics"] = sink
+    return await probe_serial_civ("/private/sentinel-port", **kwargs)
+
+
+class TestCivProbeDiagnostics:
+    def test_public_sink_and_keyword_only_api(self):
+        import inspect
+        from dataclasses import asdict
+
+        from rigplane.backends import discovery
+        import rigplane.discovery as legacy
+
+        assert legacy is discovery
+        assert "CivProbeDiagnostic" in discovery.__all__
+        parameter = inspect.signature(probe_serial_civ).parameters["diagnostics"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default is None
+        assert asdict(discovery.CivProbeDiagnostic()) == {
+            "status": "not_attempted",
+            "stage": None,
+            "code": None,
+            "open_failure_codes": (),
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("error", "code"),
+        [
+            (PermissionError("secret"), "serial_permission_denied"),
+            (OSError(errno.EACCES, "secret"), "serial_permission_denied"),
+            (OSError(errno.EPERM, "secret"), "serial_permission_denied"),
+            (OSError(errno.EBUSY, "secret"), "serial_busy"),
+            (OSError(errno.EAGAIN, "secret"), "serial_busy"),
+            (OSError(errno.ENOENT, "secret"), "serial_not_found"),
+            (OSError(errno.ENODEV, "secret"), "serial_not_found"),
+            (OSError(errno.ETIMEDOUT, "secret"), "serial_timeout"),
+            (TimeoutError("secret"), "serial_timeout"),
+            (OSError("Resource busy secret"), "serial_unknown"),
+            (ValueError("Permission denied secret"), "serial_unknown"),
+        ],
+    )
+    async def test_actual_open_failure_keeps_verified_code(self, error, code):
+        sink = _diagnostic_sink()
+        opened = []
+
+        async def opener(**kwargs):
+            opened.append(kwargs["baudrate"])
+            raise error
+
+        assert await _probe_with_diagnostics(sink, opener) is None
+        assert opened == [19200]
+        assert (sink.status, sink.stage, sink.code) == ("open_failed", "open", code)
+        assert sink.open_failure_codes == (code,)
+        assert "secret" not in repr(sink)
+        assert "sentinel-port" not in repr(sink)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("link", ["cause", "context", "suppressed"])
+    async def test_actual_wrapped_open_error_respects_context(self, link):
+        wrapper = RuntimeError("wrapper secret")
+        cause = OSError(errno.EACCES, "private secret")
+        if link == "cause":
+            wrapper.__cause__ = cause
+        else:
+            wrapper.__context__ = cause
+            wrapper.__suppress_context__ = link == "suppressed"
+        sink = _diagnostic_sink()
+
+        async def opener(**kwargs):
+            raise wrapper
+
+        assert await _probe_with_diagnostics(sink, opener) is None
+        expected = (
+            "serial_unknown" if link == "suppressed" else "serial_permission_denied"
+        )
+        assert sink.code == expected
+        assert sink.open_failure_codes == (expected,)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("chunks", "status", "stage"),
+        [
+            ([], "opened_no_response", "read"),
+            ([_PROBE_CMD], "opened_no_response", "read"),
+            ([_PROBE_CMD * 2], "opened_no_response", "read"),
+            ([b"garbage"], "malformed_reply", "parse"),
+            ([bytes([0xFE, 0xFE, 0xE0, 0x94])], "incomplete_reply", "parse"),
+            ([_IC7610_RESPONSE[:-1]], "incomplete_reply", "parse"),
+            (
+                [bytes([0xFE, 0xFE, 0xE0, 0x94, 0, 0, 1, 0xFD])],
+                "malformed_reply",
+                "parse",
+            ),
+        ],
+    )
+    async def test_actual_read_boundary_distinguishes_missing_and_invalid_reply(
+        self, chunks, status, stage
+    ):
+        reader, writer = _FakeReader(chunks), _FakeWriter()
+        sink = _diagnostic_sink()
+        assert await _probe_with_diagnostics(sink, _make_open(reader, writer)) is None
+        assert (sink.status, sink.stage, sink.code) == (status, stage, None)
+        assert sink.open_failure_codes == ()
+        assert writer.written == [_PROBE_CMD]
+        assert writer.closed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("open_first", [True, False])
+    async def test_opened_evidence_outranks_other_baud_open_error(self, open_first):
+        sink = _diagnostic_sink()
+        writers = []
+
+        async def opener(**kwargs):
+            if (kwargs["baudrate"] == 19200) == open_first:
+                writer = _FakeWriter()
+                writers.append(writer)
+                return _FakeReader([]), writer
+            raise OSError(errno.EBUSY, "private secret")
+
+        assert await _probe_with_diagnostics(sink, opener, [19200, 9600]) is None
+        assert (sink.status, sink.stage, sink.code) == (
+            "opened_no_response",
+            "read",
+            None,
+        )
+        assert sink.open_failure_codes == ("serial_busy",)
+        assert all(writer.closed for writer in writers)
+
+    @pytest.mark.asyncio
+    async def test_mixed_open_failures_preserve_bounded_distinct_causes(self):
+        errors = [
+            OSError(errno.EACCES, "secret"),
+            OSError(errno.EBUSY, "secret"),
+            OSError(errno.ENOENT, "secret"),
+            TimeoutError("secret"),
+            OSError("secret"),
+        ] * 3
+        sink = _diagnostic_sink()
+
+        async def opener(**kwargs):
+            raise errors.pop(0)
+
+        assert await _probe_with_diagnostics(sink, opener, list(range(15))) is None
+        assert (sink.status, sink.stage, sink.code) == (
+            "open_failed",
+            "open",
+            "serial_unknown",
+        )
+        assert sink.open_failure_codes == (
+            "serial_permission_denied",
+            "serial_busy",
+            "serial_not_found",
+            "serial_timeout",
+            "serial_unknown",
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("data", "status"),
+        [(b"garbage", "malformed_reply"), (b"\xfe\xfe\xe0\x94", "incomplete_reply")],
+    )
+    async def test_parse_evidence_survives_later_silence(self, data, status):
+        sink = _diagnostic_sink()
+
+        async def opener(**kwargs):
+            chunks = [data] if kwargs["baudrate"] == 19200 else []
+            return _FakeReader(chunks), _FakeWriter()
+
+        assert await _probe_with_diagnostics(sink, opener, [19200, 9600]) is None
+        assert (sink.status, sink.stage, sink.code) == (status, "parse", None)
+
+    @pytest.mark.asyncio
+    async def test_success_overrides_misses_and_sink_reuse_resets(self):
+        sink = _diagnostic_sink()
+        writer = _FakeWriter()
+
+        async def opener(**kwargs):
+            if kwargs["baudrate"] == 19200:
+                raise PermissionError("secret")
+            return _FakeReader([_IC7610_RESPONSE]), writer
+
+        result = await _probe_with_diagnostics(sink, opener, [19200, 9600, 4800])
+        assert result is not None and result.baud == 9600
+        assert result.model_id == b"\x01\x06"
+        assert (sink.status, sink.stage, sink.code) == ("response", "parse", None)
+        assert sink.open_failure_codes == ("serial_permission_denied",)
+        assert writer.closed
+        from rigplane.backends import discovery
+
+        if "CivProbeDiagnostic" not in discovery.__all__:
+            pytest.fail("diagnostic API absent after actual probe boundary executed")
+        assert await probe_serial_civ("unused", [], diagnostics=sink) is None
+        assert (sink.status, sink.stage, sink.code) == ("not_attempted", None, None)
+        assert sink.open_failure_codes == ()
+
+    @pytest.mark.asyncio
+    async def test_legacy_mock_receives_no_new_keyword(self, monkeypatch):
+        from rigplane.backends import discovery
+
+        seen = []
+
+        async def legacy_try(port, baud, timeout, *, _open_serial=None):
+            seen.append((port, baud, timeout, _open_serial))
+            return None
+
+        monkeypatch.setattr(discovery, "_try_baud", legacy_try)
+        assert await probe_serial_civ("legacy", [19200, 9600], 0.02) is None
+        assert seen == [("legacy", 19200, 0.02, None), ("legacy", 9600, 0.02, None)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", [asyncio.CancelledError(), OSError("secret")])
+    async def test_post_open_exception_and_cancel_close_and_propagate(self, error):
+        class Reader:
+            async def read(self, size):
+                raise error
+
+        writer = _FakeWriter()
+        sink = _diagnostic_sink()
+        with pytest.raises(type(error)):
+            await _probe_with_diagnostics(sink, _make_open(Reader(), writer))
+        assert writer.closed
+        assert sink.open_failure_codes == ()
+        assert (sink.status, sink.stage, sink.code) == ("probe_error", "read", None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ["write", "drain", "close", "wait_closed"])
+    async def test_failing_operation_stage_is_preserved(self, operation):
+        error = OSError("private operation error")
+
+        class Writer(_FakeWriter):
+            def write(self, data):
+                if operation == "write":
+                    raise error
+                super().write(data)
+
+            async def drain(self):
+                if operation == "drain":
+                    raise error
+
+            def close(self):
+                super().close()
+                if operation == "close":
+                    raise error
+
+            async def wait_closed(self):
+                if operation == "wait_closed":
+                    raise error
+
+        writer, sink = Writer(), _diagnostic_sink()
+        with pytest.raises(OSError) as raised:
+            await _probe_with_diagnostics(
+                sink, _make_open(_FakeReader([_IC7610_RESPONSE]), writer)
+            )
+        assert raised.value is error
+        expected = "write" if operation in {"write", "drain"} else "close"
+        assert (sink.status, sink.stage, sink.code) == ("probe_error", expected, None)
+        assert sink.open_failure_codes == ()
+        assert writer.closed
+
+    @pytest.mark.asyncio
+    async def test_close_error_is_final_stage_without_hiding_read_cause(self):
+        read_error, close_error = OSError("read secret"), OSError("close secret")
+
+        class Reader:
+            async def read(self, size):
+                raise read_error
+
+        class Writer(_FakeWriter):
+            async def wait_closed(self):
+                raise close_error
+
+        writer, sink = Writer(), _diagnostic_sink()
+        with pytest.raises(OSError) as raised:
+            await _probe_with_diagnostics(sink, _make_open(Reader(), writer))
+        assert raised.value is close_error
+        assert raised.value.__context__ is read_error
+        assert (sink.status, sink.stage, sink.code) == ("probe_error", "close", None)
+        assert writer.closed
+
+
+class TestCivProbeFraming:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("sizes", [(3, 5), (4, 4), (7, 1), (1, 2, 5)])
+    async def test_fragmented_id_is_read_to_completion(self, sizes):
+        response = bytes([0xFE, 0xFE, 0xE0, 0x94, 0x19, 0, 0x94, 0xFD])
+        chunks, offset = [], 0
+        for size in sizes:
+            chunks.append(response[offset : offset + size])
+            offset += size
+        reader, writer = _FakeReader(chunks), _FakeWriter()
+        result = await probe_serial_civ(
+            "fake", [115200], 0.02, _open_serial=_make_open(reader, writer)
+        )
+        assert result is not None
+        assert (result.address, result.model_id, result.baud) == (0x94, b"\x94", 115200)
+        assert reader._queue.empty()
+        assert writer.written == [_PROBE_CMD]
+        assert writer.closed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("same_chunk", [True, False])
+    @pytest.mark.parametrize(
+        "leading",
+        [
+            bytes([0xFE, 0xFE, 0xE0, 0x94, 3, 0, 0, 0xFD]),
+            bytes([0xFE, 0xFE, 0xE0, 0x94, 0x19, 0, 0xFD]),
+            bytes([0xFE, 0xFE, 0xE0, 0x94, 0x19, 0, 0x94]),
+            bytes([0xFE, 0xFE, 0xE0, 0x94, 0x19, 0xFD]),
+            _PROBE_CMD,
+        ],
+    )
+    async def test_leading_non_id_frame_does_not_hide_valid_id(
+        self, leading, same_chunk
+    ):
+        response = bytes([0xFE, 0xFE, 0xE0, 0x94, 0x19, 0, 0x94, 0xFD])
+        chunks = [leading + response] if same_chunk else [leading, response]
+        reader, writer = _FakeReader(chunks), _FakeWriter()
+        result = await probe_serial_civ(
+            "fake", [115200], 0.02, _open_serial=_make_open(reader, writer)
+        )
+        assert result is not None
+        assert (result.address, result.model_id) == (0x94, b"\x94")
+        assert writer.closed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "data",
+        [
+            b"\xfe\xfe\xe0\x94\x19\x00\x94",
+            b"\xfe\xfe\xe0\x94\x03\x00\x00\xfd",
+        ],
+    )
+    async def test_non_id_reply_keeps_waiting_until_deadline_and_closes(self, data):
+        class Reader(_FakeReader):
+            calls = 0
+            cancelled = False
+
+            async def read(self, size):
+                self.calls += 1
+                try:
+                    return await super().read(size)
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+
+        reader, writer = Reader([data]), _FakeWriter()
+        assert (
+            await probe_serial_civ(
+                "fake", [115200], 0.01, _open_serial=_make_open(reader, writer)
+            )
+            is None
+        )
+        assert reader.calls == 2
+        assert reader.cancelled
+        assert writer.closed
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            b"\xfe\xfe\xe0\x94\x19\x00\xfd",
+            b"\xfe\xfe\xe0\x94\x19\x00\xfd\x00\x00",
+            b"\xfe\xfe\xe0\x94\x19\x00\x94\xfe\xfe\x00\xe0\x03\xfd",
+            b"\xfe\xfe\xe0\x94\x19\x00\xfe\xfe\xe0\x94\x03\x00\xfd",
+        ],
+    )
+    def test_empty_or_crossed_frame_cannot_be_a_valid_id(self, data):
+        assert _parse_probe_response("fake", 115200, data) is None
+
+    @pytest.mark.asyncio
+    async def test_repeated_non_id_chunks_share_one_read_deadline(self, monkeypatch):
+        original_wait_for = asyncio.wait_for
+        deadlines, budgets = [], []
+
+        async def recording_wait_for(awaitable, timeout):
+            deadlines.append(asyncio.get_running_loop().time() + timeout)
+            budgets.append(timeout)
+            return await original_wait_for(awaitable, timeout=timeout)
+
+        class Reader(_FakeReader):
+            async def read(self, size):
+                if not self._queue.empty():
+                    await asyncio.sleep(0.005)
+                return await super().read(size)
+
+        unrelated = b"\xfe\xfe\xe0\x94\x03\x00\x00\xfd"
+        reader, writer = Reader([unrelated, unrelated]), _FakeWriter()
+        monkeypatch.setattr(asyncio, "wait_for", recording_wait_for)
+        assert (
+            await probe_serial_civ(
+                "fake", [115200], 0.03, _open_serial=_make_open(reader, writer)
+            )
+            is None
+        )
+        assert len(budgets) == 3
+        assert max(deadlines) - min(deadlines) < 0.004
+        assert budgets[-1] < budgets[0] - 0.005
+        assert writer.closed

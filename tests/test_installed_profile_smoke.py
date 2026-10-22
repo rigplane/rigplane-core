@@ -40,6 +40,19 @@ def test_catalog_contract_rejects_unreviewed_profile_addition() -> None:
         smoke.validate_catalog((*smoke.EXPECTED_PROFILES, "future.toml"))
 
 
+def test_installed_catalog_matches_source_profiles() -> None:
+    from rigplane.profiles.rig_loader import discover_rigs
+
+    smoke = _load_smoke_module()
+    names = smoke._profile_resource_names(RIGS_DIR)
+    assert smoke.validate_catalog(names) == names
+
+    rigs = discover_rigs(RIGS_DIR)
+    assert set(rigs) == {model for _, model in smoke.EXPECTED_PROFILES.values()}
+    for profile_id, model in smoke.EXPECTED_PROFILES.values():
+        assert rigs[model].id == profile_id
+
+
 def test_corrupt_profile_negative_proof_is_actionable() -> None:
     smoke = _load_smoke_module()
 

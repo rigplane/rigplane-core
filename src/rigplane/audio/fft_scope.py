@@ -23,6 +23,7 @@ import time
 from typing import Any, Callable
 
 from rigplane.scope import ScopeFrame
+from rigplane.scope.levels import AdaptiveLevelMapper
 
 __all__ = ["AudioFftScope"]
 
@@ -31,34 +32,15 @@ _log = logging.getLogger(__name__)
 # Scope mode: center (matches SpectrumPanel expected mode)
 _SCOPE_MODE_CENTER = 0
 
-# Amplitude mapping: FFT dB range → 0-160 pixel range (ScopeFrame convention).
-#
-# The dB→pixel window is ADAPTIVE (MOR-512): a fixed window was tuned for one
-# radio's RX audio level and rendered nearly empty for radios at a different
-# level (e.g. FTX-1, whose clean in-band signal sat ~16-20 dB below a fixed
-# -70 dB floor). Instead we track the per-stream noise floor and signal ceiling
-# and slide the window to follow them, so any radio/level stays visible.
-_PIXEL_MAX = 160
+# Amplitude mapping: FFT dB → 0-160 pixel range (ScopeFrame convention) via
+# the shared adaptive level mapper (MOR-512 tuning; extracted to
+# ``rigplane.scope.levels`` in MOR-3152). The dB→pixel window is ADAPTIVE: a
+# fixed window was tuned for one radio's RX audio level and rendered nearly
+# empty for radios at a different level (e.g. FTX-1). The mapper instead
+# tracks the per-stream noise floor and signal ceiling and slides the window
+# to follow them, so any radio/level stays visible.
 
-# Robust per-frame floor/ceil estimators (percentiles of the IN-BAND dB array).
-#
-# Radio RX audio is BIMODAL (MOR-512): the demodulated audio baseband
-# (~0-3.2 kHz) always carries receiver band-noise, while the out-of-band region
-# (>~4-5 kHz) sits far lower, near the true noise floor. Estimating the floor
-# over the FULL spectrum latches it onto the quiet out-of-band majority, which
-# drags the floor way down and pushes the ever-present in-band band-noise up to
-# ~68% of the screen with NO signal present ("high noise floor regardless of
-# signal"). We therefore estimate floor and ceil over the IN-BAND region only —
-# the bins that actually carry radio audio (and that the display shows) — so the
-# band-noise maps LOW and a real signal stands out above it.
-#
-# Floor: a low-ish percentile of the in-band bins (rejects the quietest bins
-# without latching onto out-of-band). Ceil: a high percentile (rejects single-bin
-# DC-leakage spikes that would otherwise inflate the ceiling).
-_FLOOR_PCT = 30.0
-_CEIL_PCT = 99.0
-
-# In-band (audio baseband) region used for the floor/ceil estimate.
+# In-band (audio baseband) region used for the mapper's floor/ceil estimate.
 #
 # Lower edge: skip DC / sub-sonic bins (hum, DC leakage) that do not represent
 # band-noise. Upper edge: when the mode bandwidth is known the in-band region is
@@ -69,29 +51,6 @@ _CEIL_PCT = 99.0
 # quiet out-of-band tail that caused the regression.
 _INBAND_LO_HZ = 50.0
 _INBAND_FALLBACK_HI_HZ = 3500.0
-
-# EMA / attack-decay smoothing of the tracked floor & ceil. The floor adapts
-# SLOWLY for a stable baseline; the ceil rises fast (attack) but falls slowly
-# (decay) so a vanishing signal does not snap the window down and re-amplify
-# noise. Values are per-frame blend factors in (0, 1].
-_FLOOR_ALPHA = 0.05
-_CEIL_ATTACK = 0.30
-_CEIL_DECAY = 0.05
-
-# Margins placed below the tracked floor / above the tracked ceil (dB).
-_FLOOR_MARGIN = 5.0
-_CEIL_MARGIN = 3.0
-
-# Minimum display-window span (dB). During silence the observed floor and ceil
-# collapse together; without a floor on the span the auto-range would stretch a
-# flat noise field across the whole screen. Enforcing a wide minimum span keeps
-# noise pinned near the bottom until a real signal rises above it.
-_MIN_SPAN_DB = 45.0
-
-# Absolute sanity clamps on the window endpoints (dB, on the /fft_size scale).
-_ABS_FLOOR_MIN = -160.0
-_ABS_FLOOR_MAX = -20.0
-_ABS_CEIL_MAX = 0.0
 
 
 def _import_numpy() -> Any:
@@ -148,10 +107,11 @@ class AudioFftScope:
         # Rolling average buffer
         self._avg_buf: list[object] = []  # list of numpy arrays
 
-        # Adaptive dB→pixel window state (MOR-512). None until seeded from the
-        # first processed frame, then EMA-tracked toward the live floor/ceil.
-        self._db_floor_ema: float | None = None
-        self._db_ceil_ema: float | None = None
+        # Adaptive dB→pixel level mapper (MOR-512 tuning, shared via
+        # rigplane.scope.levels since MOR-3152). The audio-specific in-band
+        # estimation region is applied via ``_refresh_inband_bins``.
+        self._mapper = AdaptiveLevelMapper()
+        self._refresh_inband_bins()
 
         # Frame rate limiting
         self._min_interval = 1.0 / self._fps
@@ -203,6 +163,7 @@ class AudioFftScope:
         new_val = max_hz if max_hz else None
         if new_val != self._crop_max_hz:
             self._crop_max_hz = new_val
+            self._refresh_inband_bins()
             self._avg_buf.clear()
             self._last_frame_time = 0.0  # emit next frame immediately
             _log.info("AudioFftScope: mode bandwidth set to %s Hz", new_val)
@@ -218,6 +179,7 @@ class AudioFftScope:
             self._window = self._make_window("hann", self._fft_size)
             self._buf = self._np.zeros(0, dtype=self._np.float32)
             self._avg_buf.clear()
+            self._refresh_inband_bins()
             _log.info("AudioFftScope: sample rate changed to %d", rate)
 
     def on_frame(self, callback: Callable[[ScopeFrame], None] | None) -> None:
@@ -290,12 +252,9 @@ class AudioFftScope:
         else:
             avg_db = db
 
-        # Map dB to pixel values (0-160) through the ADAPTIVE window.
-        # Linear mapping: db_floor → 0, db_ceil → _PIXEL_MAX.
-        db_floor, db_ceil = self._update_db_window(avg_db)
-        db_range = db_ceil - db_floor
-        pixels_float = (avg_db - db_floor) / db_range * _PIXEL_MAX
-        pixels_uint8 = np.clip(pixels_float, 0, _PIXEL_MAX).astype(np.uint8)
+        # Map dB to pixel values (0-160) through the ADAPTIVE level mapper
+        # (linear mapping: db_floor → 0, db_ceil → pixel max, clipped).
+        pixels_uint8 = np.frombuffer(self._mapper.map(avg_db), dtype=np.uint8)
 
         # rfft produces fft_size//2 + 1 bins from DC to Nyquist.
         # Bin 0 = DC (center freq), bin N = Nyquist (+sample_rate/2).
@@ -339,8 +298,8 @@ class AudioFftScope:
         except Exception:
             _log.exception("AudioFftScope: frame callback error")
 
-    def _inband_db(self, avg_db: Any) -> Any:
-        """Return the in-band (audio baseband) slice of ``avg_db``.
+    def _inband_bins(self) -> tuple[int, int]:
+        """Return the in-band (audio baseband) bin range ``(lo, hi)``.
 
         ``avg_db`` is the rfft per-bin dB array, indexed DC..Nyquist; bin ``i``
         sits at ``i * sample_rate / fft_size`` Hz of audio. The in-band region
@@ -348,9 +307,19 @@ class AudioFftScope:
         ``upper`` is the displayed passband (``_crop_max_hz / 2``) capped at
         ``_INBAND_FALLBACK_HI_HZ`` (MOR-528): a wide-crop mode (AM) would
         otherwise re-include the quiet out-of-band tail that MOR-512 excluded.
-        When it is unknown the fixed ``_INBAND_FALLBACK_HI_HZ`` is used. Falls
-        back to the full array if the mask would be empty (degenerate fft_size /
-        sample_rate).
+        When it is unknown the fixed ``_INBAND_FALLBACK_HI_HZ`` is used. The
+        mapper falls back to the full array if the range would be degenerate
+        (degenerate fft_size / sample_rate or short input).
+
+        Radio RX audio is BIMODAL (MOR-512): the demodulated audio baseband
+        (~0-3.2 kHz) always carries receiver band-noise, while the out-of-band
+        region (>~4-5 kHz) sits far lower, near the true noise floor.
+        Estimating the floor over the FULL spectrum latches it onto the quiet
+        out-of-band majority, which drags the floor way down and pushes the
+        ever-present in-band band-noise up to ~68% of the screen with NO signal
+        present ("high noise floor regardless of signal"). Restricting the
+        estimate to this region keeps the band-noise mapped LOW so a real
+        signal stands out above it.
         """
         bin_res = self._sample_rate / self._fft_size
         if self._crop_max_hz:
@@ -363,22 +332,19 @@ class AudioFftScope:
             upper_hz = _INBAND_FALLBACK_HI_HZ
         lo_bin = int(_INBAND_LO_HZ / bin_res)
         hi_bin = int(upper_hz / bin_res)
-        hi_bin = min(hi_bin, len(avg_db) - 1)
-        if hi_bin <= lo_bin:
-            return avg_db
-        return avg_db[lo_bin : hi_bin + 1]
+        return lo_bin, hi_bin
+
+    def _refresh_inband_bins(self) -> None:
+        """Apply the current in-band bin range to the level mapper."""
+        self._mapper.set_inband_bins(*self._inband_bins())
 
     def _update_db_window(self, avg_db: Any) -> tuple[float, float]:
         """Adapt the dB→pixel window to the current frame and return it.
 
-        Tracks a robust noise floor (low percentile) and signal ceiling (high
-        percentile) of the IN-BAND region of ``avg_db`` (the audio baseband that
-        carries radio audio — see :meth:`_inband_db`), smooths each with an EMA /
-        attack-decay so the window neither jitters nor pumps, then applies
-        margins, a minimum span (so silence does not amplify noise) and absolute
-        clamps. Estimating over the in-band region rather than the full spectrum
-        keeps the ever-present in-band band-noise mapped LOW so a real signal
-        stands out above it (MOR-512).
+        Delegates to the shared :class:`~rigplane.scope.levels.AdaptiveLevelMapper`
+        (MOR-3152); the tracked floor/ceil state and smoothing now live there.
+        Kept as the audio-side seam so existing scope tests can drive the
+        window directly with synthesized dB frames.
 
         Args:
             avg_db: The (averaged) per-bin dB array for this frame.
@@ -386,45 +352,14 @@ class AudioFftScope:
         Returns:
             ``(db_floor, db_ceil)`` — the window endpoints to map to pixels.
         """
-        np = self._np
-
-        inband_db = self._inband_db(avg_db)
-        obs_floor = float(np.percentile(inband_db, _FLOOR_PCT))
-        obs_ceil = float(np.percentile(inband_db, _CEIL_PCT))
-
-        if self._db_floor_ema is None or self._db_ceil_ema is None:
-            # Seed from the first frame so startup is immediately sane.
-            self._db_floor_ema = obs_floor
-            self._db_ceil_ema = obs_ceil
-        else:
-            # Floor: slow EMA → stable baseline.
-            self._db_floor_ema += (obs_floor - self._db_floor_ema) * _FLOOR_ALPHA
-            # Ceil: fast attack up, slow decay down → no pump when signal drops.
-            ceil_alpha = _CEIL_ATTACK if obs_ceil > self._db_ceil_ema else _CEIL_DECAY
-            self._db_ceil_ema += (obs_ceil - self._db_ceil_ema) * ceil_alpha
-
-        # Apply display margins.
-        db_floor = self._db_floor_ema - _FLOOR_MARGIN
-        db_ceil = self._db_ceil_ema + _CEIL_MARGIN
-
-        # Absolute sanity clamps.
-        db_floor = min(max(db_floor, _ABS_FLOOR_MIN), _ABS_FLOOR_MAX)
-        db_ceil = min(db_ceil, _ABS_CEIL_MAX)
-
-        # Minimum span: never let the window collapse onto a flat noise field
-        # (silence) — keep noise pinned near the bottom.
-        if db_ceil - db_floor < _MIN_SPAN_DB:
-            db_ceil = db_floor + _MIN_SPAN_DB
-
-        return db_floor, db_ceil
+        return self._mapper.window(avg_db)
 
     def stop(self) -> None:
         """Stop the scope and clear buffers."""
         self._callback = None
         self._buf = self._np.zeros(0, dtype=self._np.float32)
         self._avg_buf.clear()
-        self._db_floor_ema = None
-        self._db_ceil_ema = None
+        self._mapper.reset()
         _log.info("AudioFftScope stopped")
 
     @property

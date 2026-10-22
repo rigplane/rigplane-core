@@ -21,7 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import ctypes
+import ctypes.util
+import functools
 import gzip as _gzip
+import ipaddress
 import json
 import logging
 import math
@@ -30,16 +34,19 @@ import os
 import pathlib
 import signal as _signal
 import sys
+import threading
 import time
 import urllib.parse
-from collections.abc import Callable, Collection, Coroutine, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable, Collection, Coroutine, Mapping
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from inspect import getattr_static
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 
 from .. import __version__
 from .._bounded_queue import BoundedQueue
+from ..audio.route import resolve_audio_route
+from ..commands._frame import build_civ_frame
 from ..core.acquisition_scheduler import (
     AcquisitionScheduler,
     MeterObservationCoalescer,
@@ -69,13 +76,35 @@ from ..core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from ..core.state_store import StateSnapshot, StateStore
-from ..core.tx_observation import ObservedPtt, project_observed_ptt
+from ..core.tx_observation import (
+    ObservedPtt,
+    legacy_ptt_bool,
+    project_observed_ptt,
+)
+from ..runtime.controller_authority import (
+    ControllerAuthority,
+    ControllerError,
+    ControllerTicket,
+)
+from ..runtime.managed_tx_authority import ManagedTxAuthority
 from ..runtime.managed_tx_state import ManagedTxIntentKind
+from ..runtime.tx_interlock import (
+    RfState,
+    TxInterlockRefusal,
+    classify_raw_civ_frame_tx_family,
+    is_exact_raw_dekey_frame,
+    is_exact_raw_transmission_end_frame,
+    resolve_rf_state,
+    send_civ_frame,
+)
+from ..sdr import IqSource, SdrConfig
+from ..sdr.runtime import SdrScopeRuntime
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO
 from ..exceptions import TimeoutError as RigplaneTimeoutError
 from ..audio.bus import STAGE_RX_POST_DSP
 from ..audio.session import AudioSession, AudioSessionEvent
+from ..audio.usb_driver import bounded_portaudio_pool
 from ..audio_analyzer import AudioAnalyzer
 from ..audio_fft_scope import AudioFftScope
 from ..env_config import (
@@ -96,11 +125,13 @@ from .handlers import (  # noqa: TID251
 )
 from .handlers.audio import browser_tx_audio_facts  # noqa: TID251
 from .handlers.control import _consume_normalized_level_unit  # noqa: TID251
+from .handlers.rigctl import OpenRigctlChannel, RigctlChannelHandler  # noqa: TID251
 from .host_guard import (  # noqa: TID251
     MISDIRECTED_BODY,
     ORIGIN_FORBIDDEN_BODY,
     host_header_allowed,
     same_origin_allowed,
+    validate_trusted_origins,
 )
 from .managed_tx_view import build_managed_tx_view  # noqa: TID251
 from .transport.webrtc import webrtc_available  # noqa: TID251
@@ -175,6 +206,7 @@ class _ClassifyRadioHealthFn(Protocol):
         now_monotonic: float | None = None,
         served_with_silent_link: bool = False,
         served_without_port: bool = False,
+        operator_disconnected: bool = False,
     ) -> dict[str, Any]: ...
 
 
@@ -227,6 +259,9 @@ _MAX_POST_BODY = 256 * 1024  # 256 KiB — hard ceiling for all POST body reads
 _MAX_COMMAND_BATCH_STEPS = 128
 _COMMAND_BATCH_STEP_TIMEOUT = 10.0
 _DELIVERY_EPOCH_ATTEMPTS = 2
+# SDR scope tick cadence (MOR-3157): within the issue's 50-100 ms
+# window, faster than the 150 ms retune debounce.
+_SDR_TICK_INTERVAL_S = 0.075
 # Ceiling on the managed TX rebind that fronts recovery, derived from what the
 # rebind actually costs: one provider retirement (a transport disconnect) plus
 # one serviced effect chain — the durable OFF write and the authoritative PTT
@@ -452,20 +487,113 @@ def _command_error_code(exc: BaseException) -> str:
     return "command_failed"
 
 
+def _raw_civ_transaction_frame(params: Mapping[str, Any]) -> bytes | None:
+    """Build the exact frame a ``raw_civ_transaction`` intent would send.
+
+    Raise-free: anything that does not build — a missing key, a
+    non-numeric part, an out-of-range byte — returns None, so the
+    caller keeps today's capture behavior and the existing error
+    surfaces downstream.
+    """
+
+    try:
+        sub = params.get("sub")
+        # Annotated local: under the web-scoped mypy run the runtime
+        # import resolves to Any, and a bare return would trip
+        # no-any-return while the value is real bytes-or-None.
+        frame: bytes | None = send_civ_frame(
+            int(params["command"]),
+            None if sub is None else int(sub),
+            bytes(params["data"]),
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return frame
+
+
 @dataclass(slots=True)
 class _HttpCommandExecutor:
     server: "WebServer"
+
+    def _observed_rf_state(self) -> RfState:
+        """Resolve RF state from the server's state store snapshot.
+
+        Mirrors ``ControlHandler._observed_rf_state``: no usable store
+        reads as UNKNOWN, and a TX-family raw frame that is not an exact
+        de-key then refuses.
+        """
+
+        state_store = getattr(self.server, "command_state_store", None)
+        if isinstance(state_store, StateStore):
+            return resolve_rf_state(state_store.snapshot())
+        return RfState.UNKNOWN
 
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
         radio = self.server._radio
         if radio is None:
             raise RuntimeError("No radio configured")
+        controller = getattr(self.server, "_controller", None)
+        if isinstance(controller, ControllerAuthority):
+            # A raw transaction whose frame ends a transmission never
+            # takes a controller seat: the raw PTT off and voice TX
+            # memory stop unkey like the typed PTT-off, which never
+            # captures either.  Anything that does not build to
+            # exactly such a frame captures as before.
+            raw_frame = (
+                _raw_civ_transaction_frame(intent.params)
+                if intent.name == "raw_civ_transaction"
+                else None
+            )
+            if raw_frame is None or not is_exact_raw_transmission_end_frame(raw_frame):
+                ticket = controller.capture()
+                if ticket.remote:
+                    raise ControllerError("controller_tx_unsupported")
         params = intent.params
         if intent.name == "raw_civ_transaction":
             if not isinstance(radio, CivTransactionCapable):
                 raise RuntimeError(
                     "active backend does not support raw CI-V transactions"
                 )
+            # The TX-family verdict is computed on the exact frame the
+            # transaction below would send — addresses play no part in it.
+            frame = build_civ_frame(
+                0x00,
+                0x00,
+                int(params["command"]),
+                sub=None if params.get("sub") is None else int(params["sub"]),
+                data=bytes(params["data"]),
+            )
+            tx_family_verdict = classify_raw_civ_frame_tx_family(frame)
+            if self.server._managed_tx_authority() is not None:
+                # Managed mode refuses a TX-family raw transaction by
+                # payload alone — regardless of the observed RF state,
+                # and without consulting the authority.  An exact raw
+                # de-key is refused with it: in managed mode PTT moves
+                # only through the authority.
+                if tx_family_verdict is not False:
+                    raise TxInterlockRefusal(
+                        "raw CI-V TX-family transactions are refused while the "
+                        "radio is under managed TX authority",
+                        reason_code="managed_tx_refused",
+                    )
+            elif tx_family_verdict is not False and not is_exact_raw_dekey_frame(frame):
+                # Unmanaged seat: a TX-family frame, or one that cannot
+                # be parsed as a single whole CI-V frame, is refused
+                # unless the observed PTT resolves to fresh-known RX;
+                # any other non-TX frame passes regardless of the
+                # observed RF state.  An exact de-key frame is exempt
+                # from that refusal.
+                rf_state = self._observed_rf_state()
+                if rf_state is not RfState.RX:
+                    raise TxInterlockRefusal(
+                        "raw CI-V TX-family transactions require a "
+                        "fresh-known RX observation",
+                        reason_code=(
+                            "radio_transmitting"
+                            if rf_state is RfState.TX
+                            else "rf_state_unknown"
+                        ),
+                    )
             result = await radio.send_civ_transaction(
                 int(params["command"]),
                 sub=params.get("sub"),
@@ -587,6 +715,26 @@ def _format_band_plan_config(new_region: str, existing: dict[str, Any]) -> str:
     return "".join(lines)
 
 
+def _serialize_cw_text(profile: "RadioProfile", radio: object) -> dict[str, object]:
+    """``cwText`` (MOR-3678): whether ``send_cw_text`` works on this radio.
+
+    Separate from the ``cw`` tag / ``hasCw``, which keep driving the CW
+    decoder, console and keyer controls. ``supported`` also needs a backend
+    that can run ``send_cw_text`` (``cw_text_sender``, the check the send
+    path uses); the limits stay the profile's. With no radio attached yet
+    the profile's answer stands (a send then fails as not connected).
+    """
+    from ..profiles import cw_text_sender
+
+    spec = profile.cw_text
+    runs = radio is None or cw_text_sender(radio) is not None
+    return {
+        "supported": spec.supported and runs,
+        "maxLength": spec.max_length,
+        "memoryChannel": spec.memory_channel,
+    }
+
+
 def _serialize_filter_config(profile: "RadioProfile") -> dict[str, dict[str, object]]:
     config = profile.filter_config or {}
     result: dict[str, dict[str, object]] = {}
@@ -649,6 +797,17 @@ def _serialize_choices(
     if not values or not labels:
         return []
     return [{"value": value, "label": labels[str(value)]} for value in values]
+
+
+def _startup_busy_session_payload(
+    busy: bool, retry_in_seconds: float | None
+) -> dict[str, object]:
+    """The served ``connection.session`` object (MOR-3391 part 2).
+
+    Always present: ``busy`` false and ``retryInSeconds`` null outside a
+    start-up busy hold.
+    """
+    return {"busy": busy, "retryInSeconds": retry_in_seconds}
 
 
 def _serialize_keyboard_config(profile: "RadioProfile") -> dict[str, object] | None:
@@ -715,6 +874,8 @@ class WebConfig:
         max_clients: Maximum concurrent WebSocket clients.
         keepalive_interval: Seconds between WebSocket keepalive pings.
             Set to a very large value (e.g. 9999) to disable during tests.
+        max_controller_sessions_per_ip: Live controller sessions per peer IP;
+            a new session beyond it is refused (429 ``controller_session_limit``).
     """
 
     host: str = "0.0.0.0"
@@ -723,6 +884,9 @@ class WebConfig:
     radio_model: str = _RADIO_MODEL_UNSPECIFIED
     max_clients: int = 100
     keepalive_interval: float = WS_KEEPALIVE_INTERVAL
+    # Live controller sessions one peer IP may hold (MOR-3557). Default fits a
+    # gateway fronting several devices with a few tabs each.
+    max_controller_sessions_per_ip: int = 32
     dx_cluster_host: str = ""
     dx_cluster_port: int = 0
     dx_callsign: str = ""
@@ -744,51 +908,108 @@ class WebConfig:
     # PCM16↔Opus switching on detected slow/lossy links. Off (default) =
     # static MOR-584 per-connection codecs, never switched mid-stream.
     audio_adaptive_egress: bool = False
-    # Extra Host-header names admitted by the Host allowlist (MOR-2880),
-    # e.g. the stands' *.msmsoft.net names (MOR-2868). Repeatable via
-    # the CLI's --allowed-host flag.
+    # Extra Host-header names admitted by the Host allowlist (MOR-2880).
+    # Repeatable via the CLI's --allowed-host flag.
     allowed_hosts: tuple[str, ...] = ()
+    # Explicitly trusted serialized http(s) origins (MOR-3108 b11): the
+    # operator's own public HTTPS origin in front of this HTTP/internal
+    # upstream (a reverse proxy). A matching Origin is admitted past the
+    # same-origin rule only when the raw Host still passes the allowlist
+    # above; it never bypasses any other guard. Repeatable via the CLI's
+    # --trusted-origin flag; invalid entries fail construction.
+    trusted_origins: tuple[str, ...] = ()
+    # Scope source (MOR-3157): "auto" picks the SDR when sdr_config is
+    # present, else hardware, else audio FFT; explicit overrides.
+    # sdr_source_factory is the injectable test factory (default
+    # SoapyIqSource, lazily).
+    scope_source: str = "auto"
+    sdr_config: SdrConfig | None = None
+    sdr_source_factory: Callable[[SdrConfig], IqSource] | None = None
 
     def __post_init__(self) -> None:
         if self.auth_token:
             raise ValueError(
                 "Application authentication was removed; auth_token must be empty."
             )
+        validate_trusted_origins(self.trusted_origins)
+        if self.max_controller_sessions_per_ip < 1:
+            raise ValueError("max_controller_sessions_per_ip must be >= 1")
+        if self.scope_source not in ("auto", "hardware", "sdr", "audio_fft"):
+            raise ValueError(
+                f"scope_source must be auto/hardware/sdr/audio_fft, "
+                f"got {self.scope_source!r}"
+            )
+        if self.scope_source == "sdr" and self.sdr_config is None:
+            raise ValueError(
+                "scope_source='sdr' requires an SDR device (pass --sdr-device)"
+            )
 
 
 class ConnectionManager:
-    """Track WebSocket connections per-IP per-channel; evict excess and reap zombies."""
+    """Track WebSocket connections per client per channel; evict excess and reap zombies.
 
+    The client scope is the controller session's TX owner when the channel
+    joined a session, else the peer IP (MOR-3534): behind a gateway every
+    client shares one IP. Channels owned by the current TX holder (a session,
+    or a sessionless socket that keyed PTT) are never evicted.
+    """
+
+    # Per client scope (session or IP) per channel path, despite the name.
     MAX_PER_IP_PER_CHANNEL: int = 9  # 3 tabs × 3 WS (control + scope + audio-scope)
 
     def __init__(self) -> None:
         self._connections: dict[tuple[str, str], list[WebSocketConnection]] = {}
+        self._owners: dict[WebSocketConnection, str] = {}
 
     def register(
-        self, ip: str, channel: str, ws: WebSocketConnection
+        self,
+        scope: str,
+        channel: str,
+        ws: WebSocketConnection,
+        *,
+        owner: str | None = None,
+        holder: str | None = None,
     ) -> list[WebSocketConnection]:
-        """Register ws for (ip, channel) and return any evicted excess connections."""
-        key = (ip, channel)
+        """Register ws for (scope, channel) and return any evicted excess connections.
+
+        ``owner`` is the channel's TX owner, ``holder`` the current TX holder.
+        """
+        key = (scope, channel)
         conns = self._connections.setdefault(key, [])
         conns.append(ws)
+        if owner is not None:
+            self._owners[ws] = owner
         evicted: list[WebSocketConnection] = []
         while len(conns) > self.MAX_PER_IP_PER_CHANNEL:
-            evicted.append(conns.pop(0))
+            victim = next(
+                (
+                    conn
+                    for conn in conns
+                    if holder is None or self._owners.get(conn) != holder
+                ),
+                None,
+            )
+            if victim is None:
+                break
+            conns.remove(victim)
+            self._owners.pop(victim, None)
+            evicted.append(victim)
         # Debug: log current connection count per channel
         if evicted:
             logger.debug(
                 "conn_manager: %s from %s now has %d connections (evicted %d)",
                 channel,
-                ip,
+                scope,
                 len(conns),
                 len(evicted),
             )
         return evicted
 
-    def unregister(self, ip: str, channel: str, ws: WebSocketConnection) -> None:
-        """Remove ws from (ip, channel) tracking."""
-        key = (ip, channel)
+    def unregister(self, scope: str, channel: str, ws: WebSocketConnection) -> None:
+        """Remove ws from (scope, channel) tracking."""
+        key = (scope, channel)
         conns = self._connections.get(key, [])
+        self._owners.pop(ws, None)
         try:
             conns.remove(ws)
         except ValueError:
@@ -804,6 +1025,8 @@ class ConnectionManager:
             alive = [ws for ws in conns if ws.is_alive()]
             dead_here = [ws for ws in conns if not ws.is_alive()]
             dead.extend(dead_here)
+            for ws in dead_here:
+                self._owners.pop(ws, None)
             if alive:
                 self._connections[key] = alive
             else:
@@ -826,6 +1049,73 @@ def _is_managed_tx_invalidation(event: dict[str, Any]) -> bool:
     return (
         event.get("type") == "event" and event.get("name") == "managed_transmit_changed"
     )
+
+
+# MOR-3317: macOS has no /proc/self/statm and resource.getrusage reports only
+# the peak RSS; the current resident size comes from libproc's proc_pidinfo
+# with PROC_PIDTASKINFO, in-process (no subprocess on the request path).
+_PROC_PIDTASKINFO = 4
+
+
+class _ProcTaskinfo(ctypes.Structure):
+    """Layout of libproc's ``proc_taskinfo`` (96 bytes)."""
+
+    _fields_ = [
+        ("pti_virtual_size", ctypes.c_uint64),
+        ("pti_resident_size", ctypes.c_uint64),
+        ("pti_total_user", ctypes.c_uint64),
+        ("pti_total_system", ctypes.c_uint64),
+        ("pti_threads_user", ctypes.c_uint64),
+        ("pti_threads_system", ctypes.c_uint64),
+        ("pti_policy", ctypes.c_int32),
+        ("pti_faults", ctypes.c_int32),
+        ("pti_pageins", ctypes.c_int32),
+        ("pti_cow_faults", ctypes.c_int32),
+        ("pti_messages_sent", ctypes.c_int32),
+        ("pti_messages_received", ctypes.c_int32),
+        ("pti_syscalls_mach", ctypes.c_int32),
+        ("pti_syscalls_unix", ctypes.c_int32),
+        ("pti_csw", ctypes.c_int32),
+        ("pti_threadnum", ctypes.c_int32),
+        ("pti_numrunning", ctypes.c_int32),
+        ("pti_priority", ctypes.c_int32),
+    ]
+
+
+_PidInfoFn = Callable[[int, int, int, Any, int], int]
+
+
+@functools.lru_cache(maxsize=1)
+def _libproc_pidinfo() -> _PidInfoFn | None:
+    """libproc's ``proc_pidinfo``, loaded once lazily; ``None`` if unavailable."""
+    try:
+        lib_path = ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib"
+        pidinfo: _PidInfoFn = ctypes.CDLL(lib_path).proc_pidinfo
+    except (OSError, AttributeError):
+        return None
+    return pidinfo
+
+
+def _macos_rss_bytes(pidinfo: _PidInfoFn | None) -> int | None:
+    """Current resident set size of this process via ``proc_pidinfo``.
+
+    ``proc_pidinfo`` returns the number of bytes written; the result is
+    accepted only when the whole ``proc_taskinfo`` struct came back. Any
+    failure — no library, a short count, ``OSError`` — yields ``None``;
+    the reader never raises into the endpoint.
+    """
+    if pidinfo is None:
+        return None
+    info = _ProcTaskinfo()
+    try:
+        written = pidinfo(
+            os.getpid(), _PROC_PIDTASKINFO, 0, ctypes.byref(info), ctypes.sizeof(info)
+        )
+    except OSError:
+        return None
+    if written != ctypes.sizeof(info):
+        return None
+    return int(info.pti_resident_size)
 
 
 class WebServer:
@@ -896,6 +1186,8 @@ class WebServer:
         self._suppressed_refusals = 0
         self._runtime_log_path: str | None = None
         self._runtime_rigctld_addr: str | None = None
+        # MOR-3536: RigctldServer.open_channel, attached by the composition root.
+        self._rigctl_channel: OpenRigctlChannel | None = None
         self._runtime_last_error: str | None = None
         self._client_tasks: set[asyncio.Task[None]] = set()
         self._scope_handlers: set["ScopeHandler"] = set()
@@ -955,6 +1247,27 @@ class WebServer:
                 True,
                 self._hardware_scope_available,
             )
+        # SDR panadapter scope (MOR-3157): selected when an SDR config
+        # is present (auto) or --scope-source sdr is explicit; feeds
+        # /api/v1/scope while its frames flow, falls back on failure.
+        self._sdr_runtime: SdrScopeRuntime | None = None
+        self._sdr_tick_task: asyncio.Task[None] | None = None
+        self._sdr_last_active: bool | None = None
+        self._sdr_last_status: tuple[object, ...] | None = None
+        self._sdr_start_failure_logged = False
+        if self._config.sdr_config is not None and self._config.scope_source not in (
+            "hardware",
+            "audio_fft",
+        ):
+            self._sdr_runtime = SdrScopeRuntime(
+                self._config.sdr_config,
+                source_factory=self._config.sdr_source_factory,
+            )
+            logger.info(
+                "SDR scope configured (device=%r, requested=%s)",
+                self._config.sdr_config.device_args,
+                self._config.scope_source,
+            )
         # Audio analyzer: lightweight SNR estimator, tapped from PCM stream.
         self._audio_analyzer: AudioAnalyzer | None = None
         if radio is not None and _has_audio:
@@ -963,6 +1276,24 @@ class WebServer:
                 STAGE_RX_POST_DSP
             ).register("audio-analyzer", self._audio_analyzer.feed_audio)
         self._command_queue: CommandQueue = CommandQueue()
+        self._controller = ControllerAuthority(
+            ready=self._controller_ready,
+            cleanup=self._controller_cleanup,
+            tx_ready=self._controller_native_ready,
+            release_session=self._controller_release_session,
+            max_sessions_per_client=self._config.max_controller_sessions_per_ip,
+        )
+        self._command_queue.bind_controller(self._controller)
+        self._controller_handler_tasks: dict[ControllerTicket, asyncio.Task[Any]] = {}
+        self._controller_audio_cleanup: set[asyncio.Future[Any]] = set()
+        self._controller_enforcement_ready = False
+        self._controller_installed = False
+        if radio is not None and getattr(radio, "_controller_authority", None) is None:
+            try:
+                setattr(radio, "_controller_authority", self._controller)
+                self._controller_installed = True
+            except (AttributeError, TypeError):
+                pass
         self._radio_poller: RadioPoller | None = None
         self._state_poller: Any | None = None  # StatePoller (lazy, optional)
         self._state_store_freshness_task: asyncio.Task[None] | None = None
@@ -1008,6 +1339,15 @@ class WebServer:
         # could not be opened; ``_build_radio_health`` combines it with the
         # same no-radio-observation predicate.
         self._served_without_port: bool = False
+        # MOR-3391 part 2: set once the startup gate released for a
+        # start-up busy hold. Unlike the silent-link mark above it never
+        # feeds health: a held session is a busy radio, not a silent one.
+        self._served_with_startup_busy_hold: bool = False
+        # MOR-3452: set by an operator-initiated radio disconnect (HTTP
+        # route or WS message) and cleared on operator connect or when
+        # the radio reports connected again. No lifecycle or radio
+        # record of intent exists, so the web seat keeps this one mark.
+        self._operator_disconnected: bool = False
         # Audio bridge (virtual device integration)
         self._audio_bridge: "AudioBridge | None" = None
         # MOR-3078: bridge kwargs armed by ``defer_audio_bridge_start``
@@ -1018,6 +1358,8 @@ class WebServer:
         self._watched_audio_session: AudioSession | None = None
         # Latest reconnect status forwarded from the radio (MOR-594)
         self._connection_status: dict[str, Any] | None = None
+        # Count of ``reconnecting`` edges seen by ``_on_reconnect_status``
+        self._reconnects_total: int = 0
         # Scope health monitor
         self._scope_last_nonzero: float = 0.0
         self._scope_health_task: asyncio.Task[None] | None = None
@@ -1243,6 +1585,57 @@ class WebServer:
         """Backend view of radio readiness (CI-V healthy)."""
         return bool(radio_ready(self._radio))
 
+    def attach_rigctl_channel(self, open_channel: OpenRigctlChannel) -> None:
+        """Serve ``/api/v1/rigctl`` through the bundled rigctld server (MOR-3536)."""
+        self._rigctl_channel = open_channel
+
+    def note_operator_disconnect(self) -> None:
+        """Record an intentional operator radio disconnect (MOR-3452)."""
+
+        self._operator_disconnected = True
+
+    def note_operator_connect(self) -> None:
+        """Clear the operator-disconnect mark on operator connect (MOR-3452)."""
+
+        self._operator_disconnected = False
+
+    def _operator_disconnect_active(self) -> bool:
+        """Whether the radio is down after an operator disconnect (MOR-3452).
+
+        Reads only the radio's public ``connected`` / readiness surface,
+        never private lifecycle state. The mark heals on the next
+        evaluation while connected, so a backend-side reconnect needs no
+        explicit clearing.
+        """
+
+        if not self._operator_disconnected:
+            return False
+        radio = self._radio
+        raw_connected = (
+            getattr(radio, "connected", False) if radio is not None else False
+        )
+        connected = raw_connected if isinstance(raw_connected, bool) else False
+        if connected or self._radio_ready():
+            self._operator_disconnected = False
+            return False
+        return True
+
+    def _startup_busy_hold(self) -> tuple[bool, float | None]:
+        """Whether the first connect waits out a busy reject (MOR-3391).
+
+        Read through the radio's public busy surface only; a radio
+        without it is never busy. The retry number is the live cooldown
+        remainder while one runs, else the hold's cooldown between two
+        busy passes.
+        """
+        event = getattr(self._radio, "startup_busy_hold_event", None)
+        if not isinstance(event, asyncio.Event) or not event.is_set():
+            return False, None
+        retry = getattr(self._radio, "startup_busy_hold_retry_in_seconds", None)
+        if isinstance(retry, bool) or not isinstance(retry, (int, float)):
+            return True, None
+        return True, float(retry)
+
     def _connection_identity_payload(self) -> dict[str, object] | None:
         """The served ``connection.identity`` object (MOR-3071).
 
@@ -1301,34 +1694,48 @@ class WebServer:
             generation = self._scope_demand_generation
             if not was_registered:
                 self._broadcast_ws_client_state_update()
+            if self._sdr_runtime is not None:
+                self._ensure_sdr_scope_started()
+                if self._sdr_scope_active():
+                    return  # the SDR feeds /api/v1/scope
+                if not self._hardware_scope_available:
+                    return  # audio-FFT fallback gate reopens itself
+                # SDR stale on a hardware-scope radio: hardware fallback.
             if self._radio is not None:
                 if not self._hardware_scope_available:
                     logger.info(
                         "scope: active radio does not expose runtime scope support"
                     )
                     return
-                # Always ensure callback is wired for new handlers
-                self._set_scope_data_callback(self._broadcast_scope)
-                if self._scope_enabled:
-                    logger.debug(
-                        "scope: already enabled, skipping re-enable (%d handlers)",
-                        len(self._scope_handlers),
-                    )
-                    return
-                if self._scope_enable_failed:
-                    logger.debug("scope: enable previously rejected; not retrying")
-                    return
-                if self._radio_ready():
-                    if await self._execute_scope_command(
-                        EnableScope(generation=generation)
-                    ):
-                        self._scope_enabled = True
-                        logger.info("scope: enable confirmed")
-                else:
-                    self._schedule_scope_enable_when_ready(
-                        reason="handler_connect", generation=generation
-                    )
-                    logger.info("scope: defer enable until radio_ready")
+                await self._enable_hardware_scope(
+                    reason="handler_connect", generation=generation
+                )
+
+    async def _enable_hardware_scope(self, *, reason: str, generation: int) -> None:
+        """Wire the hardware scope data callback and enable the radio's
+        scope through the ordered command queue. Shared by the
+        client-register path (:meth:`ensure_scope_enabled`) and the
+        SDR-stale fallback in :meth:`_sdr_tick_loop` (MOR-3202); callers
+        serialize concurrent invocations with ``_scope_enable_lock``.
+        """
+        # Always ensure callback is wired for new handlers
+        self._set_scope_data_callback(self._on_hardware_scope_frame)
+        if self._scope_enabled:
+            logger.debug(
+                "scope: already enabled, skipping re-enable (%d handlers)",
+                len(self._scope_handlers),
+            )
+            return
+        if self._scope_enable_failed:
+            logger.debug("scope: enable previously rejected; not retrying")
+            return
+        if self._radio_ready():
+            if await self._execute_scope_command(EnableScope(generation=generation)):
+                self._scope_enabled = True
+                logger.info("scope: enable confirmed")
+        else:
+            self._schedule_scope_enable_when_ready(reason=reason, generation=generation)
+            logger.info("scope: defer enable until radio_ready")
 
     def unregister_scope_handler(self, handler: "ScopeHandler") -> None:
         """Unregister a scope handler."""
@@ -1339,6 +1746,7 @@ class WebServer:
         if was_registered and not self._scope_handlers:
             self._scope_demand_generation += 1
             self._cancel_scope_reenable_task()
+            self._stop_sdr_scope()
         if (
             not self._scope_handlers
             and self._radio is not None
@@ -1376,7 +1784,7 @@ class WebServer:
             if self._scope_handlers:
                 logger.debug("scope: disable task aborted — handler reconnected")
                 if self._radio is not None:
-                    self._set_scope_data_callback(self._broadcast_scope)
+                    self._set_scope_data_callback(self._on_hardware_scope_frame)
                 return
             if generation != self._scope_demand_generation:
                 logger.debug("scope: disable task superseded by newer viewer demand")
@@ -1408,10 +1816,23 @@ class WebServer:
         since those radios derive their spectrum from RX audio. Hardware-scope
         radios (e.g. IC-7610) keep ``/api/v1/scope`` sourced exclusively from
         the real scope, so the audio FFT never touches it (MOR-241).
+        While the SDR scope is selected and its frames flow, the SDR owns
+        ``/api/v1/scope`` (MOR-3157).
         """
         self._broadcast_audio_scope(frame)
-        if not self._hardware_scope_available:
+        if not self._hardware_scope_available and not self._sdr_scope_active():
             self._broadcast_scope(frame)
+
+    def _on_hardware_scope_frame(self, frame: Any) -> None:
+        """Hardware scope data sink for ``/api/v1/scope``: broadcast
+        unless the SDR scope owns the channel (MOR-3202). Wired instead
+        of ``_broadcast_scope`` at every hardware wire point, so a scope
+        left enabled after an SDR outage stops feeding the channel once
+        the SDR runtime is active again — no unwire/CI-V disable
+        round-trip."""
+        if self._sdr_scope_active():
+            return
+        self._broadcast_scope(frame)
 
     def _broadcast_scope(self, frame: Any) -> None:
         """Broadcast scope frame to all registered handlers.
@@ -1513,6 +1934,153 @@ class WebServer:
             self._audio_fft_scope.set_mode_bandwidth(rule.max_hz)
         else:
             self._audio_fft_scope.set_mode_bandwidth(None)
+
+    # ------------------------------------------------------------------
+    # SDR scope source (MOR-3157)
+    # ------------------------------------------------------------------
+
+    def _sdr_scope_active(self) -> bool:
+        """Whether the SDR scope currently owns ``/api/v1/scope``."""
+        runtime = self._sdr_runtime
+        return runtime is not None and runtime.active
+
+    def _sdr_status_payload(self) -> dict[str, Any]:
+        """The public ``sdr`` status object (MOR-3201), ``disabled`` with
+        zeroed fields when no SDR runtime exists."""
+        runtime = self._sdr_runtime
+        config = self._config.sdr_config
+        if runtime is None or config is None:
+            return {
+                "state": "disabled",
+                "device": "",
+                "sampleRateHz": 0,
+                "spanHz": 0,
+                "txFrozen": False,
+                "overflowCount": 0,
+                "lastError": None,
+            }
+        return {
+            "state": runtime.state,
+            "device": config.device_args,
+            "sampleRateHz": config.sample_rate_hz,
+            "spanHz": runtime.span_hz,
+            "txFrozen": runtime.tx_frozen,
+            "overflowCount": runtime.overflow_count,
+            "lastError": runtime.last_error,
+        }
+
+    def _sdr_status_key(self) -> tuple[object, ...]:
+        """Delivery-key component for the ``sdr`` object's live fields."""
+        runtime = self._sdr_runtime
+        if runtime is None:
+            return ("disabled",)
+        return (
+            runtime.state,
+            runtime.span_hz,
+            runtime.tx_frozen,
+            runtime.overflow_count,
+            runtime.last_error,
+        )
+
+    def _publish_sdr_status_change(self) -> None:
+        """Broadcast a state update when the ``sdr`` status object
+        changed — it lives outside the StateStore (same rule as
+        ``publish_monitor_mute``), and the delivery key keeps
+        ETag/publicStateSeq moves tied to real changes."""
+        if self._stopping:
+            return
+        key = self._sdr_status_key()
+        if key == self._sdr_last_status:
+            return
+        self._sdr_last_status = key
+        if self._control_event_queues:
+            self._broadcast_state_update(force=True)
+
+    def _ensure_sdr_scope_started(self) -> None:
+        """Start once, seeded so the controller retunes before open. A
+        start failure publishes the ``error`` status once per streak and
+        keeps the fallback path; the next connect retries the start."""
+        runtime = self._sdr_runtime
+        if runtime is None or runtime.started:
+            return
+        freq_hz, tx_active = self._primary_vfo_freq_and_tx()
+        try:
+            runtime.start(self._broadcast_scope, freq_hz=freq_hz, tx_active=tx_active)
+        except Exception as exc:
+            if not self._sdr_start_failure_logged:
+                logger.warning("sdr-scope: start failed, fallback stays: %s", exc)
+                self._sdr_start_failure_logged = True
+            return  # "error"/lastError stay; no tick loop
+        finally:
+            self._sdr_last_active = None
+            self._publish_sdr_status_change()
+        self._sdr_start_failure_logged = False
+        self._sdr_tick_task = self._spawn(self._sdr_tick_loop())
+
+    def _stop_sdr_scope(self) -> None:
+        """Stop the pipeline and its tick loop; idempotent."""
+        task = self._sdr_tick_task
+        self._sdr_tick_task = None
+        if task is not None and not task.done():
+            task.cancel()
+        if self._sdr_runtime is not None and self._sdr_runtime.started:
+            self._sdr_runtime.stop()
+        self._sdr_last_active = None
+        self._sdr_start_failure_logged = False  # a stop ends the streak
+        self._publish_sdr_status_change()
+
+    def _primary_vfo_freq_and_tx(self) -> tuple[int | None, bool]:
+        """Primary VFO frequency and TX flag from the store."""
+        snapshot = self.command_state_store.snapshot()
+        freq = self._active_primary_freq_mode_value(snapshot, "freq_hz")
+        freq_hz = freq if isinstance(freq, int) and freq > 0 else None
+        tx_active = legacy_ptt_bool(project_observed_ptt(snapshot))
+        return freq_hz, tx_active
+
+    async def _sdr_tick_loop(self) -> None:
+        """Feed the SDR controller and manage source fallback."""
+        while True:
+            await asyncio.sleep(_SDR_TICK_INTERVAL_S)
+            runtime = self._sdr_runtime
+            if runtime is None or not runtime.started:
+                return
+            try:
+                freq_hz, tx_active = self._primary_vfo_freq_and_tx()
+                runtime.on_radio_state(freq_hz, tx_active)
+                runtime.tick()
+            except Exception:  # noqa: BLE001 - the tick must survive
+                logger.exception("sdr-scope: tick error")
+                continue
+            if runtime.active != self._sdr_last_active:
+                self._sdr_last_active = runtime.active
+                if runtime.active:
+                    logger.info("sdr-scope: frames flowing — SDR owns /api/v1/scope")
+                else:
+                    logger.warning(
+                        "sdr-scope: no frames — falling back on /api/v1/scope"
+                    )
+                # MOR-3202: a stale SDR hands /api/v1/scope to the
+                # hardware scope through the ordinary enable path when
+                # clients are connected. Recovery needs no action here:
+                # the hardware data callback is gated on SDR activity
+                # (_on_hardware_scope_frame), so hardware frames stop
+                # reaching the channel once the SDR runtime is active
+                # again.
+                if (
+                    not runtime.active
+                    and self._hardware_scope_available
+                    and self._radio is not None
+                    and self._scope_handlers
+                ):
+                    try:
+                        async with self._scope_enable_lock:
+                            await self._enable_hardware_scope(
+                                reason="sdr_stale",
+                                generation=self._scope_demand_generation,
+                            )
+                    except Exception:
+                        logger.exception("sdr-scope: hardware fallback failed")
+            self._publish_sdr_status_change()
 
     # ------------------------------------------------------------------
     # RadioPoller integration
@@ -1863,6 +2431,7 @@ class WebServer:
             len(self._scope_handlers),
             len(self._control_event_queues),
             len(self._audio_broadcaster._clients),
+            self._sdr_status_key(),
         )
 
     def _public_state_etag(
@@ -1948,6 +2517,8 @@ class WebServer:
         payload["publicStateSeq"] = public_state_seq
         payload["stateContractVersion"] = 1
         payload["providerGeneration"] = snapshot.provider_generation
+        # Live SDR status (MOR-3201); the delivery key carries it (cache hit = no-op).
+        payload["sdr"] = self._sdr_status_payload()
         if updated_at is None:
             self._cached_public_state_key = cache_key
             self._cached_public_state_payload = copy.deepcopy(payload)
@@ -2259,6 +2830,12 @@ class WebServer:
 
     def _on_provider_generation(self, _generation: int) -> None:
         """Fail active Web work at the canonical provider invalidation edge."""
+        controller = getattr(self, "_controller", None)
+        if isinstance(controller, ControllerAuthority):
+            controller.revoke()
+        broadcaster = getattr(self, "_audio_broadcaster", None)
+        if isinstance(broadcaster, AudioBroadcaster):
+            broadcaster.invalidate_rx_start_status()
         self.command_service.terminate_active_commands(
             "provider generation invalidated",
             source="websocket",
@@ -2271,13 +2848,23 @@ class WebServer:
         """Build radio health and advance the health revision on transitions."""
         now = time.monotonic()
         observed = store_has_radio_observation(self.command_state_store)
+        busy, _retry = self._startup_busy_hold()
+        operator = self._operator_disconnect_active()
         health = _classify_radio_health_impl(
             self._radio,
             server_reachable=True,
             now_monotonic=now,
             served_with_silent_link=self._served_with_silent_link and not observed,
             served_without_port=self._served_without_port and not observed,
+            operator_disconnected=operator and not busy,
         )
+        if busy:
+            # MOR-3450: the radio is present and busy-rejecting, retrying in
+            # the background — not missing and not on a dead network. The
+            # held session is a bounded wait, so the verdict is the
+            # ``recovering`` readiness literal, never ``stalled``.
+            health["likelyCause"] = "radio_session_busy"
+            health["readiness"] = "recovering"
         signature = (
             health.get("serverReachable"),
             health.get("radioLink"),
@@ -2715,8 +3302,8 @@ class WebServer:
                 # the OFF down.
                 logger.warning("reconnect: managed TX release failed", exc_info=True)
 
-    def _on_radio_reconnect(self) -> None:
-        """Called after soft_reconnect — refetch state and re-enable scope."""
+    def _begin_reconnect_reacquire(self) -> None:
+        """Reset epoch facts and reopen the readiness gate for a refetch."""
         # A/B identity and relative samples are connection-epoch facts.  Clear
         # them before any new-epoch read can arrive; the topology-derived MAIN
         # fact is independently valid and is reasserted without touching TX.
@@ -2727,79 +3314,110 @@ class WebServer:
         if self._radio_poller is not None:
             self._radio_poller._initial_fetch_done.clear()
 
-        async def _refetch_and_reenable() -> None:
-            """Release TX first, then refetch state, signal readiness and scope."""
-            try:
-                # Inside the guard, not above it (MOR-1187's shape, MOR-1196):
-                # servicing the release resolves the supervisor, which is
-                # backend code and free to raise anything.  Above the
-                # ``finally`` it escapes with the gate still clear, and since
-                # this closure is the only thing in ``src/`` that ever re-sets
-                # the gate, the poller defers and re-queues ``EnableScope`` for
-                # good.  The failure still propagates — the point is that
-                # cleanup runs first, not that anything is swallowed.
-                await self._service_managed_tx_release()
-                try:
-                    if self._radio is not None and hasattr(
-                        self._radio, "_fetch_initial_state"
-                    ):
-                        await self._radio._fetch_initial_state()
-                    if isinstance(self._radio_poller, RadioPoller):
-                        await self._radio_poller.select_vfo_a_on_connect(
-                            read_only=self._config.read_only
-                        )
-                except Exception:
-                    logger.warning("reconnect: refetch failed", exc_info=True)
-            finally:
-                # The readiness gate MUST reopen unconditionally for any
-                # attached poller-like object (MOR-1187/1196 invariant —
-                # ``_refetch_and_reenable`` is the only thing in ``src/``
-                # that ever re-sets it; ``test_web_recovery_durable_off``
-                # pins this with a non-RadioPoller stub).
-                if self._radio_poller is not None:
-                    self._radio_poller._initial_fetch_done.set()
-                if isinstance(self._radio_poller, RadioPoller):
-                    # MOR-1495 review R2: RadioPoller._run()'s one-time
-                    # startup section never re-fires after a soft-reconnect,
-                    # so re-seed scanning/scan_resume_mode here too — otherwise
-                    # a reconnect after any scan command would leave the web
-                    # trusting a possibly-stale pre-reconnect value forever.
-                    # This is a pure local seed and never writes to the radio.
-                    try:
-                        self._radio_poller._seed_scan_facts_at_connect()
-                    except Exception:
-                        logger.warning(
-                            "reconnect: scan facts seed failed",
-                            exc_info=True,
-                        )
-            # Re-enable scope after refetch completes.
-            # Do NOT gate on self._radio_ready(): that property waits for
-            # CI-V broadcast data, but on IC-7610 in the "deaf" firmware
-            # state broadcast may only resume once a scope-enable command
-            # is sent — creating a deadlock where scope re-enable waits
-            # for the very signal it would itself trigger.  The session
-            # is already up at this point (soft_reconnect completed auth +
-            # discovery), so queue EnableScope unconditionally; if the
-            # radio is genuinely unreachable the command will fail on its
-            # own, which is strictly better than a silent 30-second wait
-            # every reconnect cycle.
-            if (
-                self._scope_handlers
-                and self._radio is not None
-                and self._hardware_scope_available
-                and not self._scope_enable_failed
-            ):
-                self._set_scope_data_callback(self._broadcast_scope)
-                if await self._execute_scope_command(
-                    EnableScope(generation=self._scope_demand_generation)
-                ):
-                    self._scope_enabled = True
-                    logger.info(
-                        "scope: re-enable confirmed after reconnect (%d handlers)",
-                        len(self._scope_handlers),
-                    )
+    def _on_radio_reconnect(self) -> None:
+        """Called after soft_reconnect — refetch state and re-enable scope."""
+        self._begin_reconnect_reacquire()
+        self._spawn(self._refetch_and_reenable())
 
-        self._spawn(_refetch_and_reenable())
+    async def finish_startup_busy_hold(self) -> None:
+        """Complete web start-up after a start-up busy hold is granted.
+
+        Runs the late-connect completion: the shared
+        ``_refetch_and_reenable`` (initial-state refetch, VFO-A select,
+        scan seeding and scope re-enable — the same body a late
+        ``connect()`` gets through ``_on_radio_reconnect``) plus the
+        poller's one-time start-up fetches, which ran against the
+        disconnected radio while the hold was pending. Awaited (not
+        spawned) so the caller knows when the station is ready.
+        """
+        self._begin_reconnect_reacquire()
+        await self._refetch_and_reenable()
+        if isinstance(self._radio_poller, RadioPoller):
+            # The poller's one-time fetches from ``RadioPoller._run``
+            # already ran at server start, against the disconnected
+            # radio; run them once now that the grant landed.
+            try:
+                await self._radio_poller._fetch_nb_controls()
+            except Exception:
+                logger.debug(
+                    "radio-poller: NB controls late fetch failed", exc_info=True
+                )
+            try:
+                await self._radio_poller._fetch_mod_inputs()
+            except Exception:
+                logger.debug("radio-poller: MOD-input late fetch failed", exc_info=True)
+
+    async def _refetch_and_reenable(self) -> None:
+        """Release TX first, then refetch state, signal readiness and scope."""
+        try:
+            # Inside the guard, not above it (MOR-1187's shape, MOR-1196):
+            # servicing the release resolves the supervisor, which is
+            # backend code and free to raise anything.  Above the
+            # ``finally`` it escapes with the gate still clear, and since
+            # this method is the only thing in ``src/`` that ever re-sets
+            # the gate, the poller defers and re-queues ``EnableScope`` for
+            # good.  The failure still propagates — the point is that
+            # cleanup runs first, not that anything is swallowed.
+            await self._service_managed_tx_release()
+            try:
+                if self._radio is not None and hasattr(
+                    self._radio, "_fetch_initial_state"
+                ):
+                    await self._radio._fetch_initial_state()
+                if isinstance(self._radio_poller, RadioPoller):
+                    await self._radio_poller.select_vfo_a_on_connect(
+                        read_only=self._config.read_only
+                    )
+            except Exception:
+                logger.warning("reconnect: refetch failed", exc_info=True)
+        finally:
+            # The readiness gate MUST reopen unconditionally for any
+            # attached poller-like object (MOR-1187/1196 invariant —
+            # ``_refetch_and_reenable`` is the only thing in ``src/``
+            # that ever re-sets it; ``test_web_recovery_durable_off``
+            # pins this with a non-RadioPoller stub).
+            if self._radio_poller is not None:
+                self._radio_poller._initial_fetch_done.set()
+            if isinstance(self._radio_poller, RadioPoller):
+                # MOR-1495 review R2: RadioPoller._run()'s one-time
+                # startup section never re-fires after a soft-reconnect,
+                # so re-seed scanning/scan_resume_mode here too — otherwise
+                # a reconnect after any scan command would leave the web
+                # trusting a possibly-stale pre-reconnect value forever.
+                # This is a pure local seed and never writes to the radio.
+                try:
+                    self._radio_poller._seed_scan_facts_at_connect()
+                except Exception:
+                    logger.warning(
+                        "reconnect: scan facts seed failed",
+                        exc_info=True,
+                    )
+        # Re-enable scope after refetch completes.
+        # Do NOT gate on self._radio_ready(): that property waits for
+        # CI-V broadcast data, but on IC-7610 in the "deaf" firmware
+        # state broadcast may only resume once a scope-enable command
+        # is sent — creating a deadlock where scope re-enable waits
+        # for the very signal it would itself trigger.  The session
+        # is already up at this point (soft_reconnect completed auth +
+        # discovery), so queue EnableScope unconditionally; if the
+        # radio is genuinely unreachable the command will fail on its
+        # own, which is strictly better than a silent 30-second wait
+        # every reconnect cycle.
+        if (
+            self._scope_handlers
+            and self._radio is not None
+            and self._hardware_scope_available
+            and not self._scope_enable_failed
+        ):
+            self._set_scope_data_callback(self._on_hardware_scope_frame)
+            if await self._execute_scope_command(
+                EnableScope(generation=self._scope_demand_generation)
+            ):
+                self._scope_enabled = True
+                logger.info(
+                    "scope: re-enable confirmed after reconnect (%d handlers)",
+                    len(self._scope_handlers),
+                )
 
     def _cancel_scope_reenable_task(self) -> None:
         """Cancel readiness work invalidated by a last-viewer transition."""
@@ -2842,7 +3460,7 @@ class WebServer:
                 if self._scope_enable_failed:
                     return
                 if self._radio_ready():
-                    self._set_scope_data_callback(self._broadcast_scope)
+                    self._set_scope_data_callback(self._on_hardware_scope_frame)
                     if await self._execute_scope_command(
                         EnableScope(generation=generation)
                     ):
@@ -2866,6 +3484,19 @@ class WebServer:
         finally:
             if self._scope_reenable_task is current_task:
                 self._scope_reenable_task = None
+
+    def _scope_tx_known(self) -> bool:
+        """Whether a transmit is known from managed intent or observed PTT."""
+        try:
+            if self.tx_active_hint():
+                return True
+            return (
+                project_observed_ptt(self.command_state_store.snapshot())
+                is ObservedPtt.ON
+            )
+        except Exception:
+            logger.debug("scope TX probe: unexpected failure", exc_info=True)
+            return False
 
     def _scope_health_check(self, frame: Any) -> None:
         """Track whether scope frames contain real data (non-zero pixels)."""
@@ -2904,6 +3535,13 @@ class WebServer:
                     retries = 0
                     continue
                 if not self._scope_enabled:
+                    continue
+                if self._scope_tx_known():
+                    # MOR-2859: all-zero frames are expected during transmit
+                    # (an IC-7300 with scope-during-TX off sends blanks), so
+                    # pause the stall timer instead of re-enabling mid-TX.
+                    self._scope_last_nonzero = time.monotonic()
+                    retries = 0
                     continue
                 now = time.monotonic()
                 if self._scope_last_nonzero == 0.0:
@@ -3063,6 +3701,11 @@ class WebServer:
             setter(None)
 
     def _on_reconnect_status(self, status: dict[str, Any]) -> None:
+        previous = self._connection_status
+        if status.get("state") == "reconnecting" and (
+            previous is None or previous.get("state") != "reconnecting"
+        ):
+            self._reconnects_total += 1
         self._connection_status = dict(status)
         self._snapshot_for_delivery()
         self.broadcast_event("connection_status", dict(status))
@@ -3097,6 +3740,9 @@ class WebServer:
         is exactly ON. Everything else closes the gate: unknown or stale
         observation, no authority, or a snapshot that cannot be read.
         """
+        controller = getattr(self, "_controller", None)
+        if isinstance(controller, ControllerAuthority) and controller.mode == "remote":
+            return False
         authority = self._managed_tx_authority()
         if authority is None:
             return False
@@ -3251,6 +3897,7 @@ class WebServer:
         from .web_startup import stop_web_server  # noqa: TID251
 
         self._stopping = True
+        self._controller.revoke()
         unsubscribe = self._managed_tx_change_unsubscribe
         self._managed_tx_change_unsubscribe = None
         self._managed_tx_hint_authority = None
@@ -3259,6 +3906,7 @@ class WebServer:
         self._unsubscribe_provider_generation()
         self._detach_audio_session_listener()
         self._detach_reconnect_status_listener()
+        self._stop_sdr_scope()
         await stop_web_server(self)
 
     async def serve_forever(
@@ -3398,9 +4046,14 @@ class WebServer:
                 break
             if b":" in stripped:
                 key, _, value = stripped.partition(b":")
-                headers[key.decode("ascii", errors="replace").strip().lower()] = (
-                    value.decode("ascii", errors="replace").strip()
-                )
+                name = key.decode("ascii", errors="replace").strip().lower()
+                text = value.decode("ascii", errors="replace").strip()
+                if (
+                    name in ("x-rigplane-controller", "sec-websocket-protocol")
+                    and name in headers
+                ):
+                    text = headers[name] + "," + text
+                headers[name] = text
 
         return method, path, headers, query
 
@@ -3543,7 +4196,12 @@ class WebServer:
         if profile is not None:
             capabilities.update(
                 {
+                    "cwText": _serialize_cw_text(profile, self._radio),
                     "modes": list(profile.modes),
+                    "modeFamilies": {
+                        name: list(members)
+                        for name, members in profile.mode_families.items()
+                    },
                     "filters": list(profile.filters),
                     "filterWidthMin": profile.filter_width_min,
                     "filterWidthMax": profile.filter_width_max,
@@ -3608,12 +4266,21 @@ class WebServer:
                 "radio": model,
                 # New structured fields
                 "model": model,
+                "audioReceive": self._audio_broadcaster.rx_start_status(),
+                "audioRoute": (
+                    asdict(resolve_audio_route(self._radio))
+                    if self._radio is not None
+                    else None
+                ),
                 "capabilities": capabilities,
                 "connection": {
                     "rigConnected": connected,
                     "radioReady": self._radio_ready(),
                     "controlConnected": control_connected,
                     "identity": self._connection_identity_payload(),
+                    "session": _startup_busy_session_payload(
+                        *self._startup_busy_hold()
+                    ),
                     "wsClients": len(self._client_tasks),
                 },
             },
@@ -3638,6 +4305,31 @@ class WebServer:
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
         ready = self._radio_ready()
+        busy, retry = self._startup_busy_hold()
+        if busy and not ready:
+            # MOR-3391 part 2: the first connect is waiting out a busy
+            # reject while HTTP already serves. Every other not-ready body
+            # stays exactly {"status": "not_ready", "radioReady": false}.
+            # The 0.0 is unreachable with the production radio (its event
+            # is set only with a live cooldown); it guards doubles that
+            # set the event without a retry number.
+            body = json.dumps(
+                {
+                    "status": "not_ready",
+                    "radioReady": False,
+                    "reason": "session_busy",
+                    "retryInSeconds": retry if retry is not None else 0.0,
+                },
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer,
+                503,
+                "Service Unavailable",
+                body,
+                {"Content-Type": "application/json"},
+            )
+            return
         body = json.dumps(
             {
                 "status": "ready" if ready else "not_ready",
@@ -3693,7 +4385,17 @@ class WebServer:
         backend = getattr(radio, "backend_id", None) if radio is not None else None
         radio_payload = self._radio_runtime_payload()
         health = self._build_radio_health()
-        if radio_payload["radioReady"]:
+        busy, _retry = self._startup_busy_hold()
+        if busy:
+            readiness = "radio_session_busy"
+            message = (
+                "The radio's LAN session is held by another client; retrying "
+                "— stop the other client to connect sooner."
+            )
+        elif self._operator_disconnect_active():
+            readiness = "operator_disconnected"
+            message = "Disconnected by the operator."
+        elif radio_payload["radioReady"]:
             readiness = "ready_with_radio"
             message = "Station server is ready with an attached radio."
         elif radio is None:
@@ -3882,6 +4584,81 @@ class WebServer:
             "events": self._state_diagnostics.snapshot(),
         }
 
+    def _runtime_audio_playback_payload(self) -> dict[str, Any]:
+        broadcaster = getattr(self, "_audio_broadcaster", None)
+        if isinstance(broadcaster, AudioBroadcaster):
+            return broadcaster.playback_diagnostics()
+        return {
+            "schemaVersion": 1,
+            "state": "unavailable",
+            "activeClients": None,
+            "reportedClients": None,
+            "omittedClients": None,
+            "clients": [],
+        }
+
+    def _runtime_audio_capture_payload(self) -> dict[str, Any]:
+        broadcaster = getattr(self, "_audio_broadcaster", None)
+        if isinstance(broadcaster, AudioBroadcaster):
+            return broadcaster.capture_diagnostics()
+        return {"schemaVersion": 1, "lastFailureCategory": None}
+
+    def _runtime_process_payload(self) -> dict[str, Any]:
+        """Process metrics; a value this platform cannot report is ``None``."""
+        rss_bytes: int | None = None
+        try:
+            with open("/proc/self/statm", encoding="ascii") as statm:
+                rss_bytes = int(statm.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+        except (OSError, ValueError, IndexError):
+            pass
+        if rss_bytes is None and sys.platform == "darwin":
+            rss_bytes = _macos_rss_bytes(_libproc_pidinfo())
+        open_fds: int | None = None
+        for fd_dir in ("/proc/self/fd", "/dev/fd"):
+            try:
+                names = os.listdir(fd_dir)
+            except OSError:
+                continue
+            # The listing can name its own, already closed, directory
+            # descriptor; ``fstat`` fails on it, so it is not counted.
+            open_fds = 0
+            for name in names:
+                try:
+                    os.fstat(int(name))
+                except (OSError, ValueError):
+                    continue
+                open_fds += 1
+            break
+        radio = self._radio
+        # Reconnect status is emitted only by the LAN watchdog/reconnect
+        # loops (``runtime/radio_reconnect.py``), started solely by
+        # ``ControlPhase._start_watchdog`` — recorded in ``_watchdog_task``.
+        # Serial CI-V and Yaesu CAT radios count their own link-loss
+        # episodes instead (``serial_reconnects_total``); a radio with
+        # neither source reports null ("not counted").
+        watchdog_task = (
+            getattr(radio, "_watchdog_task", None) if radio is not None else None
+        )
+        reconnects_observable = watchdog_task is not None
+        serial_reconnects = (
+            getattr(radio, "serial_reconnects_total", None)
+            if radio is not None
+            else None
+        )
+        if reconnects_observable:
+            reconnects_total: int | None = self._reconnects_total
+        elif type(serial_reconnects) is int:
+            reconnects_total = serial_reconnects
+        else:
+            reconnects_total = None
+        return {
+            "rssBytes": rss_bytes,
+            "openFds": open_fds,
+            "threads": threading.active_count(),
+            "asyncioTasks": len(asyncio.all_tasks()),
+            "reconnectsTotal": reconnects_total,
+        }
+
     async def _serve_runtime(
         self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
     ) -> None:
@@ -3906,6 +4683,8 @@ class WebServer:
                 "bridge": self._runtime_bridge_payload(),
                 "audioBus": self._runtime_audio_bus_payload(),
                 "audioSession": self._runtime_audio_session_payload(),
+                "audioPlayback": self._runtime_audio_playback_payload(),
+                "audioCapture": self._runtime_audio_capture_payload(),
                 "connection": self._runtime_connection_payload(),
                 "stateAcquisition": self._state_acquisition_diagnostics_payload(),
                 # Additive TX safety evidence (MOR-1015): owner, phase, lease,
@@ -3913,6 +4692,7 @@ class WebServer:
                 # from the supervisor rather than re-derived from the poller's
                 # PTT mirror — which knows nothing about leases or obligations.
                 "txSafety": build_tx_safety_payload(radio),
+                "process": self._runtime_process_payload(),
                 "lastError": self._runtime_last_error,
             },
             separators=(",", ":"),
@@ -4062,18 +4842,27 @@ class WebServer:
                 else (2 if "dual_rx" in caps else 1)
             ),
             "scopeSource": (
-                "hardware"
+                "sdr"
+                if self._sdr_scope_active()
+                else "hardware"
                 if self._hardware_scope_available
-                else ("audio_fft" if self._audio_fft_scope is not None else None)
+                else "audio_fft"
+                if self._audio_fft_scope is not None
+                else None
             ),
+            "sdrAvailable": self._sdr_runtime is not None,
             "audioFftAvailable": self._audio_fft_scope is not None,
             "scopeConfig": {
                 "centerMode": True,
                 "amplitudeMax": 160,
                 "defaultSpan": (
-                    (self._audio_fft_scope.bandwidth_hz or 48000)
-                    if self._audio_fft_scope is not None
-                    else 500000
+                    self._sdr_runtime.span_hz
+                    if self._sdr_scope_active() and self._sdr_runtime is not None
+                    else (
+                        (self._audio_fft_scope.bandwidth_hz or 48000)
+                        if self._audio_fft_scope is not None
+                        else 500000
+                    )
                 ),
             },
             "audioConfig": {
@@ -4117,6 +4906,7 @@ class WebServer:
                     # leaving ``power_on`` undeclared (a level-only profile, see
                     # ``RadioProfile.infers_power_on_from_liveness``).
                     "powerOnCommand": profile.supports_command("power_on"),
+                    "cwText": _serialize_cw_text(profile, self._radio),
                     "vfoScheme": profile.vfo_scheme,
                     "vfoReadback": profile.vfo_readback,
                     "freqRanges": freq_ranges,
@@ -4126,6 +4916,10 @@ class WebServer:
                         else {}
                     ),
                     "modes": list(profile.modes),
+                    "modeFamilies": {
+                        name: list(members)
+                        for name, members in profile.mode_families.items()
+                    },
                     "filters": list(profile.filters),
                     "filterWidthMin": profile.filter_width_min,
                     "filterWidthMax": profile.filter_width_max,
@@ -4608,7 +5402,192 @@ class WebServer:
 
     def _managed_tx_authority(self) -> Any | None:
         port = self._production_managed_tx_port
-        return None if port is None else getattr(port, "authority", None)
+        authority = None if port is None else getattr(port, "authority", None)
+        controller = getattr(self, "_controller", None)
+        if isinstance(authority, ManagedTxAuthority) and isinstance(
+            controller, ControllerAuthority
+        ):
+            authority.bind_controller(controller)
+        return authority
+
+    def _controller_native_ready(self) -> bool:
+        return bool(
+            bounded_portaudio_pool.inflight == 0
+            and not bounded_portaudio_pool._opens
+            and not bounded_portaudio_pool._stops
+            and not bounded_portaudio_pool._cleanup_streams
+            and not self._controller_audio_cleanup
+        )
+
+    def _controller_ready(self) -> bool:
+        enforcement_ready = self._controller_enforcement_ready
+        if self._radio is not None:
+            from .web_startup import _validate_managed_tx  # noqa: TID251
+
+            try:
+                port = _validate_managed_tx(self)
+            except (AttributeError, RuntimeError, TypeError):
+                return False
+            enforcement_ready = (
+                port is not None
+                and getattr(self._radio, "_controller_authority", None)
+                is self._controller
+            )
+        if not enforcement_ready:
+            return False
+        try:
+            authority = self._managed_tx_authority()
+        except RuntimeError:
+            return False
+        return bool(
+            self._controller_installed
+            and not self._config.read_only
+            and not self._stopping
+            and self._webrtc_sessions is None
+            and self._audio_bridge is None
+            and self._controller_native_ready()
+            and isinstance(authority, ManagedTxAuthority)
+            and authority.controller_quiescent()
+            and project_observed_ptt(self.command_state_store.snapshot())
+            is ObservedPtt.OFF
+            and not any(
+                not task.done() for task in self._controller_handler_tasks.values()
+            )
+        )
+
+    async def _controller_cleanup(self) -> None:
+        if self._audio_bridge is not None:
+            self._audio_bridge._drop_queued_tx()
+        authority = self._managed_tx_authority()
+        if authority is None:
+            raise ControllerError("controller_not_ready", 503)
+        await authority.force_off()
+        tasks = tuple(self._controller_handler_tasks.values())
+        if tasks:
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in tasks), return_exceptions=True
+            )
+
+    async def _controller_release_session(self, owner: str) -> None:
+        """Release the TX an ended multi-client session holds (MOR-3534)."""
+        authority = self._managed_tx_authority()
+        if authority is not None:
+            await authority.owner_disconnect(owner)
+
+    async def _controller_audio_gate(
+        self, ticket: ControllerTicket, source: object
+    ) -> bool:
+        try:
+            self._controller.validate(ticket)
+            if not ticket.remote:
+                # MOR-3534: while a session holds TX only that session's own
+                # audio channel transmits. A sessionless channel is not pinned
+                # to its owner, but never feeds a session's transmission.
+                held = self._managed_tx_authority()
+                if isinstance(held, ManagedTxAuthority) and (
+                    held.held_by_other(ticket.tx_owner)
+                    if ticket.tx_owner is not None
+                    else self._controller.is_session_owner(held.tx_holder_nowait())
+                ):
+                    return False
+                return await self._bridge_tx_gate_open()
+            authority = self._managed_tx_authority()
+            if authority is None:
+                return False
+            intent = (await authority.snapshot()).state.intent
+            return bool(
+                intent.kind is ManagedTxIntentKind.PTT
+                and intent.owner_token
+                and self._controller.audio_matches(ticket, source, intent.owner_token)
+            )
+        except ControllerError:
+            return False
+
+    async def _controller_audio_loss(
+        self, ticket: ControllerTicket, source: object
+    ) -> None:
+        if ticket.remote and self._controller.fence_audio(ticket, source):
+            authority = self._managed_tx_authority()
+            if authority is not None:
+                await authority.force_off()
+
+    def _controller_track_audio_stop(self, stop: Awaitable[Any]) -> asyncio.Future[Any]:
+        """Retain cleanup currency through timeout; a refused close stays blocked."""
+        task = asyncio.ensure_future(stop)
+        self._controller_audio_cleanup.add(task)
+
+        def settled(done: asyncio.Future[Any]) -> None:
+            if (
+                not done.cancelled()
+                and done.exception() is None
+                and (done.result() is None or done.result() is True)
+            ):
+                self._controller_audio_cleanup.discard(done)
+            else:
+                self._controller.revoke()
+
+        task.add_done_callback(settled)
+        return task
+
+    async def _handle_http_controller(
+        self,
+        method: str,
+        path: str,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None,
+        reader: asyncio.StreamReader | None,
+    ) -> None:
+        allowed = ("POST",) if path.endswith("/mode") else ("GET", "POST", "DELETE")
+        if method not in allowed:
+            await self._send_json(
+                writer, 405, "Method Not Allowed", {"error": "method_not_allowed"}
+            )
+            return
+        try:
+            if path.endswith("/mode"):
+                peer = writer.get_extra_info("peername")
+                if not peer or not ipaddress.ip_address(peer[0]).is_loopback:
+                    raise ControllerError("controller_local_required")
+            if method == "GET":
+                result, status = self._controller.status(), 200
+            elif method == "DELETE":
+                await self._controller.release(
+                    (headers or {}).get("x-rigplane-controller")
+                )
+                result, status = self._controller.status(), 200
+            else:
+                payload = await self._read_json_object(writer, headers, reader)
+                if payload is None:
+                    return
+                field = "mode" if path.endswith("/mode") else "kind"
+                if set(payload) != {field} or type(payload[field]) is not str:
+                    raise ControllerError("invalid_request", 400)
+                if field == "mode":
+                    if self._audio_bridge is not None:
+                        self._audio_bridge._drop_queued_tx()
+                    await self._controller.set_mode(payload[field])
+                    result, status = self._controller.status(), 200
+                else:
+                    peer = writer.get_extra_info("peername")
+                    result = self._controller.acquire(
+                        payload[field], str(peer[0]) if peer else None
+                    )
+                    status = 201
+            await self._send_json(
+                writer, status, "Created" if status == 201 else "OK", result
+            )
+        except (ControllerError, ValueError) as exc:
+            status = exc.status if isinstance(exc, ControllerError) else 403
+            await self._send_json(
+                writer,
+                status,
+                "Refused",
+                {
+                    "error": str(exc)
+                    if isinstance(exc, ControllerError)
+                    else "controller_local_required"
+                },
+            )
 
     async def _managed_tx_document(self) -> dict[str, object]:
         authority = self._managed_tx_authority()
@@ -4667,6 +5646,11 @@ class WebServer:
                     },
                 )
                 return
+            if operation == "transmit_on" and self._controller.mode == "remote":
+                await self._send_json(
+                    writer, 403, "Forbidden", {"error": "controller_tx_unsupported"}
+                )
+                return
             if operation == "transmit_on" and self._config.read_only:
                 await self._send_json(
                     writer,
@@ -4703,7 +5687,17 @@ class WebServer:
             except RuntimeError:
                 await self._managed_tx_unavailable(writer)
                 return
-            accepted = submission.outcome.value == "accepted"
+            except ControllerError as exc:
+                # Controller currency failed after routing (MOR-3534): e.g. ended.
+                await self._send_json(
+                    writer, exc.status, "Forbidden", {"error": exc.code}
+                )
+                return
+            except CommandError:
+                # The queue reports a refused or no-longer-current transmit_on
+                # (another owner holds TX, MOR-3534) as a command error.
+                submission = None
+            accepted = submission is not None and submission.outcome.value == "accepted"
             await self._send_json(
                 writer,
                 202 if accepted else 409,
@@ -4948,6 +5942,14 @@ class WebServer:
             )
             details = service_result.executor_result.details or {}
             result = details["transaction_result"]
+        except TxInterlockRefusal as exc:
+            await self._send_json(
+                writer,
+                403,
+                "Forbidden",
+                {"error": exc.reason_code, "message": str(exc)},
+            )
+            return
         except (RigplaneTimeoutError, TimeoutError):
             await self._send_json(
                 writer,
@@ -5032,13 +6034,52 @@ class WebServer:
             )
             return
         try:
-            params = _consume_normalized_level_unit(raw_name, raw_params)
-            result = await self._control_handler_for()._enqueue_command(  # noqa: SLF001
-                raw_name,
-                params,
-                command_id=None if payload.get("id") is None else str(payload["id"]),
-                source="http",
+            if (
+                raw_name in ControlHandler._READ_ONLY_HANDLERS  # noqa: SLF001
+                or raw_name == "set_vfo_freq"
+            ):
+                # Queue-bypass commands (get_*, send_cw_text, ...) execute
+                # inline through _enqueue_command and already report their
+                # outcome; the batch rejects them, so they keep this path.
+                # set_vfo_freq already awaits its own completion (write plus
+                # readback under the bound connection generation) inside
+                # _enqueue_command, so it keeps this path too — the batch
+                # proxy collector cannot supply capture_connection_generation.
+                # It is the only such command: managed PTT awaits submission
+                # but refuses non-websocket sources, and every other queued
+                # command completes on the poller-settled ordered future.
+                params = _consume_normalized_level_unit(raw_name, raw_params)
+                result = await self._control_handler_for()._enqueue_command(  # noqa: SLF001
+                    raw_name,
+                    params,
+                    command_id=None
+                    if payload.get("id") is None
+                    else str(payload["id"]),
+                    source="http",
+                )
+            else:
+                # Every other command runs the batch step path — prepare,
+                # then execute to completion — so the reply reports the
+                # poller outcome (409 radio_nak, 504 timeout), not the
+                # enqueue ack.
+                raw_step: dict[str, Any] = {
+                    "name": raw_name,
+                    "params": raw_params,
+                }
+                if "id" in payload:
+                    raw_step["id"] = payload["id"]
+                step = await self._prepare_http_batch_step(0, raw_step)
+                result = await self._execute_http_prepared_step(
+                    step, use_executor_details=True
+                )
+        except TxInterlockRefusal as exc:
+            await self._send_json(
+                writer,
+                403,
+                "Forbidden",
+                {"error": exc.reason_code, "message": str(exc)},
             )
+            return
         except PermissionError as exc:
             await self._send_json(
                 writer,
@@ -5081,18 +6122,37 @@ class WebServer:
             )
             return
         except RuntimeError as exc:
+            from ..profiles import CwTextSendCancelledError
+
             message = str(exc)
-            status, reason, code = (
-                (409, "Conflict", "unsupported_command")
-                if command_descriptor(raw_name) is None
-                and "does not support" in message
-                else (500, "Internal Server Error", "command_failed")
-            )
+            if isinstance(exc, CwTextSendCancelledError):
+                # MOR-3700: a CW stop or a transmit abort ended the send.
+                status, reason, code = (409, "Conflict", "command_cancelled")
+            elif command_descriptor(raw_name) is None and "does not support" in message:
+                status, reason, code = (409, "Conflict", "unsupported_command")
+            else:
+                status, reason, code = (500, "Internal Server Error", "command_failed")
             await self._send_json(
                 writer,
                 status,
                 reason,
                 {"ok": False, "error": code, "message": message},
+            )
+            return
+        except Exception as exc:
+            # The batch's catch-all: a poller failure that is neither a
+            # CommandError nor a timeout (e.g. a lost radio link during an
+            # identity hold) still answers with the error envelope, never
+            # the routing layer's generic 500.
+            await self._send_json(
+                writer,
+                500,
+                "Internal Server Error",
+                {
+                    "ok": False,
+                    "error": "command_failed",
+                    "message": str(exc) or type(exc).__name__,
+                },
             )
             return
 
@@ -5191,6 +6251,48 @@ class WebServer:
             source=entry.source,
             command_service=entry.command_service,
         )
+
+    async def _execute_http_prepared_step(
+        self,
+        step: _HttpBatchStep,
+        *,
+        use_executor_details: bool = False,
+    ) -> dict[str, Any]:
+        """Run one prepared HTTP step to completion, batch and single alike.
+
+        Intent steps execute through the shared command service (which waits
+        for poller completion itself); queued steps wait on the poller-settled
+        ordered future under ``_COMMAND_BATCH_STEP_TIMEOUT``, failing the
+        lifecycle on timeout. Returns the step's acknowledgement result —
+        or, when *use_executor_details* is set (the single-command path), the
+        executor's details, which is the body ``_enqueue_command`` returns
+        (the ``admitted_level`` enrichment included).
+        """
+        if isinstance(step.command, CommandIntent):
+            service_result = await self.command_service.execute(step.command)
+            if use_executor_details:
+                return dict(service_result.executor_result.details or {})
+            return step.result
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._command_queue.put_ordered(
+            step.command,
+            future=future,
+            command_id=step.command_id,
+            source=step.source,
+            command_service=step.command_service,
+        )
+        try:
+            await asyncio.wait_for(future, timeout=_COMMAND_BATCH_STEP_TIMEOUT)
+        except (RigplaneTimeoutError, TimeoutError) as exc:
+            if step.command_service is not None and step.command_id is not None:
+                step.command_service.fail_command(
+                    step.command_id,
+                    message=str(exc) or type(exc).__name__,
+                    timed_out=True,
+                    source=step.source,
+                )
+            raise
+        return step.result
 
     def _prepare_http_batch_transaction_step(
         self,
@@ -5313,6 +6415,13 @@ class WebServer:
             )
             details = service_result.executor_result.details or {}
             result = details["transaction_result"]
+        except TxInterlockRefusal as exc:
+            return self._failed_transaction_batch_result(
+                step,
+                status="refused",
+                error=exc.reason_code,
+                message=str(exc),
+            )
         except (RigplaneTimeoutError, TimeoutError):
             return self._failed_transaction_batch_result(
                 step,
@@ -5530,6 +6639,18 @@ class WebServer:
                 return
             try:
                 step = await self._prepare_http_batch_step(index, raw_step)
+            except TxInterlockRefusal as exc:
+                results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "ok": False,
+                        "status": "refused",
+                        "error": exc.reason_code,
+                        "message": str(exc),
+                    }
+                )
+                step = None
             except PermissionError as exc:
                 results.append(
                     {
@@ -5601,32 +6722,8 @@ class WebServer:
                 return
 
             try:
-                if isinstance(step.command, CommandIntent):
-                    await self.command_service.execute(step.command)
-                else:
-                    future: asyncio.Future[None] = (
-                        asyncio.get_running_loop().create_future()
-                    )
-                    self._command_queue.put_ordered(
-                        step.command,
-                        future=future,
-                        command_id=step.command_id,
-                        source=step.source,
-                        command_service=step.command_service,
-                    )
-                    await asyncio.wait_for(future, timeout=_COMMAND_BATCH_STEP_TIMEOUT)
+                step_result = await self._execute_http_prepared_step(step)
             except (RigplaneTimeoutError, TimeoutError) as exc:
-                if (
-                    not isinstance(step.command, CommandIntent)
-                    and step.command_service is not None
-                    and step.command_id is not None
-                ):
-                    step.command_service.fail_command(
-                        step.command_id,
-                        message=str(exc) or type(exc).__name__,
-                        timed_out=True,
-                        source=step.source,
-                    )
                 results.append(
                     {
                         "index": step.index,
@@ -5695,7 +6792,7 @@ class WebServer:
                         "name": step.name,
                         "ok": True,
                         "status": "executed",
-                        "result": step.result,
+                        "result": step_result,
                     }
                 )
 
@@ -5761,11 +6858,19 @@ class WebServer:
                 # fallback-store teardown performs — so TTL-less SETTING
                 # and MENU fields cannot stay FRESH past the disconnect.
                 self.command_state_store.begin_provider_generation()
+                # MOR-3452: mark the intentional disconnect for the runtime.
+                self.note_operator_disconnect()
                 resp = {"status": "disconnected"}
             elif path == "/api/v1/radio/connect":
                 if self._control_handler_for()._backend_recovering():  # noqa: SLF001
                     await refuse_while_recovering()
                     return
+                # MOR-3452: the operator asked back in — clear the
+                # disconnect mark when the connect starts, not after it
+                # returns, so an in-flight or failed connect never reads
+                # as an operator disconnect. A later operator disconnect
+                # sets the mark again, so the last action still wins.
+                self.note_operator_connect()
                 poller = self._radio_poller
                 generation = (
                     poller._vfo_connection_generation()
@@ -5849,6 +6954,10 @@ class WebServer:
                         return
                     # Radio is off → reconnect transport first, then send power-on CI-V
                     logger.info("power-on: radio disconnected, reconnecting first")
+                    # MOR-3452: a power-on is an operator connect — clear the
+                    # disconnect mark when it starts, as above, so an
+                    # in-flight or failed reconnect never reads as operator.
+                    self.note_operator_connect()
                     try:
                         await radio.connect()
                         # Give transport a moment to establish
@@ -5978,12 +7087,16 @@ class WebServer:
             )
             return
         except RuntimeError as exc:
+            from ..profiles import CwTextSendCancelledError
+
             message = str(exc)
-            status, reason, code = (
-                (409, "Conflict", "unsupported_command")
-                if "does not support" in message
-                else (500, "Internal Server Error", "command_failed")
-            )
+            if isinstance(exc, CwTextSendCancelledError):
+                # MOR-3700: a CW stop or a transmit abort ended the send.
+                status, reason, code = (409, "Conflict", "command_cancelled")
+            elif "does not support" in message:
+                status, reason, code = (409, "Conflict", "unsupported_command")
+            else:
+                status, reason, code = (500, "Internal Server Error", "command_failed")
             body = json.dumps(
                 {"error": code, "message": message},
                 separators=(",", ":"),
@@ -6557,7 +7670,11 @@ class WebServer:
         if origin is not None:
             scheme = "https" if self._config.tls else "http"
             if not same_origin_allowed(
-                origin, raw_host, scheme, self._config.allowed_hosts
+                origin,
+                raw_host,
+                scheme,
+                self._config.allowed_hosts,
+                self._config.trusted_origins,
             ):
                 self._log_refused_request("websocket origin", path, headers)
                 await _send_response(
@@ -6569,8 +7686,51 @@ class WebServer:
                 )
                 return
 
+        protocols = [
+            part.strip()
+            for part in headers.get("sec-websocket-protocol", "").split(",")
+            if part.strip().startswith("rigplane-controller-v1.")
+        ]
+        # Local mode: a channel that names a controller session attaches to
+        # it (MOR-3534); one that names none stays sessionless, as before.
+        ticket = (
+            self._controller.capture()
+            if self._controller.mode == "local" and not protocols
+            else None
+        )
+        selected_protocol = ""
+        if ticket is None:
+            try:
+                if len(protocols) != 1:
+                    raise ControllerError("controller_invalid")
+                selected_protocol = protocols[0]
+                role = (query or {}).get("controller_role", ["primary"])
+                if path == "/api/v1/ws" and len(role) != 1:
+                    raise ControllerError("invalid_request", 400)
+                ticket = self._controller.attach(
+                    selected_protocol.split(".", 1)[1],
+                    role[0] if path == "/api/v1/ws" else "auxiliary",
+                    f"controller-{time.monotonic_ns()}",
+                )
+            except ControllerError as exc:
+                await self._send_json(
+                    writer, exc.status, "Forbidden", {"error": exc.code}
+                )
+                return
+        assert ticket is not None
+        if path == "/api/v1/rigctl" and ticket.tx_owner is None:
+            # MOR-3536: rigctl lines key as the session the channel joined, so
+            # a channel without a multi-client session is refused. A sessionless
+            # rigctld client has the TCP port; this channel exists to tie a
+            # remote client's keying to its own session's audio.
+            self._controller.detach(ticket)
+            await self._send_json(
+                writer, 403, "Forbidden", {"error": "controller_session_required"}
+            )
+            return
         ws_key = headers.get("sec-websocket-key", "")
         if not ws_key:
+            self._controller.detach(ticket)
             await _send_response(writer, 400, "Bad Request", b"Missing key", {})
             return
 
@@ -6587,10 +7747,19 @@ class WebServer:
             "Connection: Upgrade\r\n"
             f"Sec-WebSocket-Accept: {accept}\r\n"
             f"{ext_line}"
-            "\r\n"
+            + (
+                f"Sec-WebSocket-Protocol: {selected_protocol}\r\n"
+                if selected_protocol
+                else ""
+            )
+            + "\r\n"
         )
-        writer.write(response.encode("ascii"))
-        await writer.drain()
+        try:
+            writer.write(response.encode("ascii"))
+            await writer.drain()
+        except BaseException:
+            self._controller.detach(ticket)
+            raise
 
         ws = WebSocketConnection(reader, writer, deflate=bool(deflate_resp))
         raw_model = (
@@ -6599,6 +7768,8 @@ class WebServer:
         model = raw_model if isinstance(raw_model, str) else self._config.radio_model
 
         if path == "/api/v1/ws":
+            if ticket.remote:
+                self._controller.register_control(ticket)
             handler: Any = ControlHandler(
                 ws,
                 self._radio,
@@ -6607,33 +7778,72 @@ class WebServer:
                 server=self,
                 read_only=self._config.read_only,
                 managed_tx_authority=self._managed_tx_authority(),
+                session_id=ticket.session_id,
+                tx_owner=ticket.tx_owner,
             )
         elif path == "/api/v1/scope":
             handler = ScopeHandler(ws, self._radio, server=self)
         elif path == "/api/v1/audio-scope":
             if self._audio_fft_scope is None:
+                self._controller.detach(ticket)
                 await ws.close(1008, "audio FFT scope not available")
                 return
             handler = ScopeHandler(ws, self._radio, server=self, audio_mode=True)
         elif path == "/api/v1/audio":
+            audio_source = object()
             handler = AudioHandler(
                 ws,
                 self._radio,
                 self._audio_broadcaster,
-                tx_gate=self._bridge_tx_gate_open,
+                tx_gate=lambda: self._controller_audio_gate(ticket, audio_source),
+                controller=self._controller,
+                controller_ticket=ticket,
+                controller_audio_source=audio_source,
+                controller_audio_loss=self._controller_audio_loss,
+                controller_track_stop=self._controller_track_audio_stop,
+                managed_tx_authority=self._managed_tx_authority(),
+            )
+        elif path == "/api/v1/rigctl":
+            owner = ticket.tx_owner
+            assert owner is not None  # refused before the upgrade otherwise
+            if self._rigctl_channel is None:
+                self._controller.detach(ticket)
+                await ws.close(1008, "rigctl channel not available")
+                return
+            handler = RigctlChannelHandler(
+                ws,
+                self._rigctl_channel,
+                owner,
+                writer.get_extra_info("peername", ("?", 0)),
             )
         else:
+            self._controller.detach(ticket)
             await ws.close(1008, "unknown channel")
             return
 
         peer = writer.get_extra_info("peername", ("?", 0))
         ip = str(peer[0])
 
-        # Register with connection manager; evict oldest excess connections
-        evicted = self._conn_manager.register(ip, path, ws)
+        # Register with connection manager; evict oldest excess connections.
+        # MOR-3534: a session-attached channel counts against its session, not
+        # the shared IP. The holder session's channels, and the control channel
+        # of a sessionless socket that keyed PTT, are never evicted.
+        scope = ip if ticket.tx_owner is None else ticket.tx_owner
+        managed = self._managed_tx_authority()
+        evicted = self._conn_manager.register(
+            scope,
+            path,
+            ws,
+            owner=ticket.tx_owner or getattr(handler, "_tx_owner", None),
+            holder=managed.tx_holder_nowait()
+            if isinstance(managed, ManagedTxAuthority)
+            else None,
+        )
         for old_ws in evicted:
             logger.info(
-                "ws: evicting old connection from %s on %s (per-IP limit)", ip, path
+                "ws: evicting old connection from %s on %s (per-client limit)",
+                ip,
+                path,
             )
             try:
                 await old_ws.close(1001, "replaced by newer connection")
@@ -6647,20 +7857,37 @@ class WebServer:
             peer[1],
             len(self._client_tasks),
         )
+        try:
+            self._controller.validate(ticket)
+        except ControllerError:
+            self._controller.detach(ticket)
+            self._conn_manager.unregister(scope, path, ws)
+            ws.abort()
+            return
         keepalive = asyncio.create_task(
             ws.keepalive_loop(self._config.keepalive_interval)
         )
+        if ticket.tx_owner is not None:
+            self._controller.add_channel(ticket, ws.abort)
+        if ticket.remote:
+            self._controller.add_channel(ticket, ws.abort)
+            task = asyncio.current_task()
+            assert task is not None
+            self._controller_handler_tasks[ticket] = task
         try:
-            await handler.run()
+            with self._controller.bind(ticket):
+                await handler.run()
         except Exception as exc:
             logger.debug("ws handler error on %s: %s", _redact_token_in_path(path), exc)
         finally:
+            self._controller.detach(ticket)
+            self._controller_handler_tasks.pop(ticket, None)
             keepalive.cancel()
             try:
                 await keepalive
             except asyncio.CancelledError:
                 pass
-            self._conn_manager.unregister(ip, path, ws)
+            self._conn_manager.unregister(scope, path, ws)
             logger.info(
                 "ws disconnect: %s %s:%s (active=%d)",
                 path,

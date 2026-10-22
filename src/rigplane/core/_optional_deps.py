@@ -13,6 +13,9 @@ Notes
   install hint therefore omits any extra.
 - ``Pillow`` lives behind ``[scope]`` and ``pyserial-asyncio`` behind
   ``[serial]``.
+- The SoapySDR Python bindings behind ``[sdr]`` have no official PyPI
+  wheel; they come from the system (``python3-soapysdr``) or a SoapySDR
+  build, so the extra is a feature marker only.
 
 Helpers raise ``ImportError`` chained from the original failure (``from exc``)
 so callers can introspect ``__cause__`` for richer diagnostics.
@@ -75,10 +78,24 @@ def _require_pyserial_asyncio() -> None:
         ) from exc
 
 
+def _require_soapysdr() -> None:
+    """Ensure the SoapySDR Python bindings are importable, or raise ``ImportError``."""
+    try:
+        import SoapySDR  # type: ignore[import-not-found]  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(
+            "SoapySDR Python bindings are required for the SDR IQ source. "
+            "Install the sdr extra and system bindings: pip install "
+            "rigplane[sdr] plus python3-soapysdr (Debian/Raspberry Pi OS) "
+            "or a SoapySDR build — there is no PyPI wheel"
+        ) from exc
+
+
 __all__ = [
     "_require_numpy",
     "_require_sounddevice",
     "_require_opuslib",
     "_require_pillow",
     "_require_pyserial_asyncio",
+    "_require_soapysdr",
 ]

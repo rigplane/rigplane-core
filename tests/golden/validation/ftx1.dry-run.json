@@ -138,6 +138,11 @@
       "declaration": "supported"
     },
     {
+      "check_id": "narrow.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
       "check_id": "nb.set",
       "status": "skip",
       "declaration": "supported"
@@ -169,6 +174,11 @@
     },
     {
       "check_id": "repeater_shift.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
+      "check_id": "repeater_shift_ars.presence",
       "status": "pass",
       "declaration": "unsupported_pending_evidence"
     },

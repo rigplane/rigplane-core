@@ -51,6 +51,15 @@ export class PresentationResourceHost<H> {
     })();
     return this.final;
   }
+  async rearm(): Promise<void> {
+    const final = this.final;
+    if (!final) return;
+    await final;
+    if (this.final === final) {
+      this.final = undefined;
+      this.demand.rearm();
+    }
+  }
   private refresh(resource: AppResource): void {
     this.pump();
     for (const listener of this.listeners) listener(resource, this.snapshot(resource));

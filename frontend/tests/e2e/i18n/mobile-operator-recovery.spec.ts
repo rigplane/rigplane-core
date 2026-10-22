@@ -1,6 +1,6 @@
 import { test, expect, type Page, type TestInfo } from '@playwright/test';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { mockCapabilities, mockInfo, mockState } from './fixtures';
+import { fulfillControllerRoute, mockCapabilities, mockControllerHeartbeatAck, mockInfo, mockLocalControllerStatus, mockState } from './fixtures';
 import type { Capabilities } from '../../../src/lib/types/capabilities';
 import type { ServerState } from '../../../src/lib/types/state';
 
@@ -63,6 +63,9 @@ async function prepare(page: Page, stateOverride?: Omit<ServerState, 'sub'>) {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
     if (request.method() !== 'GET') {
+      // Controller session admission (MOR-3534: one local session per
+      // browser, docs/api/web.md) is transport, not a radio write.
+      if (pathname === '/api/v1/controller') return fulfillControllerRoute(route);
       // The local tuning-step preference is not a radio command, but is isolated too.
       if (pathname !== '/api/local/v1/rc28/tuning-step') writes.push(`${request.method()} ${pathname}`);
       await route.fulfill({ status: 404, body: '{}' });
@@ -73,6 +76,7 @@ async function prepare(page: Page, stateOverride?: Omit<ServerState, 'sub'>) {
       '/api/v1/capabilities': capture?.capabilities.body ?? capabilities,
       '/api/v1/managed-transmit': capture?.['managed-transmit'].body ?? managedTransmit,
       '/api/v1/info': mockInfo,
+      '/api/v1/controller': mockLocalControllerStatus,
     };
     await route.fulfill({ status: pathname.startsWith('/api/local/') ? 404 : 200,
       contentType: 'application/json', body: JSON.stringify(responses[pathname] ?? {}) });
@@ -80,6 +84,12 @@ async function prepare(page: Page, stateOverride?: Omit<ServerState, 'sub'>) {
   await page.routeWebSocket(/.*/, (socket) => {
     socket.onMessage((message) => {
       const frame = JSON.parse(String(message));
+      // Real Core acks session heartbeats (`controller_authority.py:
+      // heartbeat`); they are keepalive, not a radio command.
+      if (frame.type === 'controller_heartbeat') {
+        socket.send(JSON.stringify(mockControllerHeartbeatAck));
+        return;
+      }
       if (frame.type !== 'subscribe') writes.push(String(message));
     });
     if (new URL(socket.url()).pathname === '/api/v1/ws') {

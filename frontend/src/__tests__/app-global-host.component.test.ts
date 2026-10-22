@@ -21,7 +21,7 @@ const h = vi.hoisted(() => ({
   offMessage: vi.fn(),
   powerOn: vi.fn(),
   radioPowerOn: null as boolean | null,
-  radioHealth: null as { radioLink: string; likelyCause?: string } | null,
+  radioHealth: null as { radioLink: string; likelyCause?: string; lastError?: string } | null,
   powerOnCommand: true,
   ptt: false,
   notifyRuntime: () => {},
@@ -339,6 +339,30 @@ describe('AppGlobalHost — standalone, with no layout mounted', () => {
 
     unmount(instance);
   });
+
+  it.each(['permission_denied', 'busy', 'not_found', 'timeout', 'unknown'])(
+    'shows actionable serial %s diagnostics without exposing raw exception text', (code) => {
+      h.radioHealth = {
+        radioLink: 'reconnecting', likelyCause: 'radio_not_connected',
+        lastError: `serial_${code}: EACCES`,
+      };
+      mountAt(AppGlobalHost);
+      expect(powerEl()?.querySelector('[role="alert"]')?.textContent)
+        .toContain(`core.overlay.serial.${code}`);
+      expect(powerEl()?.querySelector('[role="alert"]')?.textContent).toContain('EACCES');
+      expect(powerEl()?.querySelector('.power-on-btn')).toBeNull();
+      h.radioPowerOn = true;
+      h.notifyRuntime();
+      flushSync();
+      expect(powerEl()?.querySelector('[role="alert"]')?.textContent).toContain('EACCES');
+      h.radioPowerOn = null;
+      h.radioHealth.lastError = 'Permission denied token=secret';
+      h.notifyRuntime();
+      flushSync();
+      expect(powerEl()?.textContent).not.toContain('token=secret');
+      expect(powerEl()?.querySelector('[role="alert"]')).toBeNull();
+    },
+  );
 });
 
 describe('AppGlobalHost — authoritative TX source', () => {

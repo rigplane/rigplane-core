@@ -181,6 +181,12 @@ class YaesuCatRadio:
         """
         self._config: RigConfig = _load_config(profile)
         self._profile_cache: RadioProfile | None = None
+        # MOR-3678: one send_cw_text at a time, so each KM memory write
+        # stays paired with the KY that plays it.
+        self._cw_text_lock = asyncio.Lock()
+        # Bumped by stop_cw_text and the managed CW abort: a send admitted
+        # under an older generation can no longer write KM or KY.
+        self._cw_text_generation = 0
         self._tuner_provider_generation: Callable[[], int] | None = None
         self._device = device
         self._transport = YaesuCatTransport(device=device, baudrate=baudrate)
@@ -276,6 +282,10 @@ class YaesuCatRadio:
         self._identity_generation: int = 0
         self._identity_reread_task: asyncio.Task[None] | None = None
         self._identity_gate_running: bool = False
+        # MOR-3436: the connect generation whose identity hold still owes
+        # the audio re-establishment; the re-read completion consumes it,
+        # any generation advance (``disconnect``, a new connect) drops it.
+        self._audio_reestablish_generation: int | None = None
 
     # -- Lifecycle ----------------------------------------------------------
 
@@ -347,14 +357,24 @@ class YaesuCatRadio:
                 self._device,
             )
             self._start_identity_reread()
+            # MOR-3436: the connect returned into the identity hold — the
+            # audio re-establishment waits for the hold's completion.
+            self._audio_reestablish_generation = generation
             return
-        await self._resolve_identity_answer(answered)
+        completed = await self._resolve_identity_answer(answered)
+        if completed:
+            await self._reestablish_audio_after_connect(generation)
+        else:
+            # A wrong radio holds the connect; the re-read completion owes
+            # the audio re-establishment (MOR-3436).
+            self._audio_reestablish_generation = generation
 
     async def disconnect(self) -> None:
         """Close the serial port."""
         self._cancel_identity_reread()
         self._identity_generation += 1
         self._connection_identity = None
+        self._audio_reestablish_generation = None
         await self._audio_driver.stop_rx()
         await self._audio_driver.stop_tx()
         await self._transport.close()
@@ -384,6 +404,17 @@ class YaesuCatRadio:
     def radio_ready(self) -> bool:
         """Whether the backend is ready for commands."""
         return self.connected
+
+    @property
+    def serial_reconnects_total(self) -> int:
+        """Link-loss episodes since this radio was created.
+
+        The first reconnect after the last successful exchange opens an
+        episode; retries inside it do not recount.
+        """
+        stats = getattr(getattr(self, "_transport", None), "stats", None)
+        episodes = getattr(stats, "reconnect_episodes", 0)
+        return episodes if type(episodes) is int else 0
 
     @property
     def connection_identity(self) -> RadioIdentity | None:
@@ -585,6 +616,9 @@ class YaesuCatRadio:
                     continue
                 completed = await self._resolve_identity_answer(answered)
                 if completed:
+                    # MOR-3436: the hold completed — run the audio
+                    # re-establishment a held connect deferred here, once.
+                    await self._run_deferred_audio_reestablish(generation)
                     return
         except asyncio.CancelledError:
             pass
@@ -600,6 +634,41 @@ class YaesuCatRadio:
                 exc,
                 exc_info=True,
             )
+
+    # -- Audio tail of a completed connect (MOR-3436) -----------------------
+
+    async def _reestablish_audio_after_connect(self, generation: int) -> None:
+        """Re-arm audio demand an owner teardown left held (MOR-3436).
+
+        ``disconnect()`` stops the USB audio driver's RX and TX legs while
+        the radio-owned ``AudioSession``'s demand handles survive it, and
+        before this tail nothing re-armed them after an owner
+        ``connect()``. Runs only while this connect's generation still
+        owns the radio — ``disconnect()`` and every new connect advance
+        ``_identity_generation``. This backend has no recovery-event
+        channel, so a failure is logged (WARNING), not raised — the same
+        non-raising contract ``AudioRecoveryRuntime.recover`` applies.
+        """
+        if self._identity_generation != generation:
+            return
+        session = self._audio_session
+        if session is None or (session.rx_demand <= 0 and session.tx_demand <= 0):
+            return
+        try:
+            await session.reestablish()
+        except Exception:
+            logger.warning(
+                "rigplane (%s): re-establishing held audio demand after connect failed",
+                self.model,
+                exc_info=True,
+            )
+
+    async def _run_deferred_audio_reestablish(self, generation: int) -> None:
+        """Run the audio re-establishment a held connect deferred, once."""
+        stashed = self._audio_reestablish_generation
+        self._audio_reestablish_generation = None
+        if stashed == generation:
+            await self._reestablish_audio_after_connect(generation)
 
     @property
     def backend_id(self) -> str:
@@ -1191,9 +1260,13 @@ class YaesuCatRadio:
         *,
         is_current: Callable[[], bool] | None = None,
         tier: ExchangeTier = ExchangeTier.ORDINARY,
+        on_committed: Callable[[], None] | None = None,
         **kwargs: Any,
     ) -> None:
         """Format and send a write command (no response expected).
+
+        *on_committed* is handed to the transport, which runs it only for a
+        write that passed its final currency check (MOR-3678).
 
         Raises:
             CommandRejectedError: If the radio rejects the command with
@@ -1216,7 +1289,11 @@ class YaesuCatRadio:
 
         cmd = format_command(spec.write, **kwargs)
         try:
-            if is_current is None and tier is ExchangeTier.ORDINARY:
+            if on_committed is not None:
+                await self._transport.write(
+                    cmd, is_current=is_current, tier=tier, on_committed=on_committed
+                )
+            elif is_current is None and tier is ExchangeTier.ORDINARY:
                 await self._transport.write(cmd)
             else:
                 await self._transport.write(cmd, is_current=is_current, tier=tier)
@@ -1476,6 +1553,7 @@ class YaesuCatRadio:
     ) -> ActuationResult:
         """Execute one profile-backed runtime-managed transmit operation."""
         del token
+        on_committed: Callable[[], None] | None = None
         if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
             command, params, tier = "set_ptt", {"state": "1"}, ExchangeTier.ORDINARY
         elif operation is ActuationOperation.FORCE_RECEIVE:
@@ -1485,9 +1563,13 @@ class YaesuCatRadio:
                 ExchangeTier.FORCE_RELEASE,
             )
         elif operation is AbortOperation.STOP_CW:
+            # KY P1 P2 with P2 0 = STOP (CAT 2508-C printed p.18), MOR-3678.
+            # Only a stop the transport lets out ends earlier sends; a
+            # stale or superseded one leaves them alone (#4317 review).
+            on_committed = self._end_earlier_cw_text_sends
             command, params, tier = (
                 "send_cw",
-                {"type": " ", "mem": ""},
+                {"type": self._cw_text_memory_type_code(), "mem": "0"},
                 ExchangeTier.ABORT,
             )
         elif operation is AbortOperation.STOP_TUNE:
@@ -1500,7 +1582,13 @@ class YaesuCatRadio:
             return ActuationResult.REJECTED
 
         try:
-            await self._write(command, is_current=is_current, tier=tier, **params)
+            await self._write(
+                command,
+                is_current=is_current,
+                tier=tier,
+                on_committed=on_committed,
+                **params,
+            )
         except CommandError:
             return ActuationResult.REJECTED
         if operation is not ActuationOperation.FORCE_RECEIVE:
@@ -3515,37 +3603,110 @@ class YaesuCatRadio:
             await self._local_tx_work.run(write)
 
     async def send_cw_text(self, text: str) -> None:
-        """Send CW text via keyer (KY command), split into 24-character chunks.
+        """Send CW text by writing a keyer memory and playing it (MOR-3678).
 
-        Uses ``send_cw(" ", text)`` — the space is the P1 type parameter
-        (keyboard input), not a separator.  Wire format: ``KY {text};``.
+        FTX-1_CAT_OM_ENG_2508-C: ``KM P1 P2..;`` (printed p.17) stores up to
+        50 characters in keyer memory channel P1 (1-5); ``KY P1 P2;``
+        (printed p.18) plays it, P1 ``0`` CW TEXT / ``1`` CW MESSAGE memory.
+        KY has no free-text form. Channel, memory type and the length limit
+        come from the profile's ``[cw_text]``; nothing is chunked, truncated
+        or split. Text with a ``;`` or an ASCII control code is rejected:
+        CAT parameters may not contain them (general rules, printed p.4;
+        DEL 7Fh included). Sends are serialized so each KM stays paired with
+        its KY; stop_cw_text does not wait for the lock.
 
-        Args:
-            text: CW text to send (A-Z, 0-9, punctuation).
+        Raises:
+            RuntimeError: The profile does not enable CW text sending.
+            ValueError: The text is longer than the profile limit or holds a
+                character a CAT parameter cannot carry. Nothing is written.
+            CwTextSendCancelledError: A CW stop or a transmit abort ended
+                the send before it was written (MOR-3700).
         """
-        if not text:
-            await self.send_cw(" ", "")
-            return
-        chunk_size = 24
-        if self._local_tx_work is None:
-            for i in range(0, len(text), chunk_size):
-                await self.send_cw(" ", text[i : i + chunk_size])
-            return
+        from ...profiles import (
+            CwTextUnsupportedError,
+            admit_cw_text,
+            await_fenced_cw_text,
+            cw_text_cancelled,
+        )
 
-        async def write_chunks(is_current: Callable[[], bool]) -> None:
-            for i in range(0, len(text), chunk_size):
-                await self._write(
-                    "send_cw",
-                    type=" ",
-                    mem=text[i : i + chunk_size],
-                    is_current=is_current,
+        admit_cw_text(self.profile, text)
+        spec = self.profile.cw_text
+        if spec.memory_channel is None or not 1 <= spec.memory_channel <= 5:
+            # KM P1 is one digit, keyer memory 1-5 (printed p.17).
+            raise CwTextUnsupportedError(
+                f"{self.profile.model} does not support sending CW text yet: "
+                f"[cw_text].memory_channel {spec.memory_channel} is not a "
+                "KM keyer memory channel 1-5"
+            )
+        if not text:
+            raise ValueError("CW text is empty")
+        if any(ch == ";" or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+            raise ValueError("CW text cannot contain ';' or control characters")
+        msg_type = self._cw_text_memory_type_code()
+        channel = str(spec.memory_channel)
+        generation = self._cw_text_generation
+
+        async def write(is_current: Callable[[], bool] | None) -> None:
+            def current() -> bool:
+                # A stop since admission (or a stale managed fence) ends
+                # this send: the transport refuses a write that is no
+                # longer current, checked when the write is sent.
+                return self._cw_text_generation == generation and (
+                    is_current is None or is_current()
                 )
 
-        await self._local_tx_work.run(write_chunks)
+            # The lock is taken inside the fenced work, so a send still
+            # waiting for it already holds an abort token: a force-off ends
+            # it before it can write KM or KY.
+            async with self._cw_text_lock:
+                try:
+                    await self._write(
+                        "write_keyer_memory",
+                        chan=channel,
+                        mem=text,
+                        is_current=current,
+                    )
+                    # A stale fence makes this write raise "no longer
+                    # current", the same as a stale chunk: KY never plays
+                    # after a force-off.
+                    await self._write(
+                        "send_cw", type=msg_type, mem=channel, is_current=current
+                    )
+                except Exception as exc:
+                    # MOR-3700: a write that fails once a transmit abort or
+                    # a stop ended this send (refused as no longer current,
+                    # or a KM the radio rejects after the stop) is a
+                    # cancellation the caller is told about, not a
+                    # transport failure. The fence first: a force-off goes
+                    # stale before its managed CW stop runs. While the send
+                    # is current the failure stays what it was.
+                    if is_current is not None and not is_current():
+                        raise cw_text_cancelled(self.profile.model, "abort") from exc
+                    if self._cw_text_generation != generation:
+                        raise cw_text_cancelled(self.profile.model, "stop") from exc
+                    raise
+
+        if self._local_tx_work is None:
+            await write(None)
+        else:
+            await await_fenced_cw_text(
+                self._local_tx_work.run(write), self.profile.model
+            )
 
     async def stop_cw_text(self) -> None:
-        """Stop CW sending by clearing the keyer buffer."""
-        await self.send_cw(" ", "")
+        """Stop keyer memory playback: ``KY P1 0;`` (printed p.18, P2 0 STOP)."""
+        # Ends every send admitted before this stop, then writes the stop
+        # unfenced (stopping never keys).
+        self._end_earlier_cw_text_sends()
+        await self._write("send_cw", type=self._cw_text_memory_type_code(), mem="0")
+
+    def _end_earlier_cw_text_sends(self) -> None:
+        """End every send_cw_text admitted before now (MOR-3678)."""
+        self._cw_text_generation += 1
+
+    def _cw_text_memory_type_code(self) -> str:
+        """KY P1: ``1`` CW MESSAGE memory, else ``0`` CW TEXT (printed p.18)."""
+        return "1" if self.profile.cw_text.memory_type == "message" else "0"
 
     # -- Icom-only stubs (AdvancedControlCapable conformance) -----------------
     # Yaesu does not support these features; methods exist for protocol compat.

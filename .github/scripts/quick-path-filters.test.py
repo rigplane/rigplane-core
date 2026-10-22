@@ -300,6 +300,59 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                 {"core": True, "frontend": False, "ci": False, "docs": False},
             )
 
+    def test_frontend_input_paths_select_frontend_checks(self) -> None:
+        # Payloads the frontend parses are produced here; a change must run
+        # the frontend checks even though no frontend/ file changed.
+        for path in (
+            "src/rigplane/runtime/radio.py",
+            "src/rigplane/core/state_store.py",
+            "src/rigplane/core/_state_cache.py",
+            "src/rigplane/core/radio_state.py",
+            "contracts/consumer-expectations/example.json",
+            "rigs/ftx1.toml",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    CLASSIFIER.classify([path]),
+                    {"core": True, "frontend": True, "ci": False, "docs": False},
+                )
+        # Controls: core paths that are not frontend inputs, and rig prose.
+        self.assertFalse(CLASSIFIER.classify(["src/rigplane/core/civ.py"])["frontend"])
+        self.assertFalse(
+            CLASSIFIER.classify(["src/rigplane/commands/x.py"])["frontend"]
+        )
+        self.assertFalse(CLASSIFIER.classify(["src/rigplane/cli/x.py"])["frontend"])
+        self.assertFalse(CLASSIFIER.classify(["tests/test_radio.py"])["frontend"])
+        self.assert_docs_only(["rigs/_schema.md"])
+        self.assert_docs_only(["docs/internals/runtime-notes.md"])
+
+    def test_frontend_changes_select_the_web_python_subset(self) -> None:
+        for paths, expected in (
+            (["frontend/src/lib/transport/ws.ts"], True),
+            (["frontend/package.json", "docs/guide.md"], True),
+            (["src/rigplane/web/server.py"], False),
+            (["src/rigplane/runtime/radio.py"], False),
+            (["frontend/README.md"], False),
+            (["docs/guide.md"], False),
+        ):
+            with self.subTest(paths=paths):
+                self.assertEqual(CLASSIFIER.selects_web_python_subset(paths), expected)
+        # frontend-only: no core, so quick.yml must run the subset itself.
+        self.assertEqual(
+            CLASSIFIER.classify(["frontend/src/lib/transport/ws.ts"]),
+            {"core": False, "frontend": True, "ci": False, "docs": False},
+        )
+        # The subset target exists and quick.yml wires the output.
+        self.assertTrue((ROOT / "tests" / "web").is_dir())
+        self.assertTrue(list((ROOT / "tests").glob("test_web_*.py")))
+        quick = QUICK_YML.read_text(encoding="utf-8")
+        self.assertIn("web: ${{ steps.paths.outputs.web }}", quick)
+        self.assertIn(
+            "needs.classify.outputs.web == 'true' && needs.classify.outputs.core != 'true'",
+            quick,
+        )
+        self.assertIn("uv run pytest tests/web tests/test_web_*.py", quick)
+
     def test_workflows_pin_docs_skip_ready_guard_and_visual_exclusions(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
         visual = VISUAL_YML.read_text(encoding="utf-8")
@@ -318,6 +371,69 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertIn('      - "!frontend/**/*.md"', visual)
         self.assertIn('      - "!frontend/**/*.rst"', visual)
         self.assertNotIn('      - ".github/workflows/visual.yml"', visual)
+        # The push-to-main trigger carries the same paths
+        # list as pull_request, entry for entry, and targets only main.
+        pull_request_paths = [
+            line
+            for line in visual[
+                visual.index("  pull_request:") : visual.index("  push:")
+            ].splitlines()
+            if line.startswith('      - "')
+        ]
+        self.assertEqual(
+            "\n".join(
+                ["  push:", "    branches: [main]", "    paths:", *pull_request_paths]
+            ),
+            visual[
+                visual.index("  push:") : visual.index("  workflow_dispatch:")
+            ].strip("\n"),
+        )
+
+    def test_visual_push_run_is_wired_and_dispatch_has_its_own_concurrency(
+        self,
+    ) -> None:
+        visual = VISUAL_YML.read_text(encoding="utf-8")
+        visual_job_start = "\n  visual:\n"
+        self.assertIn(visual_job_start, visual)
+        visual_job = visual[visual.index(visual_job_start) :]
+
+        # The push trigger alone would give an all-skipped green run: the
+        # `changes` job must select push runs and the `visual` job must let
+        # them through.
+        self.assertIn(
+            "      frontend: ${{ steps.filter.outputs.frontend"
+            " || steps.manual.outputs.frontend"
+            " || steps.push.outputs.frontend }}",
+            visual,
+        )
+        push_step_start = "      - name: Select push main run\n"
+        self.assertIn(push_step_start, visual)
+        push_step = visual[
+            visual.index(push_step_start) : visual.index(visual_job_start)
+        ]
+        self.assertIn("        id: push\n", push_step)
+        self.assertIn("        if: github.event_name == 'push'\n", push_step)
+        self.assertIn(
+            '        run: echo "frontend=true" >> "$GITHUB_OUTPUT"', push_step
+        )
+        self.assertIn(
+            "    if: >-\n"
+            "      needs.changes.outputs.frontend == 'true' &&\n"
+            "      (github.event_name == 'workflow_dispatch' ||\n"
+            "      github.event_name == 'push' ||\n"
+            "      github.event.pull_request.draft == false)\n",
+            visual_job,
+        )
+
+        # The event name is part of the group key, so a push to main and a
+        # workflow_dispatch on main are different groups.
+        self.assertIn(
+            "concurrency:\n"
+            "  group: visual-${{ github.workflow }}-${{ github.event_name }}"
+            "-${{ github.ref }}\n"
+            "  cancel-in-progress: true\n",
+            visual,
+        )
 
     def test_component_kit_api_proof_is_frontend_selected_and_mirrored(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")

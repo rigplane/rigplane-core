@@ -15,6 +15,9 @@ from rigplane.diagnostics._logging import (
     configure_diagnostic_logging,
 )
 
+# Mirrors the CLI false-value set at cli/__init__.py:main (ICOM_DEBUG).
+_ICOM_DEBUG_FALSE_VALUES = ("", "0", "false", "no")
+
 
 @pytest.fixture(autouse=True)
 def _enable_diagnostic_logging(monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -25,6 +28,7 @@ def _enable_diagnostic_logging(monkeypatch: pytest.MonkeyPatch) -> Any:
     since #1879) do not pollute the logger state for subsequent tests.
     """
     monkeypatch.delenv("RIGPLANE_DISABLE_DIAGNOSTIC_LOGGING", raising=False)
+    monkeypatch.delenv("ICOM_DEBUG", raising=False)
     icom_logger = logging.getLogger("rigplane")
     saved_level = icom_logger.level
     yield
@@ -193,6 +197,96 @@ def test_unset_logger_level_set_to_info(
     the event loop at idle. INFO is the new production default; DEBUG remains
     opt-in via an explicit setLevel call before configure_diagnostic_logging.
     """
+    monkeypatch.setattr(platformdirs, "user_cache_path", lambda app: tmp_path)
+    icom_logger = logging.getLogger("rigplane")
+    icom_logger.setLevel(logging.NOTSET)
+    configure_diagnostic_logging()
+    assert icom_logger.level == logging.INFO
+
+
+def test_icom_debug_truthy_child_debug_reaches_diagnostic_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """ICOM_DEBUG=1 must let real child DEBUG records reach the diagnostic file.
+
+    Regression for MOR-3107 b11: the diagnostic init promoted NOTSET → INFO
+    unconditionally, so a startup ICOM_DEBUG (established before
+    configuration) was suppressed by the named rigplane logger even though
+    the CLI root logger ran at DEBUG. Matches CLI semantics at
+    cli/__init__.py:main — truthy after strip, case-sensitive.
+    """
+    monkeypatch.setattr(platformdirs, "user_cache_path", lambda app: tmp_path)
+    monkeypatch.setenv("ICOM_DEBUG", "1")
+    icom_logger = logging.getLogger("rigplane")
+    icom_logger.setLevel(logging.NOTSET)
+    configure_diagnostic_logging()
+    assert icom_logger.level == logging.DEBUG
+    logging.getLogger("rigplane.test").debug("b11 debug marker")
+    log_file = tmp_path / "logs" / "rigplane.log"
+    assert log_file.exists()
+    assert "b11 debug marker" in log_file.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("value", _ICOM_DEBUG_FALSE_VALUES)
+def test_icom_debug_false_values_keep_info_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, value: str
+) -> None:
+    """Exact CLI false values must keep the INFO default; DEBUG stays out."""
+    monkeypatch.setattr(platformdirs, "user_cache_path", lambda app: tmp_path)
+    monkeypatch.setenv("ICOM_DEBUG", value)
+    icom_logger = logging.getLogger("rigplane")
+    icom_logger.setLevel(logging.NOTSET)
+    configure_diagnostic_logging()
+    assert icom_logger.level == logging.INFO
+    logging.getLogger("rigplane.test").debug("b11 suppressed marker")
+    log_file = tmp_path / "logs" / "rigplane.log"
+    assert not log_file.exists()
+
+
+def test_icom_debug_stripped_truthy_enables_debug(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Whitespace-padded truthy values enable DEBUG, matching CLI strip()."""
+    monkeypatch.setattr(platformdirs, "user_cache_path", lambda app: tmp_path)
+    monkeypatch.setenv("ICOM_DEBUG", " 1 ")
+    icom_logger = logging.getLogger("rigplane")
+    icom_logger.setLevel(logging.NOTSET)
+    configure_diagnostic_logging()
+    assert icom_logger.level == logging.DEBUG
+
+
+def test_icom_debug_case_sensitive_false_enables_debug(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """CLI comparison is case-sensitive: 'False' is truthy there; match it."""
+    monkeypatch.setattr(platformdirs, "user_cache_path", lambda app: tmp_path)
+    monkeypatch.setenv("ICOM_DEBUG", "False")
+    icom_logger = logging.getLogger("rigplane")
+    icom_logger.setLevel(logging.NOTSET)
+    configure_diagnostic_logging()
+    assert icom_logger.level == logging.DEBUG
+
+
+def test_icom_debug_respects_explicit_host_level(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An explicit host level wins over ICOM_DEBUG; DEBUG records stay out."""
+    monkeypatch.setattr(platformdirs, "user_cache_path", lambda app: tmp_path)
+    monkeypatch.setenv("ICOM_DEBUG", "1")
+    icom_logger = logging.getLogger("rigplane")
+    icom_logger.setLevel(logging.WARNING)
+    configure_diagnostic_logging()
+    assert icom_logger.level == logging.WARNING
+    logging.getLogger("rigplane.test").debug("b11 host-level marker")
+    log_file = tmp_path / "logs" / "rigplane.log"
+    assert not log_file.exists()
+
+
+def test_icom_debug_unset_keeps_info_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No ICOM_DEBUG in the environment: unchanged INFO default."""
+    monkeypatch.delenv("ICOM_DEBUG", raising=False)
     monkeypatch.setattr(platformdirs, "user_cache_path", lambda app: tmp_path)
     icom_logger = logging.getLogger("rigplane")
     icom_logger.setLevel(logging.NOTSET)

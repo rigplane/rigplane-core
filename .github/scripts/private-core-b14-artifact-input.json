@@ -1,0 +1,16 @@
+{
+  "sourceAcceptance": "ACCEPTED",
+  "version": "3.0.0b14",
+  "commit": "00b82396fb51617911273076dd8925058343e136",
+  "tree": "fad7a794052f170009514f362124dd1a33ed6b4a",
+  "sourceArchiveSha256": "bc2935a9ca60864fdcc7bdd58da83ad11f25fdc2f60b6bc5511918b6da4a95e3",
+  "sourceQuick": "https://github.com/rigplane/rigplane-core/actions/runs/37097833304",
+  "inheritedMainQuick": "https://github.com/rigplane/rigplane-core/actions/runs/37095447132",
+  "independentReview": "https://github.com/rigplane/rigplane-core/pull/3982#issuecomment-5965625423",
+  "byteCatalog": [
+    "audio/route.py", "web/handlers/audio.py", "runtime/_civ_rx.py",
+    "runtime/_control_phase.py", "runtime/_runtime_protocols.py",
+    "runtime/session_lifecycle.py", "core/acquisition_scheduler.py",
+    "rigctld/protocol.py"
+  ]
+}

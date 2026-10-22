@@ -1,0 +1,46 @@
+name: Artifact cleanup
+
+# Deletes Actions artifacts older than `max_age_days`. A dry run deletes
+# nothing and reports the counts; a failed delete turns the run red.
+
+on:
+  schedule:
+    # Sunday 04:40 UTC.
+    - cron: "40 4 * * 0"
+  workflow_dispatch:
+    inputs:
+      max_age_days:
+        description: "Delete artifacts older than this many days"
+        required: false
+        default: "3"
+        type: string
+      dry_run:
+        description: "Only report what would be deleted"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  # One run at a time: a second run waits for the running one.
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Delete old artifacts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MAX_AGE_DAYS: ${{ inputs.max_age_days || '3' }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || '' }}
+        run: python3 .github/scripts/artifact_cleanup.py --max-age-days "$MAX_AGE_DAYS" ${DRY_RUN:+--dry-run}

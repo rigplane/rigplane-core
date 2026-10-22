@@ -118,14 +118,34 @@ class TransportStats:
     errors: int = 0
     timeouts: int = 0
     reconnects: int = 0
+    reconnect_episodes: int = 0
     stale_lines_skipped: int = 0
     bytes_flushed: int = 0
     last_error: str = ""
     last_error_time: float = 0.0
     _consecutive_errors: int = field(default=0, repr=False)
+    _reconnect_episode_counted: bool = field(default=False, repr=False)
 
     def record_success(self) -> None:
+        """A radio exchange completed: reset the error streak and close the
+        loss episode, so the next reconnect opens a new episode."""
         self._consecutive_errors = 0
+        self._reconnect_episode_counted = False
+
+    def record_port_open(self) -> None:
+        """The port opened with no radio evidence yet: reset the error
+        streak (the reconnect threshold depends on it) but leave the loss
+        episode open — only a successful exchange closes it."""
+        self._consecutive_errors = 0
+
+    def record_reconnect_attempt(self) -> None:
+        """Count one reconnect attempt; the first attempt of a loss episode
+        also opens the episode. A successful exchange (``record_success``)
+        closes it, so retries inside one episode never recount."""
+        self.reconnects += 1
+        if not self._reconnect_episode_counted:
+            self._reconnect_episode_counted = True
+            self.reconnect_episodes += 1
 
     def record_error(self, msg: str) -> None:
         self.errors += 1
@@ -212,7 +232,7 @@ class YaesuCatTransport:
                 stopbits=1,
             )
             self._connected = True
-            self._stats.record_success()
+            self._stats.record_port_open()
             logger.info("CAT serial port opened: %s", self._device)
         except Exception as exc:
             raise CatTransportError(
@@ -246,7 +266,7 @@ class YaesuCatTransport:
             return
 
         self._last_reconnect = now
-        self._stats.reconnects += 1
+        self._stats.record_reconnect_attempt()
         logger.warning(
             "CAT: reconnecting serial port (consecutive errors: %d)",
             self._stats.consecutive_errors,
@@ -267,8 +287,15 @@ class YaesuCatTransport:
         command: str,
         *,
         is_current: Callable[[], bool] | None = None,
+        on_committed: Callable[[], None] | None = None,
     ) -> None:
-        """Send raw bytes to serial port."""
+        """Send raw bytes to serial port.
+
+        *on_committed* runs once the final currency check has passed and the
+        writer has accepted the bytes, before ``drain()`` and with no await
+        in between, so its effect happens only for a write that went out: a
+        writer that refuses the bytes leaves it unrun (MOR-3678).
+        """
         self._check_connected()
         assert self._writer is not None  # for type checker
 
@@ -278,9 +305,12 @@ class YaesuCatTransport:
         if self._debug_logging:
             logger.debug("CAT TX: %r", command)
 
+        encoded = command.encode("ascii")
         self._require_write_currency(is_current)
         try:
-            self._writer.write(command.encode("ascii"))
+            self._writer.write(encoded)
+            if on_committed is not None:
+                on_committed()
             await self._writer.drain()
         except Exception as exc:
             self._stats.record_error(f"write failed: {exc}")
@@ -407,6 +437,7 @@ class YaesuCatTransport:
         *,
         is_current: Callable[[], bool] | None = None,
         tier: ExchangeTier = ExchangeTier.ORDINARY,
+        on_committed: Callable[[], None] | None = None,
     ) -> None:
         """Send a SET command and drain echo / auto-info.
 
@@ -416,6 +447,8 @@ class YaesuCatTransport:
 
         Args:
             command: CAT command string (e.g. ``"MD0E;"``).
+            on_committed: Runs once the final currency check has passed,
+                just before the bytes go out (see :meth:`_raw_write`).
 
         Raises:
             CatCommandRejected: If the radio returns ``?;`` (MOR-2103).
@@ -424,7 +457,12 @@ class YaesuCatTransport:
         async with self._exchange_gate.exchange(tier=tier):
             await self.flush_rx()
             self._require_write_currency(is_current)
-            await self._raw_write(command, is_current=is_current)
+            if on_committed is None:
+                await self._raw_write(command, is_current=is_current)
+            else:
+                await self._raw_write(
+                    command, is_current=is_current, on_committed=on_committed
+                )
             self._stats.writes += 1
             drained = await self._drain_responses(command)
             self._stats.record_success()

@@ -53,11 +53,13 @@ from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from rigplane.core.exceptions import (
     AuthenticationError,
     ConnectionError as RigplaneConnectionError,
+    DiscoveryTimeout,
+    RadioSessionHeldError,
 )
 
 __all__ = [
@@ -692,6 +694,10 @@ class CoreRadioSessionLifecycle:
         max_recovery_attempts: int = _MAX_RECONNECTS,
         recovery_backoff_s: tuple[float, ...] = _RECONNECT_BACKOFF,
         max_connect_attempts: int = _MAX_CONNECT_ATTEMPTS,
+        first_connect_busy_cooldown_s: float | None = None,
+        first_connect_busy_budget_s: float | None = None,
+        first_connect_busy_live_holder_after_s: float | None = None,
+        first_connect_discovery_retries: int | None = None,
     ) -> None:
         self._mech = mechanism
         self._not_ready_cooldown_s = not_ready_cooldown_s
@@ -699,6 +705,36 @@ class CoreRadioSessionLifecycle:
         self._max_recovery_attempts = max_recovery_attempts
         self._recovery_backoff_s = recovery_backoff_s
         self._max_connect_attempts = max_connect_attempts
+        # Start-up busy-hold policy (MOR-3391): when set, a SESSION_BUSY_REJECT
+        # on the first connect (before any connect through this loop has
+        # reached CONNECTED) retries with a real cooldown until the wall-clock
+        # budget elapses, and those busy passes do not count against
+        # ``max_connect_attempts`` — its retries stay reserved for the other
+        # transient outcomes.  Later connects and mechanisms without the
+        # policy keep the constructed cooldown/attempt behaviour. ``None``
+        # disables it.
+        # Live-holder stop (MOR-3391 part 1b): when ALSO set, a busy reject
+        # on an attempt that STARTS at or after the first busy attempt's
+        # start plus this threshold proves a LIVE session holds the radio
+        # (a dead hold would have expired by then), so the loop raises the
+        # honest busy error instead of retrying. ``None`` disables it,
+        # leaving the budget as the only backstop.
+        self._first_connect_busy_cooldown_s = first_connect_busy_cooldown_s
+        self._first_connect_busy_budget_s = first_connect_busy_budget_s
+        self._first_connect_busy_live_holder_after_s = (
+            first_connect_busy_live_holder_after_s
+        )
+        # Silent first-discovery retries (MOR-3391 part 1b(c)): ``None``
+        # resolves to the packet layer's STARTUP_DISCOVERY_RETRIES (deferred
+        # import: that module reaches back into this one at its call sites).
+        if first_connect_discovery_retries is None:
+            from rigplane.runtime._control_phase import ControlPhaseRuntime
+
+            first_connect_discovery_retries = (
+                ControlPhaseRuntime.STARTUP_DISCOVERY_RETRIES
+            )
+        self._first_connect_discovery_retries = first_connect_discovery_retries
+        self._connected_once = False
 
         self._state: LifecycleState = LifecycleState.DISCONNECTED
         self._last_error: LifecycleErrorReason = LifecycleErrorReason.NONE
@@ -707,6 +743,7 @@ class CoreRadioSessionLifecycle:
         # Resident connect runner + coalescing.
         self._connect_task: asyncio.Task[None] | None = None
         self._recover_task: asyncio.Task[None] | None = None
+        self._recovery_waiters: dict[asyncio.Task[None], asyncio.Task[None]] = {}
         # True once a session has been claimed (auth succeeded) and not yet
         # released — drives idempotent disconnect.
         self._claimed = False
@@ -716,6 +753,16 @@ class CoreRadioSessionLifecycle:
         self._cooldown_total_s: float | None = None
         self._connecting_started: float | None = None
         self._recovery_attempt: int | None = None
+        # Start-up busy-hold signal (MOR-3391 part 2): set while a
+        # first-connect busy-pass cooldown owns the loop (a busy reject
+        # or, after one, a discovery timeout), cleared on
+        # CONNECTED/DISCONNECTED. Upper layers (CLI start-up, the web
+        # wire) wait on / read this instead of the private lifecycle, so a
+        # start-up hold can serve not-ready while the same connect keeps
+        # running. Never set for reconnect busy rejects (those keep the
+        # immediate attempts) — the set below lives only in the
+        # first-connect policy branch.
+        self.startup_busy_hold_event = asyncio.Event()
 
     # ------------------------------------------------------------------
     # Observable surface
@@ -724,6 +771,20 @@ class CoreRadioSessionLifecycle:
     @property
     def state(self) -> LifecycleState:
         return self._state
+
+    @property
+    def startup_busy_hold_retry_in_seconds(self) -> float | None:
+        """The live cooldown remainder while one runs, else the hold's
+        cooldown between two busy passes (the state is CONNECTING there,
+        with no live deadline); ``None`` when no hold is active. Read by
+        the radio's public busy surface for the web wire.
+        """
+        if not self.startup_busy_hold_event.is_set():
+            return None
+        status = self.status
+        if status.cooldown_remaining_s is not None:
+            return status.cooldown_remaining_s
+        return self._cooldown_total_s
 
     @property
     def status(self) -> LifecycleStatus:
@@ -787,6 +848,14 @@ class CoreRadioSessionLifecycle:
         self._state = to_state
         if reason is not LifecycleErrorReason.NONE:
             self._last_error = reason
+        if (
+            to_state is LifecycleState.CONNECTED
+            or to_state is LifecycleState.DISCONNECTED
+        ):
+            # The hold is over either way: the grant landed, the budget ran
+            # out, or teardown released. Clearing here (rather than at each
+            # emit site) keeps the signal exact by construction.
+            self.startup_busy_hold_event.clear()
         event = LifecycleEvent(
             from_state=from_state,
             to_state=to_state,
@@ -830,13 +899,9 @@ class CoreRadioSessionLifecycle:
             # release already ran in ``_attempt_with_release``/teardown; just
             # propagate so the awaiter sees the cancel.
             raise
-        except (AuthenticationError, RigplaneConnectionError):
-            # Hard-fail / exhaustion paths already drove the machine to
-            # DISCONNECTED; just re-raise.
-            raise
         except BaseException:
-            # Any other post-claim exception: release ran inside
-            # ``_attempt_with_release``; drive the observable machine home.
+            # Any other exception: release already ran in ``_attempt_with_release``;
+            # paths that already emitted DISCONNECTED are skipped by the guard.
             self._connecting_started = None
             if self._state not in (
                 LifecycleState.CLOSING,
@@ -850,14 +915,72 @@ class CoreRadioSessionLifecycle:
 
     async def _connect_loop(self) -> None:
         attempt = 0
+        busy_attempts = 0
+        busy_deadline: float | None = None
+        first_busy_started_at: float | None = None
+        silent_discovery_attempts = 0
         while True:
             attempt += 1
-            self._connecting_started = time.monotonic()
+            attempt_started_at = time.monotonic()
+            self._connecting_started = attempt_started_at
             self._emit(LifecycleState.CONNECTING)
-            outcome = await self._attempt_with_release()
+            try:
+                outcome = await self._attempt_with_release()
+            except DiscoveryTimeout:
+                # MOR-3391 round 2: after at least one busy reject on the
+                # first connect, an unanswered discovery is one more busy
+                # pass — the radio is holding a session and not answering
+                # us — with the same cadence and live-holder stop as a busy
+                # reject.  A discovery attempt sent no login, so it schedules
+                # no same-computer drop.
+                budget_s = self._first_connect_busy_budget_s
+                if (
+                    first_busy_started_at is not None
+                    and not self._connected_once
+                    and budget_s is not None
+                ):
+                    busy_attempts, busy_deadline = await self._first_connect_busy_pass(
+                        attempt_started_at=attempt_started_at,
+                        first_busy_started_at=first_busy_started_at,
+                        busy_attempts=busy_attempts,
+                        busy_deadline=busy_deadline,
+                        budget_s=budget_s,
+                        kind="discovery timeout",
+                    )
+                    continue
+                # MOR-3391 part 1b(c): on the FIRST connect (policy on) a
+                # discovery timeout before any busy reject retries at the
+                # first-connect busy cadence — at most
+                # ``_first_connect_discovery_retries`` retries — then stays
+                # fatal with today's message.  A busy reject on any retry
+                # hands back to the busy rules above; reconnects (or the
+                # policy off) stay fatal, exactly as before.
+                if (
+                    first_busy_started_at is None
+                    and not self._connected_once
+                    and budget_s is not None
+                ):
+                    silent_discovery_attempts += 1
+                    total = self._first_connect_discovery_retries + 1
+                    _logger.warning(
+                        "discovery attempt %d/%d got no answer",
+                        silent_discovery_attempts,
+                        total,
+                    )
+                    if (
+                        silent_discovery_attempts
+                        <= self._first_connect_discovery_retries
+                    ):
+                        cooldown = self._first_connect_busy_cooldown_s
+                        if cooldown is None:
+                            cooldown = self._reject_cooldown_s
+                        await asyncio.sleep(cooldown)
+                        continue
+                raise
 
             if outcome is AttemptOutcome.CONNECTED:
                 self._connecting_started = None
+                self._connected_once = True
                 self._emit(LifecycleState.CONNECTED)
                 return
 
@@ -876,11 +999,43 @@ class CoreRadioSessionLifecycle:
                     "Authentication failed (error=0xFEFFFFFF); credentials rejected"
                 )
 
+            if (
+                outcome is AttemptOutcome.SESSION_BUSY_REJECT
+                and not self._connected_once
+                and self._first_connect_busy_budget_s is not None
+            ):
+                # Start-up busy-hold policy (MOR-3391): the radio still holds
+                # a dead client's session and the busy-issued token is
+                # unusable afterwards, so the reject was already released
+                # inside ``_attempt_with_release`` and the next attempt logs
+                # in again.  Retry with a real cooldown until the start-up
+                # budget elapses; the busy passes do not count against
+                # ``max_connect_attempts`` — those retries stay reserved for
+                # the other transient outcomes.
+                if first_busy_started_at is None:
+                    first_busy_started_at = attempt_started_at
+                busy_attempts, busy_deadline = await self._first_connect_busy_pass(
+                    attempt_started_at=attempt_started_at,
+                    first_busy_started_at=first_busy_started_at,
+                    busy_attempts=busy_attempts,
+                    busy_deadline=busy_deadline,
+                    budget_s=self._first_connect_busy_budget_s,
+                    kind="busy reject",
+                )
+                continue
+
             # Transient: SESSION_NOT_READY (civ_port==0) or SESSION_BUSY_REJECT
             # (0xFFFFFFFF).  The session was already released inside
             # ``_attempt_with_release`` (release BEFORE the wait — Hole 4 / Cause
             # A inversion).  Now enter COOLDOWN and wait in-process.
-            if attempt >= self._max_connect_attempts:
+            # Busy passes that retried under the first-connect policy above
+            # must not consume these retries; busy passes on later connects
+            # (``busy_attempts`` stays 0 there) still count.  Silent
+            # first-discovery retries are the same kind of policy-loop pass.
+            if (
+                attempt - busy_attempts - silent_discovery_attempts
+                >= self._max_connect_attempts
+            ):
                 self._connecting_started = None
                 self._emit(LifecycleState.DISCONNECTED)
                 raise RigplaneConnectionError(
@@ -896,7 +1051,11 @@ class CoreRadioSessionLifecycle:
                 cooldown = self._not_ready_cooldown_s
 
             self._connecting_started = None
-            self._cooldown_total_s = cooldown
+            # A transient pass in the middle of a start-up hold must not
+            # clobber the hold's cooldown: the wire serves the hold's
+            # number until the grant lands.
+            if not self.startup_busy_hold_event.is_set():
+                self._cooldown_total_s = cooldown
             self._cooldown_deadline = time.monotonic() + cooldown
             self._emit(
                 LifecycleState.COOLDOWN,
@@ -907,8 +1066,111 @@ class CoreRadioSessionLifecycle:
                 await asyncio.sleep(cooldown)
             finally:
                 self._cooldown_deadline = None
-                self._cooldown_total_s = None
+                if not self.startup_busy_hold_event.is_set():
+                    self._cooldown_total_s = None
             # loop → CONNECTING again, inside the same resident process.
+
+    async def _first_connect_busy_pass(
+        self,
+        *,
+        attempt_started_at: float,
+        first_busy_started_at: float,
+        busy_attempts: int,
+        busy_deadline: float | None,
+        budget_s: float,
+        kind: Literal["busy reject", "discovery timeout"],
+    ) -> tuple[int, float | None]:
+        """Count one start-up busy-loop pass and wait out its cooldown.
+
+        Shared by busy rejects and mid-loop discovery timeouts (MOR-3391
+        round 2): both mean the radio is granting no session right now, so
+        both ride the same cooldown cadence and the same live-holder stop,
+        and neither consumes ``max_connect_attempts``.  A discovery pass
+        sent no login, so it schedules no same-computer drop.  Returns the
+        updated ``(busy_attempts, busy_deadline)``.
+
+        Raises:
+            RadioSessionHeldError: the pass started at or after the
+                live-holder threshold (a live session holds the radio).
+            RigplaneConnectionError: the start-up busy budget elapsed —
+                with the honest busy reason, never the discovery message.
+        """
+        live_holder_after_s = self._first_connect_busy_live_holder_after_s
+        if (
+            live_holder_after_s is not None
+            and attempt_started_at >= first_busy_started_at + live_holder_after_s
+        ):
+            # Live-holder stop: the start-up busy threshold elapsed
+            # with no grant.  The reject was already
+            # released inside ``_attempt_with_release``; a discovery attempt
+            # never claimed anything.  These branches carry no holder
+            # location metadata, so the terminal wording stays neutral.
+            self._connecting_started = None
+            self._emit(LifecycleState.DISCONNECTED)
+            raise RadioSessionHeldError(
+                "radio busy: another client holds the session. "
+                "Check for another active radio client before retrying."
+            )
+        busy_attempts += 1
+        now = time.monotonic()
+        if busy_deadline is None:
+            busy_deadline = now + budget_s
+        if now >= busy_deadline:
+            self._connecting_started = None
+            self._emit(LifecycleState.DISCONNECTED)
+            raise RigplaneConnectionError(
+                "Radio session never became ready: still busy after "
+                f"{busy_attempts} start-up re-logins against the "
+                f"{budget_s:.0f}s start-up "
+                "busy budget. Check for another active radio client "
+                "before retrying."
+            )
+        cooldown = self._first_connect_busy_cooldown_s
+        if cooldown is None:
+            cooldown = self._reject_cooldown_s
+        if kind == "busy reject":
+            _logger.warning(
+                "Radio session busy (startup attempt %d): retrying with "
+                "a fresh login after %.0fs (startup busy budget %.0fs).",
+                busy_attempts,
+                cooldown,
+                budget_s,
+            )
+        else:
+            _logger.warning(
+                "Radio discovery unanswered (startup attempt %d): retrying "
+                "after %.0fs (startup busy budget %.0fs); "
+                "counted as a busy pass.",
+                busy_attempts,
+                cooldown,
+                budget_s,
+            )
+        self._connecting_started = None
+        self._cooldown_total_s = cooldown
+        self._cooldown_deadline = time.monotonic() + cooldown
+        self._emit(
+            LifecycleState.COOLDOWN,
+            # A discovery pass counts as a busy pass, hence the reason.
+            reason=LifecycleErrorReason.SESSION_BUSY_REJECT,
+            cooldown_remaining_s=cooldown,
+        )
+        # First-connect busy hold owns the loop now (MOR-3391 part 2);
+        # the same connect keeps running while upper layers serve
+        # not-ready off this signal. Every busy pass sets it — a
+        # discovery-timeout pass included — and both stop paths above
+        # emit DISCONNECTED, which clears it, so nothing reports "busy"
+        # after the loop gives up.
+        self.startup_busy_hold_event.set()
+        try:
+            await asyncio.sleep(cooldown)
+        finally:
+            self._cooldown_deadline = None
+            # Keep the total for the hold's duration: between two busy
+            # passes the state is CONNECTING (no live deadline), and the
+            # retry number the wire serves then is this same cooldown.
+            # Terminal states clear the event, which is what gates the
+            # number's readers.
+        return busy_attempts, busy_deadline
 
     async def _attempt_with_release(self) -> AttemptOutcome:
         """One connect attempt; on any non-CONNECTED outcome RELEASE first.
@@ -998,16 +1260,29 @@ class CoreRadioSessionLifecycle:
     # soft_reconnect() — CONNECTED → RECOVERING → CONNECTED (#1217)
     # ------------------------------------------------------------------
 
+    def is_current_recovery_awaited_by(self, task: asyncio.Task[None]) -> bool:
+        recovery = self._recover_task
+        return (
+            recovery is not None
+            and asyncio.current_task() is recovery
+            and self._recovery_waiters.get(task) is recovery
+        )
+
     async def soft_reconnect(self) -> None:
         # Coalesce concurrent recovery onto the in-flight one.
-        if self._recover_task is not None and not self._recover_task.done():
-            await self._recover_task
-            return
-        self._recover_task = asyncio.ensure_future(self._run_recover())
+        recovery = self._recover_task
+        if recovery is None or recovery.done():
+            recovery = asyncio.ensure_future(self._run_recover())
+            self._recover_task = recovery
+        caller = asyncio.current_task()
+        if caller is not None:
+            self._recovery_waiters[caller] = recovery
         try:
-            await self._recover_task
+            await recovery
         finally:
-            if self._recover_task is not None and self._recover_task.done():
+            if caller is not None and self._recovery_waiters.get(caller) is recovery:
+                del self._recovery_waiters[caller]
+            if self._recover_task is recovery and recovery.done():
                 self._recover_task = None
 
     async def _run_recover(self) -> None:

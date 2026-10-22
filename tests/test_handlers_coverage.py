@@ -27,6 +27,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
+from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime.radio import IcomRadio
 from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.scope import ScopeFrame
@@ -1107,7 +1108,7 @@ async def test_att_web_explicit_none_receiver_fails_before_enqueue() -> None:
         radio=_AttenuatorIngressRadio(), server=SimpleNamespace(command_queue=queue)
     )
 
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueError, match="receiver"):
         await handler._enqueue_command("set_att", {"db": 20, "receiver": None})
 
     assert queue.items == []
@@ -2067,6 +2068,64 @@ async def test_control_run_registers_unregisters_and_sends_hello() -> None:
     assert hello["radio_ready"] is True
 
 
+@pytest.mark.asyncio
+async def test_control_run_skips_non_utf8_text_frame() -> None:
+    """A text frame with invalid UTF-8 bytes is skipped, not raised (MOR-3313)."""
+
+    class _FakeTxAuthority:
+        def __init__(self) -> None:
+            self.disconnects: list[str] = []
+
+        def owner_disconnect(self, session_id: str):
+            self.disconnects.append(session_id)
+            return self._release()
+
+        async def _release(self) -> None:
+            return None
+
+    class _FakeServer:
+        def __init__(self, authority: _FakeTxAuthority) -> None:
+            self.managed_tx_authority = authority
+            self.registered = 0
+            self.unregistered = 0
+
+        def register_control_event_queue(
+            self, queue: object, session_id: str | None = None
+        ) -> dict[str, object]:
+            self.registered += 1
+            return {"type": "full", "data": {}}
+
+        def unregister_control_event_queue(
+            self, queue: object, session_id: str | None = None
+        ) -> None:
+            self.unregistered += 1
+
+    ping = encode_json({"type": "ping"}).encode("utf-8")
+    ws = SimpleNamespace(
+        send_text=AsyncMock(),
+        recv=AsyncMock(
+            side_effect=[
+                (WS_OP_TEXT, b"\xff\xfe{"),
+                (WS_OP_TEXT, ping),
+                EOFError(),
+            ]
+        ),
+    )
+    radio = SimpleNamespace(connected=True, radio_ready=True)
+    authority = _FakeTxAuthority()
+    server = _FakeServer(authority)
+    handler = _control_handler(
+        ws=ws, radio=radio, server=server, session_id="test-session"
+    )
+    await handler.run()
+
+    sent = [decode_json(call.args[0]) for call in ws.send_text.await_args_list]
+    assert {"type": "pong"} in sent
+    assert server.registered == 1
+    assert server.unregistered == 1
+    assert authority.disconnects == ["test-session"]
+
+
 async def test_control_event_sender_loop_filters_by_subscription() -> None:
     ws = SimpleNamespace(send_text=AsyncMock())
     handler = _control_handler(ws=ws)
@@ -2343,11 +2402,18 @@ async def test_radio_disconnect_paths() -> None:
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
     assert msg["error"] == "no_radio"
 
-    radio = SimpleNamespace(connected=False, soft_disconnect=AsyncMock())
+    radio = SimpleNamespace(
+        connected=False,
+        conn_state=RadioConnectionState.DISCONNECTED,
+        disconnect=AsyncMock(),
+        soft_disconnect=AsyncMock(),
+    )
     h = _control_handler(ws=ws, radio=radio)
     await h._handle_radio_disconnect({"id": "d1"})
-    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["result"]["status"] == "already_disconnected"
+    msgs = [decode_json(c.args[0]) for c in ws.send_text.await_args_list[-2:]]
+    assert msgs[0]["result"]["status"] == "disconnected"
+    assert msgs[1]["event"] == "connection_state" and msgs[1]["connected"] is False
+    radio.disconnect.assert_awaited_once()
 
     radio = SimpleNamespace(
         connected=True,
@@ -3592,19 +3658,6 @@ async def test_send_cw_text_multi_frame_text_reaches_radio_unchanged() -> None:
 
     assert result == {"text": text}
     radio.send_cw_text.assert_awaited_once_with(text)
-
-
-@pytest.mark.asyncio
-async def test_send_cw_text_over_payload_limit_raises() -> None:
-    """send_cw_text raises ValueError when text exceeds the web payload cap."""
-    radio = _capable_radio()
-    radio.send_cw_text = AsyncMock()
-    handler = _control_handler(radio=radio)
-    long_text = "A" * 513
-
-    with pytest.raises(ValueError, match="CW text too long: max 512 characters"):
-        await handler._enqueue_command("send_cw_text", {"text": long_text})
-    radio.send_cw_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio

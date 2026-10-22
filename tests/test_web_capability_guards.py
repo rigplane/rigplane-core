@@ -769,6 +769,17 @@ def test_browser_tx_audio_facts_pin_real_provider_snapshots():
     )
 
 
+def test_browser_tx_audio_facts_mk2_requires_declared_lan_input():
+    facts = browser_tx_audio_facts(IcomRadio("192.0.2.1", model="IC-7300MK2"))
+    assert astuple(facts)[:-1] == (
+        True,
+        "lan",
+        5,
+        AudioCodec.PCM_1CH_16BIT,
+        "session",
+    )
+
+
 # ── /api/v1/state tests ───────────────────────────────────────
 
 

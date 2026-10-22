@@ -2,15 +2,18 @@
 
 Extracted from ``radio.py`` (issue #1258, Tier 3 wave 3 of #1063) to slim down
 the god-object module. The two functions here read from / write to a radio
-instance using only its public API (``get_*``/``set_*``) plus a small number of
-documented internal attributes (``_last_*`` caches, ``_attenuator_state``,
-``_preamp_level``, ``_filter_width``) and the wire-level helper
-``_set_vfo_wire``.
+instance using its public ``get_*``/``set_*`` API (plus ``_check_connected``
+and the wire-level helper ``_set_vfo_wire``).
 
-The behaviour is intentionally identical to the previous ``IcomRadio.snapshot_state``
-and ``IcomRadio.restore_state`` methods: best-effort, with all per-field failures
-swallowed and logged at DEBUG level. The public ``IcomRadio.snapshot_state`` /
-``IcomRadio.restore_state`` methods now delegate here.
+Snapshots record only confirmed readings: each key comes from a successful
+public-getter read, and a failed read omits the key. Split, attenuator and
+preamp are read strictly (``strict=True``), so a failed read raises instead
+of returning a setter-written mirror. The VFO slot is not snapshotted
+(``get_vfo_slot`` reads no radio). Restore applies only the keys present in
+the snapshot (it still applies a ``vfo`` key when a snapshot carries one).
+All per-field failures are best-effort, swallowed and logged at DEBUG level.
+The public ``IcomRadio.snapshot_state`` / ``IcomRadio.restore_state``
+methods delegate here.
 """
 
 from __future__ import annotations
@@ -36,9 +39,7 @@ async def snapshot_state(radio: IcomRadio) -> dict[str, object]:
     try:
         state["frequency"] = await radio.get_freq()
     except Exception:
-        logger.debug("snapshot: get_freq failed, using cache", exc_info=True)
-        if radio._last_freq_hz is not None:
-            state["frequency"] = radio._last_freq_hz
+        logger.debug("snapshot: get_freq failed", exc_info=True)
 
     try:
         mode, filt = await radio.get_mode_info()
@@ -46,27 +47,33 @@ async def snapshot_state(radio: IcomRadio) -> dict[str, object]:
         if filt is not None:
             state["filter"] = filt
     except Exception:
-        logger.debug("snapshot: get_mode_info failed, using cache", exc_info=True)
-        if radio._last_mode is not None:
-            state["mode"] = radio._last_mode
-        if radio._filter_width is not None:
-            state["filter"] = radio._filter_width
+        logger.debug("snapshot: get_mode_info failed", exc_info=True)
 
     try:
         state["power"] = await radio.get_rf_power()
     except Exception:
-        logger.debug("snapshot: get_rf_power failed, using cache", exc_info=True)
-        if radio._last_power is not None:
-            state["power"] = radio._last_power
+        logger.debug("snapshot: get_rf_power failed", exc_info=True)
 
-    if radio._last_split is not None:
-        state["split"] = radio._last_split
-    if radio._last_vfo is not None:
-        state["vfo"] = radio._last_vfo
-    if radio._attenuator_state is not None:
-        state["attenuator"] = radio._attenuator_state
-    if radio._preamp_level is not None:
-        state["preamp"] = radio._preamp_level
+    get_split = getattr(radio, "get_split", None)
+    if get_split is not None:
+        try:
+            state["split"] = await get_split(strict=True)
+        except Exception:
+            logger.debug("snapshot: get_split failed", exc_info=True)
+
+    get_attenuator = getattr(radio, "get_attenuator", None)
+    if get_attenuator is not None:
+        try:
+            state["attenuator"] = await get_attenuator(strict=True)
+        except Exception:
+            logger.debug("snapshot: get_attenuator failed", exc_info=True)
+
+    get_preamp = getattr(radio, "get_preamp", None)
+    if get_preamp is not None:
+        try:
+            state["preamp"] = await get_preamp(strict=True)
+        except Exception:
+            logger.debug("snapshot: get_preamp failed", exc_info=True)
     try:
         state["vox"] = await radio.get_vox()
     except Exception:
@@ -88,7 +95,10 @@ async def snapshot_state(radio: IcomRadio) -> dict[str, object]:
 
 
 async def restore_state(radio: IcomRadio, state: dict[str, object]) -> None:
-    """Best-effort restore of state produced by :func:`snapshot_state`."""
+    """Best-effort restore of state produced by :func:`snapshot_state`.
+
+    Keys absent from the snapshot are skipped.
+    """
     radio._check_connected()
 
     if "split" in state:

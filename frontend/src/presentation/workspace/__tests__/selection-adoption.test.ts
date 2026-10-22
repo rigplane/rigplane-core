@@ -80,12 +80,14 @@ function foreignWrites(rec: Recorder): string[] {
 
 beforeEach(() => {
   document.documentElement.removeAttribute('data-theme');
+  document.documentElement.style.removeProperty('color-scheme');
 });
 
 afterEach(() => {
   // Return the shared module-level `$state` to defaults for sibling files.
   initWorkspaceStore(null);
   document.documentElement.removeAttribute('data-theme');
+  document.documentElement.style.removeProperty('color-scheme');
 });
 
 describe('MOR-1081 — one workspace field set owns the selection', () => {
@@ -369,6 +371,7 @@ describe('MOR-1081 — theme selection reads and writes the workspace only', () 
     expect(getTheme()).toBe('tokyo-night');
     expect(hasExplicitTheme()).toBe(true);
     expect(document.documentElement.dataset.theme).toBe('tokyo-night');
+    expect(document.documentElement.style.colorScheme).toBe('dark');
     expect(foreignWrites(rec)).toEqual([]);
   });
 
@@ -384,7 +387,28 @@ describe('MOR-1081 — theme selection reads and writes the workspace only', () 
     setTheme(getTheme());
 
     expect(document.documentElement.dataset.theme).toBe('nord');
+    expect(document.documentElement.style.colorScheme).toBe('dark');
     expect(rec.writes).toEqual([]);
+  });
+
+  it.each([
+    ['default', 'dark'],
+    ['tokyo-night', 'dark'],
+    ['lcd-warm', 'dark'],
+    ['solarized-light', 'light'],
+    ['catppuccin-latte', 'light'],
+    ['nord-light', 'light'],
+    ['gruvbox-light', 'light'],
+    ['github-light', 'light'],
+  ])('uses the %s native control polarity after switching themes', (theme, scheme) => {
+    initWorkspaceStore(null);
+    document.documentElement.style.colorScheme = scheme === 'dark' ? 'light' : 'dark';
+
+    setThemeUserChoice(theme);
+
+    expect(document.documentElement.style.colorScheme).toBe(scheme);
+    expect(getTheme()).toBe(theme);
+    expect(document.documentElement.dataset.theme).toBe(theme === 'default' ? undefined : theme);
   });
 
   it('rejects an unknown theme id without touching the workspace', () => {
@@ -395,11 +419,13 @@ describe('MOR-1081 — theme selection reads and writes the workspace only', () 
     });
     initWorkspaceStore(rec.storage);
     rec.writes.length = 0;
+    document.documentElement.style.colorScheme = 'light';
 
     setTheme('not-a-theme');
 
     expect(getTheme()).toBe('nord');
     expect(rec.writes).toEqual([]);
+    expect(document.documentElement.style.colorScheme).toBe('light');
     warn.mockRestore();
   });
 

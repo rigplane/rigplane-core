@@ -14,6 +14,14 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-10-02 — LAN audio, observation delivery and recovery
+
+- [2026-10-02-mechanism-audit-core-next-bugs.md](2026-10-02-mechanism-audit-core-next-bugs.md)
+  — bounded changed-mechanism audit at three pinned candidates; shared route
+  decisions and observation metadata are retained, and recovery cleanup uses
+  the existing lifecycle owner with an explicit waiter relation. No whole-module
+  dead-code or hardware acceptance claim.
+
 ## 2026-09-28 — MOR-2215 final whole-path audit, instrument inventory, and census
 
 The final whole-path mechanism audit of the frontend instrument layer, with

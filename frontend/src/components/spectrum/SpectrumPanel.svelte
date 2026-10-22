@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { untrack, type Snippet } from 'svelte';
+  import { onDestroy, untrack, type Snippet } from 'svelte';
+  import { ScopeRenderTrace, type TraceToken, type TraceSource, type TraceStatus } from '../../lib/runtime/scope-render-trace';
   import SpectrumCanvas from './SpectrumCanvas.svelte';
   import WaterfallCanvas from './WaterfallCanvas.svelte';
   import DxOverlay from './DxOverlay.svelte';
@@ -31,6 +32,8 @@
     type SpectrumAuthority,
   } from '../../lib/runtime/adapters/scope-adapter';
   import type { ScopeDisplayProjection } from '../../lib/runtime/adapters/scope-display-projection';
+  import { getManagedAppTxController } from '../../lib/runtime/tx-controller/managed-app-host';
+  import type { ManagedTxState } from '../../lib/runtime/tx-controller/managed-state';
   import SpectrumToolbar from './SpectrumToolbar.svelte';
   import BandPlanOverlay from './BandPlanOverlay.svelte';
   import EiBiBrowser from './EiBiBrowser.svelte';
@@ -47,6 +50,9 @@
   } from './spectrum-logic';
   import { PanoramaViewportCenter } from './panorama-motion';
   import { hasCommandModifier } from '../../components-v2/layout/keyboard-map';
+  import ScopeSourceBadge, { type ScopeSourceId } from '../../components-v2/spectrum/ScopeSourceBadge.svelte';
+  import ScopeSourceSelector from '../../components-v2/spectrum/ScopeSourceSelector.svelte';
+  import SdrTxFrozenIndicator from '../../components-v2/spectrum/SdrTxFrozenIndicator.svelte';
 
   // --- Props ---
   // `hideSourceControls` is forwarded to SpectrumToolbar so layouts that surface
@@ -92,7 +98,8 @@
   // once per mount for both the root attribute and the renderer options`.
   let { hideSourceControls = false, hideScopeControls = false, hideAutoStepToggle = false, hideToolbar = false,
     enableAvg = $bindable(true), enablePeakHold = $bindable(true), showBandPlan = $bindable(true), scopeControls,
-    scopeStatusIndicator, scopeProjection, scopeDemanded = true, onScopeDemandChange, colorRoles }: {
+    scopeStatusIndicator, scopeProjection, scopeDemanded = true, onScopeDemandChange, colorRoles,
+    captureTraceTimeline = false, onTraceComplete }: {
     hideSourceControls?: boolean; hideScopeControls?: boolean; hideAutoStepToggle?: boolean; hideToolbar?: boolean;
     enableAvg?: boolean; enablePeakHold?: boolean; showBandPlan?: boolean;
     scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet]>;
@@ -100,6 +107,9 @@
     scopeProjection?: ScopeDisplayProjection | null;
     scopeDemanded?: boolean; onScopeDemandChange?: (enabled: boolean) => void;
     colorRoles?: Partial<SpectrumColorRoles>;
+    /** Diagnostic candidates only; ordinary rendering never invokes these hooks. */
+    captureTraceTimeline?: boolean;
+    onTraceComplete?: (contents: string) => void;
   } = $props();
 
   let resolvedColorRoles = $derived(resolveSpectrumColorRoles(colorRoles));
@@ -112,19 +122,148 @@
   let filterWidthLifecycle = $derived(getFilterWidthCommandLifecycle());
   // --- Component state ---
   let audioFft = $derived(runtime.caps?.scopeSource === 'audio_fft');
+  // MOR-3158: the SDR source rides the same hardware rendering path —
+  // RF-center geometry, the existing set-frequency click-to-tune, the
+  // hardware scope stream and leases — because the backend feeds the
+  // IQ-derived ScopeFrames through that channel. The SDR-specific surface
+  // is additive: the toolbar badge/selector and the TX-frozen waterfall
+  // hold. The public `sdr` leaf is the generated `SdrStatusPublic`
+  // (MOR-3201); an absent leaf reads as null, never a fabricated default.
+  let sdrSource = $derived(runtime.caps?.scopeSource === 'sdr');
+  let sdrState = $derived(sdrSource ? runtime.state?.sdr ?? null : null);
+  let sdrTxFrozen = $derived(sdrState?.txFrozen === true);
+  // Every source the info payload advertises next to the selected SDR
+  // source; the selector renders itself only when more than one exists.
+  let sdrOtherSources = $derived.by(() => {
+    if (!sdrSource) return [] as const;
+    const others: ScopeSourceId[] = [];
+    if (runtime.caps?.scope === true) others.push('hardware');
+    if (runtime.caps?.audioFftAvailable === true) others.push('audio_fft');
+    return others;
+  });
   let scopeDemandOn = $state(true);
   let managed = $derived(scopeProjection !== undefined);
   let managedUnavailable = $derived(managed && (!scopeDemandOn || scopeProjection === null));
   let scopeConnected = $derived(managed ? !managedUnavailable : audioFft
     ? runtime.defaultScopeStatus.transport === 'connected'
-    : runtime.scope.hardwareScopeConnected);
+    : runtime.scope.hardwareScopeConnected && runtime.scope.hardwareScopeFrameLive);
+  // MOR-2859: the managed TX snapshot is the only TX truth (invariant R9,
+  // the same source as the global TX lamp) — never `state.ptt`. The lookup
+  // is optional: mounts without the provider read as "TX not known".
+  let txSnapshot = $state.raw<ManagedTxState | null>(null);
+  try {
+    const txCtl = getManagedAppTxController();
+    txSnapshot = txCtl.snapshot();
+    const stopWatchingTx = txCtl.subscribe((next) => { txSnapshot = next; });
+    onDestroy(() => stopWatchingTx());
+  } catch {
+    // No provider — scopeTxKnown stays false.
+  }
+  // "TX known" is the `transmitting` case of `rfState` (rx-tx-surface.ts):
+  // a positively observed ON or a confirmed-on risk. `uncertain` is doubt,
+  // not knowledge, and keeps the disconnected overlay.
+  let scopeTxKnown = $derived(
+    txSnapshot !== null && (txSnapshot.radioTx === 'on' || txSnapshot.txRisk === 'confirmed-on'),
+  );
   let scopeLease: ReturnType<typeof runtime.acquireHardwareScope> | null = null;
   let scopePixels = $state<Uint8Array | null>(null);
   let sampledReceipt: number | null = null;
   let brtLevel = $state(0);
   let colorScheme = $state<ColorSchemeName>('classic');
-  let spectrumPush: ((data: Uint8Array) => void) | null = null;
-  let waterfallPush: ((data: Uint8Array, options?: WaterfallOptions) => void) | null = null;
+  let spectrumPush: ((data: Uint8Array, token?: TraceToken | null) => void) | null = null;
+  let waterfallPush: ((data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null) => void) | null = null;
+  const traceCandidate = import.meta.env.VITE_SCOPE_TRACE_CANDIDATE === '1';
+  let trace: ScopeRenderTrace | null = $state(null);
+  let traceStatus: 'idle' | TraceStatus = $state('idle');
+  let traceError = $state('');
+  let traceSource: TraceSource | null = null;
+  type TraceSelection = Readonly<{
+    selectedSource: string | null;
+    providerGeneration: number | null;
+    activeReceiver: string | null;
+    managed: boolean;
+    projectionSource: string | null;
+    projectionReceiver: string | null;
+  }>;
+  let traceSelection: TraceSelection | null = null;
+  let unsubscribeTrace: (() => void) | null = null;
+
+  function selectedTraceIdentity(): TraceSelection {
+    const caps = runtime.caps;
+    const state = runtime.state;
+    return {
+      selectedSource: typeof caps?.scopeSource === 'string' ? caps.scopeSource : null,
+      providerGeneration: typeof state?.providerGeneration === 'number' && Number.isSafeInteger(state.providerGeneration)
+        ? state.providerGeneration : null,
+      activeReceiver: typeof state?.active === 'string' ? state.active : null,
+      managed,
+      projectionSource: managed ? scopeProjection?.frame.source ?? null : null,
+      projectionReceiver: managed ? scopeProjection?.frame.receiver ?? null : null,
+    };
+  }
+
+  function startTrace(captureTransition = false): void {
+    if (!traceCandidate || traceStatus === 'recording' || !scopeDemandOn || !scopeConnected) return;
+    unsubscribeTrace?.();
+    trace?.dispose();
+    traceError = '';
+    traceSource = (managed && scopeProjection?.frame.source === 'audio-fft') || (!managed && audioFft)
+      ? 'audio_fft' : 'hardware';
+    traceSelection = selectedTraceIdentity();
+    // An already-hidden constructor can stop synchronously. Export that
+    // session only after assignment, avoiding an uninitialized closure read.
+    let completedDuringConstruction = false;
+    let session: ScopeRenderTrace | null = null;
+    const completed = () => {
+      const contents = session?.export();
+      if (contents && onTraceComplete) {
+        try { onTraceComplete(contents); } catch { traceError = 'Trace export callback failed'; }
+      }
+    };
+    session = new ScopeRenderTrace((status) => {
+      traceStatus = status;
+      traceSelection = null;
+      unsubscribeTrace?.();
+      unsubscribeTrace = null;
+      if (session) completed();
+      else completedDuringConstruction = true;
+    }, undefined, undefined, { captureTimeline: captureTraceTimeline, captureTransition });
+    trace = session;
+    traceStatus = session.status;
+    if (completedDuringConstruction) completed();
+    if (session.status === 'recording') {
+      const recordingSession = session;
+      unsubscribeTrace = runtime.scope.subscribeTraceReceipt((receipt) => {
+        const source = receipt.kind === 'accepted' ? receipt.token.source : receipt.source;
+        if (source !== traceSource) return;
+        try { recordingSession.observe(receipt); } catch {
+          traceError = 'Trace collector stopped after an error';
+          recordingSession.stop('observer_error');
+        }
+      });
+    }
+  }
+
+  function stopTrace(): void { trace?.stop('operator'); }
+
+  function downloadTrace(): void {
+    const contents = trace?.export();
+    if (!contents) return;
+    try {
+      const url = URL.createObjectURL(new Blob([contents], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `scope-render-trace-${trace?.runId}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    } catch {
+      traceError = 'Local trace download failed';
+    }
+  }
+
+  onDestroy(() => { unsubscribeTrace?.(); trace?.dispose(); });
   let startFreq = $state(0);
   let endFreq = $state(0);
   let frameScopeMode = $state(0);  // scope mode from binary frame header (authoritative)
@@ -886,11 +1025,11 @@
   // the disconnect overlay. Pinned by `stops painting on drop and repaints
   // only from a post-reconnect frame`.
   //
-  // The unmanaged audio-FFT source keeps its canvas: there `scopeConnected`
-  // reads `runtime.defaultScopeStatus`, a different observation than the
-  // frames this panel paints, and `preserves distinct 80/120/160 producer
-  // levels in the trace, peak hold and waterfall` paints frames while that
-  // observation reads `disconnected`.
+  // On the raw hardware path `scopeConnected` also requires a live frame, so
+  // transport loss or 500 ms of frame silence clears the trace through the
+  // effect below. The unmanaged audio-FFT source keeps its canvas: there
+  // `scopeConnected` reads `runtime.defaultScopeStatus`, a different
+  // observation than the frames this panel paints.
   let scopeTraceLive = $derived(scopeConnected || (!managed && audioFft));
   $effect(() => {
     if (scopeTraceLive) return;
@@ -898,6 +1037,21 @@
   });
 
   $effect(() => { if (managed) scopeDemandOn = scopeDemanded; });
+  $effect(() => { if (!scopeDemandOn && traceStatus === 'recording') trace?.stop('source_changed'); });
+  $effect(() => {
+    if (traceStatus !== 'recording') return;
+    const selected = selectedTraceIdentity();
+    const initial = traceSelection;
+    if (!initial) return;
+    if (selected.selectedSource !== initial.selectedSource
+      || selected.providerGeneration !== initial.providerGeneration
+      || selected.activeReceiver !== initial.activeReceiver
+      || selected.managed !== initial.managed
+      || (selected.projectionSource !== null && selected.projectionSource !== initial.projectionSource)
+      || (selected.projectionReceiver !== null && selected.projectionReceiver !== initial.projectionReceiver)) {
+      trace?.stop('source_changed');
+    }
+  });
   $effect(() => {
     if (!managed) return;
     const projection = scopeProjection;
@@ -908,10 +1062,18 @@
       startFreq = projection.frame.startHz;
       endFreq = projection.frame.endHz;
       if (sampledReceipt !== projection.acceptedSequence) {
+        const traceStart = trace?.status === 'recording' ? performance.now() : 0;
+        const source: TraceSource = projection.frame.source === 'audio-fft' ? 'audio_fft' : 'hardware';
+        if (trace?.status === 'recording' && source !== traceSource) trace.stop('source_changed');
+        const token = trace?.tokenForAcceptedSequence(projection.acceptedSequence, source) ?? null;
         sampledReceipt = projection.acceptedSequence;
         scopePixels = Uint8Array.from(projection.frame.normalizedBins, sample => Math.round(sample * 255));
-        spectrumPush?.(scopePixels);
-        waterfallPush?.(scopePixels, waterfallOptions);
+        spectrumPush?.(scopePixels, token);
+        // MOR-3158: a TX-frozen SDR source adds no waterfall row — the
+        // panorama holds its last pre-transmit image under the TX marker.
+        if (!sdrTxFrozen) waterfallPush?.(scopePixels, waterfallOptions, token);
+        else trace?.record('waterfall_suppressed', token, 0, true);
+        if (traceStart) trace?.record('fanout', token, performance.now() - traceStart);
       }
       if (projection.passband.state !== 'current') {
         resizeCapture = null;
@@ -931,6 +1093,9 @@
         if (managed || !scopeDemandOn) return;
         if (sourceIsAudio && (frame.pixels.length < 3 || frame.pixels.length % 2 === 0
           || frame.endFreq <= frame.startFreq)) return;
+        const traceStart = trace?.status === 'recording' ? performance.now() : 0;
+        if (traceStart && (sourceIsAudio ? 'audio_fft' : 'hardware') !== traceSource) trace?.stop('source_changed');
+        const token = trace?.tokenForFrame(frame) ?? null;
         const pixels = sourceIsAudio
           ? frame.pixels.slice(Math.floor(frame.pixels.length / 2)).map(value =>
               Math.round(Math.min(value, AUDIO_FFT_AMPLITUDE_MAX)
@@ -940,8 +1105,11 @@
         startFreq = sourceIsAudio ? 0 : frame.startFreq;
         endFreq = sourceIsAudio ? (frame.endFreq - frame.startFreq) / 2 : frame.endFreq;
         scopePixels = pixels;
-        spectrumPush?.(pixels);
-        waterfallPush?.(pixels, waterfallOptions);
+        spectrumPush?.(pixels, token);
+        // MOR-3158: same TX-frozen hold as the managed path above.
+        if (!sdrTxFrozen) waterfallPush?.(pixels, waterfallOptions, token);
+        else trace?.record('waterfall_suppressed', token, 0, true);
+        if (traceStart) trace?.record('fanout', token, performance.now() - traceStart);
       };
       const unsubscribe = sourceIsManaged ? () => {} : sourceIsAudio
         ? runtime.scope.subscribe(receive)
@@ -1002,6 +1170,25 @@
   style:--scope-passband-fill={resolvedColorRoles.passbandFill}
   style:--scope-passband-edge={resolvedColorRoles.passbandEdge}
 >
+  <!-- MOR-3158: the SDR toolbar status wraps whatever indicator snippet the
+       layout supplied (unchanged for every other source) and adds the
+       source badge plus, when more than one source is advertised, the
+       display-only source selector — mounted only for `scopeSource ===
+       'sdr'` so hardware and audio-FFT sessions render unchanged. -->
+  {#snippet sdrToolbarStatus()}
+    {#if scopeStatusIndicator}{@render scopeStatusIndicator()}{/if}
+    <ScopeSourceBadge source="sdr" sdr={sdrState} />
+    <ScopeSourceSelector sources={[...sdrOtherSources, 'sdr']} active="sdr" />
+  {/snippet}
+  {#if traceCandidate}
+    <div class="scope-trace-controls" aria-label="Scope render trace">
+      <button type="button" onclick={() => startTrace()} disabled={traceStatus === 'recording' || !scopeDemandOn || !scopeConnected}>Start trace</button>
+      <button type="button" onclick={() => startTrace(true)} disabled={traceStatus === 'recording' || !scopeDemandOn || !scopeConnected}>Start transition trace</button>
+      {#if traceStatus === 'recording'}<button type="button" onclick={stopTrace}>Stop trace</button>{/if}
+      {#if traceStatus === 'stopped' || traceStatus === 'overflow'}<button type="button" onclick={downloadTrace}>Download trace</button>{/if}
+      <span role="status">{traceStatus}{trace?.reason ? ` (${trace.reason})` : ''}{traceError ? ` · ${traceError}` : ''}</span>
+    </div>
+  {/if}
   {#if audioFft}
     <div class="audio-source-label">
       <span>Audio FFT · AF</span>
@@ -1014,7 +1201,7 @@
        tab instead. An audio-FFT source keeps its original no-toolbar
        branch. -->
   {:else if !hideToolbar}
-    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} {scopeStatusIndicator} />
+    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopeStatusIndicator={sdrSource ? sdrToolbarStatus : scopeStatusIndicator} />
   {/if}
   <div
     class="spectrum-split-region"
@@ -1031,12 +1218,14 @@
     <div class="spectrum-area" class:panning={dragging} class:draggable={canPan} bind:this={spectrumArea} onpointerdown={handleDragStart} role="presentation">
       {#if !scopeDemandOn}
         <div class="scope-disconnected-overlay scope-demand-off-overlay">Scope viewer OFF</div>
+      {:else if scopeTxKnown && !scopeConnected}
+        <div class="scope-tx-overlay" data-testid="scope-tx-overlay">{t('core.overlay.scopeTransmitting')}</div>
       {:else if !scopeConnected}
         <div class="scope-disconnected-overlay">{t('core.overlay.scopeDisconnected')}</div>
       {/if}
       {#if !audioFft}<BandPlanOverlay startFreq={viewportStartFreq} endFreq={viewportEndFreq} visible={showBandPlan} {hiddenLayers} />{/if}
       {#if scopeTraceLive}
-      <SpectrumCanvas data={scopePixels} options={spectrumOptions} {spanHz} {enableAvg} {enablePeakHold} onRegisterPush={(fn) => { spectrumPush = fn; if (managed && scopePixels) fn(scopePixels); }} />
+      <SpectrumCanvas data={scopePixels} options={spectrumOptions} {spanHz} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} onRegisterPush={(fn) => { spectrumPush = fn; if (managed && scopePixels) fn(scopePixels); }} />
       {/if}
       {#if spectrumCenterReferenceVisible}
         <div class="tune-line" style="left:{tuneLinePct}%"></div>
@@ -1086,7 +1275,12 @@
     <div class="waterfall-content" class:panning={dragging} class:draggable={canPan} bind:this={waterfallContent} onpointerdown={handleDragStart} role="presentation">
       {#key runtime.state?.providerGeneration}
       <div class="waterfall-history" style:visibility={managedUnavailable ? 'hidden' : 'visible'} aria-hidden={managedUnavailable}>
-        <WaterfallCanvas options={waterfallOptions} onFreqClick={audioFft || managedUnavailable ? undefined : handleTune} onRegisterPush={(fn) => { waterfallPush = fn; if (managed && scopePixels) fn(scopePixels, waterfallOptions); }} />
+        <WaterfallCanvas options={waterfallOptions} trace={traceStatus === 'recording' ? trace : null} onFreqClick={audioFft || managedUnavailable ? undefined : handleTune} onRegisterPush={(fn) => { waterfallPush = fn; if (managed && scopePixels && !sdrTxFrozen) fn(scopePixels, waterfallOptions); }} />
+        <!-- MOR-3158: the TX-frozen veil rides inside the history wrapper so
+             it dims the painted rows without hiding the tune-line/passband
+             overlays stacked above the canvas; it hides together with the
+             history while the sample plane is unavailable. -->
+        {#if sdrSource}<SdrTxFrozenIndicator active={sdrTxFrozen} />{/if}
       </div>
       {/key}
       {#if !audioFft}<DxOverlay spots={dxSpots} startFreq={viewportStartFreq} endFreq={viewportEndFreq} onTune={handleTune} />{/if}
@@ -1360,7 +1554,7 @@
     transition-delay: 0s;
   }
 
-  .scope-disconnected-overlay {
+  .scope-disconnected-overlay, .scope-tx-overlay {
     position: absolute;
     inset: 0;
     z-index: 10;

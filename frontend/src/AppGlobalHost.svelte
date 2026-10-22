@@ -77,9 +77,16 @@
   // MOR-2876: the server started while the radio's serial port could not be
   // opened ('radio_not_connected'). The same overlay says so, without Power
   // ON: there is no port to send it through.
+  let serialDiagnostic = $derived(
+    runtime.radioHealth?.likelyCause === 'radio_not_connected'
+      ? /^serial_(permission_denied|busy|not_found|timeout|unknown)(?:: (EACCES|EPERM|EBUSY|EAGAIN|ENOENT|ENODEV|ETIMEDOUT))?$/.exec(
+          runtime.radioHealth?.lastError ?? '',
+        )
+      : null,
+  );
   let radioNotConnected = $derived(
-    runtime.radioPowerOn !== true
-      && runtime.radioHealth?.likelyCause === 'radio_not_connected',
+    runtime.radioHealth?.likelyCause === 'radio_not_connected'
+      && (runtime.radioPowerOn !== true || serialDiagnostic !== null),
   );
   let overlayVisible = $derived(
     runtime.radioPowerOn === false || radioNotAnswering || radioNotConnected,
@@ -142,6 +149,12 @@
           <line x1="12" y1="2" x2="12" y2="12" />
         </svg>
         <span class="power-off-label">{t(overlayLabel)}</span>
+        {#if serialDiagnostic}
+          <span class="power-off-hint" role="alert">
+            {t(`core.overlay.serial.${serialDiagnostic[1]}`)}
+            {#if serialDiagnostic[2]} ({serialDiagnostic[2]}){/if}
+          </span>
+        {/if}
         {#if powerOnCommand && !radioNotConnected}
           <button class="power-on-btn" onclick={handlePowerOn}>
             {t('core.overlay.poweredOff.powerOnButton')}

@@ -12,6 +12,11 @@ from typing import Any, Protocol
 
 from rigplane.core.command_dispatch import DescriptorTxPolicy, command_descriptor
 from rigplane.core.state_pipeline_contracts import CommandIntent
+from rigplane.runtime.controller_authority import (
+    ControllerAuthority,
+    ControllerError,
+    ControllerTicket,
+)
 from rigplane.runtime.managed_tx_config import (
     ManagedTxTotConfig,
     ManagedTxTotConfigStore,
@@ -42,6 +47,35 @@ from rigplane.runtime.managed_tx_state import (
 logger = logging.getLogger(__name__)
 
 ManagedTxChangeListener = Callable[[], None]
+
+
+class RadioTxOrigin(StrEnum):
+    """Who keyed a TX the radio reports while Core holds and owes none (MOR-3537)."""
+
+    # Seen after Core's last unkey with no RX observed in between: Core's
+    # own TX, which the radio did not release.
+    UNRELEASED = "unreleased"
+    # Seen after an RX: the operator's own mic or PTT at the radio.
+    FOREIGN = "foreign"
+
+
+class RadioTxProbe(Protocol):
+    """The radio's PTT readback, as the composition observes it (MOR-3537)."""
+
+    def radio_released(self, keyed_at: float) -> None:
+        """Core's own TX, keyed at ``keyed_at``, just ended: its unkey settled."""
+        ...
+
+    def radio_tx_since(self, since: float) -> RadioTxOrigin | None:
+        """Origin of a TX the radio reported after ``since``; ``None`` if none."""
+        ...
+
+
+# The refusal code for a TX start while the radio reports such a TX.
+_RADIO_TX_REFUSALS = {
+    RadioTxOrigin.UNRELEASED: "radio_tx_unreleased",
+    RadioTxOrigin.FOREIGN: "radio_tx_unowned",
+}
 
 
 class _Wakeup(Protocol):
@@ -146,6 +180,7 @@ class ManagedTxAuthority:
         wakeup: _Wakeup | None = None,
         attempt_timeout_seconds: float = ATTEMPT_TIMEOUT_S,
         retry_delay_seconds: float = RETRY_DELAY_S,
+        radio_tx: RadioTxProbe | None = None,
     ) -> None:
         if not 0 < attempt_timeout_seconds < float("inf") or not 0 < (
             retry_delay_seconds
@@ -181,7 +216,37 @@ class ManagedTxAuthority:
         self._provider_unavailable_task: asyncio.Task[None] | None = None
         self._closing = False
         self._closed = False
+        self._controller: ControllerAuthority | None = None
+        self._controller_effects: dict[EffectToken, ControllerTicket] = {}
+        # Owner of a latched TRANSMIT intent (MOR-3534): the controller session
+        # that sent transmit_on, or None for a sessionless one.
+        self._transmit_owner: str | None = None
+        # MOR-3537: the radio's PTT readback, and the clock reading at which
+        # Core's own TX last ended. A TX the radio reports after that refuses
+        # every TX start; it never blocks force_off.
+        self._radio_tx = radio_tx
+        self._idle_since = float("-inf")
+        # When Core last keyed, until that TX's release settles.
+        self._keyed_at: float | None = None
         self._scheduler_task = asyncio.create_task(self._scheduler())
+
+    def bind_controller(self, controller: ControllerAuthority) -> None:
+        if self._controller is not None and self._controller is not controller:
+            raise RuntimeError("managed TX controller is already bound")
+        self._controller = controller
+
+    def controller_quiescent(self) -> bool:
+        """Positive safety proof for a controlling-seat handoff, without awaits."""
+        return bool(
+            self._provider_generation is not None
+            and not (
+                self._closing or self._closed or self._shutting_down or self._terminated
+            )
+            and self._state_is_clean_locked()
+            and not self._pending_settlements_locked()
+            and not self._pending_abort_cleanup
+            and not self._abort_cleanup
+        )
 
     async def ptt_down(self, owner: str) -> ManagedTxOutcome:
         """Compatibility helper which deliberately drains provider settlement."""
@@ -280,6 +345,21 @@ class ManagedTxAuthority:
         """Register one cancellable positive transition before it can admit."""
         if action not in ("ptt_down", "transmit_on"):
             raise ValueError("positive managed TX action is invalid")
+        controller_ticket = None
+        if self._controller is not None:
+            controller_ticket = self._controller.capture()
+            self._controller.validate_positive(controller_ticket)
+            if controller_ticket.remote and (
+                action != "ptt_down" or controller_ticket.session_id != owner
+            ):
+                raise ControllerError("controller_tx_unsupported")
+            if controller_ticket.tx_owner is not None:
+                # A session keys only as itself; its latched transmit_on is
+                # owned by the session too.
+                if action == "transmit_on":
+                    owner = controller_ticket.tx_owner
+                elif owner != controller_ticket.tx_owner:
+                    raise ControllerError("controller_tx_unsupported")
         if action == "ptt_down":
             if type(owner) is not str:
                 raise TypeError("PTT requires a builtin str owner")
@@ -302,6 +382,8 @@ class ManagedTxAuthority:
                     await asyncio.wait((ready,))
                 async with self._lock:
                     self._require_ingress_open_locked()
+                    if controller_ticket is not None:
+                        controller_ticket.authority.validate_positive(controller_ticket)
                     if not (
                         self._provider_generation == generation
                         and self._abort_fence.is_current(token)
@@ -317,12 +399,24 @@ class ManagedTxAuthority:
                         return ManagedTxTransition(
                             self._state, ManagedTxOutcome.REJECTED
                         ), None
+                    if (refusal := self._radio_tx_refusal_locked()) is not None:
+                        # MOR-3537: never key over a TX the radio reports.
+                        raise ControllerError(refusal, 409)
                     transition, full_force = self._transition_locked(action, owner)
                     if transition is None:
                         transition = ManagedTxTransition(
                             self._state, ManagedTxOutcome.REJECTED
                         )
                     self._wakeup.wake()
+                    if controller_ticket is not None:
+                        controller_effects = {
+                            effect.token: controller_ticket
+                            for effect in transition.effects
+                            if isinstance(effect, ManagedTxEffect)
+                            and effect.operation is not ActuationOperation.FORCE_RECEIVE
+                        }
+                        if controller_effects:
+                            self._controller_effects = controller_effects
                     execution = asyncio.create_task(
                         self._execute(transition.effects, full_force=full_force)
                     )
@@ -568,6 +662,16 @@ class ManagedTxAuthority:
         pending = self._state.pending_effect
         if isinstance(operation, AbortOperation):
             operation = ActuationOperation.FORCE_RECEIVE
+        if operation is not ActuationOperation.FORCE_RECEIVE:
+            ticket = self._controller_effects.get(token)
+            if ticket is None and self._controller is not None:
+                if self._controller.mode == "remote":
+                    return False
+            if ticket is not None:
+                try:
+                    ticket.authority.validate_positive(ticket)
+                except ControllerError:
+                    return False
         return bool(
             not (self._closing or self._closed or self._terminated)
             and not (
@@ -584,7 +688,7 @@ class ManagedTxAuthority:
         self._cancel_pending_ptt(owner)
         async with self._lock:
             self._require_ingress_open_locked()
-            if self._state.intent != ManagedTxIntent.ptt(owner):
+            if self.tx_holder_nowait() != owner:
                 return ManagedTxOutcome.REJECTED
             transition = self._force_off_locked()
             self._wakeup.wake()
@@ -640,6 +744,33 @@ class ManagedTxAuthority:
         not wait on a stuck authority (MOR-2875); no ``await`` runs between
         its reads."""
         return self._projection_locked()
+
+    def tx_holder_nowait(self) -> str | None:
+        """Owner of the held transmitter, read without the lock (MOR-3534).
+
+        The PTT owner, or the owner of a latched transmit_on (``None`` for a
+        sessionless one); ``None`` in RX.
+        """
+        intent = self._state.intent
+        if intent.kind is ManagedTxIntentKind.TRANSMIT:
+            return self._transmit_owner
+        return intent.owner_token
+
+    def held_by_other(self, owner: str | None) -> bool:
+        """Whether the transmitter is held by an owner other than ``owner``."""
+        return (
+            self._state.intent.kind is not ManagedTxIntentKind.RX
+            and self.tx_holder_nowait() != owner
+        )
+
+    def radio_tx_refusal_nowait(self) -> str | None:
+        """Refusal code for a TX start while the radio reports TX (MOR-3537).
+
+        Read without the lock, like :meth:`held_by_other`: a TX the radio
+        reports while Core holds and owes none, either Core's own TX the radio
+        did not release or the operator's own mic or PTT; ``None`` otherwise.
+        """
+        return self._radio_tx_refusal_locked()
 
     def _projection_locked(self) -> ManagedTxProjection:
         deadline = self._tot_deadline_locked()
@@ -939,6 +1070,10 @@ class ManagedTxAuthority:
             action == "transmit_on"
             and self._state.intent.kind is ManagedTxIntentKind.TRANSMIT
         ):
+            if owner != self._transmit_owner:
+                return ManagedTxTransition(
+                    self._state, ManagedTxOutcome.REJECTED
+                ), False
             return self._reduce_locked(
                 TransmitOn(
                     generation or max(0, self._generation_high_water),
@@ -961,6 +1096,8 @@ class ManagedTxAuthority:
             event = PttUp(owner, generation, attempt)
         else:
             event = TransmitOn(generation, attempt, now, self._deadline_from(now))
+            if self._state.intent.kind is ManagedTxIntentKind.RX:
+                self._transmit_owner = owner
         return self._reduce_locked(event), False
 
     def _force_off_locked(self) -> ManagedTxTransition:
@@ -973,8 +1110,18 @@ class ManagedTxAuthority:
     def _reduce_locked(self, event: ManagedTxEvent) -> ManagedTxTransition:
         transition = reduce_managed_tx(self._state, event)
         changed = transition.state != self._state
+        was_clean = self._state_is_clean_locked()
         self._state = transition.state
+        if self._state.intent.kind is not ManagedTxIntentKind.TRANSMIT:
+            self._transmit_owner = None
+        if was_clean and self._state.intent.kind is not ManagedTxIntentKind.RX:
+            self._keyed_at = self._clock()  # MOR-3537: Core keys
         if self._state_is_clean_locked():
+            if not was_clean:
+                self._idle_since = self._clock()
+                if self._keyed_at is not None and self._radio_tx is not None:
+                    self._radio_tx.radio_released(self._keyed_at)
+                self._keyed_at = None
             self._release_drained.set()
         else:
             self._release_drained.clear()
@@ -1140,6 +1287,13 @@ class ManagedTxAuthority:
             and not self._state.release_required
             and self._state.pending_effect is None
         )
+
+    def _radio_tx_refusal_locked(self) -> str | None:
+        """Refusal code while the radio transmits and Core holds and owes no TX."""
+        if self._radio_tx is None or not self._state_is_clean_locked():
+            return None
+        origin = self._radio_tx.radio_tx_since(self._idle_since)
+        return None if origin is None else _RADIO_TX_REFUSALS[origin]
 
     def _pending_settlements_locked(self) -> tuple[_SubmissionCompletion, ...]:
         return tuple(task for task in self._settlement_tasks if not task.done())

@@ -20,10 +20,11 @@ from rigplane.core.state_pipeline_contracts import (
 from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime.managed_tx_state import ManagedTxOutcome
+from rigplane.runtime.tx_interlock import TxInterlockRefusal
 from rigplane.web import handlers as web_handlers
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.protocol import decode_json
-from rigplane.web.radio_poller import CommandQueue
+from rigplane.web.radio_poller import CommandQueue, RadioPoller
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.transport.webrtc_session import WebRtcSessionManager
 from test_managed_tx_http_route import _Writer, _reader
@@ -131,8 +132,9 @@ def _handler(
     observed: object = None,
     stale: bool = False,
     ws: Any | None = None,
+    queue: Any | None = None,
 ) -> tuple[ControlHandler, SimpleNamespace, MagicMock]:
-    queue = MagicMock()
+    queue = MagicMock() if queue is None else queue
     retained: set[asyncio.Task[Any]] = set()
 
     def spawn(coro: Any) -> asyncio.Task[Any]:
@@ -482,3 +484,109 @@ def test_state_projection_keeps_authority_separate_from_observed_rf() -> None:
     assert "authority.snapshot" in source
     assert "project_observed_ptt" in source
     assert "observed_ptt" not in inspect.getsource(ControlHandler._enqueue_command)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("params", "expected_wire"),
+    (
+        ({"command": 0x1C, "sub": 0x00, "data": "01"}, None),
+        ({"command": 0x1C, "sub": 0x00, "data": "00"}, None),
+        ({"command": 0x1C, "sub": 0x01, "data": "01"}, None),
+        ({"command": 0x29, "sub": 0x00, "data": "1C0001"}, None),
+        ({"command": 0x28, "sub": 0x00, "data": "01"}, None),
+        ({"command": 0x28, "sub": 0x00, "data": "00"}, None),
+        ({"command": 0x29, "sub": 0x00, "data": "280001"}, None),
+        ({"command": 0x03, "data": "FDFEFE94E01C0001"}, None),
+        (
+            {"command": 0x05, "data": "0000101400"},
+            (0x05, None, bytes.fromhex("0000101400")),
+        ),
+        ({"command": 0x03}, (0x03, None, b"")),
+    ),
+    ids=(
+        "ptt-on",
+        "ptt-off",
+        "tuner-engage",
+        "cmd29-wrapped-ptt-on",
+        "voice-memory-tx",
+        "voice-memory-stop",
+        "cmd29-wrapped-voice-memory-tx",
+        "smuggled-frame-in-data",
+        "set-frequency-passes",
+        "read-passes",
+    ),
+)
+async def test_managed_ws_send_civ_tx_family_refused_by_payload(
+    params: dict[str, Any], expected_wire: tuple[int, int | None, bytes] | None
+) -> None:
+    """Managed WebSocket send_civ refuses TX-family raw frames before enqueue.
+
+    The verdict is computed on the exact frame the seat would queue, so a
+    cmd29 wrapper and a frame smuggled inside the data field past an FD
+    delimiter are refused exactly as their wire form is. The WebSocket
+    error envelope carries no reason code (see
+    ``ControlHandler._send_command_failure``), so the refusal pins ok
+    False here while the HTTP surface answers 403 managed_tx_refused for
+    the same family. Passing rows prove non-TX frames still flow
+    unchanged: the queued SendCiv reaches the radio's send_civ through a
+    managed poller with the same command, sub and data.
+    """
+    authority = _Authority()
+    queue = CommandQueue()
+    ws = SimpleNamespace(send_text=AsyncMock())
+    handler, _, radio = _handler(authority, ws=ws, queue=queue)
+    radio.send_civ = AsyncMock()
+    await handler._dispatch_command("cmd-1", "send_civ", params)
+    response = decode_json(ws.send_text.await_args.args[0])
+    assert response["id"] == "cmd-1"
+    entries = queue.drain_entries()
+    if expected_wire is None:
+        assert response["ok"] is False
+        assert response["error"] == "command_failed"
+        assert "under managed TX authority" in response["message"]
+        assert entries == []
+        assert authority.calls == []
+        radio.send_civ.assert_not_awaited()
+        return
+    assert response["ok"] is True
+    assert authority.calls == []
+    (command, sub, data) = expected_wire
+    [entry] = entries
+    store = StateStore()
+    store.begin_provider_generation()
+    poller = RadioPoller(
+        radio, CommandQueue(), state_store=store, managed_tx_authority=authority
+    )
+    await poller._execute(entry.command)  # noqa: SLF001
+    radio.send_civ.assert_awaited_once_with(
+        command, sub=sub, data=data, wait_response=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_managed_send_civ_refusal_survives_production_shared_executor_route() -> (
+    None
+):
+    """The managed send_civ refusal propagates with its reason code through
+    the production route: the WebServer's shared CommandService executor
+    back into a handler built by WebServer._control_handler_for — not the
+    handler-local executor the WebSocket rows above drive. Nothing reaches
+    the radio or the command queue on either leg."""
+    authority = _Authority()
+    radio = _radio()
+    radio.send_civ = AsyncMock()
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    server._production_managed_tx_port = SimpleNamespace(authority=authority)  # noqa: SLF001
+    handler = server._control_handler_for()  # noqa: SLF001
+
+    assert handler._command_service is server.command_service  # noqa: SLF001
+
+    with pytest.raises(TxInterlockRefusal) as excinfo:
+        await handler._enqueue_command(
+            "send_civ",
+            {"command": 0x1C, "sub": 0x00, "data": "01"},
+        )
+    assert excinfo.value.reason_code == "managed_tx_refused"
+    assert not server.command_queue.drain()
+    radio.send_civ.assert_not_awaited()

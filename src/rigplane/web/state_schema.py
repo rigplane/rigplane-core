@@ -46,6 +46,7 @@ __all__ = [
     "RadioDetailPublic",
     "MonitorMuteSavedAfPublic",
     "MonitorMutePublic",
+    "SdrStatusPublic",
     "WsClientsPublic",
     "ServerStatePublic",
     "StateUpdateEnvelope",
@@ -142,6 +143,31 @@ class ReceiverStatePublic(_Strict):
     toneFreq: int | None = None
     tsqlFreq: int | None = None
     repeaterShift: int | None = None
+    # Neutral tone squelch type (MOR-3377): the observation adapters publish
+    # the ``core/types.py: ToneSquelchType`` member value as a string, or
+    # ``None`` for a selector code outside the profile's
+    # ``[tone_squelch_types]`` table (``backends/yaesu_cat/observations.py:
+    # poll_slow_controls``; ``runtime/_civ_rx.py: _observations_from_frame``).
+    # Pinned to the enum members both ways by ``tests/web/
+    # test_state_schema_conformance.py``: a member the Literal omits fails
+    # ``test_every_tone_squelch_type_value_conforms``, and a stale extra
+    # Literal member fails the set-equality test
+    # ``test_tone_squelch_type_literal_members_equal_the_enum``.
+    toneSquelchType: (
+        Literal[
+            "off",
+            "tone",
+            "tsql",
+            "dtcs",
+            "dtcs_t",
+            "tone_t_dtcs_r",
+            "dtcs_t_tsql_r",
+            "tone_t_tsql_r",
+            "pr_freq",
+            "rev_tone",
+        ]
+        | None
+    ) = None
 
     # Snapshot-path only: ``dcd`` is the canonical squelch-open status; it is
     # also dual-published as the deprecated ``sMeterSqlOpen`` alias (MOR-466).
@@ -250,7 +276,7 @@ class RadioHealthPublic(_Strict):
 
     serverReachable: bool
     radioLink: Literal["connected", "reconnecting", "disconnected", "unknown"]
-    readiness: Literal["ready", "delayed", "stalled", "recovering"]
+    readiness: Literal["ready", "delayed", "stalled", "recovering", "idle"]
     likelyCause: Literal[
         "server_unreachable",
         "radio_network_lost",
@@ -258,6 +284,8 @@ class RadioHealthPublic(_Strict):
         "radio_not_responding",
         "radio_powered_off_likely",
         "radio_not_connected",
+        "radio_session_busy",
+        "operator_disconnected",
         "unknown",
     ]
     sinceMs: int
@@ -295,6 +323,20 @@ class MonitorMutePublic(_Strict):
 
     on: bool = False
     savedAf: MonitorMuteSavedAfPublic = Field(default_factory=MonitorMuteSavedAfPublic)
+
+
+class SdrStatusPublic(_Strict):
+    """Live SDR panadapter status (MOR-3201), injected by the web server
+    into every public state payload; absent on server-less payloads, so
+    the field on :class:`ServerStatePublic` is optional."""
+
+    state: Literal["disabled", "starting", "streaming", "reconnecting", "error"]
+    device: str
+    sampleRateHz: int
+    spanHz: int
+    txFrozen: bool
+    overflowCount: int
+    lastError: str | None = None
 
 
 class WsClientsPublic(_Strict):
@@ -405,6 +447,8 @@ class ServerStatePublic(_Strict):
     # Server process state, injected by the web server after the radio
     # projection. Absent on a payload built without a server (MOR-2583).
     monitorMute: MonitorMutePublic | None = None
+    # Live SDR panadapter status, likewise server-injected only (MOR-3201).
+    sdr: SdrStatusPublic | None = None
 
     # Snapshot path only — absent on the dataclass path, never null when
     # present (generated TS: ``fieldStatus?: Record<string, FieldStatusPublic>``).

@@ -65,6 +65,9 @@ vi.mock('$lib/runtime', () => ({
 }));
 
 import StatusBar from '../StatusBar.svelte';
+import {
+  getRadioHealth, getRadioLinkState, getRadioPowerOn, getRadioReady, getRigConnected,
+} from '$lib/stores/connection.svelte';
 
 describe('StatusBar radio-link chip wiring (MOR-1526 F3)', () => {
   let target: HTMLElement | null = null;
@@ -95,5 +98,95 @@ describe('StatusBar radio-link chip wiring (MOR-1526 F3)', () => {
     // a build still reading getRadioStatus() renders red (#ef4444) instead.
     expect(radioIndicator!.getAttribute('style')).toContain('#4ade80');
     expect(radioIndicator!.getAttribute('style')).not.toContain('#ef4444');
+  });
+});
+
+// The reason text in the radio indicator's title, one case per branch of
+// the label derivation (`radio-health-label.ts: deriveRadioHealthLabel`).
+describe('StatusBar radio indicator title carries the health reason', () => {
+  let target: HTMLElement | null = null;
+  let instance: object | null = null;
+
+  const health = (
+    likelyCause: NonNullable<ReturnType<typeof getRadioHealth>>['likelyCause'],
+    readiness: NonNullable<ReturnType<typeof getRadioHealth>>['readiness'] = 'ready',
+  ) => ({
+    serverReachable: true, radioLink: 'connected' as const, readiness, likelyCause,
+    sinceMs: 0, lastError: null,
+  });
+
+  afterEach(() => {
+    if (instance) unmount(instance);
+    instance = null;
+    target?.remove();
+    target = null;
+    vi.mocked(getRadioHealth).mockReturnValue(null);
+    vi.mocked(getRadioLinkState).mockReturnValue('connected');
+    vi.mocked(getRigConnected).mockReturnValue(true);
+    vi.mocked(getRadioReady).mockReturnValue(true);
+    vi.mocked(getRadioPowerOn).mockReturnValue(true);
+  });
+
+  function radioTitle(): string | null {
+    target = document.createElement('div');
+    document.body.appendChild(target);
+    instance = mount(StatusBar, { target }) as object;
+    flushSync();
+    return target.querySelector('.status-indicators .indicator')!.getAttribute('title');
+  }
+
+  it.each([
+    ['radio_network_lost', 'stalled', 'Radio ↔ Server: connected (radio link lost)'],
+    ['radio_not_responding', 'delayed', 'Radio ↔ Server: connected (radio response delayed)'],
+    ['radio_not_responding', 'stalled', 'Radio ↔ Server: connected (radio not responding)'],
+    ['radio_powered_off_likely', 'stalled', 'Radio ↔ Server: connected (radio appears powered off or unreachable)'],
+    ['server_unreachable', 'ready', 'Radio ↔ Server: connected (server unreachable)'],
+    ['radio_session_busy', 'recovering', 'Radio ↔ Server: connected (radio in use by another connection, retrying)'],
+    ['operator_disconnected', 'idle', 'Radio ↔ Server: disconnected (disconnected by the operator)'],
+    ['unknown', 'ready', 'Radio ↔ Server: connected'],
+  ] as const)('%s (%s)', (cause, readiness, expected) => {
+    vi.mocked(getRadioHealth).mockReturnValue({
+      ...health(cause, readiness),
+      radioLink: cause === 'operator_disconnected' ? 'disconnected' : 'connected',
+    });
+    if (cause === 'operator_disconnected') {
+      vi.mocked(getRadioLinkState).mockReturnValue('degraded');
+      vi.mocked(getRigConnected).mockReturnValue(false);
+      vi.mocked(getRadioReady).mockReturnValue(false);
+    }
+    expect(radioTitle()).toBe(expected);
+  });
+
+  it.each([true, null])('shows an idle operator disconnect as disconnected/red with power %s', (powerOn) => {
+    vi.mocked(getRadioHealth).mockReturnValue({
+      ...health('operator_disconnected', 'idle'), radioLink: 'disconnected',
+    });
+    vi.mocked(getRadioLinkState).mockReturnValue('degraded');
+    vi.mocked(getRadioPowerOn).mockReturnValue(powerOn);
+    vi.mocked(getRigConnected).mockReturnValue(false);
+    vi.mocked(getRadioReady).mockReturnValue(false);
+    expect.soft(radioTitle()).toBe('Radio ↔ Server: disconnected (disconnected by the operator)');
+    const style = target!.querySelector('.status-indicators .indicator')!.getAttribute('style');
+    expect.soft(style).toContain('#ef4444');
+    expect.soft(style).not.toContain('#facc15');
+  });
+
+  it('reads "rig offline" when the rig is down and the link is degraded', () => {
+    vi.mocked(getRigConnected).mockReturnValue(false);
+    vi.mocked(getRadioLinkState).mockReturnValue('degraded');
+    expect(radioTitle()).toBe('Radio ↔ Server: degraded (rig offline)');
+  });
+
+  it('reads "radio not ready" when only readiness is missing and the link is degraded', () => {
+    vi.mocked(getRadioReady).mockReturnValue(false);
+    vi.mocked(getRadioLinkState).mockReturnValue('degraded');
+    expect(radioTitle()).toBe('Radio ↔ Server: degraded (radio link degraded — radio not ready)');
+  });
+
+  it('shows the link as disconnected, without a reason, while the radio is powered off', () => {
+    vi.mocked(getRadioPowerOn).mockReturnValue(false);
+    vi.mocked(getRigConnected).mockReturnValue(false);
+    vi.mocked(getRadioLinkState).mockReturnValue('degraded');
+    expect(radioTitle()).toBe('Radio ↔ Server: disconnected');
   });
 });

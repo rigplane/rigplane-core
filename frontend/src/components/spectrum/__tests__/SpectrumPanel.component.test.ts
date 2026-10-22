@@ -15,6 +15,7 @@ import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter
 import { qualifyScopeFrameEnvelope, toScopeDisplayFrame } from '$lib/runtime/adapters/scope-adapter';
 import { resolveLcdSpectrumFrame } from '../../../skins/segmentline/lcd-display-contract';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import { ScopeRenderTrace, type TraceReceipt } from '$lib/runtime/scope-render-trace';
 
 // ---------------------------------------------------------------------------
 // Global mocks (must be before component import)
@@ -130,6 +131,7 @@ const runtimeHarness = vi.hoisted(() => {
     currentCaps: Object.freeze({ source: 'test-capabilities' }) as unknown,
     currentSession: { state: 'connected' as const, epoch: 1 },
     mockScopeConnected: true,
+    mockScopeFrameLive: true,
     tuningStep: 1_000,
     nextLeaseId: 0,
     hardwareUnsubscribe: vi.fn(),
@@ -144,7 +146,9 @@ const runtimeHarness = vi.hoisted(() => {
     scope: {
       registerPresentationDriver: vi.fn(),
       subscribe: vi.fn(() => () => {}),
+      subscribeTraceReceipt: vi.fn((_observer: (receipt: TraceReceipt) => void) => () => {}),
       get hardwareScopeConnected() { return state.mockScopeConnected; },
+      get hardwareScopeFrameLive() { return state.mockScopeFrameLive; },
       subscribeHardware: vi.fn((handler: (frame: TestScopeFrame) => void) => {
         state.capturedHardwareFrame = handler;
         return state.hardwareUnsubscribe;
@@ -175,6 +179,12 @@ Object.defineProperty(runtimeHarness.state, 'mockScopeConnected', {
   configurable: true,
   get: () => hardwareScopeTransport.get('connected')!,
   set: (value: boolean) => hardwareScopeTransport.set('connected', value),
+});
+const hardwareScopeFrameLive = new SvelteMap<string, boolean>([['live', true]]);
+Object.defineProperty(runtimeHarness.state, 'mockScopeFrameLive', {
+  configurable: true,
+  get: () => hardwareScopeFrameLive.get('live')!,
+  set: (value: boolean) => hardwareScopeFrameLive.set('live', value),
 });
 
 const authorityHarness = vi.hoisted(() => {
@@ -650,6 +660,7 @@ beforeEach(() => {
   runtimeHarness.state.capturedHardwareFrame = null;
   runtimeHarness.state.capturedDxMessage = null;
   runtimeHarness.state.mockScopeConnected = true;
+  runtimeHarness.state.mockScopeFrameLive = true;
   runtimeHarness.state.tuningStep = 1_000;
   runtimeHarness.state.nextLeaseId = 0;
   runtimeHarness.state.hardwareUnsubscribe = vi.fn();
@@ -677,6 +688,7 @@ afterEach(() => {
   expect(txHarness.listenerCount()).toBe(0);
   appTxHostHarness.controller = null;
   document.body.innerHTML = '';
+  vi.unstubAllEnvs();
 });
 
 // ---------------------------------------------------------------------------
@@ -684,6 +696,69 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('SpectrumPanel component', () => {
+  it('keeps trace controls absent in an ordinary build', () => {
+    const target = mountPanel();
+    expect(target.querySelector('[aria-label="Scope render trace"]')).toBeNull();
+    expect(runtimeHarness.runtime.scope.subscribeTraceReceipt).not.toHaveBeenCalled();
+  });
+
+  it('starts and stops a candidate trace only on explicit clicks without opening a source', () => {
+    vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
+    const target = mountPanel();
+    const controls = target.querySelector('[aria-label="Scope render trace"]');
+    expect(controls).not.toBeNull();
+    const start = [...controls!.querySelectorAll('button')].find((button) => button.textContent === 'Start trace')!;
+    expect(start.disabled).toBe(false);
+    start.click();
+    flushSync();
+    expect(runtimeHarness.runtime.scope.subscribeTraceReceipt).toHaveBeenCalledTimes(1);
+    expect(controls?.textContent).toContain('recording');
+    expect(runtimeHarness.runtime.acquireHardwareScope).toHaveBeenCalledTimes(1);
+    const stop = [...controls!.querySelectorAll('button')].find((button) => button.textContent === 'Stop trace')!;
+    stop.click();
+    flushSync();
+    expect(controls?.textContent).toContain('stopped');
+    expect(controls?.textContent).toContain('Download trace');
+  });
+
+  it('keeps concurrent panel sessions separate and ignores receipts from another source', () => {
+    vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
+    const observe = vi.spyOn(ScopeRenderTrace.prototype, 'observe');
+    const first = mountPanel();
+    const second = mountPanel();
+    for (const panel of [first, second]) {
+      (panel.querySelector('[aria-label="Scope render trace"] button') as HTMLButtonElement).click();
+    }
+    flushSync();
+    const subscriptions = vi.mocked(runtimeHarness.runtime.scope.subscribeTraceReceipt).mock.calls;
+    expect(subscriptions).toHaveLength(2);
+    const frame = Object.freeze({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, pixels: new Uint8Array(4) });
+    const receipt = { kind: 'accepted' as const, frame, token: { source: 'hardware' as const,
+      transportEpoch: 1, wireSequence: 1, acceptedSequence: 1 }, callbackAt: performance.now(), acceptedAt: performance.now() };
+    subscriptions[0][0](receipt);
+    subscriptions[1][0](receipt);
+    expect(observe).toHaveBeenCalledTimes(2);
+    expect(observe.mock.contexts[0]).not.toBe(observe.mock.contexts[1]);
+    subscriptions[0][0]({ ...receipt, token: { ...receipt.token, source: 'audio_fft' } });
+    expect(observe).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['source', 'receiver'] as const)('stops a trace when selected %s changes without another frame', (change) => {
+    vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
+    const target = mountPanel();
+    const start = target.querySelector<HTMLButtonElement>('[aria-label="Scope render trace"] button')!;
+    start.click();
+    flushSync();
+    expect(target.querySelector('[aria-label="Scope render trace"]')?.textContent).toContain('recording');
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    if (change === 'source') runtimeHarness.state.currentCaps = Object.freeze({ scopeSource: 'audio_fft' });
+    else runtimeHarness.state.currentState = Object.freeze({ source: 'test-state', providerGeneration: 17, active: 'SUB' });
+    refreshSpectrumAuthority();
+    flushSync();
+    expect(target.querySelector('[aria-label="Scope render trace"]')?.textContent).toContain('stopped (source_changed)');
+    expect(push).not.toHaveBeenCalled();
+    expect(mockRuntime.scope.subscribeTraceReceipt).toHaveBeenCalledTimes(1);
+  });
   it('mounts without errors', () => {
     const target = mountPanel();
     expect(target.querySelector('.spectrum-panel')).not.toBeNull();
@@ -898,6 +973,44 @@ describe('SpectrumPanel component', () => {
     expect(spectrumPanelSource).not.toContain('resolveFilterModeConfig');
     expect(spectrumPanelSource).not.toContain('tuneBy');
     expect(spectrumPanelSource).not.toContain('getDragInterval');
+  });
+});
+
+describe('SpectrumPanel TX-known overlay (MOR-2859)', () => {
+  it('shows the transmitting message instead of the disconnected overlay when TX is known', () => {
+    txHarness.emitServerSnapshot({ observedPtt: 'on' });
+    runtimeHarness.state.mockScopeConnected = false;
+    const target = mountPanel();
+
+    expect(target.querySelector('[data-testid="scope-tx-overlay"]')?.textContent)
+      .toBe('Transmitting — the radio sends no panorama during transmit');
+    expect(target.querySelector('.scope-disconnected-overlay')).toBeNull();
+  });
+
+  it('keeps the disconnected overlay on RX with no frame', () => {
+    runtimeHarness.state.mockScopeConnected = false;
+    const target = mountPanel();
+
+    expect(target.querySelector('.scope-disconnected-overlay')).not.toBeNull();
+    expect(target.querySelector('[data-testid="scope-tx-overlay"]')).toBeNull();
+  });
+
+  it('keeps the disconnected overlay when TX is only uncertain', () => {
+    txHarness.emitServerSnapshot({ intent: 'ptt', observedPtt: 'off' });
+    runtimeHarness.state.mockScopeConnected = false;
+    const target = mountPanel();
+
+    expect(target.querySelector('.scope-disconnected-overlay')).not.toBeNull();
+    expect(target.querySelector('[data-testid="scope-tx-overlay"]')).toBeNull();
+  });
+
+  it('shows no overlay when TX is known and frames are live', () => {
+    txHarness.emitServerSnapshot({ observedPtt: 'on' });
+    const target = mountPanel();
+    emitFrame();
+
+    expect(target.querySelector('[data-testid="scope-tx-overlay"]')).toBeNull();
+    expect(target.querySelector('.scope-disconnected-overlay')).toBeNull();
   });
 });
 
@@ -1689,6 +1802,177 @@ describe('opaque semantic scope snippet forwarding (MOR-2358)', () => {
   });
 });
 
+describe('SDR scope source routing (MOR-3158)', () => {
+  // The public `sdr` leaf is the generated `SdrStatusPublic` contract
+  // (MOR-3201); it rides `currentState` like every other raw field.
+  function sdrLeaf(overrides: Record<string, unknown> = {}) {
+    return Object.freeze({
+      state: 'streaming', device: 'rtlsdr=0', sampleRateHz: 2_400_000,
+      spanHz: 2_000_000, txFrozen: false, overflowCount: 0, lastError: null,
+      ...overrides,
+    });
+  }
+  function selectSdrSource(sdr: unknown = sdrLeaf()): void {
+    runtimeHarness.state.currentCaps = Object.freeze({ scopeSource: 'sdr' });
+    runtimeHarness.state.currentState = Object.freeze({
+      source: 'test-state', providerGeneration: 17, active: 'MAIN', sdr,
+    });
+    refreshSpectrumAuthority();
+  }
+  function replaceSdrLeaf(sdr: unknown): void {
+    runtimeHarness.state.currentState = Object.freeze({
+      ...(runtimeHarness.state.currentState as Record<string, unknown>), sdr,
+    });
+    refreshSpectrumAuthority();
+  }
+
+  it('routes the SDR source over the hardware path and mounts only the badge', () => {
+    selectSdrSource();
+    const target = mountPanel();
+    // Hardware transport routing: the IQ-derived ScopeFrames arrive on the
+    // hardware channel with its leases (MOR-3158 contract assumption).
+    expect(mockRuntime.scope.subscribeHardware).toHaveBeenCalledOnce();
+    expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledOnce();
+    expect(mockRuntime.scope.subscribe).not.toHaveBeenCalled();
+    expect(target.querySelector('.audio-source-label')).toBeNull();
+    expect(target.querySelector('.spectrum-toolbar')).not.toBeNull();
+    const badge = target.querySelector<HTMLElement>('[data-testid="scope-source-badge"]')!;
+    expect(badge).not.toBeNull();
+    expect(badge.closest('.spectrum-toolbar')).not.toBeNull();
+    expect(badge.dataset.source).toBe('sdr');
+    expect(badge.dataset.sdrState).toBe('streaming');
+    expect(badge.dataset.tone).toBe('green');
+    // A single advertised source renders no selector.
+    expect(target.querySelector('[data-testid="scope-source-selector"]')).toBeNull();
+    // RF geometry like the hardware path: an axis appears with the frame.
+    expect(target.querySelector('.freq-axis')).toBeNull();
+    emitFrame();
+    expect(target.querySelector('.freq-axis')).not.toBeNull();
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+  });
+
+  it('renders an uncoloured badge and no TX hold while the sdr leaf is absent', () => {
+    runtimeHarness.state.currentCaps = Object.freeze({ scopeSource: 'sdr' });
+    runtimeHarness.state.currentState = Object.freeze({
+      source: 'test-state', providerGeneration: 17, active: 'MAIN',
+    });
+    const target = mountPanel();
+    const badge = target.querySelector<HTMLElement>('[data-testid="scope-source-badge"]')!;
+    expect(badge.dataset.tone).toBe('neutral');
+    expect(badge.dataset.sdrState).toBeUndefined();
+    expect(badge.title).toBe('Scope source: SDR');
+    expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).toBeNull();
+  });
+
+  it('keeps the layout status indicator and adds the selector beside the badge when another source is advertised', () => {
+    const statusProbe = createRawSnippet(() => ({ render: () => '<span data-testid="status-probe"></span>' }));
+    runtimeHarness.state.currentCaps = Object.freeze({
+      scopeSource: 'sdr', scope: true, audioFftAvailable: true,
+    });
+    runtimeHarness.state.currentState = Object.freeze({
+      source: 'test-state', providerGeneration: 17, active: 'MAIN', sdr: sdrLeaf(),
+    });
+    const target = mountPanel({ scopeStatusIndicator: statusProbe });
+    expect(target.querySelector('[data-testid="status-probe"]')?.closest('.spectrum-toolbar')).not.toBeNull();
+    const selector = target.querySelector<HTMLElement>('[data-testid="scope-source-selector"]')!;
+    expect(selector).not.toBeNull();
+    const keys = [...selector.querySelectorAll<HTMLElement>('.scope-source-key')];
+    expect(keys.map((key) => key.dataset.source)).toEqual(['hardware', 'audio_fft', 'sdr']);
+    expect(keys.map((key) => key.textContent)).toEqual(['RIG', 'AUDIO', 'SDR']);
+    expect(keys.at(-1)!.dataset.active).toBe('true');
+    expect(selector.contains(target.querySelector('[data-testid="scope-source-badge"]'))).toBe(false);
+  });
+
+  it('colours the badge by the SDR state and carries lastError in its tooltip', () => {
+    selectSdrSource(sdrLeaf({ state: 'error', lastError: 'SoapySDR: device busy' }));
+    const target = mountPanel();
+    const badge = target.querySelector<HTMLElement>('[data-testid="scope-source-badge"]')!;
+    expect(badge.dataset.tone).toBe('red');
+    expect(badge.dataset.sdrState).toBe('error');
+    expect(badge.title).toBe('Scope source: SDR error — SoapySDR: device busy');
+    replaceSdrLeaf(sdrLeaf({ state: 'reconnecting', lastError: null }));
+    flushSync();
+    expect(badge.dataset.tone).toBe('yellow');
+    expect(badge.dataset.sdrState).toBe('reconnecting');
+  });
+
+  it('tunes a below-threshold SDR-frame click to the clicked RF frequency through the existing VFO intent', () => {
+    selectSdrSource();
+    const target = mountPanel();
+    emitFrame();
+    const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 30, 100);
+    pointer(spectrum, 'pointerup', 30, 104);
+    // 104/200 of the 100 kHz SDR frame span → 14_052_000 snapped to the
+    // 1 kHz step — the same set_frequency seam the hardware path uses.
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_052_000, 0);
+  });
+
+  it('holds the waterfall under the TX marker while sdr.txFrozen and resumes on release', () => {
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    try {
+      selectSdrSource();
+      const target = mountPanel();
+      emitFrame();
+      expect(push).toHaveBeenCalledTimes(1);
+      expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).toBeNull();
+      replaceSdrLeaf(sdrLeaf({ txFrozen: true }));
+      flushSync();
+      const marker = target.querySelector<HTMLElement>('[data-testid="sdr-tx-frozen"]')!;
+      expect(marker).not.toBeNull();
+      expect(marker.closest('.waterfall-history')).not.toBeNull();
+      emitFrame();
+      emitFrame();
+      // Frozen: no new row scrolls — the last pre-TX panorama stays.
+      expect(push).toHaveBeenCalledTimes(1);
+      replaceSdrLeaf(sdrLeaf({ txFrozen: false }));
+      flushSync();
+      expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).toBeNull();
+      emitFrame();
+      expect(push).toHaveBeenCalledTimes(2);
+    } finally {
+      push.mockRestore();
+    }
+  });
+
+  it('holds managed waterfall pushes under the TX marker too', () => {
+    function sdrProjection(sequence: number): ScopeDisplayProjection {
+      return Object.freeze({
+        frame: Object.freeze({ source: 'hardware', receiver: 'MAIN', freshness: 'fresh',
+          startHz: 14_000_000, endHz: 14_100_000, normalizedBins: Object.freeze([0, 0.5, 1]) }),
+        frameMode: 0, acceptedSequence: sequence,
+        passband: Object.freeze({ state: 'current', tuple: Object.freeze({
+          frequencyHz: 14_050_250, mode: 'USB', widthHz: 2_400, shiftHz: 0,
+          frameMode: 0, startHz: 14_000_000, endHz: 14_100_000 }) }),
+      });
+    }
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    try {
+      selectSdrSource();
+      const props = new SvelteMap<string, unknown>([['projection', sdrProjection(1)]]);
+      const target = mountPanel({
+        get scopeProjection() { return props.get('projection'); },
+        scopeDemanded: true,
+      });
+      expect(push).toHaveBeenCalledTimes(1);
+      props.set('projection', sdrProjection(2)); flushSync();
+      expect(push).toHaveBeenCalledTimes(2);
+      replaceSdrLeaf(sdrLeaf({ txFrozen: true }));
+      flushSync();
+      expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).not.toBeNull();
+      props.set('projection', sdrProjection(3)); flushSync();
+      expect(push).toHaveBeenCalledTimes(2);
+      replaceSdrLeaf(sdrLeaf({ txFrozen: false }));
+      flushSync();
+      props.set('projection', sdrProjection(4)); flushSync();
+      expect(push).toHaveBeenCalledTimes(3);
+    } finally {
+      push.mockRestore();
+    }
+  });
+});
+
 describe('managed scope projection (MOR-2367)', () => {
   function projection(state: 'current' | 'stale' | 'unknown' | 'unsupported' = 'current', frameMode = 0): ScopeDisplayProjection {
     return Object.freeze({
@@ -1754,6 +2038,19 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(destroy.mock.calls.length).toBe(before);
     expect(target.querySelector('.waterfall-content canvas')).not.toBeNull();
     destroy.mockRestore();
+  });
+  it('keeps a recording through a missing projection but ends it on selection change without a frame', () => {
+    vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
+    const { target, props } = managed(projection());
+    target.querySelector<HTMLButtonElement>('[aria-label="Scope render trace"] button')!.click();
+    flushSync();
+    props.set('projection', null);
+    flushSync();
+    expect(target.querySelector('[aria-label="Scope render trace"]')?.textContent).toContain('recording');
+    runtimeHarness.state.currentCaps = Object.freeze({ scopeSource: 'audio_fft' });
+    refreshSpectrumAuthority();
+    flushSync();
+    expect(target.querySelector('[aria-label="Scope render trace"]')?.textContent).toContain('stopped (source_changed)');
   });
   it('discards waterfall history when provider generation changes', () => {
     const generations = new SvelteMap([['current', 17]]);
@@ -2345,6 +2642,60 @@ describe('hardware scope drop clears the trace (R53)', () => {
   });
 });
 
+describe('silent raw scope refuses click-to-tune', () => {
+  it('clears the stale span on frame silence and tunes again after a fresh frame', () => {
+    const target = mountPanel();
+    emitFrame({ mode: 1, startFreq: 14_000_000, endFreq: 14_100_000 });
+    prepareGeometry(target);
+
+    // One in-span DX spot so the post-silence badge assertion can fail:
+    // DxOverlay renders only spots inside the frame span.
+    runtimeHarness.state.capturedDxMessage?.({
+      type: 'dx_spot',
+      spot: {
+        spotter: 'N0CALL', freq: 14_075_410, call: 'K1ABC', comment: 'test',
+        time_utc: '1200', timestamp: 1,
+      },
+    });
+    flushSync();
+    expect(target.querySelector('.dx-badge')).not.toBeNull();
+
+    // Frames stop while the transport stays connected.
+    runtimeHarness.state.mockScopeFrameLive = false;
+    flushSync();
+
+    authorityHarness.state.current = authority({ frequencyHz: 7_050_000 });
+    refreshSpectrumAuthority();
+    flushSync();
+
+    const { spectrum, waterfall } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 8, 100);
+    pointer(spectrum, 'pointermove', 8, 104);
+    pointer(spectrum, 'pointerup', 8, 104);
+    const canvas = waterfall.querySelector('canvas')!;
+    pointer(canvas, 'pointerdown', 4, 150);
+    pointer(canvas, 'pointerup', 4, 150);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    expect(mockRuntime.send).not.toHaveBeenCalled();
+    expect(target.querySelector('.dx-badge')).toBeNull();
+
+    runtimeHarness.state.mockScopeFrameLive = true;
+    flushSync();
+    emitFrame({ mode: 1, startFreq: 7_000_000, endFreq: 7_100_000 });
+    // A second waterfall tap at the same point would fall inside the
+    // recognizer's double-tap window, so the recovery leg clicks the
+    // spectrum release path instead — the same x the neighbouring
+    // below-threshold release test uses (104/200 of the 100 kHz span).
+    const { spectrum: revivedSpectrum } = prepareGeometry(target);
+    pointer(revivedSpectrum, 'pointerdown', 9, 100);
+    pointer(revivedSpectrum, 'pointermove', 9, 104);
+    pointer(revivedSpectrum, 'pointerup', 9, 104);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(7_052_000, 0);
+    expect(mockRuntime.send).not.toHaveBeenCalled();
+  });
+});
+
 // MOR-2464 — the center panorama. In CENTER scope the carrier+passband
 // indicator is anchored at 50% while the visual viewport glides toward the
 // commanded frequency; a late recentered frame never restarts or double-shifts.
@@ -2393,16 +2744,24 @@ describe('center panorama motion (MOR-2464)', () => {
     return orders;
   };
   it('glides the panorama across a translated→recentered transition through real intermediate frames', async () => {
-    const { target, props } = mountPanorama(panoramaProjection());
-    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
-    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
-    expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.left).toBe('38%');
-    await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
-    await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
-    props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
-    expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
-    await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
-    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    let panoramaNow = 0;
+    vi.stubGlobal('performance', { now: () => panoramaNow });
+    try {
+      const { target, props } = mountPanorama(panoramaProjection());
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+      panoramaNow = 40;
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.left).toBe('38%');
+      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+      panoramaNow = 140;
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+      props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
+      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
+      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('retargets a rapid reversal without overshoot and keeps the carrier anchored', async () => {

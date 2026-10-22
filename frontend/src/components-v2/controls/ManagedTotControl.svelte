@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import { runtime } from '$lib/runtime';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
   const tx = getManagedAppTxController();
@@ -27,6 +28,7 @@
   }
 
   async function save(): Promise<void> {
+    if (runtime.remoteController) return;
     const trimmed = draft.trim();
     const configuredSeconds = trimmed === '' ? null : Number(trimmed);
     if (configuredSeconds !== null
@@ -62,6 +64,7 @@
       <span data-testid="managed-tot-countdown">REMAINING {Math.ceil(txState.remainingMs / 1000)}s</span>
     {/if}
   </div>
+  {#if !runtime.remoteController}
   <div class="managed-tot-editor">
     <label for="managed-tot-draft">TOT seconds</label>
     <input
@@ -86,6 +89,7 @@
     </button>
   </div>
   <div class="managed-tot-help">Blank disables the software limit.</div>
+  {/if}
   {#if error}
     <div class="managed-tot-error" data-testid="managed-tot-error">{error}</div>
   {/if}

@@ -1847,6 +1847,49 @@ class TestSemiIntegrationSerialMockRadio:
         finally:
             await _close(writer)
 
+    async def test_get_lock_mode_keeps_next_reply_aligned(
+        self, server_serial_radio: tuple[RigctldServer, SerialMockRadio]
+    ) -> None:
+        """MOR-3113: `\\get_lock_mode` answers value + RPRT 0, nothing more.
+
+        netrigctl (WSJT-X 3.0.2 / Hamlib 4.7.1 d042479) reads the
+        lock-mode value and then a second RPRT line. Read both lines, then
+        prove the footer does not leak into the ordinary GET after it,
+        nor into a repeat of the lock-mode query itself.
+        """
+        server, _ = server_serial_radio
+        reader, writer = await _connect(server)
+        try:
+            writer.write(b"\\get_lock_mode\n")
+            await writer.drain()
+            line_1 = await asyncio.wait_for(reader.readline(), timeout=1.0)
+            line_2 = await asyncio.wait_for(reader.readline(), timeout=1.0)
+            assert line_1 == b"0\n"
+            assert line_2 == b"RPRT 0\n"
+
+            # The ordinary GET after it must start clean: a leftover or
+            # duplicate trailer from the lock-mode reply surfaces here.
+            writer.write(b"f\n")
+            await writer.drain()
+            freq = await asyncio.wait_for(reader.readline(), timeout=1.0)
+            assert freq == b"14074000\n"
+
+            # Repeat the lock-mode query: same two lines, nothing extra.
+            writer.write(b"\\get_lock_mode\n")
+            await writer.drain()
+            line_3 = await asyncio.wait_for(reader.readline(), timeout=1.0)
+            line_4 = await asyncio.wait_for(reader.readline(), timeout=1.0)
+            assert line_3 == b"0\n"
+            assert line_4 == b"RPRT 0\n"
+
+            # And the next ordinary GET still starts clean.
+            writer.write(b"f\n")
+            await writer.drain()
+            freq_again = await asyncio.wait_for(reader.readline(), timeout=1.0)
+            assert freq_again == b"14074000\n"
+        finally:
+            await _close(writer)
+
 
 async def test_deferred_write_and_unkey_both_answer_immediately_on_one_connection(
     cfg: RigctldConfig,

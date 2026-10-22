@@ -43,7 +43,7 @@ function frame(receiver: 0 | 1 = 0, pixels = [0, 128, 255], wireSequence = 17): 
   view.setUint8(1, receiver);
   view.setUint32(3, 14_000_000, true);
   view.setUint32(7, 14_100_000, true);
-  view.setUint16(12, wireSequence, true);
+  view.setUint16(11, wireSequence, true);
   view.setUint16(14, pixels.length, true);
   pixels.forEach((sample, index) => view.setUint8(16 + index, sample));
   return buffer;
@@ -126,7 +126,37 @@ describe('ScopeFrameHost MOR-2326 lifecycle', () => {
     host.dispose();
   });
 
-  it('publishes exact expiry and selected-receiver null despite unrelated raw liveness', async () => {
+  it.each([0, 1] as const)('expires receiver %s at its own deadline while foreign traffic continues', async receiver => {
+    const { time, channels, controller, host } = rig();
+    host.updateAuthority({ source: 'hardware', receiver: receiver === 0 ? 'MAIN' : 'SUB', providerGeneration: 1 });
+    const handle = await controller.hardwareScopeDriver.start();
+    channels.scope.transition('connected');
+    const updates = vi.fn();
+    host.subscribePresentation(updates);
+    channels.scope.fire(frame(receiver));
+    const selected = host.snapshotPresentation().envelope;
+    for (let tick = 0; tick < 4; tick++) {
+      time.advance(100);
+      channels.scope.fire(frame(receiver === 0 ? 1 : 0, [255, 0, 0]));
+      expect(host.snapshotPresentation().envelope).toBe(selected);
+      expect(host.snapshot().state).toBe('live');
+    }
+    time.advance(99);
+    expect(host.snapshot().state).toBe('live');
+    updates.mockClear();
+    time.advance(1);
+    expect(updates.mock.lastCall?.[0].resolution).toEqual({ state: 'ghost', reason: 'stale' });
+    expect(controller.hardwareScopeFrameLive).toBe(true);
+    channels.scope.fire(frame(receiver === 0 ? 1 : 0));
+    expect(host.snapshot().state).toBe('ghost');
+    channels.scope.fire(frame(receiver));
+    expect(host.snapshot().state).toBe('live');
+    await controller.hardwareScopeDriver.stop(handle);
+    host.dispose();
+    expect(time.active()).toBe(0);
+  });
+
+  it('publishes exact expiry despite unrelated raw liveness', async () => {
     const { time, channels, controller, host } = rig();
     host.updateAuthority({ source: 'hardware', receiver: 'MAIN', providerGeneration: 1 });
     const handle = await controller.hardwareScopeDriver.start();
@@ -145,7 +175,7 @@ describe('ScopeFrameHost MOR-2326 lifecycle', () => {
     channels.scope.fire(frame(1));
     expect(controller.hardwareScopeFrameLive).toBe(true);
     expect(updates.mock.lastCall![0]).toMatchObject({
-      envelope: null, resolution: { state: 'ghost', reason: 'missing' },
+      envelope: live.envelope, resolution: { state: 'ghost', reason: 'stale' },
     });
     channels.scope.fire(frame());
     channels.scope.transition('reconnecting');
@@ -311,7 +341,7 @@ describe('ScopeFrameHost MOR-2326 lifecycle', () => {
     host.dispose();
   });
 
-  it('fails malformed and mismatched frames closed without fallback or zero bins', async () => {
+  it('keeps selected evidence for valid foreign traffic but fails malformed frames closed', async () => {
     const { channels, controller, host } = rig();
     host.updateAuthority({ source: 'hardware', receiver: 'MAIN', providerGeneration: 2 });
     const handle = await controller.hardwareScopeDriver.start();
@@ -319,12 +349,23 @@ describe('ScopeFrameHost MOR-2326 lifecycle', () => {
     channels.scope.fire(frame());
     expect(host.snapshot().state).toBe('live');
 
+    const selected = host.snapshotPresentation().envelope;
     channels.scope.fire(frame(1));
-    expect(host.snapshot()).toEqual({ state: 'ghost', reason: 'missing' });
+    expect(host.snapshotPresentation().envelope).toBe(selected);
+    expect(host.snapshot().state).toBe('live');
     channels.scope.fire(new ArrayBuffer(16));
     const malformed = host.snapshot();
     expect(malformed.state).toBe('ghost');
     expect(malformed).not.toHaveProperty('frame');
+    channels.scope.fire(frame(1));
+    expect(host.snapshot().state).toBe('ghost');
+    for (const receiver of [0, 1] as const) {
+      channels.scope.fire(frame());
+      channels.scope.fire(frame(receiver, []));
+      expect(host.snapshot().state).toBe('ghost');
+      channels.scope.fire(frame(1));
+      expect(host.snapshot().state).toBe('ghost');
+    }
     await controller.hardwareScopeDriver.stop(handle);
     host.dispose();
   });

@@ -892,6 +892,7 @@ def classify_radio_health(
     now_monotonic: float | None = None,
     served_with_silent_link: bool = False,
     served_without_port: bool = False,
+    operator_disconnected: bool = False,
 ) -> dict[str, Any]:
     """Classify server/radio health from runtime evidence.
 
@@ -914,6 +915,11 @@ def classify_radio_health(
     started while the radio's serial port could not be opened: the verdict
     is ``radio_not_connected`` while the latest port open failed
     (``last_error`` set), otherwise ``radio_powered_off_likely``.
+
+    ``operator_disconnected`` (MOR-3452) is the web server's record of an
+    intentional operator disconnect: the verdict is ``idle`` /
+    ``operator_disconnected`` with the link held at ``disconnected``,
+    whatever the live link state infers.
     """
     now = time.monotonic() if now_monotonic is None else now_monotonic
     if not server_reachable:
@@ -950,6 +956,31 @@ def classify_radio_health(
     stats = _civ_stats(radio)
     last_error = getattr(radio, "last_error", None)
     last_error_value = last_error if isinstance(last_error, str) else None
+
+    if operator_disconnected:
+        # MOR-3452: the operator disconnected on purpose — not a dead
+        # network and not a missing radio. The link stays reported as
+        # ``disconnected``; readiness is the ``idle`` literal, never
+        # ``stalled`` or ``recovering``. No severity is reported.
+        return {
+            "serverReachable": True,
+            "radioLink": "disconnected",
+            "readiness": "idle",
+            "likelyCause": "operator_disconnected",
+            "sinceMs": 0,
+            "lastError": last_error_value,
+        }
+
+    serial_error = getattr(radio, "serial_open_error", None)
+    if isinstance(serial_error, str):
+        return {
+            "serverReachable": True,
+            "radioLink": radio_link,
+            "readiness": "stalled",
+            "likelyCause": "radio_not_connected",
+            "sinceMs": 0,
+            "lastError": serial_error,
+        }
 
     if served_without_port and last_error_value is not None:
         return {
@@ -1245,11 +1276,37 @@ def _project_scope_fixed_edge(value: Any) -> dict[str, int]:
 
 
 def _canonical_snapshot_fields(snapshot: StateSnapshot) -> tuple[FieldSnapshot, ...]:
+    # Receiver IDs and slotless/ACTIVE paths can name the same public leaf.
+    # Resolve that leaf once so its value and fieldStatus retain one sample.
+    aliases: dict[str, FieldSnapshot] = {}
+    alias_paths: dict[FieldPath, str] = {}
+    for field in snapshot.fields:
+        if (
+            field.path.scope is not FieldScope.RECEIVER
+            or field.path.family is not FieldFamily.FREQ_MODE
+            or field.path.slot not in (None, VfoSlot.ACTIVE)
+        ):
+            continue
+        public_paths = _snapshot_field_public_paths(field.path)
+        if len(public_paths) != 1:
+            continue
+        public_path = public_paths[0]
+        alias_paths[field.path] = public_path
+        previous = aliases.get(public_path)
+        if previous is None or (field.last_observed_monotonic, str(field.path)) >= (
+            previous.last_observed_monotonic,
+            str(previous.path),
+        ):
+            aliases[public_path] = field
+    fields = tuple(
+        field
+        for field in snapshot.fields
+        if field.path not in alias_paths or field is aliases[alias_paths[field.path]]
+    )
     path = FieldPath.global_("tx_state", "tx_target")
-    targets = tuple(field for field in snapshot.fields if field.path == path)
+    targets = tuple(field for field in fields if field.path == path)
     if len(targets) < 2:
-        canonical: tuple[FieldSnapshot, ...] = snapshot.fields
-        return canonical
+        return fields
     newest_at = max(field.last_observed_monotonic for field in targets)
     newest = tuple(f for f in targets if f.last_observed_monotonic == newest_at)
     rank = (FreshnessState.FRESH, FreshnessState.UNKNOWN, FreshnessState.STALE)
@@ -1258,7 +1315,7 @@ def _canonical_snapshot_fields(snapshot: StateSnapshot) -> tuple[FieldSnapshot, 
         field.value != winner.value for field in newest
     ):
         winner = replace(winner, value={"status": "unknown", "reason": "contradiction"})
-    return tuple(field for field in snapshot.fields if field.path != path) + (winner,)
+    return tuple(field for field in fields if field.path != path) + (winner,)
 
 
 def _apply_snapshot_field(
@@ -1513,7 +1570,9 @@ def _build_public_state_payload_from_dict(
     }
     public_health = dict(radio_health or classify_radio_health(radio))
     stored_health = state.get("radio_health")
-    if isinstance(stored_health, dict):
+    if isinstance(stored_health, dict) and not isinstance(
+        getattr(radio, "serial_open_error", None), str
+    ):
         for name in _HEALTH_PUBLIC_PATHS:
             if name in stored_health:
                 public_health[_to_camel(name)] = stored_health[name]

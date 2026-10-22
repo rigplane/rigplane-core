@@ -39,6 +39,8 @@ import pytest
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
 from rigplane.audio.usb_driver import AudioCaptureOpenTimeoutError, UsbAudioDriver
 
+from _portaudio_pool_helpers import drain_pool
+
 _LOGGER_NAME = "rigplane.audio.usb_driver"
 # Tiny relative to the production default -- keeps this suite fast while
 # still exercising the real asyncio.wait()-based bound.
@@ -132,7 +134,7 @@ async def test_rx_open_timeout_keeps_event_loop_free(
     assert "consent" in message.lower()
 
     gate.set()  # release the stuck background open so the thread can exit
-    await asyncio.sleep(0.05)
+    await drain_pool()
 
 
 @pytest.mark.timeout(10)
@@ -176,7 +178,7 @@ async def test_rx_open_recovers_on_next_subscriber(
     assert driver.rx_running is False
 
     gate.set()
-    await asyncio.sleep(0.05)  # let the abandoned attempt's cleanup settle
+    await drain_pool()  # let the abandoned attempt's cleanup settle
 
     backend.block_rx_open = None  # simulate consent granted for the retry
     await driver.start_rx(lambda _frame: None)
@@ -221,7 +223,7 @@ async def test_tx_open_timeout_shares_the_same_treatment(
     assert len(_warnings(caplog)) == 1
 
     gate.set()
-    await asyncio.sleep(0.05)
+    await drain_pool()
 
 
 @pytest.mark.timeout(10)
@@ -374,41 +376,53 @@ async def test_timeout_warning_reports_sub_second_timeout_with_one_decimal(
         # process exit forever (the exact failure mode this ticket exists
         # to prevent in production).
         gate.set()
-        await asyncio.sleep(0.05)
+        await drain_pool()
 
 
 @pytest.mark.timeout(15)
 async def test_pool_saturation_fails_fast_instead_of_queuing(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Item 1: enough sequential wedged opens must fail the NEXT one fast.
+    from rigplane.audio import usb_driver
 
-    ``_rx_lock`` only serializes concurrent opens; it does not bound how
-    many abandoned (still-running-in-background) opens pile up across
-    SEQUENTIAL start_rx() calls. Each timed-out-and-abandoned open leaves
-    its worker thread permanently blocked on ``gate.wait()``, so eight
-    sequential stuck opens exhaust the whole driver-owned pool
-    (``_CAPTURE_OPEN_MAX_WORKERS`` == 8). The NEXT open against a healthy
-    device must recognize the pool is saturated and fail immediately with
-    an honest "pool saturated" error — NOT queue behind the stuck workers
-    and burn the full timeout while misreporting TCC consent as the cause.
-    """
     caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
     gate = threading.Event()
-    driver, backend = _make_driver()
+    pool = usb_driver._BoundedPortAudioPool()
+    monkeypatch.setattr(usb_driver, "bounded_portaudio_pool", pool)
+    capacity = usb_driver._CAPTURE_OPEN_MAX_WORKERS
+    backend = FakeAudioBackend(
+        [
+            AudioDeviceInfo(
+                id=AudioDeviceId(index),
+                name=f"USB Audio CODEC {index}",
+                input_channels=1,
+                output_channels=1,
+                default_samplerate=48_000,
+            )
+            for index in range(capacity + 1)
+        ]
+    )
+    drivers = [
+        UsbAudioDriver(
+            backend=backend,
+            rx_device=f"USB Audio CODEC {index}",
+            tx_device=f"USB Audio CODEC {index}",
+            capture_open_timeout=_TEST_TIMEOUT_S,
+        )
+        for index in range(capacity + 1)
+    ]
     backend.block_rx_open = gate.wait
 
     try:
-        # Saturate every worker in the driver-owned pool with abandoned,
-        # permanently-blocked opens (max_workers == 8, see usb_driver.py).
-        for _ in range(8):
+        for driver in drivers[:-1]:
             with pytest.raises(AudioCaptureOpenTimeoutError):
                 await driver.start_rx(lambda _frame: None)
 
         wedged = list(backend.rx_streams)
+        assert len(wedged) == capacity
 
         with pytest.raises(AudioCaptureOpenTimeoutError) as exc_info:
-            await driver.start_rx(lambda _frame: None)
+            await drivers[-1].start_rx(lambda _frame: None)
 
         assert "saturated" in str(exc_info.value).lower(), (
             f"expected an honest pool-saturation message, got: {exc_info.value!r}"
@@ -453,7 +467,10 @@ async def test_pool_saturation_fails_fast_instead_of_queuing(
         )
     finally:
         gate.set()  # release every stuck worker so the pool can drain
-        await asyncio.sleep(0.2)
+        async with asyncio.timeout(5):
+            while pool.inflight:
+                await asyncio.sleep(0.005)
+        pool._executor.shutdown(wait=True)
 
 
 @pytest.mark.timeout(10)
@@ -539,7 +556,7 @@ async def test_duplex_open_routes_off_loop_and_times_out(
         stop.set()
         await ticker
         gate.set()
-        await asyncio.sleep(0.05)
+        await drain_pool()
 
     assert progressed >= 3, (
         "event loop should keep making progress while the duplex open is stuck"

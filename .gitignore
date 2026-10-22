@@ -90,8 +90,18 @@ scripts/*
 !scripts/gen_field_status_fixture.py
 # And the control-domain contract vector generator is tracked (MOR-2477).
 !scripts/gen_control_domain_vectors.py
+# And the state wire golden generator is tracked.
+!scripts/gen_state_wire_goldens.py
+# And the IC-7610 capture probe driver is tracked (MOR-3307).
+!scripts/ic7610_capture/
+# And the IC-7300 capture bridge and scope session driver are tracked (MOR-3595).
+!scripts/ic7300_capture/
+# And the FTX-1 capture probe driver is tracked (MOR-3596).
+!scripts/ftx1_capture/
 # And the versioned docs site builder is tracked (MOR-2914).
 !scripts/build_versioned_docs.py
+# And the weekly mutation-testing summarizer is tracked.
+!scripts/mutation/
 # But CI scripts under .github/ are tracked.
 !.github/scripts/
 # And frontend tooling scripts (e.g. i18n lint) are tracked.

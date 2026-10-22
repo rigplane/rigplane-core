@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
-from rigplane.core.serial_open import open_serial_port
+from rigplane.core.serial_open import open_serial_port, serial_open_diagnostic
 from rigplane.usb_audio_resolve import AudioDeviceMapping, resolve_audio_for_serial_port
 
 from .hamlib_probe import (
@@ -26,6 +26,7 @@ __all__ = [
     "build_hamlib_discovery_payload",
     "build_setup_discovery_payload",
     "CivProbeResult",
+    "CivProbeDiagnostic",
     "DiscoveryCandidate",
     "DiscoveryEvidence",
     "HamlibProbeTarget",
@@ -135,12 +136,45 @@ class CivProbeResult:
 _OpenSerial = Callable[..., Awaitable[tuple[Any, Any]]]
 
 
+_ProbeCode = Literal[
+    "serial_busy",
+    "serial_permission_denied",
+    "serial_not_found",
+    "serial_timeout",
+    "serial_unknown",
+]
+
+
+@dataclass
+class CivProbeDiagnostic:
+    """Caller-local CI-V probe status without device or exception contents."""
+
+    status: Literal[
+        "not_attempted",
+        "response",
+        "open_failed",
+        "opened_no_response",
+        "incomplete_reply",
+        "malformed_reply",
+        "probe_error",
+    ] = "not_attempted"
+    stage: Literal["open", "write", "read", "parse", "close"] | None = None
+    code: _ProbeCode | None = None
+    open_failure_codes: tuple[_ProbeCode, ...] = ()
+
+
+# Documented CI-V baud rates, in the order a port is swept (MOR-3620: also the
+# retry order of a serial connect that gets silence at the configured baud).
+SERIAL_PROBE_BAUD_RATES: tuple[int, ...] = (19200, 9600, 115200, 4800)
+
+
 async def probe_serial_civ(
     port: str,
     baud_rates: list[int] | None = None,
     timeout: float = 1.0,
     *,
     _open_serial: _OpenSerial | None = None,
+    diagnostics: CivProbeDiagnostic | None = None,
 ) -> CivProbeResult | None:
     """Probe a serial port for a CI-V radio, trying multiple baud rates.
 
@@ -150,19 +184,56 @@ async def probe_serial_civ(
     Args:
         port: Serial device path (e.g. ``/dev/ttyUSB0``).
         baud_rates: Baud rates to try, in order. Defaults to
-            ``[19200, 9600, 115200, 4800]``.
+            :data:`SERIAL_PROBE_BAUD_RATES`.
         timeout: Per-baud timeout in seconds.
         _open_serial: Overrides the open step of :func:`rigplane.core.serial_open.open_serial_port`;
             post-open control-line deassert still applies (used in tests).
+        diagnostics: Optional caller-local status, reset before the baud sweep.
 
     Returns:
         :class:`CivProbeResult` on success, or ``None`` if no radio responded.
     """
     if baud_rates is None:
-        baud_rates = [19200, 9600, 115200, 4800]
+        baud_rates = list(SERIAL_PROBE_BAUD_RATES)
+
+    if diagnostics is not None:
+        diagnostics.status = "not_attempted"
+        diagnostics.stage = None
+        diagnostics.code = None
+        diagnostics.open_failure_codes = ()
 
     for baud in baud_rates:
-        result = await _try_baud(port, baud, timeout, _open_serial=_open_serial)
+        if diagnostics is None:
+            result = await _try_baud(port, baud, timeout, _open_serial=_open_serial)
+        else:
+            attempt = CivProbeDiagnostic()
+            try:
+                result = await _try_baud(
+                    port, baud, timeout, _open_serial=_open_serial, diagnostics=attempt
+                )
+            finally:
+                for code in attempt.open_failure_codes:
+                    if code not in diagnostics.open_failure_codes:
+                        diagnostics.open_failure_codes += (code,)
+                priority = {
+                    "not_attempted": 0,
+                    "open_failed": 1,
+                    "opened_no_response": 2,
+                    "incomplete_reply": 3,
+                    "malformed_reply": 3,
+                    "response": 4,
+                    "probe_error": 5,
+                }
+                if priority[attempt.status] >= priority[diagnostics.status]:
+                    diagnostics.status = attempt.status
+                    diagnostics.stage = attempt.stage
+                    diagnostics.code = attempt.code
+                if diagnostics.status == "open_failed":
+                    diagnostics.code = (
+                        diagnostics.open_failure_codes[0]
+                        if len(diagnostics.open_failure_codes) == 1
+                        else "serial_unknown"
+                    )
         if result is not None:
             return result
     return None
@@ -174,6 +245,7 @@ async def _try_baud(
     timeout: float,
     *,
     _open_serial: _OpenSerial | None = None,
+    diagnostics: CivProbeDiagnostic | None = None,
 ) -> CivProbeResult | None:
     """Open *port* at *baud*, send CI-V probe, return result or None.
 
@@ -192,10 +264,17 @@ async def _try_baud(
         reader, writer = await open_serial_port(
             url=port, baudrate=baud, opener=_open_serial
         )
-    except OSError:
+    except OSError as exc:
         # Expected during a scan: port busy, absent, or refusing the baud
         # rate. pyserial's SerialException subclasses OSError.
         logger.debug("probe_serial_civ: cannot open %s @ %d", port, baud)
+        if diagnostics is not None:
+            diagnostics.status = "open_failed"
+            diagnostics.stage = "open"
+            diagnostics.code = cast(
+                _ProbeCode, serial_open_diagnostic(exc).split(":")[0]
+            )
+            diagnostics.open_failure_codes = (diagnostics.code,)
         return None
     except Exception as exc:
         # Unexpected: programming error or broken environment. Not a
@@ -208,8 +287,16 @@ async def _try_baud(
             exc,
             exc_info=True,
         )
+        if diagnostics is not None:
+            diagnostics.status = "open_failed"
+            diagnostics.stage = "open"
+            diagnostics.code = cast(
+                _ProbeCode, serial_open_diagnostic(exc).split(":")[0]
+            )
+            diagnostics.open_failure_codes = (diagnostics.code,)
         return None
 
+    operation: Literal["write", "read", "parse"] = "write"
     try:
         writer.write(_CIV_PROBE_CMD)
         await writer.drain()
@@ -219,32 +306,70 @@ async def _try_baud(
         # command; the actual radio response arrives a few ms later.
         buf = bytearray()
         response_preamble = bytes([0xFE, 0xFE, 0xE0])
-        try:
-            deadline = asyncio.get_event_loop().time() + timeout
-            while asyncio.get_event_loop().time() < deadline:
-                remaining = deadline - asyncio.get_event_loop().time()
-                if remaining <= 0:
-                    break
-                try:
-                    chunk = await asyncio.wait_for(reader.read(64), timeout=remaining)
-                    buf.extend(chunk)
-                except asyncio.TimeoutError:
-                    break
-                # Check if we have the response (not just echo)
-                if buf.find(response_preamble) != -1:
-                    break
-        except asyncio.TimeoutError:
-            pass
+        operation = "read"
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                break
+            try:
+                chunk = await asyncio.wait_for(reader.read(64), timeout=remaining)
+                buf.extend(chunk)
+            except asyncio.TimeoutError:
+                break
+            operation = "parse"
+            result = _parse_probe_response(port, baud, bytes(buf))
+            if result is not None:
+                if diagnostics is not None:
+                    diagnostics.status = "response"
+                    diagnostics.stage = "parse"
+                return result
+            operation = "read"
 
         if not buf:
             logger.debug("probe_serial_civ: timeout at %s @ %d", port, baud)
+            if diagnostics is not None:
+                diagnostics.status = "opened_no_response"
+                diagnostics.stage = "read"
             return None
 
-        return _parse_probe_response(port, baud, bytes(buf))
+        operation = "parse"
+        result = _parse_probe_response(port, baud, bytes(buf))
+        if diagnostics is not None:
+            diagnostics.stage = "parse"
+            if result is not None:
+                diagnostics.status = "response"
+            elif not bytes(buf).replace(_CIV_PROBE_CMD, b""):
+                diagnostics.status = "opened_no_response"
+                diagnostics.stage = "read"
+            else:
+                start = buf.rfind(response_preamble)
+                frame = buf[start:] if start >= 0 else bytearray()
+                diagnostics.status = (
+                    "incomplete_reply"
+                    if frame
+                    and 0xFD not in frame[3:]
+                    and (len(frame) < 6 or frame[4:6] == b"\x19\x00")
+                    else "malformed_reply"
+                )
+        return result
+    except BaseException:
+        if diagnostics is not None:
+            diagnostics.status = "probe_error"
+            diagnostics.stage = operation
+            diagnostics.code = None
+        raise
     finally:
         logger.debug("probe_serial_civ: closing %s", port)
-        writer.close()
-        await writer.wait_closed()
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except BaseException:
+            if diagnostics is not None:
+                diagnostics.status = "probe_error"
+                diagnostics.stage = "close"
+                diagnostics.code = None
+            raise
         logger.debug("probe_serial_civ: closed %s", port)
 
 
@@ -261,42 +386,32 @@ def _parse_probe_response(port: str, baud: int, data: bytes) -> CivProbeResult |
     Returns:
         :class:`CivProbeResult` if a valid response is found, else ``None``.
     """
-    # Scan for response preamble FE FE E0 (to=controller, ignoring echo)
     search = bytes([0xFE, 0xFE, 0xE0])
-    idx = data.find(search)
-    if idx == -1:
-        logger.debug("probe_serial_civ: no valid preamble in response from %s", port)
-        return None
-
-    frame = data[idx:]
-    if len(frame) < _RESPONSE_MIN_LEN:
-        logger.debug("probe_serial_civ: response too short from %s", port)
-        return None
-
-    # Verify command echo: bytes 4-5 should be 0x19 0x00
-    if frame[4] != 0x19 or frame[5] != 0x00:
-        logger.debug(
-            "probe_serial_civ: unexpected command bytes in response from %s", port
+    cursor = 0
+    while True:
+        idx = data.find(search, cursor)
+        if idx == -1:
+            return None
+        cursor = idx + len(search)
+        end_idx = data.find(0xFD, idx + 3)
+        if end_idx == -1:
+            continue
+        next_preamble = data.find(b"\xfe\xfe", idx + 2)
+        if next_preamble != -1 and next_preamble < end_idx:
+            continue
+        frame = data[idx : end_idx + 1]
+        if len(frame) < _RESPONSE_MIN_LEN or frame[4:6] != b"\x19\x00":
+            continue
+        address = frame[3]
+        model_id = bytes(frame[6:-1])
+        logger.info(
+            "probe_serial_civ: found radio at %s @ %d — addr=0x%02X model=%s",
+            port,
+            baud,
+            address,
+            model_id.hex(),
         )
-        return None
-
-    address = frame[3]
-
-    # model_id is everything between byte 6 and the terminator FD
-    end_idx = frame.find(0xFD, 6)
-    if end_idx == -1:
-        logger.debug("probe_serial_civ: no terminator in response from %s", port)
-        return None
-
-    model_id = bytes(frame[6:end_idx])
-    logger.info(
-        "probe_serial_civ: found radio at %s @ %d — addr=0x%02X model=%s",
-        port,
-        baud,
-        address,
-        model_id.hex(),
-    )
-    return CivProbeResult(port=port, baud=baud, address=address, model_id=model_id)
+        return CivProbeResult(port=port, baud=baud, address=address, model_id=model_id)
 
 
 # ---------------------------------------------------------------------------
@@ -619,8 +734,64 @@ def enumerate_serial_ports() -> list[SerialPortCandidate]:
     return candidates
 
 
+def _local_ipv4_addresses() -> list[str]:
+    """Return a best-effort subset of the host's local IPv4 addresses.
+
+    Combines the default-route address — a UDP ``connect`` sends no packet,
+    it only makes the OS pick the outbound interface — with, on Windows,
+    the IPv4 addresses the hostname resolves to. Loopback and unspecified
+    addresses are dropped; duplicates are removed with a stable order.
+    """
+    import socket
+    import sys
+
+    addresses: list[str] = []
+
+    # UDP connect() transmits nothing; it just records the routing decision,
+    # so getsockname() reports the default-route interface's address. The
+    # target is TEST-NET-1 (RFC 5737, documentation only), so no real
+    # traffic can leave the host.
+    try:
+        probe_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe_sock.connect(("192.0.2.1", 9))
+            addresses.append(probe_sock.getsockname()[0])
+        finally:
+            probe_sock.close()
+    except OSError:
+        pass
+
+    # Windows-only: there the hostname resolves locally to every adapter's
+    # address, and Windows is where the single-adapter broadcast problem is;
+    # elsewhere getaddrinfo(gethostname()) can stall for seconds on a name
+    # that does not resolve locally (e.g. .local) before the scan's clock
+    # even starts. The UDP-connect probe above runs on every platform.
+    if sys.platform == "win32":
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                addresses.append(info[4][0])
+        except OSError:
+            pass
+
+    unique: list[str] = []
+    for address in addresses:
+        if address.startswith("127.") or address == "0.0.0.0" or address in unique:
+            continue
+        unique.append(address)
+    return unique
+
+
 async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
     """Discover Icom radios on LAN via UDP broadcast ("Are You There").
+
+    The probe is sent from one unbound socket and from one socket bound to
+    each enumerated local IPv4 address (best-effort). On Windows an unbound
+    socket sends the limited broadcast (255.255.255.255) out of a single
+    interface only, while a socket bound to an adapter's address sends it
+    through that adapter; on other platforms the extra bound sockets are
+    harmless duplicates. Per-socket receive errors (including the
+    WSAECONNRESET Windows raises after an ICMP port-unreachable) are
+    tolerated.
 
     Args:
         timeout: How long to listen for responses, in seconds.
@@ -637,6 +808,9 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
     # not hide a radio for the entire scan. A radio that only answers a later
     # probe is still discovered; responses are deduplicated by host.
     RESEND_INTERVAL = 0.6
+    # Per-socket receive poll. Polling N sockets costs up to N × 50 ms per
+    # loop iteration, so the scan may overshoot its deadline by that much.
+    RECV_POLL_INTERVAL = 0.05
 
     def _scan() -> list[dict[str, object]]:
         import random
@@ -651,58 +825,126 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
         struct.pack_into("<I", pkt, 8, my_id)  # sender_id (non-zero!)
         struct.pack_into("<I", pkt, 0x0C, 0)  # remote_id=0 (unknown)
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.settimeout(0.3)
+        # Enumeration is best-effort: any exception (a chroot without routing,
+        # exotic resolver errors) falls back to the unbound socket alone.
+        try:
+            local_addresses = _local_ipv4_addresses()
+        except Exception:
+            local_addresses = []
 
-        # Broadcast on common Icom ports. Returns False only if the very first
-        # send fails on every port (no usable socket); a later transient send
-        # failure is logged and tolerated so listening continues.
-        def _broadcast(*, first: bool) -> bool:
-            sent_any = False
-            for port in [50001]:
-                try:
-                    sock.sendto(bytes(pkt), ("255.255.255.255", port))
-                    sent_any = True
-                except OSError as exc:
-                    logger.warning(
-                        "discover: broadcast failed on port %d: %s", port, exc
-                    )
-            return sent_any or not first
-
-        if not _broadcast(first=True):
-            sock.close()
-            return []
+        def _open_probe_socket(address: str | None) -> socket.socket:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                if address is not None:
+                    sock.bind((address, 0))
+                sock.settimeout(RECV_POLL_INTERVAL)
+            except BaseException:
+                sock.close()
+                raise
+            return sock
 
         found: dict[str, dict[str, object]] = {}
-        start = time.monotonic()
-        deadline = start + timeout
-        next_resend = start + RESEND_INTERVAL
-        while time.monotonic() < deadline:
-            # Spread retransmits across the window; keep within `timeout`.
-            now = time.monotonic()
-            if now >= next_resend:
-                _broadcast(first=False)
-                next_resend = now + RESEND_INTERVAL
-            try:
-                data, addr = sock.recvfrom(256)
-                if len(data) >= 0x10:
-                    ptype = struct.unpack_from("<H", data, 4)[0]
-                    if ptype == 0x04:  # I_AM_HERE
-                        remote_id = struct.unpack_from("<I", data, 8)[0]
-                        if addr[0] not in found:
-                            logger.info(
-                                "discover_lan_radios: found %s id=0x%08X",
-                                addr[0],
-                                remote_id,
-                            )
-                        # Dedup by host: a radio answering multiple probes is
-                        # recorded once.
-                        found[addr[0]] = {"host": addr[0], "remote_id": remote_id}
-            except socket.timeout:
-                continue
+        sockets: list[socket.socket] = []
+        # Bound address per socket ("unbound" for the unbound socket), for
+        # send-failure log lines.
+        labels: dict[socket.socket, str] = {}
 
-        sock.close()
+        try:
+            # One unbound socket as before, plus one per local address so
+            # that, on Windows, the limited broadcast also leaves through
+            # each bound adapter; on other platforms the bound sockets are
+            # harmless duplicates (coverage is best-effort). A socket that
+            # fails to create/bind (address vanished, adapter removed) is
+            # logged and skipped; the remaining adapters still get probed.
+            try:
+                sock = _open_probe_socket(None)
+            except OSError as exc:
+                logger.debug("discover: could not open unbound socket: %s", exc)
+            else:
+                sockets.append(sock)
+                labels[sock] = "unbound"
+            for address in local_addresses:
+                try:
+                    sock = _open_probe_socket(address)
+                except OSError as exc:
+                    logger.debug("discover: could not bind %s: %s", address, exc)
+                else:
+                    sockets.append(sock)
+                    labels[sock] = address
+
+            # Broadcast on the Icom discovery port. Returns False only if
+            # the very first send fails on every socket (no usable socket);
+            # a send failure on one socket is logged — the first failure at
+            # WARNING with the bound address, repeats at DEBUG — and
+            # tolerated so listening continues.
+            send_failed: set[socket.socket] = set()
+
+            def _broadcast(*, first: bool) -> bool:
+                sent_any = False
+                for sock in sockets:
+                    try:
+                        sock.sendto(bytes(pkt), ("255.255.255.255", 50001))
+                        sent_any = True
+                    except OSError as exc:
+                        if sock in send_failed:
+                            logger.debug(
+                                "discover: broadcast failed again on %s: %s",
+                                labels[sock],
+                                exc,
+                            )
+                        else:
+                            send_failed.add(sock)
+                            logger.warning(
+                                "discover: broadcast failed on %s: %s",
+                                labels[sock],
+                                exc,
+                            )
+                return sent_any or not first
+
+            if not _broadcast(first=True):
+                return []
+
+            start = time.monotonic()
+            deadline = start + timeout
+            next_resend = start + RESEND_INTERVAL
+            while time.monotonic() < deadline:
+                # Spread retransmits across the window; keep within `timeout`.
+                now = time.monotonic()
+                if now >= next_resend:
+                    _broadcast(first=False)
+                    next_resend = now + RESEND_INTERVAL
+                for sock in sockets:
+                    try:
+                        data, addr = sock.recvfrom(256)
+                    except socket.timeout:
+                        continue
+                    except OSError as exc:
+                        # Windows surfaces the ICMP port-unreachable for a
+                        # previous broadcast as ConnectionResetError from
+                        # recvfrom; any other per-socket error also just
+                        # skips this poll. A socket in a permanent error
+                        # state returns immediately, so pace the loop.
+                        logger.debug("discover: recvfrom failed: %s", exc)
+                        time.sleep(0.01)
+                        continue
+                    if len(data) >= 0x10:
+                        ptype = struct.unpack_from("<H", data, 4)[0]
+                        if ptype == 0x04:  # I_AM_HERE
+                            remote_id = struct.unpack_from("<I", data, 8)[0]
+                            if addr[0] not in found:
+                                logger.info(
+                                    "discover_lan_radios: found %s id=0x%08X",
+                                    addr[0],
+                                    remote_id,
+                                )
+                            # Dedup by host: a radio answering multiple probes
+                            # is recorded once, whichever socket heard it.
+                            found[addr[0]] = {"host": addr[0], "remote_id": remote_id}
+        finally:
+            for sock in sockets:
+                sock.close()
+
         return list(found.values())
 
     return await asyncio.get_running_loop().run_in_executor(None, _scan)

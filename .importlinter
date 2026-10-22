@@ -10,7 +10,7 @@ layers =
     rigplane.web | rigplane.rigctld
     rigplane.backends
     rigplane.runtime
-    rigplane.profiles | rigplane.audio
+    rigplane.profiles | rigplane.audio | rigplane.sdr
     rigplane.commands | rigplane.scope | rigplane.dsp
     rigplane.core
 ignore_imports =
@@ -34,6 +34,7 @@ type = independence
 modules =
     rigplane.profiles
     rigplane.audio
+    rigplane.sdr
 
 [importlinter:contract:independence-low]
 name = low-tier siblings must not depend on each other

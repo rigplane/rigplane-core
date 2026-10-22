@@ -27,11 +27,21 @@ the capture is the real ``_PortAudioRxStream`` (only ``sounddevice`` is faked vi
 
 from __future__ import annotations
 
+import asyncio
 import struct
+import sys
+from types import SimpleNamespace
 
 import pytest
+from _order_sensitive_radios import LanLikeRadio
 
-from rigplane.audio.backend import AudioDeviceId, PortAudioBackend
+from rigplane.audio.backend import (
+    AudioDeviceId,
+    AudioDeviceInfo,
+    FakeAudioBackend,
+    PortAudioBackend,
+)
+from rigplane.audio.bridge import AudioBridge
 from rigplane.core.exceptions import AudioFormatError
 from rigplane.core.types import AudioCodec
 from rigplane.runtime._audio_runtime_mixin import AudioRuntimeMixin
@@ -51,7 +61,9 @@ class _FakeIndata:
         return self._payload
 
 
-def _make_fake_sd(captured_cb: dict[str, object]) -> type:
+def _make_fake_sd(
+    captured_cb: dict[str, object], *, host_api: str | None = None
+) -> type:
     """Build a fake ``sounddevice`` module whose InputStream records the callback.
 
     The capture path registers ``callback=`` and never calls ``read()``; the test
@@ -59,9 +71,20 @@ def _make_fake_sd(captured_cb: dict[str, object]) -> type:
     """
 
     class FakeSd:
+        @staticmethod
+        def query_devices(index: int) -> dict[str, int]:
+            assert index == 0
+            return {"hostapi": 1}
+
+        @staticmethod
+        def query_hostapis(index: int) -> dict[str, str | None]:
+            assert index == 1
+            return {"name": host_api}
+
         class InputStream:
             def __init__(self, **kw: object) -> None:
                 captured_cb["cb"] = kw["callback"]
+                captured_cb["kwargs"] = kw
 
             def start(self) -> None:
                 pass
@@ -126,10 +149,12 @@ def _open_capture(
     sample_rate: int,
     frame_ms: int,
     channels: int,
+    *,
+    host_api: str | None = None,
 ) -> tuple[object, dict[str, object]]:
     """Open the REAL capture stream against a fake sounddevice; return (stream, cb)."""
     captured_cb: dict[str, object] = {}
-    fake_sd = _make_fake_sd(captured_cb)
+    fake_sd = _make_fake_sd(captured_cb, host_api=host_api)
     backend = PortAudioBackend(dependency_loader=lambda: (fake_sd(), object()))
     stream = backend.open_rx(
         AudioDeviceId(0),
@@ -158,6 +183,52 @@ def _tone_pcm(total_samples: int, channels: int) -> bytes:
 
 
 class TestCaptureFramesAlwaysAcceptedByTxValidator:
+    @pytest.mark.parametrize("channels", [1, 2])
+    @pytest.mark.asyncio()
+    async def test_linux_alsa_600_sample_callbacks_preserve_frames_and_overflow(
+        self, monkeypatch: pytest.MonkeyPatch, channels: int
+    ) -> None:
+        monkeypatch.setattr(sys, "platform", "linux")
+        stream, captured = _open_capture(48_000, 20, channels, host_api="ALSA")
+        emitted: list[bytes] = []
+        await stream.start(emitted.append)
+        try:
+            assert captured["kwargs"]["latency"] == 0.050
+            assert captured["kwargs"]["blocksize"] == 0
+            cb = captured["cb"]
+            reference = _tone_pcm(4800, channels)
+            chunk_bytes = 600 * channels * 2
+            for index in range(8):
+                status = SimpleNamespace(input_overflow=True) if index == 0 else None
+                cb(
+                    _FakeIndata(
+                        reference[index * chunk_bytes : (index + 1) * chunk_bytes]
+                    ),
+                    600,
+                    None,
+                    status,
+                )
+            validator = _ValidatorHarness(
+                sample_rate=48_000, channels=channels, frame_ms=20
+            )
+            for frame in emitted:
+                await validator.push_audio_tx_pcm(frame)
+            assert len(emitted) == 5
+            assert all(len(frame) == 960 * channels * 2 for frame in emitted)
+            assert b"".join(validator._audio_stream.pushed) == reference
+            assert stream.capture_health.input_overflow_events == 1
+            assert stream.capture_health.frames_delivered == 5
+            cb(_FakeIndata(_tone_pcm(600, channels)), 600, None, None)
+            assert len(emitted) == 5
+        finally:
+            await stream.stop()
+        await stream.start(emitted.append)
+        try:
+            captured["cb"](_FakeIndata(_tone_pcm(600, channels)), 600, None, None)
+            assert len(emitted) == 5
+        finally:
+            await stream.stop()
+
     @pytest.mark.asyncio()
     async def test_adversarial_blocks_emit_only_validator_accepted_frames(self) -> None:
         """Drive the real capture with adversarial variable-size blocks; feed every
@@ -245,6 +316,59 @@ class TestCaptureFramesAlwaysAcceptedByTxValidator:
 
         with pytest.raises(AudioFormatError, match="PCM frame size mismatch"):
             await validator.push_audio_tx_pcm(verbatim_block)
+
+
+@pytest.mark.asyncio()
+async def test_linux_alsa_bridge_tx_capture_uses_margin_and_preserves_pcm_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    captured: dict[str, object] = {}
+    fake_sd = _make_fake_sd(captured, host_api="ALSA")
+    capture_backend = PortAudioBackend(dependency_loader=lambda: (fake_sd(), object()))
+    backend = FakeAudioBackend(
+        [
+            AudioDeviceInfo(
+                id=AudioDeviceId(0),
+                name="RigPlane Virtual Cable",
+                input_channels=1,
+                output_channels=1,
+            )
+        ]
+    )
+    monkeypatch.setattr(backend, "open_rx", capture_backend.open_rx)
+    radio = LanLikeRadio()
+    validator = _ValidatorHarness(sample_rate=48_000, channels=1, frame_ms=20)
+    complete = asyncio.Event()
+    original_push = radio.push_tx
+
+    async def validated_push(frame: bytes) -> None:
+        await original_push(frame)
+        await validator.push_audio_tx_pcm(frame)
+        if len(validator._audio_stream.pushed) == 5:
+            complete.set()
+
+    monkeypatch.setattr(radio, "push_tx", validated_push)
+    bridge = AudioBridge(radio, device_name="RigPlane Virtual Cable", backend=backend)
+    await bridge.start()
+    try:
+        assert captured["kwargs"]["latency"] == 0.050
+        assert captured["kwargs"]["blocksize"] == 0
+        reference = _tone_pcm(4800, 1)
+        for index in range(8):
+            captured["cb"](
+                _FakeIndata(reference[index * 1200 : (index + 1) * 1200]),
+                600,
+                None,
+                None,
+            )
+        await asyncio.wait_for(complete.wait(), timeout=2.0)
+        assert len(validator._audio_stream.pushed) == 5
+        assert all(len(frame) == 1920 for frame in validator._audio_stream.pushed)
+        assert b"".join(validator._audio_stream.pushed) == reference
+        assert bridge.metrics.tx_frames == 5
+    finally:
+        await bridge.stop()
 
 
 # ---------------------------------------------------------------------------

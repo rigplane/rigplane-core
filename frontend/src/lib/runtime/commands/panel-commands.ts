@@ -1464,8 +1464,11 @@ export function makeVfoHandlers() {
       if (!context || target === null || receiver === undefined
         || knownA03cReceiver(context, target, 'freqHz') !== receiver
         || !Number.isSafeInteger(freq)) return;
-      if (kind === 'jump') { tuningAccumulator().jump(receiver, freq); return; }
       const confirmed = receiver === 1 ? context.state.sub : context.state.main;
+      if (kind === 'jump') {
+        tuningAccumulator().jump(receiver, freq, confirmed?.freqHz ?? undefined, currentTuningMarker(receiver));
+        return;
+      }
       // MOR-2513: an unobserved current frequency (null) computes no step.
       if (!confirmed || typeof confirmed.freqHz !== 'number') return;
       tuningAccumulator().step(receiver, confirmed.freqHz, freq, currentTuningMarker(receiver));

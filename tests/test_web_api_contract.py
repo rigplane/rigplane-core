@@ -410,3 +410,35 @@ async def test_stable_http_payloads_satisfy_required_field_contract() -> None:
         assert status == expected_status
         required = RESPONSE_FIELD_CONTRACTS[path]["required"]
         assert set(required).issubset(payload)
+
+
+def test_capabilities_contract_requires_mode_families() -> None:
+    """MOR-3679: clients read CW modes from ``modeFamilies``, so the stable
+    contract lists it as required on ``/api/v1/capabilities``."""
+    assert (
+        "modeFamilies" in RESPONSE_FIELD_CONTRACTS["/api/v1/capabilities"]["required"]
+    )
+
+
+def test_runtime_contract_requires_the_process_block() -> None:
+    assert "process" in RESPONSE_FIELD_CONTRACTS["/api/v1/runtime"]["required"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_process_block_keeps_its_five_keys_without_a_radio() -> None:
+    srv = WebServer(None, WebConfig(host="127.0.0.1", port=0))
+    writer = _Writer()
+    await srv._handle_http(  # noqa: SLF001
+        writer, "GET", "/api/v1/runtime", headers={}
+    )
+    status, payload = _json_response(writer)
+    assert status == 200
+    # Presence of the keys is the contract; a platform or radio that cannot
+    # report a value serves null, so no value is pinned.
+    assert set(payload["process"]) == {
+        "rssBytes",
+        "openFds",
+        "threads",
+        "asyncioTasks",
+        "reconnectsTotal",
+    }

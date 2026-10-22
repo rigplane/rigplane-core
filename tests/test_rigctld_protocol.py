@@ -4,6 +4,7 @@ Covers:
 - parse_line: short commands, long commands, arg validation, unknown commands
 - parse_line: \\r\\n tolerance, empty lines, extra whitespace
 - format_response: normal mode (GET / SET / error)
+- format_response: get_lock_mode normal-mode RPRT footer (MOR-3113)
 - format_response: extended mode
 - format_error
 """
@@ -459,6 +460,37 @@ class TestFormatResponseNormal:
         cmd = RigctldCommand("f", "get_freq")
         resp = RigctldResponse(values=["14074000"])
         assert format_response(cmd, resp, _session()).endswith(b"\n")
+
+
+# ── format_response: get_lock_mode normal-mode footer (MOR-3113) ──────────────
+
+
+class TestFormatGetLockModeNormal:
+    """MOR-3113: successful normal `\\get_lock_mode` is value + RPRT 0.
+
+    rigctl_parse.c marks get_lock_mode ARG_NOVFO without ARG_OUT, so the
+    normal-mode parser appends the RPRT line after the value and netrigctl
+    (WSJT-X 3.0.2 / Hamlib 4.7.1 d042479) reads the value, then a second
+    line. Errors stay one RPRT line, extended mode keeps exactly one
+    footer, and every other GET stays bare (TestFormatResponseNormal).
+    """
+
+    def test_success_exact_bytes(self) -> None:
+        cmd = RigctldCommand("\\get_lock_mode", "get_lock_mode")
+        resp = RigctldResponse(values=["0"])
+        assert format_response(cmd, resp, _session()) == b"0\nRPRT 0\n"
+
+    def test_error_is_one_rprt_line(self) -> None:
+        cmd = RigctldCommand("\\get_lock_mode", "get_lock_mode")
+        resp = RigctldResponse(values=["0"], error=HamlibError.ETIMEOUT)
+        assert format_response(cmd, resp, _session()) == b"RPRT -5\n"
+
+    def test_extended_has_exactly_one_footer(self) -> None:
+        cmd = RigctldCommand("\\get_lock_mode", "get_lock_mode")
+        resp = RigctldResponse(values=["0"], cmd_echo="get_lock_mode")
+        out = format_response(cmd, resp, _session(extended=True))
+        assert out == b"get_lock_mode:\n0\nRPRT 0\n"
+        assert out.count(b"RPRT") == 1
 
 
 # ── format_response: extended mode ───────────────────────────────────────────

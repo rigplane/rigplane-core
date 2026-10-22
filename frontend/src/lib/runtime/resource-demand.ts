@@ -28,6 +28,8 @@ export class ResourceDemand<H> {
   private ended = false;
 
   constructor(readonly sessionEpoch: string) {}
+  /** Called only after the host's prior teardown and late cleanup settle. */
+  rearm(): void { this.ended = false; }
   configure(resource: AppResource, config: { available: boolean; selected: boolean }): void {
     const state = this.state(resource);
     state.available = config.available;

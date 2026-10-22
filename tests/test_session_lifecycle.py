@@ -29,7 +29,12 @@ import asyncio
 
 import pytest
 
-from rigplane.core.exceptions import AuthenticationError, ConnectionError
+from rigplane.core.exceptions import (
+    AuthenticationError,
+    ConnectionError,
+    DiscoveryTimeout,
+    TimeoutError,
+)
 from rigplane.runtime.session_lifecycle import (
     AttemptOutcome,
     AttemptResult,
@@ -89,6 +94,23 @@ class FakeMechanism:
     def queue_exception(self, exc: BaseException) -> None:
         self.queue_outcome(AttemptResult(AttemptOutcome.CONNECTED, raises=exc))
 
+    def queue_discovery_timeout(self) -> None:
+        """Pre-login discovery timeout, as production raises it.
+
+        An unanswered control-channel discovery surfaces as a
+        ``DiscoveryTimeout`` from the transport: auth never ran, so the
+        attempt sent no login and claimed nothing.  The fake mirrors
+        that by raising instead of returning an outcome.
+        """
+        self.queue_outcome(
+            AttemptResult(
+                AttemptOutcome.CONNECTED,
+                raises=DiscoveryTimeout(
+                    "Radio did not respond to discovery after 10 attempts"
+                ),
+            )
+        )
+
     def set_scan_result(self, presences: list[RadioPresence]) -> None:
         self._scan_result = presences
 
@@ -106,7 +128,13 @@ class FakeMechanism:
         # A claim happens on auth success, which for the fake is any outcome
         # except a pre-auth-style AUTH_CREDENTIALS reject.  CONNECTED/
         # NOT_READY/BUSY_REJECT all imply auth succeeded → session claimed.
-        if result.outcome is not AttemptOutcome.AUTH_CREDENTIALS:
+        # A pre-auth timeout (discovery, login-response wait) claims
+        # nothing: auth never ran, so the attempt holds no session.
+        is_pre_auth_timeout = isinstance(result.raises, TimeoutError)
+        if (
+            result.outcome is not AttemptOutcome.AUTH_CREDENTIALS
+            and not is_pre_auth_timeout
+        ):
             self.claimed = True
         if result.raises is not None:
             raise result.raises
@@ -297,6 +325,31 @@ async def test_busy_reject_releases_before_cooldown_then_connects() -> None:
     first_release = mech.ops.index("release")
     second_connect = [i for i, op in enumerate(mech.ops) if op == "connect_attempt"][1]
     assert first_release < second_connect, mech.ops
+
+
+async def test_first_connect_busy_passes_do_not_consume_the_attempt_budget() -> None:
+    """MOR-3391: first-connect busy re-logins stay out of the retry budget.
+
+    ``CoreRadio`` constructs the lifecycle with ``max_connect_attempts=4``;
+    busy passes consumed by the start-up hold must not leave a following
+    not-ready with zero retries (main gave three). The busy passes retry
+    under the start-up busy budget instead.
+    """
+    lc, mech, _events = make_lifecycle(
+        max_connect_attempts=4,
+        first_connect_busy_cooldown_s=0.0,
+        first_connect_busy_budget_s=600.0,
+    )
+    for _ in range(3):
+        mech.queue_busy_reject()
+    mech.queue_not_ready()
+    mech.queue_ok()
+
+    await lc.connect()
+
+    assert lc.state is LifecycleState.CONNECTED
+    # 3 busy re-logins + 1 not-ready + the connecting attempt.
+    assert mech.connect_calls == 5
 
 
 # ---------------------------------------------------------------------------
@@ -723,3 +776,496 @@ async def test_release_raising_does_not_crash_disconnect() -> None:
     await lc.disconnect()
     assert lc.state is LifecycleState.DISCONNECTED
     assert mech.release_calls >= 1
+
+
+# ---------------------------------------------------------------------------
+# MOR-3355 — a connect attempt failing with a connection error leaves the
+# lifecycle DISCONNECTED (not stuck at CONNECTING)
+# ---------------------------------------------------------------------------
+
+
+async def test_connection_error_attempt_drives_machine_to_disconnected() -> None:
+    """MOR-3355: RigplaneConnectionError from the attempt ends CLOSING→DISCONNECTED.
+
+    Models the startup-readiness abort inside ``ControlPhaseRuntime._connect_once``
+    (or any other ConnectionError from the attempt): ``_attempt_with_release``
+    already released the claim, so ``_run_connect`` must drive the observable
+    machine home before re-raising instead of leaving it at CONNECTING.
+    """
+    lc, mech, events = make_lifecycle()
+    mech.queue_exception(ConnectionError("startup-readiness abort (fake)"))
+
+    with pytest.raises(ConnectionError, match="startup-readiness abort"):
+        await lc.connect()
+
+    assert mech.release_calls >= 1
+    assert not mech.claimed
+    assert lc.state is LifecycleState.DISCONNECTED
+    assert [e.to_state for e in events] == [
+        LifecycleState.CONNECTING,
+        LifecycleState.CLOSING,
+        LifecycleState.DISCONNECTED,
+    ]
+    assert events[1].reason is LifecycleErrorReason.CANCELLED
+
+
+async def test_auth_hard_fail_emits_disconnected_exactly_once() -> None:
+    """MOR-3355: the auth hard-fail path still emits DISCONNECTED exactly once."""
+    lc, mech, events = make_lifecycle()
+    mech.queue_auth_fail()
+
+    with pytest.raises(AuthenticationError):
+        await lc.connect()
+
+    assert lc.state is LifecycleState.DISCONNECTED
+    assert sum(1 for e in events if e.to_state is LifecycleState.CLOSING) == 1
+    assert sum(1 for e in events if e.to_state is LifecycleState.DISCONNECTED) == 1
+
+
+async def test_exhaustion_emits_disconnected_exactly_once() -> None:
+    """MOR-3355: the attempt-exhaustion path still emits DISCONNECTED exactly once."""
+    lc, mech, events = make_lifecycle(max_connect_attempts=3)
+    for _ in range(3):
+        mech.queue_busy_reject()
+
+    with pytest.raises(ConnectionError, match="never became ready"):
+        await lc.connect()
+
+    assert lc.state is LifecycleState.DISCONNECTED
+    assert sum(1 for e in events if e.to_state is LifecycleState.DISCONNECTED) == 1
+
+
+async def test_cancel_during_attempt_reraises_without_extra_emits() -> None:
+    """MOR-3355: CancelledError still propagates with no CLOSING/DISCONNECTED emits."""
+
+    class CancelMech(FakeMechanism):
+        async def connect_attempt(self) -> AttemptResult:
+            self.connect_calls += 1
+            self.ops.append("connect_attempt")
+            self.claimed = True
+            raise asyncio.CancelledError()
+
+    mech = CancelMech()
+    lc, _m, events = make_lifecycle(mech=mech)
+
+    with pytest.raises(asyncio.CancelledError):
+        await lc.connect()
+
+    assert mech.release_calls >= 1
+    assert not mech.claimed
+    assert events
+    assert events[-1].to_state is LifecycleState.CONNECTING
+    assert all(
+        e.to_state is not LifecycleState.CLOSING
+        and e.to_state is not LifecycleState.DISCONNECTED
+        for e in events
+    )
+
+
+# ---------------------------------------------------------------------------
+# MOR-3391 part 1b — stop the start-up busy retry on a proven LIVE holder
+# ---------------------------------------------------------------------------
+
+
+class _VirtualClock:
+    """Controllable clock seam for the start-up busy-cadence tests.
+
+    The lifecycle sizes the start-up busy wait in its own clock seam
+    (``session_lifecycle.time.monotonic``); advancing it inside the fake
+    cooldown sleep plays a 0/30/60/90 s cadence in real milliseconds.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.now += delay
+
+
+def _busy_lifecycle(
+    clock: _VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    busy_cooldown_s: float = 30.0,
+    live_holder_after_s: float | None = 90.0,
+) -> tuple[CoreRadioSessionLifecycle, FakeMechanism, list[LifecycleEvent]]:
+    """Lifecycle with the production start-up busy wiring on a virtual clock."""
+    monkeypatch.setattr(
+        "rigplane.runtime.session_lifecycle.time.monotonic", clock.monotonic
+    )
+    monkeypatch.setattr("rigplane.runtime.session_lifecycle.asyncio.sleep", clock.sleep)
+    mech = FakeMechanism()
+    lc = CoreRadioSessionLifecycle(
+        mechanism=mech,
+        not_ready_cooldown_s=busy_cooldown_s,
+        reject_cooldown_s=busy_cooldown_s,
+        max_connect_attempts=4,
+        first_connect_busy_cooldown_s=busy_cooldown_s,
+        first_connect_busy_budget_s=600.0,
+        first_connect_busy_live_holder_after_s=live_holder_after_s,
+    )
+    events: list[LifecycleEvent] = []
+    lc.add_event_listener(events.append)
+    return lc, mech, events
+
+
+async def test_live_holder_stop_on_the_threshold_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 part 1b: busy at 0/30/60 then at the 90 s threshold stops.
+
+    A busy reject on an attempt that starts at or after first-busy + 90 s
+    proves a LIVE session holds the radio, so the loop raises the honest
+    error instead of retrying into the 600 s budget. Exactly four logins,
+    each released, none after the stop.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    for _ in range(5):
+        mech.queue_busy_reject()
+
+    with pytest.raises(ConnectionError) as excinfo:
+        await lc.connect()
+
+    message = str(excinfo.value)
+    assert "another client holds the session" in message
+    assert "Check for another active radio client before retrying." in message
+    assert "this computer" not in message
+    assert "runs here" not in message
+    assert "stop one of them" not in message
+    assert mech.connect_calls == 4
+    assert mech.release_calls == 4
+    assert not mech.claimed
+    assert lc.state is LifecycleState.DISCONNECTED
+
+
+async def test_live_holder_stop_raises_held_subclass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live-owner stop raises RadioSessionHeldError.
+
+    The stop keeps raising the established connection error (every
+    existing ``except`` still catches it) through a dedicated subclass,
+    so the CLI can map it to exit code 3.
+    """
+    from rigplane.core.exceptions import (
+        ConnectionError as RigplaneConnectionError,
+    )
+    from rigplane.core.exceptions import RadioSessionHeldError
+
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    for _ in range(5):
+        mech.queue_busy_reject()
+
+    with pytest.raises(
+        RadioSessionHeldError, match="another client holds the session"
+    ) as excinfo:
+        await lc.connect()
+
+    assert isinstance(excinfo.value, RigplaneConnectionError)
+    assert mech.connect_calls == 4
+    assert mech.release_calls == 4
+    assert not mech.claimed
+    assert lc.state is LifecycleState.DISCONNECTED
+
+
+async def test_dead_hold_granted_before_the_threshold_connects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 part 1b: a hold that ends between attempts grants in time.
+
+    Two busy passes, then the radio grants on the third attempt (started at
+    +60 s, before the +90 s threshold): the loop connects and never trips
+    the live-holder stop.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    mech.queue_busy_reject()
+    mech.queue_busy_reject()
+    mech.queue_ok()
+
+    await lc.connect()
+
+    assert lc.state is LifecycleState.CONNECTED
+    assert mech.connect_calls == 3
+
+
+async def test_live_holder_boundary_just_before_threshold_continues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 part 1b: an attempt starting just before +90 s does not stop.
+
+    With a 29 s cadence the fourth attempt starts at +87 s — still a dead
+    hold as far as the rule knows — so only the fifth attempt (at +116 s)
+    trips the stop.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(
+        clock, monkeypatch, busy_cooldown_s=29.0, live_holder_after_s=90.0
+    )
+    for _ in range(6):
+        mech.queue_busy_reject()
+
+    with pytest.raises(ConnectionError, match="another client holds the session"):
+        await lc.connect()
+
+    assert mech.connect_calls == 5
+    assert mech.release_calls == 5
+
+
+async def test_startup_busy_budget_cap_without_live_holder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 part 1b: with the live-holder stop unset the 600 s cap stays.
+
+    The outer budget is the backstop for lifecycles constructed without the
+    threshold: a persistent busy still ends in the resident never-ready
+    error, every pass released.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch, live_holder_after_s=None)
+    for _ in range(22):
+        mech.queue_busy_reject()
+
+    with pytest.raises(ConnectionError, match="never became ready"):
+        await lc.connect()
+
+    # Attempts start at +0/+30/...; the first start at or past the +600 s
+    # deadline is the 21st.
+    assert mech.connect_calls == 21
+    assert mech.release_calls == 21
+    assert not mech.claimed
+
+
+# ---------------------------------------------------------------------------
+# MOR-3391 part 1b round 2 — a discovery timeout inside the busy loop is a
+# busy pass
+# ---------------------------------------------------------------------------
+
+
+async def test_discovery_timeout_after_busy_is_a_busy_pass_then_connects(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-3391 round 2 (bench second run): busy, a retry whose discovery
+    times out, then a grant.
+
+    The mid-loop discovery timeout counts as one more busy pass — same
+    30 s cadence, one status line naming its kind — instead of exiting on
+    the discovery error, so the later attempt connects.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    mech.queue_busy_reject()
+    mech.queue_discovery_timeout()
+    mech.queue_ok()
+
+    with caplog.at_level("WARNING", logger="rigplane.runtime.session_lifecycle"):
+        await lc.connect()
+
+    assert lc.state is LifecycleState.CONNECTED
+    assert mech.connect_calls == 3
+    # The granted attempt holds its session: only the two failed attempts
+    # released.
+    assert mech.release_calls == 2
+    busy_lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "rigplane.runtime.session_lifecycle"
+        and "Radio session busy" in rec.getMessage()
+    ]
+    discovery_lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "rigplane.runtime.session_lifecycle"
+        and "discovery" in rec.getMessage().lower()
+    ]
+    assert len(busy_lines) == 1
+    assert len(discovery_lines) == 1
+    assert "attempt 1" in busy_lines[0]
+    assert "attempt 2" in discovery_lines[0]
+    assert "fresh login" not in discovery_lines[0]
+
+
+async def test_discovery_timeouts_until_threshold_stop_with_busy_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 round 2: busy, then unanswered discoveries until the
+    threshold attempt stops with the busy reason — never the discovery
+    message.  A hold that still answers nothing at the threshold proves a
+    live session either way.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    mech.queue_busy_reject()
+    mech.queue_discovery_timeout()
+    mech.queue_discovery_timeout()
+    mech.queue_discovery_timeout()
+
+    with pytest.raises(ConnectionError) as excinfo:
+        await lc.connect()
+
+    message = str(excinfo.value)
+    assert "another client holds the session" in message
+    assert "Check for another active radio client before retrying." in message
+    assert "this computer" not in message
+    assert "runs here" not in message
+    assert "stop one of them" not in message
+    assert "did not respond to discovery" not in message
+    # Attempts start at +0/+30/+60/+90 s; the fourth is at the threshold.
+    assert mech.connect_calls == 4
+    assert mech.release_calls == 4
+    assert not mech.claimed
+    assert lc.state is LifecycleState.DISCONNECTED
+
+
+async def test_discovery_timeout_before_any_busy_stays_fatal(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-3391 part 1b(c) (bench first run): silent first discoveries
+    retry twice, then stay fatal with today's message.
+
+    Three unanswered first-connect discoveries — before any busy reject —
+    raise the discovery error (never the busy reason) after exactly three
+    attempts, one log line per attempt, about two cooldowns apart.  A radio
+    that is off looks the same and fails here, only slower.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    for _ in range(3):
+        mech.queue_discovery_timeout()
+
+    with pytest.raises(TimeoutError, match="did not respond to discovery"):
+        await lc.connect()
+
+    message_lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "rigplane.runtime.session_lifecycle"
+    ]
+    assert mech.connect_calls == 3
+    assert [f"discovery attempt {n}/3 got no answer" for n in (1, 2, 3)] == [
+        line for line in message_lines if line.startswith("discovery attempt")
+    ]
+    assert not any("busy" in line.lower() for line in message_lines)
+    assert clock.now - 1_000.0 == pytest.approx(2 * 30.0)
+    assert lc.state is LifecycleState.DISCONNECTED
+
+
+async def test_non_discovery_timeout_inside_loop_stays_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 round 2 scope pin: only the discovery timeout converts.
+
+    A timeout from a later stage (here a login-response wait, which runs
+    after discovery already answered) stays fatal even after a busy
+    reject — the busy-pass conversion covers discovery attempts, which
+    sent no login, not attempts that already spoke to the radio.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    mech.queue_busy_reject()
+    mech.queue_exception(TimeoutError("login response timed out"))
+
+    with pytest.raises(TimeoutError, match="login response timed out"):
+        await lc.connect()
+
+    assert mech.connect_calls == 2
+
+
+async def test_discovery_timeout_after_a_clean_connect_stays_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3391 round 2: reconnects keep today's behaviour.
+
+    A discovery timeout on a later connect — with no busy reject on this
+    connect — is fatal even though an earlier connect succeeded.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    mech.queue_ok()
+    await lc.connect()
+    await lc.disconnect()
+    mech.queue_discovery_timeout()
+
+    with pytest.raises(TimeoutError, match="did not respond to discovery"):
+        await lc.connect()
+
+    assert lc.state is LifecycleState.DISCONNECTED
+
+
+# ---------------------------------------------------------------------------
+# MOR-3391 part 1b(c) — a silent first discovery retries twice, then gives up
+# ---------------------------------------------------------------------------
+
+
+async def test_silent_first_discovery_then_grant_connects(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-3391 part 1b(c) (bench second run): a silent first discovery
+    retries once and connects.
+
+    The unanswered first attempt logs exactly one ``discovery attempt 1/3
+    got no answer`` line and waits out one busy-cadence cooldown; the
+    granted retry connects as today.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    mech.queue_discovery_timeout()
+    mech.queue_ok()
+
+    with caplog.at_level("WARNING", logger="rigplane.runtime.session_lifecycle"):
+        await lc.connect()
+
+    assert lc.state is LifecycleState.CONNECTED
+    assert mech.connect_calls == 2
+    lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "rigplane.runtime.session_lifecycle"
+    ]
+    assert lines.count("discovery attempt 1/3 got no answer") == 1
+    assert not any(
+        line.startswith("discovery attempt")
+        and line != "discovery attempt 1/3 got no answer"
+        for line in lines
+    )
+    assert not any("busy" in line.lower() for line in lines)
+    assert clock.now - 1_000.0 == pytest.approx(30.0)
+
+
+async def test_silent_first_discovery_then_busy_uses_busy_rules(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-3391 part 1b(c): a busy reject after a silent discovery takes
+    over under the #4178 rules.
+
+    One silent discovery, then busy rejects until the live-holder stop:
+    the loop stops with "radio busy: another client holds the session"
+    (never the discovery message), and the single silent attempt logged
+    its one line.
+    """
+    clock = _VirtualClock()
+    lc, mech, _events = _busy_lifecycle(clock, monkeypatch)
+    mech.queue_discovery_timeout()
+    for _ in range(4):
+        mech.queue_busy_reject()
+
+    with pytest.raises(ConnectionError) as excinfo:
+        await lc.connect()
+
+    message = str(excinfo.value)
+    assert "another client holds the session" in message
+    assert "did not respond to discovery" not in message
+    # Silent attempt at +0, busy passes at +30/+60/+90, stop at +120.
+    assert mech.connect_calls == 5
+    lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "rigplane.runtime.session_lifecycle"
+    ]
+    assert lines.count("discovery attempt 1/3 got no answer") == 1
+    assert lc.state is LifecycleState.DISCONNECTED

@@ -1,4 +1,4 @@
-"""Host allowlist and Origin guard contracts (MOR-2880, MOR-2881).
+"""Host allowlist and Origin guard contracts (MOR-2880, MOR-2881, MOR-3108).
 
 Pins the guards of the web server:
 
@@ -7,6 +7,10 @@ Pins the guards of the web server:
 - a same-origin ``Origin`` rule on the four WebSocket upgrades and on
   every state-changing HTTP request (403 on refusal, no loopback
   exception). Read-only ``GET``/``HEAD`` routes admit any ``Origin``.
+- an explicit trusted public Origin allowlist (MOR-3108 b11): the
+  operator's own serialized HTTPS origin behind a reverse proxy with an
+  HTTP/internal upstream, admitted past the same-origin rule without
+  bypassing the Host allowlist or any other guard.
 """
 
 from __future__ import annotations
@@ -459,3 +463,490 @@ async def test_http_read_only_get_foreign_origin_still_admitted() -> None:
         {"origin": "https://evil.example", "host": "127.0.0.1:8470"},
     )
     assert bytes(writer.buffer).startswith(b"HTTP/1.1 200 ")
+
+
+# ---------------------------------------------------------------------------
+# Explicit trusted public Origin (MOR-3108 b11)
+# ---------------------------------------------------------------------------
+
+#: The operator's fictional public HTTPS origin in front of this
+#: HTTP/internal upstream (the reverse-proxy shape).
+_TRUSTED = ("https://station.example",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", WS_PATHS)
+async def test_ws_trusted_origin_admitted_behind_https_proxy(
+    monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    """Opted-in: the browser's public HTTPS Origin is admitted on all
+    four WS upgrades behind the operator's HTTPS reverse proxy over
+    this HTTP upstream (127.0.0.1 raw Host passes the allowlist)."""
+    handlers = _patch_ws_handlers(monkeypatch)
+    srv = _make_srv(trusted_origins=_TRUSTED)
+    writer = _MemoryWriter()
+    await srv._handle_websocket(
+        asyncio.StreamReader(),
+        writer,
+        path,
+        {
+            "sec-websocket-key": GOOD_KEY,
+            "origin": "https://station.example",
+            "host": "127.0.0.1:8080",
+        },
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 101 ")
+    assert sum(factory.call_count for factory in handlers.values()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", WS_PATHS)
+async def test_ws_public_origin_refused_without_trusted_flag(
+    monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    """Default refusal: without --trusted-origin the public Origin is
+    just a foreign Origin."""
+    handlers = _patch_ws_handlers(monkeypatch)
+    srv = _make_srv()
+    writer = _MemoryWriter()
+    await srv._handle_websocket(
+        asyncio.StreamReader(),
+        writer,
+        path,
+        {
+            "sec-websocket-key": GOOD_KEY,
+            "origin": "https://station.example",
+            "host": "127.0.0.1:8080",
+        },
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 403 ")
+    assert sum(factory.call_count for factory in handlers.values()) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://other.example",  # wrong host
+        "http://station.example",  # wrong scheme
+        "https://station.example:8443",  # trusted host, nondefault port
+    ],
+)
+async def test_ws_trusted_origin_mismatch_refused(
+    monkeypatch: pytest.MonkeyPatch, origin: str
+) -> None:
+    handlers = _patch_ws_handlers(monkeypatch)
+    srv = _make_srv(trusted_origins=_TRUSTED)
+    writer = _MemoryWriter()
+    await srv._handle_websocket(
+        asyncio.StreamReader(),
+        writer,
+        "/api/v1/ws",
+        {
+            "sec-websocket-key": GOOD_KEY,
+            "origin": origin,
+            "host": "127.0.0.1:8080",
+        },
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 403 ")
+    assert json.loads(_response_body(writer)) == {
+        "error": "forbidden: origin not allowed"
+    }
+    assert sum(factory.call_count for factory in handlers.values()) == 0
+
+
+@pytest.mark.asyncio
+async def test_ws_trusted_origin_case_and_default_port_normalized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The trusted comparison is the one normalized place: scheme/host
+    case and the default port (443) canonicalize, so an explicitly
+    written default port and uppercase host still match."""
+    handlers = _patch_ws_handlers(monkeypatch)
+    srv = _make_srv(trusted_origins=_TRUSTED)
+    writer = _MemoryWriter()
+    await srv._handle_websocket(
+        asyncio.StreamReader(),
+        writer,
+        "/api/v1/ws",
+        {
+            "sec-websocket-key": GOOD_KEY,
+            "origin": "HTTPS://STATION.example:443",
+            "host": "127.0.0.1:8080",
+        },
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 101 ")
+    assert sum(factory.call_count for factory in handlers.values()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://station.example:99999",  # out-of-range port: ValueError, fail closed
+        "https://station.example/",  # path (trailing slash)
+        "https://station.example?q=1",  # query
+        "https://station.example#frag",  # fragment
+        "https://user@station.example",  # userinfo
+        "null",  # opaque origin
+    ],
+)
+async def test_ws_malformed_trusted_shape_request_origin_fail_closed(
+    monkeypatch: pytest.MonkeyPatch, origin: str
+) -> None:
+    """A malformed request Origin fails closed even though the trusted
+    host itself is configured — including the ValueError paths."""
+    handlers = _patch_ws_handlers(monkeypatch)
+    srv = _make_srv(trusted_origins=_TRUSTED)
+    writer = _MemoryWriter()
+    await srv._handle_websocket(
+        asyncio.StreamReader(),
+        writer,
+        "/api/v1/ws",
+        {
+            "sec-websocket-key": GOOD_KEY,
+            "origin": origin,
+            "host": "127.0.0.1:8080",
+        },
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 403 ")
+    assert sum(factory.call_count for factory in handlers.values()) == 0
+
+
+@pytest.mark.asyncio
+async def test_ws_trusted_origin_does_not_bypass_host_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A trusted Origin with a foreign raw Host is 421: the allowlist
+    never bypasses the Host guard."""
+    handlers = _patch_ws_handlers(monkeypatch)
+    srv = _make_srv(trusted_origins=_TRUSTED)
+    writer = _MemoryWriter()
+    await srv._handle_websocket(
+        asyncio.StreamReader(),
+        writer,
+        "/api/v1/ws",
+        {
+            "sec-websocket-key": GOOD_KEY,
+            "origin": "https://station.example",
+            "host": "evil.example",
+        },
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 421 ")
+    assert json.loads(_response_body(writer)) == MISDIRECTED
+    assert sum(factory.call_count for factory in handlers.values()) == 0
+
+
+@pytest.mark.asyncio
+async def test_ws_trusted_origin_requires_present_raw_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The trusted branch requires a present raw Host: a missing Host
+    header (admitted by the Host guard) still refuses the upgrade."""
+    handlers = _patch_ws_handlers(monkeypatch)
+    srv = _make_srv(trusted_origins=_TRUSTED)
+    writer = _MemoryWriter()
+    await srv._handle_websocket(
+        asyncio.StreamReader(),
+        writer,
+        "/api/v1/ws",
+        {"sec-websocket-key": GOOD_KEY, "origin": "https://station.example"},
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 403 ")
+    assert sum(factory.call_count for factory in handlers.values()) == 0
+
+
+@pytest.mark.asyncio
+async def test_ws_forwarded_headers_alone_never_admit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No trust from Forwarded/X-Forwarded-*: a foreign Origin stays
+    refused no matter what the proxy-metadata headers claim."""
+    handlers = _patch_ws_handlers(monkeypatch)
+    srv = _make_srv(trusted_origins=_TRUSTED)
+    writer = _MemoryWriter()
+    await srv._handle_websocket(
+        asyncio.StreamReader(),
+        writer,
+        "/api/v1/ws",
+        {
+            "sec-websocket-key": GOOD_KEY,
+            "origin": "https://evil.example",
+            "host": "127.0.0.1:8080",
+            "x-forwarded-host": "station.example",
+            "x-forwarded-proto": "https",
+            "forwarded": "for=203.0.113.9;host=station.example;proto=https",
+        },
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 403 ")
+    assert sum(factory.call_count for factory in handlers.values()) == 0
+
+
+@pytest.mark.asyncio
+async def test_http_trusted_origin_state_changing_admitted() -> None:
+    """Opted-in: POST with the trusted public Origin reaches the route
+    handler (503 no_radio, not 403/421)."""
+    srv = _make_srv(trusted_origins=_TRUSTED)
+    writer = _MemoryWriter()
+    await srv._handle_http(
+        writer,
+        "POST",
+        "/api/v1/commands",
+        {"origin": "https://station.example", "host": "127.0.0.1:8080"},
+    )
+    assert bytes(writer.buffer).startswith(_HANDLER_REACHED_STATUS_LINE)
+
+
+@pytest.mark.asyncio
+async def test_http_trusted_origin_clearcache_admitted() -> None:
+    """GET /clearcache with the trusted public Origin still clears."""
+    srv = _make_srv(trusted_origins=_TRUSTED)
+    writer = _MemoryWriter()
+    await srv._handle_http(
+        writer,
+        "GET",
+        "/clearcache",
+        {"origin": "https://station.example", "host": "127.0.0.1:8080"},
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 200 ")
+
+
+@pytest.mark.asyncio
+async def test_http_public_origin_refused_without_trusted_flag() -> None:
+    """Default refusal: the same POST without the flag is 403."""
+    srv = _make_srv()
+    writer = _MemoryWriter()
+    await srv._handle_http(
+        writer,
+        "POST",
+        "/api/v1/commands",
+        {"origin": "https://station.example", "host": "127.0.0.1:8080"},
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 403 ")
+    assert json.loads(_response_body(writer)) == {
+        "error": "forbidden: origin not allowed"
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://other.example",
+        "http://station.example",
+        "https://station.example:8443",
+    ],
+)
+async def test_http_trusted_origin_mismatch_refused(origin: str) -> None:
+    srv = _make_srv(trusted_origins=_TRUSTED)
+    writer = _MemoryWriter()
+    await srv._handle_http(
+        writer,
+        "POST",
+        "/api/v1/commands",
+        {"origin": origin, "host": "127.0.0.1:8080"},
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 403 ")
+    assert json.loads(_response_body(writer)) == {
+        "error": "forbidden: origin not allowed"
+    }
+
+
+@pytest.mark.asyncio
+async def test_http_trusted_origin_does_not_bypass_host_guard() -> None:
+    """A trusted Origin with a foreign raw Host is 421 (Host guard
+    first), never admitted by the allowlist."""
+    srv = _make_srv(trusted_origins=_TRUSTED)
+    writer = _MemoryWriter()
+    await srv._handle_http(
+        writer,
+        "POST",
+        "/api/v1/commands",
+        {"origin": "https://station.example", "host": "evil.example"},
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 421 ")
+    assert json.loads(_response_body(writer)) == MISDIRECTED
+
+
+@pytest.mark.asyncio
+async def test_http_trusted_origin_requires_present_raw_host() -> None:
+    """No Host header: same-origin would refuse anyway, and the trusted
+    branch requires a present raw Host → 403."""
+    srv = _make_srv(trusted_origins=_TRUSTED)
+    writer = _MemoryWriter()
+    await srv._handle_http(
+        writer,
+        "POST",
+        "/api/v1/commands",
+        {"origin": "https://station.example"},
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 403 ")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "proxy_headers",
+    [
+        {"x-forwarded-host": "station.example"},
+        {"x-forwarded-proto": "https"},
+        {
+            "x-forwarded-host": "station.example",
+            "x-forwarded-proto": "https",
+            "forwarded": "for=203.0.113.9;host=station.example;proto=https",
+        },
+    ],
+)
+async def test_http_forwarded_headers_alone_never_admit(
+    proxy_headers: dict[str, str],
+) -> None:
+    """No trust from Forwarded/X-Forwarded-*: a foreign Origin on a
+    state-changing request stays refused."""
+    srv = _make_srv(trusted_origins=_TRUSTED)
+    writer = _MemoryWriter()
+    await srv._handle_http(
+        writer,
+        "POST",
+        "/api/v1/commands",
+        {
+            "origin": "https://evil.example",
+            "host": "127.0.0.1:8080",
+            **proxy_headers,
+        },
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 403 ")
+    assert json.loads(_response_body(writer)) == {
+        "error": "forbidden: origin not allowed"
+    }
+
+
+# ---------------------------------------------------------------------------
+# WebConfig.trusted_origins validation (MOR-3108)
+# ---------------------------------------------------------------------------
+
+_INVALID_TRUSTED_ORIGINS = [
+    None,  # null
+    "",  # empty
+    "https://*.example",  # wildcard
+    "https://*",
+    "https://user:pass@station.example",  # userinfo
+    "https://user@station.example",
+    "https://station.example/",  # path: trailing slash
+    "https://station.example/ui",
+    "https://station.example?q=1",  # query
+    "https://station.example#frag",  # fragment
+    "https://station.example?",
+    "https://station.example#",
+    "\x00https://station.example",
+    "https://station.example\x00",
+    "https://station.example\x7f",
+    "https://station.example:0",
+    "https://station.example%2f",
+    "https://station..example",
+    "https://-station.example",
+    "https://999.999.999.999",
+    "https://[v1.station.example]",
+    "https://prefix[::1]",
+    "https://[::1]suffix",
+    "https://[::1]suffix:443",
+    " https://station.example",  # leading whitespace
+    "https://station.example ",  # trailing whitespace
+    "https://station.example\t",
+    "https://station.example:99999",  # out-of-range port
+    "https://station.example:abc",  # non-numeric port
+    "https://station.example:",  # empty port
+    "ftp://station.example",  # scheme
+    "//station.example",  # no scheme
+    "https://",  # empty host
+    "https://:443",  # empty host
+]
+
+
+@pytest.mark.parametrize("bad", _INVALID_TRUSTED_ORIGINS)
+def test_webconfig_rejects_invalid_trusted_origins_before_serving(
+    bad: object,
+) -> None:
+    """Invalid configuration fails at construction, before serving."""
+    with pytest.raises(ValueError):
+        WebConfig(trusted_origins=(bad,))  # type: ignore[arg-type]
+
+
+def test_webconfig_trusted_origins_default_empty_tuple() -> None:
+    assert WebConfig().trusted_origins == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "origin",
+    (
+        "https://[v1.station.example]",
+        "https://prefix[::1]",
+        "https://[::1]suffix",
+        "https://[::1]suffix:443",
+    ),
+)
+async def test_malformed_bracket_authority_is_not_a_trusted_origin(
+    monkeypatch: pytest.MonkeyPatch, origin: str
+) -> None:
+    srv = _make_srv(trusted_origins=("https://v1.station.example", "https://[::1]"))
+    handlers = _patch_ws_handlers(monkeypatch)
+    writer = _MemoryWriter()
+    await srv._handle_websocket(
+        asyncio.StreamReader(),
+        writer,
+        "/api/v1/ws",
+        {"sec-websocket-key": GOOD_KEY, "origin": origin, "host": "127.0.0.1:8080"},
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 403 ")
+    assert sum(factory.call_count for factory in handlers.values()) == 0
+    http_writer = _MemoryWriter()
+    await srv._handle_http(
+        http_writer,
+        "POST",
+        "/api/v1/commands",
+        {"origin": origin, "host": "127.0.0.1:8080"},
+    )
+    assert bytes(http_writer.buffer).startswith(b"HTTP/1.1 403 ")
+
+
+@pytest.mark.asyncio
+async def test_valid_ipv6_trusted_origin_remains_admitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    srv = _make_srv(trusted_origins=("https://[::1]",))
+    handlers = _patch_ws_handlers(monkeypatch)
+    writer = _MemoryWriter()
+    await srv._handle_websocket(
+        asyncio.StreamReader(),
+        writer,
+        "/api/v1/ws",
+        {
+            "sec-websocket-key": GOOD_KEY,
+            "origin": "https://[::1]:443",
+            "host": "127.0.0.1:8080",
+        },
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 101 ")
+    assert sum(factory.call_count for factory in handlers.values()) == 1
+    http_writer = _MemoryWriter()
+    await srv._handle_http(
+        http_writer,
+        "GET",
+        "/clearcache",
+        {"origin": "https://[::1]:443", "host": "127.0.0.1:8080"},
+    )
+    assert bytes(http_writer.buffer).startswith(b"HTTP/1.1 200 ")
+
+
+def test_webconfig_accepts_valid_trusted_origins_verbatim() -> None:
+    """Valid origins are stored verbatim; normalization happens only in
+    the comparison, not in the configuration."""
+    cfg = WebConfig(
+        trusted_origins=(
+            "https://Station.Example",
+            "http://127.0.0.1:8080",
+        )
+    )
+    assert cfg.trusted_origins == (
+        "https://Station.Example",
+        "http://127.0.0.1:8080",
+    )

@@ -1,0 +1,549 @@
+"""Malformed WS command parameters are client errors, not programmer errors.
+
+Since #4077, ``ControlHandler._send_command_failure`` logs
+``AttributeError``/``TypeError``/``NameError`` at ERROR with a traceback —
+that class is reserved for genuine bugs in the command path. Malformed
+client frames must instead fail as client errors: exactly one failure reply
+with error ``command_failed`` whose message names the offending field (or
+says ``params must be an object``, the same wording the HTTP single-command
+ingress in ``web/server.py: WebServer._handle_http_single_command`` uses),
+one WARNING record, and no ERROR record.
+
+Covered here: ``params: null`` behaves exactly like an omitted ``params``
+(``ControlHandler._handle_command`` treats it as ``{}``); any other
+non-object ``params`` (a list, a string) is refused at that entry, before
+rate limiting and coalescing; ``set_freq`` with a ``freq`` of the wrong
+JSON type is refused by ``core/command_service.py:
+command_intent_from_request``; ``set_att``/``set_af_level`` with
+``receiver: null`` are refused by ``core/command_dispatch.py:
+_bind_attenuator``/``_bind_level``; a non-string command ``name`` gets the
+``unknown_command`` reply and the session continues — also when the same
+frame carries a non-object ``params`` (the name check runs before the
+params refusal, so an unhashable name never reaches ``command_descriptor``
+inside the failure sender); ``ptt_off`` with ``params: null`` is admitted
+past ingress validation. Legacy executor-side commands whose params are
+coerced inside the command-service executor (``set_band``, ``set_nr_level``,
+``set_data_mode``, ``set_rit_frequency``, ``set_key_speed``,
+``set_scope_span``) fail the same way: one ``command_failed`` reply naming
+the field, one WARNING record, no ERROR record, and nothing queued. The
+control row pins that a genuine programmer error — an executor raising
+``AttributeError`` — is still logged at ERROR. Infinite JSON numbers
+(``1e400`` decodes to ``float("inf")``) for an integer param are refused
+the same way as any other bad integer param: ``_int_param`` raises the
+field-naming ``ValueError`` (unit row), the control WebSocket answers the
+client-error reply with nothing enqueued, and HTTP ``POST
+/api/v1/commands`` answers 400 ``invalid_request`` with nothing enqueued.
+An infinite ``receiver_count`` (``set_vfo``/``select_vfo``) keeps the
+``_receiver_count_value`` "treat as absent" behaviour instead of raising.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from rigplane.core.command_dispatch import _int_param
+from rigplane.core.command_service import (
+    CommandExecutionResult,
+    CommandService,
+    _receiver_count_value,
+)
+from rigplane.core.radio_protocol import Radio
+from rigplane.core.state_pipeline_contracts import CommandIntent
+from rigplane.core.state_store import StateStore
+from rigplane.profiles import resolve_radio_profile
+from rigplane.web.handlers.control import ControlHandler
+from rigplane.web.server import WebConfig, WebServer
+
+_CONTROL_LOGGER = "rigplane.web.handlers.control"
+
+
+class _RecordingWebSocket:
+    """Fake websocket that records decoded ``send_text`` payloads."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+
+    async def send_text(self, payload: str) -> None:
+        self.sent.append(json.loads(payload))
+
+
+def _handler() -> tuple[ControlHandler, _RecordingWebSocket]:
+    ws = _RecordingWebSocket()
+    radio = SimpleNamespace(connected=True, capabilities={"nb"})
+    handler = ControlHandler(
+        ws,  # type: ignore[arg-type]
+        radio,
+        "9.9.9",
+        "IC-7610",
+        server=SimpleNamespace(),
+    )
+    return handler, ws
+
+
+def _handler_with_queue() -> tuple[ControlHandler, _RecordingWebSocket]:
+    """Handler whose server exposes a command queue, so descriptor-bound
+    commands (``set_att``, ``set_af_level``, ...) reach their bind."""
+    ws = _RecordingWebSocket()
+    radio = SimpleNamespace(connected=True, capabilities={"nb"})
+    handler = ControlHandler(
+        ws,  # type: ignore[arg-type]
+        radio,
+        "9.9.9",
+        "IC-7610",
+        server=SimpleNamespace(command_queue=SimpleNamespace()),
+    )
+    return handler, ws
+
+
+class _RecordingQueue:
+    """Fake command queue that records every enqueued command."""
+
+    def __init__(self) -> None:
+        self.commands: list[Any] = []
+
+    def put(self, command: Any, **_: Any) -> None:
+        self.commands.append(command)
+
+    def put_ordered(self, command: Any, **_: Any) -> None:
+        self.commands.append(command)
+
+
+def _handler_with_legacy_queue() -> tuple[
+    ControlHandler, _RecordingWebSocket, _RecordingQueue
+]:
+    """Handler whose server exposes a command queue, so legacy commands
+    (``set_band``, ``set_nr_level``, ...) reach their executor-side
+    coercion in the ``_enqueue_rc_*`` helpers."""
+    ws = _RecordingWebSocket()
+    queue = _RecordingQueue()
+    radio = SimpleNamespace(connected=True, capabilities={"nb"})
+    handler = ControlHandler(
+        ws,  # type: ignore[arg-type]
+        radio,
+        "9.9.9",
+        "IC-7610",
+        server=SimpleNamespace(command_queue=queue),
+    )
+    return handler, ws, queue
+
+
+@dataclass(slots=True)
+class _RaisingExecutor:
+    """Typed CommandService executor that fails with a fixed exception."""
+
+    exc: Exception
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        raise self.exc
+
+
+def _assert_single_client_failure(
+    ws: _RecordingWebSocket,
+    cmd_id: Any,
+    expected_message_part: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    assert len(ws.sent) == 1
+    reply = ws.sent[0]
+    assert reply["type"] == "response"
+    assert reply["id"] == cmd_id
+    assert reply["ok"] is False
+    assert reply["error"] == "command_failed"
+    assert expected_message_part in reply["message"]
+
+    records = [record for record in caplog.records if record.name == _CONTROL_LOGGER]
+    errors = [record for record in records if record.levelno >= logging.ERROR]
+    warnings = [record for record in records if record.levelno == logging.WARNING]
+    assert errors == []
+    assert len(warnings) == 1
+    assert warnings[0].exc_info is None
+
+
+@pytest.mark.parametrize(
+    ("frame", "expected_message_part"),
+    [
+        pytest.param(
+            {"id": "c1", "name": "set_freq", "params": None},
+            # ``params: null`` means ``{}``; the refusal is the missing freq.
+            "freq",
+            id="params-null",
+        ),
+        pytest.param(
+            {"id": "c2", "name": "set_freq", "params": []},
+            "params must be an object",
+            id="params-list",
+        ),
+        pytest.param(
+            {"id": "c2b", "name": "set_freq", "params": ""},
+            "params must be an object",
+            id="params-string",
+        ),
+        pytest.param(
+            {"id": "c3", "name": "set_freq", "params": {"freq": None}},
+            "freq",
+            id="set_freq-freq-null",
+        ),
+        pytest.param(
+            {"id": "c4", "name": "set_freq", "params": {"freq": "abc"}},
+            "freq",
+            id="set_freq-freq-string",
+        ),
+        pytest.param(
+            {"id": "c5", "name": "set_freq", "params": {"freq": {}}},
+            "freq",
+            id="set_freq-freq-object",
+        ),
+    ],
+)
+async def test_malformed_command_params_fail_as_client_error(
+    frame: dict[str, Any],
+    expected_message_part: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    handler, ws = _handler()
+    with caplog.at_level(logging.WARNING, logger=_CONTROL_LOGGER):
+        await handler._handle_command(frame)  # noqa: SLF001
+
+    _assert_single_client_failure(ws, frame["id"], expected_message_part, caplog)
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        pytest.param(
+            {"id": "c6", "name": "set_att", "params": {"db": 20, "receiver": None}},
+            id="set_att-receiver-null",
+        ),
+        pytest.param(
+            {
+                "id": "c7",
+                "name": "set_af_level",
+                "params": {"level": 10, "receiver": None},
+            },
+            id="set_af_level-receiver-null",
+        ),
+    ],
+)
+async def test_null_receiver_in_descriptor_bound_commands_fails_as_client_error(
+    frame: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    handler, ws = _handler_with_queue()
+    with caplog.at_level(logging.WARNING, logger=_CONTROL_LOGGER):
+        await handler._handle_command(frame)  # noqa: SLF001
+
+    _assert_single_client_failure(ws, frame["id"], "receiver", caplog)
+
+
+@pytest.mark.parametrize("name", [42, None], ids=["int-name", "null-name"])
+async def test_non_string_command_name_gets_unknown_command(
+    name: Any,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    handler, ws = _handler()
+    with caplog.at_level(logging.WARNING, logger=_CONTROL_LOGGER):
+        # Returns normally: the malformed frame must not end the session.
+        await handler._handle_command({"id": "c8", "name": name, "params": {}})  # noqa: SLF001
+
+    assert ws.sent == [
+        {
+            "type": "response",
+            "id": "c8",
+            "ok": False,
+            "error": "unknown_command",
+            "message": f"unknown command: {name!r}",
+        }
+    ]
+    records = [record for record in caplog.records if record.name == _CONTROL_LOGGER]
+    errors = [record for record in records if record.levelno >= logging.ERROR]
+    warnings = [record for record in records if record.levelno == logging.WARNING]
+    assert errors == []
+    assert len(warnings) == 1
+
+
+@pytest.mark.parametrize(
+    ("frame", "expected_message_part"),
+    [
+        pytest.param(
+            {"id": "e1", "name": "set_band", "params": {"band": None}},
+            "band",
+            id="set_band-band-null",
+        ),
+        pytest.param(
+            {"id": "e2", "name": "set_nr_level", "params": {"level": None}},
+            "level",
+            id="set_nr_level-level-null",
+        ),
+        pytest.param(
+            {"id": "e3", "name": "set_data_mode", "params": {"mode": {}}},
+            "mode",
+            id="set_data_mode-mode-object",
+        ),
+        pytest.param(
+            # ``set_vfo_freq``'s ``freq`` is never coerced by a bare int()
+            # (it rides the ordered-queue identity machinery), and
+            # ``set_freq``'s executor site is pre-validated at ingress, so
+            # the reachable executor-side ``freq`` coercion is
+            # ``set_rit_frequency``.
+            {"id": "e4", "name": "set_rit_frequency", "params": {"freq": None}},
+            "freq",
+            id="set_rit_frequency-freq-null",
+        ),
+        pytest.param(
+            {"id": "e5", "name": "set_key_speed", "params": {"speed": "abc"}},
+            "speed",
+            id="set_key_speed-speed-non-numeric",
+        ),
+        pytest.param(
+            {"id": "e6", "name": "set_scope_span", "params": {"span": None}},
+            "span",
+            id="set_scope_span-span-null",
+        ),
+    ],
+)
+async def test_executor_side_param_coercion_fails_as_client_error(
+    frame: dict[str, Any],
+    expected_message_part: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    handler, ws, queue = _handler_with_legacy_queue()
+    with caplog.at_level(logging.WARNING, logger=_CONTROL_LOGGER):
+        await handler._handle_command(frame)  # noqa: SLF001
+
+    _assert_single_client_failure(ws, frame["id"], expected_message_part, caplog)
+    assert queue.commands == []
+
+
+async def test_list_name_with_non_object_params_gets_unknown_command(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The name check runs before the params refusal.
+
+    A list ``name`` alongside a non-object ``params`` used to reach the
+    params refusal first, where ``command_descriptor`` raised TypeError
+    (unhashable key) and ended the control session. It must answer
+    ``unknown_command`` and keep the session alive instead.
+    """
+    handler, ws = _handler()
+    with caplog.at_level(logging.WARNING, logger=_CONTROL_LOGGER):
+        # Returns normally: the malformed frame must not end the session.
+        await handler._handle_command(  # noqa: SLF001
+            {"id": "e7", "name": ["set_freq"], "params": []}
+        )
+
+    assert ws.sent == [
+        {
+            "type": "response",
+            "id": "e7",
+            "ok": False,
+            "error": "unknown_command",
+            "message": "unknown command: ['set_freq']",
+        }
+    ]
+    records = [record for record in caplog.records if record.name == _CONTROL_LOGGER]
+    errors = [record for record in records if record.levelno >= logging.ERROR]
+    warnings = [record for record in records if record.levelno == logging.WARNING]
+    assert errors == []
+    assert len(warnings) == 1
+
+
+async def test_ptt_off_with_null_params_is_not_refused_as_malformed() -> None:
+    """``params: null`` spells "no params"; the frame reaches the managed-PTT path."""
+    handler, ws = _handler()
+    await handler._handle_command({"id": "c9", "name": "ptt_off", "params": None})  # noqa: SLF001
+
+    assert len(ws.sent) == 1
+    reply = ws.sent[0]
+    assert reply["ok"] is False
+    assert "params must be an object" not in reply["message"]
+    # This fixture has no managed transmit authority, so the refusal proves
+    # the frame was admitted past ingress validation into the PTT path.
+    assert reply["error"] == "radio_nak"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(1e400, id="positive-1e400"),
+        pytest.param(float("inf"), id="positive-inf"),
+        pytest.param(-1e400, id="negative-1e400"),
+        pytest.param("abc", id="non-numeric-string"),
+    ],
+)
+def test_int_param_rejects_non_finite_floats_like_non_numeric_strings(
+    value: Any,
+) -> None:
+    """``1e400`` decodes to ``float("inf")``; ``int()`` of it raises
+    ``OverflowError``, not ``ValueError``. It must surface as the same
+    field-naming validation error as any other bad integer param."""
+    with pytest.raises(ValueError, match="receiver must be an integer"):
+        _int_param(value, "receiver")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(1e400, id="positive-1e400"),
+        pytest.param(float("inf"), id="positive-inf"),
+        pytest.param(-1e400, id="negative-1e400"),
+    ],
+)
+def test_infinite_receiver_count_is_treated_as_absent(value: Any) -> None:
+    """An infinite ``receiver_count`` keeps the helper's existing "treat
+    as absent" behaviour (``None``), like any other non-convertible
+    value — ``set_vfo``/``select_vfo`` then fall back to the
+    single-receiver derivation instead of raising ``OverflowError``."""
+    assert _receiver_count_value({}) is None
+    assert _receiver_count_value({"receiver_count": value}) is None
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        pytest.param(
+            {
+                "id": "w1",
+                "name": "set_att",
+                "params": {"db": 20, "receiver": float("inf")},
+            },
+            id="set_att-receiver-inf",
+        ),
+        pytest.param(
+            {
+                "id": "w2",
+                "name": "set_af_level",
+                "params": {"level": 10, "receiver": float("inf")},
+            },
+            id="set_af_level-receiver-inf",
+        ),
+    ],
+)
+async def test_infinite_receiver_in_descriptor_bound_commands_fails_as_client_error(
+    frame: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An infinite ``receiver`` is a client error naming the field, and
+    nothing is enqueued — the same reply shape as ``receiver: null``."""
+    handler, ws, queue = _handler_with_legacy_queue()
+    with caplog.at_level(logging.WARNING, logger=_CONTROL_LOGGER):
+        await handler._handle_command(frame)  # noqa: SLF001
+
+    _assert_single_client_failure(ws, frame["id"], "receiver", caplog)
+    assert queue.commands == []
+
+
+class _FakeHttpWriter:
+    """Minimal writer capturing the raw HTTP response bytes."""
+
+    def __init__(self) -> None:
+        self.buffer = bytearray()
+        self.closed = False
+
+    def write(self, data: bytes) -> None:
+        self.buffer.extend(data)
+
+    async def drain(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        return None
+
+    def get_extra_info(self, name: str, default: Any = None) -> Any:
+        if name == "peername":
+            return ("127.0.0.1", 55555)
+        return default
+
+    @property
+    def response_status(self) -> int:
+        line = self.buffer.split(b"\r\n", 1)[0]
+        return int(line.split(b" ")[1])
+
+    @property
+    def response_body(self) -> dict[str, Any]:
+        body = self.buffer.split(b"\r\n\r\n", 1)[1]
+        return json.loads(body) if body else {}
+
+
+async def _post_raw_body(srv: WebServer, path: str, raw_body: str) -> _FakeHttpWriter:
+    """POST a body verbatim so a ``1e400`` literal survives to ``json.loads``."""
+    body = raw_body.encode()
+    writer = _FakeHttpWriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(body)
+    reader.feed_eof()
+    await srv._handle_http(  # noqa: SLF001
+        writer,  # type: ignore[arg-type]
+        "POST",
+        path,
+        headers={"content-length": str(len(body))},
+        reader=reader,
+    )
+    return writer
+
+
+async def test_http_single_command_rejects_infinite_integer_param() -> None:
+    """``POST /api/v1/commands`` with ``receiver: 1e400`` answers 400
+    ``invalid_request`` naming the field — the same as any other bad
+    integer param — and enqueues nothing."""
+    profile = resolve_radio_profile(model="IC-9700")
+    radio = MagicMock(spec=Radio)
+    radio.model = profile.model
+    radio.capabilities = set(profile.capabilities)
+    radio.send_civ = AsyncMock()
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+
+    writer = await _post_raw_body(
+        srv,
+        "/api/v1/commands",
+        '{"id": "h1", "name": "set_att", "params": {"db": 20, "receiver": 1e400}}',
+    )
+
+    assert writer.response_status == 400
+    assert writer.response_body["error"] == "invalid_request"
+    assert "receiver must be an integer" in writer.response_body["message"]
+    assert srv.command_queue.drain() == []
+
+
+async def test_programmer_error_from_executor_still_logs_an_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Control row: a genuine bug (executor raising AttributeError) is ERROR."""
+    ws = _RecordingWebSocket()
+    handler = ControlHandler.__new__(ControlHandler)
+    handler._ws = ws  # noqa: SLF001
+    handler._radio = SimpleNamespace()  # noqa: SLF001
+    handler._server = None  # noqa: SLF001
+    handler._session_id = "test-session"  # noqa: SLF001
+    handler._managed_tx_authority = None  # noqa: SLF001
+    handler._command_service = CommandService(  # noqa: SLF001
+        executor=_RaisingExecutor(AttributeError("boom")),
+        state_store=StateStore(),
+    )
+
+    with caplog.at_level(logging.WARNING, logger=_CONTROL_LOGGER):
+        await handler._dispatch_command(  # noqa: SLF001
+            "cmd-1", "set_freq", {"freq": 14_074_000}
+        )
+
+    assert len(ws.sent) == 1
+    assert ws.sent[0]["ok"] is False
+    assert ws.sent[0]["error"] == "command_failed"
+    errors = [
+        record
+        for record in caplog.records
+        if record.name == _CONTROL_LOGGER and record.levelno == logging.ERROR
+    ]
+    assert len(errors) == 1
+    assert errors[0].exc_info is not None
+    assert errors[0].exc_info[0] is AttributeError
