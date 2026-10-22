@@ -119,6 +119,26 @@ def test_mode_families_does_not_shift_positional_arguments(cls: type) -> None:
     assert positional[-1] == "expected_identity_ids"
 
 
+@pytest.mark.parametrize(
+    "mode_list",
+    [
+        pytest.param('"CW-R"', id="scalar-string"),
+        pytest.param('["CW", 1]', id="non-string-entry"),
+        pytest.param("{ a = 1 }", id="table"),
+    ],
+)
+def test_modes_list_must_be_a_list_of_strings(tmp_path: Path, mode_list: str) -> None:
+    """Pro-gate P2: a scalar ``list = "CW-R"`` passed (substring match of
+    family member ``CW``) and published modes ``["C", "W", "-", "R"]``."""
+    path = tmp_path / "family_test.toml"
+    text = _MINIMAL_TOML.format(modes_extra='families = { cw = ["CW"] }').replace(
+        'list = ["USB", "LSB", "CW", "CW-R", "FM"]', f"list = {mode_list}"
+    )
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(RigLoadError, match=r"family_test\.toml: \[modes\]\.list"):
+        load_rig(path)
+
+
 # ── Capability endpoints ─────────────────────────────────────────
 
 
