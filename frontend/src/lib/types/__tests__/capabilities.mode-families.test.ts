@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { validateCapabilities } from '../capabilities';
 import ftx1CapabilitiesJson from '$lib/runtime/adapters/__tests__/fixtures/ftx1-capabilities.json';
+import stateWireGoldens from '$lib/transport/__tests__/fixtures/state-wire-goldens.json';
 
 // MOR-3679: the profile names its CW modes once (`[modes] families`) and
 // the server publishes them as `modeFamilies`; clients must not guess.
@@ -76,6 +77,13 @@ describe('modeFamilies capability field (MOR-3679)', () => {
   it('accepts a family name this client does not know (newer server)', () => {
     const payload = { ...base, modeFamilies: { cw: ['CW'], data: ['USB'] } };
     expect(validateCapabilities(payload).modeFamilies?.cw).toEqual(['CW']);
+  });
+
+  it('FTX-1 fixture modeFamilies match the server golden', () => {
+    // The fixture is hand-kept; the golden is generated from the server.
+    const golden = (stateWireGoldens as unknown as Record<string, { capabilities: { modeFamilies?: unknown } }>)['FTX-1'];
+    expect(golden.capabilities.modeFamilies).toBeDefined();
+    expect(ftx1CapabilitiesJson.modeFamilies).toEqual(golden.capabilities.modeFamilies);
   });
 
   it('FTX-1 fixture carries the profile CW family CW-U/CW-L', () => {
