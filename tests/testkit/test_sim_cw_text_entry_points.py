@@ -389,3 +389,50 @@ async def test_force_off_stops_the_keyer_memory_send_cw_text_plays(
         assert s.model.keying_memory == {5: "CQ"}
         assert s.model.keyer_play_requests == ((stop[0], 5), stop)
         assert s.sim.ptt is False
+
+
+# ── An unloadable profile on the audio-probe path is a readable error ──
+
+
+@pytest.mark.asyncio
+async def test_cli_audio_probe_reports_an_unloadable_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # `audio probe` resolves the profile registry before create_radio(); a
+    # rigs directory with an incomplete Yaesu [cw_text] enable must answer
+    # like every other CLI path: "Error: <file>: <key> ...", exit 1, and no
+    # probe (dry run: nothing would connect anyway).
+    rigs = _rigs_dir(
+        tmp_path, "[cw_text]\nsupported = true\nmemory_channel = 5", cw_tag=True
+    )
+    monkeypatch.delenv("ICOM_SERIAL_DEVICE", raising=False)
+    monkeypatch.setattr("rigplane.profiles._RIG_DIRS", [rigs])
+    for name in ("_profiles", "_by_normalized", "_by_id", "_by_civ_addr"):
+        monkeypatch.setattr(f"rigplane.profiles.{name}", None)
+    output = tmp_path / "probe.json"
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "--host",
+            "127.0.0.1",
+            "--radio-addr",
+            "0x94",
+            "audio",
+            "probe",
+            "--dry-run",
+            "--output",
+            str(output),
+        ]
+    )
+    _finalize_ptt_args(parser, args)
+    rc = await _run(args)
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert re.search(
+        r"^Error: \S*ftx1\.toml: \[cw_text\]\.max_length is required",
+        captured.err,
+        re.MULTILINE,
+    ), captured.err
+    assert not output.exists()
