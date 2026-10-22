@@ -2574,9 +2574,13 @@ async def _run(args: argparse.Namespace) -> int:
             return 1
     if args.command == "audio" and args.audio_command == "probe":
         return await _cmd_audio_probe(config, args)
+    from rigplane.rig_loader import RigLoadError
+
     try:
         radio = create_radio(config)
-    except ValueError as exc:
+    except (ValueError, RigLoadError) as exc:
+        # A profile that does not load (MOR-3678: e.g. an incomplete
+        # [cw_text] enable) is a readable error naming the file and key.
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
