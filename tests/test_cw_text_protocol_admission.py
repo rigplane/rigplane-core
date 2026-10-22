@@ -230,3 +230,55 @@ def test_declared_absent_keyer_memory_command_does_not_enable(tmp_path: Path) ->
     )
     with pytest.raises(RigLoadError, match=r"yaesu_absent\.toml.*write_keyer_memory"):
         _variant(tmp_path, "yaesu_absent.toml", text)
+
+
+# ── Commands the protocol's backend can execute ──────────────────
+
+
+@pytest.mark.parametrize(
+    ("command", "civ_bytes"),
+    [("send_cw", "[0x17]"), ("write_keyer_memory", "[0x1A, 0x02]")],
+)
+def test_yaesu_enable_needs_cat_commands_not_civ_bytes(
+    tmp_path: Path, command: str, civ_bytes: str
+) -> None:
+    # A CI-V spec in a Yaesu profile is not something YaesuCatRadio can
+    # write: KM would land and KY would never play.
+    text = _ftx1_text("[cw_text]\nsupported = true\nmemory_channel = 5")
+    text = re.sub(
+        rf"^{command}\s*=.*$", f"{command} = {civ_bytes}", text, flags=re.MULTILINE
+    )
+    with pytest.raises(RigLoadError) as excinfo:
+        _variant(tmp_path, "yaesu_civ_spec.toml", text)
+    message = str(excinfo.value)
+    assert "yaesu_civ_spec.toml" in message
+    assert command in message
+
+
+def _civ_with_cat_send_cw(tmp_path: Path, cw_text: str) -> RigConfig:
+    from test_cw_text_capability import _MINIMAL_TOML
+
+    path = tmp_path / "civ_cat_send_cw.toml"
+    path.write_text(
+        _MINIMAL_TOML.format(
+            commands_extra='send_cw = { cat = { write = "KY {text};" } }',
+            cw_text=cw_text,
+        ),
+        encoding="utf-8",
+    )
+    return load_rig(path)
+
+
+def test_civ_profile_with_a_cat_send_cw_is_unsupported(tmp_path: Path) -> None:
+    rig = _civ_with_cat_send_cw(tmp_path, "")
+    assert rig.cw_text.supported is False
+    assert supports_callable(rig.to_profile(), "send_cw_text") is False
+
+
+def test_civ_enable_with_a_cat_send_cw_does_not_load(tmp_path: Path) -> None:
+    with pytest.raises(RigLoadError) as excinfo:
+        _civ_with_cat_send_cw(tmp_path, "[cw_text]\nsupported = true")
+    message = str(excinfo.value)
+    assert "civ_cat_send_cw.toml" in message
+    assert "[cw_text].supported" in message
+    assert "send_cw" in message
