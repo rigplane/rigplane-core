@@ -711,3 +711,56 @@ async def test_managed_cw_abort_the_writer_refuses_leaves_the_send_alone() -> No
     assert radio._cw_text_generation == generation
     await sending
     assert writer.frames == [b"KM5CQ;", b"KY05;"]
+
+
+class _DrainFailsAfterWriter(_RecordingWriter):
+    """A serial writer that accepts one frame, then fails to flush it."""
+
+    def __init__(self, frame: bytes) -> None:
+        super().__init__()
+        self._frame = frame
+
+    async def drain(self) -> None:
+        if self.frames and self.frames[-1] == self._frame:
+            raise OSError("serial port flush failed")
+
+
+@pytest.mark.asyncio
+async def test_managed_cw_abort_the_writer_accepted_ends_the_send() -> None:
+    # The writer took KY00 (it may already be on its way to the radio)
+    # before the flush failed: the stop counts, the in-flight send ends and
+    # its KY never plays.
+    radio = _fenced_radio(None)
+    transport = radio._transport
+    writer = _DrainFailsAfterWriter(b"KY00;")
+    transport._writer = writer
+    transport._reader = object()
+    del transport._raw_write
+    first_drain_started = asyncio.Event()
+    release_first_drain = asyncio.Event()
+    drain_calls = 0
+
+    async def drain(_command: str) -> int:
+        nonlocal drain_calls
+        drain_calls += 1
+        if drain_calls == 1:
+            first_drain_started.set()
+            await release_first_drain.wait()
+        return 0
+
+    transport._drain_responses = drain
+    sending = asyncio.create_task(radio.send_cw_text("CQ"))
+    await first_drain_started.wait()
+    generation = radio._cw_text_generation
+    aborting = asyncio.create_task(
+        radio.actuate(_effect_token(), AbortOperation.STOP_CW, is_current=None)
+    )
+    await asyncio.sleep(0)
+    release_first_drain.set()
+
+    with pytest.raises(CatTransportError, match="serial port flush failed"):
+        await aborting
+    assert radio._cw_text_generation == generation + 1
+    with pytest.raises(CatTransportError, match="no longer current"):
+        await sending
+    assert writer.frames == [b"KM5CQ;", b"KY00;"]

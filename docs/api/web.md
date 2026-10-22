@@ -1203,6 +1203,11 @@ when no profile is resolved (a provider-owned backend).
 | `maxLength` | `int` | Longest text one request may carry; longer text is refused, never truncated or split |
 | `memoryChannel` | `int` \| `null` | Keyer memory channel the text is written to and played from (FTX-1: KM then KY); `null` when the radio sends text directly (Icom) |
 
+`cwText.supported` is true only when the profile enables CW text and the
+active backend can send it: an external-rigctld backend publishes `false`
+even with an IC-7300 profile (the limits still come from the profile), the
+same check that makes it refuse the send.
+
 `cwText` is separate from the `cw` tag and `hasCw`, which keep driving the
 CW decoder, console and keyer controls: the FTX-1 publishes `hasCw: true`
 and `cwText.supported: false`. The `cw` tag does not gate sending: a radio

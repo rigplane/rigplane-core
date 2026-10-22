@@ -42,7 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backend with no CW text sending (external rigctld) answers all three as an
   unsupported command, and a rig profile that does not load is reported by
   every CLI path (including `--model` and `audio probe`) as `Error: <file>:
-  <key> ...`, exit 1.
+  <key> ...`, exit 1. `cwText.supported` is false when the active backend
+  cannot send CW text (external rigctld), with the profile's limits kept.
 
 ## [3.0.0b19] — 2026-10-20
 
