@@ -3617,20 +3617,23 @@ class YaesuCatRadio:
         channel = str(spec.memory_channel)
 
         async def write(is_current: Callable[[], bool] | None) -> None:
-            await self._write(
-                "write_keyer_memory", chan=channel, mem=text, is_current=is_current
-            )
-            # A stale fence makes this write raise "no longer current", the
-            # same as a stale chunk: KY never plays after a force-off.
-            await self._write(
-                "send_cw", type=msg_type, mem=channel, is_current=is_current
-            )
+            # The lock is taken inside the fenced work, so a send still
+            # waiting for it already holds an abort token: a force-off ends
+            # it before it can write KM or KY.
+            async with self._cw_text_lock:
+                await self._write(
+                    "write_keyer_memory", chan=channel, mem=text, is_current=is_current
+                )
+                # A stale fence makes this write raise "no longer current",
+                # the same as a stale chunk: KY never plays after a force-off.
+                await self._write(
+                    "send_cw", type=msg_type, mem=channel, is_current=is_current
+                )
 
-        async with self._cw_text_lock:
-            if self._local_tx_work is None:
-                await write(None)
-            else:
-                await self._local_tx_work.run(write)
+        if self._local_tx_work is None:
+            await write(None)
+        else:
+            await self._local_tx_work.run(write)
 
     async def stop_cw_text(self) -> None:
         """Stop keyer memory playback: ``KY P1 0;`` (printed p.18, P2 0 STOP)."""
