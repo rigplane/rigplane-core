@@ -24,7 +24,9 @@ from rigplane.profiles import CwTextSpec, RadioProfile
 from rigplane.rig_loader import RigConfig, RigLoadError, load_rig
 from rigplane.web.api_contract import RESPONSE_FIELD_CONTRACTS
 from rigplane.web.server import WebConfig, WebServer
+from rigplane.web.protocol import decode_json
 from test_web_cw_http_control import _FakeWriter, _reader_for
+from test_web_managed_tx_ingress import _handler
 
 ROOT = Path(__file__).resolve().parents[1]
 RIGS = ROOT / "rigs"
@@ -254,7 +256,10 @@ async def test_disabled_cw_text_answers_unsupported_command() -> None:
     radio = _profiled_radio(load_rig(RIGS / "ftx1.toml").to_profile())
     writer = await _post_cw(radio, "CQ")
     assert writer.response_status == 409
-    assert writer.response_body["error"] == "unsupported_command"
+    assert writer.response_body == {
+        "error": "unsupported_command",
+        "message": "this radio does not support sending CW text yet",
+    }
     radio.send_cw_text.assert_not_awaited()
 
 
@@ -268,7 +273,9 @@ async def test_text_over_the_profile_limit_is_rejected_not_truncated() -> None:
     writer = await _post_cw(radio, "A" * 51)
     assert writer.response_status == 400
     assert writer.response_body["error"] == "invalid_request"
-    assert "max 50 characters, got 51" in writer.response_body["message"]
+    assert writer.response_body["message"] == (
+        "CW text too long: max 50 characters, got 51"
+    )
     radio.send_cw_text.assert_not_awaited()
 
     writer = await _post_cw(radio, "A" * 50)
@@ -281,7 +288,51 @@ async def test_icom_limit_stays_512() -> None:
     radio = _profiled_radio(load_rig(RIGS / "ic7300.toml").to_profile())
     writer = await _post_cw(radio, "A" * 513)
     assert writer.response_status == 400
-    assert "max 512 characters, got 513" in writer.response_body["message"]
+    assert writer.response_body == {
+        "error": "invalid_request",
+        "message": "CW text too long: max 512 characters, got 513",
+    }
     radio.send_cw_text.assert_not_awaited()
     writer = await _post_cw(radio, "A" * 512)
     assert writer.response_status == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("supported", "text", "error", "message"),
+    [
+        (
+            False,
+            "CQ",
+            "unsupported_command",
+            "this radio does not support sending CW text yet",
+        ),
+        (
+            True,
+            "A" * 51,
+            "command_failed",
+            "CW text too long: max 50 characters, got 51",
+        ),
+    ],
+    ids=["unsupported", "too-long"],
+)
+async def test_websocket_send_cw_text_reports_the_same_readable_error(
+    supported: bool, text: str, error: str, message: str
+) -> None:
+    rig = load_rig(RIGS / "ftx1.toml")
+    profile = dataclasses.replace(
+        rig, cw_text=dataclasses.replace(rig.cw_text, supported=supported)
+    ).to_profile()
+    ws = SimpleNamespace(send_text=AsyncMock())
+    handler, _, radio = _handler(None, ws=ws)
+    radio.profile = profile
+    radio.capabilities = set(profile.capabilities)
+    radio.send_cw_text = AsyncMock()
+
+    await handler._dispatch_command("cmd-cw", "send_cw_text", {"text": text})  # noqa: SLF001
+
+    response = decode_json(ws.send_text.await_args.args[0])
+    assert response["ok"] is False
+    assert response["error"] == error
+    assert response["message"] == message
+    radio.send_cw_text.assert_not_awaited()
