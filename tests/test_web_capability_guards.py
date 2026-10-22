@@ -1294,11 +1294,20 @@ async def test_direct_vfo_frequency_capability_requires_real_supported_route(mod
         assert "vfo_freq_direct" not in tags
 
 
-@pytest.mark.parametrize("missing", ["set_selected_freq", "set_unselected_freq"])
-async def test_direct_vfo_frequency_profile_keys_are_both_required(missing):
+@pytest.mark.parametrize("model", ["IC-7300", "IC-7300MK2", "IC-705"])
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "set_selected_freq",
+        "get_selected_freq",
+        "set_unselected_freq",
+        "get_unselected_freq",
+    ],
+)
+async def test_direct_vfo_frequency_profile_keys_are_all_required(model, missing):
     from rigplane.commands.command_map import CommandMap
 
-    radio = _make_radio("IC-7300")
+    radio = _make_radio(model)
     radio.write_relative_vfo_frequency = AsyncMock(
         spec=IcomRadio.write_relative_vfo_frequency
     )

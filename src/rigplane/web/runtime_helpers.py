@@ -821,7 +821,13 @@ def projected_vfo_capability_tags(
         and profile.vfo_readback == "selected_unselected"
         and cmd_map is not None
         and all(
-            cmd_map.has(key) for key in ("set_selected_freq", "set_unselected_freq")
+            cmd_map.has(key)
+            for key in (
+                "set_selected_freq",
+                "get_selected_freq",
+                "set_unselected_freq",
+                "get_unselected_freq",
+            )
         )
     ):
         tags.add("vfo_freq_direct")
