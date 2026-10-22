@@ -687,9 +687,6 @@ class RigConfig:
     # Optional per-mode single-character CAT mode codes, parallel to
     # ``modes`` (MOR-2518; consumed by the Yaesu MD codec).
     mode_codes: tuple[str, ...] | None = None
-    # Optional ``[modes] families`` (MOR-3679): family name -> member mode
-    # names from ``modes``, in declared order. Empty when not declared.
-    mode_families: dict[str, tuple[str, ...]] = field(default_factory=dict)
     controls: dict[str, ControlSpec] | None = None
     _control_domains: dict[str, _ScalarControlDomain] | None = field(
         default=None, repr=False
@@ -735,6 +732,12 @@ class RigConfig:
     # top-level ``[identity].expected_ids``. Empty means no/unverified
     # identity configuration.
     expected_identity_ids: tuple[str, ...] = ()
+    # Optional ``[modes] families`` (MOR-3679): family name -> member mode
+    # names from ``modes``, in declared order. Empty when not declared.
+    # Keyword-only and appended so no positional argument shifts.
+    mode_families: dict[str, tuple[str, ...]] = field(
+        default_factory=dict, kw_only=True
+    )
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""

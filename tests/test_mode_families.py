@@ -9,13 +9,15 @@ from the profile under test.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from rigplane.rig_loader import RigLoadError, load_rig
+from rigplane.profiles import RadioProfile
+from rigplane.rig_loader import RigConfig, RigLoadError, load_rig
 from rigplane.web.server import WebConfig, WebServer
 
 _MINIMAL_TOML = """\
@@ -104,6 +106,17 @@ def test_family_error_names_profile_and_mode(
 def test_malformed_families_rejected(tmp_path: Path, modes_extra: str) -> None:
     with pytest.raises(RigLoadError, match=r"\[modes\]"):
         _load(tmp_path, modes_extra)
+
+
+@pytest.mark.parametrize("cls", [RigConfig, RadioProfile])
+def test_mode_families_does_not_shift_positional_arguments(cls: type) -> None:
+    """Pre-review P2: the field is keyword-only, so callers passing the
+    existing fields positionally keep their assignments."""
+    by_name = {f.name: f for f in dataclasses.fields(cls)}
+    assert by_name["mode_families"].kw_only is True
+    positional = [f.name for f in dataclasses.fields(cls) if f.init and not f.kw_only]
+    assert "mode_families" not in positional
+    assert positional[-1] == "expected_identity_ids"
 
 
 # ── Capability endpoints ─────────────────────────────────────────
