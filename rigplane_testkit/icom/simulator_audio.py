@@ -115,6 +115,8 @@ class AudioPortMixin:
         # step 1 per packet and wrap at 0xFFFF.
         self._audio_client: tuple[tuple[str, int], int] | None = None
         self._audio_rx_task: asyncio.Task[None] | None = None
+        self._audio_rx_generation: int = 0
+        self._audio_next_burst_at: float = 0.0
         self._audio_rx_seq: int = 0
         self._audio_rx_inner_seq: int = 0
         # audio_port_silence deadline (0.0 = inactive).
@@ -124,7 +126,7 @@ class AudioPortMixin:
         self.audio_tx_frames: list[ClientAudioFrame] = []
         self._audio_last_client_seq: int | None = None
         self._audio_retransmit_requests_received: int = 0
-        # Optional RX audio source (``rxplane_testkit/icom/rx_source.py``),
+        # Optional RX audio source (``rigplane_testkit/icom/rx_source.py``),
         # set by the radio constructor; None keeps the synthetic ramp.
         self._rx_source = getattr(self, "_rx_source", None)
 
@@ -263,6 +265,8 @@ class AudioPortMixin:
 
     def _audio_stop_rx(self, reason: str) -> None:
         """Cancel the RX stream task and forget the audio client."""
+        self._audio_rx_generation += 1
+        self._audio_next_burst_at = 0.0
         if self._audio_rx_task is not None:
             self._audio_rx_task.cancel()
             self._audio_rx_task = None
@@ -360,14 +364,19 @@ class AudioPortMixin:
         (new addr) retargets the stream within the same session; the
         numbering never restarts on a re-open — the epoch is the session.
         """
-        self._audio_client = (addr, sender_id)
-        if self._audio_rx_task is None or self._audio_rx_task.done():
+        client = (addr, sender_id)
+        restart = self._audio_rx_task is None or self._audio_rx_task.done()
+        if self._audio_client != client or restart:
+            self._audio_rx_generation += 1
+            self._audio_next_burst_at = 0.0
+        self._audio_client = client
+        if restart:
+            loop = asyncio.get_running_loop()
+            origin = loop.time()
             if self._rx_source is not None:
                 # Stream (re)start: the file plays from its head again.
                 self._rx_source.reset()
-            self._audio_rx_task = asyncio.get_running_loop().create_task(
-                self._audio_rx_loop()
-            )
+            self._audio_rx_task = loop.create_task(self._audio_rx_loop(origin))
 
     # ------------------------------------------------------------------
     # Outbound funnel and RX streamer
@@ -392,7 +401,7 @@ class AudioPortMixin:
             return True
         return False
 
-    async def _audio_rx_loop(self) -> None:
+    async def _audio_rx_loop(self, origin: float) -> None:
         """Emit the recorded RX stream: three packets every 20 ms.
 
         Bursts sit at ABSOLUTE deadlines on the loop clock (a relative
@@ -402,7 +411,7 @@ class AudioPortMixin:
         """
         try:
             loop = asyncio.get_running_loop()
-            next_t = loop.time() + _AUDIO_BURST_PERIOD_S
+            next_t = origin + _AUDIO_BURST_PERIOD_S
             while True:
                 now = loop.time()
                 if next_t - now < -5 * _AUDIO_BURST_PERIOD_S:
@@ -420,23 +429,27 @@ class AudioPortMixin:
             logger.exception("Mock: audio RX loop error")
 
     def _audio_queue_rx_burst(self, addr: tuple[str, int], client_id: int) -> None:
-        """Build one burst now and schedule only the three sends.
-
-        Each burst's three fragments are built together in order, so
-        every fragment's content and sequence number belong to one
-        burst (the sends may still be scheduled late).
-        """
+        """Build one burst and schedule its sends after earlier bursts."""
         src = self._rx_source
         burst = src.read_burst() if src is not None else None
         loop = asyncio.get_running_loop()
+        start_t = max(loop.time(), self._audio_next_burst_at)
+        generation = self._audio_rx_generation
         for position, offset in enumerate(_AUDIO_IN_BURST_OFFSETS_S):
             pkt = self._audio_rx_packet(position, client_id, burst)
-            loop.call_later(offset, self._audio_emit_prebuilt, pkt, addr)
+            loop.call_at(
+                start_t + offset, self._audio_emit_prebuilt, pkt, addr, generation
+            )
+        self._audio_next_burst_at = (
+            start_t + _AUDIO_IN_BURST_OFFSETS_S[-1] + _AUDIO_IN_BURST_OFFSETS_S[1]
+        )
 
-    def _audio_emit_prebuilt(self, pkt: bytes, addr: tuple[str, int]) -> None:
-        """Send one prebuilt RX packet (dropped unless the stream lives)."""
-        if self._audio_client is None:
-            return  # the stream stopped after this emission was scheduled
+    def _audio_emit_prebuilt(
+        self, pkt: bytes, addr: tuple[str, int], generation: int
+    ) -> None:
+        """Send a prebuilt RX packet only in its stream generation."""
+        if generation != self._audio_rx_generation or self._audio_client is None:
+            return
         if self._audio_send(pkt, addr):
             self._audio_rx_frames_sent += 1
 

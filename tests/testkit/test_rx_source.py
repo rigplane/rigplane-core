@@ -1,18 +1,11 @@
-"""Unit tests for ``rigplane_testkit.icom.rx_source.WavSource``.
-
-WAVs are generated into ``tmp_path`` (nothing committed). Red mutation:
-skip the 48 kHz stereo conversion in ``_load``, or ignore the slot wait
-/ loop wrap in ``read_burst`` — all expectations go red.
-"""
+"""Unit tests for ``rigplane_testkit.icom.rx_source.WavSource``."""
 
 from __future__ import annotations
 
-import math
 import struct
 import wave
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from rigplane_testkit.icom.rx_source import RX_BURST_BYTES, WavSource
@@ -28,15 +21,6 @@ def _write_wav(
         w.setsampwidth(width)
         w.setframerate(rate)
         w.writeframes(samples)
-
-
-def _mono_sine(rate: int, seconds: float) -> bytes:
-    """A 1 kHz s16 sine — signal-shaped, unlike the simulator's ramp."""
-    n = int(rate * seconds)
-    return struct.pack(
-        f"<{n}h",
-        *[int(12000 * math.sin(2 * math.pi * 1000 * i / rate)) for i in range(n)],
-    )
 
 
 def _stereo_wav(path: Path, bursts: int) -> bytes:
@@ -60,13 +44,41 @@ def test_burst_size_and_48k_stereo_passthrough_bit_exact(tmp_path: Path) -> None
 
 def test_12k_mono_resampled_to_48k_stereo(tmp_path: Path) -> None:
     wav = tmp_path / "m12.wav"
-    _write_wav(wav, rate=12000, channels=1, samples=_mono_sine(12000, 1.0))
+    _write_wav(wav, rate=12000, channels=1, samples=struct.pack("<3h", 1, 7, -3))
     src = WavSource(wav)
-    served = b"".join(src.read_burst() for _ in range(50))  # 1 s at 48 kHz
-    assert len(served) == 4 * 12000 * 4  # round(n * 48000 / 12000) stereo frames
-    pairs = np.frombuffer(served, "<i2").reshape(-1, 2)
-    assert (pairs[:, 0] == pairs[:, 1]).all()  # mono duplicated to both channels
-    assert src.read_burst() == bytes(RX_BURST_BYTES)  # once: silence after the end
+    # Input positions 0, 1/4, ...; halfway values round to even.
+    samples = (1, 2, 4, 6, 7, 4, 2, 0, -3, -3, -3, -3)
+    expected = struct.pack("<24h", *(v for v in samples for _ in range(2)))
+    assert src.read_burst() == expected + bytes(RX_BURST_BYTES - len(expected))
+    assert src.read_burst() == bytes(RX_BURST_BYTES)
+
+
+def test_64k_stereo_downsample_preserves_channels_and_eof(tmp_path: Path) -> None:
+    wav = tmp_path / "s64.wav"
+    _write_wav(
+        wav,
+        rate=64000,
+        channels=2,
+        samples=struct.pack("<8h", 1, -11, 8, 3, -5, 12, 11, -7),
+    )
+    # Three output frames at input positions 0, 4/3 and 8/3.
+    expected = struct.pack("<6h", 1, -11, 4, 6, 6, -1)
+    src = WavSource(wav)
+    assert src.read_burst() == expected + bytes(RX_BURST_BYTES - len(expected))
+    assert src.read_burst() == bytes(RX_BURST_BYTES)
+
+
+@pytest.mark.parametrize("rate", [12000, 64000])
+def test_resampled_duration_crosses_burst_boundary(tmp_path: Path, rate: int) -> None:
+    wav = tmp_path / "duration.wav"
+    # 321 frames at 12 kHz or 1712 at 64 kHz both become 1284 frames.
+    frames = 321 if rate == 12000 else 1712
+    _write_wav(wav, rate=rate, channels=1, samples=struct.pack("<h", 1234) * frames)
+    src = WavSource(wav)
+    frame = struct.pack("<2h", 1234, 1234)
+    assert src.read_burst() == frame * 960
+    assert src.read_burst() == frame * 324 + bytes(636 * 4)
+    assert src.read_burst() == bytes(RX_BURST_BYTES)
 
 
 def test_loop_wraps_to_the_first_burst(tmp_path: Path) -> None:
