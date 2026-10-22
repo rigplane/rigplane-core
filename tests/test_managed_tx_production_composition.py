@@ -1,5 +1,6 @@
 import ast
 import asyncio
+import dataclasses
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +24,7 @@ from rigplane.core.tx_observation import (
 )
 from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.rig_loader import load_rig
 from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator
 from rigplane.runtime.managed_tx_state import (
@@ -114,6 +116,11 @@ async def test_yaesu_install_shares_runner_and_poison_suppresses_queued_cw_chunk
 ) -> None:
     radio = object.__new__(YaesuCatRadio)
     radio._local_tx_work = None
+    # MOR-3678: an FTX-1 profile with send_cw_text enabled (KM then KY).
+    rig = load_rig(Path(__file__).resolve().parents[1] / "rigs" / "ftx1.toml")
+    radio._profile_cache = dataclasses.replace(
+        rig, cw_text=dataclasses.replace(rig.cw_text, supported=True)
+    ).to_profile()
 
     async def raw_set_ptt(_on: bool) -> None:
         raise AssertionError("raw PTT must be replaced")
@@ -179,9 +186,11 @@ async def test_yaesu_install_shares_runner_and_poison_suppresses_queued_cw_chunk
     with pytest.raises(asyncio.CancelledError):
         await sending
     assert pending
-    assert pending[0][0] == "A" * 24
+    assert pending[0][0] == "A" * 48
     assert pending[0][1] is not None
-    assert "A" * 24 not in wire
+    assert "A" * 48 not in wire
+    # The KY that would play channel 5 was never even queued.
+    assert "5" not in [payload for payload, _ in pending]
     await composition.shutdown(asyncio.Event())
 
 

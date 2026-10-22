@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -23,6 +25,7 @@ from rigplane.runtime.managed_tx_state import (
     ActuationResult,
     EffectToken,
 )
+from rigplane.rig_loader import RigConfig, load_rig
 from rigplane.runtime.radio import CoreRadio
 
 
@@ -32,8 +35,19 @@ async def _answer_query(command: str, *args: object, **kwargs: object) -> str:
     return "TX0" if command == "TX;" else "AC101"
 
 
+def _cw_text_enabled_ftx1() -> RigConfig:
+    # MOR-3678: the shipped FTX-1 profile disables send_cw_text until the
+    # memory type is verified on a radio; these fence tests enable it.
+    rig = load_rig(Path(__file__).resolve().parents[1] / "rigs" / "ftx1.toml")
+    return dataclasses.replace(
+        rig, cw_text=dataclasses.replace(rig.cw_text, supported=True)
+    )
+
+
 def _fenced_radio(fence: TxAbortFence | None) -> YaesuCatRadio:
-    radio = YaesuCatRadio("/dev/null", tx_abort_fence=fence)
+    radio = YaesuCatRadio(
+        "/dev/null", profile=_cw_text_enabled_ftx1(), tx_abort_fence=fence
+    )
     transport = radio._transport
     transport._connected = True
     transport.query = AsyncMock(side_effect=_answer_query)
@@ -105,7 +119,7 @@ async def test_force_receive_bypasses_queued_stale_local_work(
 
 
 @pytest.mark.asyncio
-async def test_force_receive_suppresses_remaining_cw_chunks() -> None:
+async def test_force_receive_suppresses_keyer_playback_after_the_memory_write() -> None:
     fence = TxAbortFence()
     radio = _fenced_radio(fence)
     first_drain_started = asyncio.Event()
@@ -137,8 +151,9 @@ async def test_force_receive_suppresses_remaining_cw_chunks() -> None:
     wire_commands = [
         call.args[0] for call in radio._transport._raw_write.await_args_list
     ]
+    # KM wrote the text; the KY that would play it never reached the wire.
     assert len(wire_commands) == 2
-    assert wire_commands[0].startswith("KY ")
+    assert wire_commands[0].startswith("KM5")
     assert wire_commands[1].startswith("TX0")
 
 
@@ -150,13 +165,15 @@ async def test_unmanaged_calls_keep_native_writes_and_guard_generic_tuner() -> N
     await radio.send_cw_text("CQ")
     await radio.set_tuner_status(2)
 
-    cw_call, tuner_call = radio._transport.write.await_args_list
-    assert cw_call.kwargs == {}
+    km_call, ky_call, tuner_call = radio._transport.write.await_args_list
+    assert km_call.kwargs == {}
+    assert ky_call.kwargs == {}
     assert tuner_call.kwargs["is_current"]() is True
     radio._transport.stats.reconnects += 1
     assert tuner_call.kwargs["is_current"]() is False
     radio._transport.query.assert_awaited_once_with("AC;")
-    assert radio._transport.write.await_args_list[0].args[0].startswith("KY ")
+    assert km_call.args == ("KM5CQ;",)
+    assert ky_call.args == ("KY05;",)
     assert tuner_call.args == ("AC103;",)
 
 
