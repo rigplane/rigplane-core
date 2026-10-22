@@ -599,3 +599,61 @@ async def test_managed_cw_abort_superseded_while_queued_leaves_sends_alone() -> 
         call.args[0] for call in radio._transport._raw_write.await_args_list
     ]
     assert wire_commands == ["KM5AA;", "KY05;", "KM5BB;", "KY05;"]
+
+
+class _RecordingWriter:
+    def __init__(self) -> None:
+        self.frames: list[bytes] = []
+
+    def write(self, data: bytes) -> None:
+        self.frames.append(data)
+
+    async def drain(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_cw_abort_expiring_between_transport_checks_leaves_the_send_alone() -> (
+    None
+):
+    # #4317 pre-review: the transport checks currency twice (write() and
+    # _raw_write()). A managed stop whose claim expires between the two
+    # never reaches the wire, so it must not end the pending send either.
+    radio = _fenced_radio(None)
+    transport = radio._transport
+    writer = _RecordingWriter()
+    transport._writer = writer
+    transport._reader = object()
+    del transport._raw_write  # the real write path, down to the bytes
+    first_drain_started = asyncio.Event()
+    release_first_drain = asyncio.Event()
+    drain_calls = 0
+
+    async def drain(_command: str) -> int:
+        nonlocal drain_calls
+        drain_calls += 1
+        if drain_calls == 1:
+            first_drain_started.set()
+            await release_first_drain.wait()
+        return 0
+
+    transport._drain_responses = drain
+    checks = 0
+
+    def expires_after_first_check() -> bool:
+        nonlocal checks
+        checks += 1
+        return checks == 1
+
+    sending = asyncio.create_task(radio.send_cw_text("CQ"))
+    await first_drain_started.wait()
+    generation = radio._cw_text_generation
+    aborting = asyncio.create_task(_stale_cw_abort(radio, expires_after_first_check))
+    await asyncio.sleep(0)
+    release_first_drain.set()
+
+    await aborting
+    await sending
+    assert checks == 2
+    assert radio._cw_text_generation == generation
+    assert writer.frames == [b"KM5CQ;", b"KY05;"]
