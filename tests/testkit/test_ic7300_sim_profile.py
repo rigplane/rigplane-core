@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from rigplane.commands import parse_civ_frame
+from rigplane_testkit.serial.endpoints import TcpEndpoint
 from rigplane_testkit.sim.profiles import load_sim_profile
 from testkit.ic7300_fakes import FIXTURES, ic7300_profile_fake
 from testkit.test_sim_serve import _kill_if_alive, _start_sim
@@ -356,6 +357,76 @@ async def test_scope_state_is_per_radio_not_per_connection() -> None:
         assert reply == bytes.fromhex("fefee094271101fd")
     finally:
         writer.close()
+
+
+async def _loop_errors_during(seconds: float, body) -> list[dict]:
+    """Run ``body`` and wait ``seconds``; return what the loop's handler caught."""
+    loop = asyncio.get_running_loop()
+    caught: list[dict] = []
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: caught.append(context))
+    try:
+        await body()
+        await asyncio.sleep(seconds)
+    finally:
+        loop.set_exception_handler(previous)
+    return caught
+
+
+async def test_closing_with_a_reply_pending_tears_down_cleanly() -> None:
+    fake = ic7300_profile_fake()
+    reader, writer = await fake.opener(url="socket://p", baudrate=19200)
+
+    async def body() -> None:
+        writer.write(IDENTITY)
+        writer.close()  # before the 30 ms reply is due
+
+    assert await _loop_errors_during(0.12, body) == []
+    assert await reader.read() == b""  # EOF, and the late reply never arrived
+
+
+async def test_a_tcp_client_leaving_with_a_reply_pending_tears_down_cleanly() -> None:
+    fake = ic7300_profile_fake()
+    endpoint = TcpEndpoint(fake)
+    await endpoint.start()
+    try:
+        _, port = endpoint.device_url.removeprefix("socket://").rsplit(":", 1)
+        _, client = await asyncio.open_connection("127.0.0.1", int(port))
+
+        async def body() -> None:
+            client.write(IDENTITY)
+            await client.drain()
+            client.close()
+
+        assert await _loop_errors_during(0.15, body) == []
+    finally:
+        await endpoint.stop()
+
+
+async def test_repeating_wave_enable_never_restarts_a_running_sweep() -> None:
+    fake = ic7300_profile_fake(baud=115200)
+    reader, writer = await fake.opener(url="socket://p", baudrate=115200)
+    _, other = await fake.opener(url="socket://p", baudrate=115200)
+    enable = bytes.fromhex("fefe94e0271101fd")
+    try:
+        writer.write(enable)
+
+        async def repeat() -> None:
+            for turn in range(14):  # every 100 ms: shorter than one 219 ms sweep
+                await asyncio.sleep(0.1)
+                (writer if turn % 2 else other).write(enable)
+
+        repeater = asyncio.create_task(repeat())
+        packets = await _stream_sweeps(reader, 1.5)
+        await repeater
+    finally:
+        writer.close()
+        other.close()
+    seqs = [f[7] for _, f in packets]
+    bcd_seq = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x10, 0x11]
+    whole = len(seqs) // 11
+    assert whole >= 5
+    assert seqs[: whole * 11] == bcd_seq * whole
 
 
 # ---------------------------------------------------------------------------

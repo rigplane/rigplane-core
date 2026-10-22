@@ -663,14 +663,15 @@ class CivSerialFake:
             return self._ack()
         if on and not self._scope_carries(connection):
             return self._nak()  # recorded: the 19200 link refuses wave output
-        self._scope_wave = on
-        for other in self._connections:
-            if not on:
-                other.stop_scope()
-            elif other is connection:
-                other.scope_start_pending = True
-            else:
-                other.start_scope()
+        was_on, self._scope_wave = self._scope_wave, on
+        if on != was_on:  # a repeated enable leaves running sweeps alone
+            for other in self._connections:
+                if not on:
+                    other.stop_scope()
+                elif other is connection:
+                    other.scope_start_pending = True
+                else:
+                    other.start_scope()
         return self._ack()
 
     def _scope_carries(self, connection: "_Connection") -> bool:
@@ -715,6 +716,7 @@ class _Connection:
         self.error: OSError | None = None
         self.scope_start_pending = False
         self._last_due = 0.0  # loop time of the latest scheduled delayed reply
+        self._late: set[asyncio.TimerHandle] = set()  # replies still in flight
         self._scope_handle: asyncio.TimerHandle | None = None
         self._scope_t0 = 0.0
         self._scope_sweep = 0
@@ -724,11 +726,18 @@ class _Connection:
         """Kill this session: pending and later reads raise *error*."""
         self.error = error
         self.stop_scope()
+        self.cancel_late()
         self.reader.set_exception(error)
 
     def deliver(self, data: bytes) -> None:
-        if self.error is None:
+        if self.error is None and not self.writer.closed:
             self.reader.feed_data(data)
+
+    def cancel_late(self) -> None:
+        """Drop the replies still in flight: the port is closed or gone."""
+        for handle in self._late:
+            handle.cancel()
+        self._late.clear()
 
     def deliver_after(self, delay: float, data: bytes) -> None:
         """Deliver *data* ``delay`` seconds from now, in the order scheduled."""
@@ -741,10 +750,12 @@ class _Connection:
         baud = self.baud  # a reply sent at this rate is noise at another
 
         def deliver_late() -> None:
+            self._late.discard(handle)
             if self.baud == baud:
                 self.deliver(data)
 
-        loop.call_at(due, deliver_late)
+        handle = loop.call_at(due, deliver_late)
+        self._late.add(handle)
 
     def start_scope(self) -> None:
         """Stream the fake's scope sweeps from the first one, after any reply due."""
@@ -849,6 +860,7 @@ class _FakeSerialWriter:
     def close(self) -> None:
         self.closed = True
         self._connection.stop_scope()
+        self._connection.cancel_late()
         if self._connection.error is None:
             self._connection.reader.feed_eof()
 
