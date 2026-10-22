@@ -216,6 +216,10 @@ except RigLoadError as e:
 | `[filters].list` present (may be empty: a radio without a selectable IF filter) | `missing required [filters].list` |
 | `[cw_text]` keys known and typed (if present): `supported` bool, `max_length` and `memory_channel` positive integers, `memory_type` `"text"` or `"message"` | `[cw_text].<key> must be ...` / `[cw_text] unknown key '<key>'` |
 | `[cw_text].supported = true` only with a `send_cw` command | `[cw_text].supported = true needs a send_cw command` |
+| Without `[cw_text].supported`, CW text is supported only on CI-V profiles with a `send_cw` command; Yaesu CAT and Kenwood CAT default to `false` | — |
+| Kenwood CAT: `[cw_text].supported = true` is refused (no backend sends CW text) | `[cw_text].supported = true is not available for kenwood_cat profiles: ...` |
+| Yaesu CAT: `[cw_text].memory_channel` is a keyer memory 1-5 | `[cw_text].memory_channel must be a keyer memory channel 1-5, got <n>` |
+| Yaesu CAT: `[cw_text].supported = true` needs `memory_channel` and a writable `write_keyer_memory` command | `[cw_text].supported = true needs [cw_text].memory_channel (keyer memory 1-5)` / `... needs a writable write_keyer_memory command` |
 
 Unknown sections or extra fields are silently ignored (forward-compatible).
 

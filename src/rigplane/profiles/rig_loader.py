@@ -2150,26 +2150,62 @@ _CW_TEXT_KEYS = frozenset({"supported", "max_length", "memory_channel", "memory_
 _CW_TEXT_MEMORY_TYPES = frozenset({"text", "message"})
 
 
-def _parse_cw_text(filename: str, raw: Any, *, has_send_cw: bool) -> CwTextSpec:
+def _is_writable(spec: CommandSpec | None) -> bool:
+    """A command the backend can write: present, not absent, with a write."""
+    if spec is None or isinstance(spec, AbsentCommandSpec):
+        return False
+    if isinstance(spec, CatCommandSpec):
+        return spec.write is not None
+    return True
+
+
+# KM P1 is one digit, keyer memory channel 1-5 (FTX-1 CAT 2508-C printed p.17).
+_YAESU_KEYER_MEMORY_CHANNELS = range(1, 6)
+
+
+def _parse_cw_text(
+    filename: str,
+    raw: Any,
+    *,
+    protocol_type: str,
+    commands: dict[str, CommandSpec],
+) -> CwTextSpec:
     """Parse the optional top-level ``[cw_text]`` section (MOR-3678).
 
     Typed CW text sending is separate from the ``cw`` capability tag (the
-    decoder, console and keyer controls). ``supported`` defaults to whether
-    the profile declares a ``send_cw`` command, so a radio without one never
-    advertises it; declaring ``supported = true`` without ``send_cw`` is an
-    error. ``max_length`` (default 512) is the longest text one request may
-    carry: longer requests are rejected, never truncated or split.
-    ``memory_channel`` and ``memory_type`` (``"text"`` / ``"message"``) are
-    for radios that send text by writing a keyer memory and playing it.
+    decoder, console and keyer controls). Whether it is supported depends
+    on what the protocol's backend needs (#4317 gate review):
+
+    * ``civ``: the backend sends the text with ``send_cw`` (0x17), so
+      ``supported`` defaults to whether that command is declared, and
+      ``supported = true`` without it is an error.
+    * ``yaesu_cat``: the backend writes the text into a keyer memory
+      (``write_keyer_memory``, KM, CAT 2508-C printed p.17) and plays it
+      (``send_cw``, KY, printed p.18). ``supported`` defaults to false;
+      ``supported = true`` needs ``memory_channel`` 1-5 and both commands
+      writable. ``memory_channel`` outside 1-5 is an error either way.
+    * ``kenwood_cat``: core has no backend that sends CW text, so it is
+      never supported and ``supported = true`` is an error.
+
+    ``max_length`` (default 512) is the longest text one request may carry:
+    longer requests are rejected, never truncated or split.
+    ``memory_type`` (``"text"`` / ``"message"``) picks the Yaesu memory kind.
     """
+    has_send_cw = _is_writable(commands.get("send_cw"))
+    default_supported = protocol_type == "civ" and has_send_cw
     if raw is None:
-        return CwTextSpec(supported=has_send_cw)
+        return CwTextSpec(supported=default_supported)
     if not isinstance(raw, dict):
         raise RigLoadError(f"{filename}: [cw_text] must be a table")
     _reject_unknown_keys(filename, "[cw_text]", raw, _CW_TEXT_KEYS)
-    supported = raw.get("supported", has_send_cw)
+    supported = raw.get("supported", default_supported)
     if not isinstance(supported, bool):
         raise RigLoadError(f"{filename}: [cw_text].supported must be a boolean")
+    if supported and protocol_type == "kenwood_cat":
+        raise RigLoadError(
+            f"{filename}: [cw_text].supported = true is not available for "
+            "kenwood_cat profiles: no backend sends CW text over Kenwood CAT"
+        )
     if supported and not has_send_cw:
         raise RigLoadError(
             f"{filename}: [cw_text].supported = true needs a send_cw command"
@@ -2197,6 +2233,22 @@ def _parse_cw_text(filename: str, raw: Any, *, has_send_cw: bool) -> CwTextSpec:
         raise RigLoadError(
             f'{filename}: [cw_text].memory_type must be "text" or "message"'
         )
+    if protocol_type == "yaesu_cat":
+        if channel is not None and channel not in _YAESU_KEYER_MEMORY_CHANNELS:
+            raise RigLoadError(
+                f"{filename}: [cw_text].memory_channel must be a keyer memory "
+                f"channel 1-5, got {channel}"
+            )
+        if supported and channel is None:
+            raise RigLoadError(
+                f"{filename}: [cw_text].supported = true needs "
+                "[cw_text].memory_channel (keyer memory 1-5)"
+            )
+        if supported and not _is_writable(commands.get("write_keyer_memory")):
+            raise RigLoadError(
+                f"{filename}: [cw_text].supported = true needs a writable "
+                "write_keyer_memory command"
+            )
     return CwTextSpec(
         supported=supported,
         max_length=max_length,
@@ -3052,12 +3104,11 @@ def load_rig(path: Path) -> RigConfig:
     )
     tx_policy = _parse_tx_policy(filename, data.get("tx_policy"))
     expected_identity_ids = _parse_identity(filename, data.get("identity"))
-    send_cw_spec = commands.get("send_cw")
     cw_text = _parse_cw_text(
         filename,
         data.get("cw_text"),
-        has_send_cw=send_cw_spec is not None
-        and not isinstance(send_cw_spec, AbsentCommandSpec),
+        protocol_type=protocol_type,
+        commands=commands,
     )
 
     # The reset-to-radio-default capability is DERIVED from the parsed

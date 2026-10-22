@@ -33,7 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HTTP, WebSocket and the CLI refuse the same requests with the same
   message; the web handler's own 512-character limit is gone (512 is now
   only the profile default). Profiles without a `send_cw` command (TX-500,
-  X6100, X6200) publish `supported: false`.
+  X6100, X6200) publish `supported: false`. Yaesu CAT and Kenwood CAT
+  profiles without `[cw_text].supported = true` publish `supported: false`;
+  a Yaesu enable without keyer memory channel 1-5 and writable `KM`/`KY`
+  commands, or any Kenwood enable, does not load.
 
 ## [3.0.0b19] — 2026-10-20
 
