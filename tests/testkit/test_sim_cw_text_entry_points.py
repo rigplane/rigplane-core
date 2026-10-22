@@ -135,9 +135,11 @@ async def _ws_command(port: int, name: str, params: dict) -> dict:
         writer.close()
 
 
-async def _cli(device: str, *argv: str) -> int:
+async def _cli(device: str, *argv: str, model: tuple[str, ...] = ()) -> int:
     parser = _build_parser()
-    args = parser.parse_args(["--backend", "yaesu-cat", "--serial-port", device, *argv])
+    args = parser.parse_args(
+        ["--backend", "yaesu-cat", *model, "--serial-port", device, *argv]
+    )
     _finalize_ptt_args(parser, args)
     return await _run(args)
 
@@ -287,10 +289,14 @@ async def test_cli_refuses_disabled_profile(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model", [(), ("--model", "FTX-1")], ids=["backend-default", "named-model"]
+)
 async def test_cli_refuses_a_yaesu_enable_without_a_text_limit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    model: tuple[str, ...],
 ) -> None:
     # Before #4317's gate review this profile loaded with the 512 default,
     # and 51 characters went out as an over-long KM the radio refused.
@@ -298,8 +304,14 @@ async def test_cli_refuses_a_yaesu_enable_without_a_text_limit(
         tmp_path, "[cw_text]\nsupported = true\nmemory_channel = 5", cw_tag=True
     )
     monkeypatch.setattr("rigplane.backends.yaesu_cat.radio._RIGS_DIR", rigs)
+    # --model resolves through discover_available_rigs(): the source-checkout
+    # layout (no packaged rigs, the rigs/ directory as fallback).
+    monkeypatch.setattr("rigplane.cli._rigs_dir", lambda: rigs)
+    monkeypatch.setattr(
+        "rigplane.profiles.rig_loader._discover_resource_rigs", lambda _root: {}
+    )
     async with _sim() as sim:
-        rc = await _cli(sim.device, "cw", "A" * 51)
+        rc = await _cli(sim.device, "cw", "A" * 51, model=model)
         await _settle()
         assert sim.model.keying_memory == {}
         assert sim.model.keyer_play_requests == ()
