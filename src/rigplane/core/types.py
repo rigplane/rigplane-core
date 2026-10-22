@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
+from typing import Literal
 
 from rigplane.core.env_config import get_audio_sample_rate
 
@@ -28,6 +29,7 @@ __all__ = [
     "bcd_encode",
     "bcd_decode",
     "MemoryChannel",
+    "MemoryProfile",
     "BandStackRegister",
 ]
 
@@ -445,6 +447,26 @@ class MemoryChannel:
     tone_freq_hz: int | None = None
     tsql_freq_hz: int | None = None
     name: str = ""
+
+
+MemoryAddressing = Literal["group_channel", "band_channel"]
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryProfile:
+    """How a radio's stored memory channels are addressed (MOR-3627).
+
+    ``group_channel`` is the IC-705 shape, ``band_channel`` the IC-9700's; the
+    bounds limit the group number (or band code) and the channel, and
+    ``recall`` says the profile's select commands recall a listed channel.
+    """
+
+    addressing: MemoryAddressing
+    first_group: int
+    last_group: int
+    first_channel: int
+    last_channel: int
+    recall: bool = False
 
 
 @dataclass

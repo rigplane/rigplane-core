@@ -1,0 +1,66 @@
+{
+ "baud": {
+  "answers_at": [
+   19200
+  ],
+  "auto_locks_to_first_baud": "confirmed by the owner (known IC-7300 behaviour): Auto locks to the first baud contacted until power cycle; the first sweep started at 19200",
+  "configured_on_radio": "Auto (owner, 2026-10-21 13:57Z); answered only at 19200",
+  "silent_at": [
+   115200,
+   9600,
+   4800
+  ],
+  "source": "engine session sweep 2026-10-21 (GTR7 COM3); profile default_baud is 115200",
+  "ticket": "MOR-3620"
+ },
+ "scope_enable_at_19200": {
+  "pairs": [
+   {
+    "note": "panel was ON before the session",
+    "reply": "fefee094271001fd",
+    "request": "fefe94e02710fd"
+   },
+   {
+    "note": "wave output was OFF before the session",
+    "reply": "fefee094271100fd",
+    "request": "fefe94e02711fd"
+   },
+   {
+    "note": "panel on: ACK",
+    "reply": "fefee094fbfd",
+    "request": "fefe94e0271001fd"
+   },
+   {
+    "note": "wave output on: NAK at 19200, no 27 00 frame ever followed (retried 4x by the server)",
+    "reply": "fefee094fafd",
+    "request": "fefe94e0271101fd"
+   }
+  ],
+  "source": "Core web server through the guarded bridge, GTR7, 2026-10-21 09:05 EDT; state read back unchanged afterwards (27 10 = 01, 27 11 = 00)"
+ },
+ "scope_stream_115200": {
+  "seq_max": 11,
+  "source": "Core web server through the guarded bridge, GTR7, 2026-10-21 09:59-10:01 EDT, CI-V USB Baud Rate 115200 (owner changed from Auto), no antenna",
+  "span_s": 121.89,
+  "sweep_gap_ms": {
+   "max": 282.0,
+   "median": 250.0,
+   "p95": 266.0
+  },
+  "sweeps": 498,
+  "sweeps_per_s": 4.085,
+  "switch_sequence": "27 10 read -> 01 (panel on), 27 11 read -> 00 (output off); 27 10 01 -> ACK, 27 11 01 -> ACK at 115200; server restored 27 10 01 / 27 11 00 afterwards",
+  "through_core_websocket": {
+   "fps": 4.107,
+   "frame_bytes": 491,
+   "frames": 489,
+   "interval_ms": {
+    "max": 297.0,
+    "median": 250.0,
+    "p95": 266.0
+   },
+   "seconds": 120
+  },
+  "wave_packets": 5478
+ }
+}

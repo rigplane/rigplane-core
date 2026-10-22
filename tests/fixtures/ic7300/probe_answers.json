@@ -1,0 +1,1025 @@
+{
+ "backend": "serial",
+ "baud": 19200,
+ "probes": [
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050064fd",
+   "latency_ms": 108.8,
+   "name": "get_acc1_mod_level"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01401fd",
+   "latency_ms": 27.1,
+   "name": "get_af_level"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01612fd",
+   "latency_ms": 107.1,
+   "name": "get_agc"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a04fd",
+   "latency_ms": 29.0,
+   "name": "get_agc_time_constant"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01513fd",
+   "latency_ms": 27.2,
+   "name": "get_alc"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050005fd",
+   "latency_ms": 93.8,
+   "name": "get_am_rx_bass"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050004fd",
+   "latency_ms": 29.8,
+   "name": "get_am_rx_hpflpf"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050006fd",
+   "latency_ms": 30.9,
+   "name": "get_am_rx_treble"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050017fd",
+   "latency_ms": 79.5,
+   "name": "get_am_tx_bass"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050018fd",
+   "latency_ms": 22.6,
+   "name": "get_am_tx_treble"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01417fd",
+   "latency_ms": 15.7,
+   "name": "get_anti_vox_gain"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e011fd",
+   "latency_ms": 96.1,
+   "name": "get_attenuator"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01641fd",
+   "latency_ms": 28.4,
+   "name": "get_auto_notch"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e002fd",
+   "latency_ms": 28.8,
+   "name": "get_band_edge_freq"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01647fd",
+   "latency_ms": 93.2,
+   "name": "get_break_in"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e0140ffd",
+   "latency_ms": 30.6,
+   "name": "get_break_in_delay"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e01a01fd",
+   "latency_ms": 13.2,
+   "name": "get_bsr"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050073fd",
+   "latency_ms": 96.7,
+   "name": "get_civ_output_ant"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050071fd",
+   "latency_ms": 30.9,
+   "name": "get_civ_transceive"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01514fd",
+   "latency_ms": 30.1,
+   "name": "get_comp_meter"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01644fd",
+   "latency_ms": 92.5,
+   "name": "get_compressor"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e0140efd",
+   "latency_ms": 28.8,
+   "name": "get_compressor_level"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01409fd",
+   "latency_ms": 29.7,
+   "name": "get_cw_pitch"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050010fd",
+   "latency_ms": 76.4,
+   "name": "get_cw_rx_hpflpf"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050161fd",
+   "latency_ms": 34.3,
+   "name": "get_dash_ratio"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050067fd",
+   "latency_ms": 30.4,
+   "name": "get_data1_mod_input"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a06fd",
+   "latency_ms": 83.2,
+   "name": "get_data_mode"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050066fd",
+   "latency_ms": 27.2,
+   "name": "get_data_off_mod_input"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01650fd",
+   "latency_ms": 29.9,
+   "name": "get_dial_lock"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01656fd",
+   "latency_ms": 92.2,
+   "name": "get_filter_shape"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a03fd",
+   "latency_ms": 29.8,
+   "name": "get_filter_width"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050008fd",
+   "latency_ms": 32.1,
+   "name": "get_fm_rx_bass"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050007fd",
+   "latency_ms": 77.8,
+   "name": "get_fm_rx_hpflpf"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050009fd",
+   "latency_ms": 28.4,
+   "name": "get_fm_rx_treble"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050019fd",
+   "latency_ms": 30.7,
+   "name": "get_fm_tx_bass"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050020fd",
+   "latency_ms": 90.6,
+   "name": "get_fm_tx_treble"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e003fd",
+   "latency_ms": 30.7,
+   "name": "get_freq"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01516fd",
+   "latency_ms": 27.6,
+   "name": "get_id_meter"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01665fd",
+   "latency_ms": 91.9,
+   "name": "get_ip_plus"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e0140cfd",
+   "latency_ms": 30.1,
+   "name": "get_key_speed"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01648fd",
+   "latency_ms": 28.7,
+   "name": "get_manual_notch"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01657fd",
+   "latency_ms": 78.3,
+   "name": "get_manual_notch_width"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e0140bfd",
+   "latency_ms": 32.5,
+   "name": "get_mic_gain"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e004fd",
+   "latency_ms": 28.8,
+   "name": "get_mode"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01645fd",
+   "latency_ms": 92.1,
+   "name": "get_monitor"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01415fd",
+   "latency_ms": 29.7,
+   "name": "get_monitor_gain"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01622fd",
+   "latency_ms": 30.3,
+   "name": "get_nb"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050189fd",
+   "latency_ms": 77.2,
+   "name": "get_nb_depth"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01412fd",
+   "latency_ms": 27.5,
+   "name": "get_nb_level"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050190fd",
+   "latency_ms": 29.4,
+   "name": "get_nb_width"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e0140dfd",
+   "latency_ms": 94.2,
+   "name": "get_notch_filter"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01640fd",
+   "latency_ms": 29.6,
+   "name": "get_nr"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01406fd",
+   "latency_ms": 31.9,
+   "name": "get_nr_level"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01507fd",
+   "latency_ms": 77.9,
+   "name": "get_overflow_status"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01407fd",
+   "latency_ms": 29.2,
+   "name": "get_pbt_inner"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01408fd",
+   "latency_ms": 32.0,
+   "name": "get_pbt_outer"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01511fd",
+   "latency_ms": 91.8,
+   "name": "get_power_meter"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01602fd",
+   "latency_ms": 30.1,
+   "name": "get_preamp"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050030fd",
+   "latency_ms": 38.1,
+   "name": "get_quick_split"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01642fd",
+   "latency_ms": 76.4,
+   "name": "get_repeater_tone"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01643fd",
+   "latency_ms": 29.0,
+   "name": "get_repeater_tsql"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01402fd",
+   "latency_ms": 26.6,
+   "name": "get_rf_gain"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e0140afd",
+   "latency_ms": 90.4,
+   "name": "get_rf_power"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e02100fd",
+   "latency_ms": 29.8,
+   "name": "get_rit_frequency"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e02101fd",
+   "latency_ms": 29.4,
+   "name": "get_rit_status"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e02102fd",
+   "latency_ms": 80.9,
+   "name": "get_rit_tx_status"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01502fd",
+   "latency_ms": 28.7,
+   "name": "get_s_meter"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01501fd",
+   "latency_ms": 30.1,
+   "name": "get_s_meter_sql_status"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e0271cfd",
+   "latency_ms": 93.1,
+   "name": "get_scope_center_type"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e0271bfd",
+   "latency_ms": 30.2,
+   "name": "get_scope_during_tx"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e02716fd",
+   "latency_ms": 15.7,
+   "name": "get_scope_edge"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050124fd",
+   "latency_ms": 93.4,
+   "name": "get_scope_edge1_11mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050127fd",
+   "latency_ms": 29.6,
+   "name": "get_scope_edge1_15mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050112fd",
+   "latency_ms": 31.1,
+   "name": "get_scope_edge1_1p6mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050130fd",
+   "latency_ms": 95.3,
+   "name": "get_scope_edge1_20mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050133fd",
+   "latency_ms": 29.8,
+   "name": "get_scope_edge1_22mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050136fd",
+   "latency_ms": 28.1,
+   "name": "get_scope_edge1_26mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050115fd",
+   "latency_ms": 75.4,
+   "name": "get_scope_edge1_2mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050139fd",
+   "latency_ms": 28.3,
+   "name": "get_scope_edge1_30mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050142fd",
+   "latency_ms": 26.3,
+   "name": "get_scope_edge1_45mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050145fd",
+   "latency_ms": 92.8,
+   "name": "get_scope_edge1_60mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050118fd",
+   "latency_ms": 30.2,
+   "name": "get_scope_edge1_6mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050148fd",
+   "latency_ms": 29.1,
+   "name": "get_scope_edge1_74mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050121fd",
+   "latency_ms": 94.7,
+   "name": "get_scope_edge1_8mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050125fd",
+   "latency_ms": 35.9,
+   "name": "get_scope_edge2_11mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050128fd",
+   "latency_ms": 24.8,
+   "name": "get_scope_edge2_15mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050113fd",
+   "latency_ms": 77.6,
+   "name": "get_scope_edge2_1p6mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050131fd",
+   "latency_ms": 28.0,
+   "name": "get_scope_edge2_20mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050134fd",
+   "latency_ms": 33.2,
+   "name": "get_scope_edge2_22mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050137fd",
+   "latency_ms": 95.4,
+   "name": "get_scope_edge2_26mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050116fd",
+   "latency_ms": 30.7,
+   "name": "get_scope_edge2_2mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050140fd",
+   "latency_ms": 28.5,
+   "name": "get_scope_edge2_30mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050143fd",
+   "latency_ms": 78.6,
+   "name": "get_scope_edge2_45mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050146fd",
+   "latency_ms": 28.3,
+   "name": "get_scope_edge2_60mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050119fd",
+   "latency_ms": 30.5,
+   "name": "get_scope_edge2_6mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050149fd",
+   "latency_ms": 75.3,
+   "name": "get_scope_edge2_74mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050122fd",
+   "latency_ms": 30.2,
+   "name": "get_scope_edge2_8mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050126fd",
+   "latency_ms": 31.6,
+   "name": "get_scope_edge3_11mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050129fd",
+   "latency_ms": 93.5,
+   "name": "get_scope_edge3_15mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050114fd",
+   "latency_ms": 29.9,
+   "name": "get_scope_edge3_1p6mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050132fd",
+   "latency_ms": 30.8,
+   "name": "get_scope_edge3_20mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050135fd",
+   "latency_ms": 75.0,
+   "name": "get_scope_edge3_22mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050138fd",
+   "latency_ms": 44.9,
+   "name": "get_scope_edge3_26mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050117fd",
+   "latency_ms": 31.0,
+   "name": "get_scope_edge3_2mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050141fd",
+   "latency_ms": 78.9,
+   "name": "get_scope_edge3_30mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050144fd",
+   "latency_ms": 31.5,
+   "name": "get_scope_edge3_45mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050147fd",
+   "latency_ms": 27.4,
+   "name": "get_scope_edge3_60mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050120fd",
+   "latency_ms": 77.9,
+   "name": "get_scope_edge3_6mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050150fd",
+   "latency_ms": 31.4,
+   "name": "get_scope_edge3_74mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050123fd",
+   "latency_ms": 29.3,
+   "name": "get_scope_edge3_8mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050208fd",
+   "latency_ms": 93.9,
+   "name": "get_scope_edge4_11mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050209fd",
+   "latency_ms": 27.6,
+   "name": "get_scope_edge4_15mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050204fd",
+   "latency_ms": 29.3,
+   "name": "get_scope_edge4_1p6mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050210fd",
+   "latency_ms": 91.1,
+   "name": "get_scope_edge4_20mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050211fd",
+   "latency_ms": 27.9,
+   "name": "get_scope_edge4_22mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050212fd",
+   "latency_ms": 31.1,
+   "name": "get_scope_edge4_26mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050205fd",
+   "latency_ms": 76.4,
+   "name": "get_scope_edge4_2mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050213fd",
+   "latency_ms": 29.4,
+   "name": "get_scope_edge4_30mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050214fd",
+   "latency_ms": 30.8,
+   "name": "get_scope_edge4_45mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050215fd",
+   "latency_ms": 95.6,
+   "name": "get_scope_edge4_60mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050206fd",
+   "latency_ms": 28.5,
+   "name": "get_scope_edge4_6mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050216fd",
+   "latency_ms": 30.8,
+   "name": "get_scope_edge4_74mhz"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050207fd",
+   "latency_ms": 76.3,
+   "name": "get_scope_edge4_8mhz"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e0271efd",
+   "latency_ms": 30.3,
+   "name": "get_scope_fixed_edge"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e02717fd",
+   "latency_ms": 30.8,
+   "name": "get_scope_hold"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e02712fd",
+   "latency_ms": 81.0,
+   "name": "get_scope_main_sub"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e02714fd",
+   "latency_ms": 26.5,
+   "name": "get_scope_mode"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e02719fd",
+   "latency_ms": 28.1,
+   "name": "get_scope_ref"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e02713fd",
+   "latency_ms": 92.3,
+   "name": "get_scope_single_dual"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e02715fd",
+   "latency_ms": 27.6,
+   "name": "get_scope_span"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e0271afd",
+   "latency_ms": 15.2,
+   "name": "get_scope_speed"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e0271dfd",
+   "latency_ms": 96.0,
+   "name": "get_scope_vbw"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e02700fd",
+   "latency_ms": 28.0,
+   "name": "get_scope_wave"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e02500fd",
+   "latency_ms": 31.7,
+   "name": "get_selected_freq"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e02600fd",
+   "latency_ms": 90.1,
+   "name": "get_selected_mode"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e00ffd",
+   "latency_ms": 29.2,
+   "name": "get_split"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01403fd",
+   "latency_ms": 29.0,
+   "name": "get_squelch"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050002fd",
+   "latency_ms": 91.6,
+   "name": "get_ssb_rx_bass"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050001fd",
+   "latency_ms": 31.8,
+   "name": "get_ssb_rx_hpflpf"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050003fd",
+   "latency_ms": 28.0,
+   "name": "get_ssb_rx_treble"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01658fd",
+   "latency_ms": 75.7,
+   "name": "get_ssb_tx_bandwidth"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050012fd",
+   "latency_ms": 28.7,
+   "name": "get_ssb_tx_bass"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050013fd",
+   "latency_ms": 29.6,
+   "name": "get_ssb_tx_treble"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01512fd",
+   "latency_ms": 92.4,
+   "name": "get_swr"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050094fd",
+   "latency_ms": 25.9,
+   "name": "get_system_date"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050095fd",
+   "latency_ms": 26.7,
+   "name": "get_system_time"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01b00fd",
+   "latency_ms": 91.4,
+   "name": "get_tone_freq"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01900fd",
+   "latency_ms": 22.3,
+   "name": "get_transceiver_id"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01b01fd",
+   "latency_ms": 30.5,
+   "name": "get_tsql_freq"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e010fd",
+   "latency_ms": 94.0,
+   "name": "get_tuning_step"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e0164ffd",
+   "latency_ms": 28.4,
+   "name": "get_twin_peak_filter"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01e00fd",
+   "latency_ms": 31.2,
+   "name": "get_tx_band_count"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e01e01fd",
+   "latency_ms": 77.5,
+   "name": "get_tx_band_edge"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e02501fd",
+   "latency_ms": 31.8,
+   "name": "get_unselected_freq"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e02601fd",
+   "latency_ms": 29.3,
+   "name": "get_unselected_mode"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050065fd",
+   "latency_ms": 96.5,
+   "name": "get_usb_mod_level"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050096fd",
+   "latency_ms": 32.6,
+   "name": "get_utc_offset"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01505fd",
+   "latency_ms": 28.2,
+   "name": "get_various_squelch"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01515fd",
+   "latency_ms": 77.8,
+   "name": "get_vd_meter"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01646fd",
+   "latency_ms": 31.3,
+   "name": "get_vox"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01a050191fd",
+   "latency_ms": 29.4,
+   "name": "get_vox_delay"
+  },
+  {
+   "class": "data",
+   "frame_hex": "fefe94e01416fd",
+   "latency_ms": 97.4,
+   "name": "get_vox_gain"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e0290003fd",
+   "latency_ms": 26.7,
+   "name": "cmd29:get_freq:0"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e0290103fd",
+   "latency_ms": 15.1,
+   "name": "cmd29:get_freq:1"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e01a050999fd",
+   "latency_ms": 92.4,
+   "name": "unknown:1a050999"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e07ffd",
+   "latency_ms": 29.1,
+   "name": "unknown:7f"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e0147efd",
+   "latency_ms": 14.3,
+   "name": "unknown:147e"
+  },
+  {
+   "class": "nak",
+   "frame_hex": "fefe94e0277ffd",
+   "latency_ms": 105.7,
+   "name": "unknown:277f"
+  }
+ ],
+ "radio": {
+  "model": "IC-7300",
+  "radio_addr": 148
+ },
+ "summary": {
+  "ack": 0,
+  "data": 151,
+  "error": 0,
+  "nak": 17,
+  "silence": 0
+ }
+}

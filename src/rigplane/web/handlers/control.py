@@ -34,7 +34,12 @@ from ...core.state_pipeline_contracts import CommandIntent, CommandSource, Field
 from ...runtime.controller_authority import ControllerAuthority, ControllerError
 from ...core.state_store import FreshnessState, StateStore
 from ..monitor_mute import MonitorMuteState, apply_monitor_mute  # noqa: TID251
-from ...profiles import RadioProfile, resolve_radio_profile
+from ...profiles import (
+    CwTextSendCancelledError,
+    RadioProfile,
+    cw_text_sender,
+    resolve_radio_profile,
+)
 from ...profiles.control_domain import encode_legacy_control, validate_control_raw_value
 from ...runtime._poller_types import SetNarrow
 from ...runtime._dual_rx_runtime import require_receiver_for_profile
@@ -207,7 +212,6 @@ from ...radio_protocol import (
 __all__ = ["ControlHandler"]
 
 logger = logging.getLogger(__name__)
-_MAX_CW_TEXT_CHARS = 512
 # Intent param carrying the TX owner `_enqueue_command` checked (MOR-3537).
 _TX_OWNER_PARAM = "_tx_owner"
 
@@ -1722,7 +1726,10 @@ class ControlHandler:
         else:
             logger.warning("control: command %r failed: %s", name, exc)
         message = str(exc)
-        if isinstance(exc, CommandUnsupportedError):
+        if isinstance(exc, CwTextSendCancelledError):
+            # MOR-3700: a CW stop or a transmit abort ended the send.
+            error = "command_cancelled"
+        elif isinstance(exc, CommandUnsupportedError):
             error = "unsupported_command"
         elif isinstance(exc, CommandRejectedError):
             error = "radio_nak"
@@ -2323,15 +2330,17 @@ class ControlHandler:
     ) -> dict[str, Any]:
         if radio is None:
             raise RuntimeError("radio connection not available")
-        if CAP_CW not in radio.capabilities:
+        # MOR-3678: the radio's send_cw_text admits the text against its
+        # profile's ``cw_text`` (``admit_cw_text``), the one check shared
+        # with the CLI; the handler passes the text through unchanged. The
+        # ``cw`` tag (decoder, console, keyer controls) is not a second gate.
+        # A backend with no send_cw_text at all (external rigctld) is an
+        # unsupported command, not a programmer error.
+        send_cw_text = cw_text_sender(radio)
+        if send_cw_text is None:
             raise RuntimeError("radio does not support this command")
         text = str(params.get("text", ""))
-        if len(text) > _MAX_CW_TEXT_CHARS:
-            raise ValueError(
-                "CW text too long: "
-                f"max {_MAX_CW_TEXT_CHARS} characters, got {len(text)}"
-            )
-        await radio.send_cw_text(text)
+        await send_cw_text(text)
         return {"text": text}
 
     async def _ro_stop_cw_text(
@@ -2339,7 +2348,10 @@ class ControlHandler:
     ) -> dict[str, Any]:
         if radio is None:
             raise RuntimeError("radio connection not available")
-        if CAP_CW not in radio.capabilities:
+        profile = getattr(radio, "profile", None)
+        sends_cw_text = isinstance(profile, RadioProfile) and profile.cw_text.supported
+        # MOR-3678: a radio that can send CW text can stop it, cw tag or not.
+        if CAP_CW not in radio.capabilities and not sends_cw_text:
             raise RuntimeError("radio does not support this command")
         await radio.stop_cw_text()
         return {}
