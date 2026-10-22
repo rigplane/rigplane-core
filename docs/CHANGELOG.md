@@ -22,8 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   naming the cause (`CW text send to <model> was cancelled by a CW stop` /
   `... by a transmit abort`); the WebSocket command answers `ok: false`
   with the same code and message, and the CLI prints `Error: <message>`
-  and exits 1. Icom (CI-V) sends a force-off ends answer the same way. See
-  the refusal table in `docs/api/web.md`.
+  and exits 1. The same holds for `send_cw_text` on `POST /api/v1/commands`
+  and for Icom (CI-V) sends a force-off ends (a CW stop does not end a
+  CI-V send in progress). See the refusal table in `docs/api/web.md`.
 - **Radio profiles name their CW modes in one place (MOR-3679, MOR-3678).**
   Clients guessed CW mode names and missed the FTX-1's `CW-U`/`CW-L`, so
   the Pro CW console never left "Waiting for CW mode". A profile can now

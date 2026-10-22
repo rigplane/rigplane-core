@@ -1222,21 +1222,30 @@ requests with the same message:
 | Text too long | `CW text too long for <model>: got <n> characters, limit is <maxLength>` | `400` `invalid_request` | `command_failed` | `Error: <message>`, exit 1 |
 | Not supported | `<model> does not support sending CW text yet` | `409` `unsupported_command` | `unsupported_command` | `Error: <message>`, exit 1 |
 | Backend cannot send CW text (external rigctld) | `radio does not support this command` | `409` `unsupported_command` | `unsupported_command` | `Error: <message>`, exit 1 |
-| Ended by a CW stop before it was sent | `CW text send to <model> was cancelled by a CW stop` | `409` `command_cancelled` | `command_cancelled` | `Error: <message>`, exit 1 |
+| Ended by a CW stop before it was sent (Yaesu CAT only) | `CW text send to <model> was cancelled by a CW stop` | `409` `command_cancelled` | `command_cancelled` | `Error: <message>`, exit 1 |
 | Ended by a transmit abort before it was sent | `CW text send to <model> was cancelled by a transmit abort` | `409` `command_cancelled` | `command_cancelled` | not reached (see below) |
 
 Clients only display these values.
 
-The last two rows are sends that were accepted but still pending (waiting
-behind another send, or part-way through their writes) when
-`POST /api/v1/radio/cw/stop` (or the WebSocket `stop_cw_text`) or a transmit
-abort arrived. A transmit abort is the managed TX abort fence going stale:
-`force_off` on `POST /api/v1/managed-transmit/command`, the radio transport
-going away, or shutdown. What the radio already received stays sent;
-nothing of the send is written after the stop or abort. The CLI `cw`
-command runs without the managed TX composition, so no abort reaches it. A
-request whose own connection or server task is cancelled (shutdown, client
-gone) still ends without a response.
+The last two rows are sends that were accepted but still pending when a
+stop or a transmit abort arrived; the HTTP rows apply to
+`POST /api/v1/radio/cw/send` and to `send_cw_text` on
+`POST /api/v1/commands` (there in its `ok: false` envelope).
+
+- CW stop (`POST /api/v1/radio/cw/stop`, WebSocket `stop_cw_text`): on a
+  Yaesu CAT radio it ends every send admitted before it, including one
+  waiting behind another send; none of them writes its keyer memory or
+  plays it after the stop. On a CI-V radio the stop is sent at once but
+  does not end a multi-frame send in progress: its remaining frames are
+  still sent and it answers success.
+- Transmit abort (the managed TX abort fence going stale: `force_off` on
+  `POST /api/v1/managed-transmit/command`, the radio transport going away,
+  or shutdown): on both backends no frame or write of the send follows the
+  abort; what the radio already received stays sent.
+
+The CLI `cw` command runs without the managed TX composition, so no abort
+reaches it. A request whose own connection or server task is cancelled
+(shutdown, client gone) still ends without a response.
 
 When radio has audio but no hardware scope support, backend enables `AudioFftScope`
 and reports `scopeSource: "audio_fft"`. The same FFT frames are also available

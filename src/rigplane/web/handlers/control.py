@@ -1727,7 +1727,7 @@ class ControlHandler:
             logger.warning("control: command %r failed: %s", name, exc)
         message = str(exc)
         if isinstance(exc, CwTextSendCancelledError):
-            # MOR-3700: a CW stop or force-off ended the send.
+            # MOR-3700: a CW stop or a transmit abort ended the send.
             error = "command_cancelled"
         elif isinstance(exc, CommandUnsupportedError):
             error = "unsupported_command"

@@ -39,7 +39,7 @@ from rigplane.web.web_startup import (
 
 from rigplane_testkit.serial import CivSerialFake
 from testkit.test_sim_cw_text_civ_long_text import _rigs_dir
-from testkit.test_sim_cw_text_entry_points import _send_outcome, _ws_send_outcome
+from testkit.test_sim_cw_text_entry_points import _OUTCOME, _ended_unsent
 from testkit.test_sim_ftx1_send_cw_text import _request
 
 _SEND_CW = 0x17
@@ -108,13 +108,12 @@ async def _managed_civ_web(tmp_path: Path) -> AsyncIterator[SimpleNamespace]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("entry", ["http", "websocket"])
+@pytest.mark.parametrize("entry", ["http", "commands", "websocket"])
 async def test_force_off_mid_send_answers_command_cancelled(
     tmp_path: Path, entry: str
 ) -> None:
     async with _managed_civ_web(tmp_path) as s:
-        outcome = _send_outcome if entry == "http" else _ws_send_outcome
-        sending = asyncio.create_task(outcome(s.port, TEXT))
+        sending = asyncio.create_task(_OUTCOME[entry](s.port, TEXT))
         await asyncio.wait_for(s.table.holding.wait(), 5)
         # The second frame goes out and waits for its ACK.
         await asyncio.sleep(0.1)
@@ -126,20 +125,8 @@ async def test_force_off_mid_send_answers_command_cancelled(
             {"operation": "force_off"},
         )
         assert status == 202, body
-        result = await asyncio.wait_for(sending, 15)
-        if entry == "http":
-            assert result == (
-                409,
-                {"error": "command_cancelled", "message": ABORTED},
-            )
-        else:
-            assert result == {
-                "type": "response",
-                "id": "cw-1",
-                "ok": False,
-                "error": "command_cancelled",
-                "message": ABORTED,
-            }
+        expected = _ended_unsent(entry, "force_off", ABORTED)
+        assert await asyncio.wait_for(sending, 15) == expected
         # Only the first frame was answered; the send never completed.
         assert s.table.payloads == [b"A" * 30]
         assert s.fake.ptt is False

@@ -204,6 +204,7 @@ from rigplane.profiles import (
     RadioProfile,
     admit_cw_text,
     await_fenced_cw_text,
+    cw_text_cancelled,
     resolve_radio_profile,
 )
 from rigplane.profiles.control_domain import decode_legacy_control
@@ -6095,21 +6096,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         async def send_frames(
             is_current: Callable[[], bool] | None = None,
         ) -> None:
-            for frame in frames:
-                if is_current is None:
-                    resp = await self._send_civ_expect(
-                        frame,
-                        label="send_cw_text",
-                    )
-                else:
-                    resp = await self._send_civ_expect(
-                        frame,
-                        label="send_cw_text",
-                        is_current=is_current,
-                    )
-                ack = parse_ack_nak(resp)
-                if ack is False:
-                    raise CommandError("Radio rejected CW text")
+            try:
+                for frame in frames:
+                    if is_current is None:
+                        resp = await self._send_civ_expect(
+                            frame,
+                            label="send_cw_text",
+                        )
+                    else:
+                        resp = await self._send_civ_expect(
+                            frame,
+                            label="send_cw_text",
+                            is_current=is_current,
+                        )
+                    ack = parse_ack_nak(resp)
+                    if ack is False:
+                        raise CommandError("Radio rejected CW text")
+            except Exception as exc:
+                # MOR-3700: an abort makes the fence stale at once and
+                # cancels this work later; a frame that fails in between
+                # ("managed TX attempt is stale") is the same abort.
+                if is_current is not None and not is_current():
+                    raise cw_text_cancelled(self.profile.model, "abort") from exc
+                raise
 
         if not frames or self._local_tx_work is None:
             await send_frames()

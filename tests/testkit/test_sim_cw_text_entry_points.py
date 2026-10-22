@@ -525,15 +525,25 @@ async def test_cli_audio_probe_reports_an_unloadable_profile(
 # ── A stop ends sends that are still pending (not yet on the wire) ──
 
 _SEND = "/api/v1/radio/cw/send"
+_COMMANDS = "/api/v1/commands"
 
 
-async def _send_outcome(port: int, text: str) -> tuple[int | None, dict]:
-    """POST a CW text send; ``(None, {})`` when the server closes unanswered."""
+async def _send_outcome(
+    port: int, text: str, *, path: str = _SEND
+) -> tuple[int | None, dict]:
+    """POST a CW text send; ``(None, {})`` when the server closes unanswered.
+
+    *path* ``/api/v1/commands`` sends it as the structured
+    ``send_cw_text`` command instead of ``/api/v1/radio/cw/send``.
+    """
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     try:
-        data = json.dumps({"text": text}).encode()
+        body: dict[str, object] = {"text": text}
+        if path == _COMMANDS:
+            body = {"name": "send_cw_text", "params": body}
+        data = json.dumps(body).encode()
         writer.write(
-            f"POST {_SEND} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+            f"POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
             f"Content-Type: application/json\r\nContent-Length: {len(data)}\r\n"
             "Connection: close\r\n\r\n".encode()
             + data
@@ -558,7 +568,16 @@ async def _ws_send_outcome(port: int, text: str) -> dict | None:
         return None
 
 
-_OUTCOME = {"http": _send_outcome, "websocket": _ws_send_outcome}
+async def _commands_send_outcome(port: int, text: str) -> tuple[int | None, dict]:
+    """``send_cw_text`` through the structured ``POST /api/v1/commands``."""
+    return await _send_outcome(port, text, path=_COMMANDS)
+
+
+_OUTCOME = {
+    "http": _send_outcome,
+    "commands": _commands_send_outcome,
+    "websocket": _ws_send_outcome,
+}
 
 
 async def _pending_sends(
@@ -579,17 +598,25 @@ async def _pending_sends(
     return first, second
 
 
-def _ended_unsent(entry: str, how: str) -> object:
+def _ended_unsent(entry: str, how: str, message: str | None = None) -> object:
     """What the user sees for a send a stop or force-off ended (MOR-3700).
 
-    A defined refusal on both entry points: HTTP 409 ``command_cancelled``,
-    WebSocket ``ok: false`` with the same code and text. It used to be a 500
+    A defined refusal on every entry point: HTTP 409 ``command_cancelled``
+    (``/api/v1/radio/cw/send`` and the structured ``/api/v1/commands``,
+    each in its own envelope), WebSocket ``ok: false`` with the same code
+    and text. It used to be a 500
     ("Managed Yaesu CAT write is no longer current") for a stop and, for a
     force-off, a connection closed with no response at all.
     """
-    message = STOPPED if how == "stop" else ABORTED
+    if message is None:
+        message = STOPPED if how == "stop" else ABORTED
     if entry == "http":
         return (409, {"error": "command_cancelled", "message": message})
+    if entry == "commands":
+        return (
+            409,
+            {"ok": False, "error": "command_cancelled", "message": message},
+        )
     return {
         "type": "response",
         "id": "cw-1",
@@ -620,7 +647,7 @@ async def _end_pending_sends(s: SimpleNamespace, how: str) -> tuple[int, dict]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("entry", ["http", "websocket"])
+@pytest.mark.parametrize("entry", ["http", "commands", "websocket"])
 @pytest.mark.parametrize("how", ["stop", "force_off"])
 async def test_stop_ends_pending_sends_before_they_play(
     tmp_path: Path, how: str, entry: str

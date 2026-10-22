@@ -14,6 +14,7 @@ import pytest
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.backends.yaesu_cat.transport import CatTransportError
 from rigplane.commands.commander import Priority
+from rigplane.core.exceptions import ConnectionError as RigplaneConnectionError
 from rigplane.core.types import CivFrame
 from rigplane.profiles import CwTextSendCancelledError
 from rigplane.runtime.managed_tx_composition import (
@@ -304,6 +305,49 @@ async def test_icom_force_off_suppresses_late_cw_write_and_remaining_chunks(
     assert predicates[0] is predicates[1]
     assert predicates[0] is not None
     assert predicates[0]() is False
+    assert wire == []
+    await composition.shutdown(asyncio.Event())
+
+
+@pytest.mark.asyncio
+async def test_icom_frame_refused_stale_before_the_abort_cancels_is_a_refusal(
+    tmp_path,
+) -> None:
+    # MOR-3700 (pre-review): force_off() makes the fence stale at once and
+    # cancels the fenced work only when its cleanup runs. A CI-V frame that
+    # resumes in between is refused by the currency check ("managed TX
+    # attempt is stale", _civ_rx.py) and ends the work before the cancel
+    # arrives; the caller still gets the abort refusal, not that error.
+    radio = _icom_radio()
+    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
+    install_managed_tx_composition(radio, composition)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    wire: list[bytes] = []
+
+    async def stale_checked_send_raw(frame: bytes, **kwargs: object) -> CivFrame:
+        predicate = kwargs.get("is_current")
+        assert callable(predicate)
+        entered.set()
+        await release.wait()
+        if not predicate():
+            raise RigplaneConnectionError("managed TX attempt is stale")
+        wire.append(frame)
+        return _ack()
+
+    radio._send_civ_raw = stale_checked_send_raw
+    sending = asyncio.create_task(radio.send_cw_text("A" * 31))
+    await entered.wait()
+
+    cleanup = composition._abort_fence.force_off()  # cleanup not yet run
+    release.set()
+    with pytest.raises(
+        CwTextSendCancelledError,
+        match="^CW text send to IC-7300 was cancelled by a transmit abort$",
+    ) as raised:
+        await sending
+    assert isinstance(raised.value.__cause__, RigplaneConnectionError)
+    await cleanup
     assert wire == []
     await composition.shutdown(asyncio.Event())
 
