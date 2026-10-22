@@ -87,6 +87,7 @@ __all__ = [
     "TransceiverBankCapable",
     "VfoSlotCapable",
     "RelativeVfoReadbackCapable",
+    "RelativeVfoFrequencyWritable",
     "RelativeVfoState",
     "StateCacheCapable",
     "StateModelCapable",
@@ -1685,6 +1686,22 @@ class RelativeVfoReadbackCapable(Protocol):
 
     async def read_relative_vfo(self, *, selected: bool) -> RelativeVfoState:
         """Return a fresh tuple for the radio's current relative role."""
+        ...
+
+
+@runtime_checkable
+class RelativeVfoFrequencyWritable(Protocol):
+    """Radio can write and read back a Selected/Unselected VFO frequency."""
+
+    async def write_relative_vfo_frequency(
+        self,
+        freq_hz: int,
+        *,
+        selected: bool,
+        after_ack: Callable[[], None] | None = None,
+        after_readback: Callable[[], None] | None = None,
+    ) -> int:
+        """Return observed Hz; synchronous hooks may raise to reject stale targets."""
         ...
 
 

@@ -6,8 +6,7 @@ import asyncio
 import json
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -364,11 +363,13 @@ async def test_http_single_set_vfo_freq_reports_readback_body() -> None:
         Observation,
         SourceMetadata,
     )
+    from rigplane.runtime._dual_rx_runtime import DualRxRuntimeMixin
     from rigplane.web.radio_poller import RadioPoller, SetVfoFreq
 
     profile = resolve_radio_profile(model="IC-7300")
     radio = SimpleNamespace(
         profile=profile,
+        _profile=profile,
         model=profile.model,
         capabilities=set(),
         _civ_epoch=1,
@@ -381,6 +382,9 @@ async def test_http_single_set_vfo_freq_reports_readback_body() -> None:
         set_freq=AsyncMock(),
         set_vfo=AsyncMock(),
         select_receiver=AsyncMock(),
+    )
+    radio.write_relative_vfo_frequency = (
+        DualRxRuntimeMixin.write_relative_vfo_frequency.__get__(radio)
     )
     srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))  # type: ignore[arg-type]
     store = srv.command_state_store
@@ -417,6 +421,13 @@ async def test_http_single_set_vfo_freq_reports_readback_body() -> None:
     await poller._execute_queued_entry(entries[0])  # noqa: SLF001
     writer = await asyncio.wait_for(request, timeout=10.0)
 
+    assert radio.send_civ.await_args_list == [
+        call(0x25, None, data=bytes.fromhex("01 00 40 07 14 00"), wait_response=True),
+        call(0x25, None, data=b"\x01", wait_response=True),
+    ]
+    radio.set_freq.assert_not_awaited()
+    radio.set_vfo.assert_not_awaited()
+    radio.select_receiver.assert_not_awaited()
     assert writer.response_status == 200
     assert writer.response_body == {
         "id": "single-vfo",

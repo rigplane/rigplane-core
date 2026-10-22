@@ -810,13 +810,12 @@ def projected_vfo_capability_tags(
         }
     else:
         tags = set()
-    from ..core.radio_protocol import CivCommandCapable
+    from ..core.radio_protocol import RelativeVfoFrequencyWritable
 
     cmd_map = profile.command_map
     if (
         isinstance(getattr(radio, "profile", None), RadioProfile)
-        and isinstance(radio, CivCommandCapable)
-        and profile.id == "icom_ic7300"
+        and isinstance(radio, RelativeVfoFrequencyWritable)
         and profile.receiver_count == 1
         and profile.vfo_scheme == "ab"
         and profile.vfo_readback == "selected_unselected"
