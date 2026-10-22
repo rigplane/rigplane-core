@@ -13,6 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A CW text send a stop or force-off ends gets a defined answer
+  (MOR-3700).** A pending `send_cw_text` that a CW stop ended answered HTTP
+  `500` with the transport's "Managed Yaesu CAT write is no longer current",
+  and one a managed force-off ended got no answer at all: the HTTP
+  connection closed and the WebSocket command never got a response. Both
+  now answer HTTP `409` with `error: "command_cancelled"` and a message
+  naming the cause (`CW text send to <model> was cancelled by a CW stop` /
+  `... by a transmit abort`); the WebSocket command answers `ok: false`
+  with the same code and message, and the CLI prints `Error: <message>`
+  and exits 1. Icom (CI-V) sends a force-off ends answer the same way. See
+  the refusal table in `docs/api/web.md`.
 - **Radio profiles name their CW modes in one place (MOR-3679, MOR-3678).**
   Clients guessed CW mode names and missed the FTX-1's `CW-U`/`CW-L`, so
   the Pro CW console never left "Waiting for CW mode". A profile can now

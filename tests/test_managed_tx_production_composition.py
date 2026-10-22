@@ -24,6 +24,7 @@ from rigplane.core.tx_observation import (
 )
 from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.profiles import CwTextSendCancelledError
 from rigplane.rig_loader import load_rig
 from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator
@@ -185,7 +186,8 @@ async def test_yaesu_install_shares_runner_and_poison_suppresses_queued_cw_chunk
     release.set()
     await retiring
 
-    with pytest.raises(asyncio.CancelledError):
+    # MOR-3700: the retired fence ends the send with a refusal.
+    with pytest.raises(CwTextSendCancelledError, match="by a transmit abort$"):
         await sending
     assert pending
     assert pending[0][0] == "A" * 48

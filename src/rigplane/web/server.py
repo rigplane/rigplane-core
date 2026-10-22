@@ -7084,12 +7084,16 @@ class WebServer:
             )
             return
         except RuntimeError as exc:
+            from ..profiles import CwTextSendCancelledError
+
             message = str(exc)
-            status, reason, code = (
-                (409, "Conflict", "unsupported_command")
-                if "does not support" in message
-                else (500, "Internal Server Error", "command_failed")
-            )
+            if isinstance(exc, CwTextSendCancelledError):
+                # MOR-3700: a CW stop or force-off ended the send.
+                status, reason, code = (409, "Conflict", "command_cancelled")
+            elif "does not support" in message:
+                status, reason, code = (409, "Conflict", "unsupported_command")
+            else:
+                status, reason, code = (500, "Internal Server Error", "command_failed")
             body = json.dumps(
                 {"error": code, "message": message},
                 separators=(",", ":"),

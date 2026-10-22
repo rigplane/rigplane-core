@@ -3619,8 +3619,15 @@ class YaesuCatRadio:
             RuntimeError: The profile does not enable CW text sending.
             ValueError: The text is longer than the profile limit or holds a
                 character a CAT parameter cannot carry. Nothing is written.
+            CwTextSendCancelledError: A CW stop or a transmit abort ended
+                the send before it was written (MOR-3700).
         """
-        from ...profiles import CwTextUnsupportedError, admit_cw_text
+        from ...profiles import (
+            CwTextUnsupportedError,
+            admit_cw_text,
+            await_fenced_cw_text,
+            cw_text_cancelled,
+        )
 
         admit_cw_text(self.profile, text)
         spec = self.profile.cw_text
@@ -3652,19 +3659,37 @@ class YaesuCatRadio:
             # waiting for it already holds an abort token: a force-off ends
             # it before it can write KM or KY.
             async with self._cw_text_lock:
-                await self._write(
-                    "write_keyer_memory", chan=channel, mem=text, is_current=current
-                )
-                # A stale fence makes this write raise "no longer current",
-                # the same as a stale chunk: KY never plays after a force-off.
-                await self._write(
-                    "send_cw", type=msg_type, mem=channel, is_current=current
-                )
+                try:
+                    await self._write(
+                        "write_keyer_memory",
+                        chan=channel,
+                        mem=text,
+                        is_current=current,
+                    )
+                    # A stale fence makes this write raise "no longer
+                    # current", the same as a stale chunk: KY never plays
+                    # after a force-off.
+                    await self._write(
+                        "send_cw", type=msg_type, mem=channel, is_current=current
+                    )
+                except CatTransportError as exc:
+                    # MOR-3700: a write refused because a transmit abort
+                    # or a stop ended this send is a cancellation the
+                    # caller is told about, not a transport failure. The
+                    # fence first: a force-off goes stale before its
+                    # managed CW stop runs.
+                    if is_current is not None and not is_current():
+                        raise cw_text_cancelled(self.profile.model, "abort") from exc
+                    if self._cw_text_generation != generation:
+                        raise cw_text_cancelled(self.profile.model, "stop") from exc
+                    raise
 
         if self._local_tx_work is None:
             await write(None)
         else:
-            await self._local_tx_work.run(write)
+            await await_fenced_cw_text(
+                self._local_tx_work.run(write), self.profile.model
+            )
 
     async def stop_cw_text(self) -> None:
         """Stop keyer memory playback: ``KY P1 0;`` (printed p.18, P2 0 STOP)."""

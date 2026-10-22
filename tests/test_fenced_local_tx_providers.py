@@ -15,6 +15,7 @@ from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.backends.yaesu_cat.transport import CatTransportError
 from rigplane.commands.commander import Priority
 from rigplane.core.types import CivFrame
+from rigplane.profiles import CwTextSendCancelledError
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
@@ -88,14 +89,23 @@ async def _force_receive(radio: YaesuCatRadio) -> ActuationResult:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "start_local_work",
+    ("start_local_work", "ended"),
     [
-        pytest.param(lambda radio: radio.send_cw_text("CQ"), id="cw"),
-        pytest.param(lambda radio: radio.set_tuner_status(2), id="tuner"),
+        pytest.param(
+            lambda radio: radio.send_cw_text("CQ"),
+            (CwTextSendCancelledError, "cancelled by a transmit abort"),
+            id="cw",
+        ),
+        pytest.param(
+            lambda radio: radio.set_tuner_status(2),
+            (CatTransportError, "no longer current"),
+            id="tuner",
+        ),
     ],
 )
 async def test_force_receive_bypasses_queued_stale_local_work(
     start_local_work: Callable[[YaesuCatRadio], Awaitable[None]],
+    ended: tuple[type[Exception], str],
 ) -> None:
     fence = TxAbortFence()
     radio = _fenced_radio(fence)
@@ -109,7 +119,9 @@ async def test_force_receive_bypasses_queued_stale_local_work(
     release.set()
 
     assert await force_receive is ActuationResult.ACCEPTED
-    with pytest.raises(CatTransportError, match="no longer current"):
+    # MOR-3700: a CW text send the abort ended says so; tuner work keeps
+    # the transport's refusal.
+    with pytest.raises(ended[0], match=ended[1]):
         await local
     await holder
     await cleanup
@@ -145,7 +157,10 @@ async def test_force_receive_suppresses_keyer_playback_after_the_memory_write() 
     release_first_drain.set()
 
     assert await force_receive is ActuationResult.ACCEPTED
-    with pytest.raises(CatTransportError, match="no longer current"):
+    with pytest.raises(
+        CwTextSendCancelledError,
+        match="^CW text send to FTX-1 was cancelled by a transmit abort$",
+    ):
         await local
     await cleanup
 
@@ -274,7 +289,12 @@ async def test_icom_force_off_suppresses_late_cw_write_and_remaining_chunks(
 
     cleanup = composition._abort_fence.force_off()
     release.set()
-    with pytest.raises(asyncio.CancelledError):
+    # MOR-3700: the abort's cancellation of the fenced work is a refusal
+    # for the caller, not a cancellation of the caller's own task.
+    with pytest.raises(
+        CwTextSendCancelledError,
+        match="^CW text send to IC-7300 was cancelled by a transmit abort$",
+    ):
         await sending
     result = await cleanup
 
@@ -445,7 +465,10 @@ async def test_stop_cw_text_ends_a_send_whose_memory_write_is_in_flight() -> Non
     release_first_drain.set()
 
     await stopping
-    with pytest.raises(CatTransportError, match="no longer current"):
+    with pytest.raises(
+        CwTextSendCancelledError,
+        match="^CW text send to FTX-1 was cancelled by a CW stop$",
+    ):
         await sending
     wire_commands = [
         call.args[0] for call in radio._transport._raw_write.await_args_list
@@ -480,7 +503,10 @@ async def test_stop_cw_text_ends_a_send_still_waiting_for_the_keyer_lock() -> No
 
     await stopping
     results = await asyncio.gather(first, second, return_exceptions=True)
-    assert all(isinstance(r, CatTransportError) for r in results), results
+    assert [str(r) for r in results] == [
+        "CW text send to FTX-1 was cancelled by a CW stop"
+    ] * 2, results
+    assert all(isinstance(r, CwTextSendCancelledError) for r in results), results
     wire_commands = [
         call.args[0] for call in radio._transport._raw_write.await_args_list
     ]
@@ -515,7 +541,10 @@ async def test_managed_cw_abort_ends_a_send_whose_memory_write_is_in_flight() ->
     release_first_drain.set()
 
     await aborting
-    with pytest.raises(CatTransportError, match="no longer current"):
+    with pytest.raises(
+        CwTextSendCancelledError,
+        match="^CW text send to FTX-1 was cancelled by a CW stop$",
+    ):
         await sending
     assert writer.frames == [b"KM5CQ;", b"KY00;"]
 
@@ -761,6 +790,9 @@ async def test_managed_cw_abort_the_writer_accepted_ends_the_send() -> None:
     with pytest.raises(CatTransportError, match="serial port flush failed"):
         await aborting
     assert radio._cw_text_generation == generation + 1
-    with pytest.raises(CatTransportError, match="no longer current"):
+    with pytest.raises(
+        CwTextSendCancelledError,
+        match="^CW text send to FTX-1 was cancelled by a CW stop$",
+    ):
         await sending
     assert writer.frames == [b"KM5CQ;", b"KY00;"]

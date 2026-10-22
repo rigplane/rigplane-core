@@ -34,7 +34,12 @@ from ...core.state_pipeline_contracts import CommandIntent, CommandSource, Field
 from ...runtime.controller_authority import ControllerAuthority, ControllerError
 from ...core.state_store import FreshnessState, StateStore
 from ..monitor_mute import MonitorMuteState, apply_monitor_mute  # noqa: TID251
-from ...profiles import RadioProfile, cw_text_sender, resolve_radio_profile
+from ...profiles import (
+    CwTextSendCancelledError,
+    RadioProfile,
+    cw_text_sender,
+    resolve_radio_profile,
+)
 from ...profiles.control_domain import encode_legacy_control, validate_control_raw_value
 from ...runtime._poller_types import SetNarrow
 from ...runtime._dual_rx_runtime import require_receiver_for_profile
@@ -1721,7 +1726,10 @@ class ControlHandler:
         else:
             logger.warning("control: command %r failed: %s", name, exc)
         message = str(exc)
-        if isinstance(exc, CommandUnsupportedError):
+        if isinstance(exc, CwTextSendCancelledError):
+            # MOR-3700: a CW stop or force-off ended the send.
+            error = "command_cancelled"
+        elif isinstance(exc, CommandUnsupportedError):
             error = "unsupported_command"
         elif isinstance(exc, CommandRejectedError):
             error = "radio_nak"

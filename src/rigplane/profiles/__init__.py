@@ -7,6 +7,7 @@ TOML file with zero Python changes.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,8 +25,10 @@ from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.types import ToneSquelchType
 
 __all__ = [
+    "CwTextSendCancelledError",
     "CwTextSpec",
     "CwTextUnsupportedError",
+    "await_fenced_cw_text",
     "admit_cw_text",
     "ControlLookupPoint",
     "EncodedControlChoice",
@@ -870,6 +873,47 @@ class CwTextUnsupportedError(RuntimeError):
     answers it with the existing ``unsupported_command`` path (HTTP 409,
     WebSocket ``unsupported_command``).
     """
+
+
+class CwTextSendCancelledError(RuntimeError):
+    """A CW stop or a transmit abort ended a send_cw_text (MOR-3700).
+
+    A send that was still pending (queued behind another send, or waiting
+    to write) when a CW stop or a transmit abort arrived. A transmit abort
+    is the managed TX abort fence going stale: a force-off, the radio
+    transport going away, or shutdown. It is a defined refusal, not a
+    failure: HTTP answers 409 ``command_cancelled``,
+    the WebSocket command ``ok: false`` with ``command_cancelled``, the CLI
+    ``Error: <message>`` with exit 1. Raise it with :func:`cw_text_cancelled`
+    so every backend uses the same text.
+    """
+
+
+def cw_text_cancelled(
+    model: str, by: Literal["stop", "abort"]
+) -> CwTextSendCancelledError:
+    """The refusal for a send a CW stop or a transmit abort ended (MOR-3700)."""
+    cause = "a CW stop" if by == "stop" else "a transmit abort"
+    return CwTextSendCancelledError(f"CW text send to {model} was cancelled by {cause}")
+
+
+async def await_fenced_cw_text(work: Awaitable[None], model: str) -> None:
+    """Await a send's abort-fenced TX work; an abort is a refusal (MOR-3700).
+
+    A transmit abort (force-off, transport gone) cancels the fenced work task, and the runner hands
+    that on as ``CancelledError``; left alone it would cancel the caller's
+    request too (HTTP closed the connection unanswered). That cancellation
+    becomes :class:`CwTextSendCancelledError`. A cancellation of the caller
+    itself (server shutdown, a client gone) is not a refusal and stays a
+    cancellation.
+    """
+    try:
+        await work
+    except asyncio.CancelledError:
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise
+        raise cw_text_cancelled(model, "abort") from None
 
 
 def cw_text_sender(radio: object) -> Callable[[str], Awaitable[None]] | None:
