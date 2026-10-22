@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
 
 from rigplane.profiles import MemoryProfile, get_radio_profile
-from rigplane.profiles.rig_loader import RigLoadError, load_rig
+from rigplane.profiles import RadioProfile
+from rigplane.profiles.rig_loader import RigConfig, RigLoadError, load_rig
 from test_profile_identity_metadata import _minimal_toml, _write_toml
 
 
@@ -90,3 +92,9 @@ def test_a_channel_list_has_only_group_zero(tmp_path: Path) -> None:
     assert _load(tmp_path, ok).to_profile().memory == MemoryProfile(
         "channel", 0, 0, 1, 99
     )
+
+
+@pytest.mark.parametrize("cls", [RigConfig, RadioProfile])
+def test_memory_is_keyword_only_so_no_positional_argument_shifts(cls: type) -> None:
+    by_name = {f.name: f for f in dataclasses.fields(cls)}
+    assert by_name["memory"].kw_only is True

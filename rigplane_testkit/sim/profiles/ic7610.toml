@@ -1,0 +1,40 @@
+# IC-7610 simulation profile (LAN, tier A). Wire facts stay in
+# rigs/ic7610.toml; identity/audio/scope select among its values. Sourcing:
+# tests/fixtures/ic7610/README.md, docs/internals/ic7610-fake-fidelity.md. Unsourced keys are omitted.
+
+schema = "rigplane-sim-profile/1"
+
+[sim]
+id = "ic7610-lan"
+radio = "IC-7610"
+fidelity = "A"
+evidence = ["tests/fixtures/ic7610/civ_pairs.jsonl", "tests/golden/wire_oracle/ic7610.toml"]
+gaps = [
+    "TX audio path unrecorded",
+    "scope waves recorded for MAIN and SUB only at the recorded cadence",
+    "unknown 0x1A 05 menu items answered from the table or NAK",
+]
+
+[transport.lan]
+keepalive_hold_s = 85.0
+single_owner = true
+identity = "98"
+
+[initial]
+frequency_hz = 14_286_000
+mode = "USB"
+filter = 1
+
+[answers]
+recorded = [{ file = "tests/fixtures/ic7610/civ_pairs.jsonl", transport = "lan" }]
+
+[audio.rx]
+transport = "lan_stream"
+sample_rate_hz = 48000
+channels = 2
+sample_format = "s16le"
+
+[scope]
+bins = 689
+span_hz = 100_000
+frame = "27 00"

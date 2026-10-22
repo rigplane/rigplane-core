@@ -176,6 +176,10 @@ What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fa
   complete `FE FE ... FD` frames per direction. CLI:
   `python -m rigplane_testkit.serial record --device DEV --out FILE
   [--baud 115200] [--listen-host H] [--listen-port P]`.
+  `python -m rigplane_testkit.serial.fixtures extract` trims a bridge
+  recording into `civ_pairs.jsonl` rows (first occurrence per request, echo,
+  closing reply, scope sweeps; unsolicited frames summarised apart); the
+  IC-7300 capture runbook is `scripts/ic7300_capture/README.md`.
 - `rigplane_testkit.yaesu` — `FakeCatRadio`, a stateful FTX-1-style Yaesu CAT
   personality (frequency, mode, PTT, power, auto-information mode) on a real
   TCP server, reached through pyserial's `socket://` URL handler: the

@@ -749,6 +749,8 @@ list = [
     "FM-N", "DATA-U", "AM-N", "PSK", "DATA-FM-N",
     "C4FM-DN", "C4FM-VW",
 ]
+# MOR-3679: the CW modes, named once here for every client.
+families = { cw = ["CW-U", "CW-L"] }
 # MD (OPERATING MODE) P2 codes, one per name above, parallel to list
 # (FTX-1 CAT OM 2508-C): 1-9, A-F, then H and I. The manual marks 0, G and
 # J unused; H = C4FM-DN and I = C4FM-VW.
@@ -1440,6 +1442,9 @@ set_break_in   = { cat = { write = "BI{state};" } }
 get_cw_spot    = { cat = { read = "CS;", parse = "CS{state};" } }
 set_cw_spot    = { cat = { write = "CS{state};" } }
 send_cw        = { cat = { write = "KY{type}{mem};" } }
+# KM KEYING MEMORY (CAT manual 2508-C printed p.17): channel 1-5, up to 50
+# characters. send_cw_text writes the text here, then plays it with send_cw.
+write_keyer_memory = { cat = { write = "KM{chan}{mem};" } }
 get_break_in_delay = { cat = { read = "SD;", parse = "SD{delay:04d};" } }
 set_break_in_delay = { cat = { write = "SD{delay:04d};" } }
 
@@ -1531,3 +1536,20 @@ refused_during_tx = ["mode", "vfo-topology"]
 # receiving, "1" transmitting because CAT keyed it, "2" transmitting
 # because the radio keyed itself (front panel/mic/footswitch/VOX).
 tx_state_map = { "0" = "rx", "1" = "tx_cat", "2" = "tx_other" }
+
+
+# ── Typed CW text (MOR-3678) ──
+# send_cw_text writes the text with KM into keyer memory channel 5, then
+# plays it with KY P1 P2 (CAT manual FTX-1_CAT_OM_ENG_2508-C: KM printed
+# p.17 "up to 50 characters"; KY printed p.18, P1 0 = CW TEXT memory,
+# 1 = CW MESSAGE memory, P2 1-5 = play, 0 = stop). The FTX-1 has no
+# free-text KY form. Channel 5 overwrites the factory "R 5NN K}" memory
+# (Operation Manual 2506E printed p.49).
+[cw_text]
+# Disabled until the memory type is verified on the radio.
+supported = false
+max_length = 50
+memory_channel = 5
+# Advance Manual FTX-1_AM_ENG_2506-B printed p.62, CW MEMORY 1-5: "Default
+# Setting: TEXT". NOT verified on radio (live check item 6 pending).
+memory_type = "text"

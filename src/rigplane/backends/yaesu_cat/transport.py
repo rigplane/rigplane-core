@@ -287,8 +287,15 @@ class YaesuCatTransport:
         command: str,
         *,
         is_current: Callable[[], bool] | None = None,
+        on_committed: Callable[[], None] | None = None,
     ) -> None:
-        """Send raw bytes to serial port."""
+        """Send raw bytes to serial port.
+
+        *on_committed* runs once the final currency check has passed and the
+        writer has accepted the bytes, before ``drain()`` and with no await
+        in between, so its effect happens only for a write that went out: a
+        writer that refuses the bytes leaves it unrun (MOR-3678).
+        """
         self._check_connected()
         assert self._writer is not None  # for type checker
 
@@ -298,9 +305,12 @@ class YaesuCatTransport:
         if self._debug_logging:
             logger.debug("CAT TX: %r", command)
 
+        encoded = command.encode("ascii")
         self._require_write_currency(is_current)
         try:
-            self._writer.write(command.encode("ascii"))
+            self._writer.write(encoded)
+            if on_committed is not None:
+                on_committed()
             await self._writer.drain()
         except Exception as exc:
             self._stats.record_error(f"write failed: {exc}")
@@ -427,6 +437,7 @@ class YaesuCatTransport:
         *,
         is_current: Callable[[], bool] | None = None,
         tier: ExchangeTier = ExchangeTier.ORDINARY,
+        on_committed: Callable[[], None] | None = None,
     ) -> None:
         """Send a SET command and drain echo / auto-info.
 
@@ -436,6 +447,8 @@ class YaesuCatTransport:
 
         Args:
             command: CAT command string (e.g. ``"MD0E;"``).
+            on_committed: Runs once the final currency check has passed,
+                just before the bytes go out (see :meth:`_raw_write`).
 
         Raises:
             CatCommandRejected: If the radio returns ``?;`` (MOR-2103).
@@ -444,7 +457,12 @@ class YaesuCatTransport:
         async with self._exchange_gate.exchange(tier=tier):
             await self.flush_rx()
             self._require_write_currency(is_current)
-            await self._raw_write(command, is_current=is_current)
+            if on_committed is None:
+                await self._raw_write(command, is_current=is_current)
+            else:
+                await self._raw_write(
+                    command, is_current=is_current, on_committed=on_committed
+                )
             self._stats.writes += 1
             drained = await self._drain_responses(command)
             self._stats.record_success()
