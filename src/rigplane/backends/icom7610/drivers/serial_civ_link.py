@@ -200,6 +200,8 @@ class SerialCivLink:
         self._healthy = False
         self._max_write_queue = max_write_queue
         self._frames: asyncio.Queue[bytes] = asyncio.Queue()
+        self._receive_generation = 0
+        self._read_task: asyncio.Task[bytes | None] | None = None
         self._write_queue: asyncio.Queue[bytes | _WriteRequest | None] = asyncio.Queue(
             maxsize=max_write_queue
         )
@@ -254,6 +256,57 @@ class SerialCivLink:
         self._writer_task = asyncio.create_task(
             self._writer_loop(self._write_queue, writer), name="serial-civ-writer"
         )
+
+    def set_baudrate(self, baudrate: int) -> bool:
+        """Retune the open port to *baudrate* without reopening it (MOR-3620).
+
+        A reopen toggles the modem control lines; the live pyserial object
+        takes a new rate in place. A closed link just remembers the rate for
+        its next open. Returns ``False`` and keeps the old rate when the
+        transport exposes no pyserial object (test fakes, bespoke openers)
+        or the port refuses the rate (a refusal
+        is rolled back; if even that fails the link is marked unhealthy so
+        the watchdog reopens it at the old rate). On success the rate is also
+        what a later reopen uses. Queued frames, codec state and the OS input
+        buffer are dropped, and a read that already returned old-rate bytes
+        is discarded; bytes already sitting in the asyncio reader buffer are
+        not fenced (MOR-3657).
+        """
+        if baudrate <= 0:
+            raise ValueError("baudrate must be > 0")
+        if not self._connected:
+            self._baudrate = baudrate  # what the next open uses
+            self._receive_generation += 1
+            return True
+        port = getattr(getattr(self._writer, "transport", None), "serial", None)
+        if port is None:
+            return False
+        try:
+            port.baudrate = baudrate
+        except Exception:
+            logger.warning(
+                "serial CI-V: %s refused baud %d; keeping %d",
+                self._device,
+                baudrate,
+                self._baudrate,
+                exc_info=True,
+            )
+            try:
+                port.baudrate = self._baudrate
+            except Exception:
+                self._healthy = False
+            return False
+        self._baudrate = baudrate
+        self._receive_generation += 1
+        # Restart the in-flight pending read before it consumes the new baud's reply.
+        if self._read_task is not None:
+            self._read_task.cancel()
+        with contextlib.suppress(Exception):
+            port.reset_input_buffer()
+        while not self._frames.empty():
+            self._frames.get_nowait()
+        self._codec.reset()
+        return True
 
     async def disconnect(self) -> None:
         """Close serial CI-V transport and worker tasks."""
@@ -426,11 +479,23 @@ class SerialCivLink:
                     )
                 return None
 
+            generation = self._receive_generation
+            read_task = asyncio.create_task(self._read_once())
+            self._read_task = read_task
             try:
                 chunk = await asyncio.wait_for(
-                    self._read_once(),
+                    read_task,
                     timeout=remaining,
                 )
+            except asyncio.CancelledError:
+                receiver = asyncio.current_task()
+                if (
+                    generation == self._receive_generation
+                    or receiver is None
+                    or receiver.cancelling()
+                ):
+                    raise
+                continue
             except asyncio.TimeoutError:
                 if self._codec.expire_partial():
                     self._healthy = False
@@ -438,7 +503,12 @@ class SerialCivLink:
                         "Timed out waiting for complete frame."
                     )
                 return None
+            finally:
+                if self._read_task is read_task:
+                    self._read_task = None
 
+            if generation != self._receive_generation:
+                continue
             if chunk is None:
                 return None
             for parsed in self._codec.feed(chunk):

@@ -4037,6 +4037,8 @@ class TestFtx1ManualOnlyCommands:
 
     MOR-2531 added two 2508-C names: ``vfo_swap`` (SV; — SWAP VFO) and
     ``vfo_equalize`` (AB; — MAIN-side to SUB-side), the FTX-1's M⇄S / M=S.
+    MOR-3678 added ``write_keyer_memory`` (KM; — KEYING MEMORY, printed
+    p.17), which send_cw_text writes before KY plays the channel.
     """
 
     _REMOVED_NAMES = frozenset(
@@ -4064,8 +4066,8 @@ class TestFtx1ManualOnlyCommands:
     def test_exact_retained_membership(self):
         _assert_manual_only_membership(
             "ftx1.toml",
-            128,
-            "f3cc23e821f26a47b0e89fa373f8bd97912de0908708f004acb805e39d983d47",
+            129,
+            "4e3ac4943f54949abfae82c2c500f4b25141fd3e719ec90f4062f29b2f859264",
             self._REMOVED_NAMES,
         )
 

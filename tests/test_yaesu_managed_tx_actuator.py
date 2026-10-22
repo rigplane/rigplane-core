@@ -151,7 +151,8 @@ async def test_force_receive_settles_on_the_confirmed_ptt_readback(
 @pytest.mark.parametrize(
     ("operation", "profile_key", "params"),
     [
-        (AbortOperation.STOP_CW, "send_cw", {"type": " ", "mem": ""}),
+        # KY P1 P2 with P2 0 = STOP (CAT 2508-C printed p.18), MOR-3678.
+        (AbortOperation.STOP_CW, "send_cw", {"type": "0", "mem": "0"}),
         (
             AbortOperation.STOP_TUNE,
             "set_tuner",
@@ -173,11 +174,19 @@ async def test_managed_abort_uses_urgent_profile_command(
     result = await radio.actuate(_token(), operation, is_current=current)
 
     assert result is ActuationResult.ACCEPTED
-    radio._transport.write.assert_awaited_once_with(
+    radio._transport.write.assert_awaited_once()
+    call = radio._transport.write.await_args
+    assert call.args == (
         format_command(_PROFILE_TEMPLATES[profile_key].write, **params),
-        is_current=current,
-        tier=ExchangeTier.ABORT,
     )
+    assert call.kwargs["tier"] is ExchangeTier.ABORT
+    assert call.kwargs["is_current"] is current
+    if operation is AbortOperation.STOP_CW:
+        # MOR-3678: the CW stop ends earlier sends only once the transport
+        # lets it out (on_committed), never at issue.
+        assert call.kwargs["on_committed"] == radio._end_earlier_cw_text_sends
+    else:
+        assert "on_committed" not in call.kwargs
 
 
 @pytest.mark.asyncio
@@ -202,3 +211,48 @@ async def test_missing_profile_command_refuses_before_io(
 
     assert result is ActuationResult.REJECTED
     radio._transport.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("memory_type", "frame"), [("text", "KY00;"), ("message", "KY10;")]
+)
+async def test_managed_cw_abort_stops_the_profile_memory_kind(
+    memory_type: str, frame: str
+) -> None:
+    # MOR-3678: the managed force-off / shutdown stop is a valid KY stop for
+    # the memory kind send_cw_text plays, never the old "KY ;".
+    config = load_rig(_RIGS_DIR / "ftx1.toml")
+    config = replace(config, cw_text=replace(config.cw_text, memory_type=memory_type))
+    radio = YaesuCatRadio("/dev/null", profile=config)
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+
+    def current() -> bool:
+        return True
+
+    result = await radio.actuate(_token(), AbortOperation.STOP_CW, is_current=current)
+
+    assert result is ActuationResult.ACCEPTED
+    radio._transport.write.assert_awaited_once()
+    call = radio._transport.write.await_args
+    assert call.args == (frame,)
+    assert call.kwargs["tier"] is ExchangeTier.ABORT
+    assert call.kwargs["is_current"] is current
+
+
+@pytest.mark.asyncio
+async def test_managed_cw_abort_ends_earlier_sends_only_once_accepted() -> None:
+    # MOR-3678 (#4317 review): issuing the stop changes nothing; only the
+    # transport running on_committed (after its final currency check)
+    # ends earlier sends.
+    radio = _profile_radio()
+    before = radio._cw_text_generation
+    result = await radio.actuate(
+        _token(), AbortOperation.STOP_CW, is_current=lambda: True
+    )
+    assert result is ActuationResult.ACCEPTED
+    assert radio._cw_text_generation == before
+
+    radio._transport.write.await_args.kwargs["on_committed"]()
+    assert radio._cw_text_generation != before
