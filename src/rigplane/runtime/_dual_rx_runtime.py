@@ -547,6 +547,30 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """
         await self._set_vfo_slot_impl(slot, receiver=receiver, confirmed=False)
 
+    async def read_vfo_slot(self, receiver: int = 0) -> str:
+        """Probe physical A/B selection on a single receiver using bare CI-V 07.
+
+        A NAK or an answer other than exactly 07 00/01 establishes no slot.
+        This probe does not declare profile support or use the cached slot.
+        """
+        self._check_connected()
+        self._check_vfo_slot_receiver(receiver, operation="read_vfo_slot")
+        if self.receiver_count != 1:
+            raise CommandError("read_vfo_slot requires a single receiver")
+        request = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, _CMD_VFO)
+        response = await self._send_civ_expect(request, label="read_vfo_slot")
+        if parse_ack_nak(response) is False:
+            raise CommandRejectedError("Radio rejected VFO slot read")
+        if (
+            response.command != _CMD_VFO
+            or response.sub is not None
+            or response.data not in (b"\x00", b"\x01")
+        ):
+            raise CommandError("VFO slot read returned no unambiguous A/B identity")
+        slot = "A" if response.data == b"\x00" else "B"
+        self._radio_state.main.active_slot = slot
+        return slot
+
     async def set_vfo_slot_confirmed(self, slot: str, receiver: int = 0) -> None:
         """Make ``slot`` active on ``receiver``, ACK-confirmed.
 
@@ -583,8 +607,11 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             )
             if confirmed:
                 response = await self._send_civ_expect(civ, label=operation)
-                if parse_ack_nak(response) is not True:
-                    raise CommandError(f"Radio rejected VFO slot {norm_slot}")
+                ack = parse_ack_nak(response)
+                if ack is False:
+                    raise CommandRejectedError(f"Radio rejected VFO slot {norm_slot}")
+                if ack is not True:
+                    raise CommandError(f"Invalid VFO slot {norm_slot} acknowledgement")
             else:
                 await self._send_civ_raw(civ, wait_response=False)
             rx_state = (

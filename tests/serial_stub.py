@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from rigplane.core.radio_protocol import RelativeVfoState
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -27,10 +28,106 @@ from rigplane.exceptions import CommandError
 from rigplane.profiles import RadioProfile, resolve_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane._state_cache import StateCache
-from rigplane.types import Mode
+from rigplane.types import Mode, bcd_decode, bcd_encode
 
 if TYPE_CHECKING:
     from rigplane._poller_types import CommandQueue, CommandQueueEntry
+
+
+class SplitIcomTransport:
+    """Stateful CI-V peer for real CoreRadio split-command socket tests."""
+
+    my_id = 0x00010001
+    remote_id = 0xDEADBEEF
+
+    def __init__(self, *, selected: str = "A") -> None:
+        self.selected = selected
+        self.slots = {
+            "A": (14_074_000, Mode.USB, 1, 0),
+            "B": (7_076_000, Mode.LSB, 3, 1),
+        }
+        self.split = False
+        self.query_reply: bytes | None = None
+        self.reject_slot: str | None = None
+        self.restore_attempted = asyncio.Event()
+        self.restore_ack: asyncio.Event | None = None
+        self.second_payload = asyncio.Event()
+        self.relative_freq_read = asyncio.Event()
+        self.relative_mode_read = asyncio.Event()
+        self._responses: asyncio.Queue[bytes] = asyncio.Queue()
+        self._packet_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self.rx_packet_count = 0
+
+    async def receive_packet(self, timeout: float = 5.0) -> bytes:
+        return await asyncio.wait_for(self._responses.get(), timeout)
+
+    async def send_tracked(self, packet: bytes) -> None:
+        from _helpers import wrap_civ_in_udp
+
+        start = packet.index(b"\xfe\xfe")
+        request = parse_civ_frame(packet[start:])
+        command, data = request.command, request.data
+        reply_command, reply_sub, reply_data = 0xFB, None, b""
+        freq, mode, filt, data_mode = self.slots[self.selected]
+        if command == 0x07:
+            if not data:
+                if self.query_reply is not None:
+                    reply_command, reply_data = self.query_reply[0], self.query_reply[1:]
+                else:
+                    reply_command = 0x07
+                    reply_data = bytes([0 if self.selected == "A" else 1])
+            else:
+                slot = "A" if data == b"\x00" else "B"
+                if slot == "A":
+                    self.restore_attempted.set()
+                    if self.restore_ack is not None:
+                        await self.restore_ack.wait()
+                if slot == self.reject_slot:
+                    reply_command = 0xFA
+                else:
+                    self.selected = slot
+        elif command == 0x05:
+            if bcd_decode(data) == 14_090_000:
+                self.second_payload.set()
+            self.slots[self.selected] = (bcd_decode(data), mode, filt, data_mode)
+        elif command == 0x06:
+            self.slots[self.selected] = (
+                freq, Mode(data[0]), data[1] if len(data) > 1 else filt, data_mode
+            )
+        elif command in (0x25, 0x26):
+            slot = self.selected
+            if data[0] == 1:
+                slot = "B" if slot == "A" else "A"
+            rel_freq, rel_mode, rel_filter, rel_data = self.slots[slot]
+            if command == 0x26 and len(data) == 4:
+                self.slots[slot] = (rel_freq, Mode(data[1]), data[3], data[2])
+            else:
+                read_event = (
+                    self.relative_freq_read if command == 0x25 else self.relative_mode_read
+                )
+                read_event.set()
+                reply_command = command
+                reply_data = data + (
+                    bcd_encode(rel_freq)
+                    if command == 0x25
+                    else bytes([rel_mode, rel_data, rel_filter])
+                )
+        elif command == 0x03:
+            reply_command, reply_data = command, bcd_encode(freq)
+        elif command == 0x04:
+            reply_command, reply_data = command, bytes([mode, filt])
+        elif command == 0x0F:
+            if data:
+                self.split = bool(data[0])
+            else:
+                reply_command, reply_data = command, bytes([self.split])
+        else:
+            raise AssertionError(f"Unexpected split-test CI-V request: {request!r}")
+        reply = build_civ_frame(
+            CONTROLLER_ADDR, request.to_addr, reply_command,
+            sub=reply_sub, data=reply_data,
+        )
+        self._responses.put_nowait(wrap_civ_in_udp(reply))
 
 
 class SerialFrameError(RuntimeError):
@@ -667,6 +764,11 @@ class SerialMockRadio:
             )
         return self._vfo_slot[receiver]
 
+    async def read_vfo_slot(self, receiver: int = 0) -> str:
+        """Read the stub's physical selection independently of cached mirrors."""
+        self._receiver_state(receiver, operation="read_vfo_slot")
+        return self._vfo_slot[receiver]
+
     async def set_vfo_slot(self, slot: str, receiver: int = 0) -> None:
         """Select A/B slot on ``receiver`` (``VfoSlotCapable`` mirror)."""
         normalized = slot.upper()
@@ -686,12 +788,12 @@ class SerialMockRadio:
         """Confirmed select (``VfoSlotConfirmedCapable`` mirror).
 
         No transport ACK exists on the stub, so this selects via
-        ``set_vfo_slot`` and confirms with a ``get_vfo_slot`` readback,
+        ``set_vfo_slot`` and confirms with a ``read_vfo_slot`` readback,
         raising :class:`CommandError` on a mismatch — the same seam
         confirmed-selection callers prefer on the Icom backend.
         """
         await self.set_vfo_slot(slot, receiver=receiver)
-        actual = await self.get_vfo_slot(receiver)
+        actual = await self.read_vfo_slot(receiver)
         if actual != slot.strip().upper():
             raise CommandError(
                 "VFO slot select not confirmed: requested "

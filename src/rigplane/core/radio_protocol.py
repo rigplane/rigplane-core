@@ -86,6 +86,7 @@ __all__ = [
     "ReceiverBankCapable",
     "TransceiverBankCapable",
     "VfoSlotCapable",
+    "VfoSlotReadbackCapable",
     "VfoSlotConfirmedCapable",
     "RelativeVfoReadbackCapable",
     "RelativeVfoState",
@@ -1598,6 +1599,15 @@ class VfoSlotCapable(Protocol):
 
 
 @runtime_checkable
+class VfoSlotReadbackCapable(VfoSlotCapable, Protocol):
+    """Radio can read physical A/B selection without relying on its cache."""
+
+    async def read_vfo_slot(self, receiver: int = 0) -> str:
+        """Read current A/B selection, raising when it cannot be established."""
+        ...
+
+
+@runtime_checkable
 class VfoSlotConfirmedCapable(VfoSlotCapable, Protocol):
     """Radio confirms VFO slot selection before the caller proceeds.
 
@@ -1612,7 +1622,7 @@ class VfoSlotConfirmedCapable(VfoSlotCapable, Protocol):
 
         Backends with a transport-level acknowledgement (Icom CI-V
         ACK/NAK) implement the ACK-checked path; others select via
-        ``set_vfo_slot`` and confirm with a ``get_vfo_slot`` readback,
+        ``set_vfo_slot`` and confirm with a cache-free ``read_vfo_slot`` readback,
         raising :class:`~rigplane.core.exceptions.CommandError` when
         the radio is not on the requested slot afterwards. Callers fall
         back to select-plus-readback themselves when the radio lacks
