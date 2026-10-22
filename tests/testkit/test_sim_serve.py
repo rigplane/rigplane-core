@@ -18,18 +18,22 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import serial
 from aiohttp import ClientSession
 from aiohttp.test_utils import TestClient, TestServer
 
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.radio import IcomRadio
 
+from rigplane_testkit.serial.endpoints import pty_supported
 from rigplane_testkit.sim.__main__ import _control_arg, build_parser
+from rigplane_testkit.sim.engine import Ok, SetMeter
 from rigplane_testkit.sim.serve import (
     TRACE_RECORD_LIMIT,
     TraceLog,
     build_stack,
     format_control_host,
+    startup_line,
 )
 
 from _perf_helpers import fast_connect
@@ -343,6 +347,176 @@ async def test_serial_events_reject_bad_durations(event: str, literal: str) -> N
         assert fake._vanished is False and fake._silent_until == 0.0
 
 
+# --- FTX-1 (Yaesu CAT serial, MOR-3602) --------------------------------------
+
+_FTX1_STARTUP_KEYS = "sim radio fidelity evidence transport device pty control seed"
+_FTX1_STATE_KEYS = "frequency_hz mode ptt s_meter open_count vanished"
+
+
+async def test_ftx1_startup_line_keys_and_state() -> None:
+    args = _args("--radio", "ftx1")
+    stack = build_stack(args)
+    await stack.backend.start()
+    client = TestClient(TestServer(stack.app))
+    await client.start_server()
+    try:
+        line = startup_line(stack.backend, args, 4321)
+        assert list(line) == _FTX1_STARTUP_KEYS.split()
+        assert line["sim"] == "rigplane-sim/1" and line["radio"] == "FTX-1"
+        assert line["fidelity"] == "A" and line["evidence"] == "simulated"
+        assert line["transport"] == "serial" and line["seed"] == 0
+        assert line["device"].startswith("socket://127.0.0.1:")
+        if pty_supported():
+            assert isinstance(line["pty"], str) and line["pty"].startswith("/dev/")
+        else:
+            assert line["pty"] is None
+
+        state = await (await client.get("/state")).json()
+        assert list(state) == _FTX1_STATE_KEYS.split()
+        assert state["frequency_hz"] == 147_225_000  # seeded from the recording
+        assert state["mode"] == "FM"  # the CAT mode NAME, not a number
+        assert state["ptt"] is False and state["vanished"] is False
+        assert isinstance(state["s_meter"], int)
+        assert state["open_count"] == (1 if pty_supported() else 0)
+    finally:
+        await client.close()
+        await stack.backend.stop()
+        stack.trace.close()
+
+
+async def test_ftx1_events() -> None:
+    async with _stack("--radio", "ftx1") as s:
+        resp = await s.client.post(
+            "/event", json={"event": "set_frequency", "hz": 7_074_000}
+        )
+        assert resp.status == 200
+        assert (await resp.json())["frequency_hz"] == 7_074_000
+        state = await (await s.client.get("/state")).json()
+        assert state["frequency_hz"] == 7_074_000
+
+        # Above the FTX-1's 470 MHz top: the existing invalid_args path.
+        for hz in (999_999_999, "7074000"):
+            resp = await s.client.post(
+                "/event", json={"event": "set_frequency", "hz": hz}
+            )
+            assert resp.status == 400, hz
+            assert (await resp.json())["error"] == "invalid_args", hz
+        assert (await (await s.client.get("/state")).json())[
+            "frequency_hz"
+        ] == 7_074_000
+
+        resp = await s.client.post("/event", json={"event": "silence", "for_s": 0.05})
+        assert resp.status == 200
+        resp = await s.client.post("/event", json={"event": "silence", "for_s": -1})
+        assert resp.status == 400
+
+        resp = await s.client.post("/event", json={"event": "usb_vanish"})
+        assert resp.status == 200
+        assert (await (await s.client.get("/state")).json())["vanished"] is True
+        resp = await s.client.post("/event", json={"event": "usb_reappear"})
+        assert resp.status == 200
+        assert (await (await s.client.get("/state")).json())["vanished"] is False
+
+        # IC-7610-only events answer unsupported.
+        resp = await s.client.post("/event", json={"event": "session_drop"})
+        assert resp.status == 400
+        assert (await resp.json())["error"] == "unsupported"
+
+
+async def test_ftx1_s_meter_state_matches_the_wire() -> None:
+    async with _stack("--radio", "ftx1") as s:
+        fake = s.inner.backend.radio
+        reader, writer = await fake.open_serial_connection()
+        try:
+            # The seeded MAIN AGC is OFF (recorded GT00;), which pins SM0
+            # at 0 on the wire: enable AGC first (a served SET, no reply).
+            writer.write(b"GT01;")
+            outcome = fake.model.engine.apply(SetMeter("s_meter_main", 77))
+            assert isinstance(outcome, Ok)
+            # /state reads the same s_meter_main the SM0; reply serves.
+            state = await (await s.client.get("/state")).json()
+            assert state["s_meter"] == 77
+            writer.write(b"SM0;")
+            assert await asyncio.wait_for(reader.readuntil(b";"), 3.0) == b"SM0077;"
+        finally:
+            writer.close()
+
+
+async def test_ftx1_unmodelled_socket_request_is_traced() -> None:
+    async with _stack("--radio", "ftx1") as s:
+        device = s.inner.backend.startup_fields()["device"]
+        port = await asyncio.to_thread(_socket_serial, device)
+        try:
+            await asyncio.to_thread(port.write, b"QQ;")
+            reply = await asyncio.wait_for(
+                asyncio.to_thread(port.read_until, b";"), 3.0
+            )
+            assert bytes(reply) == b"?;"
+        finally:
+            await asyncio.to_thread(port.close)
+
+        body = await (await s.client.get("/trace")).json()
+        gaps = [rec for rec in body["events"] if rec["name"] == "not_modelled"]
+        assert len(gaps) == 1
+        assert gaps[0]["kind"] == "event"
+        assert gaps[0]["args"] == {"request": "QQ;"}
+        assert gaps[0]["result"] == {"ok": False, "outcome": "unsupported"}
+
+
+async def test_ftx1_stop_cancels_pending_reappear_timer() -> None:
+    async with _stack("--radio", "ftx1") as s:
+        await s.client.post("/event", json={"event": "usb_vanish", "for_s": 5})
+        handle = s.inner.backend.vanish._reappear
+        assert handle is not None  # the 5 s restore timer is pending
+        await s.inner.backend.stop()
+        assert handle.cancelled()
+        names = [rec["name"] for rec in s.inner.trace.snapshot(0)["events"]]
+        assert "usb_reappear" not in names
+
+
+def test_ftx1_profile_failure_is_a_clear_startup_error(tmp_path, monkeypatch) -> None:
+    # Missing files under the root: a one-line SystemExit, not a traceback
+    # from deep inside a loader.
+    monkeypatch.setattr("rigplane_testkit.sim.serve._FTX1_REPO_ROOT", tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        build_stack(_args("--radio", "ftx1"))
+    message = str(exc.value)
+    assert "serve --radio ftx1" in message and "ftx1.toml" in message
+
+    # Bad TOML surfaces the loader's own message, still as SystemExit.
+    profile = tmp_path / "rigplane_testkit" / "sim" / "profiles" / "ftx1.toml"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("not [valid", encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        build_stack(_args("--radio", "ftx1"))
+    assert "serve --radio ftx1" in str(exc.value)
+    assert "invalid TOML" in str(exc.value)
+
+
+async def test_ftx1_scheduled_reappear_fires_and_is_traced() -> None:
+    async with _stack("--radio", "ftx1") as s:
+        resp = await s.client.post(
+            "/event", json={"event": "usb_vanish", "for_s": 0.05}
+        )
+        assert resp.status == 200
+        assert (await (await s.client.get("/state")).json())["vanished"] is True
+
+        async def _reappeared() -> None:
+            while True:
+                state = await (await s.client.get("/state")).json()
+                names = [rec["name"] for rec in s.inner.trace.snapshot(0)["events"]]
+                if not state["vanished"] and "usb_reappear" in names:
+                    return
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(_reappeared(), 5)
+
+
+def _socket_serial(url: str) -> serial.SerialBase:
+    """The production open over pyserial's ``socket://`` URL, 3 s timeout."""
+    return serial.serial_for_url(url, baudrate=38400, timeout=3)
+
+
 # --- Subprocess end to end ----------------------------------------------------
 
 
@@ -529,6 +703,45 @@ async def test_subprocess_serial_end_to_end(tmp_path: Path) -> None:
 
         proc.send_signal(signal.SIGTERM)
         assert await asyncio.wait_for(proc.wait(), 10) == 0
+    finally:
+        await _kill_if_alive(proc)
+
+    file_records = [_strict_loads(x) for x in trace_path.read_text().splitlines()]
+    assert (file_records[-1]["kind"], file_records[-1]["name"]) == ("stop", "shutdown")
+    assert file_records[-1]["result"] == {"ok": True}
+
+
+async def test_subprocess_serial_end_to_end_ftx1(tmp_path: Path) -> None:
+    if sys.platform == "win32":
+        pytest.skip("POSIX signal delivery")
+    trace_path = tmp_path / "trace.jsonl"
+    proc, line = await _start_sim("--trace", str(trace_path), radio="ftx1")
+    try:
+        keys = "sim radio fidelity evidence transport device pty control seed"
+        assert list(line) == keys.split()
+        assert line["radio"] == "FTX-1" and line["fidelity"] == "A"
+        assert line["evidence"] == "simulated" and line["transport"] == "serial"
+        if pty_supported():
+            assert isinstance(line["pty"], str) and line["pty"].startswith("/dev/")
+        else:
+            assert line["pty"] is None
+
+        port = await asyncio.to_thread(_socket_serial, line["device"])
+        try:
+            await asyncio.to_thread(port.write, b"ID;")
+            reply = await asyncio.wait_for(asyncio.to_thread(port.read_until, b";"), 10)
+            assert bytes(reply) == b"ID0840;"
+        finally:
+            await asyncio.to_thread(port.close)
+
+        async with ClientSession() as http:
+            async with http.post(f"{line['control']}/stop") as resp:
+                assert resp.status == 200
+                assert await resp.json() == {"ok": True}
+
+        assert await asyncio.wait_for(proc.wait(), 10) == 0
+        # Nothing else was ever printed on stdout.
+        assert await proc.stdout.read() == b""
     finally:
         await _kill_if_alive(proc)
 
