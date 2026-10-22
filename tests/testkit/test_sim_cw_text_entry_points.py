@@ -29,9 +29,22 @@ from types import SimpleNamespace
 import pytest
 
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
-from rigplane.cli import _build_parser, _finalize_ptt_args, _run
+from rigplane.cli import (
+    _build_parser,
+    _finalize_ptt_args,
+    _ManagedTxRadioSession,
+    _run,
+)
+from rigplane.runtime.managed_tx_composition import (
+    ManagedTxComposition,
+    install_managed_tx_composition,
+)
 from rigplane.rig_loader import load_rig
 from rigplane.web.server import WebConfig, WebServer
+from rigplane.web.web_startup import (
+    attach_managed_tx_composition,
+    prepare_managed_tx_observation_generation,
+)
 
 from rigplane_testkit.sim.__main__ import build_parser
 from rigplane_testkit.sim.serve import build_stack
@@ -310,3 +323,57 @@ async def test_http_stop_works_without_cw_tag(tmp_path: Path) -> None:
         assert status == 200, body
         await _settle()
         assert s.model.keyer_play_requests == ((0, 0),)
+
+
+# ── Force-off through the production managed-TX composition ──
+
+
+@asynccontextmanager
+async def _managed_web(rigs: Path, tmp_path: Path) -> AsyncIterator[SimpleNamespace]:
+    """The composition order of ``rigplane web`` (cli/__init__.py: _run, _cmd_web)."""
+    async with _sim() as sim:
+        radio = YaesuCatRadio(sim.device, profile=load_rig(rigs / "ftx1.toml"))
+        composition = ManagedTxComposition(
+            radio, config_path=tmp_path / "managed-tx.json"
+        )
+        install_managed_tx_composition(radio, composition)
+        async with _ManagedTxRadioSession(radio, composition, None):
+            server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+            prepare_managed_tx_observation_generation(server)
+            await composition.bind_state_store(server.command_state_store)
+            attach_managed_tx_composition(server, composition)
+            await server.start()
+            try:
+                yield SimpleNamespace(port=server.port, model=sim.model, sim=sim.sim)
+            finally:
+                await server.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("memory_type", "stop"), [("text", (0, 0)), ("message", (1, 0))]
+)
+async def test_force_off_stops_the_keyer_memory_send_cw_text_plays(
+    tmp_path: Path, memory_type: str, stop: tuple[int, int]
+) -> None:
+    # The managed abort is KY{P1}0; for the memory kind the profile plays
+    # (CAT 2508-C printed p.18); it used to be the invalid "KY ;".
+    rigs = _rigs_dir(
+        tmp_path, ENABLED + f'\nmemory_type = "{memory_type}"', cw_tag=True
+    )
+    async with _managed_web(rigs, tmp_path) as s:
+        status, body = await _request(
+            s.port, "POST", "/api/v1/radio/cw/send", {"text": "CQ"}
+        )
+        assert (status, body) == (200, {"text": "CQ"})
+        status, body = await _request(
+            s.port,
+            "POST",
+            "/api/v1/managed-transmit/command",
+            {"operation": "force_off"},
+        )
+        assert status == 202, body
+        await _settle()
+        assert s.model.keying_memory == {5: "CQ"}
+        assert s.model.keyer_play_requests == ((stop[0], 5), stop)
+        assert s.sim.ptt is False
