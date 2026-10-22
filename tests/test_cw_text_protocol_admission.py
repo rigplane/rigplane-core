@@ -225,7 +225,7 @@ async def test_published_support_matches_callable_support_and_execution(
 ) -> None:
     rig = load_rig(RIGS / name)
     profile = rig.to_profile()
-    published = _serialize_cw_text(profile)["supported"]
+    published = _serialize_cw_text(profile, None)["supported"]
     assert published is supports_callable(profile, "send_cw_text")
     assert published is await _backend_sends(rig)
 

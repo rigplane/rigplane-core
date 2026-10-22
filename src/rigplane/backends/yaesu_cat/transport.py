@@ -291,9 +291,10 @@ class YaesuCatTransport:
     ) -> None:
         """Send raw bytes to serial port.
 
-        *on_committed* runs after the final currency check passes and
-        before the bytes are written, with no await in between, so its
-        effect happens only for a write that goes out (MOR-3678).
+        *on_committed* runs once the final currency check has passed and the
+        writer has accepted the bytes, before ``drain()`` and with no await
+        in between, so its effect happens only for a write that went out: a
+        writer that refuses the bytes leaves it unrun (MOR-3678).
         """
         self._check_connected()
         assert self._writer is not None  # for type checker
@@ -304,11 +305,12 @@ class YaesuCatTransport:
         if self._debug_logging:
             logger.debug("CAT TX: %r", command)
 
+        encoded = command.encode("ascii")
         self._require_write_currency(is_current)
-        if on_committed is not None:
-            on_committed()
         try:
-            self._writer.write(command.encode("ascii"))
+            self._writer.write(encoded)
+            if on_committed is not None:
+                on_committed()
             await self._writer.drain()
         except Exception as exc:
             self._stats.record_error(f"write failed: {exc}")

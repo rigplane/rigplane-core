@@ -34,7 +34,7 @@ from ...core.state_pipeline_contracts import CommandIntent, CommandSource, Field
 from ...runtime.controller_authority import ControllerAuthority, ControllerError
 from ...core.state_store import FreshnessState, StateStore
 from ..monitor_mute import MonitorMuteState, apply_monitor_mute  # noqa: TID251
-from ...profiles import RadioProfile, resolve_radio_profile
+from ...profiles import RadioProfile, cw_text_sender, resolve_radio_profile
 from ...profiles.control_domain import encode_legacy_control, validate_control_raw_value
 from ...runtime._poller_types import SetNarrow
 from ...runtime._dual_rx_runtime import require_receiver_for_profile
@@ -2328,8 +2328,8 @@ class ControlHandler:
         # ``cw`` tag (decoder, console, keyer controls) is not a second gate.
         # A backend with no send_cw_text at all (external rigctld) is an
         # unsupported command, not a programmer error.
-        send_cw_text = getattr(radio, "send_cw_text", None)
-        if not callable(send_cw_text):
+        send_cw_text = cw_text_sender(radio)
+        if send_cw_text is None:
             raise RuntimeError("radio does not support this command")
         text = str(params.get("text", ""))
         await send_cw_text(text)

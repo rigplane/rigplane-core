@@ -19,7 +19,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.profiles import CwTextSpec, RadioProfile
+from rigplane.runtime.radio import IcomRadio
 from rigplane.rig_loader import RigConfig, RigLoadError, load_rig
 from rigplane.runtime.callable_support import supports_callable
 from rigplane.web.api_contract import RESPONSE_FIELD_CONTRACTS
@@ -184,6 +186,31 @@ class _Writer:
         return None
 
 
+def _production_radio(rig: RigConfig) -> object:
+    """The backend production builds for *rig*, never connected.
+
+    ``cwText.supported`` also depends on the backend running send_cw_text
+    (#4317 gate review), so the endpoints are served from the real backend
+    object; nothing is opened (``/dev/null`` and TEST-NET are never dialled).
+    Core has no Kenwood CAT backend, so a Kenwood profile is served from a
+    plain radio stand-in without send_cw_text, as nothing in core sends it.
+    """
+    if rig.protocol_type == "yaesu_cat":
+        return YaesuCatRadio("/dev/null", profile=rig)
+    if rig.protocol_type == "civ":
+        return IcomRadio("192.0.2.1", profile=rig.to_profile())
+    assert rig.protocol_type == "kenwood_cat", rig.protocol_type
+    profile = rig.to_profile()
+    return SimpleNamespace(
+        model=profile.model,
+        profile=profile,
+        capabilities=set(profile.capabilities),
+        connected=False,
+        control_connected=False,
+        radio_ready=False,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("name", "expected"),
@@ -194,15 +221,7 @@ class _Writer:
     ],
 )
 async def test_capability_endpoints_publish_cw_text(name: str, expected: dict) -> None:
-    profile = load_rig(RIGS / name).to_profile()
-    radio = SimpleNamespace(
-        model=profile.model,
-        profile=profile,
-        capabilities=set(profile.capabilities),
-        connected=False,
-        control_connected=False,
-        radio_ready=False,
-    )
+    radio = _production_radio(load_rig(RIGS / name))
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     for path in ("/api/v1/info", "/api/v1/capabilities"):
         writer = _Writer()
@@ -240,15 +259,7 @@ async def test_frontend_capability_fixtures_carry_the_served_cw_text(
 ) -> None:
     # The frontend fixtures stand in for /api/v1/capabilities in browser
     # tests; their cwText must be what the real handler serves.
-    profile = load_rig(RIGS / name).to_profile()
-    radio = SimpleNamespace(
-        model=profile.model,
-        profile=profile,
-        capabilities=set(profile.capabilities),
-        connected=False,
-        control_connected=False,
-        radio_ready=False,
-    )
+    radio = _production_radio(load_rig(RIGS / name))
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     writer = _Writer()
     await server._handle_http(writer, "GET", "/api/v1/capabilities", headers={})  # noqa: SLF001

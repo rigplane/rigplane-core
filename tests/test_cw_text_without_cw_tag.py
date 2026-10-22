@@ -52,7 +52,7 @@ def _sent(radio: IcomRadio) -> int:
 
 def test_profile_without_cw_tag_publishes_cw_text_support(tmp_path: Path) -> None:
     radio = _radio(tmp_path)
-    assert _serialize_cw_text(radio.profile)["supported"] is True
+    assert _serialize_cw_text(radio.profile, radio)["supported"] is True
     assert supports_callable(radio.profile, "send_cw_text") is True
 
 

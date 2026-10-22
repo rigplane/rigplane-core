@@ -3850,8 +3850,10 @@ async def _cmd_ptt(radio: Radio, args: argparse.Namespace) -> int:
 async def _cmd_cw(radio: Radio, args: argparse.Namespace) -> int:
     # MOR-3678: same refusal text as HTTP/WebSocket for a backend with no
     # send_cw_text (external rigctld); the profile admission decides otherwise.
-    send_cw_text = getattr(radio, "send_cw_text", None)
-    if not callable(send_cw_text):
+    from rigplane.profiles import cw_text_sender
+
+    send_cw_text = cw_text_sender(radio)
+    if send_cw_text is None:
         print("Error: radio does not support this command", file=sys.stderr)
         return 1
     await send_cw_text(args.text)

@@ -10,7 +10,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Never, NotRequired, Required, TypedDict
+from collections.abc import Awaitable, Callable
+from typing import Literal, Never, NotRequired, Required, TypedDict, cast
 
 from rigplane.commands._codec import (
     bcd_encode_value,
@@ -869,6 +870,18 @@ class CwTextUnsupportedError(RuntimeError):
     answers it with the existing ``unsupported_command`` path (HTTP 409,
     WebSocket ``unsupported_command``).
     """
+
+
+def cw_text_sender(radio: object) -> Callable[[str], Awaitable[None]] | None:
+    """The backend's ``send_cw_text``, or ``None`` when it has none (MOR-3678).
+
+    The one check for "can this backend run send_cw_text at all": the HTTP
+    and WebSocket handler and the CLI refuse when it is ``None``, and the
+    published ``cwText.supported`` is false then, so what is advertised and
+    what runs cannot drift apart (external rigctld has no CW text sending).
+    """
+    send = getattr(radio, "send_cw_text", None)
+    return cast("Callable[[str], Awaitable[None]]", send) if callable(send) else None
 
 
 def admit_cw_text(profile: RadioProfile, text: str) -> None:
