@@ -147,15 +147,13 @@ Rules:
 `main` is protected. Non-trivial PRs require an independent agent review
 before merge; the implementation agent never reviews its own work.
 
-Codex (`chatgpt-codex-connector[bot]`) is the primary reviewer. The gate is
-green when Codex reviewed the exact head SHA and every Codex P0-P2 review
-thread is resolved, or, when Codex did not review that head (the lane script
-waits about 20 minutes for it first), when the cross-family backup reviewer posted the exact-head `Agent Review:
-PASS` directive below (never while a Codex P0-P2 thread is open). A push needs
-a new Codex review, requested with a `@codex review` comment from a person's
-account (the workflow cannot request it). A PR built by a GPT/Codex-family
-agent carries the label `built-by-gpt` and needs the backup PASS. Rules:
-`AGENTS.md`, "Primary reviewer: Codex".
+The merge verdict comes from a local review of the exact head (owner decision
+2026-10-21): the builder runs `tmp/pre-review.sh` (Codex CLI) before pushing, and
+on `PRE-REVIEW: CLEAN` for the pushed head `pro-gate.sh` posts the exact-head
+`Agent Review: PASS` directive below. Nobody waits for the GitHub Codex bot
+(`chatgpt-codex-connector[bot]`): it is advisory and asynchronous. The reviewer
+family differs from the builder's. Rules: `AGENTS.md`, "Review verdict: local
+Codex CLI review".
 
 The gate is `.github/workflows/agent-review-gate.yml`, parsed by
 `.github/scripts/agent-review-gate.js`. It considers only non-minimized

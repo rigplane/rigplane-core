@@ -260,7 +260,8 @@ async def test_yaesu_lifecycle_exit_never_disables_the_persistent_tuner(
     # FORCE_RECEIVE and STOP_CW still happen.
     assert format_command(_PROFILE_TEMPLATES["set_ptt"].write, state="0") in written
     assert (
-        format_command(_PROFILE_TEMPLATES["send_cw"].write, type=" ", mem="") in written
+        format_command(_PROFILE_TEMPLATES["send_cw"].write, type="0", mem="0")
+        in written
     )
     if observed is not None:
         assert store.snapshot().field(_TUNER_PATH).value == observed

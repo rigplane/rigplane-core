@@ -40,7 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
         "serve", help="run a radio simulator until SIGINT/SIGTERM or POST /stop"
     )
     serve.add_argument(
-        "--radio", choices=["ic7610"], required=True, help="simulated radio model"
+        "--radio",
+        choices=["ic7610", "ic7300", "ftx1"],
+        required=True,
+        help="simulated radio model (ic7300 serves the serial CI-V fake; "
+        "ftx1 serves the Yaesu CAT serial fake)",
     )
     serve.add_argument(
         "--username",

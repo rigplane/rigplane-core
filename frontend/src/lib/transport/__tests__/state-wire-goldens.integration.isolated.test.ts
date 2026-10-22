@@ -93,6 +93,21 @@ describe('state wire goldens → real client chain', () => {
     expect(caps.model).toBe(model);
   });
 
+  // MOR-3679: the profile's CW family reaches the client unchanged.
+  it('FTX-1: modeFamilies survive validateCapabilities', () => {
+    const caps = validateCapabilities(structuredClone(goldens['FTX-1'].capabilities));
+
+    expect(caps.modeFamilies).toEqual({ cw: ['CW-U', 'CW-L'] });
+  });
+
+  it.each(models)('%s: every modeFamilies.cw member is a published mode', (model) => {
+    const caps = validateCapabilities(structuredClone(goldens[model].capabilities));
+    const cw = caps.modeFamilies?.cw ?? [];
+
+    expect(cw.length).toBeGreaterThan(0);
+    for (const mode of cw) expect(caps.modes).toContain(mode);
+  });
+
   it.each(cases)('%s %s: the client accepts the envelope and builds a view model', async (model, caseName) => {
     const entry = goldens[model];
     const envelope = structuredClone(entry[caseName]!);
