@@ -493,13 +493,25 @@ def test_ftx1_profile_failure_is_a_clear_startup_error(tmp_path, monkeypatch) ->
     assert "invalid TOML" in str(exc.value)
 
 
+async def test_ftx1_vanish_is_visible_until_an_explicit_reappear() -> None:
+    # A long window: nothing here depends on how fast the next request runs.
+    async with _stack("--radio", "ftx1") as s:
+        resp = await s.client.post("/event", json={"event": "usb_vanish", "for_s": 60})
+        assert resp.status == 200
+        assert (await (await s.client.get("/state")).json())["vanished"] is True
+        resp = await s.client.post("/event", json={"event": "usb_reappear"})
+        assert resp.status == 200
+        assert (await (await s.client.get("/state")).json())["vanished"] is False
+
+
 async def test_ftx1_scheduled_reappear_fires_and_is_traced() -> None:
+    # Wait for the condition with a deadline; do not assert the transient
+    # vanished state, which a loaded worker can legitimately miss.
     async with _stack("--radio", "ftx1") as s:
         resp = await s.client.post(
             "/event", json={"event": "usb_vanish", "for_s": 0.05}
         )
         assert resp.status == 200
-        assert (await (await s.client.get("/state")).json())["vanished"] is True
 
         async def _reappeared() -> None:
             while True:
