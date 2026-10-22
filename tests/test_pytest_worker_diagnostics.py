@@ -78,6 +78,23 @@ def test_quick_worker_diagnostics_wiring() -> None:
 _QUALIFICATION_DEADLINE_S = 120
 
 
+def _cgroup_dir(pid: int) -> Path:
+    """cgroup v2 directory of ``pid`` (its ``0::`` line in /proc/<pid>/cgroup).
+
+    Falls back to the hierarchy root when the file is unreadable (for example
+    the process already exited) or has no v2 entry.
+    """
+    root = Path("/sys/fs/cgroup")
+    try:
+        lines = Path(f"/proc/{pid}/cgroup").read_text(errors="replace").splitlines()
+    except OSError:
+        return root
+    for line in lines:
+        if line.startswith("0::"):
+            return root / line[3:].strip().lstrip("/")
+    return root
+
+
 def _hang_diagnostics(pgid: int) -> str:
     def command_output(command: list[str]) -> str:
         try:
@@ -105,9 +122,13 @@ def _hang_diagnostics(pgid: int) -> str:
     )
     processes = command_output(["ps", "-g", str(pgid), "-o", fields])
     meminfo = "\n".join(read_source(Path("/proc/meminfo")).splitlines()[:10])
+    cgroup_dir = _cgroup_dir(pgid)
     cgroup = "\n".join(
-        f"{leaf}:\n{read_source(Path('/sys/fs/cgroup') / leaf)[:500]}"
-        for leaf in ("pids.current", "pids.max", "memory.events")
+        [f"path: {cgroup_dir}"]
+        + [
+            f"{leaf}:\n{read_source(cgroup_dir / leaf)[:500]}"
+            for leaf in ("pids.current", "pids.max", "memory.events")
+        ]
     )
     dmesg = "\n".join(command_output(["dmesg"]).splitlines()[-30:])[-1900:]
     return "\n".join(
@@ -119,6 +140,34 @@ def _hang_diagnostics(pgid: int) -> str:
             ("Dmesg", dmesg),
         )
     )
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (
+            "0::/system.slice/runner.service\n",
+            "/sys/fs/cgroup/system.slice/runner.service",
+        ),
+        ("12:pids:/legacy\n0::/\n", "/sys/fs/cgroup"),
+        ("12:pids:/legacy\n", "/sys/fs/cgroup"),
+    ],
+)
+def test_cgroup_dir_uses_the_process_v2_entry(
+    monkeypatch: pytest.MonkeyPatch, content: str, expected: str
+) -> None:
+    read = create_autospec(Path.read_text, return_value=content)
+    monkeypatch.setattr(Path, "read_text", read)
+    assert _cgroup_dir(4242) == Path(expected)
+    assert read.call_args.args[0] == Path("/proc/4242/cgroup")
+
+
+def test_cgroup_dir_falls_back_to_the_root_when_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    read = create_autospec(Path.read_text, side_effect=OSError("gone"))
+    monkeypatch.setattr(Path, "read_text", read)
+    assert _cgroup_dir(4242) == Path("/sys/fs/cgroup")
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux worker qualification")
@@ -238,6 +287,7 @@ def test_hang_diagnostics_unavailable_sources(
     assert diagnostics.count("unreadable") >= 4
     assert {call.args[0] for call in read.call_args_list} == {
         Path("/proc/meminfo"),
+        Path("/proc/12345/cgroup"),
         Path("/sys/fs/cgroup/pids.current"),
         Path("/sys/fs/cgroup/pids.max"),
         Path("/sys/fs/cgroup/memory.events"),
