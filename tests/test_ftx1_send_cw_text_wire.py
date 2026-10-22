@@ -151,3 +151,28 @@ async def test_concurrent_sends_keep_each_memory_write_with_its_playback() -> No
     radio._transport.write.side_effect = slow_write  # noqa: SLF001
     await asyncio.gather(radio.send_cw_text("FIRST"), radio.send_cw_text("SECOND"))
     assert _writes(radio) == ["KM5FIRST;", "KY05;", "KM5SECOND;", "KY05;"]
+
+
+@pytest.mark.asyncio
+async def test_message_memory_type_plays_and_stops_the_message_memory() -> None:
+    # KY P1 1 = CW MESSAGE memory (printed p.18).
+    rig = load_rig(_RIG)
+    rig = dataclasses.replace(
+        rig,
+        cw_text=dataclasses.replace(rig.cw_text, supported=True, memory_type="message"),
+    )
+    radio = YaesuCatRadio("/dev/null", profile=rig)
+    radio._transport._connected = True  # noqa: SLF001
+    radio._transport.write = AsyncMock()  # noqa: SLF001
+    radio._transport.query = AsyncMock(return_value="")  # noqa: SLF001
+    await radio.send_cw_text("CQ")
+    await radio.stop_cw_text()
+    assert _writes(radio) == ["KM5CQ;", "KY15;", "KY10;"]
+
+
+@pytest.mark.asyncio
+async def test_empty_text_is_rejected_before_any_write() -> None:
+    radio = _radio(supported=True)
+    with pytest.raises(ValueError, match="^CW text is empty$"):
+        await radio.send_cw_text("")
+    assert _writes(radio) == []

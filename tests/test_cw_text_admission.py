@@ -29,6 +29,7 @@ import pytest
 import rigplane.web.handlers.control as control
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.cli import _run
+from rigplane.profiles import admit_cw_text
 from rigplane.rig_loader import load_rig
 from rigplane.runtime.radio import IcomRadio
 from rigplane.web.protocol import decode_json
@@ -244,3 +245,20 @@ async def test_cli_sends_text_within_the_limit(
     assert await _cli(radio, "CQ") == 0
     assert _writes(radio) == ["KM5CQ;", "KY05;"]
     assert "CW: CQ" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_text_exactly_at_the_profile_limit_is_sent() -> None:
+    radio = _ftx1(supported=True, max_length=3)
+    await radio.send_cw_text("CQC")
+    assert _writes(radio) == ["KM5CQC;", "KY05;"]
+
+
+def test_icom_text_exactly_at_the_profile_limit_is_admitted() -> None:
+    rig = load_rig(RIGS / "ic7300.toml")
+    profile = dataclasses.replace(
+        rig, cw_text=dataclasses.replace(rig.cw_text, max_length=4)
+    ).to_profile()
+    admit_cw_text(profile, "CQDE")
+    with pytest.raises(ValueError, match="got 5 characters, limit is 4"):
+        admit_cw_text(profile, "CQ DE")

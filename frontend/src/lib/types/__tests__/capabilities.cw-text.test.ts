@@ -43,7 +43,7 @@ describe('capabilities cwText', () => {
     [{ supported: true, maxLength: 0, memoryChannel: null }, /\$\.cwText\.maxLength/],
     [{ supported: true, maxLength: 50, memoryChannel: '5' }, /\$\.cwText\.memoryChannel/],
     [{ supported: true, maxLength: 50 }, /\$\.cwText\.memoryChannel/],
-    [null, /\$\.cwText/],
+    [null, /\$\.cwText: expected an object/],
   ])('rejects malformed cwText %o', (cwText, message) => {
     expect(() => validateCapabilities({ ...baseCapabilities, cwText })).toThrow(message);
   });
