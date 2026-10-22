@@ -200,7 +200,13 @@ from rigplane.core.tx_safety import (
 from rigplane.runtime.meter_cal import interpolate_swr
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
-from rigplane.profiles import RadioProfile, resolve_radio_profile
+from rigplane.profiles import (
+    RadioProfile,
+    admit_cw_text,
+    await_fenced_cw_text,
+    cw_text_cancelled,
+    resolve_radio_profile,
+)
 from rigplane.profiles.control_domain import decode_legacy_control
 from rigplane.profiles.control_domain import encode_legacy_control
 from rigplane.core.radio_state import RadioState
@@ -6075,33 +6081,52 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
         Args:
             text: CW text (A-Z, 0-9, prosigns).
+
+        Raises:
+            CwTextUnsupportedError: The profile does not enable CW text.
+            ValueError: The text is longer than the profile's limit
+                (``admit_cw_text``, MOR-3678); nothing is sent.
+            CwTextSendCancelledError: A transmit abort ended the send
+                part-way; no later frame is sent (MOR-3700).
         """
+        admit_cw_text(self.profile, text)
         self._check_connected()
         frames = self._commands.send_cw(text, to_addr=self._radio_addr)
 
         async def send_frames(
             is_current: Callable[[], bool] | None = None,
         ) -> None:
-            for frame in frames:
-                if is_current is None:
-                    resp = await self._send_civ_expect(
-                        frame,
-                        label="send_cw_text",
-                    )
-                else:
-                    resp = await self._send_civ_expect(
-                        frame,
-                        label="send_cw_text",
-                        is_current=is_current,
-                    )
-                ack = parse_ack_nak(resp)
-                if ack is False:
-                    raise CommandError("Radio rejected CW text")
+            try:
+                for frame in frames:
+                    if is_current is None:
+                        resp = await self._send_civ_expect(
+                            frame,
+                            label="send_cw_text",
+                        )
+                    else:
+                        resp = await self._send_civ_expect(
+                            frame,
+                            label="send_cw_text",
+                            is_current=is_current,
+                        )
+                    ack = parse_ack_nak(resp)
+                    if ack is False:
+                        raise CommandError("Radio rejected CW text")
+            except Exception as exc:
+                # MOR-3700: an abort makes the fence stale at once and
+                # cancels this work later; a frame that fails in between
+                # ("managed TX attempt is stale") is the same abort.
+                if is_current is not None and not is_current():
+                    raise cw_text_cancelled(self.profile.model, "abort") from exc
+                raise
 
         if not frames or self._local_tx_work is None:
             await send_frames()
             return
-        await self._local_tx_work.run(send_frames)
+        # MOR-3700: a force-off that cancels this send is a refusal.
+        await await_fenced_cw_text(
+            self._local_tx_work.run(send_frames), self.profile.model
+        )
 
     async def stop_cw_text(self) -> None:
         """Stop CW sending."""

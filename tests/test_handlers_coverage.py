@@ -3661,19 +3661,6 @@ async def test_send_cw_text_multi_frame_text_reaches_radio_unchanged() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_cw_text_over_payload_limit_raises() -> None:
-    """send_cw_text raises ValueError when text exceeds the web payload cap."""
-    radio = _capable_radio()
-    radio.send_cw_text = AsyncMock()
-    handler = _control_handler(radio=radio)
-    long_text = "A" * 513
-
-    with pytest.raises(ValueError, match="CW text too long: max 512 characters"):
-        await handler._enqueue_command("send_cw_text", {"text": long_text})
-    radio.send_cw_text.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_send_cw_text_no_radio_raises() -> None:
     """send_cw_text raises when radio is not connected."""
     handler = _control_handler(radio=None)

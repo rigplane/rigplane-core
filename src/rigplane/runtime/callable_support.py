@@ -191,6 +191,9 @@ def supports_callable(profile: RadioProfile, operation: str) -> bool:
     """Return support from explicit profile facts or one registered relation."""
     if operation in profile.absent_command_names:
         return False
+    # MOR-3678: typed CW text needs the profile's cw_text, not just send_cw.
+    if operation == "send_cw_text" and not profile.cw_text.supported:
+        return False
     if profile.supports_command(operation):
         return True
     relation = CALLABLE_RELATIONS.get(operation)

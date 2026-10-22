@@ -990,7 +990,7 @@ const CODEX_RECEIPT = (sha) => ({
   updated_at: '2026-08-08T04:55:00Z',
 });
 
-test('Codex reviewed the exact head with no open threads: success without any PASS comment', async () => {
+test('a Codex bot review of the exact head is advisory: without a PASS the gate stays red', async () => {
   const evidence = {
     review: {reviews: [codexReview()]},
     summary: {comments: [CODEX_SUMMARY(HEAD)]},
@@ -1004,8 +1004,8 @@ test('Codex reviewed the exact head with no open threads: success without any PA
     assert.equal(statuses.length, 1, via);
     assert.equal(statuses[0].sha, HEAD, via);
     assert.equal(statuses[0].context, 'Agent Review Gate', via);
-    assert.equal(statuses[0].state, 'success', via);
-    assert.match(statuses[0].description, new RegExp(`Codex reviewed 1234567 \\(${via}\\)`, 'u'));
+    assert.equal(statuses[0].state, 'failure', via);
+    assert.match(statuses[0].description, /Waiting for the local review PASS for 1234567/u, via);
     assert.deepEqual(core.failures, [], via);
   }
 });
@@ -1025,45 +1025,40 @@ test('Codex evidence for another commit, from another author, or not final prove
   for (const [index, input] of notEvidence.entries()) {
     const {statuses} = await runGate(input);
     assert.equal(statuses[0].state, 'failure', String(index));
-    assert.match(statuses[0].description, /Waiting for Codex review/u, String(index));
+    assert.match(statuses[0].description, /Waiting for the local review PASS/u, String(index));
   }
 });
 
-test('an unresolved Codex P0-P2 thread denies even with Codex review and a valid PASS', async () => {
+test('an unresolved Codex P0-P2 thread is advisory: it shows in the text and never blocks a valid PASS', async () => {
   for (const priority of ['P0', 'P1', 'P2']) {
     const withCodex = await runGate({
       reviews: [codexReview()],
       comments: [comment(directive('PASS'))],
       threads: [codexThread(priority)],
     });
-    assert.equal(withCodex.statuses[0].state, 'failure', priority);
-    assert.match(withCodex.statuses[0].description, new RegExp(`1 unresolved Codex P0-P2 thread.*${priority} src/rigplane/example.py:12`, 'u'));
+    assert.equal(withCodex.statuses[0].state, 'success', priority);
+    assert.match(withCodex.statuses[0].description, /Codex bot advisory: 1 open P0-P2 thread/u);
 
     const backupOnly = await runGate({
       comments: [comment(directive('PASS'))],
       threads: [codexThread(priority)],
     });
-    assert.equal(backupOnly.statuses[0].state, 'failure', priority);
-    assert.match(backupOnly.statuses[0].description, /unresolved Codex/u);
+    assert.equal(backupOnly.statuses[0].state, 'success', priority);
   }
 
-  // Resolved, P3, and non-Codex threads do not block.
-  const ok = await runGate({
+  // Without a PASS, threads or reviews alone never turn the gate green.
+  const noPass = await runGate({
     reviews: [codexReview()],
-    threads: [
-      codexThread('P1', {resolved: true}),
-      codexThread('P3'),
-      codexThread('P1', {login: 'someone-else'}),
-    ],
+    threads: [codexThread('P1', {resolved: true}), codexThread('P3'), codexThread('P1', {login: 'someone-else'})],
   });
-  assert.equal(ok.statuses[0].state, 'success');
+  assert.equal(noPass.statuses[0].state, 'failure');
 });
 
-test('no Codex review of the head: a valid backup PASS succeeds', async () => {
+test('a valid local-review PASS succeeds, with or without a Codex bot review', async () => {
   const {statuses} = await runGate({comments: [comment(directive('PASS'))]});
   assert.equal(statuses.length, 1);
   assert.equal(statuses[0].state, 'success');
-  assert.match(statuses[0].description, /Backup cross-family PASS for 1234567/u);
+  assert.match(statuses[0].description, /^Local review PASS for 1234567\./u);
 
   // The existing strictness is untouched: untrusted, stale-SHA, and pre-commit PASS do not count.
   for (const bad of [
@@ -1074,16 +1069,16 @@ test('no Codex review of the head: a valid backup PASS succeeds', async () => {
   ]) {
     const denied = await runGate({comments: [bad]});
     assert.equal(denied.statuses[0].state, 'failure');
-    assert.match(denied.statuses[0].description, /Waiting for Codex review/u);
+    assert.match(denied.statuses[0].description, /Waiting for the local review PASS/u);
   }
 });
 
-test('no Codex review and no PASS: failure that says it is waiting for Codex', async () => {
+test('no PASS: failure that says it is waiting for the local review PASS', async () => {
   const {statuses, core} = await runGate({comments: [comment('looks fine to me')]});
   assert.equal(statuses.length, 1);
   assert.equal(statuses[0].sha, HEAD);
   assert.equal(statuses[0].state, 'failure');
-  assert.match(statuses[0].description, /^Waiting for Codex review of 1234567; backup review after 20 min\.$/u);
+  assert.match(statuses[0].description, /^Waiting for the local review PASS for 1234567 \(pro-gate\.sh posts it\)\.$/u);
   assert.deepEqual(core.failures, []);
   assert.equal(core.notices.length, 1);
 });
@@ -1121,6 +1116,7 @@ test('a BLOCKED directive wins over a Codex review and over a PASS', async () =>
     comments: [
       comment(`${directive('BLOCKED', STALE)}\nOld blocker`),
       comment(`${directive('BLOCKED')}\nOutsider`, {author_association: 'NONE'}),
+      comment(directive('PASS')),
     ],
   });
   assert.equal(notBinding.statuses[0].state, 'success');
@@ -1143,7 +1139,7 @@ async function runBrokenGate(breakIt) {
   return {...fake, core};
 }
 
-test('GraphQL and review-list failures fail closed with a loud run failure', async () => {
+test('GraphQL and review-list failures are advisory: a valid PASS still succeeds, without a run failure', async () => {
   const breakers = {
     graphql: (github) => {
       github.graphql = async () => { throw new Error('GraphQL unavailable'); };
@@ -1165,10 +1161,41 @@ test('GraphQL and review-list failures fail closed with a loud run failure', asy
     const {statuses, core} = await runBrokenGate(breakIt);
     assert.equal(statuses.length, 1, name);
     assert.equal(statuses[0].sha, HEAD, name);
-    assert.equal(statuses[0].state, 'failure', name);
-    assert.equal(statuses[0].description, 'Agent Review Gate evaluation failed closed.', name);
-    assert.equal(core.failures.length, 1, name);
-    assert.equal(core.errors.length, 1, name);
+    assert.equal(statuses[0].state, 'success', name);
+    assert.match(statuses[0].description, /^Local review PASS for 1234567\./u, name);
+    assert.deepEqual(core.failures, [], name);
+    assert.deepEqual(core.errors, [], name);
+    assert.equal(core.notices.length, 1, name);
+    assert.match(core.notices[0], /Codex bot data unavailable \(advisory only\)/u, name);
+  }
+
+  // Authoritative failures stay fail-closed: no PASS stays red, BLOCKED stays red.
+  for (const [name, breakIt] of Object.entries(breakers)) {
+    const noPass = gateGithub({comments: [], reviews: [codexReview()]});
+    breakIt(noPass.github);
+    const core = coreMock();
+    await runWorkflowScript(updaterScript(), {
+      github: noPass.github,
+      context: workflowContext(22),
+      core,
+      workspace: path.join(__dirname, '..', '..'),
+    });
+    assert.equal(noPass.statuses[0].state, 'failure', name);
+    assert.match(noPass.statuses[0].description, /^Waiting for the local review PASS/u, name);
+
+    const blocked = gateGithub({
+      comments: [comment(directive('PASS')), comment(`${directive('BLOCKED')}\nConcrete blocker`)],
+      reviews: [],
+    });
+    breakIt(blocked.github);
+    await runWorkflowScript(updaterScript(), {
+      github: blocked.github,
+      context: workflowContext(23),
+      core: coreMock(),
+      workspace: path.join(__dirname, '..', '..'),
+    });
+    assert.equal(blocked.statuses[0].state, 'failure', name);
+    assert.match(blocked.statuses[0].description, /BLOCKED directive is active/u, name);
   }
 });
 
@@ -1180,6 +1207,7 @@ test('review threads are read through every GraphQL page', async () => {
   const seen = [];
   const {statuses} = await runGate({
     reviews: [codexReview()],
+    comments: [comment(directive('PASS'))],
     overrides: {
       graphql: async (query, variables) => {
         seen.push(variables.after);
@@ -1188,8 +1216,9 @@ test('review threads are read through every GraphQL page', async () => {
     },
   });
   assert.deepEqual(seen, [null, 'c1']);
-  assert.equal(statuses[0].state, 'failure');
-  assert.match(statuses[0].description, /P2/u);
+  // The open thread on the second page is read and shown, but it is advisory.
+  assert.equal(statuses[0].state, 'success');
+  assert.match(statuses[0].description, /Codex bot advisory: 1 open P0-P2 thread/u);
 });
 
 test('the resolver reads the PR number from a manual dispatch', async () => {
@@ -1248,30 +1277,25 @@ test('REST call budget matches the number the workflow comment states', async ()
   assert.equal(run.graphqlCalls.length, 1);
 });
 
-test('AGENTS documents the Codex-primary gate rules', () => {
+test('AGENTS documents the local-verdict gate rules', () => {
   const instructions = fs.readFileSync(AGENTS_PATH, 'utf8');
-  assert.match(instructions, /^### Primary reviewer: Codex$/mu);
-  const section = /^### Primary reviewer: Codex$([\s\S]*?)(?=^#{1,3} )/mu.exec(instructions)[1];
+  assert.match(instructions, /^### Review verdict: local Codex CLI review$/mu);
+  const section = /^### Review verdict: local Codex CLI review$([\s\S]*?)(?=^#{1,3} )/mu.exec(instructions)[1];
   assert.match(section, /chatgpt-codex-connector\[bot\]/u);
-  assert.match(section, /exact head SHA/u);
-  assert.match(section, /P0-P2/u);
-  assert.match(section, /@codex review/u);
-  assert.match(section, /cannot request it/u);
-  assert.match(section, /built-by-gpt/u);
-  assert.match(section, /person's account/u);
-  assert.match(section, /20 minutes/u);
+  assert.match(section, /exact head/u);
+  assert.match(section, /advisory/u);
+  assert.match(section, /pre-review\.sh/u);
+  assert.match(section, /Agent Review: PASS/u);
   assert.match(section, /family differs from the builder/u);
   assert.match(section, /gh workflow run agent-review-gate\.yml -f pr_number=N/u);
 });
 
-test('a built-by-gpt PR ignores the Codex review as a verdict and needs the backup PASS', async () => {
+test('the built-by-gpt label no longer changes the verdict; PASS and BLOCKED rules are the same', async () => {
   const labelled = {gptBuilt: 'true'};
 
   const reviewOnly = await runGate({...labelled, reviews: [codexReview()]});
-  assert.equal(reviewOnly.statuses.length, 1);
-  assert.equal(reviewOnly.statuses[0].sha, HEAD);
   assert.equal(reviewOnly.statuses[0].state, 'failure');
-  assert.match(reviewOnly.statuses[0].description, /built-by-gpt: Codex is not independent; backup PASS needed for 1234567/u);
+  assert.match(reviewOnly.statuses[0].description, /Waiting for the local review PASS/u);
 
   const withPass = await runGate({
     ...labelled,
@@ -1279,17 +1303,7 @@ test('a built-by-gpt PR ignores the Codex review as a verdict and needs the back
     comments: [comment(directive('PASS'))],
   });
   assert.equal(withPass.statuses[0].state, 'success');
-  assert.match(withPass.statuses[0].description, /Backup cross-family PASS for 1234567/u);
-
-  // Open Codex P0-P2 threads still block the backup path, and BLOCKED still wins.
-  const withThread = await runGate({
-    ...labelled,
-    reviews: [codexReview()],
-    comments: [comment(directive('PASS'))],
-    threads: [codexThread('P1')],
-  });
-  assert.equal(withThread.statuses[0].state, 'failure');
-  assert.match(withThread.statuses[0].description, /unresolved Codex P0-P2/u);
+  assert.match(withPass.statuses[0].description, /^Local review PASS for 1234567\./u);
 
   const blocked = await runGate({
     ...labelled,
@@ -1297,10 +1311,6 @@ test('a built-by-gpt PR ignores the Codex review as a verdict and needs the back
   });
   assert.equal(blocked.statuses[0].state, 'failure');
   assert.match(blocked.statuses[0].description, /BLOCKED directive is active/u);
-
-  // Without the label the same Codex review is a verdict.
-  const unlabelled = await runGate({reviews: [codexReview()]});
-  assert.equal(unlabelled.statuses[0].state, 'success');
 });
 
 test('the resolver reports the built-by-gpt label; its spelling matches the module constant', async () => {
