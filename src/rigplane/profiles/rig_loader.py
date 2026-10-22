@@ -2157,6 +2157,8 @@ _MEMORY_KEYS = frozenset(
         "first_channel",
         "last_channel",
         "recall",
+        "dd_groups",
+        "offset_10mhz_groups",
     }
 )
 _MEMORY_ADDRESSING = frozenset({"group_channel", "band_channel"})
@@ -2194,7 +2196,26 @@ def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
     recall = raw.get("recall", False)
     if not isinstance(recall, bool):
         raise RigLoadError(f"{filename}: [memory].recall must be a boolean")
-    return MemoryProfile(addressing=addressing, recall=recall, **bounds)  # type: ignore[arg-type]
+    groups: dict[str, tuple[int, ...]] = {}
+    for key in ("dd_groups", "offset_10mhz_groups"):
+        values = raw.get(key, [])
+        if not isinstance(values, list) or any(
+            isinstance(value, bool) or not isinstance(value, int) for value in values
+        ):
+            raise RigLoadError(f"{filename}: [memory].{key} must be a list of integers")
+        if any(
+            not bounds["first_group"] <= value <= bounds["last_group"]
+            for value in values
+        ):
+            raise RigLoadError(
+                f"{filename}: [memory].{key} must be within first_group..last_group"
+            )
+        if len(set(values)) != len(values):
+            raise RigLoadError(
+                f"{filename}: [memory].{key} must not contain duplicates"
+            )
+        groups[key] = tuple(values)
+    return MemoryProfile(addressing=addressing, recall=recall, **bounds, **groups)  # type: ignore[arg-type]
 
 
 _CW_TEXT_KEYS = frozenset({"supported", "max_length", "memory_channel", "memory_type"})
