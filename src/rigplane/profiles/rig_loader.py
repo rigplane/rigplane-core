@@ -2854,7 +2854,7 @@ def load_rig(path: Path) -> RigConfig:
         override_section,
         filename=filename,
     )
-    keyboard = _filter_undeclared_mode_bindings(keyboard, modes)
+    keyboard = _filter_undeclared_mode_bindings(keyboard, tuple(modes))
 
     # Parse optional [audio] codec and sample-rate policy (#797, #1470).
     codec_preference: tuple[str, ...] | None = None
