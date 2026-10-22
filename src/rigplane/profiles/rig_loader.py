@@ -2326,6 +2326,10 @@ def load_rig(path: Path) -> RigConfig:
 
     # Validate [modes]
     modes = data["modes"].get("list", [])
+    if not isinstance(modes, list) or not all(isinstance(mode, str) for mode in modes):
+        # A scalar would pass ``in`` checks by substring and publish its
+        # characters as modes (MOR-3679 pro-gate finding).
+        raise RigLoadError(f"{filename}: [modes].list must be a list of strings")
     if not modes:
         raise RigLoadError(f"{filename}: [modes].list must not be empty")
     # MOR-2518: optional [modes].codes — one single-character code per mode,

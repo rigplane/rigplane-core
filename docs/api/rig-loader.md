@@ -209,6 +209,7 @@ except RigLoadError as e:
 | `[controls.X].style` valid (if present) | `[controls.X].style must be one of {'toggle', 'stepped', ...}` |
 | `[[rules]].kind` valid (if present) | `rule kind must be one of {'mutex', 'disables', 'requires', 'value_limit'}` |
 | `[capabilities].rf_sql_control_model` valid (if present) | `[capabilities].rf_sql_control_model must be one of ['combined', 'separate']` |
+| `[modes].list` a list of strings | `[modes].list must be a list of strings` |
 | `[modes].list` non-empty | `[modes].list must not be empty` |
 | `[modes].families` names only `cw`, each a non-empty list of strings (if present) | `[modes].families unknown family 'X'; known: ['cw']`, `[modes].families.cw must be a non-empty list of strings` |
 | `[modes].families` members are in `[modes].list`, each at most once | `[modes].families.cw names mode 'X' that is not in [modes].list`, `[modes].families.cw repeats mode 'X' (already in family 'cw')` |
