@@ -658,3 +658,56 @@ async def test_cw_abort_expiring_between_transport_checks_leaves_the_send_alone(
     assert checks == 2
     assert radio._cw_text_generation == generation
     assert writer.frames == [b"KM5CQ;", b"KY05;"]
+
+
+class _RejectingWriter(_RecordingWriter):
+    """A serial writer that synchronously refuses one frame (port gone)."""
+
+    def __init__(self, refused: bytes) -> None:
+        super().__init__()
+        self._refused = refused
+
+    def write(self, data: bytes) -> None:
+        if data == self._refused:
+            raise OSError("serial port write refused")
+        super().write(data)
+
+
+@pytest.mark.asyncio
+async def test_managed_cw_abort_the_writer_refuses_leaves_the_send_alone() -> None:
+    # #4317 gate review: the managed stop ends earlier sends only once the
+    # writer has accepted its KY bytes. A writer that refuses KY00 wrote no
+    # stop, so the in-flight send stays current and still plays.
+    radio = _fenced_radio(None)
+    transport = radio._transport
+    writer = _RejectingWriter(b"KY00;")
+    transport._writer = writer
+    transport._reader = object()
+    del transport._raw_write
+    first_drain_started = asyncio.Event()
+    release_first_drain = asyncio.Event()
+    drain_calls = 0
+
+    async def drain(_command: str) -> int:
+        nonlocal drain_calls
+        drain_calls += 1
+        if drain_calls == 1:
+            first_drain_started.set()
+            await release_first_drain.wait()
+        return 0
+
+    transport._drain_responses = drain
+    sending = asyncio.create_task(radio.send_cw_text("CQ"))
+    await first_drain_started.wait()
+    generation = radio._cw_text_generation
+    aborting = asyncio.create_task(
+        radio.actuate(_effect_token(), AbortOperation.STOP_CW, is_current=None)
+    )
+    await asyncio.sleep(0)
+    release_first_drain.set()
+
+    with pytest.raises(CatTransportError, match="serial port write refused"):
+        await aborting
+    assert radio._cw_text_generation == generation
+    await sending
+    assert writer.frames == [b"KM5CQ;", b"KY05;"]

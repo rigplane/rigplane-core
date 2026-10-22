@@ -81,3 +81,43 @@ async def test_cli_refuses_cw_text_on_a_backend_without_it(
     captured = capsys.readouterr()
     assert captured.err.strip().splitlines()[-1] == f"Error: {UNSUPPORTED}"
     assert "CW:" not in captured.out
+
+
+@pytest.mark.asyncio
+async def test_published_cw_text_matches_what_a_rigctld_backend_can_run() -> None:
+    # #4317 gate review: --backend rigctld --model IC-7300 resolves the
+    # IC-7300 profile (cw_text supported by default), but the rigctld client
+    # cannot send CW text. Both capability documents say so, with the
+    # profile's limits kept, and agree with the refusal over HTTP and WS.
+    async with FakeRigctldServer() as rigctld:
+        radio = RigctldClientRadio(
+            host=rigctld.host, port=rigctld.port, model="IC-7300"
+        )
+        await asyncio.wait_for(radio.connect(), 10)
+        server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+        await server.start()
+        try:
+            _, info = await _request(server.port, "GET", "/api/v1/info")
+            _, caps = await _request(server.port, "GET", "/api/v1/capabilities")
+            status, body = await _request(
+                server.port, "POST", "/api/v1/radio/cw/send", {"text": "CQ"}
+            )
+            response = await _ws_command(server.port, "send_cw_text", {"text": "CQ"})
+        finally:
+            await server.stop()
+            await radio.disconnect()
+        published = {"supported": False, "maxLength": 512, "memoryChannel": None}
+        assert info["model"] == "IC-7300"
+        assert info["capabilities"]["cwText"] == published
+        assert caps["cwText"] == published
+        assert (status, body["error"], body["message"]) == (
+            409,
+            "unsupported_command",
+            UNSUPPORTED,
+        )
+        assert (response["ok"], response["error"], response["message"]) == (
+            False,
+            "unsupported_command",
+            UNSUPPORTED,
+        )
+        assert _sent_cw(rigctld) == []
