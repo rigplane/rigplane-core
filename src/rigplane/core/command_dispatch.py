@@ -791,4 +791,7 @@ async def execute_command_intent(
         )
     if validate_currency is not None:
         validate_currency()
-    await method(**{name: intent.params[name] for name in descriptor.argument_names})
+    arguments = {name: intent.params[name] for name in descriptor.argument_names}
+    if descriptor.name == "set_split_mode" and validate_currency is not None:
+        arguments["before_set"] = validate_currency
+    await method(**arguments)

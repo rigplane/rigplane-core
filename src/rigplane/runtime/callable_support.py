@@ -64,7 +64,15 @@ class Protocol:
     protocol: str
 
 
-SupportRelation: TypeAlias = BuilderAllOf | Capability | Protocol
+@dataclass(frozen=True, slots=True)
+class RelativeVfoCommands:
+    """A single-RX A/B relative write requiring profile wire commands."""
+
+    operation: str
+    commands: tuple[str, ...]
+
+
+SupportRelation: TypeAlias = BuilderAllOf | Capability | Protocol | RelativeVfoCommands
 
 _SCOPE_BUILDERS = (scope_on, scope_data_output)
 
@@ -142,14 +150,27 @@ _RELATIONS = _validate_relations(
         *BUILDER_RELATIONS,
         *(Capability(operation, "audio") for operation in AUDIO_OPERATIONS),
         Protocol("send_civ", "civ"),
+        RelativeVfoCommands(
+            "write_relative_vfo_frequency",
+            (
+                "set_selected_freq",
+                "get_selected_freq",
+                "set_unselected_freq",
+                "get_unselected_freq",
+            ),
+        ),
+        RelativeVfoCommands(
+            "write_relative_vfo_mode",
+            ("set_unselected_mode", "get_unselected_mode", "get_unselected_freq"),
+        ),
     )
 )
 CALLABLE_RELATIONS: Mapping[str, SupportRelation] = MappingProxyType(
     {relation.operation: relation for relation in _RELATIONS}
 )
 
-if len(CALLABLE_RELATIONS) != 32:  # pragma: no cover - import-time invariant
-    raise ValueError("callable-support registry must contain exactly 32 operations")
+if len(CALLABLE_RELATIONS) != 34:  # pragma: no cover - import-time invariant
+    raise ValueError("callable-support registry must contain exactly 34 operations")
 if set(CALLABLE_RELATIONS) & EXCLUDED_OPERATIONS:  # pragma: no cover
     raise ValueError("excluded operations must not have callable-support relations")
 
@@ -184,6 +205,18 @@ def _relation_supported(
         )
     if isinstance(relation, Capability):
         return bool(profile.supports_capability(relation.capability))
+    if isinstance(relation, RelativeVfoCommands):
+        command_map = profile.command_map
+        return (
+            profile.receiver_count == 1
+            and profile.vfo_scheme == "ab"
+            and profile.vfo_readback == "selected_unselected"
+            and command_map is not None
+            and all(
+                command_map.has(name) and profile.supports_command(name)
+                for name in relation.commands
+            )
+        )
     return bool(profile.protocol_type == relation.protocol)
 
 

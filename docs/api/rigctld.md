@@ -303,6 +303,12 @@ pending overlay. `X USB` and `X USB 0` preserve the target DATA setting and
 filter; an ordinary mode with a positive passband explicitly disables DATA.
 Packet modes explicitly enable DATA in the same unselected-mode frame.
 Omitted filter/DATA fields are filled from runtime readback before the write.
+With an omitted or zero passband, `X` first reads the target VFO's DATA and
+filter, then sends the SET as a separate exchange. If a runtime VFO selection,
+swap or equalize operation is in progress or occurs between that read and the
+SET, `X` fails with `ERJCTED` (`RPRT -9`) without sending the SET; retry `X`
+after selection settles. This includes selection from another rigctld
+connection or the HTTP/WebSocket poller.
 See `handler.py: RigctldHandler._cmd_get_split_freq`,
 `handler.py: RigctldHandler._cmd_get_split_mode`, and
 `_dual_rx_runtime.py: DualRxRuntimeMixin.write_relative_vfo_mode`.

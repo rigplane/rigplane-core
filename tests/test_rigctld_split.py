@@ -15,13 +15,62 @@ from rigplane.core.state_pipeline_contracts import (
 )
 from rigplane.profiles import get_radio_profile
 from rigplane.types import Mode
+from test_controller_authority import Safety
 from test_rigctld_wsjtx_split_mk2 import (
     MODELS,
     _assert_no_relative_overlays,
+    _client,
     _exchange,
     _peer,
     _rf_state,
 )
+
+
+def _pause_mode_preservation(monkeypatch, radio):
+    read_done, release = asyncio.Event(), asyncio.Event()
+    read_relative_vfo = radio.read_relative_vfo
+
+    async def paused_read(*, selected):
+        observed = await read_relative_vfo(selected=selected)
+        if not read_done.is_set():
+            read_done.set()
+            await release.wait()
+        return observed
+
+    monkeypatch.setattr(radio, "read_relative_vfo", paused_read)
+    return read_done, release
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
+@pytest.mark.parametrize("command", [b"X USB\n", b"X USB 0\n"])
+async def test_split_selection_change_after_preservation_never_sets(
+    monkeypatch, model, command
+):
+    async with _peer(model) as (radio, peer, server, reader, writer):
+        before = dict(peer.slots)
+        read_done, release = _pause_mode_preservation(monkeypatch, radio)
+        reply = asyncio.create_task(_exchange(writer, reader, command))
+        try:
+            await asyncio.wait_for(read_done.wait(), 1)
+            async with _client(server) as (other_reader, other_writer):
+                assert (
+                    await _exchange(other_writer, other_reader, b"V VFOB\n")
+                    == b"RPRT 0\n"
+                )
+            assert peer.selected == "B"
+            release.set()
+            assert await reply == b"RPRT -9\n"
+            assert not any(
+                cmd == 0x26 and len(data) > 1 for cmd, _sub, data in peer.requests
+            )
+            assert peer.slots == before
+            _assert_no_relative_overlays(server)
+        finally:
+            release.set()
+            if not reply.done():
+                reply.cancel()
+            await asyncio.gather(reply, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -174,3 +223,61 @@ async def test_parser_distinguishes_bad_arity_from_unknown_command(model):
             assert await _exchange(writer, reader, command) == b"RPRT -1\n"
         assert await _exchange(writer, reader, b"\\get_bogus\n") == b"RPRT -4\n"
         assert not peer.requests
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
+@pytest.mark.parametrize("name,mode", [("CWR", Mode.CW_R), ("RTTYR", Mode.RTTY_R)])
+@pytest.mark.parametrize("getter", [b"x\n", b"m\n"])
+async def test_split_reverse_mode_round_trip_keeps_selected_mode(
+    model, name, mode, getter
+):
+    async with _peer(model) as (_radio, peer, _server, reader, writer):
+        before = peer.slots["A"]
+        assert (
+            await _exchange(writer, reader, f"X {name} 1800\n".encode()) == b"RPRT 0\n"
+        )
+        assert peer.slots["B"] == (7_076_000, mode, 3, 0)
+        expected = f"{name}\n1800\n".encode() if getter == b"x\n" else b"USB\n3000\n"
+        assert await _exchange(writer, reader, getter, lines=2) == expected
+        assert peer.slots["A"] == before
+        assert peer.selected == "A"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
+@pytest.mark.parametrize("command", [b"X USB\n", b"X USB 0\n"])
+async def test_split_mode_authority_change_during_preservation_never_sets(
+    model, command
+):
+    controller = Safety().authority()
+
+    def configure(radio):
+        radio._controller_authority = controller
+        return {}
+
+    async with _peer(model, configure=configure) as (
+        _radio,
+        peer,
+        _server,
+        reader,
+        writer,
+    ):
+        before = dict(peer.slots)
+        gate = peer.relative_mode_read_gate = asyncio.Event()
+        reply = asyncio.create_task(_exchange(writer, reader, command))
+        try:
+            await asyncio.wait_for(peer.relative_mode_read.wait(), 1)
+            await controller.set_mode("remote")
+            gate.set()
+            assert await reply == b"RPRT -22\n"
+            assert not any(
+                cmd == 0x26 and len(data) > 1 for cmd, _sub, data in peer.requests
+            )
+            assert peer.slots == before
+            assert peer.selected == "A"
+        finally:
+            gate.set()
+            if not reply.done():
+                reply.cancel()
+            await asyncio.gather(reply, return_exceptions=True)

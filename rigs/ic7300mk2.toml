@@ -736,7 +736,7 @@ get_selected_mode = [0x26, 0x00]          # guide p.23 (mode/data/filter)
 get_unselected_mode = [0x26, 0x01]
 # SET: selector, mode, DATA 00/01, filter 01..03; omitted fields reset defaults.
 # Source: owner-supplied IC-7300MK2_ENG_CI-V_0.pdf p.23.
-# Manual-derived; not bench-verified. Coordinator RX-only probe pending.
+# Manual-derived; not bench-probed on this model (the same SET was bench-probed on the IC-7300 and IC-705, MOR-3115).
 set_unselected_mode = [0x26, 0x01]
 # set_selected_mode stays undeclared to preserve ordinary 0x06 mode routing.
 

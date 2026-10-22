@@ -7,10 +7,11 @@ Part of the radio.py decomposition (#505). All methods are accessed via
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from typing import Any, Awaitable, Callable
+    from typing import Any, Awaitable, Callable, Iterator
 
     from .radio import CoreRadio as _MixinBase  # type: ignore[attr-defined]
 else:
@@ -60,6 +61,19 @@ def require_receiver_for_profile(
 
 class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
     """Dual-receiver routing methods for CoreRadio (mixin)."""
+
+    @contextmanager
+    def _vfo_selection_change(self) -> Iterator[None]:
+        # One integer encodes (2 * revision + 1) << in_flight. Odd means idle;
+        # every entry adds a factor of two, and every exit removes one while
+        # advancing the revision. Overlapping/nested changes stay even until
+        # ALL have exited, including on cancellation or an uncertain failure.
+        self._vfo_selection_epoch <<= 1
+        try:
+            yield
+        finally:
+            epoch = self._vfo_selection_epoch
+            self._vfo_selection_epoch = (epoch >> 1) + (epoch & -epoch)
 
     def _require_receiver(self, receiver: int, *, operation: str) -> None:
         """Validate receiver index against active profile."""
@@ -369,8 +383,9 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         selected: bool,
         data: bool | None = None,
         filter_width: int | None = None,
+        before_set: Callable[[], None] | None = None,
     ) -> RelativeVfoState:
-        """Write a complete mode/DATA/filter tuple and return observed state."""
+        """Write a mode tuple; validate synchronously after preservation, before SET."""
         role = "selected" if selected else "unselected"
         cmd_map = self._profile.command_map
         required = (f"set_{role}_mode", f"get_{role}_mode", f"get_{role}_freq")
@@ -392,7 +407,13 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             type(filter_width) is not int or filter_width not in (1, 2, 3)
         ):
             raise CommandError("direct VFO filter number must be 1, 2 or 3")
+        selection_epoch = None
         if data is None or filter_width is None:
+            selection_epoch = self._vfo_selection_epoch
+            if selection_epoch % 2 == 0:
+                raise CommandRejectedError(
+                    "VFO selection is changing; retry mode write"
+                )
             try:
                 current = await self.read_relative_vfo(selected=selected)
             except ValueError as exc:
@@ -410,6 +431,18 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         if data is None or filter_width is None or filter_width not in (1, 2, 3):
             raise CommandError("direct VFO filter readback is unavailable")
         opcode, sub, prefix = decode_wire_tuple(cmd_map.get(f"set_{role}_mode"))
+        if before_set is not None:
+            before_set()
+        if selection_epoch is not None and (
+            self._vfo_selection_epoch != selection_epoch
+            or self._vfo_selection_epoch % 2 == 0
+        ):
+            raise CommandRejectedError(
+                "VFO selection changed during preservation; retry"
+            )
+        # no await between the epoch check and the send; nothing can interleave there
+        # before the SET enters the commander queue. This covers runtime VFO
+        # selection, swap and equalize calls from rigctld and HTTP/WS pollers.
         response = await self.send_civ(
             opcode,
             sub,
@@ -450,7 +483,8 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         civ = build_civ_frame(
             self._radio_addr, CONTROLLER_ADDR, _CMD_VFO, data=bytes([code])
         )
-        await self._send_civ_raw(civ, wait_response=False)
+        with self._vfo_selection_change():
+            await self._send_civ_raw(civ, wait_response=False)
 
     async def equalize_main_sub(self) -> None:
         """Copy MAIN VFO state to SUB. Requires a dual-RX profile."""
@@ -469,7 +503,8 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         civ = build_civ_frame(
             self._radio_addr, CONTROLLER_ADDR, _CMD_VFO, data=bytes([code])
         )
-        await self._send_civ_raw(civ, wait_response=False)
+        with self._vfo_selection_change():
+            await self._send_civ_raw(civ, wait_response=False)
 
     async def swap_vfo_ab(self, receiver: int = 0) -> None:
         """Swap VFO A and VFO B within ``receiver``.
@@ -494,13 +529,14 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 "profile declares no swap_ab_code. "
                 "For MAIN↔SUB exchange use swap_main_sub()."
             )
-        if self._profile.receiver_count > 1:
-            target = "MAIN" if receiver == RECEIVER_MAIN else "SUB"
-            await self._set_vfo_wire(target)
-        civ = build_civ_frame(
-            self._radio_addr, CONTROLLER_ADDR, _CMD_VFO, data=bytes([code])
-        )
-        await self._send_civ_raw(civ, wait_response=False)
+        with self._vfo_selection_change():
+            if self._profile.receiver_count > 1:
+                target = "MAIN" if receiver == RECEIVER_MAIN else "SUB"
+                await self._set_vfo_wire(target)
+            civ = build_civ_frame(
+                self._radio_addr, CONTROLLER_ADDR, _CMD_VFO, data=bytes([code])
+            )
+            await self._send_civ_raw(civ, wait_response=False)
 
     async def equalize_vfo_ab(self, receiver: int = 0) -> None:
         """Copy the active VFO's state to the inactive VFO on ``receiver``.
@@ -519,13 +555,14 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 "profile declares no equal_ab_code. "
                 "For MAIN→SUB copy use equalize_main_sub()."
             )
-        if self._profile.receiver_count > 1:
-            target = "MAIN" if receiver == RECEIVER_MAIN else "SUB"
-            await self._set_vfo_wire(target)
-        civ = build_civ_frame(
-            self._radio_addr, CONTROLLER_ADDR, _CMD_VFO, data=bytes([code])
-        )
-        await self._send_civ_raw(civ, wait_response=False)
+        with self._vfo_selection_change():
+            if self._profile.receiver_count > 1:
+                target = "MAIN" if receiver == RECEIVER_MAIN else "SUB"
+                await self._set_vfo_wire(target)
+            civ = build_civ_frame(
+                self._radio_addr, CONTROLLER_ADDR, _CMD_VFO, data=bytes([code])
+            )
+            await self._send_civ_raw(civ, wait_response=False)
 
     # ------------------------------------------------------------------
     # ReceiverBankCapable — Transceiver → Receiver tier (issue #1170)
@@ -699,11 +736,12 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             )
             rx_state.active_slot = norm_slot
 
-        if self.receiver_count > 1:
-            await self._run_with_receiver_vfo_fallback(
-                receiver=receiver,
-                operation=operation,
-                action=emit,
-            )
-        else:
-            await emit()
+        with self._vfo_selection_change():
+            if self.receiver_count > 1:
+                await self._run_with_receiver_vfo_fallback(
+                    receiver=receiver,
+                    operation=operation,
+                    action=emit,
+                )
+            else:
+                await emit()

@@ -279,7 +279,7 @@ def _split_mode_values(
     Same display mapping as ``get_mode``: the DATA sub-mode (an int on
     the way in, never narrowed to bool) selects the packet-mode label.
     """
-    mode_str = str(mode).upper()
+    mode_str = _mode_to_hamlib_str(mode)
     filt = None if filter_num is None else int(filter_num)
     data = 0 if data_mode is None else int(data_mode)
     if data:
@@ -429,7 +429,11 @@ def _mode_to_hamlib_str(mode: object) -> str:
     if isinstance(mode, Mode):
         return str(CIV_TO_HAMLIB_MODE.get(mode.value, mode.name))
     if isinstance(mode, str):
-        return mode.upper()
+        name = mode.upper()
+        core_mode = Mode.__members__.get(name)
+        return (
+            name if core_mode is None else CIV_TO_HAMLIB_MODE.get(core_mode.value, name)
+        )
     name = getattr(mode, "name", None)
     if isinstance(name, str):
         return name.upper()
@@ -595,6 +599,8 @@ class _RigctldCommandExecutor:
             raise _RigctldCommandFailure(HamlibError.ETIMEOUT) from exc
         except CommandRejectedError as exc:
             raise _RigctldCommandFailure(HamlibError.ERJCTED) from exc
+        except ControllerError as exc:
+            raise _RigctldCommandFailure(HamlibError.EACCESS) from exc
         except CommandError as exc:
             raise _RigctldCommandFailure(HamlibError.ENAVAIL) from exc
         return CommandExecutionResult()
@@ -617,6 +623,11 @@ class _RigctldCommandExecutor:
             if isinstance(controller, ControllerAuthority) and not safety_off
             else None
         )
+
+        def validate_controller() -> None:
+            if ticket is not None:
+                ticket.authority.validate(ticket)
+
         managed = self.handler._managed_tx_authority is not None
         if managed and intent.name == "set_ptt":
             return await self._execute_managed_ptt(intent)
@@ -774,6 +785,7 @@ class _RigctldCommandExecutor:
                 int(params["mode"]),
                 filter_width=params.get("filter_width"),
                 data=params.get("data"),
+                before_set=validate_controller,
             )
         elif intent.name == "send_raw":
             send_fn = getattr(self.handler._radio, "_send_civ_raw", None)
@@ -3239,15 +3251,22 @@ class RigctldHandler:
         *,
         filter_width: int | None,
         data: bool | None,
+        before_set: Callable[[], None] | None = None,
     ) -> CommandExecutionResult:
         if not isinstance(self._radio, RelativeVfoModeWritable):
             raise _RigctldCommandFailure(HamlibError.ENAVAIL)
         try:
             await self._radio.write_relative_vfo_mode(
-                mode, selected=False, filter_width=filter_width, data=data
+                mode,
+                selected=False,
+                filter_width=filter_width,
+                data=data,
+                before_set=before_set,
             )
         except CommandRejectedError:
             raise
+        except ControllerError as exc:
+            raise _RigctldCommandFailure(HamlibError.EACCESS) from exc
         except CommandError as exc:
             raise _RigctldCommandFailure(HamlibError.ENAVAIL) from exc
         return CommandExecutionResult()

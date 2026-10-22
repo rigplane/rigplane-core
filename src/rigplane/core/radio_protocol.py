@@ -1717,8 +1717,9 @@ class RelativeVfoModeWritable(Protocol):
         selected: bool,
         data: bool | None = None,
         filter_width: int | None = None,
+        before_set: Callable[[], None] | None = None,
     ) -> RelativeVfoState:
-        """Return observed state, preserving omitted DATA and filter number (1–3)."""
+        """Preserve omitted fields; the synchronous hook may refuse before SET."""
         ...
 
 

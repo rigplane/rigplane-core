@@ -853,7 +853,7 @@ get_selected_mode = [0x26, 0x00]          # source: IC-7300 Advanced Manual (11a
 get_unselected_mode = [0x26, 0x01]        # source: IC-7300 Advanced Manual (11a) p.19-7 (detail p.19-13)
 # SET: selector, mode, DATA 00/01, filter 01..03; omitted fields reset defaults.
 # Source: owner-supplied IC-7300 Advanced Manual (11a), pp.19-7/19-13.
-# Manual-derived; not bench-verified. Coordinator RX-only probe pending.
+# Bench-probed 2026-10-22 on an IC-7300 (RX only, MOR-3115): 26 01 SET with explicit mode/DATA/filter was ACKed, read back exactly, and left the selected VFO unchanged.
 set_unselected_mode = [0x26, 0x01]
 # set_selected_mode stays undeclared to preserve ordinary 0x06 mode routing.
 

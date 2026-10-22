@@ -534,6 +534,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._last_power: int | None = None
         self._last_split: bool | None = None
         self._last_vfo: str | None = None
+        self._vfo_selection_epoch: int = 1
         self._token_task: asyncio.Task[None] | None = None
         self._auto_reconnect = auto_reconnect
         self._reconnect_delay = reconnect_delay
@@ -4782,11 +4783,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 f"profile {self._profile.model} declares no VFO select code for {name}"
             )
         civ = self._commands.set_vfo(code, to_addr=self._radio_addr)
-        resp = await self._send_civ_expect(civ, label="set_vfo")
-        ack = parse_ack_nak(resp)
-        if ack is False:
-            raise CommandError(f"Radio rejected VFO select {vfo}")
-        self._last_vfo = vfo.upper()
+        with self._vfo_selection_change():
+            resp = await self._send_civ_expect(civ, label="set_vfo")
+            ack = parse_ack_nak(resp)
+            if ack is False:
+                raise CommandError(f"Radio rejected VFO select {vfo}")
+            self._last_vfo = vfo.upper()
 
     async def set_split(self, on: bool) -> None:
         """Enable or disable split mode (CI-V ``0x0F``)."""

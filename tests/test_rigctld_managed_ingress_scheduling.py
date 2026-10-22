@@ -18,7 +18,9 @@ from rigplane.runtime._poller_types import CommandQueue, execute_command_queue_e
 from rigplane.runtime.managed_tx_state import ActuationOperation, ActuationResult, ManagedTxIntentKind, ManagedTxOutcome
 from serial_stub import SerialMockRadio
 from test_managed_tx_authority import authority
-from test_rigctld_wsjtx_split_mk2 import MODELS, _assert_no_relative_overlays, _exchange, _peer, _rf_state
+from test_controller_authority import Safety
+from test_rigctld_split import _pause_mode_preservation
+from test_rigctld_wsjtx_split_mk2 import MODELS, _assert_no_relative_overlays, _client, _exchange, _peer, _rf_state
 _FREQUENCY, _WAIT = 14_074_000, 2.0
 class _NoTruthProbe:
     def __bool__(self): raise AssertionError("identity checks must use is None")
@@ -770,6 +772,9 @@ async def managed_split(request):
     refs = {}
 
     def configure(radio):
+        controller = Safety().authority()
+        radio._controller_authority = controller
+        queue.bind_controller(controller)
         managed, *_ = authority(generation=radio.state_store.provider_generation)
         refs["authority"] = managed
         default = _Default()
@@ -831,6 +836,50 @@ async def _drain_split_entry(rig, entry):
         )
 
     await execute_command_queue_entry(entry, execute)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", [b"X USB\n", b"X USB 0\n"])
+async def test_managed_split_selection_change_after_preservation_never_sets(
+    managed_split, monkeypatch, command
+):
+    rig = managed_split
+    before = dict(rig.peer.slots)
+    read_done, release = _pause_mode_preservation(monkeypatch, rig.radio)
+    reply = asyncio.create_task(_exchange(rig.writer, rig.reader, command))
+    drain = None
+    try:
+        await rig.queue.wait(1)
+        entry = rig.queue.take_entry()
+        assert entry is not None
+        rig.ordered.assert_called_once()
+        drain = asyncio.create_task(_drain_split_entry(rig, entry))
+        await asyncio.wait_for(read_done.wait(), 1)
+        async with _client(rig.server) as (other_reader, other_writer):
+            assert (
+                await _exchange(other_writer, other_reader, b"V VFOB\n") == b"RPRT 0\n"
+            )
+        assert rig.peer.selected == "B"
+        release.set()
+        await asyncio.wait_for(asyncio.gather(drain, return_exceptions=True), 2)
+        assert await reply == b"RPRT -9\n"
+        assert not any(
+            cmd == 0x26 and len(data) > 1 for cmd, _sub, data in rig.peer.requests
+        )
+        assert rig.peer.slots == before
+        assert rig.queue.pending_count == 0
+        assert not rig.default.calls
+        rig.ordered.assert_called_once()
+        _assert_no_relative_overlays(rig.server)
+    finally:
+        release.set()
+        for task in (reply, drain):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (reply, drain) if task is not None),
+            return_exceptions=True,
+        )
 
 
 @pytest.mark.asyncio
@@ -940,6 +989,43 @@ async def test_managed_split_mode_cancelled_during_preservation_read_never_sets(
         assert not any(
             command == 0x26 and len(data) > 1
             for command, _sub, data in rig.peer.requests
+        )
+        assert rig.peer.slots == before
+        assert rig.peer.selected == "A"
+        _assert_no_relative_overlays(rig.server)
+    finally:
+        gate.set()
+        for task in (reply, drain):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (reply, drain) if task is not None),
+            return_exceptions=True,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", [b"X USB\n", b"X USB 0\n"])
+async def test_managed_split_mode_authority_change_during_preservation_never_sets(
+    managed_split, command
+):
+    rig = managed_split
+    before = dict(rig.peer.slots)
+    gate = rig.peer.relative_mode_read_gate = asyncio.Event()
+    reply = asyncio.create_task(_exchange(rig.writer, rig.reader, command))
+    drain = None
+    try:
+        await rig.queue.wait(1)
+        entry = rig.queue.take_entry()
+        assert entry is not None and entry.controller_ticket is not None
+        drain = asyncio.create_task(_drain_split_entry(rig, entry))
+        await asyncio.wait_for(rig.peer.relative_mode_read.wait(), 1)
+        await rig.radio._controller_authority.set_mode("remote")
+        gate.set()
+        await asyncio.wait_for(asyncio.gather(drain, return_exceptions=True), 2)
+        assert await reply == b"RPRT -22\n"
+        assert not any(
+            cmd == 0x26 and len(data) > 1 for cmd, _sub, data in rig.peer.requests
         )
         assert rig.peer.slots == before
         assert rig.peer.selected == "A"

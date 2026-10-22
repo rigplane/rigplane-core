@@ -1,5 +1,6 @@
 """Relative mode writes preserve omitted fields and require observed acceptance."""
 
+import asyncio
 from dataclasses import replace
 
 import pytest
@@ -174,3 +175,153 @@ async def test_selected_mode_uses_existing_selected_command_declaration(route):
     ]
     await radio.write_relative_vfo_mode(0x01, selected=True, data=False, filter_width=1)
     assert wire.frames[0] == bytes.fromhex(f"FE FE {addr:02X} E0 26 00 01 00 01 FD")
+
+
+@pytest.mark.parametrize(
+    "model,method,args,kwargs",
+    [
+        ("IC-7300", "set_vfo_slot", ("B",), {}),
+        ("IC-7300", "_set_vfo_slot_confirmed", ("B",), {}),
+        ("IC-7300", "_set_vfo_wire", ("B",), {}),
+        ("IC-7300", "swap_vfo_ab", (), {}),
+        ("IC-7300", "equalize_vfo_ab", (), {}),
+        ("IC-7610", "set_vfo_slot", ("B",), {"receiver": 1}),
+        ("IC-7610", "_set_vfo_slot_confirmed", ("B",), {"receiver": 1}),
+        ("IC-7610", "select_receiver", (1,), {}),
+        ("IC-7610", "swap_main_sub", (), {}),
+        ("IC-7610", "equalize_main_sub", (), {}),
+    ],
+)
+@pytest.mark.parametrize("ending", ["complete", "error", "cancel"])
+async def test_selection_methods_mark_epoch_until_completion(
+    monkeypatch, model, method, args, kwargs, ending
+):
+    radio = IcomRadio("127.0.0.1", model=model)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def send(frame, **_kwargs):
+        entered.set()
+        await release.wait()
+        if ending == "error":
+            raise RuntimeError("selection failed")
+        return response(radio.profile.civ_addr, "FB")
+
+    monkeypatch.setattr(radio, "_check_connected", lambda: None)
+    monkeypatch.setattr(radio, "_send_civ_raw", send)
+    initial_epoch = radio._vfo_selection_epoch
+    task = asyncio.create_task(getattr(radio, method)(*args, **kwargs))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        assert radio._vfo_selection_epoch != initial_epoch
+        assert radio._vfo_selection_epoch % 2 == 0
+        if ending == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            release.set()
+            if ending == "error":
+                with pytest.raises(RuntimeError, match="selection failed"):
+                    await task
+            else:
+                await task
+        assert radio._vfo_selection_epoch != initial_epoch
+        assert radio._vfo_selection_epoch % 2 == 1
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("first_to_finish", [0, 1])
+async def test_overlapping_selection_changes_stay_in_progress(
+    monkeypatch, first_to_finish
+):
+    radio = IcomRadio("127.0.0.1", model="IC-7300")
+    entered = [asyncio.Event(), asyncio.Event()]
+    release = [asyncio.Event(), asyncio.Event()]
+    frames = []
+
+    async def send(frame, **_kwargs):
+        index = len(frames)
+        frames.append(frame)
+        entered[index].set()
+        await release[index].wait()
+        return response(radio.profile.civ_addr, "FB")
+
+    monkeypatch.setattr(radio, "_check_connected", lambda: None)
+    monkeypatch.setattr(radio, "_send_civ_raw", send)
+    initial_epoch = radio._vfo_selection_epoch
+    tasks = []
+    try:
+        tasks.append(asyncio.create_task(radio.set_vfo_slot("B")))
+        await asyncio.wait_for(entered[0].wait(), 1)
+        tasks.append(asyncio.create_task(radio.swap_vfo_ab()))
+        await asyncio.wait_for(entered[1].wait(), 1)
+        assert radio._vfo_selection_epoch % 2 == 0
+        with pytest.raises(CommandRejectedError):
+            await radio.write_relative_vfo_mode(0x01, selected=False)
+        assert len(frames) == 2
+        release[first_to_finish].set()
+        await tasks[first_to_finish]
+        assert radio._vfo_selection_epoch % 2 == 0
+        with pytest.raises(CommandRejectedError):
+            await radio.write_relative_vfo_mode(0x01, selected=False)
+        assert len(frames) == 2
+        release[1 - first_to_finish].set()
+        await tasks[1 - first_to_finish]
+        assert radio._vfo_selection_epoch % 2 == 1
+        assert radio._vfo_selection_epoch != initial_epoch
+    finally:
+        for event in release:
+            event.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_explicit_tuple_needs_no_preservation_during_selection(route):
+    radio, wire, addr = route
+    wire.replies = [
+        response(addr, "FB"),
+        response(addr, "25 01 00 40 07 14 00"),
+        response(addr, "26 01 01 01 02"),
+    ]
+    with radio._vfo_selection_change():
+        await radio.write_relative_vfo_mode(
+            0x01, selected=False, data=True, filter_width=2
+        )
+    assert wire.frames == [
+        bytes.fromhex(f"FE FE {addr:02X} E0 26 01 01 01 02 FD"),
+        bytes.fromhex(f"FE FE {addr:02X} E0 25 01 FD"),
+        bytes.fromhex(f"FE FE {addr:02X} E0 26 01 FD"),
+    ]
+
+
+async def test_epoch_is_checked_after_before_set_hook(route):
+    radio, wire, addr = route
+    wire.replies = [
+        response(addr, "25 01 00 40 07 14 00"),
+        response(addr, "26 01 01 01 03"),
+    ]
+
+    def selection_changed():
+        with radio._vfo_selection_change():
+            pass
+
+    with pytest.raises(CommandRejectedError):
+        await radio.write_relative_vfo_mode(
+            0x01, selected=False, before_set=selection_changed
+        )
+    assert len(wire.frames) == 2
+    assert all(len(frame) == 7 for frame in wire.frames)
+
+
+async def test_single_receiver_selection_noop_keeps_epoch(route):
+    radio, wire, _addr = route
+    initial_epoch = radio._vfo_selection_epoch
+    await radio.select_receiver(0)
+    assert radio._vfo_selection_epoch == initial_epoch
+    assert wire.frames == []
