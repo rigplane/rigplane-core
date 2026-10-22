@@ -463,6 +463,40 @@ async def test_ftx1_unmodelled_socket_request_is_traced() -> None:
         assert gaps[0]["result"] == {"ok": False, "outcome": "unsupported"}
 
 
+async def test_ftx1_keyer_memory_over_socket_serial() -> None:
+    """MOR-3678: KM/KY through serve --radio ftx1's real TCP endpoint.
+
+    pyserial's ``socket://`` open, one burst of CAT bytes, the model behind
+    the adapter's splitter. Per the CAT OM 2508-C (printed p.17-18): KM1CQ;
+    stores, KM1; reads it back, KY01; plays TEXT memory 1 (no answer), KY0;
+    lacks P2 and KY; is a read KY does not have, so both answer ?;. Nothing
+    is transmitted: TX; still reads TX0; and the engine PTT stays off.
+    """
+    async with _stack("--radio", "ftx1") as s:
+        fake = s.inner.backend.radio
+        device = s.inner.backend.startup_fields()["device"]
+        port = await asyncio.to_thread(_socket_serial, device)
+        try:
+            await asyncio.to_thread(port.write, b"KM1CQ;KM1;KY01;KY0;KY;TX;")
+            replies = [
+                bytes(
+                    await asyncio.wait_for(
+                        asyncio.to_thread(port.read_until, b";"), 5.0
+                    )
+                )
+                for _ in range(4)
+            ]
+        finally:
+            await asyncio.to_thread(port.close)
+
+        assert replies == [b"KM1CQ;", b"?;", b"?;", b"TX0;"]
+        assert fake.model.keying_memory == {1: "CQ"}
+        assert fake.model.keyer_play_requests == ((0, 1),)
+        assert fake.ptt is False
+        state = await (await s.client.get("/state")).json()
+        assert state["ptt"] is False
+
+
 async def test_ftx1_stop_cancels_pending_reappear_timer() -> None:
     async with _stack("--radio", "ftx1") as s:
         await s.client.post("/event", json={"event": "usb_vanish", "for_s": 5})
