@@ -27,6 +27,7 @@ from rigplane_testkit.icom.simulator_audio import (
     AUDIO_HEADER_SIZE,
 )
 from testkit.test_simulator_audio import (
+    _assert_burst_cadence,
     _collect_audio,
     _complete_bursts,
     _open_audio,
@@ -220,6 +221,63 @@ async def test_delayed_task_start_keeps_the_slot_origin(
     assert b"".join(p[AUDIO_HEADER_SIZE:] for p in frames[12:]) == raw[:RX_BURST_BYTES]
 
 
+@pytest.mark.parametrize("startup_delay", [0.200, 0.205])
+async def test_resynchronized_task_start_keeps_the_future_slot_boundary(
+    clocked_rx: tuple[MockIcomRadio, _UdpClient, _AudioClock, bytes],
+    tmp_path: Path,
+    startup_delay: float,
+) -> None:
+    server, client, clock, raw = clocked_rx
+    server._rx_source = WavSource(
+        tmp_path / "rx.wav", start="slot", utc=lambda: 14.5 + clock.time()
+    )
+    assert client.transport is not None
+    server._audio_start_rx(
+        (_HOST, client.transport.get_extra_info("sockname")[1]), _CLIENT_ID
+    )
+    clock.advance_to(startup_delay)
+    await asyncio.sleep(0)
+    for _ in range(30):
+        await clock.tick(clock.deadlines[-1])
+        if any(any(args[0][AUDIO_HEADER_SIZE:]) for _, _, args in clock.calls[-3:]):
+            break
+    file_calls = [
+        (when, args[0])
+        for when, _, args in clock.calls
+        if any(args[0][AUDIO_HEADER_SIZE:])
+    ]
+    assert len(file_calls) == 3
+    assert file_calls[0][0] == pytest.approx(0.5)
+    assert (
+        b"".join(p[AUDIO_HEADER_SIZE:] for _, p in file_calls) == raw[:RX_BURST_BYTES]
+    )
+
+
+@pytest.mark.parametrize(
+    ("first_wake", "second_burst"), [(0.035, 0.040), (0.135, 0.1358)]
+)
+async def test_ramp_cadence_allows_a_delayed_wake_then_catchup(
+    clocked_rx: tuple[MockIcomRadio, _UdpClient, _AudioClock, bytes],
+    first_wake: float,
+    second_burst: float,
+) -> None:
+    server, client, clock, _ = clocked_rx
+    server._rx_source = None
+    assert client.transport is not None
+    server._audio_start_rx(
+        (_HOST, client.transport.get_extra_info("sockname")[1]), _CLIENT_ID
+    )
+    await asyncio.sleep(0)
+    await clock.tick(first_wake)
+    for _ in range(24):
+        await clock.tick(clock.deadlines[-1])
+    starts = [when for when, _, _ in clock.calls[::3]]
+    assert len(starts) == 25
+    assert starts[:2] == pytest.approx([first_wake, second_burst])
+    assert starts[-1] == pytest.approx(0.5)
+    _assert_burst_cadence(starts)
+
+
 async def test_rx_loop_uses_absolute_deadlines_after_sleep_overshoot(
     clocked_rx: tuple[MockIcomRadio, _UdpClient, _AudioClock, bytes],
 ) -> None:
@@ -236,7 +294,7 @@ async def test_rx_loop_uses_absolute_deadlines_after_sleep_overshoot(
 
 
 @pytest.mark.parametrize(
-    ("resume_at", "next_deadline"), [(0.139, 0.139), (0.141, 0.161)]
+    ("resume_at", "next_deadline"), [(0.139, 0.139), (0.141, 0.160)]
 )
 async def test_rx_loop_resynchronizes_only_beyond_five_periods(
     clocked_rx: tuple[MockIcomRadio, _UdpClient, _AudioClock, bytes],
@@ -286,9 +344,10 @@ async def test_pending_pcm_is_invalidated_on_reopen_or_retarget(
             struct.unpack_from("<I", p, 0x0C)[0] == _CLIENT_ID + 1 for p in frames
         )
         index = 0 if stop_first else 2
-        assert b"".join(p[AUDIO_HEADER_SIZE:] for p in frames) == raw[
-            index * RX_BURST_BYTES : (index + 1) * RX_BURST_BYTES
-        ]
+        assert (
+            b"".join(p[AUDIO_HEADER_SIZE:] for p in frames)
+            == raw[index * RX_BURST_BYTES : (index + 1) * RX_BURST_BYTES]
+        )
         await old_client.expect_silence(0.01)
     finally:
         new_client.close()

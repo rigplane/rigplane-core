@@ -407,7 +407,7 @@ class AudioPortMixin:
         Bursts sit at ABSOLUTE deadlines on the loop clock (a relative
         ``sleep(0.02)`` accumulates overshoot and stretches playback,
         breaking slot alignment for file sources); more than five bursts
-        behind, resynchronise to now.
+        behind, drop stale deadlines without moving the timebase.
         """
         try:
             loop = asyncio.get_running_loop()
@@ -415,7 +415,11 @@ class AudioPortMixin:
             while True:
                 now = loop.time()
                 if next_t - now < -5 * _AUDIO_BURST_PERIOD_S:
-                    next_t = now  # >5 bursts behind: resynchronise
+                    skipped = int((now - next_t) / _AUDIO_BURST_PERIOD_S)
+                    if self._rx_source is not None:
+                        for _ in range(skipped):
+                            self._rx_source.read_burst()
+                    next_t += skipped * _AUDIO_BURST_PERIOD_S
                 await asyncio.sleep(max(0.0, next_t - now))
                 next_t += _AUDIO_BURST_PERIOD_S
                 client = self._audio_client
