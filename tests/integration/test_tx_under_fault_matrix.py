@@ -49,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 pytestmark = pytest.mark.mock_integration
 
 from rigplane.core.state_pipeline_contracts import FieldPath  # noqa: E402
+from rigplane.core.tx_observation import OBSERVED_PTT_PATH  # noqa: E402
 from rigplane.radio import IcomRadio  # noqa: E402
 from rigplane.rigctld.contract import RigctldConfig  # noqa: E402
 from rigplane.rigctld.server import RigctldServer  # noqa: E402
@@ -674,6 +675,103 @@ async def test_tx_under_fault_matrix(
         cell.note("lease released, debt cleared")
 
         print(f"[{cell.id}] {'; '.join(cell.timeline)}")
+    finally:
+        with contextlib.suppress(Exception):
+            await client.close()
+        await _tear_down_stack(stack)
+
+
+# ---------------------------------------------------------------------------
+# MOR-2855: the published managed TX document during a silent session loss
+# ---------------------------------------------------------------------------
+
+
+async def test_silent_drop_keeps_the_published_managed_tx_document_honest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The published document the UI's TX look is built from stays honest.
+
+    The ``ws``-``drop_silent``-``hold`` scenario without the matrix's own
+    end-state assertions: while the simulator stays keyed, every sampled
+    ``GET /api/v1/managed-transmit`` document must never claim "nothing is
+    transmitting and nothing is owed", and once the silence outlives the PTT
+    field's max age the observation must age out — an ``on`` after that can
+    only come from a NEW post-fault observation, never from the stale
+    pre-fault reading.
+    """
+    # Patient OpenClose window shortened for test time, as the matrix cell
+    # for the same fault does.
+    monkeypatch.setattr("rigplane.runtime._civ_rx._OPENCLOSE_DEADLINE", _PATIENCE_S)
+    stack = await _stand_up_stack(
+        tmp_path, loss="hold", tot_seconds=_LINK_FAULT_TOT_S, unsolicited=False
+    )
+    client = _WsKeyClient("127.0.0.1", stack.web.port)
+    try:
+        sim, web, composition = stack.sim, stack.web, stack.composition
+        await client.connect()
+        await _wait_ptt_observed(web, _GATE_TIMEOUT_S)
+        assert await client.key("pin-key")
+        await _wait_ptt(sim, True, _KEY_DEADLINE_S)
+
+        observed_ptt = web.command_state_store.snapshot().field(OBSERVED_PTT_PATH)
+        assert observed_ptt.max_age is not None and observed_ptt.max_age > 0
+        # Baseline: the last PTT observation before the fault. Any "on" the
+        # document reports later must be backed by an observation NEWER than
+        # this one — the stale pre-fault reading must never stand in as TX
+        # evidence once the link went silent.
+        last_observed_before = observed_ptt.last_observed_monotonic
+        stale_after_s = float(observed_ptt.max_age) + 0.5
+
+        fault_at = time.monotonic()
+        sim.drop_session(at=0.05, notice=False)
+
+        deadline = time.monotonic() + _SILENT_DROP_BUDGET_S + _RELEASE_DEBT_GRACE_S
+        samples = 0
+        keyed_samples = 0
+        while True:
+            await asyncio.sleep(0.1)
+            status, document = await _http_json(
+                web.port, "GET", "/api/v1/managed-transmit"
+            )
+            assert status == 200, document
+            samples += 1
+            managed = document["managedTransmit"]
+            assert managed["status"] == "available", document
+            observed = document["txObservation"]["observedPtt"]
+            intent_kind = managed["intent"]["kind"]
+            owed = managed["releaseRequired"]
+            if sim.ptt_on:
+                # The radio is still keyed: the document may not claim a
+                # clean RX (nothing transmitting, nothing owed).
+                keyed_samples += 1
+                assert not (
+                    observed == "off" and owed is False and intent_kind == "rx"
+                ), f"clean RX claimed while the simulator is keyed: {document}"
+            if time.monotonic() - fault_at > stale_after_s and observed == "on":
+                field = web.command_state_store.snapshot().field(OBSERVED_PTT_PATH)
+                assert field.last_observed_monotonic > last_observed_before, (
+                    f"stale 'on' published after the field's max age: {document}"
+                )
+            state = (await composition.authority.snapshot()).state
+            if (
+                not sim.ptt_on
+                and state.intent.kind is ManagedTxIntentKind.RX
+                and not state.release_required
+                and state.pending_effect is None
+            ):
+                break
+            assert time.monotonic() < deadline, (
+                f"authority never settled after the silent drop: {state}"
+            )
+        assert keyed_samples > 0, (
+            "simulator unkeyed before any keyed sample was taken; the "
+            "keyed-sample assertion never ran"
+        )
+        print(
+            f"[ws-drop_silent-hold-pin] settled after {samples} document "
+            f"samples ({keyed_samples} while keyed)"
+        )
     finally:
         with contextlib.suppress(Exception):
             await client.close()

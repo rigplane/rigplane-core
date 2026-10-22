@@ -35,6 +35,11 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.core.tx_observation import (
+    OBSERVED_PTT_PATH,
+    ObservedPtt,
+    project_observed_ptt,
+)
 from rigplane.core.radio_protocol import ScopeCapable
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
@@ -3338,6 +3343,214 @@ async def test_scope_health_monitor_unconfirmed_session_does_not_reenable() -> N
     await asyncio.gather(task, return_exceptions=True)
 
     assert not srv.command_queue.has_commands
+
+
+def _record_scope_commands_completing_like_a_poller(
+    srv: WebServer,
+    queued: list[EnableScope],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Record EnableScope entries and complete them so the monitor advances."""
+    put_ordered = srv.command_queue.put_ordered
+
+    def observe_and_complete(command: object, **kwargs: object) -> object:
+        entry = put_ordered(command, **kwargs)
+        if isinstance(command, EnableScope):
+            queued.append(command)
+            future = kwargs.get("future")
+            if isinstance(future, asyncio.Future) and not future.done():
+                future.set_result(None)
+        return entry
+
+    monkeypatch.setattr(srv.command_queue, "put_ordered", observe_and_complete)
+
+
+def _observe_scope_ptt(srv: WebServer, value: ObservedPtt, max_age: float) -> None:
+    srv.command_state_store.apply_current(
+        _store_observation(
+            OBSERVED_PTT_PATH, value, at=time.monotonic(), max_age=max_age
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_scope_health_monitor_keyed_tx_queues_nothing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-2859: keyed managed TX pauses scope re-enable writes and retries."""
+    radio = _scope_radio(ready=True, connected=True)
+    srv = WebServer(radio)
+    srv._scope_handlers.add(MagicMock())
+    srv._scope_enabled = True
+    srv._scope_health_interval = 0.01
+    srv._scope_last_nonzero = time.monotonic() - 1.0
+    srv._managed_tx_keyed = True  # noqa: SLF001
+    queued: list[EnableScope] = []
+    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
+
+    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    try:
+        await asyncio.sleep(0.06)  # several monitor intervals under TX
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert queued == []
+    assert "giving up" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scope_health_monitor_observed_ptt_on_queues_nothing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-2859: fresh observed PTT ON pauses scope writes without keyed intent."""
+    radio = _scope_radio(ready=True, connected=True)
+    srv = WebServer(radio)
+    srv._scope_handlers.add(MagicMock())
+    srv._scope_enabled = True
+    srv._scope_health_interval = 0.01
+    srv._scope_last_nonzero = time.monotonic() - 1.0
+    _observe_scope_ptt(srv, ObservedPtt.ON, max_age=60.0)
+    assert srv._managed_tx_keyed is False  # noqa: SLF001
+    queued: list[EnableScope] = []
+    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
+
+    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    try:
+        await asyncio.sleep(0.06)  # several monitor intervals under TX
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert queued == []
+    assert "giving up" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scope_health_monitor_long_tx_never_gives_up(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-2859: a TX longer than the retry budget logs no give-up."""
+    radio = _scope_radio(ready=True, connected=True)
+    srv = WebServer(radio)
+    srv._scope_handlers.add(MagicMock())
+    srv._scope_enabled = True
+    srv._scope_health_interval = 0.01
+    srv._scope_last_nonzero = time.monotonic() - 1.0
+    srv._managed_tx_keyed = True  # noqa: SLF001
+    queued: list[EnableScope] = []
+    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
+
+    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    try:
+        await asyncio.sleep(0.15)  # well past three retries under TX
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert queued == []
+    assert "giving up" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scope_health_monitor_recovers_after_tx_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-2859: de-key with live traffic stays quiet; a later stall re-enables."""
+    radio = _scope_radio(ready=True, connected=True)
+    srv = WebServer(radio)
+    srv._scope_handlers.add(MagicMock())
+    srv._scope_enabled = True
+    srv._scope_health_interval = 0.05
+    srv._scope_last_nonzero = time.monotonic() - 1.0
+    srv._managed_tx_keyed = True  # noqa: SLF001
+    queued: list[EnableScope] = []
+    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
+
+    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    try:
+        await asyncio.sleep(0.3)  # long TX spans the 3-retry budget (6 intervals)
+        assert queued == []
+        srv._managed_tx_keyed = False  # noqa: SLF001 — de-key, traffic resumes
+        for _ in range(25):  # ~250 ms of live traffic, ~10 ms between frames
+            srv._scope_health_check(SimpleNamespace(pixels=b"\x00\x01"))  # noqa: SLF001
+            await asyncio.sleep(0.01)
+        assert queued == []  # live traffic after TX stays quiet
+        # Genuine RX stall: frames stop again.
+        srv._scope_last_nonzero = time.monotonic() - 1.0
+        await _await_condition(lambda: len(queued) > 0, timeout=5.0)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert any(isinstance(command, EnableScope) for command in queued)
+
+
+@pytest.mark.asyncio
+async def test_scope_health_monitor_tx_resets_retry_budget_after_give_up(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-2859: a TX pause restores the retry budget exhausted by an RX stall."""
+    caplog.set_level("WARNING", logger="rigplane.web.server")
+    radio = _scope_radio(ready=True, connected=True)
+    srv = WebServer(radio)
+    srv._scope_handlers.add(MagicMock())
+    srv._scope_enabled = True
+    srv._scope_health_interval = 0.05
+    srv._scope_last_nonzero = time.monotonic() - 1.0
+    queued: list[EnableScope] = []
+    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
+
+    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    try:
+        # RX stall with zero frames until the monitor exhausts its retries.
+        await _await_condition(
+            lambda: len(queued) >= 3 and "giving up" in caplog.text,
+            timeout=5.0,
+        )
+        baseline = len(queued)
+        # TX known for a few intervals: quiet, timer + retries reset.
+        srv._managed_tx_keyed = True  # noqa: SLF001
+        await asyncio.sleep(0.2)
+        assert len(queued) == baseline
+        # De-key with zero frames continuing: fresh budget re-enables.
+        srv._managed_tx_keyed = False  # noqa: SLF001
+        await _await_condition(lambda: len(queued) > baseline, timeout=5.0)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert any(isinstance(command, EnableScope) for command in queued[baseline:])
+
+
+@pytest.mark.asyncio
+async def test_scope_health_monitor_stale_ptt_still_reenables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-2859: stale observed PTT (UNKNOWN) keeps the RX re-enable path."""
+    radio = _scope_radio(ready=True, connected=True)
+    srv = WebServer(radio)
+    srv._scope_handlers.add(MagicMock())
+    srv._scope_enabled = True
+    srv._scope_health_interval = 0.01
+    srv._scope_last_nonzero = time.monotonic() - 1.0
+    _observe_scope_ptt(srv, ObservedPtt.ON, max_age=0.02)
+    await asyncio.sleep(0.05)  # the ON observation goes stale
+    assert srv._managed_tx_keyed is False  # noqa: SLF001
+    assert (
+        project_observed_ptt(srv.command_state_store.snapshot()) is ObservedPtt.UNKNOWN
+    )
+    queued: list[EnableScope] = []
+    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
+
+    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    try:
+        await _await_condition(lambda: len(queued) > 0, timeout=5.0)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert any(isinstance(command, EnableScope) for command in queued)
 
 
 @pytest.mark.asyncio

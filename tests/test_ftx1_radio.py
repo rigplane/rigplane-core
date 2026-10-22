@@ -3265,32 +3265,22 @@ async def test_set_tuner_status_acquires_atu_route(connected_radio):
 
 
 @pytest.mark.asyncio
-async def test_send_cw_text_sends_ky_command(connected_radio):
+async def test_shipped_profile_refuses_send_cw_text_before_any_write(connected_radio):
+    # MOR-3678: the shipped FTX-1 profile disables typed CW text; the old
+    # "KY <text>;" keyboard frames were not valid FTX-1 CAT. The KM + KY
+    # path is covered in tests/test_ftx1_send_cw_text_wire.py.
     connected_radio._transport.write = AsyncMock()
-    await connected_radio.send_cw_text("CQ CQ DE W1AW")
-    connected_radio._transport.write.assert_called_once_with("KY CQ CQ DE W1AW;")
+    with pytest.raises(RuntimeError, match="does not support sending CW text"):
+        await connected_radio.send_cw_text("CQ CQ DE W1AW")
+    connected_radio._transport.write.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_send_cw_text_splits_long_text(connected_radio):
-    connected_radio._transport.write = AsyncMock()
-    text = "A" * 48  # two 24-char chunks
-    await connected_radio.send_cw_text(text)
-    assert connected_radio._transport.write.call_count == 2
-
-
-@pytest.mark.asyncio
-async def test_send_cw_text_empty_sends_ky_clear(connected_radio):
-    connected_radio._transport.write = AsyncMock()
-    await connected_radio.send_cw_text("")
-    connected_radio._transport.write.assert_called_once_with("KY ;")
-
-
-@pytest.mark.asyncio
-async def test_stop_cw_text_sends_ky_clear(connected_radio):
+async def test_stop_cw_text_stops_keyer_playback(connected_radio):
+    # KY P1 P2 with P2 0 = STOP (CAT manual 2508-C printed p.18).
     connected_radio._transport.write = AsyncMock()
     await connected_radio.stop_cw_text()
-    connected_radio._transport.write.assert_called_once_with("KY ;")
+    connected_radio._transport.write.assert_called_once_with("KY00;")
 
 
 # ---------------------------------------------------------------------------

@@ -412,6 +412,14 @@ async def test_stable_http_payloads_satisfy_required_field_contract() -> None:
         assert set(required).issubset(payload)
 
 
+def test_capabilities_contract_requires_mode_families() -> None:
+    """MOR-3679: clients read CW modes from ``modeFamilies``, so the stable
+    contract lists it as required on ``/api/v1/capabilities``."""
+    assert (
+        "modeFamilies" in RESPONSE_FIELD_CONTRACTS["/api/v1/capabilities"]["required"]
+    )
+
+
 def test_runtime_contract_requires_the_process_block() -> None:
     assert "process" in RESPONSE_FIELD_CONTRACTS["/api/v1/runtime"]["required"]
 

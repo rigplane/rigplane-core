@@ -36,6 +36,40 @@ def test_full_worker_diagnostics_wiring() -> None:
     assert "rc=${PIPESTATUS[0]}" in text and 'exit "$rc"' in text
 
 
+def test_quick_worker_diagnostics_wiring() -> None:
+    text = (ROOT / ".github/workflows/quick.yml").read_text()
+    assert "- name: Run tests" in text
+    assert "- name: Bound worker diagnostics" in text
+    assert "- name: Upload worker diagnostics" in text
+    run = text.split("- name: Run tests", 1)[1].split("- name:", 1)[0]
+    assert "-p pytest_worker_diagnostics" in run
+    assert (
+        "RIGPLANE_WORKER_DIAG_DIR: ${{ runner.temp }}/pytest-worker-diagnostics" in run
+    )
+    assert "PYTHONPATH: ${{ github.workspace }}/.github/scripts" in run
+    finalize = text.split("- name: Bound worker diagnostics", 1)[1].split("- name:", 1)[
+        0
+    ]
+    assert (
+        "pytest_worker_diagnostics.py --finalize" in finalize
+        and "${{ runner.temp }}/pytest-worker-diagnostics" in finalize
+    )
+    upload = text.split("- name: Upload worker diagnostics", 1)[1].split("- name:", 1)[
+        0
+    ]
+    assert "actions/upload-artifact" in upload and "always()" in upload
+    for leaf in (
+        "events-*.jsonl",
+        "phases-*.jsonl",
+        "controller-*.jsonl",
+        "dump-*.txt",
+        "fatal-*.log",
+        "timeout-*.log",
+        "bounds.json",
+    ):
+        assert f"${{{{ runner.temp }}}}/pytest-worker-diagnostics/{leaf}" in upload
+
+
 @pytest.mark.skipif(
     sys.platform != "linux", reason="Linux signal/resource qualification"
 )

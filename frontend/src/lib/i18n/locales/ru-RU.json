@@ -113,6 +113,7 @@
   "core.overlay.poweredOff.powerOnButton": "Включить",
   "core.overlay.poweredOff.failedPowerOn": "Не удалось включить: {detail}",
   "core.overlay.scopeDisconnected": "Панорама отключена — переподключение…",
+  "core.overlay.scopeTransmitting": "Идёт передача — радио не присылает панораму во время передачи",
   "core.overlay.audioLinkLost": "Аудиоканал потерян — переподключение…",
   "core.overlay.rxSilence": "Нет звука от радиостанции: сервер получает только цифровую тишину. В macOS выдайте разрешение на микрофон программе, которая запускает сервер, или проверьте вывод USB-аудио радиостанции.",
 

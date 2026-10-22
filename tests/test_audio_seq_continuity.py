@@ -108,7 +108,13 @@ def _kept_session_radio() -> IcomRadio:
     ctrl.state = ConnectionState.CONNECTED
     ctrl._udp_transport = object()  # the control socket looks open
     radio._ctrl_transport = ctrl
-    radio._audio_port = 50003
+    # The ports connect() leaves on a kept session (_control_phase.py:
+    # _civ_port = _port + 1, _audio_port = _port + 2; a radio-reported CI-V
+    # port replaces the first only when it is > 0). soft_reconnect rebuilds
+    # CI-V to _civ_port; left at its pre-connect 0 the rebuild connected to
+    # ('127.0.0.1', 0), which macOS refuses (EADDRNOTAVAIL) (MOR-3701).
+    radio._civ_port = radio._port + 1
+    radio._audio_port = radio._port + 2
     radio._audio_local_port = 0
     radio._audio_sock_pending = None
     radio._local_bind_host = "127.0.0.1"
@@ -160,6 +166,18 @@ async def test_rebuild_on_a_kept_session_resumes_the_old_numbering() -> None:
         new = radio._audio_transport
         assert isinstance(new, _OfflineAudioTransport)
         try:
+            # The rebuild targets the session's CI-V and audio ports.
+            civ = radio._civ_transport
+            assert civ is not None and civ._udp_transport is not None
+            assert civ._udp_transport.get_extra_info("peername") == (
+                "127.0.0.1",
+                radio._port + 1,
+            )
+            assert new._udp_transport is not None
+            assert new._udp_transport.get_extra_info("peername") == (
+                "127.0.0.1",
+                radio._port + 2,
+            )
             assert new is not old
             assert len(new.wire) == 1
             open_packet = new.wire[0]

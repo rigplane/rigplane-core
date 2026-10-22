@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import gc
 import json
 import logging
 import os
@@ -69,6 +70,17 @@ RSS_MIN_FIT_SPAN_S = 600.0
 VERDICT_INCOMPLETE = "INCOMPLETE"
 STABILITY_TOLERANCE = 5
 _STABILITY_PROBE_COUNT = 3
+# A post-reconnect median above pre + tolerance may be teardown still
+# draining (MOR-3575): settle first — gc once, then resample in small
+# steps until _STABILITY_SETTLE_STABLE_READINGS consecutive resamples
+# show no decrease and no surplus over pre — and take the median again.
+# A plateau still above tolerance keeps sampling until the window (or
+# its resample budget) expires; the caller always re-probes, so a
+# persistent surplus still fails. The window bounds the settle wait (its
+# samples and step sleeps), not the median re-probe after it.
+_STABILITY_SETTLE_WINDOW_S = 5.0
+_STABILITY_SETTLE_STEP_S = 0.25
+_STABILITY_SETTLE_STABLE_READINGS = 3
 _DRIVER_TASK_PREFIX = "soak-"
 
 TUNE_INTERVAL_S = 2.0
@@ -243,6 +255,19 @@ class _ProbeDiagnostics:
         self.probes.append(probe)
         return probe
 
+    def drop_phase(self, phase: str) -> None:
+        """Discard the retained probes of one phase, freeing its budget.
+
+        When the first post median shows a surplus the cycle settles and
+        takes the median again (MOR-3575): the transient trio is dropped
+        so the settled re-probe fits the six-probe bound. The median goes
+        with it; the re-probe sets the settled one.
+        """
+        if phase not in {"pre", "post"}:
+            raise ValueError("invalid diagnostic phase")
+        self.probes = [p for p in self.probes if p.phase != phase]
+        self.medians[phase] = None
+
     def to_dict(self) -> dict[str, Any]:
         phases = {}
         for phase in ("pre", "post"):
@@ -346,6 +371,21 @@ class _TaskProvenance:
         probe = {"sequence": len(probes) + 1, "phase": phase, "snapshot": None}
         probes.append(probe)
         return probe
+
+    def drop_phase(self, phase: str) -> None:
+        """Discard the retained probes of one phase, freeing its budget.
+
+        When the first post median shows a surplus the cycle settles and
+        takes the median again (MOR-3575): the transient trio is dropped
+        so the settled re-probe fits the six-probe bound. Task labels and
+        completion events are per-cycle tracking, not per-probe, so they
+        stay.
+        """
+        if self.active is None or phase not in {"pre", "post"}:
+            raise ValueError("invalid task provenance phase")
+        self.active["probes"] = [
+            p for p in self.active["probes"] if p["phase"] != phase
+        ]
 
     def unknown(
         self,
@@ -641,6 +681,15 @@ async def _ps_output(args: list[str]) -> str | None:
             proc.kill()
         await proc.wait()
         return None
+    except asyncio.CancelledError:
+        # A caller-side bound (the settle window's timeout giving up
+        # on this sample) cancels us mid-communicate: the ps child
+        # must not outlive the call, so kill and reap it before
+        # letting the cancellation propagate.
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        await proc.wait()
+        raise
     return out.decode("utf-8", "replace")
 
 
@@ -1021,6 +1070,30 @@ def _stability_criterion(checks: list[dict[str, Any]]) -> dict[str, Any]:
     else:
         status = "NOT_EVALUATED"
     return {"status": status, "tolerance": STABILITY_TOLERANCE, "checks": checks}
+
+
+def _stability_counts_decreased(before: ProcessSample, after: ProcessSample) -> bool:
+    """Either stability count strictly lower; a missing field never counts."""
+    for field in ("fds", "asyncio_tasks"):
+        old = getattr(before, field)
+        new = getattr(after, field)
+        if old is not None and new is not None and new < old:
+            return True
+    return False
+
+
+def _stability_surplus(pre: ProcessSample, post: ProcessSample) -> bool:
+    """Either post count above pre + tolerance; missing fields never count."""
+    for field in ("fds", "asyncio_tasks"):
+        before = getattr(pre, field)
+        after = getattr(post, field)
+        if (
+            before is not None
+            and after is not None
+            and after - before > STABILITY_TOLERANCE
+        ):
+            return True
+    return False
 
 
 def evaluate_report(
@@ -1773,6 +1846,72 @@ class SoakDriver:
             diagnostics.medians[phase] = _diagnostic_sample_values(result)
         return result
 
+    async def _settle_sample(self, deadline: float) -> ProcessSample | None:
+        """One settle sample, bounded by the remaining window (None past it).
+
+        The bound is an in-task timeout, not ``wait_for``: on Python
+        3.11 (the CI quick suite's interpreter) ``wait_for`` runs the
+        awaited coroutine as a task of its own, which both task-count
+        routes count — the runtime route's ``len(asyncio.all_tasks())``
+        and the fallback's non-``soak-`` filter — so the settle would
+        measure one task above the probe-time population and read a
+        delta sitting exactly at tolerance as a surplus.
+        ``asyncio.timeout`` cancels without creating a task on every
+        supported version: the sampler runs on the settle's own
+        ``soak-`` task, the same task the probes run on, so the
+        compared populations are identical.
+        """
+        assert self._sampler is not None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        with contextlib.suppress(asyncio.TimeoutError):
+            async with asyncio.timeout(remaining):
+                return await self._sampler.sample(self._elapsed())
+        return None
+
+    async def _settle_stability_counts(self, pre: ProcessSample) -> None:
+        """Resample while the counts still decrease, within a window.
+
+        A flat pair may be a plateau before further decay: the counts
+        read as settled only after _STABILITY_SETTLE_STABLE_READINGS
+        consecutive resamples without a decrease AND within tolerance
+        of pre. A plateau still above tolerance keeps sampling until
+        the window expires; the resample budget (one per step) bounds
+        the loop when sleeps do not advance the clock. The deadline
+        bounds the first sample, every resample and the step sleeps; a
+        timeout ends the settle and the caller re-probes regardless, so
+        a persistent surplus still fails.
+        """
+        assert self._sampler is not None
+        gc.collect()
+        deadline = time.monotonic() + _STABILITY_SETTLE_WINDOW_S
+        budget = max(
+            _STABILITY_SETTLE_STABLE_READINGS,
+            int(_STABILITY_SETTLE_WINDOW_S // _STABILITY_SETTLE_STEP_S),
+        )
+        previous = await self._settle_sample(deadline)
+        if previous is None:
+            return
+        calm = 0
+        for _ in range(budget):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(_STABILITY_SETTLE_STEP_S, remaining))
+            current = await self._settle_sample(deadline)
+            if current is None:
+                return
+            if _stability_counts_decreased(previous, current):
+                calm = 0
+            else:
+                calm += 1
+            previous = current
+            if calm >= _STABILITY_SETTLE_STABLE_READINGS and not _stability_surplus(
+                pre, current
+            ):
+                return
+
     def _record_unrecovered_cycle(self, reason: str) -> None:
         self._reconnects.append(
             {
@@ -1902,11 +2041,20 @@ class SoakDriver:
             await asyncio.sleep(3.0)
             if diagnostics is not None:
                 diagnostics.boundary("settleEnd")
-            post = (
-                await self._stability_probe("post")
-                if diagnostics is not None or self._task_provenance is not None
-                else await self._stability_probe()
-            )
+            post = await self._stability_probe("post")
+            if _stability_surplus(pre, post):
+                # A surplus right after recovery may be teardown still
+                # draining (MOR-3575): settle, then take the median again.
+                # The settle's own samples are uncaptured; the transient
+                # trio is dropped so the settled re-probe fits the
+                # six-probe bound. Observation never changes the verdict:
+                # a surplus surviving the settle still fails.
+                await self._settle_stability_counts(pre)
+                if diagnostics is not None:
+                    diagnostics.drop_phase("post")
+                if self._task_provenance is not None:
+                    self._task_provenance.drop_phase("post")
+                post = await self._stability_probe("post")
             entry["fdsPost"] = post.fds
             entry["tasksPost"] = post.asyncio_tasks
         entry["windowEndS"] = round(self._elapsed(), 3)

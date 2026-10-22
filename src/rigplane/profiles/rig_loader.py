@@ -56,6 +56,7 @@ from rigplane.commands.command_spec import (
 )
 from rigplane.profiles import (
     BandInfo,
+    CwTextSpec,
     ControlDomainSpec,
     ControlLookupPoint,
     EncodedControlChoice,
@@ -65,6 +66,7 @@ from rigplane.profiles import (
     FreqRangeInfo,
     KeyboardBinding,
     KeyboardConfig,
+    MemoryProfile,
     MeterCalibrationPoint,
     RadioProfile,
     RuleSpec,
@@ -153,6 +155,52 @@ CTCSS_TONE_MAX_CENTIHZ = 25410
 _CTCSS_CAPABILITIES = frozenset({"repeater_tone", "tsql", "sql_type"})
 
 _REQUIRED_SECTIONS = ("radio", "capabilities", "modes", "filters", "vfo")
+# MOR-3679: only ``cw`` has a consumer; add a family when a consumer needs it.
+KNOWN_MODE_FAMILIES = frozenset({"cw"})
+
+
+def _parse_mode_families(
+    filename: str, raw: object, modes: list[str]
+) -> dict[str, tuple[str, ...]]:
+    """Validate ``[modes] families``: known family names, each a non-empty
+    list of distinct mode names from ``[modes].list``; a mode belongs to at
+    most one family (MOR-3679)."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [modes].families must be a table")
+    families: dict[str, tuple[str, ...]] = {}
+    owner: dict[str, str] = {}
+    for name, members in raw.items():
+        if name not in KNOWN_MODE_FAMILIES:
+            raise RigLoadError(
+                f"{filename}: [modes].families unknown family {name!r}; "
+                f"known: {sorted(KNOWN_MODE_FAMILIES)!r}"
+            )
+        if (
+            not isinstance(members, list)
+            or not members
+            or not all(isinstance(mode, str) for mode in members)
+        ):
+            raise RigLoadError(
+                f"{filename}: [modes].families.{name} must be a non-empty list of strings"
+            )
+        for mode in members:
+            if mode not in modes:
+                raise RigLoadError(
+                    f"{filename}: [modes].families.{name} names mode {mode!r} "
+                    "that is not in [modes].list"
+                )
+            if mode in owner:
+                raise RigLoadError(
+                    f"{filename}: [modes].families.{name} repeats mode {mode!r} "
+                    f"(already in family {owner[mode]!r})"
+                )
+            owner[mode] = name
+        families[name] = tuple(members)
+    return families
+
+
 _REQUIRED_RADIO_FIELDS = ("id", "model", "receiver_count", "has_lan", "has_wifi")
 
 
@@ -686,6 +734,16 @@ class RigConfig:
     # top-level ``[identity].expected_ids``. Empty means no/unverified
     # identity configuration.
     expected_identity_ids: tuple[str, ...] = ()
+    memory: MemoryProfile | None = field(default=None, kw_only=True)
+    # Optional ``[modes] families`` (MOR-3679): family name -> member mode
+    # names from ``modes``, in declared order. Empty when not declared.
+    # Keyword-only and appended so no positional argument shifts.
+    mode_families: dict[str, tuple[str, ...]] = field(
+        default_factory=dict, kw_only=True
+    )
+    # Typed CW text sending (MOR-3678), from the optional ``[cw_text]``.
+    # Keyword-only so the positional constructor contract cannot shift.
+    cw_text: CwTextSpec = field(default_factory=CwTextSpec, kw_only=True)
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -812,6 +870,7 @@ class RigConfig:
             has_lan=self.has_lan,
             freq_ranges=ranges,
             modes=tuple(self.modes),
+            mode_families=dict(self.mode_families),
             filters=tuple(self.filters),
             command_names=frozenset(
                 name
@@ -906,6 +965,8 @@ class RigConfig:
             state_acquisition=self.state_acquisition,
             tx_policy=self.tx_policy,
             expected_identity_ids=self.expected_identity_ids,
+            memory=self.memory,
+            cw_text=self.cw_text,
         )
 
     def to_command_map(self) -> CommandMap:
@@ -2088,6 +2149,186 @@ def _is_control_char(ch: str) -> bool:
     return code <= 0x1F or 0x7F <= code <= 0x9F
 
 
+_MEMORY_KEYS = frozenset(
+    {
+        "addressing",
+        "first_group",
+        "last_group",
+        "first_channel",
+        "last_channel",
+        "recall",
+    }
+)
+_MEMORY_ADDRESSING = frozenset({"group_channel", "band_channel"})
+
+
+def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
+    """Parse the optional ``[memory]`` section (MOR-3627)."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [memory] must be a table")
+    _reject_unknown_keys(filename, "[memory]", raw, _MEMORY_KEYS)
+    addressing = raw.get("addressing")
+    if not isinstance(addressing, str) or addressing not in _MEMORY_ADDRESSING:
+        raise RigLoadError(
+            f"{filename}: [memory].addressing must be one of "
+            f"{sorted(_MEMORY_ADDRESSING)}, got {addressing!r}"
+        )
+    bounds: dict[str, int] = {}
+    for key in ("first_group", "last_group", "first_channel", "last_channel"):
+        value = raw.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise RigLoadError(f"{filename}: [memory].{key} must be an integer")
+        if not 0 <= value <= 9999:
+            raise RigLoadError(f"{filename}: [memory].{key} must be 0..9999")
+        bounds[key] = value
+    if bounds["first_group"] > bounds["last_group"]:
+        raise RigLoadError(f"{filename}: [memory].first_group must be <= last_group")
+    if bounds["first_channel"] > bounds["last_channel"]:
+        raise RigLoadError(
+            f"{filename}: [memory].first_channel must be <= last_channel"
+        )
+    if addressing == "band_channel" and bounds["last_group"] > 99:
+        raise RigLoadError(f"{filename}: [memory] band codes are one BCD byte (0-99)")
+    recall = raw.get("recall", False)
+    if not isinstance(recall, bool):
+        raise RigLoadError(f"{filename}: [memory].recall must be a boolean")
+    return MemoryProfile(addressing=addressing, recall=recall, **bounds)  # type: ignore[arg-type]
+
+
+_CW_TEXT_KEYS = frozenset({"supported", "max_length", "memory_channel", "memory_type"})
+_CW_TEXT_MEMORY_TYPES = frozenset({"text", "message"})
+
+
+def _is_writable(spec: CommandSpec | None, protocol_type: str) -> bool:
+    """A command this protocol's backend can write (#4317 review).
+
+    CI-V needs CI-V bytes; Yaesu and Kenwood CAT need a CAT write template.
+    A declared-absent command, or one in the other protocol's form, is not
+    writable: the backend could not send it.
+    """
+    if protocol_type == "civ":
+        return isinstance(spec, CivCommandSpec)
+    return isinstance(spec, CatCommandSpec) and spec.write is not None
+
+
+# KM P1 is one digit, keyer memory channel 1-5 (FTX-1 CAT 2508-C printed p.17).
+_YAESU_KEYER_MEMORY_CHANNELS = range(1, 6)
+# KM P2 stores up to 50 characters (FTX-1 CAT 2508-C printed p.17).
+_YAESU_KEYER_MEMORY_MAX_CHARS = 50
+
+
+def _parse_cw_text(
+    filename: str,
+    raw: Any,
+    *,
+    protocol_type: str,
+    commands: dict[str, CommandSpec],
+) -> CwTextSpec:
+    """Parse the optional top-level ``[cw_text]`` section (MOR-3678).
+
+    Typed CW text sending is separate from the ``cw`` capability tag (the
+    decoder, console and keyer controls). Whether it is supported depends
+    on what the protocol's backend needs (#4317 gate review):
+
+    * ``civ``: the backend sends the text with ``send_cw`` (0x17), so
+      ``supported`` defaults to whether that command is declared as CI-V
+      bytes, and ``supported = true`` without it is an error.
+    * ``yaesu_cat``: the backend writes the text into a keyer memory
+      (``write_keyer_memory``, KM, CAT 2508-C printed p.17) and plays it
+      (``send_cw``, KY, printed p.18). ``supported`` defaults to false;
+      ``supported = true`` needs ``memory_channel`` 1-5, ``max_length``
+      (at most 50, one KM write) and both commands as CAT write templates. ``memory_channel`` outside 1-5 is an error either way.
+    * ``kenwood_cat``: core has no backend that sends CW text, so it is
+      never supported and ``supported = true`` is an error.
+
+    ``max_length`` (default 512) is the longest text one request may carry:
+    longer requests are rejected, never truncated or split.
+    ``memory_type`` (``"text"`` / ``"message"``) picks the Yaesu memory kind.
+    """
+    has_send_cw = _is_writable(commands.get("send_cw"), protocol_type)
+    default_supported = protocol_type == "civ" and has_send_cw
+    if raw is None:
+        return CwTextSpec(supported=default_supported)
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [cw_text] must be a table")
+    _reject_unknown_keys(filename, "[cw_text]", raw, _CW_TEXT_KEYS)
+    supported = raw.get("supported", default_supported)
+    if not isinstance(supported, bool):
+        raise RigLoadError(f"{filename}: [cw_text].supported must be a boolean")
+    if supported and protocol_type == "kenwood_cat":
+        raise RigLoadError(
+            f"{filename}: [cw_text].supported = true is not available for "
+            "kenwood_cat profiles: no backend sends CW text over Kenwood CAT"
+        )
+    if supported and not has_send_cw:
+        raise RigLoadError(
+            f"{filename}: [cw_text].supported = true needs a send_cw command "
+            f"{protocol_type} can write"
+        )
+    max_length = raw.get("max_length", CwTextSpec().max_length)
+    if (
+        isinstance(max_length, bool)
+        or not isinstance(max_length, int)
+        or max_length < 1
+    ):
+        raise RigLoadError(
+            f"{filename}: [cw_text].max_length must be a positive integer"
+        )
+    channel = raw.get("memory_channel")
+    if channel is not None and (
+        isinstance(channel, bool) or not isinstance(channel, int) or channel < 1
+    ):
+        raise RigLoadError(
+            f"{filename}: [cw_text].memory_channel must be a positive integer"
+        )
+    memory_type = raw.get("memory_type")
+    if memory_type is not None and (
+        not isinstance(memory_type, str) or memory_type not in _CW_TEXT_MEMORY_TYPES
+    ):
+        raise RigLoadError(
+            f'{filename}: [cw_text].memory_type must be "text" or "message"'
+        )
+    if protocol_type == "yaesu_cat":
+        # The text is one KM write, so the limit is the KM limit: required
+        # when sending is enabled, never above it (#4317 gate review).
+        if supported and "max_length" not in raw:
+            raise RigLoadError(
+                f"{filename}: [cw_text].max_length is required when "
+                "[cw_text].supported = true (one KM write holds at most "
+                f"{_YAESU_KEYER_MEMORY_MAX_CHARS} characters)"
+            )
+        if "max_length" in raw and max_length > _YAESU_KEYER_MEMORY_MAX_CHARS:
+            raise RigLoadError(
+                f"{filename}: [cw_text].max_length must be at most "
+                f"{_YAESU_KEYER_MEMORY_MAX_CHARS} (one KM write), got {max_length}"
+            )
+        if channel is not None and channel not in _YAESU_KEYER_MEMORY_CHANNELS:
+            raise RigLoadError(
+                f"{filename}: [cw_text].memory_channel must be a keyer memory "
+                f"channel 1-5, got {channel}"
+            )
+        if supported and channel is None:
+            raise RigLoadError(
+                f"{filename}: [cw_text].supported = true needs "
+                "[cw_text].memory_channel (keyer memory 1-5)"
+            )
+        if supported and not _is_writable(
+            commands.get("write_keyer_memory"), protocol_type
+        ):
+            raise RigLoadError(
+                f"{filename}: [cw_text].supported = true needs a writable "
+                "write_keyer_memory command"
+            )
+    return CwTextSpec(
+        supported=supported,
+        max_length=max_length,
+        memory_channel=channel,
+        memory_type=memory_type,
+    )
+
+
 def _parse_identity(filename: str, raw: Any) -> tuple[str, ...]:
     """Parse the optional top-level ``[identity]`` section (MOR-3064).
 
@@ -2273,6 +2514,10 @@ def load_rig(path: Path) -> RigConfig:
 
     # Validate [modes]
     modes = data["modes"].get("list", [])
+    if not isinstance(modes, list) or not all(isinstance(mode, str) for mode in modes):
+        # A scalar would pass ``in`` checks by substring and publish its
+        # characters as modes (MOR-3679 pro-gate finding).
+        raise RigLoadError(f"{filename}: [modes].list must be a list of strings")
     if not modes:
         raise RigLoadError(f"{filename}: [modes].list must not be empty")
     # MOR-2518: optional [modes].codes — one single-character code per mode,
@@ -2296,6 +2541,7 @@ def load_rig(path: Path) -> RigConfig:
         if len(set(raw_mode_codes)) != len(raw_mode_codes):
             raise RigLoadError(f"{filename}: [modes].codes entries must be unique")
         mode_codes = tuple(raw_mode_codes)
+    mode_families = _parse_mode_families(filename, data["modes"].get("families"), modes)
 
     # Validate [filters]
     filter_section = data["filters"]
@@ -2796,7 +3042,7 @@ def load_rig(path: Path) -> RigConfig:
         override_section,
         filename=filename,
     )
-    keyboard = _filter_undeclared_mode_bindings(keyboard, modes)
+    keyboard = _filter_undeclared_mode_bindings(keyboard, tuple(modes))
 
     # Parse optional [audio] codec and sample-rate policy (#797, #1470).
     codec_preference: tuple[str, ...] | None = None
@@ -2930,6 +3176,13 @@ def load_rig(path: Path) -> RigConfig:
     )
     tx_policy = _parse_tx_policy(filename, data.get("tx_policy"))
     expected_identity_ids = _parse_identity(filename, data.get("identity"))
+    memory = _parse_memory(filename, data.get("memory"))
+    cw_text = _parse_cw_text(
+        filename,
+        data.get("cw_text"),
+        protocol_type=protocol_type,
+        commands=commands,
+    )
 
     # The reset-to-radio-default capability is DERIVED from the parsed
     # ``[filters].radio_default_code`` field (MOR-2535), never hand-listed in
@@ -2960,6 +3213,7 @@ def load_rig(path: Path) -> RigConfig:
         capabilities=capability_features,
         modes=tuple(modes),
         mode_codes=mode_codes,
+        mode_families=mode_families,
         filters=tuple(filters),
         filter_width_min=filter_width_min,
         filter_width_max=filter_width_max,
@@ -3037,6 +3291,8 @@ def load_rig(path: Path) -> RigConfig:
         state_acquisition=state_acquisition,
         tx_policy=tx_policy,
         expected_identity_ids=expected_identity_ids,
+        memory=memory,
+        cw_text=cw_text,
     )
 
 

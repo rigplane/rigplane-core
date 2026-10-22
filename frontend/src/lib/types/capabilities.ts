@@ -165,6 +165,17 @@ export type ControlDomain = ScalarControlDomain | CenteredControlDomain | Lookup
 export type VfoScheme = 'single' | 'ab' | 'ab_shared' | 'main_sub';
 export type VfoReadback = 'absolute' | 'selected_unselected' | 'none';
 
+/** Whether send_cw_text works on this radio (MOR-3678), from the profile's
+ *  `[cw_text]`. Separate from the `cw` tag, which drives the decoder and
+ *  keyer controls. The server enforces `maxLength`; clients only display. */
+export interface CwTextCapability {
+  supported: boolean;
+  maxLength: number;
+  /** Keyer memory channel the text is written to; null when the radio
+   *  sends text directly. */
+  memoryChannel: number | null;
+}
+
 export interface WebRtcCapabilities {
   available: boolean;
   enabled: boolean;
@@ -211,6 +222,8 @@ export interface Capabilities {
    *  the capability for the RF-power level only. Absent on older servers
    *  (treated as unknown, not false). */
   powerOnCommand?: boolean;
+  /** Absent on older servers. */
+  cwText?: CwTextCapability;
   receivers: number;
   vfoScheme: VfoScheme;
   /** Provider identity semantics; absent on older compatible servers. */
@@ -220,6 +233,11 @@ export interface Capabilities {
    *  Present only when the profile declares `[ctcss]` (MOR-2111). */
   ctcssTones?: number[];
   modes: string[];
+  /** Profile-declared mode families (MOR-3679, `[modes] families`):
+   *  family name -> mode names from `modes`, e.g. `{ cw: ['CW-U', 'CW-L'] }`.
+   *  `{}` when the profile declares none; absent on older servers. Read the
+   *  radio's CW modes from here instead of a client-side list. */
+  modeFamilies?: Record<string, string[]>;
   filters: string[];
   filterWidthMin?: number;   // Min filter width in Hz (default 50)
   filterWidthMax?: number;   // Max filter width in Hz (default 9999)
@@ -662,6 +680,24 @@ export function validateCapabilities(value: unknown): Capabilities {
     }
   });
   requireStringArray(raw.modes, '$.modes');
+  if ('modeFamilies' in raw) {
+    // Same invariants as the Core loader (MOR-3679): each family is a
+    // non-empty list of modes from `modes`, a mode in at most one family.
+    // Family names are not restricted, so a newer server may add one.
+    const families = requireRecord(raw.modeFamilies, '$.modeFamilies');
+    const declared = new Set(raw.modes as string[]);
+    const seen = new Set<string>();
+    for (const [name, members] of Object.entries(families)) {
+      const path = `$.modeFamilies.${name}`;
+      requireStringArray(members, path);
+      if ((members as string[]).length === 0) invalid(path, 'a non-empty array');
+      (members as string[]).forEach((mode, index) => {
+        if (!declared.has(mode)) invalid(`${path}[${index}]`, 'a mode listed in $.modes');
+        if (seen.has(mode)) invalid(`${path}[${index}]`, 'a mode in at most one family');
+        seen.add(mode);
+      });
+    }
+  }
   requireStringArray(raw.filters, '$.filters');
   if ('ctcssTones' in raw) {
     if (!Array.isArray(raw.ctcssTones) || raw.ctcssTones.length === 0) {
@@ -694,6 +730,15 @@ export function validateCapabilities(value: unknown): Capabilities {
   requireInteger(audioConfig.sampleRate, '$.audioConfig.sampleRate', true);
   requireInteger(audioConfig.channels, '$.audioConfig.channels', true);
   requireStringArray(audioConfig.codecs, '$.audioConfig.codecs');
+
+  if (Object.prototype.hasOwnProperty.call(raw, 'cwText')) {
+    const cwText = requireRecord(raw.cwText, '$.cwText');
+    requireBoolean(cwText.supported, '$.cwText.supported');
+    requireInteger(cwText.maxLength, '$.cwText.maxLength', true);
+    if (cwText.memoryChannel !== null) {
+      requireInteger(cwText.memoryChannel, '$.cwText.memoryChannel', true);
+    }
+  }
 
   const webrtc = requireRecord(raw.webrtc, '$.webrtc');
   requireBoolean(webrtc.available, '$.webrtc.available');

@@ -34,15 +34,33 @@ radio disconnect/connect, and pins:
   criterion fails when a silent holder keeps the transmitter or a session
   outlives its channel — for unkey, cut and half_open alike, and with the
   leases forced old at the close.
+* the post-reconnect stability settle (MOR-3575): a transient surplus
+  that drains after recovery passes once settled — even across a long
+  flat plateau mid-drain, for FDs and task counts alike, and whether or
+  not probe/task capture is on — a persistent one still fails after the
+  full window, and the settle gives up at its window or on a hung
+  sample. The feeds are scripted; the window test drives a controlled
+  monotonic clock so the deadline itself ends the settle (one late
+  settle sample hangs for real and is bounded by the in-task timeout on
+  the remaining window), and the hung-sample test uses a real 50 ms
+  window against a real 30 s hang. The step sleep is clamped to the
+  remaining window, a sample cancelled inside the ``ps`` fallback kills
+  and reaps its child before the cancellation propagates, and the
+  settle's own bound adds no task to the counts it takes: on the live
+  loop a task delta exactly at tolerance must still settle, measured by
+  both count routes with the CI interpreter's task-wrapping
+  ``wait_for`` semantics emulated (Python 3.11; 3.12+ await in-task).
 """
 
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import time
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, Callable
 
 import pytest
 
@@ -376,6 +394,47 @@ async def test_driver_side_metrics_tolerate_a_missing_ps_sample(
     rss, _fds = await soak_driver._driver_side_process_metrics(999999)
 
     assert rss is None
+
+
+class _BlockingPsProcess:
+    """A fake ``ps`` child that never finishes and records its teardown."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def communicate(self) -> tuple[bytes, None]:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    def kill(self) -> None:
+        self.calls.append("kill")
+
+    async def wait(self) -> None:
+        self.calls.append("wait")
+
+
+async def test_ps_output_kills_and_reaps_its_child_when_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled sample must not leak its ps child (MOR-3575).
+
+    The settle window's timeout can cancel a sample that is inside
+    ``_ps_output``; the child is killed and reaped before the
+    cancellation propagates. RED on the pre-fix helper: the cancel
+    propagated straight through and these kill/reap assertions failed.
+    """
+
+    async def _spawn_ps(*args: Any, **kwargs: Any) -> _BlockingPsProcess:
+        return proc
+
+    proc = _BlockingPsProcess()
+    monkeypatch.setattr(soak_driver.asyncio, "create_subprocess_exec", _spawn_ps)
+    task = asyncio.create_task(soak_driver._ps_output(["-o", "rss="]))
+    await asyncio.sleep(0.01)  # reach the blocking communicate()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert proc.calls == ["kill", "wait"]
 
 
 async def test_soak_smoke_report_shape_and_incomplete_verdict() -> None:
@@ -730,3 +789,493 @@ async def test_renew_gives_a_session_its_full_lease_whatever_its_age() -> None:
             await client.close()
     finally:
         await stack.aclose()
+
+
+def _process_script(
+    fds_values: list[int],
+    tasks_values: list[int] | None = None,
+    tasks: int = 30,
+) -> Callable[[], dict[str, int]]:
+    """A runtime ``process`` feed replaying scripted counts, then holding."""
+    fds = iter(fds_values)
+    last_fds = fds_values[-1]
+    task_feed = iter(tasks_values) if tasks_values is not None else None
+    last_tasks = tasks_values[-1] if tasks_values is not None else tasks
+
+    def script() -> dict[str, int]:
+        return {
+            "rssBytes": 1024,
+            "openFds": next(fds, last_fds),
+            "asyncioTasks": (
+                next(task_feed, last_tasks) if task_feed is not None else tasks
+            ),
+        }
+
+    return script
+
+
+class _SettleClock:
+    """A controlled monotonic clock for the settle's deadline math.
+
+    Every scripted sample costs ``sample_cost_s`` of window time and
+    every recorded sleep advances the clock by its delay, so the test
+    decides exactly when the settle's window expires without waiting
+    for real time to pass. Installed as a ``time``-module stub inside
+    ``soak_driver`` only: on Python 3.13 the event loop's ``time()``
+    reads ``time.monotonic`` dynamically, so patching the stdlib module
+    attribute globally would freeze the loop's own timers.
+    """
+
+    def __init__(self, sample_cost_s: float) -> None:
+        self.now = 1000.0
+        self._sample_cost_s = sample_cost_s
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def advance_by_sample(self) -> None:
+        self.now += self._sample_cost_s
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+async def _run_cycle_with_process_script(
+    monkeypatch: pytest.MonkeyPatch,
+    script: Callable[[], dict[str, int]],
+    *,
+    hang_call: int | None = None,
+    probe_diagnostics: bool = False,
+    task_provenance: bool = False,
+    clock: _SettleClock | None = None,
+) -> tuple[soak_driver.SoakDriver, list[float]]:
+    """One recovered cycle over a scripted feed; records asyncio.sleep delays.
+
+    ``hang_call`` makes the Nth ``fetch_runtime`` call sleep 30 real
+    seconds (an unbounded sampler hang). ``clock``, when given, is
+    only advanced by every sample and sleep recorded here, driving
+    the settle's deadline arithmetic; installing it as the driver's
+    ``time.monotonic`` is the caller's job (see the window and clamp
+    tests), because patching the ``time`` module attribute inside the
+    helper would scope the stub to every caller whether wanted or not.
+    """
+    driver = soak_driver.SoakDriver(
+        soak_driver.SoakConfig(
+            duration_s=45,
+            probe_diagnostics=probe_diagnostics,
+            task_provenance=task_provenance,
+        ),
+        "http://127.0.0.1:1",
+        "127.0.0.1:1",
+        SimpleNamespace(fault_plan=None),
+    )
+    sampler = soak_driver.ProcessMetricsSampler(object(), "http://127.0.0.1:1")
+    real_sleep = asyncio.sleep
+    sleeps: list[float] = []
+    calls = 0
+
+    async def runtime() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if hang_call is not None and calls == hang_call:
+            await real_sleep(30.0)
+        feed = script()
+        if clock is not None:
+            clock.advance_by_sample()
+        return {"process": feed}
+
+    async def status() -> str:
+        return "connected"
+
+    async def control(action: str) -> None:
+        pass
+
+    async def wait(*args: Any, **kwargs: Any) -> bool:
+        return True
+
+    async def connect(deadline: float) -> bool:
+        return True
+
+    async def sleep(delay: float) -> None:
+        sleeps.append(delay)
+        if clock is not None:
+            clock.advance(delay)
+
+    monkeypatch.setattr(sampler, "fetch_runtime", runtime)
+    monkeypatch.setattr(sampler, "fetch_connection_status", status)
+    monkeypatch.setattr(driver, "_post_radio_control", control)
+    monkeypatch.setattr(driver, "_wait_connection", wait)
+    monkeypatch.setattr(driver, "_do_connect_until_recovered", connect)
+    monkeypatch.setattr(soak_driver.asyncio, "sleep", sleep)
+    monkeypatch.setattr(driver, "_elapsed", lambda: 10.0)
+    driver._sampler = sampler
+    await driver._reconnect_cycle()
+    return driver, sleeps
+
+
+def _stability_status(entry: dict[str, Any], field: str) -> dict[str, Any]:
+    return soak_driver._stability_criterion(
+        soak_driver._stability_checks([entry], field)
+    )
+
+
+async def test_stability_post_probe_settles_a_transient_fd_surplus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A draining transient must not read as a leak (MOR-3575, CI 39451768550)."""
+    script = _process_script(
+        [48, 48, 48, 56, 55, 54, 53, 52, 51, 50, 49, 48, 48, 48, 48, 48, 48]
+    )
+    driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert entry["fdsPost"] == 48
+    assert entry["tasksPost"] == 30
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    assert _stability_status(entry, "tasks")["status"] == "PASS"
+    assert sleeps[0] == 3.0
+    settle = sleeps[1:]
+    assert settle and all(s == soak_driver._STABILITY_SETTLE_STEP_S for s in settle)
+    assert sum(settle) < soak_driver._STABILITY_SETTLE_WINDOW_S
+
+
+async def test_stability_post_probe_still_fails_a_persistent_fd_surplus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A surplus that never drains still fails (MOR-3575 control)."""
+    script = _process_script([48, 48, 48] + [55] * 30)
+    driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert entry["fdsPost"] == 55
+    assert _stability_status(entry, "fds")["status"] == "FAIL"
+    # The flat surplus never clears: the settle runs its full resample
+    # budget (window/step = 20) before the re-probe still fails.
+    assert sleeps == [3.0] + [soak_driver._STABILITY_SETTLE_STEP_S] * 20
+
+
+async def test_stability_settle_waits_out_a_plateau_before_further_decay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A flat pair mid-drain is not the settled value (MOR-3575)."""
+    script = _process_script(
+        [48, 48, 48, 56, 55, 54, 55, 55, 55, 54, 53, 52, 51, 50, 49, 48, 48, 48, 48, 48]
+    )
+    driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
+    (entry,) = driver._reconnects
+    assert entry["fdsPost"] == 48
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    assert len(sleeps) > 2
+
+
+async def test_stability_settle_is_bounded_by_its_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The window, not the resample budget, ends a never-settling feed.
+
+    A controlled monotonic clock drives the deadline arithmetic: with a
+    1.0 s window, every sample costs 0.1 s of it and every sleep
+    advances the clock by its delay. After the first settle sample and
+    one 0.25 s step the next settle sample starts with 0.65 s of window
+    left — and that late sample hangs for 30 real seconds, so the
+    in-task timeout on the remaining window gives up on it. The settle
+    ends after a single step although the budget allows four, and the
+    cycle still concludes with a FAIL on the never-settling counts.
+    Remove the sample-bounding timeout and this goes red: the 30 s hang
+    outruns the outer bound instead of being cancelled at the window's
+    end. (The step-sleep clamp is pinned separately, by
+    test_stability_settle_clamps_its_step_sleep_to_the_remaining_window.)
+    """
+    real_monotonic = time.monotonic
+    monkeypatch.setattr(soak_driver, "_STABILITY_SETTLE_WINDOW_S", 1.0)
+    clock = _SettleClock(sample_cost_s=0.1)
+    monkeypatch.setattr(soak_driver, "time", SimpleNamespace(monotonic=clock.monotonic))
+    falling = itertools.chain([48, 48, 48], itertools.count(10**9, -1))
+
+    def script() -> dict[str, int]:
+        return {"rssBytes": 1024, "openFds": next(falling), "asyncioTasks": 30}
+
+    started = real_monotonic()
+    driver, sleeps = await asyncio.wait_for(
+        _run_cycle_with_process_script(monkeypatch, script, hang_call=8, clock=clock),
+        timeout=10.0,
+    )
+    assert real_monotonic() - started < 5.0
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert _stability_status(entry, "fds")["status"] == "FAIL"
+    # One clamped step sleep; the late hung sample consumed the rest of
+    # the window, so the settle ended by the window — not by its budget
+    # of four steps (window 1.0 s / step 0.25 s) nor by a calm reading
+    # (the counts fall forever, so calm never reaches its threshold).
+    assert sleeps == [3.0, soak_driver._STABILITY_SETTLE_STEP_S]
+
+
+async def test_stability_settle_clamps_its_step_sleep_to_the_remaining_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A step sleep never outruns the window (MOR-3575).
+
+    A controlled clock with 0.8 s samples leaves 0.2 s of the 1.0 s
+    window after the settle's first sample, so the step sleep is
+    clamped to that 0.2 s instead of its full 0.25 s; the next
+    resample then starts past the window and the settle ends. Remove
+    the clamp and this goes red: the recorded sleep is the full 0.25 s
+    step.
+    """
+    monkeypatch.setattr(soak_driver, "_STABILITY_SETTLE_WINDOW_S", 1.0)
+    clock = _SettleClock(sample_cost_s=0.8)
+    monkeypatch.setattr(soak_driver, "time", SimpleNamespace(monotonic=clock.monotonic))
+    falling = itertools.chain([48, 48, 48], itertools.count(10**9, -1))
+
+    def script() -> dict[str, int]:
+        return {"rssBytes": 1024, "openFds": next(falling), "asyncioTasks": 30}
+
+    driver, sleeps = await _run_cycle_with_process_script(
+        monkeypatch, script, clock=clock
+    )
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert _stability_status(entry, "fds")["status"] == "FAIL"
+    assert sleeps[0] == 3.0
+    # Clamped to the 0.2 s left of the window — not the full 0.25 s step
+    # (the controlled clock's deadline arithmetic carries float error,
+    # so compare approximately and against the step bound).
+    assert sleeps[1] == pytest.approx(1.0 - 0.8)
+    assert sleeps[1] < soak_driver._STABILITY_SETTLE_STEP_S
+
+
+async def test_stability_settle_gives_up_on_a_hung_sample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sample past the window ends the settle; the cycle still concludes.
+
+    The 7th runtime call is the settle's first sample; it hangs 30 real
+    seconds against a real 50 ms window, and the in-task timeout on
+    the remaining window cancels it. The outer 10 s bound is the
+    discrimination: without the timeout in _settle_sample the injected
+    hang is unguarded, the bound fires TimeoutError, and this test goes
+    red instead of passing after 30 s.
+    """
+    monkeypatch.setattr(soak_driver, "_STABILITY_SETTLE_WINDOW_S", 0.05)
+    script = _process_script([48, 48, 48, 56, 55, 54, 48, 48, 48])
+    started = time.monotonic()
+    driver, sleeps = await asyncio.wait_for(
+        _run_cycle_with_process_script(
+            monkeypatch,
+            script,
+            hang_call=2 * soak_driver._STABILITY_PROBE_COUNT + 1,
+        ),
+        timeout=10.0,
+    )
+    assert time.monotonic() - started < 5.0
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert entry["fdsPost"] == 48
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    assert sleeps == [3.0]
+
+
+async def test_stability_settle_counts_no_task_of_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The settle's bound must not add a task to the counts it takes.
+
+    Five long-lived tasks make a task delta that sits exactly at
+    tolerance, and the sampler counts the live loop both ways the
+    report does — ``len(asyncio.all_tasks())`` (the runtime route,
+    server.py) and the non-``soak-`` fallback. CI's quick suite runs
+    Python 3.11 (``UV_PYTHON: "3.11"`` in quick.yml), whose
+    ``wait_for`` runs the awaited coroutine as a task of its own;
+    Python 3.12+ reimplemented ``wait_for`` over ``asyncio.timeout``,
+    in-task, so this host's 3.13 cannot show the bias unaided and the
+    monkeypatched ``wait_for`` restores the 3.11 wrap. Under that
+    wrap a ``wait_for``-bounded settle measures one task above the
+    delta, the boundary reads as a surplus that never drains, and the
+    settle spins to its window; the in-task bound never calls
+    ``wait_for``, both routes read exactly the delta, and the settle
+    ends after the initial sample plus three stable readings.
+    """
+    driver = soak_driver.SoakDriver(
+        soak_driver.SoakConfig(duration_s=45),
+        "http://127.0.0.1:1",
+        "127.0.0.1:1",
+        SimpleNamespace(fault_plan=None),
+    )
+    runtime_route_counts: list[int] = []
+    fallback_route_counts: list[int] = []
+
+    class _LiveTaskCountingSampler:
+        async def sample(
+            self,
+            t_s: float,
+            capture: Any = None,
+            *,
+            task_probe: Any = None,
+        ) -> soak_driver.ProcessSample:
+            runtime_route_counts.append(len(asyncio.all_tasks()))
+            fallback_route_counts.append(soak_driver._server_asyncio_task_count())
+            return soak_driver.ProcessSample(
+                t_s=t_s,
+                rss_bytes=1024,
+                fds=48,
+                asyncio_tasks=fallback_route_counts[-1],
+                connection="connected",
+            )
+
+    driver._sampler = _LiveTaskCountingSampler()
+    real_wait_for = asyncio.wait_for
+
+    async def wait_for_wrapping_its_awaitable_in_a_task(
+        awaiting: Any, timeout: float
+    ) -> Any:
+        return await real_wait_for(asyncio.ensure_future(awaiting), timeout)
+
+    monkeypatch.setattr(
+        soak_driver.asyncio, "wait_for", wait_for_wrapping_its_awaitable_in_a_task
+    )
+    baseline_runtime = len(asyncio.all_tasks())
+    baseline_fallback = soak_driver._server_asyncio_task_count()
+    extras = [
+        asyncio.create_task(asyncio.sleep(30.0))
+        for _ in range(soak_driver.STABILITY_TOLERANCE)
+    ]
+    try:
+        pre = soak_driver.ProcessSample(
+            t_s=0.0,
+            rss_bytes=1024,
+            fds=48,
+            asyncio_tasks=baseline_fallback,
+            connection="connected",
+        )
+        await driver._settle_stability_counts(pre)
+    finally:
+        for extra in extras:
+            extra.cancel()
+        await asyncio.gather(*extras, return_exceptions=True)
+    assert fallback_route_counts
+    assert all(
+        count - baseline_fallback == soak_driver.STABILITY_TOLERANCE
+        for count in fallback_route_counts
+    )
+    assert all(
+        count - baseline_runtime == soak_driver.STABILITY_TOLERANCE
+        for count in runtime_route_counts
+    )
+    assert (
+        len(fallback_route_counts) == 1 + soak_driver._STABILITY_SETTLE_STABLE_READINGS
+    )
+
+
+async def test_stability_settle_waits_out_a_long_plateau_before_late_decay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plateau above tolerance is not settled until it decays (MOR-3575)."""
+    script = _process_script(
+        [48, 48, 48, 56, 55, 54]
+        + [55] * 8
+        + [54, 53, 52, 51, 50, 49, 48, 48, 48, 48, 48, 48, 48]
+    )
+    driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
+    (entry,) = driver._reconnects
+    assert entry["fdsPost"] == 48
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    assert len(sleeps[1:]) > 3
+
+
+async def test_stability_settle_applies_under_probe_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Capture must not disable the settle: same transient, same PASS (MOR-3575).
+
+    The transient trio is dropped so the settled re-probe fits the
+    six-probe bound; the report keeps the settled post trio.
+    """
+    script = _process_script(
+        [48, 48, 48, 56, 55, 54, 53, 52, 51, 50, 49, 48, 48, 48, 48, 48, 48]
+    )
+    driver, sleeps = await _run_cycle_with_process_script(
+        monkeypatch, script, probe_diagnostics=True
+    )
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert entry["fdsPost"] == 48
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    assert len(sleeps) > 1
+    diagnostic = driver._build_report()["probeDiagnostics"]
+    assert diagnostic["maxProbes"] == 6
+    assert [p["phase"] for p in diagnostic["probes"]] == ["pre"] * 3 + ["post"] * 3
+    assert [p["sequence"] for p in diagnostic["probes"]] == list(range(1, 7))
+    assert diagnostic["phases"]["post"]["median"]["fds"] == 48
+    assert diagnostic["phases"]["post"]["status"] == "complete"
+
+
+async def test_stability_settle_applies_under_task_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task capture must not disable the settle either (MOR-3575).
+
+    Nine probes begin (the transient post trio plus its settled
+    re-probe) but the transient trio is dropped first, so at most six
+    are ever retained.
+    """
+    script = _process_script(
+        [48, 48, 48, 56, 55, 54, 53, 52, 51, 50, 49, 48, 48, 48, 48, 48, 48]
+    )
+    calls: list[str] = []
+    retained_high_water = 0
+    original = soak_driver._TaskProvenance.begin_probe
+
+    def counting(self: Any, phase: str) -> dict[str, Any]:
+        nonlocal retained_high_water
+        calls.append(phase)
+        probe = original(self, phase)
+        assert self.active is not None
+        retained_high_water = max(retained_high_water, len(self.active["probes"]))
+        return probe
+
+    monkeypatch.setattr(soak_driver._TaskProvenance, "begin_probe", counting)
+    driver, sleeps = await _run_cycle_with_process_script(
+        monkeypatch, script, task_provenance=True
+    )
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert entry["fdsPost"] == 48
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    assert len(sleeps) > 1
+    assert calls == ["pre"] * 3 + ["post"] * 6
+    assert retained_high_water == 6
+
+
+async def test_stability_post_probe_settles_a_transient_tasks_surplus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The settle covers task counts too: FDs stable, tasks drain (MOR-3575)."""
+    script = _process_script(
+        [48] * 18,
+        tasks_values=[30] * 3 + [38, 37, 36, 35, 34, 33, 32, 31] + [30] * 7,
+    )
+    driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert entry["fdsPost"] == 48
+    assert entry["tasksPost"] == 30
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    assert _stability_status(entry, "tasks")["status"] == "PASS"
+    # Eight resamples: every task decrease resets the calm count.
+    assert len(sleeps[1:]) == 8
+
+
+async def test_stability_post_probe_still_fails_a_persistent_tasks_surplus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A task surplus that never drains still fails; FDs stay green (MOR-3575)."""
+    script = _process_script([48] * 30, tasks_values=[30, 30, 30] + [37] * 27)
+    driver, sleeps = await _run_cycle_with_process_script(monkeypatch, script)
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert entry["fdsPost"] == 48
+    assert entry["tasksPost"] == 37
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    assert _stability_status(entry, "tasks")["status"] == "FAIL"
+    assert sleeps == [3.0] + [soak_driver._STABILITY_SETTLE_STEP_S] * 20

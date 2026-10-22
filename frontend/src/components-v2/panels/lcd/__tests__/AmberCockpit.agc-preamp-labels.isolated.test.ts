@@ -11,6 +11,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+// MOR-2855: AmberCockpit reads the App-owned managed TX controller for its
+// TX look; the harness provides it the way the LcdLayout tests do.
+const txHarness = new ManagedAppTxHarness();
 
 const h = vi.hoisted(() => ({
   props: {
@@ -35,6 +40,10 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
     scope: { registerPresentationDriver: vi.fn(), subscribe: vi.fn(() => vi.fn()) },
   },
+}));
+
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => txHarness.controller,
 }));
 
 import AmberCockpit from '../AmberCockpit.svelte';

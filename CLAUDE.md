@@ -147,6 +147,14 @@ Rules:
 `main` is protected. Non-trivial PRs require an independent agent review
 before merge; the implementation agent never reviews its own work.
 
+The merge verdict comes from a local review of the exact head (owner decision
+2026-10-21): the builder runs `tmp/pre-review.sh` (Codex CLI) before pushing, and
+on `PRE-REVIEW: CLEAN` for the pushed head `pro-gate.sh` posts the exact-head
+`Agent Review: PASS` directive below. Nobody waits for the GitHub Codex bot
+(`chatgpt-codex-connector[bot]`): it is advisory and asynchronous. The reviewer
+family differs from the builder's. Rules: `AGENTS.md`, "Review verdict: local
+Codex CLI review".
+
 The gate is `.github/workflows/agent-review-gate.yml`, parsed by
 `.github/scripts/agent-review-gate.js`. It considers only non-minimized
 comments whose author association is OWNER, MEMBER or COLLABORATOR, and

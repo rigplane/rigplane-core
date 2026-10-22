@@ -1,0 +1,46 @@
+# FTX-1 simulation profile (USB CAT, tier A). Wire facts stay in
+# rigs/ftx1.toml; identity comes from its [identity].expected_ids, so
+# transport.yaesu_cat carries no identity key. Sourcing and provenance:
+# tests/fixtures/ftx1/README.md. Unsourced keys are omitted.
+
+schema = "rigplane-sim-profile/1"
+
+[sim]
+id = "ftx1-usb"
+radio = "FTX-1"
+fidelity = "A"
+evidence = ["tests/fixtures/ftx1/cat_pairs.jsonl", "tests/golden/wire_oracle/ftx1.toml"]
+gaps = [
+    "writes are not recorded: only the natively served SET verbs (FA FB MD TX AI ST VS AG RG SQ NL GT PA KM KY) are modelled (oracle rows exist for all of them except AI and VS, which follow the CAT command shape and the recorded read replies, and KM and KY, which follow the CAT OM 2508-C tables, printed p.17-18); every other SET verb in the oracle (AC BI KS MG PC PL RA RL VX) answers ?; until its handler and evidence exist",
+    "verbs answered only from the recorded table: AC BC BI BP CF CN CO CS CT FR FT IS KS KP LK MG NA OS PC PL PR RA RL RM SD SH VX",
+    "FA SET refused with ?; in MEMORY mode is observed on the MAIN side only; FB in MEMORY mode is unobserved",
+    "IF seeding keeps only the recorded channel digits, mode, memory flag, tone and tail; PMS/emergency channel codes and the RX/TX clarifier flags are not modelled (tracked in MOR-3670)",
+    "a self-keyed TX2; readback is not modelled: TX; answers TX0;/TX1; from the engine PTT only (tracked in MOR-3670)",
+    "no scope or hardware spectrum",
+    "firmware unknown: not readable over CAT and the front panel was not inspected",
+    "SM1; is answered with the side digit echoed as 0 (recorded quirk)",
+    "AI auto-information stores state only; no unsolicited pushes are sent",
+    "KM/KY keyer memory follows the CAT OM 2508-C tables only (MOR-3678): KM text is limited to letters, digits, + and - (the manual names no character set); a KM read of a channel never written here answers ?; as a not_modelled gap; KY only records the request: it is not linked to KM text (the manual does not say whether KM writes the TEXT or the MESSAGE memory) and keys nothing",
+    "PS SET and VHF/UHF PA SET are not modelled: recorded answers win; without one they answer ?; and report a not_modelled coverage gap",
+    "mode (MD) and split (ST) writes are accepted while TX is active; the measured radio refuses them with ?; (rigs/ftx1.toml [tx_policy])",
+    "SUB AGC is stored per receiver, not per mode; the measured radio keeps it per mode (rigs/ftx1.toml SUB DSP controls)",
+]
+
+[transport.yaesu_cat]
+baud = 38400
+
+[initial]
+frequency_hz = 147_225_000
+mode = "FM"
+
+[answers]
+recorded = [{ file = "tests/fixtures/ftx1/cat_pairs.jsonl", transport = "usb" }]
+
+[timing]
+reply_latency_ms = 9
+
+[audio.rx]
+transport = "usb_device"
+sample_rate_hz = 48000
+channels = 2
+sample_format = "s16le"

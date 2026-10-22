@@ -23,6 +23,7 @@ import logging
 import socket
 import struct
 import time
+from pathlib import Path
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -39,6 +40,7 @@ from rigplane.core.state_pipeline_contracts import (
 from rigplane.core.state_store import StateStore
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
+from rigplane.rig_loader import load_rig
 from rigplane.rigctld.state_cache import StateCache
 from rigplane.scope import ScopeFrame
 from rigplane.web.protocol import (
@@ -48,6 +50,7 @@ from rigplane.web.protocol import (
     encode_json,
     encode_scope_frame,
 )
+from rigplane.web.api_contract import RESPONSE_FIELD_CONTRACTS
 from rigplane.web.server import _DEFAULT_STATIC_DIR, WebConfig, WebServer
 from rigplane.web.websocket import (
     WS_MAGIC,
@@ -4653,3 +4656,44 @@ class TestGetMeterCalPayload:
         srv = self._make_server(radio=None)
         payload = srv._get_meter_cal_payload()
         assert isinstance(payload, dict)
+
+
+# ---------------------------------------------------------------------------
+# MOR-3679: shipped profile -> loader -> WebServer -> real socket
+# ---------------------------------------------------------------------------
+
+_FTX1_RIG = Path(__file__).resolve().parents[1] / "rigs" / "ftx1.toml"
+
+
+async def test_ftx1_mode_families_reach_both_capability_endpoints_over_http() -> None:
+    """The shipped FTX-1 profile publishes its CW family on a live listener.
+
+    No radio: the server gets the profile from ``load_rig`` and answers the
+    two capability endpoints over a real TCP connection on 127.0.0.1.
+    """
+    profile = load_rig(_FTX1_RIG).to_profile()
+    radio = SimpleNamespace(
+        model=profile.model,
+        profile=profile,
+        capabilities=set(profile.capabilities),
+        connected=True,
+        control_connected=True,
+        radio_ready=True,
+    )
+    srv = WebServer(
+        radio, WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+    )
+    await srv.start()
+    try:
+        host, port = _addr(srv)
+        for path in ("/api/v1/capabilities", "/api/v1/info"):
+            status, _, body = await _http_get(host, port, path)
+            assert status == 200, path
+            payload = json.loads(body)
+            assert set(RESPONSE_FIELD_CONTRACTS[path]["required"]) <= set(payload)
+            capabilities = (
+                payload["capabilities"] if path == "/api/v1/info" else payload
+            )
+            assert capabilities["modeFamilies"] == {"cw": ["CW-U", "CW-L"]}, path
+    finally:
+        await srv.stop()

@@ -66,6 +66,7 @@ __all__ = [
     "CAP_MAIN_SUB_TRACKING",
     "CAP_TUNING_STEP",
     "CAP_BAND_EDGE",
+    "CAP_MEMORY_READ",
     "CAP_XFC",
     "CAP_SYSTEM_SETTINGS",
     "CAP_VFO_SWAP",
@@ -206,6 +207,8 @@ CAP_BSR = "bsr"
 CAP_MAIN_SUB_TRACKING = "main_sub_tracking"
 CAP_TUNING_STEP = "tuning_step"
 CAP_BAND_EDGE = "band_edge"
+# Read-only listing of stored memory channels (MOR-3627; profile ``[memory]``).
+CAP_MEMORY_READ = "memory_read"
 CAP_XFC = "xfc"
 CAP_SYSTEM_SETTINGS = "system_settings"
 
@@ -302,6 +305,7 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         CAP_MAIN_SUB_TRACKING,
         CAP_TUNING_STEP,
         CAP_BAND_EDGE,
+        CAP_MEMORY_READ,
         CAP_XFC,
         CAP_SYSTEM_SETTINGS,
         # VFO primitives

@@ -566,11 +566,6 @@ describe('radio store', () => {
     expect(store.getMode()).toBe('USB');
   });
 
-  it('getIsTransmitting reflects ptt state', () => {
-    store.setRadioState(makeState({ ptt: true }));
-    expect(store.getIsTransmitting()).toBe(true);
-  });
-
   it('getLastRevision tracks the latest revision', () => {
     store.setRadioState(makeState({ revision: 10 }));
     expect(store.getLastRevision()).toBe(10);

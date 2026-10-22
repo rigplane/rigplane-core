@@ -32,6 +32,8 @@
     type SpectrumAuthority,
   } from '../../lib/runtime/adapters/scope-adapter';
   import type { ScopeDisplayProjection } from '../../lib/runtime/adapters/scope-display-projection';
+  import { getManagedAppTxController } from '../../lib/runtime/tx-controller/managed-app-host';
+  import type { ManagedTxState } from '../../lib/runtime/tx-controller/managed-state';
   import SpectrumToolbar from './SpectrumToolbar.svelte';
   import BandPlanOverlay from './BandPlanOverlay.svelte';
   import EiBiBrowser from './EiBiBrowser.svelte';
@@ -145,6 +147,24 @@
   let scopeConnected = $derived(managed ? !managedUnavailable : audioFft
     ? runtime.defaultScopeStatus.transport === 'connected'
     : runtime.scope.hardwareScopeConnected && runtime.scope.hardwareScopeFrameLive);
+  // MOR-2859: the managed TX snapshot is the only TX truth (invariant R9,
+  // the same source as the global TX lamp) — never `state.ptt`. The lookup
+  // is optional: mounts without the provider read as "TX not known".
+  let txSnapshot = $state.raw<ManagedTxState | null>(null);
+  try {
+    const txCtl = getManagedAppTxController();
+    txSnapshot = txCtl.snapshot();
+    const stopWatchingTx = txCtl.subscribe((next) => { txSnapshot = next; });
+    onDestroy(() => stopWatchingTx());
+  } catch {
+    // No provider — scopeTxKnown stays false.
+  }
+  // "TX known" is the `transmitting` case of `rfState` (rx-tx-surface.ts):
+  // a positively observed ON or a confirmed-on risk. `uncertain` is doubt,
+  // not knowledge, and keeps the disconnected overlay.
+  let scopeTxKnown = $derived(
+    txSnapshot !== null && (txSnapshot.radioTx === 'on' || txSnapshot.txRisk === 'confirmed-on'),
+  );
   let scopeLease: ReturnType<typeof runtime.acquireHardwareScope> | null = null;
   let scopePixels = $state<Uint8Array | null>(null);
   let sampledReceipt: number | null = null;
@@ -1198,6 +1218,8 @@
     <div class="spectrum-area" class:panning={dragging} class:draggable={canPan} bind:this={spectrumArea} onpointerdown={handleDragStart} role="presentation">
       {#if !scopeDemandOn}
         <div class="scope-disconnected-overlay scope-demand-off-overlay">Scope viewer OFF</div>
+      {:else if scopeTxKnown && !scopeConnected}
+        <div class="scope-tx-overlay" data-testid="scope-tx-overlay">{t('core.overlay.scopeTransmitting')}</div>
       {:else if !scopeConnected}
         <div class="scope-disconnected-overlay">{t('core.overlay.scopeDisconnected')}</div>
       {/if}
@@ -1532,7 +1554,7 @@
     transition-delay: 0s;
   }
 
-  .scope-disconnected-overlay {
+  .scope-disconnected-overlay, .scope-tx-overlay {
     position: absolute;
     inset: 0;
     z-index: 10;

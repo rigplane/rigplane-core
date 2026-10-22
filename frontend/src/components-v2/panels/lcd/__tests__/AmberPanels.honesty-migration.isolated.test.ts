@@ -24,6 +24,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import { readFileSync } from 'node:fs';
 import type { ServerState } from '$lib/types/state';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+// MOR-2855: both faces read the App-owned managed TX controller for their TX
+// look; the harness provides it the way the LcdLayout tests do.
+const txHarness = new ManagedAppTxHarness();
 
 const cockpitProps = vi.hoisted(() => ({
   value: {
@@ -45,7 +50,12 @@ const scopeProps = vi.hoisted(() => ({
   },
 }));
 
+// MOR-2855 follow-up: `tx: true` is the top-level flag `toTxProps` reads
+// (`hasTx: caps?.tx`), declared the way amber-tx-truth.component.test.ts's
+// TX_CAPS does — the TX chip renders in this suite from the managed TX
+// snapshot (inactive; the harness defaults to RX), never from state.ptt.
 const amberCaps = {
+  tx: true,
   capabilities: [
     'rit', 'xit', 'vox', 'compressor', 'tuner', 'split', 'dial_lock', 'ip_plus',
   ],
@@ -89,6 +99,10 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
 
 vi.mock('$lib/runtime/adapters/qsy-history-adapter', () => ({
   deriveQsyRecent: () => [],
+}));
+
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => txHarness.controller,
 }));
 
 vi.mock('$lib/runtime/frontend-runtime', () => ({
@@ -261,8 +275,10 @@ describe('Amber TX and inline RIT availability (MOR-1586 review)', () => {
     return state as ServerState;
   }
 
+  // TX (ptt) is excluded: invariant R9 overrides the generic R29 rule for
+  // TX — the look tracks the managed TX snapshot only, never state.ptt —
+  // and that is pinned in amber-tx-truth.component.test.ts.
   const tokenCases = [
-    ['TX', 'ptt', false, true, 'TX', [mountCockpit, mountScope]],
     ['VOX', 'voxOn', false, true, 'VOX', [mountCockpit, mountScope]],
     ['PROC', 'compressorOn', false, true, 'PROC 7', [mountCockpit, mountScope]],
     ['ATU', 'tunerStatus', 0, 1, 'ATU', [mountCockpit]],

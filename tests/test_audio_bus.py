@@ -12,6 +12,29 @@ from rigplane.audio import AudioPacket
 from rigplane.audio_bus import AudioBus, AudioSubscription
 
 
+def _parked_on_queue_get(task: asyncio.Task[object]) -> bool:
+    """True when ``task`` is suspended awaiting a Future at the bottom of
+    its coroutine chain — the queue getter the consumer parks on when the
+    queue is empty. Cancelling after this check lands on a genuinely
+    pending receive on every supported Python version, not on one that
+    already finished. In CPython ``await future`` bottoms out at the
+    C-level ``FutureIter`` wrapper rather than the Future itself, so the
+    FutureIter shape counts as parked-on-a-future too (nothing can have
+    woken the consumer at the points this is used).
+    """
+    coro: object = task.get_coro()
+    for _ in range(8):
+        nxt = getattr(coro, "cr_await", None)
+        if nxt is None:
+            return False
+        if isinstance(nxt, asyncio.Future):
+            return not nxt.done()
+        if type(nxt).__name__ == "FutureIter":
+            return not task.done()
+        coro = nxt
+    return False
+
+
 @pytest.fixture
 def mock_radio():
     radio = SimpleNamespace()
@@ -275,6 +298,97 @@ async def test_cancelled_async_iteration_raises_cancelled_error(bus, mock_radio)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+    await sub.aclose()
+
+
+async def test_next_cancel_while_pending_on_empty_queue_ends_cancelled(bus, mock_radio):
+    """A cancel of a consumer genuinely parked on the empty queue must end
+    the iteration as cancelled on every supported Python (MOR-3575).
+    """
+    sub = bus.subscribe(name="pending-cancel")
+    await sub.start()
+
+    task = asyncio.create_task(sub.__anext__())
+    await asyncio.sleep(0)  # the consumer runs to its first real suspension
+    assert _parked_on_queue_get(task), "consumer is not parked on the queue get"
+    task.cancel()
+
+    done, _pending = await asyncio.wait({task}, timeout=2.0)
+    assert task in done, "consumer never finished: cancel was swallowed"
+    assert task.cancelled(), "a cancel of a parked consumer was not delivered"
+
+    await sub.aclose()
+
+
+async def test_next_cancel_racing_a_delivered_packet_ends_cancelled(bus, mock_radio):
+    """A cancel arriving in the same loop pass as packet delivery must win
+    (MOR-3575): the iteration ends cancelled and the packet stays queued
+    for the next consumer instead of being lost.
+
+    This is the race the serial soak teardowns deadlocked in, restated
+    deterministically: the packet resolves the getter, and the cancel is
+    requested before the consumer's wakeup runs — exactly one wakeup, no
+    scheduling lottery.
+    """
+    sub = bus.subscribe(name="racing-cancel")
+    await sub.start()
+
+    task = asyncio.create_task(sub.__anext__())
+    await asyncio.sleep(0)  # the consumer runs to its first real suspension
+    assert _parked_on_queue_get(task), "consumer is not parked on the queue get"
+    bus._on_opus_packet(AudioPacket(ident=0x80, send_seq=1, data=b"x"))
+    # No yield here: the getter is resolved but the consumer has not run,
+    # so the cancel is requested into the same wakeup the packet scheduled.
+    task.cancel()
+
+    done, _pending = await asyncio.wait({task}, timeout=2.0)
+    assert task in done, "consumer never finished: cancel was swallowed"
+    assert task.cancelled(), "a cancel racing a delivered packet was swallowed"
+    assert sub._queue.get_nowait() == AudioPacket(ident=0x80, send_seq=1, data=b"x"), (
+        "the racing packet was consumed or lost"
+    )
+
+    await sub.aclose()
+
+
+async def test_next_during_cancellation_cleanup_returns_the_packet(bus, mock_radio):
+    """A consumer that caught CancelledError and awaits an already queued
+    packet during cleanup must get that packet, not a fresh CancelledError
+    (MOR-3575). The old ``Task.cancelling()`` guard broke exactly this:
+    the historical count made every later receive look cancelled.
+    """
+    sub = bus.subscribe(name="cleanup-receive")
+    await sub.start()
+    packet = AudioPacket(ident=0x80, send_seq=1, data=b"cleanup")
+    sub._queue.put_nowait(packet)
+
+    async def cleanup_consumer() -> AudioPacket | None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            pass  # cleanup begins; the cancel request count stays raised
+        return await sub.__anext__()
+
+    task = asyncio.create_task(cleanup_consumer())
+    await asyncio.sleep(0)  # the consumer parks in the sleep
+    assert not task.done()
+    task.cancel()
+
+    got = await task
+    assert got == packet
+    assert not task.cancelled()
+
+    await sub.aclose()
+
+
+async def test_next_timeout_while_active_returns_none(bus, mock_radio):
+    sub = bus.subscribe(name="timeout-none")
+    await sub.start()
+
+    pkt = await sub.__anext__()  # 1 s poll window on an active subscription
+
+    assert pkt is None
 
     await sub.aclose()
 
