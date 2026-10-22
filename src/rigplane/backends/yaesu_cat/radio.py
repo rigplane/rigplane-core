@@ -3672,12 +3672,14 @@ class YaesuCatRadio:
                     await self._write(
                         "send_cw", type=msg_type, mem=channel, is_current=current
                     )
-                except CatTransportError as exc:
-                    # MOR-3700: a write refused because a transmit abort
-                    # or a stop ended this send is a cancellation the
-                    # caller is told about, not a transport failure. The
-                    # fence first: a force-off goes stale before its
-                    # managed CW stop runs.
+                except Exception as exc:
+                    # MOR-3700: a write that fails once a transmit abort or
+                    # a stop ended this send (refused as no longer current,
+                    # or a KM the radio rejects after the stop) is a
+                    # cancellation the caller is told about, not a
+                    # transport failure. The fence first: a force-off goes
+                    # stale before its managed CW stop runs. While the send
+                    # is current the failure stays what it was.
                     if is_current is not None and not is_current():
                         raise cw_text_cancelled(self.profile.model, "abort") from exc
                     if self._cw_text_generation != generation:

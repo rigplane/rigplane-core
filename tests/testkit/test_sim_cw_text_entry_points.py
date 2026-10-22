@@ -23,7 +23,7 @@ import asyncio
 import json
 import re
 import struct
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -413,13 +413,67 @@ class _HoldingWire:
             radio_writer.close()
 
 
+class _RejectingKmWire(_HoldingWire):
+    """A serial line whose radio answers ``?;`` to a ``KM`` write.
+
+    Fake hardware only. Once :attr:`armed`, a ``KM`` line from the radio
+    object is not passed on (the simulated radio stores nothing); the wire
+    first calls :attr:`on_km` (if set), lets the loop run once, then
+    answers ``?;``, which the transport reads while it drains after the
+    write (CAT general rules, printed p.4: ``?;`` is the radio's refusal).
+    """
+
+    def __init__(self, device: str) -> None:
+        super().__init__(device)
+        self.on_km: Callable[[], object] | None = None
+
+    async def _serve(
+        self, radio_reader: asyncio.StreamReader, radio_writer: asyncio.StreamWriter
+    ) -> None:
+        sim_reader, sim_writer = await asyncio.open_connection(*self._upstream)
+
+        async def to_sim() -> None:
+            pending = b""
+            while data := await radio_reader.read(4096):
+                pending += data
+                while b";" in pending:
+                    line, pending = pending.split(b";", 1)
+                    if self.armed and line.startswith(b"KM"):
+                        if self.on_km is not None:
+                            self.on_km()
+                        await asyncio.sleep(0)
+                        radio_writer.write(b"?;")
+                        await radio_writer.drain()
+                        continue
+                    sim_writer.write(line + b";")
+                    await sim_writer.drain()
+
+        async def to_radio() -> None:
+            while data := await sim_reader.read(4096):
+                radio_writer.write(data)
+                await radio_writer.drain()
+
+        for coro in (to_sim(), to_radio()):
+            task = asyncio.create_task(coro)
+            self._tasks.add(task)
+        try:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        finally:
+            sim_writer.close()
+            radio_writer.close()
+
+
 @asynccontextmanager
 async def _managed_web(
-    rigs: Path, tmp_path: Path, *, wire: bool = False
+    rigs: Path,
+    tmp_path: Path,
+    *,
+    wire: bool = False,
+    line_type: type[_HoldingWire] = _HoldingWire,
 ) -> AsyncIterator[SimpleNamespace]:
     """The composition order of ``rigplane web`` (cli/__init__.py: _run, _cmd_web)."""
     async with _sim() as sim, AsyncExitStack() as stack:
-        line = await stack.enter_async_context(_HoldingWire(sim.device))
+        line = await stack.enter_async_context(line_type(sim.device))
         radio = YaesuCatRadio(
             line.device if wire else sim.device, profile=load_rig(rigs / "ftx1.toml")
         )
@@ -668,6 +722,58 @@ async def test_stop_ends_pending_sends_before_they_play(
         # The radio still sends after the stop.
         status, body = await _request(s.port, "POST", _SEND, {"text": "CQ"})
         assert (status, body) == (200, {"text": "CQ"})
+
+
+def _km_rejected(entry: str) -> object:
+    """What a send whose KM the radio refuses with ``?;`` answers (unchanged)."""
+    message = "Radio rejected command 'KM5AAA;' (returned '?;')"
+    if entry == "http":
+        return (500, {"error": message})
+    if entry == "commands":
+        return (409, {"ok": False, "error": "radio_nak", "message": message})
+    return {
+        "type": "response",
+        "id": "cw-1",
+        "ok": False,
+        "error": "radio_nak",
+        "message": message,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["http", "commands", "websocket"])
+@pytest.mark.parametrize("stopped", [True, False], ids=["stopped", "current"])
+async def test_a_km_refused_after_a_stop_is_the_stop_refusal(
+    tmp_path: Path, entry: str, stopped: bool
+) -> None:
+    # MOR-3700 (pre-review round 2): KM passed its currency check and went
+    # out; a CW stop ends the send while the transport still drains after
+    # that write; then the radio answers ?;. The caller is told the stop
+    # ended the send. Without the stop, the refusal keeps its old answer.
+    rigs = _rigs_dir(tmp_path, ENABLED, cw_tag=True)
+    async with _managed_web(rigs, tmp_path, wire=True, line_type=_RejectingKmWire) as s:
+        assert isinstance(s.wire, _RejectingKmWire)
+        stops: list[asyncio.Task[None]] = []
+        if stopped:
+            # The production radio's public stop, started the moment KM
+            # reaches the line (an HTTP stop cannot be timed into the
+            # drain window from outside).
+            s.wire.on_km = lambda: stops.append(
+                asyncio.create_task(s.radio.stop_cw_text())
+            )
+        s.wire.armed = True
+        result = await asyncio.wait_for(_OUTCOME[entry](s.port, "AAA"), 15)
+        s.wire.armed = False
+        await asyncio.gather(*stops)
+        assert len(stops) == int(stopped)
+        if stopped:
+            assert result == _ended_unsent(entry, "stop")
+        else:
+            assert result == _km_rejected(entry)
+        await _settle()
+        assert s.model.keying_memory == {}
+        assert (0, 5) not in s.model.keyer_play_requests
+        assert s.sim.ptt is False
 
 
 @pytest.mark.asyncio
