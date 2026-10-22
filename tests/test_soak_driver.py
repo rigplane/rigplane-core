@@ -1628,3 +1628,193 @@ async def test_runtime_outage_keeps_one_owned_population_and_verdict() -> None:
         await asyncio.gather(*leak_tasks, return_exceptions=True)
         await live.aclose()
     assert "_runtime_process_payload" not in vars(live.web)
+
+
+@pytest.mark.parametrize("leaked_fds", [0, 2])
+async def test_stability_probe_drains_replay_without_hiding_socket_leaks(
+    monkeypatch: pytest.MonkeyPatch, leaked_fds: int
+) -> None:
+    baseline = frozenset(asyncio.all_tasks())
+    stack = await soak_driver._start_simulator_stack()
+    adapter = soak_driver._RuntimeTaskAdapter(stack, None, baseline)
+    adapter.install()
+    tasks: list[asyncio.Task[Any]] = []
+    leaks: list[asyncio.StreamWriter] = []
+    release = asyncio.Event()
+    replay_open = asyncio.Event()
+    replay_done = asyncio.Event()
+    try:
+        async with aiohttp.ClientSession() as session:
+            driver = soak_driver.SoakDriver(
+                _smoke_config(duration_s=3600),
+                f"http://127.0.0.1:{stack.web_port}",
+                f"127.0.0.1:{stack.rigctld_port}",
+                stack.sim,
+            )
+            driver._t0 = time.monotonic()
+            driver._connection_state = "connected"
+            driver._runtime_task_adapter = adapter
+            driver._sampler = soak_driver.ProcessMetricsSampler(session, driver._base_url)
+            driver._sampler._runtime_task_adapter = adapter
+            command = driver._rigctld_cmd
+
+            async def held_command(
+                writer: asyncio.StreamWriter,
+                reader: asyncio.StreamReader,
+                cmd: str,
+                extra_lines: int = 0,
+            ) -> list[str]:
+                reply = await command(writer, reader, cmd, extra_lines)
+                if not replay_open.is_set():
+                    replay_open.set()
+                    await release.wait()
+                return reply
+
+            async def replay() -> None:
+                await driver._rigctld_replay_once()
+                replay_done.set()
+
+            monkeypatch.setattr(driver, "_rigctld_cmd", held_command)
+            tasks.append(
+                asyncio.create_task(
+                    driver._run_periodic("rigctld", 3600, replay),
+                    name="soak-test-replay",
+                )
+            )
+            async with asyncio.timeout(30.0):
+                await replay_open.wait()
+                pre_task = asyncio.create_task(
+                    driver._stability_probe(), name="soak-test-pre"
+                )
+                tasks.append(pre_task)
+                # Without the barrier, retain the replay through the whole pre
+                # trio; with it, release as soon as admission has paused.
+                while not pre_task.done() and not getattr(
+                    driver, "_transient_paused", False
+                ):
+                    await asyncio.sleep(0)
+                release.set()
+                await replay_done.wait()
+                pre = await pre_task
+                assert driver._counts["rigctldReplays"] == 1
+                if leaked_fds:
+                    reader, writer = await asyncio.open_connection(
+                        "127.0.0.1", stack.rigctld_port
+                    )
+                    leaks.append(writer)
+                    assert await command(writer, reader, "t") == ["0"]
+                post = await driver._stability_probe("post")
+            criterion = _stability_criteria_for(
+                pre.fds, post.fds, pre.asyncio_tasks, post.asyncio_tasks
+            )["fdsStability"]
+            assert criterion["status"] == ("FAIL" if leaked_fds else "PASS")
+            assert criterion["checks"][0]["delta"] == leaked_fds
+    finally:
+        release.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for writer in leaks:
+            writer.close()
+            await writer.wait_closed()
+        adapter.close()
+        await stack.aclose()
+
+
+async def test_stability_probe_defers_new_periodic_actions_until_trio_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live = await _LiveProbeStack().start()
+    driver = soak_driver.SoakDriver(
+        _smoke_config(), "", "", SimpleNamespace(fault_plan=None)
+    )
+    driver._t0 = time.monotonic()
+    driver._sampler = live.sampler
+    sampling = asyncio.Event()
+    finish = asyncio.Event()
+    scheduled = asyncio.Event()
+    acted = asyncio.Event()
+    tasks: list[asyncio.Task[Any]] = []
+    assert live.sampler is not None
+    sample = live.sampler.sample
+
+    async def held_sample(t_s: float) -> soak_driver.ProcessSample:
+        sampling.set()
+        await finish.wait()
+        assert not acted.is_set()
+        return await sample(t_s)
+
+    async def action() -> None:
+        acted.set()
+
+    async def periodic() -> None:
+        scheduled.set()
+        await driver._run_periodic("metrics", 3600, action)
+
+    monkeypatch.setattr(live.sampler, "sample", held_sample)
+    try:
+        async with asyncio.timeout(5.0):
+            probe = asyncio.create_task(
+                driver._stability_probe(), name="soak-test-probe"
+            )
+            tasks.append(probe)
+            await sampling.wait()
+            tasks.append(asyncio.create_task(periodic(), name="soak-test-metrics"))
+            await scheduled.wait()
+            finish.set()
+            await probe
+            await acted.wait()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await live.aclose()
+
+
+@pytest.mark.parametrize("interrupt", ["timeout", "cancel"])
+async def test_stability_drain_is_bounded_and_restores_admission(
+    monkeypatch: pytest.MonkeyPatch, interrupt: str
+) -> None:
+    driver = soak_driver.SoakDriver(
+        _smoke_config(), "", "", SimpleNamespace(fault_plan=None)
+    )
+    driver._t0 = time.monotonic()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def action() -> None:
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(
+        soak_driver,
+        "_TRANSIENT_DRAIN_TIMEOUT_S",
+        0.05 if interrupt == "timeout" else 30.0,
+    )
+    traffic = asyncio.create_task(driver._run_periodic("rigctld", 3600, action))
+    probe: asyncio.Task[Any] | None = None
+    try:
+        async with asyncio.timeout(5.0):
+            await entered.wait()
+            probe = asyncio.create_task(driver._stability_probe())
+            while not driver._transient_paused:
+                await asyncio.sleep(0)
+            if interrupt == "cancel":
+                probe.cancel()
+            expected = (
+                TimeoutError if interrupt == "timeout" else asyncio.CancelledError
+            )
+            with pytest.raises(expected):
+                await probe
+            assert not driver._transient_paused
+            assert not driver._transient_condition.locked()
+            assert driver._transient_active == 1
+    finally:
+        release.set()
+        traffic.cancel()
+        if probe is not None:
+            probe.cancel()
+        await asyncio.gather(
+            traffic, *([probe] if probe else []), return_exceptions=True
+        )
+    assert driver._transient_active == 0

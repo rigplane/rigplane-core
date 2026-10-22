@@ -39,7 +39,7 @@ from contextvars import Context, ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, AsyncIterator, Callable
 
 import aiohttp
 
@@ -90,6 +90,7 @@ IN_PROCESS_FD_STABILITY_TOLERANCE = 0
 # leak surface this criterion watches — or need creation-time ancestry.
 IN_PROCESS_TASK_STABILITY_TOLERANCE = 2
 _STABILITY_PROBE_COUNT = 3
+_TRANSIENT_DRAIN_TIMEOUT_S = 40.0
 # A post-reconnect median above pre + tolerance may be teardown still
 # draining (MOR-3575): settle first — gc once, then resample in small
 # steps until _STABILITY_SETTLE_STABLE_READINGS consecutive resamples
@@ -1622,6 +1623,9 @@ class SoakDriver:
         # the stability probes of the latter must not see the former's
         # sockets and handler tasks.
         self._exclusive = asyncio.Lock()
+        self._transient_condition = asyncio.Condition()
+        self._transient_paused = False
+        self._transient_active = 0
         self._tx_keyed = False
         self._tx_seed = secrets.randbits(32)
         self._tx_rng = random.Random(self._tx_seed)
@@ -2042,10 +2046,26 @@ class SoakDriver:
                 return True
         return await self._fetch_connection_state() == "connected"
 
+    @contextlib.asynccontextmanager
+    async def _quiesce_transient_actions(self) -> AsyncIterator[None]:
+        async with self._transient_condition:
+            self._transient_paused = True
+            try:
+                async with asyncio.timeout(_TRANSIENT_DRAIN_TIMEOUT_S):
+                    await self._transient_condition.wait_for(
+                        lambda: self._transient_active == 0
+                    )
+                yield
+            finally:
+                self._transient_paused = False
+                self._transient_condition.notify_all()
+
     async def _stability_probe(self, phase: str = "pre") -> ProcessSample:
-        """Median of 3 quick samples: in-flight requests and rigctld
-        replays make single task/FD counts oscillate by a few; the median
-        keeps the pre/post comparison about leaks, not about a spike."""
+        async with self._quiesce_transient_actions():
+            return await self._stability_probe_samples(phase)
+
+    async def _stability_probe_samples(self, phase: str) -> ProcessSample:
+        """Median of three samples with periodic actions paused and drained."""
         assert self._sampler is not None
         diagnostics = self._probe_diagnostics if self._capture_cycle else None
         provenance = self._task_provenance
@@ -2123,6 +2143,10 @@ class SoakDriver:
         return None
 
     async def _settle_stability_counts(self, pre: ProcessSample) -> None:
+        async with self._quiesce_transient_actions():
+            await self._settle_quiesced_counts(pre)
+
+    async def _settle_quiesced_counts(self, pre: ProcessSample) -> None:
         """Resample while the counts still decrease, within a window.
 
         A flat pair may be a plateau before further decay: the counts
@@ -2359,12 +2383,21 @@ class SoakDriver:
                 # event loop.
                 await asyncio.sleep(next_due - self._elapsed())
                 continue
+            async with self._transient_condition:
+                await self._transient_condition.wait_for(
+                    lambda: not self._transient_paused
+                )
+                self._transient_active += 1
             try:
                 await action()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("soak: %s action failed", name)
+            finally:
+                async with self._transient_condition:
+                    self._transient_active -= 1
+                    self._transient_condition.notify_all()
             next_due = self._elapsed() + interval_s
 
     async def _metrics_once(self) -> None:
