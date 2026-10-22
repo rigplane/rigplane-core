@@ -221,6 +221,43 @@ async def test_capability_endpoints_publish_cw_text(name: str, expected: dict) -
         assert caps["cwText"] == expected
 
 
+_FRONTEND_FIXTURES = (
+    Path(__file__).resolve().parents[1]
+    / "frontend/src/lib/runtime/adapters/__tests__/fixtures"
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "fixture"),
+    [
+        ("ftx1.toml", "ftx1-capabilities.json"),
+        ("ic7300.toml", "ic7300-capabilities.json"),
+    ],
+)
+async def test_frontend_capability_fixtures_carry_the_served_cw_text(
+    name: str, fixture: str
+) -> None:
+    # The frontend fixtures stand in for /api/v1/capabilities in browser
+    # tests; their cwText must be what the real handler serves.
+    profile = load_rig(RIGS / name).to_profile()
+    radio = SimpleNamespace(
+        model=profile.model,
+        profile=profile,
+        capabilities=set(profile.capabilities),
+        connected=False,
+        control_connected=False,
+        radio_ready=False,
+    )
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    writer = _Writer()
+    await server._handle_http(writer, "GET", "/api/v1/capabilities", headers={})  # noqa: SLF001
+    text = writer.buffer.decode("ascii", errors="replace")
+    served = json.loads(text[text.index("\r\n\r\n") + 4 :])
+    stored = json.loads((_FRONTEND_FIXTURES / fixture).read_text(encoding="utf-8"))
+    assert stored["cwText"] == served["cwText"]
+
+
 def test_capabilities_contract_requires_cw_text() -> None:
     assert "cwText" in RESPONSE_FIELD_CONTRACTS["/api/v1/capabilities"]["required"]
 

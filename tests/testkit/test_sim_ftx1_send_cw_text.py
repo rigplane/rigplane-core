@@ -14,8 +14,8 @@ lexer rejects spaces, so the text here is ``CQ``.
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import json
+import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -35,10 +35,19 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @asynccontextmanager
 async def _served(*, supported: bool) -> AsyncIterator[SimpleNamespace]:
-    rig = load_rig(ROOT / "rigs" / "ftx1.toml")
-    rig = dataclasses.replace(
-        rig, cw_text=dataclasses.replace(rig.cw_text, supported=supported)
-    )
+    # The profile is loaded from a file, as production loads it: the shipped
+    # ftx1.toml, or a copy whose [cw_text] says supported = true.
+    text = (ROOT / "rigs" / "ftx1.toml").read_text(encoding="utf-8")
+    if supported:
+        assert text.count("\nsupported = false\n") == 1
+        text = text.replace("\nsupported = false\n", "\nsupported = true\n", 1)
+    with tempfile.TemporaryDirectory() as tmp:
+        rigs = Path(tmp)
+        for shared in (ROOT / "rigs").glob("_*.toml"):
+            (rigs / shared.name).write_bytes(shared.read_bytes())
+        (rigs / "ftx1.toml").write_text(text, encoding="utf-8")
+        rig = load_rig(rigs / "ftx1.toml")
+    assert rig.cw_text.supported is supported
     stack = build_stack(build_parser().parse_args(["serve", "--radio", "ftx1"]))
     await stack.backend.start()
     radio = None
