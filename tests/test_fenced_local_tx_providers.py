@@ -21,6 +21,7 @@ from rigplane.runtime.managed_tx_composition import (
 )
 from rigplane.runtime.managed_tx_fence import TxAbortFence
 from rigplane.runtime.managed_tx_state import (
+    AbortOperation,
     ActuationOperation,
     ActuationResult,
     EffectToken,
@@ -484,3 +485,38 @@ async def test_stop_cw_text_ends_a_send_still_waiting_for_the_keyer_lock() -> No
         call.args[0] for call in radio._transport._raw_write.await_args_list
     ]
     assert wire_commands == ["KM5AA;", "KY00;"]
+
+
+@pytest.mark.asyncio
+async def test_managed_cw_abort_ends_a_send_whose_memory_write_is_in_flight() -> None:
+    # MOR-3678: the managed STOP_CW abort (force-off / shutdown) ends an
+    # earlier send_cw_text like stop_cw_text does; its KY never follows.
+    radio = _fenced_radio(None)
+    first_drain_started = asyncio.Event()
+    release_first_drain = asyncio.Event()
+    drain_calls = 0
+
+    async def drain(_command: str) -> int:
+        nonlocal drain_calls
+        drain_calls += 1
+        if drain_calls == 1:
+            first_drain_started.set()
+            await release_first_drain.wait()
+        return 0
+
+    radio._transport._drain_responses = drain
+    sending = asyncio.create_task(radio.send_cw_text("CQ"))
+    await first_drain_started.wait()
+    aborting = asyncio.create_task(
+        radio.actuate(_effect_token(), AbortOperation.STOP_CW, is_current=lambda: True)
+    )
+    await asyncio.sleep(0)
+    release_first_drain.set()
+
+    await aborting
+    with pytest.raises(CatTransportError, match="no longer current"):
+        await sending
+    wire_commands = [
+        call.args[0] for call in radio._transport._raw_write.await_args_list
+    ]
+    assert wire_commands == ["KM5CQ;", "KY00;"]
