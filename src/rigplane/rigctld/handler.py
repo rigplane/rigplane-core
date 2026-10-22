@@ -34,7 +34,7 @@ from ..core.command_service import (
 from ..core.command_dispatch import prepare_command_intent
 from ..core.exceptions import CommandError, CommandRejectedError
 from ..runtime.controller_authority import ControllerAuthority, ControllerError
-from ..core.radio_protocol import AttenuatorStepsCapable
+from ..core.radio_protocol import AttenuatorStepsCapable, ConfirmedModeCapable
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import (
     CommandIntent,
@@ -339,8 +339,8 @@ def _classify_rigctld_tx_intent(
         command = tx_commands.SetFreq(int(params["freq_hz"]))
     elif intent.name == "set_split_freq":
         # NOT SetFreq: the split-TX write is a VFO-topology write
-        # (select-slot-B, write, restore), and with split on, slot B is
-        # the live TX VFO. Dispatching during TX or on unknown RF truth
+        # (exchange contents, write, exchange back). The unselected tuple is
+        # the live TX VFO with split on. Dispatching during TX or unknown RF truth
         # could retune a live transmission, so these borrow SetSplit's
         # policy entry exactly: DEFER (dropped with RPRT 0 on known TX,
         # ERJCTED on unknown RF truth). The `on` value is unconsumed —
@@ -466,6 +466,23 @@ class _RigctldCommandExecutor:
         self,
         intent: CommandIntent,
     ) -> CommandExecutionResult:
+        if not bool(intent.params["ptt"]):
+            self.handler._ptt_slot_generation += 1
+            return await self._execute_managed_ptt_unlocked(intent)
+        generation = self.handler._ptt_slot_generation
+        async with self.handler._vfo_slot_lock:
+            if generation != self.handler._ptt_slot_generation:
+                raise _RigctldCommandFailure(HamlibError.ERJCTED)
+            return await self._execute_managed_ptt_unlocked(
+                intent, key_generation=generation
+            )
+
+    async def _execute_managed_ptt_unlocked(
+        self,
+        intent: CommandIntent,
+        *,
+        key_generation: int | None = None,
+    ) -> CommandExecutionResult:
         authority = self.handler._managed_tx_authority
         assert authority is not None
         on = bool(intent.params["ptt"])
@@ -488,6 +505,8 @@ class _RigctldCommandExecutor:
                     else await authority.submit_ptt(False, owner)
                 )
             else:
+                if key_generation != self.handler._ptt_slot_generation:
+                    raise CommandRejectedError("PTT key invalidated by dekey")
                 loop = asyncio.get_running_loop()
                 if submission is None:
                     raise _RigctldCommandFailure(HamlibError.EINTERNAL)
@@ -659,7 +678,7 @@ class _RigctldCommandExecutor:
         params = intent.params
         if intent.name == "set_freq":
             # Shares the slot lock with the split-TX dance: an F landing
-            # between select-B and restore would write the TX slot and
+            # between exchange and restore would write the TX tuple and
             # lose the caller's RX write. Held only around the radio
             # call — never across the predecessor wait above or the
             # reply formatting in the _cmd_* caller.
@@ -926,15 +945,16 @@ class RigctldHandler:
         self._key_down_backstop_task: asyncio.Task[None] | None = None
         self._key_down_backstop_token: int = 0
         self._key_down_backstop_session: str | None = None
-        # Serializes the single-RX A/B slot dance (split-TX writes)
-        # against VFO switches and main-VFO freq/mode writes. The
+        # Serializes single-RX A/B exchanges against VFO switches,
+        # freq/mode reads and writes, and positive PTT. The
         # handler instance is shared across all client connections of
         # one server, so without this another client's V/F/M could land
-        # between select-B and restore and strand the dial or lose the
-        # caller's write. Never nested: the dance calls the radio
-        # directly, the F/M/V paths take this only around the radio
-        # call, and none of them calls the dance.
+        # between exchange and restore and strand the dial or lose the
+        # caller's write. Never nested: transactions call the radio
+        # directly, and the ordinary handlers do not call a transaction.
         self._vfo_slot_lock = asyncio.Lock()
+        self._ptt_slot_generation = 0
+        self._split_selected_reads_live = False
         self._routing = create_routing(radio, getattr(config, "max_power_w", 100.0))
         if state_store is None and isinstance(radio, StateStoreCapable):
             state_store = radio.state_store
@@ -1623,12 +1643,28 @@ class RigctldHandler:
     # ------------------------------------------------------------------
 
     async def _cmd_get_freq(self, cmd: RigctldCommand) -> RigctldResponse:
+        async with self._vfo_slot_lock:
+            return await self._cmd_get_freq_locked(cmd)
+
+    async def _cmd_get_freq_locked(self, cmd: RigctldCommand) -> RigctldResponse:
         try:
             target = self._resolve_target_vfo(cmd.vfo_arg)
         except ValueError:
             return _err(HamlibError.EVFO)
 
         receiver = self._receiver_index_for(target)
+        if self._split_selected_reads_live and receiver == 0:
+            # A temporary exchange can contaminate selected-role caches and
+            # observations. Without physical A/B identity, only live relative
+            # readback can establish the restored selected tuple. This also
+            # leaves the radio's memory/VFO context alone.
+            read = getattr(self._radio, "read_relative_vfo", None)
+            freq = (
+                (await read(selected=True)).freq_hz
+                if read is not None
+                else await self._radio.get_freq()
+            )
+            return RigctldResponse(values=[str(int(freq))])
         path = self._freq_path(receiver)
         projection = self._project_with_freshness((path,), reason="rigctld.get_freq")
         projected = projection.value(path)
@@ -1696,12 +1732,34 @@ class RigctldHandler:
     # ------------------------------------------------------------------
 
     async def _cmd_get_mode(self, cmd: RigctldCommand) -> RigctldResponse:
+        async with self._vfo_slot_lock:
+            return await self._cmd_get_mode_locked(cmd)
+
+    async def _cmd_get_mode_locked(self, cmd: RigctldCommand) -> RigctldResponse:
         try:
             target = self._resolve_target_vfo(cmd.vfo_arg)
         except ValueError:
             return _err(HamlibError.EVFO)
 
         receiver = self._receiver_index_for(target)
+        if self._split_selected_reads_live and receiver == 0:
+            read = getattr(self._radio, "read_relative_vfo", None)
+            if read is not None:
+                current = await read(selected=True)
+                mode, passband = _split_mode_values(
+                    current.mode, current.filter_num, current.data_mode
+                )
+            else:
+                get_mode = get_mode_reader(self._radio, _mode_to_hamlib_str)
+                if get_mode is None:
+                    return _err(HamlibError.ENIMPL)
+                mode_name, filt = await get_mode()
+                try:
+                    data_mode = await self._radio.get_data_mode()
+                except Exception:
+                    data_mode = 0
+                mode, passband = _split_mode_values(mode_name, filt, data_mode)
+            return RigctldResponse(values=[mode, passband])
         mode_path = self._mode_path(receiver)
         # The rigctld passband maps a filter NUMBER (1/2/3), so the projection
         # reads ``filter_num``. ``filter_width`` (decoded Hz) is deliberately
@@ -2154,6 +2212,27 @@ class RigctldHandler:
             )
 
     async def _route_ptt(self, on: bool, *, session_id: str | None) -> None:
+        if not on:
+            # De-key never waits for a split transaction. Any key already
+            # waiting on that transaction loses its authority to run later.
+            self._ptt_slot_generation += 1
+            await self._route_ptt_unlocked(False, session_id=session_id)
+            return
+        generation = self._ptt_slot_generation
+        async with self._vfo_slot_lock:
+            if generation != self._ptt_slot_generation:
+                raise _RigctldCommandFailure(HamlibError.ERJCTED)
+            await self._route_ptt_unlocked(
+                True, session_id=session_id, key_generation=generation
+            )
+
+    async def _route_ptt_unlocked(
+        self,
+        on: bool,
+        *,
+        session_id: str | None,
+        key_generation: int | None = None,
+    ) -> None:
         """Key or unkey the rig, through the supervisor when the rig has one.
 
         A rigctld connection id is a lease-bearing owner identity (MOR-1014):
@@ -2204,6 +2283,8 @@ class RigctldHandler:
                     session_id,
                 )
                 raise _RigctldCommandFailure(HamlibError.EACCESS)
+            if on and key_generation != self._ptt_slot_generation:
+                raise _RigctldCommandFailure(HamlibError.ERJCTED)
             await self._radio.set_ptt(on)
             # MOR-1904, below the write and never in a ``finally``: an unkey
             # that RAISED left the rig keyed and must not drop the bound.
@@ -2212,6 +2293,8 @@ class RigctldHandler:
             else:
                 self._void_key_down_backstop()
             return
+        if on and key_generation != self._ptt_slot_generation:
+            raise _RigctldCommandFailure(HamlibError.ERJCTED)
         transition = await managed.set_ptt(on)
         if transition.outcome in _TX_ACCEPTED:
             return
@@ -2390,6 +2473,10 @@ class RigctldHandler:
         raise ValueError(f"Unknown VFO arg: {vfo_arg!r}")
 
     async def _cmd_get_vfo(self, cmd: RigctldCommand) -> RigctldResponse:
+        async with self._vfo_slot_lock:
+            return await self._cmd_get_vfo_locked(cmd)
+
+    async def _cmd_get_vfo_locked(self, cmd: RigctldCommand) -> RigctldResponse:
         active_vfo = self._project_active_vfo_name()
         if active_vfo is None:
             # The active-VFO projection is not fresh yet (or absent). On a CAT
@@ -2433,7 +2520,7 @@ class RigctldHandler:
 
     async def _execute_set_vfo(self, vfo: str) -> HamlibError:
         # Shares the slot lock with the split-TX dance: a V landing
-        # between select-B and restore would strand the dial.
+        # between exchange and restore would strand the dial.
         async with self._vfo_slot_lock:
             return await self._execute_set_vfo_locked(vfo)
 
@@ -3124,93 +3211,64 @@ class RigctldHandler:
         info = self._profile_vfo_info()
         return info is not None and info[0] >= 2
 
-    async def _selected_vfo_slot(self) -> Literal["A", "B"]:
-        """Require physical A/B identity; Icom provides a cache-free probe."""
-        get_vfo_slot = getattr(self._radio, "read_vfo_slot", None)
-        if get_vfo_slot is None:
-            raise _RigctldCommandFailure(HamlibError.EIO)
-        try:
-            slot = await get_vfo_slot()
-        except CommandRejectedError:
-            raise
-        except CommandError as exc:
-            raise _RigctldCommandFailure(HamlibError.EIO) from exc
-        if isinstance(slot, str) and slot.upper() in ("A", "B"):
-            return cast(Literal["A", "B"], slot.upper())
-        raise _RigctldCommandFailure(HamlibError.EIO)
-
-    async def _select_vfo_slot_confirmed(self, slot: str) -> bool:
-        """Select A/B ``slot``; True only when the radio is on it.
-
-        Prefers the radio's ACK-confirmed seam
-        (``set_vfo_slot_confirmed``) when it provides one; otherwise
-        selects via fire-and-forget ``set_vfo_slot`` and confirms with
-        a cache-free ``read_vfo_slot`` readback. Radio errors propagate to the
-        seat's normal mapping; a lost or unverifiable switch returns
-        False so the caller aborts without writing.
-        """
-        confirmed_select = getattr(self._radio, "set_vfo_slot_confirmed", None)
-        if confirmed_select is not None:
-            await confirmed_select(slot)
-            return True
-        set_vfo_slot = getattr(self._radio, "set_vfo_slot", None)
-        assert set_vfo_slot is not None  # entry check guarantees a seam
-        await set_vfo_slot(slot)
-        return await self._selected_vfo_slot() == slot
-
     async def _run_on_split_tx_slot(
         self, write: Callable[[], Awaitable[None]]
     ) -> CommandExecutionResult:
-        """Run ``write`` against the split-TX (unselected) slot, then restore.
+        """Exchange contents, write the selected tuple, and exchange back.
 
-        Keep the slot lock until the restore task finishes, including repeated
-        caller cancellation. A restore failure fails an otherwise successful
-        payload; an earlier payload error or cancellation takes precedence.
+        Both exchanges are joined under the slot lock even on cancellation.
+        A first-exchange NAK proves nothing moved, so must not exchange again.
+        An ambiguous exchange error still attempts cleanup; it cannot prove
+        restoration and retains its original failure. Payload failure takes
+        precedence over cleanup failure. No A/B identity is inferred.
         """
-        if (
-            getattr(self._radio, "set_vfo_slot_confirmed", None) is None
-            and getattr(self._radio, "set_vfo_slot", None) is None
-        ):
+        swap = getattr(self._radio, "swap_vfo_ab", None)
+        profile = getattr(self._radio, "profile", None)
+        if swap is None or getattr(profile, "swap_ab_code", None) is None:
             raise _RigctldCommandFailure(HamlibError.ENAVAIL)
         async with self._vfo_slot_lock:
-            previous = await self._selected_vfo_slot()
-            target = "B" if previous == "A" else "A"
+            self._split_selected_reads_live = True
             failure: BaseException | None = None
+
+            async def join(operation: asyncio.Task[None]) -> None:
+                nonlocal failure
+                while not operation.done():
+                    try:
+                        await asyncio.shield(operation)
+                    except asyncio.CancelledError as exc:
+                        if failure is None:
+                            failure = exc
+                    except Exception:
+                        break
+                operation.result()
+
+            # Join the initial ACK as well: cancellation must not detach an
+            # exchange whose eventual success requires a matching cleanup.
+            exchange = asyncio.create_task(swap())
             try:
-                if not await self._select_vfo_slot_confirmed(target):
-                    logger.warning(
-                        "split TX write: VFO slot %s select unconfirmed; "
-                        "aborting without writing",
-                        target,
-                    )
-                    raise _RigctldCommandFailure(HamlibError.EIO)
-                await write()
+                await join(exchange)
+            except CommandRejectedError:
+                if failure is not None:
+                    raise failure
+                raise
             except BaseException as exc:
-                failure = exc
-            restore = asyncio.create_task(self._select_vfo_slot_confirmed(previous))
-            while not restore.done():
+                if failure is None:
+                    failure = exc
+            if failure is None:
                 try:
-                    await asyncio.shield(restore)
-                except asyncio.CancelledError as exc:
-                    if failure is None:
-                        failure = exc
-                except Exception:
-                    break
+                    await write()
+                except BaseException as exc:
+                    failure = exc
+            restore = asyncio.create_task(swap())
             try:
-                if not restore.result():
-                    logger.warning(
-                        "split TX write: restore to %s unconfirmed", previous
-                    )
-                    raise _RigctldCommandFailure(HamlibError.EIO)
+                await join(restore)
             except BaseException as exc:
-                logger.exception(
-                    "split TX write: restoring VFO slot %s failed", previous
-                )
+                logger.exception("split TX write: restoring VFO contents failed")
                 if failure is None:
                     failure = exc
             if failure is not None:
                 raise failure
-            return CommandExecutionResult(details={"split_tx_slot": target})
+            return CommandExecutionResult()
 
     async def _cmd_get_split_freq(self, cmd: RigctldCommand) -> RigctldResponse:
         try:
@@ -3220,31 +3278,18 @@ class RigctldHandler:
         if self._split_tx_needs_dual_rx_routing():
             return _err(HamlibError.ENIMPL)
         async with self._vfo_slot_lock:
-            selected = await self._selected_vfo_slot()
-            slot = "B" if selected == "A" else "A"
-            path = FieldPath.vfo_slot("main", slot, "freq_mode", "freq_hz")
-            projection = self._project_with_freshness(
-                (path,), reason="rigctld.get_split_freq"
-            )
-            projected = projection.value(path)
-            if projected is not None:
-                return RigctldResponse(values=[str(int(projected.value))])
             read_relative_vfo = getattr(self._radio, "read_relative_vfo", None)
             if read_relative_vfo is None:
                 return _err(HamlibError.ENIMPL)
             unselected = await read_relative_vfo(selected=False)
-            freq = int(unselected.freq_hz)
-            self._record_state_sample(
-                path, freq, source="hamlib_response", max_age=self._config.cache_ttl
-            )
-            return RigctldResponse(values=[str(freq)])
+            return RigctldResponse(values=[str(int(unselected.freq_hz))])
 
     async def _cmd_set_split_freq(self, cmd: RigctldCommand) -> RigctldResponse:
         if not cmd.args:
             return _err(HamlibError.EINVAL)
         try:
             freq = int(float(cmd.args[0]))
-        except ValueError:
+        except (ValueError, OverflowError):
             return _err(HamlibError.EINVAL)
         try:
             self._validate_split_tx_vfo_arg(cmd.vfo_arg)
@@ -3263,13 +3308,7 @@ class RigctldHandler:
             dropped = self._defer_write_gate(intent)
             if dropped is not None:
                 return dropped
-        result = await self._execute_write(intent)
-        slot = str((result.executor_result.details or {})["split_tx_slot"])
-        self._record_pending_overlay(
-            FieldPath.vfo_slot("main", slot, "freq_mode", "freq_hz"),
-            freq,
-            command_id=intent.id,
-        )
+        await self._execute_write(intent)
         return _ok()
 
     async def _execute_set_split_freq(self, freq_hz: int) -> CommandExecutionResult:
@@ -3286,21 +3325,6 @@ class RigctldHandler:
         if self._split_tx_needs_dual_rx_routing():
             return _err(HamlibError.ENIMPL)
         async with self._vfo_slot_lock:
-            selected = await self._selected_vfo_slot()
-            slot = "B" if selected == "A" else "A"
-            paths = tuple(
-                FieldPath.vfo_slot("main", slot, "freq_mode", name)
-                for name in ("mode", "filter_num", "data_mode")
-            )
-            projection = self._project_with_freshness(
-                paths, reason="rigctld.get_split_mode"
-            )
-            values = tuple(projection.value(path) for path in paths)
-            if all(value is not None for value in values):
-                mode_str, passband = _split_mode_values(
-                    *(cast(_ProjectedField, value).value for value in values)
-                )
-                return RigctldResponse(values=[mode_str, passband])
             read_relative_vfo = getattr(self._radio, "read_relative_vfo", None)
             if read_relative_vfo is None:
                 return _err(HamlibError.ENIMPL)
@@ -3351,24 +3375,7 @@ class RigctldHandler:
             dropped = self._defer_write_gate(intent)
             if dropped is not None:
                 return dropped
-        result = await self._execute_write(intent)
-        slot = str((result.executor_result.details or {})["split_tx_slot"])
-        self._record_pending_overlay(
-            FieldPath.vfo_slot("main", slot, "freq_mode", "mode"),
-            base_mode_str,
-            command_id=intent.id,
-        )
-        self._record_pending_overlay(
-            FieldPath.vfo_slot("main", slot, "freq_mode", "filter_num"),
-            filter_width,
-            command_id=intent.id,
-        )
-        if requested_mode in packet_modes:
-            self._record_pending_overlay(
-                FieldPath.vfo_slot("main", slot, "freq_mode", "data_mode"),
-                True,
-                command_id=intent.id,
-            )
+        await self._execute_write(intent)
         return _ok()
 
     async def _execute_set_split_mode(
@@ -3378,8 +3385,20 @@ class RigctldHandler:
         filter_width: int | None,
         packet_mode: bool,
     ) -> CommandExecutionResult:
+        if not isinstance(self._radio, ConfirmedModeCapable) or not callable(
+            getattr(self._radio, "set_mode_confirmed", None)
+        ):
+            raise _RigctldCommandFailure(HamlibError.ENAVAIL)
+        confirmed_mode = self._radio.set_mode_confirmed
+
         async def _write() -> None:
-            await self._radio.set_mode(mode, filter_width=filter_width)
+            resolved_filter = filter_width
+            if resolved_filter is None:
+                read = getattr(self._radio, "read_relative_vfo", None)
+                if read is None:
+                    raise _RigctldCommandFailure(HamlibError.ENAVAIL)
+                resolved_filter = (await read(selected=True)).filter_num
+            await confirmed_mode(mode, filter_width=resolved_filter)
             if packet_mode:
                 # DATA is applied while the TX slot is still selected, so it
                 # lands on the TX VFO — not on the restored RX slot.

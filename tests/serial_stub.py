@@ -47,8 +47,16 @@ class SplitIcomTransport:
             "B": (7_076_000, Mode.LSB, 3, 1),
         }
         self.split = False
-        self.query_reply: bytes | None = None
-        self.reject_slot: str | None = None
+        self.context = "vfo"
+        self.exchanges = 0
+        self.reject_exchange: int | None = None
+        self.reject_mode = False
+        self.reject_data = False
+        self.payload_writes = 0
+        self.requests: list[tuple[int, int | None, bytes]] = []
+        self.ptt_writes: list[bool] = []
+        self.ptt_key_tuples: list[tuple[int, Mode, int, int]] = []
+        self.dekeyed = asyncio.Event()
         self.restore_attempted = asyncio.Event()
         self.restore_ack: asyncio.Event | None = None
         self.second_payload = asyncio.Event()
@@ -67,46 +75,55 @@ class SplitIcomTransport:
         start = packet.index(b"\xfe\xfe")
         request = parse_civ_frame(packet[start:])
         command, data = request.command, request.data
+        self.requests.append((command, request.sub, data))
         reply_command, reply_sub, reply_data = 0xFB, None, b""
         freq, mode, filt, data_mode = self.slots[self.selected]
         if command == 0x07:
             if not data:
-                if self.query_reply is not None:
-                    reply_command, reply_data = (
-                        self.query_reply[0],
-                        self.query_reply[1:],
-                    )
-                else:
-                    reply_command = 0x07
-                    reply_data = bytes([0 if self.selected == "A" else 1])
-            else:
-                slot = "A" if data == b"\x00" else "B"
-                if slot == "A":
+                # Bare 07 enters VFO mode. It does not query A/B identity.
+                self.context = "vfo"
+            elif data == b"\xb0":
+                self.exchanges += 1
+                if self.exchanges % 2 == 0:
                     self.restore_attempted.set()
                     if self.restore_ack is not None:
                         await self.restore_ack.wait()
-                if slot == self.reject_slot:
+                if self.exchanges == self.reject_exchange:
                     reply_command = 0xFA
                 else:
-                    self.selected = slot
+                    self.slots["A"], self.slots["B"] = self.slots["B"], self.slots["A"]
+            elif data in (b"\x00", b"\x01"):
+                self.context = "vfo"
+                self.selected = "A" if data == b"\x00" else "B"
+            else:
+                raise AssertionError(f"Unexpected VFO operation: {data!r}")
         elif command == 0x05:
+            self.payload_writes += 1
             if bcd_decode(data) == 14_090_000:
                 self.second_payload.set()
             self.slots[self.selected] = (bcd_decode(data), mode, filt, data_mode)
         elif command == 0x06:
-            self.slots[self.selected] = (
-                freq,
-                Mode(data[0]),
-                data[1] if len(data) > 1 else filt,
-                data_mode,
-            )
+            self.payload_writes += 1
+            if self.reject_mode:
+                reply_command = 0xFA
+            else:
+                self.slots[self.selected] = (
+                    freq,
+                    Mode(data[0]),
+                    data[1] if len(data) > 1 else filt,
+                    data_mode,
+                )
         elif command in (0x25, 0x26):
             slot = self.selected
             if data[0] == 1:
                 slot = "B" if slot == "A" else "A"
             rel_freq, rel_mode, rel_filter, rel_data = self.slots[slot]
             if command == 0x26 and len(data) == 4:
-                self.slots[slot] = (rel_freq, Mode(data[1]), data[3], data[2])
+                self.payload_writes += 1
+                if self.reject_mode:
+                    reply_command = 0xFA
+                else:
+                    self.slots[slot] = (rel_freq, Mode(data[1]), data[3], data[2])
             else:
                 read_event = (
                     self.relative_freq_read
@@ -129,6 +146,18 @@ class SplitIcomTransport:
                 self.split = bool(data[0])
             else:
                 reply_command, reply_data = command, bytes([self.split])
+        elif command == 0x1A and request.sub == 0x06:
+            if self.reject_data:
+                reply_command = 0xFA
+            else:
+                self.slots[self.selected] = (freq, mode, filt, data[0])
+        elif command == 0x1C and request.sub == 0x00:
+            on = bool(data[0])
+            self.ptt_writes.append(on)
+            if on:
+                self.ptt_key_tuples.append(self.slots[self.selected])
+            else:
+                self.dekeyed.set()
         else:
             raise AssertionError(f"Unexpected split-test CI-V request: {request!r}")
         reply = build_civ_frame(
@@ -281,6 +310,7 @@ class _VfoSlotFreqMode:
     freq: int = 14_074_000
     mode: Mode = Mode.USB
     filter_width: int | None = 1
+    data_mode: int = 0
 
 
 @dataclass(slots=True)
@@ -439,6 +469,10 @@ class SerialMockRadio:
         target.freq = slot.freq
         target.mode = slot.mode.name
         target.filter = slot.filter_width
+        target.data_mode = slot.data_mode
+        self._rx[receiver].data_mode = bool(slot.data_mode)
+        if receiver == 0:
+            self._data_mode = bool(slot.data_mode)
 
     def set_state_change_callback(self, callback: Any | None) -> None:
         self._state_change_callback = callback
@@ -492,6 +526,11 @@ class SerialMockRadio:
         if receiver == 0:
             self._state_cache.update_mode(parsed_mode.name, slot.filter_width)
 
+    async def set_mode_confirmed(
+        self, mode: Mode | str, *, filter_width: int | None = None
+    ) -> None:
+        await self.set_mode(mode, filter_width=filter_width)
+
     async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
         slot = self._active_slot_state(receiver, operation="get_mode")
         return slot.mode.name, slot.filter_width
@@ -507,6 +546,10 @@ class SerialMockRadio:
         mode_value = int(on) if isinstance(on, bool) else int(on)
         state = self._receiver_state(receiver, operation="set_data_mode")
         state.data_mode = bool(mode_value)
+        self._active_slot_state(
+            receiver, operation="set_data_mode"
+        ).data_mode = mode_value
+        self._sync_radio_state_from_rx(receiver)
         self._data_mode = bool(mode_value)
         if receiver == 0:
             self._state_cache.update_data_mode(bool(mode_value))
@@ -775,11 +818,6 @@ class SerialMockRadio:
             )
         return self._vfo_slot[receiver]
 
-    async def read_vfo_slot(self, receiver: int = 0) -> str:
-        """Read the stub's physical selection independently of cached mirrors."""
-        self._receiver_state(receiver, operation="read_vfo_slot")
-        return self._vfo_slot[receiver]
-
     async def set_vfo_slot(self, slot: str, receiver: int = 0) -> None:
         """Select A/B slot on ``receiver`` (``VfoSlotCapable`` mirror)."""
         normalized = slot.upper()
@@ -795,21 +833,14 @@ class SerialMockRadio:
         target.active_slot = normalized
         self._sync_radio_state_from_rx(receiver)
 
-    async def set_vfo_slot_confirmed(self, slot: str, receiver: int = 0) -> None:
-        """Confirmed select (``VfoSlotConfirmedCapable`` mirror).
-
-        No transport ACK exists on the stub, so this selects via
-        ``set_vfo_slot`` and confirms with a ``read_vfo_slot`` readback,
-        raising :class:`CommandError` on a mismatch — the same seam
-        confirmed-selection callers prefer on the Icom backend.
-        """
-        await self.set_vfo_slot(slot, receiver=receiver)
-        actual = await self.read_vfo_slot(receiver)
-        if actual != slot.strip().upper():
-            raise CommandError(
-                "VFO slot select not confirmed: requested "
-                f"{slot!r}, radio reports {actual!r}"
-            )
+    async def swap_vfo_ab(self, receiver: int = 0) -> None:
+        """Exchange contents while keeping the selected A/B identity."""
+        self._receiver_state(receiver, operation="swap_vfo_ab")
+        if self._profile.swap_ab_code is None:
+            raise CommandError("Profile declares no VFO A/B exchange")
+        slots = self._slots[receiver]
+        slots["A"], slots["B"] = slots["B"], slots["A"]
+        self._sync_radio_state_from_rx(receiver)
 
     async def read_relative_vfo(self, *, selected: bool) -> RelativeVfoState:
         """Selected/unselected tuple for receiver 0 without switching slots."""
@@ -820,7 +851,7 @@ class SerialMockRadio:
             freq_hz=slot.freq,
             mode=slot.mode.name,
             filter_num=slot.filter_width,
-            data_mode=int(self._rx[0].data_mode),
+            data_mode=slot.data_mode,
         )
 
     async def set_powerstat(self, on: bool) -> None:

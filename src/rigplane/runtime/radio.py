@@ -3103,9 +3103,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 resp = await self._send_civ_expect(civ, label="action")
                 ack = parse_ack_nak(resp)
                 if ack is False:
-                    raise CommandError(
+                    raise CommandRejectedError(
                         f"Radio rejected set_data_mode({on}, receiver={receiver})"
                     )
+                if ack is not True:
+                    raise CommandError("Invalid DATA mode acknowledgement")
 
             await self._run_with_receiver_vfo_fallback(
                 receiver=receiver,
@@ -3126,9 +3128,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         resp = await self._send_civ_expect(civ, label="action")
         ack = parse_ack_nak(resp)
         if ack is False:
-            raise CommandError(
+            raise CommandRejectedError(
                 f"Radio rejected set_data_mode({on}, receiver={receiver})"
             )
+        if ack is not True:
+            raise CommandError("Invalid DATA mode acknowledgement")
 
     def _parse_level(self, resp: "CivFrame") -> int:
         """Parse a level BCD response into an integer 0-255."""

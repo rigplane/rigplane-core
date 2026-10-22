@@ -1,31 +1,25 @@
-"""Rigctld split-TX frequency/mode commands (I/i/X/x, MOR-3115).
-
-Handler-level coverage for the surface that
-``tests/test_rigctld_wsjtx_split_mk2.py`` drives end to end on the wire:
-set/get of the split-TX frequency and mode on single-RX profiles via
-the VFO-slot dance, error paths, DEFER interlock outcomes (drop on
-known TX, refuse on unknown RF truth, dispatch only on known RX),
-restore-after-failure coverage, and the SerialMockRadio slot model the
-wire test runs against.
-"""
+"""Split writes exchange selected/unselected contents, then restore RX."""
 
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from typing import Protocol
-from unittest.mock import AsyncMock, MagicMock, call, create_autospec
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
 from serial_stub import SerialMockRadio
+from rigplane.core.command_service import (
+    CommandExecutionResult,
+    command_intent_from_request,
+)
 from rigplane.core.radio_protocol import (
     Radio,
+    ConfirmedModeCapable,
     RelativeVfoReadbackCapable,
     RelativeVfoState,
-    VfoSlotConfirmedCapable,
-    VfoSlotReadbackCapable,
+    VfoSlotCapable,
 )
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
@@ -33,92 +27,40 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
-from rigplane.exceptions import CommandError, CommandRejectedError
+from rigplane.exceptions import CommandRejectedError
 from rigplane.exceptions import TimeoutError as RigplaneTimeoutError
-from rigplane.rigctld.contract import (
-    HamlibError,
-    RigctldCommand,
-    RigctldConfig,
+from rigplane.rigctld.contract import HamlibError, RigctldCommand, RigctldConfig
+from rigplane.rigctld.handler import (
+    RigctldHandler,
+    _RigctldCommandExecutor,
+    _RigctldCommandFailure,
 )
-from rigplane.rigctld.handler import RigctldHandler
-from rigplane.runtime import tx_interlock
 
 
-def get_cmd(long_cmd: str, *args: str) -> RigctldCommand:
+def get_cmd(name: str, *, vfo_arg: str | None = None) -> RigctldCommand:
     return RigctldCommand(
-        short_cmd="", long_cmd=long_cmd, args=tuple(args), is_set=False
+        short_cmd="", long_cmd=name, args=(), is_set=False, vfo_arg=vfo_arg
     )
 
 
-def set_cmd(long_cmd: str, *args: str) -> RigctldCommand:
+def set_cmd(name: str, *args: str, vfo_arg: str | None = None) -> RigctldCommand:
     return RigctldCommand(
-        short_cmd="", long_cmd=long_cmd, args=tuple(args), is_set=True
-    )
-
-
-def vfo_get_cmd(long_cmd: str, vfo_arg: str | None, *args: str) -> RigctldCommand:
-    return RigctldCommand(
-        short_cmd="",
-        long_cmd=long_cmd,
-        args=tuple(args),
-        is_set=False,
-        vfo_arg=vfo_arg,
-    )
-
-
-def vfo_set_cmd(long_cmd: str, vfo_arg: str | None, *args: str) -> RigctldCommand:
-    return RigctldCommand(
-        short_cmd="",
-        long_cmd=long_cmd,
-        args=tuple(args),
-        is_set=True,
-        vfo_arg=vfo_arg,
+        short_cmd="", long_cmd=name, args=args, is_set=True, vfo_arg=vfo_arg
     )
 
 
 class _FakeProfile:
-    """Minimal stand-in for ``rigplane.profiles.RadioProfile``."""
-
-    def __init__(self, *, receiver_count: int, vfo_scheme: str) -> None:
+    def __init__(self, receiver_count: int = 1) -> None:
         self.model = "IC-7300" if receiver_count == 1 else "IC-7610"
         self.receiver_count = receiver_count
-        self.vfo_scheme = vfo_scheme
+        self.vfo_scheme = "ab" if receiver_count == 1 else "main_sub"
+        self.swap_ab_code = 0xB0
 
 
 class _SplitTxRadioSpec(
-    Radio, VfoSlotReadbackCapable, RelativeVfoReadbackCapable, Protocol
+    Radio, VfoSlotCapable, RelativeVfoReadbackCapable, ConfirmedModeCapable, Protocol
 ):
-    """Spec for the split-TX handler stand-ins.
-
-    The real Protocols the dance drives (core setters, slot
-    select/readback, relative readback), deliberately without
-    ``VfoSlotConfirmedCapable`` and ``RigctldRoutable``: ``getattr`` sees
-    their absence, so no attribute deletion is needed to model a radio
-    without the ACK-confirmed seam. Confirmed-seam tests assign
-    ``set_vfo_slot_confirmed`` explicitly (allowed with ``spec=``).
-    """
-
     profile: _FakeProfile
-
-
-def _mock_radio(*, receiver_count: int, vfo_scheme: str) -> AsyncMock:
-    # Spec'd stand-in for a radio without the ACK-confirmed seam: the
-    # spec lacks set_vfo_slot_confirmed (and rigctld_routing), so the
-    # dance falls back to select-plus-readback here (confirmed-path
-    # tests assign the seam explicitly).
-    radio = AsyncMock(spec=_SplitTxRadioSpec)
-    radio.profile = _FakeProfile(receiver_count=receiver_count, vfo_scheme=vfo_scheme)
-    radio.read_vfo_slot.return_value = "A"
-    radio.get_vfo_slot.return_value = "A"
-
-    async def _select_slot(slot: str, receiver: int = 0) -> None:
-        # Track the selected slot like a radio would, so the post-select
-        # readback confirms the switch.
-        radio.read_vfo_slot.return_value = str(slot).upper()
-        radio.get_vfo_slot.return_value = str(slot).upper()
-
-    radio.set_vfo_slot.side_effect = _select_slot
-    return radio
 
 
 @pytest.fixture
@@ -127,25 +69,178 @@ def config() -> RigctldConfig:
 
 
 @pytest.fixture
-def single_rx_radio() -> AsyncMock:
-    return _mock_radio(receiver_count=1, vfo_scheme="ab")
+def radio() -> AsyncMock:
+    result = AsyncMock(spec=_SplitTxRadioSpec)
+    result.profile = _FakeProfile()
+    result.read_relative_vfo.return_value = RelativeVfoState(7_076_000, "LSB", 3, 0)
+    return result
 
 
 @pytest.fixture
-def single_rx_handler(
-    single_rx_radio: AsyncMock, config: RigctldConfig
-) -> RigctldHandler:
-    return RigctldHandler(single_rx_radio, config)
+def handler(radio: AsyncMock, config: RigctldConfig) -> RigctldHandler:
+    return RigctldHandler(radio, config)
 
 
-@pytest.fixture
-def dual_rx_radio() -> AsyncMock:
-    return _mock_radio(receiver_count=2, vfo_scheme="main_sub")
+_WRITES = [
+    ("set_split_freq", ("14080100",)),
+    ("set_split_mode", ("RTTY", "1800")),
+]
 
 
-@pytest.fixture
-def dual_rx_handler(dual_rx_radio: AsyncMock, config: RigctldConfig) -> RigctldHandler:
-    return RigctldHandler(dual_rx_radio, config)
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("name", "args"), _WRITES)
+async def test_split_exchange_write_restore_without_identity(
+    handler, radio, name, args
+):
+    parent = MagicMock(spec=["swap", "freq", "mode"])
+    parent.attach_mock(radio.swap_vfo_ab, "swap")
+    parent.attach_mock(radio.set_freq, "freq")
+    parent.attach_mock(radio.set_mode_confirmed, "mode")
+    assert (await handler.execute(set_cmd(name, *args))).ok
+    payload = (
+        call.freq(14_080_100, receiver=0)
+        if name == "set_split_freq"
+        else call.mode("RTTY", filter_width=3)
+    )
+    assert parent.mock_calls == [call.swap(), payload, call.swap()]
+    radio.get_vfo_slot.assert_not_awaited()
+    radio.set_vfo_slot.assert_not_awaited()
+    assert not handler._command_service.pending_overlays(
+        source="rigctld", session_id=None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("name", "args"), _WRITES)
+async def test_split_missing_exchange_capability_refuses(handler, radio, name, args):
+    radio.profile.swap_ab_code = None
+    response = await handler.execute(set_cmd(name, *args))
+    assert response.error is HamlibError.ENAVAIL
+    radio.swap_vfo_ab.assert_not_awaited()
+    radio.set_freq.assert_not_awaited()
+    radio.set_mode_confirmed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("name", "args"), _WRITES)
+async def test_split_initial_exchange_nak_never_swaps_back(handler, radio, name, args):
+    radio.swap_vfo_ab.side_effect = CommandRejectedError("exchange rejected")
+    assert (await handler.execute(set_cmd(name, *args))).error is HamlibError.ERJCTED
+    radio.swap_vfo_ab.assert_awaited_once_with()
+    radio.set_freq.assert_not_awaited()
+    radio.set_mode_confirmed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_split_unknown_initial_exchange_attempts_restore(handler, radio):
+    radio.swap_vfo_ab.side_effect = [RigplaneTimeoutError("ACK lost"), None]
+    response = await handler.execute(set_cmd("set_split_freq", "14080100"))
+    assert response.error is HamlibError.ETIMEOUT
+    assert radio.swap_vfo_ab.await_count == 2
+    radio.set_freq.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("name", "args"), _WRITES)
+async def test_split_restore_failure_never_publishes_success(
+    handler, radio, name, args
+):
+    radio.swap_vfo_ab.side_effect = [None, CommandRejectedError("restore rejected")]
+    assert (await handler.execute(set_cmd(name, *args))).error is HamlibError.ERJCTED
+    assert radio.swap_vfo_ab.await_count == 2
+    assert not handler._command_service.pending_overlays(
+        source="rigctld", session_id=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_split_payload_error_wins_over_restore_error(handler, radio):
+    radio.set_freq.side_effect = RigplaneTimeoutError("payload lost")
+    radio.swap_vfo_ab.side_effect = [None, CommandRejectedError("restore rejected")]
+    response = await handler.execute(set_cmd("set_split_freq", "14080100"))
+    assert response.error is HamlibError.ETIMEOUT
+    assert radio.swap_vfo_ab.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["exchange", "payload", "restore"])
+async def test_split_cancellation_joins_exchange_and_restore(handler, radio, phase):
+    entered, release = asyncio.Event(), asyncio.Event()
+    swaps = 0
+
+    async def swap():
+        nonlocal swaps
+        swaps += 1
+        if (phase == "exchange" and swaps == 1) or (phase == "restore" and swaps == 2):
+            entered.set()
+            await release.wait()
+
+    async def payload(freq, receiver=0):
+        if phase == "payload":
+            entered.set()
+            await release.wait()
+
+    radio.swap_vfo_ab.side_effect = swap
+    radio.set_freq.side_effect = payload
+    task = asyncio.create_task(handler.execute(set_cmd("set_split_freq", "14080100")))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        if phase != "payload":
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(task), 0.02)
+            task.cancel()
+            assert handler._vfo_slot_lock.locked()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert swaps == 2
+        if phase == "exchange":
+            radio.set_freq.assert_not_awaited()
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["abc", "nan", "inf", "-inf", "1e999"])
+async def test_split_nonfinite_frequency_is_einval_without_radio(handler, radio, value):
+    response = await handler.execute(set_cmd("set_split_freq", value))
+    assert response.error is HamlibError.EINVAL
+    radio.swap_vfo_ab.assert_not_awaited()
+    radio.set_freq.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args", [(), ("ZZZ",), ("USB", "wide")])
+async def test_split_invalid_mode_is_einval(handler, radio, args):
+    assert (
+        await handler.execute(set_cmd("set_split_mode", *args))
+    ).error is HamlibError.EINVAL
+    radio.swap_vfo_ab.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args", [("USB",), ("USB", "0")])
+async def test_split_omitted_filter_uses_actual_tx_filter(handler, radio, args):
+    assert (await handler.execute(set_cmd("set_split_mode", *args))).ok
+    radio.read_relative_vfo.assert_awaited_once_with(selected=True)
+    radio.set_mode_confirmed.assert_awaited_once_with("USB", filter_width=3)
+
+
+@pytest.mark.asyncio
+async def test_split_packet_data_failure_restores_and_rejects(handler, radio):
+    radio.set_data_mode.side_effect = CommandRejectedError("DATA rejected")
+    response = await handler.execute(set_cmd("set_split_mode", "PKTUSB", "2400"))
+    assert response.error is HamlibError.ERJCTED
+    radio.set_mode_confirmed.assert_awaited_once_with("USB", filter_width=2)
+    radio.set_data_mode.assert_awaited_once_with(True)
+    assert radio.swap_vfo_ab.await_count == 2
+    assert not handler._command_service.pending_overlays(
+        source="rigctld", session_id=None
+    )
 
 
 def _seed(store: StateStore, path: FieldPath, value: object) -> None:
@@ -155,1282 +250,288 @@ def _seed(store: StateStore, path: FieldPath, value: object) -> None:
             value=value,
             source=SourceMetadata(source="test", provider="tests"),
             timestamp_monotonic=time.monotonic(),
-            max_age=60.0,
+            max_age=60,
         )
     )
 
 
-def _store_of(handler: RigctldHandler) -> StateStore:
-    return handler._state_store  # noqa: SLF001
-
-
-_SET_CASES = [
-    ("set_split_freq", ("14080100",)),
-    ("set_split_mode", ("USB", "0")),
-]
-
-
-# -- set_split_freq ------------------------------------------------------
-
-
 @pytest.mark.asyncio
-async def test_set_split_freq_dances_b_write_a(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    single_rx_radio.read_vfo_slot.return_value = "A"
-    parent = MagicMock(spec=["slot", "freq", "mode", "data"])
-    parent.attach_mock(single_rx_radio.set_vfo_slot, "slot")
-    parent.attach_mock(single_rx_radio.set_freq, "freq")
-
-    resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
-
-    assert resp.ok
-    assert parent.mock_calls == [
-        call.slot("B"),
-        call.freq(14080100, receiver=0),
-        call.slot("A"),
-    ]
-    assert single_rx_handler._command_service.lifecycle_events()[-1].state == (  # noqa: SLF001
-        "acknowledged"
-    )
-
-
-@pytest.mark.asyncio
-async def test_set_split_freq_restores_b_when_b_selected(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    single_rx_radio.read_vfo_slot.return_value = "B"
-    parent = MagicMock(spec=["slot", "freq", "mode", "data"])
-    parent.attach_mock(single_rx_radio.set_vfo_slot, "slot")
-    parent.attach_mock(single_rx_radio.set_freq, "freq")
-
-    resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
-
-    assert resp.ok
-    assert parent.mock_calls == [
-        call.slot("A"),
-        call.freq(14080100, receiver=0),
-        call.slot("B"),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_set_split_freq_aborts_when_slot_unverifiable(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    # Projected B cannot prove the physical slot, so no select is safe.
-    del single_rx_radio.read_vfo_slot
-    single_rx_radio.set_vfo_slot.side_effect = None  # drop slot tracking
-    _seed(
-        _store_of(single_rx_handler),
-        FieldPath.active_slot("main"),
-        "B",
-    )
-
-    resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
-
-    assert resp.error is HamlibError.EIO
-    single_rx_radio.set_freq.assert_not_awaited()
-    single_rx_radio.set_vfo_slot.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_set_split_freq_restores_slot_after_failed_write(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    single_rx_radio.read_vfo_slot.return_value = "A"
-    single_rx_radio.set_freq.side_effect = CommandRejectedError("radio refused")
-
-    resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
-
-    assert resp.error is HamlibError.ERJCTED
-    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
-
-
-@pytest.mark.asyncio
-async def test_set_split_freq_restores_slot_when_first_switch_raises(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    # An ambiguous first-switch failure (ACK timeout / NAK after
-    # landing) may have switched the radio anyway: the restore is
-    # still attempted, the write never runs, and the original error
-    # reaches the client.
-    single_rx_radio.read_vfo_slot.return_value = "A"
-    single_rx_radio.set_vfo_slot.side_effect = [
-        CommandRejectedError("ambiguous NAK after landing"),
-        None,
-    ]
-
-    resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
-
-    assert resp.error is HamlibError.ERJCTED
-    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
-    single_rx_radio.set_freq.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_set_split_freq_restore_failure_does_not_replace_write_error(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    # Best-effort restore: when both the write and the restore fail,
-    # the client sees the write's error (ETIMEOUT), not the restore's.
-    # The custom select script replaces the fixture's slot tracking, so
-    # the readback is driven explicitly (previous, post-select).
-    single_rx_radio.read_vfo_slot.side_effect = ["A", "B"]
-    single_rx_radio.set_vfo_slot.side_effect = [
-        None,
-        CommandRejectedError("restore refused"),
-    ]
-    single_rx_radio.set_freq.side_effect = RigplaneTimeoutError("write lost")
-
-    resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
-
-    assert resp.error is HamlibError.ETIMEOUT
-    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
-
-
-@pytest.mark.asyncio
-async def test_set_split_freq_restore_rejection_fails_without_overlay(
-    single_rx_handler: RigctldHandler,
-    single_rx_radio: AsyncMock,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    # The custom select script replaces the fixture's slot tracking, so
-    # the readback is driven explicitly (previous, post-select).
-    single_rx_radio.read_vfo_slot.side_effect = ["A", "B"]
-    single_rx_radio.set_vfo_slot.side_effect = [
-        None,
-        CommandRejectedError("restore refused"),
-    ]
-    caplog.set_level(logging.ERROR, logger="rigplane.rigctld.handler")
-
-    resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
-
-    assert resp.error is HamlibError.ERJCTED
-    assert not single_rx_handler._command_service.pending_overlays(
-        source="rigctld", session_id=None
-    )
-    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
-    assert any("restoring VFO slot" in record.getMessage() for record in caplog.records)
-
-
-@pytest.mark.asyncio
-async def test_set_split_freq_aborts_when_select_lost(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    # The select-B command is lost: the switch reports success but the
-    # readback still shows A. The write must not run (it would retune
-    # the RX VFO), the restore is still attempted, and the client sees
-    # EIO rather than success.
-    single_rx_radio.read_vfo_slot.side_effect = ["A", "A", "A"]
-    single_rx_radio.set_vfo_slot.side_effect = None  # drop slot tracking
-
-    resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
-
-    assert resp.error is HamlibError.EIO
-    single_rx_radio.set_freq.assert_not_awaited()
-    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
-
-
-@pytest.mark.asyncio
-async def test_set_split_freq_restore_mismatch_fails_without_overlay(
-    single_rx_handler: RigctldHandler,
-    single_rx_radio: AsyncMock,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    # A landed payload is insufficient when the RX slot was not restored.
-    single_rx_radio.read_vfo_slot.side_effect = ["A", "B", "B"]
-    single_rx_radio.set_vfo_slot.side_effect = None  # drop slot tracking
-    caplog.set_level(logging.WARNING, logger="rigplane.rigctld.handler")
-
-    resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
-
-    assert resp.error is HamlibError.EIO
-    assert not single_rx_handler._command_service.pending_overlays(
-        source="rigctld", session_id=None
-    )
-    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
-    assert any("unconfirmed" in record.getMessage() for record in caplog.records)
-
-
-@pytest.mark.asyncio
-async def test_set_split_freq_confirmed_seam_dances_without_readback(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    # A radio with the ACK-confirmed seam (Icom): the dance trusts the
-    # seam for select and restore, needs no readback, and behaves as
-    # before — select, write, restore, success.
-    single_rx_radio.set_vfo_slot_confirmed = create_autospec(
-        VfoSlotConfirmedCapable, instance=True
-    ).set_vfo_slot_confirmed
-    single_rx_radio.read_vfo_slot.return_value = "A"
-    parent = MagicMock(spec=["slot", "freq", "mode", "data"])
-    parent.attach_mock(single_rx_radio.set_vfo_slot_confirmed, "slot")
-    parent.attach_mock(single_rx_radio.set_freq, "freq")
-
-    resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
-
-    assert resp.ok
-    assert parent.mock_calls == [
-        call.slot("B"),
-        call.freq(14080100, receiver=0),
-        call.slot("A"),
-    ]
-    single_rx_radio.set_vfo_slot_confirmed.assert_has_awaits([call("B"), call("A")])
-    single_rx_radio.set_vfo_slot.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_set_split_freq_confirmed_seam_reject_aborts_write(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    # The radio rejects the confirmed select: no write runs, the
-    # restore is still attempted, and the refusal reaches the client.
-    single_rx_radio.read_vfo_slot.return_value = "A"
-    single_rx_radio.set_vfo_slot_confirmed = create_autospec(
-        VfoSlotConfirmedCapable, instance=True
-    ).set_vfo_slot_confirmed
-    single_rx_radio.set_vfo_slot_confirmed.side_effect = [
-        CommandRejectedError("radio refused"),
-        None,
-    ]
-
-    resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
-
-    assert resp.error is HamlibError.ERJCTED
-    single_rx_radio.set_freq.assert_not_awaited()
-    single_rx_radio.set_vfo_slot_confirmed.assert_has_awaits([call("B"), call("A")])
-    single_rx_radio.set_vfo_slot.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_set_split_freq_cancel_mid_dance_still_restores_slot(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    # A command-timeout cancellation landing mid-dance (the server
-    # cancels the handler task on command_timeout) still runs the
-    # shielded restore before the cancellation propagates.
-    single_rx_radio.read_vfo_slot.return_value = "A"
-    entered = asyncio.Event()
-    release = asyncio.Event()
-
-    async def _slow_write(freq_hz: int, receiver: int = 0) -> None:
-        entered.set()
-        await release.wait()
-
-    single_rx_radio.set_freq.side_effect = _slow_write
-    task = asyncio.create_task(
-        single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
-    )
-    await asyncio.wait_for(entered.wait(), timeout=2.0)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
-
-
-@pytest.mark.asyncio
-async def test_split_dance_serializes_against_concurrent_set_vfo(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    # Two clients on one handler (the server shares the instance across
-    # connections): a V issued mid-dance waits for the restore, so the
-    # radio sees select-B, restore-A, then the V — never the V between.
-    single_rx_radio.read_vfo_slot.return_value = "A"
-    entered = asyncio.Event()
-    release = asyncio.Event()
-
-    async def _slow_write(freq_hz: int, receiver: int = 0) -> None:
-        entered.set()
-        await release.wait()
-
-    single_rx_radio.set_freq.side_effect = _slow_write
-    dance = asyncio.create_task(
-        single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
-    )
-    await asyncio.wait_for(entered.wait(), timeout=2.0)
-    vfo = asyncio.create_task(single_rx_handler.execute(set_cmd("set_vfo", "VFOB")))
-    await asyncio.sleep(0.05)
-    assert single_rx_radio.set_vfo_slot.await_count == 1
-    release.set()
-    assert (await dance).ok
-    assert (await vfo).ok
-    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A"), call("B")])
-
-
-@pytest.mark.asyncio
-async def test_split_dance_serializes_against_concurrent_set_freq(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    # Two clients on one handler: client 2's F issued mid-dance waits
-    # for the restore, so its write lands on the restored selected
-    # slot (A) — never on the dance's slot B, and the caller's RX
-    # write is not lost.
-    single_rx_radio.read_vfo_slot.return_value = "A"
-    entered = asyncio.Event()
-    release = asyncio.Event()
-
-    async def _slow_write(freq_hz: int, receiver: int = 0) -> None:
-        entered.set()
-        await release.wait()
-
-    single_rx_radio.set_freq.side_effect = _slow_write
-    parent = MagicMock(spec=["slot", "freq", "mode", "data"])
-    parent.attach_mock(single_rx_radio.set_vfo_slot, "slot")
-    parent.attach_mock(single_rx_radio.set_freq, "freq")
-    dance = asyncio.create_task(
-        single_rx_handler.execute(
-            set_cmd("set_split_freq", "14080100"), session_id="client-1"
-        )
-    )
-    await asyncio.wait_for(entered.wait(), timeout=2.0)
-    freq = asyncio.create_task(
-        single_rx_handler.execute(
-            set_cmd("set_freq", "14250000"), session_id="client-2"
-        )
-    )
-    await asyncio.sleep(0.05)
-    assert single_rx_radio.set_vfo_slot.await_count == 1
-    assert single_rx_radio.set_freq.await_count == 1
-    release.set()
-    assert (await dance).ok
-    assert (await freq).ok
-    assert parent.mock_calls == [
-        call.slot("B"),
-        call.freq(14080100, receiver=0),
-        call.slot("A"),
-        call.freq(14250000, receiver=0),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_split_freq_then_main_freq_same_client_does_not_deadlock(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    # Sequential I then F from one client: the dance releases the slot
-    # lock, so the F that follows is never stuck behind it. The
-    # wait_for turns a hang into a failure instead of a stuck suite.
-    single_rx_radio.read_vfo_slot.return_value = "A"
-    parent = MagicMock(spec=["slot", "freq", "mode", "data"])
-    parent.attach_mock(single_rx_radio.set_vfo_slot, "slot")
-    parent.attach_mock(single_rx_radio.set_freq, "freq")
-
-    async def _run_both() -> None:
-        resp_split = await single_rx_handler.execute(
-            set_cmd("set_split_freq", "14080100"), session_id="client-1"
-        )
-        assert resp_split.ok
-        resp_main = await single_rx_handler.execute(
-            set_cmd("set_freq", "14250000"), session_id="client-1"
-        )
-        assert resp_main.ok
-
-    await asyncio.wait_for(_run_both(), timeout=5.0)
-    assert parent.mock_calls == [
-        call.slot("B"),
-        call.freq(14080100, receiver=0),
-        call.slot("A"),
-        call.freq(14250000, receiver=0),
-    ]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("args", [(), ("abc",)], ids=["no-arg", "not-a-number"])
-async def test_set_split_freq_einval(
-    single_rx_handler: RigctldHandler,
-    single_rx_radio: AsyncMock,
-    args: tuple[str, ...],
-) -> None:
-    resp = await single_rx_handler.execute(set_cmd("set_split_freq", *args))
-
-    assert resp.error is HamlibError.EINVAL
-    single_rx_radio.set_vfo_slot.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_set_split_freq_enavail_without_slot_switching(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    del single_rx_radio.set_vfo_slot
-
-    resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
-
-    assert resp.error is HamlibError.ENAVAIL
-    single_rx_radio.set_freq.assert_not_awaited()
-
-
-def _canonical_split_setup(
-    config: RigctldConfig, *, ptt: bool | None
-) -> tuple[RigctldHandler, AsyncMock]:
-    """Single-RX handler with a canonical store seeded to one RF truth.
-
-    The plain fixtures deliberately use the handler's non-canonical
-    fallback store, where the defer gate never fires; DEFER outcomes
-    need an injected canonical store (as in
-    test_rigctld_tx_interlock.py). The premise of each case is asserted
-    first so a broken seed cannot pass vacuously.
-    """
+@pytest.mark.parametrize(("name", "args"), _WRITES)
+@pytest.mark.parametrize("ptt", [True, False, None])
+async def test_split_interlock_gate(config, radio, name, args, ptt):
     store = StateStore()
     if ptt is not None:
         _seed(store, FieldPath.global_("tx_state", "ptt"), ptt)
-    radio = _mock_radio(receiver_count=1, vfo_scheme="ab")
     handler = RigctldHandler(radio, config, state_store=store)
-    expected = {
-        False: tx_interlock.RfState.RX,
-        True: tx_interlock.RfState.TX,
-        None: tx_interlock.RfState.UNKNOWN,
-    }[ptt]
-    assert handler._resolve_rigctld_rf_state() is expected  # noqa: SLF001
-    return handler, radio
+    response = await handler.execute(set_cmd(name, *args))
+    if ptt is None:
+        assert response.error is HamlibError.ERJCTED
+    else:
+        assert response.ok
+    assert radio.swap_vfo_ab.await_count == (2 if ptt is False else 0)
 
 
 @pytest.mark.asyncio
-async def test_set_split_freq_dropped_while_transmitting(
-    config: RigctldConfig,
-) -> None:
-    # DEFER, exactly like the other DEFER writes (S/U SPLIT): known TX
-    # answers RPRT 0 with the radio untouched — never even the slot
-    # read, since the gate fires before the intent executes.
-    handler, radio = _canonical_split_setup(config, ptt=True)
-
-    resp = await handler.execute(set_cmd("set_split_freq", "14080100"))
-
-    assert resp.ok
-    radio.set_freq.assert_not_awaited()
-    radio.set_vfo_slot.assert_not_awaited()
-    radio.read_vfo_slot.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_set_split_freq_rejected_on_unknown_rf_truth(
-    config: RigctldConfig,
-) -> None:
-    handler, radio = _canonical_split_setup(config, ptt=None)
-
-    resp = await handler.execute(set_cmd("set_split_freq", "14080100"))
-
-    assert resp.error is HamlibError.ERJCTED
-    radio.set_freq.assert_not_awaited()
-    radio.set_vfo_slot.assert_not_awaited()
-    radio.read_vfo_slot.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_set_split_freq_dispatches_in_known_rx(
-    config: RigctldConfig,
-) -> None:
-    handler, radio = _canonical_split_setup(config, ptt=False)
-    radio.read_vfo_slot.return_value = "A"
-
-    resp = await handler.execute(set_cmd("set_split_freq", "14080100"))
-
-    assert resp.ok
-    radio.set_freq.assert_awaited_once_with(14080100, receiver=0)
-    radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
-
-
-@pytest.mark.asyncio
-async def test_set_split_freq_overlay_answers_get_without_readback(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    del single_rx_radio.read_relative_vfo
-    single_rx_radio.read_vfo_slot.return_value = "A"
-
-    set_resp = await single_rx_handler.execute(set_cmd("set_split_freq", "14080100"))
-    assert set_resp.ok
-    get_resp = await single_rx_handler.execute(get_cmd("get_split_freq"))
-
-    assert get_resp.values == ["14080100"]
-
-
-# -- set_split_mode ------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_set_split_mode_dances_and_maps_passband(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    single_rx_radio.read_vfo_slot.return_value = "A"
-    parent = MagicMock(spec=["slot", "freq", "mode", "data"])
-    parent.attach_mock(single_rx_radio.set_vfo_slot, "slot")
-    parent.attach_mock(single_rx_radio.set_mode, "mode")
-
-    resp = await single_rx_handler.execute(set_cmd("set_split_mode", "USB", "2400"))
-
-    assert resp.ok
-    assert parent.mock_calls == [
-        call.slot("B"),
-        call.mode("USB", filter_width=2),
-        call.slot("A"),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_set_split_mode_without_passband_keeps_filter_none(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    single_rx_radio.read_vfo_slot.return_value = "A"
-
-    resp = await single_rx_handler.execute(set_cmd("set_split_mode", "LSB"))
-
-    assert resp.ok
-    single_rx_radio.set_mode.assert_awaited_once_with("LSB", filter_width=None)
-
-
-@pytest.mark.asyncio
-async def test_set_split_mode_packet_applies_data_on_tx_slot(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    single_rx_radio.read_vfo_slot.return_value = "A"
-    parent = MagicMock(spec=["slot", "freq", "mode", "data"])
-    parent.attach_mock(single_rx_radio.set_vfo_slot, "slot")
-    parent.attach_mock(single_rx_radio.set_mode, "mode")
-    parent.attach_mock(single_rx_radio.set_data_mode, "data")
-
-    resp = await single_rx_handler.execute(set_cmd("set_split_mode", "PKTUSB", "0"))
-
-    assert resp.ok
-    assert parent.mock_calls == [
-        call.slot("B"),
-        call.mode("USB", filter_width=None),
-        call.data(True),
-        call.slot("A"),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_set_split_mode_restores_slot_after_failed_write(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    single_rx_radio.read_vfo_slot.return_value = "A"
-    single_rx_radio.set_mode.side_effect = CommandRejectedError("radio refused")
-
-    resp = await single_rx_handler.execute(set_cmd("set_split_mode", "USB", "0"))
-
-    assert resp.error is HamlibError.ERJCTED
-    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
+@pytest.mark.parametrize(("name", "args"), _WRITES)
+@pytest.mark.parametrize("vfo", [None, "VFOB", "VFOC"])
+async def test_split_write_vfo_prefix(handler, radio, name, args, vfo):
+    response = await handler.execute(set_cmd(name, *args, vfo_arg=vfo))
+    if vfo == "VFOC":
+        assert response.error is HamlibError.EVFO
+    else:
+        assert response.ok
+    assert radio.swap_vfo_ab.await_count == (0 if vfo == "VFOC" else 2)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "args",
-    [(), ("ZZZ",), ("USB", "wide")],
-    ids=["no-arg", "bad-mode", "bad-passband"],
+    ("name", "args"), _WRITES + [("get_split_freq", ()), ("get_split_mode", ())]
 )
-async def test_set_split_mode_einval(
-    single_rx_handler: RigctldHandler,
-    single_rx_radio: AsyncMock,
-    args: tuple[str, ...],
-) -> None:
-    resp = await single_rx_handler.execute(set_cmd("set_split_mode", *args))
-
-    assert resp.error is HamlibError.EINVAL
-    single_rx_radio.set_vfo_slot.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_set_split_mode_dropped_while_transmitting(
-    config: RigctldConfig,
-) -> None:
-    # DEFER, exactly like the other DEFER writes (S/U SPLIT): known TX
-    # answers RPRT 0 with the radio untouched.
-    handler, radio = _canonical_split_setup(config, ptt=True)
-
-    resp = await handler.execute(set_cmd("set_split_mode", "USB", "0"))
-
-    assert resp.ok
-    radio.set_mode.assert_not_awaited()
-    radio.set_vfo_slot.assert_not_awaited()
-    radio.read_vfo_slot.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_set_split_mode_rejected_on_unknown_rf_truth(
-    config: RigctldConfig,
-) -> None:
-    handler, radio = _canonical_split_setup(config, ptt=None)
-
-    resp = await handler.execute(set_cmd("set_split_mode", "USB", "0"))
-
-    assert resp.error is HamlibError.ERJCTED
-    radio.set_mode.assert_not_awaited()
-    radio.set_vfo_slot.assert_not_awaited()
-    radio.read_vfo_slot.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_set_split_mode_dispatches_in_known_rx(
-    config: RigctldConfig,
-) -> None:
-    handler, radio = _canonical_split_setup(config, ptt=False)
-    radio.read_vfo_slot.return_value = "A"
-
-    resp = await handler.execute(set_cmd("set_split_mode", "USB", "0"))
-
-    assert resp.ok
-    radio.set_mode.assert_awaited_once_with("USB", filter_width=None)
-    radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
-
-
-# -- split writes share the interlock gate -------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("long_cmd", "args"), _SET_CASES)
-async def test_set_split_passes_through_defer_gate(
-    single_rx_handler: RigctldHandler,
-    single_rx_radio: AsyncMock,
-    monkeypatch: pytest.MonkeyPatch,
-    long_cmd: str,
-    args: tuple[str, ...],
-) -> None:
-    seen: list[str] = []
-    real_gate = single_rx_handler._defer_write_gate  # noqa: SLF001
-
-    def _spy(intent) -> object:
-        seen.append(intent.name)
-        return real_gate(intent)
-
-    monkeypatch.setattr(single_rx_handler, "_defer_write_gate", _spy)
-    single_rx_radio.read_vfo_slot.return_value = "A"
-
-    resp = await single_rx_handler.execute(set_cmd(long_cmd, *args))
-
-    assert resp.ok
-    assert seen == [long_cmd]
-
-
-# -- VFO prefix + profile gates (both sets, both gets) --------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("long_cmd", "args"), _SET_CASES)
-async def test_set_split_accepts_vfob_prefix_on_single_rx(
-    single_rx_handler: RigctldHandler,
-    single_rx_radio: AsyncMock,
-    long_cmd: str,
-    args: tuple[str, ...],
-) -> None:
-    single_rx_radio.read_vfo_slot.return_value = "A"
-
-    resp = await single_rx_handler.execute(vfo_set_cmd(long_cmd, "VFOB", *args))
-
-    assert resp.ok
-    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("long_cmd", "args"), _SET_CASES)
-async def test_set_split_unknown_vfo_is_evfo(
-    single_rx_handler: RigctldHandler,
-    single_rx_radio: AsyncMock,
-    long_cmd: str,
-    args: tuple[str, ...],
-) -> None:
-    resp = await single_rx_handler.execute(vfo_set_cmd(long_cmd, "VFOC", *args))
-
-    assert resp.error is HamlibError.EVFO
-    single_rx_radio.set_vfo_slot.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("long_cmd", "args"), _SET_CASES)
-async def test_set_split_dual_rx_is_enimpl(
-    dual_rx_handler: RigctldHandler,
-    dual_rx_radio: AsyncMock,
-    long_cmd: str,
-    args: tuple[str, ...],
-) -> None:
-    resp = await dual_rx_handler.execute(set_cmd(long_cmd, *args))
-
-    assert resp.error is HamlibError.ENIMPL
-    dual_rx_radio.set_vfo_slot.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("long_cmd", "expected"),
-    [("get_split_freq", ["14080100"]), ("get_split_mode", ["USB", "3000"])],
-)
-async def test_get_split_accepts_vfob_prefix_on_single_rx(
-    single_rx_handler: RigctldHandler,
-    single_rx_radio: AsyncMock,
-    long_cmd: str,
-    expected: list[str],
-) -> None:
-    single_rx_radio.read_relative_vfo.return_value = RelativeVfoState(
-        freq_hz=14080100, mode="USB", filter_num=1, data_mode=0
-    )
-
-    resp = await single_rx_handler.execute(vfo_get_cmd(long_cmd, "VFOB"))
-
-    assert resp.values == expected
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("long_cmd", ["get_split_freq", "get_split_mode"])
-async def test_get_split_unknown_vfo_is_evfo(
-    single_rx_handler: RigctldHandler,
-    single_rx_radio: AsyncMock,
-    long_cmd: str,
-) -> None:
-    resp = await single_rx_handler.execute(vfo_get_cmd(long_cmd, "VFOC"))
-
-    assert resp.error is HamlibError.EVFO
-    single_rx_radio.read_relative_vfo.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("long_cmd", ["get_split_freq", "get_split_mode"])
-async def test_get_split_dual_rx_is_enimpl(
-    dual_rx_handler: RigctldHandler,
-    dual_rx_radio: AsyncMock,
-    long_cmd: str,
-) -> None:
-    resp = await dual_rx_handler.execute(get_cmd(long_cmd))
-
-    assert resp.error is HamlibError.ENIMPL
-    dual_rx_radio.read_relative_vfo.assert_not_awaited()
-
-
-# -- get_split_freq ------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("receiver_id", ["main", "0"], ids=["main", "legacy-0"])
-async def test_get_split_freq_reads_physical_slot_store(
-    single_rx_handler: RigctldHandler,
-    single_rx_radio: AsyncMock,
-    receiver_id: str,
-) -> None:
-    _seed(
-        _store_of(single_rx_handler),
-        FieldPath.vfo_slot(receiver_id, "B", "freq_mode", "freq_hz"),
-        14080100,
-    )
-
-    resp = await single_rx_handler.execute(get_cmd("get_split_freq"))
-
-    assert resp.values == ["14080100"]
-    single_rx_radio.read_relative_vfo.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_get_split_freq_ignores_active_slot_store_field(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    # The bare receiver field carries active-slot state; it must never
-    # answer a split-TX read, which falls through to the live readback.
-    _seed(
-        _store_of(single_rx_handler),
-        FieldPath.receiver("0", "freq_mode", "freq_hz"),
-        14074000,
-    )
-    single_rx_radio.read_relative_vfo.return_value = RelativeVfoState(
-        freq_hz=14080100, mode="USB", filter_num=1, data_mode=0
-    )
-
-    resp = await single_rx_handler.execute(get_cmd("get_split_freq"))
-
-    assert resp.values == ["14080100"]
-
-
-@pytest.mark.asyncio
-async def test_get_split_freq_falls_back_to_relative_readback(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    single_rx_radio.read_relative_vfo.return_value = RelativeVfoState(
-        freq_hz=14080100, mode="USB", filter_num=1, data_mode=0
-    )
-
-    resp = await single_rx_handler.execute(get_cmd("get_split_freq"))
-
-    assert resp.values == ["14080100"]
-    single_rx_radio.read_relative_vfo.assert_awaited_once_with(selected=False)
-
-
-@pytest.mark.asyncio
-async def test_get_split_freq_enimpl_without_readback(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    del single_rx_radio.read_relative_vfo
-
-    resp = await single_rx_handler.execute(get_cmd("get_split_freq"))
-
-    assert resp.error is HamlibError.ENIMPL
-
-
-# -- get_split_mode ------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_get_split_mode_reads_physical_slot_store_tuple(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    store = _store_of(single_rx_handler)
-    _seed(store, FieldPath.vfo_slot("main", "B", "freq_mode", "mode"), "USB")
-    _seed(store, FieldPath.vfo_slot("main", "B", "freq_mode", "filter_num"), 2)
-    _seed(store, FieldPath.vfo_slot("main", "B", "freq_mode", "data_mode"), 0)
-
-    resp = await single_rx_handler.execute(get_cmd("get_split_mode"))
-
-    assert resp.values == ["USB", "2400"]
-    single_rx_radio.read_relative_vfo.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_get_split_mode_maps_packet_label(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    store = _store_of(single_rx_handler)
-    _seed(store, FieldPath.vfo_slot("main", "B", "freq_mode", "mode"), "USB")
-    _seed(store, FieldPath.vfo_slot("main", "B", "freq_mode", "filter_num"), 1)
-    _seed(store, FieldPath.vfo_slot("main", "B", "freq_mode", "data_mode"), 1)
-
-    resp = await single_rx_handler.execute(get_cmd("get_split_mode"))
-
-    assert resp.values == ["PKTUSB", "3000"]
-    single_rx_radio.read_relative_vfo.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_get_split_mode_none_filter_answers_zero_passband(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    store = _store_of(single_rx_handler)
-    _seed(store, FieldPath.vfo_slot("main", "B", "freq_mode", "mode"), "CW")
-    _seed(store, FieldPath.vfo_slot("main", "B", "freq_mode", "filter_num"), None)
-    _seed(store, FieldPath.vfo_slot("main", "B", "freq_mode", "data_mode"), 0)
-
-    resp = await single_rx_handler.execute(get_cmd("get_split_mode"))
-
-    assert resp.values == ["CW", "0"]
-    single_rx_radio.read_relative_vfo.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_get_split_mode_partial_store_falls_back_to_live(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    _seed(
-        _store_of(single_rx_handler),
-        FieldPath.unselected("main", "freq_mode", "mode"),
-        "USB",
-    )
-    single_rx_radio.read_relative_vfo.return_value = RelativeVfoState(
-        freq_hz=14080100, mode="LSB", filter_num=3, data_mode=0
-    )
-
-    resp = await single_rx_handler.execute(get_cmd("get_split_mode"))
-
-    assert resp.values == ["LSB", "1800"]
-
-
-@pytest.mark.asyncio
-async def test_get_split_mode_fallback_formats_tuple(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    single_rx_radio.read_relative_vfo.return_value = RelativeVfoState(
-        freq_hz=14080100, mode="RTTY", filter_num=2, data_mode=1
-    )
-
-    resp = await single_rx_handler.execute(get_cmd("get_split_mode"))
-
-    assert resp.values == ["PKTRTTY", "2400"]
-    single_rx_radio.read_relative_vfo.assert_awaited_once_with(selected=False)
-
-
-@pytest.mark.asyncio
-async def test_get_split_mode_enimpl_without_readback(
-    single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
-) -> None:
-    del single_rx_radio.read_relative_vfo
-
-    resp = await single_rx_handler.execute(get_cmd("get_split_mode"))
-
-    assert resp.error is HamlibError.ENIMPL
-
-
-# -- SerialMockRadio slot model ------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_mock_slots_hold_independent_freq_mode() -> None:
-    radio = SerialMockRadio(model="IC-7300MK2")
-
-    assert await radio.get_freq() == 14074000
-    await radio.set_vfo_slot("B")
-    await radio.set_freq(14080100)
-    await radio.set_mode("CW")
-    assert await radio.get_freq() == 14080100
-    assert await radio.get_mode() == ("CW", 1)
-    await radio.set_vfo_slot("A")
-    assert await radio.get_freq() == 14074000
-    assert await radio.get_mode() == ("USB", 1)
-
-
-@pytest.mark.asyncio
-async def test_mock_relative_readback_reports_both_roles() -> None:
-    radio = SerialMockRadio(model="IC-7300MK2")
-    await radio.set_vfo_slot("B")
-    await radio.set_freq(14080100)
-    await radio.set_vfo_slot("A")
-
-    selected = await radio.read_relative_vfo(selected=True)
-    unselected = await radio.read_relative_vfo(selected=False)
-    assert (selected.freq_hz, selected.mode) == (14074000, "USB")
-    assert (unselected.freq_hz, unselected.mode) == (14080100, "USB")
-    assert await radio.get_vfo_slot() == "A"
-
-    await radio.set_vfo_slot("B")
-    flipped = await radio.read_relative_vfo(selected=False)
-    assert (flipped.freq_hz, flipped.mode) == (14074000, "USB")
-
-
-@pytest.mark.asyncio
-async def test_mock_slot_selection_is_validated() -> None:
-    radio = SerialMockRadio(model="IC-7300MK2")
-
-    await radio.set_vfo_slot("b")
-    assert await radio.get_vfo_slot() == "B"
-    with pytest.raises(ValueError, match="slot must be"):
-        await radio.set_vfo_slot("C")
-    with pytest.raises(ValueError, match="out of range"):
-        await radio.set_vfo_slot("A", receiver=9)
-    with pytest.raises(ValueError, match="out of range"):
-        await radio.get_vfo_slot(receiver=9)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("long_cmd", "args"), _SET_CASES)
-@pytest.mark.parametrize("slot", [None, "", "C", 42])
-async def test_split_write_refuses_unproven_initial_slot(
-    single_rx_handler: RigctldHandler,
-    single_rx_radio: AsyncMock,
-    long_cmd: str,
-    args: tuple[str, ...],
-    slot: object,
-) -> None:
-    single_rx_radio.read_vfo_slot.return_value = slot
-    response = await single_rx_handler.execute(set_cmd(long_cmd, *args))
-    assert response.error is HamlibError.EIO
-    single_rx_radio.set_vfo_slot.assert_not_awaited()
-    single_rx_radio.set_freq.assert_not_awaited()
-    single_rx_radio.set_mode.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("long_cmd", "args"), _SET_CASES)
-@pytest.mark.parametrize("reject", [False, True], ids=["mismatch", "NAK"])
-async def test_split_restore_failure_never_publishes_success(
-    single_rx_handler: RigctldHandler,
-    single_rx_radio: AsyncMock,
-    long_cmd: str,
-    args: tuple[str, ...],
-    reject: bool,
-) -> None:
-    single_rx_radio.read_vfo_slot.side_effect = ["A", "B", "B"]
-    single_rx_radio.set_vfo_slot.side_effect = [
-        None,
-        CommandRejectedError("restore refused") if reject else None,
-    ]
-    response = await single_rx_handler.execute(set_cmd(long_cmd, *args))
-    assert response.error is (HamlibError.ERJCTED if reject else HamlibError.EIO)
-    assert not single_rx_handler._command_service.pending_overlays(
-        source="rigctld", session_id=None
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("long_cmd", "args"), _SET_CASES)
-async def test_split_payload_error_wins_over_restore_error(
-    single_rx_handler: RigctldHandler,
-    single_rx_radio: AsyncMock,
-    long_cmd: str,
-    args: tuple[str, ...],
-) -> None:
-    single_rx_radio.read_vfo_slot.side_effect = ["A", "B"]
-    single_rx_radio.set_vfo_slot.side_effect = [None, CommandRejectedError("restore")]
-    single_rx_radio.set_freq.side_effect = RigplaneTimeoutError("payload")
-    single_rx_radio.set_mode.side_effect = RigplaneTimeoutError("payload")
-    response = await single_rx_handler.execute(set_cmd(long_cmd, *args))
-    assert response.error is HamlibError.ETIMEOUT
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("payload_error", [False, True])
-async def test_split_cancellation_during_restore_keeps_lock_until_ack(
-    config: RigctldConfig, monkeypatch: pytest.MonkeyPatch, payload_error: bool
-) -> None:
-    radio = SerialMockRadio(model="IC-7300MK2")
+async def test_split_dual_rx_is_enimpl(config, radio, name, args):
+    radio.profile = _FakeProfile(receiver_count=2)
     handler = RigctldHandler(radio, config)
-    restore_entered, restore_ack = asyncio.Event(), asyncio.Event()
-    second_started, second_payload = asyncio.Event(), asyncio.Event()
-    real_select, real_freq = radio.set_vfo_slot_confirmed, radio.set_freq
-    delay_restore = True
-
-    async def select(slot: str, receiver: int = 0) -> None:
-        nonlocal delay_restore
-        if slot == "A" and delay_restore:
-            delay_restore = False
-            restore_entered.set()
-            await restore_ack.wait()
-        await real_select(slot, receiver)
-
-    async def frequency(freq: int, receiver: int = 0) -> None:
-        if freq == 14_090_000:
-            second_payload.set()
-        await real_freq(freq, receiver)
-        if freq == 14_080_100 and payload_error:
-            raise RigplaneTimeoutError("payload timeout")
-
-    monkeypatch.setattr(radio, "set_vfo_slot_confirmed", select)
-    monkeypatch.setattr(radio, "set_freq", frequency)
-    first = asyncio.create_task(handler.execute(set_cmd("set_split_freq", "14080100")))
-    second: asyncio.Task | None = None
-    try:
-        await asyncio.wait_for(restore_entered.wait(), 2)
-        first.cancel()
-
-        async def next_write():
-            second_started.set()
-            return await handler.execute(set_cmd("set_split_freq", "14090000"))
-
-        second = asyncio.create_task(next_write())
-        await asyncio.wait_for(second_started.wait(), 2)
-        with pytest.raises(TimeoutError):
-            await asyncio.wait_for(second_payload.wait(), 0.02)
-        first.cancel()  # Repeated cancellation must not detach the restore.
-        with pytest.raises(TimeoutError):
-            await asyncio.wait_for(asyncio.shield(first), 0.02)
-        restore_ack.set()
-        if payload_error:
-            assert (await first).error is HamlibError.ETIMEOUT
-        else:
-            with pytest.raises(asyncio.CancelledError):
-                await first
-        assert (await asyncio.wait_for(second, 2)).ok
-        assert await radio.get_vfo_slot() == "A"
-        assert await radio.get_freq() == 14_074_000
-        assert (await radio.read_relative_vfo(selected=False)).freq_hz == 14_090_000
-        assert all(
-            overlay.value != 14_080_100
-            for overlay in handler._command_service.pending_overlays(
-                source="rigctld", session_id=None
-            )
-        )
-    finally:
-        restore_ack.set()
-        for task in (first, second):
-            if task is not None and not task.done():
-                task.cancel()
-        await asyncio.gather(
-            *(t for t in (first, second) if t is not None), return_exceptions=True
-        )
+    cmd = set_cmd(name, *args) if args else get_cmd(name)
+    assert (await handler.execute(cmd)).error is HamlibError.ENIMPL
+    radio.swap_vfo_ab.assert_not_awaited()
+    radio.read_relative_vfo.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("write_cmd", "write_args", "read_cmd", "expected"),
-    [
-        ("set_split_freq", ("14080100",), "get_split_freq", ["14080100"]),
-        ("set_split_mode", ("RTTY", "1800"), "get_split_mode", ["RTTY", "1800"]),
-    ],
+    ("name", "expected"),
+    [("get_split_freq", ["7076000"]), ("get_split_mode", ["LSB", "1800"])],
 )
-async def test_split_live_getter_waits_for_dance_and_publishes_restored_tuple(
-    config: RigctldConfig,
-    monkeypatch: pytest.MonkeyPatch,
-    write_cmd: str,
-    write_args: tuple[str, ...],
-    read_cmd: str,
-    expected: list[str],
-) -> None:
-    radio = SerialMockRadio(model="IC-7300MK2")
-    await radio.set_vfo_slot("B")
-    await radio.set_freq(7_076_000)
-    await radio.set_mode("LSB", filter_width=3)
-    await radio.set_vfo_slot("A")
-    handler = RigctldHandler(radio, config)
-    payload_entered, payload_release, getter_started = (
-        asyncio.Event(),
-        asyncio.Event(),
-        asyncio.Event(),
+async def test_split_getters_ignore_cached_slot_and_always_read_live(
+    handler, radio, name, expected
+):
+    _seed(
+        handler._state_store, FieldPath.unselected("main", "freq_mode", "freq_hz"), 99
     )
-    name = "set_freq" if write_cmd == "set_split_freq" else "set_mode"
-    setter = getattr(radio, name)
+    _seed(
+        handler._state_store,
+        FieldPath.vfo_slot("main", "B", "freq_mode", "freq_hz"),
+        88,
+    )
+    for _ in range(2):
+        assert (await handler.execute(get_cmd(name))).values == expected
+    assert radio.read_relative_vfo.await_count == 2
+    radio.get_vfo_slot.assert_not_awaited()
 
-    async def delayed(*args, **kwargs):
-        await setter(*args, **kwargs)
-        payload_entered.set()
-        await payload_release.wait()
 
-    monkeypatch.setattr(radio, name, delayed)
-    writer = asyncio.create_task(handler.execute(set_cmd(write_cmd, *write_args)))
-    getter: asyncio.Task | None = None
-    try:
-        await asyncio.wait_for(payload_entered.wait(), 2)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["get_split_freq", "get_split_mode"])
+async def test_split_getter_missing_readback_is_enimpl(handler, radio, name):
+    del radio.read_relative_vfo
+    assert (await handler.execute(get_cmd(name))).error is HamlibError.ENIMPL
 
-        async def read():
-            getter_started.set()
-            return await handler.execute(get_cmd(read_cmd), session_id="reader")
 
-        getter = asyncio.create_task(read())
-        await asyncio.wait_for(getter_started.wait(), 2)
-        with pytest.raises(TimeoutError):
-            await asyncio.wait_for(asyncio.shield(getter), 0.02)
-        payload_release.set()
-        assert (await asyncio.wait_for(writer, 2)).ok
-        assert (await asyncio.wait_for(getter, 2)).values == expected
-        assert await radio.get_vfo_slot() == "A"
-        assert await radio.get_freq() == 14_074_000
+@pytest.mark.asyncio
+async def test_split_mode_requires_confirmed_seam_before_exchange(handler, radio):
+    del radio.set_mode_confirmed
+    response = await handler.execute(set_cmd("set_split_mode", "RTTY", "1800"))
+    assert response.error is HamlibError.ENAVAIL
+    radio.swap_vfo_ab.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_selected_reads_after_split_fall_back_without_relative_seam(
+    handler, radio
+):
+    assert (await handler.execute(set_cmd("set_split_freq", "14080100"))).ok
+    del radio.read_relative_vfo
+    radio.get_freq.return_value = 14_074_000
+    radio.get_mode.return_value = ("USB", 1)
+    radio.get_data_mode.return_value = False
+    assert (await handler.execute(get_cmd("get_freq"))).values == ["14074000"]
+    assert (await handler.execute(get_cmd("get_mode"))).values == ["USB", "3000"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("name", "args"), _WRITES)
+async def test_managed_split_dispatch_preserves_ingress_defer_ownership(
+    handler, radio, monkeypatch, name, args
+):
+    handler._managed_tx_authority = object()
+    gate = MagicMock(
+        spec=handler._defer_write_gate, side_effect=AssertionError("legacy gate called")
+    )
+    monkeypatch.setattr(handler, "_defer_write_gate", gate)
+    assert (await handler.execute(set_cmd(name, *args))).ok
+    gate.assert_not_called()
+    assert radio.swap_vfo_ab.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["get_split_freq", "get_split_mode"])
+@pytest.mark.parametrize("vfo", ["VFOB", "VFOC"])
+async def test_split_getter_vfo_prefix(handler, radio, name, vfo):
+    response = await handler.execute(get_cmd(name, vfo_arg=vfo))
+    if vfo == "VFOC":
+        assert response.error is HamlibError.EVFO
+        radio.read_relative_vfo.assert_not_awaited()
+    else:
+        assert response.ok
+        radio.read_relative_vfo.assert_awaited_once_with(selected=False)
+
+
+@pytest.mark.asyncio
+async def test_split_getter_none_filter_answers_zero_passband(handler, radio):
+    radio.read_relative_vfo.return_value = RelativeVfoState(1, "USB", None, 0)
+    assert (await handler.execute(get_cmd("get_split_mode"))).values == ["USB", "0"]
+
+
+@pytest.mark.asyncio
+async def test_set_split_freq_missing_argument_is_einval(handler, radio):
+    assert (
+        await handler.execute(set_cmd("set_split_freq"))
+    ).error is HamlibError.EINVAL
+    radio.swap_vfo_ab.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_split_freq_then_main_freq_same_client_does_not_deadlock(handler, radio):
+    async def sequence():
         assert (
-            await handler.execute(get_cmd(read_cmd), session_id="reader")
-        ).values == expected
+            await handler.execute(
+                set_cmd("set_split_freq", "14080100"), session_id="one"
+            )
+        ).ok
+        assert (
+            await handler.execute(set_cmd("set_freq", "14250000"), session_id="one")
+        ).ok
+
+    await asyncio.wait_for(sequence(), 2)
+    radio.set_freq.assert_has_awaits(
+        [call(14_080_100, receiver=0), call(14_250_000, receiver=0)]
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_key_waiting_for_split_never_keys(handler, radio):
+    await handler._vfo_slot_lock.acquire()
+    key = asyncio.create_task(handler._route_ptt(True, session_id="cancelled"))
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(key), 0.02)
+        key.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await key
     finally:
-        payload_release.set()
-        for task in (writer, getter):
-            if task is not None and not task.done():
-                task.cancel()
-        await asyncio.gather(
-            *(t for t in (writer, getter) if t is not None), return_exceptions=True
-        )
+        handler._vfo_slot_lock.release()
+        await asyncio.gather(key, return_exceptions=True)
+    radio.set_ptt.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dekey", [False, True])
+async def test_managed_ptt_waits_for_split_and_off_invalidates_key(
+    handler, monkeypatch, dekey
+):
+    executor = _RigctldCommandExecutor(handler)
+    # Keep the lease/submission body intact in production; isolate its entry
+    # ordering here, with TCP tests exercising the physical CoreRadio path.
+    body = AsyncMock(
+        spec=executor._execute_managed_ptt_unlocked,
+        return_value=CommandExecutionResult(),
+    )
+    monkeypatch.setattr(_RigctldCommandExecutor, "_execute_managed_ptt_unlocked", body)
+    on = command_intent_from_request(
+        "set_ptt", {"on": True}, source="rigctld", command_id="key", session_id="owner"
+    )
+    off = command_intent_from_request(
+        "set_ptt", {"on": False}, source="rigctld", command_id="off", session_id="owner"
+    )
+    await handler._vfo_slot_lock.acquire()
+    key = asyncio.create_task(executor._execute_managed_ptt(on))
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(key), 0.02)
+        body.assert_not_awaited()
+        if dekey:
+            await executor._execute_managed_ptt(off)
+            body.assert_awaited_once_with(off)
+        handler._vfo_slot_lock.release()
+        if dekey:
+            with pytest.raises(_RigctldCommandFailure) as failure:
+                await key
+            assert failure.value.error is HamlibError.ERJCTED
+            body.assert_awaited_once_with(off)
+        else:
+            await key
+            body.assert_awaited_once_with(on, key_generation=0)
+    finally:
+        if handler._vfo_slot_lock.locked():
+            handler._vfo_slot_lock.release()
+        if not key.done():
+            key.cancel()
+        await asyncio.gather(key, return_exceptions=True)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("write_cmd", "write_args", "read_cmd", "expected"),
+    ("mode", "data", "expected"),
+    [("RTTY", 1, "PKTRTTY"), ("USB", 3, "PKTUSB"), ("LSB", 0, "LSB")],
+)
+async def test_split_getter_formats_data_mode(handler, radio, mode, data, expected):
+    radio.read_relative_vfo.return_value = RelativeVfoState(1, mode, 3, data)
+    assert (await handler.execute(get_cmd("get_split_mode"))).values == [
+        expected,
+        "1800",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("write", "args", "read", "expected"),
     [
         ("set_split_freq", ("14080100",), "get_split_freq", ["14074000"]),
         ("set_split_mode", ("RTTY", "1800"), "get_split_mode", ["USB", "3000"]),
     ],
 )
-async def test_split_overlay_follows_physical_slot_after_vfo_change(
-    config: RigctldConfig,
-    write_cmd: str,
-    write_args: tuple[str, ...],
-    read_cmd: str,
-    expected: list[str],
-) -> None:
+async def test_split_live_read_follows_selection_after_write(
+    config, write, args, read, expected
+):
     radio = SerialMockRadio(model="IC-7300MK2")
     handler = RigctldHandler(radio, config)
-    assert (await handler.execute(set_cmd(write_cmd, *write_args))).ok
+    assert (await handler.execute(set_cmd(write, *args))).ok
     assert (await handler.execute(set_cmd("set_vfo", "VFOB"))).ok
-    assert (await handler.execute(get_cmd(read_cmd))).values == expected
+    assert (await handler.execute(get_cmd(read))).values == expected
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("long_cmd", "args"), _SET_CASES)
-async def test_split_write_missing_live_seam_refuses_cached_a_on_physical_b(
-    config: RigctldConfig,
-    monkeypatch: pytest.MonkeyPatch,
-    long_cmd: str,
-    args: tuple[str, ...],
-) -> None:
-    radio = SerialMockRadio(model="IC-7300MK2")
-    await radio.set_vfo_slot("B")
-    before = await radio.get_freq(), await radio.get_mode()
-    attempted = asyncio.Event()
+@pytest.mark.parametrize("name", ["set_freq", "set_mode", "set_vfo"])
+async def test_split_transaction_serializes_main_writes(handler, radio, name):
+    entered, release = asyncio.Event(), asyncio.Event()
 
-    async def cached(receiver: int = 0) -> str:
-        return "A"
+    async def delayed(freq, receiver=0):
+        if freq == 14_080_100:
+            entered.set()
+            await release.wait()
 
-    async def select(slot: str, receiver: int = 0) -> None:
-        attempted.set()
-        await radio.set_vfo_slot(slot, receiver)
-
-    monkeypatch.setattr(radio, "read_vfo_slot", None, raising=False)
-    monkeypatch.setattr(radio, "get_vfo_slot", cached)
-    monkeypatch.setattr(radio, "set_vfo_slot_confirmed", select)
-    response = await RigctldHandler(radio, config).execute(set_cmd(long_cmd, *args))
-    assert response.error is HamlibError.EIO
-    assert not attempted.is_set()
-    assert radio._vfo_slot[0] == "B"
-    assert (await radio.get_freq(), await radio.get_mode()) == before
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("long_cmd", "args"), _SET_CASES)
-@pytest.mark.parametrize(
-    "lost_restore", [False, True], ids=["lost-select", "lost-restore"]
-)
-async def test_split_legacy_selection_requires_live_readback_not_optimistic_cache(
-    single_rx_handler: RigctldHandler,
-    single_rx_radio: AsyncMock,
-    long_cmd: str,
-    args: tuple[str, ...],
-    lost_restore: bool,
-) -> None:
-    # Cache follows every requested switch even when the physical radio does not.
-    single_rx_radio.read_vfo_slot = AsyncMock(
-        spec=VfoSlotReadbackCapable.read_vfo_slot,
-        side_effect=["A", "B" if lost_restore else "A", "B" if lost_restore else "A"],
-    )
-    response = await single_rx_handler.execute(set_cmd(long_cmd, *args))
-    assert response.error is HamlibError.EIO
-    if not lost_restore:
-        single_rx_radio.set_freq.assert_not_awaited()
-        single_rx_radio.set_mode.assert_not_awaited()
-    assert not single_rx_handler._command_service.pending_overlays(
-        source="rigctld", session_id=None
-    )
-    single_rx_radio.set_vfo_slot.assert_has_awaits([call("B"), call("A")])
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("read_cmd", "expected"),
-    [("get_split_freq", ["14074000"]), ("get_split_mode", ["USB", "3000"])],
-)
-async def test_split_getter_ignores_unbound_relative_state_after_external_selection(
-    config: RigctldConfig,
-    read_cmd: str,
-    expected: list[str],
-) -> None:
-    radio = SerialMockRadio(model="IC-7300MK2")
-    await radio.set_vfo_slot("B")
-    await radio.set_freq(7_076_000)
-    await radio.set_mode("LSB", filter_width=3)
-    await radio.set_vfo_slot("A")
-    handler = RigctldHandler(radio, config)
-    for name, value in (
-        ("freq_hz", 7_076_000),
-        ("mode", "LSB"),
-        ("filter_num", 3),
-        ("data_mode", 1),
-    ):
-        _seed(
-            _store_of(handler), FieldPath.unselected("main", "freq_mode", name), value
+    radio.set_freq.side_effect = delayed
+    split = asyncio.create_task(handler.execute(set_cmd("set_split_freq", "14080100")))
+    other = None
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        args = {
+            "set_freq": ("14250000",),
+            "set_mode": ("USB", "2400"),
+            "set_vfo": ("VFOB",),
+        }[name]
+        other = asyncio.create_task(handler.execute(set_cmd(name, *args)))
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(other), 0.02)
+        assert radio.swap_vfo_ab.await_count == 1
+        release.set()
+        assert (await split).ok
+        assert (await other).ok
+        assert radio.swap_vfo_ab.await_count == 2
+    finally:
+        release.set()
+        for task in (split, other):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (split, other) if task is not None),
+            return_exceptions=True,
         )
-    await radio.set_vfo_slot("B")  # External selection bypasses the handler.
-    assert (await handler.execute(get_cmd(read_cmd))).values == expected
-
-
-@pytest.mark.asyncio
-async def test_mock_mirror_follows_active_slot() -> None:
-    radio = SerialMockRadio(model="IC-7300MK2")
-    await radio.set_vfo_slot("B")
-    await radio.set_freq(14080100)
-
-    assert radio.radio_state.main.active_slot == "B"
-    assert radio.radio_state.main.freq == 14080100
-
-
-@pytest.mark.asyncio
-async def test_mock_confirmed_select_lands_and_validates(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    radio = SerialMockRadio(model="IC-7300MK2")
-
-    await radio.set_vfo_slot_confirmed("B")
-    assert await radio.get_vfo_slot() == "B"
-    await radio.set_vfo_slot_confirmed("A")
-    assert await radio.get_vfo_slot() == "A"
-    with pytest.raises(ValueError, match="slot must be"):
-        await radio.set_vfo_slot_confirmed("C")
-
-    async def _stuck_slot(receiver: int = 0) -> str:
-        return "A"
-
-    monkeypatch.setattr(radio, "read_vfo_slot", _stuck_slot)
-    with pytest.raises(CommandError, match="not confirmed"):
-        await radio.set_vfo_slot_confirmed("B")

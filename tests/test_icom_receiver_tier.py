@@ -19,13 +19,14 @@ Hardware-smoke pending — these tests verify wire-bytes only.
 from __future__ import annotations
 
 import pytest
+from unittest.mock import AsyncMock
 
-from rigplane.exceptions import CommandError
+from rigplane.commands import parse_civ_frame
+from rigplane.exceptions import CommandError, CommandRejectedError
 from rigplane.radio import IcomRadio
 from rigplane.radio_protocol import (
     ReceiverBankCapable,
     VfoSlotCapable,
-    VfoSlotConfirmedCapable,
 )
 
 from test_radio import MockTransport, _wrap_civ_in_udp
@@ -145,17 +146,6 @@ class TestProtocolSatisfaction:
     def test_ic705_satisfies_both_protocols(self, ic705: IcomRadio) -> None:
         assert isinstance(ic705, ReceiverBankCapable)
         assert isinstance(ic705, VfoSlotCapable)
-
-    def test_all_rigs_satisfy_confirmed_slot_capable(
-        self,
-        ic7610: IcomRadio,
-        ic9700: IcomRadio,
-        ic7300: IcomRadio,
-        ic705: IcomRadio,
-    ) -> None:
-        """Every Icom rig exposes the ACK-confirmed slot seam (MOR-3115)."""
-        for rig in (ic7610, ic9700, ic7300, ic705):
-            assert isinstance(rig, VfoSlotConfirmedCapable)
 
 
 # ---------------------------------------------------------------------------
@@ -428,7 +418,7 @@ class TestSetVfoSlot:
 
 
 # ---------------------------------------------------------------------------
-# set_vfo_slot_confirmed — ACK-checked select
+# _set_vfo_slot_confirmed — ACK-checked select
 # ---------------------------------------------------------------------------
 
 
@@ -438,7 +428,7 @@ class TestSetVfoSlotConfirmed:
         self, ic7300: IcomRadio, mock_transport: MockTransport
     ) -> None:
         mock_transport.queue_response(ACK_IC7300)
-        await ic7300.set_vfo_slot_confirmed("B")
+        await ic7300._set_vfo_slot_confirmed("B")
         frames = _civ_bytes(mock_transport.sent_packets)
         assert SLOT_B_7300 in frames
         assert await ic7300.get_vfo_slot() == "B"
@@ -448,9 +438,69 @@ class TestSetVfoSlotConfirmed:
         self, ic7300: IcomRadio, mock_transport: MockTransport
     ) -> None:
         mock_transport.queue_response(NAK_IC7300)
-        with pytest.raises(CommandError, match="rejected VFO slot"):
-            await ic7300.set_vfo_slot_confirmed("B")
+        with pytest.raises(CommandRejectedError, match="rejected VFO slot"):
+            await ic7300._set_vfo_slot_confirmed("B")
         assert await ic7300.get_vfo_slot() == "A"
+
+
+@pytest.mark.asyncio
+async def test_data_mode_main_nak_is_explicit_rejection(ic7300, mock_transport):
+    mock_transport.queue_response(NAK_IC7300)
+    with pytest.raises(CommandRejectedError, match="rejected set_data_mode"):
+        await ic7300.set_data_mode(True)
+
+
+@pytest.mark.asyncio
+async def test_data_mode_fallback_nak_is_explicit_rejection(ic7610, mock_transport):
+    # IC-7610 routes DATA through its selected receiver, not command 29.
+    ic7610._radio_state.active = "SUB"
+    mock_transport.queue_response(_wrap_civ_in_udp(b"\xfe\xfe\xe0\x98\xfa\xfd"))
+    with pytest.raises(CommandRejectedError, match="rejected set_data_mode"):
+        await ic7610.set_data_mode(True, receiver=1)
+
+
+@pytest.mark.asyncio
+async def test_swap_vfo_ab_requires_ack_and_preserves_cached_identity(
+    ic7300, mock_transport
+):
+    mock_transport.queue_response_on_send(1, ACK_IC7300)
+    await ic7300.swap_vfo_ab()
+    assert await ic7300.get_vfo_slot() == "A"
+    assert _civ_bytes(mock_transport.sent_packets)[-1].endswith(b"\x07\xb0\xfd")
+
+
+@pytest.mark.asyncio
+async def test_swap_vfo_ab_nak_is_explicit_rejection(ic7300, mock_transport):
+    mock_transport.queue_response_on_send(1, NAK_IC7300)
+    with pytest.raises(CommandRejectedError, match="exchange"):
+        await ic7300.swap_vfo_ab()
+    assert await ic7300.get_vfo_slot() == "A"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_mode_nak_preserves_rx_cache(ic7300, mock_transport):
+    before = (ic7300._last_mode, ic7300._filter_width)
+    mock_transport.queue_response_on_send(1, NAK_IC7300)
+    with pytest.raises(CommandRejectedError, match="set_mode"):
+        await ic7300.set_mode_confirmed("RTTY", filter_width=3)
+    assert (ic7300._last_mode, ic7300._filter_width) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["frequency", "mode", "exchange", "data"])
+async def test_confirmed_writes_refuse_non_ack_reply(ic7300, monkeypatch, operation):
+    reply = parse_civ_frame(b"\xfe\xfe\xe0\x94\x07\x00\xfd")
+    response = AsyncMock(spec=ic7300._send_civ_expect, return_value=reply)
+    monkeypatch.setattr(ic7300, "_send_civ_expect", response)
+    with pytest.raises(CommandError, match="acknowledgement"):
+        if operation == "frequency":
+            await ic7300.set_freq(14_080_100)
+        elif operation == "mode":
+            await ic7300.set_mode_confirmed("RTTY", filter_width=3)
+        elif operation == "exchange":
+            await ic7300.swap_vfo_ab()
+        else:
+            await ic7300.set_data_mode(True)
 
 
 # ---------------------------------------------------------------------------

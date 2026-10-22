@@ -185,8 +185,11 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             freq_hz, to_addr=self._radio_addr, receiver=RECEIVER_MAIN
         )
         resp = await self._send_civ_expect(civ, label="set_frequency_main")
-        if parse_ack_nak(resp) is False:
+        ack = parse_ack_nak(resp)
+        if ack is False:
             raise CommandRejectedError(f"Radio rejected MAIN set_frequency({freq_hz})")
+        if ack is not True:
+            raise CommandError("Invalid frequency acknowledgement")
         if update_cache:
             self._last_freq_hz = freq_hz
 
@@ -221,6 +224,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         *,
         filter_width: int | None = None,
         update_cache: bool = True,
+        confirmed: bool = False,
     ) -> None:
         """Set MAIN receiver mode/filter with optional cache updates."""
         if self._profile.set_mode_via_selected:
@@ -230,6 +234,11 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             # the radio's current data-mode and filter.
             target = self._radio_state.receiver("MAIN")
             data_mode = int(getattr(target, "data_mode", 0) or 0)
+            if confirmed:
+                current = await self.read_relative_vfo(selected=True)
+                data_mode = current.data_mode
+                if filter_width is None:
+                    filter_width = current.filter_num
             resolved_filter = (
                 filter_width
                 if filter_width is not None
@@ -245,11 +254,36 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 to_addr=self._radio_addr,
                 receiver=RECEIVER_MAIN,
             )
-        await self._send_civ_raw(civ, wait_response=False)
-        self._last_mode = mode
+        if confirmed:
+            response = await self._send_civ_expect(civ, label="set_mode_confirmed")
+            ack = parse_ack_nak(response)
+            if ack is False:
+                raise CommandRejectedError(f"Radio rejected MAIN set_mode({mode.name})")
+            if ack is not True:
+                raise CommandError("Invalid mode acknowledgement")
+        else:
+            await self._send_civ_raw(civ, wait_response=False)
+        if not confirmed or update_cache:
+            self._last_mode = mode
         if update_cache:
             if filter_width is not None:
                 self._filter_width = filter_width
+
+    async def set_mode_confirmed(
+        self, mode: Mode | str, *, filter_width: int | None = None
+    ) -> None:
+        """Set the selected MAIN tuple and require its ACK before returning.
+
+        Ordinary ``set_mode`` retains its fire-and-forget contract. Split
+        transactions use this seam so a NAK cannot become a successful write.
+        """
+        self._check_connected()
+        await self._set_mode_main(
+            self._coerce_mode(mode),
+            filter_width=filter_width,
+            confirmed=True,
+            update_cache=False,
+        )
 
     # ------------------------------------------------------------------
     # Selected / Unselected receiver freq & mode (0x25 / 0x26)
@@ -383,7 +417,12 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         civ = build_civ_frame(
             self._radio_addr, CONTROLLER_ADDR, _CMD_VFO, data=bytes([code])
         )
-        await self._send_civ_raw(civ, wait_response=False)
+        response = await self._send_civ_expect(civ, label="swap_vfo_ab")
+        ack = parse_ack_nak(response)
+        if ack is False:
+            raise CommandRejectedError("Radio rejected VFO A/B exchange")
+        if ack is not True:
+            raise CommandError("Invalid VFO A/B exchange acknowledgement")
 
     async def equalize_vfo_ab(self, receiver: int = 0) -> None:
         """Copy the active VFO's state to the inactive VFO on ``receiver``.
@@ -547,46 +586,9 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """
         await self._set_vfo_slot_impl(slot, receiver=receiver, confirmed=False)
 
-    async def read_vfo_slot(self, receiver: int = 0) -> str:
-        """Probe physical A/B selection on a single receiver using bare CI-V 07.
-
-        A NAK or an answer other than exactly 07 00/01 establishes no slot.
-        This probe does not declare profile support or use the cached slot.
-        """
-        self._check_connected()
-        self._check_vfo_slot_receiver(receiver, operation="read_vfo_slot")
-        if self.receiver_count != 1:
-            raise CommandError("read_vfo_slot requires a single receiver")
-        request = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, _CMD_VFO)
-        response = await self._send_civ_expect(request, label="read_vfo_slot")
-        if parse_ack_nak(response) is False:
-            raise CommandRejectedError("Radio rejected VFO slot read")
-        if (
-            response.command != _CMD_VFO
-            or response.sub is not None
-            or response.data not in (b"\x00", b"\x01")
-        ):
-            raise CommandError("VFO slot read returned no unambiguous A/B identity")
-        slot = "A" if response.data == b"\x00" else "B"
-        self._radio_state.main.active_slot = slot
-        return slot
-
-    async def set_vfo_slot_confirmed(self, slot: str, receiver: int = 0) -> None:
-        """Make ``slot`` active on ``receiver``, ACK-confirmed.
-
-        Unlike fire-and-forget :meth:`set_vfo_slot`, waits for the
-        CI-V ACK/NAK and raises when the radio rejects the switch or
-        the reply times out. State-sensitive callers (the rigctld
-        split-TX dance, the VFO binding) prefer this seam so a lost
-        select can never silently retune the wrong VFO.
-        """
-
-        await self._set_vfo_slot_impl(slot, receiver=receiver, confirmed=True)
-
     async def _set_vfo_slot_confirmed(self, slot: str, receiver: int = 0) -> None:
-        """Private alias for the observation poller; prefer :meth:`set_vfo_slot_confirmed`."""
-
-        await self.set_vfo_slot_confirmed(slot, receiver=receiver)
+        """ACK-confirmed slot selection for the observation poller."""
+        await self._set_vfo_slot_impl(slot, receiver=receiver, confirmed=True)
 
     async def _set_vfo_slot_impl(
         self, slot: str, *, receiver: int, confirmed: bool

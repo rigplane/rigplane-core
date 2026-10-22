@@ -287,16 +287,22 @@ the handler in the dispatch table, and translates exceptions:
 | `\get_lock_mode` | `get_lock_mode` | CTL | Lock mode (always 0) |
 | `w` | `send_raw` | CTL | Raw CI-V passthrough (hex in, hex out) |
 
-On single-RX rigs, `I`/`X` require current physical A/B selection before writing
-the opposite slot, then confirm restoration of the original slot. An unproven identity or
-restore mismatch returns `RPRT -6`; an explicit radio refusal returns `RPRT -9`.
-An earlier payload error or cancellation takes precedence over a restore error.
-Split reads share the slot lock with these writes, and pending values are
-bound to physical A/B slots. Dual-RX rigs return `RPRT -4` for `I`/`i`/`X`/`x`.
-The Icom bare CI-V `07` probe is attempted without a hardware-validated support
-claim; an unavailable or unrecognized identity cannot authorize a split write.
-See `handler.py: RigctldHandler._run_on_split_tx_slot`
-and `_dual_rx_runtime.py: DualRxRuntimeMixin.read_vfo_slot`.
+On single-RX rigs, `I`/`X` exchange selected/unselected contents using the
+profile's A/B exchange command, write, and exchange back. Both exchanges and
+the payload require radio acknowledgements; an explicit refusal returns
+`RPRT -9`. A restore failure fails an otherwise successful write; an earlier
+payload error or cancellation takes precedence. A rejected initial exchange
+does not trigger a second exchange. An uncertain initial exchange attempts
+cleanup and reports failure, without claiming restoration.
+`i`/`x` always read live Selected/Unselected frequency and mode tuples under
+the transaction lock, without changing memory/VFO context or using pending
+overlays. Ordinary `f`/`m` also use live selected tuples after an exchange
+attempt, avoiding observations or mirrors from the temporary exchange.
+Positive PTT and `f`/`m`/`v` wait for the transaction; dekey does not take its
+lock and invalidates keys already waiting on it. Dual-RX rigs return
+`RPRT -4` for `I`/`i`/`X`/`x`. Profiles without A/B exchange return `RPRT -11`
+for split writes. See `handler.py: RigctldHandler._run_on_split_tx_slot`
+and `_dual_rx_runtime.py: DualRxRuntimeMixin.swap_vfo_ab`.
 
 **Mode strings** accepted/returned by `get_mode`/`set_mode`:
 `USB`, `LSB`, `CW`, `CWR`, `RTTY`, `RTTYR`, `AM`, `FM`, `WFM`,
