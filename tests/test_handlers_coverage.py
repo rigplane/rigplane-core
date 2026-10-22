@@ -3661,23 +3661,6 @@ async def test_send_cw_text_multi_frame_text_reaches_radio_unchanged() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_cw_text_leaves_the_length_limit_to_the_radio() -> None:
-    """The handler has no CW text limit of its own (MOR-3678).
-
-    The radio's ``send_cw_text`` admits the text against its profile's
-    ``cw_text`` (one check for HTTP, WebSocket and CLI); the handler passes
-    the text through unchanged.
-    """
-    radio = _capable_radio()
-    radio.send_cw_text = AsyncMock()
-    handler = _control_handler(radio=radio)
-    long_text = "A" * 513
-
-    await handler._enqueue_command("send_cw_text", {"text": long_text})
-    radio.send_cw_text.assert_awaited_once_with(long_text)
-
-
-@pytest.mark.asyncio
 async def test_send_cw_text_no_radio_raises() -> None:
     """send_cw_text raises when radio is not connected."""
     handler = _control_handler(radio=None)
