@@ -80,7 +80,10 @@ async def test_send_cw_text_over_fifty_characters_is_rejected_before_any_write()
     None
 ):
     radio = _radio(supported=True)
-    with pytest.raises(ValueError, match=r"max 50 characters, got 51"):
+    with pytest.raises(
+        ValueError,
+        match=r"^CW text too long for FTX-1: got 51 characters, limit is 50$",
+    ):
         await radio.send_cw_text("A" * 51)
     assert _writes(radio) == []
 
@@ -88,6 +91,8 @@ async def test_send_cw_text_over_fifty_characters_is_rejected_before_any_write()
 @pytest.mark.asyncio
 async def test_disabled_send_cw_text_refuses_before_any_write() -> None:
     radio = _radio(supported=False)
-    with pytest.raises(RuntimeError, match="does not support"):
+    with pytest.raises(
+        RuntimeError, match=r"^FTX-1 does not support sending CW text yet$"
+    ):
         await radio.send_cw_text("CQ")
     assert _writes(radio) == []
