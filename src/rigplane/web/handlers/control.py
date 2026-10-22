@@ -207,8 +207,6 @@ from ...radio_protocol import (
 __all__ = ["ControlHandler"]
 
 logger = logging.getLogger(__name__)
-# Fallback limit for a radio without a RadioProfile (MOR-3678).
-_MAX_CW_TEXT_CHARS = 512
 # Intent param carrying the TX owner `_enqueue_command` checked (MOR-3537).
 _TX_OWNER_PARAM = "_tx_owner"
 
@@ -2326,20 +2324,10 @@ class ControlHandler:
             raise RuntimeError("radio connection not available")
         if CAP_CW not in radio.capabilities:
             raise RuntimeError("radio does not support this command")
-        # MOR-3678: the profile's ``cw_text`` says whether typed text can be
-        # sent and how long it may be; the ``cw`` tag alone does not.
-        profile = getattr(radio, "profile", None)
-        max_chars = _MAX_CW_TEXT_CHARS
-        if isinstance(profile, RadioProfile):
-            if not profile.cw_text.supported:
-                raise RuntimeError("this radio does not support sending CW text yet")
-            max_chars = profile.cw_text.max_length
+        # MOR-3678: the radio's send_cw_text admits the text against its
+        # profile's ``cw_text`` (``admit_cw_text``), the one check shared
+        # with the CLI; the handler passes the text through unchanged.
         text = str(params.get("text", ""))
-        if len(text) > max_chars:
-            # Rejected, never truncated or split.
-            raise ValueError(
-                f"CW text too long: max {max_chars} characters, got {len(text)}"
-            )
         await radio.send_cw_text(text)
         return {"text": text}
 

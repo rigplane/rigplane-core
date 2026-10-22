@@ -2121,7 +2121,7 @@ def _parse_cw_text(filename: str, raw: Any, *, has_send_cw: bool) -> CwTextSpec:
         raise RigLoadError(
             f"{filename}: [cw_text].supported = true needs a send_cw command"
         )
-    max_length = raw.get("max_length", 512)
+    max_length = raw.get("max_length", CwTextSpec().max_length)
     if (
         isinstance(max_length, bool)
         or not isinstance(max_length, int)

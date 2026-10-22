@@ -200,7 +200,7 @@ from rigplane.core.tx_safety import (
 from rigplane.runtime.meter_cal import interpolate_swr
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
-from rigplane.profiles import RadioProfile, resolve_radio_profile
+from rigplane.profiles import RadioProfile, admit_cw_text, resolve_radio_profile
 from rigplane.profiles.control_domain import decode_legacy_control
 from rigplane.profiles.control_domain import encode_legacy_control
 from rigplane.core.radio_state import RadioState
@@ -6075,7 +6075,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
         Args:
             text: CW text (A-Z, 0-9, prosigns).
+
+        Raises:
+            CwTextUnsupportedError: The profile does not enable CW text.
+            ValueError: The text is longer than the profile's limit
+                (``admit_cw_text``, MOR-3678); nothing is sent.
         """
+        admit_cw_text(self.profile, text)
         self._check_connected()
         frames = self._commands.send_cw(text, to_addr=self._radio_addr)
 

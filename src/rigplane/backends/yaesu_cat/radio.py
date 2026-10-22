@@ -3593,12 +3593,14 @@ class YaesuCatRadio:
             ValueError: The text is longer than the profile limit or holds a
                 character a CAT parameter cannot carry. Nothing is written.
         """
+        from ...profiles import CwTextUnsupportedError, admit_cw_text
+
+        admit_cw_text(self.profile, text)
         spec = self.profile.cw_text
-        if not spec.supported or spec.memory_channel is None:
-            raise RuntimeError("this radio does not support sending CW text yet")
-        if len(text) > spec.max_length:
-            raise ValueError(
-                f"CW text too long: max {spec.max_length} characters, got {len(text)}"
+        if spec.memory_channel is None:
+            raise CwTextUnsupportedError(
+                f"{self.profile.model} does not support sending CW text yet: "
+                "its profile names no [cw_text].memory_channel"
             )
         if not text:
             raise ValueError("CW text is empty")

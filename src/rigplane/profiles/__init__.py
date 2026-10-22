@@ -24,6 +24,8 @@ from rigplane.core.types import ToneSquelchType
 
 __all__ = [
     "CwTextSpec",
+    "CwTextUnsupportedError",
+    "admit_cw_text",
     "ControlLookupPoint",
     "EncodedControlChoice",
     "ControlDomainSpec",
@@ -852,3 +854,36 @@ def reload_profiles() -> None:
     global _profiles
     _profiles = None
     _ensure_loaded()
+
+
+class CwTextUnsupportedError(RuntimeError):
+    """The radio's profile does not enable ``send_cw_text`` (MOR-3678).
+
+    A ``RuntimeError`` whose text says "does not support", so the web layer
+    answers it with the existing ``unsupported_command`` path (HTTP 409,
+    WebSocket ``unsupported_command``).
+    """
+
+
+def admit_cw_text(profile: RadioProfile, text: str) -> None:
+    """The one admission check every ``send_cw_text`` passes (MOR-3678).
+
+    Called first thing by each backend's ``send_cw_text``, so the HTTP
+    endpoint, the WebSocket command and the CLI refuse the same requests
+    with the same text. The profile's ``cw_text`` is the only source of the
+    limit. Text over the limit is rejected, never truncated or split.
+
+    Raises:
+        CwTextUnsupportedError: ``cw_text.supported`` is false.
+        ValueError: The text is longer than ``cw_text.max_length``.
+    """
+    spec = profile.cw_text
+    if not spec.supported:
+        raise CwTextUnsupportedError(
+            f"{profile.model} does not support sending CW text yet"
+        )
+    if len(text) > spec.max_length:
+        raise ValueError(
+            f"CW text too long for {profile.model}: got {len(text)} characters, "
+            f"limit is {spec.max_length}"
+        )
