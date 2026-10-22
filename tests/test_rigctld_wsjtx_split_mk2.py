@@ -20,10 +20,14 @@ from rigplane.types import Mode
 
 
 def _known_rx(server: RigctldServer) -> None:
+    _rf_state(server, False)
+
+
+def _rf_state(server: RigctldServer, value: bool | None) -> None:
     server._state_store.apply_current(
         Observation(
             path=FieldPath.global_("tx_state", "ptt"),
-            value=False,
+            value=value,
             source=SourceMetadata(source="test", provider="tests"),
             timestamp_monotonic=asyncio.get_running_loop().time(),
             max_age=60,
@@ -396,3 +400,192 @@ async def test_split_wire_timeout_joins_restore_before_next_client_write():
                 *(task for task in (first, second) if task is not None),
                 return_exceptions=True,
             )
+
+
+@asynccontextmanager
+async def _paused_exchange(peer, reader, writer):
+    peer.pause_exchange = 1
+    task = asyncio.create_task(_exchange(writer, reader, b"I 14080100\n"))
+    try:
+        await asyncio.wait_for(peer.exchange_paused.wait(), 2)
+        yield task
+    finally:
+        peer.exchange_release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def _slot_waiters(server, count):
+    async def wait():
+        while len(server._rig_handler._vfo_slot_lock._waiters or ()) < count:
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(wait(), 2)
+
+
+_RAW_KEY = b"w FE FE 94 E0 1C 00 01 FD\n"
+_RAW_OFF = b"w FE FE 94 E0 1C 00 00 FD\n"
+_RAW_ACK = b"FE FE E0 94 FB FD\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dekey", [False, True])
+async def test_split_raw_ptt_fence_and_raw_off_invalidates_typed_key(dekey):
+    async with _peer("IC-7300") as (_radio, peer, server, reader, writer):
+        rx_before = peer.slots["A"]
+        async with _paused_exchange(peer, reader, writer) as split:
+            async with _client(server) as (key_reader, key_writer):
+                key = asyncio.create_task(
+                    _exchange(key_writer, key_reader, b"T 1\n" if dekey else _RAW_KEY)
+                )
+                try:
+                    with pytest.raises(TimeoutError):
+                        await asyncio.wait_for(asyncio.shield(key), 0.03)
+                    assert not peer.ptt_writes
+                    if dekey:
+                        await _slot_waiters(server, 1)
+                        async with _client(server) as (off_reader, off_writer):
+                            assert (
+                                await _exchange(off_writer, off_reader, _RAW_OFF)
+                                == _RAW_ACK
+                            )
+                        assert peer.ptt_writes == [False]
+                    peer.exchange_release.set()
+                    assert await split == b"RPRT 0\n"
+                    assert await key == (b"RPRT -9\n" if dekey else _RAW_ACK)
+                    assert peer.ptt_writes == ([False] if dekey else [True])
+                    assert peer.ptt_key_tuples == ([] if dekey else [rx_before])
+                    assert peer.slots["A"] == rx_before
+                    assert peer.exchanges == 2
+                finally:
+                    peer.exchange_release.set()
+                    await asyncio.gather(key, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", [b"I 14080100\n", b"X RTTY 1800\n"])
+@pytest.mark.parametrize("rf_after_key", [True, None, False])
+async def test_split_waiting_behind_key_revalidates_rf_and_key_generation(
+    command, rf_after_key
+):
+    async with _peer("IC-7300MK2") as (_radio, peer, server, reader, writer):
+        peer.pause_frequency = 14_250_000
+        peer.on_key = lambda: _rf_state(server, rf_after_key)
+        ordinary = asyncio.create_task(_exchange(writer, reader, b"F 14250000\n"))
+        key = split = None
+        try:
+            await asyncio.wait_for(peer.frequency_paused.wait(), 2)
+            async with (
+                _client(server) as (key_reader, key_writer),
+                _client(server) as (
+                    split_reader,
+                    split_writer,
+                ),
+            ):
+                key = asyncio.create_task(_exchange(key_writer, key_reader, b"T 1\n"))
+                await _slot_waiters(server, 1)
+                split = asyncio.create_task(
+                    _exchange(split_writer, split_reader, command)
+                )
+                await _slot_waiters(server, 2)
+                peer.frequency_release.set()
+                assert await ordinary == b"RPRT 0\n"
+                assert await key == b"RPRT 0\n"
+                expected = b"RPRT -9\n" if rf_after_key is None else b"RPRT 0\n"
+                assert await split == expected
+                assert peer.ptt_writes == [True]
+                assert peer.ptt_key_tuples == [(14_250_000, Mode.USB, 1, 0)]
+                assert peer.exchanges == 0
+                assert peer.payload_writes == 1
+                assert peer.slots["B"] == (7_076_000, Mode.LSB, 3, 1)
+        finally:
+            peer.frequency_release.set()
+            await asyncio.gather(
+                *(task for task in (ordinary, key, split) if task is not None),
+                return_exceptions=True,
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-7300MK2", "IC-7300"])
+@pytest.mark.parametrize(
+    ("command", "initial_filter", "expected_filter", "passband"),
+    [
+        (b"X PKTUSB 2400\n", 3, 2, b"2400"),
+        (b"X PKTUSB\n", 2, 2, b"2400"),
+        (b"X PKTUSB 0\n", 3, 3, b"1800"),
+    ],
+)
+async def test_split_packet_data_preserves_physical_filter(
+    model, command, initial_filter, expected_filter, passband
+):
+    async with _peer(model) as (_radio, peer, _server, reader, writer):
+        peer.slots["B"] = (7_076_000, Mode.LSB, initial_filter, 0)
+        rx_before = peer.slots["A"]
+        assert await _exchange(writer, reader, command) == b"RPRT 0\n"
+        assert peer.slots["B"] == (7_076_000, Mode.USB, expected_filter, 1)
+        assert (
+            await _exchange(writer, reader, b"x\n", lines=2)
+            == b"PKTUSB\n" + passband + b"\n"
+        )
+        assert peer.slots["A"] == rx_before
+        assert peer.selected == "A"
+        assert peer.exchanges == 2
+
+
+@pytest.mark.asyncio
+async def test_split_packet_filter_reapply_nak_restores_rx_and_fails():
+    async with _peer("IC-7300") as (_radio, peer, server, reader, writer):
+        rx_before = peer.slots["A"]
+        peer.reject_mode_write = 2
+        assert await _exchange(writer, reader, b"X PKTUSB 2400\n") == b"RPRT -9\n"
+        assert peer.mode_writes == 2
+        assert peer.slots["A"] == rx_before
+        assert peer.selected == "A"
+        assert peer.exchanges == 2
+        assert not server._rig_handler._command_service._overlays
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", [False, True])
+async def test_split_pipelined_off_invalidates_key_waiting_on_slot(raw):
+    async with _peer("IC-7300") as (_radio, peer, server, reader, writer):
+        async with _paused_exchange(peer, reader, writer) as split:
+            async with _client(server) as (other_reader, other_writer):
+                other_writer.write(_RAW_KEY + _RAW_OFF if raw else b"T 1\nT 0\n")
+                await other_writer.drain()
+                await asyncio.wait_for(peer.dekeyed.wait(), 1)
+                assert peer.ptt_writes == [False]
+                with pytest.raises(TimeoutError):
+                    await asyncio.wait_for(other_reader.readline(), 0.03)
+                peer.exchange_release.set()
+                assert await split == b"RPRT 0\n"
+                assert (
+                    await asyncio.wait_for(other_reader.readline(), 2) == b"RPRT -9\n"
+                )
+                assert await asyncio.wait_for(other_reader.readline(), 2) == (
+                    _RAW_ACK if raw else b"RPRT 0\n"
+                )
+                assert peer.ptt_writes == [False]
+                assert not peer.ptt_key_tuples
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", [False, True])
+async def test_pipelined_off_waits_for_key_already_writing_radio(raw):
+    async with _peer("IC-7300") as (_radio, peer, _server, reader, writer):
+        peer.key_release = asyncio.Event()
+        writer.write(_RAW_KEY + _RAW_OFF if raw else b"T 1\nT 0\n")
+        await writer.drain()
+        try:
+            await asyncio.wait_for(peer.key_started.wait(), 2)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(peer.dekeyed.wait(), 0.03)
+            assert not peer.ptt_writes
+            peer.key_release.set()
+            expected = _RAW_ACK if raw else b"RPRT 0\n"
+            assert await asyncio.wait_for(reader.readline(), 2) == expected
+            assert await asyncio.wait_for(reader.readline(), 2) == expected
+            assert peer.ptt_writes == [True, False]
+            assert peer.ptt_key_tuples == [(14_074_000, Mode.USB, 1, 0)]
+        finally:
+            peer.key_release.set()

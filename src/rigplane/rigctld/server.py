@@ -59,6 +59,12 @@ from . import audit as _audit  # noqa: TID251
 from .circuit_breaker import CircuitBreaker, CircuitState  # noqa: TID251
 from .contract import ClientSession, HamlibError, RigctldConfig  # noqa: TID251
 from .utils import get_mode_reader  # noqa: TID251
+from .handler import (  # noqa: TID251
+    RigctldHandler,
+    _PttSlotFence,
+    _is_positive_ptt_command,
+    _is_safety_off_command,
+)
 
 if TYPE_CHECKING:
     from ..core.command_service import CommandService
@@ -297,9 +303,10 @@ class RigctldServer:
         cmd: Any,
         *,
         session_id: str,
-        predecessor: asyncio.Future[None],
+        predecessor: asyncio.Future[None] | None,
         ptt_submission: asyncio.Task[Any] | None = None,
         ptt_ready: asyncio.Future[None] | None = None,
+        ptt_slot_fence: _PttSlotFence | None = None,
     ) -> Coroutine[Any, Any, Any]:
         execute = getattr(self._rig_handler, "execute")
         try:
@@ -326,6 +333,10 @@ class RigctldServer:
                 accepts_kwargs or "ptt_ready" in signature.parameters
             ):
                 kwargs["ptt_ready"] = ptt_ready
+            if ptt_slot_fence is not None and (
+                accepts_kwargs or "ptt_slot_fence" in signature.parameters
+            ):
+                kwargs["ptt_slot_fence"] = ptt_slot_fence
             return cast(Coroutine[Any, Any, Any], execute(cmd, **kwargs))
         return cast(Coroutine[Any, Any, Any], execute(cmd))
 
@@ -1228,6 +1239,7 @@ class RigctldServer:
         loop = asyncio.get_running_loop()
         previous_execution: asyncio.Future[None] = loop.create_future()
         previous_execution.set_result(None)
+        previous_ptt_slot: _PttSlotFence | None = None
         previous_retirement: asyncio.Future[None] = loop.create_future()
         previous_retirement.set_result(None)
         response_tasks: set[asyncio.Task[None]] = set()
@@ -1261,10 +1273,19 @@ class RigctldServer:
             ptt_submission: asyncio.Task[Any] | None = None,
             ptt_ready: asyncio.Future[None] | None = None,
         ) -> None:
-            nonlocal previous_execution, previous_retirement
+            nonlocal previous_execution, previous_retirement, previous_ptt_slot
             execution = loop.create_future()
             retirement = loop.create_future()
             predecessor_retirement = previous_retirement
+            ptt_slot = (
+                _PttSlotFence()
+                if self._managed_tx_authority is None
+                and isinstance(self._rig_handler, RigctldHandler)
+                and cmd is not None
+                and immediate_error is None
+                and _is_positive_ptt_command(cmd)
+                else None
+            )
             if ptt_submission is not None:
                 ptt_submissions.add(ptt_submission)
                 ptt_submission.add_done_callback(submission_done)
@@ -1290,12 +1311,15 @@ class RigctldServer:
                     retirement=retirement,
                     ptt_submission=ptt_submission,
                     ptt_ready=ptt_ready,
+                    ptt_slot_fence=ptt_slot,
+                    predecessor_ptt_slot=previous_ptt_slot,
                 )
             )
             task.add_done_callback(settle_unstarted)
             response_tasks.add(task)
             task.add_done_callback(response_task_done)
             previous_execution = execution
+            previous_ptt_slot = ptt_slot
             previous_retirement = retirement
 
         try:
@@ -1515,6 +1539,8 @@ class RigctldServer:
         retirement: asyncio.Future[None],
         ptt_submission: asyncio.Task[Any] | None,
         ptt_ready: asyncio.Future[None] | None,
+        ptt_slot_fence: _PttSlotFence | None = None,
+        predecessor_ptt_slot: _PttSlotFence | None = None,
     ) -> None:
         """Execute one received line, then retire its reply in wire order."""
         proto = self._protocol
@@ -1530,15 +1556,38 @@ class RigctldServer:
                     managed_off = self._is_managed_off(cmd)
                     handler_task: asyncio.Task[Any] | None = None
                     try:
-                        if not managed_off:
+                        bypass_slot_key = False
+                        if (
+                            not managed_off
+                            and predecessor_ptt_slot is not None
+                            and _is_safety_off_command(cmd)
+                        ):
+                            ready = asyncio.create_task(
+                                predecessor_ptt_slot.ready.wait()
+                            )
+                            try:
+                                await asyncio.wait(
+                                    (ready, predecessor_execution),
+                                    return_when=asyncio.FIRST_COMPLETED,
+                                )
+                                bypass_slot_key = (
+                                    predecessor_ptt_slot.invalidate_waiting_key()
+                                )
+                            finally:
+                                ready.cancel()
+                                await asyncio.gather(ready, return_exceptions=True)
+                        if not managed_off and not bypass_slot_key:
                             await asyncio.shield(predecessor_execution)
                         handler_task = asyncio.create_task(
                             self._handler_execute_call(
                                 cmd,
                                 session_id=session_id,
-                                predecessor=predecessor_execution,
+                                predecessor=None
+                                if bypass_slot_key
+                                else predecessor_execution,
                                 ptt_submission=ptt_submission,
                                 ptt_ready=ptt_ready,
+                                ptt_slot_fence=ptt_slot_fence,
                             )
                         )
                         resp = await asyncio.wait_for(

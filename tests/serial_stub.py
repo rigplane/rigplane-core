@@ -51,11 +51,22 @@ class SplitIcomTransport:
         self.exchanges = 0
         self.reject_exchange: int | None = None
         self.reject_mode = False
+        self.reject_mode_write: int | None = None
+        self.mode_writes = 0
         self.reject_data = False
         self.payload_writes = 0
         self.requests: list[tuple[int, int | None, bytes]] = []
         self.ptt_writes: list[bool] = []
         self.ptt_key_tuples: list[tuple[int, Mode, int, int]] = []
+        self.pause_exchange: int | None = None
+        self.exchange_paused = asyncio.Event()
+        self.exchange_release = asyncio.Event()
+        self.pause_frequency: int | None = None
+        self.frequency_paused = asyncio.Event()
+        self.frequency_release = asyncio.Event()
+        self.key_started = asyncio.Event()
+        self.key_release: asyncio.Event | None = None
+        self.on_key: Callable[[], None] | None = None
         self.dekeyed = asyncio.Event()
         self.restore_attempted = asyncio.Event()
         self.restore_ack: asyncio.Event | None = None
@@ -104,7 +115,8 @@ class SplitIcomTransport:
             self.slots[self.selected] = (bcd_decode(data), mode, filt, data_mode)
         elif command == 0x06:
             self.payload_writes += 1
-            if self.reject_mode:
+            self.mode_writes += 1
+            if self.reject_mode or self.mode_writes == self.reject_mode_write:
                 reply_command = 0xFA
             else:
                 self.slots[self.selected] = (
@@ -120,7 +132,8 @@ class SplitIcomTransport:
             rel_freq, rel_mode, rel_filter, rel_data = self.slots[slot]
             if command == 0x26 and len(data) == 4:
                 self.payload_writes += 1
-                if self.reject_mode:
+                self.mode_writes += 1
+                if self.reject_mode or self.mode_writes == self.reject_mode_write:
                     reply_command = 0xFA
                 else:
                     self.slots[slot] = (rel_freq, Mode(data[1]), data[3], data[2])
@@ -150,12 +163,23 @@ class SplitIcomTransport:
             if self.reject_data:
                 reply_command = 0xFA
             else:
-                self.slots[self.selected] = (freq, mode, filt, data[0])
+                self.slots[self.selected] = (
+                    freq,
+                    mode,
+                    data[1] if len(data) > 1 and data[1] else filt,
+                    data[0],
+                )
         elif command == 0x1C and request.sub == 0x00:
             on = bool(data[0])
+            if on:
+                self.key_started.set()
+                if self.key_release is not None:
+                    await self.key_release.wait()
             self.ptt_writes.append(on)
             if on:
                 self.ptt_key_tuples.append(self.slots[self.selected])
+                if self.on_key is not None:
+                    self.on_key()
             else:
                 self.dekeyed.set()
         else:
@@ -168,6 +192,16 @@ class SplitIcomTransport:
             data=reply_data,
         )
         self._responses.put_nowait(wrap_civ_in_udp(reply))
+        if (
+            command == 0x07
+            and data == b"\xb0"
+            and self.exchanges == self.pause_exchange
+        ):
+            self.exchange_paused.set()
+            await self.exchange_release.wait()
+        if command == 0x05 and bcd_decode(data) == self.pause_frequency:
+            self.frequency_paused.set()
+            await self.frequency_release.wait()
 
 
 class SerialFrameError(RuntimeError):

@@ -18,7 +18,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ..commands import build_civ_frame
@@ -104,6 +104,9 @@ _RIGCTLD_PTT_SUBMISSION: ContextVar[asyncio.Task[Any] | None] = ContextVar(
 )
 _RIGCTLD_PTT_READY: ContextVar[asyncio.Future[None] | None] = ContextVar(
     "rigctld_ptt_ready", default=None
+)
+_RIGCTLD_PTT_SLOT: ContextVar[_PttSlotFence | None] = ContextVar(
+    "rigctld_ptt_slot", default=None
 )
 
 
@@ -412,9 +415,6 @@ def _terminal_lifecycle_state(
     return None
 
 
-# Terminal lifecycle states that are evidence the write was actually carried
-# out: the executor ran to completion and the command was still the live one
-# when it did (``acknowledged``), or a readback has since confirmed it.
 _APPLIED_LIFECYCLE_STATES: frozenset[str] = frozenset(
     {"acknowledged", "confirmed", "reconciled"}
 )
@@ -454,6 +454,44 @@ class _RigctldCommandFailure(Exception):
 
 
 @dataclass(slots=True)
+class _PttSlotFence:
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
+    write_started: bool = False
+    invalidated: bool = False
+
+    def invalidate_waiting_key(self) -> bool:
+        if not self.ready.is_set() or self.write_started:
+            return False
+        self.invalidated = True
+        return True
+
+
+def _is_safety_off_command(cmd: RigctldCommand) -> bool:
+    try:
+        if cmd.long_cmd == "set_ptt":
+            return bool(cmd.args) and int(cmd.args[0]) == 0
+        return cmd.long_cmd == "send_raw" and tx_interlock.is_exact_raw_dekey_frame(
+            _parse_raw_hex(cmd.args)
+        )
+    except (ValueError, IndexError):
+        return False
+
+
+def _is_positive_ptt_command(cmd: RigctldCommand) -> bool:
+    try:
+        if cmd.long_cmd == "set_ptt":
+            return bool(cmd.args) and int(cmd.args[0]) != 0
+        return (
+            cmd.long_cmd == "send_raw"
+            and not _is_safety_off_command(cmd)
+            and tx_interlock.classify_raw_civ_frame_tx_family(_parse_raw_hex(cmd.args))
+            is not False
+        )
+    except (ValueError, IndexError):
+        return False
+
+
+@dataclass(slots=True)
 class _RigctldCommandExecutor:
     handler: "RigctldHandler"
     predecessor: asyncio.Future[None] | None = None
@@ -473,6 +511,7 @@ class _RigctldCommandExecutor:
         async with self.handler._vfo_slot_lock:
             if generation != self.handler._ptt_slot_generation:
                 raise _RigctldCommandFailure(HamlibError.ERJCTED)
+            self.handler._ptt_key_generation += 1
             return await self._execute_managed_ptt_unlocked(
                 intent, key_generation=generation
             )
@@ -783,7 +822,27 @@ class _RigctldCommandExecutor:
             # terminal lifecycle and the client an ``RPRT -5``, where the old
             # empty-but-successful response claimed a write that may never
             # have landed.
-            resp = await send_fn(frame_bytes)
+            if tx_interlock.is_exact_raw_dekey_frame(frame_bytes):
+                self.handler._ptt_slot_generation += 1
+                resp = await send_fn(frame_bytes)
+            elif (
+                tx_interlock.classify_raw_civ_frame_tx_family(frame_bytes) is not False
+            ):
+                generation = self.handler._ptt_slot_generation
+                fence = _RIGCTLD_PTT_SLOT.get()
+                if fence is not None:
+                    fence.ready.set()
+                async with self.handler._vfo_slot_lock:
+                    self.handler._start_slot_key(generation)
+                    if (
+                        self.handler._has_canonical_state_store
+                        and self.handler._resolve_rigctld_rf_state()
+                        is not tx_interlock.RfState.RX
+                    ):
+                        raise _RigctldCommandFailure(HamlibError.ERJCTED)
+                    resp = await send_fn(frame_bytes)
+            else:
+                resp = await send_fn(frame_bytes)
             if resp is None:
                 return CommandExecutionResult(details={"values": []})
             raw = _civ_frame_to_bytes(resp)
@@ -954,6 +1013,7 @@ class RigctldHandler:
         # directly, and the ordinary handlers do not call a transaction.
         self._vfo_slot_lock = asyncio.Lock()
         self._ptt_slot_generation = 0
+        self._ptt_key_generation = 0
         self._split_selected_reads_live = False
         self._routing = create_routing(radio, getattr(config, "max_power_w", 100.0))
         if state_store is None and isinstance(radio, StateStoreCapable):
@@ -1006,14 +1066,10 @@ class RigctldHandler:
         programme protects, and the reason that design was rejected on
         review evidence (PR #2755).
 
-        This gate is called by each ``_cmd_set_*`` handler BEFORE
-        :meth:`CommandService.execute`, not from inside the injected
-        executor — ``CommandService.execute`` records an optimistic pending
-        overlay and emits "accepted"/"queued" lifecycle events before the
-        executor ever runs, so a write refused *inside* the executor would
-        still have already told our own state model (and therefore our own
-        UI) that the write was in flight. Returning a terminal response here
-        means a dropped write never reaches any of that.
+        Unmanaged ``_cmd_set_*`` handlers call this before
+        :meth:`CommandService.execute`. Split writes also recheck RF state
+        and intervening keys under the slot lock in
+        :meth:`_run_on_split_tx_slot`.
 
         Two outcomes when the disposition is DEFER (``None`` for everything
         else — RX, non-DEFER, or no canonical store to check against):
@@ -1064,13 +1120,10 @@ class RigctldHandler:
     async def _execute_write(self, intent: CommandIntent) -> CommandServiceResult:
         """Run one material write and report only the outcome we actually have.
 
-        This seat answers ``RPRT 0`` for a write the radio never saw in
-        exactly one case: the deliberate pre-send policy drop in
-        :meth:`_defer_write_gate` (known TX, MOR-1881's owner ruling). That
-        exception is bounded — it ends the moment the operator unkeys — and it
-        is taken *before* this method is entered, so nothing here can widen
-        it. Any write that gets this far was sent, and its terminal result is
-        reported truthfully (MOR-1882):
+        Known-TX DEFER writes may be dropped with ``RPRT 0`` by
+        :meth:`_defer_write_gate` or the split transaction's slot-lock check.
+        A key that intervenes while a split write waits also drops that write.
+        Other terminal results are reported as follows (MOR-1882):
 
         * **Timeout** — ``ETIMEOUT``, with the ``timed_out`` terminal
           lifecycle :class:`CommandService` emits on the way past.
@@ -1508,6 +1561,7 @@ class RigctldHandler:
         predecessor: asyncio.Future[None] | None = None,
         ptt_submission: asyncio.Task[Any] | None = None,
         ptt_ready: asyncio.Future[None] | None = None,
+        ptt_slot_fence: _PttSlotFence | None = None,
     ) -> RigctldResponse:
         """Execute a parsed rigctld command and return the response.
 
@@ -1524,6 +1578,7 @@ class RigctldHandler:
         predecessor_token = _RIGCTLD_PREDECESSOR.set(predecessor)
         submission_token = _RIGCTLD_PTT_SUBMISSION.set(ptt_submission)
         ready_token = _RIGCTLD_PTT_READY.set(ptt_ready)
+        slot_token = _RIGCTLD_PTT_SLOT.set(ptt_slot_fence)
         # Read-only gate
         try:
             controller = getattr(self._radio, "_controller_authority", None)
@@ -1593,6 +1648,7 @@ class RigctldHandler:
                 logger.exception("Internal error executing %s", cmd.long_cmd)
                 return _err(HamlibError.EINTERNAL)
         finally:
+            _RIGCTLD_PTT_SLOT.reset(slot_token)
             _RIGCTLD_PTT_READY.reset(ready_token)
             _RIGCTLD_PTT_SUBMISSION.reset(submission_token)
             _RIGCTLD_PREDECESSOR.reset(predecessor_token)
@@ -2219,12 +2275,24 @@ class RigctldHandler:
             await self._route_ptt_unlocked(False, session_id=session_id)
             return
         generation = self._ptt_slot_generation
+        fence = _RIGCTLD_PTT_SLOT.get()
+        if fence is not None:
+            fence.ready.set()
         async with self._vfo_slot_lock:
-            if generation != self._ptt_slot_generation:
-                raise _RigctldCommandFailure(HamlibError.ERJCTED)
+            self._start_slot_key(generation)
             await self._route_ptt_unlocked(
                 True, session_id=session_id, key_generation=generation
             )
+
+    def _start_slot_key(self, generation: int) -> None:
+        fence = _RIGCTLD_PTT_SLOT.get()
+        if generation != self._ptt_slot_generation or (
+            fence is not None and fence.invalidated
+        ):
+            raise _RigctldCommandFailure(HamlibError.ERJCTED)
+        if fence is not None:
+            fence.write_started = True
+        self._ptt_key_generation += 1
 
     async def _route_ptt_unlocked(
         self,
@@ -3226,7 +3294,20 @@ class RigctldHandler:
         profile = getattr(self._radio, "profile", None)
         if swap is None or getattr(profile, "swap_ab_code", None) is None:
             raise _RigctldCommandFailure(HamlibError.ENAVAIL)
+        key_generation = self._ptt_key_generation
         async with self._vfo_slot_lock:
+            rf_state = (
+                self._resolve_rigctld_rf_state()
+                if self._has_canonical_state_store
+                else tx_interlock.RfState.RX
+            )
+            if rf_state is tx_interlock.RfState.UNKNOWN:
+                raise _RigctldCommandFailure(HamlibError.ERJCTED)
+            if (
+                rf_state is tx_interlock.RfState.TX
+                or key_generation != self._ptt_key_generation
+            ):
+                return CommandExecutionResult()
             self._split_selected_reads_live = True
             failure: BaseException | None = None
 
@@ -3403,6 +3484,7 @@ class RigctldHandler:
                 # DATA is applied while the TX slot is still selected, so it
                 # lands on the TX VFO — not on the restored RX slot.
                 await self._apply_packet_data_mode(receiver=0)
+                await confirmed_mode(mode, filter_width=resolved_filter)
 
         return await self._run_on_split_tx_slot(_write)
 
