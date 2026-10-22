@@ -149,6 +149,11 @@
       "raw_min": 0
     }
   },
+  "cwText": {
+    "maxLength": 512,
+    "memoryChannel": null,
+    "supported": true
+  },
   "dataModeCount": 1,
   "dataModeLabels": {
     "0": "OFF",

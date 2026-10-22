@@ -3,7 +3,7 @@
 Data from the real bench IC-7300 (USB CI-V, 2026-10-21), read-only, receive
 side only. **Data: never edited by hand.** When
 `tests/testkit/test_ic7300_conformance.py` reports a divergence between
-`CivSerialFake` (recorded table mounted, `tests/testkit/ic7300_fakes.py`) and
+`CivSerialFake` (built from the simulation profile, `tests/testkit/ic7300_fakes.py`) and
 this recording, the fix belongs in the simulator and the matching
 `conformance_ledger.json` entry is then deleted (ratchet: the test fails both
 for a divergence missing from the ledger and for a ledger entry that no
@@ -28,7 +28,7 @@ longer diverges).
 - `civ_pairs.jsonl` - rows `{window, transport:"usb", t, dir, frame}` like the IC-7610 file. Reads the server issues after startup are included (the Core forms of the scope setting reads carry a selector byte, e.g. `27 15 00`, and are all answered).
 - `probe_answers.json` - the probe's per-command result: class (`data`/`nak`), frame, latency in ms. 168 probes: 151 data, 17 NAK, 0 silent. Reply latency median 30.9 ms (min 15.7, max 108.8).
 - `evidence.json` - facts that cannot be rows of `civ_pairs.jsonl` without teaching the answer table wrong things: the baud sweep, and the scope enable attempt at 19200 (`27 10 01` -> ACK, `27 11 01` -> NAK; no `27 00` frame ever followed; the panel was ON and wave output OFF before and after).
-- `conformance_ledger.json` - known divergences of the fake from this recording: reply latency, accepts any baud, and the scope switch commands (`27 10`/`27 11` reads and `27 10 01` are not implemented by the fake; the recorded wave-output enable at 19200 is NAKed by the radio and so is the fake's, which only coincides).
+- `conformance_ledger.json` - known divergences of the fake from this recording. Empty since MOR-3597: reply latency, the baud gate and the scope wave stream are implemented by `CivSerialFake.from_profile` over `rigplane_testkit/sim/profiles/ic7300.toml`, which is the fake `serve --radio ic7300` serves. A new divergence goes in here with its ticket, and the entry is deleted when the simulator is fixed.
 
 ## Commands the radio NAKed (17 of 168, bare forms of the probe)
 

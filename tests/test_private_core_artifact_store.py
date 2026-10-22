@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,18 @@ import pytest
 SCRIPT = (
     Path(__file__).resolve().parents[1]
     / ".github/scripts/private_core_artifact_store.py"
+)
+
+
+# persist() publishes with Linux renameat2(RENAME_NOREPLACE) and refuses on
+# any platform without it (OSError ENOSYS, fail closed; pinned on such
+# platforms by test_persist_refuses_without_linux_no_replace). Tests that
+# need a publish to succeed run where the script runs: Linux. The CI jobs
+# that run tests/ (quick.yml, full.yml) use Linux runners; the macOS
+# platform subset does not include this file. Skipped elsewhere only.
+needs_linux_no_replace = pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="publishing needs Linux renameat2(RENAME_NOREPLACE) (MOR-3701)",
 )
 
 
@@ -119,6 +133,7 @@ def rewrite(bundle, edit):
     path.write_text(json.dumps(manifest))
 
 
+@needs_linux_no_replace
 def test_roundtrip_preserves_manifest_and_only_declared_members(
     store_module, bundle, tmp_path
 ):
@@ -238,6 +253,7 @@ def test_rejects_missing_required_evidence_and_wrong_size(
         store_module.persist(bundle, store)
 
 
+@needs_linux_no_replace
 def test_refuses_existing_identity_and_retrieval_destination(
     store_module, bundle, tmp_path
 ):
@@ -255,6 +271,7 @@ def test_refuses_existing_identity_and_retrieval_destination(
     assert not list(target.iterdir())
 
 
+@needs_linux_no_replace
 def test_retrieval_checks_identity_and_corruption(store_module, bundle, tmp_path):
     store = tmp_path / "store"
     store.mkdir()
@@ -271,6 +288,7 @@ def test_retrieval_checks_identity_and_corruption(store_module, bundle, tmp_path
 
 
 @pytest.mark.parametrize("failure", [OSError("disk full"), KeyboardInterrupt()])
+@needs_linux_no_replace
 def test_failed_copy_never_publishes_and_retry_succeeds(
     store_module, bundle, tmp_path, monkeypatch, failure
 ):
@@ -308,6 +326,7 @@ def test_rejects_store_symlink_and_missing_root(store_module, bundle, tmp_path):
     assert not list(real.iterdir())
 
 
+@needs_linux_no_replace
 def test_atomic_publish_race_never_overwrites_destination(
     store_module, bundle, tmp_path, monkeypatch
 ):
@@ -328,6 +347,7 @@ def test_atomic_publish_race_never_overwrites_destination(
     assert not list(store.rglob("manifest.json"))
 
 
+@needs_linux_no_replace
 def test_retrieval_failure_cleans_partial_destination(
     store_module, bundle, tmp_path, monkeypatch
 ):
@@ -386,6 +406,7 @@ def test_rejects_symlink_store_ancestor_and_member_hardlink(
         store_module.persist(bundle, real / "store")
 
 
+@needs_linux_no_replace
 def test_incomplete_staging_is_not_a_completed_identity(store_module, bundle, tmp_path):
     store = tmp_path / "store"
     store.mkdir()
@@ -435,6 +456,7 @@ def test_source_freeze_identity_is_checked_beyond_member_hashes(
         store_module.persist(bundle, store)
 
 
+@needs_linux_no_replace
 def test_cli_roundtrip(store_module, bundle, tmp_path):
     import subprocess
     import sys
@@ -494,6 +516,7 @@ def test_cli_roundtrip(store_module, bundle, tmp_path):
     assert "refused" in refused.stderr
 
 
+@needs_linux_no_replace
 def test_concurrent_publishers_have_exactly_one_winner(store_module, bundle, tmp_path):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -543,5 +566,20 @@ def test_no_replace_api_unavailable_fails_closed(
     monkeypatch.setattr(store_module.ctypes, "CDLL", lambda *a, **k: object())
     with pytest.raises(OSError, match="renameat2"):
         store_module.persist(bundle, store)
+    assert not list(store.rglob("manifest.json"))
+    assert not list(store.rglob(".pending-*"))
+
+
+@pytest.mark.skipif(
+    sys.platform == "linux", reason="Linux has renameat2(RENAME_NOREPLACE)"
+)
+def test_persist_refuses_without_linux_no_replace(store_module, bundle, tmp_path):
+    # The real libc of a non-Linux host (macOS has no renameat2): persist
+    # refuses with ENOSYS and leaves nothing published or staged (MOR-3701).
+    store = tmp_path / "store"
+    store.mkdir()
+    with pytest.raises(OSError, match="renameat2") as raised:
+        store_module.persist(bundle, store)
+    assert raised.value.errno == errno.ENOSYS
     assert not list(store.rglob("manifest.json"))
     assert not list(store.rglob(".pending-*"))

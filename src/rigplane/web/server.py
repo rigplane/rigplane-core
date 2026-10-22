@@ -715,6 +715,26 @@ def _format_band_plan_config(new_region: str, existing: dict[str, Any]) -> str:
     return "".join(lines)
 
 
+def _serialize_cw_text(profile: "RadioProfile", radio: object) -> dict[str, object]:
+    """``cwText`` (MOR-3678): whether ``send_cw_text`` works on this radio.
+
+    Separate from the ``cw`` tag / ``hasCw``, which keep driving the CW
+    decoder, console and keyer controls. ``supported`` also needs a backend
+    that can run ``send_cw_text`` (``cw_text_sender``, the check the send
+    path uses); the limits stay the profile's. With no radio attached yet
+    the profile's answer stands (a send then fails as not connected).
+    """
+    from ..profiles import cw_text_sender
+
+    spec = profile.cw_text
+    runs = radio is None or cw_text_sender(radio) is not None
+    return {
+        "supported": spec.supported and runs,
+        "maxLength": spec.max_length,
+        "memoryChannel": spec.memory_channel,
+    }
+
+
 def _serialize_filter_config(profile: "RadioProfile") -> dict[str, dict[str, object]]:
     config = profile.filter_config or {}
     result: dict[str, dict[str, object]] = {}
@@ -4176,7 +4196,12 @@ class WebServer:
         if profile is not None:
             capabilities.update(
                 {
+                    "cwText": _serialize_cw_text(profile, self._radio),
                     "modes": list(profile.modes),
+                    "modeFamilies": {
+                        name: list(members)
+                        for name, members in profile.mode_families.items()
+                    },
                     "filters": list(profile.filters),
                     "filterWidthMin": profile.filter_width_min,
                     "filterWidthMax": profile.filter_width_max,
@@ -4881,6 +4906,7 @@ class WebServer:
                     # leaving ``power_on`` undeclared (a level-only profile, see
                     # ``RadioProfile.infers_power_on_from_liveness``).
                     "powerOnCommand": profile.supports_command("power_on"),
+                    "cwText": _serialize_cw_text(profile, self._radio),
                     "vfoScheme": profile.vfo_scheme,
                     "vfoReadback": profile.vfo_readback,
                     "freqRanges": freq_ranges,
@@ -4890,6 +4916,10 @@ class WebServer:
                         else {}
                     ),
                     "modes": list(profile.modes),
+                    "modeFamilies": {
+                        name: list(members)
+                        for name, members in profile.mode_families.items()
+                    },
                     "filters": list(profile.filters),
                     "filterWidthMin": profile.filter_width_min,
                     "filterWidthMax": profile.filter_width_max,
@@ -6092,13 +6122,16 @@ class WebServer:
             )
             return
         except RuntimeError as exc:
+            from ..profiles import CwTextSendCancelledError
+
             message = str(exc)
-            status, reason, code = (
-                (409, "Conflict", "unsupported_command")
-                if command_descriptor(raw_name) is None
-                and "does not support" in message
-                else (500, "Internal Server Error", "command_failed")
-            )
+            if isinstance(exc, CwTextSendCancelledError):
+                # MOR-3700: a CW stop or a transmit abort ended the send.
+                status, reason, code = (409, "Conflict", "command_cancelled")
+            elif command_descriptor(raw_name) is None and "does not support" in message:
+                status, reason, code = (409, "Conflict", "unsupported_command")
+            else:
+                status, reason, code = (500, "Internal Server Error", "command_failed")
             await self._send_json(
                 writer,
                 status,
@@ -7054,12 +7087,16 @@ class WebServer:
             )
             return
         except RuntimeError as exc:
+            from ..profiles import CwTextSendCancelledError
+
             message = str(exc)
-            status, reason, code = (
-                (409, "Conflict", "unsupported_command")
-                if "does not support" in message
-                else (500, "Internal Server Error", "command_failed")
-            )
+            if isinstance(exc, CwTextSendCancelledError):
+                # MOR-3700: a CW stop or a transmit abort ended the send.
+                status, reason, code = (409, "Conflict", "command_cancelled")
+            elif "does not support" in message:
+                status, reason, code = (409, "Conflict", "unsupported_command")
+            else:
+                status, reason, code = (500, "Internal Server Error", "command_failed")
             body = json.dumps(
                 {"error": code, "message": message},
                 separators=(",", ":"),

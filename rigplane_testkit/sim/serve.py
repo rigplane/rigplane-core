@@ -8,9 +8,9 @@ rejected control event, plus start and stop, lands in a bounded trace
 field; the trace is a log of what happened, not a replay script (a restore
 timer's ``usb_reappear`` record appears only if the timer fires).
 
-Two radio kinds (MOR-3594): ``ic7610`` (LAN) and ``ic7300`` — the serial
-CI-V fake on a real TCP listener (``socket://``) plus a PTY where the
-platform has one; :class:`RadioBackend` is the seam between them.
+Three radio kinds: ``ic7610`` (LAN, MOR-3593), ``ic7300`` (serial CI-V,
+MOR-3594) and ``ftx1`` (Yaesu CAT serial, MOR-3602) — each on real
+endpoints; :class:`RadioBackend` is the seam between them.
 """
 
 from __future__ import annotations
@@ -26,14 +26,21 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
+
+from rigplane.profiles.rig_loader import RigLoadError
 
 from rigplane_testkit.icom.faults import FaultPlan
 from rigplane_testkit.icom.simulator import MockIcomRadio
 from rigplane_testkit.serial import CivSerialFake
 from rigplane_testkit.serial.endpoints import PtyEndpoint, TcpEndpoint, pty_supported
+from rigplane_testkit.sim.adapters.yaesu_cat import (
+    YaesuCatSerialFake,
+    fidelity_for_banner,
+)
 
 logger = logging.getLogger("rigplane_testkit.sim")
 
@@ -313,9 +320,15 @@ def _ic7610_backend(args: argparse.Namespace) -> RadioBackend:
     )
 
 
+# Profiles, rigs/ and fixtures live under the repo root (see the FTX-1 note below).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 def _ic7300_backend(args: argparse.Namespace, trace: TraceLog) -> RadioBackend:
-    """The stateful serial CI-V fake on a TCP and (where supported) PTY."""
-    fake = CivSerialFake(model="IC-7300")
+    """The IC-7300 simulation profile (MOR-3597) on a TCP and (where supported) PTY."""
+    fake = CivSerialFake.from_profile(_REPO_ROOT)
+    sim = fake.sim_profile
+    assert sim is not None  # from_profile always keeps the profile it loaded
     tcp = TcpEndpoint(fake, host=args.bind)
     pty = PtyEndpoint(fake) if pty_supported() else None
     vanish = _VanishController(fake, trace)
@@ -343,7 +356,9 @@ def _ic7300_backend(args: argparse.Namespace, trace: TraceLog) -> RadioBackend:
     def _startup_fields() -> dict:
         return {
             "radio": "IC-7300",
-            "fidelity": "B",
+            # The profile's tier: tests/testkit/test_ic7300_conformance.py fails
+            # on a divergence outside the (empty) ledger, so A is kept honest.
+            "fidelity": sim.sim.fidelity,
             "evidence": "simulated",
             "transport": "serial",
             "device": tcp.device_url,
@@ -369,15 +384,111 @@ def _ic7300_backend(args: argparse.Namespace, trace: TraceLog) -> RadioBackend:
     return RadioBackend(fake, _start, _stop, _startup_fields, _state, events, vanish)
 
 
+# The FTX-1 sim profile, rigs/ftx1.toml and the fixtures live under the repo
+# root; a repo-relative constant here is the known ADR section 11 extraction
+# blocker, because serve has no --fixtures flag yet.
+_FTX1_REPO_ROOT = _REPO_ROOT
+_FTX1_LEDGER = (
+    _FTX1_REPO_ROOT / "tests" / "fixtures" / "ftx1" / "model_conformance_ledger.json"
+)
+
+
+def _ftx1_backend(args: argparse.Namespace, trace: TraceLog) -> RadioBackend:
+    """The FTX-1 Yaesu CAT fake on a TCP and (where supported) PTY (MOR-3602)."""
+
+    def _on_not_modelled(line: str) -> None:
+        trace.append(
+            "event",
+            "not_modelled",
+            {"request": line},
+            {"ok": False, "outcome": "unsupported"},
+        )
+
+    fake = YaesuCatSerialFake.from_profile(
+        _FTX1_REPO_ROOT, seed=args.seed, on_not_modelled=_on_not_modelled
+    )
+    fidelity = fidelity_for_banner(fake, _FTX1_LEDGER)
+    tcp = TcpEndpoint(fake, host=args.bind)
+    pty = PtyEndpoint(fake) if pty_supported() else None
+    vanish = _VanishController(fake, trace)
+
+    def _ev_ftx1_set_frequency(radio: YaesuCatSerialFake, body: dict) -> dict:
+        hz = _parse_hz(body)
+        try:
+            # The engine bounds the value to the FTX-1's ranges; the setter
+            # bypasses the wire's MEMORY-mode refusal on purpose.
+            radio.frequency_hz = hz
+        except ValueError as exc:
+            raise InvalidArgs(str(exc)) from exc
+        return {"frequency_hz": hz}
+
+    def _ev_usb_vanish(radio: YaesuCatSerialFake, body: dict) -> dict:
+        for_s = _parse_for_s(body) if "for_s" in body else None
+        vanish.vanish(for_s)
+        return {"for_s": for_s} if for_s is not None else {}
+
+    def _ev_usb_reappear(radio: YaesuCatSerialFake, body: dict) -> dict:
+        vanish.reappear()
+        return {}
+
+    async def _start() -> None:
+        await tcp.start()
+        if pty is not None:
+            await pty.start()
+
+    async def _stop() -> None:
+        vanish.cancel()  # a scheduled reappear must not fire into a shutdown
+        if pty is not None:
+            await pty.stop()
+        await tcp.stop()
+
+    def _startup_fields() -> dict:
+        return {
+            "radio": "FTX-1",
+            "fidelity": fidelity,
+            "evidence": "simulated",
+            "transport": "serial",
+            "device": tcp.device_url,
+            "pty": pty.device if pty is not None else None,
+        }
+
+    def _state() -> dict:
+        return {
+            "frequency_hz": fake.frequency_hz,
+            "mode": fake.mode,
+            "ptt": fake.ptt,
+            "s_meter": fake.s_meter,
+            "open_count": fake.open_count,
+            "vanished": vanish.vanished,
+        }
+
+    events = {
+        "set_frequency": _ev_ftx1_set_frequency,
+        "usb_vanish": _ev_usb_vanish,
+        "usb_reappear": _ev_usb_reappear,
+        "silence": _ev_serial_silence,
+    }
+    return RadioBackend(fake, _start, _stop, _startup_fields, _state, events, vanish)
+
+
 def build_stack(args: argparse.Namespace) -> ServeStack:
     """Build the radio backend, trace, stop event and control app (no sockets)."""
     trace = TraceLog(args.trace)
     stop_event = asyncio.Event()
-    backend = (
-        _ic7300_backend(args, trace)
-        if args.radio == "ic7300"
-        else _ic7610_backend(args)
-    )
+    try:
+        if args.radio == "ic7300":
+            backend = _ic7300_backend(args, trace)
+        elif args.radio == "ftx1":
+            backend = _ftx1_backend(args, trace)
+        else:
+            backend = _ic7610_backend(args)
+    except (OSError, ValueError, RigLoadError) as exc:
+        # A missing/unreadable profile, bad TOML or a bad fixture is a
+        # startup error (SystemExit prints the message, no traceback), not
+        # a crash from deep inside a loader. No sockets exist yet; close
+        # the one side effect, a --trace file opened above.
+        trace.close()
+        raise SystemExit(f"serve --radio {args.radio}: {exc}") from exc
     app = web.Application()
     app[_BACKEND_KEY] = backend
     app[_TRACE_KEY] = trace

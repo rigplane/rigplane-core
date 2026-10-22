@@ -42,6 +42,8 @@ Walk this list against your own diff, then run the local pre-review, then push.
 
 ## 2. Defect classes to walk, unit by unit
 
+Which findings must be fixed is decided by the severity policy in section 4.
+
 For each changed or added unit (a function, a workflow step, a configuration or
 schema declaration, a shell command, a documentation claim), ask every question. "Not applicable" is a
 valid answer; skipping the question is not.
@@ -121,8 +123,12 @@ valid answer; skipping the question is not.
    created by a lane script), stop and ask the coordinator to provision it (a
    copy of the lane scripts' `pre-review.sh`), and do not push until it prints
    `PRE-REVIEW: CLEAN`. The script runs Codex read-only on the branch diff and
-   prints every P0-P2 finding, grouped by file, as its output. Fix all of them,
-   fix the siblings of each that lie inside your assigned scope (list the others
+   prints the findings that must be fixed (section 4), grouped by file, as its
+   output, followed by a short list of deferrable items. Fix all the
+   must-fix ones, put the deferrable ones in the PR body under a "Deferred"
+   heading (one line each; the builder session files the one follow-up ticket per
+   PR before merge, the coordinator when the builder has no tracker access), fix
+   the siblings of each that lie inside your assigned scope (list the others
    in the PR body), commit, and run it again until it prints
    `PRE-REVIEW: CLEAN`. If a finding is wrong, pass the evidence with
    `tmp/pre-review.sh -R '<evidence>'`; the next round reads it. The script
@@ -136,23 +142,36 @@ valid answer; skipping the question is not.
    size or scope limits, or a fix needs a decision outside your scope. Never
    push before CLEAN.
 3. Push only when the local pre-review has printed `PRE-REVIEW: CLEAN`, and push
-   once. Never push a fix per finding or an intermediate state: each push can
-   start a new GitHub review. After a GitHub review round, push all fixes of
-   that round together (section 4).
+   once. Never push a fix per finding or an intermediate state.
+4. Get the verdict: `pro-gate.sh <repo> <pr> <builder-family>` posts
+   `Agent Review: PASS <head sha>` from the recorded local verdict (the reviewer
+   family differs from the builder's; if Codex built the change, Spark reviews),
+   then merge. Do not wait for the GitHub Codex bot: it is advisory and
+   asynchronous. A new push needs a new local verdict.
 
-## 4. When Codex still reports on GitHub
+## 4. Severity policy: what to fix, what to defer
 
-- Read every thread of the current head before changing anything. Group them by
-  root cause, fix the class (grep for siblings), answer each thread, and push
-  all fixes in one commit.
-- Fix every valid P0-P2 finding, or answer it with evidence that it is not a
-  bug, before resolving the thread. A behavior fix gets a regression test. A
-  false documentation claim is a P2 and gets corrected in place; a wrong
-  PR-body or comment claim is corrected by editing the PR body or comment, with
-  no commit. A builder never defers a valid P0-P2 to a ticket.
-- Ticket-only follow-ups are for P3 suggestions (naming, style, refactors),
-  which never block. A valid P0-P2 finding is never resolved by a ticket, for
-  internal test and bench tooling too: a wrong verdict, dirty state, lost data,
-  a hung run or a false claim in a README or comment gets fixed (or disproved)
-  before the thread is resolved.
-- Re-run `tmp/pre-review.sh` before the re-push.
+It applies to the local pre-review and to any Codex bot thread on GitHub alike.
+
+- Always fix before merge: P0, P1, and a P2 that changes behaviour (a wrong
+  result or verdict, data loss, state left dirty, a hang, a security or
+  radio-transmit safety defect, a false claim about safety or support in
+  user-facing documentation). A behaviour fix gets a regression test; or answer
+  the finding with evidence that it is not a bug.
+- Do not spend a round on documentation wording, comments, PR-body phrasing,
+  naming, style, test-only polish, or robustness nits in internal tooling that
+  cannot change a verdict or leave state dirty. On a GitHub thread reply
+  `deferred to MOR-xxxx` and resolve it; the gate accepts a resolved thread.
+  One follow-up ticket per PR collects the deferred items (listed in the PR body
+  under "Deferred"; the builder session files it, the coordinator when the
+  builder has no tracker access). Prose fixes ride along with the next code
+  change. Before you push, section 2 item 9 still holds: never push a claim you
+  know is false. This section covers wording-level findings raised afterwards.
+- P3: ticket or ignore.
+- There is no Codex round to wait for: the verdict is the local pre-review. If
+  the GitHub Codex bot later reports a P0 or P1 (or a behaviour-changing P2) on
+  your PR, open a fix PR; that is part of the task's done. A bot thread that is
+  wording-level is answered `deferred to MOR-xxxx` and resolved.
+- Push once per fix round, after `tmp/pre-review.sh` printed CLEAN: group the
+  findings by root cause, fix the class that must be fixed (grep for siblings),
+  answer every GitHub thread, and push all fixes in one commit.
