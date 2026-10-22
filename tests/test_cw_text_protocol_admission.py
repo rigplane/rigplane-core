@@ -218,3 +218,15 @@ async def test_published_support_matches_callable_support_and_execution(
     published = _serialize_cw_text(profile)["supported"]
     assert published is supports_callable(profile, "send_cw_text")
     assert published is await _backend_sends(rig)
+
+
+def test_declared_absent_keyer_memory_command_does_not_enable(tmp_path: Path) -> None:
+    text = _ftx1_text("[cw_text]\nsupported = true\nmemory_channel = 5")
+    text = re.sub(
+        r"^write_keyer_memory\s*=.*$",
+        'write_keyer_memory = { absent = "test: declared absent" }',
+        text,
+        flags=re.MULTILINE,
+    )
+    with pytest.raises(RigLoadError, match=r"yaesu_absent\.toml.*write_keyer_memory"):
+        _variant(tmp_path, "yaesu_absent.toml", text)
