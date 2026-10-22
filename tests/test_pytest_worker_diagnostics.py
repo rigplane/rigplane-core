@@ -70,6 +70,12 @@ def test_quick_worker_diagnostics_wiring() -> None:
         assert f"${{{{ runner.temp }}}}/pytest-worker-diagnostics/{leaf}" in upload
 
 
+# The synthetic child took ~1.4 s in a green quick run on main (2026-10-22,
+# run 39831600325) but missed a 30 s deadline in repeated quick runs of one
+# loaded PR; the deadline only has to catch a real hang.
+_QUALIFICATION_DEADLINE_S = 120
+
+
 @pytest.mark.skipif(
     sys.platform != "linux", reason="Linux signal/resource qualification"
 )
@@ -141,11 +147,15 @@ def test_03_fatal():
             start_new_session=True,
         )
         try:
-            code = child.wait(timeout=30)
+            code = child.wait(timeout=_QUALIFICATION_DEADLINE_S)
         except subprocess.TimeoutExpired:
             os.killpg(child.pid, signal.SIGKILL)
             child.wait()
-            pytest.fail("synthetic diagnostics qualification exceeded 30s")
+            tail = log.read_text(errors="replace")[-4000:]
+            pytest.fail(
+                f"synthetic diagnostics qualification exceeded "
+                f"{_QUALIFICATION_DEADLINE_S}s; child output tail:\n{tail}"
+            )
     output = log.read_text()
     assert code == 1 and "3 failed" in output and "INTERNALERROR" not in output
     assert "INTENTIONAL_SYNTHETIC_ASSERTION" in output
