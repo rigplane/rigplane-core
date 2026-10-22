@@ -18,9 +18,8 @@ def test_shipped_profiles_declare_memory_addressing_and_capability() -> None:
     assert ic705.memory == MemoryProfile("group_channel", 0, 99, 0, 99)
     ic9700 = get_radio_profile("IC-9700")
     assert ic9700.memory == MemoryProfile("band_channel", 1, 3, 1, 99)
-    # The capability is declared together with the reader (list API PR).
     for profile in (ic705, ic9700):
-        assert "memory_read" not in profile.capabilities
+        assert "memory_read" in profile.capabilities
     # Radios without a [memory] section stay without the listing.
     for model in ("IC-7300", "IC-7610"):
         profile = get_radio_profile(model)
