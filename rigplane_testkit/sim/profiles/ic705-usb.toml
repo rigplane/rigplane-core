@@ -1,0 +1,46 @@
+# IC-705 simulation profile (USB CI-V, tier A). Wire facts stay in
+# rigs/ic705.toml; identity/audio/scope select among recorded values.
+# Sourcing: tests/fixtures/ic705/README.md and the fixture files cited per
+# key below. Unsourced keys are omitted.
+
+schema = "rigplane-sim-profile/1"
+
+[sim]
+id = "ic705-usb"
+radio = "IC-705"
+fidelity = "A"
+evidence = ["tests/fixtures/ic705/civ_pairs.jsonl", "tests/golden/wire_oracle/ic705.toml"]
+gaps = [
+    "TX audio path unrecorded",
+    "scope waves recorded at the recorded cadence only",
+    "VHF/UHF answers recorded separately in civ_pairs_vhf_uhf.jsonl (they differ per band) and not mounted",
+    "configured repeater channel (offset, tone, DCS values) not recorded",
+    "firmware version unknown (not readable over CI-V)",
+    "GPS and Bluetooth not modelled",
+    "unknown 1A 05 menu items answered from the recorded table or NAK",
+]
+
+[transport.serial]
+baud = 115200      # capture link speed (README "Provenance")
+echo = false       # recorded: the radio does not echo requests on USB (README trim rule)
+identity = "A4"    # recorded 19 00 reply (probe_answers.json get_transceiver_id)
+
+[initial]
+frequency_hz = 14_074_000  # README "Radio state"; probe get_freq reply 03 00 40 07 14 00
+mode = "USB"               # probe get_mode reply 04 01 01
+filter = 1                 # probe get_mode reply 04 01 01
+
+[answers]
+recorded = [{ file = "tests/fixtures/ic705/civ_pairs.jsonl", transport = "usb" }]
+
+[audio.rx]
+transport = "usb_device"
+sample_rate_hz = 48000  # usb_audio.json coreaudio_format.rx_input
+channels = 2            # usb_audio.json coreaudio_format.rx_input
+sample_format = "s16le" # usb_audio.json core_capture (device-native PCM)
+
+[scope]
+frame = "27 00"
+bins = 475          # 27 00 pixels in the scope window: nine 50-byte middle segments + one 25-byte final segment (segment 1 carries only scope metadata)
+span_hz = 50_000    # recorded 27 15 00 reply 00 00 05 00 00 (BCD) in the scope window
+rate_hz = 4.128     # scope_cadence.json radio_wave.sweeps_per_s (usb_civ)
