@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 import pytest
+from aiohttp import ClientSession
 
 from rigplane.commands import parse_civ_frame
 from rigplane_testkit.serial import CivSerialFake
@@ -379,8 +380,10 @@ def test_a_scope_source_refuses_a_rate_it_cannot_schedule(rate: float) -> None:
 
 
 # The requests the fake answers from its own state, not from the table.
-_NATIVE_REQUESTS = ["fefe94e003fd", "fefe94e004fd", "fefe94e01502fd",
-                    "fefe94e01c00fd", "fefe94e01900fd"]  # fmt: skip
+_NATIVE_REQUESTS = [
+    "fefe94e003fd", "fefe94e004fd", "fefe94e02500fd", "fefe94e02600fd",
+    "fefe94e01502fd", "fefe94e01c00fd", "fefe94e01900fd",
+]  # fmt: skip
 
 
 @pytest.mark.parametrize("request_hex", _NATIVE_REQUESTS)
@@ -487,6 +490,40 @@ async def test_serve_ic7300_serves_the_profile_end_to_end() -> None:
             assert _bcd_le(parse_civ_frame(freq).data) == 14_263_000
             assert await _ask(reader, writer, bytes.fromhex("fefe94e0271101fd")) == ACK
             assert await _stream_sweeps(reader, 0.8)
+        finally:
+            writer.close()
+    finally:
+        await _kill_if_alive(proc)
+
+
+async def test_serve_selected_readbacks_follow_the_live_state() -> None:
+    """`25 00` / `26 00` (what Core polls) track `03` / `04` after changes."""
+    if sys.platform == "win32":
+        pytest.skip("POSIX signal delivery")
+    proc, line = await _start_sim(radio="ic7300")
+    try:
+        host, port = line["device"].removeprefix("socket://").rsplit(":", 1)
+        reader, writer = await asyncio.open_connection(host, int(port))
+        try:
+            async with ClientSession() as http:
+                resp = await http.post(
+                    f"{line['control']}/event",
+                    json={"event": "set_frequency", "hz": 7_100_000},
+                )
+                assert resp.status == 200
+            bcd = bytes.fromhex(f"{7_100_000:010d}")[::-1]
+            freq = await _ask(reader, writer, bytes.fromhex("fefe94e003fd"))
+            assert parse_civ_frame(freq).data == bcd
+            selected = await _ask(reader, writer, bytes.fromhex("fefe94e02500fd"))
+            assert parse_civ_frame(selected).data == b"\x00" + bcd
+            # A native mode/filter write (CW, FIL2) moves 04 and 26 00 together.
+            assert await _ask(reader, writer, bytes.fromhex("fefe94e0060302fd")) == ACK
+            mode = await _ask(reader, writer, bytes.fromhex("fefe94e004fd"))
+            assert parse_civ_frame(mode).data == bytes([0x03, 0x02])
+            selected_mode = await _ask(reader, writer, bytes.fromhex("fefe94e02600fd"))
+            assert parse_civ_frame(selected_mode).data == bytes(
+                [0x00, 0x03, 0x00, 0x02]
+            )
         finally:
             writer.close()
     finally:

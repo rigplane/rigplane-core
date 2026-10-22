@@ -107,6 +107,8 @@ _CMD_METER = 0x15  # meter readings
 _SUB_S_METER = 0x02
 _CMD_TRANSCEIVER_ID = 0x19  # read transceiver ID
 _SUB_TRANSCEIVER_ID = 0x00
+_CMD_SEL_FREQ_GET = 0x25  # read the selected VFO's frequency (data 00)
+_CMD_SEL_MODE_GET = 0x26  # read the selected VFO's mode, data mode and filter (data 00)
 _CMD_PTT = 0x1C  # transceiver status
 _SUB_PTT = 0x00
 _CMD_SCOPE = 0x27  # scope: 00 wave packet, 10 panel on/off, 11 wave output on/off
@@ -603,6 +605,21 @@ class CivSerialFake:
                 self._civ_addr,
                 _CMD_FREQ_GET,
                 data=_bcd_encode_freq(self._frequency_hz),
+            )
+        if cmd == _CMD_SEL_FREQ_GET and parsed.data == b"\x00":
+            return build_civ_frame(
+                CONTROLLER_ADDR,
+                self._civ_addr,
+                _CMD_SEL_FREQ_GET,
+                data=b"\x00" + _bcd_encode_freq(self._frequency_hz),
+            )
+        if cmd == _CMD_SEL_MODE_GET and parsed.data == b"\x00":
+            # Data mode is not modelled: the recorded radio had it off (00).
+            return build_civ_frame(
+                CONTROLLER_ADDR,
+                self._civ_addr,
+                _CMD_SEL_MODE_GET,
+                data=bytes([0x00, self._mode, 0x00, self._filter_width]),
             )
         if cmd == _CMD_FREQ_SET:
             if len(parsed.data) == 5:
