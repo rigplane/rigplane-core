@@ -320,9 +320,15 @@ def _ic7610_backend(args: argparse.Namespace) -> RadioBackend:
     )
 
 
+# Profiles, rigs/ and fixtures live under the repo root (see the FTX-1 note below).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 def _ic7300_backend(args: argparse.Namespace, trace: TraceLog) -> RadioBackend:
-    """The stateful serial CI-V fake on a TCP and (where supported) PTY."""
-    fake = CivSerialFake(model="IC-7300")
+    """The IC-7300 simulation profile (MOR-3597) on a TCP and (where supported) PTY."""
+    fake = CivSerialFake.from_profile(_REPO_ROOT)
+    sim = fake.sim_profile
+    assert sim is not None  # from_profile always keeps the profile it loaded
     tcp = TcpEndpoint(fake, host=args.bind)
     pty = PtyEndpoint(fake) if pty_supported() else None
     vanish = _VanishController(fake, trace)
@@ -350,7 +356,9 @@ def _ic7300_backend(args: argparse.Namespace, trace: TraceLog) -> RadioBackend:
     def _startup_fields() -> dict:
         return {
             "radio": "IC-7300",
-            "fidelity": "B",
+            # The profile's tier: tests/testkit/test_ic7300_conformance.py fails
+            # on a divergence outside the (empty) ledger, so A is kept honest.
+            "fidelity": sim.sim.fidelity,
             "evidence": "simulated",
             "transport": "serial",
             "device": tcp.device_url,
@@ -379,7 +387,7 @@ def _ic7300_backend(args: argparse.Namespace, trace: TraceLog) -> RadioBackend:
 # The FTX-1 sim profile, rigs/ftx1.toml and the fixtures live under the repo
 # root; a repo-relative constant here is the known ADR section 11 extraction
 # blocker, because serve has no --fixtures flag yet.
-_FTX1_REPO_ROOT = Path(__file__).resolve().parents[2]
+_FTX1_REPO_ROOT = _REPO_ROOT
 _FTX1_LEDGER = (
     _FTX1_REPO_ROOT / "tests" / "fixtures" / "ftx1" / "model_conformance_ledger.json"
 )

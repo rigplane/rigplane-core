@@ -3,10 +3,11 @@
 ``tests/fixtures/ic7300/`` holds what the real bench IC-7300 answered over
 its USB CI-V port (2026-10-21, 19200 baud, read-only; README there has the
 provenance). These tests pin the recorded wire facts and measure
-``CivSerialFake`` with the recorded answer table mounted
-(``tests/testkit/ic7300_fakes.py: ic7300_usb_fake``) against them, classifying
-each request's reply from the wire (nak / ack / data with receiver, command,
-sub and payload length), never comparing live state values.
+``CivSerialFake`` built from its simulation profile
+(``tests/testkit/ic7300_fakes.py: ic7300_profile_fake``, the fake
+``serve --radio ic7300`` serves) against them, classifying each request's
+reply from the wire (nak / ack / data with receiver, command, sub and payload
+length), never comparing live state values.
 
 Known divergences live in ``conformance_ledger.json`` next to the fixtures,
 keyed ``usb:<request hex>``; the ratchet is the IC-7610 one
@@ -30,7 +31,12 @@ from rigplane.commands import parse_civ_frame
 from rigplane.profiles import resolve_radio_profile
 from rigplane.profiles.rig_loader import discover_rigs
 
-from testkit.ic7300_fakes import FIXTURES, ic7300_answer_table, ic7300_usb_fake
+from testkit.ic7300_fakes import (
+    FIXTURES,
+    ic7300_answer_table,
+    ic7300_profile_fake,
+    ic7300_usb_fake,
+)
 from testkit.test_ic7610_conformance import (
     _assert_ledger_exact,
     _ask_serial_fake,
@@ -43,6 +49,7 @@ RADIO_ADDR = 0x94
 # probe: allow-list GETs; server_poll: Core server polling (19200);
 # scope_session: Core server with the scope on (115200).
 WINDOWS = ("probe", "server_poll", "scope_session")
+WAVE_PREFIX = b"\xfe\xfe\xe0\x94\x27\x00"
 
 # Probes the real IC-7300 NAKed (probe_answers.json), by cause:
 #   * bare scope reads: Core sends these with a selector byte, so the NAK is a
@@ -198,9 +205,26 @@ async def test_identity_answer_is_the_profile_id() -> None:
 # ---------------------------------------------------------------------------
 
 
+class _WithoutWave:
+    """A reader that drops the scope's ``27 00`` packets, as a client's filter does."""
+
+    def __init__(self, reader) -> None:
+        self._reader = reader
+
+    async def readuntil(self, separator: bytes) -> bytes:
+        while True:
+            frame = bytes(await self._reader.readuntil(separator))
+            if not frame.startswith(WAVE_PREFIX):
+                return frame
+
+
 async def _collect_usb_divergences(table_rows=None) -> dict[str, tuple[str, str]]:
-    fake = ic7300_usb_fake()
-    reader, writer = await fake.opener(url="socket://conformance", baudrate=19200)
+    # The recorded windows span two radio settings (19200 locked, then 115200),
+    # so the replay opens a link that reports no baud: baud behaviour is the
+    # structural check below. No reply latency, to keep the replay quick.
+    fake = ic7300_profile_fake(reply_latency_s=0.0)
+    raw_reader, writer = await fake.opener(url="socket://conformance")
+    reader = _WithoutWave(raw_reader)
     observed: dict[str, tuple[str, str]] = {}
     try:
         for request, reply in _pairs():
@@ -232,7 +256,7 @@ async def _collect_structural_divergences() -> dict[str, tuple[str, str]]:
         f"median {statistics.median(lat)} ms (min {lat[0]}, max {lat[-1]})"
     )
 
-    fake = ic7300_usb_fake()
+    fake = ic7300_profile_fake(baud=115200)
     reader, writer = await fake.opener(url="socket://conformance", baudrate=115200)
     try:
         timings = []
@@ -254,7 +278,7 @@ async def _collect_structural_divergences() -> dict[str, tuple[str, str]]:
     stream = _evidence()["scope_stream_115200"]
     rows = [r for r in _rows() if r["window"] == "scope_session_scope"]
     assert rows and all(r["dir"] == "r2c" for r in rows)  # recorded whole sweeps
-    fake = ic7300_usb_fake()
+    fake = ic7300_profile_fake(baud=115200)
     reader, writer = await fake.opener(url="socket://conformance", baudrate=115200)
     try:
         for switch in ("fefe94e0271001fd", "fefe94e0271101fd"):
@@ -281,7 +305,7 @@ async def _collect_structural_divergences() -> dict[str, tuple[str, str]]:
 
     baud = _evidence()["baud"]
     silent_baud = baud["silent_at"][0]
-    reader2, writer2 = await ic7300_usb_fake().opener(
+    reader2, writer2 = await ic7300_profile_fake().opener(
         url="socket://conformance", baudrate=silent_baud
     )
     try:
@@ -312,10 +336,19 @@ def test_every_ledger_key_has_exactly_one_owner_and_a_ticket() -> None:
         assert set(value) == {"recorded", "simulator", "ticket"}
 
 
-async def test_ratchet_fails_when_a_ledger_entry_is_deleted() -> None:
-    ledger = _ledger()
-    ledger.pop("latency")
+async def test_ratchet_fails_on_a_divergence_missing_from_the_ledger() -> None:
+    observed = {"latency": ("median 30.9 ms", "answers instantly (no reply delay)")}
     with pytest.raises(AssertionError, match="missing from the ledger"):
+        _assert_ledger_exact(observed, _is_named_key, ledger={})
+
+
+async def test_ratchet_fails_on_a_stale_named_entry() -> None:
+    ledger = {
+        "latency": {
+            "recorded": "median 30.9 ms", "simulator": "instant", "ticket": "MOR-3597",
+        }
+    }  # fmt: skip
+    with pytest.raises(AssertionError, match="stale"):
         _assert_ledger_exact(
             await _collect_structural_divergences(), _is_named_key, ledger=ledger
         )

@@ -681,11 +681,10 @@ async def test_signal_exits_0_and_writes_stop_record(tmp_path: Path, sig) -> Non
 
 
 async def _wire_identity(reader, writer, ident: bytes) -> bytes:
-    # Send *ident* on a raw stream; return the parsed reply past the echo.
+    # Send *ident* on a raw stream; return the parsed reply. The IC-7300
+    # profile's USB port does not echo (recorded), so the first frame is it.
     writer.write(ident)
     await writer.drain()
-    echo = await asyncio.wait_for(reader.readuntil(b"\xfd"), 5)
-    assert echo == ident
     return parse_civ_frame(bytes(await asyncio.wait_for(reader.readuntil(b"\xfd"), 5)))
 
 
@@ -713,7 +712,7 @@ async def test_subprocess_serial_end_to_end(tmp_path: Path) -> None:
     try:
         keys = "sim radio fidelity evidence transport device pty control seed"
         assert list(line) == keys.split()
-        assert line["radio"] == "IC-7300" and line["fidelity"] == "B"
+        assert line["radio"] == "IC-7300" and line["fidelity"] == "A"
         assert isinstance(line["pty"], str) and line["pty"].startswith("/dev/")
         host, port = line["device"].removeprefix("socket://").rsplit(":", 1)
         ident = build_civ_frame(0x94, CONTROLLER_ADDR, 0x19, sub=0x00)
@@ -740,7 +739,7 @@ async def test_subprocess_serial_end_to_end(tmp_path: Path) -> None:
             # The serial /state key set; IC-7610-only events answer unsupported.
             wanted = "frequency_hz mode ptt s_meter open_count vanished".split()
             assert set(state) == set(wanted)
-            assert (state["frequency_hz"], state["vanished"]) == (14_074_000, False)
+            assert (state["frequency_hz"], state["vanished"]) == (14_263_000, False)
             async with http.post(
                 f"{line['control']}/event", json={"event": "session_drop"}
             ) as resp:

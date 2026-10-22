@@ -1,17 +1,1 @@
-{
- "baud_gate": {
-  "recorded": "answers only at 19200 baud, silent at 115200, 9600, 4800",
-  "simulator": "answers at any baud",
-  "ticket": "MOR-3620"
- },
- "latency": {
-  "recorded": "median 30.9 ms (min 15.7, max 108.8)",
-  "simulator": "answers instantly (no reply delay)",
-  "ticket": "MOR-3597"
- },
- "scope_wave": {
-  "recorded": "4.085 sweeps/s of 11 packets (median gap 250.0 ms) after wave output on, at 115200",
-  "simulator": "no wave frames after wave-on",
-  "ticket": "MOR-3597"
- }
-}
+{}

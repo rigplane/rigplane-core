@@ -67,7 +67,8 @@ booleans and strings.
 
 ## Serial radios (`--radio ic7300`, MOR-3594)
 
-The IC-7300 is served by the stateful serial CI-V fake (`rigplane_testkit/serial/civ_serial.py`) on
+The IC-7300 is served by the stateful serial CI-V fake (`rigplane_testkit/serial/civ_serial.py`),
+built from its simulation profile `rigplane_testkit/sim/profiles/ic7300.toml` (MOR-3597) on
 real endpoints: a TCP listener usable through pyserial's `socket://` URL — the same open the
 production link performs — and, on macOS and Linux, a pseudo-terminal slave path a serial app opens
 like a device node. On Windows there is no PTY serial simulation: `pty` is `null` and the TCP
@@ -80,6 +81,17 @@ does not fail.
 
 Startup line: same envelope, but `device` (the `socket://` URL) and `pty` (the slave path, or
 `null`) replace `host`/`control_port`/`username`.
+
+What the profile gives the served radio: no CI-V echo (the recorded USB port does not echo), the
+recorded start state (14.263 MHz, USB, FIL2, scope panel on, wave output off), every reply about
+30 ms after its request (recorded median 30.9 ms), and `fidelity` `A` (the recording's divergence
+ledger is empty). The scope switches `27 10` (panel) and `27 11` (wave output) are served natively;
+while wave output is on, the five recorded noise-floor sweeps (475 bins, 11 packets each) stream in
+a loop at the recorded 4.085 sweeps/s. A TCP or PTY link carries no baud, so it is never baud-gated:
+it always answers and always carries the scope. Where a test passes a baud to
+`CivSerialFake.from_profile(...).opener(baudrate=...)`, the radio answers only at the recorded
+19200 (silent at other bauds) and refuses the wave-output enable below 115200, as the bench radio
+did (`tests/fixtures/ic7300/evidence.json`). The profile's `gaps` list what is not modelled.
 
 `GET /state` → `{"frequency_hz":int,"mode":int,"ptt":bool,"s_meter":int,"open_count":int,"vanished":bool}`.
 
