@@ -56,6 +56,7 @@ from rigplane.commands.command_spec import (
 )
 from rigplane.profiles import (
     BandInfo,
+    CwTextSpec,
     ControlDomainSpec,
     ControlLookupPoint,
     EncodedControlChoice,
@@ -686,6 +687,9 @@ class RigConfig:
     # top-level ``[identity].expected_ids``. Empty means no/unverified
     # identity configuration.
     expected_identity_ids: tuple[str, ...] = ()
+    # Typed CW text sending (MOR-3678), from the optional ``[cw_text]``.
+    # Keyword-only so the positional constructor contract cannot shift.
+    cw_text: CwTextSpec = field(default_factory=CwTextSpec, kw_only=True)
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -906,6 +910,7 @@ class RigConfig:
             state_acquisition=self.state_acquisition,
             tx_policy=self.tx_policy,
             expected_identity_ids=self.expected_identity_ids,
+            cw_text=self.cw_text,
         )
 
     def to_command_map(self) -> CommandMap:
@@ -2088,6 +2093,63 @@ def _is_control_char(ch: str) -> bool:
     return code <= 0x1F or 0x7F <= code <= 0x9F
 
 
+_CW_TEXT_KEYS = frozenset({"supported", "max_length", "memory_channel", "memory_type"})
+_CW_TEXT_MEMORY_TYPES = frozenset({"text", "message"})
+
+
+def _parse_cw_text(filename: str, raw: Any, *, has_send_cw: bool) -> CwTextSpec:
+    """Parse the optional top-level ``[cw_text]`` section (MOR-3678).
+
+    Typed CW text sending is separate from the ``cw`` capability tag (the
+    decoder, console and keyer controls). ``supported`` defaults to whether
+    the profile declares a ``send_cw`` command, so a radio without one never
+    advertises it; declaring ``supported = true`` without ``send_cw`` is an
+    error. ``max_length`` (default 512) is the longest text one request may
+    carry: longer requests are rejected, never truncated or split.
+    ``memory_channel`` and ``memory_type`` (``"text"`` / ``"message"``) are
+    for radios that send text by writing a keyer memory and playing it.
+    """
+    if raw is None:
+        return CwTextSpec(supported=has_send_cw)
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [cw_text] must be a table")
+    _reject_unknown_keys(filename, "[cw_text]", raw, _CW_TEXT_KEYS)
+    supported = raw.get("supported", has_send_cw)
+    if not isinstance(supported, bool):
+        raise RigLoadError(f"{filename}: [cw_text].supported must be a boolean")
+    if supported and not has_send_cw:
+        raise RigLoadError(
+            f"{filename}: [cw_text].supported = true needs a send_cw command"
+        )
+    max_length = raw.get("max_length", 512)
+    if (
+        isinstance(max_length, bool)
+        or not isinstance(max_length, int)
+        or max_length < 1
+    ):
+        raise RigLoadError(
+            f"{filename}: [cw_text].max_length must be a positive integer"
+        )
+    channel = raw.get("memory_channel")
+    if channel is not None and (
+        isinstance(channel, bool) or not isinstance(channel, int) or channel < 1
+    ):
+        raise RigLoadError(
+            f"{filename}: [cw_text].memory_channel must be a positive integer"
+        )
+    memory_type = raw.get("memory_type")
+    if memory_type is not None and memory_type not in _CW_TEXT_MEMORY_TYPES:
+        raise RigLoadError(
+            f'{filename}: [cw_text].memory_type must be "text" or "message"'
+        )
+    return CwTextSpec(
+        supported=supported,
+        max_length=max_length,
+        memory_channel=channel,
+        memory_type=memory_type,
+    )
+
+
 def _parse_identity(filename: str, raw: Any) -> tuple[str, ...]:
     """Parse the optional top-level ``[identity]`` section (MOR-3064).
 
@@ -2930,6 +2992,13 @@ def load_rig(path: Path) -> RigConfig:
     )
     tx_policy = _parse_tx_policy(filename, data.get("tx_policy"))
     expected_identity_ids = _parse_identity(filename, data.get("identity"))
+    send_cw_spec = commands.get("send_cw")
+    cw_text = _parse_cw_text(
+        filename,
+        data.get("cw_text"),
+        has_send_cw=send_cw_spec is not None
+        and not isinstance(send_cw_spec, AbsentCommandSpec),
+    )
 
     # The reset-to-radio-default capability is DERIVED from the parsed
     # ``[filters].radio_default_code`` field (MOR-2535), never hand-listed in
@@ -3037,6 +3106,7 @@ def load_rig(path: Path) -> RigConfig:
         state_acquisition=state_acquisition,
         tx_policy=tx_policy,
         expected_identity_ids=expected_identity_ids,
+        cw_text=cw_text,
     )
 
 

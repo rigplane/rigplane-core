@@ -715,6 +715,20 @@ def _format_band_plan_config(new_region: str, existing: dict[str, Any]) -> str:
     return "".join(lines)
 
 
+def _serialize_cw_text(profile: "RadioProfile") -> dict[str, object]:
+    """``cwText`` (MOR-3678): whether ``send_cw_text`` works on this radio.
+
+    Separate from the ``cw`` tag / ``hasCw``, which keep driving the CW
+    decoder, console and keyer controls.
+    """
+    spec = profile.cw_text
+    return {
+        "supported": spec.supported,
+        "maxLength": spec.max_length,
+        "memoryChannel": spec.memory_channel,
+    }
+
+
 def _serialize_filter_config(profile: "RadioProfile") -> dict[str, dict[str, object]]:
     config = profile.filter_config or {}
     result: dict[str, dict[str, object]] = {}
@@ -4176,6 +4190,7 @@ class WebServer:
         if profile is not None:
             capabilities.update(
                 {
+                    "cwText": _serialize_cw_text(profile),
                     "modes": list(profile.modes),
                     "filters": list(profile.filters),
                     "filterWidthMin": profile.filter_width_min,
@@ -4881,6 +4896,7 @@ class WebServer:
                     # leaving ``power_on`` undeclared (a level-only profile, see
                     # ``RadioProfile.infers_power_on_from_liveness``).
                     "powerOnCommand": profile.supports_command("power_on"),
+                    "cwText": _serialize_cw_text(profile),
                     "vfoScheme": profile.vfo_scheme,
                     "vfoReadback": profile.vfo_readback,
                     "freqRanges": freq_ranges,

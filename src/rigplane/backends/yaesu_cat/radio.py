@@ -3578,37 +3578,55 @@ class YaesuCatRadio:
             await self._local_tx_work.run(write)
 
     async def send_cw_text(self, text: str) -> None:
-        """Send CW text via keyer (KY command), split into 24-character chunks.
+        """Send CW text by writing a keyer memory and playing it (MOR-3678).
 
-        Uses ``send_cw(" ", text)`` — the space is the P1 type parameter
-        (keyboard input), not a separator.  Wire format: ``KY {text};``.
+        FTX-1_CAT_OM_ENG_2508-C: ``KM P1 P2..;`` (printed p.17) stores up to
+        50 characters in keyer memory channel P1 (1-5); ``KY P1 P2;``
+        (printed p.18) plays it, P1 ``0`` CW TEXT / ``1`` CW MESSAGE memory.
+        KY has no free-text form. Channel, memory type and the length limit
+        come from the profile's ``[cw_text]``; nothing is chunked, truncated
+        or split. Text with a ``;`` or an ASCII control code is rejected:
+        CAT parameters may not contain them (general rules, printed p.4).
 
-        Args:
-            text: CW text to send (A-Z, 0-9, punctuation).
+        Raises:
+            RuntimeError: The profile does not enable CW text sending.
+            ValueError: The text is longer than the profile limit or holds a
+                character a CAT parameter cannot carry. Nothing is written.
         """
+        spec = self.profile.cw_text
+        if not spec.supported or spec.memory_channel is None:
+            raise RuntimeError("this radio does not support sending CW text yet")
+        if len(text) > spec.max_length:
+            raise ValueError(
+                f"CW text too long: max {spec.max_length} characters, got {len(text)}"
+            )
         if not text:
-            await self.send_cw(" ", "")
-            return
-        chunk_size = 24
+            raise ValueError("CW text is empty")
+        if any(ch == ";" or ord(ch) < 0x20 for ch in text):
+            raise ValueError("CW text cannot contain ';' or control characters")
+        msg_type = "1" if spec.memory_type == "message" else "0"
+        channel = str(spec.memory_channel)
+
+        async def write(is_current: Callable[[], bool] | None) -> None:
+            await self._write(
+                "write_keyer_memory", chan=channel, mem=text, is_current=is_current
+            )
+            if is_current is not None and not is_current():
+                return
+            await self._write(
+                "send_cw", type=msg_type, mem=channel, is_current=is_current
+            )
+
         if self._local_tx_work is None:
-            for i in range(0, len(text), chunk_size):
-                await self.send_cw(" ", text[i : i + chunk_size])
-            return
-
-        async def write_chunks(is_current: Callable[[], bool]) -> None:
-            for i in range(0, len(text), chunk_size):
-                await self._write(
-                    "send_cw",
-                    type=" ",
-                    mem=text[i : i + chunk_size],
-                    is_current=is_current,
-                )
-
-        await self._local_tx_work.run(write_chunks)
+            await write(None)
+        else:
+            await self._local_tx_work.run(write)
 
     async def stop_cw_text(self) -> None:
-        """Stop CW sending by clearing the keyer buffer."""
-        await self.send_cw(" ", "")
+        """Stop keyer memory playback: ``KY P1 0;`` (printed p.18, P2 0 STOP)."""
+        # Unfenced like the old empty-text stop: stopping never keys.
+        msg_type = "1" if self.profile.cw_text.memory_type == "message" else "0"
+        await self._write("send_cw", type=msg_type, mem="0")
 
     # -- Icom-only stubs (AdvancedControlCapable conformance) -----------------
     # Yaesu does not support these features; methods exist for protocol compat.

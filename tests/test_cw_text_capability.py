@@ -135,7 +135,7 @@ def test_declared_section_loads(tmp_path: Path) -> None:
         ('[cw_text]\nsupported = "yes"', True, "supported"),
         ("[cw_text]\nmax_length = 0", True, "max_length"),
         ("[cw_text]\nmax_length = true", True, "max_length"),
-        ("[cw_text]\nmemory_channel = 6", True, "memory_channel"),
+        ("[cw_text]\nmemory_channel = 0", True, "memory_channel"),
         ('[cw_text]\nmemory_channel = "5"', True, "memory_channel"),
         ('[cw_text]\nmemory_type = "keyboard"', True, "memory_type"),
         ("[cw_text]\nchannel = 5", True, "channel"),

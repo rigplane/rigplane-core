@@ -23,6 +23,7 @@ from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.types import ToneSquelchType
 
 __all__ = [
+    "CwTextSpec",
     "ControlLookupPoint",
     "EncodedControlChoice",
     "ControlDomainSpec",
@@ -311,6 +312,28 @@ class TxPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class CwTextSpec:
+    """Whether and how a radio sends typed CW text (MOR-3678).
+
+    Separate from the ``cw`` capability tag, which drives the CW decoder,
+    console and keyer controls: a radio can have ``cw`` and still not
+    accept ``send_cw_text``. Published as ``cwText`` on ``/api/v1/info``
+    and ``/api/v1/capabilities``.
+
+    ``max_length`` is the longest text one ``send_cw_text`` accepts; a
+    longer request is rejected, never truncated or split.
+    ``memory_channel`` and ``memory_type`` are set only for radios that
+    send text by writing a keyer memory and playing it back (Yaesu KM +
+    KY); ``memory_type`` is ``"text"`` or ``"message"``.
+    """
+
+    supported: bool = True
+    max_length: int = 512
+    memory_channel: int | None = None
+    memory_type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RadioProfile:
     """Runtime radio profile used by command routing and capability checks."""
 
@@ -536,6 +559,9 @@ class RadioProfile:
     # unverified identity configuration; the loader validates shape only.
     # Appended to preserve the positional constructor contract.
     expected_identity_ids: tuple[str, ...] = ()
+    # Typed CW text sending (MOR-3678), from the profile's ``[cw_text]``.
+    # Keyword-only so the positional constructor contract cannot shift.
+    cw_text: CwTextSpec = field(default_factory=CwTextSpec, kw_only=True)
 
     @property
     def vfo_swap_code(self) -> int | None:
