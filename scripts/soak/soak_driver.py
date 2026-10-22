@@ -574,15 +574,14 @@ class _TaskProvenance:
 
 
 class _RuntimeTaskAdapter:
-    """In-process overlay keeping every count on one owned population.
+    """In-process overlay for run-owned socket and task counts.
 
-    The runtime payload and the driver-side fallbacks in
-    ``ProcessMetricsSampler.sample`` all read the same population: socket
-    FDs on the harness-created ports, and tasks attributed by run
-    ownership (pending tasks that appeared after the run's baseline,
-    minus the driver's ``soak-`` prefixed tasks) — never by coroutine
-    origin module. With a provenance collector it also correlates one
-    request per probe for task capture, as before.
+    Socket FDs match harness-created ports; tasks appeared after the
+    baseline and lack the driver's ``soak-`` prefix. The runtime payload
+    omits its producing handler and connection. The sampler's fallback
+    supplies client-captured endpoint ports to omit that connection and
+    at most one handler whose writer matches the port pair. With a
+    provenance collector it also correlates a request for task capture.
     """
 
     def __init__(
@@ -610,23 +609,38 @@ class _RuntimeTaskAdapter:
         )
         self._installed = False
 
-    def owned_task_population(self) -> set[asyncio.Task[Any]]:
+    def owned_task_population(
+        self, skip_ports: frozenset[int] | None = None
+    ) -> set[asyncio.Task[Any]]:
         """Pending tasks the run owns, attributed by creation not origin.
 
         Run-owned: appeared after the baseline (the stack's startup
         tasks, per-request handlers, and standard-library helpers the
         run's tasks spawned, whatever module defines the coroutine) and
         not one of the driver's ``soak-`` prefixed traffic tasks.
+        With ``skip_ports``, omit at most one task whose root coroutine's
+        writer matches the port pair.
         """
-        return {
+        population = {
             task
             for task in asyncio.all_tasks()
             if task not in self._task_baseline and _task_counted(task)
         }
+        if skip_ports:
+            for task in population:
+                frame = getattr(task.get_coro(), "cr_frame", None)
+                writer = None if frame is None else frame.f_locals.get("writer")
+                if _probe_connection_ports(writer) == skip_ports:
+                    return population - {task}
+        return population
 
-    def owned_fd_count(self) -> int | None:
+    def owned_fd_count(self, skip_ports: frozenset[int] | None = None) -> int | None:
         """The owned-socket FD count; None when it cannot be measured."""
-        return _owned_socket_fd_count(self._ports) if self._ports else None
+        return (
+            _owned_socket_fd_count(self._ports, skip_ports=skip_ports)
+            if self._ports
+            else None
+        )
 
     def install(self) -> None:
         web = self._stack.web
@@ -650,12 +664,8 @@ class _RuntimeTaskAdapter:
 
         def payload() -> dict[str, Any]:
             result = original_payload()
-            # The probe's own instruments stay out of the measurement:
-            # the request's handler task (this very task — the fallback
-            # route runs in a ``soak-`` task and never has it) and the
-            # probe connection's own two sockets, else a
-            # runtime-pre/fallback-post pair subtracts them from a real
-            # leak's delta (MOR-3575).
+            # Omit this handler and its connection; the fallback passes
+            # client-captured ports to the owned counters (MOR-3575).
             handler_task = asyncio.current_task()
             owned_tasks = {
                 task
@@ -828,18 +838,17 @@ def _run_owned_ports(stack: Any) -> frozenset[int]:
     )
 
 
-def _probe_connection_ports(writer: Any) -> frozenset[int] | None:
+def _probe_connection_ports(transport: Any) -> frozenset[int] | None:
     """The two endpoint ports of the probe request's own connection.
 
-    The handler's ``writer`` carries the server side. Port numbers alone
-    do not identify a connection across addresses and protocols, so the
-    pair is only a best-effort match for the probe's sockets, not an
-    exact connection identity. ``None`` when unreadable.
+    Accepts the client transport or the server's writer. Port numbers
+    alone do not identify a connection across addresses and protocols,
+    so the pair is a best-effort match, not an exact connection identity.
+    ``None`` when unreadable.
     """
     try:
-        sock = None if writer is None else writer.get_extra_info("socket")
-        local = _socket_port(sock.getsockname())
-        peer = _socket_port(sock.getpeername())
+        local = _socket_port(transport.get_extra_info("sockname"))
+        peer = _socket_port(transport.get_extra_info("peername"))
     except (AttributeError, OSError):
         return None
     if local is None or peer is None:
@@ -858,10 +867,8 @@ def _owned_socket_fd_count(
     reported value. ``skip_ports`` names the endpoint ports of one
     connection — the live probe's own request — and removes every
     socket matched by those ports (a port-based best-effort match, not
-    a unique connection identity): counting the probe's sockets would
-    inflate a runtime-route baseline by two FDs the fallback route
-    cannot see and mask a real leak of the smallest detectable size
-    (MOR-3575).
+    a unique connection identity). Both the runtime overlay and the
+    fallback sampler pass the probe's endpoint ports (MOR-3575).
     """
     for fd_dir in ("/proc/self/fd", "/dev/fd"):
         try:
@@ -952,6 +959,19 @@ def _state_connection_status(body: dict[str, Any]) -> str | None:
     return None
 
 
+_PROBE_CLIENT_PORTS: ContextVar[list[frozenset[int] | None] | None] = ContextVar(
+    "soak_probe_client_ports", default=None
+)
+
+
+class _ProbeClientRequest(aiohttp.ClientRequest):
+    async def send(self, conn: Any) -> aiohttp.ClientResponse:
+        capture = _PROBE_CLIENT_PORTS.get()
+        if capture is not None:
+            capture[0] = _probe_connection_ports(conn.transport)
+        return await super().send(conn)
+
+
 class ProcessMetricsSampler:
     """Samples the server process metrics for the soak report.
 
@@ -962,12 +982,12 @@ class ProcessMetricsSampler:
     wins when present, and any field the runtime did not report is
     measured driver-side for this process (the stack runs in-process):
     RSS via ``/proc`` or ``ps``; FDs and tasks — with the overlay
-    installed — from its owned population, the same population the
-    runtime payload reports (``owned_fd_count`` /
-    ``owned_task_population``), without it via ``/proc`` or ``/dev/fd``
-    and ``_server_asyncio_task_count``. The connection column comes
-    from the state document (``_state_connection_status``), not the
-    runtime payload.
+    installed — via ``owned_fd_count`` / ``owned_task_population``,
+    excluding the probe connection and at most one matching handler
+    using the client-captured endpoint ports; without it via ``/proc``
+    or ``/dev/fd`` and ``_server_asyncio_task_count``. The connection
+    column comes from the state document (``_state_connection_status``),
+    not the runtime payload.
     """
 
     def __init__(self, session: aiohttp.ClientSession, base_url: str) -> None:
@@ -1018,11 +1038,17 @@ class ProcessMetricsSampler:
     ) -> ProcessSample:
         collector = self._task_provenance if task_probe is not None else None
         adapter = self._runtime_task_adapter
-        if collector is not None and adapter is not None:
-            with adapter.request(task_probe):
+        probe_ports: list[frozenset[int] | None] = [None]
+        context = _PROBE_CLIENT_PORTS.set(probe_ports)
+        try:
+            if collector is not None and adapter is not None:
+                with adapter.request(task_probe):
+                    runtime = await self.fetch_runtime()
+            else:
                 runtime = await self.fetch_runtime()
-        else:
-            runtime = await self.fetch_runtime()
+        finally:
+            _PROBE_CLIENT_PORTS.reset(context)
+        skip_ports = probe_ports[0]
         rss: int | None = None
         fds: int | None = None
         tasks: int | None = None
@@ -1044,13 +1070,6 @@ class ProcessMetricsSampler:
                     _runtime_missing_reason(runtime, runtime_field),
                 )
         if rss is None or fds is None:
-            # Give a just-finished or refused probe request one loop
-            # pass to finish closing its transport: this reduces the
-            # chance that the fallback counts the probe's own dying
-            # socket, but one pass is not a guarantee of closure
-            # (on a /proc host the metrics helper below takes no await
-            # that would do it either).
-            await asyncio.sleep(0)
             d_rss, d_fds = await _driver_side_process_metrics(os.getpid())
             if rss is None:
                 rss = d_rss
@@ -1061,10 +1080,11 @@ class ProcessMetricsSampler:
                         _runtime_missing_reason(runtime, "rssBytes"),
                     )
             if fds is None:
-                # In-process run: measure the same owned-socket population
-                # the runtime payload reports, so a failed runtime request
-                # cannot switch populations between the pre and post probes.
-                fds = adapter.owned_fd_count() if adapter is not None else None
+                fds = (
+                    adapter.owned_fd_count(skip_ports=skip_ports)
+                    if adapter is not None
+                    else None
+                )
                 if fds is None:
                     fds = d_fds
                 if capture is not None:
@@ -1075,7 +1095,7 @@ class ProcessMetricsSampler:
                     )
         if tasks is None:
             if adapter is not None:
-                population = adapter.owned_task_population()
+                population = adapter.owned_task_population(skip_ports=skip_ports)
                 tasks = len(population)
                 if collector is not None:
                     collector.capture(task_probe, "driver", tasks, tasks=population)
@@ -2449,13 +2469,15 @@ class SoakDriver:
         async with (
             aiohttp.ClientSession(timeout=timeout) as ws_session,
             aiohttp.ClientSession(
-                timeout=timeout, connector=aiohttp.TCPConnector(limit=2)
+                timeout=timeout,
+                connector=aiohttp.TCPConnector(limit=2),
+                request_class=_ProbeClientRequest,
             ) as session,
         ):
             self._ws_session = ws_session
             self._session = session
             self._sampler = ProcessMetricsSampler(session, self._base_url)
-            # Run-wide, so the fallback fields read the owned population.
+            # Pass the run's overlay to the sampler.
             self._sampler._runtime_task_adapter = self._runtime_task_adapter
             if not await self._wait_ready(
                 max(60.0, self._cfg.reconnect_budget_s * 2.0)
@@ -2611,7 +2633,7 @@ async def run_soak(config: SoakConfig) -> dict[str, Any]:
             sim=stack.sim,
             session_count=stack.session_count if managed_tx else None,
         )
-        # Always installed in-process: every route reads owned counts.
+        # Install the owned-count overlay for the in-process run.
         adapter = _RuntimeTaskAdapter(stack, driver._task_provenance, task_baseline)
         driver._runtime_task_adapter = adapter
         adapter.install()
