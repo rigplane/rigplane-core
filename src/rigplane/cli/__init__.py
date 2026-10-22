@@ -2513,9 +2513,14 @@ async def _run(args: argparse.Namespace) -> int:
     if preset:
         _apply_preset(args, preset)
 
+    from rigplane.rig_loader import RigLoadError
+
     try:
         config = await _build_backend_config(args)
-    except ValueError as exc:
+    except (ValueError, RigLoadError) as exc:
+        # --model resolves through the rig profiles; one that does not load
+        # (MOR-3678: e.g. an incomplete [cw_text] enable) is a readable
+        # error naming the file and key, like the create_radio() path.
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     # web, serve and station run for the life of the process on one radio, so
@@ -2574,8 +2579,6 @@ async def _run(args: argparse.Namespace) -> int:
             return 1
     if args.command == "audio" and args.audio_command == "probe":
         return await _cmd_audio_probe(config, args)
-    from rigplane.rig_loader import RigLoadError
-
     try:
         radio = create_radio(config)
     except (ValueError, RigLoadError) as exc:
