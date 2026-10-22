@@ -10,6 +10,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import time
 from unittest.mock import create_autospec
 
 import pytest
@@ -165,8 +166,7 @@ def test_qualification_timeout_reports_diagnostics_and_reaps_group(
             assert message.index(header) > message.index("child output tail:")
         assert len(children) == 1
         diagnostic_spy.assert_called_once_with(children[0].pid)
-        with pytest.raises(ProcessLookupError):
-            os.killpg(children[0].pid, 0)
+        _assert_group_gone(children[0].pid)
     finally:
         for child in children:
             try:
@@ -176,6 +176,24 @@ def test_qualification_timeout_reports_diagnostics_and_reaps_group(
             child.wait(timeout=5)
 
 
+def _assert_group_gone(pgid: int, timeout_s: float = 5.0) -> None:
+    """Fail unless the process group disappears within ``timeout_s``.
+
+    After SIGKILL the controller is reaped by the test, but its xdist worker
+    may still be exiting or waiting to be reaped by init for a moment.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return
+        if time.monotonic() >= deadline:
+            pytest.fail(f"process group {pgid} still present after {timeout_s}s")
+        time.sleep(0.05)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX ps and process groups")
 def test_hang_diagnostics_includes_live_process_group() -> None:
     child = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
