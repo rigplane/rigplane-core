@@ -76,6 +76,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import json
+import math
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -143,6 +144,13 @@ class ScopeSource:
     sweeps: tuple[tuple[tuple[float, bytes], ...], ...]
     rate_hz: float
     min_baud: int | None = None
+
+    def __post_init__(self) -> None:
+        # inf would start every sweep at the same instant and spin the loop.
+        if not 0.0 < self.rate_hz < math.inf:
+            raise ValueError(
+                f"scope rate_hz must be finite and > 0, got {self.rate_hz!r}"
+            )
 
     @classmethod
     def from_civ_pairs(
@@ -340,6 +348,15 @@ class CivSerialFake:
             **extra,
         )
         fake._sim_profile = profile
+        # The native S-meter read must say what the radio said, not the default.
+        assert fake._recorded_answers is not None
+        meter = fake._recorded_answers.answer(
+            build_civ_frame(
+                fake._civ_addr, CONTROLLER_ADDR, _CMD_METER, sub=_SUB_S_METER
+            )
+        )
+        if meter is not None:
+            fake._s_meter = int(parse_civ_frame(meter).data.hex())
         return fake
 
     # ------------------------------------------------------------------

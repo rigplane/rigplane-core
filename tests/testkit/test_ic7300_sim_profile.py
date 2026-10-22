@@ -19,6 +19,8 @@ from pathlib import Path
 import pytest
 
 from rigplane.commands import parse_civ_frame
+from rigplane_testkit.serial import CivSerialFake
+from rigplane_testkit.serial.civ_serial import ScopeSource
 from rigplane_testkit.serial.endpoints import TcpEndpoint
 from rigplane_testkit.sim.profiles import load_sim_profile
 from testkit.ic7300_fakes import FIXTURES, ic7300_profile_fake
@@ -357,6 +359,40 @@ async def test_scope_state_is_per_radio_not_per_connection() -> None:
         assert reply == bytes.fromhex("fefee094271101fd")
     finally:
         writer.close()
+
+
+@pytest.mark.parametrize("rate", ["inf", "-inf", "nan", "0.0"])
+def test_a_profile_with_a_non_finite_or_zero_scope_rate_is_refused(
+    rate: str, tmp_path: Path
+) -> None:
+    text = PROFILE.read_text().replace("rate_hz = 4.085", f"rate_hz = {rate}")
+    custom = tmp_path / "ic7300-custom.toml"
+    custom.write_text(text)
+    with pytest.raises(ValueError, match="rate_hz"):
+        CivSerialFake.from_profile(REPO_ROOT, custom)
+
+
+@pytest.mark.parametrize("rate", [float("inf"), float("nan"), 0.0, -1.0])
+def test_a_scope_source_refuses_a_rate_it_cannot_schedule(rate: float) -> None:
+    with pytest.raises(ValueError, match="rate_hz"):
+        ScopeSource(sweeps=(((0.0, b"x"),),), rate_hz=rate)
+
+
+# The requests the fake answers from its own state, not from the table.
+_NATIVE_REQUESTS = ["fefe94e003fd", "fefe94e004fd", "fefe94e01502fd",
+                    "fefe94e01c00fd", "fefe94e01900fd"]  # fmt: skip
+
+
+@pytest.mark.parametrize("request_hex", _NATIVE_REQUESTS)
+async def test_native_handlers_answer_the_recorded_bytes(request_hex: str) -> None:
+    """Tier A rests on payloads too, not only reply classes (S-meter: 00 00)."""
+    fake = ic7300_profile_fake(reply_latency_s=0.0)
+    reader, writer = await fake.opener(url="socket://p")
+    try:
+        reply = await _ask(reader, writer, bytes.fromhex(request_hex))
+    finally:
+        writer.close()
+    assert reply == _recorded_reply(request_hex)
 
 
 async def _loop_errors_during(seconds: float, body) -> list[dict]:
