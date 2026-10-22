@@ -561,6 +561,12 @@ class RadioProfile:
     # unverified identity configuration; the loader validates shape only.
     # Appended to preserve the positional constructor contract.
     expected_identity_ids: tuple[str, ...] = ()
+    # ``[modes] families`` (MOR-3679): family name -> member modes, e.g.
+    # ``{"cw": ("CW-U", "CW-L")}``. Empty when the profile declares none.
+    # Keyword-only and appended so no positional argument shifts.
+    mode_families: dict[str, tuple[str, ...]] = field(
+        default_factory=dict, kw_only=True
+    )
     # Typed CW text sending (MOR-3678), from the profile's ``[cw_text]``.
     # Keyword-only so the positional constructor contract cannot shift.
     cw_text: CwTextSpec = field(default_factory=CwTextSpec, kw_only=True)

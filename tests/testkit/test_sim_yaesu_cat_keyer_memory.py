@@ -19,6 +19,7 @@ Pure: no sockets, no radio, a ManualClock.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -136,13 +137,30 @@ def test_ky_refuses_out_of_table_parameters(line: str) -> None:
     assert model.keyer_play_requests == ()
 
 
-def test_ky_does_not_key_the_engine_transmitter() -> None:
-    # Playback keying is not modelled: the engine PTT stays off.
+@pytest.mark.parametrize("command", ["KY01;", "KY15;", "KY00;"])
+def test_ky_does_not_key_the_engine_transmitter(command: str) -> None:
+    # Playback keying is not modelled: a KY play or stop, with no KM write
+    # before it, is accepted and recorded but the engine PTT stays off.
     model = _model()
-    assert model.handle("KM1CQ;") is None
-    assert model.handle("KY01;") is None
+    assert model.handle(command) is None
+    assert model.keyer_play_requests == ((int(command[2]), int(command[3])),)
+    assert model.engine.state.ptt is False
     assert model.handle("TX;") == "TX0;"
 
 
 def test_km_and_ky_are_natively_served_set_verbs() -> None:
     assert {"KM", "KY"} <= NATIVE_SET_VERBS
+
+
+_SERVED_SET_VERBS = re.compile(r"natively served SET verbs \(([A-Z ]+)\)")
+
+
+def test_sim_profile_gap_list_names_exactly_the_served_set_verbs() -> None:
+    # The profile's honesty list must not drift from what the model serves.
+    gaps = load_sim_profile(PROFILE_PATH, root=ROOT).sim.gaps
+    listed = [
+        m.group(1).split() for gap in gaps if (m := _SERVED_SET_VERBS.search(gap))
+    ]
+    assert len(listed) == 1, gaps
+    assert sorted(listed[0]) == sorted(NATIVE_SET_VERBS)
+    assert len(listed[0]) == len(set(listed[0]))

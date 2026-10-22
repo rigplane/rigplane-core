@@ -154,6 +154,52 @@ CTCSS_TONE_MAX_CENTIHZ = 25410
 _CTCSS_CAPABILITIES = frozenset({"repeater_tone", "tsql", "sql_type"})
 
 _REQUIRED_SECTIONS = ("radio", "capabilities", "modes", "filters", "vfo")
+# MOR-3679: only ``cw`` has a consumer; add a family when a consumer needs it.
+KNOWN_MODE_FAMILIES = frozenset({"cw"})
+
+
+def _parse_mode_families(
+    filename: str, raw: object, modes: list[str]
+) -> dict[str, tuple[str, ...]]:
+    """Validate ``[modes] families``: known family names, each a non-empty
+    list of distinct mode names from ``[modes].list``; a mode belongs to at
+    most one family (MOR-3679)."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [modes].families must be a table")
+    families: dict[str, tuple[str, ...]] = {}
+    owner: dict[str, str] = {}
+    for name, members in raw.items():
+        if name not in KNOWN_MODE_FAMILIES:
+            raise RigLoadError(
+                f"{filename}: [modes].families unknown family {name!r}; "
+                f"known: {sorted(KNOWN_MODE_FAMILIES)!r}"
+            )
+        if (
+            not isinstance(members, list)
+            or not members
+            or not all(isinstance(mode, str) for mode in members)
+        ):
+            raise RigLoadError(
+                f"{filename}: [modes].families.{name} must be a non-empty list of strings"
+            )
+        for mode in members:
+            if mode not in modes:
+                raise RigLoadError(
+                    f"{filename}: [modes].families.{name} names mode {mode!r} "
+                    "that is not in [modes].list"
+                )
+            if mode in owner:
+                raise RigLoadError(
+                    f"{filename}: [modes].families.{name} repeats mode {mode!r} "
+                    f"(already in family {owner[mode]!r})"
+                )
+            owner[mode] = name
+        families[name] = tuple(members)
+    return families
+
+
 _REQUIRED_RADIO_FIELDS = ("id", "model", "receiver_count", "has_lan", "has_wifi")
 
 
@@ -687,6 +733,12 @@ class RigConfig:
     # top-level ``[identity].expected_ids``. Empty means no/unverified
     # identity configuration.
     expected_identity_ids: tuple[str, ...] = ()
+    # Optional ``[modes] families`` (MOR-3679): family name -> member mode
+    # names from ``modes``, in declared order. Empty when not declared.
+    # Keyword-only and appended so no positional argument shifts.
+    mode_families: dict[str, tuple[str, ...]] = field(
+        default_factory=dict, kw_only=True
+    )
     # Typed CW text sending (MOR-3678), from the optional ``[cw_text]``.
     # Keyword-only so the positional constructor contract cannot shift.
     cw_text: CwTextSpec = field(default_factory=CwTextSpec, kw_only=True)
@@ -816,6 +868,7 @@ class RigConfig:
             has_lan=self.has_lan,
             freq_ranges=ranges,
             modes=tuple(self.modes),
+            mode_families=dict(self.mode_families),
             filters=tuple(self.filters),
             command_names=frozenset(
                 name
@@ -2335,6 +2388,10 @@ def load_rig(path: Path) -> RigConfig:
 
     # Validate [modes]
     modes = data["modes"].get("list", [])
+    if not isinstance(modes, list) or not all(isinstance(mode, str) for mode in modes):
+        # A scalar would pass ``in`` checks by substring and publish its
+        # characters as modes (MOR-3679 pro-gate finding).
+        raise RigLoadError(f"{filename}: [modes].list must be a list of strings")
     if not modes:
         raise RigLoadError(f"{filename}: [modes].list must not be empty")
     # MOR-2518: optional [modes].codes — one single-character code per mode,
@@ -2358,6 +2415,7 @@ def load_rig(path: Path) -> RigConfig:
         if len(set(raw_mode_codes)) != len(raw_mode_codes):
             raise RigLoadError(f"{filename}: [modes].codes entries must be unique")
         mode_codes = tuple(raw_mode_codes)
+    mode_families = _parse_mode_families(filename, data["modes"].get("families"), modes)
 
     # Validate [filters]
     filter_section = data["filters"]
@@ -2858,7 +2916,7 @@ def load_rig(path: Path) -> RigConfig:
         override_section,
         filename=filename,
     )
-    keyboard = _filter_undeclared_mode_bindings(keyboard, modes)
+    keyboard = _filter_undeclared_mode_bindings(keyboard, tuple(modes))
 
     # Parse optional [audio] codec and sample-rate policy (#797, #1470).
     codec_preference: tuple[str, ...] | None = None
@@ -3029,6 +3087,7 @@ def load_rig(path: Path) -> RigConfig:
         capabilities=capability_features,
         modes=tuple(modes),
         mode_codes=mode_codes,
+        mode_families=mode_families,
         filters=tuple(filters),
         filter_width_min=filter_width_min,
         filter_width_max=filter_width_max,

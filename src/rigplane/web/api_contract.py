@@ -204,6 +204,7 @@ RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {
             "capabilities",
             "receivers",
             "modes",
+            "modeFamilies",
             "filters",
             "audioConfig",
             "webrtc",

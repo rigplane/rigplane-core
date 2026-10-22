@@ -1179,6 +1179,7 @@ Notable fields:
 | Field | Type | Notes |
 |------|------|-------|
 | `receivers` | `int` | Receiver count from active profile |
+| `modeFamilies` | `object` | Profile `[modes] families`: family name -> mode names, e.g. `{"cw": ["CW-U", "CW-L"]}`. `{}` when the profile declares none. Also in `/api/v1/info` `capabilities`. Use it instead of guessing a radio's CW mode names. |
 | `vfoScheme` | `"ab"` \| `"main_sub"` \| `"ab_shared"` \| `"single"` | VFO label scheme |
 | `freqRanges[].bands[].bsrCode` | `int` (optional) | Band Stack Register code for `set_band` |
 | `scopeSource` | `"hardware"` \| `"audio_fft"` \| `null` | Spectrum data source |

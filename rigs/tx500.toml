@@ -78,6 +78,8 @@ features = [
 # carry the single-digit register. (Was wrongly 6=FSK / 9=FSK-R with RTTY
 # labels and a "DIGI" label — corrected per MOR-684 / audit gap D.)
 list = ["LSB", "USB", "CW", "FM", "AM", "DIG", "CW-R"]
+# MOR-3679: the CW modes, named once here for every client.
+families = { cw = ["CW", "CW-R"] }
 
 [filters]
 # FL command: RX filter 0-3 (P1), TX filter 0-1 (P2).

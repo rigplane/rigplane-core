@@ -35,6 +35,7 @@
     {"bands": [], "end": 137000000, "label": "Air", "start": 108000000},
     {"bands": [], "end": 108000000, "label": "WFM", "start": 88000000},
     {"bands": [], "end": 470000000, "label": "Gen", "start": 100000}],
+  "modeFamilies": {"cw": ["CW-U", "CW-L"]},
   "model": "FTX-1",
   "modes": ["LSB", "USB", "CW-U", "FM", "AM", "RTTY-L", "CW-L", "DATA-L", "RTTY-U", "DATA-FM", "FM-N", "DATA-U", "AM-N", "PSK", "DATA-FM-N", "C4FM-DN", "C4FM-VW"],
   "providerGeneration": 0,

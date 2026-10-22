@@ -424,6 +424,7 @@ Optional section for radios that support the spectrum scope.
 |--------|----------|----------|----------------------------------------------------|
 | `list` | string[] | yes      | Supported operating modes (e.g. `"USB"`, `"CW"`)  |
 | `codes` | string[] | no | One single-character code per mode, parallel to `list` (validated: same length, one character each, unique). Yaesu CAT `MD` P2 codes. |
+| `families` | table | no | Family name -> non-empty list of mode names from `list`, e.g. `families = { cw = ["CW-U", "CW-L"] }`. The only family name is `cw` (MOR-3679); the loader rejects any other name, a mode that is not in `list` (names compare exactly as written in `list`), and a mode listed twice. Published as `modeFamilies` by `/api/v1/info` and `/api/v1/capabilities`; `{}` when absent. |
 
 ## `[filters]` — IF Filters
 

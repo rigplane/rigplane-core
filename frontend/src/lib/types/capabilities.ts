@@ -233,6 +233,11 @@ export interface Capabilities {
    *  Present only when the profile declares `[ctcss]` (MOR-2111). */
   ctcssTones?: number[];
   modes: string[];
+  /** Profile-declared mode families (MOR-3679, `[modes] families`):
+   *  family name -> mode names from `modes`, e.g. `{ cw: ['CW-U', 'CW-L'] }`.
+   *  `{}` when the profile declares none; absent on older servers. Read the
+   *  radio's CW modes from here instead of a client-side list. */
+  modeFamilies?: Record<string, string[]>;
   filters: string[];
   filterWidthMin?: number;   // Min filter width in Hz (default 50)
   filterWidthMax?: number;   // Max filter width in Hz (default 9999)
@@ -675,6 +680,24 @@ export function validateCapabilities(value: unknown): Capabilities {
     }
   });
   requireStringArray(raw.modes, '$.modes');
+  if ('modeFamilies' in raw) {
+    // Same invariants as the Core loader (MOR-3679): each family is a
+    // non-empty list of modes from `modes`, a mode in at most one family.
+    // Family names are not restricted, so a newer server may add one.
+    const families = requireRecord(raw.modeFamilies, '$.modeFamilies');
+    const declared = new Set(raw.modes as string[]);
+    const seen = new Set<string>();
+    for (const [name, members] of Object.entries(families)) {
+      const path = `$.modeFamilies.${name}`;
+      requireStringArray(members, path);
+      if ((members as string[]).length === 0) invalid(path, 'a non-empty array');
+      (members as string[]).forEach((mode, index) => {
+        if (!declared.has(mode)) invalid(`${path}[${index}]`, 'a mode listed in $.modes');
+        if (seen.has(mode)) invalid(`${path}[${index}]`, 'a mode in at most one family');
+        seen.add(mode);
+      });
+    }
+  }
   requireStringArray(raw.filters, '$.filters');
   if ('ctcssTones' in raw) {
     if (!Array.isArray(raw.ctcssTones) || raw.ctcssTones.length === 0) {
