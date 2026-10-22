@@ -38,7 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a Yaesu enable without keyer memory channel 1-5, a `max_length` of at
   most 50 (one `KM` write) and writable `KM`/`KY` commands, or any Kenwood
   enable, does not load. The `cw` tag no longer gates sending or stopping
-  CW text over HTTP, WebSocket or the CLI; `cwText` alone decides.
+  CW text over HTTP, WebSocket or the CLI; `cwText` alone decides. A
+  backend with no CW text sending (external rigctld) answers all three as an
+  unsupported command, and a rig profile that does not load is reported by
+  every CLI path (including `--model` and `audio probe`) as `Error: <file>:
+  <key> ...`, exit 1.
 
 ## [3.0.0b19] — 2026-10-20
 

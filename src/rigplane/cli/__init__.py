@@ -2976,6 +2976,7 @@ async def _cmd_audio_caps(
 
 async def _cmd_audio_probe(config: BackendConfig, args: argparse.Namespace) -> int:
     """Run a safe RX-only LAN audio capability probe."""
+    from rigplane.rig_loader import RigLoadError
 
     if not isinstance(config, LanBackendConfig):
         print("Error: audio probe requires a LAN backend.", file=sys.stderr)
@@ -2986,7 +2987,8 @@ async def _cmd_audio_probe(config: BackendConfig, args: argparse.Namespace) -> i
             model=config.model,
             radio_addr=config.radio_addr,
         )
-    except ValueError as exc:
+    except (ValueError, RigLoadError) as exc:
+        # MOR-3678: an unloadable rig profile is a readable error here too.
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     duration_s = float(getattr(args, "duration", 1.0))
@@ -3846,7 +3848,13 @@ async def _cmd_ptt(radio: Radio, args: argparse.Namespace) -> int:
 
 
 async def _cmd_cw(radio: Radio, args: argparse.Namespace) -> int:
-    await radio.send_cw_text(args.text)
+    # MOR-3678: same refusal text as HTTP/WebSocket for a backend with no
+    # send_cw_text (external rigctld); the profile admission decides otherwise.
+    send_cw_text = getattr(radio, "send_cw_text", None)
+    if not callable(send_cw_text):
+        print("Error: radio does not support this command", file=sys.stderr)
+        return 1
+    await send_cw_text(args.text)
     print(f"CW: {args.text}")
     return 0
 

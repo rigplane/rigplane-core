@@ -2326,8 +2326,13 @@ class ControlHandler:
         # profile's ``cw_text`` (``admit_cw_text``), the one check shared
         # with the CLI; the handler passes the text through unchanged. The
         # ``cw`` tag (decoder, console, keyer controls) is not a second gate.
+        # A backend with no send_cw_text at all (external rigctld) is an
+        # unsupported command, not a programmer error.
+        send_cw_text = getattr(radio, "send_cw_text", None)
+        if not callable(send_cw_text):
+            raise RuntimeError("radio does not support this command")
         text = str(params.get("text", ""))
-        await radio.send_cw_text(text)
+        await send_cw_text(text)
         return {"text": text}
 
     async def _ro_stop_cw_text(

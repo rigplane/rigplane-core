@@ -1216,6 +1216,7 @@ requests with the same message:
 |------|------|------|------|------|
 | Text too long | `CW text too long for <model>: got <n> characters, limit is <maxLength>` | `400` `invalid_request` | `command_failed` | `Error: <message>`, exit 1 |
 | Not supported | `<model> does not support sending CW text yet` | `409` `unsupported_command` | `unsupported_command` | `Error: <message>`, exit 1 |
+| Backend cannot send CW text (external rigctld) | `radio does not support this command` | `409` `unsupported_command` | `unsupported_command` | `Error: <message>`, exit 1 |
 
 Clients only display these values.
 
