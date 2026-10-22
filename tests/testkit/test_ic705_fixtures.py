@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from rigplane_testkit.icom.replay import RecordedAnswerTable
 from rigplane_testkit.redaction_gate import scan
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "ic705"
@@ -42,16 +43,28 @@ def _rows() -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line]
 
 
-def test_civ_pairs_are_wellformed_usb_frames() -> None:
+def test_civ_pairs_are_wellformed_frames() -> None:
     rows = _rows()
-    assert {r["window"] for r in rows} == {"probe", "readonly_session", "scope"}
+    windows = {
+        "usb": {"probe", "readonly_session", "scope"},
+        "lan": {"lan_probe", "lan_scope"},
+    }
+    assert {(r["transport"], r["window"]) for r in rows} == {
+        (t, w) for t, ws in windows.items() for w in ws
+    }
+    requests: set[tuple[str, str]] = set()
     for row in rows:
-        assert row["transport"] == "usb"
         assert row["dir"] in ("c2r", "r2c")
         frame = bytes.fromhex(row["frame"])
         assert frame[:2] == b"\xfe\xfe" and frame[-1:] == b"\xfd"
-        to, src = (RADIO, CONTROLLER) if row["dir"] == "c2r" else (CONTROLLER, RADIO)
-        assert (frame[2], frame[3]) == (to, src)
+        key = (row["window"], row["frame"])
+        if row["dir"] == "c2r":
+            assert (frame[2], frame[3]) == (RADIO, CONTROLLER)
+            requests.add(key)
+        elif row["transport"] == "lan" and key in requests:
+            assert (frame[2], frame[3]) == (RADIO, CONTROLLER)  # echo of a request
+        else:
+            assert (frame[2], frame[3]) == (CONTROLLER, RADIO)
 
 
 def test_no_recorded_request_transmits_or_writes() -> None:
@@ -120,3 +133,58 @@ def test_vhf_uhf_rows_are_wellformed_reads_only() -> None:
         assert (frame[2], frame[3]) == (to, src)
         if row["dir"] == "c2r":
             assert frame[4:-1] in probe_gets, frame.hex()  # exact GET, no setter
+
+
+def test_lan_scope_window_has_five_whole_sweeps() -> None:
+    frames = [
+        bytes.fromhex(r["frame"])
+        for r in _rows()
+        if r["window"] == "lan_scope" and r["dir"] == "r2c"
+    ]
+    assert (
+        len([f for f in frames if f[4:6] == b"\x27\x00"]) == 5
+    )  # one frame per LAN sweep
+
+
+def test_lan_files_are_consistent() -> None:
+    data = json.loads((FIXTURES / "probe_answers_lan.json").read_text())
+    classes: dict[str, int] = {}
+    for item in data["answers"]:
+        classes[item["class"]] = classes.get(item["class"], 0) + 1
+    assert classes == {k: v for k, v in data["summary"].items() if v}
+    audio = json.loads((FIXTURES / "audio_stream.json").read_text())
+    assert audio["packet_lengths"] == {"1388": 5104, "580": 5104}
+    assert audio["payload_bytes_per_burst"] == 1920  # 960 mono s16 samples = 20 ms
+    cadence = json.loads((FIXTURES / "scope_cadence.json").read_text())
+    assert 25 < cadence["lan"]["web_scope_ws"]["fps"] < 35
+    control = [
+        json.loads(line)
+        for line in (FIXTURES / "control_windows.jsonl").read_text().splitlines()
+    ]
+    assert {r["window"] for r in control} == {"handshake"}
+    assert all(
+        set(r) == {"dir", "len", "reqtype", "t", "transport", "type", "window"}
+        for r in control
+    )
+
+
+def test_lan_rows_replay_to_the_recorded_probe_answers() -> None:
+    """The LAN rows are request/echo/reply groups: the answer table built
+    from them reproduces every recorded probe answer class and reply."""
+    table = RecordedAnswerTable.from_civ_pairs(_rows(), "lan")
+    answers = json.loads((FIXTURES / "probe_answers_lan.json").read_text())["answers"]
+    for item in answers:
+        reply = table.answer(bytes.fromhex(item["frame"]))
+        if item["class"] == "data":
+            assert reply is not None and reply.hex() == item["reply"], item["name"]
+        elif item["class"] == "nak":
+            assert reply is not None and reply[4:-1] == b"\xfa", item["name"]
+        else:
+            assert reply is None, item["name"]
+
+
+def test_audio_stream_baseline_matches_the_burst_markers() -> None:
+    audio = json.loads((FIXTURES / "audio_stream.json").read_text())
+    assert audio["bursts"] == audio["rx_packets"] // 2 == 5104
+    assert abs(audio["bursts_per_s"] - audio["bursts"] / audio["window_s"]) < 0.05
+    assert audio["header_seq_0x12_step_hist"] == {"1": 10207}

@@ -1,0 +1,54 @@
+# IC-7300 simulation profile (USB CI-V, tier A). Wire facts stay in
+# rigs/ic7300.toml; identity comes from its [identity].expected_ids ("94":
+# the recorded `19 00` answer). Sourcing and provenance:
+# tests/fixtures/ic7300/README.md. Unsourced keys are omitted: the profile
+# schema has no key for the recorded preamp-off state, which the recorded
+# `16 02` answer carries.
+
+schema = "rigplane-sim-profile/1"
+
+[sim]
+id = "ic7300-usb"
+radio = "IC-7300"
+fidelity = "A"
+evidence = ["tests/fixtures/ic7300/civ_pairs.jsonl"]
+gaps = [
+    "receive side only: frequency, mode, PTT, S-meter, identity and the scope switches (27 10, 27 11) are served natively; every other write is ACKed or NAKed from the recording or NAKed, and PTT was never keyed on the bench radio",
+    "scope waves replay the five recorded noise-floor sweeps (no antenna, 14.263 MHz, 100 kHz span, 475 bins) in a loop at the recorded cadence, whatever frequency, span or mode the client sets",
+    "a link that reports no baud (socket://, PTY) is never baud-gated: it answers and streams the scope; the 19200 NAK of the wave-output enable and the silence at other bauds apply only where the opener passes a baud",
+    "reply latency is one fixed value (recorded median 30.9 ms, min 15.7, max 108.8), without jitter",
+    "audio.rx is declared from the bench radio's native Windows MME format (44.1 kHz, 2 ch, s16) but serve streams no audio yet (virtual device spike MOR-3604)",
+    "bare-form scope reads, get_bsr (1A 01) and get_tx_band_edge (1E 01) answer NAK as recorded; the Core forms need their own capture (MOR-3661)",
+    "firmware unknown: CI-V has no firmware query on this radio and the front panel was not read",
+]
+
+[transport.serial]
+# The recorded radio answered only at 19200: CI-V USB Baud Rate was Auto and
+# locked to the first baud it was contacted at (evidence.json "baud"). The
+# scope streams only at 115200 (rigs/ic7300.toml default_baud).
+baud = 19200
+echo = false
+
+[initial]
+frequency_hz = 14_263_000
+mode = "USB"
+filter = 2
+data_mode = false
+
+[answers]
+recorded = [{ file = "tests/fixtures/ic7300/civ_pairs.jsonl", transport = "usb" }]
+
+[timing]
+reply_latency_ms = 30
+
+[audio.rx]
+transport = "usb_device"
+sample_rate_hz = 44100
+channels = 2
+sample_format = "s16le"
+
+[scope]
+bins = 475
+span_hz = 100_000
+rate_hz = 4.085
+frame = "27 00"

@@ -100,7 +100,6 @@ features = [
     "agc",
     "tuning_step",
     "band_edge",
-    "memory_read",
     "xfc",
     # System
     "system_settings",
@@ -520,6 +519,8 @@ table = "standard_50"
 [modes]
 # wfview Modes: LSB, USB, AM, CW, RTTY, FM, CW-R, RTTY-R, DV, WFM
 list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "WFM", "RTTY", "RTTY-R", "DV"]
+# MOR-3679: the CW modes, named once here for every client.
+families = { cw = ["CW", "CW-R"] }
 
 [data_mode]
 count = 1
