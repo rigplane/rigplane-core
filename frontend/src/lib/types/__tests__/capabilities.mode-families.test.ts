@@ -52,6 +52,32 @@ describe('modeFamilies capability field (MOR-3679)', () => {
     );
   });
 
+  it('rejects an empty family', () => {
+    expect(() => validateCapabilities({ ...base, modeFamilies: { cw: [] } })).toThrow(
+      /\$\.modeFamilies\.cw: expected a non-empty array/,
+    );
+  });
+
+  it('rejects a member that is not in modes', () => {
+    expect(() => validateCapabilities({ ...base, modeFamilies: { cw: ['CW-U'] } })).toThrow(
+      /\$\.modeFamilies\.cw\[0\]: expected a mode listed in \$\.modes/,
+    );
+  });
+
+  it('rejects a mode listed twice across families', () => {
+    expect(() => validateCapabilities({ ...base, modeFamilies: { cw: ['CW', 'CW'] } })).toThrow(
+      /\$\.modeFamilies\.cw\[1\]: expected a mode in at most one family/,
+    );
+    expect(() =>
+      validateCapabilities({ ...base, modeFamilies: { cw: ['CW'], future: ['CW'] } }),
+    ).toThrow(/\$\.modeFamilies\.future\[0\]: expected a mode in at most one family/);
+  });
+
+  it('accepts a family name this client does not know (newer server)', () => {
+    const payload = { ...base, modeFamilies: { cw: ['CW'], data: ['USB'] } };
+    expect(validateCapabilities(payload).modeFamilies?.cw).toEqual(['CW']);
+  });
+
   it('FTX-1 fixture carries the profile CW family CW-U/CW-L', () => {
     const caps = validateCapabilities(structuredClone(ftx1CapabilitiesJson));
     expect(caps.modeFamilies).toEqual({ cw: ['CW-U', 'CW-L'] });
