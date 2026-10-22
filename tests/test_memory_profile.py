@@ -17,7 +17,11 @@ def test_shipped_profiles_declare_memory_addressing_and_capability() -> None:
     ic705 = get_radio_profile("IC-705")
     assert ic705.memory == MemoryProfile("group_channel", 0, 99, 0, 99)
     ic9700 = get_radio_profile("IC-9700")
-    assert ic9700.memory == MemoryProfile("band_channel", 1, 3, 1, 99)
+    assert ic9700.memory == MemoryProfile(
+        "band_channel", 1, 3, 1, 99, dd_groups=(3,), offset_10mhz_groups=(3,)
+    )
+    assert ic9700.memory.dd_groups == (3,)
+    assert ic705.memory.dd_groups == ()
     # The capability is declared together with the reader (list API PR).
     for profile in (ic705, ic9700):
         assert "memory_read" not in profile.capabilities
@@ -49,6 +53,29 @@ def test_loader_reads_the_memory_section(tmp_path: Path) -> None:
         "band_channel", 1, 3, 1, 99, recall=True
     )
     assert _load(tmp_path, "").memory is None
+
+
+def test_loader_reads_memory_group_rules(tmp_path: Path) -> None:
+    memory = _load(
+        tmp_path, _GOOD + "dd_groups = [3]\noffset_10mhz_groups = [3]\n"
+    ).memory
+    assert memory.dd_groups == (3,)
+    assert memory.offset_10mhz_groups == (3,)
+    defaults = MemoryProfile("band_channel", 1, 3, 1, 99)
+    assert defaults.dd_groups == defaults.offset_10mhz_groups == ()
+    fields = {f.name: f for f in dataclasses.fields(MemoryProfile)}
+    assert fields["dd_groups"].kw_only and fields["offset_10mhz_groups"].kw_only
+
+
+@pytest.mark.parametrize("key", ["dd_groups", "offset_10mhz_groups"])
+@pytest.mark.parametrize(
+    "value", ["[0]", "[4]", "[3, 3]", '["3"]', "[true]", "[1.5]", "3", '"3"', "{}"]
+)
+def test_loader_rejects_invalid_memory_group_rules(
+    tmp_path: Path, key: str, value: str
+) -> None:
+    with pytest.raises(RigLoadError, match=rf"\[memory\].{key}"):
+        _load(tmp_path, _GOOD + f"{key} = {value}\n")
 
 
 @pytest.mark.parametrize(
