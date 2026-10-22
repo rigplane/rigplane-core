@@ -166,8 +166,12 @@ async def test_unmanaged_calls_keep_native_writes_and_guard_generic_tuner() -> N
     await radio.set_tuner_status(2)
 
     km_call, ky_call, tuner_call = radio._transport.write.await_args_list
-    assert km_call.kwargs == {}
-    assert ky_call.kwargs == {}
+    # MOR-3678: unmanaged KM and KY carry only the stop-generation check.
+    for cw_call in (km_call, ky_call):
+        assert cw_call.kwargs["is_current"]() is True
+    await radio.stop_cw_text()
+    assert km_call.kwargs["is_current"]() is False
+    assert ky_call.kwargs["is_current"]() is False
     assert tuner_call.kwargs["is_current"]() is True
     radio._transport.stats.reconnects += 1
     assert tuner_call.kwargs["is_current"]() is False

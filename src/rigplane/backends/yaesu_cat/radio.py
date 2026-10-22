@@ -184,6 +184,9 @@ class YaesuCatRadio:
         # MOR-3678: one send_cw_text at a time, so each KM memory write
         # stays paired with the KY that plays it.
         self._cw_text_lock = asyncio.Lock()
+        # Bumped by stop_cw_text and the managed CW abort: a send admitted
+        # under an older generation can no longer write KM or KY.
+        self._cw_text_generation = 0
         self._tuner_provider_generation: Callable[[], int] | None = None
         self._device = device
         self._transport = YaesuCatTransport(device=device, baudrate=baudrate)
@@ -1551,9 +1554,11 @@ class YaesuCatRadio:
                 ExchangeTier.FORCE_RELEASE,
             )
         elif operation is AbortOperation.STOP_CW:
+            # KY P1 P2 with P2 0 = STOP (CAT 2508-C printed p.18), MOR-3678.
+            self._cw_text_generation += 1
             command, params, tier = (
                 "send_cw",
-                {"type": " ", "mem": ""},
+                {"type": self._cw_text_memory_type_code(), "mem": "0"},
                 ExchangeTier.ABORT,
             )
         elif operation is AbortOperation.STOP_TUNE:
@@ -3613,21 +3618,30 @@ class YaesuCatRadio:
             raise ValueError("CW text is empty")
         if any(ch == ";" or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
             raise ValueError("CW text cannot contain ';' or control characters")
-        msg_type = "1" if spec.memory_type == "message" else "0"
+        msg_type = self._cw_text_memory_type_code()
         channel = str(spec.memory_channel)
+        generation = self._cw_text_generation
 
         async def write(is_current: Callable[[], bool] | None) -> None:
+            def current() -> bool:
+                # A stop since admission (or a stale managed fence) ends
+                # this send: the transport refuses a write that is no
+                # longer current, checked when the write is sent.
+                return self._cw_text_generation == generation and (
+                    is_current is None or is_current()
+                )
+
             # The lock is taken inside the fenced work, so a send still
             # waiting for it already holds an abort token: a force-off ends
             # it before it can write KM or KY.
             async with self._cw_text_lock:
                 await self._write(
-                    "write_keyer_memory", chan=channel, mem=text, is_current=is_current
+                    "write_keyer_memory", chan=channel, mem=text, is_current=current
                 )
                 # A stale fence makes this write raise "no longer current",
                 # the same as a stale chunk: KY never plays after a force-off.
                 await self._write(
-                    "send_cw", type=msg_type, mem=channel, is_current=is_current
+                    "send_cw", type=msg_type, mem=channel, is_current=current
                 )
 
         if self._local_tx_work is None:
@@ -3637,9 +3651,14 @@ class YaesuCatRadio:
 
     async def stop_cw_text(self) -> None:
         """Stop keyer memory playback: ``KY P1 0;`` (printed p.18, P2 0 STOP)."""
-        # Unfenced like the old empty-text stop: stopping never keys.
-        msg_type = "1" if self.profile.cw_text.memory_type == "message" else "0"
-        await self._write("send_cw", type=msg_type, mem="0")
+        # Ends every send admitted before this stop, then writes the stop
+        # unfenced (stopping never keys).
+        self._cw_text_generation += 1
+        await self._write("send_cw", type=self._cw_text_memory_type_code(), mem="0")
+
+    def _cw_text_memory_type_code(self) -> str:
+        """KY P1: ``1`` CW MESSAGE memory, else ``0`` CW TEXT (printed p.18)."""
+        return "1" if self.profile.cw_text.memory_type == "message" else "0"
 
     # -- Icom-only stubs (AdvancedControlCapable conformance) -----------------
     # Yaesu does not support these features; methods exist for protocol compat.
