@@ -72,7 +72,10 @@ class SplitIcomTransport:
         if command == 0x07:
             if not data:
                 if self.query_reply is not None:
-                    reply_command, reply_data = self.query_reply[0], self.query_reply[1:]
+                    reply_command, reply_data = (
+                        self.query_reply[0],
+                        self.query_reply[1:],
+                    )
                 else:
                     reply_command = 0x07
                     reply_data = bytes([0 if self.selected == "A" else 1])
@@ -92,7 +95,10 @@ class SplitIcomTransport:
             self.slots[self.selected] = (bcd_decode(data), mode, filt, data_mode)
         elif command == 0x06:
             self.slots[self.selected] = (
-                freq, Mode(data[0]), data[1] if len(data) > 1 else filt, data_mode
+                freq,
+                Mode(data[0]),
+                data[1] if len(data) > 1 else filt,
+                data_mode,
             )
         elif command in (0x25, 0x26):
             slot = self.selected
@@ -103,7 +109,9 @@ class SplitIcomTransport:
                 self.slots[slot] = (rel_freq, Mode(data[1]), data[3], data[2])
             else:
                 read_event = (
-                    self.relative_freq_read if command == 0x25 else self.relative_mode_read
+                    self.relative_freq_read
+                    if command == 0x25
+                    else self.relative_mode_read
                 )
                 read_event.set()
                 reply_command = command
@@ -124,8 +132,11 @@ class SplitIcomTransport:
         else:
             raise AssertionError(f"Unexpected split-test CI-V request: {request!r}")
         reply = build_civ_frame(
-            CONTROLLER_ADDR, request.to_addr, reply_command,
-            sub=reply_sub, data=reply_data,
+            CONTROLLER_ADDR,
+            request.to_addr,
+            reply_command,
+            sub=reply_sub,
+            data=reply_data,
         )
         self._responses.put_nowait(wrap_civ_in_udp(reply))
 

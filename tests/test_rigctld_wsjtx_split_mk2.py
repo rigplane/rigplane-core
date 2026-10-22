@@ -9,7 +9,11 @@ import pytest
 
 from serial_stub import SplitIcomTransport
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
-from rigplane.core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from rigplane.radio import IcomRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
@@ -19,9 +23,11 @@ from rigplane.types import Mode
 def _known_rx(server: RigctldServer) -> None:
     server._state_store.apply_current(
         Observation(
-            path=FieldPath.global_("tx_state", "ptt"), value=False,
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
             source=SourceMetadata(source="test", provider="tests"),
-            timestamp_monotonic=asyncio.get_running_loop().time(), max_age=60,
+            timestamp_monotonic=asyncio.get_running_loop().time(),
+            max_age=60,
         )
     )
 
@@ -66,27 +72,39 @@ async def _peer(model: str, *, selected: str = "A"):
 @pytest.mark.parametrize("selector", [0, 1])
 @pytest.mark.parametrize("data_mode", [0, 1])
 async def test_split_peer_mode_write_updates_tuple_and_acks(
-    initial: str, selector: int, data_mode: int,
+    initial: str,
+    selector: int,
+    data_mode: int,
 ) -> None:
     peer = SplitIcomTransport(selected=initial)
     target = initial if selector == 0 else ("B" if initial == "A" else "A")
     before = dict(peer.slots)
-    await peer.send_tracked(build_civ_frame(
-        0xA4, CONTROLLER_ADDR, 0x26,
-        data=bytes([selector, Mode.RTTY, data_mode, 3]),
-    ))
+    await peer.send_tracked(
+        build_civ_frame(
+            0xA4,
+            CONTROLLER_ADDR,
+            0x26,
+            data=bytes([selector, Mode.RTTY, data_mode, 3]),
+        )
+    )
     assert peer.slots == {
-        **before, target: (before[target][0], Mode.RTTY, 3, data_mode),
+        **before,
+        target: (before[target][0], Mode.RTTY, 3, data_mode),
     }
     assert peer.selected == initial
     packet = await peer.receive_packet()
-    assert parse_civ_frame(packet[packet.index(b"\xfe\xfe"):]).command == 0xFB
+    assert parse_civ_frame(packet[packet.index(b"\xfe\xfe") :]).command == 0xFB
     assert not peer.relative_mode_read.is_set()
-    await peer.send_tracked(build_civ_frame(
-        0xA4, CONTROLLER_ADDR, 0x26, data=bytes([selector]),
-    ))
+    await peer.send_tracked(
+        build_civ_frame(
+            0xA4,
+            CONTROLLER_ADDR,
+            0x26,
+            data=bytes([selector]),
+        )
+    )
     packet = await peer.receive_packet()
-    reply = parse_civ_frame(packet[packet.index(b"\xfe\xfe"):])
+    reply = parse_civ_frame(packet[packet.index(b"\xfe\xfe") :])
     assert reply.command == 0x26
     assert reply.data == bytes([selector, Mode.RTTY, data_mode, 3])
     assert peer.relative_mode_read.is_set()
@@ -96,7 +114,8 @@ async def test_split_peer_mode_write_updates_tuple_and_acks(
 @pytest.mark.parametrize("model", ["IC-7300MK2", "IC-7300", "IC-705"])
 @pytest.mark.parametrize("initial", ["A", "B"])
 async def test_wsjtx_rig_split_sequence_preserves_physical_rx(
-    model: str, initial: str,
+    model: str,
+    initial: str,
 ) -> None:
     async with _peer(model, selected=initial) as (radio, peer, server, reader, writer):
         # The unobserved mirror still says A, including physical-B startup.
@@ -124,8 +143,13 @@ async def test_wsjtx_rig_split_sequence_preserves_physical_rx(
         live_reader, live_writer = await asyncio.open_connection(host, port)
         try:
             assert await _exchange(live_writer, live_reader, b"i\n") == b"14080100\n"
-            expected_mode = b"PKTRTTY\n1800\n" if peer.slots[tx_slot][3] else b"RTTY\n1800\n"
-            assert await _exchange(live_writer, live_reader, b"x\n", lines=2) == expected_mode
+            expected_mode = (
+                b"PKTRTTY\n1800\n" if peer.slots[tx_slot][3] else b"RTTY\n1800\n"
+            )
+            assert (
+                await _exchange(live_writer, live_reader, b"x\n", lines=2)
+                == expected_mode
+            )
             assert peer.relative_freq_read.is_set()
             assert peer.relative_mode_read.is_set()
             assert peer.slots[initial] == rx_before
@@ -139,7 +163,8 @@ async def test_wsjtx_rig_split_sequence_preserves_physical_rx(
 @pytest.mark.parametrize("model", ["IC-7300MK2", "IC-7300", "IC-705"])
 @pytest.mark.parametrize("initial", ["A", "B"])
 async def test_wsjtx_split_after_transport_replacement_ignores_previous_slot_cache(
-    model: str, initial: str,
+    model: str,
+    initial: str,
 ) -> None:
     async with _peer(model, selected=initial) as (radio, peer, server, reader, writer):
         opposite = "B" if initial == "A" else "A"
@@ -171,7 +196,8 @@ async def test_wsjtx_split_after_transport_replacement_ignores_previous_slot_cac
 @pytest.mark.parametrize("command", [b"I 14080100\n", b"X RTTY 1800\n"])
 @pytest.mark.parametrize("model", ["IC-7300MK2", "IC-705"])
 async def test_split_wire_nak_returns_rejected_without_payload(
-    model: str, command: bytes,
+    model: str,
+    command: bytes,
 ) -> None:
     async with _peer(model) as (radio, peer, server, reader, writer):
         peer.reject_slot = "B"
@@ -187,14 +213,26 @@ async def test_split_wire_nak_returns_rejected_without_payload(
 @pytest.mark.parametrize("command", [b"I 14080100\n", b"X RTTY 1800\n"])
 @pytest.mark.parametrize(
     ("reply", "expected"),
-    [(b"\xfa", b"RPRT -9\n"), (b"\x07", b"RPRT -6\n"),
-     (b"\x07\x02", b"RPRT -6\n"), (b"\x07\x00\x01", b"RPRT -6\n")],
+    [
+        (b"\xfa", b"RPRT -9\n"),
+        (b"\x07", b"RPRT -6\n"),
+        (b"\x07\x02", b"RPRT -6\n"),
+        (b"\x07\x00\x01", b"RPRT -6\n"),
+    ],
     ids=["NAK", "empty", "unknown", "trailing"],
 )
 async def test_split_wire_unproven_identity_never_switches_or_writes(
-    command: bytes, reply: bytes, expected: bytes,
+    command: bytes,
+    reply: bytes,
+    expected: bytes,
 ) -> None:
-    async with _peer("IC-7300MK2", selected="B") as (radio, peer, server, reader, writer):
+    async with _peer("IC-7300MK2", selected="B") as (
+        radio,
+        peer,
+        server,
+        reader,
+        writer,
+    ):
         peer.query_reply = reply
         before = dict(peer.slots)
         assert await _exchange(writer, reader, command) == expected

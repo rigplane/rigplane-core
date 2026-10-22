@@ -3198,10 +3198,14 @@ class RigctldHandler:
                     break
             try:
                 if not restore.result():
-                    logger.warning("split TX write: restore to %s unconfirmed", previous)
+                    logger.warning(
+                        "split TX write: restore to %s unconfirmed", previous
+                    )
                     raise _RigctldCommandFailure(HamlibError.EIO)
             except BaseException as exc:
-                logger.exception("split TX write: restoring VFO slot %s failed", previous)
+                logger.exception(
+                    "split TX write: restoring VFO slot %s failed", previous
+                )
                 if failure is None:
                     failure = exc
             if failure is not None:
