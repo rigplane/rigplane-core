@@ -21,6 +21,7 @@ import pytest
 
 from rigplane.profiles import CwTextSpec, RadioProfile
 from rigplane.rig_loader import RigConfig, RigLoadError, load_rig
+from rigplane.runtime.callable_support import supports_callable
 from rigplane.web.api_contract import RESPONSE_FIELD_CONTRACTS
 from rigplane.web.server import WebConfig, WebServer
 
@@ -222,3 +223,49 @@ async def test_capability_endpoints_publish_cw_text(name: str, expected: dict) -
 
 def test_capabilities_contract_requires_cw_text() -> None:
     assert "cwText" in RESPONSE_FIELD_CONTRACTS["/api/v1/capabilities"]["required"]
+
+
+# ── Command introspection agrees with cwText ─────────────────────
+
+
+@pytest.mark.parametrize(
+    ("name", "supported", "expected"),
+    [
+        ("ftx1.toml", None, False),
+        ("ftx1.toml", True, True),
+        ("ic7300.toml", None, True),
+        ("ic7300.toml", False, False),
+    ],
+    ids=["ftx1-shipped", "ftx1-enabled", "ic7300-shipped", "ic7300-disabled"],
+)
+def test_supports_send_cw_text_follows_cw_text_supported(
+    name: str, supported: bool | None, expected: bool
+) -> None:
+    rig = load_rig(RIGS / name)
+    if supported is not None:
+        rig = dataclasses.replace(
+            rig, cw_text=dataclasses.replace(rig.cw_text, supported=supported)
+        )
+    profile = rig.to_profile()
+    assert supports_callable(profile, "send_cw_text") is expected
+    # Stopping stays available wherever stop_cw exists or KY can stop.
+    assert supports_callable(profile, "stop_cw_text") is supports_callable(
+        load_rig(RIGS / name).to_profile(), "stop_cw_text"
+    )
+
+
+def test_yaesu_radio_supports_command_follows_cw_text_supported() -> None:
+    from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+
+    rig = load_rig(RIGS / "ftx1.toml")
+    assert (
+        YaesuCatRadio("/dev/null", profile=rig).supports_command("send_cw_text")
+        is False
+    )
+    enabled = dataclasses.replace(
+        rig, cw_text=dataclasses.replace(rig.cw_text, supported=True)
+    )
+    assert (
+        YaesuCatRadio("/dev/null", profile=enabled).supports_command("send_cw_text")
+        is True
+    )

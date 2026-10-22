@@ -413,3 +413,70 @@ async def test_force_receive_cancels_a_cw_send_still_waiting_for_the_keyer_lock(
     ]
     assert not any(c.startswith("KY0") for c in wire_commands), wire_commands
     assert not any(c.startswith("KM5BB") for c in wire_commands), wire_commands
+
+
+@pytest.mark.asyncio
+async def test_stop_cw_text_ends_a_send_whose_memory_write_is_in_flight() -> None:
+    # MOR-3678: stop queued behind an in-flight KM must not be followed by
+    # that send's KY; the send ends instead of playing after the stop.
+    radio = _fenced_radio(None)
+    first_drain_started = asyncio.Event()
+    release_first_drain = asyncio.Event()
+    drain_calls = 0
+
+    async def drain(_command: str) -> int:
+        nonlocal drain_calls
+        drain_calls += 1
+        if drain_calls == 1:
+            first_drain_started.set()
+            await release_first_drain.wait()
+        return 0
+
+    radio._transport._drain_responses = drain
+    sending = asyncio.create_task(radio.send_cw_text("CQ"))
+    await first_drain_started.wait()
+    stopping = asyncio.create_task(radio.stop_cw_text())
+    await asyncio.sleep(0)
+    release_first_drain.set()
+
+    await stopping
+    with pytest.raises(CatTransportError, match="no longer current"):
+        await sending
+    wire_commands = [
+        call.args[0] for call in radio._transport._raw_write.await_args_list
+    ]
+    assert wire_commands == ["KM5CQ;", "KY00;"]
+
+
+@pytest.mark.asyncio
+async def test_stop_cw_text_ends_a_send_still_waiting_for_the_keyer_lock() -> None:
+    radio = _fenced_radio(None)
+    first_drain_started = asyncio.Event()
+    release_first_drain = asyncio.Event()
+    drain_calls = 0
+
+    async def drain(_command: str) -> int:
+        nonlocal drain_calls
+        drain_calls += 1
+        if drain_calls == 1:
+            first_drain_started.set()
+            await release_first_drain.wait()
+        return 0
+
+    radio._transport._drain_responses = drain
+    first = asyncio.create_task(radio.send_cw_text("AA"))
+    await first_drain_started.wait()
+    second = asyncio.create_task(radio.send_cw_text("BB"))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    stopping = asyncio.create_task(radio.stop_cw_text())
+    await asyncio.sleep(0)
+    release_first_drain.set()
+
+    await stopping
+    results = await asyncio.gather(first, second, return_exceptions=True)
+    assert all(isinstance(r, CatTransportError) for r in results), results
+    wire_commands = [
+        call.args[0] for call in radio._transport._raw_write.await_args_list
+    ]
+    assert wire_commands == ["KM5AA;", "KY00;"]
