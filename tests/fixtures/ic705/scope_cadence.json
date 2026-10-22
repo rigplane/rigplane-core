@@ -1,5 +1,28 @@
 {
  "civ_addr": "0xA4",
+ "lan": {
+  "radio_wave": {
+   "complete_sweeps": 2308,
+   "frame_len_bytes": 497,
+   "note": "over LAN each sweep is one 27 00 frame (sequence 1 of 1); over USB a sweep is 11 segments",
+   "segments_per_sweep": 1,
+   "sweep_interval_max_s": 0.137,
+   "sweep_interval_median_s": 0.033,
+   "sweep_interval_p95_s": 0.046,
+   "sweeps_per_s": 29.997
+  },
+  "source": "recorder proxy JSONL of a rigplane web session over Wi-Fi (lan-web-session), 75 s observation",
+  "web_scope_ws": {
+   "fps": 30.143,
+   "frame_len_bytes": [
+    491
+   ],
+   "frames": 2247,
+   "interval_max_s": 0.1647,
+   "interval_median_s": 0.033,
+   "interval_p95_s": 0.0464
+  }
+ },
  "radio": "IC-705",
  "radio_wave": {
   "complete_sweeps": 255,

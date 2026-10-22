@@ -424,6 +424,7 @@ Optional section for radios that support the spectrum scope.
 |--------|----------|----------|----------------------------------------------------|
 | `list` | string[] | yes      | Supported operating modes (e.g. `"USB"`, `"CW"`)  |
 | `codes` | string[] | no | One single-character code per mode, parallel to `list` (validated: same length, one character each, unique). Yaesu CAT `MD` P2 codes. |
+| `families` | table | no | Family name -> non-empty list of mode names from `list`, e.g. `families = { cw = ["CW-U", "CW-L"] }`. The only family name is `cw` (MOR-3679); the loader rejects any other name, a mode that is not in `list` (names compare exactly as written in `list`), and a mode listed twice. Published as `modeFamilies` by `/api/v1/info` and `/api/v1/capabilities`; `{}` when absent. |
 
 ## `[filters]` — IF Filters
 
@@ -622,6 +623,26 @@ Optional: how stored memory channels are addressed, for the read-only listing
 also picks the `1A 00` record layout; `first_group`/`last_group` bound the
 group number or band code, `first_channel`/`last_channel` the channel;
 `recall = true` marks profiles whose select commands recall a listed channel.
+
+## `[cw_text]` — Typed CW Text (MOR-3678)
+
+Whether `send_cw_text` works on this radio, published as `cwText`. Separate
+from the `cw` capability tag (decoder, console, keyer controls).
+
+| Key              | Type   | Default | Description |
+|------------------|--------|---------|-------------|
+| `supported`      | bool   | CI-V: whether `[commands]` has `send_cw` as CI-V bytes; Yaesu CAT and Kenwood CAT: `false` | `false` refuses `send_cw_text`. `true` is a load error without a `send_cw` the protocol can write (CI-V bytes on CI-V, a CAT write template on Yaesu CAT); on Yaesu CAT also without `memory_channel` 1-5 or a `write_keyer_memory` CAT write template; on Kenwood CAT always (no backend sends CW text) |
+| `max_length`     | int    | `512`   | Longest text one request may carry (positive); longer text is refused, never truncated. Yaesu CAT: at most `50` (one KM write, printed p.17), and required when `supported = true` |
+| `memory_channel` | int    | absent  | Keyer memory channel the text is written to (positive; 1-5 on Yaesu CAT, KM printed p.17); for radios that send text by writing a memory and playing it |
+| `memory_type`    | string | absent  | `"text"` or `"message"`: which keyer memory kind is played |
+
+```toml
+[cw_text]
+supported = false
+max_length = 50
+memory_channel = 5
+memory_type = "text"
+```
 
 ## Wire Byte Format
 

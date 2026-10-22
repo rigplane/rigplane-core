@@ -45,7 +45,7 @@ class Icom7610SerialRadio(_IcomSerialRadioBase):
             f"{self._serial_baudrate}. Set allow_low_baud_scope=True to override."
         )
         if not self._allow_low_baud_scope:
-            raise CommandError(msg)
+            raise CommandError(f"{msg} {self._low_baud_scope_hint()}")
 
         if not self._low_baud_scope_warned:
             logger.warning("%s Running with override may increase timeout risk.", msg)
