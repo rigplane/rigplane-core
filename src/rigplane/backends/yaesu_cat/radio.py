@@ -1555,7 +1555,7 @@ class YaesuCatRadio:
             )
         elif operation is AbortOperation.STOP_CW:
             # KY P1 P2 with P2 0 = STOP (CAT 2508-C printed p.18), MOR-3678.
-            self._cw_text_generation += 1
+            is_current = self._cw_abort_currency(is_current)
             command, params, tier = (
                 "send_cw",
                 {"type": self._cw_text_memory_type_code(), "mem": "0"},
@@ -3655,6 +3655,23 @@ class YaesuCatRadio:
         # unfenced (stopping never keys).
         self._cw_text_generation += 1
         await self._write("send_cw", type=self._cw_text_memory_type_code(), mem="0")
+
+    def _cw_abort_currency(self, is_current: Callable[[], bool]) -> Callable[[], bool]:
+        """Currency check for a managed CW stop that also ends earlier sends.
+
+        The transport asks this immediately before the stop's bytes go out
+        (the last check runs with no await before the write), so a stop
+        refused as stale or superseded never ends a send_cw_text: only a
+        stop the transport accepted bumps the generation (MOR-3678).
+        """
+
+        def current_and_claim() -> bool:
+            if not is_current():
+                return False
+            self._cw_text_generation += 1
+            return True
+
+        return current_and_claim
 
     def _cw_text_memory_type_code(self) -> str:
         """KY P1: ``1`` CW MESSAGE memory, else ``0`` CW TEXT (printed p.18)."""

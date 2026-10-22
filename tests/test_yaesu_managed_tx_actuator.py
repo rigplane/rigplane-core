@@ -174,11 +174,18 @@ async def test_managed_abort_uses_urgent_profile_command(
     result = await radio.actuate(_token(), operation, is_current=current)
 
     assert result is ActuationResult.ACCEPTED
-    radio._transport.write.assert_awaited_once_with(
+    radio._transport.write.assert_awaited_once()
+    call = radio._transport.write.await_args
+    assert call.args == (
         format_command(_PROFILE_TEMPLATES[profile_key].write, **params),
-        is_current=current,
-        tier=ExchangeTier.ABORT,
     )
+    assert call.kwargs["tier"] is ExchangeTier.ABORT
+    if operation is AbortOperation.STOP_CW:
+        # MOR-3678: the CW stop's check delegates to the managed one and
+        # also ends earlier sends once the transport accepts it.
+        assert call.kwargs["is_current"]() is True
+    else:
+        assert call.kwargs["is_current"] is current
 
 
 @pytest.mark.asyncio
@@ -226,6 +233,31 @@ async def test_managed_cw_abort_stops_the_profile_memory_kind(
     result = await radio.actuate(_token(), AbortOperation.STOP_CW, is_current=current)
 
     assert result is ActuationResult.ACCEPTED
-    radio._transport.write.assert_awaited_once_with(
-        frame, is_current=current, tier=ExchangeTier.ABORT
+    radio._transport.write.assert_awaited_once()
+    call = radio._transport.write.await_args
+    assert call.args == (frame,)
+    assert call.kwargs["tier"] is ExchangeTier.ABORT
+    assert call.kwargs["is_current"]() is True
+
+
+@pytest.mark.asyncio
+async def test_managed_cw_abort_ends_earlier_sends_only_once_accepted() -> None:
+    # MOR-3678 (#4317 review): issuing the stop changes nothing; only the
+    # transport accepting its currency ends earlier sends, and a stale
+    # stop never does.
+    radio = _profile_radio()
+    managed_current = True
+    result = await radio.actuate(
+        _token(), AbortOperation.STOP_CW, is_current=lambda: managed_current
     )
+    assert result is ActuationResult.ACCEPTED
+    stop_check = radio._transport.write.await_args.kwargs["is_current"]
+    before = radio._cw_text_generation
+
+    managed_current = False
+    assert stop_check() is False
+    assert radio._cw_text_generation == before
+
+    managed_current = True
+    assert stop_check() is True
+    assert radio._cw_text_generation != before
