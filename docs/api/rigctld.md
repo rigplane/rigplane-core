@@ -287,36 +287,25 @@ the handler in the dispatch table, and translates exceptions:
 | `\get_lock_mode` | `get_lock_mode` | CTL | Lock mode (always 0) |
 | `w` | `send_raw` | CTL | Raw CI-V passthrough (hex in, hex out) |
 
-On single-RX rigs, `I`/`X` exchange selected/unselected contents using the
-profile's A/B exchange command, write, and exchange back. Both exchanges and
-mode/DATA payloads require radio acknowledgements; an explicit refusal returns
-`RPRT -9`. A restore failure fails an otherwise successful write; an earlier
-payload error or cancellation takes precedence. A rejected initial exchange
-does not trigger a second exchange. An uncertain initial exchange attempts
-cleanup and reports failure, without claiming restoration.
-`i`/`x` always read live Selected/Unselected frequency and mode tuples under
-the transaction lock, without changing memory/VFO context or using pending
-overlays. Ordinary `f`/`m` also use live selected tuples after an exchange
-attempt, avoiding observations or mirrors from the temporary exchange.
-Typed positive PTT and `f`/`m`/`v` wait for the transaction. On unmanaged
-radios, raw TX-family frames use the same fence, except exact raw dekey.
-Typed dekey and unmanaged exact raw dekey bypass the slot lock and invalidate
-waiting keys. For unmanaged PTT, a pipelined OFF bypasses its predecessor
-only when that key is still waiting on the slot fence; an already started
-radio write finishes before OFF. Replies retain wire order.
-Immediately before the first exchange, RF state is checked again under the
-lock: known TX drops the write with `RPRT 0`, UNKNOWN refuses with `RPRT -9`.
-A positive key that intervenes while the write waits also drops that write.
-For packet modes, the resolved filter is reapplied with ACK confirmation
-after DATA enable, preserving either the requested filter or the live TX
-filter when passband is omitted or zero. See
-`tests/test_rigctld_wsjtx_split_mk2.py: test_split_packet_data_preserves_physical_filter`,
-`tests/test_rigctld_wsjtx_split_mk2.py: test_split_waiting_behind_key_revalidates_rf_and_key_generation`,
-and `tests/test_rigctld_wsjtx_split_mk2.py: test_split_pipelined_off_invalidates_key_waiting_on_slot`.
-Dual-RX rigs return
-`RPRT -4` for `I`/`i`/`X`/`x`. Profiles without A/B exchange return `RPRT -11`
-for split writes. See `handler.py: RigctldHandler._run_on_split_tx_slot`
-and `_dual_rx_runtime.py: DualRxRuntimeMixin.swap_vfo_ab`.
+On single-RX rigs, `I` and `X` call the runtime's relative-VFO write APIs
+with `selected=False`; support comes from the profile's unselected write
+commands. They use the existing FREQUENCY and MODE TX-safe classifications.
+In bundled managed mode each write is one ordered command-queue entry;
+standalone handlers call the same runtime API directly. An explicit radio
+refusal returns `RPRT -9`, an unavailable write returns `RPRT -11`, and a
+timeout returns `RPRT -5`. Dual-RX rigs return `RPRT -4` for `I`/`i`/`X`/`x`.
+See `handler.py: _RigctldCommandExecutor._execute_managed_split_write`,
+`handler.py: RigctldHandler._execute_set_split_freq`, and
+`handler.py: RigctldHandler._execute_set_split_mode`.
+
+`i`/`x` read the live unselected tuple. Successful relative writes publish no
+pending overlay. `X USB` and `X USB 0` preserve the target DATA setting and
+filter; an ordinary mode with a positive passband explicitly disables DATA.
+Packet modes explicitly enable DATA in the same unselected-mode frame.
+Omitted filter/DATA fields are filled from runtime readback before the write.
+See `handler.py: RigctldHandler._cmd_get_split_freq`,
+`handler.py: RigctldHandler._cmd_get_split_mode`, and
+`_dual_rx_runtime.py: DualRxRuntimeMixin.write_relative_vfo_mode`.
 
 **Mode strings** accepted/returned by `get_mode`/`set_mode`:
 `USB`, `LSB`, `CW`, `CWR`, `RTTY`, `RTTYR`, `AM`, `FM`, `WFM`,

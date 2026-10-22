@@ -1216,11 +1216,28 @@ async def execute_command_queue_entry(
     owner = asyncio.current_task()
     cancelling = owner.cancelling() if owner is not None else 0
     child = asyncio.create_task(invoke())
+
+    def cancel_request_leaf(done: asyncio.Future[Any]) -> None:
+        if done.cancelled() and not child.done() and not child.cancelling():
+            child.cancel()
+
+    reply_cancel_callback: Callable[[asyncio.Future[Any]], None] | None = None
+    if (
+        reply is not None
+        and entry.positive_tx_ready is None
+        and entry.positive_tx_submission is None
+        and isinstance(entry.command, CommandIntent)
+        and entry.command.source == "rigctld"
+        and entry.command.name in ("set_split_freq", "set_split_mode")
+    ):
+        reply_cancel_callback = cancel_request_leaf
+        reply.add_done_callback(reply_cancel_callback)
     try:
         result = await asyncio.shield(child)
     except asyncio.CancelledError:
         if owner is not None and owner.cancelling() > cancelling:
-            child.cancel()
+            if reply_cancel_callback is None or not child.cancelling():
+                child.cancel()
             while not child.done():
                 try:
                     await asyncio.shield(child)
@@ -1248,6 +1265,9 @@ async def execute_command_queue_entry(
     else:
         if reply is not None and not reply.done():
             reply.set_result(result)
+    finally:
+        if reply is not None and reply_cancel_callback is not None:
+            reply.remove_done_callback(reply_cancel_callback)
 
 
 @dataclass(slots=True)

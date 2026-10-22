@@ -186,11 +186,8 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             freq_hz, to_addr=self._radio_addr, receiver=RECEIVER_MAIN
         )
         resp = await self._send_civ_expect(civ, label="set_frequency_main")
-        ack = parse_ack_nak(resp)
-        if ack is False:
+        if parse_ack_nak(resp) is False:
             raise CommandRejectedError(f"Radio rejected MAIN set_frequency({freq_hz})")
-        if ack is not True:
-            raise CommandError("Invalid frequency acknowledgement")
         if update_cache:
             self._last_freq_hz = freq_hz
 
@@ -225,7 +222,6 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         *,
         filter_width: int | None = None,
         update_cache: bool = True,
-        confirmed: bool = False,
     ) -> None:
         """Set MAIN receiver mode/filter with optional cache updates."""
         if self._profile.set_mode_via_selected:
@@ -235,11 +231,6 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             # the radio's current data-mode and filter.
             target = self._radio_state.receiver("MAIN")
             data_mode = int(getattr(target, "data_mode", 0) or 0)
-            if confirmed:
-                current = await self.read_relative_vfo(selected=True)
-                data_mode = current.data_mode
-                if filter_width is None:
-                    filter_width = current.filter_num
             resolved_filter = (
                 filter_width
                 if filter_width is not None
@@ -255,36 +246,11 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 to_addr=self._radio_addr,
                 receiver=RECEIVER_MAIN,
             )
-        if confirmed:
-            response = await self._send_civ_expect(civ, label="set_mode_confirmed")
-            ack = parse_ack_nak(response)
-            if ack is False:
-                raise CommandRejectedError(f"Radio rejected MAIN set_mode({mode.name})")
-            if ack is not True:
-                raise CommandError("Invalid mode acknowledgement")
-        else:
-            await self._send_civ_raw(civ, wait_response=False)
-        if not confirmed or update_cache:
-            self._last_mode = mode
+        await self._send_civ_raw(civ, wait_response=False)
+        self._last_mode = mode
         if update_cache:
             if filter_width is not None:
                 self._filter_width = filter_width
-
-    async def set_mode_confirmed(
-        self, mode: Mode | str, *, filter_width: int | None = None
-    ) -> None:
-        """Set the selected MAIN tuple and require its ACK before returning.
-
-        Ordinary ``set_mode`` retains its fire-and-forget contract. Split
-        transactions use this seam so a NAK cannot become a successful write.
-        """
-        self._check_connected()
-        await self._set_mode_main(
-            self._coerce_mode(mode),
-            filter_width=filter_width,
-            confirmed=True,
-            update_cache=False,
-        )
 
     # ------------------------------------------------------------------
     # Selected / Unselected receiver freq & mode (0x25 / 0x26)
@@ -335,11 +301,15 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         freq_resp = await self._send_civ_expect(
             freq_cmd(to_addr=self._radio_addr), label=f"get_{role}_freq"
         )
-        _receiver, freq = _parse_selected_freq_response(freq_resp)
+        receiver, freq = _parse_selected_freq_response(freq_resp)
+        if receiver != (0 if selected else 1):
+            raise CommandError("relative VFO frequency readback selector mismatch")
         mode_resp = await self._send_civ_expect(
             mode_cmd(to_addr=self._radio_addr), label=f"get_{role}_mode"
         )
-        _receiver, mode, data_mode, filt = _parse_selected_mode_response(mode_resp)
+        receiver, mode, data_mode, filt = _parse_selected_mode_response(mode_resp)
+        if receiver != (0 if selected else 1):
+            raise CommandError("relative VFO mode readback selector mismatch")
         return RelativeVfoState(
             freq_hz=freq,
             mode=mode.name,
@@ -391,6 +361,73 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         if selector != (0 if selected else 1):
             raise CommandError("direct VFO readback selector mismatch")
         return observed_freq
+
+    async def write_relative_vfo_mode(
+        self,
+        mode: int,
+        *,
+        selected: bool,
+        data: bool | None = None,
+        filter_width: int | None = None,
+    ) -> RelativeVfoState:
+        """Write a complete mode/DATA/filter tuple and return observed state."""
+        role = "selected" if selected else "unselected"
+        cmd_map = self._profile.command_map
+        required = (f"set_{role}_mode", f"get_{role}_mode", f"get_{role}_freq")
+        if (
+            self._profile.receiver_count != 1
+            or self._profile.vfo_scheme != "ab"
+            or self._profile.vfo_readback != "selected_unselected"
+            or cmd_map is None
+            or not all(cmd_map.has(key) for key in required)
+        ):
+            raise CommandError("direct VFO mode is unavailable")
+        try:
+            mode_code = int(Mode(mode))
+        except (TypeError, ValueError) as exc:
+            raise CommandError(f"Unsupported direct VFO mode: {mode!r}") from exc
+        if data is not None and not isinstance(data, bool):
+            raise CommandError("direct VFO DATA must be a boolean")
+        if filter_width is not None and (
+            type(filter_width) is not int or filter_width not in (1, 2, 3)
+        ):
+            raise CommandError("direct VFO filter number must be 1, 2 or 3")
+        if data is None or filter_width is None:
+            try:
+                current = await self.read_relative_vfo(selected=selected)
+            except ValueError as exc:
+                raise CommandError(
+                    "Invalid direct VFO mode preservation readback"
+                ) from exc
+            if current.data_mode not in (0, 1) or current.filter_num not in (1, 2, 3):
+                raise CommandError(
+                    "direct VFO mode preservation readback is unavailable"
+                )
+            if data is None:
+                data = bool(current.data_mode)
+            if filter_width is None:
+                filter_width = current.filter_num
+        if data is None or filter_width is None or filter_width not in (1, 2, 3):
+            raise CommandError("direct VFO filter readback is unavailable")
+        opcode, sub, prefix = decode_wire_tuple(cmd_map.get(f"set_{role}_mode"))
+        response = await self.send_civ(
+            opcode,
+            sub,
+            data=prefix + bytes([mode_code, int(data), filter_width]),
+            wait_response=True,
+        )
+        ack = None if response is None else parse_ack_nak(response)
+        if ack is False:
+            raise CommandRejectedError("Radio rejected direct VFO mode")
+        if ack is not True:
+            raise CommandError("direct VFO mode was not acknowledged")
+        try:
+            observed = await self.read_relative_vfo(selected=selected)
+        except ValueError as exc:
+            raise CommandError("Invalid direct VFO mode readback") from exc
+        if observed.data_mode not in (0, 1) or observed.filter_num not in (1, 2, 3):
+            raise CommandError("direct VFO mode readback is unavailable")
+        return observed
 
     # ------------------------------------------------------------------
     # Explicit swap/equalize — MAIN/SUB vs A/B (issue #714)
@@ -463,12 +500,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         civ = build_civ_frame(
             self._radio_addr, CONTROLLER_ADDR, _CMD_VFO, data=bytes([code])
         )
-        response = await self._send_civ_expect(civ, label="swap_vfo_ab")
-        ack = parse_ack_nak(response)
-        if ack is False:
-            raise CommandRejectedError("Radio rejected VFO A/B exchange")
-        if ack is not True:
-            raise CommandError("Invalid VFO A/B exchange acknowledgement")
+        await self._send_civ_raw(civ, wait_response=False)
 
     async def equalize_vfo_ab(self, receiver: int = 0) -> None:
         """Copy the active VFO's state to the inactive VFO on ``receiver``.
@@ -633,7 +665,8 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         await self._set_vfo_slot_impl(slot, receiver=receiver, confirmed=False)
 
     async def _set_vfo_slot_confirmed(self, slot: str, receiver: int = 0) -> None:
-        """ACK-confirmed slot selection for the observation poller."""
+        """Private ACK-confirmed path; public ``set_vfo_slot`` stays fire-and-forget."""
+
         await self._set_vfo_slot_impl(slot, receiver=receiver, confirmed=True)
 
     async def _set_vfo_slot_impl(
@@ -655,11 +688,8 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             )
             if confirmed:
                 response = await self._send_civ_expect(civ, label=operation)
-                ack = parse_ack_nak(response)
-                if ack is False:
-                    raise CommandRejectedError(f"Radio rejected VFO slot {norm_slot}")
-                if ack is not True:
-                    raise CommandError(f"Invalid VFO slot {norm_slot} acknowledgement")
+                if parse_ack_nak(response) is not True:
+                    raise CommandError(f"Radio rejected VFO slot {norm_slot}")
             else:
                 await self._send_civ_raw(civ, wait_response=False)
             rx_state = (

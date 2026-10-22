@@ -92,6 +92,8 @@ Maximum batch size: 128 steps. Per-step timeout: 10 seconds.
 | `set_rit_tx_status` | `on?: bool=false` | `rit` | Yes | |
 | `set_rit_frequency` | `freq?: int=0` (Hz offset) | `rit` | Yes | |
 | `set_split` | `on?: bool=false` | `split` | Yes | |
+| `set_split_freq` | `freq_hz: int` (Hz) | — | Yes | Relative unselected-VFO frequency write (`selected=False`) via `_dual_rx_runtime.py: DualRxRuntimeMixin.write_relative_vfo_frequency`. Requires single-RX A/B selected/unselected profile commands; the runtime requires a positive ACK and target readback. TX-safe FREQUENCY classification; no pending overlay. |
+| `set_split_mode` | `mode: int` (CI-V mode code), `filter_width?: int` (CI-V filter number 1–3), `data?: bool` | — | Yes | Relative unselected-VFO mode/DATA/filter write (`selected=False`) via `_dual_rx_runtime.py: DualRxRuntimeMixin.write_relative_vfo_mode`. Requires single-RX A/B selected/unselected profile commands; omitted or null filter/DATA values are preserved from runtime readback. The runtime requires a positive ACK and target readback. TX-safe MODE classification; no pending overlay. |
 | `set_vfo` | `vfo?: str="A"` | — | Yes | Canonical. Values: `"A"` or `"B"`. |
 | `select_vfo` | `vfo?: str="A"` | — | Yes | Alias for `set_vfo`. |
 | `vfo_swap` | — | — | Yes | Swap VFO A↔B (or MAIN↔SUB). |

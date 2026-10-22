@@ -5508,8 +5508,8 @@ async def test_set_vfo_single_rx_rejected_slot_answers_erjcted(
 def legacy_dual_rx_radio() -> AsyncMock:
     """Legacy dual-RX backend lacking ReceiverBankCapable / VfoSlotCapable.
 
-    Issue #1189: backends predating #1170/#1172 (e.g. 3rd-party
-    ``Radio`` implementers) only expose the legacy ``set_vfo``
+    Issue #1189: backends predating #1170/#1172 (e.g. ``SerialMockRadio``,
+    3rd-party ``Radio`` implementers) only expose the legacy ``set_vfo``
     overload.  ``_cmd_set_vfo`` must fall back to it instead of returning
     a silent ``RPRT 0``.
     """

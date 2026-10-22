@@ -240,7 +240,6 @@ class TestVfoSwap:
     async def test_ic7300_swap_vfo_ab_sends_0xB0(
         self, ic7300: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        mock_transport.queue_response_on_send(1, ACK_IC7300)
         await ic7300.swap_vfo_ab(receiver=0)
         frames = _civ_bytes(mock_transport.sent_packets)
         assert any(SWAP_B0 in f for f in frames)

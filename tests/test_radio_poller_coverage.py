@@ -2650,7 +2650,7 @@ async def test_undeclared_profile_vfo_commands_fail_before_mutation(
 async def test_select_vfo_legacy_backend_falls_back_to_set_vfo() -> None:
     """SelectVfo on backends predating ReceiverBankCapable falls back to set_vfo.
 
-    Issue #1189: backends predating #1170/#1172 only expose the legacy
+    Issue #1189: backends like ``SerialMockRadio`` only expose the legacy
     ``set_vfo`` overload.  The poller must not AttributeError on
     ``radio.select_receiver(...)`` — it must fall back to ``set_vfo`` so
     SUB selection still reaches the radio.  The DeprecationWarning from

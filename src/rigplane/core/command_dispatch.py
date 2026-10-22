@@ -85,7 +85,7 @@ class ManagedWriteAdmission(Protocol):
 
 
 Binder = Callable[[Mapping[str, Any]], dict[str, Any]]
-TargetBuilder = Callable[[Mapping[str, Any]], FieldPath]
+TargetBuilder = Callable[[Mapping[str, Any]], FieldPath | None]
 ExpectationProjector = Callable[[Any, Mapping[str, Any]], dict[str, Any]]
 MethodNameResolver = Callable[[Mapping[str, Any]], str]
 
@@ -128,6 +128,24 @@ class CommandDescriptor:
     def result(self, intent: CommandIntent) -> dict[str, Any]:
         names = self.argument_names if self.result_names is None else self.result_names
         return {name: intent.params[name] for name in names}
+
+
+def _bind_split_freq(params: Mapping[str, Any]) -> dict[str, Any]:
+    return {"freq_hz": _int_param(params["freq_hz"], "freq_hz"), "selected": False}
+
+
+def _bind_split_mode(params: Mapping[str, Any]) -> dict[str, Any]:
+    mode = _int_param(params["mode"], "mode")
+    raw_filter = params.get("filter_width")
+    filter_width = (
+        None if raw_filter is None else _int_param(raw_filter, "filter_width")
+    )
+    if filter_width is not None and filter_width not in (1, 2, 3):
+        raise ValueError("filter_width must be a CI-V filter number 1-3")
+    data = params.get("data")
+    if data is not None and not isinstance(data, bool):
+        raise ValueError("data must be a boolean or None")
+    return {"mode": mode, "selected": False, "filter_width": filter_width, "data": data}
 
 
 def _bind_repeater_shift(params: Mapping[str, Any]) -> dict[str, Any]:
@@ -509,6 +527,24 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             tx_policy=DescriptorTxPolicy.TX_SAFE,
             public_names=("set_civ_output_ant",),
         ),
+        "set_split_freq": CommandDescriptor(
+            name="set_split_freq",
+            method_name="write_relative_vfo_frequency",
+            bind=_bind_split_freq,
+            target=lambda _params: None,
+            argument_names=("freq_hz", "selected"),
+            tx_policy=DescriptorTxPolicy.TX_SAFE,
+            public_names=("set_split_freq",),
+        ),
+        "set_split_mode": CommandDescriptor(
+            name="set_split_mode",
+            method_name="write_relative_vfo_mode",
+            bind=_bind_split_mode,
+            target=lambda _params: None,
+            argument_names=("mode", "selected", "data", "filter_width"),
+            tx_policy=DescriptorTxPolicy.TX_SAFE,
+            public_names=("set_split_mode",),
+        ),
         "set_tuner_status": CommandDescriptor(
             name="set_tuner_status",
             method_name="set_tuner_status",
@@ -674,8 +710,8 @@ def bind_command_intent(
         target=target,
         priority="user",
         timeout=timeout,
-        pending_policy="scoped",
-        expected_observations=(target,),
+        pending_policy="scoped" if target is not None else "none",
+        expected_observations=() if target is None else (target,),
     )
 
 

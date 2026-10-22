@@ -670,16 +670,8 @@ class _RecordingSend:
     def __init__(self) -> None:
         self.frames: list[bytes] = []
 
-    async def __call__(self, civ: bytes, **_: object) -> CivFrame | None:
+    async def __call__(self, civ: bytes, **_: object) -> None:
         self.frames.append(civ)
-        if civ[4:] == b"\x07\xb0\xfd":
-            return CivFrame(
-                to_addr=CONTROLLER_ADDR,
-                from_addr=civ[2],
-                command=0xFB,
-                sub=None,
-                data=b"",
-            )
         return None
 
 

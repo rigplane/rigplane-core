@@ -86,9 +86,9 @@ __all__ = [
     "ReceiverBankCapable",
     "TransceiverBankCapable",
     "VfoSlotCapable",
-    "ConfirmedModeCapable",
     "RelativeVfoReadbackCapable",
     "RelativeVfoFrequencyWritable",
+    "RelativeVfoModeWritable",
     "RelativeVfoState",
     "StateCacheCapable",
     "StateModelCapable",
@@ -1598,17 +1598,6 @@ class VfoSlotCapable(Protocol):
         ...
 
 
-@runtime_checkable
-class ConfirmedModeCapable(Protocol):
-    """Provider confirms a selected MAIN mode write before returning."""
-
-    async def set_mode_confirmed(
-        self, mode: Mode | str, *, filter_width: int | None = None
-    ) -> None:
-        """Set mode/filter and raise when acceptance cannot be confirmed."""
-        ...
-
-
 @dataclass(frozen=True, slots=True)
 class RelativeVfoState:
     """Provider-neutral Selected/Unselected frequency-mode tuple."""
@@ -1714,6 +1703,22 @@ class RelativeVfoFrequencyWritable(Protocol):
         after_readback: Callable[[], None] | None = None,
     ) -> int:
         """Return observed Hz; synchronous hooks may raise to reject stale targets."""
+        ...
+
+
+@runtime_checkable
+class RelativeVfoModeWritable(Protocol):
+    """Radio can write and read back a Selected/Unselected VFO mode tuple."""
+
+    async def write_relative_vfo_mode(
+        self,
+        mode: int,
+        *,
+        selected: bool,
+        data: bool | None = None,
+        filter_width: int | None = None,
+    ) -> RelativeVfoState:
+        """Return observed state, preserving omitted DATA and filter number (1–3)."""
         ...
 
 

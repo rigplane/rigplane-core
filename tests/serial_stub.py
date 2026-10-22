@@ -48,31 +48,14 @@ class SplitIcomTransport:
         }
         self.split = False
         self.context = "vfo"
-        self.exchanges = 0
-        self.reject_exchange: int | None = None
+        self.reject_frequency = False
         self.reject_mode = False
-        self.reject_mode_write: int | None = None
-        self.mode_writes = 0
-        self.reject_data = False
-        self.payload_writes = 0
         self.requests: list[tuple[int, int | None, bytes]] = []
         self.ptt_writes: list[bool] = []
         self.ptt_key_tuples: list[tuple[int, Mode, int, int]] = []
-        self.pause_exchange: int | None = None
-        self.exchange_paused = asyncio.Event()
-        self.exchange_release = asyncio.Event()
-        self.pause_frequency: int | None = None
-        self.frequency_paused = asyncio.Event()
-        self.frequency_release = asyncio.Event()
-        self.key_started = asyncio.Event()
-        self.key_release: asyncio.Event | None = None
-        self.on_key: Callable[[], None] | None = None
-        self.dekeyed = asyncio.Event()
-        self.restore_attempted = asyncio.Event()
-        self.restore_ack: asyncio.Event | None = None
-        self.second_payload = asyncio.Event()
         self.relative_freq_read = asyncio.Event()
         self.relative_mode_read = asyncio.Event()
+        self.relative_mode_read_gate: asyncio.Event | None = None
         self._responses: asyncio.Queue[bytes] = asyncio.Queue()
         self._packet_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self.rx_packet_count = 0
@@ -83,40 +66,26 @@ class SplitIcomTransport:
     async def send_tracked(self, packet: bytes) -> None:
         from _helpers import wrap_civ_in_udp
 
-        start = packet.index(b"\xfe\xfe")
-        request = parse_civ_frame(packet[start:])
+        request = parse_civ_frame(packet[packet.index(b"\xfe\xfe") :])
         command, data = request.command, request.data
         self.requests.append((command, request.sub, data))
         reply_command, reply_sub, reply_data = 0xFB, None, b""
         freq, mode, filt, data_mode = self.slots[self.selected]
         if command == 0x07:
             if not data:
-                # Bare 07 enters VFO mode. It does not query A/B identity.
                 self.context = "vfo"
-            elif data == b"\xb0":
-                self.exchanges += 1
-                if self.exchanges % 2 == 0:
-                    self.restore_attempted.set()
-                    if self.restore_ack is not None:
-                        await self.restore_ack.wait()
-                if self.exchanges == self.reject_exchange:
-                    reply_command = 0xFA
-                else:
-                    self.slots["A"], self.slots["B"] = self.slots["B"], self.slots["A"]
             elif data in (b"\x00", b"\x01"):
                 self.context = "vfo"
                 self.selected = "A" if data == b"\x00" else "B"
             else:
                 raise AssertionError(f"Unexpected VFO operation: {data!r}")
         elif command == 0x05:
-            self.payload_writes += 1
-            if bcd_decode(data) == 14_090_000:
-                self.second_payload.set()
-            self.slots[self.selected] = (bcd_decode(data), mode, filt, data_mode)
+            if self.reject_frequency:
+                reply_command = 0xFA
+            else:
+                self.slots[self.selected] = (bcd_decode(data), mode, filt, data_mode)
         elif command == 0x06:
-            self.payload_writes += 1
-            self.mode_writes += 1
-            if self.reject_mode or self.mode_writes == self.reject_mode_write:
+            if self.reject_mode:
                 reply_command = 0xFA
             else:
                 self.slots[self.selected] = (
@@ -126,30 +95,43 @@ class SplitIcomTransport:
                     data_mode,
                 )
         elif command in (0x25, 0x26):
+            assert data and data[0] in (0, 1)
             slot = self.selected
             if data[0] == 1:
                 slot = "B" if slot == "A" else "A"
             rel_freq, rel_mode, rel_filter, rel_data = self.slots[slot]
-            if command == 0x26 and len(data) == 4:
-                self.payload_writes += 1
-                self.mode_writes += 1
-                if self.reject_mode or self.mode_writes == self.reject_mode_write:
-                    reply_command = 0xFA
-                else:
-                    self.slots[slot] = (rel_freq, Mode(data[1]), data[3], data[2])
-            else:
-                read_event = (
+            if len(data) == 1:
+                event = (
                     self.relative_freq_read
                     if command == 0x25
                     else self.relative_mode_read
                 )
-                read_event.set()
+                event.set()
+                if command == 0x26 and self.relative_mode_read_gate is not None:
+                    await self.relative_mode_read_gate.wait()
                 reply_command = command
                 reply_data = data + (
                     bcd_encode(rel_freq)
                     if command == 0x25
                     else bytes([rel_mode, rel_data, rel_filter])
                 )
+            elif command == 0x25:
+                assert len(data) == 6
+                if self.reject_frequency:
+                    reply_command = 0xFA
+                else:
+                    self.slots[slot] = (
+                        bcd_decode(data[1:]),
+                        rel_mode,
+                        rel_filter,
+                        rel_data,
+                    )
+            else:
+                assert len(data) == 4 and data[2] in (0, 1) and data[3] in (1, 2, 3)
+                if self.reject_mode:
+                    reply_command = 0xFA
+                else:
+                    self.slots[slot] = (rel_freq, Mode(data[1]), data[3], data[2])
         elif command == 0x03:
             reply_command, reply_data = command, bcd_encode(freq)
         elif command == 0x04:
@@ -160,28 +142,34 @@ class SplitIcomTransport:
             else:
                 reply_command, reply_data = command, bytes([self.split])
         elif command == 0x1A and request.sub == 0x06:
-            if self.reject_data:
-                reply_command = 0xFA
-            else:
+            if data:
                 self.slots[self.selected] = (
                     freq,
                     mode,
                     data[1] if len(data) > 1 and data[1] else filt,
                     data[0],
                 )
-        elif command == 0x1C and request.sub == 0x00:
-            on = bool(data[0])
-            if on:
-                self.key_started.set()
-                if self.key_release is not None:
-                    await self.key_release.wait()
-            self.ptt_writes.append(on)
-            if on:
-                self.ptt_key_tuples.append(self.slots[self.selected])
-                if self.on_key is not None:
-                    self.on_key()
             else:
-                self.dekeyed.set()
+                reply_command, reply_sub, reply_data = (
+                    command,
+                    request.sub,
+                    bytes([data_mode, filt]),
+                )
+        elif command == 0x1C and request.sub == 0x00:
+            if data:
+                on = bool(data[0])
+                self.ptt_writes.append(on)
+                if on:
+                    slot = self.selected
+                    if self.split:
+                        slot = "B" if slot == "A" else "A"
+                    self.ptt_key_tuples.append(self.slots[slot])
+            else:
+                reply_command, reply_sub, reply_data = (
+                    command,
+                    request.sub,
+                    bytes([bool(self.ptt_writes and self.ptt_writes[-1])]),
+                )
         else:
             raise AssertionError(f"Unexpected split-test CI-V request: {request!r}")
         reply = build_civ_frame(
@@ -192,16 +180,6 @@ class SplitIcomTransport:
             data=reply_data,
         )
         self._responses.put_nowait(wrap_civ_in_udp(reply))
-        if (
-            command == 0x07
-            and data == b"\xb0"
-            and self.exchanges == self.pause_exchange
-        ):
-            self.exchange_paused.set()
-            await self.exchange_release.wait()
-        if command == 0x05 and bcd_decode(data) == self.pause_frequency:
-            self.frequency_paused.set()
-            await self.frequency_release.wait()
 
 
 class SerialFrameError(RuntimeError):
@@ -559,11 +537,6 @@ class SerialMockRadio:
         self._sync_radio_state_from_rx(receiver)
         if receiver == 0:
             self._state_cache.update_mode(parsed_mode.name, slot.filter_width)
-
-    async def set_mode_confirmed(
-        self, mode: Mode | str, *, filter_width: int | None = None
-    ) -> None:
-        await self.set_mode(mode, filter_width=filter_width)
 
     async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
         slot = self._active_slot_state(receiver, operation="get_mode")

@@ -19,7 +19,12 @@ from rigplane.rigctld.contract import (
     RigctldCommand,
     RigctldResponse,
 )
-from rigplane.rigctld.protocol import format_error, format_response, parse_line
+from rigplane.rigctld.protocol import (
+    ArgumentCountError,
+    format_error,
+    format_response,
+    parse_line,
+)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -342,12 +347,12 @@ class TestParseLineErrors:
 
     def test_set_split_freq_no_arg(self) -> None:
         # I requires exactly 1 arg.
-        with pytest.raises(ValueError, match="at least"):
+        with pytest.raises(ArgumentCountError, match="at least"):
             parse_line(b"I")
 
     def test_set_split_mode_too_many_args(self) -> None:
         # X accepts at most 2 args.
-        with pytest.raises(ValueError, match="at most"):
+        with pytest.raises(ArgumentCountError, match="at most"):
             parse_line(b"X USB 3000 extra")
 
     def test_get_split_freq_with_arg(self) -> None:

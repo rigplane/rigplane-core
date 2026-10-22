@@ -43,8 +43,17 @@ References
 
 from __future__ import annotations
 
+from unittest.mock import create_autospec
+
 import pytest
 
+from rigplane.core.command_dispatch import execute_command_intent
+from rigplane.core.command_service import command_intent_from_request
+from rigplane.core.radio_protocol import (
+    RelativeVfoFrequencyWritable,
+    RelativeVfoModeWritable,
+)
+from rigplane.rigctld.handler import _classify_rigctld_tx_intent
 from rigplane.rigctld.protocol import parse_line
 
 # Canonical list of short commands Hamlib prefixes with VFO under
@@ -121,3 +130,57 @@ def test_vfo_prefixable_set_documented() -> None:
     assert {"F", "M", "T", "L", "U", "S", "I", "X"} <= VFO_PREFIXABLE_SHORTS
     # Total = 17 commands (9 GET + 8 SET).
     assert len(VFO_PREFIXABLE_SHORTS) == 17
+
+
+@pytest.mark.parametrize(
+    ("name", "params", "family"),
+    [
+        ("set_split_freq", {"freq_hz": 14_080_100}, "frequency"),
+        ("set_split_mode", {"mode": 1, "filter_width": None, "data": None}, "mode"),
+        ("set_split_mode", {"mode": 1, "filter_width": 2, "data": True}, "mode"),
+    ],
+)
+def test_split_write_intents_have_no_relative_role_overlay(
+    name, params, family
+) -> None:
+    intent = command_intent_from_request(
+        name, params, source="rigctld", session_id="split-client"
+    )
+    assert intent.target is None
+    assert intent.pending_policy == "none"
+    assert intent.expected_observations == ()
+    assert intent.params["selected"] is False
+    assert intent.params["session_id"] == "split-client"
+    classification = _classify_rigctld_tx_intent(intent)
+    assert classification.disposition.value == "tx-safe"
+    assert classification.family is not None
+    assert classification.family.value == family
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "params", "capability", "method", "kwargs"),
+    [
+        (
+            "set_split_freq",
+            {"freq_hz": 14_080_100},
+            RelativeVfoFrequencyWritable,
+            "write_relative_vfo_frequency",
+            {"freq_hz": 14_080_100, "selected": False},
+        ),
+        (
+            "set_split_mode",
+            {"mode": 1, "filter_width": 2, "data": True},
+            RelativeVfoModeWritable,
+            "write_relative_vfo_mode",
+            {"mode": 1, "selected": False, "filter_width": 2, "data": True},
+        ),
+    ],
+)
+async def test_split_descriptors_call_runtime_protocol(
+    name, params, capability, method, kwargs
+) -> None:
+    radio = create_autospec(capability, instance=True)
+    intent = command_intent_from_request(name, params, source="rigctld")
+    await execute_command_intent(radio, intent)
+    getattr(radio, method).assert_awaited_once_with(**kwargs)

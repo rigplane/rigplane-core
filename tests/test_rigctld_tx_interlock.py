@@ -48,16 +48,16 @@ def test_material_intents_use_shared_policy() -> None:
         (_intent("set_freq", freq_hz=1), commands.SetFreq, "tx-safe", "frequency"),
         (
             _intent("set_split_freq", freq_hz=1),
-            commands.SetSplit,
-            "defer",
-            "vfo-topology",
+            commands.SetFreq,
+            "tx-safe",
+            "frequency",
         ),
         (_intent("set_mode", mode="USB"), commands.SetMode, "tx-safe", "mode"),
         (
-            _intent("set_split_mode", mode="USB"),
-            commands.SetSplit,
-            "defer",
-            "vfo-topology",
+            _intent("set_split_mode", mode=1),
+            commands.SetMode,
+            "tx-safe",
+            "mode",
         ),
         (_intent("set_ptt", ptt=False), commands.PttOff, "always-pass", "ptt-off"),
         (_intent("set_ptt", ptt=True), commands.PttOn, "block", "ptt-on"),
@@ -383,13 +383,11 @@ async def test_structural_exemptions_never_resolve_rf_truth(
 # design in PR #2755): DEFER-classified writes are silently dropped (RPRT 0,
 # radio untouched) during known TX, and truthfully refused under UNKNOWN/
 # stale RF -- never held in-band. See ``RigctldHandler._defer_write_gate``.
-# The parametrized rows below cover the ``S``/``U SPLIT`` DEFER wire families
+# The parametrized rows below cover the two remaining DEFER wire families
 # (``S`` → ``set_split_vfo``, ``U SPLIT`` → ``set_func`` SPLIT); each row
-# asserts on the call path its own wire command takes (MOR-1893). The split
-# TX writes (``I``/``X`` → ``set_split_freq``/``set_split_mode``) are DEFER
-# too (MOR-3115) and pin their own outcomes in test_rigctld_split.py.
-# Main freq/mode/VFO/RIT/XIT are no longer DEFER (MOR-1940, MOR-2171) and are
-# pinned by ``test_authority_approved_writes_dispatch_in_every_rf_state`` and
+# asserts on the call path its own wire command takes (MOR-1893). Freq/mode/
+# VFO/RIT/XIT are no longer DEFER (MOR-1940, MOR-2171) and are pinned by
+# ``test_authority_approved_writes_dispatch_in_every_rf_state`` and
 # ``test_rit_xit_now_dispatch_in_every_rf_state`` instead.
 
 

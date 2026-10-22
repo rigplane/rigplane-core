@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import patch
 import pytest
 from rigplane.core.command_service import CommandService
 from rigplane.core.command_dispatch import execute_command_intent
@@ -17,6 +18,7 @@ from rigplane.runtime._poller_types import CommandQueue, execute_command_queue_e
 from rigplane.runtime.managed_tx_state import ActuationOperation, ActuationResult, ManagedTxIntentKind, ManagedTxOutcome
 from serial_stub import SerialMockRadio
 from test_managed_tx_authority import authority
+from test_rigctld_wsjtx_split_mk2 import MODELS, _assert_no_relative_overlays, _exchange, _peer, _rf_state
 _FREQUENCY, _WAIT = 14_074_000, 2.0
 class _NoTruthProbe:
     def __bool__(self): raise AssertionError("identity checks must use is None")
@@ -167,7 +169,6 @@ class _LeafHandler:
     def __init__(self, error=HamlibError.OK):
         self._radio, self._managed_tx_authority = _LeafRadio(), object()
         self._has_canonical_state_store, self.error, self.calls = False, error, []
-        self._vfo_slot_lock = asyncio.Lock()
     async def _apply_packet_data_mode(self, *, receiver): self.calls.append(("packet", receiver))
     async def _execute_set_vfo(self, vfo): return self.calls.append(("vfo", vfo)) or self.error
     async def _execute_set_level(self, level, value, *, receiver, vfo_arg): return self.calls.append(("level", level, value, receiver, vfo_arg)) or self.error
@@ -758,3 +759,197 @@ async def test_managed_vox_on_is_refused_while_another_owner_holds_tx(managed):
     assert await _replies(managed, 1) == [b"RPRT 0\n"]
     assert managed.radio._vox_on is True
     await _clear_release_debt(managed)
+
+# fmt: on
+
+
+@pytest.fixture(params=MODELS)
+async def managed_split(request):
+    queue = CommandQueue()
+    queue.bind_connection_generation(lambda: "split-connection")
+    refs = {}
+
+    def configure(radio):
+        managed, *_ = authority(generation=radio.state_store.provider_generation)
+        refs["authority"] = managed
+        default = _Default()
+        service = CommandService(executor=default, state_store=radio.state_store)
+        refs["default"] = default
+        return {
+            "managed_tx_authority": managed,
+            "command_queue": queue,
+            "command_service": service,
+        }
+
+    with patch.object(
+        queue, "put_ordered", wraps=queue.put_ordered, spec=queue.put_ordered
+    ) as ordered:
+        try:
+            async with _peer(request.param, configure=configure) as (
+                radio,
+                peer,
+                server,
+                reader,
+                writer,
+            ):
+                yield SimpleNamespace(
+                    queue=queue,
+                    ordered=ordered,
+                    authority=refs["authority"],
+                    default=refs["default"],
+                    radio=radio,
+                    peer=peer,
+                    server=server,
+                    reader=reader,
+                    writer=writer,
+                )
+        finally:
+            if "authority" in refs:
+                await refs["authority"].close()
+
+
+async def _drain_split_entry(rig, entry):
+    async def execute(claimed):
+        assert isinstance(claimed.command, CommandIntent)
+
+        def validate():
+            validate_command_queue_entry_currency(
+                claimed,
+                now=asyncio.get_running_loop().time(),
+                provider_generation=rig.radio.state_store.provider_generation,
+                connection_generation="split-connection",
+                session_is_live=rig.queue.session_is_live,
+                require_connection_generation=True,
+            )
+
+        validate()
+        await execute_command_intent(
+            rig.radio,
+            claimed.command,
+            managed_tx_authority=rig.authority,
+            validate_currency=validate,
+        )
+
+    await execute_command_queue_entry(entry, execute)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "name"),
+    [(b"I 14080100\n", "set_split_freq"), (b"X PKTUSB 2400\n", "set_split_mode")],
+)
+async def test_managed_split_writes_use_one_shared_ordered_entry(
+    managed_split, command, name
+):
+    rig = managed_split
+    _rf_state(rig.server, True)
+    before = dict(rig.peer.slots)
+    reply = asyncio.create_task(_exchange(rig.writer, rig.reader, command))
+    try:
+        await rig.queue.wait(1)
+        entry = rig.queue.take_entry()
+        assert entry is not None
+        rig.ordered.assert_called_once()
+        assert entry.command.name == name
+        assert entry.command.params["selected"] is False
+        assert entry.provider_generation == rig.radio.state_store.provider_generation
+        assert entry.connection_generation == "split-connection"
+        assert rig.queue.take_entry() is None
+        assert rig.peer.slots == before
+        assert not rig.peer.requests
+        assert not reply.done()
+        await _drain_split_entry(rig, entry)
+        assert await reply == b"RPRT 0\n"
+        if name == "set_split_freq":
+            assert rig.peer.slots["B"][0] == 14_080_100
+        else:
+            assert rig.peer.slots["B"][1:] == (1, 2, 1)
+        assert rig.peer.slots["A"] == before["A"]
+        assert rig.peer.selected == "A"
+        assert not rig.default.calls
+        _assert_no_relative_overlays(rig.server)
+    finally:
+        if not reply.done():
+            reply.cancel()
+        await asyncio.gather(reply, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", [b"I 14080100\n", b"X USB 2400\n"])
+@pytest.mark.parametrize("ending", ["timeout", "disconnect"])
+async def test_managed_split_cancelled_or_timed_out_entry_never_mutates_late(
+    managed_split, command, ending
+):
+    rig = managed_split
+    rig.server._config.command_timeout = 0.05 if ending == "timeout" else 2
+    before = dict(rig.peer.slots)
+    reply = asyncio.create_task(_exchange(rig.writer, rig.reader, command))
+    try:
+        await rig.queue.wait(1)
+        entry = rig.queue.take_entry()
+        assert entry is not None and entry.future is not None
+        rig.ordered.assert_called_once()
+        if ending == "timeout":
+            assert await reply == b"RPRT -5\n"
+        else:
+            rig.writer.close()
+            await rig.writer.wait_closed()
+            await asyncio.wait_for(
+                asyncio.gather(*tuple(rig.server._client_tasks)),
+                2,
+            )
+        assert entry.future.cancelled()
+        await _drain_split_entry(rig, entry)
+        assert rig.peer.slots == before
+        assert not rig.peer.requests
+        assert rig.queue.pending_count == 0
+        _assert_no_relative_overlays(rig.server)
+    finally:
+        if not reply.done():
+            reply.cancel()
+        await asyncio.gather(reply, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["timeout", "disconnect"])
+async def test_managed_split_mode_cancelled_during_preservation_read_never_sets(
+    managed_split, ending
+):
+    rig = managed_split
+    rig.server._config.command_timeout = 0.05 if ending == "timeout" else 2
+    before = dict(rig.peer.slots)
+    gate = rig.peer.relative_mode_read_gate = asyncio.Event()
+    reply = asyncio.create_task(_exchange(rig.writer, rig.reader, b"X USB\n"))
+    drain = None
+    try:
+        await rig.queue.wait(1)
+        entry = rig.queue.take_entry()
+        assert entry is not None and entry.future is not None
+        drain = asyncio.create_task(_drain_split_entry(rig, entry))
+        await asyncio.wait_for(rig.peer.relative_mode_read.wait(), 1)
+        assert rig.peer.slots == before
+        if ending == "timeout":
+            assert await reply == b"RPRT -5\n"
+        else:
+            rig.writer.close()
+            await rig.writer.wait_closed()
+            await asyncio.wait_for(asyncio.gather(*tuple(rig.server._client_tasks)), 2)
+        assert entry.future.cancelled()
+        gate.set()
+        await asyncio.wait_for(asyncio.gather(drain, return_exceptions=True), 2)
+        assert not any(
+            command == 0x26 and len(data) > 1
+            for command, _sub, data in rig.peer.requests
+        )
+        assert rig.peer.slots == before
+        assert rig.peer.selected == "A"
+        _assert_no_relative_overlays(rig.server)
+    finally:
+        gate.set()
+        for task in (reply, drain):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (reply, drain) if task is not None),
+            return_exceptions=True,
+        )
