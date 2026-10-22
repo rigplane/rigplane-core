@@ -3613,8 +3613,8 @@ class YaesuCatRadio:
             await self._write(
                 "write_keyer_memory", chan=channel, mem=text, is_current=is_current
             )
-            if is_current is not None and not is_current():
-                return
+            # A stale fence makes this write raise "no longer current", the
+            # same as a stale chunk: KY never plays after a force-off.
             await self._write(
                 "send_cw", type=msg_type, mem=channel, is_current=is_current
             )

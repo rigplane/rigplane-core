@@ -189,8 +189,10 @@ async def test_yaesu_install_shares_runner_and_poison_suppresses_queued_cw_chunk
     assert pending[0][0] == "A" * 48
     assert pending[0][1] is not None
     assert "A" * 48 not in wire
-    # The KY that would play channel 5 was never even queued.
-    assert "5" not in [payload for payload, _ in pending]
+    # Neither the KM text nor the KY that would play channel 5 reached
+    # the wire; each queued write carried the stale-fence predicate.
+    assert "5" not in wire
+    assert all(check is not None for payload, check in pending if payload == "5")
     await composition.shutdown(asyncio.Event())
 
 
