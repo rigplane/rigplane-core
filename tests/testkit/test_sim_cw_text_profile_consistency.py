@@ -147,3 +147,90 @@ async def test_icom_profile_publishes_support_and_sends() -> None:
         if server is not None:
             await server.stop()
         await radio.disconnect()
+
+
+def _ftx1_variant(tmp_path: Path, name: str, cw_text: str, *, cw_tag: bool) -> object:
+    text = (ROOT / "rigs" / "ftx1.toml").read_text(encoding="utf-8")
+    assert _CW_TEXT_SECTION.search(text)
+    text = _CW_TEXT_SECTION.sub(cw_text + "\n", text)
+    if not cw_tag:
+        assert text.count('\n    "cw",\n') == 1
+        text = text.replace('\n    "cw",\n', "\n", 1)
+    for shared in (ROOT / "rigs").glob("_*.toml"):
+        (tmp_path / shared.name).write_bytes(shared.read_bytes())
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    return load_rig(path)
+
+
+async def _serve_ftx1(rig: object):  # type: ignore[no-untyped-def]
+    stack = build_stack(build_parser().parse_args(["serve", "--radio", "ftx1"]))
+    await stack.backend.start()
+    device = stack.backend.startup_fields()["device"]
+    assert device.startswith("socket://127.0.0.1:"), device
+    radio = YaesuCatRadio(device, profile=rig)  # type: ignore[arg-type]
+    await asyncio.wait_for(radio.connect(), 20)
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    await server.start()
+
+    async def close() -> None:
+        await server.stop()
+        await radio.disconnect()
+        await stack.backend.stop()
+        stack.trace.close()
+
+    return server, stack.backend.radio, close
+
+
+_ENABLED = "[cw_text]\nsupported = true\nmax_length = 50\nmemory_channel = 5"
+
+
+@pytest.mark.asyncio
+async def test_yaesu_file_profile_refuses_text_over_the_km_limit(
+    tmp_path: Path,
+) -> None:
+    rig = _ftx1_variant(tmp_path, "ftx1_enabled.toml", _ENABLED, cw_tag=True)
+    server, sim, close = await _serve_ftx1(rig)
+    try:
+        status, body = await _request(
+            server.port, "POST", "/api/v1/radio/cw/send", {"text": "A" * 51}
+        )
+        assert (status, body) == (
+            400,
+            {
+                "error": "invalid_request",
+                "message": "CW text too long for FTX-1: got 51 characters, limit is 50",
+            },
+        )
+        await _settle()
+        assert sim.model.keying_memory == {}
+        assert sim.model.keyer_play_requests == ()
+    finally:
+        await close()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_profile_without_cw_tag_sends_when_cw_text_is_enabled(
+    tmp_path: Path,
+) -> None:
+    rig = _ftx1_variant(tmp_path, "ftx1_no_cw_tag.toml", _ENABLED, cw_tag=False)
+    server, sim, close = await _serve_ftx1(rig)
+    try:
+        status, caps = await _request(server.port, "GET", "/api/v1/capabilities")
+        assert status == 200
+        assert "cw" not in caps["capabilities"]
+        assert caps["cwText"] == {
+            "supported": True,
+            "maxLength": 50,
+            "memoryChannel": 5,
+        }
+        status, body = await _request(
+            server.port, "POST", "/api/v1/radio/cw/send", {"text": "CQ"}
+        )
+        assert (status, body) == (200, {"text": "CQ"})
+        await _settle()
+        assert sim.model.keying_memory == {5: "CQ"}
+        assert sim.model.keyer_play_requests == ((0, 5),)
+        assert sim.ptt is False
+    finally:
+        await close()

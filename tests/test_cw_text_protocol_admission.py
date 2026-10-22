@@ -91,18 +91,26 @@ def test_complete_yaesu_enable_loads(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("section", "dropped", "key"),
     [
-        ("[cw_text]\nsupported = true", None, "[cw_text].memory_channel"),
         (
-            "[cw_text]\nsupported = true\nmemory_channel = 6",
+            "[cw_text]\nsupported = true\nmax_length = 50",
             None,
             "[cw_text].memory_channel",
         ),
         (
-            "[cw_text]\nsupported = true\nmemory_channel = 5",
+            "[cw_text]\nsupported = true\nmemory_channel = 6\nmax_length = 50",
+            None,
+            "[cw_text].memory_channel",
+        ),
+        (
+            "[cw_text]\nsupported = true\nmemory_channel = 5\nmax_length = 50",
             "write_keyer_memory",
             "write_keyer_memory",
         ),
-        ("[cw_text]\nsupported = true\nmemory_channel = 5", "send_cw", "send_cw"),
+        (
+            "[cw_text]\nsupported = true\nmemory_channel = 5\nmax_length = 50",
+            "send_cw",
+            "send_cw",
+        ),
     ],
     ids=["no-channel", "channel-6", "no-km-command", "no-ky-command"],
 )
@@ -133,7 +141,9 @@ def test_yaesu_memory_channel_outside_keyer_memories_does_not_load(
 
 
 def test_read_only_keyer_memory_command_does_not_enable(tmp_path: Path) -> None:
-    text = _ftx1_text("[cw_text]\nsupported = true\nmemory_channel = 5")
+    text = _ftx1_text(
+        "[cw_text]\nsupported = true\nmemory_channel = 5\nmax_length = 50"
+    )
     text = re.sub(
         r"^write_keyer_memory\s*=.*$",
         'write_keyer_memory = { cat = { read = "KM5;" } }',
@@ -221,7 +231,9 @@ async def test_published_support_matches_callable_support_and_execution(
 
 
 def test_declared_absent_keyer_memory_command_does_not_enable(tmp_path: Path) -> None:
-    text = _ftx1_text("[cw_text]\nsupported = true\nmemory_channel = 5")
+    text = _ftx1_text(
+        "[cw_text]\nsupported = true\nmemory_channel = 5\nmax_length = 50"
+    )
     text = re.sub(
         r"^write_keyer_memory\s*=.*$",
         'write_keyer_memory = { absent = "test: declared absent" }',
@@ -244,7 +256,9 @@ def test_yaesu_enable_needs_cat_commands_not_civ_bytes(
 ) -> None:
     # A CI-V spec in a Yaesu profile is not something YaesuCatRadio can
     # write: KM would land and KY would never play.
-    text = _ftx1_text("[cw_text]\nsupported = true\nmemory_channel = 5")
+    text = _ftx1_text(
+        "[cw_text]\nsupported = true\nmemory_channel = 5\nmax_length = 50"
+    )
     text = re.sub(
         rf"^{command}\s*=.*$", f"{command} = {civ_bytes}", text, flags=re.MULTILINE
     )
@@ -282,3 +296,31 @@ def test_civ_enable_with_a_cat_send_cw_does_not_load(tmp_path: Path) -> None:
     assert "civ_cat_send_cw.toml" in message
     assert "[cw_text].supported" in message
     assert "send_cw" in message
+
+
+# ── Yaesu text limit is the KM limit (#4317 gate review) ─────────
+
+
+@pytest.mark.parametrize(
+    ("section", "detail"),
+    [
+        ("[cw_text]\nsupported = true\nmemory_channel = 5", "required"),
+        (
+            "[cw_text]\nsupported = true\nmemory_channel = 5\nmax_length = 51",
+            "51",
+        ),
+        ("[cw_text]\nsupported = false\nmemory_channel = 5\nmax_length = 512", "512"),
+    ],
+    ids=["enabled-without-limit", "enabled-over-km-limit", "disabled-over-km-limit"],
+)
+def test_yaesu_text_limit_must_fit_one_km_write(
+    tmp_path: Path, section: str, detail: str
+) -> None:
+    # KM P2 stores up to 50 characters (CAT 2508-C printed p.17).
+    with pytest.raises(RigLoadError) as excinfo:
+        _variant(tmp_path, "yaesu_limit.toml", _ftx1_text(section))
+    message = str(excinfo.value)
+    assert "yaesu_limit.toml" in message
+    assert "[cw_text].max_length" in message
+    assert "50" in message
+    assert detail in message
