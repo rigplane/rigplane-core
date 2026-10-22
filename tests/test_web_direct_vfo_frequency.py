@@ -23,6 +23,7 @@ from rigplane.core.state_store import StateStore
 from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime._poller_types import CommandQueue, SelectVfo, SetVfoFreq
+from rigplane.runtime.radio import IcomRadio
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.runtime_helpers import projected_vfo_capability_tags
@@ -33,17 +34,22 @@ ACK = parse_civ_frame(bytes.fromhex("FE FE E0 94 FB FD"))
 READBACK = parse_civ_frame(bytes.fromhex("FE FE E0 94 25 01 00 40 07 14 00 FD"))
 
 
-def setup(active="A", *, age=0, generation=None):
+def setup(active="A", *, age=0, generation=None, model="IC-7300"):
     store = StateStore()
     store.begin_provider_generation()
+    profile = resolve_radio_profile(model=model)
     radio = SimpleNamespace(
-        profile=resolve_radio_profile(model="IC-7300"),
+        profile=profile,
+        _profile=profile,
         capabilities=set(),
         _civ_epoch=1,
-        send_civ=AsyncMock(side_effect=[ACK, READBACK]),
-        set_freq=AsyncMock(),
-        set_vfo=AsyncMock(),
-        select_receiver=AsyncMock(),
+        send_civ=AsyncMock(spec=IcomRadio.send_civ, side_effect=[ACK, READBACK]),
+        set_freq=AsyncMock(spec=IcomRadio.set_freq),
+        set_vfo=AsyncMock(spec=IcomRadio._set_vfo_wire),
+        select_receiver=AsyncMock(spec=IcomRadio.select_receiver),
+    )
+    radio.write_relative_vfo_frequency = IcomRadio.write_relative_vfo_frequency.__get__(
+        radio
     )
     queue = CommandQueue()
     poller = RadioPoller(radio, queue, state_store=store)
@@ -80,25 +86,36 @@ def command(store, slot="B", expected="A", **changes):
 @pytest.mark.parametrize(
     "active,slot,selector", [("A", "A", 0), ("A", "B", 1), ("B", "A", 1), ("B", "B", 0)]
 )
-async def test_direct_wire_and_no_selection(active, slot, selector):
-    poller, radio, store, _ = setup(active)
+@pytest.mark.parametrize("model", ["IC-7300", "IC-7300MK2", "IC-705"])
+async def test_direct_wire_and_no_selection(active, slot, selector, model):
+    poller, radio, store, _ = setup(active, model=model)
+    addr = radio.profile.civ_addr
+    writer = radio.write_relative_vfo_frequency
+    radio.write_relative_vfo_frequency = AsyncMock(
+        spec=IcomRadio.write_relative_vfo_frequency, side_effect=writer
+    )
     radio.send_civ.side_effect = [
-        ACK,
+        parse_civ_frame(bytes.fromhex(f"FE FE E0 {addr:02X} FB FD")),
         parse_civ_frame(
-            bytes.fromhex(f"FE FE E0 94 25 {selector:02X} 00 40 07 14 00 FD")
+            bytes.fromhex(f"FE FE E0 {addr:02X} 25 {selector:02X} 00 40 07 14 00 FD")
         ),
     ]
     await poller._execute(command(store, slot, active))
+    radio.write_relative_vfo_frequency.assert_awaited_once()
+    assert radio.write_relative_vfo_frequency.await_args.args == (FREQ,)
+    assert radio.write_relative_vfo_frequency.await_args.kwargs["selected"] == (
+        selector == 0
+    )
     frames = []
     for call in radio.send_civ.await_args_list:
         opcode, sub = call.args
         assert call.kwargs["wait_response"] is True
         frames.append(
-            build_civ_frame(0x94, 0xE0, opcode, sub=sub, data=call.kwargs["data"])
+            build_civ_frame(addr, 0xE0, opcode, sub=sub, data=call.kwargs["data"])
         )
     assert frames == [
-        bytes.fromhex(f"FE FE 94 E0 25 {selector:02X} 00 40 07 14 00 FD"),
-        bytes.fromhex(f"FE FE 94 E0 25 {selector:02X} FD"),
+        bytes.fromhex(f"FE FE {addr:02X} E0 25 {selector:02X} 00 40 07 14 00 FD"),
+        bytes.fromhex(f"FE FE {addr:02X} E0 25 {selector:02X} FD"),
     ]
     radio.set_vfo.assert_not_called()
     radio.select_receiver.assert_not_called()
@@ -154,13 +171,31 @@ async def test_bounds_and_provider_mismatch_never_write(changes):
     radio.send_civ.assert_not_called()
 
 
-@pytest.mark.parametrize("model", ["IC-7610", "IC-705", "FTX-1"])
+@pytest.mark.parametrize("model", ["IC-7610", "FTX-1"])
 async def test_unsupported_profile_has_no_route(model):
     poller, radio, store, _ = setup()
     radio.profile = resolve_radio_profile(model=model)
     poller._profile = radio.profile
     assert "vfo_freq_direct" not in projected_vfo_capability_tags(radio, None)
     with pytest.raises(CommandError):
+        await poller._execute(command(store))
+    radio.send_civ.assert_not_called()
+
+
+async def test_missing_profile_write_command_has_no_route():
+    from rigplane.commands.command_map import CommandMap
+
+    poller, radio, store, _ = setup(model="IC-705")
+    cmd_map = radio.profile.command_map
+    radio.profile = dataclasses.replace(
+        radio.profile,
+        command_map=CommandMap(
+            {key: cmd_map.get(key) for key in cmd_map if key != "set_unselected_freq"}
+        ),
+    )
+    poller._profile = radio._profile = radio.profile
+    assert "vfo_freq_direct" not in projected_vfo_capability_tags(radio, None)
+    with pytest.raises(CommandError, match="unavailable"):
         await poller._execute(command(store))
     radio.send_civ.assert_not_called()
 
@@ -246,7 +281,9 @@ async def test_internal_selection_waits_for_direct_write_and_readback():
         return ACK if radio.send_civ.await_count == 1 else READBACK
 
     radio.send_civ.side_effect = send
-    poller._select_and_bind_vfo_slot = AsyncMock()
+    poller._select_and_bind_vfo_slot = AsyncMock(
+        spec=RadioPoller._select_and_bind_vfo_slot
+    )
     write = asyncio.create_task(poller._execute(command(store)))
     await started.wait()
     select = asyncio.create_task(
@@ -264,7 +301,10 @@ async def test_ack_keeps_inactive_pending_until_matching_inactive_observation():
     store.begin_provider_generation()
     service = CommandService(
         executor=SimpleNamespace(
-            execute=AsyncMock(return_value=CommandExecutionResult())
+            execute=AsyncMock(
+                spec=ControlHandler._execute_intent,
+                return_value=CommandExecutionResult(),
+            )
         ),
         state_store=store,
     )
@@ -297,20 +337,26 @@ async def test_ack_keeps_inactive_pending_until_matching_inactive_observation():
 
 
 @pytest.mark.parametrize("phase", ["ack", "readback"])
-async def test_generation_change_during_transaction_does_not_confirm(phase):
+@pytest.mark.parametrize("change", ["provider", "binding"])
+async def test_generation_change_during_transaction_does_not_confirm(phase, change):
     poller, radio, store, _ = setup()
 
     async def send(*args, **kwargs):
         index = radio.send_civ.await_count
         if index == (1 if phase == "ack" else 2):
-            store.begin_provider_generation()
+            if change == "provider":
+                store.begin_provider_generation()
+            else:
+                poller._vfo_binding_generation += 1
         return ACK if index == 1 else READBACK
 
     radio.send_civ.side_effect = send
     with pytest.raises(CommandError, match="changed"):
         await poller._execute(command(store))
     assert radio.send_civ.await_count == (1 if phase == "ack" else 2)
-    assert not store.snapshot().fields
+    if change == "provider":
+        assert not store.snapshot().fields
+    assert not any(field.path.name == "freq_hz" for field in store.snapshot().fields)
 
 
 async def test_mismatched_readback_selector_cannot_confirm_other_slot():

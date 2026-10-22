@@ -24,6 +24,7 @@ from rigplane.commands import (
     parse_ack_nak,
     parse_mode_response,
 )
+from rigplane.commands._frame import decode_wire_tuple
 from rigplane.core.radio_protocol import RelativeVfoState
 from rigplane.commands import (
     parse_selected_freq_response as _parse_selected_freq_response,
@@ -36,7 +37,7 @@ from rigplane.core.exceptions import (
     CommandRejectedError,
     TimeoutError,
 )
-from rigplane.core.types import Mode
+from rigplane.core.types import Mode, bcd_encode
 from rigplane.profiles import RadioProfile
 
 # CI-V command byte for VFO select / equal / swap (0x07).
@@ -345,6 +346,51 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             filter_num=filt,
             data_mode=0 if data_mode is None else int(data_mode),
         )
+
+    async def write_relative_vfo_frequency(
+        self,
+        freq_hz: int,
+        *,
+        selected: bool,
+        after_ack: Callable[[], None] | None = None,
+        after_readback: Callable[[], None] | None = None,
+    ) -> int:
+        """Write a profile-declared relative frequency and return its readback Hz.
+
+        Synchronous hooks run after a positive ACK and after the readback I/O,
+        before decoding. Hook exceptions propagate without further I/O.
+        """
+        role = "selected" if selected else "unselected"
+        cmd_map = self._profile.command_map
+        if (
+            self._profile.receiver_count != 1
+            or self._profile.vfo_scheme != "ab"
+            or self._profile.vfo_readback != "selected_unselected"
+            or cmd_map is None
+            or not all(cmd_map.has(f"{verb}_{role}_freq") for verb in ("set", "get"))
+        ):
+            raise CommandError("direct VFO frequency is unavailable")
+        opcode, sub, prefix = decode_wire_tuple(cmd_map.get(f"set_{role}_freq"))
+        response = await self.send_civ(
+            opcode, sub, data=prefix + bcd_encode(freq_hz), wait_response=True
+        )
+        ack = None if response is None else parse_ack_nak(response)
+        if ack is False:
+            raise CommandRejectedError("Radio rejected direct VFO frequency")
+        if ack is not True:
+            raise CommandError("direct VFO frequency was not acknowledged")
+        if after_ack is not None:
+            after_ack()
+        opcode, sub, data = decode_wire_tuple(cmd_map.get(f"get_{role}_freq"))
+        readback = await self.send_civ(opcode, sub, data=data, wait_response=True)
+        if after_readback is not None:
+            after_readback()
+        if readback is None:
+            raise CommandError("direct VFO frequency readback unavailable")
+        selector, observed_freq = _parse_selected_freq_response(readback)
+        if selector != (0 if selected else 1):
+            raise CommandError("direct VFO readback selector mismatch")
+        return observed_freq
 
     # ------------------------------------------------------------------
     # Explicit swap/equalize — MAIN/SUB vs A/B (issue #714)

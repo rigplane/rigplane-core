@@ -101,6 +101,7 @@ from ..core.radio_protocol import (
     CivCommandCapable,
     FilterWidthRadioDefaultCapable,
     ManagedTxApi,
+    RelativeVfoFrequencyWritable,
     RelativeVfoReadbackCapable,
 )
 from ..core.state_diagnostics import StateDiagnosticsRecorder
@@ -2069,8 +2070,6 @@ class RadioPoller:
                     wait_response=False,
                 )
             case SetVfoFreq():
-                from ..commands import parse_ack_nak, parse_selected_freq_response
-                from ..types import bcd_encode
                 from .runtime_helpers import projected_vfo_capability_tags  # noqa: TID251
 
                 if "vfo_freq_direct" not in projected_vfo_capability_tags(radio, None):
@@ -2100,44 +2099,34 @@ class RadioPoller:
                     raise CommandError(
                         "VFO target identity is unknown, stale, or changed"
                     )
-                assert isinstance(radio, CivCommandCapable)
-                cmd_map = self._profile.command_map
-                assert cmd_map is not None
+                assert isinstance(radio, RelativeVfoFrequencyWritable)
                 selected = cmd.slot == field.value
-                role = "selected" if selected else "unselected"
-                opcode, sub, prefix = decode_wire_tuple(cmd_map.get(f"set_{role}_freq"))
                 generation = self._vfo_binding_generation
-                response = await radio.send_civ(
-                    opcode,
-                    sub,
-                    data=prefix + bcd_encode(cmd.freq),
-                    wait_response=True,
+
+                def after_ack() -> None:
+                    if validate_currency is not None:
+                        validate_currency()
+                    if (
+                        generation != self._vfo_binding_generation
+                        or provider_generation != self._provider_generation()
+                    ):
+                        raise CommandError("VFO target changed during write")
+
+                def after_readback() -> None:
+                    if validate_currency is not None:
+                        validate_currency()
+                    if (
+                        generation != self._vfo_binding_generation
+                        or provider_generation != self._provider_generation()
+                    ):
+                        raise CommandError("VFO target changed during readback")
+
+                observed_freq = await radio.write_relative_vfo_frequency(
+                    cmd.freq,
+                    selected=selected,
+                    after_ack=after_ack,
+                    after_readback=after_readback,
                 )
-                if response is None or parse_ack_nak(response) is not True:
-                    raise CommandError("direct VFO frequency was not acknowledged")
-                if validate_currency is not None:
-                    validate_currency()
-                if (
-                    generation != self._vfo_binding_generation
-                    or provider_generation != self._provider_generation()
-                ):
-                    raise CommandError("VFO target changed during write")
-                opcode, sub, data = decode_wire_tuple(cmd_map.get(f"get_{role}_freq"))
-                readback = await radio.send_civ(
-                    opcode, sub, data=data, wait_response=True
-                )
-                if validate_currency is not None:
-                    validate_currency()
-                if (
-                    generation != self._vfo_binding_generation
-                    or provider_generation != self._provider_generation()
-                ):
-                    raise CommandError("VFO target changed during readback")
-                if readback is None:
-                    raise CommandError("direct VFO frequency readback unavailable")
-                selector, observed_freq = parse_selected_freq_response(readback)
-                if selector != (0 if selected else 1):
-                    raise CommandError("direct VFO readback selector mismatch")
                 # Only actual transaction readback carries the command correlation.
                 path = (FieldPath.active if selected else FieldPath.unselected)(
                     "0", "freq_mode", "freq_hz"
