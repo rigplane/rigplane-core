@@ -14,6 +14,7 @@ Transport is mocked: nothing reaches a port, nothing is keyed.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import re
 from pathlib import Path
@@ -29,10 +30,13 @@ _RIG = Path(__file__).resolve().parents[1] / "rigs" / "ftx1.toml"
 _VALID_KY = re.compile(r"KY[01][0-5];")
 
 
-def _radio(*, supported: bool) -> YaesuCatRadio:
+def _radio(*, supported: bool, memory_channel: int = 5) -> YaesuCatRadio:
     rig = load_rig(_RIG)
     rig = dataclasses.replace(
-        rig, cw_text=dataclasses.replace(rig.cw_text, supported=supported)
+        rig,
+        cw_text=dataclasses.replace(
+            rig.cw_text, supported=supported, memory_channel=memory_channel
+        ),
     )
     r = YaesuCatRadio("/dev/null", profile=rig)
     r._transport._connected = True  # noqa: SLF001
@@ -96,3 +100,54 @@ async def test_disabled_send_cw_text_refuses_before_any_write() -> None:
     ):
         await radio.send_cw_text("CQ")
     assert _writes(radio) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    ["CQ;", "CQ\x00", "CQ\x1f", "C\nQ", "CQ\x7f"],
+    ids=["semicolon", "nul", "us", "newline", "del"],
+)
+async def test_text_a_cat_parameter_cannot_carry_is_rejected_before_any_write(
+    text: str,
+) -> None:
+    # CAT 2508-C general rules (printed p.4): no ASCII control codes and no
+    # ";" inside a parameter. DEL (7Fh) is a control code too.
+    radio = _radio(supported=True)
+    with pytest.raises(ValueError, match="control characters"):
+        await radio.send_cw_text(text)
+    assert _writes(radio) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", [1, 2, 3, 4, 5])
+async def test_each_keyer_memory_channel_is_written_then_played(channel: int) -> None:
+    radio = _radio(supported=True, memory_channel=channel)
+    await radio.send_cw_text("CQ")
+    assert _writes(radio) == [f"KM{channel}CQ;", f"KY0{channel};"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", [6, 10])
+async def test_a_channel_km_cannot_address_is_refused_before_any_write(
+    channel: int,
+) -> None:
+    # KM P1 is a single digit 1-5 (printed p.17): "KM10CQ;" would write
+    # "0CQ" into channel 1.
+    radio = _radio(supported=True, memory_channel=channel)
+    with pytest.raises(RuntimeError, match=f"memory_channel {channel}"):
+        await radio.send_cw_text("CQ")
+    assert _writes(radio) == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_sends_keep_each_memory_write_with_its_playback() -> None:
+    radio = _radio(supported=True)
+
+    async def slow_write(command: str, **_kwargs: object) -> None:
+        # Yield on every write so two sends would interleave without a lock.
+        await asyncio.sleep(0)
+
+    radio._transport.write.side_effect = slow_write  # noqa: SLF001
+    await asyncio.gather(radio.send_cw_text("FIRST"), radio.send_cw_text("SECOND"))
+    assert _writes(radio) == ["KM5FIRST;", "KY05;", "KM5SECOND;", "KY05;"]
