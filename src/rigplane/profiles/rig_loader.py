@@ -734,7 +734,7 @@ class RigConfig:
     # top-level ``[identity].expected_ids``. Empty means no/unverified
     # identity configuration.
     expected_identity_ids: tuple[str, ...] = ()
-    memory: MemoryProfile | None = None
+    memory: MemoryProfile | None = field(default=None, kw_only=True)
     # Optional ``[modes] families`` (MOR-3679): family name -> member mode
     # names from ``modes``, in declared order. Empty when not declared.
     # Keyword-only and appended so no positional argument shifts.

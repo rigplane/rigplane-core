@@ -133,11 +133,6 @@
       "declaration": "supported"
     },
     {
-      "check_id": "memory_read.presence",
-      "status": "pass",
-      "declaration": "unsupported_pending_evidence"
-    },
-    {
       "check_id": "meters.read",
       "status": "skip",
       "declaration": "supported"

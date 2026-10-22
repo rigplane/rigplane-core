@@ -569,7 +569,7 @@ class RadioProfile:
     # Memory channel addressing from the optional ``[memory]`` section
     # (MOR-3627); None when the profile declares none. Appended for the same
     # reason as the fields above.
-    memory: MemoryProfile | None = None
+    memory: MemoryProfile | None = field(default=None, kw_only=True)
     # ``[modes] families`` (MOR-3679): family name -> member modes, e.g.
     # ``{"cw": ("CW-U", "CW-L")}``. Empty when the profile declares none.
     # Keyword-only and appended so no positional argument shifts.

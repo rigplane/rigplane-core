@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
 
 from rigplane.profiles import MemoryProfile, get_radio_profile
-from rigplane.profiles.rig_loader import RigLoadError, load_rig
+from rigplane.profiles import RadioProfile
+from rigplane.profiles.rig_loader import RigConfig, RigLoadError, load_rig
 from test_profile_identity_metadata import _minimal_toml, _write_toml
 
 
@@ -16,8 +18,9 @@ def test_shipped_profiles_declare_memory_addressing_and_capability() -> None:
     assert ic705.memory == MemoryProfile("group_channel", 0, 99, 0, 99)
     ic9700 = get_radio_profile("IC-9700")
     assert ic9700.memory == MemoryProfile("band_channel", 1, 3, 1, 99)
+    # The capability is declared together with the reader (list API PR).
     for profile in (ic705, ic9700):
-        assert "memory_read" in profile.capabilities
+        assert "memory_read" not in profile.capabilities
     # Radios without a [memory] section stay without the listing.
     for model in ("IC-7300", "IC-7610"):
         profile = get_radio_profile(model)
@@ -73,3 +76,9 @@ def test_loader_rejects_a_bad_memory_section(
 def test_largest_accepted_band_code_loads(tmp_path: Path) -> None:
     config = _load(tmp_path, _GOOD.replace("last_group = 3", "last_group = 99"))
     assert config.to_profile().memory.last_group == 99
+
+
+@pytest.mark.parametrize("cls", [RigConfig, RadioProfile])
+def test_memory_is_keyword_only_so_no_positional_argument_shifts(cls: type) -> None:
+    by_name = {f.name: f for f in dataclasses.fields(cls)}
+    assert by_name["memory"].kw_only is True

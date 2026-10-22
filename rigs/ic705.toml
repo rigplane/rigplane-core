@@ -100,7 +100,6 @@ features = [
     "agc",
     "tuning_step",
     "band_edge",
-    "memory_read",
     "xfc",
     # System
     "system_settings",
