@@ -613,6 +613,26 @@ These optional sections provide detailed configuration for specific capabilities
 | `[nb]`         | Noise blanker depth and width ranges            |
 | `[power]`      | Maximum TX power in watts                      |
 
+## `[cw_text]` — Typed CW Text (MOR-3678)
+
+Whether `send_cw_text` works on this radio, published as `cwText`. Separate
+from the `cw` capability tag (decoder, console, keyer controls).
+
+| Key              | Type   | Default | Description |
+|------------------|--------|---------|-------------|
+| `supported`      | bool   | whether `[commands]` has `send_cw` | `false` refuses `send_cw_text`; `true` without a `send_cw` command is a load error |
+| `max_length`     | int    | `512`   | Longest text one request may carry (positive); longer text is refused, never truncated |
+| `memory_channel` | int    | absent  | Keyer memory channel the text is written to (positive); for radios that send text by writing a memory and playing it |
+| `memory_type`    | string | absent  | `"text"` or `"message"`: which keyer memory kind is played |
+
+```toml
+[cw_text]
+supported = false
+max_length = 50
+memory_channel = 5
+memory_type = "text"
+```
+
 ## Wire Byte Format
 
 All wire bytes are specified as arrays of integers in the range `0x00`–`0xFF`.

@@ -11,6 +11,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **FTX-1 CW text: no invalid `KY <text>;` frames; `cwText` capability
+  (MOR-3678).** The FTX-1 backend sent typed CW text as `KY <text>;` in
+  24-character chunks and stopped with `KY ;`; neither is a valid FTX-1 CAT
+  frame (CAT manual 2508-C printed p.18: `KY P1 P2;` plays a keyer memory).
+  It now writes the text with `KM` into a keyer memory channel and plays it
+  with `KY`, and stops with `KY00;`. Sending stays disabled on the FTX-1
+  until the memory type is checked on a radio. A new profile section
+  `[cw_text]` (`supported`, `max_length`, `memory_channel`, `memory_type`)
+  is published as `cwText` inside `capabilities` on `/api/v1/info` and at
+  the top level of `/api/v1/capabilities`; `hasCw` and the `cw` tag are
+  unchanged. One check in every radio's `send_cw_text` enforces it, so
+  HTTP, WebSocket and the CLI refuse the same requests with the same
+  message; the web handler's own 512-character limit is gone (512 is now
+  only the profile default). Profiles without a `send_cw` command (TX-500,
+  X6100, X6200) publish `supported: false`.
+
 ## [3.0.0b19] — 2026-10-20
 
 ### Added

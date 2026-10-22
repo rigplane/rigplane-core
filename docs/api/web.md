@@ -1087,6 +1087,7 @@ Version, model, capability summary, and connection metadata.
     "hasDualReceiver": false,
     "hasTuner": true,
     "hasCw": true,
+    "cwText": { "supported": true, "maxLength": 512, "memoryChannel": null },
     "maxReceivers": 1,
     "modes": ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R"],
     "filters": ["FIL1", "FIL2", "FIL3"],
@@ -1184,6 +1185,36 @@ Notable fields:
 | `scopeConfig.defaultSpan` | `int` | Audio FFT bandwidth in Hz (48000 if unset) when the audio FFT scope exists, otherwise the constant 500000 |
 | `audioConfig` | object | Web audio transport defaults |
 | `webrtc.available` | `bool` | Whether the optional `rigplane[webrtc]` backend is importable; this does not indicate that the default-off `WebConfig.webrtc_enabled` transport gate is enabled |
+
+| `cwText` | object | Whether `send_cw_text` works on this radio; see below. Required whenever a profile is resolved |
+
+### `cwText`
+
+`cwText` (MOR-3678) says whether typed CW text can be sent, from the
+profile's `[cw_text]` section. It is inside `capabilities` on
+`/api/v1/info` (next to `hasCw`) and a top-level key on
+`/api/v1/capabilities`; both carry the same three fields. It is absent only
+when no profile is resolved (a provider-owned backend).
+
+| Field | Type | Notes |
+|------|------|-------|
+| `supported` | `bool` | `false`: `send_cw_text` is refused |
+| `maxLength` | `int` | Longest text one request may carry; longer text is refused, never truncated or split |
+| `memoryChannel` | `int` \| `null` | Keyer memory channel the text is written to and played from (FTX-1: KM then KY); `null` when the radio sends text directly (Icom) |
+
+`cwText` is separate from the `cw` tag and `hasCw`, which keep driving the
+CW decoder, console and keyer controls: the FTX-1 publishes `hasCw: true`
+and `cwText.supported: false`. The server enforces both facts in one place
+(the radio's `send_cw_text`), so `POST /api/v1/radio/cw/send`, the
+WebSocket `send_cw_text` command and the CLI `cw` command refuse the same
+requests with the same message:
+
+| Refusal | Message | HTTP | WebSocket | CLI |
+|------|------|------|------|------|
+| Text too long | `CW text too long for <model>: got <n> characters, limit is <maxLength>` | `400` `invalid_request` | `command_failed` | `Error: <message>`, exit 1 |
+| Not supported | `<model> does not support sending CW text yet` | `409` `unsupported_command` | `unsupported_command` | `Error: <message>`, exit 1 |
+
+Clients only display these values.
 
 When radio has audio but no hardware scope support, backend enables `AudioFftScope`
 and reports `scopeSource: "audio_fft"`. The same FFT frames are also available

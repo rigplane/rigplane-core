@@ -211,6 +211,8 @@ except RigLoadError as e:
 | `[capabilities].rf_sql_control_model` valid (if present) | `[capabilities].rf_sql_control_model must be one of ['combined', 'separate']` |
 | `[modes].list` non-empty | `[modes].list must not be empty` |
 | `[filters].list` present (may be empty: a radio without a selectable IF filter) | `missing required [filters].list` |
+| `[cw_text]` keys known and typed (if present): `supported` bool, `max_length` and `memory_channel` positive integers, `memory_type` `"text"` or `"message"` | `[cw_text].<key> must be ...` / `[cw_text] unknown key '<key>'` |
+| `[cw_text].supported = true` only with a `send_cw` command | `[cw_text].supported = true needs a send_cw command` |
 
 Unknown sections or extra fields are silently ignored (forward-compatible).
 
