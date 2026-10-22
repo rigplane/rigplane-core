@@ -101,6 +101,7 @@ class ReceiverState:
     tone_freq: int = 0  # centihz, e.g. 8850 = 88.50 Hz
     tsql_freq: int = 0  # centihz, e.g. 8850 = 88.50 Hz
     repeater_shift: int = 0  # 0=Simplex,1=Plus,2=Minus,3=ARS (RepeaterShiftDirection)
+    repeater_offset: int = 0  # Hz, offset magnitude (MOR-3624)
 
     # --- VFO-slot-derived properties (legacy compat) ---------------------
 

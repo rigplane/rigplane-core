@@ -78,6 +78,7 @@
           { "contains": { "const": "set_pbt_outer" } },
           { "contains": { "const": "set_powerstat" } },
           { "contains": { "const": "set_preamp" } },
+          { "contains": { "const": "set_repeater_offset" } },
           { "contains": { "const": "set_repeater_shift" } },
           { "contains": { "const": "set_repeater_tone" } },
           { "contains": { "const": "set_repeater_tsql" } },

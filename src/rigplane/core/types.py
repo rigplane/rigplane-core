@@ -14,6 +14,8 @@ __all__ = [
     "FilterShape",
     "SsbTxBandwidth",
     "RepeaterShiftDirection",
+    "RepeaterOffsetBand",
+    "RepeaterOffsetProfile",
     "ToneSquelchType",
     "ctcss_booleans_for_tone_squelch_type",
     "AudioCodec",
@@ -147,6 +149,41 @@ class RepeaterShiftDirection(IntEnum):
     PLUS = 0x01
     MINUS = 0x02
     ARS = 0x03
+
+
+@dataclass(frozen=True, slots=True)
+class RepeaterOffsetBand:
+    """One band's repeater-offset envelope (``[[repeater_offset.bands]]`` row,
+    MOR-3624). ``max_hz`` is the largest accepted offset magnitude; an offset
+    must also be a multiple of ``step_hz``. Both are band data, not radio
+    code — the guarded ``set_repeater_offset`` command reads them for the
+    band containing the receiver's current frequency.
+    """
+
+    low_hz: int
+    high_hz: int
+    max_hz: int
+    step_hz: int
+
+    def contains(self, freq_hz: int) -> bool:
+        return self.low_hz <= freq_hz <= self.high_hz
+
+
+@dataclass(frozen=True, slots=True)
+class RepeaterOffsetProfile:
+    """A profile's ``[repeater_offset]`` section: the band envelopes the
+    offset guard checks against. Bands are validated non-overlapping by the
+    loader, so :meth:`band_for` is unambiguous; ``None`` means the frequency
+    is unknown or outside every band and the write is refused — never guess
+    a band."""
+
+    bands: tuple[RepeaterOffsetBand, ...] = ()
+
+    def band_for(self, freq_hz: int) -> RepeaterOffsetBand | None:
+        for band in self.bands:
+            if band.contains(freq_hz):
+                return band
+        return None
 
 
 class ToneSquelchType(StrEnum):

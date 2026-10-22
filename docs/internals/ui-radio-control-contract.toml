@@ -297,6 +297,23 @@ hardware_proof = "profile fixture; hardware when supported; shift direction benc
 gap_owner = "MOR-1407,MOR-1408,MOR-1409,MOR-2125"
 
 [[families]]
+id = "repeater_offset"
+capabilities = ["repeater_offset"]
+intents = ["set_repeater_offset"]
+command_route = "descriptor guard (profile band envelope) -> radio set_repeater_offset"
+observation_route = "none yet — wire readback lands with the shim PRs (O2/O3)"
+field_paths = ["receiver.main.operator_controls.repeater_offset", "receiver.sub.operator_controls.repeater_offset"]
+field_path_gaps = []
+public_fields = ["receiver.repeaterOffset"]
+ws_property = "state_update receiver repeaterOffset"
+selector = "shared mode/repeater selector"
+pending = "control lifecycle only"
+surfaces = []
+automated_proof = "tests/test_repeater_offset_mechanism.py (fake radio + synthetic profile)"
+hardware_proof = "none — mechanism only; no shipped profile declares the capability yet"
+gap_owner = "MOR-3624"
+
+[[families]]
 id = "antenna_routing"
 capabilities = ["antenna"]
 intents = ["set_antenna_1", "set_antenna_2", "set_rx_antenna_ant1", "set_rx_antenna_ant2", "set_rx_antenna"]

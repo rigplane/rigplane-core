@@ -260,6 +260,7 @@ def test_to_dict_main_keys() -> None:
         "tone_freq",
         "tsql_freq",
         "repeater_shift",
+        "repeater_offset",
         "manual_notch_freq",
         "manual_notch_width",
         # notch_filter (MOR-1548): reclassified receiver-scoped, matching the

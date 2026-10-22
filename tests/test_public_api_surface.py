@@ -63,6 +63,7 @@ TIER1_SYMBOLS: tuple[str, ...] = (
     "VoiceControlCapable",
     "SystemControlCapable",
     "RepeaterControlCapable",
+    "RepeaterOffsetCapable",
     "RepeaterShiftCapable",
     "AdvancedControlCapable",
     "RitXitCapable",

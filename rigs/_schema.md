@@ -613,6 +613,32 @@ These optional sections provide detailed configuration for specific capabilities
 | `[cw]`         | CW pitch, speed, dash ratio ranges             |
 | `[nb]`         | Noise blanker depth and width ranges            |
 | `[power]`      | Maximum TX power in watts                      |
+| `[repeater_offset]` | Repeater-offset magnitude envelopes per band (Hz) |
+
+## `[repeater_offset]` — Repeater Offset Magnitude Envelopes (MOR-3624)
+
+Band envelopes for the guarded `set_repeater_offset` command: for the band
+containing the receiver's current frequency, an offset magnitude must be a
+multiple of `step_hz` and at most `max_hz`; anything else is refused before
+the wire. Required when `[capabilities].features` lists `repeater_offset`
+(a load error otherwise); unknown keys, non-positive integers,
+`low_hz >= high_hz`, a `step_hz` that does not divide `max_hz`, and
+overlapping bands are all load errors.
+
+| Key       | Type | Description |
+|-----------|------|-------------|
+| `low_hz`  | int  | First frequency (Hz) this row applies to |
+| `high_hz` | int  | Last frequency (Hz) this row applies to |
+| `max_hz`  | int  | Largest accepted offset magnitude (Hz) |
+| `step_hz` | int  | Offsets must be a multiple of this (Hz) |
+
+```toml
+[[repeater_offset.bands]]
+low_hz = 144000000
+high_hz = 146000000
+max_hz = 1000000
+step_hz = 5000
+```
 
 ## `[cw_text]` — Typed CW Text (MOR-3678)
 

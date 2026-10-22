@@ -22,7 +22,7 @@ from rigplane.commands._codec import (
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
-from rigplane.core.types import ToneSquelchType
+from rigplane.core.types import RepeaterOffsetProfile, ToneSquelchType
 
 __all__ = [
     "CwTextSendCancelledError",
@@ -574,6 +574,10 @@ class RadioProfile:
     # Typed CW text sending (MOR-3678), from the profile's ``[cw_text]``.
     # Keyword-only so the positional constructor contract cannot shift.
     cw_text: CwTextSpec = field(default_factory=CwTextSpec, kw_only=True)
+    # Repeater-offset magnitude envelopes (MOR-3624), from the profile's
+    # ``[repeater_offset]`` bands. ``None`` = the profile declares no offset
+    # surface; the ``set_repeater_offset`` guard then refuses every write.
+    repeater_offset: RepeaterOffsetProfile | None = field(default=None, kw_only=True)
 
     @property
     def vfo_swap_code(self) -> int | None:

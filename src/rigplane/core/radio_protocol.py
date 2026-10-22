@@ -2074,6 +2074,27 @@ class RepeaterShiftCapable(Protocol):
 
 
 @runtime_checkable
+class RepeaterOffsetCapable(Protocol):
+    """Repeater offset MAGNITUDE control in Hz (MOR-3624).
+
+    Sibling to :class:`RepeaterShiftCapable`, which covers direction only;
+    this protocol covers only the offset magnitude, never its direction.
+    The magnitude a backend may write is not a protocol concern: the
+    descriptor-level guard refuses anything outside the active profile's
+    ``[[repeater_offset.bands]]`` envelope before this method is called, so
+    an implementer receives an already-admitted ``offset_hz``.
+    """
+
+    async def get_repeater_offset(self, receiver: int = 0) -> int:
+        """Get repeater offset magnitude in Hz."""
+        ...
+
+    async def set_repeater_offset(self, offset_hz: int, receiver: int = 0) -> None:
+        """Set repeater offset magnitude in Hz."""
+        ...
+
+
+@runtime_checkable
 class AdvancedControlCapable(
     DspControlCapable,
     AntennaControlCapable,

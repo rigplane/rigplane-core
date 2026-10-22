@@ -16,6 +16,7 @@ from typing import Any, cast
 
 from rigplane.core.capabilities import (
     CAP_FILTER_WIDTH_RADIO_DEFAULT,
+    CAP_REPEATER_OFFSET,
     KNOWN_CAPABILITIES,
 )
 from rigplane.core.state_acquisition_policy import (
@@ -30,7 +31,11 @@ from rigplane.core.state_acquisition_policy import (
     ReconciliationPriority,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.core.types import ToneSquelchType
+from rigplane.core.types import (
+    RepeaterOffsetBand,
+    RepeaterOffsetProfile,
+    ToneSquelchType,
+)
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.profiles.control_domain import (
     _on_control_lattice,
@@ -742,6 +747,10 @@ class RigConfig:
     # Typed CW text sending (MOR-3678), from the optional ``[cw_text]``.
     # Keyword-only so the positional constructor contract cannot shift.
     cw_text: CwTextSpec = field(default_factory=CwTextSpec, kw_only=True)
+    # Repeater-offset magnitude envelopes (MOR-3624), from the optional
+    # ``[repeater_offset]`` section. ``None`` = the profile declares no
+    # offset surface.
+    repeater_offset: RepeaterOffsetProfile | None = field(default=None, kw_only=True)
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -964,6 +973,7 @@ class RigConfig:
             tx_policy=self.tx_policy,
             expected_identity_ids=self.expected_identity_ids,
             cw_text=self.cw_text,
+            repeater_offset=self.repeater_offset,
         )
 
     def to_command_map(self) -> CommandMap:
@@ -2278,6 +2288,63 @@ def _parse_cw_text(
     )
 
 
+_REPEATER_OFFSET_KEYS = frozenset({"bands"})
+_REPEATER_OFFSET_BAND_KEYS = frozenset({"low_hz", "high_hz", "max_hz", "step_hz"})
+
+
+def _parse_repeater_offset(filename: str, raw: Any) -> RepeaterOffsetProfile | None:
+    """Parse the optional top-level ``[repeater_offset]`` section (MOR-3624).
+
+    The band envelopes are the sanity guard's only data source for the
+    ``set_repeater_offset`` command: ``max_hz`` caps the magnitude and
+    ``step_hz`` quantizes it for the band containing the receiver's current
+    frequency. Strict validation — positive integers, ``low_hz < high_hz``,
+    ``step_hz`` divides ``max_hz``, no overlapping bands, no unknown keys —
+    so a malformed envelope is refused at load, never at TX time.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [repeater_offset] must be a table")
+    _reject_unknown_keys(filename, "[repeater_offset]", raw, _REPEATER_OFFSET_KEYS)
+    raw_bands = raw.get("bands")
+    if not isinstance(raw_bands, list) or not raw_bands:
+        raise RigLoadError(
+            f"{filename}: [repeater_offset] needs at least one [[repeater_offset.bands]] row"
+        )
+    bands: list[RepeaterOffsetBand] = []
+    for index, raw_band in enumerate(raw_bands):
+        label = f"[repeater_offset.bands] row {index}"
+        if not isinstance(raw_band, dict):
+            raise RigLoadError(f"{filename}: {label} must be a table")
+        _reject_unknown_keys(filename, label, raw_band, _REPEATER_OFFSET_BAND_KEYS)
+        values: dict[str, int] = {}
+        for key in sorted(_REPEATER_OFFSET_BAND_KEYS):
+            value = raw_band.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise RigLoadError(
+                    f"{filename}: {label}.{key} must be a positive integer"
+                )
+            values[key] = value
+        if values["low_hz"] >= values["high_hz"]:
+            raise RigLoadError(f"{filename}: {label}.low_hz must be < high_hz")
+        if values["max_hz"] % values["step_hz"]:
+            raise RigLoadError(
+                f"{filename}: {label}.step_hz must divide max_hz "
+                f"({values['step_hz']} does not divide {values['max_hz']})"
+            )
+        bands.append(RepeaterOffsetBand(**values))
+    bands.sort(key=lambda band: band.low_hz)
+    for previous, following in zip(bands, bands[1:]):
+        if following.low_hz <= previous.high_hz:
+            raise RigLoadError(
+                f"{filename}: [repeater_offset.bands] rows must not overlap "
+                f"({previous.low_hz}-{previous.high_hz} vs "
+                f"{following.low_hz}-{following.high_hz})"
+            )
+    return RepeaterOffsetProfile(bands=tuple(bands))
+
+
 def _parse_identity(filename: str, raw: Any) -> tuple[str, ...]:
     """Parse the optional top-level ``[identity]`` section (MOR-3064).
 
@@ -3131,6 +3198,7 @@ def load_rig(path: Path) -> RigConfig:
         protocol_type=protocol_type,
         commands=commands,
     )
+    repeater_offset = _parse_repeater_offset(filename, data.get("repeater_offset"))
 
     # The reset-to-radio-default capability is DERIVED from the parsed
     # ``[filters].radio_default_code`` field (MOR-2535), never hand-listed in
@@ -3146,6 +3214,14 @@ def load_rig(path: Path) -> RigConfig:
         capability_features = (
             *capability_features,
             CAP_FILTER_WIDTH_RADIO_DEFAULT,
+        )
+    # The offset capability tag and its band envelope cannot drift apart
+    # (MOR-3624): the descriptor guard reads only this section, so a tag
+    # without data would admit writes the profile never bounded.
+    if CAP_REPEATER_OFFSET in capability_features and repeater_offset is None:
+        raise RigLoadError(
+            f"{filename}: the repeater_offset capability needs a "
+            "[repeater_offset] section with at least one band"
         )
 
     return RigConfig(
@@ -3240,6 +3316,7 @@ def load_rig(path: Path) -> RigConfig:
         tx_policy=tx_policy,
         expected_identity_ids=expected_identity_ids,
         cw_text=cw_text,
+        repeater_offset=repeater_offset,
     )
 
 

@@ -42,6 +42,7 @@ TIER1_NAMES = [
     "ReceiverBankCapable",
     "RecoverableConnection",
     "RepeaterControlCapable",
+    "RepeaterOffsetCapable",
     "RepeaterShiftCapable",
     "RigctldRoutable",
     "RitXitCapable",

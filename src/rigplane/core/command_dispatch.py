@@ -19,7 +19,11 @@ from functools import partial
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
-from rigplane.core.capabilities import CAP_REPEATER_TONE, CAP_TSQL
+from rigplane.core.capabilities import (
+    CAP_REPEATER_OFFSET,
+    CAP_REPEATER_TONE,
+    CAP_TSQL,
+)
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
@@ -152,6 +156,67 @@ def _repeater_shift_target(params: Mapping[str, Any]) -> FieldPath:
     return FieldPath.receiver(
         str(params["receiver"]), "operator_controls", "repeater_shift"
     )
+
+
+def _bind_repeater_offset(params: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind the offset magnitude in exact int Hz (MOR-3624).
+
+    Owns only the JSON-type contract (int, not bool, ``>= 0``); the band
+    envelope check is :func:`_guard_repeater_offset`, which needs the radio.
+    """
+    raw_offset = params["offset_hz"]
+    if isinstance(raw_offset, bool) or not isinstance(raw_offset, int):
+        raise ValueError("offset_hz must be an integer in Hz")
+    if raw_offset < 0:
+        raise ValueError("offset_hz must be >= 0")
+    return {
+        "offset_hz": int(raw_offset),
+        "receiver": _tone_receiver(params),
+        "repeater_offset": int(raw_offset),
+    }
+
+
+def _repeater_offset_target(params: Mapping[str, Any]) -> FieldPath:
+    return FieldPath.receiver(
+        str(params["receiver"]), "operator_controls", "repeater_offset"
+    )
+
+
+def _guard_repeater_offset(radio: Any, params: Mapping[str, Any]) -> dict[str, Any]:
+    """Band-envelope guard for ``set_repeater_offset`` (MOR-3624).
+
+    Runs in :func:`prepare_command_intent` — after the capability check,
+    before queueing — so a refused magnitude never reaches the wire. The
+    band comes from the profile's ``[[repeater_offset.bands]]`` row that
+    contains the receiver's current frequency; an unknown frequency or no
+    containing band refuses rather than guesses. Radio-agnostic: reads the
+    duck-typed ``profile``/``radio_state`` seats, never a model name.
+    """
+    offset_profile = getattr(getattr(radio, "profile", None), "repeater_offset", None)
+    if offset_profile is None:
+        raise CommandUnsupportedError(
+            "command 'set_repeater_offset' is not supported by active profile "
+            "(missing capability: repeater_offset)"
+        )
+    state = getattr(radio, "radio_state", None)
+    receiver_state = getattr(state, "sub" if params["receiver"] else "main", None)
+    freq_hz = getattr(receiver_state, "freq", 0) or 0
+    band = offset_profile.band_for(freq_hz)
+    if band is None:
+        raise ValueError(
+            f"repeater offset refused: receiver frequency {freq_hz} Hz is "
+            "unknown or outside every [repeater_offset] band"
+        )
+    offset = params["offset_hz"]
+    if offset > band.max_hz:
+        raise ValueError(
+            f"offset_hz {offset} exceeds the band maximum {band.max_hz} Hz"
+        )
+    if offset % band.step_hz:
+        raise ValueError(
+            f"offset_hz {offset} is not a multiple of the band step {band.step_hz} Hz"
+        )
+    return dict(params)
 
 
 def _tone_receiver(params: Mapping[str, Any]) -> int:
@@ -358,6 +423,22 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             argument_names=("direction", "receiver"),
             tx_policy=DescriptorTxPolicy.TX_SAFE,
             public_names=("set_repeater_shift",),
+        ),
+        # Repeater offset MAGNITUDE (MOR-3624): the band guard runs in
+        # ``prepare_command_intent`` via ``project_expectation`` — the one
+        # descriptor hook with radio access before queueing — so refused
+        # magnitudes never reach the wire. ``required_capability`` hides the
+        # command from profiles that declare no offset surface.
+        "set_repeater_offset": CommandDescriptor(
+            name="set_repeater_offset",
+            method_name="set_repeater_offset",
+            bind=_bind_repeater_offset,
+            target=_repeater_offset_target,
+            argument_names=("offset_hz", "receiver"),
+            tx_policy=DescriptorTxPolicy.TX_SAFE,
+            public_names=("set_repeater_offset",),
+            required_capability=CAP_REPEATER_OFFSET,
+            project_expectation=_guard_repeater_offset,
         ),
         # Repeater tone family (MOR-2111): like ``set_repeater_shift``, the
         # receiver rides the Radio call itself and every backend refuses an

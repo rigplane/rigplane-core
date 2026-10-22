@@ -21,6 +21,7 @@ from ..profiles import RadioProfile, resolve_radio_profile
 from ..radio_protocol import (
     AudioCapable,
     DualReceiverCapable,
+    RepeaterOffsetCapable,
     RepeaterShiftCapable,
     ScopeCapable,
     UsbAudioCapable,
@@ -101,6 +102,7 @@ _RECEIVER_OPERATOR_CONTROL_FIELDS = {
     "tone_freq",
     "tsql_freq",
     "repeater_shift",
+    "repeater_offset",
     "tone_squelch_type",
     "key_speed",
     "cw_pitch",
@@ -654,6 +656,8 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
         # are gated separately, by ``projected_vfo_capability_tags``.
         if "repeater_shift" in caps and not isinstance(radio, RepeaterShiftCapable):
             caps.discard("repeater_shift")
+        if "repeater_offset" in caps and not isinstance(radio, RepeaterOffsetCapable):
+            caps.discard("repeater_offset")
         return caps
 
     result: set[str] = set()
@@ -665,6 +669,8 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
         result.add("dual_rx")
     if isinstance(radio, RepeaterShiftCapable):
         result.add("repeater_shift")
+    if isinstance(radio, RepeaterOffsetCapable):
+        result.add("repeater_offset")
     return result
 
 

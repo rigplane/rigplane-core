@@ -371,6 +371,12 @@
     "observed": false,
     "storePath": "receiver.main.operator_controls.preamp"
   },
+  "main.repeaterOffset": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.operator_controls.repeater_offset"
+  },
   "main.repeaterShift": {
     "availability": "missing",
     "freshness": "unknown",
@@ -982,6 +988,12 @@
     "freshness": "unknown",
     "observed": false,
     "storePath": "receiver.sub.operator_controls.preamp"
+  },
+  "sub.repeaterOffset": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.operator_controls.repeater_offset"
   },
   "sub.repeaterShift": {
     "availability": "missing",

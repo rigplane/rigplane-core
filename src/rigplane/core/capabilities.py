@@ -52,6 +52,7 @@ __all__ = [
     "CAP_DTCS",
     "CAP_CSQL",
     "CAP_SQL_TYPE",
+    "CAP_REPEATER_OFFSET",
     "CAP_REPEATER_SHIFT",
     "CAP_REPEATER_SHIFT_ARS",
     "CAP_VOICE_TX",
@@ -180,12 +181,17 @@ CAP_SQL_TYPE = "sql_type"
 
 # Repeater shift DIRECTION (simplex/plus/minus/ARS) — MOR-2111. Distinct from
 # the tone-family tags above: gates ``RepeaterShiftCapable``, not
-# ``RepeaterControlCapable``. Shift magnitude has no capability tag yet — it
-# is a separate, not-yet-built surface.
+# ``RepeaterControlCapable``.
 CAP_REPEATER_SHIFT = "repeater_shift"
 # Automatic Repeater Shift (``RepeaterShiftDirection.ARS``) as a fourth shift
 # direction.
 CAP_REPEATER_SHIFT_ARS = "repeater_shift_ars"
+
+# Repeater offset MAGNITUDE in Hz (MOR-3624) — the sibling surface the
+# direction tags above never covered. Gates ``RepeaterOffsetCapable`` and the
+# guarded ``set_repeater_offset`` command; a profile that declares the tag
+# must also declare its ``[[repeater_offset.bands]]`` envelope.
+CAP_REPEATER_OFFSET = "repeater_offset"
 
 # Data
 CAP_DATA_MODE = "data_mode"
@@ -286,6 +292,8 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         # Repeater shift (direction only)
         CAP_REPEATER_SHIFT,
         CAP_REPEATER_SHIFT_ARS,
+        # Repeater offset (magnitude, Hz)
+        CAP_REPEATER_OFFSET,
         CAP_VOICE_TX,
         CAP_SPEECH,
         # Data

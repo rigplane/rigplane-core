@@ -161,7 +161,7 @@ available directly via `from rigplane import …`.
 - `DspControlCapable`, `AntennaControlCapable`, `CwControlCapable`,
   `VoiceControlCapable`
 - `SystemControlCapable`, `RepeaterControlCapable`, `RepeaterShiftCapable`,
-  `AdvancedControlCapable`
+  `RepeaterOffsetCapable`, `AdvancedControlCapable`
 - `RitXitCapable`, `MemoryCapable`
 - `SplitCapable` (new in v0.19)
 - `UsbAudioCapable` (new in v0.19)
