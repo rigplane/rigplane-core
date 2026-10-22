@@ -138,6 +138,26 @@ def _stereo_wav(path: Path, bursts: int) -> bytes:
     return samples
 
 
+def _assert_wav_payloads(bursts: list[list[tuple[float, bytes]]], raw: bytes) -> None:
+    file_bursts = [
+        raw[offset : offset + RX_BURST_BYTES]
+        for offset in range(0, len(raw), RX_BURST_BYTES)
+    ]
+    next_index = 0
+    for burst in bursts:
+        first = burst[0][1]
+        assert struct.unpack_from(">H", first, 0x10)[0] == _RX_IDENT_FIRST_FRAGMENT
+        payload = b"".join(p[AUDIO_HEADER_SIZE:] for _, p in burst)
+        assert payload in file_bursts[next_index:], (
+            "RX payload does not match the file in forward burst order"
+        )
+        next_index = file_bursts.index(payload, next_index) + 1
+
+    flat = [p for burst in bursts for _, p in burst]
+    seqs = [struct.unpack_from("<H", p, 6)[0] for p in flat]
+    assert all((c - p) & 0xFFFF == 1 for p, c in zip(seqs, seqs[1:]))
+
+
 async def test_rx_stream_carries_the_wav_payload(tmp_path: Path) -> None:
     wav = tmp_path / "rx.wav"
     raw = _stereo_wav(wav, bursts=50)
@@ -150,24 +170,36 @@ async def test_rx_stream_carries_the_wav_payload(tmp_path: Path) -> None:
         bursts = _complete_bursts(packets, _recorded_burst_shape())
         assert len(bursts) >= 4, f"only {len(bursts)} complete bursts captured"
 
-        for burst in bursts:
-            first = burst[0][1]  # burst start: ident 0x8126 at 0x10
-            assert struct.unpack_from(">H", first, 0x10)[0] == _RX_IDENT_FIRST_FRAGMENT
-            payload = b"".join(p[AUDIO_HEADER_SIZE:] for _, p in burst)
-            # Mid-file capture start: the burst index follows from the
-            # audio-level seq at 0x12 (3 packets per burst, from 0).
-            index = struct.unpack_from(">H", first, 0x12)[0] // 3
-            assert (
-                payload == raw[index * RX_BURST_BYTES : (index + 1) * RX_BURST_BYTES]
-            ), f"burst {index} does not match the file"
-
-        # Header sequences still step by 1 across the captured packets.
-        flat = [p for burst in bursts for _, p in burst]
-        seqs = [struct.unpack_from("<H", p, 6)[0] for p in flat]
-        assert all((c - p) & 0xFFFF == 1 for p, c in zip(seqs, seqs[1:]))
+        _assert_wav_payloads(bursts, raw)
     finally:
         client.close()
         await server.stop()
+
+
+async def test_rx_payload_assertions_allow_skipped_source_bursts(
+    clocked_rx: tuple[MockIcomRadio, _UdpClient, _AudioClock, bytes],
+) -> None:
+    server, client, clock, raw = clocked_rx
+    assert client.transport is not None
+    server._audio_start_rx(
+        (_HOST, client.transport.get_extra_info("sockname")[1]), _CLIENT_ID
+    )
+    clock.advance_to(0.205)
+    await asyncio.sleep(0)
+    await clock.tick(0.205)
+    await clock.tick(0.22)
+    clock.advance_to(0.221)
+    packets = [(clock.time(), await client.recv()) for _ in range(6)]
+    bursts = _complete_bursts(packets, _recorded_burst_shape())
+    assert len(bursts) == 2
+    _assert_wav_payloads(bursts, raw)
+    frames = [p for _, p in packets]
+    assert [struct.unpack_from("<H", p, 6)[0] for p in frames] == list(range(6))
+    assert [struct.unpack_from(">H", p, 0x12)[0] for p in frames] == list(range(6))
+    assert (
+        b"".join(p[AUDIO_HEADER_SIZE:] for p in frames)
+        == raw[9 * RX_BURST_BYTES : 11 * RX_BURST_BYTES]
+    )
 
 
 async def test_catchup_bursts_keep_file_order(
