@@ -3521,6 +3521,15 @@ class ControlHandler:
                         "command set_memory_mode is not supported by this radio "
                         "(missing MemoryCapable)"
                     )
+                if "group" in params:
+                    for field in ("group", "channel"):
+                        value = params[field]
+                        if isinstance(value, bool) or (
+                            isinstance(value, float) and not value.is_integer()
+                        ):
+                            raise ValueError(
+                                f"{field} must be an integer, got {value!r}"
+                            )
                 channel = _int_param(params["channel"], "channel")
                 if "group" not in params:
                     # The channel-only form every radio has always taken.

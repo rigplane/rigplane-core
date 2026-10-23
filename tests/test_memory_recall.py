@@ -223,6 +223,68 @@ async def test_ic705_web_recall_rejects_group_without_channel_select(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["http", "ws"])
+@pytest.mark.parametrize(
+    ("params", "field"),
+    [
+        ({"group": -0.5, "channel": 4}, "group"),
+        ({"group": 0.5, "channel": 4}, "group"),
+        ({"group": True, "channel": 4}, "group"),
+        ({"group": False, "channel": 4}, "group"),
+        ({"group": 0, "channel": 4.5}, "channel"),
+        ({"group": 0, "channel": True}, "channel"),
+        ({"group": 0, "channel": False}, "channel"),
+        ({"group": "0.5", "channel": 4}, "group"),
+        ({"group": 0, "channel": "4.5"}, "channel"),
+    ],
+)
+async def test_ic705_web_recall_rejects_non_integer_addresses(
+    recall_web, protocol: str, params: dict[str, object], field: str
+) -> None:
+    web, transport, entries, _consumer = recall_web
+
+    status, result = await _request(web, protocol, "set_memory_mode", params)
+
+    assert status == (400 if protocol == "http" else None)
+    if protocol == "ws":
+        assert result["ok"] is False
+    assert result["error"] == (
+        "invalid_request" if protocol == "http" else "command_failed"
+    )
+    assert result["message"] == f"{field} must be an integer, got {params[field]!r}"
+    assert entries == []
+    assert web.command_queue.drain_entries() == []
+    assert transport.sent_packets == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["http", "ws"])
+@pytest.mark.parametrize(
+    ("group", "channel"), [(12.0, 4), (12, 4.0), ("12", 4), (12, "4")]
+)
+async def test_ic705_web_recall_keeps_integer_coercion(
+    recall_web, protocol: str, group: int | float | str, channel: int | float | str
+) -> None:
+    web, transport, entries, consumer = recall_web
+    transport.queue_response_on_send(1, _answer(_CMD_ACK))
+    transport.queue_response_on_send(2, _answer(_CMD_ACK))
+
+    status, result = await _request(
+        web, protocol, "set_memory_mode", {"group": group, "channel": channel}
+    )
+    await asyncio.wait_for(consumer, 2)
+
+    assert status == (200 if protocol == "http" else None)
+    assert result["ok"] is True
+    assert result["result"] == {"group": 12, "channel": 4}
+    assert [entry.command for entry in entries] == [SetMemoryMode(4, 12)]
+    assert [packet[CIV_HEADER_SIZE:] for packet in transport.sent_packets] == [
+        bytes.fromhex("fefea4e008a00012fd"),
+        bytes.fromhex("fefea4e0080004fd"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_ic705_http_recall_stops_after_group_nak(recall_web) -> None:
     web, transport, entries, consumer = recall_web
     transport.queue_response_on_send(1, _answer(_NAK))
