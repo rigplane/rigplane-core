@@ -840,7 +840,7 @@ async def _drain_split_entry(rig, entry):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("command", [b"I 14080100\n", b"X USB 2400\n"])
+@pytest.mark.parametrize("command", [b"I 14080100\n", b"X PKTUSB 2400\n"])
 @pytest.mark.parametrize(
     "change", [None, "authority", "provider", "session", "deadline"]
 )
@@ -988,13 +988,28 @@ async def test_managed_split_writes_use_one_shared_ordered_entry(
         await asyncio.gather(reply, return_exceptions=True)
 
 
+def _shield_split_completion_wait(monkeypatch, rig):
+    wait_for = asyncio.wait_for
+
+    async def wait_without_cancelling_completion(awaitable, timeout):
+        call = rig.ordered.call_args
+        if call is not None and awaitable is call.kwargs["future"]:
+            return await wait_for(asyncio.shield(awaitable), timeout=timeout)
+        return await wait_for(awaitable, timeout=timeout)
+
+    monkeypatch.setattr(
+        rigctld_handler.asyncio, "wait_for", wait_without_cancelling_completion
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("command", [b"I 14080100\n", b"X USB 2400\n"])
 @pytest.mark.parametrize("ending", ["timeout", "disconnect"])
 async def test_managed_split_cancelled_or_timed_out_entry_never_mutates_late(
-    managed_split, command, ending
+    managed_split, monkeypatch, command, ending
 ):
     rig = managed_split
+    _shield_split_completion_wait(monkeypatch, rig)
     rig.server._config.command_timeout = 0.05 if ending == "timeout" else 2
     before = dict(rig.peer.slots)
     reply = asyncio.create_task(_exchange(rig.writer, rig.reader, command))
@@ -1027,9 +1042,10 @@ async def test_managed_split_cancelled_or_timed_out_entry_never_mutates_late(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ending", ["timeout", "disconnect"])
 async def test_managed_split_mode_cancelled_during_preservation_read_never_sets(
-    managed_split, ending
+    managed_split, monkeypatch, ending
 ):
     rig = managed_split
+    _shield_split_completion_wait(monkeypatch, rig)
     rig.server._config.command_timeout = 0.05 if ending == "timeout" else 2
     before = dict(rig.peer.slots)
     gate = rig.peer.relative_mode_read_gate = asyncio.Event()

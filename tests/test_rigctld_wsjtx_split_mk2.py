@@ -130,6 +130,27 @@ async def test_wsjtx_rig_split_sequence_preserves_physical_rx(model, initial):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", MODELS)
+@pytest.mark.parametrize("data_mode", [0, 1])
+async def test_split_explicit_passband_preserves_tx_data_on_wire(model, data_mode):
+    async with _peer(model) as (_radio, peer, server, reader, writer):
+        peer.slots["B"] = (7_076_000, Mode.LSB, 3, data_mode)
+        rx_before = peer.slots["A"]
+        assert await _exchange(writer, reader, b"X USB 2400\n") == b"RPRT 0\n"
+        assert peer.requests == [
+            (0x25, None, b"\x01"),
+            (0x26, None, b"\x01"),
+            (0x26, None, bytes([1, Mode.USB, data_mode, 2])),
+            (0x25, None, b"\x01"),
+            (0x26, None, b"\x01"),
+        ]
+        assert peer.slots["B"] == (7_076_000, Mode.USB, 2, data_mode)
+        assert peer.slots["A"] == rx_before
+        assert peer.selected == "A"
+        _assert_no_relative_overlays(server)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("command", [b"X USB\n", b"X USB 0\n"])
 async def test_split_omitted_passband_preserves_tx_data_and_filter(model, command):
     async with _peer(model) as (radio, peer, server, reader, writer):

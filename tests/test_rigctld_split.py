@@ -11,6 +11,7 @@ import pytest
 from rigplane.commands import parse_civ_frame
 from rigplane.commands.command_map import CommandMap
 from rigplane.commands.commander import IcomCommander
+from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -146,6 +147,70 @@ async def test_split_missing_mode_command_is_enavail_with_real_profile(model):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
+@pytest.mark.parametrize("field", ["freq", "mode"])
+@pytest.mark.parametrize("selected", [False, True])
+async def test_relative_read_missing_role_command_is_unavailable(
+    model, field, selected
+):
+    profile = get_radio_profile(model)
+    commands = profile.command_map
+    assert commands is not None
+    role = "selected" if selected else "unselected"
+    missing = f"get_{role}_{field}"
+    profile = replace(
+        profile,
+        command_map=CommandMap(
+            {name: commands.get(name) for name in commands if name != missing}
+        ),
+    )
+    async with _peer(model, profile=profile) as (
+        radio,
+        peer,
+        _server,
+        _reader,
+        _writer,
+    ):
+        with pytest.raises(CommandError, match="unavailable"):
+            await radio.read_relative_vfo(selected=selected)
+        assert not peer.requests
+        observed = await radio.read_relative_vfo(selected=not selected)
+        other = peer.slots["B" if selected else "A"]
+        assert (
+            observed.freq_hz,
+            observed.mode,
+            observed.filter_num,
+            observed.data_mode,
+        ) == (
+            other[0],
+            other[1].name,
+            other[2],
+            other[3],
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
+@pytest.mark.parametrize("missing", ["get_unselected_freq", "get_unselected_mode"])
+@pytest.mark.parametrize("command", [b"i\n", b"x\n"])
+async def test_split_missing_read_command_is_enavail(model, missing, command):
+    profile = get_radio_profile(model)
+    commands = profile.command_map
+    assert commands is not None
+    profile = replace(
+        profile,
+        command_map=CommandMap(
+            {name: commands.get(name) for name in commands if name != missing}
+        ),
+    )
+    async with _peer(model, profile=profile) as (_radio, peer, _server, reader, writer):
+        before = dict(peer.slots)
+        assert await _exchange(writer, reader, command) == b"RPRT -11\n"
+        assert not peer.requests
+        assert peer.slots == before
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("command", [b"I 14080100\n", b"X RTTY 1800\n", b"i\n", b"x\n"])
 async def test_split_dual_receiver_returns_enimpl(command):
     async with _peer("IC-7610") as (_radio, peer, _server, reader, writer):
@@ -183,7 +248,7 @@ async def test_split_live_read_follows_selection_after_write(
                 )
             )
         assert await _exchange(writer, reader, write) == b"RPRT 0\n"
-        immediate = b"14080100\n" if read == b"i\n" else b"RTTY\n1800\n"
+        immediate = b"14080100\n" if read == b"i\n" else b"PKTRTTY\n1800\n"
         lines = 1 if read == b"i\n" else 2
         assert await _exchange(writer, reader, read, lines=lines) == immediate
         assert await _exchange(writer, reader, b"V VFOB\n") == b"RPRT 0\n"
@@ -203,7 +268,7 @@ async def test_split_relative_write_is_tx_safe_but_topology_is_deferred(model, c
         if command.startswith(b"I"):
             assert peer.slots["B"][0] == 14_080_100
         else:
-            assert peer.slots["B"][1:] == (Mode.RTTY, 3, 0)
+            assert peer.slots["B"][1:] == (Mode.RTTY, 3, 1)
         before = list(peer.requests)
         assert await _exchange(writer, reader, b"S 1 VFOB\n") == b"RPRT 0\n"
         assert not peer.split
@@ -267,7 +332,7 @@ async def test_split_reverse_mode_round_trip_keeps_selected_mode(
         assert (
             await _exchange(writer, reader, f"X {name} 1800\n".encode()) == b"RPRT 0\n"
         )
-        assert peer.slots["B"] == (7_076_000, mode, 3, 0)
+        assert peer.slots["B"] == (7_076_000, mode, 3, 1)
         expected = f"{name}\n1800\n".encode() if getter == b"x\n" else b"USB\n3000\n"
         assert await _exchange(writer, reader, getter, lines=2) == expected
         assert peer.slots["A"] == before
@@ -315,7 +380,7 @@ async def test_split_mode_authority_change_during_preservation_never_sets(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", MODELS)
-@pytest.mark.parametrize("command", [b"I 14080100\n", b"X USB 2400\n"])
+@pytest.mark.parametrize("command", [b"I 14080100\n", b"X PKTUSB 2400\n"])
 async def test_split_authority_change_while_commander_queued_never_sets(
     monkeypatch, model, command
 ):

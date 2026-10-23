@@ -603,6 +603,10 @@ class _RigctldCommandExecutor:
             raise _RigctldCommandFailure(HamlibError.EACCESS) from exc
         except CommandError as exc:
             raise _RigctldCommandFailure(HamlibError.ENAVAIL) from exc
+        finally:
+            if not completion.done():
+                completion.cancel()
+            await asyncio.gather(completion, return_exceptions=True)
         return CommandExecutionResult()
 
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
@@ -1206,21 +1210,6 @@ class RigctldHandler:
             )
             aliases.append(
                 FieldPath.receiver(legacy_receiver, path.family.value, path.name)
-            )
-        elif path.slot is not None and path.slot.value == "unselected":
-            # Unselected-relative paths alias across the receiver-id spelling
-            # only (the poller publishes receiver "0"; seats project "main").
-            # They must NOT fall through to the bare receiver alias below:
-            # that field carries active-slot state, which would answer a
-            # split-TX read with the RX VFO's value.
-            aliases.append(
-                FieldPath.unselected(legacy_receiver, path.family.value, path.name)
-            )
-        elif path.slot is not None and path.slot.value in ("A", "B"):
-            aliases.append(
-                FieldPath.vfo_slot(
-                    legacy_receiver, path.slot.value, path.family.value, path.name
-                )
             )
         elif path.scope.value == "receiver":
             aliases.append(
@@ -3141,7 +3130,10 @@ class RigctldHandler:
         read_relative_vfo = getattr(self._radio, "read_relative_vfo", None)
         if read_relative_vfo is None:
             return _err(HamlibError.ENIMPL)
-        unselected = await read_relative_vfo(selected=False)
+        try:
+            unselected = await read_relative_vfo(selected=False)
+        except CommandError:
+            return _err(HamlibError.ENAVAIL)
         return RigctldResponse(values=[str(int(unselected.freq_hz))])
 
     async def _cmd_set_split_freq(self, cmd: RigctldCommand) -> RigctldResponse:
@@ -3202,7 +3194,10 @@ class RigctldHandler:
         read_relative_vfo = getattr(self._radio, "read_relative_vfo", None)
         if read_relative_vfo is None:
             return _err(HamlibError.ENIMPL)
-        unselected = await read_relative_vfo(selected=False)
+        try:
+            unselected = await read_relative_vfo(selected=False)
+        except CommandError:
+            return _err(HamlibError.ENAVAIL)
         mode_str, passband = _split_mode_values(
             unselected.mode, unselected.filter_num, unselected.data_mode
         )
@@ -3238,11 +3233,7 @@ class RigctldHandler:
             {
                 "mode": mode.value,
                 "filter_width": filter_width,
-                "data": (
-                    True
-                    if requested_mode in packet_modes
-                    else (False if filter_width is not None else None)
-                ),
+                "data": True if requested_mode in packet_modes else None,
             },
             source="rigctld",
             command_id=f"rigctld-set-split-mode-{time.monotonic_ns()}",

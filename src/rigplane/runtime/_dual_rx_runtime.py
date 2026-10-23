@@ -302,6 +302,18 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
     async def read_relative_vfo(self, *, selected: bool) -> RelativeVfoState:
         """Read one Selected/Unselected tuple without changing radio state."""
 
+        role = "selected" if selected else "unselected"
+        cmd_map = self._profile.command_map
+        required = (f"get_{role}_freq", f"get_{role}_mode")
+        if (
+            self._profile.receiver_count != 1
+            or self._profile.vfo_scheme != "ab"
+            or self._profile.vfo_readback != "selected_unselected"
+            or cmd_map is None
+            or not all(cmd_map.has(key) for key in required)
+        ):
+            raise CommandError("direct VFO read is unavailable")
+
         freq_cmd = (
             self._commands.get_selected_freq
             if selected
@@ -312,7 +324,6 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             if selected
             else self._commands.get_unselected_mode
         )
-        role = "selected" if selected else "unselected"
         freq_resp = await self._send_civ_expect(
             freq_cmd(to_addr=self._radio_addr), label=f"get_{role}_freq"
         )
@@ -465,9 +476,6 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             raise CommandRejectedError(
                 "VFO selection changed during preservation; retry"
             )
-        # no await between the epoch check and the send; nothing can interleave there
-        # before the SET enters the commander queue. This covers runtime VFO
-        # selection, swap and equalize calls from rigctld and HTTP/WS pollers.
         try:
             response = await self.send_civ(
                 opcode,

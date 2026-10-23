@@ -300,15 +300,24 @@ See `handler.py: _RigctldCommandExecutor._execute_managed_split_write`,
 
 `i`/`x` read the live unselected tuple. Successful relative writes publish no
 pending overlay. `X USB` and `X USB 0` preserve the target DATA setting and
-filter; an ordinary mode with a positive passband explicitly disables DATA.
+filter; an ordinary mode with a positive passband also preserves DATA.
 Packet modes explicitly enable DATA in the same unselected-mode frame.
 Omitted filter/DATA fields are filled from runtime readback before the write.
-With an omitted or zero passband, `X` first reads the target VFO's DATA and
-filter, then sends the SET as a separate exchange. If a runtime VFO selection,
-swap or equalize operation is in progress or occurs between that read and the
-SET, `X` fails with `ERJCTED` (`RPRT -9`) without sending the SET; retry `X`
-after selection settles. This includes selection from another rigctld
-connection or the HTTP/WebSocket poller.
+When fields need preserving, the runtime checks the selection epoch before
+readback and before the SET call. A selection operation still in progress or
+a changed epoch returns `ERJCTED` (`RPRT -9`); retry `X` after selection settles.
+The epoch tracks selection, swap and equalize operations through the
+runtime's own selection methods.
+The check is followed by awaits in the send path. Raw `w` and other direct
+writers are outside this epoch check.
+
+**Known limitation (two clients on one radio).** An `X` that does not carry both
+DATA and filter explicitly (an omitted or `0` passband, or an ordinary mode with a
+passband) reads the target DATA and filter first and writes them back in the SET.
+If another client's raw `w` frame or another `X` changes that VFO between the read
+and the SET, `X` can write the wrong DATA/filter back, and DATA also selects the
+TX audio source. A packet mode with a passband sends DATA and filter explicitly
+and is not affected; tracked in MOR-3743.
 See `handler.py: RigctldHandler._cmd_get_split_freq`,
 `handler.py: RigctldHandler._cmd_get_split_mode`, and
 `_dual_rx_runtime.py: DualRxRuntimeMixin.write_relative_vfo_mode`.
