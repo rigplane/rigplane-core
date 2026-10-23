@@ -719,9 +719,6 @@ bsr_code = 0x0A
 # - get_memory_mode [0x08]: the MK2 guide phrases 08 as "Switches to the
 #   Memory mode" (imperative); no probe has settled whether it answers a bare
 #   read.
-# - set_selected_mode [0x26, 0x00]: the GET direction is declared below, but
-#   no MK2 bench check has confirmed the SET payload convention; both frozen
-#   Icom profiles likewise leave it undeclared.
 
 [commands]
 
@@ -737,7 +734,11 @@ set_unselected_freq = [0x25, 0x01]
 get_unselected_freq = [0x25, 0x01]
 get_selected_mode = [0x26, 0x00]          # guide p.23 (mode/data/filter)
 get_unselected_mode = [0x26, 0x01]
-# set_selected_mode -- PROVENANCE OPEN above, left undeclared
+# SET: selector, mode, DATA 00/01, filter 01..03; omitted fields reset defaults.
+# Source: owner-supplied IC-7300MK2_ENG_CI-V_0.pdf p.23.
+# Manual-derived; not bench-probed on this model (the same SET was bench-probed on the IC-7300 and IC-705, MOR-3115).
+set_unselected_mode = [0x26, 0x01]
+# set_selected_mode stays undeclared to preserve ordinary 0x06 mode routing.
 
 # ── TX Band Edge ──
 get_tx_band_count = [0x1E, 0x00]

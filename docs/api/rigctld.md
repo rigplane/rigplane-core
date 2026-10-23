@@ -272,6 +272,10 @@ the handler in the dispatch table, and translates exceptions:
 | `U` | `set_func` | SET | Function write (`NB`, `NR`, `COMP`, `VOX`, etc.) |
 | `s` | `get_split_vfo` | GET | Split VFO status |
 | `S` | `set_split_vfo` | SET | Accepted/ACKed (compat path) |
+| `i` | `get_split_freq` | GET | Split TX frequency in Hz (single-RX only) |
+| `I` | `set_split_freq` | SET | Split TX frequency in Hz (single-RX only) |
+| `x` | `get_split_mode` | GET | Split TX mode + passband Hz (single-RX only) |
+| `X` | `set_split_mode` | SET | Split TX mode + optional passband (single-RX only) |
 | `q` | `quit` | CTL | Close connection |
 | `\dump_state` | `dump_state` | CTL | IC-7610 capability block |
 | `1` | `dump_caps` | CTL | Alias for `dump_state` |
@@ -282,6 +286,41 @@ the handler in the dispatch table, and translates exceptions:
 | `\mW2power` | `mW2power` | CTL | Milliwatts → normalised power |
 | `\get_lock_mode` | `get_lock_mode` | CTL | Lock mode (always 0) |
 | `w` | `send_raw` | CTL | Raw CI-V passthrough (hex in, hex out) |
+
+On single-RX rigs, `I` and `X` call the runtime's relative-VFO write APIs
+with `selected=False`; support comes from the profile's unselected write
+commands. They use the existing FREQUENCY and MODE TX-safe classifications.
+In bundled managed mode each write is one ordered command-queue entry;
+standalone handlers call the same runtime API directly. An explicit radio
+refusal returns `RPRT -9`, an unavailable write returns `RPRT -11`, and a
+timeout returns `RPRT -5`. Dual-RX rigs return `RPRT -4` for `I`/`i`/`X`/`x`.
+See `handler.py: _RigctldCommandExecutor._execute_managed_split_write`,
+`handler.py: RigctldHandler._execute_set_split_freq`, and
+`handler.py: RigctldHandler._execute_set_split_mode`.
+
+`i`/`x` read the live unselected tuple. Successful relative writes publish no
+pending overlay. `X USB` and `X USB 0` preserve the target DATA setting and
+filter; an ordinary mode with a positive passband also preserves DATA.
+Packet modes explicitly enable DATA in the same unselected-mode frame.
+Omitted filter/DATA fields are filled from runtime readback before the write.
+When fields need preserving, the runtime checks the selection epoch before
+readback and before the SET call. A selection operation still in progress or
+a changed epoch returns `ERJCTED` (`RPRT -9`); retry `X` after selection settles.
+The epoch tracks selection, swap and equalize operations through the
+runtime's own selection methods.
+The check is followed by awaits in the send path. Raw `w` and other direct
+writers are outside this epoch check.
+
+**Known limitation (two clients on one radio).** An `X` that does not carry both
+DATA and filter explicitly (an omitted or `0` passband, or an ordinary mode with a
+passband) reads the target DATA and filter first and writes them back in the SET.
+If another client's raw `w` frame or another `X` changes that VFO between the read
+and the SET, `X` can write the wrong DATA/filter back, and DATA also selects the
+TX audio source. A packet mode with a passband sends DATA and filter explicitly
+and is not affected; tracked in MOR-3743.
+See `handler.py: RigctldHandler._cmd_get_split_freq`,
+`handler.py: RigctldHandler._cmd_get_split_mode`, and
+`_dual_rx_runtime.py: DualRxRuntimeMixin.write_relative_vfo_mode`.
 
 **Mode strings** accepted/returned by `get_mode`/`set_mode`:
 `USB`, `LSB`, `CW`, `CWR`, `RTTY`, `RTTYR`, `AM`, `FM`, `WFM`,

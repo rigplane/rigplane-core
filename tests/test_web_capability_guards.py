@@ -9,7 +9,7 @@ import json
 from dataclasses import astuple, replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -314,8 +314,9 @@ class TestInfoEndpoint:
     @pytest.mark.parametrize(
         ("model", "expected"),
         [
-            ("IC-705", {"vfo_swap", "vfo_equalize"}),
-            ("IC-7300", {"vfo_swap", "vfo_equalize"}),
+            ("IC-705", {"vfo_swap", "vfo_equalize", "vfo_freq_direct"}),
+            ("IC-7300", {"vfo_swap", "vfo_equalize", "vfo_freq_direct"}),
+            ("IC-7300MK2", {"vfo_swap", "vfo_equalize", "vfo_freq_direct"}),
             ("IC-7610", {"vfo_swap", "vfo_equalize"}),
             ("IC-9700", {"vfo_swap", "vfo_equalize"}),
             ("FTX-1", {"vfo_swap", "vfo_equalize"}),
@@ -327,7 +328,11 @@ class TestInfoEndpoint:
     async def test_vfo_tags_match_across_consumers_for_real_profiles(
         self, model, expected
     ):
-        assert await _endpoint_vfo_tags(_make_radio(model)) == (
+        radio = _make_radio(model)
+        radio.write_relative_vfo_frequency = AsyncMock(
+            spec=IcomRadio.write_relative_vfo_frequency
+        )
+        assert await _endpoint_vfo_tags(radio) == (
             expected,
             expected,
             expected,
@@ -1275,25 +1280,63 @@ class TestProfileDeclaredDualWatch:
         assert "dual_watch" in data["capabilities"]["tags"]
 
 
-async def test_direct_vfo_frequency_capability_requires_real_supported_route():
-    from unittest.mock import AsyncMock
-
-    radio = _make_radio("IC-7300")
-    radio.send_civ = AsyncMock()
+@pytest.mark.parametrize("model", ["IC-7300", "IC-7300MK2", "IC-705"])
+async def test_direct_vfo_frequency_capability_requires_real_supported_route(model):
+    radio = _make_radio(model)
+    radio.write_relative_vfo_frequency = AsyncMock(
+        spec=IcomRadio.write_relative_vfo_frequency
+    )
     for tags in await _endpoint_vfo_tags(radio):
         assert "vfo_freq_direct" in tags
-    del radio.send_civ
+    del radio.write_relative_vfo_frequency
     radio.capabilities.add("vfo_freq_direct")
     for tags in await _endpoint_vfo_tags(radio):
         assert "vfo_freq_direct" not in tags
 
 
-async def test_direct_vfo_frequency_profile_keys_are_both_required():
-    import dataclasses
-    from unittest.mock import AsyncMock
+@pytest.mark.parametrize("model", ["IC-7300", "IC-7300MK2", "IC-705"])
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "set_selected_freq",
+        "get_selected_freq",
+        "set_unselected_freq",
+        "get_unselected_freq",
+    ],
+)
+async def test_direct_vfo_frequency_profile_keys_are_all_required(model, missing):
+    from rigplane.commands.command_map import CommandMap
 
-    radio = _make_radio("IC-7300")
-    radio.send_civ = AsyncMock()
-    radio.profile = dataclasses.replace(radio.profile, command_map=None)
+    radio = _make_radio(model)
+    radio.write_relative_vfo_frequency = AsyncMock(
+        spec=IcomRadio.write_relative_vfo_frequency
+    )
+    cmd_map = radio.profile.command_map
+    radio.profile = replace(
+        radio.profile,
+        command_map=CommandMap(
+            {key: cmd_map.get(key) for key in cmd_map if key != missing}
+        ),
+    )
     for tags in await _endpoint_vfo_tags(radio):
         assert "vfo_freq_direct" not in tags
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"id": "arbitrary_profile_id"},
+        {"receiver_count": 2},
+        {"vfo_scheme": "main_sub"},
+        {"vfo_readback": "none"},
+        {"command_map": None},
+    ],
+)
+async def test_direct_vfo_frequency_gate_uses_profile_data(changes):
+    radio = _make_radio("IC-7300")
+    radio.write_relative_vfo_frequency = AsyncMock(
+        spec=IcomRadio.write_relative_vfo_frequency
+    )
+    radio.profile = replace(radio.profile, **changes)
+    for tags in await _endpoint_vfo_tags(radio):
+        assert ("vfo_freq_direct" in tags) == ("id" in changes)

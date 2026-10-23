@@ -87,6 +87,8 @@ __all__ = [
     "TransceiverBankCapable",
     "VfoSlotCapable",
     "RelativeVfoReadbackCapable",
+    "RelativeVfoFrequencyWritable",
+    "RelativeVfoModeWritable",
     "RelativeVfoState",
     "StateCacheCapable",
     "StateModelCapable",
@@ -1361,6 +1363,7 @@ class CivCommandCapable(Protocol):
         wait_response: bool = True,
         priority: Any = ...,
         wait_dispatch: bool = True,
+        is_current: Callable[[], bool] | None = None,
     ) -> Any:
         """Send a CI-V command through the active backend transport.
 
@@ -1686,6 +1689,40 @@ class RelativeVfoReadbackCapable(Protocol):
 
     async def read_relative_vfo(self, *, selected: bool) -> RelativeVfoState:
         """Return a fresh tuple for the radio's current relative role."""
+        ...
+
+
+@runtime_checkable
+class RelativeVfoFrequencyWritable(Protocol):
+    """Radio can write and read back a Selected/Unselected VFO frequency."""
+
+    async def write_relative_vfo_frequency(
+        self,
+        freq_hz: int,
+        *,
+        selected: bool,
+        before_set: Callable[[], None] | None = None,
+        after_ack: Callable[[], None] | None = None,
+        after_readback: Callable[[], None] | None = None,
+    ) -> int:
+        """Return observed Hz; synchronous hooks may raise to reject stale targets."""
+        ...
+
+
+@runtime_checkable
+class RelativeVfoModeWritable(Protocol):
+    """Radio can write and read back a Selected/Unselected VFO mode tuple."""
+
+    async def write_relative_vfo_mode(
+        self,
+        mode: int,
+        *,
+        selected: bool,
+        data: bool | None = None,
+        filter_width: int | None = None,
+        before_set: Callable[[], None] | None = None,
+    ) -> RelativeVfoState:
+        """Preserve omitted fields; the synchronous hook may refuse before SET."""
         ...
 
 

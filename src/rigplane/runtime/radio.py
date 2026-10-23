@@ -536,6 +536,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._last_power: int | None = None
         self._last_split: bool | None = None
         self._last_vfo: str | None = None
+        self._vfo_selection_epoch: int = 1
         self._token_task: asyncio.Task[None] | None = None
         self._auto_reconnect = auto_reconnect
         self._reconnect_delay = reconnect_delay
@@ -2600,6 +2601,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         wait_response: bool = True,
         priority: Priority = Priority.NORMAL,
         wait_dispatch: bool = True,
+        is_current: Callable[[], bool] | None = None,
     ) -> CivFrame | None:
         """Send a CI-V command.
 
@@ -2617,6 +2619,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 the poll loop on the commander future (the response still
                 arrives via the RX path). Defaults to True so user commands
                 keep their blocking contract.
+            is_current: Optional request currency predicate for wire dispatch.
 
         Returns:
             Parsed response CivFrame, or None if wait_response=False.
@@ -2625,6 +2628,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         frame = build_civ_frame(
             self._radio_addr, CONTROLLER_ADDR, command, sub=sub, data=data
         )
+        if is_current is not None:
+            return await self._send_civ_raw(
+                frame,
+                wait_response=wait_response,
+                priority=priority,
+                wait_dispatch=wait_dispatch,
+                is_current=is_current,
+            )
         return await self._send_civ_raw(
             frame,
             wait_response=wait_response,
@@ -4786,11 +4797,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 f"profile {self._profile.model} declares no VFO select code for {name}"
             )
         civ = self._commands.set_vfo(code, to_addr=self._radio_addr)
-        resp = await self._send_civ_expect(civ, label="set_vfo")
-        ack = parse_ack_nak(resp)
-        if ack is False:
-            raise CommandError(f"Radio rejected VFO select {vfo}")
-        self._last_vfo = vfo.upper()
+        with self._vfo_selection_change():
+            resp = await self._send_civ_expect(civ, label="set_vfo")
+            ack = parse_ack_nak(resp)
+            if ack is False:
+                raise CommandError(f"Radio rejected VFO select {vfo}")
+            self._last_vfo = vfo.upper()
 
     async def set_split(self, on: bool) -> None:
         """Enable or disable split mode (CI-V ``0x0F``)."""

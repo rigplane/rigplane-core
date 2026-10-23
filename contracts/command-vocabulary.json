@@ -206,6 +206,22 @@
     "set_scope_speed": null,
     "set_scope_vbw": null,
     "set_split": null,
+    "set_split_freq": {
+      "descriptor": "set_split_freq",
+      "result_keys": [
+        "freq_hz",
+        "selected"
+      ]
+    },
+    "set_split_mode": {
+      "descriptor": "set_split_mode",
+      "result_keys": [
+        "mode",
+        "selected",
+        "data",
+        "filter_width"
+      ]
+    },
     "set_sql": {
       "descriptor": "set_squelch",
       "result_keys": [
