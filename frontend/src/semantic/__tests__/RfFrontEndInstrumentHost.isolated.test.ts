@@ -755,6 +755,24 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
     return view;
   };
 
+  it.each<{
+    profile: string; preLabels: Record<string, string>; labels: string[];
+  }>([
+    { profile: 'labelled', preLabels: { '1': 'INT', '2': 'EXT' }, labels: ['OFF', 'INT', 'EXT'] },
+    { profile: 'unlabelled', preLabels: {}, labels: ['OFF', 'P1', 'P2'] },
+  ])('renders $profile preamp capabilities through the real adapter and dispatches a numeric level', ({ preLabels, labels }) => {
+    const caps: Capabilities = { ...mor2511Caps(), preLabels };
+    const view = toRadioViewModel(mor2511State('MAIN'), caps);
+    expect(view).not.toBeNull();
+    const onPreampChange = vi.fn();
+    const r = renderFinite(view!, { onPreampChange });
+
+    expect([0, 1, 2].map((level) => r.el(`preamp-${level}`)?.textContent)).toEqual(labels);
+    r.el('preamp-2')!.click();
+    flushSync();
+    expect(onPreampChange).toHaveBeenCalledExactlyOnceWith(2);
+  });
+
   it('renders the preamp row from the real adapter: kept, disabled, with the receiver-lacks-control hint', () => {
     const r = renderFinite(mor2511View('SUB'));
     const row = r.el('preamp');
