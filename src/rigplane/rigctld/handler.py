@@ -34,7 +34,11 @@ from ..core.command_service import (
 from ..core.command_dispatch import prepare_command_intent
 from ..core.exceptions import CommandError, CommandRejectedError
 from ..runtime.controller_authority import ControllerAuthority, ControllerError
-from ..core.radio_protocol import AttenuatorStepsCapable
+from ..core.radio_protocol import (
+    AttenuatorStepsCapable,
+    RelativeVfoFrequencyWritable,
+    RelativeVfoModeWritable,
+)
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import (
     CommandIntent,
@@ -267,6 +271,27 @@ def _passband_to_filter(passband_hz: int) -> int | None:
     return 3
 
 
+def _split_mode_values(
+    mode: object, filter_num: object, data_mode: object
+) -> tuple[str, str]:
+    """Format an unselected-VFO mode tuple as ``(mode, passband)`` lines.
+
+    Same display mapping as ``get_mode``: the DATA sub-mode (an int on
+    the way in, never narrowed to bool) selects the packet-mode label.
+    """
+    mode_str = _mode_to_hamlib_str(mode)
+    filt = None if filter_num is None else int(filter_num)
+    data = 0 if data_mode is None else int(data_mode)
+    if data:
+        if mode_str == "USB":
+            mode_str = "PKTUSB"
+        elif mode_str == "LSB":
+            mode_str = "PKTLSB"
+        elif mode_str == "RTTY":
+            mode_str = "PKTRTTY"
+    return mode_str, str(_filter_to_passband(filt))
+
+
 # The supervisor took the request: a lease is ours (key), or a durable OFF is
 # owed and will be retried until the rig confirms it (unkey). Anything else and
 # nothing reached the wire.
@@ -314,9 +339,9 @@ def _classify_rigctld_tx_intent(
     """Map one material rigctld intent into the canonical typed TX policy."""
     params = intent.params
     command: tx_commands.Command
-    if intent.name == "set_freq":
+    if intent.name in ("set_freq", "set_split_freq"):
         command = tx_commands.SetFreq(int(params["freq_hz"]))
-    elif intent.name == "set_mode":
+    elif intent.name in ("set_mode", "set_split_mode"):
         command = tx_commands.SetMode(str(params["mode"]))
     elif intent.name == "set_ptt":
         command = tx_commands.PttOn() if bool(params["ptt"]) else tx_commands.PttOff()
@@ -404,7 +429,11 @@ def _mode_to_hamlib_str(mode: object) -> str:
     if isinstance(mode, Mode):
         return str(CIV_TO_HAMLIB_MODE.get(mode.value, mode.name))
     if isinstance(mode, str):
-        return mode.upper()
+        name = mode.upper()
+        core_mode = Mode.__members__.get(name)
+        return (
+            name if core_mode is None else CIV_TO_HAMLIB_MODE.get(core_mode.value, name)
+        )
     name = getattr(mode, "name", None)
     if isinstance(name, str):
         return name.upper()
@@ -543,6 +572,43 @@ class _RigctldCommandExecutor:
             raise _RigctldCommandFailure(HamlibError.ERJCTED) from exc
         return CommandExecutionResult()
 
+    async def _execute_managed_split_write(
+        self, intent: CommandIntent
+    ) -> CommandExecutionResult:
+        queue = self.handler._command_queue
+        assert queue is not None
+        loop = asyncio.get_running_loop()
+        completion: asyncio.Future[None] = loop.create_future()
+        timeout = intent.timeout or self.handler._config.command_timeout
+        expires_at = loop.time() + timeout
+        queue.put_ordered(
+            intent,
+            future=completion,
+            command_id=intent.id,
+            source=intent.source,
+            session_id=intent.params.get("session_id"),
+            expires_at_monotonic=expires_at,
+            provider_generation=self.handler._provider_generation_capture(),
+            connection_generation=queue.capture_connection_generation(),
+        )
+        try:
+            await asyncio.wait_for(
+                completion, timeout=max(0.0, expires_at - loop.time())
+            )
+        except (TimeoutError, asyncio.TimeoutError) as exc:
+            raise _RigctldCommandFailure(HamlibError.ETIMEOUT) from exc
+        except CommandRejectedError as exc:
+            raise _RigctldCommandFailure(HamlibError.ERJCTED) from exc
+        except ControllerError as exc:
+            raise _RigctldCommandFailure(HamlibError.EACCESS) from exc
+        except CommandError as exc:
+            raise _RigctldCommandFailure(HamlibError.ENAVAIL) from exc
+        finally:
+            if not completion.done():
+                completion.cancel()
+            await asyncio.gather(completion, return_exceptions=True)
+        return CommandExecutionResult()
+
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
         controller = getattr(self.handler._radio, "_controller_authority", None)
         # The unkey exemption mirrors the ingress gate: neither the typed
@@ -561,6 +627,11 @@ class _RigctldCommandExecutor:
             if isinstance(controller, ControllerAuthority) and not safety_off
             else None
         )
+
+        def validate_controller() -> None:
+            if ticket is not None:
+                ticket.authority.validate(ticket)
+
         managed = self.handler._managed_tx_authority is not None
         if managed and intent.name == "set_ptt":
             return await self._execute_managed_ptt(intent)
@@ -588,6 +659,18 @@ class _RigctldCommandExecutor:
             # does a TX the radio reports while no owner holds TX (MOR-3537).
             # The owner is the connection id the rigctld server minted.
             raise _RigctldCommandFailure(HamlibError.ERJCTED)
+        if managed and intent.name in ("set_split_freq", "set_split_mode"):
+            capability = (
+                RelativeVfoFrequencyWritable
+                if intent.name == "set_split_freq"
+                else RelativeVfoModeWritable
+            )
+            if not isinstance(self.handler._radio, capability):
+                raise _RigctldCommandFailure(HamlibError.ENAVAIL)
+            await self._wait_predecessor()
+            if ticket is not None:
+                ticket.authority.validate(ticket)
+            return await self._execute_managed_split_write(intent)
         if managed and intent.name == "send_raw":
             # A raw TX-family frame is refused by payload alone —
             # regardless of the observed RF state, and without consulting
@@ -699,6 +782,17 @@ class _RigctldCommandExecutor:
             )
             if error is not HamlibError.OK:
                 raise _RigctldCommandFailure(error)
+        elif intent.name == "set_split_freq":
+            return await self.handler._execute_set_split_freq(
+                int(params["freq_hz"]), before_set=validate_controller
+            )
+        elif intent.name == "set_split_mode":
+            return await self.handler._execute_set_split_mode(
+                int(params["mode"]),
+                filter_width=params.get("filter_width"),
+                data=params.get("data"),
+                before_set=validate_controller,
+            )
         elif intent.name == "send_raw":
             send_fn = getattr(self.handler._radio, "_send_civ_raw", None)
             if send_fn is None:
@@ -3012,6 +3106,174 @@ class RigctldHandler:
             )
 
     # ------------------------------------------------------------------
+    # Split TX frequency / mode commands (single-RX A/B slot routing)
+    # ------------------------------------------------------------------
+
+    def _validate_split_tx_vfo_arg(self, vfo_arg: str | None) -> None:
+        """Validate the split-TX role label independently of RX routing."""
+        if vfo_arg is None or vfo_arg in ("currVFO", "VFOA", "VFOB"):
+            return
+        raise ValueError(f"Unknown VFO arg: {vfo_arg!r}")
+
+    def _split_tx_needs_dual_rx_routing(self) -> bool:
+        """Exclude dual-RX profiles from unselected-slot split routing."""
+        info = self._profile_vfo_info()
+        return info is not None and info[0] >= 2
+
+    async def _cmd_get_split_freq(self, cmd: RigctldCommand) -> RigctldResponse:
+        try:
+            self._validate_split_tx_vfo_arg(cmd.vfo_arg)
+        except ValueError:
+            return _err(HamlibError.EVFO)
+        if self._split_tx_needs_dual_rx_routing():
+            return _err(HamlibError.ENIMPL)
+        read_relative_vfo = getattr(self._radio, "read_relative_vfo", None)
+        if read_relative_vfo is None:
+            return _err(HamlibError.ENIMPL)
+        try:
+            unselected = await read_relative_vfo(selected=False)
+        except CommandError:
+            return _err(HamlibError.ENAVAIL)
+        return RigctldResponse(values=[str(int(unselected.freq_hz))])
+
+    async def _cmd_set_split_freq(self, cmd: RigctldCommand) -> RigctldResponse:
+        if not cmd.args:
+            return _err(HamlibError.EINVAL)
+        try:
+            freq = int(float(cmd.args[0]))
+        except (ValueError, OverflowError):
+            return _err(HamlibError.EINVAL)
+        try:
+            self._validate_split_tx_vfo_arg(cmd.vfo_arg)
+        except ValueError:
+            return _err(HamlibError.EVFO)
+        if self._split_tx_needs_dual_rx_routing():
+            return _err(HamlibError.ENIMPL)
+        intent = command_intent_from_request(
+            "set_split_freq",
+            {"freq_hz": freq},
+            source="rigctld",
+            command_id=f"rigctld-set-split-freq-{time.monotonic_ns()}",
+            session_id=self._session_id(),
+            timeout=self._config.command_timeout,
+        )
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
+        await self._execute_write(intent)
+        return _ok()
+
+    async def _execute_set_split_freq(
+        self,
+        freq_hz: int,
+        *,
+        before_set: Callable[[], None] | None = None,
+    ) -> CommandExecutionResult:
+        if not isinstance(self._radio, RelativeVfoFrequencyWritable):
+            raise _RigctldCommandFailure(HamlibError.ENAVAIL)
+        try:
+            await self._radio.write_relative_vfo_frequency(
+                freq_hz, selected=False, before_set=before_set
+            )
+        except CommandRejectedError:
+            raise
+        except ControllerError as exc:
+            raise _RigctldCommandFailure(HamlibError.EACCESS) from exc
+        except CommandError as exc:
+            raise _RigctldCommandFailure(HamlibError.ENAVAIL) from exc
+        return CommandExecutionResult()
+
+    async def _cmd_get_split_mode(self, cmd: RigctldCommand) -> RigctldResponse:
+        try:
+            self._validate_split_tx_vfo_arg(cmd.vfo_arg)
+        except ValueError:
+            return _err(HamlibError.EVFO)
+        if self._split_tx_needs_dual_rx_routing():
+            return _err(HamlibError.ENIMPL)
+        read_relative_vfo = getattr(self._radio, "read_relative_vfo", None)
+        if read_relative_vfo is None:
+            return _err(HamlibError.ENIMPL)
+        try:
+            unselected = await read_relative_vfo(selected=False)
+        except CommandError:
+            return _err(HamlibError.ENAVAIL)
+        mode_str, passband = _split_mode_values(
+            unselected.mode, unselected.filter_num, unselected.data_mode
+        )
+        return RigctldResponse(values=[mode_str, passband])
+
+    async def _cmd_set_split_mode(self, cmd: RigctldCommand) -> RigctldResponse:
+        if not cmd.args:
+            return _err(HamlibError.EINVAL)
+        requested_mode = cmd.args[0].upper()
+        if requested_mode not in HAMLIB_MODE_MAP:
+            return _err(HamlibError.EINVAL)
+        civ_val = HAMLIB_MODE_MAP[requested_mode]
+        try:
+            mode = Mode(civ_val)
+        except ValueError:
+            return _err(HamlibError.EINVAL)
+        passband_hz = 0
+        if len(cmd.args) >= 2:
+            try:
+                passband_hz = int(cmd.args[1])
+            except ValueError:
+                return _err(HamlibError.EINVAL)
+        filter_width = _passband_to_filter(passband_hz)
+        packet_modes = {"PKTUSB", "PKTLSB", "PKTRTTY"}
+        try:
+            self._validate_split_tx_vfo_arg(cmd.vfo_arg)
+        except ValueError:
+            return _err(HamlibError.EVFO)
+        if self._split_tx_needs_dual_rx_routing():
+            return _err(HamlibError.ENIMPL)
+        intent = command_intent_from_request(
+            "set_split_mode",
+            {
+                "mode": mode.value,
+                "filter_width": filter_width,
+                "data": True if requested_mode in packet_modes else None,
+            },
+            source="rigctld",
+            command_id=f"rigctld-set-split-mode-{time.monotonic_ns()}",
+            session_id=self._session_id(),
+            timeout=self._config.command_timeout,
+        )
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
+        await self._execute_write(intent)
+        return _ok()
+
+    async def _execute_set_split_mode(
+        self,
+        mode: int,
+        *,
+        filter_width: int | None,
+        data: bool | None,
+        before_set: Callable[[], None] | None = None,
+    ) -> CommandExecutionResult:
+        if not isinstance(self._radio, RelativeVfoModeWritable):
+            raise _RigctldCommandFailure(HamlibError.ENAVAIL)
+        try:
+            await self._radio.write_relative_vfo_mode(
+                mode,
+                selected=False,
+                filter_width=filter_width,
+                data=data,
+                before_set=before_set,
+            )
+        except CommandRejectedError:
+            raise
+        except ControllerError as exc:
+            raise _RigctldCommandFailure(HamlibError.EACCESS) from exc
+        except CommandError as exc:
+            raise _RigctldCommandFailure(HamlibError.ENAVAIL) from exc
+        return CommandExecutionResult()
+
+    # ------------------------------------------------------------------
     # RIT
     # ------------------------------------------------------------------
 
@@ -3265,6 +3527,10 @@ RigctldHandler._DISPATCH = {
     "set_func": RigctldHandler._cmd_set_func,
     "get_split_vfo": RigctldHandler._cmd_get_split_vfo,
     "set_split_vfo": RigctldHandler._cmd_set_split_vfo,
+    "get_split_freq": RigctldHandler._cmd_get_split_freq,
+    "set_split_freq": RigctldHandler._cmd_set_split_freq,
+    "get_split_mode": RigctldHandler._cmd_get_split_mode,
+    "set_split_mode": RigctldHandler._cmd_set_split_mode,
     "get_rit": RigctldHandler._cmd_get_rit,
     "set_rit": RigctldHandler._cmd_set_rit,
     "get_xit": RigctldHandler._cmd_get_xit,

@@ -6,6 +6,7 @@ name replaced; the IC-9700 layout comes from the CI-V reference only (tier B-).
 
 from __future__ import annotations
 
+from dataclasses import replace
 
 import pytest
 
@@ -34,7 +35,9 @@ _IC705_GOLDEN = bytes.fromhex(
 # fmt: on
 
 _IC705 = MemoryProfile("group_channel", 0, 99, 0, 99)
-_IC9700 = MemoryProfile("band_channel", 1, 3, 1, 99)
+_IC9700 = MemoryProfile(
+    "band_channel", 1, 3, 1, 99, dd_groups=(3,), offset_10mhz_groups=(3,)
+)
 
 
 def _block(
@@ -144,6 +147,24 @@ def test_ic9700_rps_duplex_exists_only_in_dd_mode() -> None:
     )
 
 
+@pytest.mark.parametrize("start", [5, 52])
+def test_ic705_rejects_dd_mode_in_either_block(start: int) -> None:
+    reply = bytearray(_IC705_GOLDEN)
+    reply[start + 5] = 0x22
+    reply[start + 8] = 0x00  # simplex must not conceal an unsupported DD mode
+    with pytest.raises(ValueError, match="mode"):
+        parse_memory_entry(bytes(reply), _IC705)
+
+
+@pytest.mark.parametrize("band", [1, 2])
+def test_ic9700_rejects_dd_outside_profile_groups(band: int) -> None:
+    reply = _ic9700_reply(
+        _block(freq="0146000000", mode=0x22), band=band, channel=1, name=b""
+    )
+    with pytest.raises(ValueError, match="mode"):
+        parse_memory_entry(reply, _IC9700)
+
+
 def test_ic9700_frequency_ghz_digit_is_0_or_1() -> None:
     reply = _ic9700_reply(_block(freq="2296000000"), band=3, channel=1, name=b"")
     with pytest.raises(ValueError):
@@ -159,6 +180,11 @@ def test_ic9700_offset_10_mhz_digit_only_on_the_1200_mhz_band() -> None:
     for band, freq in ((1, "0146940000"), (2, "0439000000")):
         with pytest.raises(ValueError):
             parse_memory_entry(reply(band, freq), _IC9700)
+    for band in (1, 2, 3):
+        with pytest.raises(ValueError, match="offset"):
+            parse_memory_entry(
+                reply(band, "0146940000"), replace(_IC9700, offset_10mhz_groups=())
+            )
 
 
 def test_ic9700_select_byte_has_no_split_flag() -> None:

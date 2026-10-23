@@ -874,8 +874,12 @@ memory_to_vfo = [0x0A]                     # source: IC-705 CI-V Reference Guide
 memory_clear = [0x0B]                      # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3 -- payload MOR-2055, see commands/memory.py: build_memory_clear
 
 # ── Offset / Scan / Split ──
-get_freq_offset = [0x0D]
-set_freq_offset = [0x0D]
+# Duplex offset: the guide's own rows read 0C = "Read frequency offset" and
+# 0D = "Send frequency offset" (IC-705 CI-V Reference Guide p.3, format p.17).
+# The read used to be mapped to 0D (the send opcode), which the radio NAKs.
+# 0C answered on the bench IC-705 (MOR-3650): 00 50 00 = 500 kHz.
+get_freq_offset = [0x0C]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
+set_freq_offset = [0x0D]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
 get_scan = [0x0E]
 set_scan = [0x0E]
 get_split = [0x0F]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
@@ -1073,17 +1077,14 @@ set_rit_tx_status = [0x21, 0x02]
 
 # ── Selected / unselected VFO ──
 get_selected_freq = [0x25, 0x00]          # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15
-# set_selected_freq: no Python builder exists yet -- orphan key, kept
-# undisturbed by MOR-2008 batch 4 (see that batch's PR body).
 set_selected_freq = [0x25, 0x00]
 get_unselected_freq = [0x25, 0x01]        # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15
 set_unselected_freq = [0x25, 0x01]
 get_selected_mode = [0x26, 0x00]          # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15 (detail p.26)
 set_selected_mode = [0x26, 0x00]          # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15 (detail p.26)
 get_unselected_mode = [0x26, 0x01]        # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15 (detail p.26)
-# set_unselected_mode: no Python builder exists yet -- orphan key, kept
-# undisturbed by MOR-2008 batch 4 (see that batch's PR body).
-set_unselected_mode = [0x26, 0x01]
+# Bench-probed 2026-10-22 on an IC-705 (RX only, MOR-3115): 26 01 SET with explicit mode/DATA/filter was ACKed, read back exactly, and left the selected VFO unchanged.
+set_unselected_mode = [0x26, 0x01]        # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15 (detail p.26)
 
 # ── TX Band Edge ──
 get_tx_band_count = [0x1E, 0x00]          # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14

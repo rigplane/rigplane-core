@@ -444,7 +444,7 @@ def build_memory_entry_read(
     )
 
 
-def _parse_block(block: bytes, addressing: str, group: int) -> dict[str, Any]:
+def _parse_block(block: bytes, memory: MemoryProfile, group: int) -> dict[str, Any]:
     """Validate one 47-byte channel block and return its decoded fields.
 
     Fields the read model does not expose (filter, DTCS polarity, DV code,
@@ -460,20 +460,20 @@ def _parse_block(block: bytes, addressing: str, group: int) -> dict[str, Any]:
     tone_mode = _TONE_MODE_BY_NIBBLE.get(tone_nibble)
     if tone_mode is None:
         raise ValueError(f"unknown tone mode nibble {tone_nibble}")
-    # IC-705: duplex 0-2. IC-9700 adds 3 = RPS, which only DD mode has, and DD
-    # has no DUP-/DUP+.
-    dd = mode_code == _MODE_DD
-    if duplex_nibble > (2 if addressing == "group_channel" else 3) or (
+    dd = mode_code == _MODE_DD and group in memory.dd_groups
+    if mode_code == _MODE_DD and not dd:
+        raise ValueError(f"unknown mode code {mode_code:02X} for memory group {group}")
+    # RPS (3) exists only in DD; DD has no DUP-/DUP+.
+    if duplex_nibble > (2 if memory.addressing == "group_channel" else 3) or (
         (duplex_nibble == 3) != dd and duplex_nibble != 0
     ):
         raise ValueError(
             f"duplex nibble {duplex_nibble} does not fit mode {mode_code:02X}"
         )
-    if addressing == "group_channel" and block[4] >> 4:
+    if memory.addressing == "group_channel" and block[4] >> 4:
         raise ValueError("IC-705 frequency GHz digit is fixed 0")
-    # the offset's 10 MHz digit exists only on the IC-9700 1.2 GHz band (code 3)
-    if block[22] >> 4 and not (addressing == "band_channel" and group == 3):
-        raise ValueError("offset 10 MHz digit is only valid on the 1.2 GHz band")
+    if block[22] >> 4 and group not in memory.offset_10mhz_groups:
+        raise ValueError(f"offset 10 MHz digit is not valid for memory group {group}")
     # 100 MHz digit 0-4 (both radios); GHz digit 0-1 on the IC-9700 (fixed 0 above)
     if block[4] & 0x0F > 4 or block[4] >> 4 > 1:
         raise ValueError("frequency 100 MHz or GHz digit out of range")
@@ -528,11 +528,9 @@ def parse_memory_entry(data: bytes, memory: MemoryProfile) -> MemoryEntry:
     expected = start + 2 * _MEMORY_BLOCK_LEN + _MEMORY_NAME_LEN
     if len(data) != expected:
         raise ValueError(f"memory reply is {len(data)} bytes, expected {expected}")
-    fields = _parse_block(
-        data[start : start + _MEMORY_BLOCK_LEN], memory.addressing, group
-    )
+    fields = _parse_block(data[start : start + _MEMORY_BLOCK_LEN], memory, group)
     tx_block = data[start + _MEMORY_BLOCK_LEN : expected - _MEMORY_NAME_LEN]
-    _parse_block(tx_block, memory.addressing, group)
+    _parse_block(tx_block, memory, group)
     name_raw = data[expected - _MEMORY_NAME_LEN : expected]
     if not all(0x20 <= b <= 0x7E or b == 0 for b in name_raw):
         raise ValueError("memory name is not printable ASCII")

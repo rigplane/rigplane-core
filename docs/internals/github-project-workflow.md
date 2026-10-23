@@ -4,18 +4,18 @@ robots: noindex, follow
 
 # GitHub Execution Workflow
 
-The `RigPlane Core UI Composition Architecture v3` project uses Linear for
-planning and GitHub for bounded implementation evidence. Its live,
-project-specific Linear control-plane contract takes precedence over the legacy
-GitHub-Project planning and control-plane language in `CLAUDE.md`. This document
-defines the GitHub execution plane; it does not create a second backlog or
-roadmap.
+All Core development uses Linear for planning and GitHub for bounded
+implementation evidence. GitHub Projects are not used for Core planning;
+project membership, fields, and GitHub Projects OAuth scopes are not
+prerequisites. This document defines the GitHub execution plane; it does not
+create a second backlog or roadmap. Ordinary GitHub issues remain available
+for customer intake and discussion.
 
-That precedence changes only control-plane ownership. All other `CLAUDE.md`
-commands, architecture, hygiene, protected-main, exact-head `Agent Review
-Gate`, and guarded merge rules remain binding. The batching and CI cadence in
-this document and `AGENTS.md` supersede older draft-first CI and per-merge
-`main`-wait instructions; safety and acceptance gates remain binding.
+This changes only control-plane ownership. All other `CLAUDE.md` commands,
+architecture, hygiene, protected-main, exact-head `Agent Review Gate`, and
+guarded merge rules remain binding. The batching and CI cadence in this
+document and `AGENTS.md` supersede older draft-first CI and per-merge `main`-wait
+instructions; safety and acceptance gates remain binding.
 
 ## Control-plane boundary
 
@@ -38,18 +38,21 @@ completion from GitHub labels, Projects, issue state, or a merged PR.
 
 ## Agent intake checklist
 
-Before creating a branch, PR, or optional GitHub issue, an agent must:
+Before non-trivial implementation or creating a branch, PR, or optional GitHub
+execution issue, an agent must:
 
 1. Identify the existing Linear issue and read its current acceptance criteria.
 2. Confirm that the Linear issue is ready and that its dependencies permit work.
 3. Check for an existing GitHub PR or branch for the same Linear issue.
 4. Define the smallest concrete PR-bound scope and owned paths.
-5. Create a GitHub issue only when that atomic execution scope benefits from a
-   GitHub-native discussion; link the existing Linear issue in it.
+5. Create a GitHub execution issue only when that atomic execution scope
+   benefits from a GitHub-native discussion; link the existing Linear issue in
+   it. Customer intake and discussion issues do not require a prior Linear
+   ticket.
 
 Do not create a GitHub planning issue before resolving the Linear owner. A
-GitHub issue is optional, never a substitute for the Linear item, and must not
-carry a separate plan, dependency graph, priority, milestone, acceptance
+GitHub execution issue is optional, never a substitute for the Linear item, and
+must not carry a separate plan, dependency graph, priority, milestone, acceptance
 criteria, or status.
 
 ## Planning-only GitHub issues

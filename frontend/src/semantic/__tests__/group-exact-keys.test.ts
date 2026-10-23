@@ -45,7 +45,8 @@ const FROZEN: Record<string, readonly string[]> = {
     'agcTimeConstant',
   ],
   validateRfFrontEnd: [
-    'preamp', 'preValues', 'attenuator', 'attValues', 'rfGain', 'squelch', 'digiSel', 'ipPlus',
+    'preamp', 'preValues', 'preLabels', 'attenuator', 'attValues', 'rfGain', 'squelch', 'digiSel',
+    'ipPlus',
   ],
   validateBand: [
     'currentBand', 'receiverBands', 'bandChoices', 'currentBandTx', 'tuneMinHz', 'tuneMaxHz',

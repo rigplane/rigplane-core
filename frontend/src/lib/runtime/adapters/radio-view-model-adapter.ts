@@ -1035,6 +1035,7 @@ function deriveRfFrontEnd(
   return {
     preamp: txAuxField(hasPreCap, topFieldAvailable(state, `${base}preamp`), numOrUndef(rx?.preamp)),
     preValues: caps.preValues ?? [],
+    ...(caps.preLabels && Object.keys(caps.preLabels).length > 0 ? { preLabels: caps.preLabels } : {}),
     attenuator: txAuxField(hasAttCap, topFieldAvailable(state, `${base}att`), numOrUndef(rx?.att)),
     attValues: caps.attValues ?? [],
     rfGain: txAuxField(hasRfGainCap, topFieldAvailable(state, `${base}rfGain`), numOrUndef(rx?.rfGain)),

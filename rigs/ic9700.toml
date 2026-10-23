@@ -126,6 +126,10 @@ meter_coalescing_window_seconds = 0.2
 
 [state_acquisition.capabilities]
 polling_only = [
+    # 0x07 0xD2 (get_main_sub_band): IC-9700 CI-V Reference Guide p.4, "Send/read
+    # main band selection". Pinned by
+    # test_state_queries.py: test_main_sub_profiles_poll_active_receiver.
+    "global.slow_state.active",
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
     "receiver.main.operator_controls.af_level",
@@ -231,9 +235,8 @@ available_when = [
 # ── Parameterized Capabilities ───────────────────────────────────
 
 [attenuator]
-# CI-V 0x11: binary toggle only
-# 0x00=OFF, 0x20=20dB ON
-values = [0, 20]
+# CI-V 0x11: IC-9700 CI-V Reference Guide p.4 -- "00" OFF, "10" 10 dB.
+values = [0, 10]
 
 [preamp]
 # CI-V 0x16 0x02: 0=OFF, 1=P.AMP1, 2=P.AMP2
@@ -344,6 +347,9 @@ first_group = 1
 last_group = 3
 first_channel = 1
 last_channel = 99
+# CI-V Reference Guide rev 4, 1A 00 offset digit; Advanced manual, DD mode: 1.2 GHz only.
+dd_groups = [3]
+offset_10mhz_groups = [3]
 
 [ctcss]
 table = "standard_50"

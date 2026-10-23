@@ -1,6 +1,6 @@
 """Enums, dataclasses, and helper functions for the Icom LAN protocol."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 from typing import Literal
 
@@ -469,6 +469,8 @@ class MemoryProfile:
     first_channel: int
     last_channel: int
     recall: bool = False
+    dd_groups: tuple[int, ...] = field(default=(), kw_only=True)
+    offset_10mhz_groups: tuple[int, ...] = field(default=(), kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)

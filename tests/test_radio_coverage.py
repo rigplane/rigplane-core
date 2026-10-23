@@ -635,6 +635,31 @@ async def test_set_attenuator_level_ic7610_rejects_ic7300_step(
         await radio.set_attenuator_level(20)
 
 
+@pytest.fixture
+def ic9700_radio(mock_transport: MockTransport):
+    r = IcomRadio("192.168.1.102", timeout=0.05, model="IC-9700")
+    r._civ_transport = mock_transport
+    r._ctrl_transport = mock_transport
+    r._connected = True
+    yield r
+    r._connected = False
+
+
+async def test_set_attenuator_level_ic9700_sends_documented_10db(
+    ic9700_radio: IcomRadio, mock_transport: MockTransport
+) -> None:
+    """IC-9700 CI-V Reference Guide p.4: `11 10` is its only attenuator step."""
+    await ic9700_radio.set_attenuator_level(10)
+    assert any(b"\x11\x10\xfd" in packet for packet in mock_transport.sent_packets)
+
+
+async def test_set_attenuator_level_ic9700_rejects_20db(
+    ic9700_radio: IcomRadio,
+) -> None:
+    with pytest.raises(ValueError, match="10"):
+        await ic9700_radio.set_attenuator_level(20)
+
+
 async def test_set_attenuator_level_no_declared_values_raises_command_error(
     mock_transport: MockTransport,
 ) -> None:

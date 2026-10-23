@@ -3649,15 +3649,22 @@ class TestIc7300ManualOnlyCommands:
         assert profile.absent_command_names == self._ABSENT_NAMES
         assert frozenset(profile.absent_command_sources) == self._ABSENT_NAMES
         assert not (config.commands.keys() & self._REMOVED_NAMES)
-        # 322 declared command names (MOR-2257's count) plus the three
-        # MOR-3012 absent markers that live alongside them in [commands].
-        assert len(config.commands) == 322 + len(self._ABSENT_NAMES)
-        assert len(profile.command_names) == 322
+        # MOR-3115 adds the manual-derived unselected mode SET command.
+        assert len(config.commands) == 323 + len(self._ABSENT_NAMES)
+        assert len(profile.command_names) == 323
         names = "\n".join(sorted(profile.command_names)).encode()
         assert (
             sha256(names).hexdigest()
-            == "8ca3056d69fb2c06d68b0f8b7f45d5bfb14c0d953605cbbc6c0d9eb489856d42"
+            == "bacae81299ed2074f5b6cb0b5d3e437e27289ee965367b550c8076384120e03f"
         )
+
+    @pytest.mark.parametrize("model", ["ic7300", "ic7300mk2", "ic705"])
+    def test_unselected_mode_set_and_read_commands(self, model):
+        profile = load_rig(RIGS_DIR / f"{model}.toml").to_profile()
+        assert profile.command_map.get("set_unselected_mode") == (0x26, 0x01)
+        assert profile.command_map.get("get_unselected_mode") == (0x26, 0x01)
+        if model != "ic705":
+            assert not profile.set_mode_via_selected
 
     def test_removed_names_have_no_callable_fallback(self):
         from rigplane.runtime.radio import CoreRadio
