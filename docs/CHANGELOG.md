@@ -19,19 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   #4275, #4323).** `I`/`i` and `X`/`x` set and read the unselected VFO's
   frequency and mode on the IC-7300, IC-7300MK2 and IC-705 without
   selecting that VFO, using the profile's `set_/get_unselected_freq` and
-  `set_/get_unselected_mode` commands (`26 01` for the mode). `X` sets the requested mode and
-  fills DATA and the filter field by field: an ordinary mode keeps the VFO's
-  current DATA setting, a packet mode (`PKTUSB`, `PKTLSB`, `PKTRTTY`) turns
-  DATA on; an omitted or `0` passband keeps the VFO's current filter, a
-  positive passband selects filter 1 (2800 Hz and up), 2 (2000 Hz and up) or
-  3. A VFO selection, swap or equalize through
-  the runtime's own methods between the read and the write refuses `X` with
-  `RPRT -9`. Known limitation: whenever `X` keeps the current DATA or filter it
-  reads them first; a raw `w` frame or another `X` from a second client that
-  changes the same VFO between that read and the write can make `X` write
-  the wrong DATA/filter back, and DATA also selects the TX audio
-  source; a packet mode with a passband is not affected (tracked in
-  MOR-3743, see `docs/release-notes/2026-beta-known-limitations.md`).
+  `set_/get_unselected_mode` commands (`26 01` for the mode). `X` sets the requested mode and fills DATA and the filter field
+  by field: an ordinary mode keeps the VFO's current DATA setting, a packet
+  mode (`PKTUSB`, `PKTLSB`, `PKTRTTY`) turns DATA on; an omitted or `0`
+  passband keeps the VFO's current filter, a positive passband selects filter
+  1 (2800 Hz and up), 2 (2000 Hz and up) or 3. Whenever `X` keeps the current
+  DATA or filter it reads them first; a VFO selection, swap or equalize
+  through the runtime's own methods between that read and the write refuses
+  `X` with `RPRT -9`. Known limitation: a raw `w` frame or another `X` from a
+  second client that changes the same VFO between that read and the write can
+  make `X` write the wrong DATA/filter back, and DATA also selects the TX
+  audio source; a packet mode with a positive passband sets both fields
+  itself and is not affected (tracked in MOR-3743, see
+  `docs/release-notes/2026-beta-known-limitations.md`).
 - **Local audio bridge input and output gains (#4023, #4024).**
   `rigplane audio bridge` takes `--input-gain-db` and `--output-gain-db`,
   `rigplane web` takes `--bridge-input-gain-db` and
