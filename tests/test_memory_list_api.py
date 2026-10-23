@@ -16,7 +16,7 @@ from rigplane.backends.rigctld_client import RigctldClientRadio
 from rigplane.commands import CONTROLLER_ADDR
 from rigplane.commands._frame import build_civ_frame
 from rigplane.commands.commander import Priority
-from rigplane.core.exceptions import CommandError
+from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.core.radio_protocol import MemoryReadCapable
 from rigplane.radio import IcomRadio
 from rigplane.types import CivFrame
@@ -213,6 +213,47 @@ async def test_reads_settle_through_the_real_request_tracker(
         radio._connected = False
     assert [e.empty for e in entries] == [True, False]
     assert entries[1].name in ("TEST RPT", "UHF TEST")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "addr", "group", "first", "late", "valid", "name"),
+    [
+        ("IC-705", 0xA4, 0, 3, bytes.fromhex("00000003ff"), _IC705_GOLDEN, "TEST RPT"),
+        (
+            "IC-9700",
+            0xA2,
+            2,
+            1,
+            bytes.fromhex("020001ff"),
+            _ic9700_reply(
+                _block(freq="0439000000"), band=2, channel=2, name=b"UHF TEST"
+            ),
+            "UHF TEST",
+        ),
+    ],
+)
+async def test_late_memory_reply_does_not_settle_the_next_slot(
+    model: str, addr: int, group: int, first: int, late: bytes, valid: bytes, name: str
+) -> None:
+    transport = MockTransport()
+    radio = IcomRadio("radio.invalid", timeout=0.1, model=model)
+    radio._civ_transport = radio._ctrl_transport = transport
+    radio._connected = True
+    try:
+        with pytest.raises(TimeoutError, match="CI-V response timed out"):
+            await radio.read_memory_entries(group, [first])
+        assert len(transport.sent_packets) == 1
+        transport.queue_response_on_send(2, _reply(addr, late))
+        transport.queue_response_on_send(2, _reply(addr, valid))
+        entries = await radio.read_memory_entries(group, [first + 1])
+        assert len(transport.sent_packets) == 2
+        assert [(e.group, e.channel, e.empty, e.name) for e in entries] == [
+            (group, first + 1, False, name)
+        ]
+    finally:
+        radio._connected = False
+        await radio._civ_runtime.stop_pump()
 
 
 @pytest.mark.asyncio

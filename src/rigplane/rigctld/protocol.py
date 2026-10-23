@@ -32,7 +32,13 @@ from .contract import (  # noqa: TID251
     RigctldResponse,
 )
 
-__all__ = ["parse_line", "format_response", "format_error", "VFO_LABELS"]
+__all__ = [
+    "ArgumentCountError",
+    "parse_line",
+    "format_response",
+    "format_error",
+    "VFO_LABELS",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +49,10 @@ logger = logging.getLogger(__name__)
 # (``MEM`` / ``Main`` / ``Sub`` etc. exist in Hamlib but are not emitted
 # by the chk_vfo=1 path — we deliberately keep this set tight.)
 VFO_LABELS: frozenset[str] = frozenset({"VFOA", "VFOB", "currVFO"})
+
+
+class ArgumentCountError(ValueError):
+    """A known command has the wrong number of payload arguments."""
 
 
 def parse_line(
@@ -70,8 +80,9 @@ def parse_line(
         routing arrives in #1344.
 
     Raises:
-        ValueError: Unknown command, or wrong number of arguments
+        ArgumentCountError: Wrong number of arguments for a known command
             (counted *after* the VFO-token strip).
+        ValueError: Empty line or unknown command.
     """
     text = line.rstrip(b"\r").decode("ascii", errors="replace").strip()
 
@@ -113,11 +124,11 @@ def parse_line(
 
     n = len(args)
     if n < defn.min_args:
-        raise ValueError(
+        raise ArgumentCountError(
             f"Command {token!r} requires at least {defn.min_args} arg(s), got {n}"
         )
     if n > defn.max_args:
-        raise ValueError(
+        raise ArgumentCountError(
             f"Command {token!r} accepts at most {defn.max_args} arg(s), got {n}"
         )
 
