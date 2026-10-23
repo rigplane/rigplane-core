@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import ANY, AsyncMock, MagicMock, call
 
 import pytest
 
@@ -444,7 +444,13 @@ async def test_http_single_set_vfo_freq_reports_readback_body(model: str) -> Non
     writer = await asyncio.wait_for(request, timeout=10.0)
 
     assert radio.send_civ.await_args_list == [
-        call(0x25, None, data=bytes.fromhex("01 00 40 07 14 00"), wait_response=True),
+        call(
+            0x25,
+            None,
+            data=bytes.fromhex("01 00 40 07 14 00"),
+            wait_response=True,
+            is_current=ANY,
+        ),
         call(0x25, None, data=b"\x01", wait_response=True),
     ]
     radio.set_freq.assert_not_awaited()
