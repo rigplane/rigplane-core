@@ -1,26 +1,29 @@
 """Recall of a listed memory channel (MOR-3627): ``set_memory_mode`` with a group.
 
 IC-705: ``08 A0 gggg`` selects the memory group, ``08 cccc`` the channel; both
-are answered with an ACK. The operation selects memory; it writes no contents and sends no
-transmit-start command.
+are answered with an ACK. The operation selects memory; it writes no contents
+and sends no transmit-start command.
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
-from _helpers import wrap_civ_in_udp
-from rigplane.commands import _CMD_ACK, CONTROLLER_ADDR
+from _helpers import CIV_HEADER_SIZE, wrap_civ_in_udp
+from rigplane.commands import CONTROLLER_ADDR, _CMD_ACK
 from rigplane.commands._frame import build_civ_frame
 from rigplane.core.exceptions import CommandError
 from rigplane.profiles import get_radio_profile
-from rigplane.types import CivFrame
 from rigplane.radio import IcomRadio
-from rigplane.web.radio_poller import SetMemoryMode
+from rigplane.types import CivFrame
+from rigplane.web.radio_poller import RadioPoller, SetMemoryMode
+from rigplane.web.server import WebConfig, WebServer
 from test_memory_commands import TestHandlerMemoryDispatch
 from test_radio import MockTransport
+from test_web_split_writes import _request
 
 _NAK = 0xFA
 
@@ -115,6 +118,114 @@ async def test_two_recalls_never_interleave_their_group_and_channel_selects() ->
         "080004",
         "08a00002",
         "080007",
+    ]
+
+
+@pytest.fixture
+async def recall_web():
+    transport = MockTransport()
+    radio = _radio("IC-705", transport)
+    radio._civ_stream_ready = True
+    radio._last_civ_data_received = time.monotonic()
+    web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    poller = RadioPoller(radio, web.command_queue, state_store=web.command_state_store)
+    web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
+    entries = []
+
+    async def consume():
+        await web.command_queue.wait(2)
+        entry = web.command_queue.take_entry()
+        assert entry is not None
+        entries.append(entry)
+        await poller._execute_queued_entry(entry)
+
+    consumer = asyncio.create_task(consume())
+    try:
+        yield web, transport, entries, consumer
+    finally:
+        web._server.close()
+        await web._server.wait_closed()
+        web._server = None
+        tasks = (consumer, *tuple(web._client_tasks))
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        radio._connected = False
+        await radio._force_cleanup_civ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["http", "ws"])
+@pytest.mark.parametrize(
+    ("channel", "channel_frame"),
+    [(0, "fefea4e0080000fd"), (4, "fefea4e0080004fd")],
+)
+async def test_ic705_web_recall_executes_group_then_channel(
+    recall_web, protocol: str, channel: int, channel_frame: str
+) -> None:
+    web, transport, entries, consumer = recall_web
+    transport.queue_response_on_send(1, _answer(_CMD_ACK))
+    transport.queue_response_on_send(2, _answer(_CMD_ACK))
+
+    status, result = await _request(
+        web, protocol, "set_memory_mode", {"group": 12, "channel": channel}
+    )
+    await asyncio.wait_for(consumer, 2)
+
+    assert status == (200 if protocol == "http" else None)
+    assert result["ok"] is True
+    assert result["result"] == {"group": 12, "channel": channel}
+    assert [entry.command for entry in entries] == [SetMemoryMode(channel, 12)]
+    assert [packet[CIV_HEADER_SIZE:] for packet in transport.sent_packets] == [
+        bytes.fromhex("fefea4e008a00012fd"),
+        bytes.fromhex(channel_frame),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["http", "ws"])
+@pytest.mark.parametrize("group", [-1, 100])
+async def test_ic705_web_recall_rejects_group_without_channel_select(
+    recall_web, protocol: str, group: int
+) -> None:
+    web, transport, entries, _consumer = recall_web
+
+    status, result = await _request(
+        web, protocol, "set_memory_mode", {"group": group, "channel": 4}
+    )
+
+    assert status == (400 if protocol == "http" else None)
+    if protocol == "ws":
+        assert result["ok"] is False
+    assert result["error"] == (
+        "invalid_request" if protocol == "http" else "command_failed"
+    )
+    assert result["message"] == f"group must be 0-99, got {group}"
+    assert entries == []
+    assert web.command_queue.drain_entries() == []
+    assert transport.sent_packets == []
+
+
+@pytest.mark.asyncio
+async def test_ic705_http_recall_stops_after_group_nak(recall_web) -> None:
+    web, transport, entries, consumer = recall_web
+    transport.queue_response_on_send(1, _answer(_NAK))
+    transport.queue_response_on_send(2, _answer(_CMD_ACK))
+
+    status, result = await _request(
+        web, "http", "set_memory_mode", {"group": 12, "channel": 4}
+    )
+    with pytest.raises(CommandError, match="rejected memory recall 12/4"):
+        await asyncio.wait_for(consumer, 2)
+
+    assert status == 500
+    assert result["ok"] is False
+    assert result["error"] == "command_failed"
+    assert result["message"] == "Radio rejected memory recall 12/4"
+    assert [entry.command for entry in entries] == [SetMemoryMode(4, 12)]
+    assert [packet[CIV_HEADER_SIZE:] for packet in transport.sent_packets] == [
+        bytes.fromhex("fefea4e008a00012fd")
     ]
 
 
