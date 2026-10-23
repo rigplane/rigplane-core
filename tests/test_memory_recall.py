@@ -16,6 +16,11 @@ from _helpers import CIV_HEADER_SIZE, wrap_civ_in_udp
 from rigplane.commands import CONTROLLER_ADDR, _CMD_ACK
 from rigplane.commands._frame import build_civ_frame
 from rigplane.core.exceptions import CommandError
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from rigplane.profiles import get_radio_profile
 from rigplane.radio import IcomRadio
 from rigplane.types import CivFrame
@@ -129,6 +134,16 @@ async def recall_web():
     radio._last_civ_data_received = time.monotonic()
     web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     poller = RadioPoller(radio, web.command_queue, state_store=web.command_state_store)
+    # Match _web_peer -> _peer: publish observed receive state before consuming.
+    web.command_state_store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=asyncio.get_running_loop().time(),
+            max_age=60,
+        )
+    )
     web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
     entries = []
 
