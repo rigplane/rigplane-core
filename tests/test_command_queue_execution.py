@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.runtime import _poller_types as queue_types
 from rigplane.runtime._poller_types import (
     CommandQueue,
@@ -420,3 +421,102 @@ async def test_cancelled_ordered_reply_keeps_only_legacy_unkey(command, keep_pen
     )
     if keep_pending:
         assert entries[0].future is reply
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["set_split_freq", "set_split_mode"])
+async def test_kernel_split_request_cancel_stops_leaf_and_joins_cleanup(name):
+    reply = asyncio.get_running_loop().create_future()
+    started, cleanup, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    active_release, terminal = asyncio.Event(), asyncio.Event()
+    written = []
+
+    async def leaf(_entry):
+        try:
+            started.set()
+            await active_release.wait()
+            written.append("late write")
+        finally:
+            cleanup.set()
+            await release.wait()
+            terminal.set()
+
+    intent = CommandIntent(id="split", name=name, params={}, source="rigctld")
+    task = asyncio.create_task(
+        queue_types.execute_command_queue_entry(
+            CommandQueueEntry(intent, future=reply, source="rigctld"), leaf
+        )
+    )
+    try:
+        await wait_for_event_or_exit(started, task)
+        reply.cancel()
+        await wait_for_event_or_exit(cleanup, task)
+        assert not task.done(), "queue must retain the leaf until cleanup finishes"
+        assert not terminal.is_set()
+        release.set()
+        await task
+        assert terminal.is_set()
+        assert reply.cancelled()
+        assert written == []
+    finally:
+        active_release.set()
+        release.set()
+        reply.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["set_split_freq", "set_split_mode"])
+@pytest.mark.parametrize("outcome", ["cancel", "return", "error"])
+async def test_kernel_split_reply_then_owner_cancel_joins_cleanup_once(name, outcome):
+    reply = asyncio.get_running_loop().create_future()
+    started, cleanup, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    active_release = asyncio.Event()
+    terminal, interrupted = asyncio.Event(), asyncio.Event()
+
+    async def leaf(_entry):
+        try:
+            started.set()
+            await active_release.wait()
+        finally:
+            try:
+                cleanup.set()
+                await release.wait()
+                if outcome == "return":
+                    return "suppressed"
+                if outcome == "error":
+                    raise ValueError("late cleanup error")
+            except asyncio.CancelledError:
+                interrupted.set()
+                raise
+            finally:
+                terminal.set()
+
+    intent = CommandIntent(id="split", name=name, params={}, source="rigctld")
+    task = asyncio.create_task(
+        queue_types.execute_command_queue_entry(
+            CommandQueueEntry(intent, future=reply, source="rigctld"), leaf
+        )
+    )
+    try:
+        await wait_for_event_or_exit(started, task)
+        reply.cancel()
+        await wait_for_event_or_exit(cleanup, task)
+        task.cancel("owner stop")
+        for _ in range(2):
+            await asyncio.sleep(0)
+            task.cancel("repeat stop")
+        await asyncio.sleep(0)
+        assert not interrupted.is_set(), "child must receive cancellation only once"
+        assert not task.done(), "owner cancellation must still join leaf cleanup"
+        release.set()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await task
+        assert caught.value.args == ("owner stop",)
+        assert terminal.is_set()
+        assert reply.cancelled()
+    finally:
+        active_release.set()
+        release.set()
+        reply.cancel()
+        await asyncio.gather(task, return_exceptions=True)

@@ -4127,7 +4127,7 @@ class CivRuntime:
             # A GET carries only the selected/unselected selector. Adding
             # frequency or mode data is a SET whose completion is ACK/NAK.
             return len(frame.data) <= 1
-        if frame.command == 0x07 and frame.data == b"\xc2":
+        if frame.command == 0x07 and frame.data in (b"\xc2", b"\xd2"):
             return True
         if frame.command == 0x1A and frame.sub == 0x05 and len(frame.data) == 2:
             return True
