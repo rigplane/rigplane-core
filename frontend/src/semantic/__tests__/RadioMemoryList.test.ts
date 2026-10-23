@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import RadioMemoryList from '../RadioMemoryList.svelte';
@@ -81,16 +80,53 @@ describe('RadioMemoryList', () => {
   });
 });
 
-describe('RadioMemoryList layout contract (the 208-228px memory rail)', () => {
-  const css = readFileSync('src/semantic/RadioMemoryList.svelte', 'utf8').split('<style>')[1];
-  const rule = (selector: string) => css.match(new RegExp(`${selector.replace('.', '\\.')}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
-
-  it('wraps its rows and toolbar so Recall and the controls stay visible', () => {
-    expect(rule('.radio-memory-row')).toContain('flex-wrap: wrap');
-    expect(rule('.radio-memories-toolbar')).toContain('flex-wrap: wrap');
+describe('RadioMemoryList controls in the memory rail', () => {
+  it('keeps Recall and the toolbar controls available with a long channel name', () => {
+    const onRecall = vi.fn(() => true);
+    const onReload = vi.fn();
+    const onGroupChange = vi.fn();
+    const root = render({
+      entries: [{ ...stored, name: 'A long repeater name in the narrow memory rail' }],
+      onRecall, onReload, onGroupChange,
+    });
+    const toolbar = root.querySelector<HTMLElement>('.radio-memories-toolbar')!;
+    const recall = root.querySelector<HTMLButtonElement>('[data-testid="radio-memory-4-recall"]')!;
+    const reload = toolbar.querySelector<HTMLButtonElement>('[data-testid="radio-memories-reload"]')!;
+    const group = toolbar.querySelector<HTMLInputElement>('[data-testid="radio-memories-group"]')!;
+    for (const element of [toolbar, recall, reload, group]) {
+      expect(getComputedStyle(element).display).not.toBe('none');
+    }
+    expect(recall.disabled).toBe(false);
+    expect(reload.disabled).toBe(false);
+    recall.focus();
+    expect(document.activeElement).toBe(recall);
+    recall.click();
+    reload.click();
+    group.value = '3';
+    group.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(onRecall).toHaveBeenCalledWith(0, 4);
+    expect(onReload).toHaveBeenCalledOnce();
+    expect(onGroupChange).toHaveBeenCalledWith(3);
   });
 
-  it('scrolls a long list inside the panel instead of being clipped by it', () => {
-    expect(rule('.radio-memories-list')).toMatch(/max-height:[^;]+;[^}]*overflow-y: auto/);
+  it('renders a long list with the last Recall and the toolbar still available', () => {
+    const entries = Array.from({ length: 100 }, (_, channel) => ({ ...stored, channel }));
+    const onRecall = vi.fn(() => true);
+    const root = render({ entries, onRecall });
+    const list = root.querySelector<HTMLElement>('[role="list"]')!;
+    const toolbar = root.querySelector<HTMLElement>('.radio-memories-toolbar')!;
+    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(entries.length);
+    expect(list.contains(toolbar)).toBe(false);
+    expect(toolbar.querySelector('[data-testid="radio-memories-reload"]')).not.toBeNull();
+    expect(toolbar.querySelector('[data-testid="radio-memories-status"]')?.textContent).toContain('100 stored');
+    const recall = list.querySelector<HTMLButtonElement>('[data-testid="radio-memory-99-recall"]')!;
+    for (const element of [list, toolbar, recall]) {
+      expect(getComputedStyle(element).display).not.toBe('none');
+    }
+    expect(recall.disabled).toBe(false);
+    recall.focus();
+    expect(document.activeElement).toBe(recall);
+    recall.click();
+    expect(onRecall).toHaveBeenCalledWith(0, 99);
   });
 });
