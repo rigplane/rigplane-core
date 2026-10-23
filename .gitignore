@@ -94,6 +94,10 @@ scripts/*
 !scripts/gen_state_wire_goldens.py
 # And the IC-7610 capture probe driver is tracked (MOR-3307).
 !scripts/ic7610_capture/
+# And the IC-7300 capture bridge and scope session driver are tracked (MOR-3595).
+!scripts/ic7300_capture/
+# And the FTX-1 capture probe driver is tracked (MOR-3596).
+!scripts/ftx1_capture/
 # And the versioned docs site builder is tracked (MOR-2914).
 !scripts/build_versioned_docs.py
 # And the weekly mutation-testing summarizer is tracked.

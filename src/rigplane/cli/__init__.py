@@ -76,7 +76,6 @@ from rigplane.core.capabilities import (  # noqa: E402
     CAP_ANTENNA,
     CAP_ATTENUATOR,
     CAP_AUDIO,
-    CAP_CW,
     CAP_DUAL_WATCH,
     CAP_METERS,
     CAP_POWER_CONTROL,
@@ -587,6 +586,16 @@ def _apply_managed_runtime_defaults(args: argparse.Namespace) -> None:
         args.web_rigctld = True
 
 
+def _bridge_gain_db(raw: str) -> float:
+    try:
+        gain = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not a dB value") from None
+    if not isfinite(gain):
+        raise argparse.ArgumentTypeError(f"{raw!r} must be a finite dB value")
+    return gain
+
+
 def _ptt_hold_seconds(raw: str) -> float:
     """Parse ``--for``: a finite, positive number of seconds and nothing else.
 
@@ -1046,6 +1055,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="RX only (don't bridge TX from device to radio)",
     )
     audio_bridge_p.add_argument(
+        "--input-gain-db",
+        type=_bridge_gain_db,
+        default=0.0,
+        metavar="DB",
+        help="Gain for device-to-radio audio in dB (default: 0.0)",
+    )
+    audio_bridge_p.add_argument(
+        "--output-gain-db",
+        type=_bridge_gain_db,
+        default=0.0,
+        metavar="DB",
+        help="Gain for radio-to-device audio in dB (default: 0.0)",
+    )
+    audio_bridge_p.add_argument(
         "--list-devices",
         action="store_true",
         help="List available audio devices and exit",
@@ -1449,6 +1472,22 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="web_bridge_rx_only",
         action="store_true",
         help="Bridge RX only (no TX from virtual device to radio)",
+    )
+    web_p.add_argument(
+        "--bridge-input-gain-db",
+        dest="web_bridge_input_gain_db",
+        type=_bridge_gain_db,
+        default=0.0,
+        metavar="DB",
+        help="Bridge gain for device-to-radio audio in dB (default: 0.0)",
+    )
+    web_p.add_argument(
+        "--bridge-output-gain-db",
+        dest="web_bridge_output_gain_db",
+        type=_bridge_gain_db,
+        default=0.0,
+        metavar="DB",
+        help="Bridge gain for radio-to-device audio in dB (default: 0.0)",
     )
     web_p.add_argument(
         "--bridge-label",
@@ -2514,9 +2553,14 @@ async def _run(args: argparse.Namespace) -> int:
     if preset:
         _apply_preset(args, preset)
 
+    from rigplane.rig_loader import RigLoadError
+
     try:
         config = await _build_backend_config(args)
-    except ValueError as exc:
+    except (ValueError, RigLoadError) as exc:
+        # --model resolves through the rig profiles; one that does not load
+        # (MOR-3678: e.g. an incomplete [cw_text] enable) is a readable
+        # error naming the file and key, like the create_radio() path.
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     # web, serve and station run for the life of the process on one radio, so
@@ -2577,7 +2621,9 @@ async def _run(args: argparse.Namespace) -> int:
         return await _cmd_audio_probe(config, args)
     try:
         radio = create_radio(config)
-    except ValueError as exc:
+    except (ValueError, RigLoadError) as exc:
+        # A profile that does not load (MOR-3678: e.g. an incomplete
+        # [cw_text] enable) is a readable error naming the file and key.
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
@@ -2692,12 +2738,9 @@ async def _run(args: argparse.Namespace) -> int:
             elif args.command == "ptt":
                 return await _cmd_ptt(radio, args)
             elif args.command == "cw":
-                if CAP_CW not in radio.capabilities:
-                    print(
-                        "Error: this radio does not support CW control.",
-                        file=sys.stderr,
-                    )
-                    return 1
+                # MOR-3678: send_cw_text's own admission (the profile's
+                # cw_text) decides, the same check HTTP and WebSocket use;
+                # the cw tag is not a second gate.
                 return await _cmd_cw(radio, args)
             elif args.command == "att":
                 if CAP_ATTENUATOR not in radio.capabilities:
@@ -2973,6 +3016,7 @@ async def _cmd_audio_caps(
 
 async def _cmd_audio_probe(config: BackendConfig, args: argparse.Namespace) -> int:
     """Run a safe RX-only LAN audio capability probe."""
+    from rigplane.rig_loader import RigLoadError
 
     if not isinstance(config, LanBackendConfig):
         print("Error: audio probe requires a LAN backend.", file=sys.stderr)
@@ -2983,7 +3027,8 @@ async def _cmd_audio_probe(config: BackendConfig, args: argparse.Namespace) -> i
             model=config.model,
             radio_addr=config.radio_addr,
         )
-    except ValueError as exc:
+    except (ValueError, RigLoadError) as exc:
+        # MOR-3678: an unloadable rig profile is a readable error here too.
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     duration_s = float(getattr(args, "duration", 1.0))
@@ -3843,7 +3888,15 @@ async def _cmd_ptt(radio: Radio, args: argparse.Namespace) -> int:
 
 
 async def _cmd_cw(radio: Radio, args: argparse.Namespace) -> int:
-    await radio.send_cw_text(args.text)
+    # MOR-3678: same refusal text as HTTP/WebSocket for a backend with no
+    # send_cw_text (external rigctld); the profile admission decides otherwise.
+    from rigplane.profiles import cw_text_sender
+
+    send_cw_text = cw_text_sender(radio)
+    if send_cw_text is None:
+        print("Error: radio does not support this command", file=sys.stderr)
+        return 1
+    await send_cw_text(args.text)
     print(f"CW: {args.text}")
     return 0
 
@@ -4249,6 +4302,8 @@ async def _cmd_audio_bridge(radio: Radio, args: argparse.Namespace) -> int:
             radio,
             device_name=args.device,
             tx_device_name=getattr(args, "tx_device", None),
+            input_gain_db=getattr(args, "input_gain_db", 0.0),
+            output_gain_db=getattr(args, "output_gain_db", 0.0),
             tx_enabled=not args.rx_only,
             label=bridge_label,
             max_retries=getattr(args, "max_retries", 5),
@@ -4409,20 +4464,25 @@ def _print_serial_identity_no_response(radio: Radio) -> None:
 
     The connect already returned by the time web/station starts, so a radio
     that never answered the identity read is reported once, plainly, with
-    the port, the profile model and the baud; the background re-read is the
-    "Waiting for it to answer." part.
+    the port, the profile model, the bauds tried and the likely causes
+    (the radio's own ``last_error``, MOR-3620); the background re-read is
+    the "Waiting for it to answer." part.
     """
     if serial_identity_hold(radio) is not RadioIdentityStatus.NO_RESPONSE:
         return
-    device = getattr(radio, "_serial_device", None) or "the configured port"
-    model = getattr(radio, "model", None) or "this"
-    baud = getattr(radio, "_serial_baudrate", None)
-    baud_text = f", {baud} baud" if isinstance(baud, int) else ""
-    print(
-        f"No answer from the radio on {device} ({model} profile{baud_text}): "
-        "another radio may be on this port, or it is switched off. "
-        "Waiting for it to answer."
-    )
+    reason = getattr(radio, "last_error", None)
+    if not isinstance(reason, str) or not reason:
+        device = getattr(radio, "_serial_device", None) or "the configured port"
+        model = getattr(radio, "model", None) or "this"
+        reason = f"No answer from the radio on {device} ({model} profile)."
+    print(f"{reason} Waiting for it to answer.")
+
+
+def _print_serial_baud_notice(radio: Radio) -> None:
+    """One plain line when a serial radio answered at another baud (MOR-3620)."""
+    notice = getattr(radio, "serial_baud_notice", None)
+    if isinstance(notice, str) and notice:
+        print(notice)
 
 
 def _serial_identity_holds(radio: Radio) -> bool:
@@ -4567,6 +4627,7 @@ async def _cmd_web(
     config_kwargs["await_initial_state"] = True
     config = WebConfig(**config_kwargs)
     _print_serial_identity_no_response(radio)
+    _print_serial_baud_notice(radio)
     server = WebServer(radio, config)
     if managed_tx_composition is not None:
         from rigplane.web.web_startup import (
@@ -4610,6 +4671,8 @@ async def _cmd_web(
             device_name=None,
             tx_device_name=getattr(args, "web_bridge_tx_device", None),
             tx_enabled=not getattr(args, "web_bridge_rx_only", False),
+            input_gain_db=getattr(args, "web_bridge_input_gain_db", 0.0),
+            output_gain_db=getattr(args, "web_bridge_output_gain_db", 0.0),
             label=getattr(args, "web_bridge_label", None),
             max_retries=getattr(args, "web_bridge_max_retries", 5),
             retry_base_delay=getattr(args, "web_bridge_retry_delay", 1.0),
@@ -4628,6 +4691,8 @@ async def _cmd_web(
                 device_name=device_name,
                 tx_device_name=tx_device_name,
                 tx_enabled=not rx_only,
+                input_gain_db=getattr(args, "web_bridge_input_gain_db", 0.0),
+                output_gain_db=getattr(args, "web_bridge_output_gain_db", 0.0),
                 label=bridge_label,
                 max_retries=getattr(args, "web_bridge_max_retries", 5),
                 retry_base_delay=getattr(args, "web_bridge_retry_delay", 1.0),

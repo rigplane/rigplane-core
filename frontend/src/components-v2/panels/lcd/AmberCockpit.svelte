@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import {
     bindVfoTunerContext, deriveAmberCockpitProps,
     getAmberCockpitHandlers, getVfoHandlers,
@@ -17,6 +18,7 @@
   import AmberMemoryStrip from './AmberMemoryStrip.svelte';
   import type { IndToken } from './AmberIndStrip.svelte';
   import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
+  import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import { projectAgcReadback } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { isFieldAvailable } from '$lib/state/field-status';
   import { levelFormatsBelowMax } from '../../../semantic/format-level';
@@ -78,6 +80,20 @@
   let dsp = $derived(toDspProps(radioState, caps));
   let filterProps = $derived(toFilterProps(radioState, caps));
 
+  // MOR-2855. Safety invariant R9: the LCD's whole TX look takes its truth
+  // from the App-owned managed TX controller — the SAME source as the
+  // authoritative global lamp (MOR-1008/MOR-1059) and the meters dock
+  // (MOR-1235) — and never from `state.ptt`, a command/readback echo that
+  // reads RX while the key is still down and disappears while a release is
+  // still owed. Predicate is RadioLayout's own, verbatim; fail closed.
+  const txCtl = getManagedAppTxController();
+  let txState = $state.raw(txCtl.snapshot());
+  const stopWatchingTx = txCtl.subscribe((next) => { txState = next; });
+  onDestroy(() => stopWatchingTx());
+  let managedTxActive = $derived(
+    txState.radioTx === 'on' || txState.txRisk === 'confirmed-on' || txState.txRisk === 'uncertain',
+  );
+
   // MOR-1409 A14: `panel-props`' honesty-hardened projections default an
   // unobserved reading to `Number.NaN` instead of a plausible-looking
   // stand-in (`ritXit.ritOffset`, `meter.rfPower`/`swr`/`alc`/`comp`,
@@ -132,7 +148,7 @@
 
   // Auto-switch to PO during TX if user hasn't selected a TX meter
   let activeMeterSource = $derived<MeterSource>(
-    tx.txActive && userMeterSource === 'S' ? 'PO' : userMeterSource
+    managedTxActive && userMeterSource === 'S' ? 'PO' : userMeterSource
   );
 
   // The source actually safe to display — falls back to 'S' when the
@@ -170,9 +186,13 @@
   // ── Indicator token arrays ──
   // globalTokens: radio-wide status indicators for the top global strip
   let globalTokens = $derived<IndToken[]>([
-    ...(tx.txActiveAvailable ? [{
-      id: 'tx' as const, label: 'TX', active: tx.txActive,
-      variant: tx.txActive ? ('tx' as const) : undefined,
+    // MOR-2855: shown for a TX-capable radio (`hasTx`), never gated on the
+    // ptt reading's availability — the chip must stay visible exactly while
+    // the echo is stale or gone, when the managed snapshot is the only TX
+    // truth left.
+    ...(tx.hasTx ? [{
+      id: 'tx' as const, label: 'TX', active: managedTxActive,
+      variant: managedTxActive ? ('tx' as const) : undefined,
     }] : []),
     ...(hasCap('vox') && tx.voxAvailable
       ? [{ id: 'vox' as const, label: 'VOX', active: tx.voxActive }] : []),
@@ -396,12 +416,12 @@
   // must win over the receiver-active check so the cockpit never loses TX feedback
   // when SUB is the active RX (VFO B's meter is suppressed during TX by design).
   let mainMeterValue = $derived.by(() => {
-    if (tx.txActive) return meterValue;          // TX: radio-global telemetry
-    if (vfoAActive) return meterValue;           // RX + A active: use adapter-derived meter
-    return mainSMeter;                           // RX + B active: show A's own S-meter
+    if (managedTxActive) return meterValue;     // TX: radio-global telemetry
+    if (vfoAActive) return meterValue;          // RX + A active: use adapter-derived meter
+    return mainSMeter;                          // RX + B active: show A's own S-meter
   });
   let mainMeterSource = $derived<MeterSource>(
-    tx.txActive || vfoAActive ? effectiveMeterSource : 'S',
+    managedTxActive || vfoAActive ? effectiveMeterSource : 'S',
   );
 </script>
 
@@ -414,7 +434,7 @@
   - Font size identical for A and B — only ink alpha changes (no scaleY demotion).
   - Indicators (status tokens) placed in aux row, full-width in both modes.
 -->
-<div class="amber-lcd" class:tx-active={tx.txActive}>
+<div class="amber-lcd" class:tx-active={managedTxActive}>
   <div class="lcd-screen" class:dual={cockpitProps.hasDualReceiver}>
     <div class="lcd-scanlines"></div>
 
@@ -455,7 +475,7 @@
 
       <!-- Meter A (main receiver) -->
       <div class="lcd-meter-row">
-        <AmberSmeter value={mainMeterValue} txActive={tx.txActive} source={mainMeterSource} />
+        <AmberSmeter value={mainMeterValue} txActive={managedTxActive} source={mainMeterSource} />
         {#if vfoAActive}
           <button class="lcd-meter-src-btn" onclick={cycleMeterSource}>{mainMeterSource}</button>
         {/if}
@@ -500,7 +520,7 @@
 
         <!-- Meter B (sub receiver — full-size, same as A) -->
         <div class="lcd-meter-row">
-          {#if !tx.txActive}
+          {#if !managedTxActive}
             <AmberSmeter value={subSValue} source="S" />
           {/if}
         </div>

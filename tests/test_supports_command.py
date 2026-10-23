@@ -58,7 +58,8 @@ def ic7300_radio(ic7300_profile):
 
 
 _EXPECTED_COUNTS = {
-    "FTX-1": (14, 18),
+    # MOR-3678: send_cw_text is unsupported while [cw_text].supported = false.
+    "FTX-1": (13, 19),
     "IC-705": (25, 7),
     "IC-7300": (24, 8),
     # MK2 = the IC-7300's 24 plus the four shared ANT1/RX-ANT relations:

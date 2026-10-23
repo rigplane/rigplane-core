@@ -107,8 +107,16 @@ def test_measured_values_and_a_driver_error_are_formatted(
     code, lines = _summarize(tmp_path, monkeypatch, report)
     assert code == 0
     assert "- RSS growth PASS: +12.0 MiB/h (limit 50 MiB/h)" in lines
-    assert "- FDs PASS: max abs delta 4 (2 checked, tolerance 5)" in lines
-    assert "- Tasks FAIL: max abs delta 2 (1 checked, tolerance 5)" in lines
+    # The summary echoes the tolerance the report carries: the fixture's
+    # real in-process run reports the owned population's tolerances.
+    assert (
+        f"- FDs PASS: max abs delta 4 (2 checked, "
+        f"tolerance {criteria['fdsStability']['tolerance']})" in lines
+    )
+    assert (
+        f"- Tasks FAIL: max abs delta 2 (1 checked, "
+        f"tolerance {criteria['tasksStability']['tolerance']})" in lines
+    )
     assert any(
         line.startswith("- Unrecovered disconnects FAIL: 1 of 3 (") for line in lines
     )

@@ -80,7 +80,7 @@ Maximum batch size: 128 steps. Per-step timeout: 10 seconds.
 | Command | Params | Capability | Batch | Notes |
 |---------|--------|------------|-------|-------|
 | `set_freq` | `freq: int` (Hz), `receiver?: int=0` | — | Yes | |
-| `set_vfo_freq` | `freq: int` (Hz), `receiver: int`, `slot: A/B`, `expected_active_slot: A/B`, `provider_generation: int` | `vfo_freq_direct` | Yes | IC-7300 receiver 0 only; direct write without selection. Requires current identity and generation; completes after ACK and target readback. |
+| `set_vfo_freq` | `freq: int` (Hz), `receiver: int`, `slot: A/B`, `expected_active_slot: A/B`, `provider_generation: int` | `vfo_freq_direct` | Yes | Direct write without selection, gated by profile data and the runtime API (`runtime_helpers.py: projected_vfo_capability_tags`). Requires current identity and generation; completes after ACK and target readback. |
 | `set_band` | `band: int` (BSR code) | — | Yes | BSR code from `freqRanges[].bands[].bsrCode` in capabilities. See BSR workflow below. |
 | `set_mode` | `mode: str`, `receiver?: int=0` | — | Yes | Mode strings from profile `modes[]`, e.g. `"USB"`, `"FM"`, `"CW"`. |
 | `set_filter` | `filter?: str="FIL1"`, `receiver?: int=0` | — | Yes | Accepted: `"FIL1"`, `"FIL2"`, `"FIL3"`. |
@@ -295,7 +295,7 @@ directly and/or use `asyncio`). They are **not** batch-eligible. Use
 | `get_system_time` | — | `system_settings` | No | Returns `{hour, minute}`. |
 | `get_dual_watch` | — | `dual_watch` | No | Returns `{on: bool}`. |
 | `get_tuner_status` | — | `tuner` | No | Returns `{status: int, label: str}`. `label`: `"OFF"`, `"ON"`, or `"TUNING"`. |
-| `send_cw_text` | `text: str` (≤512 chars) | `cw` | No | Sends CW keyed text. TX command — rejected in read-only mode. |
+| `send_cw_text` | `text: str` (≤ `cwText.maxLength`) | `cw` | No | Sends CW keyed text when `cwText.supported`; longer text is refused (`invalid_request`), never truncated; a radio with `cwText.supported: false` answers `unsupported_command`. TX command — rejected in read-only mode. |
 | `stop_cw_text` | — | `cw` | No | Stops CW text transmission. TX command — rejected in read-only mode. |
 | `get_break_in_delay` | — | `break_in` | No | Returns `{level: int}`. |
 | `get_dash_ratio` | — | `cw` | No | Returns `{value: int}`. |

@@ -22,11 +22,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import gc
 import json
 import logging
 import os
 import random
 import secrets
+import socket
+import stat
 import sys
 import tempfile
 import time
@@ -36,7 +39,7 @@ from contextvars import Context, ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, AsyncIterator, Callable
 
 import aiohttp
 
@@ -67,8 +70,38 @@ RSS_MIN_FIT_SPAN_S = 600.0
 # The verdict of a run with no error and no FAIL in which not every criterion
 # PASSed.
 VERDICT_INCOMPLETE = "INCOMPLETE"
+# Process-wide counts — a remote server's pid observed through the
+# runtime document — carry churn this run did not create, so their
+# comparison keeps a tolerance (MOR-3575).
 STABILITY_TOLERANCE = 5
+# In-process owned sockets: the forced reconnect replaces the radio's
+# connection sockets one-for-one and the listeners persist, so a
+# surviving extra owned socket is a leak — the comparison is exact
+# (measured: 0 nonzero deltas in 90 end-to-end reconnects, MOR-3575).
+IN_PROCESS_FD_STABILITY_TOLERANCE = 0
+# In-process owned tasks: the forced reconnect tears down and recreates
+# every transport loop set (ping/retransmit/idle/rx loops across three
+# transports, the commander, the token renewer, on-demand web and
+# stdlib helper tasks), so the probe-time count legitimately differs by
+# the rebuild's last spawn/drain step in either direction. Measured:
+# |delta| <= 2 in 90 end-to-end reconnects (0:41, +-1:44, +-2:5); two
+# is the smallest tolerance that evidence justifies. Removing the churn
+# by identity would have to exclude the stack's own task classes — the
+# leak surface this criterion watches — or need creation-time ancestry.
+IN_PROCESS_TASK_STABILITY_TOLERANCE = 2
 _STABILITY_PROBE_COUNT = 3
+_TRANSIENT_DRAIN_TIMEOUT_S = 40.0
+# A post-reconnect median above pre + tolerance may be teardown still
+# draining (MOR-3575): settle first — gc once, then resample in small
+# steps until _STABILITY_SETTLE_STABLE_READINGS consecutive resamples
+# show no decrease and no surplus over pre — and take the median again.
+# A plateau still above tolerance keeps sampling until the window (or
+# its resample budget) expires; the caller always re-probes, so a
+# persistent surplus still fails. The window bounds the settle wait (its
+# samples and step sleeps), not the median re-probe after it.
+_STABILITY_SETTLE_WINDOW_S = 5.0
+_STABILITY_SETTLE_STEP_S = 0.25
+_STABILITY_SETTLE_STABLE_READINGS = 3
 _DRIVER_TASK_PREFIX = "soak-"
 
 TUNE_INTERVAL_S = 2.0
@@ -243,6 +276,19 @@ class _ProbeDiagnostics:
         self.probes.append(probe)
         return probe
 
+    def drop_phase(self, phase: str) -> None:
+        """Discard the retained probes of one phase, freeing its budget.
+
+        When the first post median shows a surplus the cycle settles and
+        takes the median again (MOR-3575): the transient trio is dropped
+        so the settled re-probe fits the six-probe bound. The median goes
+        with it; the re-probe sets the settled one.
+        """
+        if phase not in {"pre", "post"}:
+            raise ValueError("invalid diagnostic phase")
+        self.probes = [p for p in self.probes if p.phase != phase]
+        self.medians[phase] = None
+
     def to_dict(self) -> dict[str, Any]:
         phases = {}
         for phase in ("pre", "post"):
@@ -346,6 +392,21 @@ class _TaskProvenance:
         probe = {"sequence": len(probes) + 1, "phase": phase, "snapshot": None}
         probes.append(probe)
         return probe
+
+    def drop_phase(self, phase: str) -> None:
+        """Discard the retained probes of one phase, freeing its budget.
+
+        When the first post median shows a surplus the cycle settles and
+        takes the median again (MOR-3575): the transient trio is dropped
+        so the settled re-probe fits the six-probe bound. Task labels and
+        completion events are per-cycle tracking, not per-probe, so they
+        stay.
+        """
+        if self.active is None or phase not in {"pre", "post"}:
+            raise ValueError("invalid task provenance phase")
+        self.active["probes"] = [
+            p for p in self.active["probes"] if p["phase"] != phase
+        ]
 
     def unknown(
         self,
@@ -513,16 +574,73 @@ class _TaskProvenance:
 
 
 class _RuntimeTaskAdapter:
-    def __init__(self, stack: Any, collector: _TaskProvenance) -> None:
+    """In-process overlay for run-owned socket and task counts.
+
+    Socket FDs match harness-created ports; tasks appeared after the
+    baseline and lack the driver's ``soak-`` prefix. The runtime payload
+    omits its producing handler and connection. The sampler's fallback
+    supplies client-captured endpoint ports to omit that connection and
+    at most one handler whose writer matches the port pair. With a
+    provenance collector it also correlates a request for task capture.
+    """
+
+    def __init__(
+        self,
+        stack: Any,
+        collector: _TaskProvenance | None,
+        task_baseline: frozenset[asyncio.Task[Any]] | None = None,
+    ) -> None:
         self._stack = stack
         self._collector = collector
+        self._ports = _run_owned_ports(stack)
+        # Identities alive before the run started (``run_soak`` snapshots
+        # before starting the stack, so the stack's tasks are run-owned).
+        self._task_baseline = (
+            frozenset(asyncio.all_tasks()) if task_baseline is None else task_baseline
+        )
         self._loop = asyncio.get_running_loop()
         self._pid = os.getpid()
         self._pending: dict[str, dict[str, Any]] = {}
         self._producer: ContextVar[dict[str, Any] | None] = ContextVar(
             "soak_task_producer", default=None
         )
+        self._probe_conn: ContextVar[frozenset[int] | None] = ContextVar(
+            "soak_probe_conn", default=None
+        )
         self._installed = False
+
+    def owned_task_population(
+        self, skip_ports: frozenset[int] | None = None
+    ) -> set[asyncio.Task[Any]]:
+        """Pending tasks the run owns, attributed by creation not origin.
+
+        Run-owned: appeared after the baseline (the stack's startup
+        tasks, per-request handlers, and standard-library helpers the
+        run's tasks spawned, whatever module defines the coroutine) and
+        not one of the driver's ``soak-`` prefixed traffic tasks.
+        With ``skip_ports``, omit at most one task whose root coroutine's
+        writer matches the port pair.
+        """
+        population = {
+            task
+            for task in asyncio.all_tasks()
+            if task not in self._task_baseline and _task_counted(task)
+        }
+        if skip_ports:
+            for task in population:
+                frame = getattr(task.get_coro(), "cr_frame", None)
+                writer = None if frame is None else frame.f_locals.get("writer")
+                if _probe_connection_ports(writer) == skip_ports:
+                    return population - {task}
+        return population
+
+    def owned_fd_count(self, skip_ports: frozenset[int] | None = None) -> int | None:
+        """The owned-socket FD count; None when it cannot be measured."""
+        return (
+            _owned_socket_fd_count(self._ports, skip_ports=skip_ports)
+            if self._ports
+            else None
+        )
 
     def install(self) -> None:
         web = self._stack.web
@@ -537,13 +655,32 @@ class _RuntimeTaskAdapter:
             probe = self._pending.pop((headers or {}).get(_TASK_HEADER, ""), None)
             state = {"probe": probe, "calls": 0} if probe is not None else None
             context = self._producer.set(state)
+            conn = self._probe_conn.set(_probe_connection_ports(writer))
             try:
                 await original_handler(writer, headers)
             finally:
+                self._probe_conn.reset(conn)
                 self._producer.reset(context)
 
         def payload() -> dict[str, Any]:
             result = original_payload()
+            # Omit this handler and its connection; the fallback passes
+            # client-captured ports to the owned counters (MOR-3575).
+            handler_task = asyncio.current_task()
+            owned_tasks = {
+                task
+                for task in self.owned_task_population()
+                if task is not handler_task
+            }
+            if _proc_int(result, "asyncioTasks") is not None:
+                result["asyncioTasks"] = len(owned_tasks)
+            fds = (
+                _owned_socket_fd_count(self._ports, skip_ports=self._probe_conn.get())
+                if self._ports
+                else None
+            )
+            if fds is not None and _proc_int(result, "openFds") is not None:
+                result["openFds"] = fds
             state = self._producer.get()
             if state is not None:
                 probe = state["probe"]
@@ -558,7 +695,6 @@ class _RuntimeTaskAdapter:
                     and os.getpid() == self._pid
                     and asyncio.get_running_loop() is self._loop
                 ):
-                    population = asyncio.all_tasks()
                     try:
                         bindings = []
                         for name, role in (
@@ -574,7 +710,11 @@ class _RuntimeTaskAdapter:
                             if isinstance(task, asyncio.Task)
                         )
                         self._collector.capture(
-                            probe, "runtime", count, tasks=population, bindings=bindings
+                            probe,
+                            "runtime",
+                            count,
+                            tasks=owned_tasks,
+                            bindings=bindings,
                         )
                     except Exception:
                         self._collector.unknown(probe, "runtime", count)
@@ -641,6 +781,15 @@ async def _ps_output(args: list[str]) -> str | None:
             proc.kill()
         await proc.wait()
         return None
+    except asyncio.CancelledError:
+        # A caller-side bound (the settle window's timeout giving up
+        # on this sample) cancels us mid-communicate: the ps child
+        # must not outlive the call, so kill and reap it before
+        # letting the cancellation propagate.
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        await proc.wait()
+        raise
     return out.decode("utf-8", "replace")
 
 
@@ -664,6 +813,102 @@ def _fd_count(pid: int) -> int | None:
             except OSError:
                 return None
         return None
+
+
+def _socket_port(name: Any) -> int | None:
+    """The port of a socket address, or None for non-internet names."""
+    if isinstance(name, tuple) and len(name) >= 2 and type(name[1]) is int:
+        return name[1]
+    return None
+
+
+def _run_owned_ports(stack: Any) -> frozenset[int]:
+    """Bound ports of the listeners the in-process harness itself created."""
+    sim = getattr(stack, "sim", None)
+    candidates = [
+        getattr(stack, "web_port", None),
+        getattr(stack, "rigctld_port", None),
+        *(
+            getattr(sim, name, None)
+            for name in ("control_port", "civ_port", "audio_port")
+        ),
+    ]
+    return frozenset(
+        port for port in candidates if type(port) is int and 0 < port < 65536
+    )
+
+
+def _probe_connection_ports(transport: Any) -> frozenset[int] | None:
+    """The two endpoint ports of the probe request's own connection.
+
+    Accepts the client transport or the server's writer. Port numbers
+    alone do not identify a connection across addresses and protocols,
+    so the pair is a best-effort match, not an exact connection identity.
+    ``None`` when unreadable.
+    """
+    try:
+        local = _socket_port(transport.get_extra_info("sockname"))
+        peer = _socket_port(transport.get_extra_info("peername"))
+    except (AttributeError, OSError):
+        return None
+    if local is None or peer is None:
+        return None
+    return frozenset((local, peer))
+
+
+def _owned_socket_fd_count(
+    ports: frozenset[int], skip_ports: frozenset[int] | None = None
+) -> int | None:
+    """Socket FDs whose local or peer port is one of ``ports``.
+
+    Sockets on the harness-created ports are the run's stability signal;
+    the count makes no claim about the rest of the process. ``None``
+    when no FD directory can be listed, so the caller keeps the
+    reported value. ``skip_ports`` names the endpoint ports of one
+    connection — the live probe's own request — and removes every
+    socket matched by those ports (a port-based best-effort match, not
+    a unique connection identity). Both the runtime overlay and the
+    fallback sampler pass the probe's endpoint ports (MOR-3575).
+    """
+    for fd_dir in ("/proc/self/fd", "/dev/fd"):
+        try:
+            names = os.listdir(fd_dir)
+        except OSError:
+            continue
+        count = 0
+        for name in names:
+            try:
+                fd = int(name)
+            except ValueError:
+                continue
+            try:
+                dup = os.dup(fd)
+            except OSError:
+                # The listing can name its own, already closed, directory
+                # descriptor; transient reuse is skipped alike.
+                continue
+            try:
+                if not stat.S_ISSOCK(os.fstat(dup).st_mode):
+                    os.close(dup)
+                    continue
+                # From here the probe socket owns the dup and closes it.
+                probe = socket.socket(fileno=dup)
+            except OSError:
+                with contextlib.suppress(OSError):
+                    os.close(dup)
+                continue
+            local = peer = None
+            with probe:
+                with contextlib.suppress(OSError):
+                    local = _socket_port(probe.getsockname())
+                with contextlib.suppress(OSError):
+                    peer = _socket_port(probe.getpeername())
+            if local in ports or peer in ports:
+                if skip_ports and {local, peer} == skip_ports:
+                    continue
+                count += 1
+        return count
+    return None
 
 
 async def _driver_side_process_metrics(pid: int) -> tuple[int | None, int | None]:
@@ -714,6 +959,19 @@ def _state_connection_status(body: dict[str, Any]) -> str | None:
     return None
 
 
+_PROBE_CLIENT_PORTS: ContextVar[list[frozenset[int] | None] | None] = ContextVar(
+    "soak_probe_client_ports", default=None
+)
+
+
+class _ProbeClientRequest(aiohttp.ClientRequest):
+    async def send(self, conn: Any) -> aiohttp.ClientResponse:
+        capture = _PROBE_CLIENT_PORTS.get()
+        if capture is not None:
+            capture[0] = _probe_connection_ports(conn.transport)
+        return await super().send(conn)
+
+
 class ProcessMetricsSampler:
     """Samples the server process metrics for the soak report.
 
@@ -723,10 +981,13 @@ class ProcessMetricsSampler:
     neither ``/proc/self/statm`` nor macOS ``proc_pidinfo`` is available)
     wins when present, and any field the runtime did not report is
     measured driver-side for this process (the stack runs in-process):
-    RSS via ``/proc`` or ``ps``, FDs via ``/proc`` or ``/dev/fd``, tasks
-    via ``_server_asyncio_task_count``. The connection column comes from
-    the state document (``_state_connection_status``), not the runtime
-    payload.
+    RSS via ``/proc`` or ``ps``; FDs and tasks — with the overlay
+    installed — via ``owned_fd_count`` / ``owned_task_population``,
+    excluding the probe connection and at most one matching handler
+    using the client-captured endpoint ports; without it via ``/proc``
+    or ``/dev/fd`` and ``_server_asyncio_task_count``. The connection
+    column comes from the state document (``_state_connection_status``),
+    not the runtime payload.
     """
 
     def __init__(self, session: aiohttp.ClientSession, base_url: str) -> None:
@@ -776,11 +1037,18 @@ class ProcessMetricsSampler:
         task_probe: dict[str, Any] | None = None,
     ) -> ProcessSample:
         collector = self._task_provenance if task_probe is not None else None
-        if collector is not None and self._runtime_task_adapter is not None:
-            with self._runtime_task_adapter.request(task_probe):
+        adapter = self._runtime_task_adapter
+        probe_ports: list[frozenset[int] | None] = [None]
+        context = _PROBE_CLIENT_PORTS.set(probe_ports)
+        try:
+            if collector is not None and adapter is not None:
+                with adapter.request(task_probe):
+                    runtime = await self.fetch_runtime()
+            else:
                 runtime = await self.fetch_runtime()
-        else:
-            runtime = await self.fetch_runtime()
+        finally:
+            _PROBE_CLIENT_PORTS.reset(context)
+        skip_ports = probe_ports[0]
         rss: int | None = None
         fds: int | None = None
         tasks: int | None = None
@@ -812,7 +1080,13 @@ class ProcessMetricsSampler:
                         _runtime_missing_reason(runtime, "rssBytes"),
                     )
             if fds is None:
-                fds = d_fds
+                fds = (
+                    adapter.owned_fd_count(skip_ports=skip_ports)
+                    if adapter is not None
+                    else None
+                )
+                if fds is None:
+                    fds = d_fds
                 if capture is not None:
                     capture.select(
                         "fds",
@@ -820,11 +1094,15 @@ class ProcessMetricsSampler:
                         _runtime_missing_reason(runtime, "openFds"),
                     )
         if tasks is None:
-            tasks = (
-                collector.fallback(task_probe)
-                if collector is not None
-                else _server_asyncio_task_count()
-            )
+            if adapter is not None:
+                population = adapter.owned_task_population(skip_ports=skip_ports)
+                tasks = len(population)
+                if collector is not None:
+                    collector.capture(task_probe, "driver", tasks, tasks=population)
+            elif collector is not None:
+                tasks = collector.fallback(task_probe)
+            else:
+                tasks = _server_asyncio_task_count()
             if capture is not None:
                 capture.select(
                     "asyncioTasks",
@@ -990,6 +1268,29 @@ def _linear_slope_per_hour(points: list[tuple[float, float]]) -> float | None:
     return sxy / sxx * 3600.0
 
 
+def _entry_tolerance(entry: dict[str, Any], field: str) -> int:
+    """The comparison tolerance one reconnect entry's field was measured under.
+
+    ``ownedPopulation`` marks the in-process run's counts (the adapter's
+    owned population): exact for sockets, within the measured rebuild
+    bound for tasks. Anything else — the remote-pid path — keeps the
+    process-wide tolerance.
+    """
+    if entry.get("ownedPopulation"):
+        if field == "fds":
+            return IN_PROCESS_FD_STABILITY_TOLERANCE
+        return IN_PROCESS_TASK_STABILITY_TOLERANCE
+    return STABILITY_TOLERANCE
+
+
+def _run_tolerance(reconnects: list[dict[str, Any]], field: str) -> int:
+    """The tolerance a whole report's counts were measured under."""
+    for entry in reconnects:
+        if entry.get("ownedPopulation"):
+            return _entry_tolerance(entry, field)
+    return STABILITY_TOLERANCE
+
+
 def _stability_checks(
     reconnects: list[dict[str, Any]], field: str
 ) -> list[dict[str, Any]]:
@@ -1009,18 +1310,59 @@ def _stability_checks(
                 "pre": pre,
                 "post": post,
                 "delta": delta,
-                "ok": abs(delta) <= STABILITY_TOLERANCE,
+                "ok": abs(delta) <= _entry_tolerance(entry, field),
             }
         )
     return checks
 
 
-def _stability_criterion(checks: list[dict[str, Any]]) -> dict[str, Any]:
+def _stability_criterion(
+    checks: list[dict[str, Any]], tolerance: int = STABILITY_TOLERANCE
+) -> dict[str, Any]:
     if checks:
         status = "PASS" if all(check["ok"] for check in checks) else "FAIL"
     else:
         status = "NOT_EVALUATED"
-    return {"status": status, "tolerance": STABILITY_TOLERANCE, "checks": checks}
+    return {"status": status, "tolerance": tolerance, "checks": checks}
+
+
+def _stability_counts_decreased(before: ProcessSample, after: ProcessSample) -> bool:
+    """Either stability count strictly lower; a missing field never counts."""
+    for field in ("fds", "asyncio_tasks"):
+        old = getattr(before, field)
+        new = getattr(after, field)
+        if old is not None and new is not None and new < old:
+            return True
+    return False
+
+
+def _stability_surplus(
+    pre: ProcessSample, post: ProcessSample, owned_counts: bool
+) -> bool:
+    """Either post count above pre + its tolerance; missing fields never count.
+
+    ``owned_counts`` selects the in-process tolerances (exact for owned
+    sockets, the rebuild bound for owned tasks); the process-wide
+    tolerance otherwise.
+    """
+    fds_tolerance, tasks_tolerance = (
+        (IN_PROCESS_FD_STABILITY_TOLERANCE, IN_PROCESS_TASK_STABILITY_TOLERANCE)
+        if owned_counts
+        else (STABILITY_TOLERANCE, STABILITY_TOLERANCE)
+    )
+    if (
+        pre.fds is not None
+        and post.fds is not None
+        and post.fds - pre.fds > fds_tolerance
+    ):
+        return True
+    if (
+        pre.asyncio_tasks is not None
+        and post.asyncio_tasks is not None
+        and post.asyncio_tasks - pre.asyncio_tasks > tasks_tolerance
+    ):
+        return True
+    return False
 
 
 def evaluate_report(
@@ -1081,8 +1423,12 @@ def evaluate_report(
         recovery["status"] = "NOT_EVALUATED"
     return {
         "rssGrowth": rss,
-        "fdsStability": _stability_criterion(fds_checks),
-        "tasksStability": _stability_criterion(tasks_checks),
+        "fdsStability": _stability_criterion(
+            fds_checks, _run_tolerance(reconnects, "fds")
+        ),
+        "tasksStability": _stability_criterion(
+            tasks_checks, _run_tolerance(reconnects, "tasks")
+        ),
         "recovery": recovery,
     }
 
@@ -1297,6 +1643,9 @@ class SoakDriver:
         # the stability probes of the latter must not see the former's
         # sockets and handler tasks.
         self._exclusive = asyncio.Lock()
+        self._transient_condition = asyncio.Condition()
+        self._transient_paused = False
+        self._transient_active = 0
         self._tx_keyed = False
         self._tx_seed = secrets.randbits(32)
         self._tx_rng = random.Random(self._tx_seed)
@@ -1717,10 +2066,26 @@ class SoakDriver:
                 return True
         return await self._fetch_connection_state() == "connected"
 
+    @contextlib.asynccontextmanager
+    async def _quiesce_transient_actions(self) -> AsyncIterator[None]:
+        async with self._transient_condition:
+            self._transient_paused = True
+            try:
+                async with asyncio.timeout(_TRANSIENT_DRAIN_TIMEOUT_S):
+                    await self._transient_condition.wait_for(
+                        lambda: self._transient_active == 0
+                    )
+                yield
+            finally:
+                self._transient_paused = False
+                self._transient_condition.notify_all()
+
     async def _stability_probe(self, phase: str = "pre") -> ProcessSample:
-        """Median of 3 quick samples: in-flight requests and rigctld
-        replays make single task/FD counts oscillate by a few; the median
-        keeps the pre/post comparison about leaks, not about a spike."""
+        async with self._quiesce_transient_actions():
+            return await self._stability_probe_samples(phase)
+
+    async def _stability_probe_samples(self, phase: str) -> ProcessSample:
+        """Median of three samples with periodic actions paused and drained."""
         assert self._sampler is not None
         diagnostics = self._probe_diagnostics if self._capture_cycle else None
         provenance = self._task_provenance
@@ -1773,6 +2138,76 @@ class SoakDriver:
             diagnostics.medians[phase] = _diagnostic_sample_values(result)
         return result
 
+    async def _settle_sample(self, deadline: float) -> ProcessSample | None:
+        """One settle sample, bounded by the remaining window (None past it).
+
+        The bound is an in-task timeout, not ``wait_for``: on Python
+        3.11 (the CI quick suite's interpreter) ``wait_for`` runs the
+        awaited coroutine as a task of its own, which both task-count
+        routes count — the owned population includes it (post-baseline,
+        not ``soak-`` prefixed) — so the settle would measure one task
+        above the probe-time population and read a delta sitting exactly
+        at tolerance as a surplus.
+        ``asyncio.timeout`` cancels without creating a task on every
+        supported version: the sampler runs on the settle's own
+        ``soak-`` task, the same task the probes run on, so the
+        compared populations are identical.
+        """
+        assert self._sampler is not None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        with contextlib.suppress(asyncio.TimeoutError):
+            async with asyncio.timeout(remaining):
+                return await self._sampler.sample(self._elapsed())
+        return None
+
+    async def _settle_stability_counts(self, pre: ProcessSample) -> None:
+        async with self._quiesce_transient_actions():
+            await self._settle_quiesced_counts(pre)
+
+    async def _settle_quiesced_counts(self, pre: ProcessSample) -> None:
+        """Resample while the counts still decrease, within a window.
+
+        A flat pair may be a plateau before further decay: the counts
+        read as settled only after _STABILITY_SETTLE_STABLE_READINGS
+        consecutive resamples without a decrease AND within tolerance
+        of pre. A plateau still above tolerance keeps sampling until
+        the window expires; the resample budget (one per step) bounds
+        the loop when sleeps do not advance the clock. The deadline
+        bounds the first sample, every resample and the step sleeps; a
+        timeout ends the settle and the caller re-probes regardless, so
+        a persistent surplus still fails.
+        """
+        assert self._sampler is not None
+        gc.collect()
+        deadline = time.monotonic() + _STABILITY_SETTLE_WINDOW_S
+        budget = max(
+            _STABILITY_SETTLE_STABLE_READINGS,
+            int(_STABILITY_SETTLE_WINDOW_S // _STABILITY_SETTLE_STEP_S),
+        )
+        previous = await self._settle_sample(deadline)
+        if previous is None:
+            return
+        calm = 0
+        for _ in range(budget):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(_STABILITY_SETTLE_STEP_S, remaining))
+            current = await self._settle_sample(deadline)
+            if current is None:
+                return
+            if _stability_counts_decreased(previous, current):
+                calm = 0
+            else:
+                calm += 1
+            previous = current
+            if calm >= _STABILITY_SETTLE_STABLE_READINGS and not _stability_surplus(
+                pre, current, self._runtime_task_adapter is not None
+            ):
+                return
+
     def _record_unrecovered_cycle(self, reason: str) -> None:
         self._reconnects.append(
             {
@@ -1806,7 +2241,6 @@ class SoakDriver:
         if self._task_provenance is not None:
             self._task_provenance.begin_cycle(self._counts["forcedReconnects"])
             self._sampler._task_provenance = self._task_provenance
-            self._sampler._runtime_task_adapter = self._runtime_task_adapter
         outcome = "recovered"
         try:
             await self._reconnect_cycle_inner()
@@ -1837,7 +2271,6 @@ class SoakDriver:
                     outcome = "unrecovered"
                 self._task_provenance.finish_cycle(entry, outcome)
                 self._sampler._task_provenance = None
-                self._sampler._runtime_task_adapter = None
             self._capture_cycle = False
             self._cycle_active = False
 
@@ -1889,6 +2322,11 @@ class SoakDriver:
             "budgetS": self._cfg.reconnect_budget_s,
             "windowStartS": round(window_start_s, 3),
             "windowEndS": None,
+            # Marks the pre/post counts as the in-process owned
+            # population, so the criterion compares them exactly (fds)
+            # / within the rebuild bound (tasks), not with the
+            # process-wide tolerance.
+            "ownedPopulation": self._runtime_task_adapter is not None,
             "fdsPre": pre.fds,
             "tasksPre": pre.asyncio_tasks,
             "fdsPost": None,
@@ -1902,11 +2340,20 @@ class SoakDriver:
             await asyncio.sleep(3.0)
             if diagnostics is not None:
                 diagnostics.boundary("settleEnd")
-            post = (
-                await self._stability_probe("post")
-                if diagnostics is not None or self._task_provenance is not None
-                else await self._stability_probe()
-            )
+            post = await self._stability_probe("post")
+            if _stability_surplus(pre, post, self._runtime_task_adapter is not None):
+                # A surplus right after recovery may be teardown still
+                # draining (MOR-3575): settle, then take the median again.
+                # The settle's own samples are uncaptured; the transient
+                # trio is dropped so the settled re-probe fits the
+                # six-probe bound. Observation never changes the verdict:
+                # a surplus surviving the settle still fails.
+                await self._settle_stability_counts(pre)
+                if diagnostics is not None:
+                    diagnostics.drop_phase("post")
+                if self._task_provenance is not None:
+                    self._task_provenance.drop_phase("post")
+                post = await self._stability_probe("post")
             entry["fdsPost"] = post.fds
             entry["tasksPost"] = post.asyncio_tasks
         entry["windowEndS"] = round(self._elapsed(), 3)
@@ -1956,12 +2403,21 @@ class SoakDriver:
                 # event loop.
                 await asyncio.sleep(next_due - self._elapsed())
                 continue
+            async with self._transient_condition:
+                await self._transient_condition.wait_for(
+                    lambda: not self._transient_paused
+                )
+                self._transient_active += 1
             try:
                 await action()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("soak: %s action failed", name)
+            finally:
+                async with self._transient_condition:
+                    self._transient_active -= 1
+                    self._transient_condition.notify_all()
             next_due = self._elapsed() + interval_s
 
     async def _metrics_once(self) -> None:
@@ -2013,12 +2469,16 @@ class SoakDriver:
         async with (
             aiohttp.ClientSession(timeout=timeout) as ws_session,
             aiohttp.ClientSession(
-                timeout=timeout, connector=aiohttp.TCPConnector(limit=2)
+                timeout=timeout,
+                connector=aiohttp.TCPConnector(limit=2),
+                request_class=_ProbeClientRequest,
             ) as session,
         ):
             self._ws_session = ws_session
             self._session = session
             self._sampler = ProcessMetricsSampler(session, self._base_url)
+            # Pass the run's overlay to the sampler.
+            self._sampler._runtime_task_adapter = self._runtime_task_adapter
             if not await self._wait_ready(
                 max(60.0, self._cfg.reconnect_budget_s * 2.0)
             ):
@@ -2159,6 +2619,9 @@ async def run_soak(config: SoakConfig) -> dict[str, Any]:
     ``run_soak`` returns, so a raising teardown still loses that line.
     """
     managed_tx = config.tx_sessions_interval_s > 0
+    # Baseline of task identities alive before the run creates anything;
+    # taken before the stack starts so the stack's tasks are run-owned.
+    task_baseline = frozenset(asyncio.all_tasks())
     stack = await _start_simulator_stack(managed_tx=managed_tx)
     report: dict[str, Any] | None = None
     adapter: _RuntimeTaskAdapter | None = None
@@ -2170,16 +2633,17 @@ async def run_soak(config: SoakConfig) -> dict[str, Any]:
             sim=stack.sim,
             session_count=stack.session_count if managed_tx else None,
         )
-        if driver._task_provenance is not None:
-            adapter = _RuntimeTaskAdapter(stack, driver._task_provenance)
-            adapter.install()
-            driver._runtime_task_adapter = adapter
+        # Install the owned-count overlay for the in-process run.
+        adapter = _RuntimeTaskAdapter(stack, driver._task_provenance, task_baseline)
+        driver._runtime_task_adapter = adapter
+        adapter.install()
         report = await driver.run()
         return report
     finally:
         if adapter is not None:
             adapter.close()
-            driver._task_provenance.close()
+            if driver._task_provenance is not None:
+                driver._task_provenance.close()
         if config.report_path and report is not None:
             Path(config.report_path).write_text(
                 json.dumps(report, indent=2) + "\n", encoding="utf-8"

@@ -114,6 +114,7 @@
   "core.overlay.poweredOff.powerOnButton": "Power ON",
   "core.overlay.poweredOff.failedPowerOn": "Failed to power on: {detail}",
   "core.overlay.scopeDisconnected": "Scope disconnected — reconnecting…",
+  "core.overlay.scopeTransmitting": "Transmitting — the radio sends no panorama during transmit",
   "core.overlay.audioLinkLost": "Audio link lost — reconnecting…",
   "core.overlay.rxSilence": "No audio from the radio: the server receives only digital silence. On macOS, give Microphone permission to the program that starts the server, or check the radio's USB audio output.",
 

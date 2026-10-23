@@ -6,8 +6,7 @@ import asyncio
 import json
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -349,7 +348,8 @@ async def test_http_single_descriptor_body_matches_enqueue_path(
 
 
 @pytest.mark.asyncio
-async def test_http_single_set_vfo_freq_reports_readback_body() -> None:
+@pytest.mark.parametrize("model", ["IC-7300", "IC-7300MK2", "IC-705"])
+async def test_http_single_set_vfo_freq_reports_readback_body(model: str) -> None:
     """POST /api/v1/commands set_vfo_freq waits for the write and readback.
 
     The command already awaits its own completion on the enqueue path, so the
@@ -364,23 +364,33 @@ async def test_http_single_set_vfo_freq_reports_readback_body() -> None:
         Observation,
         SourceMetadata,
     )
+    from rigplane.runtime._dual_rx_runtime import DualRxRuntimeMixin
     from rigplane.web.radio_poller import RadioPoller, SetVfoFreq
 
-    profile = resolve_radio_profile(model="IC-7300")
+    profile = resolve_radio_profile(model=model)
+    reply_prefix = bytes((0xFE, 0xFE, 0xE0, profile.civ_addr))
     radio = SimpleNamespace(
         profile=profile,
+        _profile=profile,
         model=profile.model,
         capabilities=set(),
         _civ_epoch=1,
         send_civ=AsyncMock(
             side_effect=[
-                parse_civ_frame(bytes.fromhex("FE FE E0 94 FB FD")),
-                parse_civ_frame(bytes.fromhex("FE FE E0 94 25 01 00 40 07 14 00 FD")),
+                parse_civ_frame(reply_prefix + bytes.fromhex("FB FD")),
+                parse_civ_frame(
+                    reply_prefix + bytes.fromhex("25 01 00 40 07 14 00 FD")
+                ),
             ]
         ),
         set_freq=AsyncMock(),
         set_vfo=AsyncMock(),
+        set_vfo_slot=AsyncMock(),
         select_receiver=AsyncMock(),
+        swap_vfo_ab=AsyncMock(),
+    )
+    radio.write_relative_vfo_frequency = (
+        DualRxRuntimeMixin.write_relative_vfo_frequency.__get__(radio)
     )
     srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))  # type: ignore[arg-type]
     store = srv.command_state_store
@@ -396,6 +406,22 @@ async def test_http_single_set_vfo_freq_reports_readback_body() -> None:
     )
     generation = store.provider_generation
     poller = RadioPoller(radio, srv.command_queue, state_store=store)  # type: ignore[arg-type]
+    for path, value in (
+        (FieldPath.active("0", "freq_mode", "freq_hz"), 7_074_000),
+        (FieldPath.active("0", "freq_mode", "mode"), "LSB"),
+        (FieldPath.unselected("0", "freq_mode", "mode"), "USB"),
+        (FieldPath.unselected("0", "freq_mode", "filter_num"), 1),
+        (FieldPath.unselected("0", "freq_mode", "data_mode"), 0),
+    ):
+        store.apply(
+            Observation(
+                path=path,
+                value=value,
+                source=SourceMetadata(source="poll_response", provider="icom_civ"),
+                timestamp_monotonic=time.monotonic(),
+                provider_generation=generation,
+            )
+        )
     params = {
         "freq": 14_074_000,
         "receiver": 0,
@@ -417,6 +443,15 @@ async def test_http_single_set_vfo_freq_reports_readback_body() -> None:
     await poller._execute_queued_entry(entries[0])  # noqa: SLF001
     writer = await asyncio.wait_for(request, timeout=10.0)
 
+    assert radio.send_civ.await_args_list == [
+        call(0x25, None, data=bytes.fromhex("01 00 40 07 14 00"), wait_response=True),
+        call(0x25, None, data=b"\x01", wait_response=True),
+    ]
+    radio.set_freq.assert_not_awaited()
+    radio.set_vfo.assert_not_awaited()
+    radio.set_vfo_slot.assert_not_awaited()
+    radio.select_receiver.assert_not_awaited()
+    radio.swap_vfo_ab.assert_not_awaited()
     assert writer.response_status == 200
     assert writer.response_body == {
         "id": "single-vfo",
@@ -430,6 +465,19 @@ async def test_http_single_set_vfo_freq_reports_readback_body() -> None:
             "provider_generation": generation,
         },
     }
+
+    state_writer = _FakeWriter()
+    await srv._handle_http(  # noqa: SLF001
+        state_writer,  # type: ignore[arg-type]
+        "GET",
+        "/api/v1/state",
+        headers={},
+    )
+    assert state_writer.response_status == 200
+    state = state_writer.response_body
+    assert state["main"]["unselectedVfo"]["freqHz"] == 14_074_000
+    assert state["main"]["activeSlot"] == "A"
+    assert state["main"]["freqHz"] == 7_074_000
 
 
 @pytest.mark.asyncio

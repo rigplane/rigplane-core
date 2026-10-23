@@ -11,6 +11,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A CW text send a stop or force-off ends gets a defined answer
+  (MOR-3700).** A pending `send_cw_text` that a CW stop ended answered HTTP
+  `500` with the transport's "Managed Yaesu CAT write is no longer current",
+  and one a managed force-off ended got no answer at all: the HTTP
+  connection closed and the WebSocket command never got a response. Both
+  now answer HTTP `409` with `error: "command_cancelled"` and a message
+  naming the cause (`CW text send to <model> was cancelled by a CW stop` /
+  `... by a transmit abort`); the WebSocket command answers `ok: false`
+  with the same code and message, and the CLI prints `Error: <message>`
+  and exits 1. The same holds for `send_cw_text` on `POST /api/v1/commands`
+  and for Icom (CI-V) sends a force-off ends (a CW stop does not end a
+  CI-V send in progress). See the refusal table in `docs/api/web.md`.
+- **Radio profiles name their CW modes in one place (MOR-3679, MOR-3678).**
+  Clients guessed CW mode names and missed the FTX-1's `CW-U`/`CW-L`, so
+  the Pro CW console never left "Waiting for CW mode". A profile can now
+  declare `[modes] families = { cw = [...] }`; the loader rejects a member
+  that is not in `[modes].list` or is listed twice, and `/api/v1/info` and
+  `/api/v1/capabilities` publish it as `modeFamilies` (`{}` when absent).
+- **FTX-1 CW text: no invalid `KY <text>;` frames; `cwText` capability
+  (MOR-3678).** The FTX-1 backend sent typed CW text as `KY <text>;` in
+  24-character chunks and stopped with `KY ;`; neither is a valid FTX-1 CAT
+  frame (CAT manual 2508-C printed p.18: `KY P1 P2;` plays a keyer memory).
+  It now writes the text with `KM` into a keyer memory channel and plays it
+  with `KY`, and stops with `KY00;`. Sending stays disabled on the FTX-1
+  until the memory type is checked on a radio. A new profile section
+  `[cw_text]` (`supported`, `max_length`, `memory_channel`, `memory_type`)
+  is published as `cwText` inside `capabilities` on `/api/v1/info` and at
+  the top level of `/api/v1/capabilities`; `hasCw` and the `cw` tag are
+  unchanged. One check in every radio's `send_cw_text` enforces it, so
+  HTTP, WebSocket and the CLI refuse the same requests with the same
+  message; the web handler's own 512-character limit is gone (512 is now
+  only the profile default). Profiles without a `send_cw` command (TX-500,
+  X6100, X6200) publish `supported: false`. Yaesu CAT and Kenwood CAT
+  profiles without `[cw_text].supported = true` publish `supported: false`;
+  a Yaesu enable without keyer memory channel 1-5, a `max_length` of at
+  most 50 (one `KM` write) and writable `KM`/`KY` commands, or any Kenwood
+  enable, does not load. The `cw` tag no longer gates sending or stopping
+  CW text over HTTP, WebSocket or the CLI; `cwText` alone decides. A
+  backend with no CW text sending (external rigctld) answers all three as an
+  unsupported command, and a rig profile that does not load is reported by
+  every CLI path (including `--model` and `audio probe`) as `Error: <file>:
+  <key> ...`, exit 1. `cwText.supported` is false when the active backend
+  cannot send CW text (external rigctld), with the profile's limits kept.
+
+## [3.0.0b19] — 2026-10-20
+
+### Added
+
+- **`rigplane web` accepts `--log-level` (MOR-3569, #4265, #1905).** Before,
+  the level of the web server could only be raised to DEBUG through the
+  `ICOM_DEBUG` environment variable. The flag takes `DEBUG`, `INFO`,
+  `WARNING`, `ERROR` or `CRITICAL`. Without it the loggers are left alone, so
+  `ICOM_DEBUG=1` still works.
+
+### Fixed
+
+- **LAN discovery finds radios behind a second network adapter and survives
+  receive errors (MOR-2968, #4270).** The probe is also sent from each local
+  IPv4 address, and a Windows `ConnectionResetError` while receiving no
+  longer aborts the scan and drops the radios already found.
+- **No scope-health writes while the radio is known to be transmitting
+  (MOR-2859, #4271).** With "scope during TX" off, the all-zero scope frames
+  made the server re-enable the scope three times during a transmit. The
+  watchdog now waits, and the panorama says the radio is transmitting instead
+  of "Scope disconnected".
+- **The LCD layout takes its TX look from the managed TX state, not from
+  the last `ptt` value (MOR-2855, #4272).** A stale PTT reading no longer
+  leaves the LCD showing a transmit that is not happening.
+
+### Tests
+
+- **Cover every holder-end mode of the soak detach-sabotage test (MOR-3565,
+  #4266).**
+- **Capture xdist worker hang evidence in the quick test run (MOR-3575,
+  #4273).**
+- **Settle file-descriptor and task counts before the soak stability
+  comparison (MOR-3575, #4274).** On a loaded test worker the soak driver
+  compared counts while sockets and tasks were still closing and failed a
+  healthy run.
+- **CI: merge queue triggers and gates (MOR-3571, #4268, #4269).**
+
 ## [3.0.0b18] — 2026-10-20
 
 Republishes 3.0.0b17 to PyPI. The 3.0.0b17 tag exists on GitHub but its
@@ -4554,7 +4637,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b18...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b19...HEAD
+[3.0.0b19]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b18...v3.0.0b19
 [3.0.0b18]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b17...v3.0.0b18
 [3.0.0b17]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b16...v3.0.0b17
 [3.0.0b16]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b15...v3.0.0b16
