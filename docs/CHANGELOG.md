@@ -11,6 +11,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b20] — 2026-10-23
+
+### Added
+
+- **rigctld split frequency and mode for WSJT-X "Split: Rig" (MOR-3115,
+  #4275, #4323).** `I`/`i` and `X`/`x` set and read the unselected VFO's
+  frequency and mode on the IC-7300, IC-7300MK2 and IC-705 without
+  selecting that VFO, using the profile's `set_/get_unselected_freq` and
+  `set_/get_unselected_mode` commands (`26 01` for the mode). `X` sets the requested mode and fills DATA and the filter field
+  by field: an ordinary mode keeps the VFO's current DATA setting, a packet
+  mode (`PKTUSB`, `PKTLSB`, `PKTRTTY`) turns DATA on; an omitted or `0`
+  passband keeps the VFO's current filter, a positive passband selects filter
+  1 (2800 Hz and up), 2 (2000 Hz and up) or 3. Whenever `X` keeps the current
+  DATA or filter it reads them first; a VFO selection, swap or equalize
+  through the runtime's own methods between that read and the write refuses
+  `X` with `RPRT -9`. Known limitation: a raw `w` frame or another `X` from a
+  second client that changes the same VFO between that read and the write can
+  make `X` write the wrong DATA/filter back, and DATA also selects the TX
+  audio source; a packet mode with a positive passband sets both fields
+  itself and is not affected (tracked in MOR-3743, see
+  `docs/release-notes/2026-beta-known-limitations.md`).
+- **Local audio bridge input and output gains (#4023, #4024).**
+  `rigplane audio bridge` takes `--input-gain-db` and `--output-gain-db`,
+  `rigplane web` takes `--bridge-input-gain-db` and
+  `--bridge-output-gain-db` (all default 0 dB), and `PATCH /api/v1/bridge`
+  changes the running bridge. The gains apply to local device audio only.
+- **Profiles can describe how stored memory channels are addressed
+  (MOR-3627, #4296).** The IC-705 (group + channel) and IC-9700 (band +
+  channel) profiles carry a `[memory]` section that the loader validates.
+  Nothing reads or lists memory channels yet.
+
 ### Fixed
 
 - **A CW text send a stop or force-off ends gets a defined answer
@@ -56,6 +87,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every CLI path (including `--model` and `audio probe`) as `Error: <file>:
   <key> ...`, exit 1. `cwText.supported` is false when the active backend
   cannot send CW text (external rigctld), with the profile's limits kept.
+- **The RF front-end preamp buttons show the profile's preamp labels
+  (#4029).** The semantic RF front-end passes the profile's preamp labels
+  through to the buttons instead of always showing `P1`/`P2`; a profile
+  without labels keeps `P1`/`P2`. The FTX-1 declares `IPO`/`AMP1`/`AMP2`.
+- **IC-705 reads its duplex offset with CI-V `0C` (MOR-3624, #4295).** The
+  profile mapped the read to `0D`, the send opcode, which the radio NAKs;
+  writes still use `0D`.
+- **Serial connections try the other CI-V baud rates after silence
+  (MOR-3620, #4302).** A radio set to another baud rate can now be found
+  with a read-only identity retry, with a notice naming the rate found (a rate below 115200 warns that the
+  scope needs 115200); if none answers, the profile baud is restored and the
+  diagnostics name the likely causes.
+- **Packet receives with a timeout are cancellation-correct (MOR-3575,
+  #4282).** The audio bus and the transport now receive packets through
+  `asyncio.timeout`.
+
+### Tests
+
+- **Universal radio simulator and recorded conformance fixtures (MOR-3592,
+  MOR-3593, MOR-3594, MOR-3595, MOR-3596, MOR-3597, MOR-3598, MOR-3599,
+  MOR-3600, MOR-3602, MOR-3605, MOR-3609, MOR-3610, MOR-3678).** A
+  standalone IC-7610 simulator with a deterministic engine and validated
+  simulation profiles; IC-7300, IC-705 and FTX-1 profiles, recordings and
+  conformance replay; `serve --radio ic7300` and `serve --radio ftx1`; the
+  FTX-1 simulator models the `KM`/`KY` keyer memory.
+- **Test-infrastructure hardening (MOR-3575, MOR-3701, MOR-3733).** The soak
+  driver counts run-owned sockets and tasks; the worker-death qualification
+  has a hang deadline, a log tail and process diagnostics; the macOS full run
+  has no environment failures.
+- **CI review gate (MOR-3621).** The exact-head local review is the primary
+  Agent Review Gate verdict and GitHub Codex reviews are advisory.
 
 ## [3.0.0b19] — 2026-10-20
 
