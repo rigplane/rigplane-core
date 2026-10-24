@@ -19,6 +19,11 @@ def _bundle() -> dict:
     original = json.loads(
         (_FIXTURE.parent / "windows_pnp_gtr7_ic7300.json").read_text(encoding="utf-8")
     )["tree"]
+    for row in rows:
+        for name in ("parent_id", "class_name", "friendly_name", "device_desc"):
+            row.setdefault(name, "")
+        for name in ("hardware_ids", "compatible_ids"):
+            row.setdefault(name, [])
     ids = {row["instance_id"].casefold() for row in rows}
     rows += [
         dict(
@@ -454,8 +459,9 @@ def test_unicode_ignorecase_extra_match_does_not_raise_or_replace_unlearned_valu
         "devnodes"
     ][0]
     token = row["instance_id"].rsplit("\\", 1)[1]
-    assert row["friendly_name"] == f"ı {token} {token}"
-    assert row["device_desc"] == f"İ {token} {token}"
+    assert token != "I"
+    assert row["friendly_name"] == "ı I i"
+    assert row["device_desc"] == "İ I i"
     assert row["hardware_ids"] == [r"USB\ı"]
 
 
@@ -497,3 +503,167 @@ def test_observed_casefold_expansion_spelling_is_redacted(serial: str) -> None:
     assert row["device_desc"] == token
     assert row["hardware_ids"] == ["USB\\" + token]
     assert row["compatible_ids"] == [token]
+
+
+@pytest.mark.parametrize("serial", ["ABC123", "abc123"])
+def test_same_free_text_across_sources_and_sessions(serial: str) -> None:
+    text = "Radio:ABC123"
+    session = {
+        "raw": {
+            "windows": {
+                "devnodes": [
+                    {
+                        "instance_id": r"USB\VID_1234&PID_5678\ABC123",
+                        "friendly_name": text,
+                    }
+                ]
+            },
+            "portaudio": {
+                "devices": [{"name": text, "index": 1, "hostapi": 1}],
+                "hostapis": [{"name": text, "index": 1}],
+                "generation": 1,
+                "fresh": True,
+            },
+            "serial_ports": [{"serial_number": serial, "description": text}],
+        },
+    }
+    result = _usb_redact.redact_bundle(
+        {"sessions": [session, copy.deepcopy(session)]}, key=_KEY
+    )
+    outputs = []
+    for session in result["sessions"]:
+        raw = session["raw"]
+        outputs.extend(
+            [
+                raw["windows"]["devnodes"][0]["friendly_name"],
+                raw["portaudio"]["devices"][0]["name"],
+                raw["portaudio"]["hostapis"][0]["name"],
+                raw["serial_ports"][0]["description"],
+            ]
+        )
+        assert raw["portaudio"]["devices"][0]["index"] == 1
+        assert raw["portaudio"]["generation"] == 1
+    assert len(set(outputs)) == 1
+    assert outputs[0].startswith("Radio:R")
+    assert "abc123" not in json.dumps(result).casefold()
+
+
+@pytest.mark.parametrize(
+    "serial, spelling",
+    [
+        ("AB_CD", "AB CD"),
+        ("AB_CD_EF", "AB CD EF"),
+        ("AB_CD_EF", "ab_cd ef"),
+        ("AB_CD_EF", "Ab Cd_eF"),
+    ],
+)
+def test_hwid_longest_serial_with_spaces_preserves_next_field(
+    serial: str, spelling: str
+) -> None:
+    ports = [
+        {"serial_number": "AB", "hwid": "USB SER=AB LOCATION=1-2"},
+        {"serial_number": serial, "hwid": f"USB SER={spelling} LOCATION=1-2"},
+    ]
+    bundle = {"sessions": [{"raw": {"serial_ports": ports}}]}
+    result = _usb_redact.redact_bundle(bundle, key=_KEY)
+    redacted = result["sessions"][0]["raw"]["serial_ports"]
+    for port in redacted:
+        assert port["hwid"] == f"USB SER={port['serial_number']} LOCATION=1-2"
+    assert redacted[0]["serial_number"] != redacted[1]["serial_number"]
+    assert spelling.casefold() not in json.dumps(redacted).casefold()
+
+
+@pytest.mark.parametrize(
+    "text, changed",
+    [
+        ("(ABC123)", True),
+        ("X_ABC123_Y", True),
+        ("éABC123", False),
+        ("ABC123é", False),
+        ("xABC123", False),
+        ("ABC123x", False),
+    ],
+)
+def test_free_text_uses_nonalphanumeric_boundaries(text: str, changed: bool) -> None:
+    port = {"serial_number": "ABC123", "description": text, "device": text}
+    bundle = {"sessions": [{"raw": {"serial_ports": [port]}}]}
+    raw = _usb_redact.redact_bundle(bundle, key=_KEY)["sessions"][0]["raw"]
+    result = raw["serial_ports"][0]
+    assert (result["description"] != text) is changed
+    assert result["device"] == text
+
+
+def test_missing_devnode_fields_are_empty() -> None:
+    bundle = {
+        "sessions": [
+            {
+                "raw": {
+                    "windows": {
+                        "devnodes": [
+                            {},
+                            {"instance_id": r"USB\VID_1234&PID_5678\ABC123"},
+                        ]
+                    }
+                }
+            }
+        ]
+    }
+    rows = _usb_redact.redact_bundle(bundle, key=_KEY)["sessions"][0]["raw"]["windows"][
+        "devnodes"
+    ]
+    assert len(rows) == 1
+    assert rows[0]["instance_id"].startswith("USB\\VID_1234&PID_5678\\R")
+    for field in ("parent_id", "friendly_name", "device_desc"):
+        assert rows[0][field] == ""
+    assert rows[0]["hardware_ids"] == []
+    assert rows[0]["compatible_ids"] == []
+
+
+def test_short_serial_preserves_names_and_metadata() -> None:
+    pa = {
+        "devices": [{"name": "Radio 1", "index": 1, "hostapi": 1}],
+        "hostapis": [{"name": "API 1", "index": 1}],
+        "generation": 1,
+        "fresh": True,
+    }
+    port = {
+        "serial_number": "1",
+        "name": "Radio 1",
+        "description": "Radio:1",
+        "vid": 1,
+        "pid": 1,
+        "unavailable": ["1"],
+        "os_version": "1",
+    }
+    metadata = {
+        "schema": "rigplane.usb_audio_capture/1",
+        "session": "1",
+        "target": "1",
+        "radios": [{"profile": "1"}],
+        "os": "1",
+        "os_version": "1",
+        "capture_tool": "1",
+        "unavailable": ["1"],
+    }
+    bundle = {
+        **metadata,
+        "sessions": [
+            {
+                **metadata,
+                "raw": {
+                    "serial_ports": [port],
+                    "portaudio": pa,
+                },
+            }
+        ],
+    }
+    result = _usb_redact.redact_bundle(bundle, key=_KEY)
+    assert {key: result[key] for key in metadata} == metadata
+    session = result["sessions"][0]
+    assert {key: session[key] for key in metadata} == metadata
+    assert session["raw"]["portaudio"] == pa
+    redacted_port = session["raw"]["serial_ports"][0]
+    assert redacted_port["serial_number"] != "1"
+    assert {
+        key: value for key, value in redacted_port.items() if key != "serial_number"
+    } == {key: value for key, value in port.items() if key != "serial_number"}

@@ -554,7 +554,7 @@ class _RigplaneArgumentParser(argparse.ArgumentParser):
         argv = _argv_tokens(args)
         try:
             parsed = super().parse_args(args, namespace)
-            _finalize_usb_capture_args(self, parsed)
+            _validate_usb_capture_args(self, parsed)
         except SystemExit as exc:
             if exc.code != 0:
                 _print_common_cli_hint(argv)
@@ -566,7 +566,7 @@ class _RigplaneArgumentParser(argparse.ArgumentParser):
         return parsed
 
 
-def _finalize_usb_capture_args(
+def _validate_usb_capture_args(
     parser: argparse.ArgumentParser, args: argparse.Namespace
 ) -> None:
     if (
@@ -574,19 +574,6 @@ def _finalize_usb_capture_args(
         or getattr(args, "audio_command", None) != "usb-capture"
     ):
         return
-    if args.finalize:
-        if (
-            not args.out
-            or args.session is not None
-            or args.radio
-            or args.target is not None
-        ):
-            parser.error(
-                "--finalize requires --out and forbids --session, --radio, --target"
-            )
-        return
-    if args.out is not None:
-        parser.error("--out requires --finalize")
     radios = []
     for value in args.radio:
         profile, separator, port = value.partition("=")
@@ -596,7 +583,7 @@ def _finalize_usb_capture_args(
     from rigplane.audio._usb_capture import _validate_session
 
     try:
-        _validate_session(args.session, args.target, radios)
+        _validate_session("connected", None, radios)
     except ValueError as exc:
         parser.error(str(exc))
     args.radio = radios
@@ -1064,19 +1051,11 @@ def _build_parser() -> argparse.ArgumentParser:
     audio_usb_capture_p = audio_sub.add_parser(
         "usb-capture", help="Record Windows USB topology without opening radio devices"
     )
-    audio_usb_capture_p.add_argument("--stage-dir", required=True, metavar="DIR")
-    audio_usb_capture_mode = audio_usb_capture_p.add_mutually_exclusive_group(
-        required=True
-    )
-    audio_usb_capture_mode.add_argument(
-        "--session", choices=("connected", "unplugged", "replugged")
-    )
-    audio_usb_capture_mode.add_argument("--finalize", action="store_true")
     audio_usb_capture_p.add_argument(
-        "--radio", action="append", default=[], metavar="PROFILE=PORT"
+        "--radio", action="append", required=True, metavar="PROFILE=PORT"
     )
-    audio_usb_capture_p.add_argument("--target", metavar="PROFILE")
-    audio_usb_capture_p.add_argument("--out", metavar="FILE")
+    audio_usb_capture_p.add_argument("--out", required=True, metavar="FILE")
+    audio_usb_capture_p.add_argument("--no-unplug", action="store_true")
 
     # bridge
     audio_bridge_p = audio_sub.add_parser(
@@ -2598,31 +2577,28 @@ async def _run_web_station_with_busy_hold(
 def _cmd_audio_usb_capture(args: argparse.Namespace) -> int:
     import platform
 
-    from rigplane.audio._usb_capture import finalize, write_session
+    from rigplane.audio._usb_capture import capture_bundle
 
     if platform.system() != "Windows":
         print("usb-capture currently records Windows only", file=sys.stderr)
         return 2
     try:
-        if args.finalize:
-            path = finalize(args.stage_dir, args.out)
-        else:
-            path = write_session(
-                args.stage_dir,
-                session=args.session,
-                target=args.target,
-                radios=args.radio,
-            )
+        path = capture_bundle(args.out, radios=args.radio, no_unplug=args.no_unplug)
+    except KeyboardInterrupt:
+        print("USB capture cancelled; no output written.", file=sys.stderr)
+        return 130
+    except EOFError:
+        print("USB capture input ended; no output written.", file=sys.stderr)
+        return 1
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     print(f"Wrote {path}")
-    if args.session == "connected":
-        target = args.radio[0]["profile"]
-        print(
-            f"Next: unplug {target}, then repeat with the same --stage-dir "
-            f"and --session unplugged --target {target}."
-        )
+    radio_count = len(args.radio)
+    session_count = 1 if args.no_unplug else 1 + 2 * radio_count
+    print(
+        f"Captured {session_count} sessions for {radio_count} radios; serials redacted."
+    )
     return 0
 
 
