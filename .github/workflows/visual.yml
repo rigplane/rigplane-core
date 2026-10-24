@@ -140,6 +140,13 @@ jobs:
       github.event.pull_request.draft == false)
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 10
+    # MOR-3778: presetting the variables Chromium's browser process adds at
+    # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
+    # loop test. Nothing in this repo reads them.
+    env:
+      DBUS_SESSION_BUS_ADDRESS: 'disabled:'
+      FC_FONTATIONS: '1'
+      VK_ICD_FILENAMES: ''
     steps:
       - uses: actions/checkout@v6
 
