@@ -72,8 +72,9 @@ vi.mock('$lib/audio/audio-manager', () => ({
     onTxAudioDied: () => () => {},
   },
 }));
-vi.mock('$lib/runtime/frontend-runtime', () => ({
+vi.mock('$lib/runtime/frontend-runtime', async () => ({
   runtime: {
+    fetchMemoryPage: (await import('$lib/transport/http-client')).fetchMemoryPage,
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
