@@ -17,6 +17,7 @@ _HWID_SERIAL = re.compile(
     r"(?<!\S)(SER=)(.*?)(?= +[A-Za-z_][A-Za-z0-9_]*=|$)",
     re.IGNORECASE | re.DOTALL,
 )
+_HWID_FIELD = re.compile(r"(?= +[A-Za-z_][A-Za-z0-9_]*=|$)", re.DOTALL)
 
 
 def _token(key: bytes, value: str) -> str:
@@ -86,13 +87,38 @@ def redact_bundle(
         for port in raw.get("serial_ports", []):
             if serial := port.get("serial_number"):
                 values.add(serial)
-            for match in _HWID_SERIAL.finditer(port.get("hwid") or ""):
-                if match[2]:
-                    values.add(match[2])
         for row in raw.get("windows", {}).get("devnodes", []):
             match = _USB_SERIAL_ID.fullmatch(row.get("instance_id", ""))
             if match:
                 values.add(match[1])
+
+    known_spellings = sorted(values, key=len, reverse=True)
+
+    def hwid_serials(hwid: str) -> list[tuple[int, int, str]]:
+        segments = []
+        cursor = 0
+        while match := _HWID_SERIAL.search(hwid, cursor):
+            start = match.start(2)
+            spelling = next(
+                (
+                    spelling
+                    for spelling in known_spellings
+                    if hwid[start : start + len(spelling)].replace(" ", "_").casefold()
+                    == spelling.replace(" ", "_").casefold()
+                    and _HWID_FIELD.match(hwid, start + len(spelling))
+                ),
+                None,
+            )
+            end = start + len(spelling) if spelling is not None else match.end(2)
+            segments.append((start, end, hwid[start:end]))
+            cursor = end
+        return segments
+
+    for session in bundle["sessions"]:
+        for port in session.get("raw", {}).get("serial_ports", []):
+            for _, _, serial in hwid_serials(port.get("hwid") or ""):
+                if serial:
+                    values.add(serial)
 
     replacements = {
         canonical: _token(key, canonical)
@@ -110,6 +136,16 @@ def redact_bundle(
             return value
         return value[: match.start(1)] + replace_field(match[1])
 
+    def replace_hwid(hwid: str) -> str:
+        parts = []
+        cursor = 0
+        for start, end, serial in hwid_serials(hwid):
+            parts.append(hwid[cursor:start])
+            parts.append(replace_field(serial) + serial[len(serial.rstrip(" ")) :])
+            cursor = end
+        parts.append(hwid[cursor:])
+        return "".join(parts)
+
     result = copy.deepcopy(bundle)
     for session in result["sessions"]:
         raw = session.get("raw", {})
@@ -117,10 +153,7 @@ def redact_bundle(
             if "serial_number" in port:
                 port["serial_number"] = replace_field(port["serial_number"])
             if isinstance(port.get("hwid"), str):
-                port["hwid"] = _HWID_SERIAL.sub(
-                    lambda match: match[1] + replace_field(match[2]),
-                    port["hwid"],
-                )
+                port["hwid"] = replace_hwid(port["hwid"])
         windows = raw.get("windows")
         if windows is not None:
             windows["devnodes"] = _prune_windows_nodes(windows.get("devnodes", []), key)

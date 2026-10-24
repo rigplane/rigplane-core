@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import tempfile
 from typing import Any
 
@@ -148,27 +149,52 @@ def _read_session(
 def _write_private_json(path: Path, value: dict[str, Any]) -> None:
     if path.exists() or path.is_symlink():
         raise FileExistsError("capture output already exists")
-    temporary: Path | None = None
+    temporary: str | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
+        fd, temporary = tempfile.mkstemp(
             dir=path.parent,
             prefix=f".{path.name}.",
             suffix=".tmp",
-            delete=False,
-        ) as stream:
-            temporary = Path(stream.name)
-            json.dump(value, stream, ensure_ascii=False, indent=2, allow_nan=False)
-            stream.write("\n")
+        )
+        try:
+            stream = os.fdopen(fd, "wb")
+        except BaseException:
+            os.close(fd)
+            raise
+        with stream:
+            stream.write(
+                (
+                    json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False)
+                    + "\n"
+                ).encode("utf-8")
+            )
             stream.flush()
             os.fsync(stream.fileno())
-        if path.exists() or path.is_symlink():
-            raise FileExistsError("capture output already exists")
-        os.replace(temporary, path)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            raise FileExistsError("capture output already exists") from None
+        except OSError:
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                raise FileExistsError("capture output already exists") from None
+            try:
+                try:
+                    stream = os.fdopen(fd, "wb")
+                except BaseException:
+                    os.close(fd)
+                    raise
+                with stream, open(temporary, "rb") as source:
+                    shutil.copyfileobj(source, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except BaseException:
+                path.unlink(missing_ok=True)
+                raise
     finally:
         if temporary is not None:
-            temporary.unlink(missing_ok=True)
+            Path(temporary).unlink(missing_ok=True)
 
 
 def capture_bundle(

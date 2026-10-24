@@ -665,6 +665,63 @@ def test_hwid_longest_serial_with_spaces_preserves_next_field(
     assert spelling.casefold() not in json.dumps(redacted).casefold()
 
 
+def test_hwid_trailing_space_serial_preserves_field_spacing_across_sessions() -> None:
+    bundle = {
+        "sessions": [
+            {"raw": {"serial_ports": [{"hwid": "USB SER=AB CD  LOCATION=1"}]}},
+            {
+                "raw": {
+                    "serial_ports": [{"serial_number": "AB CD "}],
+                    "windows": {
+                        "devnodes": [
+                            {
+                                "instance_id": r"USB\VID_1234&PID_5678\AB_CD_",
+                                "parent_id": "",
+                                "class_name": "USB",
+                            }
+                        ]
+                    },
+                }
+            },
+        ]
+    }
+    result = _usb_redact.redact_bundle(bundle, key=_KEY)["sessions"]
+    token = result[1]["raw"]["serial_ports"][0]["serial_number"]
+    assert re.fullmatch(r"R[A-Z2-7]{10}", token)
+    assert result[0]["raw"]["serial_ports"][0]["hwid"] == (
+        f"USB SER={token}  LOCATION=1"
+    )
+    assert result[1]["raw"]["windows"]["devnodes"][0]["instance_id"] == (
+        "USB\\VID_1234&PID_5678\\" + token
+    )
+
+
+@pytest.mark.parametrize("spelling", ["aB X=1", "aB_x=1"])
+def test_hwid_known_serial_containing_field_shape_is_redacted_whole(
+    spelling: str,
+) -> None:
+    bundle = {
+        "sessions": [
+            {"raw": {"serial_ports": [{"hwid": f"USB SER={spelling} LOCATION=2"}]}},
+            {
+                "raw": {
+                    "serial_ports": [
+                        {"serial_number": "AB"},
+                        {"serial_number": "Ab X=1"},
+                    ]
+                }
+            },
+        ]
+    }
+    result = _usb_redact.redact_bundle(bundle, key=_KEY)["sessions"]
+    short, token = (port["serial_number"] for port in result[1]["raw"]["serial_ports"])
+    assert re.fullmatch(r"R[A-Z2-7]{10}", token)
+    assert short != token
+    assert result[0]["raw"]["serial_ports"][0]["hwid"] == (
+        f"USB SER={token} LOCATION=2"
+    )
+
+
 @pytest.mark.parametrize(
     "text",
     [

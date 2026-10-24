@@ -196,18 +196,24 @@ async def test_cli_captures_two_radios_in_one_process(
     assert list(tmp_path.iterdir()) == [out]
 
 
-@pytest.mark.parametrize("failure", ["serialization", "interrupt"])
+@pytest.mark.parametrize(
+    "failure", ["serialization", "creation_interrupt", "interrupt"]
+)
 def test_atomic_write_cleans_partial_temp_and_allows_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     out = tmp_path / "capture.json"
     bundle = {"sessions": []}
 
-    def fail_serialization(value, stream, **kwargs):
+    def fail_serialization(value, **kwargs):
         assert not out.exists()
-        assert [Path(stream.name)] == list(tmp_path.iterdir())
-        stream.write('{"partial":')
+        assert len(list(tmp_path.iterdir())) == 1
         raise ValueError("serialization failed")
+
+    def interrupt_before_fdopen(descriptor, *args, **kwargs):
+        assert not out.exists()
+        assert len(list(tmp_path.iterdir())) == 1
+        raise KeyboardInterrupt
 
     def interrupt_after_creation(descriptor):
         assert not out.exists()
@@ -216,8 +222,11 @@ def test_atomic_write_cleans_partial_temp_and_allows_retry(
 
     with monkeypatch.context() as patch:
         if failure == "serialization":
-            patch.setattr(capture.json, "dump", fail_serialization)
+            patch.setattr(capture.json, "dumps", fail_serialization)
             error = ValueError
+        elif failure == "creation_interrupt":
+            patch.setattr(capture.os, "fdopen", interrupt_before_fdopen)
+            error = KeyboardInterrupt
         else:
             patch.setattr(capture.os, "fsync", interrupt_after_creation)
             error = KeyboardInterrupt
@@ -230,25 +239,58 @@ def test_atomic_write_cleans_partial_temp_and_allows_retry(
     assert list(tmp_path.iterdir()) == [out]
 
 
-def test_atomic_write_refuses_output_created_during_serialization(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("link_supported", [True, False])
+def test_atomic_write_refuses_output_created_at_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, link_supported: bool
 ) -> None:
     out = tmp_path / "capture.json"
-    dump = capture.json.dump
-    replace = Mock(wraps=capture.os.replace)
+    link = capture.os.link
 
-    def create_competing_output(value, stream, **kwargs):
+    def create_competing_output(temporary, path):
         assert not out.exists()
-        dump(value, stream, **kwargs)
         out.write_text("someone else's output", encoding="utf-8")
+        if not link_supported:
+            raise OSError("hard links unsupported")
+        link(temporary, path)
 
-    monkeypatch.setattr(capture.json, "dump", create_competing_output)
-    monkeypatch.setattr(capture.os, "replace", replace)
+    monkeypatch.setattr(capture.os, "link", create_competing_output)
     with pytest.raises(FileExistsError, match="already exists"):
         capture._write_private_json(out, {"sessions": []})
     assert out.read_text(encoding="utf-8") == "someone else's output"
     assert list(tmp_path.iterdir()) == [out]
-    replace.assert_not_called()
+
+
+def test_atomic_write_falls_back_to_private_exclusive_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "capture.json"
+    bundle = {"label": "Радио"}
+    monkeypatch.setattr(capture.os, "link", Mock(side_effect=OSError("unsupported")))
+    capture._write_private_json(out, bundle)
+    assert json.loads(out.read_text(encoding="utf-8")) == bundle
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    assert list(tmp_path.iterdir()) == [out]
+
+
+def test_atomic_write_cleans_interrupted_fallback_and_allows_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "capture.json"
+    bundle = {"sessions": []}
+
+    def interrupt_copy(source, destination):
+        destination.write(b'{"partial":')
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(capture.os, "link", Mock(side_effect=OSError("unsupported")))
+        patch.setattr(capture.shutil, "copyfileobj", interrupt_copy)
+        with pytest.raises(KeyboardInterrupt):
+            capture._write_private_json(out, bundle)
+    assert list(tmp_path.iterdir()) == []
+    capture._write_private_json(out, bundle)
+    assert json.loads(out.read_text(encoding="utf-8")) == bundle
+    assert list(tmp_path.iterdir()) == [out]
 
 
 @pytest.mark.asyncio
