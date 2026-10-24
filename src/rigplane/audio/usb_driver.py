@@ -1528,14 +1528,7 @@ class UsbAudioDriver:
                 if (d.supports_rx if direction == "rx" else d.supports_tx)
             }
             if len(identities) != 1:
-                error = (
-                    AudioTopologyUnavailableError
-                    if not records.devnodes
-                    else AudioDeviceAmbiguousError
-                    if identities
-                    else AudioDeviceSelectionError
-                )
-                raise error(
+                raise AudioTopologyUnavailableError(
                     "Windows USB audio selection is ambiguous or unavailable; "
                     "select explicit RX/TX devices for the serial radio."
                 )
