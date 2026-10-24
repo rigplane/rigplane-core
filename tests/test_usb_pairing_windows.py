@@ -6,6 +6,7 @@ from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
+from unittest.mock import Mock
 
 from rigplane.audio._usb_adapt_windows import adapt_windows
 from rigplane.audio._usb_pairing import PairOk, PairRefused, pair
@@ -164,6 +165,126 @@ def test_s2_w1_wrong_codec_identity_retains_nearby_mme_candidates(snapshot):
         candidate.portaudio_index not in {0, 4} for candidate in result.candidates
     )
     assert result.candidates[0].near_radio
+
+
+@pytest.mark.parametrize("direction", ["rx", "tx"])
+@pytest.mark.parametrize("name_fallback", [False, True], ids=["endpoint-id", "name-id"])
+async def test_stable_override_revalidated_on_every_open(
+    monkeypatch, direction, name_fallback
+):
+    from rigplane.audio import _usb_pairing
+    from rigplane.audio.usb_driver import (
+        AudioDeviceSelectionError,
+        UsbAudioDriver,
+    )
+
+    session = _w1_session()
+    if name_fallback:
+        rows = session["raw"]["windows"]["devnodes"]
+        for row in tuple(rows):
+            if row["class_name"] == "AudioEndpoint":
+                rows.append(dict(row, instance_id=row["instance_id"] + "-duplicate"))
+    refusal = pair(adapt_windows(session), "missing", None)
+    assert isinstance(refusal, PairRefused)
+    choices = {
+        c.direction: c.stable_id
+        for c in refusal.candidates
+        if c.portaudio_index in {1, 5}
+    }
+    if name_fallback:
+        assert choices["capture"] == "MME|name:Microphone (USB Audio CODEC )"
+        assert choices["render"] == "MME|name:Speakers (USB Audio CODEC )"
+    backend, _ = _inject_windows(monkeypatch, session)
+    pairing = Mock(side_effect=AssertionError("explicit choices must bypass pairing"))
+    monkeypatch.setattr(_usb_pairing, "pair", pairing)
+    driver = UsbAudioDriver(
+        backend=backend,
+        serial_port="COM3",
+        rx_device=choices["capture"],
+        tx_device=choices["render"],
+    )
+    start = (
+        (lambda: driver.start_rx(lambda _frame: None))
+        if direction == "rx"
+        else driver.start_tx
+    )
+    stop = driver.stop_rx if direction == "rx" else driver.stop_tx
+    try:
+        await start()
+        assert (driver.selected_rx_device.index, driver.selected_tx_device.index) == (
+            1,
+            5,
+        )
+        await stop()
+        # Keep the same driver, but remove the saved endpoint from the next enumeration.
+        index = 1 if direction == "rx" else 5
+        devices = [d for d in backend.list_devices() if int(d.id) != index]
+        monkeypatch.setattr(backend, "list_devices", lambda: devices)
+        session["raw"]["portaudio"]["devices"][index]["name"] = "Removed device"
+        with pytest.raises(
+            AudioDeviceSelectionError,
+            match=f"Unknown {direction.upper()} device override",
+        ):
+            await start()
+        assert (
+            len(backend.rx_streams)
+            + len(backend.tx_streams)
+            + len(backend.duplex_streams)
+            == 1
+        )
+        pairing.assert_not_called()
+    finally:
+        await stop()
+
+
+@pytest.mark.parametrize(
+    "direction,index,flow", [("rx", 1, "capture"), ("tx", 5, "render")]
+)
+@pytest.mark.parametrize("duplicate", [False, True], ids=["missing", "ambiguous"])
+async def test_stable_override_refuses_without_pairing_or_streams(
+    monkeypatch, direction, index, flow, duplicate
+):
+    from rigplane.audio import _usb_pairing
+    from rigplane.audio.usb_driver import (
+        AudioDeviceAmbiguousError,
+        AudioDeviceSelectionError,
+        UsbAudioDriver,
+    )
+
+    session = _w1_session()
+    refusal = pair(adapt_windows(session), "missing", None)
+    assert isinstance(refusal, PairRefused)
+    selector = next(
+        c.stable_id
+        for c in refusal.candidates
+        if c.portaudio_index == index and c.direction == flow
+    )
+    if duplicate:
+        devices = session["raw"]["portaudio"]["devices"]
+        devices[2] = dict(devices[index], index=2)
+    else:
+        selector = "MME|name:missing saved device"
+        # A stale id must not fall through to the legacy substring matcher.
+        session["raw"]["portaudio"]["devices"][index]["name"] = (
+            selector + " replacement"
+        )
+    backend, _ = _inject_windows(monkeypatch, session)
+    pairing = Mock(side_effect=AssertionError("explicit choices must bypass pairing"))
+    monkeypatch.setattr(_usb_pairing, "pair", pairing)
+    driver = UsbAudioDriver(
+        backend=backend,
+        serial_port="COM3",
+        **{direction + "_device": selector},
+    )
+    error = AudioDeviceAmbiguousError if duplicate else AudioDeviceSelectionError
+    message = "Ambiguous" if duplicate else "Unknown"
+    with pytest.raises(error, match=f"{message} {direction.upper()} device override"):
+        if direction == "rx":
+            await driver.start_rx(lambda _frame: None)
+        else:
+            await driver.start_tx()
+    assert not (backend.rx_streams or backend.tx_streams or backend.duplex_streams)
+    pairing.assert_not_called()
 
 
 @pytest.mark.parametrize(

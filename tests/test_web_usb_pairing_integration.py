@@ -3,6 +3,7 @@
 import asyncio
 import json
 from dataclasses import replace
+from unittest.mock import Mock
 
 import pytest
 from test_icom7610_serial_radio import _FakeSerialCivLink
@@ -29,12 +30,29 @@ from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.websocket import WS_OP_BINARY, WS_OP_TEXT
 
 
-@pytest.mark.parametrize("codec_matches", [True, False], ids=["w1-mme", "wrong-codec"])
+W1_RX_ID = r"MME|SWD\MMDEVAPI\{0.0.1.00000000}.{963D478C-4D8C-412E-A32C-387169AFB3A0}"
+W1_TX_ID = r"MME|SWD\MMDEVAPI\{0.0.0.00000000}.{9082644E-6A88-4638-B416-E1788AAC0FDF}"
+
+
+@pytest.mark.parametrize(
+    "codec_matches,explicit_choice,start_direction",
+    [
+        (True, False, "rx"),
+        (False, False, "rx"),
+        (False, True, "rx"),
+        (False, False, "tx"),
+    ],
+    ids=["w1-mme", "wrong-codec", "stable-choice-overrides-wrong-codec", "tx-refusal"],
+)
 async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
-    monkeypatch, codec_matches
+    monkeypatch, codec_matches, explicit_choice, start_direction
 ):
+    from rigplane.audio import _usb_pairing
+
     backend, _ = _inject_windows(monkeypatch, _w1_session())
     monkeypatch.setattr(usb_driver, "PortAudioBackend", lambda: backend)
+    pairing = Mock(wraps=_usb_pairing.pair)
+    monkeypatch.setattr(_usb_pairing, "pair", pairing)
     profile = get_radio_profile("IC-7300")
     if not codec_matches:
         profile = replace(
@@ -45,6 +63,8 @@ async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
         device="COM3",
         profile=profile,
         audio_codec=AudioCodec.PCM_1CH_16BIT,
+        rx_device=W1_RX_ID if explicit_choice else None,
+        tx_device=W1_TX_ID if explicit_choice else None,
         civ_link=_FakeSerialCivLink(model_id=0x94),
         _enumerate_serial_ports_fn=lambda: [],
     )
@@ -62,7 +82,7 @@ async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
             json.dumps(
                 {
                     "type": "audio_start",
-                    "direction": "rx",
+                    "direction": start_direction,
                     "preferred_rx_codec": "pcm16",
                 }
             ),
@@ -74,21 +94,49 @@ async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
                 assert opcode == WS_OP_TEXT
                 message = json.loads(payload)
                 messages.append(message)
-                if message["type"] == "audio_format":
+                if message["type"] == "audio_format" or (
+                    start_direction == "tx" and message["type"] == "error"
+                ):
                     break
 
         status, _, body = await _http_get("127.0.0.1", server.port, "/api/v1/info")
         assert status == 200
         audio_receive = json.loads(body)["audioReceive"]
-        if not codec_matches:
-            assert audio_receive == {
-                "schemaVersion": 1,
-                "failure": {
-                    "stage": "rx_start",
-                    "code": "core_rx_start_failed",
-                    "reason": "usb_topology_unavailable",
-                },
+        if not codec_matches and not explicit_choice:
+            assert audio_receive["schemaVersion"] == 1
+            failure = audio_receive["failure"]
+            assert {
+                key: value for key, value in failure.items() if key != "candidates"
+            } == {
+                "stage": start_direction + "_start",
+                "code": "core_" + start_direction + "_start_failed",
+                "reason": "usb_topology_unavailable",
             }
+            candidates = failure["candidates"]
+            for stable_id, index, name, direction in (
+                (W1_RX_ID, 1, "Microphone (USB Audio CODEC )", "capture"),
+                (W1_TX_ID, 5, "Speakers (USB Audio CODEC )", "render"),
+            ):
+                assert {
+                    "stableId": stable_id,
+                    "displayName": name,
+                    "direction": direction,
+                    "hostApi": "MME",
+                    "portAudioIndex": index,
+                    "nearRadio": True,
+                } in candidates
+            assert all(
+                set(candidate)
+                == {
+                    "stableId",
+                    "displayName",
+                    "direction",
+                    "hostApi",
+                    "portAudioIndex",
+                    "nearRadio",
+                }
+                for candidate in candidates
+            )
             assert any(message["type"] == "error" for message in messages)
             assert radio.audio_session.rx_demand == 0
             assert not (
@@ -97,6 +145,8 @@ async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
             return
 
         assert audio_receive == {"schemaVersion": 1, "failure": None}
+        if explicit_choice:
+            pairing.assert_not_called()
         assert not any(message["type"] == "error" for message in messages)
         assert radio.audio_session.rx_demand == 1
         driver = radio._serial_audio_driver
