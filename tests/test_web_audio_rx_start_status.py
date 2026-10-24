@@ -124,6 +124,33 @@ async def test_late_retired_attempt_cannot_overwrite_current_source_fact(
     assert old.audio_session.rx_demand == 0
 
 
+@pytest.mark.parametrize("old_fails", [True, False])
+async def test_provider_retirement_rejects_late_rx_result_with_same_radio(
+    station, old_fails
+):
+    server, radio, broadcaster = station
+    radio.fails = old_fails
+    radio.gate = asyncio.Event()
+    source = radio.audio_session
+    pending = asyncio.create_task(broadcaster.ensure_relay())
+    try:
+        await asyncio.wait_for(radio.entered.wait(), timeout=1)
+        server._on_provider_generation(12)
+        assert broadcaster._radio is radio
+        assert radio.audio_session is source
+        assert await info(server) == CLEAR
+    finally:
+        radio.gate.set()
+        await pending
+    assert await info(server) == CLEAR
+    assert broadcaster._subscription is None
+    assert source.rx_demand == 0
+    radio.gate = None
+    radio.fails = True
+    await broadcaster.ensure_relay()
+    assert await info(server) == FAILED
+
+
 @pytest.mark.parametrize("retire", [False, True])
 @pytest.mark.parametrize("deferred", [False, True], ids=["start", "session-push"])
 async def test_tx_refusal_retains_candidates_only_for_current_radio(

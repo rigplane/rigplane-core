@@ -168,9 +168,13 @@ def test_s2_w1_wrong_codec_identity_retains_nearby_mme_candidates(snapshot):
 
 
 @pytest.mark.parametrize("direction", ["rx", "tx"])
-@pytest.mark.parametrize("name_fallback", [False, True], ids=["endpoint-id", "name-id"])
+@pytest.mark.parametrize(
+    "name_fallback,trailing_space",
+    [(False, False), (True, False), (True, True)],
+    ids=["endpoint-id", "name-id", "trailing-space-name-id"],
+)
 async def test_stable_override_revalidated_on_every_open(
-    monkeypatch, direction, name_fallback
+    monkeypatch, direction, name_fallback, trailing_space
 ):
     from rigplane.audio import _usb_pairing
     from rigplane.audio.usb_driver import (
@@ -179,7 +183,20 @@ async def test_stable_override_revalidated_on_every_open(
     )
 
     session = _w1_session()
-    if name_fallback:
+    if trailing_space:
+        listed_name = "USB Audio CODEC 12345678901234 "
+        assert len(listed_name) == 31
+        for row in session["raw"]["windows"]["devnodes"]:
+            if row["class_name"] == "AudioEndpoint":
+                row["friendly_name"] = listed_name + "endpoint"
+        for index in (1, 5):
+            session["raw"]["portaudio"]["devices"][index]["name"] = listed_name
+    if trailing_space:
+        assert choices == {
+            "capture": "MME|name:USB Audio CODEC 12345678901234 ",
+            "render": "MME|name:USB Audio CODEC 12345678901234 ",
+        }
+    elif name_fallback:
         rows = session["raw"]["windows"]["devnodes"]
         for row in tuple(rows):
             if row["class_name"] == "AudioEndpoint":
