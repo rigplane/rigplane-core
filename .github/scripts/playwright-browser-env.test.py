@@ -33,6 +33,8 @@ class WorkflowFormatError(ValueError):
 
 
 def _jobs(workflow: str, text: str) -> dict[str, tuple[str, list[str]]]:
+    if re.search(r"(^|[ :])[&*][A-Za-z_]|<<:", text, re.MULTILINE):
+        raise WorkflowFormatError(f"{workflow}: YAML anchors, aliases and merges are unsupported")
     markers = list(re.finditer(r"(?m)^jobs:[ \t]*(?:#.*)?$", text))
     if len(markers) != 1:
         raise WorkflowFormatError(f"{workflow}: expected one block jobs: mapping")
@@ -58,7 +60,7 @@ def _jobs(workflow: str, text: str) -> dict[str, tuple[str, list[str]]]:
         following = re.search(r"(?m)^    (?!#)\S", rest)
         end = following.start() if following else len(rest)
         steps = re.split(r"(?m)^      -[ \t]+", rest[:end])[1:]
-        if not steps or any(not re.match(r"[\w-]+:", step) for step in steps):
+        if not steps or any(not re.match(r"[\w-]+[ \t]*:", step) for step in steps):
             raise WorkflowFormatError(f"{workflow}:{name}: unsupported or empty steps: sequence")
         settings = block[: marker.start()] + rest[end:]
         jobs[name] = settings, ["        " + step for step in steps]
@@ -66,26 +68,26 @@ def _jobs(workflow: str, text: str) -> dict[str, tuple[str, list[str]]]:
 
 
 def _run(step: str) -> str:
-    match = re.search(r"(?m)^        run:[ \t]*(.*)$", step)
+    match = re.search(r"(?m)^        run[ \t]*:[ \t]*(.*)$", step)
     if match is None:
         return ""
     value = match.group(1).strip()
-    if value not in {"|", "|-", "|+", ">", ">-", ">+"}:
+    if not value.startswith(("|", ">")):
         return value
-    body = re.split(r"(?m)^        \S", step[match.end() :], maxsplit=1)[0]
-    return " ".join(
-        line.strip() for line in body.splitlines() if not line.lstrip().startswith("#")
-    )
+    return re.split(r"(?m)^        \S", step[match.end() :], maxsplit=1)[0]
 
 
 def _launches_browser(step: str) -> bool:
-    run = _run(step)
-    return "playwright install" not in run and any(token in run for token in BROWSER_ENTRY_POINTS)
+    run = "\n".join(
+        line for line in _run(step).splitlines() if not line.lstrip().startswith("#")
+    )
+    run = " ".join(re.sub(r"\\\r?\n", "", run).split())
+    return any(token in run for token in BROWSER_ENTRY_POINTS)
 
 
 def _envs(text: str, indent: int) -> list[tuple[str, str]]:
     envs = []
-    pattern = rf"(?m)^{' ' * indent}(?:env|'env'|\"env\"):[ \t]*(.*)$"
+    pattern = rf"(?m)^{' ' * indent}(?:env|'env'|\"env\")[ \t]*:[ \t]*(.*)$"
     for match in re.finditer(pattern, text):
         body = re.split(
             rf"(?m)^ {{0,{indent}}}[^\s#]", text[match.end() :], maxsplit=1
@@ -110,6 +112,9 @@ def _job_env_errors(label: str, settings: str) -> list[str]:
 
 def _step_env_errors(label: str, step: str) -> list[str]:
     errors = []
+    for name in BROWSER_ENV:
+        if name in _run(step):
+            errors.append(f"{label}: run mentions {name}; protected variables must stay job-level")
     for value, body in _envs(step, 8):
         visible = re.sub(r"\$\{\{.*?\}\}", "", value + "\n" + body, flags=re.DOTALL)
         content = "\n".join(
@@ -143,6 +148,11 @@ def workflow_errors(
         for job, (settings, steps) in jobs.items():
             label = f"{workflow}:{job}"
             for index, step in enumerate(steps, 1):
+                if re.search(r"(?m)^        uses[ \t]*:[ \t]*['\"]?\./", step):
+                    errors.append(
+                        f"{label}: local actions are not scanned by this guard; "
+                        "extend it before adding one"
+                    )
                 errors.extend(_step_env_errors(f"{label}:step {index}", step))
             if any(_launches_browser(step) for step in steps):
                 browser_jobs[workflow, job] = settings
@@ -176,8 +186,22 @@ class BrowserEnvironmentParserTest(unittest.TestCase):
     def errors(self, text: str) -> list[str]:
         return workflow_errors({"fixture.yml": text}, {("fixture.yml", "browser")})
 
+    def test_contract_membership_is_pinned(self) -> None:
+        commands = {
+            "playwright test", "test:e2e", "capture.mjs", "capture-ptt.mjs",
+            "verify:component-kit-api", "verify-package.mjs",
+        }
+        self.assertEqual(set(BROWSER_ENTRY_POINTS), commands)
+        self.assertEqual(BROWSER_ENV, {
+            "DBUS_SESSION_BUS_ADDRESS": "'disabled:'",
+            "FC_FONTATIONS": "'1'",
+            "VK_ICD_FILENAMES": "''",
+        })
+
     def test_correct_job_passes(self) -> None:
         self.assertEqual(self.errors(self.workflow()), [])
+        self.assertEqual(self.errors(self.workflow().replace("env:", "env :")), [])
+        self.assertEqual(self.errors(self.workflow().replace("run:", "run :")), [])
 
     def test_new_workflow_reports_unexpected_browser_job(self) -> None:
         errors = workflow_errors({"new-workflow.yaml": self.workflow(env=False)}, set())
@@ -191,10 +215,40 @@ class BrowserEnvironmentParserTest(unittest.TestCase):
         self.assertFalse(any("Missing browser jobs" in error for error in errors))
 
     def test_each_browser_entry_point_is_detected(self) -> None:
-        for token in BROWSER_ENTRY_POINTS:
+        for token in (
+            "playwright test", "test:e2e", "capture.mjs", "capture-ptt.mjs",
+            "verify:component-kit-api", "verify-package.mjs",
+            "npx playwright install chromium && npx playwright test", "npx playwright   test",
+            "|\n          npx playwright \\\n            test",
+            "|\n          npx playwright\\\n            test",
+        ):
             with self.subTest(token=token):
                 errors = self.errors(self.workflow(token, env=False))
                 self.assertTrue(any("job-level env" in error for error in errors))
+
+    def test_commented_blocks_and_yaml_references(self) -> None:
+        for run, message in (
+            ("| # browser smoke\n          node frontend/fixtures/capture.mjs", "job-level env"),
+            ("> # browser smoke\n          node frontend/fixtures/capture.mjs", "job-level env"),
+            ("*capture", "anchors, aliases and merges"),
+            ("&capture echo harmless", "anchors, aliases and merges"),
+            ("echo harmless\n        env: {<<: {A: b}}", "anchors, aliases and merges"),
+        ):
+            self.assertTrue(any(message in e for e in self.errors(self.workflow(run, env=False))))
+
+    def test_local_action_is_rejected(self) -> None:
+        text = "jobs:\n  browser:\n    steps:\n      - uses: ./.github/actions/browser\n"
+        self.assertTrue(any("local actions are not scanned" in e for e in self.errors(text)))
+
+    def test_run_mentions_of_protected_names_are_rejected(self) -> None:
+        for name in ("DBUS_SESSION_BUS_ADDRESS", "FC_FONTATIONS", "VK_ICD_FILENAMES"):
+            for run in (
+                f"echo '{name}=0' >> \"$GITHUB_ENV\"",
+                f"{name}=0", f"export {name}=0", f"unset {name}",
+                f"|\n          # {name}\n          echo harmless",
+            ):
+                text = self.workflow(run + "\n      - run: node frontend/fixtures/capture.mjs")
+                self.assertTrue(any(f"run mentions {name}" in e for e in self.errors(text)))
 
     def test_install_only_step_is_not_a_browser_job(self) -> None:
         text = self.workflow("npx playwright install chromium", env=False)
@@ -212,7 +266,7 @@ class BrowserEnvironmentParserTest(unittest.TestCase):
             ):
                 with self.subTest(name=name, mapping=mapping):
                     # Use a non-browser step in a separate, non-browser workflow.
-                    text = self.workflow("echo harmless", env=False) + f"        env: {mapping}\n"
+                    text = self.workflow("echo harmless", env=False) + f"        env : {mapping}\n"
                     errors = workflow_errors({"non-browser.yaml": text}, set())
                     self.assertTrue(any(f"step overrides {name}" in error for error in errors))
 
