@@ -137,24 +137,29 @@ def _rx_start_failures():
         AudioFormatUnsupportedError,
         AudioTopologyUnavailableError,
     )
-    from rigplane.usb_audio_resolve import (
-        WindowsAudioAmbiguityError,
-        WindowsAudioEndpointNameError,
-        WindowsAudioTopologyError,
-    )
+    from rigplane.audio._usb_pairing import PairRefused, WindowsAudioTopologyError
 
     private = "private device /private/example could not open"
     return {
         "usb_topology_names": _chained(
-            AudioDeviceSelectionError(private), WindowsAudioEndpointNameError(private)
+            AudioDeviceSelectionError(private),
+            WindowsAudioTopologyError(
+                PairRefused("endpoint_names", "usb_topology_names", (), (private,))
+            ),
         ),
         "usb_topology_unavailable": AudioTopologyUnavailableError(private),
         "usb_topology_unavailable-graph": _chained(
-            AudioDeviceSelectionError(private), WindowsAudioTopologyError(private)
+            AudioDeviceSelectionError(private),
+            WindowsAudioTopologyError(
+                PairRefused("no_codec", "usb_topology_unavailable", (), (private,))
+            ),
         ),
         "usb_ambiguous": AudioDeviceAmbiguousError(private),
         "usb_ambiguous-graph": _chained(
-            AudioDeviceSelectionError(private), WindowsAudioAmbiguityError(private)
+            AudioDeviceSelectionError(private),
+            WindowsAudioTopologyError(
+                PairRefused("contested", "usb_ambiguous", (), (private,))
+            ),
         ),
         "open_timeout": AudioCaptureOpenTimeoutError(private),
         "format": AudioFormatUnsupportedError(private),

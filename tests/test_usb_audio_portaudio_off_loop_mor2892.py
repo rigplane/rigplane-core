@@ -28,6 +28,7 @@ from aiohttp import ClientSession, web
 from aiohttp.test_utils import TestServer
 
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
+from rigplane.audio._usb_raw_windows import RawWindows
 from rigplane.audio.usb_driver import (
     AudioCaptureOpenTimeoutError,
     UsbAudioDriver,
@@ -740,6 +741,10 @@ async def test_late_close_counted_against_pool_bound() -> None:
 def windows_selection(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("rigplane.audio.usb_driver.platform.system", lambda: "Windows")
     monkeypatch.setattr("rigplane.audio.usb_driver._WINDOWS_PNP_TIMEOUT_S", 0.02)
+    monkeypatch.setattr(
+        "rigplane.audio._usb_raw_windows.read_raw_windows",
+        lambda timeout_s: RawWindows("cfgmgr32", ()),
+    )
 
 
 @pytest.mark.timeout(10)
@@ -747,7 +752,6 @@ async def test_optional_pnp_timeout_falls_back_while_worker_stays_tracked(
     monkeypatch: pytest.MonkeyPatch, windows_selection: None
 ) -> None:
     from rigplane.audio.usb_driver import bounded_portaudio_pool
-    from rigplane.usb_audio_resolve import WindowsPnpDevice
 
     gate = threading.Event()
     entered = threading.Event()
@@ -758,22 +762,17 @@ async def test_optional_pnp_timeout_falls_back_while_worker_stays_tracked(
     select = driver._select_windows_devices
 
     def record_selection(devices, records, serial_port):
-        seen.append(records)
+        seen.append(records.devnodes)
         return select(devices, records, serial_port)
 
     monkeypatch.setattr(driver, "_select_windows_devices", record_selection)
 
-    def slow_pnp():
+    def slow_pnp(timeout_s):
         entered.set()
         gate.wait()
-        return [
-            WindowsPnpDevice("serial", "radio", "1234", "5678", "COM3", None),
-            WindowsPnpDevice("audio", "radio", "1234", "5678", None, "USB Audio CODEC"),
-        ]
+        return RawWindows("cfgmgr32", ())
 
-    monkeypatch.setattr(
-        "rigplane.usb_audio_resolve._query_windows_pnp_devices", slow_pnp
-    )
+    monkeypatch.setattr("rigplane.audio._usb_raw_windows.read_raw_windows", slow_pnp)
     started = time.monotonic()
     try:
         await driver.start_rx(lambda _frame: None)
@@ -789,7 +788,7 @@ async def test_optional_pnp_timeout_falls_back_while_worker_stays_tracked(
                 break
             await asyncio.sleep(0.005)
         assert bounded_portaudio_pool.inflight == before
-        assert seen == [[]], "late topology must never enter mapping or publish a cache"
+        assert seen == [()], "late topology must never enter mapping or publish a cache"
         assert driver.selected_rx_device is None
         assert selected is not None
     finally:
@@ -824,7 +823,8 @@ async def test_optional_pnp_timeout_refuses_indistinguishable_radios(
         capture_open_timeout=0.5,
     )
     monkeypatch.setattr(
-        "rigplane.usb_audio_resolve._query_windows_pnp_devices", lambda: gate.wait()
+        "rigplane.audio._usb_raw_windows.read_raw_windows",
+        lambda timeout_s: gate.wait(),
     )
     try:
         with (
@@ -860,9 +860,6 @@ async def test_windows_selection_has_one_deadline_and_no_late_cache(
         return devices
 
     monkeypatch.setattr(backend, "list_devices", delayed_list)
-    monkeypatch.setattr(
-        "rigplane.usb_audio_resolve._query_windows_pnp_devices", lambda: []
-    )
     original = driver._select_windows_devices
 
     def delayed_mapping(*args):
@@ -896,13 +893,13 @@ async def test_windows_cancelled_or_rebound_pnp_cannot_publish_selection(
         driver, backend = _make_driver(capture_open_timeout=0.5)
         driver.set_serial_port("COM3")
 
-        def slow_pnp():
+        def slow_pnp(timeout_s):
             entered.set()
             gate.wait()
-            return []
+            return RawWindows("cfgmgr32", ())
 
         monkeypatch.setattr(
-            "rigplane.usb_audio_resolve._query_windows_pnp_devices", slow_pnp
+            "rigplane.audio._usb_raw_windows.read_raw_windows", slow_pnp
         )
         task = asyncio.create_task(driver.start_rx(lambda _frame: None))
         try:
@@ -930,19 +927,18 @@ async def test_windows_cancelled_or_rebound_pnp_cannot_publish_selection(
 async def test_windows_override_bypasses_pnp_and_aliases_or_halves_are_one_pair(
     monkeypatch: pytest.MonkeyPatch, windows_selection: None
 ) -> None:
-    def forbidden():
+    def forbidden(timeout_s):
         raise AssertionError("explicit override queried topology")
 
-    monkeypatch.setattr(
-        "rigplane.usb_audio_resolve._query_windows_pnp_devices", forbidden
-    )
+    monkeypatch.setattr("rigplane.audio._usb_raw_windows.read_raw_windows", forbidden)
     backend = FakeAudioBackend(_fake_devices())
     driver = UsbAudioDriver(backend=backend, serial_port="COM3", rx_device="1")
     await driver.start_rx(lambda _frame: None)
     await driver.stop_rx()
 
     monkeypatch.setattr(
-        "rigplane.usb_audio_resolve._query_windows_pnp_devices", lambda: []
+        "rigplane.audio._usb_raw_windows.read_raw_windows",
+        lambda timeout_s: RawWindows("cfgmgr32", ()),
     )
     for devices in (
         [
@@ -976,109 +972,74 @@ async def test_windows_override_bypasses_pnp_and_aliases_or_halves_are_one_pair(
 
 
 @pytest.mark.timeout(10)
+@pytest.mark.parametrize(
+    "change,reason,category",
+    [
+        (None, None, None),
+        ("parent", "topology_incomplete", "usb_topology_unavailable"),
+        ("no_codec", "no_codec", "usb_topology_unavailable"),
+        ("names", "endpoint_names", "usb_topology_names"),
+    ],
+)
 async def test_windows_valid_topology_and_wrong_parent_never_share_fallback(
-    monkeypatch: pytest.MonkeyPatch, windows_selection: None
+    monkeypatch: pytest.MonkeyPatch, windows_selection: None, change, reason, category
 ) -> None:
-    from dataclasses import replace
-    from types import SimpleNamespace
+    from rigplane.audio.usb_driver import audio_start_failure_reason
+    from test_usb_pairing_windows import _inject_windows, _synthetic_session
 
-    from rigplane.audio.usb_driver import (
-        AudioDeviceAmbiguousError,
-        AudioDeviceSelectionError,
-        audio_start_failure_reason,
-    )
-    from rigplane.usb_audio_resolve import WindowsPnpDevice
-
-    records = [
-        WindowsPnpDevice("serial", "radio", "1234", "5678", "COM3", None),
-        WindowsPnpDevice("audio", "radio", "1234", "5678", None, "USB Audio CODEC"),
-    ]
-    raw = [
-        {"name": "Built-in", "max_input_channels": 0, "max_output_channels": 2},
-        {"name": "USB Audio CODEC", "max_input_channels": 1, "max_output_channels": 1},
-    ]
+    session = _synthetic_session()
+    rows = session["raw"]["windows"]["devnodes"]
+    if change == "parent":
+        next(row for row in rows if row["class_name"] == "MEDIA")["parent_id"] = (
+            "WRONG-RADIO"
+        )
+    elif change == "no_codec":
+        session["raw"]["windows"]["devnodes"] = [
+            row for row in rows if row["class_name"] != "AudioEndpoint"
+        ]
+    elif change == "names":
+        for device in session["raw"]["portaudio"]["devices"]:
+            device["name"] = "Unlisted"
+    backend, sd = _inject_windows(monkeypatch, session)
     thread_ids: list[int] = []
+    query = sd.query_devices
 
     def query_devices():
         thread_ids.append(threading.get_ident())
-        return raw
+        return query()
 
-    monkeypatch.setattr(
-        "rigplane.audio.usb_driver._extract_sounddevice_module",
-        lambda _backend: SimpleNamespace(query_devices=query_devices),
+    sd.query_devices = query_devices
+    driver = UsbAudioDriver(
+        backend=backend, serial_port="COM3", capture_open_timeout=0.5
     )
-    monkeypatch.setattr(
-        "rigplane.usb_audio_resolve._query_windows_pnp_devices", lambda: records
-    )
-    driver, backend = _make_driver(capture_open_timeout=0.5)
-    driver.set_serial_port("COM3")
-    await driver.start_rx(lambda _frame: None)
-    assert driver.selected_rx_device.index == 1
+    if change is None:
+        await driver.start_rx(lambda _frame: None)
+        assert driver.selected_rx_device.index == 1
+        await driver.stop_rx()
+    else:
+        with pytest.raises(RuntimeError) as raised:
+            await driver.start_rx(lambda _frame: None)
+        assert raised.value.reason == reason
+        assert audio_start_failure_reason(raised.value) == category
+        assert not backend.rx_streams
+        assert driver.selected_rx_device is None
     assert thread_ids and all(t != threading.get_ident() for t in thread_ids)
-    await driver.stop_rx()
-
-    records[1] = replace(records[1], parent_pnp_id="WRONG-RADIO")
-    driver, backend = _make_driver(capture_open_timeout=0.5)
-    driver.set_serial_port("COM3")
-    with pytest.raises(
-        AudioDeviceSelectionError, match="parents do not match"
-    ) as raised:
-        await driver.start_rx(lambda _frame: None)
-    assert audio_start_failure_reason(raised.value) == "usb_topology_unavailable"
-    assert not backend.rx_streams
-    assert driver.selected_rx_device is None
-
-    # The serial radio's topology lists no audio function at all: the name
-    # fallback then sees two candidate pairs and refuses them as ambiguous.
-    driver, backend = _make_driver(capture_open_timeout=0.5)
-    backend.add_device(
-        AudioDeviceInfo(
-            id=AudioDeviceId(9),
-            name="USB Audio CODEC",
-            input_channels=1,
-            output_channels=1,
-        )
-    )
-    driver.set_serial_port("COM3")
-    monkeypatch.setattr(
-        "rigplane.usb_audio_resolve._query_windows_pnp_devices", lambda: records[:1]
-    )
-    with pytest.raises(AudioDeviceAmbiguousError, match="ambiguous") as raised:
-        await driver.start_rx(lambda _frame: None)
-    assert audio_start_failure_reason(raised.value) == "usb_ambiguous"
-    assert not backend.rx_streams
-
-    # An IC-7300 whose codec PortAudio does not list under any host API.
-    from test_usb_audio_resolve import _ic7300_hub_records
-
-    driver, backend = _make_driver(capture_open_timeout=0.5)
-    driver.set_serial_port("COM3")
-    monkeypatch.setattr(
-        "rigplane.usb_audio_resolve._query_windows_pnp_devices", _ic7300_hub_records
-    )
-    with pytest.raises(AudioDeviceSelectionError, match="same-host-API") as raised:
-        await driver.start_rx(lambda _frame: None)
-    assert audio_start_failure_reason(raised.value) == "usb_topology_names"
 
 
 @pytest.mark.timeout(10)
 async def test_actual_windows_resolver_mapping_shares_selection_deadline(
     monkeypatch: pytest.MonkeyPatch, windows_selection: None
 ) -> None:
-    from types import SimpleNamespace
-
     from rigplane.audio.usb_driver import bounded_portaudio_pool
-    from rigplane.usb_audio_resolve import WindowsPnpDevice
+    from test_usb_pairing_windows import _inject_windows, _synthetic_session
 
     total_budget = 0.25
     tolerance = 0.01
-    driver, backend = _make_driver(capture_open_timeout=total_budget)
-    driver.set_serial_port("COM3")
-    devices = _fake_devices()
-    records = [
-        WindowsPnpDevice("serial", "radio", "1234", "5678", "COM3", None),
-        WindowsPnpDevice("audio", "radio", "1234", "5678", None, "USB Audio CODEC"),
-    ]
+    backend, sd = _inject_windows(monkeypatch, _synthetic_session())
+    driver = UsbAudioDriver(
+        backend=backend, serial_port="COM3", capture_open_timeout=total_budget
+    )
+    devices = backend.list_devices()
     gate = threading.Event()
     entered = threading.Event()
     sdk_threads: list[int] = []
@@ -1100,28 +1061,17 @@ async def test_actual_windows_resolver_mapping_shares_selection_deadline(
         time.sleep(0.07)
         return devices
 
+    query = sd.query_devices
+
     def query_devices():
         sdk_threads.append(threading.get_ident())
         entered.set()
         gate.wait()
-        return [
-            {"name": "Built-in", "max_input_channels": 0, "max_output_channels": 2},
-            {
-                "name": "USB Audio CODEC",
-                "max_input_channels": 1,
-                "max_output_channels": 1,
-            },
-        ]
+        return query()
 
     monkeypatch.setattr(bounded_portaudio_pool, "run_bounded", record_submission)
     monkeypatch.setattr(backend, "list_devices", delayed_list)
-    monkeypatch.setattr(
-        "rigplane.usb_audio_resolve._query_windows_pnp_devices", lambda: records
-    )
-    monkeypatch.setattr(
-        "rigplane.audio.usb_driver._extract_sounddevice_module",
-        lambda _backend: SimpleNamespace(query_devices=query_devices),
-    )
+    sd.query_devices = query_devices
     try:
         with pytest.raises(AudioCaptureOpenTimeoutError):
             await driver.start_rx(lambda _frame: None)

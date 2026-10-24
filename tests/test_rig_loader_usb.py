@@ -18,6 +18,28 @@ def test_recorded_usb_codec_loads_and_reaches_profile(rig, vid, pid):
     assert config.to_profile().usb_identity == config.usb_identity
 
 
+@pytest.mark.parametrize("rig", ["ic7300", "ic705", "ic7610", "ftx1"])
+def test_serial_backend_passes_profile_identity_to_audio_driver(monkeypatch, rig):
+    from rigplane.audio.usb_driver import UsbAudioDriver
+    from rigplane.audio.backend import FakeAudioBackend
+    from rigplane.backends.ic7300 import Ic7300SerialRadio
+    from rigplane.backends.ic705 import Ic705SerialRadio
+    from rigplane.backends.icom7610 import Icom7610SerialRadio
+    from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+
+    monkeypatch.setattr("rigplane.audio.usb_driver.PortAudioBackend", FakeAudioBackend)
+    factory = {
+        "ic7300": Ic7300SerialRadio,
+        "ic705": Ic705SerialRadio,
+        "ic7610": Icom7610SerialRadio,
+        "ftx1": YaesuCatRadio,
+    }[rig]
+    radio = factory(device="COM3")
+    driver = radio._audio_driver if rig == "ftx1" else radio._serial_audio_driver
+    assert isinstance(driver, UsbAudioDriver)
+    assert driver._usb_identity == load_rig(Path("rigs") / f"{rig}.toml").usb_identity
+
+
 @pytest.mark.parametrize("rig", ["ic7610", "ic9700", "ic7300mk2", "x6200"])
 def test_unrecorded_profile_has_no_usb_identity(rig):
     config = load_rig(Path("rigs") / f"{rig}.toml")

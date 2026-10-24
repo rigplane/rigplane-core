@@ -2,6 +2,8 @@
 
 import json
 from pathlib import Path
+from dataclasses import asdict
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,12 +12,124 @@ from rigplane.audio._usb_pairing import PairOk, PairRefused, pair
 from rigplane.core.usb_identity import UsbAudioIdentity, UsbFunctionId
 
 
-@pytest.fixture
-def snapshot():
-    session = json.loads(
+def _w1_session():
+    return json.loads(
         Path("tests/fixtures/usb_audio/windows/w1-gtr7-ic7300.json").read_text()
     )["sessions"][0]
-    return adapt_windows(session)
+
+
+def _synthetic_session(*, nested=False, codec=("08BB", "2901")):
+    from rigplane.audio._windows_devnode import DevNodeRecord
+    from rigplane.audio._usb_raw_windows import RawWindows
+
+    hub = r"USB\VID_1234&PID_0001\H"
+    child_hub = r"USB\VID_1234&PID_0002\N"
+    serial = r"USB\VID_10C4&PID_EA60\S"
+    audio = rf"USB\VID_{codec[0]}&PID_{codec[1]}\C"
+    rows = [
+        DevNodeRecord("ROOT", "", "System", "", "", (), ()),
+        DevNodeRecord(hub, "ROOT", "USB", "Hub", "", (), (r"USB\USB20_HUB",)),
+        DevNodeRecord(serial, hub, "Ports", "Serial (COM3)", "", (), ()),
+        DevNodeRecord(
+            audio, child_hub if nested else hub, "MEDIA", "Codec", "", (), ()
+        ),
+        DevNodeRecord(
+            r"SWD\MMDEVAPI\{0.0.1.capture}",
+            audio,
+            "AudioEndpoint",
+            "Microphone (USB Audio CODEC )",
+            "",
+            (),
+            (),
+        ),
+        DevNodeRecord(
+            r"SWD\MMDEVAPI\{0.0.0.render}",
+            audio,
+            "AudioEndpoint",
+            "Speakers (USB Audio CODEC )",
+            "",
+            (),
+            (),
+        ),
+    ]
+    if nested:
+        rows.append(
+            DevNodeRecord(
+                child_hub, hub, "USB", "Nested hub", "", (), (r"USB\USB20_HUB",)
+            )
+        )
+    from test_usb_pairing_rules import _snapshot
+
+    enumeration = _snapshot().portaudio
+    # PortAudio list positions are its indices, including non-audio entries.
+    devices = [
+        dict(
+            asdict(enumeration.devices[0]),
+            index=i,
+            name="Built-in",
+            max_input_channels=0,
+            max_output_channels=0,
+        )
+        for i in range(6)
+    ]
+    for device in enumeration.devices:
+        devices[device.index] = asdict(device)
+    return {
+        "raw": {
+            "windows": RawWindows("cfgmgr32", tuple(rows)).to_json_dict(),
+            "serial_ports": [],
+            "portaudio": {**enumeration.to_json_dict(), "devices": devices},
+        }
+    }
+
+
+def _inject_windows(monkeypatch, session):
+    from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
+    from rigplane.audio._usb_raw_windows import RawWindows
+
+    enumeration = session["raw"]["portaudio"]
+    sd = SimpleNamespace(
+        query_devices=lambda: enumeration["devices"],
+        query_hostapis=lambda: [
+            {
+                "name": api["name"],
+                "devices": [
+                    d["index"]
+                    for d in enumeration["devices"]
+                    if d["hostapi"] == api["index"]
+                ],
+                "default_input_device": api["default_input"],
+                "default_output_device": api["default_output"],
+            }
+            for api in enumeration["hostapis"]
+        ],
+    )
+    backend = FakeAudioBackend(
+        [
+            AudioDeviceInfo(
+                id=AudioDeviceId(d["index"]),
+                name=d["name"],
+                input_channels=d["max_input_channels"],
+                output_channels=d["max_output_channels"],
+            )
+            for d in enumeration["devices"]
+        ]
+    )
+    monkeypatch.setattr("rigplane.audio.usb_driver.platform.system", lambda: "Windows")
+    monkeypatch.setattr("rigplane.audio.usb_driver._get_uid_map", lambda: {})
+    monkeypatch.setattr(
+        "rigplane.audio.usb_driver._extract_sounddevice_module", lambda _backend: sd
+    )
+    monkeypatch.setattr(
+        "rigplane.audio._usb_raw_windows.read_raw_windows",
+        lambda timeout_s: RawWindows.from_json_dict(session["raw"]["windows"]),
+    )
+    return backend, sd
+
+
+@pytest.fixture
+def snapshot():
+    return adapt_windows(_w1_session())
 
 
 @pytest.mark.parametrize(
@@ -50,3 +164,93 @@ def test_s2_w1_wrong_codec_identity_retains_nearby_mme_candidates(snapshot):
         candidate.portaudio_index not in {0, 4} for candidate in result.candidates
     )
     assert result.candidates[0].near_radio
+
+
+@pytest.mark.parametrize(
+    "session",
+    [_w1_session, lambda: _synthetic_session(nested=True)],
+    ids=["w1-ic7300", "nested-ic7610"],
+)
+async def test_driver_shared_pairing_selects_mme_indices(monkeypatch, session):
+    from rigplane.audio.usb_driver import UsbAudioDriver
+
+    backend, _ = _inject_windows(monkeypatch, session())
+    driver = UsbAudioDriver(backend=backend, serial_port="COM3")
+    await driver.start_rx(lambda _frame: None)
+    try:
+        assert (driver.selected_rx_device.index, driver.selected_tx_device.index) == (
+            1,
+            5,
+        )
+        assert driver.rx_running
+    finally:
+        await driver.stop_rx()
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+async def test_driver_refusal_carries_candidates_and_profile_identity(
+    monkeypatch, bounded
+):
+    from rigplane.audio.usb_driver import UsbAudioDriver, audio_start_failure_reason
+
+    backend, _ = _inject_windows(monkeypatch, _w1_session())
+    driver = UsbAudioDriver(
+        backend=backend,
+        serial_port="COM3",
+        usb_identity=UsbAudioIdentity(frozenset({UsbFunctionId("0D8C", "0016")})),
+    )
+    with pytest.raises(RuntimeError) as raised:
+        if bounded:
+            await driver.start_rx(lambda _frame: None)
+        else:
+            driver._ensure_selected_devices()
+    error = raised.value
+    assert error.reason == "codec_identity_mismatch"
+    assert error.evidence[-1] == "refused:codec_identity_mismatch"
+    assert {
+        (c.portaudio_index, c.direction) for c in error.candidates if c.near_radio
+    } == {(1, "capture"), (5, "render")}
+    assert all(
+        c.stable_id and c.display_name and c.hostapi == "MME" for c in error.candidates
+    )
+    assert audio_start_failure_reason(error) == "usb_topology_unavailable"
+    assert not backend.rx_streams
+
+
+def test_windows_public_resolver_uses_shared_rule_for_cmedia_shape(monkeypatch):
+    from rigplane.usb_audio_resolve import resolve_audio_for_serial_port
+
+    session = _synthetic_session(codec=("0D8C", "0012"))
+    _, sd = _inject_windows(monkeypatch, session)
+    result = resolve_audio_for_serial_port("COM3", sounddevice_module=sd)
+    assert result is not None
+    assert (result.rx_device_index, result.tx_device_index) == (1, 5)
+
+
+@pytest.mark.parametrize(
+    "reason,category",
+    [
+        ("unavailable", "usb_topology_unavailable"),
+        ("serial_not_found", "usb_topology_unavailable"),
+        ("topology_incomplete", "usb_topology_unavailable"),
+        ("containment_unproven", "usb_topology_unavailable"),
+        ("serial_ambiguous", "usb_ambiguous"),
+        ("no_codec", "usb_topology_unavailable"),
+        ("codec_ambiguous", "usb_ambiguous"),
+        ("codec_identity_mismatch", "usb_topology_unavailable"),
+        ("contested", "usb_ambiguous"),
+        ("endpoint_names", "usb_topology_names"),
+    ],
+)
+def test_pairing_exception_keeps_each_public_failure_category(reason, category):
+    from rigplane.audio._usb_pairing import WindowsAudioTopologyError
+    from rigplane.audio.usb_driver import audio_start_failure_reason
+
+    refusal = PairRefused(reason, category, (), ("refused:" + reason,))
+    error = WindowsAudioTopologyError(refusal)
+    assert (error.reason, error.evidence, error.candidates) == (
+        reason,
+        refusal.evidence,
+        refusal.candidates,
+    )
+    assert audio_start_failure_reason(error) == category
