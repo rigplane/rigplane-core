@@ -25,6 +25,8 @@ BROWSER_ENTRY_POINTS = (
     "capture-ptt.mjs",  # frontend/fixtures/capture-ptt.mjs launches Chromium.
     "verify:component-kit-api",  # frontend/component-kit-api/verify-package.mjs launches Chromium.
     "verify-package.mjs",  # frontend/component-kit-api/verify-package.mjs (direct invocation).
+    # The worker runs verify:component-kit-api, test:e2e:i18n and capture.mjs.
+    "quick-v2-worker-v1.sh",
 )
 
 
@@ -33,7 +35,11 @@ class WorkflowFormatError(ValueError):
 
 
 def _jobs(workflow: str, text: str) -> dict[str, tuple[str, list[str]]]:
-    if re.search(r"(^|[ :])[&*][A-Za-z_]|<<:", text, re.MULTILINE):
+    if re.search(
+        r"^[ \t]*(?:-[ \t]+(?:[^\s#:][^:\n#]*:[ \t]+)?|[^\s#:][^:\n#]*:[ \t]+)"
+        r"(?:[&*][A-Za-z_][\w-]*(?:[ \t].*)?$|\{[ \t]*<<:)"
+        r"|^[ \t]*(?:-[ \t]+)?<<:", text, re.MULTILINE
+    ):
         raise WorkflowFormatError(f"{workflow}: YAML anchors, aliases and merges are unsupported")
     markers = list(re.finditer(r"(?m)^jobs:[ \t]*(?:#.*)?$", text))
     if len(markers) != 1:
@@ -190,6 +196,7 @@ class BrowserEnvironmentParserTest(unittest.TestCase):
         commands = {
             "playwright test", "test:e2e", "capture.mjs", "capture-ptt.mjs",
             "verify:component-kit-api", "verify-package.mjs",
+            "quick-v2-worker-v1.sh",
         }
         self.assertEqual(set(BROWSER_ENTRY_POINTS), commands)
         self.assertEqual(BROWSER_ENV, {
@@ -208,6 +215,17 @@ class BrowserEnvironmentParserTest(unittest.TestCase):
         self.assertIn("Unexpected browser jobs: new-workflow.yaml:browser", errors)
         self.assertTrue(any("job-level env" in error for error in errors))
 
+    def test_worker_wrapper_without_environment_is_rejected(self) -> None:
+        workflows = {
+            w: self.workflow().replace("  browser:", f"  {j}:") for w, j in EXPECTED_BROWSER_JOBS
+        }
+        workflows["quick.yml"] += self.workflow(
+            '.github/scripts/quick-v2-worker-v1.sh "$GITHUB_WORKSPACE" ...', env=False
+        ).removeprefix("jobs:\n")
+        errors = workflow_errors(workflows)
+        self.assertIn("Unexpected browser jobs: quick.yml:browser", errors)
+        self.assertTrue(any("quick.yml:browser: expected one block job-level env" in e for e in errors))
+
     def test_component_kit_only_job_is_detected_without_environment(self) -> None:
         errors = self.errors(self.workflow("npm run verify:component-kit-api", env=False))
         message = "fixture.yml:browser: expected one block job-level env"
@@ -225,6 +243,11 @@ class BrowserEnvironmentParserTest(unittest.TestCase):
             with self.subTest(token=token):
                 errors = self.errors(self.workflow(token, env=False))
                 self.assertTrue(any("job-level env" in error for error in errors))
+
+    def test_shell_globs_are_not_yaml_references(self) -> None:
+        for run in ("ls *test*", "|\n          ls *.txt\n          echo a && b"):
+            text = self.workflow(run + "\n      - run: node frontend/fixtures/capture.mjs")
+            self.assertEqual(self.errors(text), [])
 
     def test_commented_blocks_and_yaml_references(self) -> None:
         for run, message in (
