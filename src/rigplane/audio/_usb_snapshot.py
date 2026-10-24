@@ -48,3 +48,4 @@ class UsbSnapshot:
     endpoints: tuple[AudioEndpoint, ...]
     portaudio: PortAudioEnumeration
     unavailable: tuple[Unavailable, ...]
+    serial_devices: tuple[str, ...] = ()

@@ -95,14 +95,15 @@ def adapt_windows(session: dict[str, Any]) -> UsbSnapshot:
         return None
 
     serial_ports = []
+    serial_devices = []
     endpoints = []
     for row in windows.devnodes:
         if row.class_name.upper() == "PORTS":
+            serial_owner = owner(row.instance_id)
+            serial_devices.append(serial_owner or row.instance_id)
             port = re.search(r"\((COM\d+)\)", row.friendly_name, re.IGNORECASE)
             if port:
-                serial_ports.append(
-                    SerialPortRef(port[1].upper(), owner(row.instance_id))
-                )
+                serial_ports.append(SerialPortRef(port[1].upper(), serial_owner))
         flow: Flow
         if row.instance_id.upper().startswith("SWD\\MMDEVAPI\\{0.0.1."):
             flow = "capture"
@@ -143,4 +144,5 @@ def adapt_windows(session: dict[str, Any]) -> UsbSnapshot:
         tuple(endpoints),
         enumeration,
         tuple(unavailable),
+        serial_devices=tuple(serial_devices),
     )

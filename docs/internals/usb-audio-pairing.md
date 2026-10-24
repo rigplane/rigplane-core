@@ -24,6 +24,7 @@ The stages run in order, stopping at the first refusal:
   duplicate node IDs refuse with `topology_incomplete`; absent or unsuitable H
   gives `containment_unproven`. Other refusals are `serial_ambiguous`,
   `no_codec`, or `codec_ambiguous`.
+  Windows `Ports` devices count independently of COM names, including LPT entries and unresolved USB owners; LPT names do not create COM references.
 - **S4 — endpoint ownership.** Match PortAudio names to OS endpoint names in
   the corresponding direction. Normalize whitespace around parentheses; retain
   localization, user renames, and numeric prefixes. MME also accepts a listed

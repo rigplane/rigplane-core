@@ -221,10 +221,13 @@ def pair(
         if node.parent and node.parent.casefold() in nested
     ]
     devices = {node.id.casefold(): node for node in boundary if node.kind == "device"}
+    boundary_ids = {node.id.casefold() for node in boundary}
     serial_devices = {
         port.node.casefold()
         for port in snapshot.serial_ports
         if port.node and port.node.casefold() in devices
+    } | {
+        id.casefold() for id in snapshot.serial_devices if id.casefold() in boundary_ids
     }
     if serial_devices != {serial.id.casefold()}:  # rule: S3
         return refuse("serial_ambiguous")
