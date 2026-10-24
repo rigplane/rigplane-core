@@ -65,7 +65,7 @@ def test_parent_join_is_case_insensitive(session):
     )
 
 
-@pytest.mark.parametrize("name", ["Radio RX (COM3)", "Radio RX (COM4)"])
+@pytest.mark.parametrize("name", ["Radio RX (COM3)", "Radio RX (COM4)", "Radio COM3"])
 def test_capture_endpoint_name_with_com_port_keeps_mme_pair(session, name):
     endpoint = next(
         row
@@ -84,18 +84,58 @@ def test_capture_endpoint_name_with_com_port_keeps_mme_pair(session, name):
 
 
 @pytest.mark.parametrize("class_name", ["Ports", "ports", "PORTS", "pOrTs"])
-def test_ports_class_preserves_com_reference(session, class_name):
+@pytest.mark.parametrize(
+    "name", ["Radio (COM3)", "Radio COM3", "Radio com3", "Radio COM3 (com3)"]
+)
+def test_ports_class_preserves_com_reference(session, class_name, name):
     serial = next(
         row
         for row in session["raw"]["windows"]["devnodes"]
         if row["class_name"] == "Ports"
     )
     serial["class_name"] = class_name
+    serial["friendly_name"] = name
     session["raw"]["serial_ports"] = []
 
     assert adapt_windows(session).serial_ports == (
         SerialPortRef("COM3", serial["instance_id"]),
     )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Radio COM3 COM4",
+        "Radio (COM3) (COM4)",
+        "Radio com3 (COM4)",
+        "Radio XCOM3",
+        "Radio COM3X",
+        "Radio _COM3",
+    ],
+)
+def test_ports_class_without_unique_com_token_retains_unnamed_evidence(session, name):
+    serial = next(
+        row
+        for row in session["raw"]["windows"]["devnodes"]
+        if row["class_name"] == "Ports"
+    )
+    serial["friendly_name"] = name
+    session["raw"]["serial_ports"] = []
+
+    snapshot = adapt_windows(session)
+    assert snapshot.serial_ports == ()
+    assert snapshot.serial_devices == (serial["instance_id"],)
+
+
+def test_audio_endpoint_com_token_creates_no_serial_reference(session):
+    for row in session["raw"]["windows"]["devnodes"]:
+        if row["class_name"] == "Ports":
+            row["friendly_name"] = "Renamed serial device"
+        elif row["class_name"] == "AudioEndpoint":
+            row["friendly_name"] = "Radio COM3"
+    session["raw"]["serial_ports"] = []
+
+    assert adapt_windows(session).serial_ports == ()
 
 
 @pytest.mark.parametrize("name", ["", "Renamed serial device", "Printer (LPT1)"])

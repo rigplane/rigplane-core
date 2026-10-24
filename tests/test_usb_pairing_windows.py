@@ -171,11 +171,22 @@ def test_s2_w1_wrong_codec_identity_retains_nearby_mme_candidates(snapshot):
     [_w1_session, lambda: _synthetic_session(nested=True)],
     ids=["w1-ic7300", "nested-ic7610"],
 )
-async def test_driver_shared_pairing_selects_mme_indices(monkeypatch, session):
+@pytest.mark.parametrize("serial_name", [None, "Radio COM3"])
+async def test_driver_shared_pairing_selects_mme_indices(
+    monkeypatch, session, serial_name
+):
     from rigplane.audio import _usb_pairing
     from rigplane.audio.usb_driver import UsbAudioDriver
 
-    backend, _ = _inject_windows(monkeypatch, session())
+    session = session()
+    if serial_name is not None:
+        next(
+            row
+            for row in session["raw"]["windows"]["devnodes"]
+            if row["class_name"] == "Ports"
+        )["friendly_name"] = serial_name
+    session["raw"]["serial_ports"] = []
+    backend, _ = _inject_windows(monkeypatch, session)
     paired = []
     shared_pair = _usb_pairing.pair
 
@@ -230,7 +241,10 @@ async def test_driver_refusal_carries_candidates_and_profile_identity(
     assert not backend.rx_streams
 
 
-def test_windows_public_resolver_uses_shared_rule_for_cmedia_shape(monkeypatch):
+@pytest.mark.parametrize("serial_name", ["Serial (COM3)", "Radio COM3"])
+def test_windows_public_resolver_uses_shared_rule_for_cmedia_shape(
+    monkeypatch, serial_name
+):
     from rigplane.usb_audio_resolve import resolve_audio_for_serial_port
 
     session = _synthetic_session(codec=("0D8C", "0012"))
@@ -240,6 +254,7 @@ def test_windows_public_resolver_uses_shared_rule_for_cmedia_shape(monkeypatch):
     serial = next(row for row in rows if row["class_name"] == "Ports")
     serial["instance_id"] = r"USB\VID_0D8C&PID_0012&MI_00\S"
     serial["parent_id"] = audio["instance_id"]
+    serial["friendly_name"] = serial_name
     for row, index, name in (
         (rows[4], 1, "Microphone (C-Media USB Audio Device)"),
         (rows[5], 5, "Speakers (C-Media USB Audio Device)"),
@@ -292,3 +307,69 @@ def test_pairing_exception_keeps_each_public_failure_category(reason, category):
         refusal.candidates,
     )
     assert audio_start_failure_reason(error) == category
+
+
+def test_windows_refusal_exceptions_are_public_shim_exports():
+    from rigplane.audio import _usb_pairing, _usb_resolve
+    from rigplane.usb_audio_resolve import (
+        WindowsAudioAmbiguityError,
+        WindowsAudioEndpointNameError,
+        WindowsAudioTopologyError,
+    )
+
+    for error_type in (
+        WindowsAudioTopologyError,
+        WindowsAudioAmbiguityError,
+        WindowsAudioEndpointNameError,
+    ):
+        assert getattr(_usb_pairing, error_type.__name__) is error_type
+        assert error_type.__name__ in _usb_resolve.__all__
+        assert issubclass(error_type, WindowsAudioTopologyError)
+
+
+@pytest.mark.parametrize("entrypoint", ["driver", "bounded_driver", "resolver"])
+@pytest.mark.parametrize(
+    "reason,category,error_name",
+    [
+        ("serial_not_found", "usb_topology_unavailable", "WindowsAudioTopologyError"),
+        ("serial_ambiguous", "usb_ambiguous", "WindowsAudioAmbiguityError"),
+        ("endpoint_names", "usb_topology_names", "WindowsAudioEndpointNameError"),
+    ],
+)
+async def test_public_refusal_subclass_matches_wire_reason(
+    monkeypatch, entrypoint, reason, category, error_name
+):
+    from rigplane.audio import _usb_pairing
+    from rigplane.audio.usb_driver import UsbAudioDriver, audio_start_failure_reason
+    import rigplane.usb_audio_resolve as public
+
+    backend, sd = _inject_windows(monkeypatch, _w1_session())
+    candidates = pair(adapt_windows(_w1_session()), "missing", None).candidates
+    refusal = PairRefused(reason, category, candidates, ("refused:" + reason,))
+    monkeypatch.setattr(_usb_pairing, "pair", lambda *args: refusal)
+
+    with pytest.raises(public.WindowsAudioTopologyError) as raised:
+        if entrypoint == "resolver":
+            public.resolve_audio_for_serial_port("COM3", sounddevice_module=sd)
+        else:
+            driver = UsbAudioDriver(backend=backend, serial_port="COM3")
+            if entrypoint == "bounded_driver":
+                await driver.start_rx(lambda _frame: None)
+            else:
+                driver._ensure_selected_devices()
+
+    error = raised.value
+    assert type(error) is getattr(public, error_name)
+    assert error.refusal is refusal
+    assert (error.reason, error.evidence, error.candidates) == (
+        reason,
+        refusal.evidence,
+        candidates,
+    )
+    assert str(error) == (
+        "Windows USB audio parents do not match the serial radio or "
+        "cannot establish a unique same-host-API pair "
+        f"({reason}); select explicit RX/TX devices."
+    )
+    assert audio_start_failure_reason(error) == category
+    assert not backend.rx_streams
