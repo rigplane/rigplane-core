@@ -78,7 +78,7 @@ def test_capture_endpoint_name_with_com_port_keeps_mme_pair(session, name):
         if record["name"] in {original_name, original_name.replace(" )", ")")}:
             record["name"] = name
 
-    result = pair(adapt_windows(session), "COM3")
+    result = pair(adapt_windows(session), "COM3", None)
     assert isinstance(result, PairOk)
     assert (result.rx_index, result.tx_index, result.hostapi) == (1, 5, "MME")
 
