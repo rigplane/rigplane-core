@@ -19,6 +19,10 @@
  *       handler-level guard itself is pinned in `MemorySurface.test.ts`).
  *   (d) the surface unmounts on a layout that declares no `memory` zone, and
  *       remounts exactly once switching back.
+ *   (e) radio-list acquisition, group selection and recall use the real
+ *       controller, HTTP client and memory intent handlers. The shared reply
+ *       is checked by tests/test_memory_list_api.py::
+ *       test_memories_endpoint_serves_a_page_with_the_profile_bounds.
  *
  * Isolated pool by name (`*.component.test.ts`), per the MOR-1272 doctrine.
  */
@@ -26,6 +30,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { MemoryPageDto } from '$lib/types/memory-list';
+import ic705MemoryPage from '../../../../../tests/fixtures/ic705-memory-page.json';
 import type { CommandDeliveryEvent, ControlSessionTransition } from '$lib/transport/ws-client';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
@@ -66,8 +72,9 @@ vi.mock('$lib/audio/audio-manager', () => ({
     onTxAudioDied: () => () => {},
   },
 }));
-vi.mock('$lib/runtime/frontend-runtime', () => ({
+vi.mock('$lib/runtime/frontend-runtime', async () => ({
   runtime: {
+    fetchMemoryPage: (await import('$lib/transport/http-client')).fetchMemoryPage,
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
@@ -208,10 +215,10 @@ function useFacts(state: ServerState, caps: Capabilities): void {
 /** Mounts the REAL `RadioLayout` behind a reactive `skinId`, with a resolved
  *  `SurfacePlan` in context so `zoneOwning()` can answer for real — same
  *  shape as `semantic-cw-keyer-wiring.component.test.ts`'s `renderHosted`. */
-function renderHosted() {
+function renderHosted(skinId: 'desktop-v2' | 'sdr-test' = 'desktop-v2') {
   target = document.createElement('div');
   document.body.appendChild(target);
-  const props = proxy({ skinId: 'desktop-v2' as 'desktop-v2' | 'sdr-test' });
+  const props = proxy({ skinId });
   const context = new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () =>
     resolveSurfacePlan(props.skinId === 'desktop-v2' ? desktopV2Layout : sdrTestLayout,
       readWorkspace({ version: 1 }).workspace)]]);
@@ -225,6 +232,10 @@ const qAll = (sel: string) => target.querySelectorAll(sel);
 const commands = () => vi.mocked(sendCommand).mock.calls.map(([name, params]) => ({ name, params }));
 const press = (node: HTMLElement) => node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
+async function settleList(): Promise<void> {
+  for (let turn = 0; turn < 50; turn++) { await Promise.resolve(); flushSync(); }
+}
+
 beforeEach(() => {
   txHarness = new ManagedAppTxHarness();
   h.txController = txHarness.controller;
@@ -237,6 +248,7 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  vi.unstubAllGlobals();
   document.body.innerHTML = '';
   localStorage.clear();
   expect(h.sessionSubscriber).toBeUndefined();
@@ -273,6 +285,174 @@ describe('recall dispatches the real memory-to-vfo intent, per channel', () => {
       { name: 'memory_to_vfo', params: { channel: ch } },
     ]);
   });
+});
+
+it('makes no memories requests in a hosted layout without a memory zone, even with memory_read', async () => {
+  const fetchMock = vi.fn().mockRejectedValue(new Error('Unexpected memories request'));
+  vi.stubGlobal('fetch', fetchMock);
+  useState(liveState(), { ...liveCaps(), capabilities: ['memory_read'] });
+
+  renderHosted('sdr-test');
+  await settleList();
+
+  expect(q('[data-zone-id="memory"]')).toBeNull();
+  expect(q('[data-testid="memory-surface"]')).toBeNull();
+  expect(q('[data-testid="radio-memories"]')).toBeNull();
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it('cancels in-flight memories requests when the hosted memory surface unmounts and acquires again on remount', async () => {
+  const signals: (AbortSignal | null | undefined)[] = [];
+  const replies: ((response: Response) => void)[] = [];
+  const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+    signals.push(init?.signal);
+    return new Promise<Response>((resolve) => replies.push(resolve));
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  useState(liveState(), { ...liveCaps(), capabilities: ['memory_read'] });
+
+  const props = renderHosted();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(signals[0]?.aborted).toBe(false);
+
+  props.skinId = 'sdr-test';
+  flushSync();
+  expect(q('[data-testid="memory-surface"]')).toBeNull();
+  expect(signals[0]?.aborted).toBe(true);
+  replies[0]({ ok: true, status: 200, json: async () => ic705MemoryPage } as Response);
+  await settleList();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+
+  props.skinId = 'desktop-v2';
+  flushSync();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(q('[data-testid="radio-memories-status"]')?.dataset.status).toBe('loading');
+  expect(signals[1]?.aborted).toBe(false);
+
+  await unmount(component!);
+  component = null;
+  expect(signals[1]?.aborted).toBe(true);
+  replies[1]({ ok: true, status: 200, json: async () => ic705MemoryPage } as Response);
+  await settleList();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+it('acquires IC-705 radio memories only with memory_read, renders them, selects a group and recalls its channel', async () => {
+  const golden = ic705MemoryPage as MemoryPageDto;
+  const requests: URL[] = [];
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), 'http://localhost');
+    expect(url.pathname).toBe('/api/v1/memories');
+    requests.push(url);
+    const group = Number(url.searchParams.get('group') ?? golden.group);
+    const start = Number(url.searchParams.get('start') ?? golden.channels.first);
+    const count = Number(url.searchParams.get('count') ?? 25);
+    const page: MemoryPageDto = {
+      ...golden, group,
+      entries: Array.from({ length: Math.min(count, golden.channels.last - start + 1) }, (_, offset) => {
+        const channel = start + offset;
+        if (channel === 29) return { ...golden.entries.find((entry) => entry.channel === 4)!, channel, group, name: 'MORE RPT' };
+        return { ...(golden.entries.find((entry) => entry.channel === channel) ?? { channel, empty: true }), group };
+      }),
+    };
+    return { ok: true, status: 200, json: async () => page } as Response;
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const caps: Capabilities = {
+    ...liveCaps(), model: 'IC-705', receivers: 1, vfoScheme: 'ab', capabilities: [],
+  };
+
+  useState(liveState(), caps);
+  renderHosted();
+  await settleList();
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(q('[data-testid="radio-memories"]')).toBeNull();
+  await unmount(component!);
+  component = null;
+  target.remove();
+
+  useState(liveState(), { ...caps, capabilities: ['memory_read'] });
+  renderHosted();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(Object.fromEntries(requests[0].searchParams)).toEqual({ count: '25' });
+  await settleList();
+  expect(requests.map((url) => Object.fromEntries(url.searchParams))).toEqual([
+    { count: '25' },
+  ]);
+  expect(q('[data-testid="radio-memories-status"]')?.dataset.status).toBe('ready');
+  const row = q('[data-testid="radio-memory-4"]');
+  expect(row).not.toBeNull();
+  expect(row!.querySelector('.rm-name')?.textContent).toBe('TEST RPT');
+  expect(row!.querySelector('.rm-freq')?.textContent).toBe('146.940.000');
+  expect(row!.querySelector('.rm-mode')?.textContent).toBe('FM');
+  expect(commands()).toEqual([]);
+
+  const more = () => q<HTMLButtonElement>('[data-testid="radio-memories-more"]');
+  expect(more()).not.toBeNull();
+  expect(more()!.disabled).toBe(false);
+  expect(q('[data-testid="radio-memory-29"]')).toBeNull();
+  press(more()!);
+  flushSync();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(Object.fromEntries(requests[1].searchParams)).toEqual({ group: '0', start: '25', count: '25' });
+  expect(more()!.disabled).toBe(true);
+  await settleList();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(q('[data-testid="radio-memory-4"]')?.textContent).toContain('TEST RPT');
+  expect(q('[data-testid="radio-memory-29"]')?.textContent).toContain('MORE RPT');
+  expect(more()!.disabled).toBe(false);
+
+  press(more()!);
+  flushSync();
+  await settleList();
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect(Object.fromEntries(requests[2].searchParams)).toEqual({ group: '0', start: '50', count: '25' });
+  expect(more()).not.toBeNull();
+  press(more()!);
+  flushSync();
+  await settleList();
+  expect(fetchMock).toHaveBeenCalledTimes(4);
+  expect(Object.fromEntries(requests[3].searchParams)).toEqual({ group: '0', start: '75', count: '25' });
+  expect(more()).toBeNull();
+
+  const chooser = q<HTMLInputElement>('[data-testid="radio-memories-group"]');
+  expect(chooser).not.toBeNull();
+  expect([chooser!.min, chooser!.max, chooser!.value]).toEqual(['0', '99', '0']);
+  press(chooser!);
+  chooser!.value = '7';
+  chooser!.dispatchEvent(new Event('change', { bubbles: true }));
+  flushSync();
+  expect(Object.fromEntries(requests[4].searchParams)).toEqual({ group: '7', count: '25' });
+  await settleList();
+  expect(requests.slice(4).map((url) => Object.fromEntries(url.searchParams))).toEqual([
+    { group: '7', count: '25' },
+  ]);
+  expect(q('[data-testid="radio-memory-29"]')).toBeNull();
+  expect(more()).not.toBeNull();
+  expect(chooser!.value).toBe('7');
+  expect(q('[data-testid="radio-memories-status"]')?.dataset.status).toBe('ready');
+  expect(q('[data-testid="radio-memory-4"]')?.textContent).toContain('TEST RPT');
+  expect(commands()).toEqual([]);
+  const recall = q<HTMLButtonElement>('[data-testid="radio-memory-4-recall"]');
+  expect(recall).not.toBeNull();
+  expect(recall!.disabled).toBe(false);
+  press(recall!);
+  flushSync();
+  expect(commands()).toEqual([{ name: 'set_memory_mode', params: { group: 7, channel: 4 } }]);
+  expect(q('[data-testid="radio-memory-4"]')?.classList.contains('selected')).toBe(true);
+
+  const reload = q<HTMLButtonElement>('[data-testid="radio-memories-reload"]');
+  expect(reload).not.toBeNull();
+  expect(reload!.disabled).toBe(false);
+  press(reload!);
+  flushSync();
+  expect(Object.fromEntries(requests[5].searchParams)).toEqual({ group: '7', count: '25' });
+  await settleList();
+  expect(requests).toHaveLength(6);
+  expect(chooser!.value).toBe('7');
+  expect(q('[data-testid="radio-memories-status"]')?.dataset.status).toBe('ready');
+  expect(q('[data-testid="radio-memory-4"]')?.textContent).toContain('TEST RPT');
+  expect(commands()).toEqual([{ name: 'set_memory_mode', params: { group: 7, channel: 4 } }]);
 });
 
 /* ── (c) STORE refused under the WRONG-VFO doctrine ────────────── */

@@ -16,7 +16,7 @@ function render(props: Record<string, unknown> = {}) {
   document.body.appendChild(target);
   const component = mount(RadioMemoryList, {
     target,
-    props: { status: 'ready', error: null, entries: [stored, empty], group: 0, groups: { first: 0, last: 99 }, recall: true, ...props },
+    props: { status: 'ready', error: null, entries: [stored, empty], group: 0, groups: { first: 0, last: 99 }, recall: true, hasMore: false, ...props },
   });
   flushSync();
   mounted.push(() => { unmount(component); target.remove(); });
@@ -86,6 +86,29 @@ describe('RadioMemoryList', () => {
   it('shows loading and the failure text', () => {
     expect(render({ status: 'loading', entries: [] }).textContent).toContain('Reading');
     expect(render({ status: 'error', error: 'fetchMemoryPage: 503', entries: [] }).textContent).toContain('503');
+  });
+
+  it('shows More only when channels remain and invokes the callback only on click', () => {
+    const onLoadMore = vi.fn();
+    const root = render({ hasMore: true, onLoadMore });
+    const more = root.querySelector<HTMLButtonElement>('[data-testid="radio-memories-more"]');
+    expect(more).not.toBeNull();
+    expect(more!.textContent?.trim()).toBe('More');
+    expect(more!.disabled).toBe(false);
+    expect(onLoadMore).not.toHaveBeenCalled();
+    more!.click();
+    expect(onLoadMore).toHaveBeenCalledOnce();
+    expect(render({ hasMore: false, onLoadMore }).querySelector('[data-testid="radio-memories-more"]')).toBeNull();
+  });
+
+  it('disables More while a page is in flight', () => {
+    const onLoadMore = vi.fn();
+    const root = render({ hasMore: true, status: 'loading', onLoadMore });
+    const more = root.querySelector<HTMLButtonElement>('[data-testid="radio-memories-more"]');
+    expect(more).not.toBeNull();
+    expect(more!.disabled).toBe(true);
+    more!.click();
+    expect(onLoadMore).not.toHaveBeenCalled();
   });
 });
 

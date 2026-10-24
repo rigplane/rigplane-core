@@ -32,6 +32,7 @@ vi.mock('$lib/transport/http-client', async (importOriginal) => ({
   ...await importOriginal<typeof import('$lib/transport/http-client')>(),
   fetchCapabilities: vi.fn(),
   fetchInfo: vi.fn().mockResolvedValue({}),
+  fetchMemoryPage: vi.fn(),
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({
@@ -134,7 +135,7 @@ vi.mock('./system-controller', async () => {
 
 // ── Import modules under test after mocks are hoisted ──
 
-import { fetchCapabilities } from '$lib/transport/http-client';
+import { fetchCapabilities, fetchMemoryPage } from '$lib/transport/http-client';
 import { connect, disconnectAll, getChannel, getControlSession, onControlSessionTransition, onMessage, sendRaw, emitLocalNotification } from '$lib/transport/ws-client';
 import { getCapabilities, setCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 import { radio, subscribeRadioState } from '$lib/stores/radio.svelte';
@@ -178,6 +179,22 @@ async function freshRuntime() {
   rt._capabilitiesUnsubscribe = null;
   return mod.runtime;
 }
+
+it('delegates memory-page requests, cancellation, replies and failures', async () => {
+  const runtime = await freshRuntime();
+  const request = { group: 7, start: 25, count: 25 };
+  const signal = new AbortController().signal;
+  const page: Awaited<ReturnType<typeof fetchMemoryPage>> = {
+    addressing: 'group_channel', group: 7, recall: true, entries: [],
+    groups: { first: 0, last: 99 }, channels: { first: 0, last: 99 },
+  };
+  vi.mocked(fetchMemoryPage).mockResolvedValueOnce(page);
+  await expect(runtime.fetchMemoryPage(request, signal)).resolves.toBe(page);
+  expect(fetchMemoryPage).toHaveBeenLastCalledWith(request, signal);
+  const error = new Error('fetchMemoryPage: 503');
+  vi.mocked(fetchMemoryPage).mockRejectedValueOnce(error);
+  await expect(runtime.fetchMemoryPage(request, signal)).rejects.toBe(error);
+});
 
 describe('FrontendRuntime control-session facade (MOR-1723)', () => {
   it('reads through and directly delegates its disposer without transport effects', async () => {

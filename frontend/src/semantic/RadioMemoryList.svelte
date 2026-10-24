@@ -15,8 +15,10 @@
     group: number | null;
     groups: { first: number; last: number } | null;
     recall: boolean;
+    hasMore?: boolean;
     onGroupChange?: (group: number) => void;
     onReload?: () => void;
+    onLoadMore?: () => void;
     onRecall?: (group: number, channel: number) => boolean;
   }
 </script>
@@ -25,7 +27,7 @@
   import { formatFrequencyString } from '../components-v2/display/frequency-format';
   import { formatShift, formatTone } from './memory-list-format';
 
-  let { status, error, entries, group, groups, recall, onGroupChange, onReload, onRecall }: RadioMemoryListProps = $props();
+  let { status, error, entries, group, groups, recall, hasMore = false, onGroupChange, onReload, onLoadMore, onRecall }: RadioMemoryListProps = $props();
 
   let stored = $derived(entries.filter((entry) => !entry.empty));
   let hasGroups = $derived(groups !== null && groups.last > groups.first);
@@ -52,6 +54,11 @@
     <button type="button" data-testid="radio-memories-reload" onclick={() => onReload?.()} disabled={status === 'loading'}>
       Reload
     </button>
+    {#if hasMore}
+      <button type="button" data-testid="radio-memories-more" onclick={() => onLoadMore?.()} disabled={status === 'loading'}>
+        More
+      </button>
+    {/if}
     <span data-testid="radio-memories-status" data-status={status}>
       {#if status === 'loading'}Reading… {stored.length}{:else if status === 'error'}{error}{:else if status === 'ready'}{stored.length} stored{/if}
     </span>

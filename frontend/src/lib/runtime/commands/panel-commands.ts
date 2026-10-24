@@ -264,6 +264,7 @@ function validMemoryChannel(channel: number): boolean {
 
 export function makeMemoryHandlers() {
   return {
+    fetchPage: (...args: Parameters<typeof runtime.fetchMemoryPage>) => runtime.fetchMemoryPage(...args),
     onRecall: (channel: number): boolean => {
       if (!validMemoryChannel(channel) || currentMemorySnapshot() === null) return false;
       dispatchRadioIntent({ name: 'set_memory_mode', params: { channel } });
