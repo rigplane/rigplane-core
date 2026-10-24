@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from rigplane.audio._usb_adapt_windows import adapt_windows
+from rigplane.audio._usb_pairing import PairOk, pair
+from rigplane.audio._usb_snapshot import SerialPortRef
 
 
 @pytest.fixture
@@ -60,6 +62,39 @@ def test_parent_join_is_case_insensitive(session):
     assert (
         len([endpoint for endpoint in snapshot.endpoints if endpoint.owner == codec.id])
         == 2
+    )
+
+
+@pytest.mark.parametrize("name", ["Radio RX (COM3)", "Radio RX (COM4)"])
+def test_capture_endpoint_name_with_com_port_keeps_mme_pair(session, name):
+    endpoint = next(
+        row
+        for row in session["raw"]["windows"]["devnodes"]
+        if row["friendly_name"] == "Microphone (USB Audio CODEC )"
+    )
+    original_name = endpoint["friendly_name"]
+    endpoint["friendly_name"] = name
+    for record in session["raw"]["portaudio"]["devices"]:
+        if record["name"] in {original_name, original_name.replace(" )", ")")}:
+            record["name"] = name
+
+    result = pair(adapt_windows(session), "COM3")
+    assert isinstance(result, PairOk)
+    assert (result.rx_index, result.tx_index, result.hostapi) == (1, 5, "MME")
+
+
+@pytest.mark.parametrize("class_name", ["Ports", "ports", "PORTS", "pOrTs"])
+def test_ports_class_preserves_com_reference(session, class_name):
+    serial = next(
+        row
+        for row in session["raw"]["windows"]["devnodes"]
+        if row["class_name"] == "Ports"
+    )
+    serial["class_name"] = class_name
+    session["raw"]["serial_ports"] = []
+
+    assert adapt_windows(session).serial_ports == (
+        SerialPortRef("COM3", serial["instance_id"]),
     )
 
 
