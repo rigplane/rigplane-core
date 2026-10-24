@@ -36,8 +36,8 @@ class WorkflowFormatError(ValueError):
 
 def _jobs(workflow: str, text: str) -> dict[str, tuple[str, list[str]]]:
     if re.search(
-        r"^[ \t]*(?:-[ \t]+(?:[^\s#:][^:\n#]*:[ \t]+)?|[^\s#:][^:\n#]*:[ \t]+)"
-        r"(?:[&*][A-Za-z_][\w-]*(?:[ \t].*)?$|\{[ \t]*<<:)"
+        r"^[ \t]*(?:-[ \t]+(?:[\w.\-'\"]+[ \t]*:[ \t]+)?|[\w.\-'\"]+[ \t]*:[ \t]+)"
+        r"(?:[&*][^\s,\[\]{}]+(?:[ \t].*)?$|\{[ \t]*<<:)"
         r"|^[ \t]*(?:-[ \t]+)?<<:", text, re.MULTILINE
     ):
         raise WorkflowFormatError(f"{workflow}: YAML anchors, aliases and merges are unsupported")
@@ -245,7 +245,10 @@ class BrowserEnvironmentParserTest(unittest.TestCase):
                 self.assertTrue(any("job-level env" in error for error in errors))
 
     def test_shell_globs_are_not_yaml_references(self) -> None:
-        for run in ("ls *test*", "|\n          ls *.txt\n          echo a && b"):
+        for run in (
+            "ls *test*",
+            "|\n          ls *.txt\n          echo Matches: *test\n          echo a && b",
+        ):
             text = self.workflow(run + "\n      - run: node frontend/fixtures/capture.mjs")
             self.assertEqual(self.errors(text), [])
 
@@ -255,6 +258,12 @@ class BrowserEnvironmentParserTest(unittest.TestCase):
             ("> # browser smoke\n          node frontend/fixtures/capture.mjs", "job-level env"),
             ("*capture", "anchors, aliases and merges"),
             ("&capture echo harmless", "anchors, aliases and merges"),
+            ("*browser.cmd", "anchors, aliases and merges"),
+            ("&browser.cmd node frontend/fixtures/capture.mjs", "anchors, aliases and merges"),
+            (
+                "&browser.cmd node frontend/fixtures/capture.mjs\n      - run: *browser.cmd",
+                "anchors, aliases and merges",
+            ),
             ("echo harmless\n        env: {<<: {A: b}}", "anchors, aliases and merges"),
         ):
             self.assertTrue(any(message in e for e in self.errors(self.workflow(run, env=False))))
