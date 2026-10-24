@@ -2,8 +2,12 @@
 
 The pure Windows rule lives in `src/rigplane/audio/_usb_pairing.py: pair`.
 `src/rigplane/audio/_usb_adapt_windows.py: adapt_windows` converts one capture
-session into a normalized snapshot without querying devices. This change is
-dormant: the audio driver still uses the existing resolver.
+session into a normalized snapshot without querying devices. Both
+`src/rigplane/audio/usb_driver.py: UsbAudioDriver._select_windows_devices` and
+`src/rigplane/audio/_usb_resolve.py: resolve_audio_for_serial_port` use this rule.
+Driver refusals raise `src/rigplane/audio/_usb_pairing.py: WindowsAudioTopologyError`,
+which retains the reason, evidence, and candidates. The driver keeps its
+unambiguous-name fallback when raw topology is unavailable.
 
 The stages run in order, stopping at the first refusal:
 

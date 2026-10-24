@@ -172,9 +172,19 @@ def test_s2_w1_wrong_codec_identity_retains_nearby_mme_candidates(snapshot):
     ids=["w1-ic7300", "nested-ic7610"],
 )
 async def test_driver_shared_pairing_selects_mme_indices(monkeypatch, session):
+    from rigplane.audio import _usb_pairing
     from rigplane.audio.usb_driver import UsbAudioDriver
 
     backend, _ = _inject_windows(monkeypatch, session())
+    paired = []
+    shared_pair = _usb_pairing.pair
+
+    def record_pair(snapshot, port, identity):
+        result = shared_pair(snapshot, port, identity)
+        paired.append(result)
+        return result
+
+    monkeypatch.setattr(_usb_pairing, "pair", record_pair)
     driver = UsbAudioDriver(backend=backend, serial_port="COM3")
     await driver.start_rx(lambda _frame: None)
     try:
@@ -183,6 +193,9 @@ async def test_driver_shared_pairing_selects_mme_indices(monkeypatch, session):
             5,
         )
         assert driver.rx_running
+        assert len(paired) == 1
+        assert isinstance(paired[0], PairOk)
+        assert paired[0].hostapi == "MME"
     finally:
         await driver.stop_rx()
 
@@ -221,10 +234,35 @@ def test_windows_public_resolver_uses_shared_rule_for_cmedia_shape(monkeypatch):
     from rigplane.usb_audio_resolve import resolve_audio_for_serial_port
 
     session = _synthetic_session(codec=("0D8C", "0012"))
+    # Synthetic composite device: serial and audio functions have one owner.
+    rows = session["raw"]["windows"]["devnodes"]
+    audio = next(row for row in rows if row["class_name"] == "MEDIA")
+    serial = next(row for row in rows if row["class_name"] == "Ports")
+    serial["instance_id"] = r"USB\VID_0D8C&PID_0012&MI_00\S"
+    serial["parent_id"] = audio["instance_id"]
+    for row, index, name in (
+        (rows[4], 1, "Microphone (C-Media USB Audio Device)"),
+        (rows[5], 5, "Speakers (C-Media USB Audio Device)"),
+    ):
+        row["friendly_name"] = name
+        session["raw"]["portaudio"]["devices"][index]["name"] = name[:31]
     _, sd = _inject_windows(monkeypatch, session)
     result = resolve_audio_for_serial_port("COM3", sounddevice_module=sd)
     assert result is not None
     assert (result.rx_device_index, result.tx_device_index) == (1, 5)
+
+
+@pytest.mark.parametrize("index", [1, 5])
+async def test_driver_refuses_pair_indices_missing_from_backend(monkeypatch, index):
+    from rigplane.audio.usb_driver import AudioDeviceSelectionError, UsbAudioDriver
+
+    backend, _ = _inject_windows(monkeypatch, _w1_session())
+    devices = [device for device in backend.list_devices() if int(device.id) != index]
+    monkeypatch.setattr(backend, "list_devices", lambda: devices)
+    driver = UsbAudioDriver(backend=backend, serial_port="COM3")
+    with pytest.raises(AudioDeviceSelectionError, match="enumerated audio devices"):
+        await driver.start_rx(lambda _frame: None)
+    assert not backend.rx_streams
 
 
 @pytest.mark.parametrize(

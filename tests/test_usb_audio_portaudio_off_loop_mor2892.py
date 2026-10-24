@@ -924,8 +924,9 @@ async def test_windows_cancelled_or_rebound_pnp_cannot_publish_selection(
 
 
 @pytest.mark.timeout(10)
+@pytest.mark.parametrize("unavailable", ["empty", "reader_error"])
 async def test_windows_override_bypasses_pnp_and_aliases_or_halves_are_one_pair(
-    monkeypatch: pytest.MonkeyPatch, windows_selection: None
+    monkeypatch: pytest.MonkeyPatch, windows_selection: None, unavailable
 ) -> None:
     def forbidden(timeout_s):
         raise AssertionError("explicit override queried topology")
@@ -936,10 +937,12 @@ async def test_windows_override_bypasses_pnp_and_aliases_or_halves_are_one_pair(
     await driver.start_rx(lambda _frame: None)
     await driver.stop_rx()
 
-    monkeypatch.setattr(
-        "rigplane.audio._usb_raw_windows.read_raw_windows",
-        lambda timeout_s: RawWindows("cfgmgr32", ()),
-    )
+    def unreadable(timeout_s):
+        if unavailable == "reader_error":
+            raise OSError("topology unavailable")
+        return RawWindows("cfgmgr32", ())
+
+    monkeypatch.setattr("rigplane.audio._usb_raw_windows.read_raw_windows", unreadable)
     for devices in (
         [
             AudioDeviceInfo(

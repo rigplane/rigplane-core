@@ -55,6 +55,21 @@ class PairRefused:
     evidence: tuple[str, ...]
 
 
+class WindowsAudioTopologyError(RuntimeError):
+    """A shared pairing refusal, including candidates for explicit selection."""
+
+    def __init__(self, refusal: PairRefused) -> None:
+        self.refusal = refusal
+        self.reason = refusal.reason
+        self.evidence = refusal.evidence
+        self.candidates = refusal.candidates
+        super().__init__(
+            "Windows USB audio parents do not match the serial radio or "
+            "cannot establish a unique same-host-API pair "
+            f"({refusal.reason}); select explicit RX/TX devices."
+        )
+
+
 def _matches(
     snapshot: UsbSnapshot, record: PortAudioDeviceRecord, api: HostApiRecord, flow: Flow
 ) -> tuple[AudioEndpoint, ...]:
