@@ -154,12 +154,18 @@ jobs:
     # doc: rigplane-tower/docs/development/mac-mini-self-hosted-runners.md.
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 25
+    # MOR-3778: presetting the variables Chromium's browser process adds at
+    # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
+    # loop test. Nothing in this repo reads them.
     env:
       # Pin uv to the project's minimum Python. Without this, `uv run`
       # satisfies requires-python=">=3.11" with the newest interpreter on
       # the runner (3.13), so the "Python 3.11" job silently tested 3.13
       # (MOR-590).
       UV_PYTHON: "3.11"
+      DBUS_SESSION_BUS_ADDRESS: 'disabled:'
+      FC_FONTATIONS: '1'
+      VK_ICD_FILENAMES: ''
 
     steps:
       - uses: actions/checkout@v6
