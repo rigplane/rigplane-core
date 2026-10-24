@@ -207,6 +207,102 @@ def test_finalize_does_not_lose_output_or_unrelated_files(
     assert extra.read_text(encoding="utf-8") == "keep"
 
 
+@pytest.mark.parametrize("preexisting_file", [None, "shared.txt"])
+def test_first_session_refuses_a_preexisting_stage(
+    tmp_path: Path, readers: dict, preexisting_file: str | None
+) -> None:
+    stage = tmp_path / "stage"
+    stage.mkdir(mode=0o755)
+    if preexisting_file is not None:
+        (stage / preexisting_file).write_text("keep", encoding="utf-8")
+    before = {path.name: path.read_bytes() for path in stage.iterdir()}
+    mode = stage.stat().st_mode
+    with pytest.raises(ValueError, match="stage directory already exists"):
+        capture.write_session(stage, session="connected", radios=_RADIOS)
+    assert {path.name: path.read_bytes() for path in stage.iterdir()} == before
+    assert stage.stat().st_mode == mode
+    assert all(reader.call_count == 0 for reader in readers.values())
+
+
+@pytest.mark.parametrize("operation", ["write_session", "finalize"])
+def test_existing_stage_lock_refuses_capture_without_changes(
+    tmp_path: Path, readers: dict, operation: str
+) -> None:
+    stage = tmp_path / "stage"
+    stage.mkdir(mode=0o755)
+    lock = stage / ".lock"
+    lock.write_text("another process", encoding="utf-8")
+    before = {path.name: path.read_bytes() for path in stage.iterdir()}
+    mode = stage.stat().st_mode
+    out = tmp_path / "capture.json"
+    with pytest.raises(
+        ValueError, match="another usb-capture is using this stage directory"
+    ):
+        if operation == "write_session":
+            capture.write_session(stage, session="connected", radios=_RADIOS)
+        else:
+            capture.finalize(stage, out)
+    assert {path.name: path.read_bytes() for path in stage.iterdir()} == before
+    assert stage.stat().st_mode == mode
+    assert not out.exists()
+    assert all(reader.call_count == 0 for reader in readers.values())
+
+
+@pytest.mark.asyncio
+async def test_cli_finalize_attempts_all_cleanup_and_reports_only_leftovers(
+    tmp_path: Path,
+    readers: dict,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    stage = tmp_path / "stage"
+    paths = [
+        capture.write_session(stage, session="connected", radios=_RADIOS),
+        capture.write_session(stage, session="unplugged", target="radio-a"),
+        capture.write_session(stage, session="replugged", target="radio-a"),
+    ]
+    leftover = paths[0]
+    unlink = Path.unlink
+    rmdir = Path.rmdir
+    unlink_attempts = []
+    rmdir_attempts = []
+
+    def remove_file(path: Path, *args, **kwargs) -> None:
+        unlink_attempts.append(path)
+        if path == leftover:
+            raise PermissionError("file is in use")
+        unlink(path, *args, **kwargs)
+
+    def remove_directory(path: Path) -> None:
+        rmdir_attempts.append(path)
+        rmdir(path)
+
+    monkeypatch.setattr(Path, "unlink", remove_file)
+    monkeypatch.setattr(Path, "rmdir", remove_directory)
+    out = tmp_path / "capture.json"
+    args = _build_parser().parse_args(
+        [
+            "audio",
+            "usb-capture",
+            "--stage-dir",
+            str(stage),
+            "--finalize",
+            "--out",
+            str(out),
+        ]
+    )
+    assert await _run(args) == 1
+    assert capsys.readouterr().err == (
+        f"Error: bundle written; delete these files by hand: {leftover}\n"
+    )
+    assert unlink_attempts == [*paths, stage / ".lock"]
+    assert rmdir_attempts == [stage]
+    assert list(stage.iterdir()) == [leftover]
+    assert json.loads(out.read_text(encoding="utf-8"))["schema"] == (
+        "rigplane.usb_audio_capture/1"
+    )
+
+
 @pytest.mark.parametrize(
     "part,module",
     [("portaudio", "sounddevice"), ("serial_ports", "serial.tools.list_ports")],
@@ -333,18 +429,70 @@ async def test_command_non_windows_exits_two(
 async def test_cli_stages_and_finalizes_without_radio(
     tmp_path: Path,
     readers: dict,
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import rigplane.cli as cli
-
-    monkeypatch.setattr(
-        cli, "_build_backend_config", Mock(side_effect=AssertionError("no connection"))
+    serials = ["RADIO_A_SERIAL", "RADIO_B_SERIAL"]
+    port = readers["ports"].return_value[0]
+    ports = [
+        SimpleNamespace(
+            **{
+                **vars(port),
+                "device": f"COM{index + 3}",
+                "name": f"COM{index + 3}",
+                "serial_number": serial,
+                "hwid": f"USB SER={serial}",
+            }
+        )
+        for index, serial in enumerate(serials)
+    ]
+    radio_a = DevNodeRecord(
+        rf"USB\VID_10C4&PID_EA60\{serials[0]}",
+        "",
+        "Ports",
+        "Serial A",
+        "Device A",
+        (),
+        (),
     )
+    radio_b = DevNodeRecord(
+        rf"USB\VID_1234&PID_5678\{serials[1]}",
+        "",
+        "USB",
+        "Radio B",
+        "Device B",
+        (),
+        (),
+    )
+    radio_b_child = DevNodeRecord(
+        rf"USB\VID_1234&PID_5678&MI_00\{serials[1]}",
+        radio_b.instance_id,
+        "Ports",
+        "Serial B",
+        "Device B",
+        (),
+        (),
+    )
+    readers["raw"].side_effect = [
+        RawWindows("cfgmgr32", nodes)
+        for nodes in (
+            (radio_a, radio_b, radio_b_child),
+            (radio_b, radio_b_child),
+            (radio_a, radio_b, radio_b_child),
+        )
+    ]
+    readers["ports"].side_effect = [ports, [ports[1]], ports]
     stage = tmp_path / "stage"
     base = ["audio", "usb-capture", "--stage-dir", str(stage)]
     args = _build_parser().parse_args(
-        [*base, "--session", "connected", "--radio", "radio-a=COM3"]
+        [
+            *base,
+            "--session",
+            "connected",
+            "--radio",
+            "radio-a=COM3",
+            "--radio",
+            "radio-b=COM4",
+        ]
     )
     assert await _run(args) == 0
     output = capsys.readouterr().out
@@ -352,8 +500,38 @@ async def test_cli_stages_and_finalizes_without_radio(
         "01-connected.json" in output
         and "--session unplugged --target radio-a" in output
     )
+    for session in ("unplugged", "replugged"):
+        args = _build_parser().parse_args(
+            [*base, "--session", session, "--target", "radio-a"]
+        )
+        assert await _run(args) == 0
     out = tmp_path / "capture.json"
     args = _build_parser().parse_args([*base, "--finalize", "--out", str(out)])
     assert await _run(args) == 0
     assert str(out) in capsys.readouterr().out
+    text = out.read_text(encoding="utf-8")
+    bundle = json.loads(text)
+    assert bundle["schema"] == "rigplane.usb_audio_capture/1"
+    sessions = bundle["sessions"]
+    assert [(session["session"], session["target"]) for session in sessions] == [
+        ("connected", None),
+        ("unplugged", "radio-a"),
+        ("replugged", "radio-a"),
+    ]
+    assert sessions[0]["radios"] == [
+        {"profile": "radio-a", "serial_port": "COM3"},
+        {"profile": "radio-b", "serial_port": "COM4"},
+    ]
+    assert all(session["radios"] == [] for session in sessions[1:])
+    assert all(serial not in text for serial in serials)
+    radio_b_ids = [
+        tuple(
+            node["instance_id"]
+            for node in session["raw"]["windows"]["devnodes"]
+            if node["instance_id"].startswith(r"USB\VID_1234&PID_5678")
+        )
+        for session in sessions
+    ]
+    assert len(radio_b_ids[0]) == 2
+    assert radio_b_ids[0] == radio_b_ids[1] == radio_b_ids[2]
     assert not stage.exists()

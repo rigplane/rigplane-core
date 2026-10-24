@@ -54,6 +54,7 @@ def test_fallback_warns_and_preserves_all_seven_fields(
     )
     assert hub.compatible_ids == (r"USB\USB20_HUB",)
     assert result.devnodes[1].friendly_name == ""
+    assert result.devnodes[1].device_desc == "Controller description"
     assert result.devnodes[1].compatible_ids == ()
     assert any(
         r.levelno == logging.WARNING
@@ -65,13 +66,16 @@ def test_fallback_warns_and_preserves_all_seven_fields(
     script = run.call_args.args[0][-1]
     for literal in (
         "Get-PnpDevice -PresentOnly",
+        "DEVPKEY_Device_FriendlyName",
+        "DEVPKEY_Device_DeviceDesc",
         "DEVPKEY_Device_Parent",
-        "DeviceDesc",
         "HardwareID",
         "CompatibleID",
         "UTF8Encoding",
     ):
         assert literal in script
+    assert "$d.DeviceDesc" not in script
+    assert "$d.FriendlyName" not in script
     assert "Where-Object" not in script
 
 

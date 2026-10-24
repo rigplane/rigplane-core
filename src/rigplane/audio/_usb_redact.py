@@ -54,7 +54,7 @@ def _prune_windows_nodes(
         if folded not in kept:
             return ""
         if folded.startswith(("usb\\", "swd\\mmdevapi\\")):
-            return instance_id
+            return by_id.get(folded, {"instance_id": instance_id})["instance_id"]
         return "opaque:" + _token(key, folded)
 
     result = []
@@ -85,40 +85,63 @@ def redact_bundle(
             if match:
                 values.add(match[1])
 
-    representatives: dict[str, str] = {}
     replacements: dict[str, str] = {}
     for value in sorted(values):
-        representative = representatives.setdefault(value.replace(" ", "_"), value)
-        token = _token(key, representative)
-        for twin in (value, value.replace(" ", "_"), value.replace("_", " ")):
-            replacements[twin] = token
-    pattern = (
+        canonical = value.replace(" ", "_").casefold()
+        token = _token(key, canonical)
+        replacements[canonical] = token
+    spellings = {value.replace(" ", "_") for value in values} | replacements.keys()
+    alternatives = "|".join(
+        "[ _]".join(re.escape(part) for part in value.split("_"))
+        for value in sorted(spellings, key=lambda value: (-len(value), value))
+    )
+    id_pattern = (
+        re.compile(r"(?<![^\\&#:])(?:" + alternatives + r")(?![^\\&#:])", re.IGNORECASE)
+        if replacements
+        else None
+    )
+    name_pattern = (
         re.compile(
-            r"(?<![A-Za-z0-9])(?:"
-            + "|".join(
-                re.escape(value)
-                for value in sorted(
-                    replacements, key=lambda value: (-len(value), value)
-                )
-            )
-            + r")(?![A-Za-z0-9])"
+            r"(?<![A-Za-z0-9])(?:" + alternatives + r")(?![A-Za-z0-9])", re.IGNORECASE
         )
         if replacements
         else None
     )
 
-    def replace(value: Any) -> Any:
-        if isinstance(value, str) and pattern is not None:
-            return pattern.sub(lambda match: replacements[match[0]], value)
-        if isinstance(value, dict):
-            return {name: replace(item) for name, item in value.items()}
-        if isinstance(value, list):
-            return [replace(item) for item in value]
+    def replace_segments(value: str, pattern: re.Pattern[str] | None) -> str:
+        if pattern is None:
+            return value
+        return pattern.sub(lambda match: replace_field(match[0]), value)
+
+    def replace_field(value: Any) -> Any:
+        if isinstance(value, str):
+            return replacements.get(value.replace(" ", "_").casefold(), value)
         return value
 
     result = copy.deepcopy(bundle)
     for session in result["sessions"]:
-        windows = session.get("raw", {}).get("windows")
+        raw = session.get("raw", {})
+        for port in raw.get("serial_ports", []):
+            for name, value in port.items():
+                if name == "hwid" and isinstance(value, str):
+                    port[name] = re.sub(
+                        r"(?<!\S)(SER=)([^ ]+)",
+                        lambda match: match[1] + replace_field(match[2]),
+                        value,
+                        flags=re.IGNORECASE,
+                    )
+                else:
+                    port[name] = replace_field(value)
+        windows = raw.get("windows")
         if windows is not None:
             windows["devnodes"] = _prune_windows_nodes(windows["devnodes"], key)
-    return replace(result)
+            for row in windows["devnodes"]:
+                for name in ("instance_id", "parent_id"):
+                    row[name] = replace_segments(row[name], id_pattern)
+                for name in ("hardware_ids", "compatible_ids"):
+                    row[name] = [
+                        replace_segments(value, id_pattern) for value in row[name]
+                    ]
+                for name in ("friendly_name", "device_desc"):
+                    row[name] = replace_segments(row[name], name_pattern)
+    return result

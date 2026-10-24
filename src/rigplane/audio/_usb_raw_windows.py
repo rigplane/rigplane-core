@@ -65,10 +65,14 @@ def read_raw_windows(timeout_s: float) -> RawWindows:
         "$OutputEncoding = [Console]::OutputEncoding = "
         "[System.Text.UTF8Encoding]::new(); "
         "Get-PnpDevice -PresentOnly | ForEach-Object { "
-        "$d = $_; $parent = (Get-PnpDeviceProperty -InstanceId $d.InstanceId "
-        "-KeyName 'DEVPKEY_Device_Parent' -ErrorAction SilentlyContinue).Data; "
+        "$d = $_; $props = Get-PnpDeviceProperty -InstanceId $d.InstanceId "
+        "-KeyName 'DEVPKEY_Device_FriendlyName','DEVPKEY_Device_DeviceDesc',"
+        "'DEVPKEY_Device_Parent' -ErrorAction SilentlyContinue; "
+        "$p = @{}; $props | ForEach-Object { $p[$_.KeyName] = $_.Data }; "
         '"{0}`t{1}`t{2}`t{3}`t{4}`t{5}`t{6}" -f '
-        "$d.InstanceId, $parent, $d.Class, $d.FriendlyName, $d.DeviceDesc, "
+        "$d.InstanceId, $($p['DEVPKEY_Device_Parent']), $d.Class, "
+        "$($p['DEVPKEY_Device_FriendlyName']), "
+        "$($p['DEVPKEY_Device_DeviceDesc']), "
         "($d.HardwareID -join '|'), ($d.CompatibleID -join '|') }"
     )
     result = subprocess.run(

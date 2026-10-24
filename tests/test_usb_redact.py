@@ -1,7 +1,4 @@
-import base64
 import copy
-import hashlib
-import hmac
 import json
 from pathlib import Path
 import re
@@ -169,26 +166,29 @@ def test_network_nodes_gone_endpoint_owners_and_ancestors_opaque() -> None:
     "text, expected",
     [
         ("ABC", "{token}"),
-        ("SER=ABC END", "SER={token} END"),
-        ("(ABC)\\ABC#ABC:ABC&ABC", "({token})\\{token}#{token}:{token}&{token}"),
+        (r"ABC\ABC#ABC:ABC&ABC", r"{token}\{token}#{token}:{token}&{token}"),
         ("xABC ABCx ABC123 0ABC", "xABC ABCx ABC123 0ABC"),
-        ("X_ABC_Y", "X_{token}_Y"),
+        ("X_ABC_Y", "X_ABC_Y"),
+        ("(ABC)", "(ABC)"),
+        ("ABC.1", "ABC.1"),
     ],
 )
-def test_one_boundary_rule_in_every_string(text: str, expected: str) -> None:
-    bundle = {
-        "sessions": [
-            {"raw": {"serial_ports": [{"serial_number": "ABC"}]}, "other": text}
-        ]
-    }
-    token = (
-        "R"
-        + base64.b32encode(hmac.new(_KEY, b"ABC", hashlib.sha256).digest()).decode()[
-            :10
-        ]
+def test_id_replacement_requires_whole_segment(text: str, expected: str) -> None:
+    node = dict(
+        instance_id=r"USB\VID_1234&PID_5678\ABC",
+        parent_id="",
+        class_name="USB",
+        friendly_name="",
+        device_desc="",
+        hardware_ids=[text],
+        compatible_ids=[text],
     )
+    bundle = {"sessions": [{"raw": {"windows": {"devnodes": [node]}}}]}
     result = _usb_redact.redact_bundle(bundle, key=_KEY)
-    assert result["sessions"][0]["other"] == expected.format(token=token)
+    row = result["sessions"][0]["raw"]["windows"]["devnodes"][0]
+    token = row["instance_id"].rsplit("\\", 1)[1]
+    assert row["hardware_ids"] == [expected.format(token=token)]
+    assert row["compatible_ids"] == [expected.format(token=token)]
 
 
 def test_longest_match_wins_and_mi_and_generated_segments_are_not_secrets() -> None:
@@ -222,7 +222,11 @@ def test_longest_match_wins_and_mi_and_generated_segments_are_not_secrets() -> N
         ]
     }
     result = _usb_redact.redact_bundle(bundle, key=_KEY)["sessions"][0]
-    assert result["other"] == result["raw"]["serial_ports"][1]["serial_number"]
+    assert result["other"] == "ABC_DEF"
+    assert (
+        result["raw"]["serial_ports"][0]["serial_number"]
+        != result["raw"]["serial_ports"][1]["serial_number"]
+    )
     assert result["raw"]["windows"]["devnodes"] == nodes
 
 
@@ -231,3 +235,265 @@ def test_default_draws_exactly_one_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_usb_redact.secrets, "token_bytes", draw)
     _usb_redact.redact_bundle(_bundle())
     draw.assert_called_once_with(32)
+    assert draw.call_count == 1
+    _usb_redact.redact_bundle(_bundle())
+    assert draw.call_count == 2
+
+
+@pytest.mark.parametrize("serial", ["abc 123", "ABC_123"])
+def test_case_variants_and_space_twins_share_token(serial: str) -> None:
+    parent = r"USB\VID_1234&PID_5678\ABC123"
+    nodes = [
+        dict(
+            instance_id=instance_id,
+            parent_id=parent_id,
+            class_name="USB",
+            friendly_name="abc_123 ABC 123 abc123",
+            device_desc="ABC_123 abc 123 ABC123",
+            hardware_ids=[r"USB\ABC_123", r"USB\abc 123"],
+            compatible_ids=[r"USB\abc123"],
+        )
+        for instance_id, parent_id in (
+            (parent, ""),
+            (r"USB\VID_1234&PID_5678&MI_00\CHILD", parent.lower()),
+        )
+    ]
+    bundle = {
+        "sessions": [
+            {
+                "raw": {
+                    "windows": {"devnodes": nodes},
+                    "serial_ports": [
+                        {
+                            "serial_number": serial,
+                            "description": "aBc_123",
+                            "hwid": "USB SER=AbC_123 LOCATION=1",
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+    raw = _usb_redact.redact_bundle(bundle, key=_KEY)["sessions"][0]["raw"]
+    rows = raw["windows"]["devnodes"]
+    assert rows[1]["parent_id"] == rows[0]["instance_id"]
+    port = raw["serial_ports"][0]
+    assert port["description"] == port["serial_number"]
+    token = port["serial_number"]
+    assert rows[0]["hardware_ids"] == [f"USB\\{token}", f"USB\\{token}"]
+    assert rows[0]["friendly_name"].split()[:2] == [token, token]
+    assert port["hwid"] == f"USB SER={port['serial_number']} LOCATION=1"
+    text = json.dumps(raw).casefold()
+    assert "abc123" not in text
+    assert "abc_123" not in text
+    assert "abc 123" not in text
+
+
+def test_short_serial_only_changes_allowed_data_fields() -> None:
+    endpoint = r"SWD\MMDEVAPI\{0.0.1.00000000}.{abcdef}"
+    nodes = [
+        dict(
+            instance_id=instance_id,
+            parent_id="",
+            class_name="USB" if instance_id.startswith("USB") else "AudioEndpoint",
+            friendly_name="1",
+            device_desc="1",
+            hardware_ids=[r"USB\1&1#1:1", "1.00000000", "X_1_Y"],
+            compatible_ids=["1"],
+        )
+        for instance_id in (r"USB\VID_1234&PID_5678\1", endpoint)
+    ]
+    port = {
+        "serial_number": "1",
+        "device": "1",
+        "name": "1",
+        "description": "1",
+        "manufacturer": "1",
+        "product": "1",
+        "interface": "1",
+        "location": "1",
+        "hwid": "USB VID:PID=0001:0001 SER=1 LOCATION=1",
+        "vid": 1,
+        "pid": 1,
+    }
+    preserved = {
+        "schema": "rigplane.usb_audio_capture/1",
+        "session": "1",
+        "target": "1",
+        "radios": [{"profile": "1", "serial_port": "1"}],
+        "os": "1",
+        "os_version": "1",
+        "capture_tool": "1",
+        "unavailable": ["1"],
+    }
+    session = {
+        **copy.deepcopy(preserved),
+        "raw": {
+            "windows": {"devnodes": nodes},
+            "serial_ports": [port],
+            "portaudio": {"name": "1"},
+            "unavailable": ["1"],
+        },
+    }
+    bundle = {**copy.deepcopy(preserved), "sessions": [session]}
+    result = _usb_redact.redact_bundle(bundle, key=_KEY)
+    assert {name: result[name] for name in preserved} == preserved
+    redacted = result["sessions"][0]
+    assert {name: redacted[name] for name in preserved} == preserved
+    raw = redacted["raw"]
+    assert raw["portaudio"] == {"name": "1"}
+    assert raw["unavailable"] == ["1"]
+    token = raw["serial_ports"][0]["serial_number"]
+    assert token != "1"
+    for name in (
+        "device",
+        "name",
+        "description",
+        "manufacturer",
+        "product",
+        "interface",
+        "location",
+    ):
+        assert raw["serial_ports"][0][name] == token
+    assert (
+        raw["serial_ports"][0]["hwid"]
+        == f"USB VID:PID=0001:0001 SER={token} LOCATION=1"
+    )
+    rows = raw["windows"]["devnodes"]
+    assert rows[0]["instance_id"].endswith("\\" + token)
+    assert rows[1]["instance_id"] == endpoint
+    assert rows[0]["hardware_ids"] == [
+        f"USB\\{token}&{token}#{token}:{token}",
+        "1.00000000",
+        "X_1_Y",
+    ]
+    assert rows[0]["compatible_ids"] == [token]
+    assert rows[0]["friendly_name"] == token
+    assert rows[0]["device_desc"] == token
+
+
+@pytest.mark.parametrize("text", ["xABC", "ABCx", "(ABC)", "ABC DEF", "X_ABC_Y"])
+def test_serial_port_non_hwid_fields_require_whole_field(text: str) -> None:
+    bundle = {
+        "sessions": [
+            {
+                "raw": {
+                    "serial_ports": [
+                        {
+                            "serial_number": "ABC",
+                            "description": text,
+                            "hwid": "USB SER=ABCx LOCATION=ABC",
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    port = _usb_redact.redact_bundle(bundle, key=_KEY)["sessions"][0]["raw"][
+        "serial_ports"
+    ][0]
+    assert port["description"] == text
+    assert port["hwid"] == "USB SER=ABCx LOCATION=ABC"
+
+
+@pytest.mark.parametrize("serial", ["AB_C D", "ab c_d", "AB C D", "ab_c_d"])
+def test_mixed_space_underscore_variants_share_token(serial: str) -> None:
+    node = dict(
+        instance_id=r"USB\VID_1234&PID_5678\AB_C D",
+        parent_id="",
+        class_name="USB",
+        friendly_name="AB C_D",
+        device_desc="ab_c d",
+        hardware_ids=[r"USB\ab c_d"],
+        compatible_ids=[r"USB\AB_C_D"],
+    )
+    bundle = {
+        "sessions": [
+            {
+                "raw": {
+                    "windows": {"devnodes": [node]},
+                    "serial_ports": [
+                        {
+                            "serial_number": serial,
+                            "description": "aB_c D",
+                            "hwid": "USB SER=ab_c_d",
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+    raw = _usb_redact.redact_bundle(bundle, key=_KEY)["sessions"][0]["raw"]
+    port = raw["serial_ports"][0]
+    token = port["serial_number"]
+    assert re.fullmatch(r"R[A-Z2-7]{10}", token)
+    assert port["description"] == token
+    assert port["hwid"] == f"USB SER={token}"
+    row = raw["windows"]["devnodes"][0]
+    assert row["instance_id"] == "USB\\VID_1234&PID_5678\\" + token
+    assert row["friendly_name"] == token
+    assert row["device_desc"] == token
+    assert row["hardware_ids"] == ["USB\\" + token]
+    assert row["compatible_ids"] == ["USB\\" + token]
+
+
+def test_unicode_ignorecase_extra_match_does_not_raise_or_replace_unlearned_value() -> (
+    None
+):
+    node = dict(
+        instance_id=r"USB\VID_1234&PID_5678\I",
+        parent_id="",
+        class_name="USB",
+        friendly_name="ı I i",
+        device_desc="İ I i",
+        hardware_ids=[r"USB\ı"],
+        compatible_ids=[],
+    )
+    bundle = {"sessions": [{"raw": {"windows": {"devnodes": [node]}}}]}
+    row = _usb_redact.redact_bundle(bundle, key=_KEY)["sessions"][0]["raw"]["windows"][
+        "devnodes"
+    ][0]
+    token = row["instance_id"].rsplit("\\", 1)[1]
+    assert row["friendly_name"] == f"ı {token} {token}"
+    assert row["device_desc"] == f"İ {token} {token}"
+    assert row["hardware_ids"] == [r"USB\ı"]
+
+
+@pytest.mark.parametrize("serial", ["Straße", "İ"])
+def test_observed_casefold_expansion_spelling_is_redacted(serial: str) -> None:
+    node = dict(
+        instance_id="USB\\VID_1234&PID_5678\\" + serial,
+        parent_id="",
+        class_name="USB",
+        friendly_name=serial,
+        device_desc=serial,
+        hardware_ids=["USB\\" + serial],
+        compatible_ids=[serial],
+    )
+    bundle = {
+        "sessions": [
+            {
+                "raw": {
+                    "windows": {"devnodes": [node]},
+                    "serial_ports": [
+                        {
+                            "serial_number": serial,
+                            "description": serial,
+                            "hwid": "USB SER=" + serial,
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+    raw = _usb_redact.redact_bundle(bundle, key=_KEY)["sessions"][0]["raw"]
+    token = raw["serial_ports"][0]["serial_number"]
+    assert re.fullmatch(r"R[A-Z2-7]{10}", token)
+    assert raw["serial_ports"][0]["description"] == token
+    assert raw["serial_ports"][0]["hwid"] == "USB SER=" + token
+    row = raw["windows"]["devnodes"][0]
+    assert row["instance_id"] == "USB\\VID_1234&PID_5678\\" + token
+    assert row["friendly_name"] == token
+    assert row["device_desc"] == token
+    assert row["hardware_ids"] == ["USB\\" + token]
+    assert row["compatible_ids"] == [token]
