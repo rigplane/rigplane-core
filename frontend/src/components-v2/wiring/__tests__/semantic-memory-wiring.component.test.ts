@@ -19,6 +19,10 @@
  *       handler-level guard itself is pinned in `MemorySurface.test.ts`).
  *   (d) the surface unmounts on a layout that declares no `memory` zone, and
  *       remounts exactly once switching back.
+ *   (e) radio-list acquisition, group selection and recall use the real
+ *       controller, HTTP client and memory intent handlers. The shared reply
+ *       is checked by tests/test_memory_list_api.py::
+ *       test_memories_endpoint_serves_a_page_with_the_profile_bounds.
  *
  * Isolated pool by name (`*.component.test.ts`), per the MOR-1272 doctrine.
  */
@@ -26,6 +30,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { MemoryPageDto } from '$lib/types/memory-list';
+import ic705MemoryPage from '../../../../../tests/fixtures/ic705-memory-page.json';
 import type { CommandDeliveryEvent, ControlSessionTransition } from '$lib/transport/ws-client';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
@@ -237,6 +243,7 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  vi.unstubAllGlobals();
   document.body.innerHTML = '';
   localStorage.clear();
   expect(h.sessionSubscriber).toBeUndefined();
@@ -273,6 +280,90 @@ describe('recall dispatches the real memory-to-vfo intent, per channel', () => {
       { name: 'memory_to_vfo', params: { channel: ch } },
     ]);
   });
+});
+
+it('acquires IC-705 radio memories only with memory_read, renders them, selects a group and recalls its channel', async () => {
+  const golden = ic705MemoryPage as MemoryPageDto;
+  const requests: URL[] = [];
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), 'http://localhost');
+    expect(url.pathname).toBe('/api/v1/memories');
+    requests.push(url);
+    const group = Number(url.searchParams.get('group') ?? golden.group);
+    const start = Number(url.searchParams.get('start') ?? golden.channels.first);
+    const count = Number(url.searchParams.get('count') ?? 25);
+    const page: MemoryPageDto = {
+      ...golden, group,
+      entries: Array.from({ length: Math.min(count, golden.channels.last - start + 1) }, (_, offset) => {
+        const channel = start + offset;
+        return { ...(golden.entries.find((entry) => entry.channel === channel) ?? { channel, empty: true }), group };
+      }),
+    };
+    return { ok: true, status: 200, json: async () => page } as Response;
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  // Microtask-only settling, as in first-browser-auth.component.test.ts.
+  async function settleList(): Promise<void> {
+    for (let turn = 0; turn < 50; turn++) { await Promise.resolve(); flushSync(); }
+  }
+  const caps: Capabilities = {
+    ...liveCaps(), model: 'IC-705', receivers: 1, vfoScheme: 'ab', capabilities: [],
+  };
+
+  useState(liveState(), caps);
+  renderHosted();
+  await settleList();
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(q('[data-testid="radio-memories"]')).toBeNull();
+  await unmount(component!);
+  component = null;
+  target.remove();
+
+  useState(liveState(), { ...caps, capabilities: ['memory_read'] });
+  renderHosted();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(Object.fromEntries(requests[0].searchParams)).toEqual({ count: '25' });
+  await settleList();
+  expect(requests.map((url) => Object.fromEntries(url.searchParams))).toEqual([
+    { count: '25' },
+    { group: '0', start: '25', count: '25' },
+    { group: '0', start: '50', count: '25' },
+    { group: '0', start: '75', count: '25' },
+  ]);
+  expect(q('[data-testid="radio-memories-status"]')?.dataset.status).toBe('ready');
+  const row = q('[data-testid="radio-memory-4"]');
+  expect(row).not.toBeNull();
+  expect(row!.querySelector('.rm-name')?.textContent).toBe('TEST RPT');
+  expect(row!.querySelector('.rm-freq')?.textContent).toBe('146.940.000');
+  expect(row!.querySelector('.rm-mode')?.textContent).toBe('FM');
+  expect(commands()).toEqual([]);
+
+  const chooser = q<HTMLInputElement>('[data-testid="radio-memories-group"]');
+  expect(chooser).not.toBeNull();
+  expect([chooser!.min, chooser!.max, chooser!.value]).toEqual(['0', '99', '0']);
+  press(chooser!);
+  chooser!.value = '7';
+  chooser!.dispatchEvent(new Event('change', { bubbles: true }));
+  flushSync();
+  expect(Object.fromEntries(requests[4].searchParams)).toEqual({ group: '7', count: '25' });
+  await settleList();
+  expect(requests.slice(4).map((url) => Object.fromEntries(url.searchParams))).toEqual([
+    { group: '7', count: '25' },
+    { group: '7', start: '25', count: '25' },
+    { group: '7', start: '50', count: '25' },
+    { group: '7', start: '75', count: '25' },
+  ]);
+  expect(chooser!.value).toBe('7');
+  expect(q('[data-testid="radio-memories-status"]')?.dataset.status).toBe('ready');
+  expect(q('[data-testid="radio-memory-4"]')?.textContent).toContain('TEST RPT');
+  expect(commands()).toEqual([]);
+  const recall = q<HTMLButtonElement>('[data-testid="radio-memory-4-recall"]');
+  expect(recall).not.toBeNull();
+  expect(recall!.disabled).toBe(false);
+  press(recall!);
+  flushSync();
+  expect(commands()).toEqual([{ name: 'set_memory_mode', params: { group: 7, channel: 4 } }]);
+  expect(q('[data-testid="radio-memory-4"]')?.classList.contains('selected')).toBe(true);
 });
 
 /* ── (c) STORE refused under the WRONG-VFO doctrine ────────────── */

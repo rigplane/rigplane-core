@@ -7,6 +7,7 @@ requests the server sends are checked on the wire.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -103,12 +104,14 @@ async def _get(radio: Any, target: str) -> tuple[int, dict]:
 
 @pytest.mark.asyncio
 async def test_memories_endpoint_serves_a_page_with_the_profile_bounds() -> None:
-    status, body = await _get(_radio(), "/api/v1/memories?group=0&start=3&count=3")
+    status, body = await _get(_radio(), "/api/v1/memories?group=0&start=0&count=25")
     assert status == 200
+    golden = Path(__file__).parent / "fixtures" / "ic705-memory-page.json"
+    assert body == json.loads(golden.read_text(encoding="utf-8"))
     assert body["addressing"] == "group_channel"
     assert body["groups"] == {"first": 0, "last": 99}
     assert body["channels"] == {"first": 0, "last": 99}
-    empty, entry, _ = body["entries"]
+    empty, entry = body["entries"][3:5]
     assert empty == {"group": 0, "channel": 3, "empty": True}
     assert entry == {
         "group": 0,
