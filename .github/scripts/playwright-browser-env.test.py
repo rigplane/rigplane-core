@@ -46,7 +46,7 @@ def _without_block_scalars(text: str) -> str:
             r"^([ \t]*)(-[ \t]+)?(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s#:'\"]+)[ \t]*:[ \t]*[|>][-+0-9]*[ \t]*(?:#.*)?$",
             line.rstrip("\r\n"),
         )
-        indent = len(header[1]) + (2 if header[2] else 0) if header else None
+        indent = len(header[1]) + len(header[2] or "") if header else None
         lines.append(line)
     return "".join(lines)
 
@@ -276,6 +276,9 @@ class BrowserEnvironmentParserTest(unittest.TestCase):
             ("| # browser smoke\n          node frontend/fixtures/capture.mjs", "job-level env"),
             ("> # browser smoke\n          node frontend/fixtures/capture.mjs", "job-level env"),
             ("|\n          echo harmless\n        env: &browser.cmd {}", "anchors, aliases and merges"),
+            ("echo harmless\n      -   name: |\n            scalar\n          env: &x {}", "anchors, aliases and merges"),
+            ("echo harmless\n      -   name: |\n            scalar\n          env: *x", "anchors, aliases and merges"),
+            ("echo harmless\n      -   name: |\n            scalar\n          env: {<<: {A: b}}", "anchors, aliases and merges"),
             ("*capture", "anchors, aliases and merges"),
             ("&capture echo harmless", "anchors, aliases and merges"),
             ("*browser.cmd", "anchors, aliases and merges"),
