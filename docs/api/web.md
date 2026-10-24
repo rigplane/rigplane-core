@@ -1073,6 +1073,36 @@ line as the startup contract instead of parsing the human-readable banner:
 
 Version, model, capability summary, and connection metadata.
 
+`audioReceive` retains the latest audio-start failure in schema version 1.
+Its `failure` is `null` when clear; otherwise it has `stage` (`rx_start` or
+`tx_start`), `code` (`core_rx_start_failed` or `core_tx_start_failed`) and
+`reason`. Pairing refusals with candidates add this field to `failure`:
+
+```json
+{
+  "candidates": [{
+    "stableId": "MME|name:USB Audio CODEC",
+    "displayName": "USB Audio CODEC",
+    "direction": "capture",
+    "hostApi": "MME",
+    "portAudioIndex": 1,
+    "nearRadio": true
+  }]
+}
+```
+
+`direction` is `capture` (RX) or `render` (TX). `candidates` is omitted when
+the failure has no pairing candidates. This is an additive field; the schema
+version remains 1 (`src/rigplane/web/handlers/audio.py: AudioBroadcaster.rx_start_status`).
+Pass a candidate's `stableId` through the existing `rx_device` / `tx_device`
+configuration or `--rx-device` / `--tx-device` flags. Its form is
+`HOSTAPI|endpoint-os-id`, or `HOSTAPI|name:PortAudio-device-name` when there
+is no unique endpoint name match. Explicit stable ids are resolved against
+current enumeration on each open, without automatic pairing; absent or
+ambiguous ids raise the existing unknown/ambiguous override error
+(`src/rigplane/audio/_usb_pairing.py: candidate_stable_id`,
+`src/rigplane/audio/usb_driver.py: _find_by_override`).
+
 ```json
 {
   "server": "rigplane",

@@ -25,7 +25,9 @@ from typing import Any, Callable, Coroutine, Iterator, Literal
 
 from rigplane.core.usb_identity import UsbAudioIdentity
 
+from ._usb_pairing import AudioCandidate, candidate_stable_id
 from ._usb_raw_windows import RawWindows
+from ._usb_snapshot import Flow, UsbSnapshot
 
 from .backend import (
     AudioBackend,
@@ -149,6 +151,12 @@ def audio_start_failure_reason(exc: BaseException) -> AudioStartFailureReason:
 
     The category is safe to publish: it never carries exception text.
     """
+    return audio_start_failure_details(exc)[0]
+
+
+def audio_start_failure_details(
+    exc: BaseException,
+) -> tuple[AudioStartFailureReason, tuple[AudioCandidate, ...]]:
     from ._usb_pairing import WindowsAudioTopologyError
 
     chain: list[BaseException] = []
@@ -169,11 +177,11 @@ def audio_start_failure_reason(exc: BaseException) -> AudioStartFailureReason:
     # The outermost classified exception is the newest failure.
     for error in chain:
         if isinstance(error, WindowsAudioTopologyError):
-            return error.refusal.wire_reason
+            return error.refusal.wire_reason, error.candidates
         for types, reason in reasons:
             if isinstance(error, types):
-                return reason
-    return "other"
+                return reason, ()
+    return "other", ()
 
 
 _DEFAULT_SAMPLE_RATE_CANDIDATES: tuple[int, ...] = (48_000, 24_000, 16_000, 8_000)
@@ -838,6 +846,7 @@ def _find_by_override(
     *,
     override: str,
     direction: str,
+    snapshot: UsbSnapshot | None = None,
 ) -> UsbAudioDevice:
     selector = override.strip()
     if not selector:
@@ -858,10 +867,46 @@ def _find_by_override(
     if match is not None:
         return match
 
+    api_name, separator, identity = selector.partition("|")
+    stable_selector = bool(separator) and (
+        identity.lower().startswith(("name:", "swd\\"))
+        or (
+            snapshot is not None
+            and any(
+                api.name.casefold() == api_name.casefold()
+                for api in snapshot.portaudio.hostapis
+            )
+        )
+    )
+    if stable_selector:
+        stable_matches = []
+        if snapshot is not None:
+            flow: Flow = "capture" if direction == "rx" else "render"
+            apis = {api.index: api for api in snapshot.portaudio.hostapis}
+            records = {record.index: record for record in snapshot.portaudio.devices}
+            for dev in devices:
+                record = records.get(dev.index)
+                if record is None or record.name != dev.name:
+                    continue
+                api = apis.get(record.hostapi)
+                if (
+                    api is not None
+                    and candidate_stable_id(snapshot, record, api, flow) == selector
+                ):
+                    stable_matches.append(dev)
+        match = _unique_override_match(
+            stable_matches, override=selector, direction=direction
+        )
+        if match is not None:
+            return match
+
     exact = [
         dev
         for dev in devices
-        if dev.name == selector or (dev.platform_uid and dev.platform_uid == selector)
+        if not stable_selector
+        and (
+            dev.name == selector or (dev.platform_uid and dev.platform_uid == selector)
+        )
     ]
     match = _unique_override_match(
         exact,
@@ -875,8 +920,11 @@ def _find_by_override(
     exact_ci = [
         dev
         for dev in devices
-        if dev.name.lower() == selector_ci
-        or (dev.platform_uid and dev.platform_uid.lower() == selector_ci)
+        if not stable_selector
+        and (
+            dev.name.lower() == selector_ci
+            or (dev.platform_uid and dev.platform_uid.lower() == selector_ci)
+        )
     ]
     match = _unique_override_match(
         exact_ci,
@@ -889,8 +937,11 @@ def _find_by_override(
     partial = [
         dev
         for dev in devices
-        if selector_ci in dev.name.lower()
-        or (dev.platform_uid and selector_ci in dev.platform_uid.lower())
+        if not stable_selector
+        and (
+            selector_ci in dev.name.lower()
+            or (dev.platform_uid and selector_ci in dev.platform_uid.lower())
+        )
     ]
     match = _unique_override_match(
         partial,
@@ -933,11 +984,21 @@ def select_usb_audio_devices(
     *,
     rx_device: str | None = None,
     tx_device: str | None = None,
+    snapshot: UsbSnapshot | None = None,
 ) -> tuple[UsbAudioDevice, UsbAudioDevice]:
     """Select RX/TX devices deterministically with override precedence."""
     rx_candidates = [dev for dev in devices if dev.supports_rx]
     tx_candidates = [dev for dev in devices if dev.supports_tx]
     duplex_candidates = [dev for dev in devices if dev.duplex]
+
+    for candidates, override, direction in (
+        (rx_candidates, rx_device, "rx"),
+        (tx_candidates, tx_device, "tx"),
+    ):
+        if not candidates and override is not None and "|" in override:
+            _find_by_override(
+                candidates, override=override, direction=direction, snapshot=snapshot
+            )
 
     if not rx_candidates:
         raise AudioDeviceSelectionError("No suitable RX USB audio device was found.")
@@ -953,11 +1014,11 @@ def select_usb_audio_devices(
 
     if rx_device is not None:
         selected_rx = _find_by_override(
-            rx_candidates, override=rx_device, direction="rx"
+            rx_candidates, override=rx_device, direction="rx", snapshot=snapshot
         )
     elif tx_device is not None:
         selected_tx = _find_by_override(
-            tx_candidates, override=tx_device, direction="tx"
+            tx_candidates, override=tx_device, direction="tx", snapshot=snapshot
         )
         selected_rx = (
             selected_tx
@@ -969,7 +1030,7 @@ def select_usb_audio_devices(
 
     if tx_device is not None:
         selected_tx = _find_by_override(
-            tx_candidates, override=tx_device, direction="tx"
+            tx_candidates, override=tx_device, direction="tx", snapshot=snapshot
         )
     elif rx_device is not None and selected_rx.supports_tx:
         selected_tx = selected_rx
@@ -1331,9 +1392,18 @@ class UsbAudioDriver:
         serial_port = self._serial_port
         if not (
             platform.system() == "Windows"
-            and serial_port
-            and self._config.rx_device is None
-            and self._config.tx_device is None
+            and (
+                (
+                    serial_port
+                    and self._config.rx_device is None
+                    and self._config.tx_device is None
+                )
+                or any(
+                    "|" in selector
+                    for selector in (self._config.rx_device, self._config.tx_device)
+                    if selector is not None
+                )
+            )
         ):
             return await self._run_portaudio_bounded(
                 self._ensure_selected_devices,
@@ -1391,7 +1461,7 @@ class UsbAudioDriver:
                     "requiring an unambiguous audio pair"
                 )
         selected = await bounded_portaudio_pool.run_bounded(
-            lambda: self._select_windows_devices(devices, records, serial_port),
+            lambda: self._select_windows_devices(devices, records, serial_port or ""),
             what="device enumeration",
             direction=direction,
             timeout=remaining(),
@@ -1417,7 +1487,11 @@ class UsbAudioDriver:
         from ._usb_pairing import PairRefused, pair, pairing_refusal_error
 
         sd_module = _extract_sounddevice_module(self._backend)
-        if records.devnodes:
+        if (
+            records.devnodes
+            or self._config.rx_device is not None
+            or self._config.tx_device is not None
+        ):
             session: dict[str, Any] = {
                 "raw": {
                     "windows": records.to_json_dict(),
@@ -1428,7 +1502,15 @@ class UsbAudioDriver:
                 session["raw"]["portaudio"] = read_portaudio_enumeration(
                     sd_module
                 ).to_json_dict()
-            mapping = pair(adapt_windows(session), serial_port, self._usb_identity)
+            snapshot = adapt_windows(session)
+            if self._config.rx_device is not None or self._config.tx_device is not None:
+                return select_usb_audio_devices(
+                    devices,
+                    rx_device=self._config.rx_device,
+                    tx_device=self._config.tx_device,
+                    snapshot=snapshot,
+                )
+            mapping = pair(snapshot, serial_port, self._usb_identity)
             if isinstance(mapping, PairRefused):
                 raise pairing_refusal_error(mapping)
             rx = next((d for d in devices if d.index == mapping.rx_index), None)
