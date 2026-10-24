@@ -5116,7 +5116,8 @@ def main() -> None:
     # ICOM_LOG_FILE=/path/to/file.log — log to file (default: platform cache logs)
     # ICOM_LOG_MAX_BYTES=50000000 — rotate when file reaches this size (default: 50 MB)
     # ICOM_LOG_BACKUP_COUNT=5 — keep N rotated backups (default: 5; 0 disables rotation)
-    # Set ICOM_LOG_FILE=off to disable the default file log on daemon commands.
+    # Set ICOM_LOG_FILE=off to disable file logging entirely (the default
+    # daemon file log and the always-on diagnostic rigplane.log).
     debug_mode = os.environ.get("ICOM_DEBUG", "").strip() not in (
         "",
         "0",
@@ -5159,25 +5160,56 @@ def main() -> None:
             )
         )
 
+    # One writer per log file (MOR-3777). ``import rigplane`` already attached
+    # the always-on diagnostic handler to ``rigplane.log``; the root file
+    # handler below would receive the same ``rigplane.*`` records again.
+    # ``ICOM_LOG_FILE=off`` means no file logging at all, so the diagnostic
+    # writer goes too. With no CLI file (short commands) it stays the sole
+    # writer, so ``rigplane diagnose`` still has a trail to bundle.
+    from rigplane.diagnostics._logging import detach_diagnostic_logging
+
+    if log_file_disabled:
+        detach_diagnostic_logging()
+
     if log_file:
+        from rigplane.diagnostics._logging import diagnostic_log_path_for
+
         log_path = Path(log_file).expanduser().resolve()
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        setattr(args, "runtime_log_path", str(log_path))
         max_bytes = _env_int("ICOM_LOG_MAX_BYTES", 50_000_000)
         backup_count = _env_int("ICOM_LOG_BACKUP_COUNT", 5)
-        file_handler: logging.Handler = RotatingFileHandler(
-            log_path,
-            mode="a",
-            maxBytes=max_bytes if backup_count > 0 else 0,
-            backupCount=backup_count,
-            encoding="utf-8",
-        )
-        file_handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s %(name)s [%(levelname)s] %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
+
+        def _open_cli_log(path: Path) -> logging.Handler:
+            handler = RotatingFileHandler(
+                path,
+                mode="a",
+                maxBytes=max_bytes if backup_count > 0 else 0,
+                backupCount=backup_count,
+                encoding="utf-8",
             )
-        )
+            handler.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s %(name)s [%(levelname)s] %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S",
+                )
+            )
+            return handler
+
+        # Order matters: open (create) the CLI file first, so the identity
+        # check sees it even when ICOM_LOG_FILE is a hard link or case alias
+        # of rigplane.log; then detach the matching diagnostic writer; the
+        # CLI handler is attached last (basicConfig below).
+        file_handler = _open_cli_log(log_path)
+        diagnostic_path = diagnostic_log_path_for(log_path)
+        if diagnostic_path is not None and str(diagnostic_path) != str(log_path):
+            # An alias of rigplane.log: write and rotate the canonical name,
+            # or the first rollover would strand rigplane.log (what
+            # diagnostic bundles collect) on the old inode with no writer.
+            file_handler.close()
+            log_path = diagnostic_path
+            file_handler = _open_cli_log(log_path)
+        detach_diagnostic_logging(log_path)
+        setattr(args, "runtime_log_path", str(log_path))
         handlers.append(file_handler)
         print(
             f"Logging to {log_path} (rotate at {max_bytes} bytes, keep {backup_count} backups)",
