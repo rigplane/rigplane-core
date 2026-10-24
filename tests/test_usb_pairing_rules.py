@@ -62,7 +62,7 @@ def _snapshot(names=("Microphone (USB Audio CODEC )", "Speakers (USB Audio CODEC
     )
 
 
-def _refused(snapshot, reason, port="COM3", identity=None):
+def _assert_refused(snapshot, reason, port="COM3", identity=None):
     result = pair(snapshot, port, identity)
     assert isinstance(result, PairRefused)
     assert result.reason == reason
@@ -70,7 +70,7 @@ def _refused(snapshot, reason, port="COM3", identity=None):
     return result
 
 
-def _paired(snapshot, port="COM3", indices=(1, 5), identity=None):
+def _assert_paired(snapshot, port="COM3", indices=(1, 5), identity=None):
     result = pair(snapshot, port, identity)
     assert isinstance(result, PairOk)
     assert (result.rx_index, result.tx_index) == indices
@@ -78,7 +78,7 @@ def _paired(snapshot, port="COM3", indices=(1, 5), identity=None):
 
 
 def test_s0_available_s1_unique_port_s2_sibling_codec_s5_first_api():
-    result = _paired(_snapshot(), "com3")
+    result = _assert_paired(_snapshot(), "com3")
     assert (result.hostapi, result.rx_id, result.tx_id, result.codec_node) == (
         "MME",
         "capture",
@@ -90,7 +90,7 @@ def test_s0_available_s1_unique_port_s2_sibling_codec_s5_first_api():
 @pytest.mark.parametrize("part", ["usb", "windows", "serial_ports", "portaudio"])
 def test_s0_unavailable_precedes_missing_serial_and_keeps_candidates(part):
     snapshot = replace(_snapshot(), unavailable=(Unavailable(part, "reader failed"),))
-    result = _refused(snapshot, "unavailable", "COM999")
+    result = _assert_refused(snapshot, "unavailable", "COM999")
     assert len(result.candidates) == 2
     assert not any(candidate.near_radio for candidate in result.candidates)
 
@@ -104,11 +104,11 @@ def test_s0_unavailable_precedes_missing_serial_and_keeps_candidates(part):
     ],
 )
 def test_s1_port_must_have_exactly_one_reference_with_node(ports):
-    _refused(replace(_snapshot(), serial_ports=ports), "serial_not_found")
+    _assert_refused(replace(_snapshot(), serial_ports=ports), "serial_not_found")
 
 
 def test_s1_does_not_match_a_port_prefix():
-    _refused(_snapshot(), "serial_not_found", "COM30")
+    _assert_refused(_snapshot(), "serial_not_found", "COM30")
 
 
 def test_s2_nested_hub_ic7610_shape():
@@ -117,7 +117,7 @@ def test_s2_nested_hub_ic7610_shape():
         replace(node, parent="nested") if node.id == "C" else node
         for node in snapshot.usb
     )
-    _paired(replace(snapshot, usb=nodes + (_node("nested", "H", "hub"),)))
+    _assert_paired(replace(snapshot, usb=nodes + (_node("nested", "H", "hub"),)))
 
 
 @pytest.mark.parametrize(
@@ -133,7 +133,7 @@ def test_s2_recorded_sibling_shapes_allow_non_audio_device(vid, pid, extra):
     )
     if extra:
         nodes += (_node("extra", "H", vid="26AA", pid="0030"),)
-    _paired(
+    _assert_paired(
         replace(snapshot, usb=nodes),
         identity=UsbAudioIdentity(frozenset({UsbFunctionId(vid, pid)})),
     )
@@ -146,7 +146,7 @@ def test_s2_serial_parent_must_be_non_root_hub(parent):
         replace(node, parent=parent) if node.id == "S" else node
         for node in snapshot.usb
     )
-    _refused(replace(snapshot, usb=nodes), "containment_unproven")
+    _assert_refused(replace(snapshot, usb=nodes), "containment_unproven")
 
 
 def test_s2_codec_two_hubs_deeper_is_outside_boundary():
@@ -156,14 +156,14 @@ def test_s2_codec_two_hubs_deeper_is_outside_boundary():
         for node in snapshot.usb
     )
     nodes += (_node("nested", "H", "hub"), _node("deep", "nested", "hub"))
-    _refused(replace(snapshot, usb=nodes), "no_codec")
+    _assert_refused(replace(snapshot, usb=nodes), "no_codec")
 
 
 def test_s2_two_serial_devices_are_ambiguous_but_two_ports_on_one_device_are_not():
     snapshot = _snapshot()
     ports = snapshot.serial_ports + (SerialPortRef("COM4", "S"),)
-    _paired(replace(snapshot, serial_ports=ports))
-    _refused(
+    _assert_paired(replace(snapshot, serial_ports=ports))
+    _assert_refused(
         replace(
             snapshot,
             usb=snapshot.usb + (_node("S2", "H"),),
@@ -179,14 +179,16 @@ def test_s2_two_full_codecs_are_ambiguous_capture_only_webcam_is_not():
     endpoints = snapshot.endpoints + (
         AudioEndpoint("webcam-in", "webcam", "capture", "Webcam"),
     )
-    _paired(replace(snapshot, usb=nodes, endpoints=endpoints))
+    _assert_paired(replace(snapshot, usb=nodes, endpoints=endpoints))
     endpoints += (AudioEndpoint("webcam-out", "webcam", "render", "Webcam"),)
-    _refused(replace(snapshot, usb=nodes, endpoints=endpoints), "codec_ambiguous")
+    _assert_refused(
+        replace(snapshot, usb=nodes, endpoints=endpoints), "codec_ambiguous"
+    )
 
 
 def test_s2_capture_only_device_is_not_a_codec():
     snapshot = _snapshot()
-    _refused(replace(snapshot, endpoints=snapshot.endpoints[:1]), "no_codec")
+    _assert_refused(replace(snapshot, endpoints=snapshot.endpoints[:1]), "no_codec")
 
 
 @pytest.mark.parametrize(
@@ -198,12 +200,12 @@ def test_s2_missing_parent_or_cycle_is_incomplete(node_id, parent):
         replace(node, parent=parent) if node.id == node_id else node
         for node in snapshot.usb
     )
-    _refused(replace(snapshot, usb=nodes), "topology_incomplete")
+    _assert_refused(replace(snapshot, usb=nodes), "topology_incomplete")
 
 
 def test_s2_duplicate_node_ids_are_incomplete():
     snapshot = _snapshot()
-    _refused(
+    _assert_refused(
         replace(snapshot, usb=snapshot.usb + (replace(snapshot.usb[-1], id="c"),)),
         "topology_incomplete",
     )
@@ -215,7 +217,7 @@ def test_s2_endpoint_parent_chain_is_checked():
         _node("media", "missing", "media"),
         _node("capture", "media", "endpoint"),
     )
-    _refused(replace(snapshot, usb=nodes), "topology_incomplete")
+    _assert_refused(replace(snapshot, usb=nodes), "topology_incomplete")
 
 
 @pytest.mark.parametrize(
@@ -230,7 +232,7 @@ def test_s2_endpoint_parent_chain_is_checked():
     ],
 )
 def test_s4_localized_prefixed_renamed_and_line_endpoints_pair_on_mme(names):
-    _paired(_snapshot(names))
+    _assert_paired(_snapshot(names))
 
 
 def test_s4_wdm_spacing_normalization_and_reused_product_helper():
@@ -239,7 +241,9 @@ def test_s4_wdm_spacing_normalization_and_reused_product_helper():
         replace(record, name=record.name.replace(" )", ")"))
         for record in snapshot.portaudio.devices
     )
-    _paired(replace(snapshot, portaudio=replace(snapshot.portaudio, devices=devices)))
+    _assert_paired(
+        replace(snapshot, portaudio=replace(snapshot.portaudio, devices=devices))
+    )
     assert endpoint_name_key(" Line ( USB Audio CODEC ) ") == "Line (USB Audio CODEC)"
     assert windows_audio_product("Line (2- USB Audio CODEC)") == "USB Audio CODEC"
 
@@ -254,12 +258,12 @@ def test_s4_mme_exactly_31_characters_is_the_only_prefix_match():
         replace(record, name=record.name[:31]) for record in snapshot.portaudio.devices
     )
     cut = replace(snapshot, portaudio=replace(snapshot.portaudio, devices=devices))
-    _paired(cut)
+    _assert_paired(cut)
     assert mme_listed_matches(names[0][:31], names[0])
     assert not mme_listed_matches(names[0][:30], names[0])
     assert not mme_listed_matches(names[0][:32], names[0])
     assert mme_listed_matches(names[0], names[0])
-    _refused(
+    _assert_refused(
         replace(
             cut,
             portaudio=replace(
@@ -294,13 +298,13 @@ def test_s4_two_radios_distinct_names_pair_each_port_identical_names_contest():
         endpoints=endpoints,
         portaudio=replace(first.portaudio, devices=devices),
     )
-    _paired(snapshot)
-    _paired(snapshot, "COM4", (11, 15))
+    _assert_paired(snapshot)
+    _assert_paired(snapshot, "COM4", (11, 15))
     endpoints = first.endpoints + tuple(
         replace(endpoint, os_id=endpoint.os_id + "2", owner="C2")
         for endpoint in first.endpoints
     )
-    contested = _refused(replace(snapshot, endpoints=endpoints), "contested")
+    contested = _assert_refused(replace(snapshot, endpoints=endpoints), "contested")
     assert contested.wire_reason == "usb_ambiguous"
     assert contested.candidates[0].stable_id == "MME|name:Microphone (USB Audio CODEC )"
 
@@ -323,8 +327,8 @@ def test_s4_virtual_collision_skips_api_and_s5_uses_next_uncontested_api():
         endpoints=endpoints,
         portaudio=replace(snapshot.portaudio, hostapis=apis, devices=devices),
     )
-    assert _paired(snapshot, indices=(19, 17)).hostapi == "Windows WASAPI"
-    _refused(
+    assert _assert_paired(snapshot, indices=(19, 17)).hostapi == "Windows WASAPI"
+    _assert_refused(
         replace(snapshot, portaudio=replace(snapshot.portaudio, hostapis=apis[:1])),
         "contested",
     )
@@ -336,8 +340,8 @@ def test_s5_duplex_record_can_supply_both_directions():
         snapshot,
         portaudio=replace(snapshot.portaudio, devices=(_record(3, "Duplex", 2, 2),)),
     )
-    _paired(snapshot, indices=(3, 3))
-    result = _refused(snapshot, "serial_not_found", "COM9")
+    _assert_paired(snapshot, indices=(3, 3))
+    result = _assert_refused(snapshot, "serial_not_found", "COM9")
     assert [
         (candidate.direction, candidate.stable_id) for candidate in result.candidates
     ] == [("capture", "MME|capture"), ("render", "MME|render")]
@@ -350,7 +354,7 @@ def test_s5_requires_exactly_one_input_and_output(indices):
         replace(snapshot.portaudio.devices[index], index=position)
         for position, index in enumerate(indices)
     )
-    _refused(
+    _assert_refused(
         replace(snapshot, portaudio=replace(snapshot.portaudio, devices=devices)),
         "endpoint_names",
     )
@@ -362,7 +366,7 @@ def test_s5_no_endpoint_matched_names_produces_no_candidates():
         replace(record, name="Unmatched mapper")
         for record in snapshot.portaudio.devices
     )
-    result = _refused(
+    result = _assert_refused(
         replace(snapshot, portaudio=replace(snapshot.portaudio, devices=devices)),
         "endpoint_names",
     )
@@ -381,7 +385,7 @@ def test_s5_partial_first_api_skips_to_first_complete_api_in_enumeration_order()
         _record(11, snapshot.endpoints[0].name, inputs=2, hostapi=5),
         _record(12, snapshot.endpoints[1].name, outputs=2, hostapi=5),
     )
-    result = _paired(
+    result = _assert_paired(
         replace(
             snapshot,
             portaudio=replace(snapshot.portaudio, hostapis=apis, devices=devices),
@@ -406,7 +410,7 @@ def test_s5_candidates_use_first_matched_api_and_near_radio_before_index():
         + snapshot.portaudio.devices
         + (_record(30, snapshot.endpoints[0].name, inputs=2, hostapi=3),)
     )
-    result = _refused(
+    result = _assert_refused(
         replace(
             snapshot,
             endpoints=endpoints,
@@ -431,9 +435,9 @@ def test_s2_residual_risk_shared_hub_foreign_headset_without_identity_pairs():
         for node in snapshot.usb
     )
     snapshot = replace(snapshot, usb=nodes)
-    _paired(snapshot)
-    _paired(snapshot, identity=UsbAudioIdentity(frozenset()))
-    _refused(
+    _assert_paired(snapshot)
+    _assert_paired(snapshot, identity=UsbAudioIdentity(frozenset()))
+    _assert_refused(
         snapshot,
         "codec_identity_mismatch",
         identity=UsbAudioIdentity(frozenset({UsbFunctionId("08BB", "2901")})),
