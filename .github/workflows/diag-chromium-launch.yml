@@ -1,0 +1,57 @@
+name: 'Diag: Chromium launch (MOR-3778)'
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/diag-chromium-launch.yml
+      - .github/scripts/diag_chromium_launch.mjs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diag-chromium-launch
+  cancel-in-progress: true
+
+jobs:
+  launch-loop:
+    runs-on: [self-hosted, linux, build]
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        slot: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+      - name: Ensure Playwright chromium for capture
+        run: |
+          cd frontend
+          npx playwright install chromium
+      - name: Install Playwright Chromium system dependencies
+        working-directory: frontend
+        run: sudo -E env "PATH=$PATH" npx playwright install-deps chromium
+      - name: Measure Chromium launches
+        working-directory: frontend
+        env:
+          DIAG_LAUNCHES: '40'
+        run: node ../.github/scripts/diag_chromium_launch.mjs
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: chromium-launch-slot-${{ matrix.slot }}
+          path: frontend/out
+          retention-days: 5
+          if-no-files-found: ignore
