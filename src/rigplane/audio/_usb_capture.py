@@ -147,13 +147,14 @@ def _read_session(
 def _write_private_json(path: Path, value: dict[str, Any]) -> None:
     if path.exists() or path.is_symlink():
         raise FileExistsError(f"output already exists: {path}")
-    fd, name = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-    )
-    os.close(fd)
+    name = None
     try:
+        fd, name = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        os.close(fd)
         with open(name, "wb") as stream:
             stream.write(
                 (
@@ -174,7 +175,8 @@ def _write_private_json(path: Path, value: dict[str, Any]) -> None:
                 "(Windows) or APFS (macOS) drive, e.g. your Documents folder"
             ) from None
     finally:
-        Path(name).unlink(missing_ok=True)
+        if name is not None:
+            Path(name).unlink(missing_ok=True)
 
 
 def capture_bundle(

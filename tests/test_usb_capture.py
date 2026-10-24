@@ -414,6 +414,28 @@ async def test_cli_interrupted_prompt_writes_nothing(
 
 
 @pytest.mark.asyncio
+async def test_cli_interrupted_descriptor_close_cleans_temp_and_allows_retry(
+    tmp_path: Path, readers: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "capture.json"
+    close = capture.os.close
+
+    def interrupt_after_close(fd):
+        close(fd)
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(capture.os, "close", interrupt_after_close)
+        assert await _run(_args(out, "--no-unplug")) == 130
+    assert not out.exists()
+    assert list(tmp_path.iterdir()) == []
+
+    assert await _run(_args(out, "--no-unplug")) == 0
+    assert out.is_file()
+    assert list(tmp_path.iterdir()) == [out]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("missing", ["_terminate", "_initialize"])
 async def test_cli_missing_portaudio_refresh_marks_later_sessions_unavailable(
     tmp_path: Path, readers: SimpleNamespace, missing: str
