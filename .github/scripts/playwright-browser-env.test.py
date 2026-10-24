@@ -36,7 +36,7 @@ class WorkflowFormatError(ValueError):
 
 def _jobs(workflow: str, text: str) -> dict[str, tuple[str, list[str]]]:
     if re.search(
-        r"^[ \t]*(?:-[ \t]+(?:[\w.\-'\"]+[ \t]*:[ \t]+)?|[\w.\-'\"]+[ \t]*:[ \t]+)"
+        r"^[ \t]*(?:-[ \t]+(?:(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s#:'\"]+)[ \t]*:[ \t]+)?|(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s#:'\"]+)[ \t]*:[ \t]+)"
         r"(?:[&*][^\s,\[\]{}]+(?:[ \t].*)?$|\{[ \t]*<<:)"
         r"|^[ \t]*(?:-[ \t]+)?<<:", text, re.MULTILINE
     ):
@@ -265,6 +265,10 @@ class BrowserEnvironmentParserTest(unittest.TestCase):
                 "anchors, aliases and merges",
             ),
             ("echo harmless\n        env: {<<: {A: b}}", "anchors, aliases and merges"),
+            ("echo harmless\n        env:\n          ProgramFiles(x86): &tools 'C:\\tools'", "anchors, aliases and merges"),
+            ("echo harmless\n        env:\n          ProgramFiles(x86): *tools", "anchors, aliases and merges"),
+            ('echo harmless\n        env:\n          "ProgramFiles(x86)": &tools x', "anchors, aliases and merges"),
+            ("echo harmless\n        env:\n          'ProgramFiles(x86)': *tools", "anchors, aliases and merges"),
         ):
             self.assertTrue(any(message in e for e in self.errors(self.workflow(run, env=False))))
 
