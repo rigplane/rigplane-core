@@ -6905,7 +6905,8 @@ class WebServer:
         radio = self._radio
 
         async def refuse_while_recovering() -> None:
-            # MOR-2876: the WebSocket ``radio_connect`` handler's refusal. On a
+            # MOR-2876: refuse a manual connect while the backend owns
+            # recovery (the only connect entry point since MOR-3777). On a
             # serial port the recovery loop is retrying, a failed ``connect()``
             # rests the radio DISCONNECTED, which the watchdog never retries.
             await self._send_json(

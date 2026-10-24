@@ -157,15 +157,18 @@ Client integrations should support both formats. Assuming only full snapshots ca
 state drift: the server sends deltas between full snapshots, and a full snapshot
 follows every 100 deltas and every provider-generation change.
 
-### Connection control messages
+### Connection control
 
-- `{"type":"radio_connect","id":"..."}`
-- `{"type":"radio_disconnect","id":"..."}`
+Connect and disconnect go through REST only: `POST /api/v1/radio/connect` and
+`POST /api/v1/radio/disconnect` (see the HTTP table above). The control
+WebSocket does not handle `radio_connect` / `radio_disconnect` messages; it
+ignores them like any other unknown message type.
 
-If backend recovery is already in progress, `radio_connect` returns:
+If backend recovery is already in progress, `POST /api/v1/radio/connect`
+returns HTTP 409:
 
 ```json
-{"type":"response","ok":false,"error":"backend_recovering"}
+{"error":"backend_recovering","message":"backend is already managing radio recovery"}
 ```
 
 ### Common commands

@@ -660,7 +660,7 @@ class _IcomSerialRadioBase(CoreRadio):
             # the same state ``connect()`` returns early from. A
             # duplicate recovery here (the CI-V recovery kick in
             # ``_civ_rx._wait_for_civ_transport_recovery``, the web
-            # ``radio_connect`` route) would retire the in-flight gate's
+            # ``/api/v1/radio/connect`` route) would retire the in-flight gate's
             # CI-V generation and reopen the port: its pending read dies
             # as silence, the epoch fence discards the reply, and the
             # retired gate's tail leaves a hold nobody drives (the

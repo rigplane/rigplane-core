@@ -1119,14 +1119,6 @@ class ControlHandler:
             await self._handle_unsubscribe(msg)
         elif msg_type == "cmd":
             await self._handle_command(msg)
-        elif msg_type == "radio_connect":
-            if self._controller_remote():
-                raise ControllerError("controller_local_required")
-            await self._handle_radio_connect(msg)
-        elif msg_type == "radio_disconnect":
-            if self._controller_remote():
-                raise ControllerError("controller_local_required")
-            await self._handle_radio_disconnect(msg)
         elif msg_type == "controller_heartbeat":
             controller = getattr(self._radio, "_controller_authority", None)
             if isinstance(controller, ControllerAuthority):
@@ -1136,199 +1128,10 @@ class ControlHandler:
         elif msg_type == "ping":
             await self._send_json({"type": "pong"})
         else:
+            # Radio connect/disconnect is REST-only (``POST
+            # /api/v1/radio/{connect,disconnect}``, MOR-3777); the old
+            # ``radio_connect``/``radio_disconnect`` messages land here.
             logger.debug("control: unknown message type: %r", msg_type)
-
-    def _note_operator_disconnect(self) -> None:
-        """Mark an intentional operator disconnect on the server (MOR-3452).
-
-        Defensive ``getattr``: unit doubles attach a bare namespace as
-        the server, the way the provider-epoch invalidation above does.
-        """
-
-        note = getattr(self._server, "note_operator_disconnect", None)
-        if callable(note):
-            note()
-
-    def _note_operator_connect(self) -> None:
-        """Clear the operator-disconnect mark on the server (MOR-3452)."""
-
-        note = getattr(self._server, "note_operator_connect", None)
-        if callable(note):
-            note()
-
-    async def _handle_radio_connect(self, msg: dict[str, Any]) -> None:
-        """Handle radio_connect request — reconnect the radio."""
-        logger.info("radio_connect requested")
-        msg_id = msg.get("id", "")
-        if self._radio is None:
-            await self._send_json(
-                {
-                    "type": "response",
-                    "id": msg_id,
-                    "ok": False,
-                    "error": "no_radio",
-                    "message": "no radio instance",
-                }
-            )
-            return
-        if self._backend_recovering():
-            await self._send_json(
-                {
-                    "type": "response",
-                    "id": msg_id,
-                    "ok": False,
-                    "error": "backend_recovering",
-                    "message": "backend is already managing radio recovery",
-                }
-            )
-            return
-        try:
-            if self._radio.connected:
-                # MOR-3452: the operator asked back in — clear the mark
-                # when the connect starts; the stale mark must not survive
-                # even this no-op path.
-                self._note_operator_connect()
-                await self._send_json(
-                    {
-                        "type": "response",
-                        "id": msg_id,
-                        "ok": True,
-                        "result": {"status": "already_connected"},
-                    }
-                )
-                return
-            # MOR-3452: clear the disconnect mark when the connect starts,
-            # before any await, so an in-flight or failed connect never
-            # reads as an operator disconnect.
-            self._note_operator_connect()
-            from ...radio_protocol import RecoverableConnection
-
-            if isinstance(self._radio, RecoverableConnection):
-                recoverable = cast(RecoverableConnection, self._radio)
-                try:
-                    await recoverable.soft_reconnect()
-                except Exception:
-                    logger.info("soft_reconnect failed, trying full connect")
-                    await self._radio.connect()
-            else:
-                await self._radio.connect()
-            await self._send_json(
-                {
-                    "type": "response",
-                    "id": msg_id,
-                    "ok": True,
-                    "result": {"status": "connected"},
-                }
-            )
-            await self._broadcast_connection_state(True)
-        except Exception as exc:
-            logger.warning("radio_connect failed: %s", exc)
-            await self._send_json(
-                {
-                    "type": "response",
-                    "id": msg_id,
-                    "ok": False,
-                    "error": "connect_failed",
-                    "message": str(exc),
-                }
-            )
-
-    async def _handle_radio_disconnect(self, msg: dict[str, Any]) -> None:
-        """Handle radio_disconnect request — disconnect the radio."""
-        logger.info("radio_disconnect requested")
-        msg_id = msg.get("id", "")
-        if self._radio is None:
-            await self._send_json(
-                {
-                    "type": "response",
-                    "id": msg_id,
-                    "ok": False,
-                    "error": "no_radio",
-                    "message": "no radio instance",
-                }
-            )
-            return
-        try:
-            if not self._radio.connected:
-                conn_state = getattr(self._radio, "conn_state", None)
-                state_value = getattr(conn_state, "value", conn_state)
-                if state_value == "disconnecting":
-                    await self._send_json(
-                        {
-                            "type": "response",
-                            "id": msg_id,
-                            "ok": True,
-                            "result": {"status": "already_disconnected"},
-                        }
-                    )
-                    return
-                # Not connected and no teardown in flight: take the
-                # owner-level disconnect() path even when conn_state reads
-                # "disconnected" — during the lifecycle recovery's backoff
-                # wait between attempts it reads disconnected while
-                # _run_recover still owns another attempt, so only
-                # disconnect() (which cancels the recovery, bumps the
-                # owner-stop epoch and releases the session) stops the
-                # reconnect. disconnect() is idempotent, so a truly idle
-                # radio answers "disconnected" after a no-op teardown.
-                # MOR-2615: the same provider-epoch invalidation as the
-                # HTTP disconnect path, via the attached server when present.
-                await self._radio.disconnect()
-                store = getattr(self._server, "command_state_store", None)
-                begin_generation = getattr(store, "begin_provider_generation", None)
-                if callable(begin_generation):
-                    begin_generation()
-                # MOR-3452: mark the intentional disconnect for the runtime.
-                self._note_operator_disconnect()
-                await self._send_json(
-                    {
-                        "type": "response",
-                        "id": msg_id,
-                        "ok": True,
-                        "result": {"status": "disconnected"},
-                    }
-                )
-                await self._broadcast_connection_state(False)
-                return
-            from ...radio_protocol import RecoverableConnection
-
-            if isinstance(self._radio, RecoverableConnection):
-                await cast(RecoverableConnection, self._radio).soft_disconnect()
-            else:
-                await self._radio.disconnect()
-            # MOR-3452: mark the intentional disconnect for the runtime.
-            self._note_operator_disconnect()
-            await self._send_json(
-                {
-                    "type": "response",
-                    "id": msg_id,
-                    "ok": True,
-                    "result": {"status": "disconnected"},
-                }
-            )
-            await self._broadcast_connection_state(False)
-        except Exception as exc:
-            logger.warning("radio_disconnect failed: %s", exc)
-            await self._send_json(
-                {
-                    "type": "response",
-                    "id": msg_id,
-                    "ok": False,
-                    "error": "disconnect_failed",
-                    "message": str(exc),
-                }
-            )
-
-    async def _broadcast_connection_state(self, connected: bool) -> None:
-        """Broadcast connection state change to this client."""
-        await self._send_json(
-            {
-                "type": "event",
-                "event": "connection_state",
-                "connected": connected,
-                "radio_ready": self._radio_ready(),
-            }
-        )
 
     async def _send_json(self, obj: dict[str, Any]) -> None:
         """Send a JSON message to the WebSocket client."""
@@ -1862,10 +1665,7 @@ class ControlHandler:
             or (name == "set_tuner_status" and params.get("value") == 2)
             or (name == "set_break_in" and params.get("mode") != 0)
         )
-        if ticket.remote and (
-            name in {"send_civ", "transmit_on", "radio_connect", "radio_disconnect"}
-            or starts_tx
-        ):
+        if ticket.remote and (name in {"send_civ", "transmit_on"} or starts_tx):
             raise ControllerError("controller_tx_unsupported")
         # MOR-3534: while one owner holds the transmitter, CW text, VOX,
         # TUNE and break-in from any other owner are refused like the remote
