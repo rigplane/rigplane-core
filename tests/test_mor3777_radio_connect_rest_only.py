@@ -74,6 +74,21 @@ async def _frames_until_pong(reader: asyncio.StreamReader) -> list[dict[str, Any
         seen.append(msg)
 
 
+def _connection_state_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Frames announcing a connection-state change, in either shape.
+
+    The removed WS handlers announced it as an event envelope,
+    ``{"type": "event", "event": "connection_state", ...}``; a bare
+    ``{"type": "connection_state"}`` is rejected as well.
+    """
+    return [
+        f
+        for f in frames
+        if f.get("type") == "connection_state"
+        or (f.get("type") == "event" and f.get("event") == "connection_state")
+    ]
+
+
 def _replies_to(frames: list[dict[str, Any]], msg_id: str) -> list[dict[str, Any]]:
     return [f for f in frames if f.get("id") == msg_id]
 
@@ -92,9 +107,11 @@ async def test_ws_radio_disconnect_is_not_handled(served_radio: Any) -> None:
     finally:
         await _close_ws(writer)
 
+    # Checked first so a regression fails on the event frame itself.
+    assert _connection_state_frames(frames) == []
+    assert not [f for f in frames if f.get("type") == "connection_state"]
     assert radio.connected is True
     assert _replies_to(frames, "ws-disc") == []
-    assert not [f for f in frames if f.get("type") == "connection_state"]
 
 
 async def test_ws_radio_connect_is_not_handled(served_radio: Any) -> None:
@@ -112,9 +129,11 @@ async def test_ws_radio_connect_is_not_handled(served_radio: Any) -> None:
     finally:
         await _close_ws(writer)
 
+    # Checked first so a regression fails on the event frame itself.
+    assert _connection_state_frames(frames) == []
+    assert not [f for f in frames if f.get("type") == "connection_state"]
     assert radio.connected is False
     assert _replies_to(frames, "ws-conn") == []
-    assert not [f for f in frames if f.get("type") == "connection_state"]
 
 
 async def test_rest_disconnect_then_connect_round_trip(served_radio: Any) -> None:
