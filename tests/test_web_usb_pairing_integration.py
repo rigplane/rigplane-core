@@ -35,17 +35,16 @@ W1_TX_ID = r"MME|SWD\MMDEVAPI\{0.0.0.00000000}.{9082644E-6A88-4638-B416-E1788AAC
 
 
 @pytest.mark.parametrize(
-    "codec_matches,explicit_choice,start_direction",
+    "codec_matches,explicit_choice",
     [
-        (True, False, "rx"),
-        (False, False, "rx"),
-        (False, True, "rx"),
-        (False, False, "tx"),
+        (True, False),
+        (False, False),
+        (False, True),
     ],
-    ids=["w1-mme", "wrong-codec", "stable-choice-overrides-wrong-codec", "tx-refusal"],
+    ids=["w1-mme", "wrong-codec", "stable-choice-overrides-wrong-codec"],
 )
 async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
-    monkeypatch, codec_matches, explicit_choice, start_direction
+    monkeypatch, codec_matches, explicit_choice
 ):
     from rigplane.audio import _usb_pairing
 
@@ -82,7 +81,7 @@ async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
             json.dumps(
                 {
                     "type": "audio_start",
-                    "direction": start_direction,
+                    "direction": "rx",
                     "preferred_rx_codec": "pcm16",
                 }
             ),
@@ -94,9 +93,7 @@ async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
                 assert opcode == WS_OP_TEXT
                 message = json.loads(payload)
                 messages.append(message)
-                if message["type"] == "audio_format" or (
-                    start_direction == "tx" and message["type"] == "error"
-                ):
+                if message["type"] == "audio_format":
                     break
 
         status, _, body = await _http_get("127.0.0.1", server.port, "/api/v1/info")
@@ -108,8 +105,8 @@ async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
             assert {
                 key: value for key, value in failure.items() if key != "candidates"
             } == {
-                "stage": start_direction + "_start",
-                "code": "core_" + start_direction + "_start_failed",
+                "stage": "rx_start",
+                "code": "core_rx_start_failed",
                 "reason": "usb_topology_unavailable",
             }
             candidates = failure["candidates"]

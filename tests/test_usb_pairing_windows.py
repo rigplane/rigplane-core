@@ -240,9 +240,9 @@ async def test_stable_override_revalidated_on_every_open(
 @pytest.mark.parametrize(
     "direction,index,flow", [("rx", 1, "capture"), ("tx", 5, "render")]
 )
-@pytest.mark.parametrize("duplicate", [False, True], ids=["missing", "ambiguous"])
+@pytest.mark.parametrize("condition", ["missing", "ambiguous", "empty"])
 async def test_stable_override_refuses_without_pairing_or_streams(
-    monkeypatch, direction, index, flow, duplicate
+    monkeypatch, direction, index, flow, condition
 ):
     from rigplane.audio import _usb_pairing
     from rigplane.audio.usb_driver import (
@@ -259,7 +259,7 @@ async def test_stable_override_refuses_without_pairing_or_streams(
         for c in refusal.candidates
         if c.portaudio_index == index and c.direction == flow
     )
-    if duplicate:
+    if condition == "ambiguous":
         devices = session["raw"]["portaudio"]["devices"]
         devices[2] = dict(devices[index], index=2)
     else:
@@ -269,6 +269,8 @@ async def test_stable_override_refuses_without_pairing_or_streams(
             selector + " replacement"
         )
     backend, _ = _inject_windows(monkeypatch, session)
+    if condition == "empty":
+        monkeypatch.setattr(backend, "list_devices", lambda: [])
     pairing = Mock(side_effect=AssertionError("explicit choices must bypass pairing"))
     monkeypatch.setattr(_usb_pairing, "pair", pairing)
     driver = UsbAudioDriver(
@@ -276,8 +278,12 @@ async def test_stable_override_refuses_without_pairing_or_streams(
         serial_port="COM3",
         **{direction + "_device": selector},
     )
-    error = AudioDeviceAmbiguousError if duplicate else AudioDeviceSelectionError
-    message = "Ambiguous" if duplicate else "Unknown"
+    error = (
+        AudioDeviceAmbiguousError
+        if condition == "ambiguous"
+        else AudioDeviceSelectionError
+    )
+    message = "Ambiguous" if condition == "ambiguous" else "Unknown"
     with pytest.raises(error, match=f"{message} {direction.upper()} device override"):
         if direction == "rx":
             await driver.start_rx(lambda _frame: None)
