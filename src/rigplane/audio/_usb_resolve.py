@@ -90,6 +90,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+from rigplane.audio._usb_names import endpoint_name_key as _endpoint_name_key
+from rigplane.audio._usb_names import windows_audio_product as _windows_audio_product
 from rigplane.audio._windows_devnode import DevNodeRow, present_devnodes
 from rigplane.audio.backend import _ALSA_HW_RE
 
@@ -712,20 +714,6 @@ def _resolve_ic7300_hub(
     raise WindowsAudioEndpointNameError(
         "IC-7300 USB audio has no complete same-host-API pair."
     )
-
-
-def _endpoint_name_key(name: str) -> str:
-    """Endpoint name without the spacing host APIs disagree on.
-
-    On GTR7 PnP reported ``Speakers (USB Audio CODEC )`` and WDM-KS
-    ``Speakers (USB Audio CODEC)`` for the same endpoint (MOR-3526).
-    """
-    return re.sub(r"\(\s+", "(", re.sub(r"\s+\)", ")", " ".join(name.split())))
-
-
-def _windows_audio_product(name: str) -> str:
-    match = re.fullmatch(r".*\((?:\d+-\s*)?([^()]+)\)", name.strip())
-    return match[1].strip() if match else name.strip()
 
 
 def _query_windows_pnp_devices() -> list[WindowsPnpDevice]:

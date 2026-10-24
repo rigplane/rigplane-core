@@ -34,6 +34,10 @@ data_len_max = 475
 [audio]
 codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 
+[usb]
+# W1 Windows recording: tests/fixtures/usb_audio/windows/w1-gtr7-ic7300.json.
+audio_codec = [{ vid = "08BB", pid = "2901" }]
+
 [scope]
 span_presets_hz = [2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000]
 

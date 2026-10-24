@@ -29,6 +29,10 @@ expected_ids = ["0840"]
 # (MOR-508). Other rigs omit this and keep the default "mix" average.
 rx_audio_channel = "left"
 
+[usb]
+# macOS USB and audio recording, 2026-10-22: codec under the internal hub.
+audio_codec = [{ vid = "0D8C", pid = "0016" }]
+
 [power]
 max_watts = 100
 # PC POWER CONTROL floor (FTX-1 CAT manual FTX-1_CAT_OM_ENG_2508-C, p.21):
