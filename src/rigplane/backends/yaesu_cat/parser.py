@@ -56,7 +56,14 @@ __all__ = [
     "CatParseError",
     "CatCommandParser",
     "format_command",
+    "is_data_mode",
 ]
+
+
+def is_data_mode(mode: str) -> bool:
+    """Return whether a Yaesu mode name denotes DATA mode."""
+    return mode.endswith("-D") or "DATA" in mode.upper()
+
 
 # ---------------------------------------------------------------------------
 # Allowed placeholder names

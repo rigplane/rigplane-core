@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...core.types import MemoryEntry, RepeaterShiftDirection, ToneSquelchType
+from .parser import is_data_mode
 
 # MR's own P8 codes (not the CT command's).
 _TONE_BY_CODE = {
@@ -46,6 +47,7 @@ def memory_entry_from_cat(
         channel=channel,
         frequency_hz=mr["freq"],
         mode=mode_name,
+        data_mode=is_data_mode(mode_name),
         duplex=_SHIFT_BY_CODE.get(mr["shift"]),  # 3 = ARS has no stored direction
         tone_mode=tone,
         name=tag.rstrip(),

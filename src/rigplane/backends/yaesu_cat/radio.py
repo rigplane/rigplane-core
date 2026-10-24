@@ -16,7 +16,21 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
 from ...audio import AudioPacket
 from ...audio.lan_stream import SYNTHETIC_RX_IDENT
 from ...command_spec import CatCommandSpec
+from ...commands import hz_to_table_index, table_index_to_hz
+from ...core.priority_exchange import ExchangeTier
 from ...core.radio_protocol import RadioIdentity, RadioIdentityStatus
+from ...core.tx_observation import TxStateReading
+from ...core.types import MemoryEntry
+from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
+from ...exceptions import ConnectionError as RadioConnectionError
+from ...profiles.control_domain import (
+    control_display_band,
+    decode_control_domain,
+    encode_control_domain,
+    snap_control_domain,
+    validate_control_raw_value,
+)
+from ...radio_state import RadioState
 from ...runtime.callable_support import supports_callable
 from ...runtime.local_tx_work import LocalTxWorkRunner
 from ...runtime.managed_tx_fence import TxAbortFence
@@ -26,23 +40,9 @@ from ...runtime.managed_tx_state import (
     ActuationResult,
     EffectToken,
 )
-from ...commands import hz_to_table_index, table_index_to_hz
-from ...core.priority_exchange import ExchangeTier
-from ...core.tx_observation import TxStateReading
 from ...types import AudioCodec, BreakInMode, RepeaterShiftDirection
-from ...core.types import MemoryEntry
 from .memory import memory_entry_from_cat
-from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
-from ...exceptions import ConnectionError as RadioConnectionError
-from ...radio_state import RadioState
-from ...profiles.control_domain import (
-    control_display_band,
-    decode_control_domain,
-    encode_control_domain,
-    snap_control_domain,
-    validate_control_raw_value,
-)
-from .parser import CatCommandParser, CatParseError, format_command
+from .parser import CatCommandParser, CatParseError, format_command, is_data_mode
 from .transport import (
     CatCommandRejected,
     CatTimeoutError,
@@ -1472,7 +1472,7 @@ class YaesuCatRadio:
         (MOR-434).
         """
         mode, _ = await self.read_mode(0)
-        return mode.endswith("-D") or "DATA" in mode.upper()
+        return is_data_mode(mode)
 
     async def set_data_mode(self, on: int | bool, receiver: int = 0) -> None:
         """Toggle DATA mode.

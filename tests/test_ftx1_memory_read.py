@@ -16,6 +16,7 @@ from rigplane.backends.yaesu_cat.transport import (
     CatCommandRejected,
     CatGarbledFrameError,
     CatTimeoutError,
+    YaesuCatTransport,
 )
 from rigplane.core.exceptions import CommandError
 from rigplane.core.radio_protocol import MemoryReadCapable
@@ -44,7 +45,7 @@ def _radio(answers: dict[str, str]) -> YaesuCatRadio:
             raise CatCommandRejected("?;", command=command)
         return answers[command]
 
-    radio._transport.query = AsyncMock(side_effect=query)
+    radio._transport.query = AsyncMock(spec=YaesuCatTransport.query, side_effect=query)
     return radio
 
 
@@ -145,13 +146,38 @@ async def test_a_slot_outside_the_profile_is_refused_before_the_wire(
 
 
 @pytest.mark.asyncio
-async def test_the_memories_endpoint_lists_an_ftx1() -> None:
-    radio = _radio({"MR00025;": _MR_25, "MT00025;": _MT_25})
+@pytest.mark.parametrize(
+    ("mode_code", "mode_name", "data_mode"),
+    [
+        ("C", "DATA-U", True),
+        ("8", "DATA-L", True),
+        ("A", "DATA-FM", True),
+        ("F", "DATA-FM-N", True),
+        ("1", "LSB", False),
+        ("2", "USB", False),
+        ("3", "CW-U", False),
+        ("4", "FM", False),
+        ("5", "AM", False),
+        ("6", "RTTY-L", False),
+        ("7", "CW-L", False),
+        ("9", "RTTY-U", False),
+        ("B", "FM-N", False),
+        ("D", "AM-N", False),
+        ("E", "PSK", False),
+        ("H", "C4FM-DN", False),
+        ("I", "C4FM-VW", False),
+    ],
+)
+async def test_the_memories_endpoint_lists_an_ftx1(
+    mode_code: str, mode_name: str, data_mode: bool
+) -> None:
+    radio = _radio({"MR00025;": _mr(mode=mode_code), "MT00025;": _MT_25})
     status, body = await _get(radio, "/api/v1/memories?group=0&start=25&count=2")
     assert status == 200
     assert body["addressing"] == "channel"
     assert body["recall"] is False
     entry, empty = body["entries"]
+    assert (entry["mode"], entry["dataMode"]) == (mode_name, data_mode)
     assert (entry["name"], entry["frequencyHz"], entry["toneMode"]) == (
         "TEST RPT",
         146_940_000,
@@ -186,7 +212,7 @@ async def test_transport_and_parse_failures_become_command_errors(
             raise failure
         return answers[command]
 
-    radio._transport.query = AsyncMock(side_effect=query)
+    radio._transport.query = AsyncMock(spec=YaesuCatTransport.query, side_effect=query)
     with pytest.raises(CommandError, match="unreadable memory"):
         await radio.read_memory_entries(0, [25])
 
