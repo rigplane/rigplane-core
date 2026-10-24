@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from rigplane.diagnostics._log_paths import resolve_core_log_dir
 
@@ -86,6 +87,31 @@ def configure_diagnostic_logging() -> None:
             icom_logger.setLevel(logging.DEBUG if debug_mode else logging.INFO)
     except Exception as exc:  # noqa: BLE001 — best-effort init, swallow all
         sys.stderr.write(f"rigplane: diagnostic logging disabled: {exc}\n")
+
+
+def detach_diagnostic_logging(path: Path | None = None) -> bool:
+    """Remove and close the diagnostic file handler; return whether one was removed.
+
+    With *path*, only a handler writing that same file is detached. The CLI
+    calls this before attaching its own file handler (MOR-3777) so a log file
+    never has two writers, and with no *path* when ``ICOM_LOG_FILE=off`` asks
+    for no file logging at all. Idempotent; never raises.
+    """
+    icom_logger = logging.getLogger("rigplane")
+    target = Path(path).expanduser().resolve() if path is not None else None
+    removed = False
+    for handler in list(icom_logger.handlers):
+        if not isinstance(handler, SafeRotatingFileHandler):
+            continue
+        if target is not None and Path(handler.baseFilename).resolve() != target:
+            continue
+        icom_logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:  # noqa: BLE001 — best-effort, same as emit
+            pass
+        removed = True
+    return removed
 
 
 # Process-wide: stdlib logging should never raise on its own emit failures either.

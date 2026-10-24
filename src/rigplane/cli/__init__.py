@@ -5048,7 +5048,8 @@ def main() -> None:
     # ICOM_LOG_FILE=/path/to/file.log — log to file (default: platform cache logs)
     # ICOM_LOG_MAX_BYTES=50000000 — rotate when file reaches this size (default: 50 MB)
     # ICOM_LOG_BACKUP_COUNT=5 — keep N rotated backups (default: 5; 0 disables rotation)
-    # Set ICOM_LOG_FILE=off to disable the default file log on daemon commands.
+    # Set ICOM_LOG_FILE=off to disable file logging entirely (the default
+    # daemon file log and the always-on diagnostic rigplane.log).
     debug_mode = os.environ.get("ICOM_DEBUG", "").strip() not in (
         "",
         "0",
@@ -5091,8 +5092,20 @@ def main() -> None:
             )
         )
 
+    # One writer per log file (MOR-3777). ``import rigplane`` already attached
+    # the always-on diagnostic handler to ``rigplane.log``; the root file
+    # handler below would receive the same ``rigplane.*`` records again.
+    # ``ICOM_LOG_FILE=off`` means no file logging at all, so the diagnostic
+    # writer goes too. With no CLI file (short commands) it stays the sole
+    # writer, so ``rigplane diagnose`` still has a trail to bundle.
+    from rigplane.diagnostics._logging import detach_diagnostic_logging
+
+    if log_file_disabled:
+        detach_diagnostic_logging()
+
     if log_file:
         log_path = Path(log_file).expanduser().resolve()
+        detach_diagnostic_logging(log_path)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         setattr(args, "runtime_log_path", str(log_path))
         max_bytes = _env_int("ICOM_LOG_MAX_BYTES", 50_000_000)
