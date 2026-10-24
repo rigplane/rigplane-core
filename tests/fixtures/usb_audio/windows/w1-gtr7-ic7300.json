@@ -1,0 +1,1069 @@
+{
+  "schema": "rigplane.usb_audio_capture/1",
+  "sessions": [
+    {
+      "schema": "rigplane.usb_audio_session/1",
+      "session": "connected",
+      "target": null,
+      "radios": [
+        {
+          "profile": "ic7300",
+          "serial_port": "COM3"
+        }
+      ],
+      "os": "windows",
+      "os_version": "Windows 11 10.0.26300 AMD64",
+      "ui_locale": "English_United States",
+      "capture_tool": "rigplane 3.0.0b20 audio usb-capture",
+      "raw": {
+        "windows": {
+          "source": "cfgmgr32",
+          "devnodes": [
+            {
+              "instance_id": "opaque:RXXVOX2CKCO",
+              "parent_id": "",
+              "class_name": "",
+              "friendly_name": "",
+              "device_desc": "",
+              "hardware_ids": [],
+              "compatible_ids": []
+            },
+            {
+              "instance_id": "opaque:RECA5SVQFPL",
+              "parent_id": "opaque:RXXVOX2CKCO",
+              "class_name": "Computer",
+              "friendly_name": "",
+              "device_desc": "ACPI x64-based PC",
+              "hardware_ids": [
+                "acpiapic"
+              ],
+              "compatible_ids": [
+                "DETECTEDInternal\\ACPI_HAL",
+                "DETECTED\\ACPI_HAL"
+              ]
+            },
+            {
+              "instance_id": "opaque:RA7HTRQMZAB",
+              "parent_id": "opaque:RECA5SVQFPL",
+              "class_name": "System",
+              "friendly_name": "",
+              "device_desc": "Microsoft ACPI-Compliant System",
+              "hardware_ids": [
+                "ACPI_HAL\\PNP0C08",
+                "*PNP0C08"
+              ],
+              "compatible_ids": []
+            },
+            {
+              "instance_id": "opaque:RB4D6L4NU7S",
+              "parent_id": "opaque:RA7HTRQMZAB",
+              "class_name": "System",
+              "friendly_name": "",
+              "device_desc": "PCI Express Root Complex",
+              "hardware_ids": [
+                "ACPI\\VEN_PNP&DEV_0A08",
+                "ACPI\\PNP0A08",
+                "*PNP0A08"
+              ],
+              "compatible_ids": [
+                "*PNP0A03"
+              ]
+            },
+            {
+              "instance_id": "opaque:RBXDCMWQIK3",
+              "parent_id": "opaque:RB4D6L4NU7S",
+              "class_name": "System",
+              "friendly_name": "",
+              "device_desc": "PCI Express Root Port",
+              "hardware_ids": [
+                "PCI\\VEN_1022&DEV_14ED&SUBSYS_14531022&REV_00",
+                "PCI\\VEN_1022&DEV_14ED&SUBSYS_14531022",
+                "PCI\\VEN_1022&DEV_14ED&CC_060400",
+                "PCI\\VEN_1022&DEV_14ED&CC_0604"
+              ],
+              "compatible_ids": [
+                "PCI\\VEN_1022&DEV_14ED&REV_00",
+                "PCI\\VEN_1022&DEV_14ED",
+                "PCI\\VEN_1022&CC_060400",
+                "PCI\\VEN_1022&CC_0604",
+                "PCI\\VEN_1022",
+                "PCI\\CC_060400&DT_4",
+                "PCI\\CC_060400",
+                "PCI\\CC_0604&DT_4",
+                "PCI\\CC_0604"
+              ]
+            },
+            {
+              "instance_id": "opaque:RWPJL5JW7TL",
+              "parent_id": "opaque:RBXDCMWQIK3",
+              "class_name": "USB",
+              "friendly_name": "ASMedia USB 3.1 eXtensible Host Controller - 1.10 (Microsoft)",
+              "device_desc": "USB xHCI Compliant Host Controller",
+              "hardware_ids": [
+                "PCI\\VEN_1B21&DEV_2142&SUBSYS_21421B21&REV_00",
+                "PCI\\VEN_1B21&DEV_2142&SUBSYS_21421B21",
+                "PCI\\VEN_1B21&DEV_2142&CC_0C0330",
+                "PCI\\VEN_1B21&DEV_2142&CC_0C03"
+              ],
+              "compatible_ids": [
+                "PCI\\VEN_1B21&DEV_2142&REV_00",
+                "PCI\\VEN_1B21&DEV_2142",
+                "PCI\\VEN_1B21&CC_0C0330",
+                "PCI\\VEN_1B21&CC_0C03",
+                "PCI\\VEN_1B21",
+                "PCI\\CC_0C0330&DT_1",
+                "PCI\\CC_0C0330",
+                "PCI\\CC_0C03&DT_1",
+                "PCI\\CC_0C03"
+              ]
+            },
+            {
+              "instance_id": "USB\\ROOT_HUB30\\5&1424396A&0&0",
+              "parent_id": "opaque:RWPJL5JW7TL",
+              "class_name": "USB",
+              "friendly_name": "",
+              "device_desc": "USB Root Hub (USB 3.0)",
+              "hardware_ids": [
+                "USB\\ROOT_HUB30&VID1B21&PID2142&REV0000",
+                "USB\\ROOT_HUB30&VID1B21&PID2142",
+                "USB\\ROOT_HUB30"
+              ],
+              "compatible_ids": []
+            },
+            {
+              "instance_id": "opaque:RGLWASEAZF2",
+              "parent_id": "opaque:RB4D6L4NU7S",
+              "class_name": "System",
+              "friendly_name": "",
+              "device_desc": "PCI Express Root Port",
+              "hardware_ids": [
+                "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00",
+                "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022",
+                "PCI\\VEN_1022&DEV_14EB&CC_060400",
+                "PCI\\VEN_1022&DEV_14EB&CC_0604"
+              ],
+              "compatible_ids": [
+                "PCI\\VEN_1022&DEV_14EB&REV_00",
+                "PCI\\VEN_1022&DEV_14EB",
+                "PCI\\VEN_1022&CC_060400",
+                "PCI\\VEN_1022&CC_0604",
+                "PCI\\VEN_1022",
+                "PCI\\CC_060400&DT_4",
+                "PCI\\CC_060400",
+                "PCI\\CC_0604&DT_4",
+                "PCI\\CC_0604"
+              ]
+            },
+            {
+              "instance_id": "opaque:RHTU3SO6XJ4",
+              "parent_id": "opaque:RGLWASEAZF2",
+              "class_name": "USB",
+              "friendly_name": "AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft)",
+              "device_desc": "USB xHCI Compliant Host Controller",
+              "hardware_ids": [
+                "PCI\\VEN_1022&DEV_15B9&SUBSYS_15B91022&REV_00",
+                "PCI\\VEN_1022&DEV_15B9&SUBSYS_15B91022",
+                "PCI\\VEN_1022&DEV_15B9&CC_0C0330",
+                "PCI\\VEN_1022&DEV_15B9&CC_0C03"
+              ],
+              "compatible_ids": [
+                "PCI\\VEN_1022&DEV_15B9&REV_00",
+                "PCI\\VEN_1022&DEV_15B9",
+                "PCI\\VEN_1022&CC_0C0330",
+                "PCI\\VEN_1022&CC_0C03",
+                "PCI\\VEN_1022",
+                "PCI\\CC_0C0330&DT_0",
+                "PCI\\CC_0C0330",
+                "PCI\\CC_0C03&DT_0",
+                "PCI\\CC_0C03"
+              ]
+            },
+            {
+              "instance_id": "USB\\ROOT_HUB30\\5&19C782B&0&0",
+              "parent_id": "opaque:RHTU3SO6XJ4",
+              "class_name": "USB",
+              "friendly_name": "",
+              "device_desc": "USB Root Hub (USB 3.0)",
+              "hardware_ids": [
+                "USB\\ROOT_HUB30&VID1022&PID15B9&REV0000",
+                "USB\\ROOT_HUB30&VID1022&PID15B9",
+                "USB\\ROOT_HUB30"
+              ],
+              "compatible_ids": []
+            },
+            {
+              "instance_id": "USB\\VID_8087&PID_0029\\6&3878EF1F&0&5",
+              "parent_id": "USB\\ROOT_HUB30\\5&19C782B&0&0",
+              "class_name": "Bluetooth",
+              "friendly_name": "",
+              "device_desc": "Intel(R) Wireless Bluetooth(R)",
+              "hardware_ids": [
+                "USB\\VID_8087&PID_0029&REV_0001",
+                "USB\\VID_8087&PID_0029"
+              ],
+              "compatible_ids": [
+                "USB\\COMPAT_VID_8087&Class_E0&SubClass_01&Prot_01",
+                "USB\\COMPAT_VID_8087&Class_E0&SubClass_01",
+                "USB\\COMPAT_VID_8087&Class_E0",
+                "USB\\Class_E0&SubClass_01&Prot_01",
+                "USB\\Class_E0&SubClass_01",
+                "USB\\Class_E0"
+              ]
+            },
+            {
+              "instance_id": "USB\\VID_0451&PID_2046\\6&3878EF1F&0&2",
+              "parent_id": "USB\\ROOT_HUB30\\5&19C782B&0&0",
+              "class_name": "USB",
+              "friendly_name": "",
+              "device_desc": "Generic USB Hub",
+              "hardware_ids": [
+                "USB\\VID_0451&PID_2046&REV_0125",
+                "USB\\VID_0451&PID_2046"
+              ],
+              "compatible_ids": [
+                "USB\\USB20_HUB"
+              ]
+            },
+            {
+              "instance_id": "USB\\VID_10C4&PID_EA60\\R7UQAB7IEGL",
+              "parent_id": "USB\\VID_0451&PID_2046\\6&3878EF1F&0&2",
+              "class_name": "Ports",
+              "friendly_name": "Silicon Labs CP210x USB to UART Bridge (COM3)",
+              "device_desc": "Silicon Labs CP210x USB to UART Bridge",
+              "hardware_ids": [
+                "USB\\VID_10C4&PID_EA60&REV_0100",
+                "USB\\VID_10C4&PID_EA60"
+              ],
+              "compatible_ids": [
+                "USB\\COMPAT_VID_10C4&Class_FF&SubClass_00&Prot_00",
+                "USB\\COMPAT_VID_10C4&Class_FF&SubClass_00",
+                "USB\\COMPAT_VID_10C4&Class_FF",
+                "USB\\Class_FF&SubClass_00&Prot_00",
+                "USB\\Class_FF&SubClass_00",
+                "USB\\Class_FF"
+              ]
+            },
+            {
+              "instance_id": "USB\\VID_08BB&PID_2901\\7&1B4BBB56&1&4",
+              "parent_id": "USB\\VID_0451&PID_2046\\6&3878EF1F&0&2",
+              "class_name": "USB",
+              "friendly_name": "",
+              "device_desc": "USB Composite Device",
+              "hardware_ids": [
+                "USB\\VID_08BB&PID_2901&REV_0100",
+                "USB\\VID_08BB&PID_2901"
+              ],
+              "compatible_ids": [
+                "USB\\COMPAT_VID_08BB&DevClass_00&SubClass_00&Prot00",
+                "USB\\COMPAT_VID_08BB&DevClass_00&SubClass_00",
+                "USB\\COMPAT_VID_08BB&DevClass_00",
+                "USB\\DevClass_00&SubClass_00&Prot_00",
+                "USB\\DevClass_00&SubClass_00",
+                "USB\\DevClass_00",
+                "USB\\COMPOSITE"
+              ]
+            },
+            {
+              "instance_id": "USB\\VID_08BB&PID_2901&MI_00\\8&2DD4048C&0&0000",
+              "parent_id": "USB\\VID_08BB&PID_2901\\7&1B4BBB56&1&4",
+              "class_name": "MEDIA",
+              "friendly_name": "USB Audio CODEC ",
+              "device_desc": "USB Audio Device",
+              "hardware_ids": [
+                "USB\\VID_08BB&PID_2901&REV_0100&MI_00",
+                "USB\\VID_08BB&PID_2901&MI_00"
+              ],
+              "compatible_ids": [
+                "USB\\COMPAT_VID_08bb&Class_01&SubClass_01&Prot_00",
+                "USB\\COMPAT_VID_08bb&Class_01&SubClass_01",
+                "USB\\COMPAT_VID_08bb&Class_01",
+                "USB\\Class_01&SubClass_01&Prot_00",
+                "USB\\Class_01&SubClass_01",
+                "USB\\Class_01"
+              ]
+            },
+            {
+              "instance_id": "SWD\\MMDEVAPI\\{0.0.1.00000000}.{963D478C-4D8C-412E-A32C-387169AFB3A0}",
+              "parent_id": "USB\\VID_08BB&PID_2901&MI_00\\8&2DD4048C&0&0000",
+              "class_name": "AudioEndpoint",
+              "friendly_name": "Microphone (USB Audio CODEC )",
+              "device_desc": "Audio Endpoint",
+              "hardware_ids": [
+                "MMDEVAPI\\AudioEndpoints"
+              ],
+              "compatible_ids": [
+                "GenericAudioEndpoint",
+                "SWD\\GenericRaw",
+                "SWD\\Generic"
+              ]
+            },
+            {
+              "instance_id": "SWD\\MMDEVAPI\\{0.0.0.00000000}.{9082644E-6A88-4638-B416-E1788AAC0FDF}",
+              "parent_id": "USB\\VID_08BB&PID_2901&MI_00\\8&2DD4048C&0&0000",
+              "class_name": "AudioEndpoint",
+              "friendly_name": "Speakers (USB Audio CODEC )",
+              "device_desc": "Audio Endpoint",
+              "hardware_ids": [
+                "MMDEVAPI\\AudioEndpoints"
+              ],
+              "compatible_ids": [
+                "GenericAudioEndpoint",
+                "SWD\\GenericRaw",
+                "SWD\\Generic"
+              ]
+            },
+            {
+              "instance_id": "USB\\VID_08BB&PID_2901&MI_03\\8&2DD4048C&0&0003",
+              "parent_id": "USB\\VID_08BB&PID_2901\\7&1B4BBB56&1&4",
+              "class_name": "HIDClass",
+              "friendly_name": "",
+              "device_desc": "USB Input Device",
+              "hardware_ids": [
+                "USB\\VID_08BB&PID_2901&REV_0100&MI_03",
+                "USB\\VID_08BB&PID_2901&MI_03"
+              ],
+              "compatible_ids": [
+                "USB\\COMPAT_VID_08bb&Class_03&SubClass_00&Prot_00",
+                "USB\\COMPAT_VID_08bb&Class_03&SubClass_00",
+                "USB\\COMPAT_VID_08bb&Class_03",
+                "USB\\Class_03&SubClass_00&Prot_00",
+                "USB\\Class_03&SubClass_00",
+                "USB\\Class_03"
+              ]
+            },
+            {
+              "instance_id": "opaque:RMXUL6NJ7PX",
+              "parent_id": "opaque:RGLWASEAZF2",
+              "class_name": "USB",
+              "friendly_name": "AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft)",
+              "device_desc": "USB xHCI Compliant Host Controller",
+              "hardware_ids": [
+                "PCI\\VEN_1022&DEV_15BA&SUBSYS_15B91022&REV_00",
+                "PCI\\VEN_1022&DEV_15BA&SUBSYS_15B91022",
+                "PCI\\VEN_1022&DEV_15BA&CC_0C0330",
+                "PCI\\VEN_1022&DEV_15BA&CC_0C03"
+              ],
+              "compatible_ids": [
+                "PCI\\VEN_1022&DEV_15BA&REV_00",
+                "PCI\\VEN_1022&DEV_15BA",
+                "PCI\\VEN_1022&CC_0C0330",
+                "PCI\\VEN_1022&CC_0C03",
+                "PCI\\VEN_1022",
+                "PCI\\CC_0C0330&DT_0",
+                "PCI\\CC_0C0330",
+                "PCI\\CC_0C03&DT_0",
+                "PCI\\CC_0C03"
+              ]
+            },
+            {
+              "instance_id": "USB\\ROOT_HUB30\\5&38F471A6&0&0",
+              "parent_id": "opaque:RMXUL6NJ7PX",
+              "class_name": "USB",
+              "friendly_name": "",
+              "device_desc": "USB Root Hub (USB 3.0)",
+              "hardware_ids": [
+                "USB\\ROOT_HUB30&VID1022&PID15BA&REV0000",
+                "USB\\ROOT_HUB30&VID1022&PID15BA",
+                "USB\\ROOT_HUB30"
+              ],
+              "compatible_ids": []
+            },
+            {
+              "instance_id": "USB\\VID_1C7A&PID_0577\\RFLA5DWFA46",
+              "parent_id": "USB\\ROOT_HUB30\\5&38F471A6&0&0",
+              "class_name": "Biometric",
+              "friendly_name": "",
+              "device_desc": "EgisTec Touch Fingerprint Sensor",
+              "hardware_ids": [
+                "USB\\VID_1C7A&PID_0577&REV_1041",
+                "USB\\VID_1C7A&PID_0577"
+              ],
+              "compatible_ids": [
+                "USB\\MS_COMP_WINUSB",
+                "USB\\COMPAT_VID_1C7A&Class_FF&SubClass_FF&Prot_00",
+                "USB\\COMPAT_VID_1C7A&Class_FF&SubClass_FF",
+                "USB\\COMPAT_VID_1C7A&Class_FF",
+                "USB\\Class_FF&SubClass_FF&Prot_00",
+                "USB\\Class_FF&SubClass_FF",
+                "USB\\Class_FF"
+              ]
+            },
+            {
+              "instance_id": "opaque:R3DRIAC5WT4",
+              "parent_id": "opaque:RB4D6L4NU7S",
+              "class_name": "System",
+              "friendly_name": "",
+              "device_desc": "PCI Express Root Port",
+              "hardware_ids": [
+                "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022&REV_00",
+                "PCI\\VEN_1022&DEV_14EB&SUBSYS_14EB1022",
+                "PCI\\VEN_1022&DEV_14EB&CC_060400",
+                "PCI\\VEN_1022&DEV_14EB&CC_0604"
+              ],
+              "compatible_ids": [
+                "PCI\\VEN_1022&DEV_14EB&REV_00",
+                "PCI\\VEN_1022&DEV_14EB",
+                "PCI\\VEN_1022&CC_060400",
+                "PCI\\VEN_1022&CC_0604",
+                "PCI\\VEN_1022",
+                "PCI\\CC_060400&DT_4",
+                "PCI\\CC_060400",
+                "PCI\\CC_0604&DT_4",
+                "PCI\\CC_0604"
+              ]
+            },
+            {
+              "instance_id": "opaque:RYCZWY22DHN",
+              "parent_id": "opaque:R3DRIAC5WT4",
+              "class_name": "USB",
+              "friendly_name": "AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft)",
+              "device_desc": "USB xHCI Compliant Host Controller",
+              "hardware_ids": [
+                "PCI\\VEN_1022&DEV_15C0&SUBSYS_15C01022&REV_00",
+                "PCI\\VEN_1022&DEV_15C0&SUBSYS_15C01022",
+                "PCI\\VEN_1022&DEV_15C0&CC_0C0330",
+                "PCI\\VEN_1022&DEV_15C0&CC_0C03"
+              ],
+              "compatible_ids": [
+                "PCI\\VEN_1022&DEV_15C0&REV_00",
+                "PCI\\VEN_1022&DEV_15C0",
+                "PCI\\VEN_1022&CC_0C0330",
+                "PCI\\VEN_1022&CC_0C03",
+                "PCI\\VEN_1022",
+                "PCI\\CC_0C0330&DT_0",
+                "PCI\\CC_0C0330",
+                "PCI\\CC_0C03&DT_0",
+                "PCI\\CC_0C03"
+              ]
+            },
+            {
+              "instance_id": "USB\\ROOT_HUB30\\5&1FEB54E4&0&0",
+              "parent_id": "opaque:RYCZWY22DHN",
+              "class_name": "USB",
+              "friendly_name": "",
+              "device_desc": "USB Root Hub (USB 3.0)",
+              "hardware_ids": [
+                "USB\\ROOT_HUB30&VID1022&PID15C0&REV0000",
+                "USB\\ROOT_HUB30&VID1022&PID15C0",
+                "USB\\ROOT_HUB30"
+              ],
+              "compatible_ids": []
+            },
+            {
+              "instance_id": "opaque:RWRFKNS45HT",
+              "parent_id": "opaque:R3DRIAC5WT4",
+              "class_name": "USB",
+              "friendly_name": "AMD USB 3.10 eXtensible Host Controller - 1.20 (Microsoft)",
+              "device_desc": "USB xHCI Compliant Host Controller",
+              "hardware_ids": [
+                "PCI\\VEN_1022&DEV_15C1&SUBSYS_15C11022&REV_00",
+                "PCI\\VEN_1022&DEV_15C1&SUBSYS_15C11022",
+                "PCI\\VEN_1022&DEV_15C1&CC_0C0330",
+                "PCI\\VEN_1022&DEV_15C1&CC_0C03"
+              ],
+              "compatible_ids": [
+                "PCI\\VEN_1022&DEV_15C1&REV_00",
+                "PCI\\VEN_1022&DEV_15C1",
+                "PCI\\VEN_1022&CC_0C0330",
+                "PCI\\VEN_1022&CC_0C03",
+                "PCI\\VEN_1022",
+                "PCI\\CC_0C0330&DT_0",
+                "PCI\\CC_0C0330",
+                "PCI\\CC_0C03&DT_0",
+                "PCI\\CC_0C03"
+              ]
+            },
+            {
+              "instance_id": "USB\\ROOT_HUB30\\5&284CF363&0&0",
+              "parent_id": "opaque:RWRFKNS45HT",
+              "class_name": "USB",
+              "friendly_name": "",
+              "device_desc": "USB Root Hub (USB 3.0)",
+              "hardware_ids": [
+                "USB\\ROOT_HUB30&VID1022&PID15C1&REV0000",
+                "USB\\ROOT_HUB30&VID1022&PID15C1",
+                "USB\\ROOT_HUB30"
+              ],
+              "compatible_ids": []
+            },
+            {
+              "instance_id": "opaque:RNDE5JQR25H",
+              "parent_id": "opaque:RXXVOX2CKCO",
+              "class_name": "MEDIA",
+              "friendly_name": "",
+              "device_desc": "Virtual Audio Cable",
+              "hardware_ids": [
+                "VirtualAudioCable_83ed7f0e-2028-4956-b0b4-39c76fdaef1d"
+              ],
+              "compatible_ids": []
+            },
+            {
+              "instance_id": "SWD\\MMDEVAPI\\{0.0.0.00000000}.{6EF31112-9C93-4E7D-9FD1-B5EE856E561E}",
+              "parent_id": "opaque:RNDE5JQR25H",
+              "class_name": "AudioEndpoint",
+              "friendly_name": "Line 1 (Virtual Audio Cable)",
+              "device_desc": "Audio Endpoint",
+              "hardware_ids": [
+                "MMDEVAPI\\AudioEndpoints"
+              ],
+              "compatible_ids": [
+                "GenericAudioEndpoint",
+                "SWD\\GenericRaw",
+                "SWD\\Generic"
+              ]
+            },
+            {
+              "instance_id": "SWD\\MMDEVAPI\\{0.0.1.00000000}.{B2622763-C85C-4E34-B625-D672872E3C23}",
+              "parent_id": "opaque:RNDE5JQR25H",
+              "class_name": "AudioEndpoint",
+              "friendly_name": "Line 1 (Virtual Audio Cable)",
+              "device_desc": "Audio Endpoint",
+              "hardware_ids": [
+                "MMDEVAPI\\AudioEndpoints"
+              ],
+              "compatible_ids": [
+                "GenericAudioEndpoint",
+                "SWD\\GenericRaw",
+                "SWD\\Generic"
+              ]
+            },
+            {
+              "instance_id": "opaque:R7Q524CSX4L",
+              "parent_id": "opaque:RXXVOX2CKCO",
+              "class_name": "MEDIA",
+              "friendly_name": "",
+              "device_desc": "RigPlane Virtual Audio Cable",
+              "hardware_ids": [
+                "Root\\rigplane_virtualcable"
+              ],
+              "compatible_ids": []
+            },
+            {
+              "instance_id": "SWD\\MMDEVAPI\\{0.0.0.00000000}.{994DFFF9-2FA9-4222-9C51-84330761724B}",
+              "parent_id": "opaque:R7Q524CSX4L",
+              "class_name": "AudioEndpoint",
+              "friendly_name": "RigPlane Virtual Cable Output (RigPlane Virtual Audio Cable)",
+              "device_desc": "Audio Endpoint",
+              "hardware_ids": [
+                "MMDEVAPI\\AudioEndpoints"
+              ],
+              "compatible_ids": [
+                "GenericAudioEndpoint",
+                "SWD\\GenericRaw",
+                "SWD\\Generic"
+              ]
+            },
+            {
+              "instance_id": "SWD\\MMDEVAPI\\{0.0.1.00000000}.{DF17AAC6-167D-40DF-AF54-7FA5CE29892E}",
+              "parent_id": "opaque:R7Q524CSX4L",
+              "class_name": "AudioEndpoint",
+              "friendly_name": "RigPlane Virtual Cable Input (RigPlane Virtual Audio Cable)",
+              "device_desc": "Audio Endpoint",
+              "hardware_ids": [
+                "MMDEVAPI\\AudioEndpoints"
+              ],
+              "compatible_ids": [
+                "GenericAudioEndpoint",
+                "SWD\\GenericRaw",
+                "SWD\\Generic"
+              ]
+            },
+            {
+              "instance_id": "SWD\\MMDEVAPI\\MICROSOFTGSWAVETABLESYNTH",
+              "parent_id": "opaque:RXXVOX2CKCO",
+              "class_name": "SoftwareDevice",
+              "friendly_name": "Microsoft GS Wavetable Synth",
+              "device_desc": "Generic software device",
+              "hardware_ids": [],
+              "compatible_ids": [
+                "SWD\\GenericRaw",
+                "SWD\\Generic"
+              ]
+            }
+          ]
+        },
+        "portaudio": {
+          "hostapis": [
+            {
+              "index": 0,
+              "name": "MME",
+              "device_count": 8,
+              "default_input": 1,
+              "default_output": 5
+            },
+            {
+              "index": 1,
+              "name": "Windows DirectSound",
+              "device_count": 8,
+              "default_input": 8,
+              "default_output": 12
+            },
+            {
+              "index": 2,
+              "name": "ASIO",
+              "device_count": 0,
+              "default_input": -1,
+              "default_output": -1
+            },
+            {
+              "index": 3,
+              "name": "Windows WASAPI",
+              "device_count": 6,
+              "default_input": 19,
+              "default_output": 17
+            },
+            {
+              "index": 4,
+              "name": "Windows WDM-KS",
+              "device_count": 11,
+              "default_input": 32,
+              "default_output": 31
+            }
+          ],
+          "devices": [
+            {
+              "index": 0,
+              "name": "Microsoft Sound Mapper - Input",
+              "hostapi": 0,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.09,
+              "default_low_output_latency": 0.09,
+              "default_high_input_latency": 0.18,
+              "default_high_output_latency": 0.18
+            },
+            {
+              "index": 1,
+              "name": "Microphone (USB Audio CODEC )",
+              "hostapi": 0,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.09,
+              "default_low_output_latency": 0.09,
+              "default_high_input_latency": 0.18,
+              "default_high_output_latency": 0.18
+            },
+            {
+              "index": 2,
+              "name": "Line 1 (Virtual Audio Cable)",
+              "hostapi": 0,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.09,
+              "default_low_output_latency": 0.09,
+              "default_high_input_latency": 0.18,
+              "default_high_output_latency": 0.18
+            },
+            {
+              "index": 3,
+              "name": "RigPlane Virtual Cable Input (R",
+              "hostapi": 0,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.09,
+              "default_low_output_latency": 0.09,
+              "default_high_input_latency": 0.18,
+              "default_high_output_latency": 0.18
+            },
+            {
+              "index": 4,
+              "name": "Microsoft Sound Mapper - Output",
+              "hostapi": 0,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.09,
+              "default_low_output_latency": 0.09,
+              "default_high_input_latency": 0.18,
+              "default_high_output_latency": 0.18
+            },
+            {
+              "index": 5,
+              "name": "Speakers (USB Audio CODEC )",
+              "hostapi": 0,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.09,
+              "default_low_output_latency": 0.09,
+              "default_high_input_latency": 0.18,
+              "default_high_output_latency": 0.18
+            },
+            {
+              "index": 6,
+              "name": "Line 1 (Virtual Audio Cable)",
+              "hostapi": 0,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.09,
+              "default_low_output_latency": 0.09,
+              "default_high_input_latency": 0.18,
+              "default_high_output_latency": 0.18
+            },
+            {
+              "index": 7,
+              "name": "RigPlane Virtual Cable Output (",
+              "hostapi": 0,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.09,
+              "default_low_output_latency": 0.09,
+              "default_high_input_latency": 0.18,
+              "default_high_output_latency": 0.18
+            },
+            {
+              "index": 8,
+              "name": "Primary Sound Capture Driver",
+              "hostapi": 1,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.12,
+              "default_low_output_latency": 0.0,
+              "default_high_input_latency": 0.24,
+              "default_high_output_latency": 0.0
+            },
+            {
+              "index": 9,
+              "name": "Microphone (USB Audio CODEC )",
+              "hostapi": 1,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.12,
+              "default_low_output_latency": 0.0,
+              "default_high_input_latency": 0.24,
+              "default_high_output_latency": 0.0
+            },
+            {
+              "index": 10,
+              "name": "Line 1 (Virtual Audio Cable)",
+              "hostapi": 1,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.12,
+              "default_low_output_latency": 0.0,
+              "default_high_input_latency": 0.24,
+              "default_high_output_latency": 0.0
+            },
+            {
+              "index": 11,
+              "name": "RigPlane Virtual Cable Input (RigPlane Virtual Audio Cable)",
+              "hostapi": 1,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.12,
+              "default_low_output_latency": 0.0,
+              "default_high_input_latency": 0.24,
+              "default_high_output_latency": 0.0
+            },
+            {
+              "index": 12,
+              "name": "Primary Sound Driver",
+              "hostapi": 1,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.0,
+              "default_low_output_latency": 0.12,
+              "default_high_input_latency": 0.0,
+              "default_high_output_latency": 0.24
+            },
+            {
+              "index": 13,
+              "name": "Speakers (USB Audio CODEC )",
+              "hostapi": 1,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.0,
+              "default_low_output_latency": 0.12,
+              "default_high_input_latency": 0.0,
+              "default_high_output_latency": 0.24
+            },
+            {
+              "index": 14,
+              "name": "Line 1 (Virtual Audio Cable)",
+              "hostapi": 1,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.0,
+              "default_low_output_latency": 0.12,
+              "default_high_input_latency": 0.0,
+              "default_high_output_latency": 0.24
+            },
+            {
+              "index": 15,
+              "name": "RigPlane Virtual Cable Output (RigPlane Virtual Audio Cable)",
+              "hostapi": 1,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.0,
+              "default_low_output_latency": 0.12,
+              "default_high_input_latency": 0.0,
+              "default_high_output_latency": 0.24
+            },
+            {
+              "index": 16,
+              "name": "Line 1 (Virtual Audio Cable)",
+              "hostapi": 3,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 48000.0,
+              "default_low_input_latency": 0.0,
+              "default_low_output_latency": 0.001,
+              "default_high_input_latency": 0.0,
+              "default_high_output_latency": 0.01
+            },
+            {
+              "index": 17,
+              "name": "Speakers (USB Audio CODEC )",
+              "hostapi": 3,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 48000.0,
+              "default_low_input_latency": 0.0,
+              "default_low_output_latency": 0.003,
+              "default_high_input_latency": 0.0,
+              "default_high_output_latency": 0.01
+            },
+            {
+              "index": 18,
+              "name": "RigPlane Virtual Cable Output (RigPlane Virtual Audio Cable)",
+              "hostapi": 3,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 48000.0,
+              "default_low_input_latency": 0.0,
+              "default_low_output_latency": 0.002,
+              "default_high_input_latency": 0.0,
+              "default_high_output_latency": 0.01
+            },
+            {
+              "index": 19,
+              "name": "Microphone (USB Audio CODEC )",
+              "hostapi": 3,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 48000.0,
+              "default_low_input_latency": 0.003,
+              "default_low_output_latency": 0.0,
+              "default_high_input_latency": 0.01,
+              "default_high_output_latency": 0.0
+            },
+            {
+              "index": 20,
+              "name": "Line 1 (Virtual Audio Cable)",
+              "hostapi": 3,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 48000.0,
+              "default_low_input_latency": 0.001,
+              "default_low_output_latency": 0.0,
+              "default_high_input_latency": 0.01,
+              "default_high_output_latency": 0.0
+            },
+            {
+              "index": 21,
+              "name": "RigPlane Virtual Cable Input (RigPlane Virtual Audio Cable)",
+              "hostapi": 3,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 48000.0,
+              "default_low_input_latency": 0.002,
+              "default_low_output_latency": 0.0,
+              "default_high_input_latency": 0.01,
+              "default_high_output_latency": 0.0
+            },
+            {
+              "index": 22,
+              "name": "Output 1 (RigPlane Virtual Cable Output)",
+              "hostapi": 4,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.04,
+              "default_high_output_latency": 0.04
+            },
+            {
+              "index": 23,
+              "name": "Output 2 (RigPlane Virtual Cable Output)",
+              "hostapi": 4,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.04,
+              "default_high_output_latency": 0.04
+            },
+            {
+              "index": 24,
+              "name": "Input (RigPlane Virtual Cable Output)",
+              "hostapi": 4,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.04,
+              "default_high_output_latency": 0.04
+            },
+            {
+              "index": 25,
+              "name": "RigPlane Virtual Cable Input 1 (RigPlane Virtual Cable Input)",
+              "hostapi": 4,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.04,
+              "default_high_output_latency": 0.04
+            },
+            {
+              "index": 26,
+              "name": "RigPlane Virtual Cable Input 2 (RigPlane Virtual Cable Input)",
+              "hostapi": 4,
+              "max_input_channels": 1,
+              "max_output_channels": 0,
+              "default_samplerate": 16000.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.04,
+              "default_high_output_latency": 0.04
+            },
+            {
+              "index": 27,
+              "name": "Line Out (Virtual Cable 1)",
+              "hostapi": 4,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.04,
+              "default_high_output_latency": 0.04
+            },
+            {
+              "index": 28,
+              "name": "Mic 1 (Virtual Cable 1)",
+              "hostapi": 4,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.04,
+              "default_high_output_latency": 0.04
+            },
+            {
+              "index": 29,
+              "name": "Line 1 (Virtual Cable 1)",
+              "hostapi": 4,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.04,
+              "default_high_output_latency": 0.04
+            },
+            {
+              "index": 30,
+              "name": "S/PDIF 1 (Virtual Cable 1)",
+              "hostapi": 4,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.04,
+              "default_high_output_latency": 0.04
+            },
+            {
+              "index": 31,
+              "name": "Speakers (USB Audio CODEC)",
+              "hostapi": 4,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.08533333333333333,
+              "default_high_output_latency": 0.08533333333333333
+            },
+            {
+              "index": 32,
+              "name": "Microphone (USB Audio CODEC)",
+              "hostapi": 4,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 44100.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.08533333333333333,
+              "default_high_output_latency": 0.08533333333333333
+            }
+          ],
+          "generation": 0,
+          "fresh": true
+        },
+        "serial_ports": [
+          {
+            "device": "COM3",
+            "name": "COM3",
+            "description": "Silicon Labs CP210x USB to UART Bridge (COM3)",
+            "hwid": "USB VID:PID=10C4:EA60 SER= LOCATION=1-2.1",
+            "vid": 4292,
+            "pid": 60000,
+            "serial_number": "",
+            "location": "1-2.1",
+            "manufacturer": "Silicon Labs",
+            "product": null,
+            "interface": null
+          },
+          {
+            "device": "COM8",
+            "name": "COM8",
+            "description": "FlexRadio Virtual Serial Port (COM8)",
+            "hwid": "FABULATECH\\VSP\\1&2D12BED1&0&DEVICE001",
+            "vid": null,
+            "pid": null,
+            "serial_number": null,
+            "location": null,
+            "manufacturer": "FlexRadio Systems",
+            "product": null,
+            "interface": null
+          },
+          {
+            "device": "COM108",
+            "name": "COM108",
+            "description": "FlexRadio Virtual Serial Port (COM108)",
+            "hwid": "FABULATECH\\VSP\\1&2D12BED1&0&DEVICE002",
+            "vid": null,
+            "pid": null,
+            "serial_number": null,
+            "location": null,
+            "manufacturer": "FlexRadio Systems",
+            "product": null,
+            "interface": null
+          }
+        ]
+      },
+      "unavailable": []
+    }
+  ]
+}
