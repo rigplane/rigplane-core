@@ -21,8 +21,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import count
 from threading import Lock
-from types import SimpleNamespace
 from typing import Any, Callable, Coroutine, Iterator, Literal
+
+from rigplane.core.usb_identity import UsbAudioIdentity
+
+from ._usb_raw_windows import RawWindows
 
 from .backend import (
     AudioBackend,
@@ -146,11 +149,7 @@ def audio_start_failure_reason(exc: BaseException) -> AudioStartFailureReason:
 
     The category is safe to publish: it never carries exception text.
     """
-    from ._usb_resolve import (
-        WindowsAudioAmbiguityError,
-        WindowsAudioEndpointNameError,
-        WindowsAudioTopologyError,
-    )
+    from ._usb_pairing import WindowsAudioTopologyError
 
     chain: list[BaseException] = []
     current: BaseException | None = exc
@@ -164,15 +163,13 @@ def audio_start_failure_reason(exc: BaseException) -> AudioStartFailureReason:
     ] = (
         ((AudioCaptureOpenTimeoutError,), "open_timeout"),
         ((AudioFormatUnsupportedError,), "format"),
-        ((AudioDeviceAmbiguousError, WindowsAudioAmbiguityError), "usb_ambiguous"),
-        ((WindowsAudioEndpointNameError,), "usb_topology_names"),
-        (
-            (AudioTopologyUnavailableError, WindowsAudioTopologyError),
-            "usb_topology_unavailable",
-        ),
+        ((AudioDeviceAmbiguousError,), "usb_ambiguous"),
+        ((AudioTopologyUnavailableError,), "usb_topology_unavailable"),
     )
     # The outermost classified exception is the newest failure.
     for error in chain:
+        if isinstance(error, WindowsAudioTopologyError):
+            return error.refusal.wire_reason
         for types, reason in reasons:
             if isinstance(error, types):
                 return reason
@@ -1138,6 +1135,7 @@ class UsbAudioDriver:
         rx_device: str | None = None,
         tx_device: str | None = None,
         serial_port: str | None = None,
+        usb_identity: UsbAudioIdentity | None = None,
         sample_rate: int = 48_000,
         channels: int = 1,
         frame_ms: int = 20,
@@ -1172,6 +1170,7 @@ class UsbAudioDriver:
             )
         )
         self._serial_port = serial_port
+        self._usb_identity = usb_identity
         self._backend: AudioBackend = backend or PortAudioBackend()
         # MOR-1438: bound on how long an RX/TX stream open may block before
         # it is treated as stuck (see ``_open_stream``). Overridable so
@@ -1363,18 +1362,18 @@ class UsbAudioDriver:
             direction=direction,
             timeout=remaining(),
         )
-        from ._usb_resolve import _query_windows_pnp_devices
+        from ._usb_raw_windows import read_raw_windows
 
-        def query() -> list[Any]:
+        def query() -> RawWindows:
             try:
-                return list(_query_windows_pnp_devices())
+                return read_raw_windows(topology_timeout)
             except Exception:  # noqa: BLE001 — optional metadata only
                 logger.warning(
                     "usb-audio: optional Windows topology unavailable", exc_info=True
                 )
-                return []
+                return RawWindows("cfgmgr32", ())
 
-        records: list[Any] = []
+        records = RawWindows("cfgmgr32", ())
         reserve = min(_WINDOWS_SELECTION_RESERVE_S, self._capture_open_timeout / 4)
         topology_timeout = min(_WINDOWS_PNP_TIMEOUT_S, remaining() - reserve)
         if topology_timeout > 0:
@@ -1410,44 +1409,35 @@ class UsbAudioDriver:
     def _select_windows_devices(
         self,
         devices: list[UsbAudioDevice],
-        records: list[Any],
+        records: RawWindows,
         serial_port: str,
     ) -> tuple[UsbAudioDevice, UsbAudioDevice]:
-        from ._usb_resolve import WindowsAudioTopologyError, _resolve_windows
+        from ._portaudio_enum import read_portaudio_enumeration
+        from ._usb_adapt_windows import adapt_windows
+        from ._usb_pairing import PairRefused, pair, pairing_refusal_error
 
         sd_module = _extract_sounddevice_module(self._backend)
-        if records:
-            if any(r.com_port for r in records) and not any(
-                r.com_port and r.com_port.strip().upper() == serial_port.strip().upper()
-                for r in records
-            ):
+        if records.devnodes:
+            session: dict[str, Any] = {
+                "raw": {
+                    "windows": records.to_json_dict(),
+                    "serial_ports": [],
+                }
+            }
+            if sd_module is not None:
+                session["raw"]["portaudio"] = read_portaudio_enumeration(
+                    sd_module
+                ).to_json_dict()
+            mapping = pair(adapt_windows(session), serial_port, self._usb_identity)
+            if isinstance(mapping, PairRefused):
+                raise pairing_refusal_error(mapping)
+            rx = next((d for d in devices if d.index == mapping.rx_index), None)
+            tx = next((d for d in devices if d.index == mapping.tx_index), None)
+            if rx is None or tx is None or not rx.supports_rx or not tx.supports_tx:
                 raise AudioDeviceSelectionError(
-                    "Windows USB topology does not include the selected serial radio."
+                    "Windows USB topology does not match enumerated audio devices."
                 )
-            try:
-                mapping = _resolve_windows(
-                    serial_port,
-                    sounddevice_module=(
-                        sd_module
-                        if sd_module is not None
-                        else SimpleNamespace(query_devices=lambda: [])
-                    ),
-                    pnp_query=lambda: records,
-                )
-            except WindowsAudioTopologyError as exc:
-                raise AudioDeviceSelectionError(str(exc)) from exc
-            if mapping is not None:
-                rx = next(
-                    (d for d in devices if d.index == mapping.rx_device_index), None
-                )
-                tx = next(
-                    (d for d in devices if d.index == mapping.tx_device_index), None
-                )
-                if rx is None or tx is None or not rx.supports_rx or not tx.supports_tx:
-                    raise AudioDeviceSelectionError(
-                        "Windows USB topology does not match enumerated audio devices."
-                    )
-                return rx, tx
+            return rx, tx
         candidates = [d for d in devices if _name_score(d.name) < 99]
         for direction in ("rx", "tx"):
             identities = {
@@ -1458,7 +1448,7 @@ class UsbAudioDriver:
             if len(identities) != 1:
                 error = (
                     AudioTopologyUnavailableError
-                    if not records
+                    if not records.devnodes
                     else AudioDeviceAmbiguousError
                     if identities
                     else AudioDeviceSelectionError
@@ -1488,6 +1478,11 @@ class UsbAudioDriver:
         mapping = resolve_audio_for_serial_port(
             self._serial_port,  # type: ignore[arg-type]
             sounddevice_module=sd_module,
+            **(
+                {"usb_identity": self._usb_identity}
+                if platform.system() == "Windows"
+                else {}
+            ),
         )
         if mapping is None:
             return None

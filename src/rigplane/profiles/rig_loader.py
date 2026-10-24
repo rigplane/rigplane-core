@@ -31,6 +31,7 @@ from rigplane.core.state_acquisition_policy import (
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.types import ToneSquelchType
+from rigplane.core.usb_identity import UsbAudioIdentity, UsbFunctionId
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.profiles.control_domain import (
     _on_control_lattice,
@@ -744,6 +745,7 @@ class RigConfig:
     # Typed CW text sending (MOR-3678), from the optional ``[cw_text]``.
     # Keyword-only so the positional constructor contract cannot shift.
     cw_text: CwTextSpec = field(default_factory=CwTextSpec, kw_only=True)
+    usb_identity: UsbAudioIdentity | None = field(default=None, kw_only=True)
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -967,6 +969,7 @@ class RigConfig:
             expected_identity_ids=self.expected_identity_ids,
             memory=self.memory,
             cw_text=self.cw_text,
+            usb_identity=self.usb_identity,
         )
 
     def to_command_map(self) -> CommandMap:
@@ -3174,6 +3177,37 @@ def load_rig(path: Path) -> RigConfig:
                 )
             rx_audio_channel = rx_channel_raw
 
+    usb_identity: UsbAudioIdentity | None = None
+    usb_section = data.get("usb")
+    if "usb" in data:
+        if not isinstance(usb_section, dict):
+            raise RigLoadError(f"{filename}: [usb] must be a table")
+        _reject_unknown_keys(filename, "[usb]", usb_section, frozenset({"audio_codec"}))
+        codecs = usb_section.get("audio_codec", [])
+        if not isinstance(codecs, list):
+            raise RigLoadError(
+                f"{filename}: [usb].audio_codec must be a list of tables"
+            )
+        functions: set[UsbFunctionId] = set()
+        for codec in codecs:
+            if not isinstance(codec, dict):
+                raise RigLoadError(
+                    f"{filename}: [usb].audio_codec entries must be tables"
+                )
+            _reject_unknown_keys(
+                filename, "[usb].audio_codec", codec, frozenset({"vid", "pid"})
+            )
+            vid, pid = codec.get("vid"), codec.get("pid")
+            if not isinstance(vid, str) or not isinstance(pid, str):
+                raise RigLoadError(
+                    f"{filename}: [usb].audio_codec requires string vid and pid"
+                )
+            try:
+                functions.add(UsbFunctionId(vid, pid))
+            except ValueError as exc:
+                raise RigLoadError(f"{filename}: [usb].audio_codec: {exc}") from exc
+        usb_identity = UsbAudioIdentity(frozenset(functions))
+
     max_watts: int | None = None
     min_watts: int | None = None
     power_section = data.get("power")
@@ -3320,6 +3354,7 @@ def load_rig(path: Path) -> RigConfig:
         expected_identity_ids=expected_identity_ids,
         memory=memory,
         cw_text=cw_text,
+        usb_identity=usb_identity,
     )
 
 

@@ -222,6 +222,7 @@ class YaesuCatRadio:
                     rx_audio_channel=self._config.rx_audio_channel,
                 ),
                 serial_port=device,
+                usb_identity=self._config.usb_identity,
                 backend=None,  # default PortAudioBackend
             )
         else:

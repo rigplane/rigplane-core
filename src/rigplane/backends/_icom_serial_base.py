@@ -254,6 +254,7 @@ class _IcomSerialRadioBase(CoreRadio):
                 frame_ms=20,
             ),
             serial_port=device,
+            usb_identity=self._profile.usb_identity,
             backend=None,  # default PortAudioBackend
         )
         self._serial_audio_seq = 0

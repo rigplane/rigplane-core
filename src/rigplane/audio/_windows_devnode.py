@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 # (instance_id, parent_instance_id, class name, device name); absent → "".
-DevNodeRow = tuple[str, str, str, str]
 
 _CR_SUCCESS = 0x00
 _CR_NO_SUCH_DEVNODE = 0x0D
@@ -224,35 +223,3 @@ def present_devnode_records(api: DevNodeApi | None = None) -> list[DevNodeRecord
             child = api.sibling(child)
         stack.extend(reversed(children))
     return records
-
-
-def present_devnodes(api: DevNodeApi | None = None) -> list[DevNodeRow]:
-    """Every present devnode, depth-first from the root of the device tree.
-
-    The parent is ``DEVPKEY_Device_Parent``, the property PowerShell reads;
-    on GTR7 it kept lower-case parts that ``CM_Get_Device_IDW`` upper-cases.
-    Raises ``OSError`` when cfgmgr32 is unavailable or a call fails.
-    """
-    api = api if api is not None else _CfgMgr32()
-    rows: list[DevNodeRow] = []
-    stack = [api.root()]
-    while stack:
-        devnode = stack.pop()
-        prop = api.string_property
-        rows.append(
-            (
-                api.device_id(devnode),
-                prop(devnode, DEVPKEY_DEVICE_PARENT) or "",
-                prop(devnode, DEVPKEY_DEVICE_CLASS) or "",
-                prop(devnode, DEVPKEY_DEVICE_FRIENDLY_NAME)
-                or prop(devnode, DEVPKEY_DEVICE_DESC)
-                or "",
-            )
-        )
-        children: list[int] = []
-        child = api.child(devnode)
-        while child is not None:
-            children.append(child)
-            child = api.sibling(child)
-        stack.extend(reversed(children))
-    return rows

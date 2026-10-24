@@ -69,6 +69,26 @@ the validation command. Opus must not be used as a stock radio LAN default unles
 the endpoint or protocol explicitly proves native Opus support. Browser Opus is
 only a server-to-browser transport policy after radio-native audio is received.
 
+## `[usb]` — Optional USB Audio Identity
+
+`audio_codec` is an optional list of `{ vid = "XXXX", pid = "YYYY" }` tables.
+Both identifiers must be strings of four uppercase hexadecimal digits. Unknown
+keys in `[usb]` or its codec entries are rejected. See
+`src/rigplane/profiles/rig_loader.py: load_rig` and
+`src/rigplane/core/usb_identity.py: UsbFunctionId`.
+
+```toml
+[usb]
+# Record the capture that establishes these identifiers beside the data.
+audio_codec = [{ vid = "08BB", pid = "2901" }]
+```
+
+Populate this list only from our own USB recordings. It constrains the codec
+chosen by the shared pairing rule; it does not establish containment by itself.
+An omitted `[usb]` gives `usb_identity = None`; an empty table or list imposes no
+codec filter. `RigConfig.to_profile` copies the identity to `RadioProfile`.
+See `docs/internals/usb-audio-pairing.md` for the complete rule.
+
 ## `[capabilities]` — Feature Flags
 
 | Field      | Type     | Required | Description                    |
