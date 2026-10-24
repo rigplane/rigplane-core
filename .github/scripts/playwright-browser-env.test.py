@@ -34,11 +34,28 @@ class WorkflowFormatError(ValueError):
     """The text parser cannot inspect a workflow's jobs or steps safely."""
 
 
+def _without_block_scalars(text: str) -> str:
+    lines, indent = [], None
+    for line in text.splitlines(keepends=True):
+        if indent is not None and (
+            not line.strip() or len(line) - len(line.lstrip(" \t")) > indent
+        ):
+            lines.append("\n")
+            continue
+        header = re.match(
+            r"^([ \t]*)(-[ \t]+)?(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s#:'\"]+)[ \t]*:[ \t]*[|>][-+0-9]*[ \t]*(?:#.*)?$",
+            line.rstrip("\r\n"),
+        )
+        indent = len(header[1]) + (2 if header[2] else 0) if header else None
+        lines.append(line)
+    return "".join(lines)
+
+
 def _jobs(workflow: str, text: str) -> dict[str, tuple[str, list[str]]]:
     if re.search(
         r"^[ \t]*(?:-[ \t]+(?:(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s#:'\"]+)[ \t]*:[ \t]+)?|(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s#:'\"]+)[ \t]*:[ \t]+)"
         r"(?:[&*][^\s,\[\]{}]+(?:[ \t].*)?$|\{[ \t]*<<:)"
-        r"|^[ \t]*(?:-[ \t]+)?<<:", text, re.MULTILINE
+        r"|^[ \t]*(?:-[ \t]+)?<<:", _without_block_scalars(text), re.MULTILINE
     ):
         raise WorkflowFormatError(f"{workflow}: YAML anchors, aliases and merges are unsupported")
     markers = list(re.finditer(r"(?m)^jobs:[ \t]*(?:#.*)?$", text))
@@ -248,6 +265,8 @@ class BrowserEnvironmentParserTest(unittest.TestCase):
         for run in (
             "ls *test*",
             "|\n          ls *.txt\n          echo Matches: *test\n          echo a && b",
+            "|\n          tar czf a.tar \\\n            - *.log > logs.tar.gz",
+            "|\n          echo Matches: *test",
         ):
             text = self.workflow(run + "\n      - run: node frontend/fixtures/capture.mjs")
             self.assertEqual(self.errors(text), [])
@@ -256,6 +275,7 @@ class BrowserEnvironmentParserTest(unittest.TestCase):
         for run, message in (
             ("| # browser smoke\n          node frontend/fixtures/capture.mjs", "job-level env"),
             ("> # browser smoke\n          node frontend/fixtures/capture.mjs", "job-level env"),
+            ("|\n          echo harmless\n        env: &browser.cmd {}", "anchors, aliases and merges"),
             ("*capture", "anchors, aliases and merges"),
             ("&capture echo harmless", "anchors, aliases and merges"),
             ("*browser.cmd", "anchors, aliases and merges"),
