@@ -115,6 +115,8 @@ class AudioPortMixin:
         # step 1 per packet and wrap at 0xFFFF.
         self._audio_client: tuple[tuple[str, int], int] | None = None
         self._audio_rx_task: asyncio.Task[None] | None = None
+        self._audio_rx_generation: int = 0
+        self._audio_next_burst_at: float = 0.0
         self._audio_rx_seq: int = 0
         self._audio_rx_inner_seq: int = 0
         # audio_port_silence deadline (0.0 = inactive).
@@ -124,6 +126,9 @@ class AudioPortMixin:
         self.audio_tx_frames: list[ClientAudioFrame] = []
         self._audio_last_client_seq: int | None = None
         self._audio_retransmit_requests_received: int = 0
+        # Optional RX audio source (``rigplane_testkit/icom/rx_source.py``),
+        # set by the radio constructor; None keeps the synthetic ramp.
+        self._rx_source = getattr(self, "_rx_source", None)
 
     async def _audio_start(self) -> None:
         """Bind the audio port at the CI-V port + 1 when free (else any).
@@ -260,6 +265,8 @@ class AudioPortMixin:
 
     def _audio_stop_rx(self, reason: str) -> None:
         """Cancel the RX stream task and forget the audio client."""
+        self._audio_rx_generation += 1
+        self._audio_next_burst_at = 0.0
         if self._audio_rx_task is not None:
             self._audio_rx_task.cancel()
             self._audio_rx_task = None
@@ -357,11 +364,19 @@ class AudioPortMixin:
         (new addr) retargets the stream within the same session; the
         numbering never restarts on a re-open — the epoch is the session.
         """
-        self._audio_client = (addr, sender_id)
-        if self._audio_rx_task is None or self._audio_rx_task.done():
-            self._audio_rx_task = asyncio.get_running_loop().create_task(
-                self._audio_rx_loop()
-            )
+        client = (addr, sender_id)
+        restart = self._audio_rx_task is None or self._audio_rx_task.done()
+        if self._audio_client != client or restart:
+            self._audio_rx_generation += 1
+            self._audio_next_burst_at = 0.0
+        self._audio_client = client
+        if restart:
+            loop = asyncio.get_running_loop()
+            origin = loop.time()
+            if self._rx_source is not None:
+                # Stream (re)start: the file plays from its head again.
+                self._rx_source.reset()
+            self._audio_rx_task = loop.create_task(self._audio_rx_loop(origin))
 
     # ------------------------------------------------------------------
     # Outbound funnel and RX streamer
@@ -386,52 +401,73 @@ class AudioPortMixin:
             return True
         return False
 
-    async def _audio_rx_loop(self) -> None:
-        """Emit the recorded RX stream: three packets every 20 ms."""
+    async def _audio_rx_loop(self, origin: float) -> None:
+        """Emit the recorded RX stream: three packets every 20 ms.
+
+        Bursts sit at ABSOLUTE deadlines on the loop clock (a relative
+        ``sleep(0.02)`` accumulates overshoot and stretches playback,
+        breaking slot alignment for file sources); more than five bursts
+        behind, drop stale deadlines without moving the timebase.
+        """
         try:
+            loop = asyncio.get_running_loop()
+            next_t = origin + _AUDIO_BURST_PERIOD_S
             while True:
-                await asyncio.sleep(_AUDIO_BURST_PERIOD_S)
+                now = loop.time()
+                if next_t - now < -5 * _AUDIO_BURST_PERIOD_S:
+                    skipped = int((now - next_t) / _AUDIO_BURST_PERIOD_S)
+                    if self._rx_source is not None:
+                        for _ in range(skipped):
+                            self._rx_source.read_burst()
+                    next_t += skipped * _AUDIO_BURST_PERIOD_S
+                await asyncio.sleep(max(0.0, next_t - now))
+                next_t += _AUDIO_BURST_PERIOD_S
                 client = self._audio_client
                 if client is None or self._audio_udp is None:
                     continue
                 addr, client_id = client
-                loop = asyncio.get_running_loop()
-                for position, offset in enumerate(_AUDIO_IN_BURST_OFFSETS_S):
-                    loop.call_later(
-                        offset,
-                        self._audio_emit_rx_packet,
-                        position,
-                        addr,
-                        client_id,
-                    )
+                self._audio_queue_rx_burst(addr, client_id)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Mock: audio RX loop error")
 
-    def _audio_emit_rx_packet(
-        self, position: int, addr: tuple[str, int], client_id: int
-    ) -> None:
-        """Build and send one RX packet (dropped unless the stream lives).
+    def _audio_queue_rx_burst(self, addr: tuple[str, int], client_id: int) -> None:
+        """Build one burst and schedule its sends after earlier bursts."""
+        src = self._rx_source
+        burst = src.read_burst() if src is not None else None
+        loop = asyncio.get_running_loop()
+        start_t = max(loop.time(), self._audio_next_burst_at)
+        generation = self._audio_rx_generation
+        for position, offset in enumerate(_AUDIO_IN_BURST_OFFSETS_S):
+            pkt = self._audio_rx_packet(position, client_id, burst)
+            loop.call_at(
+                start_t + offset, self._audio_emit_prebuilt, pkt, addr, generation
+            )
+        self._audio_next_burst_at = (
+            start_t + _AUDIO_IN_BURST_OFFSETS_S[-1] + _AUDIO_IN_BURST_OFFSETS_S[1]
+        )
 
-        The emission slot still steps both sequences when the packet is
-        suppressed (silence/reboot window), so the client sees the gap;
-        only actually-sent packets advance ``audio_rx_frames_sent``.
-        """
-        if self._audio_client is None:
-            return  # the stream stopped after this emission was scheduled
-        pkt = self._audio_rx_packet(position, client_id)
+    def _audio_emit_prebuilt(
+        self, pkt: bytes, addr: tuple[str, int], generation: int
+    ) -> None:
+        """Send a prebuilt RX packet only in its stream generation."""
+        if generation != self._audio_rx_generation or self._audio_client is None:
+            return
         if self._audio_send(pkt, addr):
             self._audio_rx_frames_sent += 1
 
-    def _audio_rx_packet(self, position: int, client_id: int) -> bytes:
+    def _audio_rx_packet(
+        self, position: int, client_id: int, burst: bytes | None
+    ) -> bytes:
         """Build one RX packet with the recorded header layout.
 
         ``position`` is the packet's place in its burst (0..2): the first
         packet of a burst carries the first-fragment ident. Both sequences
-        step 1 per packet (wrap at 0xFFFF); the payload is the byte ramp
-        seeded by the inner sequence. Building never counts: the caller
-        counts only packets the funnel actually sent.
+        step 1 per packet (wrap at 0xFFFF). The payload is the byte ramp
+        seeded by the inner sequence, unless an RX source is set: the
+        burst's 20 ms (fetched by the loop) is sliced by the recorded
+        payload split.
         """
         import rigplane_testkit.icom.simulator as _sim
 
@@ -448,10 +484,14 @@ class AudioPortMixin:
         struct.pack_into(">H", pkt, 0x12, self._audio_rx_inner_seq)
         struct.pack_into(">H", pkt, 0x14, 0)  # recorded: always 0
         struct.pack_into(">H", pkt, 0x16, payload_len)
-        start = self._audio_rx_inner_seq & 0xFF
-        pkt[AUDIO_HEADER_SIZE:] = (_PCM_RAMP * (payload_len // 256 + 2))[
-            start : start + payload_len
-        ]
+        if burst is not None:
+            start_off = sum(_AUDIO_BURST_PAYLOADS[:position])  # 0/1364/2728
+            pkt[AUDIO_HEADER_SIZE:] = burst[start_off : start_off + payload_len]
+        else:
+            start = self._audio_rx_inner_seq & 0xFF
+            pkt[AUDIO_HEADER_SIZE:] = (_PCM_RAMP * (payload_len // 256 + 2))[
+                start : start + payload_len
+            ]
         self._audio_rx_seq = (self._audio_rx_seq + 1) & 0xFFFF
         self._audio_rx_inner_seq = (self._audio_rx_inner_seq + 1) & 0xFFFF
         return bytes(pkt)
