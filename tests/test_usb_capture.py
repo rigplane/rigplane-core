@@ -129,11 +129,24 @@ def readers(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     )
 
 
+def test_capture_bundle_records_supplied_tool_version(
+    tmp_path: Path, readers: SimpleNamespace
+) -> None:
+    out = tmp_path / "capture.json"
+    capture.capture_bundle(out, radios=_RADIOS, tool_version="9.9.9")
+    sessions = json.loads(out.read_text(encoding="utf-8"))["sessions"]
+    assert [session["capture_tool"] for session in sessions] == [
+        "rigplane 9.9.9 audio usb-capture"
+    ] * 5
+
+
 def test_captured_session_omits_hwid_even_when_port_has_it(
     readers: SimpleNamespace,
 ) -> None:
     assert all(hasattr(port, "hwid") for port in readers.ports)
-    session = capture._read_session("connected", radios=_RADIOS)
+    session = capture._read_session(
+        "connected", radios=_RADIOS, tool_version=__version__
+    )
     ports = session["raw"]["serial_ports"]
     assert len(ports) == len(readers.ports)
     assert all("hwid" not in port for port in ports)

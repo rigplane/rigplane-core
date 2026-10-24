@@ -13,7 +13,6 @@ import re
 import tempfile
 from typing import Any
 
-from rigplane import __version__
 from rigplane.audio._portaudio_enum import read_portaudio_enumeration
 from rigplane.audio._usb_raw_windows import read_raw_windows
 from rigplane.audio._usb_redact import redact_bundle
@@ -94,6 +93,7 @@ def _validate_bundle(bundle: dict[str, Any]) -> None:
 def _read_session(
     session: str,
     *,
+    tool_version: str,
     target: str | None = None,
     radios: list[dict[str, str]] | None = None,
     timeout_s: float = 5.0,
@@ -138,7 +138,7 @@ def _read_session(
             ]
         ),
         "ui_locale": locale.getlocale()[0],
-        "capture_tool": f"rigplane {__version__} audio usb-capture",
+        "capture_tool": f"rigplane {tool_version} audio usb-capture",
         "raw": raw,
         "unavailable": unavailable,
     }
@@ -183,6 +183,7 @@ def capture_bundle(
     out_path: Path | str,
     *,
     radios: list[dict[str, str]],
+    tool_version: str,
     no_unplug: bool = False,
     input_fn: Callable[[str], str] | None = None,
     timeout_s: float = 5.0,
@@ -194,7 +195,11 @@ def capture_bundle(
     if platform.system() != "Windows":
         raise OSError("usb-capture currently records Windows only")
     prompt = input if input_fn is None else input_fn
-    sessions = [_read_session("connected", radios=radios, timeout_s=timeout_s)]
+    sessions = [
+        _read_session(
+            "connected", radios=radios, tool_version=tool_version, timeout_s=timeout_s
+        )
+    ]
     if not no_unplug:
         for radio in radios:
             profile, port = radio["profile"], radio["serial_port"]
@@ -202,13 +207,23 @@ def capture_bundle(
                 f"Unplug the USB cable of {profile} ({port}), wait 5 seconds, then press Enter."
             )
             sessions.append(
-                _read_session("unplugged", target=profile, timeout_s=timeout_s)
+                _read_session(
+                    "unplugged",
+                    target=profile,
+                    tool_version=tool_version,
+                    timeout_s=timeout_s,
+                )
             )
             prompt(
                 f"Plug {profile} back in (any USB port), wait 10 seconds, then press Enter."
             )
             sessions.append(
-                _read_session("replugged", target=profile, timeout_s=timeout_s)
+                _read_session(
+                    "replugged",
+                    target=profile,
+                    tool_version=tool_version,
+                    timeout_s=timeout_s,
+                )
             )
     bundle = {"schema": "rigplane.usb_audio_capture/1", "sessions": sessions}
     _validate_bundle(bundle)

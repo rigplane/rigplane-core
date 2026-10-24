@@ -2583,7 +2583,12 @@ def _cmd_audio_usb_capture(args: argparse.Namespace) -> int:
         print("usb-capture currently records Windows only", file=sys.stderr)
         return 2
     try:
-        path = capture_bundle(args.out, radios=args.radio, no_unplug=args.no_unplug)
+        path = capture_bundle(
+            args.out,
+            radios=args.radio,
+            tool_version=__version__,
+            no_unplug=args.no_unplug,
+        )
     except KeyboardInterrupt:
         print("USB capture cancelled; no output written.", file=sys.stderr)
         return 130
