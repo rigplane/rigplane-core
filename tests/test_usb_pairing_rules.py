@@ -343,7 +343,7 @@ def test_s5_duplex_record_can_supply_both_directions():
     ] == [("capture", "MME|capture"), ("render", "MME|render")]
 
 
-@pytest.mark.parametrize("indices", [(0,), (1,), (0, 0, 1)])
+@pytest.mark.parametrize("indices", [(0,), (1,), (0, 0, 1), (0, 1, 1)])
 def test_s5_requires_exactly_one_input_and_output(indices):
     snapshot = _snapshot()
     devices = tuple(
@@ -367,6 +367,28 @@ def test_s5_no_endpoint_matched_names_produces_no_candidates():
         "endpoint_names",
     )
     assert result.candidates == ()
+
+
+def test_s5_partial_first_api_skips_to_first_complete_api_in_enumeration_order():
+    snapshot = _snapshot()
+    apis = (
+        HostApiRecord(7, "First", 1, 10, -1),
+        HostApiRecord(5, "Second", 2, 11, 12),
+        HostApiRecord(0, "MME", 2, 1, 5),
+    )
+    devices = snapshot.portaudio.devices + (
+        _record(10, snapshot.endpoints[0].name, inputs=2, hostapi=7),
+        _record(11, snapshot.endpoints[0].name, inputs=2, hostapi=5),
+        _record(12, snapshot.endpoints[1].name, outputs=2, hostapi=5),
+    )
+    result = _paired(
+        replace(
+            snapshot,
+            portaudio=replace(snapshot.portaudio, hostapis=apis, devices=devices),
+        ),
+        indices=(11, 12),
+    )
+    assert result.hostapi == "Second"
 
 
 def test_s5_candidates_use_first_matched_api_and_near_radio_before_index():

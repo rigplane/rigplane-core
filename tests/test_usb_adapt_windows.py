@@ -63,6 +63,37 @@ def test_parent_join_is_case_insensitive(session):
     )
 
 
+def test_root_hub_hardware_id_and_serial_interface_owner(session):
+    rows = session["raw"]["windows"]["devnodes"]
+    root = next(row for row in rows if row["instance_id"].startswith("USB\\ROOT_HUB30"))
+    original = root["instance_id"]
+    root["instance_id"] = "opaque:root"
+    for row in rows:
+        if row["parent_id"] == original:
+            row["parent_id"] = root["instance_id"]
+    serial = next(row for row in rows if "(COM3)" in row["friendly_name"])
+    interface = {
+        **serial,
+        "instance_id": serial["instance_id"].replace("&PID_EA60", "&PID_EA60&MI_00"),
+        "parent_id": serial["instance_id"],
+    }
+    serial["friendly_name"] = ""
+    rows.append(interface)
+    snapshot = adapt_windows(session)
+    assert (
+        next(node for node in snapshot.usb if node.id == "opaque:root").kind
+        == "root_hub"
+    )
+    assert (
+        next(node for node in snapshot.usb if node.id == interface["instance_id"]).kind
+        == "interface"
+    )
+    assert (
+        next(port for port in snapshot.serial_ports if port.port == "COM3").node
+        == serial["instance_id"]
+    )
+
+
 @pytest.mark.parametrize("part", ["windows", "serial_ports", "portaudio"])
 def test_missing_capture_part_is_unavailable(session, part):
     del session["raw"][part]
