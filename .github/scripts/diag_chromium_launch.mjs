@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import net from 'node:net';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -14,10 +15,12 @@ const fallbackSeed = {
 };
 let seed3 = { ...fallbackSeed };
 let seedSource = 'fixed fallback (shim not run)';
-const defaultVariants = ['default', 'default+seed3', 'pw', 'pw+seed3', 'min', 'min+seed3'];
-const variantNames = [...defaultVariants, 'min+tz'];
+const defaultVariants = ['real', 'real+seed3'];
+const variantNames = [...defaultVariants, 'default', 'default+seed3', 'pw', 'pw+seed3',
+  'min', 'min+seed3', 'min+tz'];
 let variants = [];
-let count = 300, pwCount = 150;
+let count = 300, pwCount = 150, realCount = 150, previewPort = 4173;
+let keptRealCrashes = 0, printedHarnessErrors = 0;
 let loadCount = 0, loadStopping = false, loadFailed = false, loadWatchdog;
 const loadWorkers = [];
 const load = { workers: 0, before: null, after: null };
@@ -25,6 +28,10 @@ const file = fileURLToPath(import.meta.url);
 const frontend = path.resolve(path.dirname(file), '../../frontend');
 const require = createRequire(path.join(frontend, 'package.json'));
 const out = path.join(frontend, 'out');
+const realReporter = path.resolve(path.dirname(file), 'diag/real-reporter.mjs');
+const realTitle = 'MOR-2458 keeps RX/TX geometry fixed and attributes TX only ' +
+  'to the known split target';
+const realGrep = realTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$';
 const shimLibrary = path.join(out, 'setenv_shim.so');
 const shimLog = path.join(out, 'setenv.log');
 const runner = process.env.RUNNER_NAME || os.hostname();
@@ -129,6 +136,7 @@ function command(exe, args, { env = process.env, timeout = 8000, limit = 65536,
       stdio: ['ignore', 'pipe', 'pipe'] });
     const known = new Map();
     let stdout = Buffer.alloc(0), stderr = Buffer.alloc(0), error = '', timedOut = false;
+    let outputTail = '';
     let finished = false, hardTimer, fallback, crashOutput = false;
     const tails = { stdout: '', stderr: '' };
     const collect = (old, chunk) => Buffer.concat([old, chunk]).subarray(0, limit);
@@ -136,6 +144,7 @@ function command(exe, args, { env = process.env, timeout = 8000, limit = 65536,
       const text = tails[stream] + chunk.toString();
       crashOutput ||= crashPattern.test(text);
       tails[stream] = text.slice(-64);
+      outputTail = (outputTail + chunk.toString()).slice(-65536);
     };
     child.stdout.on('data', chunk => {
       observe('stdout', chunk); stdout = collect(stdout, chunk);
@@ -172,7 +181,7 @@ function command(exe, args, { env = process.env, timeout = 8000, limit = 65536,
       while (settle && live() && performance.now() < until) {
         await new Promise(resolve => setTimeout(resolve, 10));
       }
-      resolve({ exitCode, signal, timedOut, error, crashOutput,
+      resolve({ exitCode, signal, timedOut, error, crashOutput, outputTail,
         cleanupIncomplete: settle && live(),
         stdout: stdout.toString(),
         stderr: stderr.toString(), wallMs: Math.round(performance.now() - start) });
@@ -193,11 +202,13 @@ const shell = text => command('bash', ['-o', 'pipefail', '-c', text]);
 const describe = r => `exit=${r.exitCode} signal=${r.signal} timeout=${r.timedOut}` +
   ` error=${r.error}\n${r.stdout}${r.stderr}\n`;
 const failed = r => r.exitCode !== 0 || r.timedOut || Boolean(r.error);
-const planned = v => v.shim ? 25 : v.pw ? pwCount : count;
+const planned = v => v.shim ? 25 : v.real ? realCount : v.pw ? pwCount : count;
+const launchBudget = v => v.real ? 140000 : 100000;
 const missing = () => variants.reduce((n, v) => n + planned(v) -
   results.filter(r => r.variant === v.name).length, 0);
 const checkpoint = () => fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify({
   runner, slot, plannedPerVariant: count, plannedPerPwVariant: pwCount,
+  plannedPerRealVariant: realCount, previewPort, realGrep, keptRealCrashes,
   plannedShimLaunches: 25, seed3, seedSource, load, missing: missing(), results, errors,
 }, null, 2) + '\n');
 
@@ -464,12 +475,15 @@ function summary() {
   }
   lines.push('', 'Rates, Wilson intervals and Fisher tests exclude harness errors.',
     'Direct variants count every unsuccessful launch as a failure.',
-    'pw failures require browserType.launch, signal=SIGSEGV or Received signal 11 in output.',
-    'Every measurement uses a fresh process; pw also uses a fresh npm/runner/worker chain.',
+    'pw/real crashes require browserType.launch, signal=SIGSEGV or Received signal 11 in output.',
+    'Every measurement uses a fresh process; pw/real use a fresh npm/runner/worker chain.',
+    'real uses the i18n config/webServer/test, with list and match-count reporters.',
+    `real grep: ${realGrep}; expected matched tests: 1.`,
     `Seed source: ${seedSource}.`,
     `Shim launches: ${results.filter(r => r.variant === 'min+shim').length}/25.`);
   for (const [baseline, seeded] of [
-    ['default', 'default+seed3'], ['pw', 'pw+seed3'], ['min', 'min+seed3'],
+    ['real', 'real+seed3'], ['default', 'default+seed3'], ['pw', 'pw+seed3'],
+    ['min', 'min+seed3'],
   ]) {
     const selected = [baseline, seeded].every(name => variants.some(v => v.name === name));
     const a = totals(baseline), b = totals(seeded);
@@ -485,10 +499,11 @@ function summary() {
   }
   const final = defaultVariants.map(name => {
     const { f, n } = totals(name);
-    return `${name}=${variants.some(v => v.name === name) ? `${f}/${n}` : 'not-selected'}`;
+    return `${name}=${f}/${n}`;
   });
+  const harness = variants.reduce((n, v) => n + totals(v.name).h, 0);
   lines.push(`Missing measurements: ${missing()}.`, ...errors.map(e => `Operational error: ${e}`),
-    `DIAG-ROUND4 ${runner} load=${loadCount} ${final.join(' ')}`);
+    `DIAG-ROUND5 ${runner} ${final.join(' ')} harness=${harness}`);
   const text = lines.join('\n') + '\n';
   console.log(text);
   try { checkpoint(); } catch (err) { console.log(`Results file: ${err.message}`); }
@@ -524,26 +539,75 @@ function collectShim(log) {
     if (e.pid === browserPid && e.fn === 'setenv') addValue(seedValues, e.name, value);
   }
 }
+function portFree() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', err => {
+      if (err.code === 'EADDRINUSE') resolve(false);
+      else reject(err);
+    });
+    server.listen({ host: '127.0.0.1', port: previewPort, exclusive: true }, () => {
+      server.close(err => err ? reject(err) : resolve(true));
+    });
+  });
+}
+async function waitForPreviewPort() {
+  const until = performance.now() + 10000;
+  while (!stopped) {
+    if (await portFree()) return;
+    const remaining = until - performance.now();
+    if (remaining <= 0) throw new Error('Preview port still occupied after 10 s');
+    await new Promise(resolve => setTimeout(resolve, Math.min(100, remaining)));
+  }
+  throw new Error('Interrupted while waiting for preview port');
+}
 async function launch(v, index, deadline) {
   if (stopped) return;
-  if (performance.now() + 100000 > deadline) {
+  if (v.shim && performance.now() + launchBudget(v) > deadline) {
     stopped = true; errors.push('Measurement budget exhausted'); return;
   }
   const logStart = v.shim ? fs.statSync(shimLog).size : 0;
-  const exe = v.pw ? 'npx' : process.execPath;
-  const args = v.pw ? ['--no-install', 'playwright', 'test', '-c',
+  const outputDir = v.real ? path.join(out, 'real', `${v.name}-${index}`) : null;
+  const exe = v.pw || v.real ? 'npx' : process.execPath;
+  const args = v.real ? ['--no-install', 'playwright', 'test', '-c',
+    './playwright.i18n.config.ts', '--grep', realGrep, '--output', outputDir,
+    '--reporter', `list,${realReporter}`] : v.pw ? ['--no-install', 'playwright', 'test', '-c',
     '../.github/scripts/diag/playwright.diag.config.mjs'] :
     [file, '--once', ...(v.shim ? [shimLibrary] : [])];
-  const r = await command(exe, args,
-    { env: v.env, timeout: 70000, limit: 256 * 1024, settle: true });
+  let r;
+  try {
+    if (v.real) await waitForPreviewPort();
+    if (stopped) throw new Error('Interrupted before launch');
+    r = await command(exe, args,
+      { env: v.env, timeout: v.real ? 100000 : 70000, limit: 256 * 1024, settle: true });
+  } catch (err) {
+    r = { exitCode: null, signal: null, timedOut: false, error: err.message,
+      crashOutput: false, stdout: '', stderr: '', outputTail: err.message, wallMs: 0 };
+  }
   let outcome = 'ok';
   if (failed(r)) {
-    outcome = v.pw ? r.crashOutput ? 'crash' : 'harness-error' : 'launch-failure';
+    outcome = v.pw || v.real ? r.crashOutput ? 'crash' : 'harness-error' : 'launch-failure';
+  }
+  let matchedTests;
+  if (v.real) {
+    const matches = [...r.stdout.matchAll(/^DIAG-REAL-MATCHED (\d+)\r?$/gm)];
+    matchedTests = matches.length === 1 ? Number(matches[0][1]) : null;
+    if (matchedTests !== 1) {
+      outcome = 'harness-error';
+      r.error ||= `Expected one matched test; observed ${matchedTests ?? 'unavailable'}`;
+    } else if (!failed(r) &&
+        [...r.stdout.matchAll(/^DIAG-REAL-TEST (\w+)\r?$/gm)]
+          .map(m => m[1]).join(',') !== 'passed') {
+      outcome = 'harness-error'; r.error = 'Expected one passed test';
+    }
+    if (index === 1) {
+      console.log(`${v.name}: first launch matched=${matchedTests ?? 'unavailable'} (expected 1)`);
+    }
   }
   if (loadFailed) outcome = 'harness-error';
   const row = { variant: v.name, index, round: index, slot, wallMs: r.wallMs,
     exitCode: r.exitCode, signal: r.signal, timedOut: r.timedOut, error: r.error,
-    outcome, crashOutput: r.crashOutput };
+    outcome, crashOutput: r.crashOutput, ...(v.real ? { matchedTests } : {}) };
   if (r.cleanupIncomplete) {
     stopped = true; errors.push('Launch cleanup unconfirmed; remaining measurements stopped.');
   }
@@ -556,11 +620,23 @@ async function launch(v, index, deadline) {
     const log = fs.readFileSync(shimLog).subarray(logStart, row.shimLogEnd).toString();
     collectShim(log);
   }
-  if (failed(r)) {
+  if (outputDir) {
+    if (outcome === 'crash' && keptRealCrashes < 5) {
+      keptRealCrashes++; row.outputDir = path.relative(out, outputDir);
+    } else {
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  }
+  if (outcome !== 'ok') {
     row.stderr = r.stderr; row.failureArtifact = `failures/${v.name}-${index}.txt`;
   }
   results.push(row); append('results.jsonl', JSON.stringify(row) + '\n'); checkpoint();
-  if (failed(r)) {
+  if (outcome === 'harness-error' && printedHarnessErrors++ < 3) {
+    const tail = r.outputTail.trimEnd().split('\n').slice(-30).join('\n');
+    console.log(`Harness error ${v.name}-${index}: ${r.error || describe(r).split('\n')[0]}`);
+    console.log(tail || '(no output)');
+  }
+  if (outcome !== 'ok') {
     const ps = await shell('ps -eo pid,ppid,pcpu,pmem,comm --sort=-pcpu | head -15');
     const load = await command('cat', ['/proc/loadavg']);
     append(row.failureArtifact, JSON.stringify(row) + '\n' + describe(r) +
@@ -631,7 +707,10 @@ function deriveSeed(reason) {
   }
 }
 function mainVariants(names) {
+  const realEnv = { ...process.env, RP_I18N_PREVIEW_PORT: String(previewPort) };
   const all = [
+    { name: 'real', real: true, env: realEnv },
+    { name: 'real+seed3', real: true, env: { ...realEnv, ...seed3 } },
     { name: 'default', env: { ...process.env } },
     { name: 'min', env: minimal },
     { name: 'min+seed3', env: { ...minimal, ...seed3 } },
@@ -659,7 +738,12 @@ async function main() {
     };
     count = positive('DIAG_LAUNCHES', 300);
     pwCount = positive('DIAG_PW_LAUNCHES', 150);
-    const workers = process.env.DIAG_LOAD_WORKERS ?? String(Math.max(2, os.availableParallelism()));
+    realCount = positive('DIAG_REAL_LAUNCHES', 150);
+    if (!/^\d+$/.test(slot) || !Number.isSafeInteger(Number(slot)) || Number(slot) > 61362) {
+      throw new Error('DIAG_SLOT must be an integer from 0 to 61362');
+    }
+    previewPort += Number(slot);
+    const workers = process.env.DIAG_LOAD_WORKERS ?? '0';
     if (!/^\d+$/.test(workers) || !Number.isSafeInteger(Number(workers))) {
       throw new Error('DIAG_LOAD_WORKERS must be a nonnegative safe integer');
     }
@@ -679,6 +763,11 @@ async function main() {
     const rounds = Math.max(...variants.map(planned));
     for (let index = 1; index <= rounds && !stopped; index++) {
       const eligible = variants.filter(v => index <= planned(v));
+      const budget = eligible.reduce((n, v) => n + launchBudget(v), 0);
+      if (performance.now() + budget > deadline) {
+        stopped = true; errors.push('Measurement budget exhausted before next complete round');
+        break;
+      }
       for (const v of shuffled(eligible, index)) await launch(v, index, deadline);
     }
   } catch (err) { errors.push(err.stack || String(err)); }
