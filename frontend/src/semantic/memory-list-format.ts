@@ -4,7 +4,7 @@ import type { MemoryEntryDto } from '../lib/types/memory-list';
 export function formatShift(entry: MemoryEntryDto): string {
   if (entry.duplex !== 'plus' && entry.duplex !== 'minus') return '';
   const sign = entry.duplex === 'plus' ? '+' : '-';
-  if (entry.offsetHz === undefined) return sign;
+  if (entry.offsetHz == null) return sign; // unknown (FTX-1: the offset is a band menu value)
   // The radio keeps 100 Hz: four decimals, trailing zero dropped, so 600 kHz reads `0.600`.
   const mhz = (entry.offsetHz / 1_000_000).toFixed(4);
   return `${sign}${mhz.endsWith('0') ? mhz.slice(0, -1) : mhz}`;
@@ -12,11 +12,13 @@ export function formatShift(entry: MemoryEntryDto): string {
 
 /** Tone text for one stored channel, e.g. `T 136.5`, `TSQL 88.5`, `DCS 023`; empty when off. */
 export function formatTone(entry: MemoryEntryDto): string {
-  const hz = (centi: number | undefined) => (centi === undefined ? '' : (centi / 100).toFixed(1));
+  const hz = (centi: number | null | undefined) => (centi == null ? '' : (centi / 100).toFixed(1));
   switch (entry.toneMode) {
     case 'tone': return `T ${hz(entry.toneCentiHz)}`.trim();
     case 'tsql': return `TSQL ${hz(entry.tsqlCentiHz)}`.trim();
-    case 'dtcs': return entry.dtcsCode === undefined ? 'DCS' : `DCS ${String(entry.dtcsCode).padStart(3, '0')}`;
+    case 'dtcs': return entry.dtcsCode == null ? 'DCS' : `DCS ${String(entry.dtcsCode).padStart(3, '0')}`;
+    case 'pr_freq': return 'PR FREQ';
+    case 'rev_tone': return 'REV TONE';
     default: return '';
   }
 }

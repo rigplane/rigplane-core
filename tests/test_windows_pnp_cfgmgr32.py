@@ -17,9 +17,12 @@ from rigplane.audio._windows_devnode import (
     DEVPKEY_DEVICE_CLASS,
     DEVPKEY_DEVICE_DESC,
     DEVPKEY_DEVICE_FRIENDLY_NAME,
+    DEVPKEY_DEVICE_HARDWARE_IDS,
+    DEVPKEY_DEVICE_COMPATIBLE_IDS,
     DEVPKEY_DEVICE_PARENT,
     DevPropKey,
     present_devnodes,
+    present_devnode_records,
 )
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "windows_pnp_gtr7_ic7300.json"
@@ -37,8 +40,17 @@ class FakeCfgMgr32:
         self,
         nodes: list[tuple[str, str, str | None, str | None]],
         descriptions: dict[str, str] | None = None,
+        hardware_ids: dict[str, tuple[str, ...]] | None = None,
+        compatible_ids: dict[str, tuple[str, ...]] | None = None,
     ) -> None:
         self.ids = [n[0] for n in nodes]
+        self.list_props = {
+            i: {
+                DEVPKEY_DEVICE_HARDWARE_IDS: (hardware_ids or {}).get(n[0], ()),
+                DEVPKEY_DEVICE_COMPATIBLE_IDS: (compatible_ids or {}).get(n[0], ()),
+            }
+            for i, n in enumerate(nodes)
+        }
         self.props = {
             i: {
                 DEVPKEY_DEVICE_PARENT: n[1] or None,
@@ -78,6 +90,50 @@ class FakeCfgMgr32:
 
     def string_property(self, devnode: int, key: DevPropKey) -> str | None:
         return self.props[devnode][key]
+
+    def string_list_property(self, devnode: int, key: DevPropKey) -> tuple[str, ...]:
+        return self.list_props[devnode][key]
+
+
+def test_extended_records_keep_recorded_ids_and_separate_names() -> None:
+    rows = json.loads(
+        (_FIXTURE.parent / "windows_pnp_gtr7_ic7300_ids.json").read_text(
+            encoding="utf-8"
+        )
+    )["rows"]
+    api = _gtr7_cfgmgr32()
+    recorded = {row["instance_id"].upper(): row for row in rows}
+    for index, instance_id in enumerate(api.ids):
+        row = recorded.get(instance_id.upper())
+        if row:
+            api.list_props[index] = {
+                DEVPKEY_DEVICE_HARDWARE_IDS: tuple(row["hardware_ids"]),
+                DEVPKEY_DEVICE_COMPATIBLE_IDS: tuple(row["compatible_ids"]),
+            }
+    serial_id = r"USB\VID_10C4&PID_EA60\IC-7300_00000001"
+    api.props[api.ids.index(serial_id)][DEVPKEY_DEVICE_DESC] = "USB serial device"
+    records = present_devnode_records(api)
+    hub = next(r for r in records if r.instance_id.startswith(r"USB\VID_0451&PID_2046"))
+    assert hub.class_name == "USB"
+    assert hub.friendly_name == "Generic USB Hub"
+    assert hub.compatible_ids == (r"USB\USB20_HUB",)
+    serial = next(r for r in records if r.instance_id == serial_id)
+    assert r"USB\VID_10C4&PID_EA60" in serial.hardware_ids
+    assert serial.device_desc == "USB serial device"
+    assert serial.friendly_name == "Silicon Labs CP210x USB to UART Bridge (COM3)"
+    assert [
+        (r.instance_id, r.parent_id, r.class_name, r.friendly_name or r.device_desc)
+        for r in records
+    ] == present_devnodes(_gtr7_cfgmgr32())
+
+
+def test_device_id_property_keys_match_devpkey_header() -> None:
+    assert bytes(DEVPKEY_DEVICE_HARDWARE_IDS.fmtid) == bytes(DEVPKEY_DEVICE_DESC.fmtid)
+    assert bytes(DEVPKEY_DEVICE_COMPATIBLE_IDS.fmtid) == bytes(
+        DEVPKEY_DEVICE_DESC.fmtid
+    )
+    assert DEVPKEY_DEVICE_HARDWARE_IDS.pid == 3
+    assert DEVPKEY_DEVICE_COMPATIBLE_IDS.pid == 4
 
 
 def _gtr7() -> dict[str, list]:

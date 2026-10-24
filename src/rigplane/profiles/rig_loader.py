@@ -2161,7 +2161,7 @@ _MEMORY_KEYS = frozenset(
         "offset_10mhz_groups",
     }
 )
-_MEMORY_ADDRESSING = frozenset({"group_channel", "band_channel"})
+_MEMORY_ADDRESSING = frozenset({"group_channel", "band_channel", "channel"})
 
 
 def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
@@ -2191,6 +2191,8 @@ def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
         raise RigLoadError(
             f"{filename}: [memory].first_channel must be <= last_channel"
         )
+    if addressing == "channel" and bounds["last_group"] != 0:
+        raise RigLoadError(f"{filename}: [memory] a channel list has only group 0")
     if addressing == "band_channel" and bounds["last_group"] > 99:
         raise RigLoadError(f"{filename}: [memory] band codes are one BCD byte (0-99)")
     recall = raw.get("recall", False)

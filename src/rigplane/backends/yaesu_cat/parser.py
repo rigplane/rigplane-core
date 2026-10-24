@@ -56,7 +56,14 @@ __all__ = [
     "CatParseError",
     "CatCommandParser",
     "format_command",
+    "is_data_mode",
 ]
+
+
+def is_data_mode(mode: str) -> bool:
+    """Return whether a Yaesu mode name denotes DATA mode."""
+    return mode.endswith("-D") or "DATA" in mode.upper()
+
 
 # ---------------------------------------------------------------------------
 # Allowed placeholder names
@@ -86,6 +93,7 @@ _ALLOWED_PLACEHOLDERS: frozenset[str] = frozenset(
         "pad",
         "type",
         "mem",
+        "tag",
         "src",
         "func",
         "val",
@@ -147,12 +155,15 @@ _PLACEHOLDER_REGEX: dict[str, tuple[str, Any]] = {
     # their own regex shapes. P1 "chan" is 5 characters and may be
     # non-numeric (PMS channels like "P-01L", or the fixed literal "EMGCH"),
     # so it is not a digit-only field like the other fixed-width groups
-    # above. P8 "tone" and P10 "shift" are each a single character. "chan"
-    # and "tone" are IF-only; "shift" is also used by OS (MOR-2111), same
-    # single-character shape.
+    # above. P8 "tone" and P10 "shift" are each a single character. "chan",
+    # "tone" and "shift" are shared by IF and the MR memory read (MOR-3628);
+    # "chan" also by MT, and "shift" by OS (MOR-2111), same single-character
+    # shape.
     "chan": (r"(?P<chan>.{5})", str),
     "tone": (r"(?P<tone>.)", str),
     "shift": (r"(?P<shift>.)", str),
+    # MT memory tag: up to 12 characters, padded with spaces by the radio.
+    "tag": (r"(?P<tag>[^;]{0,12})", str),
     "receiver": (r"(?P<receiver>[01])", int),
 }
 

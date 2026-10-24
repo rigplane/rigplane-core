@@ -16,7 +16,21 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
 from ...audio import AudioPacket
 from ...audio.lan_stream import SYNTHETIC_RX_IDENT
 from ...command_spec import CatCommandSpec
+from ...commands import hz_to_table_index, table_index_to_hz
+from ...core.priority_exchange import ExchangeTier
 from ...core.radio_protocol import RadioIdentity, RadioIdentityStatus
+from ...core.tx_observation import TxStateReading
+from ...core.types import MemoryEntry
+from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
+from ...exceptions import ConnectionError as RadioConnectionError
+from ...profiles.control_domain import (
+    control_display_band,
+    decode_control_domain,
+    encode_control_domain,
+    snap_control_domain,
+    validate_control_raw_value,
+)
+from ...radio_state import RadioState
 from ...runtime.callable_support import supports_callable
 from ...runtime.local_tx_work import LocalTxWorkRunner
 from ...runtime.managed_tx_fence import TxAbortFence
@@ -26,21 +40,9 @@ from ...runtime.managed_tx_state import (
     ActuationResult,
     EffectToken,
 )
-from ...commands import hz_to_table_index, table_index_to_hz
-from ...core.priority_exchange import ExchangeTier
-from ...core.tx_observation import TxStateReading
 from ...types import AudioCodec, BreakInMode, RepeaterShiftDirection
-from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
-from ...exceptions import ConnectionError as RadioConnectionError
-from ...radio_state import RadioState
-from ...profiles.control_domain import (
-    control_display_band,
-    decode_control_domain,
-    encode_control_domain,
-    snap_control_domain,
-    validate_control_raw_value,
-)
-from .parser import CatCommandParser, CatParseError, format_command
+from .memory import memory_entry_from_cat
+from .parser import CatCommandParser, CatParseError, format_command, is_data_mode
 from .transport import (
     CatCommandRejected,
     CatTimeoutError,
@@ -1216,6 +1218,7 @@ class YaesuCatRadio:
         self,
         cmd_name: str,
         *,
+        expect_rejection: bool = False,
         is_current: Callable[[], bool] | None = None,
         tier: ExchangeTier = ExchangeTier.ORDINARY,
         **params: Any,
@@ -1240,12 +1243,12 @@ class YaesuCatRadio:
             raise CommandError(f"Command {cmd_name!r} has no read template")
 
         read_cmd = format_command(spec.read, **params) if params else spec.read
-        if is_current is None and tier is ExchangeTier.ORDINARY:
-            raw = await self._transport.query(read_cmd)
-        else:
-            raw = await self._transport.query(
-                read_cmd, is_current=is_current, tier=tier
-            )
+        query_kwargs: dict[str, Any] = {}
+        if is_current is not None or tier is not ExchangeTier.ORDINARY:
+            query_kwargs.update(is_current=is_current, tier=tier)
+        if expect_rejection:
+            query_kwargs["expect_rejection"] = True
+        raw = await self._transport.query(read_cmd, **query_kwargs)
 
         parser = self._parsers.get(cmd_name)
         if parser is None:
@@ -1470,7 +1473,7 @@ class YaesuCatRadio:
         (MOR-434).
         """
         mode, _ = await self.read_mode(0)
-        return mode.endswith("-D") or "DATA" in mode.upper()
+        return is_data_mode(mode)
 
     async def set_data_mode(self, on: int | bool, receiver: int = 0) -> None:
         """Toggle DATA mode.
@@ -3933,7 +3936,63 @@ class YaesuCatRadio:
         """
         await self._write("vfo_equalize")
 
-    # -- Memory (not supported on Yaesu) ----------------------------------------
+    # -- Memory: read-only listing (MOR-3628); writes are not supported --------
+
+    async def read_memory_entries(
+        self, group: int, channels: Sequence[int]
+    ) -> list[MemoryEntry]:
+        """Read stored channels with ``MR`` and ``MT`` without selecting them.
+
+        An unprogrammed channel answers ``?;`` and comes back empty. The
+        radio's tone frequency, DCS code and offset are not in ``MR``.
+        """
+        memory = self.profile.memory
+        if memory is None:
+            raise CommandError(f"{self.profile.model} declares no memory channels")
+        if group != memory.first_group:
+            raise ValueError(f"memory group must be {memory.first_group}, got {group}")
+        entries: list[MemoryEntry] = []
+        for channel in channels:
+            if not memory.first_channel <= channel <= memory.last_channel:
+                raise ValueError(
+                    f"memory channel must be {memory.first_channel}-"
+                    f"{memory.last_channel}, got {channel}"
+                )
+            chan = f"{channel:05d}"
+            try:
+                mr = await self._query(
+                    "get_memory_channel", chan=chan, expect_rejection=True
+                )
+            except CatCommandRejected:
+                entries.append(MemoryEntry(group=group, channel=channel, empty=True))
+                continue
+            except (CatParseError, CatTransportError) as exc:
+                raise CommandError(
+                    f"unreadable memory channel {channel}: {exc}"
+                ) from exc
+            try:
+                mt = await self._query(
+                    "get_memory_tag", chan=chan, expect_rejection=True
+                )
+            except CatCommandRejected:
+                mt = {"chan": chan, "tag": ""}
+            except (CatParseError, CatTransportError) as exc:
+                raise CommandError(f"unreadable memory tag {channel}: {exc}") from exc
+            try:
+                if mt["chan"] != chan:
+                    raise ValueError(
+                        f"MT answered channel {mt['chan']!r} for {channel}"
+                    )
+                entries.append(
+                    memory_entry_from_cat(
+                        channel, mr, mt["tag"], self._mode_name(mr["mode"])
+                    )
+                )
+            except (ValueError, CatParseError) as exc:
+                raise CommandError(
+                    f"unreadable memory channel {channel}: {exc}"
+                ) from exc
+        return entries
 
     async def set_memory_mode(self, channel: int, group: int | None = None) -> None:
         raise NotImplementedError("Memory mode not supported on this radio")
