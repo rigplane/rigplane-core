@@ -94,6 +94,30 @@ def test_root_hub_hardware_id_and_serial_interface_owner(session):
     )
 
 
+def test_media_class_on_usb_device_still_owns_its_endpoints(session):
+    row = next(
+        row
+        for row in session["raw"]["windows"]["devnodes"]
+        if "VID_08BB&PID_2901\\" in row["instance_id"]
+    )
+    row["class_name"] = "MEDIA"
+    snapshot = adapt_windows(session)
+    assert (
+        next(node for node in snapshot.usb if node.id == row["instance_id"]).kind
+        == "device"
+    )
+    assert (
+        len(
+            [
+                endpoint
+                for endpoint in snapshot.endpoints
+                if endpoint.owner == row["instance_id"]
+            ]
+        )
+        == 2
+    )
+
+
 @pytest.mark.parametrize("part", ["windows", "serial_ports", "portaudio"])
 def test_missing_capture_part_is_unavailable(session, part):
     del session["raw"][part]
