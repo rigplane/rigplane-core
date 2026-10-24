@@ -14,10 +14,13 @@ const fallbackSeed = {
 };
 let seed3 = { ...fallbackSeed };
 let seedSource = 'fixed fallback (shim not run)';
-const variantNames = ['default', 'min', 'min+seed3', 'min+tz', 'default+seed3',
-  'pw', 'pw+seed3'];
+const defaultVariants = ['default', 'default+seed3', 'pw', 'pw+seed3', 'min', 'min+seed3'];
+const variantNames = [...defaultVariants, 'min+tz'];
 let variants = [];
-let count = 400, pwCount = 150;
+let count = 300, pwCount = 150;
+let loadCount = 0, loadStopping = false, loadFailed = false, loadWatchdog;
+const loadWorkers = [];
+const load = { workers: 0, before: null, after: null };
 const file = fileURLToPath(import.meta.url);
 const frontend = path.resolve(path.dirname(file), '../../frontend');
 const require = createRequire(path.join(frontend, 'package.json'));
@@ -48,6 +51,76 @@ function descendants(pid, known) {
   }
 }
 const kill = (pid, signal) => { try { process.kill(pid, signal); } catch { /* Gone. */ } };
+function signalLoad(child, signal) {
+  if (child.pid && child.exitCode === null && child.signalCode === null) {
+    kill(-child.pid, signal);
+  }
+}
+function stopLoad() {
+  if (loadStopping) return;
+  loadStopping = true;
+  clearTimeout(loadWatchdog);
+  for (const child of loadWorkers) signalLoad(child, 'SIGTERM');
+  setTimeout(() => {
+    for (const child of loadWorkers) signalLoad(child, 'SIGKILL');
+  }, 500).unref();
+}
+function failLoad(reason) {
+  if (loadStopping || loadFailed) return;
+  loadFailed = true; stopped = true;
+  errors.push(reason); activeStop(); stopLoad();
+}
+async function startLoad() {
+  if (!loadCount || stopped) return;
+  loadWatchdog = setTimeout(() => failLoad('Load watchdog expired'), 50 * 60 * 1000);
+  loadWatchdog.unref();
+  for (let index = 0; index < loadCount && !stopped; index++) {
+    const ready = await new Promise(resolve => {
+      let child;
+      const timer = setTimeout(() => {
+        failLoad('Load worker readiness timed out'); resolve(false);
+      }, 8000);
+      try {
+        child = spawn(process.execPath, [file, '--load-worker',
+          String(Date.now() + 50 * 60 * 1000)], {
+          detached: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+        });
+      } catch {
+        clearTimeout(timer); failLoad('Load worker startup failed'); resolve(false); return;
+      }
+      loadWorkers.push(child);
+      child.unref(); child.channel?.unref();
+      child.once('message', message => {
+        if (message !== 'ready') return;
+        clearTimeout(timer); child.channel?.unref(); resolve(true);
+      });
+      child.once('error', () => {
+        clearTimeout(timer); failLoad('Load worker startup failed'); resolve(false);
+      });
+      child.once('exit', () => {
+        clearTimeout(timer); failLoad('Load worker exited before cleanup'); resolve(false);
+      });
+      child.channel?.unref();
+    });
+    if (!ready) break;
+  }
+}
+async function cleanupLoad() {
+  stopLoad();
+  if (!loadWorkers.length) return;
+  // Keep this bounded wait referenced until the final group kill has been sent.
+  await new Promise(resolve => setTimeout(resolve, 600));
+  for (const child of loadWorkers) {
+    signalLoad(child, 'SIGKILL');
+    if (child.connected) child.disconnect();
+    child.unref(); child.channel?.unref();
+  }
+}
+function loadSnapshot(phase) {
+  load[phase] = read('/proc/loadavg').trim() || 'unavailable';
+  append('env.txt', `\nmeasurement ${phase}: load workers=${loadCount} ` +
+    `/proc/loadavg=${load[phase]}\n`);
+}
 function command(exe, args, { env = process.env, timeout = 8000, limit = 65536,
   settle = false } = {}) {
   return new Promise(resolve => {
@@ -125,7 +198,7 @@ const missing = () => variants.reduce((n, v) => n + planned(v) -
   results.filter(r => r.variant === v.name).length, 0);
 const checkpoint = () => fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify({
   runner, slot, plannedPerVariant: count, plannedPerPwVariant: pwCount,
-  plannedShimLaunches: 25, seed3, seedSource, missing: missing(), results, errors,
+  plannedShimLaunches: 25, seed3, seedSource, load, missing: missing(), results, errors,
 }, null, 2) + '\n');
 
 async function capture() {
@@ -396,19 +469,26 @@ function summary() {
     `Seed source: ${seedSource}.`,
     `Shim launches: ${results.filter(r => r.variant === 'min+shim').length}/25.`);
   for (const [baseline, seeded] of [
-    ['min', 'min+seed3'], ['default', 'default+seed3'], ['pw', 'pw+seed3'],
+    ['default', 'default+seed3'], ['pw', 'pw+seed3'], ['min', 'min+seed3'],
   ]) {
     const selected = [baseline, seeded].every(name => variants.some(v => v.name === name));
+    const a = totals(baseline), b = totals(seeded);
     lines.push(`${baseline} vs ${seeded}: one-sided Fisher exact p=` +
-      `${selected ? fisher(totals(baseline), totals(seeded)) : 'n/a (not selected)'}` +
+      `${selected ? fisher(a, b) : 'n/a (not selected)'}` +
       ' (alternative: baseline failure rate > seeded).');
+    const conclusion = !selected ? 'not selected' : !a.n || !b.n ? 'insufficient data' :
+      b.f / b.n < a.f / a.n ? 'lower observed seeded failure rate' :
+        b.f / b.n > a.f / a.n ? 'higher observed seeded failure rate' :
+          'equal observed failure rates';
+    lines.push(`Aggregate ${baseline}=${a.f}/${a.n}, ${seeded}=${b.f}/${b.n}: ` +
+      `${conclusion}; empirical observations do not establish elimination of failures.`);
   }
-  const final = ['default', 'min', 'min+seed3', 'pw', 'pw+seed3'].map(name => {
+  const final = defaultVariants.map(name => {
     const { f, n } = totals(name);
     return `${name}=${variants.some(v => v.name === name) ? `${f}/${n}` : 'not-selected'}`;
   });
   lines.push(`Missing measurements: ${missing()}.`, ...errors.map(e => `Operational error: ${e}`),
-    `DIAG-ROUND3 ${runner} ${final.join(' ')}`);
+    `DIAG-ROUND4 ${runner} load=${loadCount} ${final.join(' ')}`);
   const text = lines.join('\n') + '\n';
   console.log(text);
   try { checkpoint(); } catch (err) { console.log(`Results file: ${err.message}`); }
@@ -460,6 +540,7 @@ async function launch(v, index, deadline) {
   if (failed(r)) {
     outcome = v.pw ? r.crashOutput ? 'crash' : 'harness-error' : 'launch-failure';
   }
+  if (loadFailed) outcome = 'harness-error';
   const row = { variant: v.name, index, round: index, slot, wallMs: r.wallMs,
     exitCode: r.exitCode, signal: r.signal, timedOut: r.timedOut, error: r.error,
     outcome, crashOutput: r.crashOutput };
@@ -564,7 +645,7 @@ function mainVariants(names) {
 async function main() {
   const deadline = performance.now() + 35 * 60 * 1000;
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
-    stopped = true; errors.push(`Interrupted by ${signal}`); activeStop();
+    stopped = true; errors.push(`Interrupted by ${signal}`); activeStop(); stopLoad();
   });
   try {
     fs.mkdirSync(path.join(out, 'failures'), { recursive: true });
@@ -576,9 +657,14 @@ async function main() {
       }
       return Number(input);
     };
-    count = positive('DIAG_LAUNCHES', 400);
+    count = positive('DIAG_LAUNCHES', 300);
     pwCount = positive('DIAG_PW_LAUNCHES', 150);
-    const names = (process.env.DIAG_VARIANTS ?? variantNames.join(','))
+    const workers = process.env.DIAG_LOAD_WORKERS ?? String(Math.max(2, os.availableParallelism()));
+    if (!/^\d+$/.test(workers) || !Number.isSafeInteger(Number(workers))) {
+      throw new Error('DIAG_LOAD_WORKERS must be a nonnegative safe integer');
+    }
+    loadCount = Number(workers); load.workers = loadCount;
+    const names = (process.env.DIAG_VARIANTS ?? defaultVariants.join(','))
       .split(',').map(s => s.trim());
     if (new Set(names).size !== names.length ||
         names.some(name => !variantNames.includes(name))) {
@@ -588,15 +674,33 @@ async function main() {
     await capture();
     deriveSeed(await shimPass(deadline));
     variants = mainVariants(names);
+    await startLoad();
+    loadSnapshot('before');
     const rounds = Math.max(...variants.map(planned));
     for (let index = 1; index <= rounds && !stopped; index++) {
       const eligible = variants.filter(v => index <= planned(v));
       for (const v of shuffled(eligible, index)) await launch(v, index, deadline);
     }
   } catch (err) { errors.push(err.stack || String(err)); }
-  finally { summary(); }
+  finally {
+    try { loadSnapshot('after'); }
+    catch { errors.push('Post-measurement load snapshot failed'); }
+    await cleanupLoad(); summary();
+  }
 }
-if (process.argv[2] === '--once') {
+if (process.argv[2] === '--load-worker') {
+  const deadline = Math.min(Number(process.argv[3]), Date.now() + 50 * 60 * 1000);
+  if (!Number.isSafeInteger(deadline) || deadline <= Date.now()) process.exit(1);
+  setTimeout(() => process.exit(0), Math.max(1, deadline - Date.now()));
+  process.once('disconnect', () => process.exit(0));
+  const busy = () => {
+    const until = Math.min(deadline, Date.now() + 20);
+    while (Date.now() < until) { /* Busy for a bounded slice. */ }
+    if (Date.now() >= deadline) process.exit(0);
+    setImmediate(busy);
+  };
+  process.send?.('ready'); busy();
+} else if (process.argv[2] === '--once') {
   once().then(() => { process.exitCode = 0; }, err => {
     console.error(err); process.exitCode = 1;
   });
