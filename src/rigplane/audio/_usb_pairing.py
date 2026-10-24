@@ -34,6 +34,14 @@ class AudioCandidate:
     near_radio: bool
 
 
+def candidate_stable_id(
+    snapshot: UsbSnapshot, record: PortAudioDeviceRecord, api: HostApiRecord, flow: Flow
+) -> str:
+    matches = _matches(snapshot, record, api, flow)
+    identity = matches[0].os_id if len(matches) == 1 else "name:" + record.name
+    return api.name + "|" + identity
+
+
 @dataclass(frozen=True, slots=True)
 class PairOk:
     rx_index: int
@@ -135,10 +143,9 @@ def _candidates(
                 matches = _matches(snapshot, record, api, flow)
                 if not matches:
                     continue
-                id = matches[0].os_id if len(matches) == 1 else "name:" + record.name
                 candidates.append(
                     AudioCandidate(
-                        api.name + "|" + id,
+                        candidate_stable_id(snapshot, record, api, flow),
                         record.name,
                         flow,
                         api.name,

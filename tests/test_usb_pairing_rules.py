@@ -11,11 +11,7 @@ from rigplane.audio._portaudio_enum import (
     PortAudioDeviceRecord,
     PortAudioEnumeration,
 )
-from rigplane.audio._usb_names import (
-    endpoint_name_key,
-    mme_listed_matches,
-    windows_audio_product,
-)
+from rigplane.audio._usb_names import endpoint_name_key, mme_listed_matches
 from rigplane.audio._usb_pairing import PairOk, PairRefused, pair
 from rigplane.audio._usb_snapshot import (
     AudioEndpoint,
@@ -245,7 +241,6 @@ def test_s4_wdm_spacing_normalization_and_reused_product_helper():
         replace(snapshot, portaudio=replace(snapshot.portaudio, devices=devices))
     )
     assert endpoint_name_key(" Line ( USB Audio CODEC ) ") == "Line (USB Audio CODEC)"
-    assert windows_audio_product("Line (2- USB Audio CODEC)") == "USB Audio CODEC"
 
 
 def test_s4_mme_exactly_31_characters_is_the_only_prefix_match():

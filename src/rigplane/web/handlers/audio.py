@@ -21,7 +21,8 @@ from rigplane.audio._transcoder import PcmOpusTranscoder, create_pcm_opus_transc
 from ...audio import route as audio_route
 from ...audio.bus import STAGE_RX_POST_DSP
 from ...audio.session import RxSubscription
-from ...audio.usb_driver import AudioAlreadyStartedError, audio_start_failure_reason
+from ...audio._usb_pairing import AudioCandidate
+from ...audio.usb_driver import AudioAlreadyStartedError, audio_start_failure_details
 from ...dsp.tap_registry import TapHandle, TapRegistry
 from ...env_config import (
     get_audio_broadcaster_high_watermark,
@@ -430,7 +431,9 @@ class AudioBroadcaster:
         self._subscription: _AudioSubscription | RxSubscription | None = None
         self._relay_task: asyncio.Task[None] | None = None
         self._rx_start_attempt = 0
-        self._rx_start_failure: tuple[object, object, str] | None = None
+        self._rx_start_failure: (
+            tuple[object, object, str, tuple[AudioCandidate, ...]] | None
+        ) = None
         self._seq: int = 0
         self._web_codec: int = AUDIO_CODEC_PCM16
         self._radio_codec: AudioCodec | None = None
@@ -670,18 +673,27 @@ class AudioBroadcaster:
                 or route[1] is not failure[1]
             ):
                 self._rx_start_failure = None
-        return {
-            "schemaVersion": 1,
-            "failure": (
-                {
-                    "stage": "rx_start",
-                    "code": "core_rx_start_failed",
-                    "reason": self._rx_start_failure[2],
-                }
-                if self._rx_start_failure is not None
-                else None
-            ),
-        }
+        payload: dict[str, Any] | None = None
+        if self._rx_start_failure is not None:
+            _, _, reason, candidates = self._rx_start_failure
+            payload = {
+                "stage": "rx_start",
+                "code": "core_rx_start_failed",
+                "reason": reason,
+            }
+            if candidates:
+                payload["candidates"] = [
+                    {
+                        "stableId": candidate.stable_id,
+                        "displayName": candidate.display_name,
+                        "direction": candidate.direction,
+                        "hostApi": candidate.hostapi,
+                        "portAudioIndex": candidate.portaudio_index,
+                        "nearRadio": candidate.near_radio,
+                    }
+                    for candidate in candidates
+                ]
+        return {"schemaVersion": 1, "failure": payload}
 
     def _rx_start_current(self, attempt: int, radio: object, source: object) -> bool:
         if attempt != self._rx_start_attempt or radio is not self._radio:
@@ -1311,11 +1323,8 @@ class AudioBroadcaster:
             logger.exception("audio-broadcaster: failed to start relay")
             self._subscription = None
             if source is not None:
-                self._rx_start_failure = (
-                    radio,
-                    source,
-                    audio_start_failure_reason(exc),
-                )
+                reason, candidates = audio_start_failure_details(exc)
+                self._rx_start_failure = (radio, source, reason, candidates)
             await self._notify_relay_start_failure(exc)
 
     async def _notify_relay_start_failure(self, exc: Exception) -> None:

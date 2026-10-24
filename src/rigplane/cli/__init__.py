@@ -821,14 +821,14 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="rx_device",
         default=_get_env("ICOM_USB_RX_DEVICE") or None,
         metavar="NAME",
-        help="USB audio RX device name for --backend serial (default: $ICOM_USB_RX_DEVICE or auto)",
+        help="USB audio RX device name, index or stable id HOSTAPI|endpoint-id / HOSTAPI|name:device-name for --backend serial (default: $ICOM_USB_RX_DEVICE or auto)",
     )
     p.add_argument(
         "--tx-device",
         dest="tx_device",
         default=_get_env("ICOM_USB_TX_DEVICE") or None,
         metavar="NAME",
-        help="USB audio TX device name for --backend serial (default: $ICOM_USB_TX_DEVICE or auto)",
+        help="USB audio TX device name, index or stable id HOSTAPI|endpoint-id / HOSTAPI|name:device-name for --backend serial (default: $ICOM_USB_TX_DEVICE or auto)",
     )
     p.add_argument(
         "--list-audio-devices",
