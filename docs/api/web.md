@@ -1073,10 +1073,10 @@ line as the startup contract instead of parsing the human-readable banner:
 
 Version, model, capability summary, and connection metadata.
 
-`audioReceive` retains the latest audio-start failure in schema version 1.
-Its `failure` is `null` when clear; otherwise it has `stage` (`rx_start` or
-`tx_start`), `code` (`core_rx_start_failed` or `core_tx_start_failed`) and
-`reason`. Pairing refusals with candidates add this field to `failure`:
+`audioReceive` retains the latest RX-start failure in schema version 1.
+Its `failure` is `null` when clear; otherwise it has `stage` (`rx_start`),
+`code` (`core_rx_start_failed`) and `reason`. Pairing refusals with candidates
+add this field to `failure`:
 
 ```json
 {
@@ -1091,7 +1091,9 @@ Its `failure` is `null` when clear; otherwise it has `stage` (`rx_start` or
 }
 ```
 
-`direction` is `capture` (RX) or `render` (TX). `candidates` is omitted when
+`direction` is `capture` (RX) or `render` (TX). Candidates cover both directions
+because pairing decides RX and TX together
+(`src/rigplane/audio/_usb_pairing.py: pair`). `candidates` is omitted when
 the failure has no pairing candidates. This is an additive field; the schema
 version remains 1 (`src/rigplane/web/handlers/audio.py: AudioBroadcaster.rx_start_status`).
 Pass a candidate's `stableId` through the existing `rx_device` / `tx_device`

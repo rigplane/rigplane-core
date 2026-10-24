@@ -4,7 +4,7 @@ import asyncio
 import json
 
 import pytest
-from test_web_audio_session_rx import _NoSessionRadio, _SessionLanRadio, _make_ws
+from test_web_audio_session_rx import _SessionLanRadio, _make_ws
 from test_web_auth_compare_digest import _MemoryWriter
 
 from rigplane.web.server import WebConfig, WebServer
@@ -149,99 +149,6 @@ async def test_provider_retirement_rejects_late_rx_result_with_same_radio(
     radio.fails = True
     await broadcaster.ensure_relay()
     assert await info(server) == FAILED
-
-
-@pytest.mark.parametrize("retire", [False, True])
-@pytest.mark.parametrize("deferred", [False, True], ids=["start", "session-push"])
-async def test_tx_refusal_retains_candidates_only_for_current_radio(
-    station, retire, deferred
-):
-    from rigplane.audio._usb_pairing import (
-        AudioCandidate,
-        PairRefused,
-        WindowsAudioTopologyError,
-    )
-    from rigplane.web.handlers.audio import AudioHandler, browser_tx_audio_facts
-    from rigplane.web.protocol import (
-        AUDIO_CODEC_PCM16,
-        AUDIO_HEADER_SIZE,
-        MSG_TYPE_AUDIO_TX,
-    )
-
-    server, _, broadcaster = station
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    class RefusingTxRadio(_SessionLanRadio if deferred else _NoSessionRadio):
-        capabilities = {"audio", "tx"}
-        has_usb_audio = True
-
-        async def start_tx(self):
-            entered.set()
-            await release.wait()
-            raise WindowsAudioTopologyError(
-                PairRefused(
-                    "no_codec",
-                    "usb_topology_unavailable",
-                    (
-                        AudioCandidate(
-                            "MME|capture", "USB Audio", "capture", "MME", 1, True
-                        ),
-                    ),
-                    (),
-                )
-            )
-
-    old = RefusingTxRadio()
-    server._radio = broadcaster._radio = old
-    assert browser_tx_audio_facts(old).path == ("session" if deferred else "neutral")
-    handler = AudioHandler(_make_ws(), old, broadcaster=broadcaster)
-    start = {"type": "audio_start", "direction": "tx"}
-    if deferred:
-        await handler._handle_control(start)
-        frame = (
-            bytes([MSG_TYPE_AUDIO_TX, AUDIO_CODEC_PCM16])
-            + bytes(AUDIO_HEADER_SIZE - 2)
-            + b"\x01\x00" * 960
-        )
-        pending = asyncio.create_task(handler._handle_tx_audio(frame))
-    else:
-        pending = asyncio.create_task(handler._handle_control(start))
-    try:
-        await asyncio.wait_for(entered.wait(), timeout=1)
-        if retire:
-            replacement = RefusingRadio(fails=False)
-            broadcaster._radio = replacement
-            server._radio = replacement
-            server._on_provider_generation(11)
-    finally:
-        release.set()
-        await pending
-    try:
-        status = await info(server)
-        if retire:
-            assert status == CLEAR
-        else:
-            assert status == {
-                "schemaVersion": 1,
-                "failure": {
-                    "stage": "tx_start",
-                    "code": "core_tx_start_failed",
-                    "reason": "usb_topology_unavailable",
-                    "candidates": [
-                        {
-                            "stableId": "MME|capture",
-                            "displayName": "USB Audio",
-                            "direction": "capture",
-                            "hostApi": "MME",
-                            "portAudioIndex": 1,
-                            "nearRadio": True,
-                        }
-                    ],
-                },
-            }
-        assert not handler._tx_active
-    finally:
-        await handler._stop_tx(reason="test cleanup", force=True)
 
 
 def _chained(outer, inner):

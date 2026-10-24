@@ -867,7 +867,7 @@ def _find_by_override(
     if match is not None:
         return match
 
-    api_name, separator, identity = selector.partition("|")
+    api_name, separator, identity = override.partition("|")
     stable_selector = bool(separator) and (
         identity.lower().startswith(("name:", "swd\\"))
         or (
@@ -879,6 +879,7 @@ def _find_by_override(
         )
     )
     if stable_selector:
+        selector = override
         stable_matches = []
         if snapshot is not None:
             flow: Flow = "capture" if direction == "rx" else "render"

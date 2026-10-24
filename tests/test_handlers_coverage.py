@@ -2623,7 +2623,6 @@ async def test_audio_handler_reader_control_tx_and_sender_paths(
         subscribe=AsyncMock(return_value=asyncio.Queue()),
         unsubscribe=AsyncMock(),
         negotiated_rx_format=lambda _q: {"codec": "pcm16"},
-        invalidate_rx_start_status=MagicMock(),
     )
     radio = _make_legacy_opus_tx_radio()
     ws = SimpleNamespace(
@@ -2705,7 +2704,6 @@ async def test_audio_handler_control_and_tx_guard_paths() -> None:
         subscribe=AsyncMock(return_value=asyncio.Queue()),
         unsubscribe=AsyncMock(),
         negotiated_rx_format=lambda _q: {"codec": "pcm16"},
-        invalidate_rx_start_status=MagicMock(),
     )
     handler = AudioHandler(ws, radio, broadcaster)
 
@@ -3118,13 +3116,7 @@ async def test_transcoder_failure_arms_tx_and_drops_only_opus_frames(
         recv=AsyncMock(side_effect=[start, opus, pcm, stats, EOFError()]),
         send_text=AsyncMock(),
     )
-    handler = AudioHandler(
-        ws,
-        radio,
-        SimpleNamespace(
-            record_client_stats=MagicMock(), invalidate_rx_start_status=MagicMock()
-        ),
-    )
+    handler = AudioHandler(ws, radio, SimpleNamespace(record_client_stats=MagicMock()))
     handler._rx_active = True
     monkeypatch.setattr(
         audio_module,

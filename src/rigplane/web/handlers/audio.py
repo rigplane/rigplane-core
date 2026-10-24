@@ -432,7 +432,7 @@ class AudioBroadcaster:
         self._relay_task: asyncio.Task[None] | None = None
         self._rx_start_attempt = 0
         self._rx_start_failure: (
-            tuple[object, object, str, tuple[AudioCandidate, ...], str] | None
+            tuple[object, object, str, tuple[AudioCandidate, ...]] | None
         ) = None
         self._seq: int = 0
         self._web_codec: int = AUDIO_CODEC_PCM16
@@ -656,37 +656,9 @@ class AudioBroadcaster:
             raise TypeError("audio_bus.subscribe must be callable")
         return ("bus", bus)
 
-    def invalidate_rx_start_status(
-        self, *, direction: str | None = None, radio: object | None = None
-    ) -> None:
-        if radio is not None and radio is not self._radio:
-            return
-        if direction is None:
-            self._rx_start_attempt += 1
-        if direction is None or (
-            self._rx_start_failure is not None
-            and self._rx_start_failure[4] == direction
-        ):
-            self._rx_start_failure = None
-
-    def record_start_failure(
-        self, exc: Exception, *, radio: object, direction: str
-    ) -> None:
-        if radio is not self._radio:
-            return
-        try:
-            route = self._resolve_rx_route()
-        except Exception:
-            return
-        if route is not None:
-            reason, candidates = audio_start_failure_details(exc)
-            self._rx_start_failure = (
-                self._radio,
-                route[1],
-                reason,
-                candidates,
-                direction,
-            )
+    def invalidate_rx_start_status(self) -> None:
+        self._rx_start_attempt += 1
+        self._rx_start_failure = None
 
     def rx_start_status(self) -> dict[str, Any]:
         failure = self._rx_start_failure
@@ -703,10 +675,10 @@ class AudioBroadcaster:
                 self._rx_start_failure = None
         payload: dict[str, Any] | None = None
         if self._rx_start_failure is not None:
-            _, _, reason, candidates, direction = self._rx_start_failure
+            _, _, reason, candidates = self._rx_start_failure
             payload = {
-                "stage": direction + "_start",
-                "code": "core_" + direction + "_start_failed",
+                "stage": "rx_start",
+                "code": "core_rx_start_failed",
                 "reason": reason,
             }
             if candidates:
@@ -1351,7 +1323,8 @@ class AudioBroadcaster:
             logger.exception("audio-broadcaster: failed to start relay")
             self._subscription = None
             if source is not None:
-                self.record_start_failure(exc, radio=radio, direction="rx")
+                reason, candidates = audio_start_failure_details(exc)
+                self._rx_start_failure = (radio, source, reason, candidates)
             await self._notify_relay_start_failure(exc)
 
     async def _notify_relay_start_failure(self, exc: Exception) -> None:
@@ -1776,21 +1749,12 @@ class AudioHandler:
                         logger.info("audio: TX already started by poller, reusing")
                     else:
                         await self._abort_tx_start(previous_facts, was_active)
-                        if self._record_tx_start_failure(exc):
-                            await self._send_error(
-                                f"audio_start: TX audio failed to start: {exc}"
-                            )
-                            return
                         raise
                 except BaseException:
                     await self._abort_tx_start(previous_facts, was_active)
                     raise
                 self._tx_facts = facts
                 self._tx_active = True
-                if self._broadcaster is not None and facts.path != "session":
-                    self._broadcaster.invalidate_rx_start_status(
-                        direction="tx", radio=self._radio
-                    )
                 # New TX session: clear the MOR-1788 warning counters so a
                 # recurrence is never hidden by an earlier session's backlog.
                 self._tx_warn_counts.clear()
@@ -1824,20 +1788,6 @@ class AudioHandler:
                     "browser microphone capture rejected: category=%s", category
                 )
                 self._last_logged_capture_category = category
-
-    def _record_tx_start_failure(self, exc: Exception) -> bool:
-        reason, _ = audio_start_failure_details(exc)
-        if reason not in {
-            "usb_topology_names",
-            "usb_topology_unavailable",
-            "usb_ambiguous",
-        }:
-            return False
-        if self._broadcaster is not None:
-            self._broadcaster.record_start_failure(
-                exc, radio=self._radio, direction="tx"
-            )
-        return True
 
     async def _abort_tx_start(
         self, previous_facts: BrowserTxAudioFacts | None, was_active: bool
@@ -2460,10 +2410,6 @@ class AudioHandler:
                     return
 
                 # Log every 50th frame to avoid spam
-                if self._broadcaster is not None:
-                    self._broadcaster.invalidate_rx_start_status(
-                        direction="tx", radio=self._radio
-                    )
                 if not hasattr(self, "_tx_frame_count"):
                     self._tx_frame_count = 0
                 self._tx_frame_count += 1
@@ -2473,13 +2419,7 @@ class AudioHandler:
                         self._tx_frame_count,
                         tx_data_desc,
                     )
-            except Exception as exc:
-                if self._record_tx_start_failure(exc):
-                    await self._stop_tx(reason="failed TX audio start", force=True)
-                    await self._send_error(
-                        f"audio_start: TX audio failed to start: {exc}"
-                    )
-                    return
+            except Exception:
                 self._warn_tx_throttled(
                     "push_tx_error", "audio: push TX error", exc_info=True
                 )
