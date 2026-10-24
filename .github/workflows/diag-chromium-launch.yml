@@ -18,7 +18,7 @@ concurrency:
 jobs:
   launch-loop:
     runs-on: [self-hosted, linux, build]
-    timeout-minutes: 55
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -44,14 +44,11 @@ jobs:
       - name: Install Playwright Chromium system dependencies
         working-directory: frontend
         run: sudo -E env "PATH=$PATH" npx playwright install-deps chromium
-      - name: Build frontend for real i18n preview
-        working-directory: frontend
-        run: npm run build
       - name: Measure Chromium launches
-        timeout-minutes: 42
+        timeout-minutes: 38
         working-directory: frontend
         env:
-          DIAG_LAUNCHES: '300'
+          DIAG_LAUNCHES: '200'
           DIAG_PW_LAUNCHES: '150'
           DIAG_REAL_LAUNCHES: '150'
           DIAG_LOAD_WORKERS: '0'

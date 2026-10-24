@@ -15,11 +15,12 @@ const fallbackSeed = {
 };
 let seed3 = { ...fallbackSeed };
 let seedSource = 'fixed fallback (shim not run)';
-const defaultVariants = ['real', 'real+seed3'];
-const variantNames = [...defaultVariants, 'default', 'default+seed3', 'pw', 'pw+seed3',
-  'min', 'min+seed3', 'min+tz'];
+const padCounts = Array.from({ length: 8 }, (_, k) => k);
+const defaultVariants = padCounts.flatMap(k => [`pad${k}`, `pad${k}+seed3`]);
+const variantNames = [...defaultVariants, 'real', 'real+seed3', 'default',
+  'default+seed3', 'pw', 'pw+seed3', 'min', 'min+seed3', 'min+tz'];
 let variants = [];
-let count = 300, pwCount = 150, realCount = 150, previewPort = 4173;
+let count = 200, pwCount = 150, realCount = 150, previewPort = 4173;
 let keptRealCrashes = 0, printedHarnessErrors = 0;
 let loadCount = 0, loadStopping = false, loadFailed = false, loadWatchdog;
 const loadWorkers = [];
@@ -209,6 +210,7 @@ const missing = () => variants.reduce((n, v) => n + planned(v) -
 const checkpoint = () => fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify({
   runner, slot, plannedPerVariant: count, plannedPerPwVariant: pwCount,
   plannedPerRealVariant: realCount, previewPort, realGrep, keptRealCrashes,
+  variantEnvCounts: Object.fromEntries(variants.map(v => [v.name, Object.keys(v.env).length])),
   plannedShimLaunches: 25, seed3, seedSource, load, missing: missing(), results, errors,
 }, null, 2) + '\n');
 
@@ -473,7 +475,21 @@ function summary() {
     lines.push(`| ${v.name} | ${rows.length}/${planned(v)} | ${f} | ${h} | ` +
       `${n ? (100 * f / n).toFixed(2) + '%' : 'n/a'} | ${wilson(f, n)} |`);
   }
+  const envCount = name => {
+    const v = variants.find(v => v.name === name);
+    return v ? Object.keys(v.env).length : 'n/a';
+  };
+  lines.push('', '| k | Unseeded env vars | Unseeded f/n | Wilson 95% | ' +
+    'Seeded env vars | Seeded f/n | Wilson 95% | One-sided Fisher p |',
+  '| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |');
+  for (const k of padCounts) {
+    const name = `pad${k}`, seeded = `${name}+seed3`;
+    const a = totals(name), b = totals(seeded);
+    lines.push(`| ${k} | ${envCount(name)} | ${a.f}/${a.n} | ${wilson(a.f, a.n)} | ` +
+      `${envCount(seeded)} | ${b.f}/${b.n} | ${wilson(b.f, b.n)} | ${fisher(a, b)} |`);
+  }
   lines.push('', 'Rates, Wilson intervals and Fisher tests exclude harness errors.',
+    'Padding pairs use Fisher alternative: unseeded failure rate > seeded.',
     'Direct variants count every unsuccessful launch as a failure.',
     'pw/real crashes require browserType.launch, signal=SIGSEGV or Received signal 11 in output.',
     'Every measurement uses a fresh process; pw/real use a fresh npm/runner/worker chain.',
@@ -497,13 +513,20 @@ function summary() {
     lines.push(`Aggregate ${baseline}=${a.f}/${a.n}, ${seeded}=${b.f}/${b.n}: ` +
       `${conclusion}; empirical observations do not establish elimination of failures.`);
   }
-  const final = defaultVariants.map(name => {
+  const final = padCounts.map(k => {
+    const name = `pad${k}`;
     const { f, n } = totals(name);
     return `${name}=${f}/${n}`;
   });
+  const seeded = padCounts.reduce((sum, k) => {
+    const { f, n } = totals(`pad${k}+seed3`);
+    return { f: sum.f + f, n: sum.n + n };
+  }, { f: 0, n: 0 });
   const harness = variants.reduce((n, v) => n + totals(v.name).h, 0);
-  lines.push(`Missing measurements: ${missing()}.`, ...errors.map(e => `Operational error: ${e}`),
-    `DIAG-ROUND5 ${runner} ${final.join(' ')} harness=${harness}`);
+  lines.push(`Harness errors: ${harness}. Missing measurements: ${missing()}.`,
+    ...errors.map(e => `Operational error: ${e}`),
+    `DIAG-ROUND6 ${runner} n_pad0=${envCount('pad0')} ${final.join(' ')} | ` +
+    `seeded total=${seeded.f}/${seeded.n}`);
   const text = lines.join('\n') + '\n';
   console.log(text);
   try { checkpoint(); } catch (err) { console.log(`Results file: ${err.message}`); }
@@ -563,7 +586,7 @@ async function waitForPreviewPort() {
 }
 async function launch(v, index, deadline) {
   if (stopped) return;
-  if (v.shim && performance.now() + launchBudget(v) > deadline) {
+  if (performance.now() + launchBudget(v) > deadline) {
     stopped = true; errors.push('Measurement budget exhausted'); return;
   }
   const logStart = v.shim ? fs.statSync(shimLog).size : 0;
@@ -606,6 +629,7 @@ async function launch(v, index, deadline) {
   }
   if (loadFailed) outcome = 'harness-error';
   const row = { variant: v.name, index, round: index, slot, wallMs: r.wallMs,
+    envCount: Object.keys(v.env).length,
     exitCode: r.exitCode, signal: r.signal, timedOut: r.timedOut, error: r.error,
     outcome, crashOutput: r.crashOutput, ...(v.real ? { matchedTests } : {}) };
   if (r.cleanupIncomplete) {
@@ -708,7 +732,20 @@ function deriveSeed(reason) {
 }
 function mainVariants(names) {
   const realEnv = { ...process.env, RP_I18N_PREVIEW_PORT: String(previewPort) };
+  const padded = padCounts.flatMap(k => {
+    const padding = Object.fromEntries(Array.from({ length: k }, (_, i) =>
+      [`DIAG_PAD_${i + 1}`, '1']));
+    const env = { ...process.env, ...padding };
+    if (names.includes(`pad${k}`) || names.includes(`pad${k}+seed3`)) {
+      if (Object.keys(env).length !== Object.keys(process.env).length + k) {
+        throw new Error('Padding names already exist in the job environment');
+      }
+    }
+    return [{ name: `pad${k}`, env },
+      { name: `pad${k}+seed3`, env: { ...env, ...seed3 } }];
+  });
   const all = [
+    ...padded,
     { name: 'real', real: true, env: realEnv },
     { name: 'real+seed3', real: true, env: { ...realEnv, ...seed3 } },
     { name: 'default', env: { ...process.env } },
@@ -736,7 +773,7 @@ async function main() {
       }
       return Number(input);
     };
-    count = positive('DIAG_LAUNCHES', 300);
+    count = positive('DIAG_LAUNCHES', 200);
     pwCount = positive('DIAG_PW_LAUNCHES', 150);
     realCount = positive('DIAG_REAL_LAUNCHES', 150);
     if (!/^\d+$/.test(slot) || !Number.isSafeInteger(Number(slot)) || Number(slot) > 61362) {
@@ -763,11 +800,6 @@ async function main() {
     const rounds = Math.max(...variants.map(planned));
     for (let index = 1; index <= rounds && !stopped; index++) {
       const eligible = variants.filter(v => index <= planned(v));
-      const budget = eligible.reduce((n, v) => n + launchBudget(v), 0);
-      if (performance.now() + budget > deadline) {
-        stopped = true; errors.push('Measurement budget exhausted before next complete round');
-        break;
-      }
       for (const v of shuffled(eligible, index)) await launch(v, index, deadline);
     }
   } catch (err) { errors.push(err.stack || String(err)); }
