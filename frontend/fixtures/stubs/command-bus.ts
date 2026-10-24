@@ -216,9 +216,11 @@ export function makeKeyboardHandlers() {
 
 export function makeMemoryHandlers() {
   return {
+    fetchPage: (...args: unknown[]): void => record('memory.fetchPage', args),
     onRecall: (...args: unknown[]): boolean => { record('memory.recall', args); return false; },
     onStore: (...args: unknown[]): boolean => { record('memory.store', args); return false; },
     onClear: (...args: unknown[]): boolean => { record('memory.clear', args); return false; },
+    onRecallListed: (...args: unknown[]): boolean => { record('memory.recallListed', args); return false; },
   };
 }
 

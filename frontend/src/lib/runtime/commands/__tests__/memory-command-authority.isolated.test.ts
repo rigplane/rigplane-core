@@ -76,6 +76,20 @@ describe('MOR-1409 A05a memory command authority', () => {
     expect(h.calls.every((call) => call.extraArgs.length === 0)).toBe(true);
   });
 
+  it('recalls a channel listed from the radio only when the profile can list memories (MOR-3627)', () => {
+    const handlers = makeMemoryHandlers();
+    expect(handlers.onRecallListed(0, 4)).toBe(false);
+    h.caps = { ...caps('ab'), capabilities: ['memory_read'] } as Capabilities;
+    for (const invalid of [[-1, 4], [0, -1], [0, NaN], [1.5, 4]] as const) {
+      expect(handlers.onRecallListed(invalid[0], invalid[1])).toBe(false);
+    }
+    expect(h.calls).toHaveLength(0);
+    expect(handlers.onRecallListed(0, 4)).toBe(true);
+    expect(h.calls.map(({ name, params }) => ({ name, params }))).toEqual([
+      { name: 'set_memory_mode', params: { channel: 4, group: 0 } },
+    ]);
+  });
+
   it('accepts real relative and unslotted topology identities without inventing A or B', () => {
     for (const scheme of ['ab', 'single', 'ab_shared'] as const) {
       h.state = state(scheme);

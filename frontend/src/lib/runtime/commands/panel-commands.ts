@@ -264,10 +264,18 @@ function validMemoryChannel(channel: number): boolean {
 
 export function makeMemoryHandlers() {
   return {
+    fetchPage: (...args: Parameters<typeof runtime.fetchMemoryPage>) => runtime.fetchMemoryPage(...args),
     onRecall: (channel: number): boolean => {
       if (!validMemoryChannel(channel) || currentMemorySnapshot() === null) return false;
       dispatchRadioIntent({ name: 'set_memory_mode', params: { channel } });
       dispatchRadioIntent({ name: 'memory_to_vfo', params: { channel } });
+      return true;
+    },
+    /** Recall of a channel listed from the radio itself (MOR-3627); an explicit click, never automatic. */
+    onRecallListed: (group: number, channel: number): boolean => {
+      if (!hasCapability('memory_read') || !Number.isSafeInteger(group) || group < 0
+        || !Number.isSafeInteger(channel) || channel < 0) return false;
+      dispatchRadioIntent({ name: 'set_memory_mode', params: { channel, group } });
       return true;
     },
     onStore: (channel: number, frequencyHz: number, mode: string): boolean => {
