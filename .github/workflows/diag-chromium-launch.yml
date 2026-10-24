@@ -48,7 +48,8 @@ jobs:
         timeout-minutes: 38
         working-directory: frontend
         env:
-          DIAG_LAUNCHES: '200'
+          DIAG_LAUNCHES: '300'
+          DIAG_WARM_LAUNCHES: '100'
           DIAG_PW_LAUNCHES: '150'
           DIAG_REAL_LAUNCHES: '150'
           DIAG_LOAD_WORKERS: '0'

@@ -16,11 +16,12 @@ const fallbackSeed = {
 let seed3 = { ...fallbackSeed };
 let seedSource = 'fixed fallback (shim not run)';
 const padCounts = Array.from({ length: 8 }, (_, k) => k);
-const defaultVariants = padCounts.flatMap(k => [`pad${k}`, `pad${k}+seed3`]);
-const variantNames = [...defaultVariants, 'real', 'real+seed3', 'default',
+const defaultVariants = ['pad0', 'fc-cold', 'fc-cold+seed3', 'pad0+seed3'];
+const variantNames = [...new Set([...padCounts.flatMap(k => [`pad${k}`, `pad${k}+seed3`]),
+  ...defaultVariants]), 'real', 'real+seed3', 'default',
   'default+seed3', 'pw', 'pw+seed3', 'min', 'min+seed3', 'min+tz'];
 let variants = [];
-let count = 200, pwCount = 150, realCount = 150, previewPort = 4173;
+let count = 300, warmCount = 100, pwCount = 150, realCount = 150, previewPort = 4173;
 let keptRealCrashes = 0, printedHarnessErrors = 0;
 let loadCount = 0, loadStopping = false, loadFailed = false, loadWatchdog;
 const loadWorkers = [];
@@ -203,12 +204,15 @@ const shell = text => command('bash', ['-o', 'pipefail', '-c', text]);
 const describe = r => `exit=${r.exitCode} signal=${r.signal} timeout=${r.timedOut}` +
   ` error=${r.error}\n${r.stdout}${r.stderr}\n`;
 const failed = r => r.exitCode !== 0 || r.timedOut || Boolean(r.error);
-const planned = v => v.shim ? 25 : v.real ? realCount : v.pw ? pwCount : count;
-const launchBudget = v => v.real ? 140000 : 100000;
+const planned = v => v.shim ? 25 : v.real ? realCount : v.pw ? pwCount :
+  ['pad0', 'pad0+seed3'].includes(v.name) ? warmCount : count;
+// Cold reserve covers reset, the 70 s launch timeout, cleanup and failure diagnostics.
+const launchBudget = v => v.real ? 140000 : v.cold ? 110000 : 100000;
 const missing = () => variants.reduce((n, v) => n + planned(v) -
   results.filter(r => r.variant === v.name).length, 0);
 const checkpoint = () => fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify({
-  runner, slot, plannedPerVariant: count, plannedPerPwVariant: pwCount,
+  runner, slot, plannedPerVariant: count, plannedPerWarmVariant: warmCount,
+  plannedPerPwVariant: pwCount,
   plannedPerRealVariant: realCount, previewPort, realGrep, keptRealCrashes,
   variantEnvCounts: Object.fromEntries(variants.map(v => [v.name, Object.keys(v.env).length])),
   plannedShimLaunches: 25, seed3, seedSource, load, missing: missing(), results, errors,
@@ -229,6 +233,9 @@ async function capture() {
     'dpkg-query -W libc6 libnss3 libgbm1 libdrm2 libxkbcommon0 libasound2 fonts-liberation',
     'ldd --version', 'id', 'getent passwd "$(id -u)"', 'wc -l /etc/passwd',
     'npx --no-install playwright --version',
+    'ls -la /var/cache/fontconfig | head',
+    'ls -la "$HOME/.cache/fontconfig" | head',
+    'fc-list | wc -l', 'command -v fc-cache',
     'ps -eo pid,ppid,pcpu,pmem,comm --sort=-pcpu | head -15', 'dmesg | tail -50',
   ];
   for (const probe of probes) {
@@ -408,9 +415,11 @@ async function once() {
   const { chromium } = require('playwright');
   const shim = process.argv[3];
   // Preload only Chromium and its descendants, so counts exclude the Node launcher.
+  const launchStart = performance.now();
   const browser = await chromium.launch({ headless: true, ...(shim ? { env: {
     ...process.env, LD_PRELOAD: shim, DIAG_SHIM_LOG: shimLog,
   } } : {}) });
+  console.log(`DIAG-LAUNCH-MS ${Math.round(performance.now() - launchStart)}`);
   try {
     const page = await browser.newPage();
     await page.goto('about:blank');
@@ -447,7 +456,7 @@ function fisher(a, b) {
   if (!a.n || !b.n) return 'n/a';
   const failures = a.f + b.f, denominator = choose(a.n + b.n, failures);
   let numerator = 0n;
-  // Conditional upper tail: the baseline has a greater crash rate than the seed arm.
+  // Conditional upper tail: the first arm has a greater failure rate.
   for (let x = a.f; x <= Math.min(a.n, failures); x++) {
     numerator += choose(a.n, x) * choose(b.n, failures - x);
   }
@@ -466,30 +475,57 @@ function totals(name) {
   const f = rows.filter(r => ['crash', 'launch-failure'].includes(r.outcome)).length;
   return { rows, h, n: rows.length - h, f };
 }
+function percentile(values, fraction) {
+  if (!values.length) return 'n/a';
+  const sorted = [...values].sort((a, b) => a - b);
+  const position = (sorted.length - 1) * fraction;
+  const low = Math.floor(position), high = Math.ceil(position);
+  return (sorted[low] + (sorted[high] - sorted[low]) * (position - low)).toFixed(1);
+}
+const launchTimes = name => totals(name).rows.map(r => r.launchMs).filter(Number.isFinite);
 function summary() {
   const lines = [`Chromium launch diagnostic — ${runner}`, '',
-    '| Variant | Launches | Failures | Harness errors | Failure rate | Wilson 95% |',
-    '| --- | ---: | ---: | ---: | ---: | ---: |'];
+    '| Variant | Done/planned | Failures | Harness errors | Failure rate | ' +
+      'Wilson 95% | Launch ms n | Median ms | p95 ms |',
+    '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |'];
   for (const v of variants) {
     const { rows, n, f, h } = totals(v.name);
+    const times = launchTimes(v.name);
     lines.push(`| ${v.name} | ${rows.length}/${planned(v)} | ${f} | ${h} | ` +
-      `${n ? (100 * f / n).toFixed(2) + '%' : 'n/a'} | ${wilson(f, n)} |`);
+      `${n ? (100 * f / n).toFixed(2) + '%' : 'n/a'} | ${wilson(f, n)} | ` +
+      `${times.length} | ${percentile(times, 0.5)} | ${percentile(times, 0.95)} |`);
   }
   const envCount = name => {
     const v = variants.find(v => v.name === name);
     return v ? Object.keys(v.env).length : 'n/a';
   };
-  lines.push('', '| k | Unseeded env vars | Unseeded f/n | Wilson 95% | ' +
-    'Seeded env vars | Seeded f/n | Wilson 95% | One-sided Fisher p |',
-  '| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |');
-  for (const k of padCounts) {
-    const name = `pad${k}`, seeded = `${name}+seed3`;
-    const a = totals(name), b = totals(seeded);
-    lines.push(`| ${k} | ${envCount(name)} | ${a.f}/${a.n} | ${wilson(a.f, a.n)} | ` +
-      `${envCount(seeded)} | ${b.f}/${b.n} | ${wilson(b.f, b.n)} | ${fisher(a, b)} |`);
+  if (['fc-cold', 'fc-cold+seed3'].every(name => variants.some(v => v.name === name))) {
+    const a = totals('fc-cold'), b = totals('fc-cold+seed3');
+    lines.push('', `fc-cold vs fc-cold+seed3: one-sided Fisher exact p=${fisher(a, b)}` +
+      ' (alternative: unseeded cold failure rate > seeded cold).');
+  }
+  if (['pad0', 'fc-cold'].every(name => variants.some(v => v.name === name))) {
+    const warm = totals('pad0'), cold = totals('fc-cold');
+    lines.push(`pad0 vs fc-cold: one-sided Fisher exact p=${fisher(cold, warm)}` +
+      ' (alternative: cold failure rate > warm).');
+  }
+  if (padCounts.some(k => k > 0 && variants.some(v => v.name === `pad${k}`))) {
+    lines.push('', '| k | Unseeded env vars | Unseeded f/n | Wilson 95% | ' +
+      'Seeded env vars | Seeded f/n | Wilson 95% | One-sided Fisher p |',
+    '| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |');
+    for (const k of padCounts) {
+      const name = `pad${k}`, seeded = `${name}+seed3`;
+      const a = totals(name), b = totals(seeded);
+      lines.push(`| ${k} | ${envCount(name)} | ${a.f}/${a.n} | ${wilson(a.f, a.n)} | ` +
+        `${envCount(seeded)} | ${b.f}/${b.n} | ${wilson(b.f, b.n)} | ${fisher(a, b)} |`);
+    }
   }
   lines.push('', 'Rates, Wilson intervals and Fisher tests exclude harness errors.',
-    'Padding pairs use Fisher alternative: unseeded failure rate > seeded.',
+    'Launch durations use resolved --once chromium.launch markers, including',
+    'attempts whose subsequent page work or close failed;',
+    'missing markers are excluded from timing statistics.',
+    'Cache reset time, Node startup, page work and close are outside launch durations.',
+    'Fontconfig caches are shared; pad0 warmth is not guaranteed by a prior pad0 result.',
     'Direct variants count every unsuccessful launch as a failure.',
     'pw/real crashes require browserType.launch, signal=SIGSEGV or Received signal 11 in output.',
     'Every measurement uses a fresh process; pw/real use a fresh npm/runner/worker chain.',
@@ -502,6 +538,7 @@ function summary() {
     ['min', 'min+seed3'],
   ]) {
     const selected = [baseline, seeded].every(name => variants.some(v => v.name === name));
+    if (!selected) continue;
     const a = totals(baseline), b = totals(seeded);
     lines.push(`${baseline} vs ${seeded}: one-sided Fisher exact p=` +
       `${selected ? fisher(a, b) : 'n/a (not selected)'}` +
@@ -513,20 +550,37 @@ function summary() {
     lines.push(`Aggregate ${baseline}=${a.f}/${a.n}, ${seeded}=${b.f}/${b.n}: ` +
       `${conclusion}; empirical observations do not establish elimination of failures.`);
   }
-  const final = padCounts.map(k => {
-    const name = `pad${k}`;
+  const harness = variants.reduce((n, v) => n + totals(v.name).h, 0);
+  const coldRows = results.filter(r => variants.some(v => v.name === r.variant && v.cold));
+  const resetStats = kind => ({
+    ok: coldRows.filter(r => r.cacheReset?.[kind].ok).length,
+    failed: coldRows.filter(r => !r.cacheReset?.[kind].ok).length,
+    notEmpty: coldRows.filter(r => r.cacheReset?.[kind].entriesAfter !== 0).length,
+  });
+  const userReset = resetStats('user'), systemReset = resetStats('system');
+  const systemIssue = coldRows.find(r => !r.cacheReset?.system.ok)?.cacheReset?.system;
+  const systemReason = (systemIssue?.stderr || systemIssue?.error || 'no status')
+    .replace(/[|\r\n]/g, ' ').slice(0, 200);
+  const resetFailures = coldRows.filter(r => !r.cacheReset?.user.ok ||
+    !r.cacheReset?.system.ok || r.cacheReset.user.entriesAfter !== 0 ||
+    r.cacheReset.system.entriesAfter !== 0).length;
+  const final = defaultVariants.map(name => {
     const { f, n } = totals(name);
     return `${name}=${f}/${n}`;
   });
-  const seeded = padCounts.reduce((sum, k) => {
-    const { f, n } = totals(`pad${k}+seed3`);
-    return { f: sum.f + f, n: sum.n + n };
-  }, { f: 0, n: 0 });
-  const harness = variants.reduce((n, v) => n + totals(v.name).h, 0);
-  lines.push(`Harness errors: ${harness}. Missing measurements: ${missing()}.`,
+  lines.push(`Cold resets unconfirmed: ${resetFailures}/${coldRows.length}; ` +
+    'per-launch user/system exit, timeout, stderr and post-reset entry counts are in results.',
+    `User rm: ${userReset.ok} succeeded, ${userReset.failed} failed; ` +
+      `${userReset.notEmpty} post-reset counts unknown or nonempty.`,
+    `System sudo -n rm: ${systemReset.ok} succeeded, ${systemReset.failed} failed; ` +
+      `${systemReset.notEmpty} post-reset counts unknown or nonempty.`,
+    ...(systemReset.failed ? [`First system sudo -n rm error: ${systemReason}.`] : []),
+    'User rm is attempted independently even when system sudo -n rm fails.',
+    `Harness errors: ${harness}. Missing measurements: ${missing()}.`,
     ...errors.map(e => `Operational error: ${e}`),
-    `DIAG-ROUND6 ${runner} n_pad0=${envCount('pad0')} ${final.join(' ')} | ` +
-    `seeded total=${seeded.f}/${seeded.n}`);
+    `DIAG-ROUND7 ${runner} ${final.join(' ')} ` +
+    `median_ms(fc-cold)=${percentile(launchTimes('fc-cold'), 0.5)} ` +
+    `median_ms(pad0)=${percentile(launchTimes('pad0'), 0.5)}`);
   const text = lines.join('\n') + '\n';
   console.log(text);
   try { checkpoint(); } catch (err) { console.log(`Results file: ${err.message}`); }
@@ -584,6 +638,30 @@ async function waitForPreviewPort() {
   }
   throw new Error('Interrupted while waiting for preview port');
 }
+function cacheEntries(location) {
+  try { return fs.readdirSync(location).length; }
+  catch (err) { return err.code === 'ENOENT' ? 0 : null; }
+}
+async function resetFontconfig() {
+  const userPath = path.join(process.env.HOME || os.homedir(), '.cache/fontconfig');
+  const [userResult, systemResult] = await Promise.allSettled([
+    command('rm', ['-rf', '--', userPath]),
+    command('sudo', ['-n', 'sh', '-c', 'rm -rf /var/cache/fontconfig/* ']),
+  ]);
+  const status = (result, location) => {
+    const r = result.status === 'fulfilled' ? result.value : {
+      exitCode: null, signal: null, timedOut: false,
+      error: String(result.reason), stderr: '',
+    };
+    return {
+      ok: !failed(r), exitCode: r.exitCode, signal: r.signal,
+      timedOut: r.timedOut, error: r.error,
+      stderr: r.stderr.trim().slice(0, 200), entriesAfter: cacheEntries(location),
+    };
+  };
+  return { user: status(userResult, userPath),
+    system: status(systemResult, '/var/cache/fontconfig') };
+}
 async function launch(v, index, deadline) {
   if (stopped) return;
   if (performance.now() + launchBudget(v) > deadline) {
@@ -598,7 +676,13 @@ async function launch(v, index, deadline) {
     '../.github/scripts/diag/playwright.diag.config.mjs'] :
     [file, '--once', ...(v.shim ? [shimLibrary] : [])];
   let r;
+  let cacheReset;
+  const cacheBefore = !v.cold && ['pad0', 'pad0+seed3'].includes(v.name) ? {
+    user: cacheEntries(path.join(process.env.HOME || os.homedir(), '.cache/fontconfig')),
+    system: cacheEntries('/var/cache/fontconfig'),
+  } : undefined;
   try {
+    if (v.cold) cacheReset = await resetFontconfig();
     if (v.real) await waitForPreviewPort();
     if (stopped) throw new Error('Interrupted before launch');
     r = await command(exe, args,
@@ -628,7 +712,11 @@ async function launch(v, index, deadline) {
     }
   }
   if (loadFailed) outcome = 'harness-error';
+  const markers = [...r.stdout.matchAll(/^DIAG-LAUNCH-MS (\d+(?:\.\d+)?)\r?$/gm)];
+  const launchMs = markers.length === 1 ? Number(markers[0][1]) : null;
   const row = { variant: v.name, index, round: index, slot, wallMs: r.wallMs,
+    launchMs, ...(cacheReset ? { cacheReset } : {}),
+    ...(cacheBefore ? { cacheBefore } : {}),
     envCount: Object.keys(v.env).length,
     exitCode: r.exitCode, signal: r.signal, timedOut: r.timedOut, error: r.error,
     outcome, crashOutput: r.crashOutput, ...(v.real ? { matchedTests } : {}) };
@@ -655,6 +743,21 @@ async function launch(v, index, deadline) {
     row.stderr = r.stderr; row.failureArtifact = `failures/${v.name}-${index}.txt`;
   }
   results.push(row); append('results.jsonl', JSON.stringify(row) + '\n'); checkpoint();
+  if (v.name === 'fc-cold' && index === 1) {
+    const prior = totals('pad0').rows.filter(row =>
+      row.cacheBefore?.user > 0 || row.cacheBefore?.system > 0)
+      .map(row => row.launchMs).filter(Number.isFinite);
+    const median = percentile(prior, 0.5);
+    const verified = cacheReset?.user.ok && cacheReset?.system.ok &&
+      cacheReset.user.entriesAfter === 0 && cacheReset.system.entriesAfter === 0;
+    const slower = Number.isFinite(launchMs) && median !== 'n/a' && verified &&
+      launchMs > Number(median) * 1.2 && launchMs - Number(median) >= 10;
+    const verdict = !Number.isFinite(launchMs) || median === 'n/a' || !verified ?
+      'insufficient evidence' : slower ? 'measurably slower' : 'not measurably slower';
+    console.log(`First fc-cold launch vs prior warm pad0 median: ${verdict}; ` +
+      `cold=${launchMs ?? 'n/a'} ms, pad0 median=${median} ms; ` +
+      'heuristic: >1.2x and >=10 ms; both resets must succeed and leave empty caches.');
+  }
   if (outcome === 'harness-error' && printedHarnessErrors++ < 3) {
     const tail = r.outputTail.trimEnd().split('\n').slice(-30).join('\n');
     console.log(`Harness error ${v.name}-${index}: ${r.error || describe(r).split('\n')[0]}`);
@@ -746,6 +849,8 @@ function mainVariants(names) {
   });
   const all = [
     ...padded,
+    { name: 'fc-cold', cold: true, env: { ...process.env } },
+    { name: 'fc-cold+seed3', cold: true, env: { ...process.env, ...seed3 } },
     { name: 'real', real: true, env: realEnv },
     { name: 'real+seed3', real: true, env: { ...realEnv, ...seed3 } },
     { name: 'default', env: { ...process.env } },
@@ -773,7 +878,8 @@ async function main() {
       }
       return Number(input);
     };
-    count = positive('DIAG_LAUNCHES', 200);
+    count = positive('DIAG_LAUNCHES', 300);
+    warmCount = positive('DIAG_WARM_LAUNCHES', 100);
     pwCount = positive('DIAG_PW_LAUNCHES', 150);
     realCount = positive('DIAG_REAL_LAUNCHES', 150);
     if (!/^\d+$/.test(slot) || !Number.isSafeInteger(Number(slot)) || Number(slot) > 61362) {
@@ -800,7 +906,13 @@ async function main() {
     const rounds = Math.max(...variants.map(planned));
     for (let index = 1; index <= rounds && !stopped; index++) {
       const eligible = variants.filter(v => index <= planned(v));
-      for (const v of shuffled(eligible, index)) await launch(v, index, deadline);
+      const ordered = shuffled(eligible, index);
+      if (index === 1 && ordered.some(v => v.name === 'pad0') &&
+          ordered.some(v => v.name === 'fc-cold')) {
+        ordered.splice(ordered.findIndex(v => v.name === 'pad0'), 1);
+        ordered.unshift(eligible.find(v => v.name === 'pad0'));
+      }
+      for (const v of ordered) await launch(v, index, deadline);
     }
   } catch (err) { errors.push(err.stack || String(err)); }
   finally {
