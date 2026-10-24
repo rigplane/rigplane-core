@@ -96,16 +96,13 @@ def test_serial_segments_twins_and_equal_fields_keep_one_token() -> None:
     port = session["raw"]["serial_ports"][0]
     token = port["serial_number"]
     assert re.fullmatch(r"R[A-Z2-7]{10}", token)
-    assert port["location"] == token
+    assert port["location"] == _SERIAL
     assert port["hwid"] == f"USB SER={token} LOCATION=1"
     assert any(
         row["instance_id"].endswith("\\" + token)
         for row in session["raw"]["windows"]["devnodes"]
     )
     assert bundle == before
-    text = json.dumps(result)
-    for secret in (_SERIAL, _SERIAL.replace("_", " "), _SERIAL_B, "NETWORK_SERIAL"):
-        assert secret not in text
 
 
 def test_one_key_for_bundle_preserves_b_and_per_session_keys_do_not() -> None:
@@ -168,17 +165,17 @@ def test_network_nodes_gone_endpoint_owners_and_ancestors_opaque() -> None:
 
 
 @pytest.mark.parametrize(
-    "text, expected",
+    "text",
     [
-        ("ABC", "{token}"),
-        (r"ABC\ABC#ABC:ABC&ABC", r"{token}\{token}#{token}:{token}&{token}"),
-        ("xABC ABCx ABC123 0ABC", "xABC ABCx ABC123 0ABC"),
-        ("X_ABC_Y", "X_ABC_Y"),
-        ("(ABC)", "(ABC)"),
-        ("ABC.1", "ABC.1"),
+        "ABC",
+        r"ABC\ABC#ABC:ABC&ABC",
+        "xABC ABCx ABC123 0ABC",
+        "X_ABC_Y",
+        "(ABC)",
+        "ABC.1",
     ],
 )
-def test_id_replacement_requires_whole_segment(text: str, expected: str) -> None:
+def test_hardware_and_compatible_ids_are_preserved(text: str) -> None:
     node = dict(
         instance_id=r"USB\VID_1234&PID_5678\ABC",
         parent_id="",
@@ -191,12 +188,11 @@ def test_id_replacement_requires_whole_segment(text: str, expected: str) -> None
     bundle = {"sessions": [{"raw": {"windows": {"devnodes": [node]}}}]}
     result = _usb_redact.redact_bundle(bundle, key=_KEY)
     row = result["sessions"][0]["raw"]["windows"]["devnodes"][0]
-    token = row["instance_id"].rsplit("\\", 1)[1]
-    assert row["hardware_ids"] == [expected.format(token=token)]
-    assert row["compatible_ids"] == [expected.format(token=token)]
+    assert row["hardware_ids"] == [text]
+    assert row["compatible_ids"] == [text]
 
 
-def test_longest_match_wins_and_mi_and_generated_segments_are_not_secrets() -> None:
+def test_mi_and_generated_segments_are_not_secrets() -> None:
     nodes = [
         dict(
             instance_id=i,
@@ -245,9 +241,111 @@ def test_default_draws_exactly_one_key(monkeypatch: pytest.MonkeyPatch) -> None:
     assert draw.call_count == 2
 
 
+def test_usb_serial_changes_only_its_known_id_segments() -> None:
+    parent = r"USB\VID_1234&PID_5678\USB"
+    child = r"USB\VID_1234&PID_5678&MI_00\7&CHILD&0"
+    ids = [
+        parent,
+        child,
+        r"USB\ROOT_HUB30\4&ROOT&0",
+        r"USB\VID_ABCD&PID_EF01\7&GENERATED&0",
+        r"USB\VID_ABCD&PID_EF01&MI_01\USB",
+        r"USB\VID_ABCD&PID_EF01&REV_0100\USB",
+    ]
+    nodes = [
+        {
+            "instance_id": instance_id,
+            "parent_id": parent if instance_id == child else "",
+            "hardware_ids": [r"USB\VID_1234&PID_5678", r"USB\USB"],
+            "compatible_ids": [r"USB\Class_01", "USB"],
+            "friendly_name": "USB",
+            "device_desc": "USB",
+        }
+        for instance_id in ids
+    ]
+    bundle = {"sessions": [{"raw": {"windows": {"devnodes": nodes}}}]}
+    result = _usb_redact.redact_bundle(bundle, key=_KEY)
+    rows = result["sessions"][0]["raw"]["windows"]["devnodes"]
+    token = rows[0]["instance_id"].rsplit("\\", 1)[1]
+    assert re.fullmatch(r"R[A-Z2-7]{10}", token)
+    expected = copy.deepcopy(nodes)
+    expected[0]["instance_id"] = "USB\\VID_1234&PID_5678\\" + token
+    expected[1]["parent_id"] = expected[0]["instance_id"]
+    assert rows == expected
+
+
+def test_hwid_serial_preserves_identical_location_values() -> None:
+    port = {
+        "serial_number": "1-2.3",
+        "hwid": "USB VID:PID=1234:5678 SER=1-2.3 LOCATION=1-2.3",
+        "location": "1-2.3",
+    }
+    bundle = {"sessions": [{"raw": {"serial_ports": [port]}}]}
+    redacted = _usb_redact.redact_bundle(bundle, key=_KEY)["sessions"][0]["raw"][
+        "serial_ports"
+    ][0]
+    token = redacted["serial_number"]
+    assert re.fullmatch(r"R[A-Z2-7]{10}", token)
+    assert redacted == {
+        **port,
+        "serial_number": token,
+        "hwid": f"USB VID:PID=1234:5678 SER={token} LOCATION=1-2.3",
+    }
+
+
+def test_mme_truncation_and_endpoint_names_are_preserved() -> None:
+    name = "Radio:ABC123".ljust(40, "x")
+    endpoint = {
+        "instance_id": r"SWD\MMDEVAPI\{0.0.1.00000000}.{abcdef}",
+        "parent_id": "",
+        "friendly_name": name,
+    }
+    portaudio = {
+        "devices": [{"name": name[:31], "hostapi": 0}],
+        "hostapis": [{"name": "MME"}],
+    }
+    bundle = {
+        "sessions": [
+            {
+                "raw": {
+                    "windows": {"devnodes": [endpoint]},
+                    "portaudio": portaudio,
+                    "serial_ports": [{"serial_number": "ABC123"}],
+                }
+            }
+        ]
+    }
+    raw = _usb_redact.redact_bundle(bundle, key=_KEY)["sessions"][0]["raw"]
+    assert len(name) == 40 and len(name[:31]) == 31
+    assert raw["windows"]["devnodes"] == [endpoint]
+    assert raw["portaudio"] == portaudio
+
+
+def test_hwid_only_secret_is_shared_with_later_session_parent_reference() -> None:
+    parent = r"USB\VID_1234&PID_5678\Ab C"
+    child = {
+        "instance_id": r"USB\VID_1234&PID_5678&MI_00\7&CHILD&0",
+        "parent_id": parent,
+    }
+    bundle = {
+        "sessions": [
+            {"raw": {"windows": {"devnodes": [child]}}},
+            {"raw": {"serial_ports": [{"hwid": "USB SER=aB_c EXTRA=value"}]}},
+        ]
+    }
+    result = _usb_redact.redact_bundle(bundle, key=_KEY)
+    token = result["sessions"][0]["raw"]["windows"]["devnodes"][0]["parent_id"].rsplit(
+        "\\", 1
+    )[1]
+    assert re.fullmatch(r"R[A-Z2-7]{10}", token)
+    assert result["sessions"][1]["raw"]["serial_ports"] == [
+        {"hwid": f"USB SER={token} EXTRA=value"}
+    ]
+
+
 @pytest.mark.parametrize("serial", ["abc 123", "ABC_123"])
 def test_case_variants_and_space_twins_share_token(serial: str) -> None:
-    parent = r"USB\VID_1234&PID_5678\ABC123"
+    parent = r"USB\VID_1234&PID_5678\AbC_123"
     nodes = [
         dict(
             instance_id=instance_id,
@@ -260,7 +358,10 @@ def test_case_variants_and_space_twins_share_token(serial: str) -> None:
         )
         for instance_id, parent_id in (
             (parent, ""),
-            (r"USB\VID_1234&PID_5678&MI_00\CHILD", parent.lower()),
+            (
+                r"USB\VID_1234&PID_5678&MI_00\CHILD",
+                parent.replace("AbC_123", "aBc 123"),
+            ),
         )
     ]
     bundle = {
@@ -283,15 +384,13 @@ def test_case_variants_and_space_twins_share_token(serial: str) -> None:
     rows = raw["windows"]["devnodes"]
     assert rows[1]["parent_id"] == rows[0]["instance_id"]
     port = raw["serial_ports"][0]
-    assert port["description"] == port["serial_number"]
+    assert port["description"] == "aBc_123"
     token = port["serial_number"]
-    assert rows[0]["hardware_ids"] == [f"USB\\{token}", f"USB\\{token}"]
-    assert rows[0]["friendly_name"].split()[:2] == [token, token]
+    assert rows[0]["instance_id"] == "USB\\VID_1234&PID_5678\\" + token
+    for row, original in zip(rows, nodes):
+        for field in ("hardware_ids", "compatible_ids", "friendly_name", "device_desc"):
+            assert row[field] == original[field]
     assert port["hwid"] == f"USB SER={port['serial_number']} LOCATION=1"
-    text = json.dumps(raw).casefold()
-    assert "abc123" not in text
-    assert "abc_123" not in text
-    assert "abc 123" not in text
 
 
 def test_short_serial_only_changes_allowed_data_fields() -> None:
@@ -359,7 +458,7 @@ def test_short_serial_only_changes_allowed_data_fields() -> None:
         "interface",
         "location",
     ):
-        assert raw["serial_ports"][0][name] == token
+        assert raw["serial_ports"][0][name] == "1"
     assert (
         raw["serial_ports"][0]["hwid"]
         == f"USB VID:PID=0001:0001 SER={token} LOCATION=1"
@@ -367,18 +466,13 @@ def test_short_serial_only_changes_allowed_data_fields() -> None:
     rows = raw["windows"]["devnodes"]
     assert rows[0]["instance_id"].endswith("\\" + token)
     assert rows[1]["instance_id"] == endpoint
-    assert rows[0]["hardware_ids"] == [
-        f"USB\\{token}&{token}#{token}:{token}",
-        "1.00000000",
-        "X_1_Y",
-    ]
-    assert rows[0]["compatible_ids"] == [token]
-    assert rows[0]["friendly_name"] == token
-    assert rows[0]["device_desc"] == token
+    for row, original in zip(rows, nodes):
+        for field in ("hardware_ids", "compatible_ids", "friendly_name", "device_desc"):
+            assert row[field] == original[field]
 
 
 @pytest.mark.parametrize("text", ["xABC", "ABCx", "(ABC)", "ABC DEF", "X_ABC_Y"])
-def test_serial_port_non_hwid_fields_require_whole_field(text: str) -> None:
+def test_hwid_serial_is_learned_independently_of_serial_number(text: str) -> None:
     bundle = {
         "sessions": [
             {
@@ -398,7 +492,8 @@ def test_serial_port_non_hwid_fields_require_whole_field(text: str) -> None:
         "serial_ports"
     ][0]
     assert port["description"] == text
-    assert port["hwid"] == "USB SER=ABCx LOCATION=ABC"
+    assert re.fullmatch(r"USB SER=R[A-Z2-7]{10} LOCATION=ABC", port["hwid"])
+    assert port["hwid"] != f"USB SER={port['serial_number']} LOCATION=ABC"
 
 
 @pytest.mark.parametrize("serial", ["AB_C D", "ab c_d", "AB C D", "ab_c_d"])
@@ -432,14 +527,12 @@ def test_mixed_space_underscore_variants_share_token(serial: str) -> None:
     port = raw["serial_ports"][0]
     token = port["serial_number"]
     assert re.fullmatch(r"R[A-Z2-7]{10}", token)
-    assert port["description"] == token
+    assert port["description"] == "aB_c D"
     assert port["hwid"] == f"USB SER={token}"
     row = raw["windows"]["devnodes"][0]
     assert row["instance_id"] == "USB\\VID_1234&PID_5678\\" + token
-    assert row["friendly_name"] == token
-    assert row["device_desc"] == token
-    assert row["hardware_ids"] == ["USB\\" + token]
-    assert row["compatible_ids"] == ["USB\\" + token]
+    for field in ("friendly_name", "device_desc", "hardware_ids", "compatible_ids"):
+        assert row[field] == node[field]
 
 
 def test_unicode_ignorecase_extra_match_does_not_raise_or_replace_unlearned_value() -> (
@@ -495,25 +588,23 @@ def test_observed_casefold_expansion_spelling_is_redacted(serial: str) -> None:
     raw = _usb_redact.redact_bundle(bundle, key=_KEY)["sessions"][0]["raw"]
     token = raw["serial_ports"][0]["serial_number"]
     assert re.fullmatch(r"R[A-Z2-7]{10}", token)
-    assert raw["serial_ports"][0]["description"] == token
+    assert raw["serial_ports"][0]["description"] == serial
     assert raw["serial_ports"][0]["hwid"] == "USB SER=" + token
     row = raw["windows"]["devnodes"][0]
     assert row["instance_id"] == "USB\\VID_1234&PID_5678\\" + token
-    assert row["friendly_name"] == token
-    assert row["device_desc"] == token
-    assert row["hardware_ids"] == ["USB\\" + token]
-    assert row["compatible_ids"] == [token]
+    for field in ("friendly_name", "device_desc", "hardware_ids", "compatible_ids"):
+        assert row[field] == node[field]
 
 
-@pytest.mark.parametrize("serial", ["ABC123", "abc123"])
-def test_same_free_text_across_sources_and_sessions(serial: str) -> None:
-    text = "Radio:ABC123"
+@pytest.mark.parametrize("serial", ["ABC", "abc", "ABC123", "abc123"])
+def test_names_are_kept_as_recorded_across_sources_and_sessions(serial: str) -> None:
+    text = f"Radio:{serial.upper()}"
     session = {
         "raw": {
             "windows": {
                 "devnodes": [
                     {
-                        "instance_id": r"USB\VID_1234&PID_5678\ABC123",
+                        "instance_id": "USB\\VID_1234&PID_5678\\" + serial.upper(),
                         "friendly_name": text,
                     }
                 ]
@@ -543,9 +634,10 @@ def test_same_free_text_across_sources_and_sessions(serial: str) -> None:
         )
         assert raw["portaudio"]["devices"][0]["index"] == 1
         assert raw["portaudio"]["generation"] == 1
-    assert len(set(outputs)) == 1
-    assert outputs[0].startswith("Radio:R")
-    assert "abc123" not in json.dumps(result).casefold()
+        token = raw["serial_ports"][0]["serial_number"]
+        assert re.fullmatch(r"R[A-Z2-7]{10}", token)
+        assert raw["windows"]["devnodes"][0]["instance_id"].endswith("\\" + token)
+    assert set(outputs) == {text}
 
 
 @pytest.mark.parametrize(
@@ -574,26 +666,26 @@ def test_hwid_longest_serial_with_spaces_preserves_next_field(
 
 
 @pytest.mark.parametrize(
-    "text, changed",
+    "text",
     [
-        ("(ABC123)", True),
-        ("X_ABC123_Y", True),
-        ("éABC123", False),
-        ("ABC123é", False),
-        ("xABC123", False),
-        ("ABC123x", False),
+        "(ABC123)",
+        "X_ABC123_Y",
+        "éABC123",
+        "ABC123é",
+        "xABC123",
+        "ABC123x",
     ],
 )
-def test_free_text_uses_nonalphanumeric_boundaries(text: str, changed: bool) -> None:
+def test_free_text_is_preserved(text: str) -> None:
     port = {"serial_number": "ABC123", "description": text, "device": text}
     bundle = {"sessions": [{"raw": {"serial_ports": [port]}}]}
     raw = _usb_redact.redact_bundle(bundle, key=_KEY)["sessions"][0]["raw"]
     result = raw["serial_ports"][0]
-    assert (result["description"] != text) is changed
+    assert result["description"] == text
     assert result["device"] == text
 
 
-def test_missing_devnode_fields_are_empty() -> None:
+def test_missing_devnode_name_and_hardware_fields_are_not_added() -> None:
     bundle = {
         "sessions": [
             {
@@ -613,10 +705,9 @@ def test_missing_devnode_fields_are_empty() -> None:
     ]
     assert len(rows) == 1
     assert rows[0]["instance_id"].startswith("USB\\VID_1234&PID_5678\\R")
-    for field in ("parent_id", "friendly_name", "device_desc"):
-        assert rows[0][field] == ""
-    assert rows[0]["hardware_ids"] == []
-    assert rows[0]["compatible_ids"] == []
+    assert rows[0]["parent_id"] == ""
+    for field in ("friendly_name", "device_desc", "hardware_ids", "compatible_ids"):
+        assert field not in rows[0]
 
 
 def test_short_serial_preserves_names_and_metadata() -> None:

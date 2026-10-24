@@ -159,7 +159,15 @@ async def test_cli_captures_two_radios_in_one_process(
     ]
     assert sessions[0]["radios"] == _RADIOS
     assert all(s["radios"] == [] for s in sessions[1:])
-    assert all(serial.casefold() not in text.casefold() for serial in _SERIALS)
+    for session in sessions:
+        raw = session["raw"]
+        for node in raw["windows"]["devnodes"]:
+            assert all(serial not in node["instance_id"] for serial in _SERIALS)
+        for port in raw["serial_ports"]:
+            assert port["serial_number"] not in _SERIALS
+            assert port["hwid"] == f"USB SER={port['serial_number']} LOCATION=1-2"
+            assert port["description"] in {f"Radio:{serial}" for serial in _SERIALS}
+        assert raw["portaudio"]["devices"][0]["name"] == f"Radio:{_SERIALS[0]}"
     b_ids = [s["raw"]["windows"]["devnodes"][-1]["instance_id"] for s in sessions[:3]]
     assert b_ids[0] == b_ids[1] == b_ids[2]
     assert readers.raw.call_count == readers.comports.call_count == 5
@@ -181,8 +189,85 @@ async def test_cli_captures_two_radios_in_one_process(
         "Plug radio-b back in (any USB port), wait 10 seconds, then press Enter.",
     ]
     output = capsys.readouterr().out
+    assert output.splitlines()[0] == (
+        "Note: device and audio endpoint names are kept as recorded; review the file before sending it."
+    )
     assert str(out) in output and "5 sessions" in output and "2 radios" in output
     assert list(tmp_path.iterdir()) == [out]
+
+
+@pytest.mark.parametrize("failure", ["serialization", "interrupt"])
+def test_atomic_write_cleans_partial_temp_and_allows_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    out = tmp_path / "capture.json"
+    bundle = {"sessions": []}
+
+    def fail_serialization(value, stream, **kwargs):
+        assert not out.exists()
+        assert [Path(stream.name)] == list(tmp_path.iterdir())
+        stream.write('{"partial":')
+        raise ValueError("serialization failed")
+
+    def interrupt_after_creation(descriptor):
+        assert not out.exists()
+        assert len(list(tmp_path.iterdir())) == 1
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        if failure == "serialization":
+            patch.setattr(capture.json, "dump", fail_serialization)
+            error = ValueError
+        else:
+            patch.setattr(capture.os, "fsync", interrupt_after_creation)
+            error = KeyboardInterrupt
+        with pytest.raises(error):
+            capture._write_private_json(out, bundle)
+    assert not out.exists()
+    assert list(tmp_path.iterdir()) == []
+    capture._write_private_json(out, bundle)
+    assert json.loads(out.read_text(encoding="utf-8")) == bundle
+    assert list(tmp_path.iterdir()) == [out]
+
+
+def test_atomic_write_refuses_output_created_during_serialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "capture.json"
+    dump = capture.json.dump
+    replace = Mock(wraps=capture.os.replace)
+
+    def create_competing_output(value, stream, **kwargs):
+        assert not out.exists()
+        dump(value, stream, **kwargs)
+        out.write_text("someone else's output", encoding="utf-8")
+
+    monkeypatch.setattr(capture.json, "dump", create_competing_output)
+    monkeypatch.setattr(capture.os, "replace", replace)
+    with pytest.raises(FileExistsError, match="already exists"):
+        capture._write_private_json(out, {"sessions": []})
+    assert out.read_text(encoding="utf-8") == "someone else's output"
+    assert list(tmp_path.iterdir()) == [out]
+    replace.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cli_prints_names_note_before_writing(
+    tmp_path: Path,
+    readers: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    write = capture._write_private_json
+
+    def check_note(path, value):
+        assert capsys.readouterr().out == (
+            "Note: device and audio endpoint names are kept as recorded; review the file before sending it.\n"
+        )
+        write(path, value)
+
+    monkeypatch.setattr(capture, "_write_private_json", check_note)
+    assert await _run(_args(tmp_path / "capture.json", "--no-unplug")) == 0
 
 
 @pytest.mark.asyncio

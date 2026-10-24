@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import tempfile
 from typing import Any
 
 from rigplane import __version__
@@ -145,16 +146,29 @@ def _read_session(
 
 
 def _write_private_json(path: Path, value: dict[str, Any]) -> None:
-    text = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    if path.exists() or path.is_symlink():
+        raise FileExistsError("capture output already exists")
+    temporary: Path | None = None
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(text)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            json.dump(value, stream, ensure_ascii=False, indent=2, allow_nan=False)
+            stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
+        if path.exists() or path.is_symlink():
+            raise FileExistsError("capture output already exists")
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def capture_bundle(
@@ -190,5 +204,8 @@ def capture_bundle(
             )
     bundle = {"schema": "rigplane.usb_audio_capture/1", "sessions": sessions}
     _validate_bundle(bundle)
+    print(
+        "Note: device and audio endpoint names are kept as recorded; review the file before sending it."
+    )
     _write_private_json(out, redact_bundle(bundle))
     return out
