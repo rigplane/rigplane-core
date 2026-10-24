@@ -11,13 +11,14 @@ import secrets
 from typing import Any
 
 _USB_SERIAL_ID = re.compile(
-    r"USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}\\([^\\&]+)", re.IGNORECASE
+    r"USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}\\([^\\&]+)", re.IGNORECASE | re.ASCII
 )
-_HWID_SERIAL = re.compile(
-    r"(?<!\S)(SER=)(.*?)(?= +[A-Za-z_][A-Za-z0-9_]*=|$)",
-    re.IGNORECASE | re.DOTALL,
-)
-_HWID_FIELD = re.compile(r"(?= +[A-Za-z_][A-Za-z0-9_]*=|$)", re.DOTALL)
+
+
+def _ascii_lower(value: str) -> str:
+    return "".join(
+        chr(ord(char) + 32) if "A" <= char <= "Z" else char for char in value
+    )
 
 
 def _token(key: bytes, value: str) -> str:
@@ -28,16 +29,16 @@ def _token(key: bytes, value: str) -> str:
 def _prune_windows_nodes(
     rows: list[dict[str, Any]], key: bytes
 ) -> list[dict[str, Any]]:
-    by_id = {row.get("instance_id", "").casefold(): row for row in rows}
+    by_id = {_ascii_lower(row.get("instance_id", "")): row for row in rows}
     kept: set[str] = set()
 
     def keep_chain(instance_id: str, *, owner_only: bool) -> None:
         seen: set[str] = set()
-        while instance_id and instance_id.casefold() not in seen:
-            folded = instance_id.casefold()
+        while instance_id and _ascii_lower(instance_id) not in seen:
+            folded = _ascii_lower(instance_id)
             seen.add(folded)
             row = by_id.get(folded)
-            if row is not None and row.get("class_name", "").casefold() == "net":
+            if row is not None and _ascii_lower(row.get("class_name", "")) == "net":
                 break
             kept.add(folded)
             if row is None or (owner_only and not folded.startswith("swd\\")):
@@ -45,8 +46,8 @@ def _prune_windows_nodes(
             instance_id = row.get("parent_id", "")
 
     for row in rows:
-        folded = row.get("instance_id", "").casefold()
-        if row.get("class_name", "").casefold() == "net":
+        folded = _ascii_lower(row.get("instance_id", ""))
+        if _ascii_lower(row.get("class_name", "")) == "net":
             continue
         if folded.startswith("usb\\"):
             keep_chain(row.get("instance_id", ""), owner_only=False)
@@ -55,7 +56,7 @@ def _prune_windows_nodes(
             keep_chain(row.get("parent_id", ""), owner_only=True)
 
     def public_id(instance_id: str) -> str:
-        folded = instance_id.casefold()
+        folded = _ascii_lower(instance_id)
         if folded not in kept:
             return ""
         if folded.startswith("usb\\"):
@@ -66,7 +67,7 @@ def _prune_windows_nodes(
 
     result = []
     for row in rows:
-        if row.get("instance_id", "").casefold() in kept:
+        if _ascii_lower(row.get("instance_id", "")) in kept:
             result.append(
                 {
                     **row,
@@ -92,42 +93,14 @@ def redact_bundle(
             if match:
                 values.add(match[1])
 
-    known_spellings = sorted(values, key=len, reverse=True)
-
-    def hwid_serials(hwid: str) -> list[tuple[int, int, str]]:
-        segments = []
-        cursor = 0
-        while match := _HWID_SERIAL.search(hwid, cursor):
-            start = match.start(2)
-            spelling = next(
-                (
-                    spelling
-                    for spelling in known_spellings
-                    if hwid[start : start + len(spelling)].replace(" ", "_").casefold()
-                    == spelling.replace(" ", "_").casefold()
-                    and _HWID_FIELD.match(hwid, start + len(spelling))
-                ),
-                None,
-            )
-            end = start + len(spelling) if spelling is not None else match.end(2)
-            segments.append((start, end, hwid[start:end]))
-            cursor = end
-        return segments
-
-    for session in bundle["sessions"]:
-        for port in session.get("raw", {}).get("serial_ports", []):
-            for _, _, serial in hwid_serials(port.get("hwid") or ""):
-                if serial:
-                    values.add(serial)
-
     replacements = {
         canonical: _token(key, canonical)
-        for canonical in {value.replace(" ", "_").casefold() for value in values}
+        for canonical in {_ascii_lower(value.replace(" ", "_")) for value in values}
     }
 
     def replace_field(value: Any) -> Any:
         if isinstance(value, str):
-            return replacements.get(value.replace(" ", "_").casefold(), value)
+            return replacements.get(_ascii_lower(value.replace(" ", "_")), value)
         return value
 
     def replace_id(value: str) -> str:
@@ -136,24 +109,12 @@ def redact_bundle(
             return value
         return value[: match.start(1)] + replace_field(match[1])
 
-    def replace_hwid(hwid: str) -> str:
-        parts = []
-        cursor = 0
-        for start, end, serial in hwid_serials(hwid):
-            parts.append(hwid[cursor:start])
-            parts.append(replace_field(serial) + serial[len(serial.rstrip(" ")) :])
-            cursor = end
-        parts.append(hwid[cursor:])
-        return "".join(parts)
-
     result = copy.deepcopy(bundle)
     for session in result["sessions"]:
         raw = session.get("raw", {})
         for port in raw.get("serial_ports", []):
             if "serial_number" in port:
                 port["serial_number"] = replace_field(port["serial_number"])
-            if isinstance(port.get("hwid"), str):
-                port["hwid"] = replace_hwid(port["hwid"])
         windows = raw.get("windows")
         if windows is not None:
             windows["devnodes"] = _prune_windows_nodes(windows.get("devnodes", []), key)

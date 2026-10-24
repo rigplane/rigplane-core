@@ -129,6 +129,29 @@ def readers(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     )
 
 
+def test_capture_bundle_records_supplied_tool_version(
+    tmp_path: Path, readers: SimpleNamespace
+) -> None:
+    out = tmp_path / "capture.json"
+    capture.capture_bundle(out, radios=_RADIOS, tool_version="9.9.9")
+    sessions = json.loads(out.read_text(encoding="utf-8"))["sessions"]
+    assert [session["capture_tool"] for session in sessions] == [
+        "rigplane 9.9.9 audio usb-capture"
+    ] * 5
+
+
+def test_captured_session_omits_hwid_even_when_port_has_it(
+    readers: SimpleNamespace,
+) -> None:
+    assert all(hasattr(port, "hwid") for port in readers.ports)
+    session = capture._read_session(
+        "connected", radios=_RADIOS, tool_version=__version__
+    )
+    ports = session["raw"]["serial_ports"]
+    assert len(ports) == len(readers.ports)
+    assert all("hwid" not in port for port in ports)
+
+
 @pytest.mark.asyncio
 async def test_cli_captures_two_radios_in_one_process(
     tmp_path: Path, readers: SimpleNamespace, capsys: pytest.CaptureFixture[str]
@@ -165,7 +188,7 @@ async def test_cli_captures_two_radios_in_one_process(
             assert all(serial not in node["instance_id"] for serial in _SERIALS)
         for port in raw["serial_ports"]:
             assert port["serial_number"] not in _SERIALS
-            assert port["hwid"] == f"USB SER={port['serial_number']} LOCATION=1-2"
+            assert "hwid" not in port
             assert port["description"] in {f"Radio:{serial}" for serial in _SERIALS}
         assert raw["portaudio"]["devices"][0]["name"] == f"Radio:{_SERIALS[0]}"
     b_ids = [s["raw"]["windows"]["devnodes"][-1]["instance_id"] for s in sessions[:3]]
@@ -196,9 +219,7 @@ async def test_cli_captures_two_radios_in_one_process(
     assert list(tmp_path.iterdir()) == [out]
 
 
-@pytest.mark.parametrize(
-    "failure", ["serialization", "creation_interrupt", "interrupt"]
-)
+@pytest.mark.parametrize("failure", ["serialization", "open", "write", "interrupt"])
 def test_atomic_write_cleans_partial_temp_and_allows_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
@@ -210,10 +231,26 @@ def test_atomic_write_cleans_partial_temp_and_allows_retry(
         assert len(list(tmp_path.iterdir())) == 1
         raise ValueError("serialization failed")
 
-    def interrupt_before_fdopen(descriptor, *args, **kwargs):
+    def fail_open(*args, **kwargs):
         assert not out.exists()
         assert len(list(tmp_path.iterdir())) == 1
-        raise KeyboardInterrupt
+        raise OSError("open failed")
+
+    def fail_write(*args, **kwargs):
+        stream = open(*args, **kwargs)
+
+        class FailingStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                stream.close()
+
+            def write(self, data):
+                stream.write(data[:1])
+                raise OSError("write failed")
+
+        return FailingStream()
 
     def interrupt_after_creation(descriptor):
         assert not out.exists()
@@ -224,9 +261,12 @@ def test_atomic_write_cleans_partial_temp_and_allows_retry(
         if failure == "serialization":
             patch.setattr(capture.json, "dumps", fail_serialization)
             error = ValueError
-        elif failure == "creation_interrupt":
-            patch.setattr(capture.os, "fdopen", interrupt_before_fdopen)
-            error = KeyboardInterrupt
+        elif failure == "open":
+            patch.setattr(capture, "open", fail_open, raising=False)
+            error = OSError
+        elif failure == "write":
+            patch.setattr(capture, "open", fail_write, raising=False)
+            error = OSError
         else:
             patch.setattr(capture.os, "fsync", interrupt_after_creation)
             error = KeyboardInterrupt
@@ -239,9 +279,20 @@ def test_atomic_write_cleans_partial_temp_and_allows_retry(
     assert list(tmp_path.iterdir()) == [out]
 
 
-@pytest.mark.parametrize("link_supported", [True, False])
+def test_atomic_write_cleans_temp_when_link_reports_existing_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "capture.json"
+    monkeypatch.setattr(capture.os, "link", Mock(side_effect=FileExistsError))
+    with pytest.raises(FileExistsError) as exc:
+        capture._write_private_json(out, {"sessions": []})
+    assert str(exc.value) == f"output already exists: {out}"
+    assert not out.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_atomic_write_refuses_output_created_at_publication(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, link_supported: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     out = tmp_path / "capture.json"
     link = capture.os.link
@@ -249,44 +300,47 @@ def test_atomic_write_refuses_output_created_at_publication(
     def create_competing_output(temporary, path):
         assert not out.exists()
         out.write_text("someone else's output", encoding="utf-8")
-        if not link_supported:
-            raise OSError("hard links unsupported")
         link(temporary, path)
 
     monkeypatch.setattr(capture.os, "link", create_competing_output)
-    with pytest.raises(FileExistsError, match="already exists"):
+    with pytest.raises(FileExistsError) as exc:
         capture._write_private_json(out, {"sessions": []})
+    assert str(exc.value) == f"output already exists: {out}"
     assert out.read_text(encoding="utf-8") == "someone else's output"
     assert list(tmp_path.iterdir()) == [out]
 
 
-def test_atomic_write_falls_back_to_private_exclusive_copy(
+def test_atomic_write_refuses_existing_output_without_creating_temp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     out = tmp_path / "capture.json"
-    bundle = {"label": "Радио"}
-    monkeypatch.setattr(capture.os, "link", Mock(side_effect=OSError("unsupported")))
-    capture._write_private_json(out, bundle)
-    assert json.loads(out.read_text(encoding="utf-8")) == bundle
-    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    out.write_text("existing", encoding="utf-8")
+    create = Mock(side_effect=AssertionError("must not create a temporary file"))
+    monkeypatch.setattr(capture.tempfile, "mkstemp", create)
+    with pytest.raises(FileExistsError) as exc:
+        capture._write_private_json(out, {"sessions": []})
+    assert str(exc.value) == f"output already exists: {out}"
+    assert out.read_text(encoding="utf-8") == "existing"
+    create.assert_not_called()
     assert list(tmp_path.iterdir()) == [out]
 
 
-def test_atomic_write_cleans_interrupted_fallback_and_allows_retry(
+def test_atomic_write_refuses_unsupported_safe_write_and_cleans_temp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     out = tmp_path / "capture.json"
     bundle = {"sessions": []}
 
-    def interrupt_copy(source, destination):
-        destination.write(b'{"partial":')
-        raise KeyboardInterrupt
-
     with monkeypatch.context() as patch:
         patch.setattr(capture.os, "link", Mock(side_effect=OSError("unsupported")))
-        patch.setattr(capture.shutil, "copyfileobj", interrupt_copy)
-        with pytest.raises(KeyboardInterrupt):
+        with pytest.raises(OSError) as exc:
             capture._write_private_json(out, bundle)
+    assert str(exc.value) == (
+        f"cannot write {tmp_path}: this folder's filesystem does not support the safe "
+        "write used by usb-capture; choose a folder on an NTFS (Windows) or APFS "
+        "(macOS) drive, e.g. your Documents folder"
+    )
+    assert not out.exists()
     assert list(tmp_path.iterdir()) == []
     capture._write_private_json(out, bundle)
     assert json.loads(out.read_text(encoding="utf-8")) == bundle
@@ -351,7 +405,7 @@ async def test_cli_existing_output_refused_before_reading(
     assert await _run(_args(out)) == 1
     assert out.read_text(encoding="utf-8") == "existing"
     assert readers.events == []
-    assert "already exists" in capsys.readouterr().err
+    assert f"output already exists: {out}" in capsys.readouterr().err
 
 
 @pytest.mark.asyncio
@@ -370,6 +424,28 @@ async def test_cli_interrupted_prompt_writes_nothing(
     assert list(tmp_path.iterdir()) == []
     assert readers.raw.call_count == 1
     assert "no output written" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_cli_interrupted_descriptor_close_cleans_temp_and_allows_retry(
+    tmp_path: Path, readers: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "capture.json"
+    close = capture.os.close
+
+    def interrupt_after_close(fd):
+        close(fd)
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(capture.os, "close", interrupt_after_close)
+        assert await _run(_args(out, "--no-unplug")) == 130
+    assert not out.exists()
+    assert list(tmp_path.iterdir()) == []
+
+    assert await _run(_args(out, "--no-unplug")) == 0
+    assert out.is_file()
+    assert list(tmp_path.iterdir()) == [out]
 
 
 @pytest.mark.asyncio

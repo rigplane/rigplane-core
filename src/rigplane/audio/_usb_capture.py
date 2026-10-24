@@ -10,11 +10,9 @@ import os
 from pathlib import Path
 import platform
 import re
-import shutil
 import tempfile
 from typing import Any
 
-from rigplane import __version__
 from rigplane.audio._portaudio_enum import read_portaudio_enumeration
 from rigplane.audio._usb_raw_windows import read_raw_windows
 from rigplane.audio._usb_redact import redact_bundle
@@ -24,7 +22,6 @@ _SERIAL_FIELDS = (
     "device",
     "name",
     "description",
-    "hwid",
     "vid",
     "pid",
     "serial_number",
@@ -96,6 +93,7 @@ def _validate_bundle(bundle: dict[str, Any]) -> None:
 def _read_session(
     session: str,
     *,
+    tool_version: str,
     target: str | None = None,
     radios: list[dict[str, str]] | None = None,
     timeout_s: float = 5.0,
@@ -140,7 +138,7 @@ def _read_session(
             ]
         ),
         "ui_locale": locale.getlocale()[0],
-        "capture_tool": f"rigplane {__version__} audio usb-capture",
+        "capture_tool": f"rigplane {tool_version} audio usb-capture",
         "raw": raw,
         "unavailable": unavailable,
     }
@@ -148,20 +146,16 @@ def _read_session(
 
 def _write_private_json(path: Path, value: dict[str, Any]) -> None:
     if path.exists() or path.is_symlink():
-        raise FileExistsError("capture output already exists")
-    temporary: str | None = None
+        raise FileExistsError(f"output already exists: {path}")
+    name = None
     try:
-        fd, temporary = tempfile.mkstemp(
+        fd, name = tempfile.mkstemp(
             dir=path.parent,
             prefix=f".{path.name}.",
             suffix=".tmp",
         )
-        try:
-            stream = os.fdopen(fd, "wb")
-        except BaseException:
-            os.close(fd)
-            raise
-        with stream:
+        os.close(fd)
+        with open(name, "wb") as stream:
             stream.write(
                 (
                     json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False)
@@ -171,48 +165,41 @@ def _write_private_json(path: Path, value: dict[str, Any]) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         try:
-            os.link(temporary, path)
+            os.link(name, path)
         except FileExistsError:
-            raise FileExistsError("capture output already exists") from None
+            raise FileExistsError(f"output already exists: {path}") from None
         except OSError:
-            try:
-                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            except FileExistsError:
-                raise FileExistsError("capture output already exists") from None
-            try:
-                try:
-                    stream = os.fdopen(fd, "wb")
-                except BaseException:
-                    os.close(fd)
-                    raise
-                with stream, open(temporary, "rb") as source:
-                    shutil.copyfileobj(source, stream)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-            except BaseException:
-                path.unlink(missing_ok=True)
-                raise
+            raise OSError(
+                f"cannot write {path.parent}: this folder's filesystem does not support "
+                "the safe write used by usb-capture; choose a folder on an NTFS "
+                "(Windows) or APFS (macOS) drive, e.g. your Documents folder"
+            ) from None
     finally:
-        if temporary is not None:
-            Path(temporary).unlink(missing_ok=True)
+        if name is not None:
+            Path(name).unlink(missing_ok=True)
 
 
 def capture_bundle(
     out_path: Path | str,
     *,
     radios: list[dict[str, str]],
+    tool_version: str,
     no_unplug: bool = False,
     input_fn: Callable[[str], str] | None = None,
     timeout_s: float = 5.0,
 ) -> Path:
     out = Path(out_path)
     if out.exists() or out.is_symlink():
-        raise FileExistsError("capture output already exists")
+        raise FileExistsError(f"output already exists: {out}")
     _validate_session("connected", None, radios)
     if platform.system() != "Windows":
         raise OSError("usb-capture currently records Windows only")
     prompt = input if input_fn is None else input_fn
-    sessions = [_read_session("connected", radios=radios, timeout_s=timeout_s)]
+    sessions = [
+        _read_session(
+            "connected", radios=radios, tool_version=tool_version, timeout_s=timeout_s
+        )
+    ]
     if not no_unplug:
         for radio in radios:
             profile, port = radio["profile"], radio["serial_port"]
@@ -220,13 +207,23 @@ def capture_bundle(
                 f"Unplug the USB cable of {profile} ({port}), wait 5 seconds, then press Enter."
             )
             sessions.append(
-                _read_session("unplugged", target=profile, timeout_s=timeout_s)
+                _read_session(
+                    "unplugged",
+                    target=profile,
+                    tool_version=tool_version,
+                    timeout_s=timeout_s,
+                )
             )
             prompt(
                 f"Plug {profile} back in (any USB port), wait 10 seconds, then press Enter."
             )
             sessions.append(
-                _read_session("replugged", target=profile, timeout_s=timeout_s)
+                _read_session(
+                    "replugged",
+                    target=profile,
+                    tool_version=tool_version,
+                    timeout_s=timeout_s,
+                )
             )
     bundle = {"schema": "rigplane.usb_audio_capture/1", "sessions": sessions}
     _validate_bundle(bundle)

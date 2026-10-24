@@ -34,7 +34,7 @@ import {
   toggleMute,
 } from '$lib/stores/audio.svelte';
 import * as transport from '$lib/transport/ws-client';
-import { fetchInfo } from '$lib/transport/http-client';
+import { fetchInfo, fetchMemoryPage } from '$lib/transport/http-client';
 import { controllerClient } from '$lib/transport/controller-client';
 import { audioManager } from '$lib/audio/audio-manager';
 import { makeAudioRoutingHandlers } from './commands/panel-commands';
@@ -332,6 +332,10 @@ class FrontendRuntime {
       available: caps.audio === true && caps.capabilities.includes('audio'),
       selected: true,
     });
+  }
+
+  fetchMemoryPage(...args: Parameters<typeof fetchMemoryPage>): ReturnType<typeof fetchMemoryPage> {
+    return fetchMemoryPage(...args);
   }
 
   // ── Bootstrap ──
