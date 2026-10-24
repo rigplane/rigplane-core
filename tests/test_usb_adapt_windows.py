@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from rigplane.audio._usb_adapt_windows import adapt_windows
-from rigplane.audio._usb_pairing import PairOk, pair
+from rigplane.audio._usb_pairing import PairOk, PairRefused, pair
 from rigplane.audio._usb_snapshot import SerialPortRef
 
 
@@ -96,6 +96,56 @@ def test_ports_class_preserves_com_reference(session, class_name):
     assert adapt_windows(session).serial_ports == (
         SerialPortRef("COM3", serial["instance_id"]),
     )
+
+
+@pytest.mark.parametrize("name", ["", "Renamed serial device", "Printer (LPT1)"])
+@pytest.mark.parametrize("raw_inventory", [False, True])
+@pytest.mark.parametrize("placement", ["device", "interface", "nested", "unresolved"])
+def test_second_ports_class_without_com_refuses_with_candidates(
+    session, name, raw_inventory, placement
+):
+    rows = session["raw"]["windows"]["devnodes"]
+    serial = next(row for row in rows if row["class_name"] == "Ports")
+    second = {
+        **serial,
+        "instance_id": r"USB\VID_10C4&PID_EA60\SECOND",
+        "friendly_name": name,
+    }
+    if placement == "interface":
+        rows.append({**second, "class_name": "USB"})
+        second = {
+            **second,
+            "instance_id": r"USB\VID_10C4&PID_EA60&MI_00\SECOND",
+            "parent_id": second["instance_id"],
+        }
+    elif placement == "nested":
+        rows.append(
+            {
+                **second,
+                "instance_id": "nested-hub",
+                "class_name": "USB",
+                "compatible_ids": [r"USB\USB20_HUB"],
+            }
+        )
+        second["parent_id"] = "nested-hub"
+    elif placement == "unresolved":
+        second["instance_id"] = "opaque:serial-class-device"
+    rows.append(second)
+    session["raw"]["serial_ports"] = [{"device": "COM4"}] if raw_inventory else []
+
+    snapshot = adapt_windows(session)
+    assert [ref for ref in snapshot.serial_ports if ref.port == "COM4"] == (
+        [SerialPortRef("COM4", None)] if raw_inventory else []
+    )
+    result = pair(snapshot, "COM3", None)
+    assert isinstance(result, PairRefused)
+    assert (result.reason, result.wire_reason) == ("serial_ambiguous", "usb_ambiguous")
+    assert {
+        (candidate.portaudio_index, candidate.direction)
+        for candidate in result.candidates
+        if candidate.near_radio
+    } == {(1, "capture"), (5, "render")}
+    assert all(candidate.hostapi == "MME" for candidate in result.candidates)
 
 
 def test_root_hub_hardware_id_and_serial_interface_owner(session):
