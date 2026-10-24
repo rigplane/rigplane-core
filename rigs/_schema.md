@@ -618,9 +618,11 @@ These optional sections provide detailed configuration for specific capabilities
 ### `[memory]`
 
 Optional: how stored memory channels are addressed, for the read-only listing
-(capability `memory_read`; the read is the profile's `get_memory_contents`).
-`addressing` is `"group_channel"` (IC-705) or `"band_channel"` (IC-9700) and
-also picks the `1A 00` record layout; `first_group`/`last_group` bound the
+(capability `memory_read`). CI-V profiles read with their `get_memory_contents`;
+the FTX-1 declares the CAT pair `get_memory_channel` (MR) and `get_memory_tag` (MT).
+`addressing` is `"group_channel"` (IC-705), `"band_channel"` (IC-9700) or
+`"channel"` (FTX-1, one numbered list, group 0 only); the first two also pick the
+`1A 00` record layout; `first_group`/`last_group` bound the
 group number or band code, `first_channel`/`last_channel` the channel;
 `recall = true` marks profiles whose select commands recall a listed channel.
 `dd_groups` lists groups/bands where mode byte `0x22` is DD;

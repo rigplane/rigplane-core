@@ -8,15 +8,15 @@ export interface MemoryEntryDto {
   mode?: string;
   dataMode?: boolean;
   duplex?: 'simplex' | 'plus' | 'minus' | null;
-  offsetHz?: number;
-  toneMode?: 'off' | 'tone' | 'tsql' | 'dtcs' | null;
-  toneCentiHz?: number;
-  tsqlCentiHz?: number;
-  dtcsCode?: number;
+  offsetHz?: number | null;
+  toneMode?: 'off' | 'tone' | 'tsql' | 'dtcs' | 'pr_freq' | 'rev_tone' | null;
+  toneCentiHz?: number | null;
+  tsqlCentiHz?: number | null;
+  dtcsCode?: number | null;
 }
 
 export interface MemoryPageDto {
-  addressing: 'group_channel' | 'band_channel';
+  addressing: 'group_channel' | 'band_channel' | 'channel';
   group: number;
   groups: { first: number; last: number };
   channels: { first: number; last: number };

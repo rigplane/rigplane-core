@@ -110,6 +110,18 @@ def test_recall_is_accepted_only_for_group_channel_addressing(tmp_path: Path) ->
     assert _load(tmp_path, group).to_profile().memory.recall is True
 
 
+def test_a_channel_list_has_only_group_zero(tmp_path: Path) -> None:
+    flat = _GOOD.replace("band_channel", "channel").replace(
+        "first_group = 1", "first_group = 0"
+    )
+    with pytest.raises(RigLoadError, match="only group 0"):
+        _load(tmp_path, flat)
+    ok = flat.replace("last_group = 3", "last_group = 0")
+    assert _load(tmp_path, ok).to_profile().memory == MemoryProfile(
+        "channel", 0, 0, 1, 99
+    )
+
+
 @pytest.mark.parametrize("cls", [RigConfig, RadioProfile])
 def test_memory_is_keyword_only_so_no_positional_argument_shifts(cls: type) -> None:
     by_name = {f.name: f for f in dataclasses.fields(cls)}
