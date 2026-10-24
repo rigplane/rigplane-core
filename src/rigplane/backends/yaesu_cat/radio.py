@@ -1218,6 +1218,7 @@ class YaesuCatRadio:
         self,
         cmd_name: str,
         *,
+        expect_rejection: bool = False,
         is_current: Callable[[], bool] | None = None,
         tier: ExchangeTier = ExchangeTier.ORDINARY,
         **params: Any,
@@ -1242,12 +1243,12 @@ class YaesuCatRadio:
             raise CommandError(f"Command {cmd_name!r} has no read template")
 
         read_cmd = format_command(spec.read, **params) if params else spec.read
-        if is_current is None and tier is ExchangeTier.ORDINARY:
-            raw = await self._transport.query(read_cmd)
-        else:
-            raw = await self._transport.query(
-                read_cmd, is_current=is_current, tier=tier
-            )
+        query_kwargs: dict[str, Any] = {}
+        if is_current is not None or tier is not ExchangeTier.ORDINARY:
+            query_kwargs.update(is_current=is_current, tier=tier)
+        if expect_rejection:
+            query_kwargs["expect_rejection"] = True
+        raw = await self._transport.query(read_cmd, **query_kwargs)
 
         parser = self._parsers.get(cmd_name)
         if parser is None:
@@ -3959,7 +3960,9 @@ class YaesuCatRadio:
                 )
             chan = f"{channel:05d}"
             try:
-                mr = await self._query("get_memory_channel", chan=chan)
+                mr = await self._query(
+                    "get_memory_channel", chan=chan, expect_rejection=True
+                )
             except CatCommandRejected:
                 entries.append(MemoryEntry(group=group, channel=channel, empty=True))
                 continue
@@ -3968,7 +3971,9 @@ class YaesuCatRadio:
                     f"unreadable memory channel {channel}: {exc}"
                 ) from exc
             try:
-                mt = await self._query("get_memory_tag", chan=chan)
+                mt = await self._query(
+                    "get_memory_tag", chan=chan, expect_rejection=True
+                )
             except CatCommandRejected:
                 mt = {"chan": chan, "tag": ""}
             except (CatParseError, CatTransportError) as exc:

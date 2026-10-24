@@ -6,11 +6,13 @@ frequency and tag replaced: an unprogrammed channel answers ``?;``.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
+from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.backends.yaesu_cat.transport import (
     CatCommandRejected,
@@ -29,6 +31,7 @@ from rigplane.core.types import (
 from rigplane.profiles import get_radio_profile
 from rigplane.rig_loader import load_rig
 from test_memory_list_api import _get
+from test_yaesu_cat_transport import FakeStreamReader, FakeStreamWriter
 
 _RIGS_DIR = Path(__file__).parents[1] / "rigs"
 _MR_25 = "MR00025146940000+000000412000"  # FM, memory, tone code 2, simplex
@@ -47,6 +50,73 @@ def _radio(answers: dict[str, str]) -> YaesuCatRadio:
 
     radio._transport.query = AsyncMock(spec=YaesuCatTransport.query, side_effect=query)
     return radio
+
+
+def _serial_radio(responses: list[bytes]) -> tuple[YaesuCatRadio, FakeStreamWriter]:
+    radio = YaesuCatRadio("/dev/null", profile=load_rig(_RIGS_DIR / "ftx1.toml"))
+    writer = FakeStreamWriter()
+    radio._transport._reader = FakeStreamReader(responses)  # type: ignore[assignment]
+    radio._transport._writer = writer  # type: ignore[assignment]
+    radio._transport._connected = True
+    return radio, writer
+
+
+@pytest.mark.asyncio
+async def test_empty_memory_page_does_not_prime_reconnect_after_one_poll_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio, writer = _serial_radio([b"?;"] * 5)
+    transport = radio._transport
+    reconnect = AsyncMock(spec=YaesuCatTransport.reconnect)
+    monkeypatch.setattr(transport, "reconnect", reconnect)
+
+    status, body = await _get(radio, "/api/v1/memories?group=0&start=25&count=5")
+    assert status == 200
+    assert body["entries"] == [
+        {"group": 0, "channel": channel, "empty": True} for channel in range(25, 30)
+    ]
+
+    poller = YaesuCatPoller(radio)
+    poll_calls = 0
+
+    async def poll_once() -> None:
+        nonlocal poll_calls
+        poll_calls += 1
+        if poll_calls > 1:
+            raise asyncio.CancelledError
+        await poller._poll_fast()
+
+    with pytest.raises(asyncio.CancelledError):
+        await poller._run_poll_cycle("fast", poll_once, 0)
+
+    reconnect.assert_not_awaited()
+    assert poll_calls == 2
+    assert transport.stats.errors == 0
+    assert transport.stats.consecutive_errors == 0
+    assert transport.stats.timeouts == 1
+    assert not transport._maybe_reconnect_needed()
+    assert writer.written == [
+        *(f"MR{channel:05d};".encode("ascii") for channel in range(25, 30)),
+        b"SM0;",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_missing_memory_tag_is_not_a_transport_error() -> None:
+    radio, writer = _serial_radio([(_MR_25 + ";").encode("ascii"), b"?;"])
+
+    status, body = await _get(radio, "/api/v1/memories?group=0&start=25&count=1")
+
+    assert status == 200
+    entry = body["entries"][0]
+    assert (entry["channel"], entry["frequencyHz"], entry["name"]) == (
+        25,
+        146_940_000,
+        "",
+    )
+    assert radio._transport.stats.errors == 0
+    assert radio._transport.stats.consecutive_errors == 0
+    assert writer.written == [b"MR00025;", b"MT00025;"]
 
 
 def test_the_shipped_profile_declares_a_numbered_channel_list() -> None:
