@@ -214,10 +214,10 @@ function useFacts(state: ServerState, caps: Capabilities): void {
 /** Mounts the REAL `RadioLayout` behind a reactive `skinId`, with a resolved
  *  `SurfacePlan` in context so `zoneOwning()` can answer for real — same
  *  shape as `semantic-cw-keyer-wiring.component.test.ts`'s `renderHosted`. */
-function renderHosted() {
+function renderHosted(skinId: 'desktop-v2' | 'sdr-test' = 'desktop-v2') {
   target = document.createElement('div');
   document.body.appendChild(target);
-  const props = proxy({ skinId: 'desktop-v2' as 'desktop-v2' | 'sdr-test' });
+  const props = proxy({ skinId });
   const context = new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () =>
     resolveSurfacePlan(props.skinId === 'desktop-v2' ? desktopV2Layout : sdrTestLayout,
       readWorkspace({ version: 1 }).workspace)]]);
@@ -230,6 +230,10 @@ const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T
 const qAll = (sel: string) => target.querySelectorAll(sel);
 const commands = () => vi.mocked(sendCommand).mock.calls.map(([name, params]) => ({ name, params }));
 const press = (node: HTMLElement) => node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+async function settleList(): Promise<void> {
+  for (let turn = 0; turn < 50; turn++) { await Promise.resolve(); flushSync(); }
+}
 
 beforeEach(() => {
   txHarness = new ManagedAppTxHarness();
@@ -282,6 +286,56 @@ describe('recall dispatches the real memory-to-vfo intent, per channel', () => {
   });
 });
 
+it('makes no memories requests in a hosted layout without a memory zone, even with memory_read', async () => {
+  const fetchMock = vi.fn().mockRejectedValue(new Error('Unexpected memories request'));
+  vi.stubGlobal('fetch', fetchMock);
+  useState(liveState(), { ...liveCaps(), capabilities: ['memory_read'] });
+
+  renderHosted('sdr-test');
+  await settleList();
+
+  expect(q('[data-zone-id="memory"]')).toBeNull();
+  expect(q('[data-testid="memory-surface"]')).toBeNull();
+  expect(q('[data-testid="radio-memories"]')).toBeNull();
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it('cancels in-flight memories requests when the hosted memory surface unmounts and acquires again on remount', async () => {
+  const signals: (AbortSignal | null | undefined)[] = [];
+  const replies: ((response: Response) => void)[] = [];
+  const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+    signals.push(init?.signal);
+    return new Promise<Response>((resolve) => replies.push(resolve));
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  useState(liveState(), { ...liveCaps(), capabilities: ['memory_read'] });
+
+  const props = renderHosted();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(signals[0]?.aborted).toBe(false);
+
+  props.skinId = 'sdr-test';
+  flushSync();
+  expect(q('[data-testid="memory-surface"]')).toBeNull();
+  expect(signals[0]?.aborted).toBe(true);
+  replies[0]({ ok: true, status: 200, json: async () => ic705MemoryPage } as Response);
+  await settleList();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+
+  props.skinId = 'desktop-v2';
+  flushSync();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(q('[data-testid="radio-memories-status"]')?.dataset.status).toBe('loading');
+  expect(signals[1]?.aborted).toBe(false);
+
+  await unmount(component!);
+  component = null;
+  expect(signals[1]?.aborted).toBe(true);
+  replies[1]({ ok: true, status: 200, json: async () => ic705MemoryPage } as Response);
+  await settleList();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
 it('acquires IC-705 radio memories only with memory_read, renders them, selects a group and recalls its channel', async () => {
   const golden = ic705MemoryPage as MemoryPageDto;
   const requests: URL[] = [];
@@ -302,10 +356,6 @@ it('acquires IC-705 radio memories only with memory_read, renders them, selects 
     return { ok: true, status: 200, json: async () => page } as Response;
   });
   vi.stubGlobal('fetch', fetchMock);
-  // Microtask-only settling, as in first-browser-auth.component.test.ts.
-  async function settleList(): Promise<void> {
-    for (let turn = 0; turn < 50; turn++) { await Promise.resolve(); flushSync(); }
-  }
   const caps: Capabilities = {
     ...liveCaps(), model: 'IC-705', receivers: 1, vfoScheme: 'ab', capabilities: [],
   };
@@ -364,6 +414,19 @@ it('acquires IC-705 radio memories only with memory_read, renders them, selects 
   flushSync();
   expect(commands()).toEqual([{ name: 'set_memory_mode', params: { group: 7, channel: 4 } }]);
   expect(q('[data-testid="radio-memory-4"]')?.classList.contains('selected')).toBe(true);
+
+  const reload = q<HTMLButtonElement>('[data-testid="radio-memories-reload"]');
+  expect(reload).not.toBeNull();
+  expect(reload!.disabled).toBe(false);
+  press(reload!);
+  flushSync();
+  expect(Object.fromEntries(requests[8].searchParams)).toEqual({ group: '7', count: '25' });
+  await settleList();
+  expect(requests).toHaveLength(12);
+  expect(chooser!.value).toBe('7');
+  expect(q('[data-testid="radio-memories-status"]')?.dataset.status).toBe('ready');
+  expect(q('[data-testid="radio-memory-4"]')?.textContent).toContain('TEST RPT');
+  expect(commands()).toEqual([{ name: 'set_memory_mode', params: { group: 7, channel: 4 } }]);
 });
 
 /* ── (c) STORE refused under the WRONG-VFO doctrine ────────────── */

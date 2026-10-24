@@ -41,7 +41,7 @@
   import { getFieldStatus } from '$lib/state/field-status';
   import { getCommandLifecycle } from '$lib/stores/commands.svelte';
   import { getScopeSource, hasCapability } from '$lib/stores/capabilities.svelte';
-  import { MemoryListController, trackMemoryList } from '$lib/runtime/memory-list.svelte';
+  import { MemoryListController } from '$lib/runtime/memory-list.svelte';
   import { presentationResources, runtime } from '$lib/runtime';
   import * as componentKitActivation from '../../component-kits/activation';
   import { ScopeFrameHost, type ScopeFramePresentation } from '$lib/runtime/scope-frame-host';
@@ -152,6 +152,7 @@
     type CwKeyerInstrumentHandles,
   } from '../../semantic/CwKeyerInstrumentHost.svelte';
   import MemorySurface from '../../semantic/MemorySurface.svelte';
+  import MemoryListHost from './MemoryListHost.svelte';
   import RepeaterSurface, { repeaterReceiver } from '../../semantic/RepeaterSurface.svelte';
   import ScopeControlsSurface, {
     type ScopeChoiceField, type ScopeToggleField,
@@ -735,10 +736,9 @@
    */
   let memoryFacts = $derived(deriveMemoryPanelProps());
   const memoryHandlers = getMemoryHandlers();
-  /** MOR-3627: the radio's stored channels, read-only; loaded once the profile declares `memory_read`. */
+  /** MOR-3627: the radio's stored channels, read-only. */
   const radioMemoryList = new MemoryListController();
   let memoryReadable = $derived(runtime.caps?.capabilities?.includes('memory_read') ?? false);
-  trackMemoryList(radioMemoryList, () => memoryReadable);
   let radioMemories = $derived(memoryReadable ? {
     status: radioMemoryList.status, error: radioMemoryList.error, entries: radioMemoryList.entries,
     group: radioMemoryList.group, groups: radioMemoryList.groups, recall: radioMemoryList.recall,
@@ -2786,13 +2786,15 @@
     legacy panel — nothing in `panel-commands.ts` owns a rename intent.
   -->
   {#snippet memorySurface()}
-    <MemorySurface
-      facts={memoryFacts}
-      onRecall={memoryHandlers.onRecall}
-      onStore={memoryHandlers.onStore}
-      onClear={memoryHandlers.onClear}
-      {radioMemories}
-    />
+    <MemoryListHost controller={radioMemoryList} readable={memoryReadable}>
+      <MemorySurface
+        facts={memoryFacts}
+        onRecall={memoryHandlers.onRecall}
+        onStore={memoryHandlers.onStore}
+        onClear={memoryHandlers.onClear}
+        {radioMemories}
+      />
+    </MemoryListHost>
   {/snippet}
 
   {#snippet repeaterSurface()}
