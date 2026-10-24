@@ -10,7 +10,6 @@ import os
 from pathlib import Path
 import platform
 import re
-import shutil
 import tempfile
 from typing import Any
 
@@ -24,7 +23,6 @@ _SERIAL_FIELDS = (
     "device",
     "name",
     "description",
-    "hwid",
     "vid",
     "pid",
     "serial_number",
@@ -148,20 +146,15 @@ def _read_session(
 
 def _write_private_json(path: Path, value: dict[str, Any]) -> None:
     if path.exists() or path.is_symlink():
-        raise FileExistsError("capture output already exists")
-    temporary: str | None = None
+        raise FileExistsError(f"output already exists: {path}")
+    fd, name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    os.close(fd)
     try:
-        fd, temporary = tempfile.mkstemp(
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-        )
-        try:
-            stream = os.fdopen(fd, "wb")
-        except BaseException:
-            os.close(fd)
-            raise
-        with stream:
+        with open(name, "wb") as stream:
             stream.write(
                 (
                     json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False)
@@ -171,30 +164,17 @@ def _write_private_json(path: Path, value: dict[str, Any]) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         try:
-            os.link(temporary, path)
+            os.link(name, path)
         except FileExistsError:
-            raise FileExistsError("capture output already exists") from None
+            raise FileExistsError(f"output already exists: {path}") from None
         except OSError:
-            try:
-                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            except FileExistsError:
-                raise FileExistsError("capture output already exists") from None
-            try:
-                try:
-                    stream = os.fdopen(fd, "wb")
-                except BaseException:
-                    os.close(fd)
-                    raise
-                with stream, open(temporary, "rb") as source:
-                    shutil.copyfileobj(source, stream)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-            except BaseException:
-                path.unlink(missing_ok=True)
-                raise
+            raise OSError(
+                f"cannot write {path.parent}: this folder's filesystem does not support "
+                "the safe write used by usb-capture; choose a folder on an NTFS "
+                "(Windows) or APFS (macOS) drive, e.g. your Documents folder"
+            ) from None
     finally:
-        if temporary is not None:
-            Path(temporary).unlink(missing_ok=True)
+        Path(name).unlink(missing_ok=True)
 
 
 def capture_bundle(
@@ -207,7 +187,7 @@ def capture_bundle(
 ) -> Path:
     out = Path(out_path)
     if out.exists() or out.is_symlink():
-        raise FileExistsError("capture output already exists")
+        raise FileExistsError(f"output already exists: {out}")
     _validate_session("connected", None, radios)
     if platform.system() != "Windows":
         raise OSError("usb-capture currently records Windows only")
