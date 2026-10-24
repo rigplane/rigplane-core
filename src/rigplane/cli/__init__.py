@@ -1177,7 +1177,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "value",
         nargs="?",
         type=str,
-        help="Preamp level: 0 (off), 1 (PRE1), 2 (PRE2), or 'off'",
+        help="Preamp levels from radio profile (0, 1, 2, or 'off' if undeclared)",
     )
 
     # antenna
@@ -4008,6 +4008,11 @@ _PREAMP_NAMES = {0: "OFF", 1: "PRE1", 2: "PRE2"}
 
 
 async def _cmd_preamp(radio: Radio, args: argparse.Namespace) -> int:
+    profile = getattr(radio, "profile", None)
+    values = (profile.pre_values or ()) if profile is not None else ()
+    labels = (profile.pre_labels or {}) if profile is not None else {}
+    declared_values = ", ".join(str(value) for value in values)
+    allowed_values = values or (0, 1, 2)
     if args.value is not None:
         val = args.value.strip().lower()
         if val == "off":
@@ -4016,19 +4021,32 @@ async def _cmd_preamp(radio: Radio, args: argparse.Namespace) -> int:
             try:
                 level = int(val)
             except ValueError:
-                print(
-                    f"Error: invalid preamp value {val!r}. Use 'off', 0, 1, or 2.",
-                    file=sys.stderr,
-                )
+                if values:
+                    message = (
+                        f"Error: invalid preamp value {val!r}. "
+                        f"Use a declared level: {declared_values} ('off' means 0)."
+                    )
+                else:
+                    message = (
+                        f"Error: invalid preamp value {val!r}. Use 'off', 0, 1, or 2."
+                    )
+                print(message, file=sys.stderr)
                 return 1
-            if level not in (0, 1, 2):
-                print(
-                    f"Error: preamp level must be 0, 1, or 2 (got {level}).",
-                    file=sys.stderr,
+        if level not in allowed_values:
+            if values:
+                message = (
+                    f"Error: preamp level must be one of {declared_values} "
+                    f"(got {level})."
                 )
-                return 1
+            else:
+                message = f"Error: preamp level must be 0, 1, or 2 (got {level})."
+            print(
+                message,
+                file=sys.stderr,
+            )
+            return 1
         await radio.set_preamp(level)
-        print(f"Preamp: {_PREAMP_NAMES.get(level, str(level))}")
+        print(f"Preamp: {labels.get(str(level), _PREAMP_NAMES.get(level, str(level)))}")
     else:
         level = await radio.get_preamp()
         if args.json:
@@ -4038,12 +4056,17 @@ async def _cmd_preamp(radio: Radio, args: argparse.Namespace) -> int:
                 json.dumps(
                     {
                         "preamp_level": level,
-                        "preamp_name": _PREAMP_NAMES.get(level, str(level)),
+                        "preamp_name": labels.get(
+                            str(level), _PREAMP_NAMES.get(level, str(level))
+                        ),
                     }
                 )
             )
         else:
-            print(f"Preamp: {_PREAMP_NAMES.get(level, str(level))}")
+            print(
+                "Preamp: "
+                f"{labels.get(str(level), _PREAMP_NAMES.get(level, str(level)))}"
+            )
     return 0
 
 

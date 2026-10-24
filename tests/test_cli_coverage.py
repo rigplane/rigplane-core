@@ -8,6 +8,7 @@ import json
 import logging
 import types
 import wave
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -34,6 +35,7 @@ from rigplane.cli import (
     main,
 )
 from rigplane.discovery import RadioDiscoveryResult
+from rigplane.profiles import get_radio_profile
 from rigplane.radio_protocol import (
     AdvancedControlCapable,
     AudioCapable,
@@ -616,6 +618,7 @@ async def test_cmd_audio_loopback_queue_full_and_worker_error(
 @pytest.mark.asyncio
 async def test_cmd_att_and_preamp_all_paths(capsys: pytest.CaptureFixture[str]) -> None:
     radio = AsyncMock()
+    radio.profile = get_radio_profile("ic7300")
     radio.get_attenuator_level = AsyncMock(return_value=0)
     radio.get_preamp = AsyncMock(return_value=2)
 
@@ -634,6 +637,170 @@ async def test_cmd_att_and_preamp_all_paths(capsys: pytest.CaptureFixture[str]) 
     output = capsys.readouterr().out
     assert "Attenuator" in output
     assert "Preamp" in output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("level,name", [(1, "INT"), (2, "EXT"), (3, "INT+EXT")])
+@pytest.mark.parametrize("setting", [False, True])
+@pytest.mark.parametrize("as_json", [False, True])
+async def test_cmd_preamp_ic9700_combined_level(
+    level: int,
+    name: str,
+    setting: bool,
+    as_json: bool,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    radio = MagicMock(spec=AdvancedControlCapable)
+    radio.profile = get_radio_profile("ic9700")
+    radio.get_preamp.return_value = level
+    value = str(level) if setting else None
+
+    assert await _cmd_preamp(radio, argparse.Namespace(value=value, json=as_json)) == 0
+
+    output = capsys.readouterr().out
+    if value is not None:
+        radio.set_preamp.assert_awaited_once_with(level)
+        assert output == f"Preamp: {name}\n"
+    elif as_json:
+        assert json.loads(output) == {"preamp_level": level, "preamp_name": name}
+    else:
+        assert output == f"Preamp: {name}\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("level,name", [(0, "OFF"), (1, "PRE1"), (2, "PRE2")])
+async def test_cmd_preamp_legacy_profile_names(
+    level: int, name: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    radio = MagicMock(spec=AdvancedControlCapable)
+    radio.profile = replace(
+        get_radio_profile("ic7300"), pre_values=(0, 1, 2), pre_labels=None
+    )
+    radio.get_preamp.return_value = level
+
+    assert (
+        await _cmd_preamp(radio, argparse.Namespace(value=str(level), json=False)) == 0
+    )
+    radio.set_preamp.assert_awaited_once_with(level)
+    assert capsys.readouterr().out == f"Preamp: {name}\n"
+    assert await _cmd_preamp(radio, argparse.Namespace(value=None, json=True)) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "preamp_level": level,
+        "preamp_name": name,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["3", "invalid"])
+async def test_cmd_preamp_legacy_profile_rejects_undeclared_values(
+    value: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    radio = MagicMock(spec=AdvancedControlCapable)
+    radio.profile = replace(
+        get_radio_profile("ic7300"), pre_values=(0, 1, 2), pre_labels=None
+    )
+
+    assert await _cmd_preamp(radio, argparse.Namespace(value=value, json=False)) == 1
+    radio.set_preamp.assert_not_awaited()
+    assert "0, 1, 2" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("labels,name", [({"3": "CUSTOM"}, "CUSTOM"), (None, "3")])
+@pytest.mark.parametrize("values,rejected", [((0, 3), "1"), ((3,), "off")])
+async def test_cmd_preamp_uses_declared_domain_and_name_fallback(
+    labels: dict[str, str] | None,
+    name: str,
+    values: tuple[int, ...],
+    rejected: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    radio = MagicMock(spec=AdvancedControlCapable)
+    radio.profile = replace(
+        get_radio_profile("ic7300"), pre_values=values, pre_labels=labels
+    )
+    radio.get_preamp.return_value = 3
+
+    assert await _cmd_preamp(radio, argparse.Namespace(value="3", json=False)) == 0
+    radio.set_preamp.assert_awaited_once_with(3)
+    assert capsys.readouterr().out == f"Preamp: {name}\n"
+    assert await _cmd_preamp(radio, argparse.Namespace(value=None, json=False)) == 0
+    assert capsys.readouterr().out == f"Preamp: {name}\n"
+    assert await _cmd_preamp(radio, argparse.Namespace(value=None, json=True)) == 0
+    assert json.loads(capsys.readouterr().out)["preamp_name"] == name
+    radio.set_preamp.reset_mock()
+    assert await _cmd_preamp(radio, argparse.Namespace(value=rejected, json=False)) == 1
+    radio.set_preamp.assert_not_awaited()
+    assert ", ".join(str(value) for value in values) in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value,level", [("off", 0), ("0", 0), ("1", 1), ("2", 2)])
+async def test_cmd_preamp_empty_profile_domain_uses_legacy_levels(
+    value: str, level: int
+) -> None:
+    radio = MagicMock(spec=AdvancedControlCapable)
+    radio.profile = replace(get_radio_profile("ic7300"), pre_values=())
+
+    assert await _cmd_preamp(radio, argparse.Namespace(value=value, json=False)) == 0
+    radio.set_preamp.assert_awaited_once_with(level)
+
+
+@pytest.mark.asyncio
+async def test_main_preamp_external_rigctld_wire_and_invalid_values(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fake_rigctld import FakeRigctldServer
+
+    monkeypatch.setenv("ICOM_DEBUG", "0")
+    monkeypatch.setenv("ICOM_LOG_FILE", "off")
+
+    def exit_as_exception(code: int) -> None:
+        raise SystemExit(code)
+
+    def invoke_main(argv: list[str]) -> int:
+        with (
+            patch("sys.argv", argv),
+            patch("rigplane.cli.signal.signal", autospec=True),
+            patch("rigplane.cli.logging.basicConfig", autospec=True),
+            patch(
+                "rigplane.cli.os._exit", autospec=True, side_effect=exit_as_exception
+            ),
+        ):
+            try:
+                main()
+            except SystemExit as exc:
+                return int(exc.code)
+        raise AssertionError("main() did not exit")
+
+    async with FakeRigctldServer() as server:
+        base = [
+            "rigplane",
+            "--backend",
+            "rigctld",
+            "--host",
+            server.host,
+            "--port",
+            str(server.port),
+            "preamp",
+        ]
+        for value, db in [("off", 0), ("1", 10), ("2", 20)]:
+            assert await asyncio.to_thread(invoke_main, [*base, value]) == 0
+            assert server.commands_seen[-1] == f"L PREAMP {db}"
+            assert server.state.preamp_db == db
+            capsys.readouterr()
+
+        before = [cmd for cmd in server.commands_seen if cmd.startswith("L PREAMP ")]
+        for value, error in [
+            ("7", "Error: preamp level must be 0, 1, or 2 (got 7)."),
+            ("abc", "Error: invalid preamp value 'abc'. Use 'off', 0, 1, or 2."),
+        ]:
+            assert await asyncio.to_thread(invoke_main, [*base, value]) == 1
+            assert capsys.readouterr().err.strip().splitlines()[-1] == error
+            assert [
+                cmd for cmd in server.commands_seen if cmd.startswith("L PREAMP ")
+            ] == before
 
 
 def _make_scope_capable_mock(base: MagicMock | None = None) -> MagicMock:

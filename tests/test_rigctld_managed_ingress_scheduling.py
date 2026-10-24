@@ -2,7 +2,7 @@
 from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 import pytest
 from rigplane.core.command_service import CommandService
 from rigplane.core.command_dispatch import execute_command_intent
@@ -837,6 +837,53 @@ async def _drain_split_entry(rig, entry):
         )
 
     await execute_command_queue_entry(entry, execute)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("managed_split", ["IC-7300", "IC-9700"], indirect=True)
+@pytest.mark.parametrize("db,index", [(12, 1), (20, 2)])
+async def test_managed_preamp_same_socket_reads_pending_native_index(
+    managed_split, monkeypatch, db, index
+):
+    rig = managed_split
+    setter = AsyncMock(spec=rig.radio.set_preamp)
+    getter = AsyncMock(spec=rig.radio.get_preamp, return_value=0)
+    monkeypatch.setattr(rig.radio, "set_preamp", setter)
+    monkeypatch.setattr(rig.radio, "get_preamp", getter)
+    store = rig.radio.state_store
+    path = FieldPath.receiver("0", "operator_controls", "preamp")
+    store.apply_current(
+        Observation(
+            path=path,
+            value=0,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=rig.clock(),
+            max_age=60,
+        )
+    )
+
+    reply = await _exchange(
+        rig.writer, rig.reader, f"L PREAMP {db}\nl PREAMP\n".encode(), lines=2
+    )
+
+    assert reply == f"RPRT 0\n{db}\n".encode()
+    setter.assert_awaited_once_with(index)
+    getter.assert_not_awaited()
+    service = rig.server._rig_handler._command_service
+    overlays = service.pending_overlays(
+        source="rigctld", session_id="rigctld-client-1", path=path
+    )
+    assert len(overlays) == 1
+    assert overlays[0].value == index
+    expectations = service.readback_expectations(
+        source="rigctld",
+        session_id="rigctld-client-1",
+        command_id=overlays[0].command_id,
+    )
+    assert [(item.path, item.value) for item in expectations] == [(path, index)]
+    assert store.snapshot().field(path).value == 0
+    assert rig.server._command_queue is rig.queue
+    assert not rig.default.calls
 
 
 @pytest.mark.asyncio

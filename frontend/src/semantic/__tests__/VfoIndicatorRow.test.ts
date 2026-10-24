@@ -454,7 +454,7 @@ describe('RF gain display observation', () => {
   it.each([
     ['bandwidth', 'BW 9999 Hz'], ['agc', 'AGC TUNING'], ['nb', 'NB OFF'],
     ['nr', 'NR OFF'], ['notch', 'NOTCH MANUAL'], ['attenuator', 'ATT 45 dB'],
-    ['preamp', 'P.AMP 2'], ['ip-plus', 'IP+ OFF'], ['digi-sel', 'DIGI-SEL OFF'],
+    ['preamp', 'P.AMP 3'], ['ip-plus', 'IP+ OFF'], ['digi-sel', 'DIGI-SEL OFF'],
     ['rf-gain', 'RFG 99%'], ['antenna', 'ANT 2'], ['atu', 'TUNE TUNING'],
     ['rit', 'RIT OFF −9999 Hz'], ['xit', 'XIT OFF −9999 Hz'],
   ] as const)('fact %s reserves at least its widest lit text', (fact, widest) => {

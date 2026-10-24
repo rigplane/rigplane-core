@@ -25,11 +25,6 @@ from rigplane.core.state_acquisition_policy import (
     FieldCapability,
     RadioAcquisitionProfile,
 )
-from rigplane.exceptions import CommandError as IcomCommandError
-from rigplane.exceptions import CommandRejectedError
-from rigplane.exceptions import ConnectionError as IcomConnectionError
-from rigplane.exceptions import TimeoutError as IcomTimeoutError
-from rigplane.radio import IcomRadio
 from rigplane.core.state_pipeline_contracts import (
     CommandSource,
     FieldPath,
@@ -37,6 +32,12 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessState, StateStore
+from rigplane.exceptions import CommandError as IcomCommandError
+from rigplane.exceptions import CommandRejectedError
+from rigplane.exceptions import ConnectionError as IcomConnectionError
+from rigplane.exceptions import TimeoutError as IcomTimeoutError
+from rigplane.profiles import resolve_radio_profile
+from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
 from rigplane.rigctld.contract import (
     ClientSession,
@@ -2889,6 +2890,114 @@ async def test_get_level_preamp_2(
 
 
 @pytest.mark.asyncio
+async def test_get_level_preamp_combination_unavailable_records_no_sample(
+    mock_radio: AsyncMock, config: RigctldConfig
+) -> None:
+    mock_radio.profile = resolve_radio_profile(model="IC-9700")
+    mock_radio.get_preamp = AsyncMock(spec=IcomRadio.get_preamp, return_value=3)
+    store = StateStore()
+    handler = RigctldHandler(mock_radio, config, state_store=store)
+
+    resp = await handler.execute(get_cmd("get_level", "PREAMP"))
+
+    assert mock_radio.get_preamp.await_count == 1
+    assert resp.error == HamlibError.ENAVAIL
+    assert resp.values == []
+    with pytest.raises(KeyError):
+        store.snapshot().field("receiver.main.operator_controls.preamp")
+
+
+@pytest.mark.asyncio
+async def test_get_level_preamp_ic9700_ingress_combination_is_unavailable() -> None:
+    radio = IcomRadio("192.168.1.100", model="IC-9700")
+    frame = CivFrame(
+        to_addr=CONTROLLER_ADDR,
+        from_addr=radio.profile.civ_addr,
+        command=0x16,
+        sub=0x02,
+        data=b"\x03",
+        receiver=0,
+    )
+    radio._civ_runtime._update_state_cache_from_frame(frame)  # noqa: SLF001
+    store = radio._state_store  # noqa: SLF001
+    observed = store.snapshot().field("receiver.0.operator_controls.preamp")
+    assert observed.value == 3
+    handler = RigctldHandler(radio, RigctldConfig(), state_store=store)
+
+    with mock.patch.object(
+        radio, "get_preamp", AsyncMock(spec=IcomRadio.get_preamp)
+    ) as read:
+        resp = await handler.execute(get_cmd("get_level", "PREAMP"))
+
+    assert resp.error == HamlibError.ENAVAIL
+    assert resp.values == []
+    read.assert_not_awaited()
+    assert store.snapshot().field("receiver.0.operator_controls.preamp") == observed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-7300", "IC-9700"])
+@pytest.mark.parametrize("index,db", [(1, 12), (2, 20)])
+async def test_get_level_preamp_cached_native_index_returns_db(
+    mock_radio: AsyncMock, config: RigctldConfig, model: str, index: int, db: int
+) -> None:
+    mock_radio.profile = resolve_radio_profile(model=model)
+    mock_radio.get_preamp = AsyncMock(spec=IcomRadio.get_preamp)
+    store = StateStore()
+    _apply_store_value(store, "receiver.main.operator_controls.preamp", index)
+    handler = RigctldHandler(mock_radio, config, state_store=store)
+
+    resp = await handler.execute(get_cmd("get_level", "PREAMP"))
+
+    assert resp.ok
+    assert resp.values == [str(db)]
+    mock_radio.get_preamp.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("index", [True, "1", -1])
+async def test_get_level_preamp_live_invalid_index_is_unavailable(
+    mock_radio: AsyncMock, config: RigctldConfig, index: object
+) -> None:
+    mock_radio.get_preamp = AsyncMock(spec=IcomRadio.get_preamp, return_value=index)
+    store = StateStore()
+    handler = RigctldHandler(mock_radio, config, state_store=store)
+
+    resp = await handler.execute(get_cmd("get_level", "PREAMP"))
+
+    assert resp.error == HamlibError.ENAVAIL
+    assert resp.values == []
+    mock_radio.get_preamp.assert_awaited_once()
+    with pytest.raises(KeyError):
+        store.snapshot().field("receiver.main.operator_controls.preamp")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-7300", "IC-9700"])
+@pytest.mark.parametrize("index,db", [(0, 0), (1, 12), (2, 20)])
+async def test_get_level_preamp_representable_values_unchanged(
+    mock_radio: AsyncMock, config: RigctldConfig, model: str, index: int, db: int
+) -> None:
+    mock_radio.profile = resolve_radio_profile(model=model)
+    mock_radio.get_preamp = AsyncMock(spec=IcomRadio.get_preamp, return_value=index)
+    store = StateStore()
+    handler = RigctldHandler(mock_radio, config, state_store=store)
+
+    resp = await handler.execute(get_cmd("get_level", "PREAMP"))
+
+    assert mock_radio.get_preamp.await_count == 1
+    assert resp.ok
+    assert resp.values == [str(db)]
+    observed = store.snapshot().field("receiver.main.operator_controls.preamp")
+    assert observed.value == index
+    assert observed.source.source == "hamlib_response"
+    cached = await handler.execute(get_cmd("get_level", "PREAMP"))
+    assert cached.ok
+    assert cached.values == [str(db)]
+    mock_radio.get_preamp.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_get_level_att_off(
     handler: RigctldHandler, mock_radio: AsyncMock
 ) -> None:
@@ -3063,6 +3172,44 @@ async def test_set_level_preamp_20db(
     resp = await handler.execute(set_cmd("set_level", "PREAMP", "20"))
     assert resp.ok
     mock_radio.set_preamp.assert_awaited_once_with(2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-7300", "IC-9700"])
+@pytest.mark.parametrize("db,index", [(12, 1), (20, 2)])
+async def test_set_level_preamp_pending_native_index_returns_db(
+    mock_radio: AsyncMock, config: RigctldConfig, model: str, db: int, index: int
+) -> None:
+    mock_radio.profile = resolve_radio_profile(model=model)
+    mock_radio.set_preamp = AsyncMock(spec=IcomRadio.set_preamp)
+    mock_radio.get_preamp = AsyncMock(spec=IcomRadio.get_preamp, return_value=0)
+    store = StateStore()
+    path = FieldPath.receiver("0", "operator_controls", "preamp")
+    _apply_store_value(store, str(path), 0)
+    _seed_known_rx(store)
+    handler = RigctldHandler(mock_radio, config, state_store=store)
+    session_id = "preamp-client"
+    write = parse_line(f"L PREAMP {db}".encode("ascii"))
+    read = parse_line(b"l PREAMP")
+
+    assert (await handler.execute(write, session_id=session_id)).ok
+    resp = await handler.execute(read, session_id=session_id)
+
+    assert resp.ok
+    assert resp.values == [str(db)]
+    mock_radio.set_preamp.assert_awaited_once_with(index)
+    mock_radio.get_preamp.assert_not_awaited()
+    service = handler._command_service  # noqa: SLF001
+    overlays = service.pending_overlays(
+        source="rigctld", session_id=session_id, path=path
+    )
+    assert len(overlays) == 1
+    assert overlays[0].value == index
+    expectations = service.readback_expectations(
+        source="rigctld", session_id=session_id, command_id=overlays[0].command_id
+    )
+    assert [(item.path, item.value) for item in expectations] == [(path, index)]
+    assert store.snapshot().field(path).value == 0
 
 
 @pytest.mark.asyncio
@@ -3719,6 +3866,23 @@ def yaesu_radio() -> AsyncMock:
 @pytest.fixture
 def yaesu_handler(yaesu_radio: AsyncMock, config: RigctldConfig) -> RigctldHandler:
     return RigctldHandler(yaesu_radio, config)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("index", [1, 2])
+async def test_yaesu_preamp_read_after_write_preserves_native_index(
+    yaesu_handler: RigctldHandler, yaesu_radio: AsyncMock, index: int
+) -> None:
+    write = parse_line(f"L PREAMP {index}".encode("ascii"))
+    read = parse_line(b"l PREAMP")
+
+    assert (await yaesu_handler.execute(write, session_id="yaesu-preamp")).ok
+    resp = await yaesu_handler.execute(read, session_id="yaesu-preamp")
+
+    assert resp.ok
+    assert resp.values == [str(index)]
+    yaesu_radio.set_preamp.assert_awaited_once_with(index)
+    yaesu_radio.get_preamp.assert_not_awaited()
 
 
 # -- Yaesu get_level ----------------------------------------------------------
