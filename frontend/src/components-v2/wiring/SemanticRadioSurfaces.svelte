@@ -737,13 +737,15 @@
   let memoryFacts = $derived(deriveMemoryPanelProps());
   const memoryHandlers = getMemoryHandlers();
   /** MOR-3627: the radio's stored channels, read-only. */
-  const radioMemoryList = new MemoryListController();
+  const radioMemoryList = new MemoryListController(memoryHandlers.fetchPage);
   let memoryReadable = $derived(runtime.caps?.capabilities?.includes('memory_read') ?? false);
   let radioMemories = $derived(memoryReadable ? {
     status: radioMemoryList.status, error: radioMemoryList.error, entries: radioMemoryList.entries,
     group: radioMemoryList.group, groups: radioMemoryList.groups, recall: radioMemoryList.recall,
+    hasMore: radioMemoryList.hasMore,
     onGroupChange: (group: number) => void radioMemoryList.load(group),
     onReload: () => void radioMemoryList.load(radioMemoryList.group ?? undefined),
+    onLoadMore: () => void radioMemoryList.loadMore(),
     onRecall: memoryHandlers.onRecallListed,
   } : undefined);
   /**

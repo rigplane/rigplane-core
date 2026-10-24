@@ -9,6 +9,32 @@ const pageOf = (): MemoryPageDto => ({
 });
 
 describe('trackMemoryList', () => {
+  it('loads only page one on mount and does not reload when page state changes', async () => {
+    const fetchPage = vi.fn(async (req: { start?: number }) => ({
+      ...pageOf(), channels: { first: 0, last: 5 },
+      entries: [{ group: 0, channel: req.start ?? 0, empty: true }],
+    }));
+    const list = new MemoryListController(fetchPage);
+    const destroy = $effect.root(() => trackMemoryList(list, () => true));
+    try {
+      flushSync();
+      await Promise.resolve();
+      flushSync();
+      expect(fetchPage).toHaveBeenCalledTimes(1);
+      expect(fetchPage.mock.calls[0][0]).toEqual({ group: undefined, count: 25 });
+      expect(list.hasMore).toBe(true);
+      await list.loadMore();
+      flushSync();
+      await Promise.resolve();
+      flushSync();
+      expect(fetchPage).toHaveBeenCalledTimes(2);
+      expect(fetchPage.mock.calls[1][0]).toEqual({ group: 0, start: 1, count: 25 });
+      expect(list.entries.map((entry) => entry.channel)).toEqual([0, 1]);
+    } finally {
+      destroy();
+    }
+  });
+
   it('loads while readable and cancels when the host is destroyed', async () => {
     let signal: AbortSignal | undefined;
     let settle: (page: MemoryPageDto) => void = () => undefined;

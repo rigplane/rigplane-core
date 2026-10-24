@@ -591,7 +591,6 @@ reason = "Recurring radio reads/writes stay in declared acquisition owners"
 exceptions = [
   { path = "src/lib/runtime/commands/panel-commands.ts", count = 1, owner = "MOR-1407" },
   { path = "src/lib/runtime/frontend-runtime.ts", count = 1, owner = "MOR-1407" },
-  { path = "src/lib/runtime/memory-list.svelte.ts", count = 1, owner = "MOR-1407" },
   { path = "src/lib/runtime/scope-controller.svelte.ts", count = 1, owner = "MOR-1407" },
   { path = "src/lib/runtime/tx-controller/browser-dependencies.ts", count = 1, owner = "MOR-1407" },
   { path = "src/lib/stores/connection.svelte.ts", count = 1, owner = "MOR-1407" },

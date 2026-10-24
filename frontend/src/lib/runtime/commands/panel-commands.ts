@@ -36,6 +36,7 @@ import { audioManager } from '$lib/audio/audio-manager';
 import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
 import { currentControlSessionEpoch, dispatchRadioIntent, isNormalizedLevel } from './radio-intents';
 import { getCommandLifecycles } from '$lib/stores/commands.svelte';
+import { fetchMemoryPage } from '$lib/transport/http-client';
 import {
   getSharedTuningAccumulator,
   type AcceptedTargetQuery,
@@ -264,6 +265,7 @@ function validMemoryChannel(channel: number): boolean {
 
 export function makeMemoryHandlers() {
   return {
+    fetchPage: fetchMemoryPage,
     onRecall: (channel: number): boolean => {
       if (!validMemoryChannel(channel) || currentMemorySnapshot() === null) return false;
       dispatchRadioIntent({ name: 'set_memory_mode', params: { channel } });

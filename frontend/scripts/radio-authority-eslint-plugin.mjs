@@ -30,7 +30,6 @@ const LEGACY_WRITER_OWNERS = new Set([
 const ACQUISITION_OWNERS = new Set([
   'src/lib/runtime/frontend-runtime.ts',
   'src/lib/runtime/commands/panel-commands.ts',
-  'src/lib/runtime/memory-list.svelte.ts',
   'src/lib/runtime/scope-controller.svelte.ts',
   'src/lib/runtime/tx-controller/browser-dependencies.ts',
   'src/lib/stores/connection.svelte.ts',

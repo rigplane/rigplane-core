@@ -1,5 +1,4 @@
 import { untrack } from 'svelte';
-import { fetchMemoryPage } from '$lib/transport/http-client';
 import type { MemoryEntryDto, MemoryPageDto } from '$lib/types/memory-list';
 
 const PAGE_SIZE = 25;
@@ -18,36 +17,47 @@ export class MemoryListController {
   groups = $state<{ first: number; last: number } | null>(null);
   recall = $state(false);
   entries = $state<MemoryEntryDto[]>([]);
+  #next = $state<number | null>(null);
   #abort: AbortController | null = null;
   readonly #fetchPage: FetchPage;
 
-  constructor(fetchPage: FetchPage = fetchMemoryPage) {
+  constructor(fetchPage: FetchPage) {
     this.#fetchPage = fetchPage;
   }
 
-  async load(group?: number): Promise<void> {
+  get hasMore(): boolean {
+    return this.#next !== null;
+  }
+
+  load(group?: number): Promise<void> {
+    this.entries = [];
+    this.#next = null;
+    this.group = group ?? null; // the selection survives a failed first page; omitted = the default
+    return this.#loadPage({ group, count: PAGE_SIZE });
+  }
+
+  async loadMore(): Promise<void> {
+    if (this.status === 'loading' || this.#next === null) return;
+    await this.#loadPage({ group: this.group ?? undefined, start: this.#next, count: PAGE_SIZE });
+  }
+
+  async #loadPage(request: Parameters<FetchPage>[0]): Promise<void> {
     this.#abort?.abort();
     const abort = new AbortController();
     this.#abort = abort;
     const current = () => this.#abort === abort && !abort.signal.aborted;
     this.status = 'loading';
     this.error = null;
-    this.entries = [];
-    this.group = group ?? null; // the selection survives a failed first page; omitted = the default
     try {
-      let page = await this.#fetchPage({ group, count: PAGE_SIZE }, abort.signal);
-      while (current()) {
-        this.group = page.group;
-        this.groups = page.groups;
-        this.recall = page.recall;
-        this.entries = [...this.entries, ...page.entries];
-        const next = (page.entries.at(-1)?.channel ?? page.channels.last) + 1;
-        if (next > page.channels.last) {
-          this.status = 'ready';
-          return;
-        }
-        page = await this.#fetchPage({ group: page.group, start: next, count: PAGE_SIZE }, abort.signal);
-      }
+      const page = await this.#fetchPage(request, abort.signal);
+      if (!current()) return;
+      this.group = page.group;
+      this.groups = page.groups;
+      this.recall = page.recall;
+      this.entries = [...this.entries, ...page.entries];
+      const last = page.entries.at(-1)?.channel;
+      this.#next = last !== undefined && last < page.channels.last ? last + 1 : null;
+      this.status = 'ready';
     } catch (error) {
       if (!current()) return;
       this.status = 'error';
@@ -61,6 +71,7 @@ export class MemoryListController {
     this.status = 'idle';
     this.error = null;
     this.entries = [];
+    this.#next = null;
     this.group = null;
     this.groups = null;
     this.recall = false;

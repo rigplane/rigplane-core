@@ -350,6 +350,7 @@ it('acquires IC-705 radio memories only with memory_read, renders them, selects 
       ...golden, group,
       entries: Array.from({ length: Math.min(count, golden.channels.last - start + 1) }, (_, offset) => {
         const channel = start + offset;
+        if (channel === 29) return { ...golden.entries.find((entry) => entry.channel === 4)!, channel, group, name: 'MORE RPT' };
         return { ...(golden.entries.find((entry) => entry.channel === channel) ?? { channel, empty: true }), group };
       }),
     };
@@ -376,9 +377,6 @@ it('acquires IC-705 radio memories only with memory_read, renders them, selects 
   await settleList();
   expect(requests.map((url) => Object.fromEntries(url.searchParams))).toEqual([
     { count: '25' },
-    { group: '0', start: '25', count: '25' },
-    { group: '0', start: '50', count: '25' },
-    { group: '0', start: '75', count: '25' },
   ]);
   expect(q('[data-testid="radio-memories-status"]')?.dataset.status).toBe('ready');
   const row = q('[data-testid="radio-memory-4"]');
@@ -387,6 +385,34 @@ it('acquires IC-705 radio memories only with memory_read, renders them, selects 
   expect(row!.querySelector('.rm-freq')?.textContent).toBe('146.940.000');
   expect(row!.querySelector('.rm-mode')?.textContent).toBe('FM');
   expect(commands()).toEqual([]);
+
+  const more = () => q<HTMLButtonElement>('[data-testid="radio-memories-more"]');
+  expect(more()).not.toBeNull();
+  expect(more()!.disabled).toBe(false);
+  expect(q('[data-testid="radio-memory-29"]')).toBeNull();
+  press(more()!);
+  flushSync();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(Object.fromEntries(requests[1].searchParams)).toEqual({ group: '0', start: '25', count: '25' });
+  expect(more()!.disabled).toBe(true);
+  await settleList();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(q('[data-testid="radio-memory-4"]')?.textContent).toContain('TEST RPT');
+  expect(q('[data-testid="radio-memory-29"]')?.textContent).toContain('MORE RPT');
+  expect(more()!.disabled).toBe(false);
+
+  press(more()!);
+  flushSync();
+  await settleList();
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect(Object.fromEntries(requests[2].searchParams)).toEqual({ group: '0', start: '50', count: '25' });
+  expect(more()).not.toBeNull();
+  press(more()!);
+  flushSync();
+  await settleList();
+  expect(fetchMock).toHaveBeenCalledTimes(4);
+  expect(Object.fromEntries(requests[3].searchParams)).toEqual({ group: '0', start: '75', count: '25' });
+  expect(more()).toBeNull();
 
   const chooser = q<HTMLInputElement>('[data-testid="radio-memories-group"]');
   expect(chooser).not.toBeNull();
@@ -399,10 +425,9 @@ it('acquires IC-705 radio memories only with memory_read, renders them, selects 
   await settleList();
   expect(requests.slice(4).map((url) => Object.fromEntries(url.searchParams))).toEqual([
     { group: '7', count: '25' },
-    { group: '7', start: '25', count: '25' },
-    { group: '7', start: '50', count: '25' },
-    { group: '7', start: '75', count: '25' },
   ]);
+  expect(q('[data-testid="radio-memory-29"]')).toBeNull();
+  expect(more()).not.toBeNull();
   expect(chooser!.value).toBe('7');
   expect(q('[data-testid="radio-memories-status"]')?.dataset.status).toBe('ready');
   expect(q('[data-testid="radio-memory-4"]')?.textContent).toContain('TEST RPT');
@@ -420,9 +445,9 @@ it('acquires IC-705 radio memories only with memory_read, renders them, selects 
   expect(reload!.disabled).toBe(false);
   press(reload!);
   flushSync();
-  expect(Object.fromEntries(requests[8].searchParams)).toEqual({ group: '7', count: '25' });
+  expect(Object.fromEntries(requests[5].searchParams)).toEqual({ group: '7', count: '25' });
   await settleList();
-  expect(requests).toHaveLength(12);
+  expect(requests).toHaveLength(6);
   expect(chooser!.value).toBe('7');
   expect(q('[data-testid="radio-memories-status"]')?.dataset.status).toBe('ready');
   expect(q('[data-testid="radio-memory-4"]')?.textContent).toContain('TEST RPT');
