@@ -1414,7 +1414,7 @@ class UsbAudioDriver:
     ) -> tuple[UsbAudioDevice, UsbAudioDevice]:
         from ._portaudio_enum import read_portaudio_enumeration
         from ._usb_adapt_windows import adapt_windows
-        from ._usb_pairing import PairRefused, WindowsAudioTopologyError, pair
+        from ._usb_pairing import PairRefused, pair, pairing_refusal_error
 
         sd_module = _extract_sounddevice_module(self._backend)
         if records.devnodes:
@@ -1430,7 +1430,7 @@ class UsbAudioDriver:
                 ).to_json_dict()
             mapping = pair(adapt_windows(session), serial_port, self._usb_identity)
             if isinstance(mapping, PairRefused):
-                raise WindowsAudioTopologyError(mapping)
+                raise pairing_refusal_error(mapping)
             rx = next((d for d in devices if d.index == mapping.rx_index), None)
             tx = next((d for d in devices if d.index == mapping.tx_index), None)
             if rx is None or tx is None or not rx.supports_rx or not tx.supports_tx:

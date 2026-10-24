@@ -101,9 +101,12 @@ def adapt_windows(session: dict[str, Any]) -> UsbSnapshot:
         if row.class_name.upper() == "PORTS":
             serial_owner = owner(row.instance_id)
             serial_devices.append(serial_owner or row.instance_id)
-            port = re.search(r"\((COM\d+)\)", row.friendly_name, re.IGNORECASE)
-            if port:
-                serial_ports.append(SerialPortRef(port[1].upper(), serial_owner))
+            ports = {
+                port.upper()
+                for port in re.findall(r"\bCOM\d+\b", row.friendly_name, re.IGNORECASE)
+            }
+            if len(ports) == 1:
+                serial_ports.append(SerialPortRef(ports.pop(), serial_owner))
         flow: Flow
         if row.instance_id.upper().startswith("SWD\\MMDEVAPI\\{0.0.1."):
             flow = "capture"

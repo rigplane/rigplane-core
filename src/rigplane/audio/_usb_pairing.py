@@ -70,6 +70,22 @@ class WindowsAudioTopologyError(RuntimeError):
         )
 
 
+class WindowsAudioAmbiguityError(WindowsAudioTopologyError):
+    pass
+
+
+class WindowsAudioEndpointNameError(WindowsAudioTopologyError):
+    pass
+
+
+def pairing_refusal_error(refusal: PairRefused) -> WindowsAudioTopologyError:
+    if refusal.wire_reason == "usb_ambiguous":
+        return WindowsAudioAmbiguityError(refusal)
+    if refusal.wire_reason == "usb_topology_names":
+        return WindowsAudioEndpointNameError(refusal)
+    return WindowsAudioTopologyError(refusal)
+
+
 def _matches(
     snapshot: UsbSnapshot, record: PortAudioDeviceRecord, api: HostApiRecord, flow: Flow
 ) -> tuple[AudioEndpoint, ...]:

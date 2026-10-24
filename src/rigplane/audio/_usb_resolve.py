@@ -83,6 +83,11 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+from rigplane.audio._usb_pairing import (
+    WindowsAudioAmbiguityError,
+    WindowsAudioEndpointNameError,
+    WindowsAudioTopologyError,
+)
 from rigplane.audio.backend import _ALSA_HW_RE
 from rigplane.core.usb_identity import UsbAudioIdentity
 
@@ -90,6 +95,9 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "AudioDeviceMapping",
+    "WindowsAudioAmbiguityError",
+    "WindowsAudioEndpointNameError",
+    "WindowsAudioTopologyError",
     "resolve_audio_for_serial_port",
 ]
 
@@ -138,7 +146,7 @@ def resolve_audio_for_serial_port(
     if platform.system() == "Windows":
         from ._portaudio_enum import read_portaudio_enumeration
         from ._usb_adapt_windows import adapt_windows
-        from ._usb_pairing import PairRefused, WindowsAudioTopologyError, pair
+        from ._usb_pairing import PairRefused, pair, pairing_refusal_error
         from ._usb_raw_windows import read_raw_windows
 
         try:
@@ -168,7 +176,7 @@ def resolve_audio_for_serial_port(
         )
         result = pair(snapshot, serial_port, usb_identity)
         if isinstance(result, PairRefused):
-            raise WindowsAudioTopologyError(result)
+            raise pairing_refusal_error(result)
         return AudioDeviceMapping(result.rx_index, result.tx_index, serial_port)
     logger.info(
         "usb-audio-resolve: platform %s — topology resolution not supported, "
