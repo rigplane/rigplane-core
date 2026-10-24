@@ -191,12 +191,7 @@ async def test_stable_override_revalidated_on_every_open(
                 row["friendly_name"] = listed_name + "endpoint"
         for index in (1, 5):
             session["raw"]["portaudio"]["devices"][index]["name"] = listed_name
-    if trailing_space:
-        assert choices == {
-            "capture": "MME|name:USB Audio CODEC 12345678901234 ",
-            "render": "MME|name:USB Audio CODEC 12345678901234 ",
-        }
-    elif name_fallback:
+    if name_fallback:
         rows = session["raw"]["windows"]["devnodes"]
         for row in tuple(rows):
             if row["class_name"] == "AudioEndpoint":
@@ -208,7 +203,12 @@ async def test_stable_override_revalidated_on_every_open(
         for c in refusal.candidates
         if c.portaudio_index in {1, 5}
     }
-    if name_fallback:
+    if trailing_space:
+        assert choices == {
+            "capture": "MME|name:USB Audio CODEC 12345678901234 ",
+            "render": "MME|name:USB Audio CODEC 12345678901234 ",
+        }
+    elif name_fallback:
         assert choices["capture"] == "MME|name:Microphone (USB Audio CODEC )"
         assert choices["render"] == "MME|name:Speakers (USB Audio CODEC )"
     backend, _ = _inject_windows(monkeypatch, session)
