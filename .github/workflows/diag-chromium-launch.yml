@@ -46,7 +46,8 @@ jobs:
       - name: Measure Chromium launches
         working-directory: frontend
         env:
-          DIAG_LAUNCHES: '40'
+          DIAG_LAUNCHES: '300'
+          DIAG_SLOT: ${{ matrix.slot }}
         run: node ../.github/scripts/diag_chromium_launch.mjs
       - uses: actions/upload-artifact@v7
         if: always()
