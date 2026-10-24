@@ -162,4 +162,6 @@ def test_ftx1_reply_parse_inverts_format(template: str, data: st.DataObject) -> 
 def test_ftx1_memory_tag_preserves_empty_text_and_spaces(tag: str) -> None:
     template = "MT{chan}{tag};"
     fields = {"chan": "00001", "tag": tag}
-    assert CatCommandParser(template).parse(format_command(template, **fields)) == fields
+    assert (
+        CatCommandParser(template).parse(format_command(template, **fields)) == fields
+    )
