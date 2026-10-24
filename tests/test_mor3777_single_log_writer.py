@@ -19,9 +19,12 @@ from __future__ import annotations
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -171,6 +174,131 @@ def test_cli_explicit_log_file_and_diagnostic_file_each_have_one_writer(
     _assert_no_duplicate_records(diag)
 
 
+def _case_insensitive_fs(directory: Path) -> bool:
+    directory.mkdir(parents=True, exist_ok=True)
+    probe = directory / "mor3777-case-probe"
+    probe.write_text("", encoding="utf-8")
+    try:
+        return (directory / "MOR3777-CASE-PROBE").exists()
+    finally:
+        probe.unlink()
+
+
+def test_cli_hard_link_alias_of_rigplane_log_has_one_writer(tmp_path: Path) -> None:
+    """Review r2: an alias of rigplane.log is the same file, not another one.
+
+    ``ICOM_LOG_FILE`` names a hard link to the diagnostic ``rigplane.log``:
+    a path comparison sees two files, but it is one inode, so the CLI must
+    be its only writer.
+    """
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    diag = log_dir / "rigplane.log"
+    diag.write_text("", encoding="utf-8")
+    alias = tmp_path / "alias.log"
+    os.link(diag, alias)
+
+    _, proc = _run_cli(
+        tmp_path, "status", {"ICOM_DEBUG": "1", "ICOM_LOG_FILE": str(alias)}
+    )
+
+    assert proc.returncode != 0
+    assert diag.stat().st_ino == alias.stat().st_ino
+    profile_lines = _profile_lines(diag)
+    assert len(profile_lines) == 1, profile_lines
+    assert _CLI_STYLE in profile_lines[0]
+    _assert_no_duplicate_records(diag)
+
+
+def test_cli_hard_link_alias_keeps_post_rollover_records_in_diagnostic_bundle(
+    tmp_path: Path,
+) -> None:
+    """Pre-review r2: rotation renames pathnames, so the CLI must rotate the
+    canonical ``rigplane.log``, not the alias. Otherwise the first rollover
+    leaves ``rigplane.log`` (what the diagnose bundle collects) on the old
+    inode with no writer and every later record misses the bundle.
+    """
+    from rigplane.diagnostics.contributor import BundleContext
+    from rigplane.diagnostics.contributors.logs import LogsContributor
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    diag = log_dir / "rigplane.log"
+    diag.write_text("", encoding="utf-8")
+    alias = tmp_path / "alias.log"
+    os.link(diag, alias)
+
+    _, proc = _run_cli(
+        tmp_path,
+        "status",
+        {
+            "ICOM_DEBUG": "1",
+            "ICOM_LOG_FILE": str(alias),
+            # The profile record fits; the traceback record that follows
+            # (failed serial open) forces a rollover before it is written.
+            "ICOM_LOG_MAX_BYTES": "600",
+            "ICOM_LOG_BACKUP_COUNT": "2",
+        },
+    )
+
+    assert proc.returncode != 0
+    rotated = [p.name for p in tmp_path.rglob("*.log.1")]
+    assert rotated, "no rollover happened"
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    LogsContributor().contribute(
+        BundleContext(
+            radio=None,
+            config_dir=tmp_path / "config",
+            log_dir=log_dir,
+            user_description=None,
+            issue_ref=None,
+            contact_email=None,
+            contact_callsign=None,
+            submission_id="mor3777",
+            generated_at_unix=0,
+        ),
+        bundle,
+    )
+    bundled = [
+        line
+        for p in sorted(bundle.glob("rigplane.log*"))
+        for line in p.read_text(encoding="utf-8").splitlines()
+        if _RECORD_START.match(line)
+    ]
+    # Written after the rollover: present in the bundle, exactly once.
+    post_rollover = [
+        line for line in bundled if " rigplane.cli [DEBUG] Traceback:" in line
+    ]
+    assert len(post_rollover) == 1, bundled
+    assert len([line for line in bundled if _CLI_STYLE in line]) == 1, bundled
+    # The CLI reports (and the web UI shows) the file it actually rotates.
+    assert f"Logging to {diag} " in proc.stderr
+
+
+def test_cli_case_alias_of_rigplane_log_has_one_writer(tmp_path: Path) -> None:
+    """Review r2: on a case-insensitive FS (macOS default) ``RigPlane.log``
+    and ``rigplane.log`` are one file; the CLI must be its only writer.
+
+    ``rigplane.log`` is not pre-created: the CLI opens its file first, so the
+    identity check sees the file both names point to.
+    """
+    log_dir = tmp_path / "logs"
+    if not _case_insensitive_fs(log_dir):
+        pytest.skip("filesystem is case-sensitive")
+    alias = log_dir / "RigPlane.log"
+
+    _, proc = _run_cli(
+        tmp_path, "status", {"ICOM_DEBUG": "1", "ICOM_LOG_FILE": str(alias)}
+    )
+
+    assert proc.returncode != 0
+    profile_lines = _profile_lines(log_dir / "rigplane.log")
+    assert len(profile_lines) == 1, profile_lines
+    assert _CLI_STYLE in profile_lines[0]
+    _assert_no_duplicate_records(alias)
+
+
 # ---------------------------------------------------------------------------
 # Unit: detach_diagnostic_logging + cli.main wiring (in-process)
 # ---------------------------------------------------------------------------
@@ -238,7 +366,27 @@ def test_detach_for_same_path_removes_handler(_diagnostic_handler: Path) -> None
     assert _diag_handlers() == []
 
 
+@contextmanager
+def _preserved_signal_handlers() -> Iterator[None]:
+    """main() sets SIGTERM/SIGINT to SIG_IGN on teardown; put them back.
+
+    Same pattern as ``_restore_process_signal_handlers`` in tests/test_cli.py.
+    """
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        signal.signal(signal.SIGINT, previous_sigint)
+
+
 def _run_main_serve(env: dict[str, str], command: str = "serve") -> None:
+    with _preserved_signal_handlers():
+        _run_main_serve_unguarded(env, command)
+
+
+def _run_main_serve_unguarded(env: dict[str, str], command: str) -> None:
     with patch.dict("os.environ", {"ICOM_PID_FILE": "", **env}, clear=False):
         with patch("sys.argv", ["rigplane", "--host", "127.0.0.1", command]):
             with patch("rigplane.cli._run", new_callable=AsyncMock, return_value=0):
@@ -311,3 +459,99 @@ def test_main_short_command_without_cli_file_keeps_diagnostic_writer(
     assert not any(
         isinstance(h, logging.FileHandler) for h in logging.getLogger().handlers
     )
+
+
+def _sentinel_handler(signum: int, frame: object) -> None:  # pragma: no cover
+    raise AssertionError("sentinel signal handler must never run")
+
+
+def test_in_process_main_restores_sigterm_and_sigint() -> None:
+    """Review r2: an in-process main() must not leave SIGTERM/SIGINT ignored
+    for the rest of the test session."""
+    previous = (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT))
+    signal.signal(signal.SIGTERM, _sentinel_handler)
+    signal.signal(signal.SIGINT, _sentinel_handler)
+    root = logging.getLogger()
+    saved_handlers, saved_level = list(root.handlers), root.level
+    try:
+        _run_main_serve({"ICOM_LOG_FILE": "off"})
+        assert signal.getsignal(signal.SIGTERM) is _sentinel_handler
+        assert signal.getsignal(signal.SIGINT) is _sentinel_handler
+    finally:
+        signal.signal(signal.SIGTERM, previous[0])
+        signal.signal(signal.SIGINT, previous[1])
+        for h in root.handlers:
+            if h not in saved_handlers:
+                h.close()
+        root.handlers = saved_handlers
+        root.setLevel(saved_level)
+
+
+@pytest.mark.usefixtures("_restore_root_logging")
+def test_main_opens_cli_file_before_detaching(
+    _diagnostic_handler: Path, tmp_path: Path
+) -> None:
+    """Review r2: the CLI file exists when the identity check runs, so an
+    alias of rigplane.log is recognised even if neither file existed."""
+    from rigplane.diagnostics import _logging as diag_logging
+
+    cli_file = tmp_path / "fresh" / "cli.log"
+    seen: list[bool] = []
+    real_detach = diag_logging.detach_diagnostic_logging
+
+    def _spy(path: Path | None = None) -> bool:
+        if path is not None:
+            seen.append(Path(path).exists())
+        return real_detach(path)
+
+    with patch.object(diag_logging, "detach_diagnostic_logging", _spy):
+        _run_main_serve({"ICOM_LOG_FILE": str(cli_file)})
+    assert seen == [True]
+
+
+@pytest.mark.usefixtures("_restore_root_logging")
+def test_main_survives_symlink_loop_among_handler_paths(
+    _diagnostic_handler: Path, tmp_path: Path
+) -> None:
+    """Review r2: ``Path.resolve()`` on a symlink loop raises RuntimeError.
+
+    A diagnostic handler whose path is a cyclic symlink must read as "not
+    the same file" instead of killing main() before the log opens.
+    """
+    loop_a, loop_b = tmp_path / "loop-a", tmp_path / "loop-b"
+    loop_a.symlink_to(loop_b)
+    loop_b.symlink_to(loop_a)
+    looped = SafeRotatingFileHandler(loop_a / "rigplane.log", delay=True)
+    icom_logger = logging.getLogger("rigplane")
+    icom_logger.addHandler(looped)
+    cli_file = tmp_path / "cli" / "cli.log"
+    try:
+        _run_main_serve({"ICOM_LOG_FILE": str(cli_file)})
+        assert looped in icom_logger.handlers  # not the CLI file, kept
+        logging.getLogger("rigplane.mor3777").warning("mor3777 symlink loop once")
+        for h in logging.getLogger().handlers:
+            h.flush()
+        lines = cli_file.read_text(encoding="utf-8").splitlines()
+        assert sum("mor3777 symlink loop once" in line for line in lines) == 1
+    finally:
+        icom_logger.removeHandler(looped)
+        looped.close()
+
+
+@pytest.mark.usefixtures("_restore_root_logging")
+def test_main_hard_link_alias_detaches_diagnostic_writer(
+    _diagnostic_handler: Path, tmp_path: Path
+) -> None:
+    _diagnostic_handler.parent.mkdir(parents=True, exist_ok=True)
+    _diagnostic_handler.write_text("", encoding="utf-8")
+    alias = tmp_path / "alias.log"
+    os.link(_diagnostic_handler, alias)
+
+    _run_main_serve({"ICOM_LOG_FILE": str(alias)})
+
+    assert _diag_handlers() == []
+    logging.getLogger("rigplane.mor3777").warning("mor3777 hard link once")
+    for h in logging.getLogger().handlers:
+        h.flush()
+    text = _diagnostic_handler.read_text(encoding="utf-8")
+    assert text.count("mor3777 hard link once") == 1

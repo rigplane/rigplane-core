@@ -89,21 +89,63 @@ def configure_diagnostic_logging() -> None:
         sys.stderr.write(f"rigplane: diagnostic logging disabled: {exc}\n")
 
 
+def _is_same_log_file(handler_path: str, target: Path) -> bool:
+    """Whether *handler_path* and *target* name the same file. Never raises.
+
+    Compares file identity (device + inode via ``os.path.samefile``) when
+    both exist, so hard links and case aliases on case-insensitive
+    filesystems (macOS) match. Otherwise falls back to comparing normalized,
+    resolved paths. Any resolution error — e.g. ``RuntimeError`` from
+    ``Path.resolve()`` on a symlink loop, or ``OSError`` — reads as "not the
+    same file".
+    """
+    try:
+        if os.path.exists(handler_path) and os.path.exists(target):
+            return os.path.samefile(handler_path, target)
+    except (OSError, RuntimeError, ValueError):
+        pass
+    try:
+        return os.path.normcase(str(Path(handler_path).resolve())) == os.path.normcase(
+            str(target.expanduser().resolve())
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def diagnostic_log_path_for(path: Path) -> Path | None:
+    """Pathname of the diagnostic handler writing the same file as *path*.
+
+    ``None`` when no diagnostic handler writes that file. The CLI uses it to
+    take over ``rigplane.log`` under its canonical name when ``ICOM_LOG_FILE``
+    is an alias (hard link, case variant): rotation renames pathnames, so
+    rotating the alias would leave ``rigplane.log`` — what diagnostic bundles
+    collect — on the old inode with no writer. Never raises.
+    """
+    for handler in logging.getLogger("rigplane").handlers:
+        if isinstance(handler, SafeRotatingFileHandler) and _is_same_log_file(
+            handler.baseFilename, Path(path)
+        ):
+            return Path(handler.baseFilename)
+    return None
+
+
 def detach_diagnostic_logging(path: Path | None = None) -> bool:
     """Remove and close the diagnostic file handler; return whether one was removed.
 
-    With *path*, only a handler writing that same file is detached. The CLI
-    calls this before attaching its own file handler (MOR-3777) so a log file
-    never has two writers, and with no *path* when ``ICOM_LOG_FILE=off`` asks
-    for no file logging at all. Idempotent; never raises.
+    With *path*, only a handler writing that same file (same file identity,
+    see :func:`_is_same_log_file`) is detached. The CLI calls this right
+    after opening its own file handler and before attaching it (MOR-3777),
+    so a log file never has two writers, and with no *path* when
+    ``ICOM_LOG_FILE=off`` asks for no file logging at all. Idempotent;
+    never raises — a handler whose path cannot be resolved is skipped.
     """
     icom_logger = logging.getLogger("rigplane")
-    target = Path(path).expanduser().resolve() if path is not None else None
+    target = Path(path) if path is not None else None
     removed = False
     for handler in list(icom_logger.handlers):
         if not isinstance(handler, SafeRotatingFileHandler):
             continue
-        if target is not None and Path(handler.baseFilename).resolve() != target:
+        if target is not None and not _is_same_log_file(handler.baseFilename, target):
             continue
         icom_logger.removeHandler(handler)
         try:
