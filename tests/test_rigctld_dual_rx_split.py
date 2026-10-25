@@ -46,6 +46,7 @@ class DualSplitIcomTransport(SplitIcomTransport):
         self.direct_selector = direct_selector
         self.sub_tuple = _SUB_SENTINEL
         self.truncate_mode_readback = False
+        self.mode_write_mismatch: str | None = None
 
     async def send_tracked(self, packet: bytes, *, is_current=None) -> None:
         start = packet.index(b"\xfe\xfe")
@@ -78,6 +79,21 @@ class DualSplitIcomTransport(SplitIcomTransport):
             self.selected = "A"
         try:
             await super().send_tracked(packet, is_current=is_current)
+            # ACK a SET but retain one incorrect field in physical readback.
+            data = packet[start + 5 : -1]
+            if command == 0x26 and len(data) == 4 and self.mode_write_mismatch:
+                slot = (
+                    self.selected
+                    if data[0] == 0
+                    else ("B" if self.selected == "A" else "A")
+                )
+                freq, mode, filt, data_mode = self.slots[slot]
+                self.slots[slot] = (
+                    freq,
+                    Mode.LSB if self.mode_write_mismatch == "mode" else mode,
+                    3 if self.mode_write_mismatch == "filter" else filt,
+                    1 if self.mode_write_mismatch == "data" else data_mode,
+                )
         finally:
             self.selected = saved
 
@@ -165,6 +181,8 @@ async def test_split_targets_sub_and_preserves_rx(model, main_selected):
             )
             assert await _exchange(other_writer, other_reader, b"x\n") == (b"PKTUSB\n")
         assert await _exchange(writer, reader, b"X USB 2400\n") == b"RPRT 0\n"
+        async with _client(server) as (other_reader, other_writer):
+            assert await _exchange(other_writer, other_reader, b"x\n") == b"USB\n"
         assert not any(cmd in (0x05, 0x06, 0x07, 0x1A) for cmd, _, _ in peer.requests)
         if model == "IC-7610":
             assert peer.slots["A"] == rx_before
@@ -276,3 +294,49 @@ async def test_missing_data_preservation_reply_refuses_without_set(model):
         assert not any(
             command == 0x26 and len(data) > 1 for command, _, data in peer.requests
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
+@pytest.mark.parametrize("main_selected", ["A", "B"])
+@pytest.mark.parametrize("mismatch", ["mode", "data", "filter"])
+async def test_ack_with_wrong_mode_tuple_is_not_success(model, main_selected, mismatch):
+    from test_rigctld_wsjtx_split_mk2 import _exchange
+
+    async with _dual_peer(model, selected=main_selected) as (
+        radio,
+        peer,
+        _server,
+        reader,
+        writer,
+    ):
+        rx_slot = "A" if model == "IC-7610" else main_selected
+        rx_before = peer.slots[rx_slot]
+        peer.mode_write_mismatch = mismatch
+        assert await _exchange(writer, reader, b"S 1 VFOB\n") == b"RPRT 0\n"
+        response = await _exchange(writer, reader, b"X USB 2400\n")
+        expected = (
+            "LSB" if mismatch == "mode" else "USB",
+            3 if mismatch == "filter" else 2,
+            1 if mismatch == "data" else 0,
+        )
+        target = FieldPath.active if model == "IC-7610" else FieldPath.unselected
+        receiver = "1" if model == "IC-7610" else "0"
+        snapshot = radio.state_store.snapshot()
+        assert (
+            tuple(
+                snapshot.field(target(receiver, "freq_mode", name)).value
+                for name in ("mode", "filter_num", "data_mode")
+            )
+            == expected
+        )
+        readback = await _exchange(writer, reader, b"x\n")
+        assert readback == (
+            b"PKTUSB\n" if mismatch == "data" else expected[0].encode() + b"\n"
+        )
+        assert peer.slots[rx_slot] == rx_before
+        assert peer.selected == main_selected
+        assert peer.sub_tuple == _SUB_SENTINEL
+        assert not peer.ptt_writes
+        # Canonical state and live readback stay truthful despite the failed SET.
+        assert response == b"RPRT -11\n", (response, expected, readback)
