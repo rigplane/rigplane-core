@@ -100,6 +100,8 @@ class AudioManager {
   private txMic: TxMic;
   private _rxEnabled = false;
   private _txEnabled = false;
+  // Manager cancellation identity; internal TxMic teardown is still a genuine result.
+  private txStartGeneration = 0;
   private appliedAudioConfig: Readonly<Partial<AudioRoutingConfig>> | null = null;
   private backoff = BACKOFF_MIN;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -298,6 +300,7 @@ class AudioManager {
     if (this.controller?.remote() && !this.controller.ready()) return 'Удалённое управление недоступно.';
     const epoch = this.controller?.epoch() ?? 0;
     if (this._txEnabled) return this.txAdmission?.promise ?? null;
+    const startGeneration = ++this.txStartGeneration;
     // MOR-3753: a new attempt supersedes a latched TX failure — cleared at
     // entry, after the guards, so a stale failure never outlives its retry
     // while the fresh capture is still pending.
@@ -311,10 +314,11 @@ class AudioManager {
     } catch (error) {
       // Preserve the original rejection, but only the current capture and
       // controller attempt may publish a new failure after this await.
-      if (captureEpoch === this.txMic.captureEpoch
+      if (startGeneration === this.txStartGeneration && captureEpoch === this.txMic.captureEpoch
         && (!this.controller || this.controller.current(epoch))) setTxError(true);
       throw error;
     }
+    if (startGeneration !== this.txStartGeneration) return 'TX MIC: capture start cancelled';
     if (this.controller && !this.controller.current(epoch)) {
       this.txMic.stop();
       return 'Удалённое управление потеряно. Подключитесь заново.';
@@ -350,6 +354,7 @@ class AudioManager {
   }
 
   stopTx(options?: { automatic?: boolean }): void {
+    ++this.txStartGeneration;
     // MOR-3753: an explicit stop clears a latched TX failure — including the
     // no-op stop after a failure already cleared the demand. Automatic safety
     // cleanup (ManagedTxController forceOff after _failTxAudio) passes

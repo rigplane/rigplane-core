@@ -374,3 +374,101 @@ describe('[new contract] AudioManager failure persistence and recovery (MOR-3753
     expect(rxStop).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('real capture results after manager stop (MOR-3753)', () => {
+  let savedMic: typeof import('../tx-mic');
+  let secureContext: PropertyDescriptor | undefined;
+  let track: EventTarget & { stop: ReturnType<typeof vi.fn>; readyState: string };
+  let capture: ReturnType<typeof vi.fn<() => Promise<MediaStream>>>;
+  const setSecure = (value: boolean) => Object.defineProperty(window, 'isSecureContext', {
+    configurable: true, value,
+  });
+  const enablePcm = (sampleRate = 48000) => vi.stubGlobal('AudioContext', class {
+    sampleRate = sampleRate;
+    destination = {};
+    close = vi.fn(async () => {});
+    createMediaStreamSource = () => ({ connect: vi.fn(), disconnect: vi.fn() });
+    createScriptProcessor = () => ({ connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null });
+  });
+  const stream = () => ({ getTracks: () => [track], getAudioTracks: () => [track] }) as unknown as MediaStream;
+  const refuse = (reason: 'insecure' | 'unsupported') => { if (reason === 'insecure') setSecure(false); };
+  async function rig() {
+    const { audioManager } = await import('../audio-manager');
+    const { getAudioState } = await import('../../stores/audio.svelte');
+    return { audioManager, getAudioState };
+  }
+
+  beforeEach(async () => {
+    savedMic = await import('../tx-mic');
+    vi.doMock('../tx-mic', () => vi.importActual<typeof import('../tx-mic')>('../tx-mic'));
+    vi.resetModules();
+    secureContext = Object.getOwnPropertyDescriptor(window, 'isSecureContext');
+    setSecure(true);
+    track = Object.assign(new EventTarget(), { stop: vi.fn(), readyState: 'live' });
+    capture = vi.fn<() => Promise<MediaStream>>().mockImplementation(async () => stream());
+    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia: capture } });
+    for (const key of ['AudioEncoder', 'MediaStreamTrackProcessor', 'AudioContext', 'webkitAudioContext']) {
+      vi.stubGlobal(key, undefined);
+    }
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('location', { protocol: 'https:', host: 'station.test' });
+  });
+  afterEach(async () => {
+    const { audioManager } = await import('../audio-manager');
+    audioManager.destroy();
+    vi.unstubAllGlobals();
+    if (secureContext) Object.defineProperty(window, 'isSecureContext', secureContext);
+    else Reflect.deleteProperty(window, 'isSecureContext');
+    vi.doMock('../tx-mic', () => savedMic);
+    vi.resetModules();
+  });
+
+  it.each(['insecure', 'unsupported'] as const)('explicit stop supersedes a fulfilled %s refusal', async (reason) => {
+    const { audioManager, getAudioState } = await rig();
+    refuse(reason);
+    const pending = audioManager.startTx();
+    audioManager.stopTx();
+    await pending;
+    expect(getAudioState().txError).toBe(false);
+    expect(audioManager.txEnabled).toBe(false);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it.each(['insecure', 'unsupported'] as const)('a stopped %s result cannot contaminate the pending retry', async (reason) => {
+    const { audioManager, getAudioState } = await rig();
+    refuse(reason);
+    const obsolete = audioManager.startTx();
+    audioManager.stopTx();
+    setSecure(true);
+    enablePcm();
+    let resolveCapture!: (value: MediaStream) => void;
+    capture.mockImplementationOnce(() => new Promise<MediaStream>((resolve) => { resolveCapture = resolve; }));
+    const retry = audioManager.startTx();
+    await obsolete;
+    expect(getAudioState().txError).toBe(false);
+    resolveCapture(stream());
+    await expect(retry).resolves.toBeNull();
+    expect(getAudioState().txError).toBe(false);
+    expect(audioManager.txEnabled).toBe(true);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it.each(['insecure', 'unsupported'] as const)('a current %s refusal still latches failure', async (reason) => {
+    const { audioManager, getAudioState } = await rig();
+    refuse(reason);
+    expect(await audioManager.startTx()).toMatch(/^TX MIC:/);
+    expect(getAudioState().txError).toBe(true);
+    expect(audioManager.txEnabled).toBe(false);
+  });
+
+  it('a current PCM refusal still latches when TxMic internally tears capture down', async () => {
+    const { audioManager, getAudioState } = await rig();
+    enablePcm(44100);
+    await expect(audioManager.startTx()).resolves.toBe('TX MIC: unsupported mic sample rate 44100 Hz');
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(getAudioState().txError).toBe(true);
+    expect(audioManager.txEnabled).toBe(false);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+});
