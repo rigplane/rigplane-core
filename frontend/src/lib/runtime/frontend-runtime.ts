@@ -30,6 +30,7 @@ import {
   getRxAudioTargetSnapshot,
   setVolume,
   setMuted,
+  setRxError,
   subscribeRxAudioTarget,
   toggleMute,
 } from '$lib/stores/audio.svelte';
@@ -150,7 +151,7 @@ class FrontendRuntime {
           return audioManager;
         },
         stop: () => {
-          audioManager.stopRx();
+          audioManager.stopRx({ automatic: true });
         },
       },
     });
@@ -532,6 +533,8 @@ class FrontendRuntime {
       return;
     }
 
+    // The user acknowledges RX failure even if automatic teardown retired the lease.
+    setRxError(false);
     const lease = this._rxAudioLease;
     this._rxAudioLease = null;
     if (lease) presentationResources.release(lease);
