@@ -378,6 +378,34 @@ async def test_relative_mode_write_maps_malformed_verification_readback():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("selected,frame", [(False, "MD1;"), (True, "MD0;")])
+async def test_relative_mode_write_maps_radio_nak_verification_to_command_rejected(
+    selected, frame
+):
+    radio, peer = relative_radio()
+    peer.fail_query[frame] = CatCommandRejected("?;", command=frame)
+    addressed = 0 if selected else 1
+    opposite = 1 - addressed
+    untouched = (peer.freqs[opposite], peer.modes[opposite], peer.filters[opposite])
+    with pytest.raises(CommandRejectedError):
+        await radio.write_relative_vfo_mode(Mode.USB, selected=selected, data=True)
+    assert peer.writes == [f"MD{addressed}C;"]
+    assert (peer.freqs[opposite], peer.modes[opposite], peer.filters[opposite]) == (
+        untouched
+    )
+    assert peer.vs == 0
+
+
+@pytest.mark.asyncio
+async def test_relative_mode_write_leaves_verification_transport_failure_unmapped():
+    radio, peer = relative_radio()
+    peer.fail_query["MD1;"] = CatTimeoutError("read timed out", command="MD1;")
+    with pytest.raises(CatTimeoutError):
+        await radio.write_relative_vfo_mode(Mode.USB, selected=False, data=True)
+    assert peer.writes == ["MD1C;"]
+
+
+@pytest.mark.asyncio
 async def test_relative_mode_write_maps_malformed_data_probe_readback():
     radio, peer = relative_radio()
     peer.garble["MD1;"] = "MD1Z"

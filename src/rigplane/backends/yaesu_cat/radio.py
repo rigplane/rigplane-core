@@ -1596,6 +1596,8 @@ class YaesuCatRadio:
                 await self._set_mode_verified(
                     native, receiver, is_current=current_target
                 )
+            except CatCommandRejected as exc:
+                raise CommandRejectedError(str(exc)) from exc
             except CatParseError as exc:
                 raise CommandError(f"unreadable relative mode readback: {exc}") from exc
             observed = await self._read_relative_receiver(receiver)
