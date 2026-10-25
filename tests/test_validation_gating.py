@@ -503,7 +503,7 @@ def _declaration_digest() -> str:
     return sha256("\n".join(sorted(rows)).encode("utf-8")).hexdigest()
 
 
-_DECLARATION_DIGEST = "7340e54dec88d6b396458170a3cbc9e8c79e4bff67e3110a5813f6811a6aec31"
+_DECLARATION_DIGEST = "408aef17ad70c425713bd051b1830edea333d6b38dd503cda669c1334f61de59"
 
 
 def test_declaration_digest_matches_committed() -> None:

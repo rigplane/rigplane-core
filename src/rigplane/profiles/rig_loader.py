@@ -136,6 +136,7 @@ VALID_AUDIO_SAMPLE_RATES_HZ = {8000, 12000, 16000, 24000, 48000}
 VALID_BROWSER_RX_TRANSPORTS = {"auto", "pcm", "opus"}
 VALID_RX_AUDIO_CHANNELS = {"mix", "left", "right"}
 VALID_VFO_READBACK = {"absolute", "selected_unselected", "none"}
+VALID_SPLIT_TX_TARGETS = {"none", "main_unselected", "sub_receiver"}
 # How a transceiver-wide reply (no receiver of its own) names the
 # transmitting receiver. ``main_unless_split``: MAIN, or SUB while a FRESH
 # split readback is ON (IC-7610 Basic Manual p.3-2 "transmit on only the
@@ -666,6 +667,7 @@ class RigConfig:
     # (``VALID_TX_RECEIVER_RULES``); ``"none"`` keeps the selected-band
     # label.
     tx_receiver_rule: str = "none"
+    split_tx_target: str = "none"
     # MOR-1447 leg 2: "separate" (default) or "combined" (Icom-style single
     # RF/SQL knob — see ``VALID_RF_SQL_CONTROL_MODELS``).
     rf_sql_control_model: str = "separate"
@@ -869,6 +871,7 @@ class RigConfig:
             vfo_scheme=self.vfo_scheme,
             vfo_readback=self.vfo_readback,
             tx_receiver_rule=self.tx_receiver_rule,
+            split_tx_target=self.split_tx_target,
             has_lan=self.has_lan,
             freq_ranges=ranges,
             modes=tuple(self.modes),
@@ -2530,6 +2533,19 @@ def load_rig(path: Path) -> RigConfig:
             f"{filename}: [vfo].tx_receiver_rule must be one of "
             f"{sorted(VALID_TX_RECEIVER_RULES)}, got {tx_receiver_rule!r}"
         )
+    split_tx_target = vfo.get("split_tx_target", "none")
+    if (
+        not isinstance(split_tx_target, str)
+        or split_tx_target not in VALID_SPLIT_TX_TARGETS
+    ):
+        raise RigLoadError(
+            f"{filename}: [vfo].split_tx_target must be one of "
+            f"{sorted(VALID_SPLIT_TX_TARGETS)}, got {split_tx_target!r}"
+        )
+    if split_tx_target != "none" and scheme != "main_sub":
+        raise RigLoadError(
+            f"{filename}: [vfo].split_tx_target requires main_sub scheme"
+        )
     expected_receiver_count = 1 if scheme in {"single", "ab"} else 2
     receiver_count = radio["receiver_count"]
     if (
@@ -3287,6 +3303,7 @@ def load_rig(path: Path) -> RigConfig:
         vfo_scheme=scheme,
         vfo_readback=vfo_readback,
         tx_receiver_rule=tx_receiver_rule,
+        split_tx_target=split_tx_target,
         vfo_main_select=vfo_main,
         vfo_sub_select=vfo_sub,
         vfo_swap_ab=vfo_swap_ab,

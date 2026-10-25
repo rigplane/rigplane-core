@@ -69,8 +69,8 @@ _EXPECTED_COUNTS = {
     # SMA only), and set_dual_watch/set_scope_receiver stay undeclared
     # (single receiver, no set_scope_main_sub), for exactly 4 unsupported.
     "IC-7300MK2": (30, 4),
-    "IC-7610": (32, 2),
-    "IC-9700": (32, 2),
+    "IC-7610": (34, 0),
+    "IC-9700": (34, 0),
     "TX-500": (11, 23),
     "X6100": (15, 19),
     "X6200": (15, 19),
@@ -278,6 +278,42 @@ class TestRelationMutations:
             assert not supports_callable(
                 dataclasses.replace(profile, **changes), operation
             )
+        commands = profile.command_map
+        assert commands is not None
+        for key in keys:
+            assert not supports_callable(_without(profile, key), operation)
+            without_wire = dataclasses.replace(
+                profile,
+                command_map=CommandMap(
+                    {name: commands.get(name) for name in commands if name != key}
+                ),
+            )
+            assert not supports_callable(without_wire, operation)
+
+    @pytest.mark.parametrize("model", ["IC-7610", "IC-9700"])
+    @pytest.mark.parametrize(
+        ("operation", "keys"),
+        [
+            (
+                "write_relative_vfo_frequency",
+                ("set_unselected_freq", "get_unselected_freq"),
+            ),
+            (
+                "write_relative_vfo_mode",
+                ("set_unselected_mode", "get_unselected_mode", "get_unselected_freq"),
+            ),
+        ],
+    )
+    def test_dual_split_writes_require_target_and_every_command(
+        self, profiles, model, operation, keys
+    ):
+        from rigplane.commands.command_map import CommandMap
+
+        profile = profiles[model]
+        assert supports_callable(profile, operation)
+        assert not supports_callable(
+            dataclasses.replace(profile, split_tx_target="none"), operation
+        )
         commands = profile.command_map
         assert commands is not None
         for key in keys:
