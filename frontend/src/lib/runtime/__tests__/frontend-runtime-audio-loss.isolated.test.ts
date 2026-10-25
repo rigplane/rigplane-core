@@ -15,6 +15,7 @@
  * a direct AudioManager call standing in for it.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Capabilities } from '$lib/types/capabilities';
 
 // ── Shared fake boundaries. Hoisted: vi.resetModules() re-runs mock
 //    factories per test, and assertions must keep seeing the same fn
@@ -227,10 +228,10 @@ const settle = async () => {
 /** Fresh real runtime/manager/store per test (vi.resetModules re-runs the
  *  module graph; the hoisted fake singletons stay shared). */
 async function rig() {
-  const { runtime } = await import('../frontend-runtime');
+  const { runtime, presentationResources } = await import('../frontend-runtime');
   const { audioManager } = await import('$lib/audio/audio-manager');
   const store = await import('$lib/stores/audio.svelte');
-  return { runtime, audioManager, store };
+  return { runtime, audioManager, store, presentationResources };
 }
 
 describe('FrontendRuntime automatic audio-loss cleanup (MOR-3753 B)', () => {
@@ -413,4 +414,83 @@ describe('FrontendRuntime automatic audio-loss cleanup (MOR-3753 B)', () => {
     expect(store.getAudioState().rxError).toBe(false);
     expect(fakes.disconnectAll).toHaveBeenCalledOnce();
   });
+
+  async function liveRxRig() {
+    const { subscribeCapabilities } = await import('$lib/stores/capabilities.svelte');
+    let publish!: Parameters<typeof subscribeCapabilities>[0];
+    vi.mocked(subscribeCapabilities).mockImplementation((listener) => {
+      publish = listener;
+      listener({
+        audio: true, scope: false, capabilities: ['audio'], receivers: 1,
+        vfoScheme: 'ab', audioFftAvailable: false, scopeSource: null,
+        stateContractVersion: 1, providerGeneration: 0,
+      } as Capabilities);
+      return vi.fn();
+    });
+    const r = await rig();
+    const cleanup = await r.runtime.bootstrap();
+    r.runtime.setRxLive(true);
+    await vi.waitFor(() => expect(r.presentationResources.snapshot('rx-audio')).toMatchObject({
+      demand: 1, activeHandle: r.audioManager,
+    }));
+    expect(r.audioManager.rxEnabled).toBe(true);
+    const socket = FakeWebSocket.instances.at(-1)!;
+    socket.open();
+    serverText(socket, {
+      type: 'error', message: 'audio_start: RX audio failed to start: device busy',
+    });
+    expect(r.audioManager.rxEnabled).toBe(false);
+    expect(r.store.getAudioState().rxError).toBe(true);
+    expect(r.presentationResources.snapshot('rx-audio').activeHandle).toBe(r.audioManager);
+    expect(mic.rxStop).toHaveBeenCalledOnce();
+    expect(mic.rxStart).toHaveBeenCalledTimes(2);
+    return { ...r, cleanup, withdrawCapabilities: () => publish(null) };
+  }
+
+  it.each([false, true])('RX resource cleanup preserves a refusal and explicit stop acknowledges it (remote=%s)', async (remote) => {
+    controller.remote = remote;
+    const r = await liveRxRig();
+    await r.cleanup();
+    expect(r.store.getAudioState().rxError).toBe(true);
+    expect(r.audioManager.rxEnabled).toBe(false);
+    expect(r.presentationResources.snapshot('rx-audio').activeHandle).toBeUndefined();
+    await r.cleanup();
+    expect(r.store.getAudioState().rxError).toBe(true);
+    expect(mic.rxStop).toHaveBeenCalledOnce();
+    r.runtime.setRxLive(false);
+    expect(r.store.getAudioState().rxError).toBe(false);
+    expect(mic.rxStop).toHaveBeenCalledOnce();
+    expect(mic.rxStart).toHaveBeenCalledTimes(2);
+  });
+
+  it('RX resource capability loss preserves refusal through repeated loss and explicit stop', async () => {
+    const r = await liveRxRig();
+    try {
+      r.withdrawCapabilities();
+      await vi.waitFor(() => expect(r.presentationResources.snapshot('rx-audio').activeHandle).toBeUndefined());
+      expect(r.store.getAudioState().rxError).toBe(true);
+      r.withdrawCapabilities();
+      await settle();
+      expect(r.store.getAudioState().rxError).toBe(true);
+      expect(mic.rxStop).toHaveBeenCalledOnce();
+      r.runtime.setRxLive(false);
+      expect(r.store.getAudioState().rxError).toBe(false);
+      expect(mic.rxStop).toHaveBeenCalledOnce();
+      expect(mic.rxStart).toHaveBeenCalledTimes(2);
+    } finally { await r.cleanup(); }
+  });
+
+  it('explicit RX resource release acknowledges refusal without repeating player stop', async () => {
+    const r = await liveRxRig();
+    try {
+      r.runtime.setRxLive(false);
+      await vi.waitFor(() => expect(r.presentationResources.snapshot('rx-audio').activeHandle).toBeUndefined());
+      expect(r.store.getAudioState().rxError).toBe(false);
+      r.runtime.setRxLive(false);
+      await settle();
+      expect(mic.rxStop).toHaveBeenCalledOnce();
+      expect(mic.rxStart).toHaveBeenCalledTimes(2);
+    } finally { await r.cleanup(); }
+  });
+
 });
