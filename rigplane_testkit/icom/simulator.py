@@ -2474,9 +2474,7 @@ class MockIcomRadio(AudioPortMixin):
                 self._data_mode = rest[0]
                 return self._civ_ack(to, frm)
             if (
-                len(rest) == 2
-                and 0x01 <= rest[0] <= 0x03
-                and 0x01 <= rest[1] <= 0x03
+                len(rest) == 2 and 0x01 <= rest[0] <= 0x03 and 0x01 <= rest[1] <= 0x03
             ):  # full SET: DATA 1-3 with filter 1-3
                 self._data_mode = rest[0]
                 self._filter = rest[1]
