@@ -60,3 +60,45 @@ describe('managed PTT gesture remote latch permission', () => {
     f.gesture.destroy();
   });
 });
+
+describe('managed PTT gesture release cause (MOR-3753)', () => {
+  it('a user release and a user cancel stay explicit', () => {
+    const f = fixture(false);
+    f.gesture.down(); f.gesture.up();
+    expect(f.commands.pttOff.mock.calls).toEqual([[]]);
+    f.gesture.down(); f.gesture.cancel();
+    expect(f.commands.pttOff.mock.calls).toEqual([[], []]);
+    f.gesture.destroy();
+    expect(f.commands.pttOff.mock.calls).toEqual([[], []]);
+  });
+
+  it('the delayed user release at the end of the double-tap window stays explicit', () => {
+    const f = fixture();
+    f.gesture.down(); f.gesture.up();
+    f.flush();
+    expect(f.commands.pttOff.mock.calls).toEqual([[]]);
+    f.gesture.destroy();
+  });
+
+  it('destroying an active press releases automatically', () => {
+    const f = fixture();
+    f.gesture.down();
+    f.gesture.destroy();
+    expect(f.commands.pttOff.mock.calls).toEqual([[{ automatic: true }]]);
+  });
+
+  it('destroying a pending delayed release releases automatically and fires nothing later', () => {
+    const f = fixture();
+    f.gesture.down(); f.gesture.up();
+    f.gesture.destroy();
+    expect(f.commands.pttOff.mock.calls).toEqual([[{ automatic: true }]]);
+    f.flush();
+    expect(f.commands.pttOff).toHaveBeenCalledOnce();
+  });
+
+  it('destroying without a press or pending release releases nothing', () => {
+    const f = fixture();
+    f.gesture.destroy();
+    expect(f.commands.pttOff).not.toHaveBeenCalled();
+  });
+});
