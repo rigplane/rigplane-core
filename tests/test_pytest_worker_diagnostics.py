@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import runpy
 import subprocess
 import sys
 import time
@@ -17,6 +18,23 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / ".github/scripts/pytest_worker_diagnostics.py"
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_finalizer_strict_mode_propagates_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, strict: bool
+) -> None:
+    def fail_scan(_path):
+        raise OSError("synthetic bounding failure")
+
+    monkeypatch.setattr(Path, "iterdir", fail_scan)
+    flag = "--finalize-strict" if strict else "--finalize"
+    monkeypatch.setattr(sys, "argv", [str(HELPER), flag, str(tmp_path)])
+    if strict:
+        with pytest.raises(OSError, match="synthetic bounding failure"):
+            runpy.run_path(str(HELPER), run_name="__main__")
+    else:
+        runpy.run_path(str(HELPER), run_name="__main__")
 
 
 def test_full_worker_diagnostics_wiring() -> None:
@@ -471,13 +489,22 @@ async def test_snapshot_omits_values_and_task_names(tmp_path: Path) -> None:
     observer = module._Diagnostics(tmp_path, "gw0")
     case = observer.start("test_synthetic.py::test_example[PRIVATE_PARAMETER_SENTINEL]")
     task = asyncio.create_task(asyncio.sleep(0), name="PRIVATE_TASK_SENTINEL")
+    cancelling_task = asyncio.create_task(
+        asyncio.sleep(0), name="PRIVATE_CANCEL_SENTINEL"
+    )
+    cancelling_task.cancel()
+    cancelling_task.cancel()
     try:
         observer._snapshot(case, 120)
         snapshot = next(tmp_path.glob("dump-*.txt")).read_text()
         assert "AWAIT depth=" in snapshot
+        assert "done=False cancelled=False cancelling=2" in snapshot
         assert "PRIVATE_PARAMETER_SENTINEL" not in snapshot
         assert "PRIVATE_TASK_SENTINEL" not in snapshot
+        assert "PRIVATE_CANCEL_SENTINEL" not in snapshot
         assert len(snapshot.encode()) <= module._MAX_DUMP_BYTES
     finally:
         observer.finish(case)
         await task
+        with pytest.raises(asyncio.CancelledError):
+            await cancelling_task
