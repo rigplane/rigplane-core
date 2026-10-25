@@ -372,6 +372,9 @@ class RadioProfile:
     # target (fail closed). ``none`` (default) keeps the selected-band
     # label, which is exact for single-receiver radios.
     tx_receiver_rule: str = "none"
+    # Meaning of selector 01 for split TX on dual-RX radios. This is
+    # separate from receiver attribution of transceiver-wide replies.
+    split_tx_target: str = "none"
     has_lan: bool = False
     freq_ranges: tuple[FreqRangeInfo, ...] = ()
     modes: tuple[str, ...] = ()

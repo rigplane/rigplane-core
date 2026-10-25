@@ -2529,7 +2529,9 @@ class CivRuntime:
                         )
                     )
         elif frame.command == 0x25 and len(frame.data) >= 6:
-            relative = (
+            relative = getattr(
+                self._host._profile, "split_tx_target", "none"
+            ) == "main_unselected" or (
                 getattr(self._host._profile, "vfo_readback", "none")
                 == "selected_unselected"
                 and self._host._profile.receiver_count == 1
@@ -2549,7 +2551,9 @@ class CivRuntime:
                 )
             )
         elif frame.command == 0x26 and len(frame.data) >= 2:
-            relative = (
+            relative = getattr(
+                self._host._profile, "split_tx_target", "none"
+            ) == "main_unselected" or (
                 getattr(self._host._profile, "vfo_readback", "none")
                 == "selected_unselected"
                 and self._host._profile.receiver_count == 1
@@ -3671,6 +3675,23 @@ class CivRuntime:
             from rigplane.types import bcd_decode
 
             rcvr_byte = frame.data[0]
+            if (
+                getattr(self._host._profile, "split_tx_target", "none")
+                == "main_unselected"
+            ):
+                main = rs.receiver("MAIN")
+                slot = main.active_slot
+                if rcvr_byte == 0x01:
+                    slot = "B" if slot == "A" else "A"
+                attr = "vfo_b" if slot == "B" else "vfo_a"
+                setattr(
+                    main,
+                    attr,
+                    _replace_dataclass(
+                        getattr(main, attr), freq_hz=bcd_decode(frame.data[1:6])
+                    ),
+                )
+                return
             which = "MAIN" if rcvr_byte == 0x00 else "SUB"
             rs.receiver(which).freq = bcd_decode(frame.data[1:6])
 
@@ -3686,6 +3707,22 @@ class CivRuntime:
             from rigplane.types import Mode
 
             rcvr_byte = frame.data[0]
+            if (
+                getattr(self._host._profile, "split_tx_target", "none")
+                == "main_unselected"
+            ):
+                main = rs.receiver("MAIN")
+                slot = main.active_slot
+                if rcvr_byte == 0x01:
+                    slot = "B" if slot == "A" else "A"
+                attr = "vfo_b" if slot == "B" else "vfo_a"
+                fields: dict[str, Any] = {"mode": Mode(frame.data[1]).name}
+                if len(frame.data) >= 3:
+                    fields["data_mode"] = frame.data[2]
+                if len(frame.data) >= 4:
+                    fields["filter_num"] = frame.data[3]
+                setattr(main, attr, _replace_dataclass(getattr(main, attr), **fields))
+                return
             which = "MAIN" if rcvr_byte == 0x00 else "SUB"
             tgt = rs.receiver(which)
             tgt.mode = Mode(frame.data[1]).name

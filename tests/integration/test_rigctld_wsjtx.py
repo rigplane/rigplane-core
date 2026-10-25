@@ -220,14 +220,13 @@ async def ic7300_setup() -> AsyncGenerator[
 class TestWsjtxSplitOnIc7610:
     """WSJT-X split-on-TX-freq sequence against IC-7610 (dual-RX)."""
 
-    async def test_split_enable_routes_tx_to_sub_receiver(
+    async def test_split_enable_preserves_rx_selection(
         self, ic7610_setup: tuple[RecordingMockRadio, RigctldServer]
     ) -> None:
-        """``set_split_vfo 1 VFOB`` must enable split and route TX to SUB.
+        """``S 1 VFOB`` enables split without changing the RX selection.
 
-        Expected Radio-level call order (IC-7610, receiver_count=2):
-            1. set_split(True)
-            2. set_vfo("SUB")   # VFOB → SUB on main_sub scheme
+        The profile routes split frequency/mode writes to physical SUB;
+        enabling split must not select SUB as the receive bank.
         """
         radio, server = ic7610_setup
         client = await _make_client(server)
@@ -249,7 +248,6 @@ class TestWsjtxSplitOnIc7610:
 
             assert radio.calls == [
                 ("set_split", (True,)),
-                ("set_vfo", ("SUB",)),
                 ("set_ptt", (True,)),
                 ("set_ptt", (False,)),
             ]
@@ -259,10 +257,7 @@ class TestWsjtxSplitOnIc7610:
     async def test_split_disable_does_not_switch_vfo(
         self, ic7610_setup: tuple[RecordingMockRadio, RigctldServer]
     ) -> None:
-        """``set_split_vfo 0 VFOA`` only disables split — no set_vfo call.
-
-        The handler only issues set_vfo when ``on=True`` (split enable).
-        """
+        """``set_split_vfo 0 VFOA`` disables split without changing RX."""
         radio, server = ic7610_setup
         client = await _make_client(server)
         try:
