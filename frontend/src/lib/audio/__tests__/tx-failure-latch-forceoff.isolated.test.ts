@@ -268,12 +268,19 @@ describe('TX failure latch across automatic ForceOff (MOR-3753)', () => {
     const { ManagedTxController } = await import('../../runtime/tx-controller/managed-controller');
     h.manager = audioManager;
     const audio = getTxAudioControl();
-    const sendPtt = vi.fn(async (_operation: 'ptt_on' | 'ptt_off') => 'accepted' as const);
+    let pttActive = false;
+    let lastOperation: 'ptt_on' | 'force_receive' | null = null;
+    const sendPtt = vi.fn(async (operation: 'ptt_on' | 'ptt_off') => {
+      pttActive = operation === 'ptt_on';
+      lastOperation = pttActive ? 'ptt_on' : 'force_receive';
+      return 'accepted' as const;
+    });
     const controller = new ManagedTxController({
       snapshot: () => ({
-        phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
-        faultDetail: null, fresh: true, releaseRequired: false,
-        configuredSeconds: 180, remainingMs: null, lastOperation: null,
+        phase: pttActive ? 'active' : 'idle', intent: pttActive ? 'momentary' : null,
+        radioTx: pttActive ? 'on' : 'off', txRisk: pttActive ? 'confirmed-on' : 'none',
+        fault: null, faultDetail: null, fresh: true, releaseRequired: pttActive,
+        configuredSeconds: 180, remainingMs: null, lastOperation,
       }),
       refresh: async () => {},
       invalidate: vi.fn(),
@@ -298,6 +305,9 @@ describe('TX failure latch across automatic ForceOff (MOR-3753)', () => {
         data: JSON.stringify({ type: 'audio_tx_format', codec: 'opus', sample_rate: 48000 }),
       });
       await vi.waitFor(() => expect(r.sendPtt).toHaveBeenCalledWith('ptt_on'));
+      await vi.waitFor(() => expect(r.controller.snapshot()).toMatchObject({
+        phase: 'active', intent: 'momentary', radioTx: 'on', releaseRequired: true,
+      }));
       expect(r.audioManager.txEnabled).toBe(true);
 
       // Real manager socket fault under live demand latches the failure.
@@ -306,6 +316,9 @@ describe('TX failure latch across automatic ForceOff (MOR-3753)', () => {
 
       // Automatic session release (pre-disconnect barrier / pagehide class).
       await r.controller.releaseSession();
+      expect(r.controller.snapshot()).toMatchObject({
+        phase: 'idle', intent: null, radioTx: 'off', releaseRequired: false,
+      });
       expect(r.sendPtt.mock.calls.map(([operation]) => operation)).toEqual(['ptt_on', 'ptt_off']);
       expect(r.audioManager.txEnabled).toBe(false);
       expect(r.store.getAudioState().txError).toBe(true);
