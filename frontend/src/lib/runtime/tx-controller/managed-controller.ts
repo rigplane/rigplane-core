@@ -1,4 +1,5 @@
 import { sameManagedTxState, type ManagedTxState } from './managed-state';
+import { setTxError } from '../../stores/audio.svelte';
 
 export type ManagedOperation = 'transmit_on' | 'force_off';
 export type PttOperation = 'ptt_on' | 'ptt_off';
@@ -19,7 +20,7 @@ export interface ManagedTxDependencies {
   /** Monotonic revision of the last canonical snapshot the store applied. */
   snapshotRevision?(): number;
   startAudio(): Promise<string | null>;
-  stopLocalAudio(): void;
+  stopLocalAudio(options?: { automatic?: boolean }): void;
   onAudioDied(handler: () => void): () => void;
 }
 
@@ -44,7 +45,7 @@ export class ManagedTxController {
 
   constructor(private readonly dependencies: ManagedTxDependencies) {
     this.#state = dependencies.snapshot();
-    this.#offAudioDied = dependencies.onAudioDied(() => { void this.forceOff(); });
+    this.#offAudioDied = dependencies.onAudioDied(() => { void this.forceOff({ automatic: true }); });
     this.#offPresentationTick = dependencies.onPresentationTick?.(() => this.#publish()) ?? (() => {});
     this.#offAuthorityChanged = dependencies.onAuthorityChanged?.(() => { void this.refresh(); })
       ?? (() => {});
@@ -85,13 +86,16 @@ export class ManagedTxController {
     void this.#sendPttOn(generation);
   }
 
-  async pttOff(): Promise<void> {
+  async pttOff(options: { automatic?: boolean } = {}): Promise<void> {
     ++this.#generation;
     this.#flow = 'idle';
     const attempted = this.#pttAttempted;
     this.#pttAttempted = false;
     this.#onCycle = null;
-    this.#stopAudio();
+    // MOR-3753: a user release/cancel acknowledges a latched failure; an
+    // automatic release (releaseSession, gesture teardown) preserves it.
+    if (!options.automatic) setTxError(false);
+    this.#stopAudio({ automatic: options.automatic === true });
     try {
       if (attempted) await this.dependencies.sendPtt('ptt_off');
     } catch { this.dependencies.invalidate(); }
@@ -106,9 +110,13 @@ export class ManagedTxController {
     void this.#sendTransmitOn(generation);
   }
 
-  async forceOff(): Promise<void> {
-    if (this.#forceOffInFlight !== null) return this.#forceOffInFlight;
-    this.#forceOffInFlight = this.#forceOff();
+  async forceOff(options: { automatic?: boolean } = {}): Promise<void> {
+    if (this.#forceOffInFlight !== null) {
+      await this.#forceOffInFlight;
+      if (!options.automatic) setTxError(false);
+      return;
+    }
+    this.#forceOffInFlight = this.#forceOff(options);
     try { await this.#forceOffInFlight; }
     finally { this.#forceOffInFlight = null; }
   }
@@ -127,19 +135,25 @@ export class ManagedTxController {
     this.#publish();
   }
 
-  async #forceOff(): Promise<void> {
+  async #forceOff(options: { automatic?: boolean }): Promise<void> {
     ++this.#generation;
     this.#flow = 'idle';
     this.#pttAttempted = false;
     this.#onCycle = null;
     try { await this.dependencies.submit('force_off'); }
     catch { this.dependencies.invalidate(); }
-    finally { this.#stopAudio(); this.#publish(); }
+    finally {
+      if (!options.automatic) setTxError(false);
+      this.#stopAudio({ automatic: options.automatic === true });
+      this.#publish();
+    }
   }
 
   async releaseSession(): Promise<void> {
     if (this.#flow === 'ptt' || this.#pttAttempted) await Promise.race([
-      this.pttOff(), new Promise<void>((resolve) => setTimeout(resolve, 500)),
+      // Automatic safety cleanup: preserve a latched failure for the
+      // operator instead of acknowledging it (MOR-3753).
+      this.pttOff({ automatic: true }), new Promise<void>((resolve) => setTimeout(resolve, 500)),
     ]);
     else { ++this.#generation; this.#flow = 'idle'; this.#onCycle = null; this.#stopAudio(); }
   }
@@ -244,11 +258,11 @@ export class ManagedTxController {
     return preparation;
   }
 
-  #stopAudio(): void {
+  #stopAudio(options: { automatic?: boolean } = { automatic: true }): void {
     this.#audioPreparation = null;
     if (!this.#audioNeedsCleanup) return;
     this.#audioNeedsCleanup = false;
-    this.dependencies.stopLocalAudio();
+    this.dependencies.stopLocalAudio(options);
   }
 
   /** An equal projection keeps the delivered object and notifies nobody. */
