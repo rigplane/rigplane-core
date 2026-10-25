@@ -4814,6 +4814,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             raise CommandError(f"Radio rejected split {'on' if on else 'off'}")
         self._last_split = on
 
+    async def read_split(self) -> bool:
+        """Read current split truth without falling back to cached ACK state."""
+        return await self.get_split(strict=True)
+
     async def get_split(self, *, strict: bool = False) -> bool:
         """Read split mode state (CI-V ``0x0F``).
 

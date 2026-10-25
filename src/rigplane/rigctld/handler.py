@@ -3052,6 +3052,16 @@ class RigctldHandler:
             self._resolve_target_vfo(cmd.vfo_arg)
         except ValueError:
             return _err(HamlibError.EVFO)
+        read_split = getattr(self._radio, "read_split", None)
+        if callable(read_split):
+            try:
+                observed = await read_split()
+            except (CommandError, RigplaneTimeoutError):
+                return _err(HamlibError.ENAVAIL)
+            if isinstance(observed, bool):
+                return RigctldResponse(
+                    values=[str(int(observed)), self._split_tx_vfo()]
+                )
         split_path = FieldPath.global_("tx_state", "split")
         projection = self._project_with_freshness(
             (split_path,),
@@ -3407,9 +3417,19 @@ class RigctldHandler:
     # ------------------------------------------------------------------
 
     async def _cmd_dump_state(self, cmd: RigctldCommand) -> RigctldResponse:
-        if self._routing is not None:
-            return RigctldResponse(values=self._routing.dump_state())
-        return RigctldResponse(values=list(_IC7610_DUMP_STATE))
+        values = list(
+            self._routing.dump_state()
+            if self._routing is not None
+            else _IC7610_DUMP_STATE
+        )
+        # Hamlib's protocol-0 default omits targetable_vfo, causing its split
+        # API to fall back to ordinary F/M instead of our native I/X handlers.
+        # Advertise only the server's frequency/mode routing bits. The native
+        # handlers retain profile capability checks and fail closed when a
+        # backend cannot perform the requested operation.
+        values[0] = "1"
+        values.extend(("targetable_vfo=0x3", "done"))
+        return RigctldResponse(values=values)
 
     async def _cmd_dump_caps(self, cmd: RigctldCommand) -> RigctldResponse:
         return await self._cmd_dump_state(cmd)

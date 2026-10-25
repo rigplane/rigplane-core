@@ -1965,8 +1965,8 @@ async def test_dump_state(handler: RigctldHandler, mock_radio: AsyncMock) -> Non
     assert resp.ok
     lines = resp.values
 
-    # Line 0: protocol version (atol parseable)
-    assert lines[0] == "0"
+    # Protocol 1 retains the positional prefix and adds capability metadata.
+    assert lines[0] == "1"
     # Line 1: rig model — IC-7610 hamlib model number
     assert lines[1] == "3078"
     # Line 2: ITU region
@@ -2004,7 +2004,8 @@ async def test_dump_state(handler: RigctldHandler, mock_radio: AsyncMock) -> Non
     assert lines[22] == "0x0001791B"  # has_set_level
     assert lines[23] == "0"  # has_get_parm
     assert lines[24] == "0"  # has_set_parm
-    assert len(lines) == 25
+    assert lines[25:] == ["targetable_vfo=0x3", "done"]
+    assert len(lines) == 27
 
 
 @pytest.mark.asyncio
