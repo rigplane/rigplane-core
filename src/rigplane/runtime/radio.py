@@ -3097,7 +3097,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         resp = await self._send_civ_expect(civ, label="get_data_mode")
         return parse_data_mode_response(resp)
 
-    async def set_data_mode(self, on: int | bool, receiver: int = 0) -> None:
+    async def set_data_mode_with_filter(
+        self, on: int | bool, *, filter_width: int
+    ) -> None:
+        """Apply DATA with an explicit filter using the declared value variant."""
+        await self.set_data_mode(on, filter_width=filter_width)
+
+    async def set_data_mode(
+        self, on: int | bool, receiver: int = 0, *, filter_width: int | None = None
+    ) -> None:
         """Set receiver DATA mode (command 0x1A 0x06).
 
         Args:
@@ -3113,7 +3121,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
             async def _action() -> None:
                 civ = self._commands.set_data_mode(
-                    on, to_addr=self._radio_addr, receiver=RECEIVER_MAIN
+                    on,
+                    to_addr=self._radio_addr,
+                    receiver=RECEIVER_MAIN,
+                    filter_width=filter_width,
                 )
                 resp = await self._send_civ_expect(civ, label="action")
                 ack = parse_ack_nak(resp)
@@ -3136,7 +3147,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             operation="set_data_mode",
         )
         civ = self._commands.set_data_mode(
-            on, to_addr=self._radio_addr, receiver=receiver
+            on, to_addr=self._radio_addr, receiver=receiver, filter_width=filter_width
         )
         resp = await self._send_civ_expect(civ, label="action")
         ack = parse_ack_nak(resp)
@@ -4813,6 +4824,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if ack is False:
             raise CommandError(f"Radio rejected split {'on' if on else 'off'}")
         self._last_split = on
+
+    async def read_split(self) -> bool:
+        """Read current split truth without falling back to cached ACK state."""
+        return await self.get_split(strict=True)
 
     async def get_split(self, *, strict: bool = False) -> bool:
         """Read split mode state (CI-V ``0x0F``).

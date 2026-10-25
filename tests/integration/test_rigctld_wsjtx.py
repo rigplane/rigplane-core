@@ -516,7 +516,8 @@ class TestHttpCrossProtocolGuard:
                     break
                 dump += chunk
             dump_lines = bytes(dump).decode().splitlines()
-            assert dump_lines[0] == "0"
+            assert dump_lines[0] == "1"
+            assert dump_lines[-2:] == ["targetable_vfo=0x3", "done"]
             assert dump_lines[1].isdigit()
             assert len(dump) > 200
 

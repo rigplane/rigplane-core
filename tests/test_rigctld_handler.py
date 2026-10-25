@@ -1965,8 +1965,8 @@ async def test_dump_state(handler: RigctldHandler, mock_radio: AsyncMock) -> Non
     assert resp.ok
     lines = resp.values
 
-    # Line 0: protocol version (atol parseable)
-    assert lines[0] == "0"
+    # Protocol 1 retains the positional prefix and adds capability metadata.
+    assert lines[0] == "1"
     # Line 1: rig model — IC-7610 hamlib model number
     assert lines[1] == "3078"
     # Line 2: ITU region
@@ -2004,7 +2004,8 @@ async def test_dump_state(handler: RigctldHandler, mock_radio: AsyncMock) -> Non
     assert lines[22] == "0x0001791B"  # has_set_level
     assert lines[23] == "0"  # has_get_parm
     assert lines[24] == "0"  # has_set_parm
-    assert len(lines) == 25
+    assert lines[25:] == ["targetable_vfo=0x3", "done"]
+    assert len(lines) == 27
 
 
 @pytest.mark.asyncio
@@ -6186,6 +6187,7 @@ class TestPerVfoRoutingMode:
     async def test_dual_rx_set_mode_vfoa_routes_to_main(
         self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
     ) -> None:
+        dual_rx_radio.get_data_mode.return_value = False
         resp = await dual_rx_handler.execute(
             _vfo_set_cmd("set_mode", "VFOA", "USB", "2400")
         )
@@ -6641,6 +6643,7 @@ class TestSingleRxActiveSlotBRouting:
     async def test_set_mode_no_vfo_arg_routes_to_receiver_0(
         self, single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
     ) -> None:
+        single_rx_radio.get_data_mode.return_value = False
         state = RadioState()
         state.main.active_slot = "B"
         single_rx_radio.radio_state = state
