@@ -1477,17 +1477,41 @@ class YaesuCatRadio:
         return is_data_mode(mode)
 
     async def set_data_mode(self, on: int | bool, receiver: int = 0) -> None:
-        """Toggle DATA mode.
-
-        On Yaesu radios this is done by switching the operating mode
-        (e.g. USB ↔ USB-D).  A full implementation requires the rig
-        profile to map mode pairs.  For now, log a warning if the
-        profile lacks a ``set_data_mode`` CAT command.
-        """
+        """Select the profile's DATA partner of the live receiver mode."""
         if self._has_write_command("set_data_mode"):
             await self._write("set_data_mode", state="1" if on else "0")
+            return
+
+        mode, _ = await self.read_mode(receiver)
+        pairs = {
+            "USB": "DATA-U",
+            "LSB": "DATA-L",
+            "FM": "DATA-FM",
+            "FM-N": "DATA-FM-N",
+        }
+        if on:
+            if mode in pairs.values():
+                return
+            target = pairs.get(mode)
         else:
-            logger.warning("set_data_mode: no CAT command defined for %s", self.model)
+            target = {data: plain for plain, data in pairs.items()}.get(mode)
+            if target is None and not is_data_mode(mode):
+                return
+        if target is None or target not in self._mode_to_code:
+            raise CommandError(
+                f"No DATA mode partner for {mode!r} on {self._config.model!r}"
+            )
+        cmd = "set_mode" if receiver == 0 else "set_mode_sub"
+        await self._write(cmd, mode=self._mode_to_code[target])
+        for attempt in range(5):
+            observed, _ = await self.get_mode(receiver)
+            if observed == target:
+                return
+            if attempt < 4:
+                await asyncio.sleep(0.05)
+        raise CommandError(
+            f"DATA mode readback mismatch: requested {target!r}, observed {observed!r}"
+        )
 
     # -- Power switch (PS) -------------------------------------------------
 
