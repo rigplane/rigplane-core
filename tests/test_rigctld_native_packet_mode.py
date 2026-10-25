@@ -32,7 +32,8 @@ async def test_native_packet_name_projection_preserves_canonical_truth(native, p
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("receiver,packet", [(0, "PKTUSB"), (1, "PKTLSB")])
+@pytest.mark.parametrize("receiver", [0, 1])
+@pytest.mark.parametrize("packet", ["PKTUSB", "PKTLSB"])
 @pytest.mark.parametrize("installed_client", [False, True])
 async def test_native_cat_packet_readback_over_tcp(receiver, packet, installed_client):
     from unittest.mock import AsyncMock, MagicMock
@@ -43,7 +44,17 @@ async def test_native_cat_packet_readback_over_tcp(receiver, packet, installed_c
     from test_rigctld_wsjtx_split_mk2 import _client, _exchange
 
     # Read-only fake CAT: real backend parses MD0C / MD18; no serial open.
-    replies = {"ID;": "ID0840", "MD0;": "MD0C", "MD1;": "MD18", "TX;": "TX0"}
+    replies = {
+        "ID;": "ID0840",
+        "MD0;": "MD0C",
+        "MD1;": "MD18",
+        "TX;": "TX0",
+        "FA;": "FA014074000",
+        "FB;": "FB007074000",
+    }
+    code = "C" if packet == "PKTUSB" else "8"
+    native = "DATA-U" if packet == "PKTUSB" else "DATA-L"
+    replies[f"MD{receiver};"] = f"MD{receiver}{code}"
     radio = YaesuCatRadio("/dev/null", profile="ftx1", audio_driver=MagicMock())
     radio._transport._connected = True
     radio._transport.query = AsyncMock(
@@ -51,6 +62,7 @@ async def test_native_cat_packet_readback_over_tcp(receiver, packet, installed_c
     )
     radio._transport.write = AsyncMock()
     await radio.get_mode(receiver=receiver)
+    await radio.get_freq(receiver=receiver)
     server = RigctldServer(
         radio,
         RigctldConfig(host="127.0.0.1", port=0, cache_ttl=0),
@@ -68,6 +80,10 @@ async def test_native_cat_packet_readback_over_tcp(receiver, packet, installed_c
                     writer, reader, f"m {vfo}\n".encode(), lines=2
                 )
                 assert response.splitlines()[0] == packet.encode()
+        assert (
+            radio.radio_state.receiver("MAIN" if receiver == 0 else "SUB").mode
+            == native
+        )
         radio._transport.write.assert_not_awaited()
     finally:
         await server.stop()

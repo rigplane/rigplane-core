@@ -1878,7 +1878,7 @@ class RigctldHandler:
         # the IF width to ~1. (MOR-895, pro#1200.)
         main_state = self._main_receiver_state()
         if main_state is not None:
-            mode_str = main_state.mode.upper()
+            mode_str = _mode_to_hamlib_str(main_state.mode)
             passband = _filter_to_passband(main_state.filter)
             data_mode = main_state.data_mode
         else:

@@ -160,7 +160,7 @@ def set_data_mode(
         from .command_map import CommandMap
 
         override = CommandMap({"set_data_mode": prefix})
-        return _build_from_map(
+        frame: bytes = _build_from_map(
             override,
             "set_data_mode",
             to_addr=to_addr,
@@ -169,6 +169,7 @@ def set_data_mode(
             receiver=receiver,
             command29=(receiver != RECEIVER_MAIN),
         )
+        return frame
 
     return _build_from_map(
         cmd_map,
