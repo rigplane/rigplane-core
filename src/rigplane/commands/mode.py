@@ -138,6 +138,7 @@ def set_data_mode(
     receiver: int = RECEIVER_MAIN,
     *,
     cmd_map: CommandMap,
+    filter_width: int | None = None,
 ) -> bytes:
     """Build a 'set DATA mode' CI-V command (0x1A 0x06 <0x00-0x03>).
 
@@ -147,6 +148,27 @@ def set_data_mode(
     mode_value = int(on) if isinstance(on, bool) else int(on)
     if not 0 <= mode_value <= 3:
         raise ValueError(f"DATA mode must be 0-3, got {mode_value}")
+
+    if filter_width is not None:
+        if type(filter_width) is not int or filter_width not in (1, 2, 3):
+            raise ValueError("DATA filter must be 1-3")
+        # Only declared DATA1+filter variants support this override.
+        wire = cmd_map._get_value_variant("set_data_mode", mode_value)
+        prefix = cmd_map.get("set_data_mode")
+        if mode_value != 1 or wire != (*prefix, mode_value, 1):
+            raise ValueError("DATA filter override is not declared")
+        from .command_map import CommandMap
+
+        override = CommandMap({"set_data_mode": prefix})
+        return _build_from_map(
+            override,
+            "set_data_mode",
+            to_addr=to_addr,
+            from_addr=from_addr,
+            data=bytes([mode_value, filter_width]),
+            receiver=receiver,
+            command29=(receiver != RECEIVER_MAIN),
+        )
 
     return _build_from_map(
         cmd_map,

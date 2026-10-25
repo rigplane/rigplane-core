@@ -450,13 +450,16 @@ def _mode_to_hamlib_str(mode: object) -> str:
         return str(CIV_TO_HAMLIB_MODE.get(mode.value, mode.name))
     if isinstance(mode, str):
         name = mode.upper()
+        native_packet_modes = {"DATA-U": "PKTUSB", "DATA-L": "PKTLSB"}
+        if name in native_packet_modes:
+            return native_packet_modes[name]
         core_mode = Mode.__members__.get(name)
         return (
             name if core_mode is None else CIV_TO_HAMLIB_MODE.get(core_mode.value, name)
         )
     name = getattr(mode, "name", None)
     if isinstance(name, str):
-        return name.upper()
+        return _mode_to_hamlib_str(name)
     value = getattr(mode, "value", None)
     if isinstance(value, int):
         return str(CIV_TO_HAMLIB_MODE.get(value, "USB"))
@@ -749,7 +752,9 @@ class _RigctldCommandExecutor:
                     receiver=receiver,
                 )
             if bool(params.get("packet_mode", False)):
-                await self.handler._apply_packet_data_mode(receiver=receiver)
+                await self.handler._apply_packet_data_mode(
+                    receiver=receiver, filter_width=filter_width
+                )
             elif str(params.get("mode", "")).upper() in ("USB", "LSB"):
                 await self.handler._apply_plain_ssb_data_off(receiver=receiver)
         elif intent.name == "set_ptt":
@@ -1171,7 +1176,9 @@ class RigctldHandler:
             return True
         return int(value)
 
-    async def _apply_packet_data_mode(self, *, receiver: int = 0) -> int | bool:
+    async def _apply_packet_data_mode(
+        self, *, receiver: int = 0, filter_width: int | None = None
+    ) -> int | bool:
         data_mode = self._packet_data_mode_value()
         source = self._config.wsjtx_data_mod_input
         if source is not None and type(data_mode) is int:
@@ -1183,7 +1190,20 @@ class RigctldHandler:
                     "rigctld: radio has no set_data%d_mod_input, skipping",
                     data_mode,
                 )
-        if receiver == 0:
+        profile = getattr(self._radio, "profile", None)
+        cmd_map = getattr(profile, "command_map", None)
+        if (
+            receiver == 0
+            and filter_width is not None
+            and callable(getattr(type(self._radio), "set_data_mode_with_filter", None))
+            and cmd_map is not None
+            and cmd_map._has_value_variants("set_data_mode")
+        ):
+            # Some Icom DATA variants include a filter. Carry the explicit M
+            # passband through that second write instead of resetting it.
+            setter = getattr(self._radio, "set_data_mode_with_filter")
+            await setter(data_mode, filter_width=filter_width)
+        elif receiver == 0:
             await self._radio.set_data_mode(data_mode)
         else:
             await self._radio.set_data_mode(data_mode, receiver=receiver)
@@ -1218,6 +1238,10 @@ class RigctldHandler:
             return False
         if receiver == 0:
             await self._radio.set_data_mode(False)
+            # ACK does not refresh canonical DATA truth. A following client
+            # must observe the clear rather than the previous packet mode.
+            if await self._radio.get_data_mode():
+                raise _RigctldCommandFailure(HamlibError.ENAVAIL)
         else:
             await self._radio.set_data_mode(False, receiver=receiver)
         return True
@@ -1794,7 +1818,7 @@ class RigctldHandler:
             and projected_filter_num is not None
             and projected_data_mode is not None
         ):
-            mode_str = str(projected_mode.value).upper()
+            mode_str = _mode_to_hamlib_str(projected_mode.value)
             filter_num_value = projected_filter_num.value
             passband = _filter_to_passband(
                 None if filter_num_value is None else int(filter_num_value)
@@ -1820,7 +1844,7 @@ class RigctldHandler:
             state = self._radio_state()
             if state is not None:
                 sub = state.sub
-                mode_str = sub.mode.upper()
+                mode_str = _mode_to_hamlib_str(sub.mode)
                 passband = _filter_to_passband(sub.filter)
                 data_mode = sub.data_mode
                 # get_mode is a READ: it must NOT mutate the canonical
@@ -2009,7 +2033,7 @@ class RigctldHandler:
                     try:
                         read_mode, _ = await get_mode()
                         read_data = await self._radio.get_data_mode()
-                        if read_mode == base_mode_str and read_data:
+                        if read_mode in (base_mode_str, requested_mode) and read_data:
                             # Read-back confirmed on the radio. Do NOT promote
                             # the rigctld filter NUMBER / data-mode bool into the
                             # canonical StateStore: ``filter_width`` there is Hz

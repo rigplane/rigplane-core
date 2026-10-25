@@ -6187,6 +6187,7 @@ class TestPerVfoRoutingMode:
     async def test_dual_rx_set_mode_vfoa_routes_to_main(
         self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
     ) -> None:
+        dual_rx_radio.get_data_mode.return_value = False
         resp = await dual_rx_handler.execute(
             _vfo_set_cmd("set_mode", "VFOA", "USB", "2400")
         )
@@ -6642,6 +6643,7 @@ class TestSingleRxActiveSlotBRouting:
     async def test_set_mode_no_vfo_arg_routes_to_receiver_0(
         self, single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
     ) -> None:
+        single_rx_radio.get_data_mode.return_value = False
         state = RadioState()
         state.main.active_slot = "B"
         single_rx_radio.radio_state = state
