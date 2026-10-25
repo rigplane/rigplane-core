@@ -1,6 +1,7 @@
 export interface ManagedTxGestureCommands {
   pttOn(): void;
-  pttOff(): void;
+  /** User release by default; { automatic: true } for teardown-owned cleanup. */
+  pttOff(options?: { automatic?: boolean }): void;
   transmitOn(): void;
   forceOff(): void;
 }
@@ -88,7 +89,9 @@ export function createManagedTxGesture(
     if (destroyed) return;
     const releasePtt = pressed || pending !== null;
     clearPending();
-    if (releasePtt) commands.pttOff();
+    // Surface teardown is not a user release: it must preserve a latched
+    // failure instead of acknowledging it (MOR-3753).
+    if (releasePtt) commands.pttOff({ automatic: true });
     pressed = false;
     destroyed = true;
   };

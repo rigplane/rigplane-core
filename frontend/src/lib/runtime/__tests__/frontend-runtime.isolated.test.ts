@@ -100,6 +100,8 @@ vi.mock('$lib/stores/audio.svelte', () => ({
   setVolume: vi.fn(),
   setMuted: vi.fn(),
   toggleMute: vi.fn(),
+  setRxError: vi.fn(),
+  setTxError: vi.fn(),
 }));
 
 vi.mock('$lib/audio/audio-manager', () => ({
