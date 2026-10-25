@@ -27,6 +27,7 @@ const txStart = vi.fn().mockResolvedValue(null);
 const txStop = vi.fn();
 const txApplyServerCodec = vi.fn(() => ({ switched: false, error: null }));
 let txCaptureFailureCategory: string | null = null;
+let txCaptureEpoch = 0;
 let txCaptureDied: ((reason: string) => void) | null = null;
 let txSend: ((data: ArrayBuffer) => void) | null = null;
 
@@ -57,6 +58,7 @@ vi.mock('../tx-mic', () => ({
     applyServerCodec = txApplyServerCodec;
     get active() { return true; }
     get lastCaptureFailureCategory() { return txCaptureFailureCategory; }
+    get captureEpoch() { return txCaptureEpoch; }
     static supported() { return true; }
     constructor(
       send: (data: ArrayBuffer) => void,
@@ -355,6 +357,32 @@ describe('AudioManager TX start failure latch (MOR-3753)', () => {
 
     expect(setTxError).not.toHaveBeenCalledWith(true);
     expect(txStop).toHaveBeenCalledOnce();
+    expect(audioManager.txEnabled).toBe(false);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it.each(['controller', 'capture'] as const)('a rejected obsolete %s attempt does not create a failure', async (obsolete) => {
+    const { audioManager, setTxError } = await rig();
+    let current = true;
+    audioManager.setControllerBinding({
+      remote: () => true, ready: () => current, epoch: () => 7,
+      current: (epoch: number) => epoch === 7 && current, protocols: () => [],
+    });
+    const failure = new Error('late capture setup failure');
+    let rejectCapture!: (reason: Error) => void;
+    txStart.mockImplementationOnce(() => new Promise<string | null>((_resolve, reject) => {
+      rejectCapture = reject;
+    }));
+    const pending = audioManager.startTx();
+    if (obsolete === 'controller') current = false;
+    else {
+      txStop.mockImplementationOnce(() => { txCaptureEpoch++; });
+      audioManager.stopTx();
+    }
+    rejectCapture(failure);
+
+    await expect(pending).rejects.toBe(failure);
+    expect(setTxError).not.toHaveBeenCalledWith(true);
     expect(audioManager.txEnabled).toBe(false);
     expect(FakeWebSocket.instances).toHaveLength(0);
   });

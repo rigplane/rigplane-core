@@ -303,12 +303,16 @@ class AudioManager {
     // while the fresh capture is still pending.
     setTxError(false);
     let err: string | null;
+    let captureEpoch = this.txMic.captureEpoch;
     try {
-      err = await this.txMic.start();
+      const capture = this.txMic.start();
+      captureEpoch = this.txMic.captureEpoch;
+      err = await capture;
     } catch (error) {
-      // A thrown capture-setup failure is genuine: latch the failed state
-      // truthfully; the caller (which owns the banner) still sees the throw.
-      setTxError(true);
+      // Preserve the original rejection, but only the current capture and
+      // controller attempt may publish a new failure after this await.
+      if (captureEpoch === this.txMic.captureEpoch
+        && (!this.controller || this.controller.current(epoch))) setTxError(true);
       throw error;
     }
     if (this.controller && !this.controller.current(epoch)) {

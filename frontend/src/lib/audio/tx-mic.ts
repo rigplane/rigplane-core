@@ -58,6 +58,9 @@ export class TxMic {
   private captureGeneration = 0;
   private _lastCaptureFailureCategory: string | null = null;
 
+  /** Existing capture identity, for rejecting stale asynchronous outcomes. */
+  get captureEpoch(): number { return this.captureGeneration; }
+
   /** Safe last acquisition failure; retained across stop/retry for diagnostics. */
   get lastCaptureFailureCategory(): string | null {
     return this._lastCaptureFailureCategory;
