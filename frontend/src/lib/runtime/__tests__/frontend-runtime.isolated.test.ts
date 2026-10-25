@@ -100,6 +100,9 @@ vi.mock('$lib/stores/audio.svelte', () => ({
   setVolume: vi.fn(),
   setMuted: vi.fn(),
   toggleMute: vi.fn(),
+  // The real SystemController (loaded via importActual below) imports the
+  // MOR-3753 error setters; without them its disconnect paths throw on the
+  // mock. Vitest factory mocks throw on access to an undefined export.
   setRxError: vi.fn(),
   setTxError: vi.fn(),
 }));
@@ -579,6 +582,9 @@ describe('FrontendRuntime.bootstrap()', () => {
     const lost = controller.onLoss.mock.calls.at(-1)![0];
     lost();
     expect(audioManager.destroy).toHaveBeenCalled();
+    // MOR-3753 B: remote loss is automatic teardown — the reason must reach
+    // the audio destroy so a latched failure survives it.
+    expect(audioManager.destroy).toHaveBeenCalledWith({ automatic: true });
     await cleanup();
     await cleanup();
     expect(stop).toHaveBeenCalledOnce();
@@ -593,6 +599,9 @@ describe('FrontendRuntime.bootstrap()', () => {
     // no error toast — wiring the remote-loss UI into the local branch
     // fails every assertion below.
     expect(audioManager.stopTx).toHaveBeenCalledOnce();
+    // MOR-3753 B: the local-loss stop is automatic — it must preserve a
+    // latched TX failure instead of acknowledging it.
+    expect(audioManager.stopTx).toHaveBeenCalledWith({ automatic: true });
     expect(audioManager.destroy).not.toHaveBeenCalled();
     expect(disconnectAll).not.toHaveBeenCalled();
     expect(emitLocalNotification).not.toHaveBeenCalled();

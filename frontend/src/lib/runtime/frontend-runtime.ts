@@ -402,7 +402,10 @@ class FrontendRuntime {
       cleanupInFlight = (async () => {
         stopController();
         signal?.removeEventListener('abort', abort);
-        const disconnect = (controllerClient.remote ? systemController.disconnect() : Promise.resolve())
+        // MOR-3753: bootstrap cleanup is automatic — the remote disconnect
+        // must preserve a latched audio failure for the operator, not
+        // acknowledge it the way an explicit user disconnect does.
+        const disconnect = (controllerClient.remote ? systemController.disconnect({ automatic: true }) : Promise.resolve())
           .then(() => ({ ok: true as const }), (error: unknown) => ({ ok: false as const, error }));
         this._ended = true;
         // Drop the cached registration so a later `bootstrap()` (a remounted
@@ -439,14 +442,17 @@ class FrontendRuntime {
       signal?.throwIfAborted();
       stopController = controllerClient.onLoss(() => {
         if (controllerClient.remote) {
-          void systemController.disconnect().catch(() => {
+          // MOR-3753: automatic teardown — preserve a latched audio failure.
+          void systemController.disconnect({ automatic: true }).catch(() => {
             transport.emitLocalNotification('error', 'Удалённое управление потеряно. Подключитесь заново.', 'controller_lost');
           });
           return;
         }
         // MOR-3535: a lost local session recovers silently; TX audio stops
         // and never replays — only a deliberate new PTT may key again.
-        audioManager.stopTx();
+        // MOR-3753: the stop is automatic, so a latched TX failure survives
+        // it; only an explicit user stop acknowledges the latch.
+        audioManager.stopTx({ automatic: true });
       });
 
       // Re-arm a remounted App only after controller admission succeeds.
@@ -471,7 +477,9 @@ class FrontendRuntime {
       this._capabilitiesUnsubscribe = null;
       if (controllerClient.remote) {
         this._configurePresentationResources(null);
-        await systemController.disconnect();
+        // MOR-3753: a failed bootstrap is automatic rollback, not a user
+        // acknowledgement — preserve a latched audio failure.
+        await systemController.disconnect({ automatic: true });
       }
       throw error;
     }
