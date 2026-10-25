@@ -530,6 +530,17 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             raise CommandError("Invalid direct VFO mode readback") from exc
         if observed.data_mode not in (0, 1) or observed.filter_num not in (1, 2, 3):
             raise CommandError("direct VFO mode readback is unavailable")
+        # ACK alone is not success: a valid but contradictory readback
+        # means the radio did not end up in the requested state.
+        if (
+            Mode[observed.mode] != Mode(mode_code)
+            or observed.data_mode != int(data)
+            or observed.filter_num != filter_width
+        ):
+            raise CommandError(
+                "direct VFO mode readback contradicts the requested "
+                f"{Mode(mode_code).name} data={int(data)} filter={filter_width}"
+            )
         return observed
 
     # ------------------------------------------------------------------
