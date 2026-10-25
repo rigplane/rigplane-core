@@ -62,6 +62,7 @@ from ..radio_state import RadioState, ReceiverState
 from ..runtime import _poller_types as tx_commands  # noqa: TID251
 from ..runtime import tx_interlock
 from ..runtime._dual_rx_runtime import require_receiver_for_profile
+from ..runtime.callable_support import split_tx_routes_unselected_selector
 from ..runtime.managed_tx_authority import ManagedTxAuthority
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
 from ..runtime.managed_tx_state import ManagedTxOutcome
@@ -977,9 +978,11 @@ class RigctldHandler:
         self._state_diagnostics = getattr(radio, "_state_diagnostics", None)
         # Hamlib-protocol concept: TX VFO label tracked across S/s commands.
         # Not radio state (CI-V has no per-VFO TX-routing register on most
-        # Icoms — set_vfo_split routing is via active receiver). Initial
-        # value mirrors the Hamlib default ("VFOA"). Updated by
-        # ``_cmd_set_split_vfo`` on every ``S`` request. (Issue #1345.)
+        # Icoms — the split-TX target is a radio-side fact: the unselected
+        # slot on single-RX, whatever ``split_tx_target`` names on dual-RX).
+        # Initial value mirrors the Hamlib default ("VFOA"). Updated by
+        # ``_cmd_set_split_vfo`` on every ``S`` request; never routed to
+        # the radio. (Issue #1345; MOR-3754.)
         self._split_tx_vfo_by_session: dict[str | None, Literal["VFOA", "VFOB"]] = {}
         # MOR-1904: one outstanding key-down bound, never a per-session dict —
         # the rig has one PTT, so a second session's key supersedes the first's
@@ -3097,89 +3100,26 @@ class RigctldHandler:
         return _ok()
 
     async def _execute_set_split_vfo(self, on: bool, tx_vfo: str) -> HamlibError:
-        info = self._profile_vfo_info()
         set_split = getattr(self._radio, "set_split", None)
         if set_split is not None:
             await set_split(on)
-        # Dual-RX: when enabling split, ensure TX is routed to the requested
-        # receiver (WSJT-X sends VFOB as the split-TX source).  If the
-        # receiver-select call fails we must roll back the split-enable —
-        # otherwise the radio is left in a half-configured state (split on
-        # but TX not routed to SUB), silently diverging from WSJT-X's
-        # expectations.
-        if on and info is not None and info[0] >= 2 and tx_vfo in ("VFOA", "VFOB"):
-            set_vfo = getattr(self._radio, "set_vfo", None)
-            if set_vfo is not None:
-                target = "SUB" if tx_vfo == "VFOB" else "MAIN"
-                try:
-                    await set_vfo(target)
-                except ConnectionError as exc:
-                    logger.warning(
-                        "set_split_vfo: set_vfo(%s) failed with "
-                        "ConnectionError (%s); rolling back split",
-                        target,
-                        exc,
-                    )
-                    await self._rollback_split(set_split)
-                    return HamlibError.EIO
-                except (
-                    RigplaneTimeoutError,
-                    TimeoutError,
-                    asyncio.TimeoutError,
-                ) as exc:
-                    logger.warning(
-                        "set_split_vfo: set_vfo(%s) timed out (%s); rolling back split",
-                        target,
-                        exc,
-                    )
-                    await self._rollback_split(set_split)
-                    return HamlibError.ETIMEOUT
-                except CommandRejectedError as exc:
-                    logger.warning(
-                        "set_split_vfo: set_vfo(%s) refused by the radio (%s); "
-                        "rolling back split",
-                        target,
-                        exc,
-                    )
-                    await self._rollback_split(set_split)
-                    return HamlibError.ERJCTED
-                except Exception:
-                    logger.exception(
-                        "set_split_vfo: set_vfo(%s) failed unexpectedly; "
-                        "rolling back split",
-                        target,
-                    )
-                    await self._rollback_split(set_split)
-                    return HamlibError.EINTERNAL
         # Record the requested TX VFO for the next ``s`` (get_split_vfo)
         # query — Hamlib protocol expects the TX VFO label round-trip
         # (issue #1345). Validate the label so a malformed request never
         # poisons the cached value.
+        #
+        # The label is protocol bookkeeping only and is never routed to
+        # the radio: on Icom the split-TX target is a radio-side fact,
+        # so honouring Hamlib's VFOB by switching the operator's RX
+        # selection would move the listener, not the transmitter
+        # (MOR-3754).
         if tx_vfo in ("VFOA", "VFOB"):
             self._set_split_tx_vfo(cast(Literal["VFOA", "VFOB"], tx_vfo))
         return HamlibError.OK
 
-    async def _rollback_split(self, set_split: Any) -> None:
-        """Best-effort rollback: disable split that was just enabled.
-
-        Called when the follow-up ``set_vfo`` in ``set_split_vfo`` fails,
-        so the radio does not end up with split-enabled but TX not
-        routed to SUB.  Rollback errors are logged and swallowed — the
-        original failure takes precedence in the response.
-        """
-        if set_split is None:
-            return
-        try:
-            await set_split(False)
-            logger.info("set_split_vfo: rollback disabled split successfully")
-        except Exception:
-            logger.exception(
-                "set_split_vfo: rollback set_split(False) also failed; "
-                "radio may be in inconsistent state"
-            )
-
     # ------------------------------------------------------------------
-    # Split TX frequency / mode commands (single-RX A/B slot routing)
+    # Split TX frequency / mode commands (profile-declared selector-01
+    # routing: single-RX unselected A/B slot, or dual-RX split_tx_target)
     # ------------------------------------------------------------------
 
     def _validate_split_tx_vfo_arg(self, vfo_arg: str | None) -> None:
@@ -3189,9 +3129,12 @@ class RigctldHandler:
         raise ValueError(f"Unknown VFO arg: {vfo_arg!r}")
 
     def _split_tx_needs_dual_rx_routing(self) -> bool:
-        """Exclude dual-RX profiles from unselected-slot split routing."""
+        """Keep undeclared dual-RX targets unavailable at the protocol boundary."""
         info = self._profile_vfo_info()
-        return info is not None and info[0] >= 2
+        if info is None or info[0] < 2:
+            return False
+        profile = getattr(self._radio, "profile", None)
+        return profile is None or not split_tx_routes_unselected_selector(profile)
 
     async def _cmd_get_split_freq(self, cmd: RigctldCommand) -> RigctldResponse:
         try:

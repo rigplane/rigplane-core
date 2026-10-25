@@ -22,20 +22,25 @@ def route(request, monkeypatch):
     return radio, wire, radio.profile.civ_addr
 
 
-async def test_explicit_mode_tuple_writes_full_payload_and_returns_observed_state(
-    route,
-):
+@pytest.mark.parametrize("readback", ["01 01 02", "04 01 02", "01 00 02", "01 01 03"])
+async def test_explicit_mode_tuple_requires_matching_observed_state(route, readback):
     radio, wire, addr = route
     wire.replies = [
         response(addr, "FB"),
         response(addr, "25 01 00 40 07 14 00"),
-        response(addr, "26 01 04 00 03"),
+        response(addr, f"26 01 {readback}"),
     ]
     assert isinstance(radio, RelativeVfoModeWritable)
-    observed = await radio.write_relative_vfo_mode(
-        0x01, selected=False, data=True, filter_width=2
-    )
-    assert observed == RelativeVfoState(14_074_000, "RTTY", 3, 0)
+    if readback == "01 01 02":
+        observed = await radio.write_relative_vfo_mode(
+            0x01, selected=False, data=True, filter_width=2
+        )
+        assert observed == RelativeVfoState(14_074_000, "USB", 2, 1)
+    else:
+        with pytest.raises(CommandError, match="readback contradicts"):
+            await radio.write_relative_vfo_mode(
+                0x01, selected=False, data=True, filter_width=2
+            )
     assert wire.frames == [
         bytes.fromhex(f"FE FE {addr:02X} E0 26 01 01 01 02 FD"),
         bytes.fromhex(f"FE FE {addr:02X} E0 25 01 FD"),

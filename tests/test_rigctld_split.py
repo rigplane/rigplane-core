@@ -212,8 +212,16 @@ async def test_split_missing_read_command_is_enavail(model, missing, command):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("command", [b"I 14080100\n", b"X RTTY 1800\n", b"i\n", b"x\n"])
-async def test_split_dual_receiver_returns_enimpl(command):
-    async with _peer("IC-7610") as (_radio, peer, _server, reader, writer):
+async def test_split_dual_receiver_returns_enimpl_without_target(command):
+    """Undeclared dual-RX targets remain ENIMPL without wire writes."""
+    profile = replace(get_radio_profile("IC-7610"), split_tx_target="none")
+    async with _peer("IC-7610", profile=profile) as (
+        _radio,
+        peer,
+        _server,
+        reader,
+        writer,
+    ):
         assert await _exchange(writer, reader, command) == b"RPRT -4\n"
         assert not peer.requests
 
