@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ControlSessionTransition } from '$lib/transport/ws-client';
 import type { ManagedTxDependencies } from '../managed-controller';
 import type { ManagedTxState } from '../managed-state';
+import { getAudioState, setTxError } from '../../../stores/audio.svelte';
 
 type SessionHandler = (session: ControlSessionTransition) => void;
 const h = vi.hoisted(() => ({
@@ -386,4 +387,59 @@ describe('managed App TX host', () => {
     await flush();
     expect(h.offPresentationTick).toHaveBeenCalledTimes(1);
   });
+
+  it('facade pttOff forwards the release cause: automatic preserves, explicit acknowledges (MOR-3753)', async () => {
+    const host = provideManagedAppTxHost(bindings());
+    const facade = getManagedAppTxController();
+    facade.pttOn();
+    await flush();
+    expect(h.sendPtt).toHaveBeenCalledExactlyOnceWith('ptt_on');
+    setTxError(true);
+
+    facade.pttOff({ automatic: true });
+    await flush();
+    expect(h.stopAudio).toHaveBeenCalledExactlyOnceWith({ automatic: true });
+    expect(h.sendPtt.mock.calls.map(([operation]) => operation)).toEqual(['ptt_on', 'ptt_off']);
+    expect(getAudioState().txError).toBe(true);
+
+    facade.pttOff();
+    await flush();
+    expect(h.stopAudio).toHaveBeenCalledTimes(1);
+    expect(getAudioState().txError).toBe(false);
+    host.dispose();
+    await flush();
+  });
+
+  it.each(['lifecycle', 'pre-disconnect', 'session-close', 'dispose'] as const)(
+    '%s releases session PTT automatically and preserves the latched failure (MOR-3753)',
+    async (release) => {
+      const host = provideManagedAppTxHost(bindings());
+      const facade = getManagedAppTxController();
+      facade.pttOn();
+      await flush();
+      expect(h.sendPtt).toHaveBeenCalledExactlyOnceWith('ptt_on');
+      setTxError(true);
+
+      if (release === 'lifecycle') h.lifecycle!();
+      if (release === 'pre-disconnect') await h.barrier!();
+      if (release === 'session-close') h.session!({ state: 'disconnected', epoch: 5 });
+      if (release === 'dispose') host.dispose();
+      await vi.waitFor(() => expect(h.sendPtt).toHaveBeenCalledWith('ptt_off'));
+      await flush();
+
+      expect(h.stopAudio).toHaveBeenCalledExactlyOnceWith({ automatic: true });
+      expect(getAudioState().txError).toBe(true);
+
+      // A later explicit user release still acknowledges the latch.
+      if (release !== 'dispose') {
+        facade.pttOff();
+        await flush();
+        expect(getAudioState().txError).toBe(false);
+      } else {
+        setTxError(false);
+      }
+      host.dispose();
+      await flush();
+    },
+  );
 });
