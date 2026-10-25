@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from rigplane.backends import factory
 from rigplane.backends.config import SerialBackendConfig
 from rigplane.backends.factory import (
     _SERIAL_MODEL_CLASSES,
@@ -79,6 +80,38 @@ class TestSupportsSerialModel:
             "IC-705, IC-7300, IC-7300MK2, IC-7610, IC-9700, X6200, "
             "and Yaesu FT-series (FTX-1, FT-710, ...)."
         )
+
+
+class TestCreateRadioSymbolSeam:
+    """MOR-3777 review R1: ``create_radio`` must resolve serial and Yaesu
+    constructors from module globals at call time, so patching the
+    factory's public class symbols after import reaches the dispatch —
+    the private table is not the seam."""
+
+    @pytest.mark.parametrize(
+        ("model", "symbol"),
+        [
+            ("IC-705", "Ic705SerialRadio"),
+            ("IC-7300", "Ic7300SerialRadio"),
+            ("IC-7300MK2", "Ic7300SerialRadio"),
+            ("IC-7610", "Icom7610SerialRadio"),
+            ("IC-9700", "Ic9700SerialRadio"),
+            ("X6200", "XieguSerialRadio"),
+            ("FTX-1", "YaesuCatRadio"),
+        ],
+    )
+    def test_post_import_symbol_patch_reaches_create_radio(
+        self, monkeypatch: pytest.MonkeyPatch, model: str, symbol: str
+    ) -> None:
+        calls: list[dict[str, object]] = []
+
+        def fake(**kwargs: object) -> None:
+            calls.append(kwargs)
+
+        monkeypatch.setattr(factory, symbol, fake)
+        create_radio(SerialBackendConfig(device="/dev/ttyUSB0", model=model))
+        assert len(calls) == 1
+        assert calls[0]["device"] == "/dev/ttyUSB0"
 
 
 def _civ_hit(address: int, model_id: bytes) -> CivProbeResult:

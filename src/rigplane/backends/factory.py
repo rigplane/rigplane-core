@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from ..radio import IcomRadio  # noqa: TID251
 from ..radio_protocol import Radio
 from .config import (
@@ -31,19 +33,22 @@ def _is_yaesu_serial_model(model: str) -> bool:
 
 #: Single model -> serial backend dispatch table, the one source shared by
 #: :func:`create_radio` and :func:`supports_serial_model` (MOR-3777): no
-#: second allowlist may grow beside it. X6100 has no serial backend and
+#: second allowlist may grow beside it. Values are deferred constructors:
+#: the class symbol is read from module globals only when the lambda runs,
+#: so ``monkeypatch.setattr(factory, "Ic7300SerialRadio", fake)`` keeps
+#: reaching the dispatch (review R1). X6100 has no serial backend and
 #: stays refused.
-_SERIAL_MODEL_CLASSES: dict[str, type[_IcomSerialRadioBase]] = {
-    "IC-705": Ic705SerialRadio,
-    "IC-7300": Ic7300SerialRadio,
+_SERIAL_MODEL_CLASSES: dict[str, Callable[[], type[_IcomSerialRadioBase]]] = {
+    "IC-705": lambda: Ic705SerialRadio,
+    "IC-7300": lambda: Ic7300SerialRadio,
     # X6200 shares the IC-705 CI-V session (same default address 0xA4 —
     # see MOR-170, Hamlib's x6100_priv_caps reused by both x6100_caps and
     # x6200_caps). Its own subclass keeps the unmeasured 50 ms gap; the
     # command set still comes from the loaded rig via ``model``.
-    "X6200": XieguSerialRadio,
-    "IC-7300MK2": Ic7300SerialRadio,
-    "IC-9700": Ic9700SerialRadio,
-    "IC-7610": Icom7610SerialRadio,
+    "X6200": lambda: XieguSerialRadio,
+    "IC-7300MK2": lambda: Ic7300SerialRadio,
+    "IC-9700": lambda: Ic9700SerialRadio,
+    "IC-7610": lambda: Icom7610SerialRadio,
 }
 
 
@@ -124,8 +129,8 @@ def create_radio(config: BackendConfig) -> Radio:
                 audio_sample_rate=config.audio_sample_rate or 48000,
             )
 
-        serial_class = _SERIAL_MODEL_CLASSES.get(model)
-        if serial_class is None:
+        constructor = _SERIAL_MODEL_CLASSES.get(model)
+        if constructor is None:
             # MOR-174: never silently impersonate an IC-7610 — driving real
             # hardware with the wrong CI-V personality is a foot-gun.
             raise ValueError(
@@ -134,7 +139,7 @@ def create_radio(config: BackendConfig) -> Radio:
                 "and Yaesu FT-series (FTX-1, FT-710, ...)."
             )
 
-        return serial_class(
+        return constructor()(
             device=config.device,
             baudrate=config.baudrate,
             radio_addr=config.radio_addr,
