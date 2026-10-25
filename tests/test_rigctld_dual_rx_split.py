@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -83,6 +84,23 @@ async def _dual_peer(model: str, *, selected: str = "A"):
     radio._ctrl_transport = transport
     radio._connected = True
     radio._civ_min_interval = 0
+    # Initial hardware state: MAIN A/B selection and independent SUB tuple.
+    radio._radio_state.receiver("MAIN").active_slot = selected
+    sub = radio._radio_state.receiver("SUB")
+    sub.freq, sub.mode, sub.filter, sub.data_mode = (145_800_000, "FM", 3, 0)
+    for name, value in zip(
+        ("freq_hz", "mode", "filter_num", "data_mode"),
+        (145_800_000, "FM", 3, 0),
+    ):
+        radio.state_store.apply_current(
+            Observation(
+                path=FieldPath.active("1", "freq_mode", name),
+                value=value,
+                source=SourceMetadata(source="test", provider="tests"),
+                timestamp_monotonic=asyncio.get_running_loop().time(),
+                max_age=60,
+            )
+        )
     config = RigctldConfig(host="127.0.0.1", port=0, cache_ttl=0, command_timeout=2)
     server = RigctldServer(radio, config, allow_not_ready=True)
     server._state_store = radio.state_store
@@ -113,6 +131,7 @@ async def test_split_targets_sub_and_preserves_rx(model, main_selected):
         reader,
         writer,
     ):
+        sub_before = asdict(_radio._radio_state.receiver("SUB"))
         if model == "IC-7610":
             rx_before = peer.slots["A"]
         else:
@@ -136,6 +155,30 @@ async def test_split_targets_sub_and_preserves_rx(model, main_selected):
             tx_slot = "B" if main_selected == "A" else "A"
             assert peer.slots[tx_slot][0] == freq
             assert peer.slots[tx_slot][3] == 0
+        snapshot = _radio.state_store.snapshot()
+        target_path = FieldPath.active if model == "IC-7610" else FieldPath.unselected
+        target_receiver = "1" if model == "IC-7610" else "0"
+        for name, expected in (("freq_hz", freq), ("mode", "USB"), ("data_mode", 0)):
+            assert (
+                snapshot.field(target_path(target_receiver, "freq_mode", name)).value
+                == expected
+            )
+        if model == "IC-9700":
+            for name, expected in zip(
+                ("freq_hz", "mode", "filter_num", "data_mode"),
+                (145_800_000, "FM", 3, 0),
+            ):
+                assert (
+                    snapshot.field(FieldPath.active("1", "freq_mode", name)).value
+                    == expected
+                )
+            assert asdict(_radio._radio_state.receiver("SUB")) == sub_before
+            main = _radio._radio_state.receiver("MAIN")
+            mirror = main.vfo_b if main_selected == "A" else main.vfo_a
+            assert (mirror.freq_hz, mirror.mode, mirror.data_mode) == (freq, "USB", 0)
+        else:
+            sub = _radio._radio_state.receiver("SUB")
+            assert (sub.freq, sub.mode, sub.data_mode) == (freq, "USB", 0)
         assert peer.sub_tuple == _SUB_SENTINEL
         assert peer.selected == main_selected
 
