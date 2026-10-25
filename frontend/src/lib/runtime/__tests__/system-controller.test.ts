@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SystemController } from '../system-controller';
+import { getAudioState, setRxError, setTxError } from '../../stores/audio.svelte';
 
 const teardown = [
   'audio',
@@ -22,9 +23,13 @@ function deferred() {
 
 function fixture() {
   const calls: string[] = [];
+  const audioOptions: Array<{ automatic?: boolean } | undefined> = [];
   const mark = (name: string) => () => calls.push(name);
   const controller = new SystemController({
-    destroyAudio: mark('audio'),
+    destroyAudio: (options?: { automatic?: boolean }) => {
+      audioOptions.push(options);
+      calls.push('audio');
+    },
     disconnectWebSockets: mark('ws:disconnect'),
     destroyMediaSession: mark('media:destroy'),
     setRadioDisconnected: mark('radio:disconnect'),
@@ -32,7 +37,7 @@ function fixture() {
     initMediaSession: mark('media:init'),
     reconnectWebSockets: mark('ws:reconnect'),
   });
-  return { calls, controller };
+  return { calls, audioOptions, controller };
 }
 
 describe('SystemController disconnect lifecycle', () => {
@@ -111,6 +116,107 @@ describe('SystemController disconnect lifecycle', () => {
     controller.connect();
     await controller.disconnect();
     expect(replacement).toHaveBeenCalledOnce();
+  });
+});
+
+// MOR-3753 PR A — an automatic disconnect forwards its reason to the audio
+// teardown and preserves latched audio errors; an explicit disconnect
+// acknowledges them state-only (setRxError/setTxError), never by repeating
+// media cleanup. The teardown call sequence stays exactly the original one.
+describe('SystemController automatic-reason propagation (MOR-3753 A)', () => {
+  beforeEach(() => {
+    setRxError(false);
+    setTxError(false);
+  });
+
+  it('forwards the automatic reason to destroyAudio and preserves latched errors', async () => {
+    const { calls, audioOptions, controller } = fixture();
+    setRxError(true);
+    setTxError(true);
+
+    await controller.disconnect({ automatic: true });
+
+    expect(calls).toEqual(teardown);
+    expect(audioOptions).toEqual([{ automatic: true }]);
+    expect(getAudioState().rxError).toBe(true);
+    expect(getAudioState().txError).toBe(true);
+  });
+
+  it('an automatic disconnect with nothing latched manufactures no error', async () => {
+    const { calls, controller } = fixture();
+
+    await controller.disconnect({ automatic: true });
+
+    expect(calls).toEqual(teardown);
+    expect(getAudioState().rxError).toBe(false);
+    expect(getAudioState().txError).toBe(false);
+  });
+
+  it('an explicit disconnect after a completed automatic one clears state only', async () => {
+    const { calls, controller } = fixture();
+    await controller.disconnect({ automatic: true });
+    setRxError(true);
+    setTxError(true);
+
+    await controller.disconnect();
+
+    expect(getAudioState().rxError).toBe(false);
+    expect(getAudioState().txError).toBe(false);
+    // State-only acknowledgement: exactly the original teardown ran — no
+    // second audio destroy, no repeated WS/MediaSession/radio pass.
+    expect(calls).toEqual(teardown);
+  });
+
+  it('an explicit disconnect joining an in-flight automatic one coalesces and clears by completion', async () => {
+    const { calls, audioOptions, controller } = fixture();
+    const gate = deferred();
+    controller.registerPreDisconnectBarrier(() => gate.promise);
+    setRxError(true);
+
+    const automatic = controller.disconnect({ automatic: true });
+    const joined = controller.disconnect();
+    expect(joined).toBe(automatic);
+
+    gate.resolve();
+    await joined;
+
+    expect(calls).toEqual(teardown);
+    expect(audioOptions).toEqual([{ automatic: true }]);
+    expect(getAudioState().rxError).toBe(false);
+  });
+
+  it('an automatic disconnect joining an in-flight one stays coalesced and preserves errors', async () => {
+    const { calls, controller } = fixture();
+    const gate = deferred();
+    controller.registerPreDisconnectBarrier(() => gate.promise);
+    setTxError(true);
+
+    const first = controller.disconnect({ automatic: true });
+    const second = controller.disconnect({ automatic: true });
+    expect(second).toBe(first);
+
+    gate.resolve();
+    await first;
+    expect(calls).toEqual(teardown);
+    expect(getAudioState().rxError).toBe(false);
+    expect(getAudioState().txError).toBe(true);
+  });
+
+  it('a rejected automatic disconnect preserves the error; an explicit call then clears it', async () => {
+    const { calls, audioOptions, controller } = fixture();
+    const failure = new Error('release uncertain');
+    controller.registerPreDisconnectBarrier(() => Promise.reject(failure));
+    setRxError(true);
+
+    const result = controller.disconnect({ automatic: true });
+    await expect(result).rejects.toBe(failure);
+    expect(calls).toEqual(teardown);
+    expect(audioOptions).toEqual([{ automatic: true }]);
+    expect(getAudioState().rxError).toBe(true);
+
+    await expect(controller.disconnect()).resolves.toBeUndefined();
+    expect(calls).toEqual(teardown);
+    expect(getAudioState().rxError).toBe(false);
   });
 });
 

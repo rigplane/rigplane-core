@@ -6,6 +6,13 @@ let audioState = $state({
   muted: false,
   micEnabled: false,
   bridgeRunning: false,
+  // MOR-3753: a requested browser-audio stream the server refused (or that
+  // died mid-stream) stays visible on the status-bar chip after stopRx/stopTx
+  // cleared the demand — demand alone would read "idle, all fine". Latched
+  // only by those failure paths; cleared by an explicit stop or a new
+  // attempt (startRx/startTx), which supersedes it. Never set while idle.
+  rxError: false,
+  txError: false,
   // MOR-1791: the server reported it cannot decode Opus, so browser TX runs
   // on the PCM16 capture path instead. A working state, not a fault — it is
   // surfaced as a quiet status hint, never as a modal or a blocking error.
@@ -89,6 +96,14 @@ export function setMicEnabled(v: boolean): void {
 
 export function setBridgeRunning(v: boolean): void {
   audioState.bridgeRunning = v;
+}
+
+export function setRxError(v: boolean): void {
+  audioState.rxError = v;
+}
+
+export function setTxError(v: boolean): void {
+  audioState.txError = v;
 }
 
 export function setTxCodecFallback(v: boolean): void {
