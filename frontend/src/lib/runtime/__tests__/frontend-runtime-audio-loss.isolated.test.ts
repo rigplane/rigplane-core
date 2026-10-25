@@ -421,10 +421,14 @@ describe('FrontendRuntime automatic audio-loss cleanup (MOR-3753 B)', () => {
     vi.mocked(subscribeCapabilities).mockImplementation((listener) => {
       publish = listener;
       listener({
-        audio: true, scope: false, capabilities: ['audio'], receivers: 1,
+        model: 'test-rx', audio: true, scope: false, tx: false,
+        capabilities: ['audio'], receivers: 1,
+        freqRanges: [], modes: [], filters: [], txBands: null,
+        audioConfig: { sampleRate: 48_000, channels: 1, codecs: ['pcm'] },
+        webrtc: { available: false, enabled: false },
         vfoScheme: 'ab', audioFftAvailable: false, scopeSource: null,
         stateContractVersion: 1, providerGeneration: 0,
-      } as Capabilities);
+      } satisfies Capabilities);
       return vi.fn();
     });
     const r = await rig();
