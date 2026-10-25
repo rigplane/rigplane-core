@@ -76,6 +76,8 @@ vi.mock('../../stores/audio.svelte', () => ({
   setRxEnabled: vi.fn(),
   setTxEnabled: vi.fn(),
   setTxCodecFallback: vi.fn(),
+  setRxError: vi.fn(),
+  setTxError: vi.fn(),
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
