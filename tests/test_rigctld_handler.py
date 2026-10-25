@@ -969,7 +969,9 @@ async def test_set_mode_plain_ssb_explicitly_clears_data(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("supports_factory", [mock.Mock, AsyncMock], ids=["sync", "async"])
+@pytest.mark.parametrize(
+    "supports_factory", [mock.Mock, AsyncMock], ids=["sync", "async"]
+)
 async def test_set_mode_capability_error_does_not_report_success(
     handler: RigctldHandler, mock_radio: AsyncMock, supports_factory
 ) -> None:

@@ -43,7 +43,9 @@ def _data_frames(requests, n_before, first_byte: bytes):
 
 def _assert_plain_mode_wire(requests, start, mode, filt, *, via_selected, explicit):
     writes = requests[start:]
-    data_writes = [data for cmd, sub, data in writes if (cmd, sub) == (0x1A, 0x06) and data]
+    data_writes = [
+        data for cmd, sub, data in writes if (cmd, sub) == (0x1A, 0x06) and data
+    ]
     assert all(data[0] == 0 for data in data_writes)
     assert len(data_writes) <= 1
     if via_selected:
@@ -105,13 +107,16 @@ async def test_tcp_m_pktusb_then_plain_clears_data(model, initial, plain):
         assert pkt_readback.split(b"\n")[0] == b"PKTUSB"
         n_before = len(peer.requests)
         assert (
-            await _exchange(writer, reader, f"M {plain} 2400\n".encode())
-            == b"RPRT 0\n"
+            await _exchange(writer, reader, f"M {plain} 2400\n".encode()) == b"RPRT 0\n"
         )
         assert peer.slots["A"] == (14_074_000, Mode[plain], 2, 0)
         _assert_plain_mode_wire(
-            peer.requests, n_before, Mode[plain], 2,
-            via_selected=_radio.profile.set_mode_via_selected, explicit=True,
+            peer.requests,
+            n_before,
+            Mode[plain],
+            2,
+            via_selected=_radio.profile.set_mode_via_selected,
+            explicit=True,
         )
         assert await _exchange(writer, reader, b"m\n", lines=2) == (
             plain.encode() + b"\n2400\n"
@@ -132,14 +137,16 @@ async def test_tcp_m_plain_passband_zero_preserves_filter(model, plain):
         pkt_passband = pkt_readback.split(b"\n")[1]
         pkt_filter = peer.slots["A"][2]
         n_before = len(peer.requests)
-        assert (
-            await _exchange(writer, reader, f"M {plain} 0\n".encode()) == b"RPRT 0\n"
-        )
+        assert await _exchange(writer, reader, f"M {plain} 0\n".encode()) == b"RPRT 0\n"
         # Passband 0 preserves the packet step's filter; DATA still goes off.
         assert peer.slots["A"] == (14_074_000, Mode[plain], pkt_filter, 0)
         _assert_plain_mode_wire(
-            peer.requests, n_before, Mode[plain], pkt_filter,
-            via_selected=_radio.profile.set_mode_via_selected, explicit=False,
+            peer.requests,
+            n_before,
+            Mode[plain],
+            pkt_filter,
+            via_selected=_radio.profile.set_mode_via_selected,
+            explicit=False,
         )
         assert await _exchange(writer, reader, b"m\n", lines=2) == (
             plain.encode() + b"\n" + pkt_passband + b"\n"
@@ -168,14 +175,10 @@ async def test_tcp_x_pktusb_then_plain_clears_tx_data(model, initial, tail):
         pkt_readback = await _exchange(writer, reader, b"x\n", lines=2)
         assert pkt_readback.split(b"\n")[0] == b"PKTUSB"
         pkt_passband = pkt_readback.split(b"\n")[1]
-        assert (
-            await _exchange(writer, reader, f"X {tail}\n".encode()) == b"RPRT 0\n"
-        )
+        assert await _exchange(writer, reader, f"X {tail}\n".encode()) == b"RPRT 0\n"
         # Actual 0x26 write carries DATA byte 0 with the preserved filter.
         assert peer.slots["B"] == (7_076_000, Mode[plain], 2, 0)
-        assert _last_split_mode_write(peer.requests) == bytes(
-            [1, Mode[plain], 0, 2]
-        )
+        assert _last_split_mode_write(peer.requests) == bytes([1, Mode[plain], 0, 2])
         assert await _exchange(writer, reader, b"x\n", lines=2) == (
             plain.encode() + b"\n" + pkt_passband + b"\n"
         )
@@ -204,9 +207,7 @@ async def test_tcp_m_plain_clears_data_on_main_dual_rx(command):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "command", [b"X USB 2400\n", b"X LSB 0\n", b"X PKTUSB 0\n"]
-)
+@pytest.mark.parametrize("command", [b"X USB 2400\n", b"X LSB 0\n", b"X PKTUSB 0\n"])
 async def test_tcp_x_dual_rx_stays_enimpl_without_writes(command):
     async with _peer("IC-7610") as (_radio, peer, _server, reader, writer):
         before = dict(peer.slots)
@@ -275,9 +276,7 @@ async def test_tcp_m_plain_yaesu_sends_mode_only(plain):
 @pytest.mark.parametrize(
     ("model", "expected"), [("IC-7610", b"\x02"), ("IC-7300", b"\x01")]
 )
-async def test_tcp_m_packet_keeps_configured_integer_data_selection(
-    model, expected
-):
+async def test_tcp_m_packet_keeps_configured_integer_data_selection(model, expected):
     config = RigctldConfig(
         host="127.0.0.1", port=0, cache_ttl=0, command_timeout=2, wsjtx_data_mode=2
     )
