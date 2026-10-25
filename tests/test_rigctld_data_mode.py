@@ -13,11 +13,13 @@ and a plain-mode readback. Packet modes keep DATA on (green today).
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.profiles import get_radio_profile
 from rigplane.radio import IcomRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
@@ -208,8 +210,15 @@ async def test_tcp_m_plain_clears_data_on_main_dual_rx(command):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("command", [b"X USB 2400\n", b"X LSB 0\n", b"X PKTUSB 0\n"])
-async def test_tcp_x_dual_rx_stays_enimpl_without_writes(command):
-    async with _peer("IC-7610") as (_radio, peer, _server, reader, writer):
+async def test_tcp_x_dual_rx_without_target_stays_enimpl_without_writes(command):
+    profile = replace(get_radio_profile("IC-7610"), split_tx_target="none")
+    async with _peer("IC-7610", profile=profile) as (
+        _radio,
+        peer,
+        _server,
+        reader,
+        writer,
+    ):
         before = dict(peer.slots)
         requests_before = list(peer.requests)
         assert await _exchange(writer, reader, command) == b"RPRT -4\n"

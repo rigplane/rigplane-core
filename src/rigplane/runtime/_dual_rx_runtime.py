@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import Any, Awaitable, Callable, Iterator
 
+    from rigplane.commands.command_map import CommandMap
+
     from .radio import CoreRadio as _MixinBase  # type: ignore[attr-defined]
 else:
     _MixinBase = object
@@ -41,11 +43,44 @@ from rigplane.core.exceptions import (
 )
 from rigplane.core.types import Mode, bcd_encode
 from rigplane.profiles import RadioProfile
+from rigplane.runtime.callable_support import split_tx_routes_unselected_selector
 
 # CI-V command byte for VFO select / equal / swap (0x07).
 _CMD_VFO = 0x07
 
 logger = logging.getLogger(__name__)
+
+
+def _relative_vfo_routing_available(
+    profile: RadioProfile, cmd_map: CommandMap | None, required: tuple[str, ...]
+) -> bool:
+    """Whether relative-role 0x25/0x26 I/O is routable for this profile.
+
+    Two profile-declared schemes route the selected/unselected
+    selector commands, and neither mutates the operator's RX
+    selection (MOR-3754):
+
+    * a single-RX ``ab`` profile with ``selected_unselected``
+      readback — selector 01 names the unselected A/B slot;
+    * a dual-RX profile with an explicit ``split_tx_target``
+      (``sub_receiver``: selector 01 is the SUB band;
+      ``main_unselected``: selector 01 is the unselected VFO inside
+      MAIN) — a fixed physical address for the split-TX role.
+
+    Anything else — including a dual-RX profile that declares no
+    ``split_tx_target`` — fails closed. Every name in ``required``
+    must be declared in the command map: a GET declaration never
+    licenses the matching SET.
+    """
+    if cmd_map is None or not all(cmd_map.has(key) for key in required):
+        return False
+    if split_tx_routes_unselected_selector(profile):
+        return True
+    return (
+        profile.receiver_count == 1
+        and profile.vfo_scheme == "ab"
+        and profile.vfo_readback == "selected_unselected"
+    )
 
 
 def require_receiver_for_profile(
@@ -304,13 +339,8 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
 
         role = "selected" if selected else "unselected"
         cmd_map = self._profile.command_map
-        required = (f"get_{role}_freq", f"get_{role}_mode")
-        if (
-            self._profile.receiver_count != 1
-            or self._profile.vfo_scheme != "ab"
-            or self._profile.vfo_readback != "selected_unselected"
-            or cmd_map is None
-            or not all(cmd_map.has(key) for key in required)
+        if cmd_map is None or not _relative_vfo_routing_available(
+            self._profile, cmd_map, (f"get_{role}_freq", f"get_{role}_mode")
         ):
             raise CommandError("direct VFO read is unavailable")
 
@@ -336,11 +366,13 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         receiver, mode, data_mode, filt = _parse_selected_mode_response(mode_resp)
         if receiver != (0 if selected else 1):
             raise CommandError("relative VFO mode readback selector mismatch")
+        if data_mode is None:
+            raise CommandError("relative VFO mode readback is missing DATA")
         return RelativeVfoState(
             freq_hz=freq,
             mode=mode.name,
             filter_num=filt,
-            data_mode=0 if data_mode is None else int(data_mode),
+            data_mode=int(data_mode),
         )
 
     async def write_relative_vfo_frequency(
@@ -359,12 +391,8 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """
         role = "selected" if selected else "unselected"
         cmd_map = self._profile.command_map
-        if (
-            self._profile.receiver_count != 1
-            or self._profile.vfo_scheme != "ab"
-            or self._profile.vfo_readback != "selected_unselected"
-            or cmd_map is None
-            or not all(cmd_map.has(f"{verb}_{role}_freq") for verb in ("set", "get"))
+        if cmd_map is None or not _relative_vfo_routing_available(
+            self._profile, cmd_map, (f"set_{role}_freq", f"get_{role}_freq")
         ):
             raise CommandError("direct VFO frequency is unavailable")
 
@@ -418,13 +446,10 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """Preserve omitted fields; carry before_set validation through dispatch."""
         role = "selected" if selected else "unselected"
         cmd_map = self._profile.command_map
-        required = (f"set_{role}_mode", f"get_{role}_mode", f"get_{role}_freq")
-        if (
-            self._profile.receiver_count != 1
-            or self._profile.vfo_scheme != "ab"
-            or self._profile.vfo_readback != "selected_unselected"
-            or cmd_map is None
-            or not all(cmd_map.has(key) for key in required)
+        if cmd_map is None or not _relative_vfo_routing_available(
+            self._profile,
+            cmd_map,
+            (f"set_{role}_mode", f"get_{role}_mode", f"get_{role}_freq"),
         ):
             raise CommandError("direct VFO mode is unavailable")
         try:
@@ -450,13 +475,19 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 raise CommandError(
                     "Invalid direct VFO mode preservation readback"
                 ) from exc
-            if current.data_mode not in (0, 1) or current.filter_num not in (1, 2, 3):
-                raise CommandError(
-                    "direct VFO mode preservation readback is unavailable"
-                )
+            # Explicit fields do not depend on the preservation read. In
+            # particular, clearing DATA must work from IC-7610 DATA2/3.
             if data is None:
+                if current.data_mode not in (0, 1):
+                    raise CommandError(
+                        "direct VFO mode preservation readback is unavailable"
+                    )
                 data = bool(current.data_mode)
             if filter_width is None:
+                if current.filter_num not in (1, 2, 3):
+                    raise CommandError(
+                        "direct VFO mode preservation readback is unavailable"
+                    )
                 filter_width = current.filter_num
         if data is None or filter_width is None or filter_width not in (1, 2, 3):
             raise CommandError("direct VFO filter readback is unavailable")
@@ -499,6 +530,17 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             raise CommandError("Invalid direct VFO mode readback") from exc
         if observed.data_mode not in (0, 1) or observed.filter_num not in (1, 2, 3):
             raise CommandError("direct VFO mode readback is unavailable")
+        # ACK alone is not success: a valid but contradictory readback
+        # means the radio did not end up in the requested state.
+        if (
+            Mode[observed.mode] != Mode(mode_code)
+            or observed.data_mode != int(data)
+            or observed.filter_num != filter_width
+        ):
+            raise CommandError(
+                "direct VFO mode readback contradicts the requested "
+                f"{Mode(mode_code).name} data={int(data)} filter={filter_width}"
+            )
         return observed
 
     # ------------------------------------------------------------------

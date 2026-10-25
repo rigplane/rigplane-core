@@ -550,6 +550,7 @@ sample_plane_owners = [
   "frontend/src/lib/runtime/adapters/scope-adapter.ts",
 ]
 python_acquisition_owners = [
+  "src/rigplane/backends/yaesu_cat/radio.py",
   "src/rigplane/cli/__init__.py",
   "src/rigplane/rigctld/handler.py",
   "src/rigplane/rigctld/poller.py",
