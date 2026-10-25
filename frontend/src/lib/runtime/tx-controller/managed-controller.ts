@@ -232,13 +232,16 @@ export class ManagedTxController {
   #prepareAudio(): Promise<boolean> {
     if (this.#audioPreparation !== null) return this.#audioPreparation;
     this.#audioNeedsCleanup = true;
-    this.#audioPreparation = (async () => {
-      try { if (await this.dependencies.startAudio() === null) return true; }
-      catch { /* local media refusal */ }
-      this.#stopAudio();
-      return false;
-    })();
-    return this.#audioPreparation;
+    const preparation = (async () => {
+      try { return await this.dependencies.startAudio() === null; }
+      catch { return false; /* local media refusal */ }
+    })().then((ready) => {
+      // A retired preparation cannot consume a newer attempt's cleanup.
+      if (!ready && this.#audioPreparation === preparation) this.#stopAudio();
+      return ready;
+    });
+    this.#audioPreparation = preparation;
+    return preparation;
   }
 
   #stopAudio(): void {
