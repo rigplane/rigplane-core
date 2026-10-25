@@ -328,10 +328,13 @@ class AudioManager {
     return admission;
   }
 
-  stopTx(): void {
+  stopTx(options?: { automatic?: boolean }): void {
     // MOR-3753: an explicit stop clears a latched TX failure — including the
-    // no-op stop after a failure already cleared the demand.
-    setTxError(false);
+    // no-op stop after a failure already cleared the demand. Automatic safety
+    // cleanup (ManagedTxController forceOff after _failTxAudio) passes
+    // { automatic: true } so the latch survives the de-key instead of the UI
+    // falsely returning to neutral/green.
+    if (!options?.automatic) setTxError(false);
     const admission = this.txAdmission;
     this.txAdmission = null;
     admission?.resolve('TX MIC: capture start cancelled');
