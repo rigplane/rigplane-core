@@ -541,8 +541,8 @@ class FrontendRuntime {
     return audioManager.startTx();
   }
 
-  stopTx(): void {
-    audioManager.stopTx();
+  stopTx(options?: { automatic?: boolean }): void {
+    audioManager.stopTx(options);
   }
 
   /** MOR-1796: subscribe to mid-transmission local TX capture death. */

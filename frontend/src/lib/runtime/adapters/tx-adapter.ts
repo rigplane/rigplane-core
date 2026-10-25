@@ -5,6 +5,7 @@
  */
 
 import { runtime } from '../frontend-runtime';
+import { setTxError } from '../../stores/audio.svelte';
 import { armModInputTxGuard } from './mod-input-tx-guard.svelte';
 import {
   autoSetLanModInputForTx,
@@ -25,6 +26,7 @@ interface LocalAudioAttempt {
   generation: number;
   lifecycle: 'starting' | 'running';
   stopRequested: boolean;
+  stopOptions?: { automatic?: boolean };
 }
 
 let nextLocalAudioGeneration = 0;
@@ -52,7 +54,7 @@ async function startTx(autoSwitchModInput = true): Promise<string | null> {
   try {
     err = await runtime.startTx();
   } catch (error) {
-    if (attempt.stopRequested) runtime.stopTx();
+    if (attempt.stopRequested) runtime.stopTx(attempt.stopOptions);
     if (activeLocalAudioAttempt?.generation === attempt.generation) {
       activeLocalAudioAttempt = null;
     }
@@ -60,7 +62,7 @@ async function startTx(autoSwitchModInput = true): Promise<string | null> {
   }
 
   if (attempt.stopRequested) {
-    runtime.stopTx();
+    runtime.stopTx(attempt.stopOptions);
     if (activeLocalAudioAttempt?.generation === attempt.generation) {
       activeLocalAudioAttempt = null;
     }
@@ -78,12 +80,17 @@ async function startTx(autoSwitchModInput = true): Promise<string | null> {
   return null;
 }
 
-function stopLocalAudio(): void {
+function stopLocalAudio(options?: { automatic?: boolean }): void {
   const attempt = activeLocalAudioAttempt;
+  if (!options?.automatic) {
+    setTxError(false);
+    if (attempt?.stopRequested) attempt.stopOptions = options;
+  }
   if (!attempt || attempt.stopRequested) return;
 
   attempt.stopRequested = true;
-  runtime.stopTx();
+  attempt.stopOptions = options;
+  runtime.stopTx(options);
   if (
     attempt.lifecycle === 'running' &&
     activeLocalAudioAttempt?.generation === attempt.generation

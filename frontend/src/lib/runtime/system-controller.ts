@@ -12,6 +12,7 @@ import { audioManager } from '$lib/audio/audio-manager';
 import { destroyMediaSession, initMediaSession } from '$lib/media/media-session';
 import { setRadioStatus } from '$lib/stores/connection.svelte';
 import { resetRadioState } from '$lib/stores/radio.svelte';
+import { setRxError, setTxError } from '$lib/stores/audio.svelte';
 import { getAuthHeaders } from '$lib/auth';
 
 export interface EibiStation {
@@ -29,12 +30,15 @@ export interface EibiResult {
 export class SystemController {
   private _clientConnected = true;
   private _releaseBarrier: { run: () => Promise<void> } | null = null;
-  private _disconnectInFlight: Promise<void> | null = null;
+  /** The in-flight disconnect: its shared promise plus whether an explicit
+   *  request joined this automatic operation and must be acknowledged at
+   *  its completion (MOR-3753). */
+  private _disconnectInFlight: { promise: Promise<void>; explicitJoin: boolean } | null = null;
   private _connectInFlight: Promise<void> | null = null;
 
   constructor(
     private readonly _effects = {
-      destroyAudio: () => audioManager.destroy(),
+      destroyAudio: (options?: { automatic?: boolean }) => audioManager.destroy(options),
       disconnectWebSockets: () => wsDisconnectAll(),
       destroyMediaSession: () => destroyMediaSession(),
       setRadioDisconnected: () => setRadioStatus('disconnected'),
@@ -80,22 +84,46 @@ export class SystemController {
     if (!resp.ok) throw new Error(await resp.text());
   }
 
-  /** Disconnect all frontend channels: WS, audio, MediaSession. */
-  disconnect(): Promise<void> {
-    if (this._disconnectInFlight) return this._disconnectInFlight;
+  /** Disconnect all frontend channels: WS, audio, MediaSession. Default is
+   *  an explicit disconnect, which acknowledges latched audio errors;
+   *  { automatic: true } preserves them for the operator. */
+  disconnect(options?: { automatic?: boolean }): Promise<void> {
+    const automatic = options?.automatic === true;
+    if (!automatic) {
+      // State-only acknowledgement (MOR-3753): an explicit stop clears a
+      // latched RX/TX error — also on the already-disconnected no-op path
+      // and while coalescing with an in-flight disconnect — without
+      // repeating media cleanup. Automatic calls neither clear nor
+      // manufacture an error.
+      setRxError(false);
+      setTxError(false);
+    }
+    if (this._disconnectInFlight) {
+      // MOR-3753: an explicit join is acknowledged at completion of THIS
+      // shared teardown, not only here at entry — a failure arriving while
+      // the barrier still holds (the retiring session's dying socket)
+      // belongs to the operation this request is joining.
+      if (!automatic) this._disconnectInFlight.explicitJoin = true;
+      return this._disconnectInFlight.promise;
+    }
     if (!this._clientConnected) return Promise.resolve();
     this._clientConnected = false;
     this._connectInFlight = null;
-    if (controllerClient.remote) this._effects.destroyAudio();
+    if (controllerClient.remote) this._effects.destroyAudio(options);
     const barrier = this._releaseBarrier?.run;
     if (!barrier && !controllerClient.remote) {
       // MOR-3535: release the local session so the server frees this
       // client's TX hold immediately instead of waiting for the TTL.
       if (controllerClient.session) void controllerClient.release().catch(() => {});
-      this._teardown();
+      this._teardown(options);
       return Promise.resolve();
     }
 
+    const operation = {
+      // Assigned synchronously below, once the chain exists.
+      promise: undefined as unknown as Promise<void>,
+      explicitJoin: !automatic,
+    };
     const inFlight = Promise.resolve()
       .then(barrier)
       .finally(async () => {
@@ -105,18 +133,26 @@ export class SystemController {
             : controllerClient.session
               ? controllerClient.release().catch(() => undefined)
               : Promise.resolve();
-          try { this._teardown(); } finally { await release; }
+          try { this._teardown(options); } finally { await release; }
         } finally {
           this._disconnectInFlight = null;
+          // State-only acknowledgement of the shared operation, on rejection
+          // as well — never a second media teardown (MOR-3753).
+          if (operation.explicitJoin) {
+            setRxError(false);
+            setTxError(false);
+          }
         }
       });
-    this._disconnectInFlight = inFlight;
+    operation.promise = inFlight;
+    this._disconnectInFlight = operation;
     return inFlight;
   }
 
-  private _teardown(): void {
-    // 1. Stop audio (RX/TX playback + audio WS)
-    this._effects.destroyAudio();
+  private _teardown(options?: { automatic?: boolean }): void {
+    // 1. Stop audio (RX/TX playback + audio WS). An automatic teardown
+    //    preserves latched audio errors (MOR-3753); the default clears them.
+    this._effects.destroyAudio(options);
 
     // 2. Close all WebSocket channels (control + scope + any named). This
     // synchronously flips `wsConnected` false via the control channel's

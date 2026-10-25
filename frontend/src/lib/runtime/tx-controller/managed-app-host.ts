@@ -8,7 +8,9 @@ export type ManagedAppTxController = Readonly<{
   snapshot(): Readonly<ManagedTxState>;
   subscribe(listener: Listener): () => void;
   pttOn(): void;
-  pttOff(): void;
+  /** User release by default (acknowledges a latched failure);
+   *  { automatic: true } is teardown-owned cleanup and preserves it. */
+  pttOff(options?: { automatic?: boolean }): void;
   transmitOn(): void;
   forceOff(): void;
   setTot(configuredSeconds: number | null): Promise<void>;
@@ -77,7 +79,7 @@ export function provideManagedAppTxHost(bindings: ManagedAppTxHostBindings): Man
     snapshot: () => controller.snapshot(),
     subscribe: (listener) => disposed ? noop : controller.subscribe(listener),
     pttOn: () => { if (!disposed) controller.pttOn(); },
-    pttOff: () => { if (!disposed) void controller.pttOff(); },
+    pttOff: (options) => { if (!disposed) void controller.pttOff(options); },
     transmitOn: () => { if (!disposed) controller.transmitOn(); },
     forceOff: () => { if (!disposed) void controller.forceOff(); },
     setTot: (configuredSeconds) => disposed
