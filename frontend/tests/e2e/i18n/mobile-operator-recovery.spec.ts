@@ -50,7 +50,11 @@ const capture = process.env.RP_MOBILE_OBSERVED_CAPTURE
 
 test.use({ hasTouch: true, isMobile: true });
 
-async function prepare(page: Page, stateOverride?: Omit<ServerState, 'sub'>) {
+async function prepare(
+  page: Page,
+  stateOverride?: Omit<ServerState, 'sub'>,
+  holdCapabilities?: Promise<void>,
+) {
   const selectedState = capture?.state.body ?? stateOverride ?? state;
   const writes: string[] = [];
   await page.addInitScript((value) => {
@@ -70,6 +74,11 @@ async function prepare(page: Page, stateOverride?: Omit<ServerState, 'sub'>) {
       if (pathname !== '/api/local/v1/rc28/tuning-step') writes.push(`${request.method()} ${pathname}`);
       await route.fulfill({ status: 404, body: '{}' });
       return;
+    }
+    // MOR-3754 negative control: optionally hold the capabilities response
+    // until the test releases it, AFTER the settled()-only measurement point.
+    if (pathname === '/api/v1/capabilities' && holdCapabilities) {
+      await holdCapabilities;
     }
     const responses: Record<string, unknown> = {
       '/api/v1/state': selectedState,
@@ -104,6 +113,21 @@ async function prepare(page: Page, stateOverride?: Omit<ServerState, 'sub'>) {
 async function settled(page: Page) {
   await expect(page.locator('.m-layout, .m-landscape, .radio-layout')).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
+}
+
+// MOR-3754 (CI 4347): `settled()` pins layout and fonts only, but the meta
+// facts are semantic output. The store commits radio state only after the
+// asynchronous `/api/v1/capabilities` fetch lands and its generation matches
+// (`ws-client.ts` `refreshCapabilities` gates `commitCurrentState` on
+// `setCapabilities`), and the BW/AGC/NB/NR chips are capability- and
+// observation-gated on top of that — so a one-shot measurement right after
+// `settled()` can race the hydration and read an empty facts array. Wait for
+// the row's semantic content — all four facts, with the KNOWN bandwidth
+// reading — using expect polling only: no sleeps, no timeout changes.
+async function metaFactsReady(page: Page) {
+  const row = page.locator('.m-vfo-meta');
+  await expect(row.locator('[data-indicator-fact]')).toHaveCount(4);
+  await expect(row.locator('[data-indicator-fact="bandwidth"]')).toContainText(/BW \d+ Hz/);
 }
 
 async function themeSnapshot(page: Page) {
@@ -192,6 +216,7 @@ test('360 px portrait keeps the meta facts on one line, nothing clipped (MOR-285
   await page.setViewportSize({ width: 360, height: 844 });
   await page.goto('/');
   await settled(page);
+  await metaFactsReady(page);
   const measured = await page.evaluate(() => {
     const row = document.querySelector<HTMLElement>('.m-vfo-meta');
     if (!row) throw new Error('the .m-vfo-meta row is missing');
@@ -226,6 +251,46 @@ test('360 px portrait keeps the meta facts on one line, nothing clipped (MOR-285
     expect.soft(fact.right, `${fact.fact} in viewport`).toBeLessThanOrEqual(360);
     expect.soft(fact.scrollW, `${fact.fact} not clipped`).toBeLessThanOrEqual(fact.clientW + 1);
   }
+  expect(writes).toEqual([]);
+});
+
+// MOR-3754 — deterministic negative control for the readiness race above
+// (CI 4347, head 62e7a8d5: measured facts [] vs ['bandwidth','agc','nb','nr']).
+// The capabilities response is held at the page boundary until the test
+// releases it — no clocks anywhere. Layout settles and fonts load while the
+// store still has no capabilities, so the OLD settled()-only measurement
+// point provably runs before semantic readiness: the row is painted, the
+// fact chips are structurally absent. Releasing the response then exercises
+// the same `metaFactsReady` synchronization the fixed test uses, proving it
+// waits past delayed hydration instead of measuring inside the race window.
+test('delayed capability hydration still yields all four meta facts (MOR-3754)', async ({ page }, info) => {
+  let releaseCapabilities!: () => void;
+  const held = new Promise<void>((resolve) => { releaseCapabilities = resolve; });
+  const writes = await prepare(page, undefined, held);
+  await page.setViewportSize({ width: 360, height: 844 });
+  await page.goto('/');
+  await settled(page);
+  const before = await page.evaluate(() => ({
+    row: Boolean(document.querySelector('.m-vfo-meta')),
+    facts: Array.from(document.querySelectorAll('.m-vfo-meta [data-indicator-fact]'))
+      .map((node) => node.getAttribute('data-indicator-fact')),
+  }));
+  await info.attach('before-release', { body: JSON.stringify(before), contentType: 'application/json' });
+  // The pre-fix measurement point (CI 4347 reproduced deterministically):
+  // settled() has passed, yet the facts are semantically absent.
+  expect(before.row).toBe(true);
+  expect(before.facts).toEqual([]);
+  releaseCapabilities();
+  await metaFactsReady(page);
+  const measured = await page.evaluate(() => ({
+    facts: Array.from(document.querySelectorAll('.m-vfo-meta [data-indicator-fact]'))
+      .map((node) => node.getAttribute('data-indicator-fact')),
+    bandwidth: (document.querySelector('.m-vfo-meta [data-indicator-fact="bandwidth"]') as HTMLElement | null)
+      ?.innerText.trim() ?? null,
+  }));
+  await info.attach('after-release', { body: JSON.stringify(measured), contentType: 'application/json' });
+  expect(measured.facts).toEqual(['bandwidth', 'agc', 'nb', 'nr']);
+  expect(measured.bandwidth).toMatch(/^BW \d+ Hz$/);
   expect(writes).toEqual([]);
 });
 
