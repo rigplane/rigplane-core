@@ -234,6 +234,7 @@ def _ptt_refusal_names_holder(submission: object, owner: str | None) -> bool:
     intent = getattr(state, "intent", None)
     return (
         getattr(submission, "outcome", None) is ManagedTxOutcome.REJECTED
+        and intent is not None
         and getattr(intent, "kind", None) is ManagedTxIntentKind.PTT
         and bool(intent.owner_token)
         and intent.owner_token != owner
