@@ -139,4 +139,39 @@ describe('audio store', () => {
     store.toggleMute();
     expect(subscriber).toHaveBeenCalledTimes(1);
   });
+
+  describe('[new contract] rxError / txError API', () => {
+    it('starts clear', () => {
+      const s = store.getAudioState();
+      expect(s.rxError).toBe(false);
+      expect(s.txError).toBe(false);
+    });
+
+    it('latches and clears independently', () => {
+      store.setRxError(true);
+      expect(store.getAudioState().rxError).toBe(true);
+      expect(store.getAudioState().txError).toBe(false);
+      store.setTxError(true);
+      expect(store.getAudioState().txError).toBe(true);
+      store.setRxError(false);
+      expect(store.getAudioState().rxError).toBe(false);
+      expect(store.getAudioState().txError).toBe(true);
+      store.setTxError(false);
+      expect(store.getAudioState().txError).toBe(false);
+    });
+
+    it('does not publish RX-target changes', () => {
+      const seen: Array<{ muted: boolean; rxEnabled: boolean }> = [];
+      const unsubscribe = store.subscribeRxAudioTarget((snapshot) => {
+        seen.push(snapshot);
+      });
+      const publications = seen.length;
+      store.setRxError(true);
+      store.setTxError(true);
+      store.setRxError(false);
+      store.setTxError(false);
+      expect(seen).toHaveLength(publications);
+      unsubscribe();
+    });
+  });
 });

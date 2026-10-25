@@ -76,6 +76,8 @@ vi.mock('../../stores/audio.svelte', () => ({
   setRxEnabled: vi.fn(),
   setTxEnabled: vi.fn(),
   setTxCodecFallback: vi.fn(),
+  setRxError: vi.fn(),
+  setTxError: vi.fn(),
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
@@ -265,6 +267,115 @@ describe('AudioManager controller currency', () => {
     expect(await audioManager.startTx()).not.toBeNull();
     expect(txStart).not.toHaveBeenCalled();
     expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+});
+
+describe('AudioManager TX start failure latch (MOR-3753)', () => {
+  beforeEach(() => {
+    vi.resetModules(); vi.useFakeTimers(); vi.clearAllMocks();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('location', { protocol: 'https:', host: 'station.test' });
+  });
+  afterEach(async () => {
+    const { audioManager } = await import('../audio-manager');
+    audioManager.destroy(); vi.useRealTimers(); vi.unstubAllGlobals();
+  });
+
+  /** The store mock is re-created by each resetModules import; read the
+   *  instance the freshly imported manager is wired to. */
+  async function rig() {
+    const { audioManager } = await import('../audio-manager');
+    const audio = await import('../../stores/audio.svelte');
+    return { audioManager, setTxError: vi.mocked(audio.setTxError) };
+  }
+
+  it.each([
+    'TX MIC: permission denied',
+    'TX MIC: microphone capture not supported',
+    'TX MIC: insecure context',
+    'TX MIC: capture failed (NotFoundError)',
+    'TX MIC: capture failed (unknown)',
+  ])('genuine capture failure %s latches the failed state without TX admission', async (reason) => {
+    txStart.mockResolvedValueOnce(reason);
+    const { audioManager, setTxError } = await rig();
+    audioManager.setOperatorNotifier(vi.fn());
+
+    await expect(audioManager.startTx()).resolves.toBe(reason);
+
+    expect(audioManager.txEnabled).toBe(false);
+    expect(setTxError).toHaveBeenLastCalledWith(true);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('a retry clears the latch at entry while the new capture is pending; a fresh genuine failure re-latches', async () => {
+    txStart.mockResolvedValueOnce('TX MIC: permission denied');
+    const { audioManager, setTxError } = await rig();
+    await expect(audioManager.startTx()).resolves.toBe('TX MIC: permission denied');
+    expect(setTxError).toHaveBeenLastCalledWith(true);
+
+    let settleCapture!: (reason: string | null) => void;
+    txStart.mockImplementationOnce(() => new Promise((resolve) => { settleCapture = resolve; }));
+    const retry = audioManager.startTx();
+    expect(setTxError).toHaveBeenLastCalledWith(false);
+
+    settleCapture('TX MIC: capture failed (NotReadableError)');
+    await expect(retry).resolves.toBe('TX MIC: capture failed (NotReadableError)');
+    expect(setTxError).toHaveBeenLastCalledWith(true);
+  });
+
+  it.each([
+    'TX MIC: capture start cancelled',
+    'TX MIC: capture stopped before start completed',
+  ])('non-failure reason %s never latches', async (reason) => {
+    txStart.mockResolvedValueOnce(reason);
+    const { audioManager, setTxError } = await rig();
+
+    await expect(audioManager.startTx()).resolves.toBe(reason);
+
+    expect(setTxError).not.toHaveBeenCalledWith(true);
+    expect(audioManager.txEnabled).toBe(false);
+  });
+
+  it('an obsolete controller attempt is not a failure: no latch, capture stopped', async () => {
+    const { audioManager, setTxError } = await rig();
+    let current = true;
+    audioManager.setControllerBinding({
+      remote: () => true, ready: () => current, epoch: () => 7,
+      current: (epoch: number) => epoch === 7 && current,
+      protocols: () => [],
+    });
+    let settleCapture!: (reason: string | null) => void;
+    txStart.mockImplementationOnce(() => new Promise((resolve) => { settleCapture = resolve; }));
+    const pending = audioManager.startTx();
+    current = false;
+    settleCapture(null);
+
+    await expect(pending).resolves.toBe('Удалённое управление потеряно. Подключитесь заново.');
+
+    expect(setTxError).not.toHaveBeenCalledWith(true);
+    expect(txStop).toHaveBeenCalledOnce();
+    expect(audioManager.txEnabled).toBe(false);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('a start refused by the controller-ready guard neither captures nor disturbs the latch', async () => {
+    const { audioManager, setTxError } = await rig();
+    let ready = true;
+    audioManager.setControllerBinding({
+      remote: () => true, ready: () => ready, epoch: () => 7,
+      current: (epoch: number) => epoch === 7 && ready,
+      protocols: () => [],
+    });
+    txStart.mockResolvedValueOnce('TX MIC: permission denied');
+    await expect(audioManager.startTx()).resolves.toBe('TX MIC: permission denied');
+    expect(setTxError).toHaveBeenLastCalledWith(true);
+
+    ready = false;
+    const callsBefore = setTxError.mock.calls.length;
+    await expect(audioManager.startTx()).resolves.toBe('Удалённое управление недоступно.');
+    expect(setTxError.mock.calls).toHaveLength(callsBefore);
+    expect(txStart).toHaveBeenCalledOnce();
   });
 });
 

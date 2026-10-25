@@ -204,6 +204,11 @@ export class TxMic {
         },
       });
     } catch (error: unknown) {
+      if (generation !== this.captureGeneration) {
+        // A rejection settling after stop() is that cancellation itself, not
+        // a genuine refusal (MOR-3753): no category, no failure reason.
+        return 'TX MIC: capture start cancelled';
+      }
       const name = typeof error === 'object' && error !== null && 'name' in error
         ? error.name : undefined;
       const category = typeof name === 'string' && CAPTURE_ERROR_NAMES.has(name)
