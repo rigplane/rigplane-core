@@ -51,6 +51,38 @@ _CMD_VFO = 0x07
 logger = logging.getLogger(__name__)
 
 
+def _relative_vfo_routing_available(
+    profile: RadioProfile, cmd_map: CommandMap | None, required: tuple[str, ...]
+) -> bool:
+    """Whether relative-role 0x25/0x26 I/O is routable for this profile.
+
+    Two profile-declared schemes route the selected/unselected
+    selector commands, and neither mutates the operator's RX
+    selection (MOR-3754):
+
+    * a single-RX ``ab`` profile with ``selected_unselected``
+      readback — selector 01 names the unselected A/B slot;
+    * a dual-RX profile with an explicit ``split_tx_target``
+      (``sub_receiver``: selector 01 is the SUB band;
+      ``main_unselected``: selector 01 is the unselected VFO inside
+      MAIN) — a fixed physical address for the split-TX role.
+
+    Anything else — including a dual-RX profile that declares no
+    ``split_tx_target`` — fails closed. Every name in ``required``
+    must be declared in the command map: a GET declaration never
+    licenses the matching SET.
+    """
+    if cmd_map is None or not all(cmd_map.has(key) for key in required):
+        return False
+    if split_tx_routes_unselected_selector(profile):
+        return True
+    return (
+        profile.receiver_count == 1
+        and profile.vfo_scheme == "ab"
+        and profile.vfo_readback == "selected_unselected"
+    )
+
+
 def require_receiver_for_profile(
     profile: RadioProfile, receiver: int, *, operation: str
 ) -> None:
@@ -274,38 +306,6 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
     # Selected / Unselected receiver freq & mode (0x25 / 0x26)
     # ------------------------------------------------------------------
 
-    def _relative_vfo_routing_available(
-        self, cmd_map: CommandMap | None, required: tuple[str, ...]
-    ) -> bool:
-        """Whether relative-role 0x25/0x26 I/O is routable for this profile.
-
-        Two profile-declared schemes route the selected/unselected
-        selector commands, and neither mutates the operator's RX
-        selection (MOR-3754):
-
-        * a single-RX ``ab`` profile with ``selected_unselected``
-          readback — selector 01 names the unselected A/B slot;
-        * a dual-RX profile with an explicit ``split_tx_target``
-          (``sub_receiver``: selector 01 is the SUB band;
-          ``main_unselected``: selector 01 is the unselected VFO inside
-          MAIN) — a fixed physical address for the split-TX role.
-
-        Anything else — including a dual-RX profile that declares no
-        ``split_tx_target`` — fails closed. Every name in ``required``
-        must be declared in the command map: a GET declaration never
-        licenses the matching SET.
-        """
-        if cmd_map is None or not all(cmd_map.has(key) for key in required):
-            return False
-        profile: RadioProfile = self._profile
-        if split_tx_routes_unselected_selector(profile):
-            return True
-        return (
-            profile.receiver_count == 1
-            and profile.vfo_scheme == "ab"
-            and profile.vfo_readback == "selected_unselected"
-        )
-
     async def _get_selected_freq(self) -> int:
         """Read the selected (active) receiver frequency via CI-V 0x25 0x00."""
         civ = self._commands.get_selected_freq(to_addr=self._radio_addr)
@@ -339,8 +339,8 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
 
         role = "selected" if selected else "unselected"
         cmd_map = self._profile.command_map
-        if cmd_map is None or not self._relative_vfo_routing_available(
-            cmd_map, (f"get_{role}_freq", f"get_{role}_mode")
+        if cmd_map is None or not _relative_vfo_routing_available(
+            self._profile, cmd_map, (f"get_{role}_freq", f"get_{role}_mode")
         ):
             raise CommandError("direct VFO read is unavailable")
 
@@ -391,8 +391,8 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """
         role = "selected" if selected else "unselected"
         cmd_map = self._profile.command_map
-        if cmd_map is None or not self._relative_vfo_routing_available(
-            cmd_map, (f"set_{role}_freq", f"get_{role}_freq")
+        if cmd_map is None or not _relative_vfo_routing_available(
+            self._profile, cmd_map, (f"set_{role}_freq", f"get_{role}_freq")
         ):
             raise CommandError("direct VFO frequency is unavailable")
 
@@ -446,7 +446,8 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """Preserve omitted fields; carry before_set validation through dispatch."""
         role = "selected" if selected else "unselected"
         cmd_map = self._profile.command_map
-        if cmd_map is None or not self._relative_vfo_routing_available(
+        if cmd_map is None or not _relative_vfo_routing_available(
+            self._profile,
             cmd_map,
             (f"set_{role}_mode", f"get_{role}_mode", f"get_{role}_freq"),
         ):
