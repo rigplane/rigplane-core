@@ -1585,9 +1585,21 @@ class YaesuCatRadio:
                         f"relative DATA partner unavailable for {base!r}"
                     )
 
+            # MOR-3754: a before_set refusal at the transport's final
+            # currency check is wrapped in CatTransportError; restore the
+            # caller's exact refusal (identity-checked) so rigctld can
+            # still map ControllerError to EACCESS. Unrelated transport
+            # failures keep their own type.
+            guard_failure: BaseException | None = None
+
             def current_target() -> bool:
+                nonlocal guard_failure
                 if before_set is not None:
-                    before_set()
+                    try:
+                        before_set()
+                    except BaseException as exc:
+                        guard_failure = exc
+                        raise
                 return True
 
             current_target()
@@ -1598,6 +1610,10 @@ class YaesuCatRadio:
                 )
             except CatCommandRejected as exc:
                 raise CommandRejectedError(str(exc)) from exc
+            except CatTransportError as exc:
+                if guard_failure is not None and exc.__cause__ is guard_failure:
+                    raise guard_failure
+                raise
             except CatParseError as exc:
                 raise CommandError(f"unreadable relative mode readback: {exc}") from exc
             observed = await self._read_relative_receiver(receiver)
@@ -1620,15 +1636,30 @@ class YaesuCatRadio:
         async with self._mode_lock:
             receiver = await self._relative_receiver(selected)
 
+            # MOR-3754: same restore as write_relative_vfo_mode — the
+            # transport wraps a final-check before_set refusal in
+            # CatTransportError; give the caller back the exact refusal.
+            guard_failure: BaseException | None = None
+
             def current_target() -> bool:
+                nonlocal guard_failure
                 if before_set is not None:
-                    before_set()
+                    try:
+                        before_set()
+                    except BaseException as exc:
+                        guard_failure = exc
+                        raise
                 return True
 
             current_target()
             await self._require_main_relative_role()
             cmd = "set_freq" if receiver == 0 else "set_freq_sub"
-            await self._write(cmd, freq=freq_hz, is_current=current_target)
+            try:
+                await self._write(cmd, freq=freq_hz, is_current=current_target)
+            except CatTransportError as exc:
+                if guard_failure is not None and exc.__cause__ is guard_failure:
+                    raise guard_failure
+                raise
             if after_ack is not None:
                 after_ack()
             for attempt in range(5):

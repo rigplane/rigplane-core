@@ -11,6 +11,7 @@ from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.backends.yaesu_cat.transport import (
     CatCommandRejected,
     CatTimeoutError,
+    YaesuCatTransport,
 )
 from rigplane.core.exceptions import CommandError, CommandRejectedError
 from rigplane.core.types import Mode
@@ -32,6 +33,7 @@ class RelativePeer:
         self.ignore = None
         self.garble = {}
         self.fail_query = {}
+        self.fail_write = {}
         self.vs_script = None
         self.hold_query = None
         self.allowed_external = set()
@@ -59,8 +61,13 @@ class RelativePeer:
         raise AssertionError(frame)
 
     async def write(self, frame, **kwargs):
-        if kwargs.get("is_current") is not None:
-            assert kwargs["is_current"]()
+        # MOR-3754: the final transport-dispatch currency check runs the
+        # REAL helper, so a guard refusal is wrapped in CatTransportError
+        # exactly as YaesuCatTransport.write would wrap it — before any
+        # byte reaches the peer.
+        YaesuCatTransport._require_write_currency(kwargs.get("is_current"))
+        if frame in self.fail_write:
+            raise self.fail_write[frame]
         if frame in self.allowed_external:
             self.writes.append(frame)
             return
@@ -250,6 +257,104 @@ async def test_relative_before_set_refusal_prevents_any_set(api):
         )
     with pytest.raises(_Refusal):
         await call
+    assert peer.writes == []
+
+
+# -- before_set refusal at FINAL transport dispatch (MOR-3754) ----------------
+
+
+def _grant_once_then_raise(refusal):
+    """Eager currency check passes; the final transport-dispatch check
+    raises the SAME *refusal* object — controller authority expiring
+    after the eager check, inside the transport's final guard."""
+    calls = []
+
+    def before_set():
+        calls.append(1)
+        if len(calls) > 1:
+            raise refusal
+
+    return before_set, calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api", ["mode", "frequency"])
+async def test_final_dispatch_refusal_restores_original_after_eager_pass(api):
+    radio, peer = relative_radio()
+    refusal = _Refusal("authority expired after the eager check")
+    before_set, calls = _grant_once_then_raise(refusal)
+    events = []
+    snapshot = deepcopy((peer.freqs, peer.modes, peer.filters, peer.vs))
+    if api == "mode":
+        call = radio.write_relative_vfo_mode(
+            Mode.USB, selected=False, data=True, before_set=before_set
+        )
+    else:
+        call = radio.write_relative_vfo_frequency(
+            14_080_500,
+            selected=False,
+            before_set=before_set,
+            after_ack=lambda: events.append("ack"),
+            after_readback=lambda: events.append("readback"),
+        )
+    with pytest.raises(_Refusal) as excinfo:
+        await call
+    assert excinfo.value is refusal
+    assert len(calls) == 2  # eager pass, then the dispatch guard really ran
+    assert peer.writes == []
+    assert events == []
+    assert (peer.freqs, peer.modes, peer.filters, peer.vs) == snapshot
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api", ["mode", "frequency"])
+async def test_final_dispatch_cancellation_propagates(api):
+    radio, peer = relative_radio()
+    cancel = asyncio.CancelledError()
+    before_set, calls = _grant_once_then_raise(cancel)
+    snapshot = deepcopy((peer.freqs, peer.modes, peer.filters, peer.vs))
+    if api == "mode":
+        call = radio.write_relative_vfo_mode(
+            Mode.USB, selected=False, data=True, before_set=before_set
+        )
+    else:
+        call = radio.write_relative_vfo_frequency(
+            14_080_500, selected=False, before_set=before_set
+        )
+    with pytest.raises(asyncio.CancelledError) as excinfo:
+        await call
+    assert excinfo.value is cancel
+    assert len(calls) == 2
+    assert peer.writes == []
+    assert (peer.freqs, peer.modes, peer.filters, peer.vs) == snapshot
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "api,frame", [("mode", "MD1C;"), ("frequency", "FB014080500;")]
+)
+async def test_unrelated_final_dispatch_transport_error_keeps_type(api, frame):
+    radio, peer = relative_radio()
+    boom = CatTimeoutError("write leg timed out", command=frame)
+    boom.__cause__ = RuntimeError("serial port died")
+    calls = []
+
+    def before_set():
+        calls.append(1)
+
+    peer.fail_write[frame] = boom
+    if api == "mode":
+        call = radio.write_relative_vfo_mode(
+            Mode.USB, selected=False, data=True, before_set=before_set
+        )
+    else:
+        call = radio.write_relative_vfo_frequency(
+            14_080_500, selected=False, before_set=before_set
+        )
+    with pytest.raises(CatTimeoutError) as excinfo:
+        await call
+    assert excinfo.value is boom  # no broad unwrapping of arbitrary __cause__
+    assert len(calls) == 2
     assert peer.writes == []
 
 
