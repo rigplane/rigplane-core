@@ -186,6 +186,7 @@ class YaesuCatRadio:
         # MOR-3678: one send_cw_text at a time, so each KM memory write
         # stays paired with the KY that plays it.
         self._cw_text_lock = asyncio.Lock()
+        self._mode_lock = asyncio.Lock()
         # Bumped by stop_cw_text and the managed CW abort: a send admitted
         # under an older generation can no longer write KM or KY.
         self._cw_text_generation = 0
@@ -1444,18 +1445,27 @@ class YaesuCatRadio:
             filter_width: Ignored (not supported by this backend).
             receiver: 0 = main, 1 = sub.
         """
-        code = self._mode_to_code.get(mode)
-        if code is None:
+        receiver = self._validate_receiver(receiver)
+        if mode not in self._mode_to_code:
             raise CommandError(
                 f"Unknown mode {mode!r} for {self._config.model!r}. "
                 f"Available: {list(self._mode_to_code)}"
             )
+        async with self._mode_lock:
+            await self._set_mode_verified(mode, receiver)
+
+    async def _set_mode_verified(self, mode: str, receiver: int) -> None:
         cmd = "set_mode" if receiver == 0 else "set_mode_sub"
-        await self._write(cmd, mode=code)
-        if receiver == 0:
-            self._state.main.mode = mode
-        else:
-            self._state.sub.mode = mode
+        await self._write(cmd, mode=self._mode_to_code[mode])
+        for attempt in range(5):
+            observed, _ = await self.get_mode(receiver)
+            if observed == mode:
+                return
+            if attempt < 4:
+                await asyncio.sleep(0.05)
+        raise CommandError(
+            f"Mode readback mismatch: requested {mode!r}, observed {observed!r}"
+        )
 
     # -- Data mode ---------------------------------------------------------
 
@@ -1478,40 +1488,32 @@ class YaesuCatRadio:
 
     async def set_data_mode(self, on: int | bool, receiver: int = 0) -> None:
         """Select the profile's DATA partner of the live receiver mode."""
-        if self._has_write_command("set_data_mode"):
-            await self._write("set_data_mode", state="1" if on else "0")
-            return
+        receiver = self._validate_receiver(receiver)
+        async with self._mode_lock:
+            if self._has_write_command("set_data_mode"):
+                await self._write("set_data_mode", state="1" if on else "0")
+                return
 
-        mode, _ = await self.read_mode(receiver)
-        pairs = {
-            "USB": "DATA-U",
-            "LSB": "DATA-L",
-            "FM": "DATA-FM",
-            "FM-N": "DATA-FM-N",
-        }
-        if on:
-            if mode in pairs.values():
-                return
-            target = pairs.get(mode)
-        else:
-            target = {data: plain for plain, data in pairs.items()}.get(mode)
-            if target is None and not is_data_mode(mode):
-                return
-        if target is None or target not in self._mode_to_code:
-            raise CommandError(
-                f"No DATA mode partner for {mode!r} on {self._config.model!r}"
-            )
-        cmd = "set_mode" if receiver == 0 else "set_mode_sub"
-        await self._write(cmd, mode=self._mode_to_code[target])
-        for attempt in range(5):
-            observed, _ = await self.get_mode(receiver)
-            if observed == target:
-                return
-            if attempt < 4:
-                await asyncio.sleep(0.05)
-        raise CommandError(
-            f"DATA mode readback mismatch: requested {target!r}, observed {observed!r}"
-        )
+            mode, _ = await self.read_mode(receiver)
+            pairs = {
+                "USB": "DATA-U",
+                "LSB": "DATA-L",
+                "FM": "DATA-FM",
+                "FM-N": "DATA-FM-N",
+            }
+            if on:
+                if mode in pairs.values():
+                    return
+                target = pairs.get(mode)
+            else:
+                target = {data: plain for plain, data in pairs.items()}.get(mode)
+                if target is None and not is_data_mode(mode):
+                    return
+            if target is None or target not in self._mode_to_code:
+                raise CommandError(
+                    f"No DATA mode partner for {mode!r} on {self._config.model!r}"
+                )
+            await self._set_mode_verified(target, receiver)
 
     # -- Power switch (PS) -------------------------------------------------
 
