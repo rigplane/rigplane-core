@@ -365,11 +365,13 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         receiver, mode, data_mode, filt = _parse_selected_mode_response(mode_resp)
         if receiver != (0 if selected else 1):
             raise CommandError("relative VFO mode readback selector mismatch")
+        if data_mode is None:
+            raise CommandError("relative VFO mode readback is missing DATA")
         return RelativeVfoState(
             freq_hz=freq,
             mode=mode.name,
             filter_num=filt,
-            data_mode=0 if data_mode is None else int(data_mode),
+            data_mode=int(data_mode),
         )
 
     async def write_relative_vfo_frequency(

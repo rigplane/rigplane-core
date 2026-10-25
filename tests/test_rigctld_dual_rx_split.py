@@ -45,10 +45,30 @@ class DualSplitIcomTransport(SplitIcomTransport):
         super().__init__(selected=selected)
         self.direct_selector = direct_selector
         self.sub_tuple = _SUB_SENTINEL
+        self.truncate_mode_readback = False
 
     async def send_tracked(self, packet: bytes, *, is_current=None) -> None:
         start = packet.index(b"\xfe\xfe")
         command = packet[start + 4]
+        if self.truncate_mode_readback and command == 0x26:
+            from _helpers import wrap_civ_in_udp
+            from rigplane.commands import (
+                CONTROLLER_ADDR,
+                build_civ_frame,
+                parse_civ_frame,
+            )
+
+            request = parse_civ_frame(packet[start:])
+            if len(request.data) == 1:
+                self.requests.append((command, request.sub, request.data))
+                reply = build_civ_frame(
+                    CONTROLLER_ADDR,
+                    request.to_addr,
+                    command,
+                    data=request.data + bytes([Mode.USB]),
+                )
+                self._responses.put_nowait(wrap_civ_in_udp(reply))
+                return
         if self.direct_selector and command == 0x07:
             raise AssertionError("VFO selection must not happen in split tests")
         saved = self.selected
@@ -240,3 +260,19 @@ def test_invalid_split_target_is_load_error(tmp_path, invalid):
     )
     with pytest.raises(RigLoadError, match="split_tx_target"):
         load_rig(path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
+async def test_missing_data_preservation_reply_refuses_without_set(model):
+    from test_rigctld_wsjtx_split_mk2 import _exchange
+
+    async with _dual_peer(model) as (_radio, peer, server, reader, writer):
+        before = dict(peer.slots)
+        peer.truncate_mode_readback = True
+        assert await _exchange(writer, reader, b"S 1 VFOB\n") == b"RPRT 0\n"
+        assert await _exchange(writer, reader, b"X RTTY 1800\n") == b"RPRT -11\n"
+        assert peer.slots == before
+        assert not any(
+            command == 0x26 and len(data) > 1 for command, _, data in peer.requests
+        )
