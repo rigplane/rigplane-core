@@ -20,6 +20,7 @@ import pytest
 from test_managed_tx_authority import FakeConfigStore, FakeFence, FakeLane
 
 from rigplane.core.exceptions import CommandError, CommandRejectedError
+from rigplane.core.radio_protocol import Radio
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime.managed_tx_authority import (
     ManagedTxAuthority,
@@ -56,7 +57,7 @@ class _LoopClock:
 
 def _radio() -> MagicMock:
     profile = resolve_radio_profile(model="IC-9700")
-    radio = MagicMock()
+    radio = MagicMock(spec=Radio)
     radio.profile = profile
     radio.model = profile.model
     radio.capabilities = set(profile.capabilities)
