@@ -171,7 +171,7 @@ class _LeafHandler:
     def __init__(self, error=HamlibError.OK):
         self._radio, self._managed_tx_authority = _LeafRadio(), object()
         self._has_canonical_state_store, self.error, self.calls = False, error, []
-    async def _apply_packet_data_mode(self, *, receiver): self.calls.append(("packet", receiver))
+    async def _apply_packet_data_mode(self, *, receiver, filter_width): self.calls.append(("packet", receiver, filter_width))
     async def _execute_set_vfo(self, vfo): return self.calls.append(("vfo", vfo)) or self.error
     async def _execute_set_level(self, level, value, *, receiver, vfo_arg): return self.calls.append(("level", level, value, receiver, vfo_arg)) or self.error
     async def _execute_set_func(self, func, on, *, receiver, vfo_arg): return self.calls.append(("func", func, on, receiver, vfo_arg)) or self.error
@@ -193,7 +193,7 @@ async def test_managed_non_ptt_families_keep_exact_legacy_leaf_parameters(monkey
     ]
     results = [await executor.execute(intent) for intent in intents]
     assert handler._radio.calls == [("freq", _FREQUENCY, 1), ("mode", "USB", 2400, 1), ("rit", 125), ("rit-on", True), ("rit", -75), ("xit-on", True), ("raw", bytes.fromhex("FEFE98E003FD"))]
-    assert handler.calls == [("packet", 1), ("vfo", "VFOB"), ("level", "AF", .5, 1, "VFOB"), ("func", "NB", True, 1, "VFOB"), ("split", True, "VFOB")]
+    assert handler.calls == [("packet", 1, 2400), ("vfo", "VFOB"), ("level", "AF", .5, 1, "VFOB"), ("func", "NB", True, 1, "VFOB"), ("split", True, "VFOB")]
     assert results[-1].details == {"values": []}
 @pytest.mark.parametrize("intent", [_intent("set_vfo", vfo="VFOB"), _intent("set_level", level="AF", value=.5),
     _intent("set_func", func="NB", on=True), _intent("set_split_vfo", on=True, tx_vfo="VFOB")], ids=["vfo", "level", "func", "split"])

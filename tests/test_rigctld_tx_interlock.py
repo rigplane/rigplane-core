@@ -212,6 +212,7 @@ def _handler(store: StateStore, *, public_store: bool = True):
     routing.set_level = AsyncMock(return_value=RigctldResponse())
     radio.rigctld_routing = Mock(return_value=routing)
     radio._send_civ_raw = AsyncMock(return_value=None)
+    radio.get_data_mode = AsyncMock(return_value=False)
     return RigctldHandler(radio, RigctldConfig(), state_store=store), radio, routing
 
 
@@ -490,6 +491,27 @@ async def test_authority_approved_writes_dispatch_in_every_rf_state(
         called.assert_awaited_once()
         assert called.await_args.args == expected_args
     assert handler._command_service.lifecycle_events()[-1].state == "acknowledged"  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_plain_ssb_write_with_data_still_enabled_is_not_reported_success() -> (
+    None
+):
+    """Negative readback control for the ``M USB 2400`` rows above.
+
+    The concrete ``get_data_mode`` readback in ``_handler`` is load-bearing:
+    it models a radio that truthfully reports DATA cleared after
+    ``set_data_mode(False)`` (contract: ``get_data_mode() -> bool``). A radio
+    whose readback still reports DATA active must not be answered ``RPRT 0``.
+    """
+    handler, radio, _routing = _handler(_store("rx")[0])
+    radio.get_data_mode = AsyncMock(return_value=True)
+
+    response = await handler.execute(parse_line(b"M USB 2400"))
+
+    assert response.error is HamlibError.ENAVAIL
+    radio.set_mode.assert_awaited_once()
+    radio.set_data_mode.assert_awaited_once_with(False)
 
 
 @pytest.mark.asyncio
