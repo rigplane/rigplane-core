@@ -563,6 +563,31 @@ describe('remote TX audio admission before managed PTT', () => {
     expect(r.submit).not.toHaveBeenCalled();
   });
 
+  it.each(['returned', 'rejected'] as const)('a late %s capture failure cannot clean up a fresh PTT preparation', async (outcome) => {
+    const r = await rig();
+    let finish!: () => void;
+    txStart.mockImplementationOnce(() => new Promise<string | null>((resolve, reject) => {
+      finish = () => outcome === 'returned'
+        ? resolve('TX MIC: permission denied') : reject(new Error('late capture failure'));
+    }));
+    r.controller.pttOn();
+    await r.controller.pttOff();
+    r.controller.pttOn();
+    await vi.advanceTimersByTimeAsync(0);
+    const stops = txStop.mock.calls.length;
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(txStop).toHaveBeenCalledTimes(stops);
+    expect(r.audioManager.txEnabled).toBe(true);
+    expect(r.sendPtt).not.toHaveBeenCalled();
+    serverText(r.socket, ack);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.sendPtt).toHaveBeenCalledExactlyOnceWith('ptt_on');
+    await r.controller.pttOff();
+    expect(r.sendPtt.mock.calls.map(([operation]) => operation)).toEqual(['ptt_on', 'ptt_off']);
+    expect(r.submit).not.toHaveBeenCalled();
+  });
+
   it('settles a pending start as a failure when the audio socket closes', async () => {
     const r = await rig();
     const starting = r.audioManager.startTx();
