@@ -132,18 +132,21 @@ async def test_wsjtx_rig_split_sequence_preserves_physical_rx(model, initial):
 @pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("data_mode", [0, 1])
 async def test_split_explicit_passband_preserves_tx_data_on_wire(model, data_mode):
+    # MOR-3750 intended contract: plain X USB clears TX DATA (DATA byte 0),
+    # it does not preserve the incoming data_mode on the wire.
     async with _peer(model) as (_radio, peer, server, reader, writer):
         peer.slots["B"] = (7_076_000, Mode.LSB, 3, data_mode)
         rx_before = peer.slots["A"]
         assert await _exchange(writer, reader, b"X USB 2400\n") == b"RPRT 0\n"
+        assert await _exchange(writer, reader, b"x\n", lines=2) == b"USB\n2400\n"
         assert peer.requests == [
+            (0x26, None, bytes([1, Mode.USB, 0, 2])),
             (0x25, None, b"\x01"),
             (0x26, None, b"\x01"),
-            (0x26, None, bytes([1, Mode.USB, data_mode, 2])),
             (0x25, None, b"\x01"),
             (0x26, None, b"\x01"),
         ]
-        assert peer.slots["B"] == (7_076_000, Mode.USB, 2, data_mode)
+        assert peer.slots["B"] == (7_076_000, Mode.USB, 2, 0)
         assert peer.slots["A"] == rx_before
         assert peer.selected == "A"
         _assert_no_relative_overlays(server)
@@ -153,18 +156,20 @@ async def test_split_explicit_passband_preserves_tx_data_on_wire(model, data_mod
 @pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("command", [b"X USB\n", b"X USB 0\n"])
 async def test_split_omitted_passband_preserves_tx_data_and_filter(model, command):
+    # MOR-3750 intended contract: plain X USB clears TX DATA (DATA byte 0)
+    # while still preserving the TX filter; x reads back plain USB.
     async with _peer(model) as (radio, peer, server, reader, writer):
         radio._filter_width = 1
         rx_before = peer.slots["A"]
         assert await _exchange(writer, reader, command) == b"RPRT 0\n"
-        assert peer.slots["B"] == (7_076_000, Mode.USB, 3, 1)
+        assert peer.slots["B"] == (7_076_000, Mode.USB, 3, 0)
         assert peer.slots["A"] == rx_before
         assert peer.selected == "A"
-        assert await _exchange(writer, reader, b"x\n", lines=2) == b"PKTUSB\n1800\n"
+        assert await _exchange(writer, reader, b"x\n", lines=2) == b"USB\n1800\n"
         mode_requests = [data for cmd, _, data in peer.requests if cmd == 0x26]
         assert mode_requests == [
             b"\x01",
-            bytes([1, Mode.USB, 1, 3]),
+            bytes([1, Mode.USB, 0, 3]),
             b"\x01",
             b"\x01",
         ]
@@ -177,15 +182,26 @@ async def test_split_omitted_passband_preserves_tx_data_and_filter(model, comman
     ("name", "mode"),
     [("PKTUSB", Mode.USB), ("PKTLSB", Mode.LSB), ("PKTRTTY", Mode.RTTY)],
 )
-async def test_split_packet_mode_sets_data_in_same_frame(model, name, mode):
+@pytest.mark.parametrize("initial_data", [0, 1])
+@pytest.mark.parametrize(
+    ("passband", "expected_filter", "expected_passband"),
+    [(0, 3, 1800), (2400, 2, 2400)],
+)
+async def test_split_packet_mode_sets_data_in_same_frame(
+    model, name, mode, initial_data, passband, expected_filter, expected_passband
+):
     async with _peer(model) as (_radio, peer, _server, reader, writer):
-        peer.slots["B"] = (7_076_000, Mode.AM, 3, 0)
+        peer.slots["B"] = (7_076_000, Mode.AM, 3, initial_data)
         rx_before = peer.slots["A"]
         assert (
-            await _exchange(writer, reader, f"X {name} 2400\n".encode()) == b"RPRT 0\n"
+            await _exchange(writer, reader, f"X {name} {passband}\n".encode())
+            == b"RPRT 0\n"
         )
-        assert peer.slots["B"] == (7_076_000, mode, 2, 1)
-        assert (0x26, None, bytes([1, mode, 1, 2])) in peer.requests
+        assert peer.slots["B"] == (7_076_000, mode, expected_filter, 1)
+        assert (0x26, None, bytes([1, mode, 1, expected_filter])) in peer.requests
         assert not any(cmd in (0x06, 0x07, 0x1A) for cmd, _, _ in peer.requests)
+        assert await _exchange(writer, reader, b"x\n", lines=2) == (
+            f"{name}\n{expected_passband}\n".encode()
+        )
         assert peer.slots["A"] == rx_before
         assert peer.selected == "A"

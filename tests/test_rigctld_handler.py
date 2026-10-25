@@ -958,11 +958,33 @@ async def test_set_mode_without_passband_uses_none_filter(
 
 
 @pytest.mark.asyncio
-async def test_set_mode_non_packet_does_not_force_data_change(
-    handler: RigctldHandler, mock_radio: AsyncMock
+@pytest.mark.parametrize("mode", ["USB", "LSB"])
+async def test_set_mode_plain_ssb_explicitly_clears_data(
+    handler: RigctldHandler, mock_radio: AsyncMock, mode: str
 ) -> None:
-    resp = await handler.execute(set_cmd("set_mode", "LSB"))
+    resp = await handler.execute(set_cmd("set_mode", mode))
     assert resp.ok
+    mock_radio.set_mode.assert_awaited_once_with(mode, filter_width=None)
+    mock_radio.set_data_mode.assert_awaited_once_with(False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "supports_factory", [mock.Mock, AsyncMock], ids=["sync", "async"]
+)
+async def test_set_mode_capability_error_does_not_report_success(
+    handler: RigctldHandler, mock_radio: AsyncMock, supports_factory
+) -> None:
+    mock_radio.supports_command = supports_factory(
+        side_effect=RuntimeError("capability lookup failed")
+    )
+    cmd = set_cmd("set_mode", "USB", "2400")
+
+    resp = await handler.execute(cmd)
+
+    assert resp.error == HamlibError.EINTERNAL
+    assert format_response(cmd, resp, ClientSession()) == b"RPRT -7\n"
+    mock_radio.supports_command.assert_called_once_with("set_data_mode")
     mock_radio.set_data_mode.assert_not_awaited()
 
 

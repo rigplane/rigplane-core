@@ -749,6 +749,8 @@ class _RigctldCommandExecutor:
                 )
             if bool(params.get("packet_mode", False)):
                 await self.handler._apply_packet_data_mode(receiver=receiver)
+            elif str(params.get("mode", "")).upper() in ("USB", "LSB"):
+                await self.handler._apply_plain_ssb_data_off(receiver=receiver)
         elif intent.name == "set_ptt":
             # The owner identity rides on the intent, not on the handler's
             # context var: the ingress recorded it there, ``CommandService``
@@ -1183,6 +1185,39 @@ class RigctldHandler:
         else:
             await self._radio.set_data_mode(data_mode, receiver=receiver)
         return data_mode
+
+    async def _supports_data_mode(self) -> bool:
+        """Whether this radio implements the DATA-mode command.
+
+        Consults the generic capability mechanism
+        (:meth:`Radio.supports_command`) with a name-only query — the
+        ``receiver`` keyword only admits level commands, so it is never
+        passed here. ``False`` means no DATA operation (e.g. Yaesu CAT,
+        which has the method but reports no command). Radios predating
+        ``supports_command`` fall back to the method's presence.
+        """
+        supports = getattr(self._radio, "supports_command", None)
+        if callable(supports):
+            result = supports("set_data_mode")
+            if hasattr(result, "__await__"):
+                result = await result
+            return bool(result)
+        return callable(getattr(self._radio, "set_data_mode", None))
+
+    async def _apply_plain_ssb_data_off(self, *, receiver: int = 0) -> bool:
+        """Clear DATA for a plain USB/LSB mode change when supported.
+
+        Never skipped on profile routing flags: the selected-slot path
+        reuses cached ``radio_state`` DATA that may be stale, so the
+        explicit OFF is the truth. Returns whether a clear was issued.
+        """
+        if not await self._supports_data_mode():
+            return False
+        if receiver == 0:
+            await self._radio.set_data_mode(False)
+        else:
+            await self._radio.set_data_mode(False, receiver=receiver)
+        return True
 
     def _radio_state(self) -> RadioState | None:
         state = getattr(self._radio, "radio_state", None)
@@ -1897,15 +1932,22 @@ class RigctldHandler:
             # ``filter_width`` (the local var) is a filter NUMBER, so the
             # readback overlay belongs on ``filter_num`` — that is the key the
             # get_mode projection now reads for the passband. (MOR-895.)
-            self._record_pending_overlay(
-                self._filter_num_path(1),
-                filter_width,
-                command_id=intent.id,
-            )
+            if filter_width is not None:
+                self._record_pending_overlay(
+                    self._filter_num_path(1),
+                    filter_width,
+                    command_id=intent.id,
+                )
             if requested_mode in packet_modes:
                 self._record_pending_overlay(
                     self._data_mode_path(1),
                     True,
+                    command_id=intent.id,
+                )
+            elif requested_mode in ("USB", "LSB") and await self._supports_data_mode():
+                self._record_pending_overlay(
+                    self._data_mode_path(1),
+                    False,
                     command_id=intent.id,
                 )
             return _ok()
@@ -1930,20 +1972,28 @@ class RigctldHandler:
         # ``filter_width`` (the local var) is a filter NUMBER, so the readback
         # overlay belongs on ``filter_num`` — that is the key the get_mode
         # projection now reads for the passband. (MOR-895.)
-        self._record_pending_overlay(
-            self._filter_num_path(0),
-            filter_width,
-            command_id=intent.id,
-        )
+        if filter_width is not None:
+            self._record_pending_overlay(
+                self._filter_num_path(0),
+                filter_width,
+                command_id=intent.id,
+            )
         if requested_mode in packet_modes:
             self._record_pending_overlay(
                 self._data_mode_path(0),
                 True,
                 command_id=intent.id,
             )
+        elif requested_mode in ("USB", "LSB") and await self._supports_data_mode():
+            self._record_pending_overlay(
+                self._data_mode_path(0),
+                False,
+                command_id=intent.id,
+            )
 
-        # Only set DATA mode explicitly for packet modes.
-        # For non-packet modes, avoid hidden side-effects (do not force DATA off).
+        # DATA is set explicitly for packet modes (True) and cleared for
+        # plain SSB (False); all other non-packet modes keep prior behavior
+        # with no DATA operation (MOR-3750).
         if requested_mode in packet_modes:
             # Read-back sync: keep next get_mode deterministic for CAT clients.
             # Some radios acknowledge set-data quickly but reflect packet mode
@@ -3256,7 +3306,13 @@ class RigctldHandler:
             {
                 "mode": mode.value,
                 "filter_width": filter_width,
-                "data": True if requested_mode in packet_modes else None,
+                "data": (
+                    True
+                    if requested_mode in packet_modes
+                    else False
+                    if requested_mode in ("USB", "LSB")
+                    else None
+                ),
             },
             source="rigctld",
             command_id=f"rigctld-set-split-mode-{time.monotonic_ns()}",
