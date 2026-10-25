@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dual-receiver rigctld split routing (MOR-3754).** `I`/`i` and `X`/`x`
+  use the profile-declared split target on IC-7610 (physical SUB) and IC-9700
+  (unselected MAIN A/B, not its independent SUB band). Existing IC-7300,
+  IC-7300MK2 and IC-705 routing is retained. `S 1 VFOB` does not change RX
+  selection; plain USB/LSB clears DATA, including IC-7610 D2/D3 with an
+  omitted passband. This change has not been verified on IC-7610 or IC-9700
+  hardware. IC-9700 satellite/memory operation is not added. The documented
+  multi-client read/modify/write limitation MOR-3743 remains.
+
 ## [3.0.0b20] — 2026-10-23
 
 ### Added
