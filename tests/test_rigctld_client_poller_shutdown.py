@@ -25,7 +25,7 @@ async def test_stop_when_connection_completes(
     writer = SimpleNamespace(is_closing=lambda: False)
     connections = 0
 
-    async def open_connection(*args, **kwargs):
+    async def complete_connection():
         nonlocal connections
         connections += 1
         # Schedule stop before wait_for's completion callback. The inner
@@ -35,6 +35,9 @@ async def test_stop_when_connection_completes(
         if connection_error:
             raise OSError("fake connect failed")
         return asyncio.StreamReader(), writer
+
+    def open_connection(*args, **kwargs):
+        return loop.create_task(complete_connection())
 
     async def poll():
         if reconnecting:
