@@ -141,7 +141,7 @@ _CMD_ATT = 0x11
 _CMD_PREAMP = 0x16
 _CMD_CMD29 = 0x29
 _CMD_PTT = 0x1C
-_CMD_CTL_MEM_MENU = 0x1A  # 0x1A 0x05 <item-hi> <item-lo> menu reads/writes
+_CMD_CTL_MEM_MENU = 0x1A  # 0x1A 0x05 menu items; 0x1A 0x06 DATA mode (0-3)
 _CMD_SELECTED_FREQ = 0x25  # Selected/unselected receiver frequency
 _CMD_SELECTED_MODE = 0x26  # Selected/unselected receiver mode
 _CMD_VFO_SELECT = 0x07  # MAIN/SUB receiver select (D0/D1) and read (D2)
@@ -2444,6 +2444,46 @@ class MockIcomRadio(AudioPortMixin):
                 if len(rest) == 2 + width:  # SET: BCD value bytes, item width
                     self._ctl_mem_menu[item] = _bcd_decode_value(rest[2:])
                     return self._civ_ack(to, frm)
+            return self._civ_nak(to, frm)
+
+        # --- 0x1A 06 DATA mode (the selected receiver's 0x26 DATA flag) ---
+        # Documented full form (IC-7610 CI-V Reference Guide): SET carries
+        # DATA 0-3 plus filter 1-3, with DATA 00 paired to filter 00 only
+        # (manual footnote); GET answers DATA then filter — 00 00 while
+        # DATA is OFF, and DATA OFF never zeroes the physical filter that
+        # 0x26/0x04 keep reporting. ``DD 01-03 FF 01-03`` sets both fields;
+        # ``00 00`` clears DATA and preserves the filter. Repo-compatible
+        # short form (the ``set_data_mode`` builder): one DATA value 0-3,
+        # filter preserved. Other lengths, values or pairings NAK before
+        # any mutation; no write touches mode, frequency or the unselected
+        # receiver, and the DATA flag is the byte 0x26 selector 00 reports,
+        # so 07 D0/D1 selection keeps MAIN/SUB isolated (the swap in the
+        # 0x07 handler owns the mapping).
+        if cmd == _CMD_CTL_MEM_MENU and payload[:1] == b"\x06":
+            rest = payload[1:]
+            if not rest:  # GET: DATA plus filter (00 00 while DATA is OFF)
+                filt = self._filter if self._data_mode else 0x00
+                return self._civ_frame(
+                    to,
+                    frm,
+                    _CMD_CTL_MEM_MENU,
+                    sub=0x06,
+                    data=bytes([self._data_mode, filt]),
+                )
+            if len(rest) == 1 and rest[0] <= 0x03:  # short SET: DATA 0-3
+                self._data_mode = rest[0]
+                return self._civ_ack(to, frm)
+            if (
+                len(rest) == 2
+                and 0x01 <= rest[0] <= 0x03
+                and 0x01 <= rest[1] <= 0x03
+            ):  # full SET: DATA 1-3 with filter 1-3
+                self._data_mode = rest[0]
+                self._filter = rest[1]
+                return self._civ_ack(to, frm)
+            if len(rest) == 2 and rest == b"\x00\x00":  # full SET: DATA OFF
+                self._data_mode = 0x00
+                return self._civ_ack(to, frm)
             return self._civ_nak(to, frm)
 
         # --- PTT / Transceiver status (0x1C) ---
