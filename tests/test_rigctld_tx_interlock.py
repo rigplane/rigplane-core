@@ -494,7 +494,9 @@ async def test_authority_approved_writes_dispatch_in_every_rf_state(
 
 
 @pytest.mark.asyncio
-async def test_plain_ssb_write_with_data_still_enabled_is_not_reported_success() -> None:
+async def test_plain_ssb_write_with_data_still_enabled_is_not_reported_success() -> (
+    None
+):
     """Negative readback control for the ``M USB 2400`` rows above.
 
     The concrete ``get_data_mode`` readback in ``_handler`` is load-bearing:
