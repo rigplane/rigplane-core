@@ -12,6 +12,34 @@
     | 'connected';
   export type IndicatorTone = 'green' | 'yellow' | 'red' | 'neutral';
 
+  // MOR-3753: the audio chip reads browser-audio DEMAND plus the latched
+  // request outcome — never the bare socket. No demand (idle, or a Pro
+  // embedding served by the companion bridge with browser monitoring off)
+  // is 'inactive' even with the socket absent; a refused/died request stays
+  // 'failed' after stopRx/stopTx cleared the demand, until an explicit stop
+  // or a new attempt. indicatorTone() already maps these: inactive →
+  // neutral, connecting → yellow, connected → green, failed/disconnected →
+  // red.
+  export type AudioIndicatorState =
+    | 'inactive'
+    | 'connecting'
+    | 'connected'
+    | 'failed'
+    | 'disconnected';
+
+  export function deriveAudioIndicatorState(
+    audio: { rxEnabled: boolean; txEnabled: boolean; rxError: boolean; txError: boolean },
+    audioConnected: boolean,
+    isPoweredOff: boolean,
+  ): AudioIndicatorState {
+    // A latched request failure stays visible, including while powered off.
+    // Without demand there is nothing failing: idle power-off is neutral.
+    if (audio.rxError || audio.txError) return 'failed';
+    if (!audio.rxEnabled && !audio.txEnabled) return 'inactive';
+    if (isPoweredOff) return 'disconnected';
+    return audioConnected ? 'connected' : 'connecting';
+  }
+
   export function deriveScopeIndicatorState(
     status: DefaultScopeStatus,
     isPoweredOff: boolean,
@@ -177,7 +205,12 @@
   let scopeState = $derived(
     deriveScopeIndicatorState(runtime.defaultScopeStatus, isPoweredOff),
   );
-  let audioState = $derived(isPoweredOff ? 'disconnected' : (isAudioConnected() ? 'connected' : 'disconnected'));
+  // MOR-3753: demand-gated, not socket-gated — an absent browser socket with
+  // no demand is idle (neutral), not a fault (red).
+  let audioState = $derived(
+    deriveAudioIndicatorState(getAudioState(), isAudioConnected(), isPoweredOff),
+  );
+  let audioTooltip = $derived(t(`core.statusbar.audio.${audioState}`));
   // MOR-1791: the server cannot decode Opus, so browser TX runs on the PCM16
   // capture path. Transmission works — this is a quiet hint next to the audio
   // indicator, deliberately not a fault chip and not a modal.
@@ -454,7 +487,7 @@
       </span>
     {/if}
     {#if hasAudio()}
-      <span class="indicator" role="status" title={t('core.statusbar.indicator.audio', { state: audioState })} style="--indicator-color: {stateColor(audioState)}">
+      <span class="indicator" role="status" data-testid="audio-chip" title={audioTooltip} style="--indicator-color: {stateColor(audioState)}">
         <span class="indicator-dot"></span>
         <Volume2 size={12} color="currentColor" strokeWidth={2.5} />
       </span>
