@@ -297,12 +297,13 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """
         if cmd_map is None or not all(cmd_map.has(key) for key in required):
             return False
-        if split_tx_routes_unselected_selector(self._profile):
+        profile: RadioProfile = self._profile
+        if split_tx_routes_unselected_selector(profile):
             return True
         return (
-            self._profile.receiver_count == 1
-            and self._profile.vfo_scheme == "ab"
-            and self._profile.vfo_readback == "selected_unselected"
+            profile.receiver_count == 1
+            and profile.vfo_scheme == "ab"
+            and profile.vfo_readback == "selected_unselected"
         )
 
     async def _get_selected_freq(self) -> int:

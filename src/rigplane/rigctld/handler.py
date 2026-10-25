@@ -3133,9 +3133,8 @@ class RigctldHandler:
         info = self._profile_vfo_info()
         if info is None or info[0] < 2:
             return False
-        return not split_tx_routes_unselected_selector(
-            getattr(self._radio, "profile", None)
-        )
+        profile = getattr(self._radio, "profile", None)
+        return profile is None or not split_tx_routes_unselected_selector(profile)
 
     async def _cmd_get_split_freq(self, cmd: RigctldCommand) -> RigctldResponse:
         try:
