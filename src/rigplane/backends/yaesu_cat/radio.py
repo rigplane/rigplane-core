@@ -21,7 +21,12 @@ from ...core.priority_exchange import ExchangeTier
 from ...core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from ...core.tx_observation import TxStateReading
 from ...core.types import MemoryEntry
-from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
+from ...exceptions import (
+    AudioFormatError,
+    CommandError,
+    CommandRejectedError,
+    ModeReadbackError,
+)
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...profiles.control_domain import (
     control_display_band,
@@ -1463,9 +1468,7 @@ class YaesuCatRadio:
                 return
             if attempt < 4:
                 await asyncio.sleep(0.05)
-        raise CommandError(
-            f"Mode readback mismatch: requested {mode!r}, observed {observed!r}"
-        )
+        raise ModeReadbackError(mode, observed)
 
     # -- Data mode ---------------------------------------------------------
 

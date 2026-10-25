@@ -317,3 +317,40 @@ async def test_rigctl_process_cleanup_on_timeout_or_cancel(cancel):
         with pytest.raises(TimeoutError):
             await _communicate_and_reap(process, 0.01)
     assert process.returncode is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("observed", ["LSB", "AM"])
+async def test_validator_distinguishes_ignored_mode_from_wrong_readback(observed):
+    from rigplane.core.exceptions import ModeReadbackError
+    from rigplane.core.radio_protocol import Radio
+    from rigplane.validation.hardware import _check_mode_set
+    from rigplane.validation.schema import (
+        CapabilityDeclaration,
+        CapabilityDeclarationEntry,
+        CheckStatus,
+        FailureDomain,
+        ValidationLevel,
+    )
+
+    radio = MagicMock(spec=Radio)
+    radio.get_mode = AsyncMock(return_value=("LSB", None))
+    radio.set_mode = AsyncMock(side_effect=[ModeReadbackError("USB", observed), None])
+    entry = CapabilityDeclarationEntry(
+        check_id="mode.set",
+        capability="",
+        level=ValidationLevel.CAPABILITY_MATRIX,
+        declaration=CapabilityDeclaration.SUPPORTED,
+        summary="mode readback",
+    )
+    check = await _check_mode_set(radio, entry, allow_writes=True, per_check_timeout=2)
+    assert check.status is CheckStatus.FAIL
+    assert check.failure_domain is FailureDomain.READBACK
+    assert check.evidence["readback_mode"] == observed
+    if observed == "LSB":
+        assert check.evidence["outcome"] == "ignored"
+        assert check.error == "control did not react: readback equals original"
+    else:
+        assert "outcome" not in check.evidence
+        assert "AM" in check.error
+    assert radio.set_mode.await_args_list[-1].args == ("LSB", None, 0)

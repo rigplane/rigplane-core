@@ -8,6 +8,7 @@ __all__ = [
     "CommandError",
     "BackgroundSendDropped",
     "CommandRejectedError",
+    "ModeReadbackError",
     "TimeoutError",
     "DiscoveryTimeout",
     "AudioError",
@@ -52,10 +53,19 @@ class BackgroundSendDropped(CommandError):
 
 
 class CommandRejectedError(CommandError):
-    """Raised when the radio positively refused a command (e.g. a Yaesu
-    ``?;`` response), as opposed to a locally-detected encoding error, a
-    missing command template, or any other :class:`CommandError` that never
-    reached the radio at all."""
+    """The radio positively refused a command (e.g. a Yaesu ``?;`` response)."""
+
+
+class ModeReadbackError(CommandError):
+    """A mode write completed but its readback did not reach the target."""
+
+    def __init__(self, requested_mode: str, observed_mode: str) -> None:
+        super().__init__(
+            f"Mode readback mismatch: requested {requested_mode!r}, "
+            f"observed {observed_mode!r}"
+        )
+        self.requested_mode = requested_mode
+        self.observed_mode = observed_mode
 
 
 class TimeoutError(RigplaneError):
