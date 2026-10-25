@@ -54,7 +54,7 @@ from ...runtime.tx_interlock import (
     send_civ_frame,
 )
 from ...runtime.managed_tx_authority import ManagedTxAuthority
-from ...runtime.managed_tx_state import ManagedTxOutcome
+from ...runtime.managed_tx_state import ManagedTxIntentKind, ManagedTxOutcome
 from ..protocol import (  # noqa: TID251
     decode_json,
     encode_json,
@@ -215,6 +215,50 @@ __all__ = ["ControlHandler"]
 logger = logging.getLogger(__name__)
 # Intent param carrying the TX owner `_enqueue_command` checked (MOR-3537).
 _TX_OWNER_PARAM = "_tx_owner"
+# Refusal wording when a rejected PTT receipt proves another owner held (MOR-3684).
+_PTT_HOLDER_CONFLICT = "another client is transmitting"
+# The only queue exception a rejected receipt may translate (MOR-3684):
+# `execute_positive_tx_queue_entry` collapsing a refused admission.
+_QUEUE_ADMISSION_REJECTED = "positive TX admission was rejected"
+
+
+def _ptt_refusal_names_holder(submission: object, owner: str | None) -> bool:
+    """Whether a refused managed-PTT receipt proves another PTT owner held.
+
+    Only the receipt's immutable transition state is evidence: a rejected
+    PttDown returns the held intent (``reduce_managed_tx``). A latched
+    TRANSMIT intent holds no owner in its state, so it never names a
+    holder here.
+    """
+    state = getattr(getattr(submission, "transition", None), "state", None)
+    intent = getattr(state, "intent", None)
+    return (
+        getattr(submission, "outcome", None) is ManagedTxOutcome.REJECTED
+        and intent is not None
+        and getattr(intent, "kind", None) is ManagedTxIntentKind.PTT
+        and bool(intent.owner_token)
+        and intent.owner_token != owner
+    )
+
+
+def _queue_refused_for_ptt_holder(
+    exc: BaseException, pending: asyncio.Task[Any] | None, owner: str | None
+) -> bool:
+    """Bind the holder wording to the queue's admission-rejection path only."""
+    if (
+        not isinstance(exc, CommandError)
+        or isinstance(exc, CommandRejectedError)
+        or str(exc) != _QUEUE_ADMISSION_REJECTED
+    ):
+        return False
+    return (
+        pending is not None
+        and pending.done()
+        and not pending.cancelled()
+        and pending.exception() is None
+        and _ptt_refusal_names_holder(pending.result(), owner)
+    )
+
 
 # MOR-624: maps the per-DATA-group MOD-input SET command name (as sent by the
 # frontend auto-restore) to its allowed teardown arm name (MOR-993).
@@ -1791,6 +1835,7 @@ class ControlHandler:
             on = name == "ptt_on"
         # Before the submission: a close while the key is in flight releases.
         self._last_ptt_on = on
+        pending: asyncio.Task[Any] | None = None
         try:
             if on:
                 if self._server is None:
@@ -1818,10 +1863,14 @@ class ControlHandler:
             else:
                 submission = await authority.submit_ptt(False, self._tx_owner)
         except (CommandError, RuntimeError, TimeoutError) as exc:
+            if _queue_refused_for_ptt_holder(exc, pending, self._tx_owner):
+                raise CommandRejectedError(_PTT_HOLDER_CONFLICT) from exc
             raise CommandRejectedError(
                 "managed transmit authority unavailable"
             ) from exc
         if submission.outcome is not ManagedTxOutcome.ACCEPTED:
+            if _ptt_refusal_names_holder(submission, self._tx_owner):
+                raise CommandRejectedError(_PTT_HOLDER_CONFLICT)
             raise CommandRejectedError("managed PTT admission rejected")
         return {"state": on} if name == "ptt" else {}
 
