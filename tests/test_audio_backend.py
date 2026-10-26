@@ -1358,3 +1358,148 @@ class TestPortAudioBackendDeps:
         assert output.stopped is True  # type: ignore[attr-defined]
         assert output.closed is True  # type: ignore[attr-defined]
         assert stream.write_health.buffered_audio_ms == 0.0
+
+
+# ---------------------------------------------------------------------------
+# MOR-3760 — discard_queued on TX playback streams
+# ---------------------------------------------------------------------------
+
+
+class TestTxStreamHealthDiscardCounters:
+    def test_discard_counters_are_exported(self) -> None:
+        health = TxStreamHealth(discard_events=2, discarded_audio_ms=40.0)
+        assert health.to_dict()["discard_events"] == 2
+        assert health.to_dict()["discarded_audio_ms"] == 40.0
+
+    def test_discard_counters_default_to_zero(self) -> None:
+        health = TxStreamHealth().to_dict()
+        assert health["discard_events"] == 0
+        assert health["discarded_audio_ms"] == 0.0
+
+
+class TestPortAudioTxDiscardQueued:
+    """``discard_queued`` drops queued-but-unplayed playback frames (MOR-3760)."""
+
+    @pytest.mark.asyncio()
+    async def test_discard_drops_pending_frames_and_recovers(self) -> None:
+        created: list[object] = []
+
+        class FakeSd:
+            class OutputStream:
+                def __init__(self, **kw: object) -> None:
+                    self.callback = kw["callback"]
+                    created.append(self)
+
+                def start(self) -> None:
+                    pass
+
+                def stop(self) -> None:
+                    pass
+
+                def close(self) -> None:
+                    pass
+
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
+        stream = backend.open_tx(
+            AudioDeviceId(0), sample_rate=48_000, channels=1, frame_ms=20
+        )
+        await stream.start()
+        callback = created[0].callback  # type: ignore[attr-defined]
+
+        # Three identifiable 20 ms frames (1920 bytes s16le mono @ 48 kHz).
+        frame_a = b"\x11" * 1920
+        frame_b = b"\x22" * 1920
+        frame_c = b"\x33" * 1920
+        for frame in (frame_a, frame_b, frame_c):
+            await stream.write(frame)
+
+        # The device clock consumes half of frame A (480 samples = 960 bytes).
+        outdata = bytearray(960)
+        callback(outdata, 480, None, None)
+        assert bytes(outdata) == frame_a[:960]
+
+        # Discard: the rest of frame A plus frames B and C — three queued
+        # writes are still pending.
+        dropped = await stream.discard_queued()
+        assert dropped == 3
+        assert stream.write_health.queued_frames == 0
+
+        # The next output callback produces silence, not the discarded bytes.
+        outdata = bytearray(1920)
+        callback(outdata, 960, None, None)
+        assert bytes(outdata) == b"\x00" * 1920
+
+        health = stream.write_health
+        assert health.discard_events == 1
+        # 3×1920 - 960 = 4800 bytes = 2400 samples = 50 ms @ 48 kHz mono.
+        assert health.discarded_audio_ms == pytest.approx(50.0)
+
+        # A frame written after the discard plays next and intact.
+        frame_d = b"\x44" * 1920
+        await stream.write(frame_d)
+        outdata = bytearray(1920)
+        callback(outdata, 960, None, None)
+        assert bytes(outdata) == frame_d
+
+        # A second discard with nothing queued returns 0; counters unchanged.
+        assert await stream.discard_queued() == 0
+        health = stream.write_health
+        assert health.discard_events == 1
+        assert health.discarded_audio_ms == pytest.approx(50.0)
+
+        await stream.stop()
+
+        # Discard on a stopped stream returns 0 and changes nothing.
+        assert await stream.discard_queued() == 0
+        assert stream.write_health.discard_events == 1
+
+
+class TestFakeTxStreamPlaybackQueue:
+    """The fake models a real playback queue: pending vs played (MOR-3760)."""
+
+    @pytest.mark.asyncio()
+    async def test_play_moves_oldest_pending_frames_in_order(
+        self, fake_backend: FakeAudioBackend
+    ) -> None:
+        stream = fake_backend.open_tx(DUPLEX_DEVICE.id)
+        await stream.start()
+        for frame in (b"\x01", b"\x02", b"\x03"):
+            await stream.write(frame)
+
+        assert stream.play(2) == [b"\x01", b"\x02"]
+        assert stream.played_frames == [b"\x01", b"\x02"]
+        assert stream.pending_frames == [b"\x03"]
+        assert stream.play() == [b"\x03"]
+        assert stream.pending_frames == []
+        assert stream.play() == []
+        # written_frames keeps every frame ever written, in order.
+        assert stream.written_frames == [b"\x01", b"\x02", b"\x03"]
+        await stream.stop()
+
+    @pytest.mark.asyncio()
+    async def test_discard_queued_clears_pending_only(
+        self, fake_backend: FakeAudioBackend
+    ) -> None:
+        stream = fake_backend.open_tx(DUPLEX_DEVICE.id)
+        assert isinstance(stream, TxStream)
+        await stream.start()
+        await stream.write(b"\x01")
+        await stream.write(b"\x02")
+        stream.play(1)
+
+        assert await stream.discard_queued() == 1
+        assert stream.pending_frames == []
+        assert stream.played_frames == [b"\x01"]
+        assert stream.written_frames == [b"\x01", b"\x02"]
+        assert stream.discard_events == 1
+        assert stream.write_health.discard_events == 1
+        assert stream.write_health.discarded_audio_ms == 0.0
+
+        # Nothing queued: no discard event is counted.
+        assert await stream.discard_queued() == 0
+        assert stream.discard_events == 1
+
+        await stream.stop()
+        # Not running: discard is a no-op.
+        assert await stream.discard_queued() == 0
+        assert stream.discard_events == 1

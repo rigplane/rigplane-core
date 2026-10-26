@@ -256,6 +256,114 @@ class TestPortAudioDuplexCallback:
 
 
 # ---------------------------------------------------------------------------
+# MOR-3760 — discard_queued on the duplex TX leg (delegates to _tx)
+# ---------------------------------------------------------------------------
+
+
+class TestPortAudioDuplexDiscardQueued:
+    """``discard_queued`` drops queued-but-unplayed TX playback (MOR-3760)."""
+
+    @pytest.mark.asyncio()
+    async def test_discard_queued_drops_pending_tx_playback(self) -> None:
+        FakeSd, captured = _make_fake_sd()
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
+        stream = backend.open_duplex(
+            AudioDeviceId(0),
+            sample_rate=48_000,
+            channels=1,
+            frame_ms=20,
+            tx_channels=1,
+        )
+        received: list[bytes] = []
+        await stream.start(received.append)
+        cb = captured["callback"]
+        assert callable(cb)
+
+        # Three identifiable 20 ms TX frames (1920 bytes s16le mono @ 48 kHz).
+        frame_a = b"\x11" * 1920
+        frame_b = b"\x22" * 1920
+        frame_c = b"\x33" * 1920
+        for frame in (frame_a, frame_b, frame_c):
+            await stream.write(frame)
+
+        # The device clock consumes half of frame A (480 samples = 960 bytes).
+        outdata = bytearray(960)
+        cb(_FakeIndata(b"\x00" * 960), outdata, 480, None, None)  # type: ignore[operator]
+        assert bytes(outdata) == frame_a[:960]
+
+        # Discard: the rest of frame A plus frames B and C — three queued
+        # writes are still pending.
+        dropped = await stream.discard_queued()
+        assert dropped == 3
+        assert stream.write_health.queued_frames == 0
+
+        # The next callback fills outdata with silence, not discarded bytes.
+        outdata = bytearray(1920)
+        cb(_FakeIndata(b"\x00" * 1920), outdata, 960, None, None)  # type: ignore[operator]
+        assert bytes(outdata) == b"\x00" * 1920
+
+        health = stream.write_health
+        assert health.discard_events == 1
+        # 3×1920 - 960 = 4800 bytes = 2400 samples = 50 ms @ 48 kHz mono.
+        assert health.discarded_audio_ms == pytest.approx(50.0)
+
+        # A frame written after the discard plays next and intact.
+        frame_d = b"\x44" * 1920
+        await stream.write(frame_d)
+        outdata = bytearray(1920)
+        cb(_FakeIndata(b"\x00" * 1920), outdata, 960, None, None)  # type: ignore[operator]
+        assert bytes(outdata) == frame_d
+
+        # A second discard with nothing queued returns 0; counters unchanged.
+        assert await stream.discard_queued() == 0
+        health = stream.write_health
+        assert health.discard_events == 1
+        assert health.discarded_audio_ms == pytest.approx(50.0)
+
+        await stream.stop()
+
+        # Discard on a stopped stream returns 0 and changes nothing.
+        assert await stream.discard_queued() == 0
+        assert stream.write_health.discard_events == 1
+
+
+class TestFakeDuplexStreamDiscardQueued:
+    """The duplex fake models the same pending/played playback queue."""
+
+    @pytest.mark.asyncio()
+    async def test_play_and_discard_model_the_playback_queue(
+        self, fake_backend: FakeAudioBackend
+    ) -> None:
+        stream = fake_backend.open_duplex(AudioDeviceId(0))
+        assert isinstance(stream, DuplexStream)
+        await stream.start(lambda _pcm: None)
+        for frame in (b"\x01", b"\x02", b"\x03"):
+            await stream.write(frame)
+
+        assert stream.play(1) == [b"\x01"]
+        assert stream.played_frames == [b"\x01"]
+        assert stream.pending_frames == [b"\x02", b"\x03"]
+
+        assert await stream.discard_queued() == 2
+        assert stream.pending_frames == []
+        assert stream.played_frames == [b"\x01"]
+        # written_frames keeps every frame ever written, in order.
+        assert stream.written_frames == [b"\x01", b"\x02", b"\x03"]
+        assert stream.discard_events == 1
+        assert stream.write_health.discard_events == 1
+        assert stream.write_health.discarded_audio_ms == 0.0
+
+        # Nothing queued: no discard event is counted.
+        assert await stream.discard_queued() == 0
+        assert stream.discard_events == 1
+
+        await stream.stop()
+        # Not running: discard is a no-op.
+        assert await stream.discard_queued() == 0
+        assert stream.discard_events == 1
+
+
+# ---------------------------------------------------------------------------
 # Helpers — synthesize a stereo capture buffer with LEFT signal, RIGHT silence
 # ---------------------------------------------------------------------------
 
