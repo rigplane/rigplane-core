@@ -268,3 +268,180 @@ async def test_cancelled_reservation_allows_the_next_command() -> None:
         if owner is not None and not owner.done():
             owner.cancel()
         await commander.stop()
+
+
+async def test_owner_dedupe_never_joins_a_deferred_foreign_item() -> None:
+    """The owner's keyed dedupe send must not join a deferred foreign item.
+
+    A foreign task's keyed ``BACKGROUND`` send cannot run until the hold
+    ends, and only the owner ends the hold: joining that future would wait
+    forever (MOR-3743). The owner enqueues its own frame instead, and both
+    frames run — the owner's during the hold, the foreign one after it.
+    """
+    hold = _Hold()
+    commander = IcomCommander(hold)
+    commander.start()
+    tasks: list[asyncio.Task[object]] = []
+    foreign: asyncio.Task[None] | None = None
+    try:
+
+        async def owner() -> None:
+            async with commander.exclusive():
+                await commander.send(b"R")
+                await commander.send(b"Q", key="k", dedupe=True)
+                # Still inside the hold: the owner's frame ran, the foreign
+                # frame has not.
+                assert hold.order == [b"R", b"Q"]
+                assert foreign is not None and not foreign.done()
+
+        owner_task = asyncio.create_task(owner())
+        tasks.append(owner_task)
+        await asyncio.wait_for(hold.entered.wait(), 1)
+
+        foreign_entered = asyncio.Event()
+
+        async def foreign_send() -> None:
+            foreign_entered.set()
+            await commander.send(
+                b"Q", key="k", dedupe=True, priority=Priority.BACKGROUND
+            )
+
+        foreign = asyncio.create_task(foreign_send())
+        tasks.append(foreign)
+        await asyncio.wait_for(_await_queued(foreign_entered, commander, 1), 1)
+
+        hold.release.set()
+        await asyncio.wait_for(owner_task, 1)
+        await asyncio.wait_for(foreign, 1)
+        assert hold.order == [b"R", b"Q", b"Q"]
+        # No stale key entry: a fresh keyed send enqueues and runs a new item.
+        await asyncio.wait_for(commander.send(b"Q", key="k", dedupe=True), 1)
+        assert hold.order == [b"R", b"Q", b"Q", b"Q"]
+        queue = commander._queue
+        assert queue is not None
+        await asyncio.wait_for(queue.join(), 1)
+        assert commander._pending_by_key == {}
+    finally:
+        hold.release.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await commander.stop()
+
+
+async def test_foreign_dedupe_joins_the_owners_pending_item_during_the_hold() -> None:
+    """A foreign keyed send may join the owner's pending item.
+
+    The owner's item runs during the hold, so the foreign joiner resolves
+    before the hold ends and only one frame reaches the wire.
+    """
+    hold = _Hold()
+    commander = IcomCommander(hold)
+    commander.start()
+    tasks: list[asyncio.Task[object]] = []
+    joiner: asyncio.Task[None] | None = None
+    try:
+
+        async def owner() -> None:
+            async with commander.exclusive():
+                await commander.send(b"R", wait_dispatch=False)
+                await commander.send(b"Q", key="k", dedupe=True)
+                assert hold.order == [b"R", b"Q"]
+                assert joiner is not None
+                await asyncio.wait_for(joiner, 1)
+
+        owner_task = asyncio.create_task(owner())
+        tasks.append(owner_task)
+        await asyncio.wait_for(hold.entered.wait(), 1)
+
+        async def join_send() -> None:
+            await commander.send(b"Q", key="k", dedupe=True)
+
+        joiner = asyncio.create_task(join_send())
+        tasks.append(joiner)
+        await asyncio.sleep(0)
+        hold.release.set()
+        await asyncio.wait_for(owner_task, 1)
+        await asyncio.wait_for(joiner, 1)
+        assert hold.order == [b"R", b"Q"]
+    finally:
+        hold.release.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await commander.stop()
+
+
+async def test_unreserved_dedupe_still_joins_across_tasks() -> None:
+    """Without a reservation, keyed dedupe still joins one wire frame."""
+    hold = _Hold()
+    commander = IcomCommander(hold)
+    commander.start()
+    tasks: list[asyncio.Task[object]] = []
+    try:
+        gate = asyncio.create_task(commander.send(b"R"))
+        tasks.append(gate)
+        await asyncio.wait_for(hold.entered.wait(), 1)
+
+        first_entered = asyncio.Event()
+
+        async def first() -> None:
+            first_entered.set()
+            await commander.send(b"Q", key="k", dedupe=True)
+
+        first_task = asyncio.create_task(first())
+        tasks.append(first_task)
+        await asyncio.wait_for(_await_queued(first_entered, commander, 1), 1)
+
+        second_entered = asyncio.Event()
+
+        async def second() -> None:
+            second_entered.set()
+            await commander.send(b"Q", key="k", dedupe=True)
+
+        second_task = asyncio.create_task(second())
+        tasks.append(second_task)
+        await asyncio.wait_for(second_entered.wait(), 1)
+
+        hold.release.set()
+        await asyncio.wait_for(gate, 1)
+        await asyncio.wait_for(first_task, 1)
+        await asyncio.wait_for(second_task, 1)
+        assert hold.order == [b"R", b"Q"]
+    finally:
+        hold.release.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await commander.stop()
+
+
+async def test_owner_dedupe_joins_its_own_pending_item_during_the_hold() -> None:
+    """The owner's keyed dedupe still joins its own pending item."""
+    hold = _Hold()
+    commander = IcomCommander(hold)
+    commander.start()
+    owner: asyncio.Task[None] | None = None
+    second_entered = asyncio.Event()
+    try:
+
+        async def reserved() -> None:
+            async with commander.exclusive():
+                await commander.send(b"R", wait_dispatch=False)
+                await commander.send(b"Q", key="k", dedupe=True, wait_dispatch=False)
+                second_entered.set()
+                await commander.send(b"Q", key="k", dedupe=True)
+                assert hold.order == [b"R", b"Q"]
+
+        owner = asyncio.create_task(reserved())
+        await asyncio.wait_for(hold.entered.wait(), 1)
+        await asyncio.wait_for(second_entered.wait(), 1)
+
+        hold.release.set()
+        await asyncio.wait_for(owner, 1)
+        assert hold.order == [b"R", b"Q"]
+    finally:
+        hold.release.set()
+        if owner is not None and not owner.done():
+            owner.cancel()
+        await commander.stop()
