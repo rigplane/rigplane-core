@@ -47,17 +47,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dispatched by another task between the preservation read and the SET —
   including a direct raw CI-V transaction, which reaches the wire
   without entering the commander queue — marks the scope, the SET is
-  refused before the wire, and the whole write retries from the
-  preservation read — up to three attempts, then a retryable
-  `CommandError`. A SET that already reached the wire is never retried:
-  interference behind it is decided by the readback (a consistent
-  readback succeeds, a contradictory one fails), and a VFO selection
-  change during the write fails it instead of redirecting a retry at a
-  different physical VFO. A retired scope's currency dies with it, so a
-  delayed transport retransmit request for its SET is answered with the
-  idle packet, never the stale tuple. No command is ever delayed or
-  reordered and no send priority changed; TX releases are unaffected.
-  This detects and retries; it does not exclude anyone.
+  refused before the wire (the refusal carries the new
+  `StaleBeforeWireError`, a `ConnectionError` subclass and the only
+  retryable one), and the whole write retries from the preservation
+  read — up to three attempts, then a retryable `CommandError`. A SET
+  that already reached the wire is never retried: a currency failure
+  raised behind the send — interference detected while the SET's ACK
+  was pending — propagates as `ConnectionError` instead of repeating
+  the SET, interference behind an acknowledged SET is decided by the
+  readback (a consistent readback succeeds, a contradictory one fails),
+  and a VFO selection change during the write — including one that
+  completes during the readback — fails it with `CommandError` even
+  though the SET was already applied; the caller must re-read. A
+  retired scope's currency dies with it, so a delayed transport
+  retransmit request for its SET is answered with the idle packet,
+  never the stale tuple. No command is ever delayed or reordered and no
+  send priority changed; TX releases are unaffected. This detects and
+  retries; it does not exclude anyone.
 
 ## [3.0.0b21] — 2026-10-26
 

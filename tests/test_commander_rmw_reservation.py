@@ -21,7 +21,7 @@ import pytest
 
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.commands.commander import IcomCommander, Priority
-from rigplane.core.exceptions import CommandError, ConnectionError
+from rigplane.core.exceptions import CommandError, StaleBeforeWireError
 from rigplane.core.types import CivFrame
 from rigplane.runtime.radio import IcomRadio
 from rigplane.transport import IcomTransport
@@ -44,8 +44,9 @@ class _SplitBackend:
     state and can run a per-read hook while the read holds the commander
     worker, so a test can queue foreign frames inside the gap the write
     must survive. Honors the wire-seam ``is_current`` contract exactly as
-    ``CivRuntime._execute_civ_raw`` does: a stale frame raises before it
-    is recorded, so a refused SET never reaches the wire.
+    ``CivRuntime._execute_civ_raw`` does: a stale frame raises the
+    pre-wire subclass before it is recorded, so a refused SET never
+    reaches the wire.
     """
 
     def __init__(self, addr: int) -> None:
@@ -68,7 +69,7 @@ class _SplitBackend:
     ) -> CivFrame:
         del wait_response
         if is_current is not None and not is_current():
-            raise ConnectionError("managed TX attempt is stale")
+            raise StaleBeforeWireError("managed TX attempt is stale")
         self.frames.append(payload)
         frame = parse_civ_frame(payload)
         if frame.command == 0x25 and len(frame.data) == 1:
@@ -809,10 +810,11 @@ class _RetransmitBackend:
     """CI-V peer whose sends go through a real ``IcomTransport``.
 
     Mirrors ``CivRuntime._execute_civ_raw``'s wire seam: the caller's
-    ``is_current`` predicate is enforced before the wire and handed to
-    ``IcomTransport.send_tracked``, which stores it in ``_tx_guards`` as
-    the retransmit guard for that sequence. Replies are canned relative
-    VFO state, so a real ``write_relative_vfo_mode`` drives the SET.
+    ``is_current`` predicate is enforced before the wire (the pre-wire
+    subclass) and handed to ``IcomTransport.send_tracked``, which stores
+    it in ``_tx_guards`` as the retransmit guard for that sequence.
+    Replies are canned relative VFO state, so a real
+    ``write_relative_vfo_mode`` drives the SET.
     """
 
     def __init__(self, addr: int) -> None:
@@ -849,7 +851,7 @@ class _RetransmitBackend:
     ) -> CivFrame:
         del wait_response
         if is_current is not None and not is_current():
-            raise ConnectionError("managed TX attempt is stale")
+            raise StaleBeforeWireError("managed TX attempt is stale")
         frame = parse_civ_frame(payload)
         if frame.command == 0x25 and len(frame.data) == 1:
             await self.transport.send_tracked(

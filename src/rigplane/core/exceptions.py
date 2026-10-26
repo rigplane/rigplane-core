@@ -4,6 +4,7 @@ __all__ = [
     "RigplaneError",
     "ConnectionError",
     "RadioSessionHeldError",
+    "StaleBeforeWireError",
     "AuthenticationError",
     "CommandError",
     "BackgroundSendDropped",
@@ -33,6 +34,25 @@ class RadioSessionHeldError(ConnectionError):
     A subclass of :class:`ConnectionError`, so every existing ``except``
     still catches it; the CLI maps it to exit code 3 (a deliberate stop,
     not a crash).
+    """
+
+
+class StaleBeforeWireError(ConnectionError):
+    """Raised only by the pre-wire scope-currency refusals in
+    ``runtime/_civ_rx.py`` — the ``is_current`` checks that run before
+    the frame is handed to the transport (``_execute_civ_raw``'s
+    pre-send ``check_current`` sites and ``_send_civ_frame_now``'s
+    before-dispatch currency checks).
+
+    A subclass of :class:`ConnectionError`, so every existing
+    ``except ConnectionError`` handler — the managed TX attempts —
+    still catches it unchanged. Only the split-mode read-modify-write
+    (``DualRxRuntimeMixin.write_relative_vfo_mode``, MOR-3743)
+    distinguishes it: that write retries solely on this subclass,
+    which proves the refused frame never reached the wire. The checks
+    after the send (ACK completion, timeouts) keep raising the plain
+    error: the frame may already be applied, so repeating it could
+    overwrite a concurrent client's write.
     """
 
 
