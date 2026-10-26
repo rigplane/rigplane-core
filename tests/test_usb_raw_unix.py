@@ -179,6 +179,97 @@ async def test_coreaudio_timeout_is_unavailable_without_blocking_loop(monkeypatc
         await drain_pool()
 
 
+async def test_coreaudio_reservation_cannot_leave_rejected_open_dirty(monkeypatch):
+    from test_usb_pairing_macos import _inject_macos, _macos_session
+    from rigplane.audio import usb_driver
+    from rigplane.audio.backend import AudioDeviceId
+
+    pool = usb_driver._BoundedPortAudioPool()
+    backend, _ = _inject_macos(monkeypatch, _macos_session())
+    stream = backend.open_rx(AudioDeviceId(2))
+    start = stream.start(lambda frame: None)
+    submit = pool.submit_tracked
+
+    def reserve_then_submit(fn):
+        pool.inflight = usb_driver._CAPTURE_OPEN_MAX_WORKERS
+        return submit(fn)
+
+    monkeypatch.setattr(pool, "submit_tracked", reserve_then_submit)
+    try:
+        with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
+            await pool.open_stream_bounded(
+                stream,
+                start,
+                direction="rx",
+                timeout=1,
+                resources=frozenset({(2, "rx")}),
+            )
+        assert start.cr_frame is None
+        assert pool._stream_resources == {}
+        assert pool._opens == {}
+        assert not stream.running
+    finally:
+        start.close()
+        pool._executor.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_retired_audio_worker_cannot_uncount_fresh_work(asynchronous):
+    from rigplane.audio import usb_driver
+
+    pool = usb_driver._BoundedPortAudioPool()
+    old_executor = pool._executor
+    entered, release, fresh_entered, fresh_release = (Event() for _ in range(4))
+
+    def blocked(ready, gate):
+        ready.set()
+        assert gate.wait(5)
+
+    if asynchronous:
+        old = pool.submit_tracked(lambda: blocked(entered, release))
+    else:
+        old = asyncio.create_task(
+            asyncio.to_thread(
+                pool.run_bounded_sync, lambda: blocked(entered, release), timeout=0.1
+            )
+        )
+    fresh = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        if not asynchronous:
+            with pytest.raises(TimeoutError):
+                await old
+        old_executor.shutdown(wait=False)
+        pool.__init__()
+        fresh = asyncio.create_task(
+            asyncio.to_thread(
+                pool.run_bounded_sync,
+                lambda: blocked(fresh_entered, fresh_release),
+                timeout=2,
+            )
+        )
+        assert await asyncio.to_thread(fresh_entered.wait, 1)
+        assert pool.inflight == 1
+        release.set()
+        await asyncio.to_thread(old_executor.shutdown, wait=True)
+        if asynchronous:
+            await old
+            await asyncio.sleep(0)
+        assert pool.inflight == 1
+        fresh_release.set()
+        await fresh
+        await asyncio.to_thread(pool._executor.shutdown, wait=True)
+        assert pool.inflight == 0
+    finally:
+        release.set()
+        fresh_release.set()
+        await asyncio.gather(
+            old, *([fresh] if fresh is not None else []), return_exceptions=True
+        )
+        await asyncio.to_thread(old_executor.shutdown, wait=True)
+        await asyncio.to_thread(pool._executor.shutdown, wait=True)
+
+
 def test_coreaudio_ctypes_counts_buffers_and_reports_property_errors(monkeypatch):
     raw = import_module("rigplane.audio._usb_raw_macos")
     buf = raw._AudioBuffer

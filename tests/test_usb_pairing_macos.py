@@ -123,7 +123,9 @@ def _inject_macos_hardware(monkeypatch, session):
         children = roots if parent is None else parent["IORegistryEntryChildren"]
         children.append(nodes[row["registry_id"]])
     for row in recording["serial_devices"]:
-        nodes[row["usb_registry_id"]]["IORegistryEntryChildren"].append(
+        owner = nodes.get(row["usb_registry_id"])
+        children = roots if owner is None else owner["IORegistryEntryChildren"]
+        children.append(
             {
                 "IORegistryEntryName": "Serial",
                 "IOObjectClass": "IOSerialBSDClient",

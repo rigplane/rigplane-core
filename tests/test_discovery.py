@@ -99,7 +99,7 @@ async def test_discover_cli_keeps_profile_audio_pair_and_refuses_extra_owner(
         "rigplane.discovery.probe_serial_yaesu_cat",
         AsyncMock(
             return_value=RadioDiscoveryResult(
-                port, "yaesu_cat", "FTX-1", "yaesu_ftx1", 38400
+                port, "yaesu_cat", "FTX-1", "yaesu_ftx1", 38400, 0
             )
         ),
     )
@@ -136,7 +136,9 @@ async def test_discovery_passes_resolved_profile_identity(
         "rigplane.discovery.enumerate_serial_ports",
         lambda: [SerialPortCandidate(port, "Serial", None)],
     )
-    result = RadioDiscoveryResult(port, protocol, model, profile_id, 38400)
+    result = RadioDiscoveryResult(
+        port, protocol, model, profile_id, 38400, address or 0
+    )
     for probe, value in (
         (
             "probe_serial_civ",

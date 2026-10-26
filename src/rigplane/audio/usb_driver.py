@@ -299,8 +299,8 @@ class _BoundedPortAudioPool:
             max_workers=_CAPTURE_OPEN_MAX_WORKERS,
             thread_name_prefix="rigplane-audio-open",
         )
-        self.inflight = 0
         self._inflight_lock = Lock()
+        self.inflight = 0
         # A timed-out close still owns its worker and must not be run twice
         # concurrently. Cleanup retains the stream until success, even when
         # its caller (e.g. AudioBridge) drops the slot after logging an error.
@@ -317,20 +317,23 @@ class _BoundedPortAudioPool:
         Abandoned (timed-out) calls stay counted, keeping saturation honest.
         """
         loop = asyncio.get_running_loop()
-        with self._inflight_lock:
+        counter_lock = self._inflight_lock
+        with counter_lock:
             if self.inflight >= _CAPTURE_OPEN_MAX_WORKERS:
                 raise AudioCaptureOpenTimeoutError("PortAudio worker pool saturated.")
             self.inflight += 1
         try:
             future = loop.run_in_executor(self._executor, fn)
         except BaseException:
-            with self._inflight_lock:
-                self.inflight -= 1
+            with counter_lock:
+                if self._inflight_lock is counter_lock:
+                    self.inflight -= 1
             raise
 
         def _on_settled(_future: "asyncio.Future[Any]") -> None:
-            with self._inflight_lock:
-                self.inflight -= 1
+            with counter_lock:
+                if self._inflight_lock is counter_lock:
+                    self.inflight -= 1
 
         future.add_done_callback(_on_settled)
         return future
@@ -338,23 +341,29 @@ class _BoundedPortAudioPool:
     def run_bounded_sync(self, fn: Callable[[], Any], *, timeout: float) -> Any:
         """Bound synchronous readers with the same executor and worker budget."""
         deadline = time.monotonic() + timeout
-        with self._inflight_lock:
+        counter_lock = self._inflight_lock
+        with counter_lock:
             if self.inflight >= _CAPTURE_OPEN_MAX_WORKERS:
                 raise AudioCaptureOpenTimeoutError("PortAudio worker pool saturated.")
             self.inflight += 1
         try:
             future = self._executor.submit(fn)
         except BaseException:
-            with self._inflight_lock:
-                self.inflight -= 1
+            with counter_lock:
+                if self._inflight_lock is counter_lock:
+                    self.inflight -= 1
             raise
 
         def settled(_future: object) -> None:
-            with self._inflight_lock:
-                self.inflight -= 1
+            with counter_lock:
+                if self._inflight_lock is counter_lock:
+                    self.inflight -= 1
 
         future.add_done_callback(settled)
-        return future.result(timeout=max(0.0, deadline - time.monotonic()))
+        result = future.result(timeout=max(0.0, deadline - time.monotonic()))
+        if time.monotonic() > deadline:
+            raise TimeoutError("Audio reader deadline expired.")
+        return result
 
     async def run_bounded(
         self,
@@ -528,9 +537,19 @@ class _BoundedPortAudioPool:
                     f"{direction.upper()} endpoint still has a pending open."
                 )
         key = id(stream)
+        previous_resources = self._stream_resources.get(key)
         if resources is not None:
             self._stream_resources[key] = resources
-        future = self.submit_tracked(lambda: _drive_stream_open(start_coro))
+        try:
+            future = self.submit_tracked(lambda: _drive_stream_open(start_coro))
+        except BaseException:
+            if resources is not None:
+                if previous_resources is None:
+                    self._stream_resources.pop(key, None)
+                else:
+                    self._stream_resources[key] = previous_resources
+            start_coro.close()
+            raise
         self._opens[key] = future
 
         def settled(done: asyncio.Future[Any]) -> None:
