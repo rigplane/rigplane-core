@@ -99,12 +99,12 @@ def _conninfo(token: int = 0) -> bytes:
     """Client conninfo in the production layout (``core/auth.py``:
     ``build_conninfo_packet``): the rx/tx codec and sample-rate fields the
     production client always sends — rx codec at 0x72, tx codec at 0x73,
-    BE u32 rx/tx sample rates at 0x74/0x78 (48 kHz PCM_1CH_16BIT, the
-    IC-7610 profile's legs)."""
+    BE u32 rx/tx sample rates at 0x74/0x78, at the IC-7610 profile's legs
+    (``rigs/ic7610.toml``: rx PCM_2CH_16BIT, tx PCM_1CH_16BIT, 48 kHz)."""
     pkt = _header(0x90, _PT_DATA)
     pkt[0x15] = 0x03  # requesttype: client conninfo
     struct.pack_into("<I", pkt, 0x1C, token)
-    pkt[0x72] = 0x04  # rx codec: AudioCodec.PCM_1CH_16BIT
+    pkt[0x72] = 0x10  # rx codec: AudioCodec.PCM_2CH_16BIT
     pkt[0x73] = 0x04  # tx codec: AudioCodec.PCM_1CH_16BIT
     struct.pack_into(">I", pkt, 0x74, 48000)  # rx sample rate
     struct.pack_into(">I", pkt, 0x78, 48000)  # tx sample rate
