@@ -38,6 +38,7 @@ from ..core.radio_protocol import (
     AttenuatorStepsCapable,
     RelativeVfoFrequencyWritable,
     RelativeVfoModeWritable,
+    RelativeVfoReadbackCapable,
 )
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import (
@@ -3168,7 +3169,27 @@ class RigctldHandler:
         if info is None or info[0] < 2:
             return False
         profile = getattr(self._radio, "profile", None)
-        return profile is None or not split_tx_routes_unselected_selector(profile)
+        if profile is not None and split_tx_routes_unselected_selector(profile):
+            return False
+        # Native MAIN/SUB relative escape (MOR-3754): an undeclared
+        # dual-RX ``split_tx_target`` is admissible only when the radio
+        # has an explicit native routing strategy (``create_routing``
+        # returns one — Yaesu CAT today; None for Icom) AND structurally
+        # implements the relative read/write contract. Structural
+        # conformance alone is not admission: Icom implements these
+        # methods too, and an unknown dual-RX Icom profile stays ENIMPL
+        # here. Each command still re-checks its own capability before
+        # touching the radio.
+        if self._routing is not None and isinstance(
+            self._radio,
+            (
+                RelativeVfoReadbackCapable,
+                RelativeVfoFrequencyWritable,
+                RelativeVfoModeWritable,
+            ),
+        ):
+            return False
+        return True
 
     async def _cmd_get_split_freq(self, cmd: RigctldCommand) -> RigctldResponse:
         try:
