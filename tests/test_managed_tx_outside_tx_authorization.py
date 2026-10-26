@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from _order_sensitive_radios import LanLikeRadio
 from test_controller_sessions import FakeRadioTx, _radio_reports, radio_tx_authority
 from test_managed_tx_production_composition import LegacyRadio, RecordingActuator
 from test_managed_tx_web_projection import _GatePort
@@ -245,9 +246,10 @@ async def test_outside_push_excludes_keying_and_unkeying_never_waits() -> None:
         assert await managed.ptt_up("websocket-9") is REJECTED
 
         ptt_task = asyncio.ensure_future(managed.submit_ptt(True, "rigctld-client-1"))
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        assert not ptt_task.done()
+        # Bounded wait long enough for the PTT to be admitted if nothing
+        # excluded it: it must still be waiting behind the in-flight push.
+        done, _ = await asyncio.wait({ptt_task}, timeout=0.2)
+        assert ptt_task not in done, "keying ran while an outside push was in flight"
         assert (await managed.snapshot()).state.intent.kind is ManagedTxIntentKind.RX
 
         probe.tx_at = None  # the outside TX ends before Core keys
@@ -289,6 +291,10 @@ async def test_stuck_outside_push_is_cut_at_the_submission_budget() -> None:
 
         submission_task = asyncio.ensure_future(submission())
         await asyncio.wait_for(push_started.wait(), 1.0)
+        # The outside TX ends now: the stuck push was already admitted, so it
+        # is still the one the budget cuts, and the keying below is not
+        # refused by MOR-3537 (``radio_tx_unowned``) over a FOREIGN reading.
+        probe.tx_at = None
         ptt_task = asyncio.ensure_future(managed.submit_ptt(True, "rigctld-client-1"))
 
         done, _ = await asyncio.wait(
@@ -298,7 +304,6 @@ async def test_stuck_outside_push_is_cut_at_the_submission_budget() -> None:
         assert isinstance(submission_task.exception(), TimeoutError)
         assert delivered == []
 
-        probe.tx_at = None  # the outside TX ends before Core keys
         done, _ = await asyncio.wait({ptt_task}, timeout=5.0)
         assert ptt_task in done, "keying did not proceed after the budget cut"
         assert ptt_task.result().outcome is ACCEPTED
@@ -349,7 +354,7 @@ def _local_ticket(server: WebServer) -> ControllerTicket:
 
 
 def _bridge_style_handler(
-    server: WebServer, radio: _SessionLanRadio, ticket: ControllerTicket
+    server: WebServer, radio: LanLikeRadio, ticket: ControllerTicket
 ) -> AudioHandler:
     """The /api/v1/audio shape with the bridge gate (test_web_audio_tx_gate)."""
     return AudioHandler(
@@ -359,6 +364,101 @@ def _bridge_style_handler(
         tx_gate=server._bridge_tx_gate_open,
         outside_tx_admission=lambda: server._controller_outside_tx_admission(ticket),
     )
+
+
+class _BlockingPushSessionRadio(_SessionLanRadio):
+    """Session radio whose push blocks in flight (the atomicity witness)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.push_started = asyncio.Event()
+        self.release_push = asyncio.Event()
+
+    async def push_tx(self, audio_data: bytes) -> None:
+        await LanLikeRadio.push_tx(self, audio_data)  # raises unless TX armed
+        self.push_started.set()
+        await self.release_push.wait()
+        self.pushed.append(audio_data)
+
+
+class _BlockingPushNeutralRadio(LanLikeRadio):
+    """LAN-like stub WITHOUT ``audio_session``: the neutral push path."""
+
+    capabilities = {"audio", "tx"}
+    backend_id = "rigplane"
+    has_usb_audio = True
+    audio_sample_rate = 48000
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pushed: list[bytes] = []
+        self.push_started = asyncio.Event()
+        self.release_push = asyncio.Event()
+
+    async def push_tx(self, audio_data: bytes) -> None:
+        await super().push_tx(audio_data)  # raises unless TX armed
+        self.push_started.set()
+        await self.release_push.wait()
+        self.pushed.append(audio_data)
+
+
+async def _assert_web_outside_push_excludes_keying(
+    outside_station, radio: LanLikeRadio
+) -> None:
+    """A 0x12 frame in flight through the REAL handler bounds keying.
+
+    Probe FOREIGN; the frame's push blocks on an event inside the admission
+    critical section; a rigctld client's ``submit_ptt`` must wait behind it
+    (intent still RX); once the push is released and recorded, the PTT is
+    accepted and a further 0x12 frame is refused and counted.
+    """
+    server, managed, clock, probe = outside_station
+    ticket = _local_ticket(server)
+    handler = _bridge_style_handler(server, radio, ticket)
+    await _start_tx(handler)
+    assert handler._tx_active is True
+    probe.tx_at = clock.now  # FOREIGN
+
+    push_task = asyncio.ensure_future(
+        handler._handle_tx_audio(_outside_tx_frame(b"in-flight"))
+    )
+    await asyncio.wait_for(radio.push_started.wait(), 1.0)  # push in flight
+
+    probe.tx_at = None  # the outside TX ends before Core keys
+    ptt_task = asyncio.ensure_future(managed.submit_ptt(True, "rigctld-client-1"))
+    done, _ = await asyncio.wait({ptt_task}, timeout=0.2)
+    assert ptt_task not in done, "keying ran while an outside push was in flight"
+    assert (await managed.snapshot()).state.intent.kind is ManagedTxIntentKind.RX
+
+    radio.release_push.set()
+    await push_task
+    assert radio.pushed == [b"in-flight"]
+
+    ptt = await ptt_task
+    assert ptt.outcome is ACCEPTED
+    assert (await managed.snapshot()).state.intent.kind is ManagedTxIntentKind.PTT
+
+    # Keyed by a Core client now: a further 0x12 frame is refused, not pushed.
+    await handler._handle_tx_audio(_outside_tx_frame(b"after-key"))
+    assert radio.pushed == [b"in-flight"]
+    assert handler._tx_warn_counts["outside_tx_refused"] == 1
+
+    assert await managed.ptt_up("rigctld-client-1") is ACCEPTED
+
+
+async def test_web_outside_push_excludes_keying_lease_path(outside_station) -> None:
+    """ATOMICITY through ``TxLease.push``: the push holds the critical section."""
+    await _assert_web_outside_push_excludes_keying(
+        outside_station, _BlockingPushSessionRadio()
+    )
+
+
+async def test_web_outside_push_excludes_keying_neutral_path(outside_station) -> None:
+    """ATOMICITY through ``_push_tx_outside``'s non-lease branch."""
+    radio = _BlockingPushNeutralRadio()
+    await _assert_web_outside_push_excludes_keying(outside_station, radio)
+    # Really the neutral lifecycle (no audio_session lease was taken).
+    assert radio.calls.count("start_tx") == 1
 
 
 async def test_web_outside_frame_admission_and_plain_tx_unchanged(
@@ -384,6 +484,8 @@ async def test_web_outside_frame_admission_and_plain_tx_unchanged(
     probe.tx_at = clock.now
     await handler._handle_tx_audio(_outside_tx_frame(b"outside-b"))
     assert radio.pushed == [b"outside-a"]
+    # The refusal is counted on the lease path too (one shared wrapper).
+    assert handler._tx_warn_counts["outside_tx_refused"] == 1
     # ...while a 0x11 frame in the same keyed state still passes (unchanged).
     await handler._handle_tx_audio(_pcm_tx_frame(b"client-tx"))
     assert radio.pushed == [b"outside-a", b"client-tx"]

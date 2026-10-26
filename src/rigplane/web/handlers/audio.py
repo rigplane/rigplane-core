@@ -13,7 +13,7 @@ import logging
 import math
 import time
 from collections.abc import AsyncIterator, Awaitable
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
 
@@ -2246,9 +2246,24 @@ class AudioHandler:
         admission = self._outside_tx_admission
         if admission is None:
             return  # ``_handle_tx_audio`` already refused; defense in depth
+
+        @asynccontextmanager
+        async def counted_admission() -> AsyncIterator[bool]:
+            # The refusal count lives in this ONE wrapper so the lease and
+            # the non-lease paths below share the same message.
+            async with admission() as admitted:
+                if admitted is not True:
+                    self._warn_tx_throttled(
+                        "outside_tx_refused",
+                        "audio: outside-only TX frame refused "
+                        "action=dropped_outside_tx_refused size=%d",
+                        len(data),
+                    )
+                yield admitted
+
         lease = self._tx_lease
         if lease is not None and not lease.released:
-            await lease.push(data, admission=admission)
+            await lease.push(data, admission=counted_admission)
             return
         facts = self._tx_facts
         if facts is not None and facts.lifecycle is not None:
@@ -2259,14 +2274,8 @@ class AudioHandler:
             push = getattr(self._radio, "push_tx", None)
             if push is None:
                 push = getattr(self._radio, legacy_method)
-        async with admission() as admitted:
+        async with counted_admission() as admitted:
             if admitted is not True:
-                self._warn_tx_throttled(
-                    "outside_tx_refused",
-                    "audio: outside-only TX frame refused "
-                    "action=dropped_outside_tx_refused size=%d",
-                    len(data),
-                )
                 return
             await push(data)
 
