@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   authorized and pushed atomically against any Core-client keying
   transition; refused otherwise. `0x11` behavior is unchanged.
 
+### Fixed
+
+- **Profile receive ranges match published coverage (MOR-3782).** The
+  IC-7300MK2, IC-705 and FTX-1 profiles' tuning/receive ranges now match
+  the manufacturer's published receiver coverage (IC-7300MK2 up to
+  74.800 MHz; IC-705 0.030-199.999999 and 400-470 MHz; FTX-1 0.030-174
+  and 400-470 MHz); no transmit band was added or widened; not verified
+  on radios.
+
 ## [3.0.0b21] — 2026-10-26
 
 ### Added

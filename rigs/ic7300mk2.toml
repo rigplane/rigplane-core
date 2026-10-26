@@ -710,6 +710,20 @@ end_hz = 54_000_000
 default_hz = 50_125_000
 bsr_code = 0x0A
 
+# MOR-3782: receiver coverage per IC-7300MK2_ENG_IM_Basic_1,
+# "11 SPECIFICATIONS / General / Frequency coverage (unit: MHz)":
+# Receiver 0.030000 ~ 74.800000* (footnote: "The frequency coverage and
+# guaranteed ranges differ, according to the transceiver version"), so
+# every IC-7300MK2 tunes and receives up to 74.800 MHz. Not
+# hardware-verified. The VHF RX range below carries no `bands` table on
+# purpose: it is tune/receive only, and transmit permission comes from
+# `bands` — no 4 m TX band is declared.
+
+[[freq_ranges.ranges]]
+label = "VHF RX"
+start_hz = 60_000_000
+end_hz = 74_800_000
+
 # ── CI-V Commands ────────────────────────────────────────────────
 # Grouped by capability area. Wire bytes as integer arrays.
 # Source: IC-7300MK2 CI-V Reference Guide (Oct. 2025).

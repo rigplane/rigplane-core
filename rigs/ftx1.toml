@@ -1123,9 +1123,25 @@ label = "WFM"
 start_hz = 88000000
 end_hz = 108000000
 
+# MOR-3782: receiver coverage per FTX-1_OM_ENG_EH084M201_2506E-DS,
+# "Specifications / General": "Rx Frequency Range: 30kHz - 174MHz,
+# 400MHz - 470MHz (operating)". The Gen range is trimmed to the published
+# HF/VHF segment and extended down to the published 30 kHz floor. Not
+# hardware-verified.
 [[freq_ranges.ranges]]
 label = "Gen"
-start_hz = 100000
+start_hz = 30000
+end_hz = 174000000
+
+# MOR-3782: the published UHF receive segment (400MHz - 470MHz, same
+# manual section) as its own range. Not hardware-verified. The UHF RX
+# range below carries no `bands` table on purpose: it is tune/receive
+# only, and transmit permission comes from `bands` — 70 cm transmit stays
+# governed by the 70cm range's own band above.
+
+[[freq_ranges.ranges]]
+label = "UHF RX"
+start_hz = 400000000
 end_hz = 470000000
 
 [meters.swr]
