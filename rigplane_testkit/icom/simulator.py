@@ -398,8 +398,9 @@ class MockIcomRadio(AudioPortMixin):
         capture_tx_audio: retain the payload bytes of every recorded
             client audio frame (``audio_tx_frames`` ``payload``, readable
             as PCM via :meth:`audio_tx_pcm` / :meth:`write_tx_wav`).
-            Default False keeps the sink metadata-only (``payload`` is
-            ``b""``), so long soaks grow no memory.
+            Default False keeps payloads unretained (``payload`` is
+            ``b""``), so long soaks retain no payload bytes — the
+            per-frame metadata list still grows.
         civ_state_survives_unclean_end: keep the CI-V stream state
             (frontier plus gap list) of a session whose hold expires on
             its own as orphan state for the next opener (recorded IC-7610,
@@ -626,7 +627,8 @@ class MockIcomRadio(AudioPortMixin):
         self.civ_frames_received: list[bytes] = []
         # Opt-in retention of client audio-frame payloads (default off):
         # ``audio_tx_frames`` entries carry the bytes after the 0x18 header
-        # in ``payload`` (``b""`` when off, so long soaks grow no memory).
+        # in ``payload`` (``b""`` when off, so long soaks retain no payload
+        # bytes — the per-frame metadata list still grows).
         self.capture_tx_audio: bool = capture_tx_audio
         # Opt-in CI-V refusal hook (default off, additive): (cmd, sub) pairs the
         # simulator answers with a bare NAK (0xFA) instead of dispatching — a
