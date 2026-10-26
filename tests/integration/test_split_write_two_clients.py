@@ -793,7 +793,8 @@ async def test_unopposed_split_write_reads_once_and_sets_once(
         await _drain_in_flight_polls(arena)
         _seed_unselected(arena.sim, Mode.USB.value, 0x00, 0x03)
         a = await arena.tcp()
-        await _control_write(arena, a)
+        reads_per_attempt = await _control_write(arena, a)
+        assert reads_per_attempt >= 1, _frames_debug(arena.sim)
 
 
 async def test_ptt_off_keeps_plain_dispatch_order_across_a_held_split_write(
