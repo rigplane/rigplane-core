@@ -128,6 +128,8 @@ class TxStreamHealth:
     callback_underrun_audio_ms: float = 0.0
     callback_underrun_events: int = 0
     callback_calls_per_sec_ewma: float | None = None
+    discard_events: int = 0
+    discarded_audio_ms: float = 0.0
 
     def __post_init__(self) -> None:
         self._sync_alias_pair("enqueued_audio_ms", "queued_audio_ms", 0.0)
@@ -195,6 +197,8 @@ class TxStreamHealth:
             "callback_calls_per_sec_ewma": self.callback_calls_per_sec_ewma,
             "write_calls_per_sec_ewma": self.write_calls_per_sec_ewma,
             "last_error": self.last_error,
+            "discard_events": self.discard_events,
+            "discarded_audio_ms": self.discarded_audio_ms,
         }
 
 
@@ -255,6 +259,15 @@ class TxStream(Protocol):
         """Queue one PCM s16le frame for playback."""
         ...
 
+    async def discard_queued(self) -> int:
+        """Drop every playback frame queued but not yet handed to the device.
+
+        Returns how many queued writes were dropped. The stream keeps
+        running; later writes queue normally. Audio already handed to the
+        device/OS is not recalled.
+        """
+        ...
+
 
 @runtime_checkable
 class DuplexStream(Protocol):
@@ -282,6 +295,15 @@ class DuplexStream(Protocol):
 
     async def write(self, frame: bytes) -> None:
         """Queue one PCM s16le frame for playback."""
+        ...
+
+    async def discard_queued(self) -> int:
+        """Drop every playback frame queued but not yet handed to the device.
+
+        Returns how many queued writes were dropped. The stream keeps
+        running; later writes queue normally. Audio already handed to the
+        device/OS is not recalled.
+        """
         ...
 
 
@@ -880,6 +902,8 @@ class _PortAudioTxStream:
         self._last_write_rate_at: float | None = None
         self._last_write_rate_total: int = 0
         self._last_error: str | None = None
+        self._discard_events: int = 0
+        self._discarded_audio_ms: float = 0.0
 
     @property
     def running(self) -> bool:
@@ -913,6 +937,8 @@ class _PortAudioTxStream:
                     else None
                 ),
                 last_error=self._last_error,
+                discard_events=self._discard_events,
+                discarded_audio_ms=round(self._discarded_audio_ms, 3),
             )
 
     async def start(self) -> None:
@@ -1013,6 +1039,26 @@ class _PortAudioTxStream:
                 "portaudio-tx: dropped stale playback frame (buffer full, total=%d)",
                 total_dropped,
             )
+
+    async def discard_queued(self) -> int:
+        """Drop every playback frame queued but not yet handed to the device.
+
+        Returns how many queued writes were dropped. The stream keeps
+        running; later writes queue normally. Audio already handed to the
+        device/OS is not recalled. A stream that is not running returns 0
+        and changes nothing.
+        """
+        if not self.running:
+            return 0
+        with self._lock:
+            dropped_writes = len(self._frame_lengths)
+            dropped_bytes = self._buffered_bytes
+            if not dropped_writes and not dropped_bytes:
+                return 0
+            self._discard_locked()
+            self._discard_events += 1
+            self._discarded_audio_ms += self._audio_ms_for_bytes(dropped_bytes)
+            return dropped_writes
 
     def _output_callback(
         self,
@@ -1139,11 +1185,15 @@ class _PortAudioTxStream:
 
     def _clear_buffer(self) -> None:
         with self._lock:
-            self._buffer[:] = b"\x00" * self._capacity_bytes
-            self._read_pos = 0
-            self._write_pos = 0
-            self._buffered_bytes = 0
-            self._frame_lengths.clear()
+            self._discard_locked()
+
+    def _discard_locked(self) -> None:
+        """Reset the playback ring to empty; caller must hold ``self._lock``."""
+        self._buffer[:] = b"\x00" * self._capacity_bytes
+        self._read_pos = 0
+        self._write_pos = 0
+        self._buffered_bytes = 0
+        self._frame_lengths.clear()
 
     def _audio_ms_for_bytes(self, byte_count: int) -> float:
         frames = byte_count // self._bytes_per_audio_frame
@@ -1339,6 +1389,10 @@ class _PortAudioDuplexStream:
         if not self.running:
             raise RuntimeError("Duplex stream is not running.")
         await self._tx.write(frame)
+
+    async def discard_queued(self) -> int:
+        """Drop queued-but-unplayed TX playback frames (delegates to the TX leg)."""
+        return await self._tx.discard_queued()
 
     def _duplex_callback(
         self,
@@ -1691,7 +1745,17 @@ class FakeRxStream:
 
 
 class FakeTxStream:
-    """Test double: records lifecycle and captures written frames."""
+    """Test double: records lifecycle and captures written frames.
+
+    ``written_frames`` keeps every frame ever written, in order. The fake
+    also models a real playback queue: ``pending_frames`` holds written
+    frames not yet played, :meth:`play` is the fake's "device clock" and
+    moves the oldest pending frames to ``played_frames``, and
+    :meth:`discard_queued` drops the pending ones (MOR-3760). Like the real
+    PortAudio streams (``_PortAudioTxStream.stop`` → ``_clear_buffer``),
+    :meth:`stop` clears the pending ring so a restart does not replay
+    frames queued before the stop.
+    """
 
     def __init__(
         self,
@@ -1706,6 +1770,9 @@ class FakeTxStream:
         self.started_count = 0
         self.stopped_count = 0
         self.written_frames: list[bytes] = []
+        self.pending_frames: list[bytes] = []
+        self.played_frames: list[bytes] = []
+        self.discard_events = 0
         self.fail_on_write: OSError | None = None
         self.write_failures = 0
         self.last_error: str | None = None
@@ -1728,6 +1795,7 @@ class FakeTxStream:
             writes_completed=len(self.written_frames),
             write_failures=self.write_failures,
             last_error=self.last_error,
+            discard_events=self.discard_events,
         )
 
     async def start(self) -> None:
@@ -1744,6 +1812,10 @@ class FakeTxStream:
         _release_exclusive_device(self._exclusive, self._device, self)
         self._running = False
         self.stopped_count += 1
+        # Match _PortAudioTxStream.stop (→ _clear_buffer): stop drops the
+        # pending playback ring; written_frames/played_frames/discard_events
+        # are cumulative records and stay untouched.
+        self.pending_frames.clear()
 
     async def write(self, frame: bytes) -> None:
         if not self._running:
@@ -1755,6 +1827,33 @@ class FakeTxStream:
             self.last_error = f"{type(exc).__name__}: {exc}"
             raise exc
         self.written_frames.append(frame)
+        self.pending_frames.append(frame)
+
+    def play(self, count: int | None = None) -> list[bytes]:
+        """Move the oldest *count* pending frames (all when None) to played.
+
+        Test helper modelling the device clock: returns the frames the fake
+        "played", oldest first.
+        """
+        moved = (
+            len(self.pending_frames)
+            if count is None
+            else min(count, len(self.pending_frames))
+        )
+        played = self.pending_frames[:moved]
+        del self.pending_frames[:moved]
+        self.played_frames.extend(played)
+        return played
+
+    async def discard_queued(self) -> int:
+        """Drop pending (written, not yet played) frames; return the count."""
+        if not self._running:
+            return 0
+        dropped = len(self.pending_frames)
+        if dropped:
+            self.pending_frames.clear()
+            self.discard_events += 1
+        return dropped
 
 
 class FakeDuplexStream:
@@ -1779,6 +1878,9 @@ class FakeDuplexStream:
         self.started_count = 0
         self.stopped_count = 0
         self.written_frames: list[bytes] = []
+        self.pending_frames: list[bytes] = []
+        self.played_frames: list[bytes] = []
+        self.discard_events = 0
         self._capture_health = _CaptureHealthTracker()
         # MOR-1573: see FakeRxStream.block_open — lets tests model a
         # genuinely blocking duplex open so UsbAudioDriver.start_duplex's
@@ -1800,6 +1902,7 @@ class FakeDuplexStream:
         return TxStreamHealth(
             frames_queued=len(self.written_frames),
             writes_completed=len(self.written_frames),
+            discard_events=self.discard_events,
         )
 
     async def start(self, callback: Callable[[bytes], None]) -> None:
@@ -1818,11 +1921,42 @@ class FakeDuplexStream:
         self._running = False
         self._callback = None
         self.stopped_count += 1
+        # Match _PortAudioDuplexStream.stop (→ _tx._clear_buffer): stop drops
+        # the pending TX playback ring; written_frames/played_frames and
+        # discard_events are cumulative records and stay untouched.
+        self.pending_frames.clear()
 
     async def write(self, frame: bytes) -> None:
         if not self._running:
             raise RuntimeError("FakeDuplexStream is not running.")
         self.written_frames.append(frame)
+        self.pending_frames.append(frame)
+
+    def play(self, count: int | None = None) -> list[bytes]:
+        """Move the oldest *count* pending TX frames (all when None) to played.
+
+        Test helper modelling the device clock, exactly like
+        :meth:`FakeTxStream.play`.
+        """
+        moved = (
+            len(self.pending_frames)
+            if count is None
+            else min(count, len(self.pending_frames))
+        )
+        played = self.pending_frames[:moved]
+        del self.pending_frames[:moved]
+        self.played_frames.extend(played)
+        return played
+
+    async def discard_queued(self) -> int:
+        """Drop pending (written, not yet played) TX frames; return the count."""
+        if not self._running:
+            return 0
+        dropped = len(self.pending_frames)
+        if dropped:
+            self.pending_frames.clear()
+            self.discard_events += 1
+        return dropped
 
     def inject_frame(
         self,
