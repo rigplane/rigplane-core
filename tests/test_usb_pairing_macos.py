@@ -2,6 +2,7 @@
 
 import asyncio
 from copy import deepcopy
+from dataclasses import replace
 import json
 from pathlib import Path
 from threading import Event, get_ident
@@ -123,6 +124,64 @@ def test_recording_adapter_uses_usb_ancestry_and_uid_location(
     assert all(
         node.parent is not None or node.kind == "root_hub" for node in snapshot.usb
     )
+    if profile == "FTX-1":
+        assert snapshot.portaudio.devices[result.rx_index].name == "USB Audio Device"
+        assert snapshot.portaudio.devices[result.tx_index].name == "USB Audio Device"
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "undeclared",
+        "second-radio",
+        "duplicate-cat",
+        "duplicate-hri",
+        "no-profile",
+        "codec-only",
+        "empty-functions",
+    ],
+)
+def test_recorded_serial_functions_preserve_ambiguous_refusal(condition):
+    session = _macos_session()
+    identity = get_radio_profile("FTX-1").usb_identity
+    raw = session["raw"]["macos"]
+    if condition in {"undeclared", "second-radio", "duplicate-cat", "duplicate-hri"}:
+        owners = {
+            "undeclared": (4295976929,),
+            "second-radio": (4295976883, 4295976929),
+            "duplicate-cat": (4295976883,),
+            "duplicate-hri": (4295976929,),
+        }[condition]
+        for index, owner in enumerate(owners):
+            original = next(
+                row for row in raw["usb_devices"] if row["registry_id"] == owner
+            )
+            row = {**original, "registry_id": 100 + index}
+            if condition == "undeclared":
+                row.update(vendor_id=0xFFFF, product_id=0x0001)
+            raw["usb_devices"].append(row)
+            raw["serial_devices"].append(
+                {
+                    "device": f"/dev/cu.extra{index}",
+                    "usb_registry_id": row["registry_id"],
+                }
+            )
+    elif condition == "no-profile":
+        identity = None
+    else:
+        identity = (
+            replace(identity, serial_functions=frozenset())
+            if condition == "empty-functions"
+            else type(identity)(identity.audio_codec)
+        )
+    result = pair(_adapt(session), FTX_PORT, identity)
+    assert isinstance(result, PairRefused)
+    assert (result.reason, result.wire_reason) == ("serial_ambiguous", "usb_ambiguous")
+    assert {
+        (candidate.portaudio_index, candidate.direction)
+        for candidate in result.candidates
+        if candidate.near_radio
+    } == {(3, "capture"), (3, "render")}
 
 
 @pytest.mark.parametrize(

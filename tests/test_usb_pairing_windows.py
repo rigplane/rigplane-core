@@ -11,6 +11,7 @@ from unittest.mock import Mock
 from rigplane.audio._usb_adapt_windows import adapt_windows
 from rigplane.audio._usb_pairing import PairOk, PairRefused, pair
 from rigplane.core.usb_identity import UsbAudioIdentity, UsbFunctionId
+from rigplane.profiles import get_radio_profile
 
 
 def _w1_session():
@@ -165,6 +166,86 @@ def test_s2_w1_wrong_codec_identity_retains_nearby_mme_candidates(snapshot):
         candidate.portaudio_index not in {0, 4} for candidate in result.candidates
     )
     assert result.candidates[0].near_radio
+
+
+@pytest.mark.parametrize("hri_has_com_name", [True, False])
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "pair",
+        "undeclared",
+        "second-radio",
+        "duplicate-cat",
+        "duplicate-hri",
+        "no-profile",
+        "codec-only",
+        "empty-functions",
+    ],
+)
+def test_declared_serial_functions_share_one_radio_hub(condition, hri_has_com_name):
+    from dataclasses import replace
+
+    session = _synthetic_session(codec=("0D8C", "0016"))
+    rows = session["raw"]["windows"]["devnodes"]
+    serial = rows[2]
+    serial["instance_id"] = r"USB\VID_10C4&PID_EA70\S"
+    serial["class_name"] = "USB"
+    serial["friendly_name"] = "Dual UART"
+    for interface, port in (("00", "COM3"), ("01", "COM4")):
+        rows.append(
+            {
+                **serial,
+                "instance_id": rf"USB\VID_10C4&PID_EA70&MI_{interface}\S",
+                "parent_id": serial["instance_id"],
+                "class_name": "Ports",
+                "friendly_name": f"UART ({port})",
+            }
+        )
+    hri = {
+        **serial,
+        "instance_id": r"USB\VID_26AA&PID_0030\HRI",
+        "class_name": "Ports",
+        "friendly_name": "HRI (COM5)" if hri_has_com_name else "HRI",
+    }
+    rows.append(hri)
+    identity = get_radio_profile("FTX-1").usb_identity
+    extras = {
+        "undeclared": (("FFFF", "0001"),),
+        "second-radio": (("10C4", "EA70"), ("26AA", "0030")),
+        "duplicate-cat": (("10C4", "EA70"),),
+        "duplicate-hri": (("26AA", "0030"),),
+    }.get(condition, ())
+    for index, (vid, pid) in enumerate(extras):
+        rows.append(
+            {
+                **hri,
+                "instance_id": rf"USB\VID_{vid}&PID_{pid}\extra{index}",
+                "friendly_name": f"Extra (COM{index + 6})",
+            }
+        )
+    if condition == "no-profile":
+        identity = None
+    elif condition == "codec-only":
+        identity = UsbAudioIdentity(identity.audio_codec)
+    elif condition == "empty-functions":
+        identity = replace(identity, serial_functions=frozenset())
+    snapshot = adapt_windows(session)
+    result = pair(snapshot, "COM3", identity)
+    if condition == "pair":
+        assert isinstance(result, PairOk), result
+        assert (result.rx_index, result.tx_index, result.hostapi) == (1, 5, "MME")
+        assert result.codec_node == r"USB\VID_0D8C&PID_0016\C"
+    else:
+        assert isinstance(result, PairRefused), result
+        assert (result.reason, result.wire_reason) == (
+            "serial_ambiguous",
+            "usb_ambiguous",
+        )
+        assert {
+            (candidate.portaudio_index, candidate.direction)
+            for candidate in result.candidates
+            if candidate.near_radio
+        } == {(1, "capture"), (5, "render")}
 
 
 @pytest.mark.parametrize("direction", ["rx", "tx"])
