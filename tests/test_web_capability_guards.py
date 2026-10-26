@@ -476,8 +476,7 @@ class TestCapabilitiesEndpoint:
             for freq_range in data["freqRanges"]
         )
         assert not any(
-            band["start"] <= 70_200_000 <= band["end"]
-            for band in data["txBands"]
+            band["start"] <= 70_200_000 <= band["end"] for band in data["txBands"]
         )
 
     @pytest.mark.asyncio

@@ -587,7 +587,7 @@ async def test_http_set_vfo_freq_ic7300_4m_receive_envelope() -> None:
                 side_effect=[
                     parse_civ_frame(reply_prefix + bytes.fromhex("FB FD")),
                     parse_civ_frame(
-                        reply_prefix + b"\x25\x01" + readback_bcd + b"\xFD"
+                        reply_prefix + b"\x25\x01" + readback_bcd + b"\xfd"
                     ),
                 ]
             ),
@@ -604,9 +604,7 @@ async def test_http_set_vfo_freq_ic7300_4m_receive_envelope() -> None:
 
     async def _posted_set_vfo_freq(
         radio: SimpleNamespace, freq: int
-    ) -> tuple[
-        WebServer, RadioPoller, asyncio.Task[_FakeWriter], CommandQueueEntry
-    ]:
+    ) -> tuple[WebServer, RadioPoller, asyncio.Task[_FakeWriter], CommandQueueEntry]:
         srv = WebServer(  # type: ignore[arg-type]
             radio, WebConfig(host="127.0.0.1", port=0)
         )
@@ -638,9 +636,7 @@ async def test_http_set_vfo_freq_ic7300_4m_receive_envelope() -> None:
                 Observation(
                     path=path,
                     value=value,
-                    source=SourceMetadata(
-                        source="poll_response", provider="icom_civ"
-                    ),
+                    source=SourceMetadata(source="poll_response", provider="icom_civ"),
                     timestamp_monotonic=time.monotonic(),
                     provider_generation=generation,
                 )
@@ -695,17 +691,12 @@ async def test_http_set_vfo_freq_ic7300_4m_receive_envelope() -> None:
         headers={},
     )
     assert state_writer.response_status == 200
-    assert (
-        state_writer.response_body["main"]["unselectedVfo"]["freqHz"]
-        == 70_200_000
-    )
+    assert state_writer.response_body["main"]["unselectedVfo"]["freqHz"] == 70_200_000
 
     # Rejected: 74.800001 MHz lies outside every declared receive range,
     # so the poller refuses the write before any CI-V frame is sent.
     refused = _radio_with_readback(bytes.fromhex("00 00 80 74 00"))
-    _srv2, poller2, request2, entry2 = await _posted_set_vfo_freq(
-        refused, 74_800_001
-    )
+    _srv2, poller2, request2, entry2 = await _posted_set_vfo_freq(refused, 74_800_001)
     with pytest.raises(CommandError, match="outside profile receive ranges"):
         await poller2._execute_queued_entry(entry2)  # noqa: SLF001
     writer2 = await asyncio.wait_for(request2, timeout=10.0)
@@ -713,9 +704,7 @@ async def test_http_set_vfo_freq_ic7300_4m_receive_envelope() -> None:
     assert writer2.response_status == 500
     assert writer2.response_body["ok"] is False
     assert writer2.response_body["error"] == "command_failed"
-    assert (
-        "outside profile receive ranges" in writer2.response_body["message"]
-    )
+    assert "outside profile receive ranges" in writer2.response_body["message"]
     refused.send_civ.assert_not_awaited()
 
 
