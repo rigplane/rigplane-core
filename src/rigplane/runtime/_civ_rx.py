@@ -51,7 +51,13 @@ from rigplane.commands import (
     parse_scope_vbw_response,
 )
 from rigplane.commands.scope import _span_index_for_hz
-from rigplane.core.exceptions import CommandRejectedError, ConnectionError, TimeoutError
+from rigplane.core.exceptions import (
+    CommandError,
+    CommandRejectedError,
+    ConnectionError,
+    StaleBeforeWireError,
+    TimeoutError,
+)
 from rigplane.core.tx_safety import ProviderPttObservation, RadioTx
 from rigplane.core.tx_target import (
     KnownTxTarget,
@@ -1310,14 +1316,25 @@ class CivRuntime:
         if isinstance(owner, _AuthoritativePttRead) and owner.managed:
             token = owner.token
         if token is not None and not self._managed_tx_port_is_current(token):
-            raise ConnectionError("managed TX physical port changed before dispatch")
+            # Before the frame reaches the transport (MOR-3743): the
+            # subclass lets a caller prove its frame never hit the wire.
+            raise StaleBeforeWireError(
+                "managed TX physical port changed before dispatch"
+            )
         if isinstance(owner, _AuthoritativePttRead) and not self._ptt_read_is_current(
             owner
         ):
-            raise ConnectionError("PTT observer binding changed before dispatch")
+            raise StaleBeforeWireError("PTT observer binding changed before dispatch")
         pkt = self._wrap_civ(civ_frame)
         transport = token.transport if token is not None else self._host._civ_transport
         assert transport is not None
+        # MOR-3743: this frame is about to reach the wire without ever
+        # entering the commander queue, so the worker's scope marking
+        # never saw it.  Apply the same marking rule here — raw
+        # transactions carry no priority and count as non-BACKGROUND.
+        commander = self._host._commander
+        if commander is not None:
+            commander.note_foreign_dispatch(asyncio.current_task(), Priority.NORMAL)
         task = asyncio.create_task(transport.send_tracked(pkt))
         tasks = None
         if token is not None:
@@ -4254,7 +4271,7 @@ class CivRuntime:
         tracker = self._host._civ_request_tracker
         epoch = self._host._civ_epoch
 
-        def current_error() -> ConnectionError | None:
+        def current_error(*, pre_wire: bool = False) -> ConnectionError | None:
             if (
                 self._host._civ_transport is not transport
                 or self._host._civ_request_tracker is not tracker
@@ -4265,11 +4282,29 @@ class CivRuntime:
                 current = is_current is None or is_current()
             except Exception:
                 current = False
-            return None if current else ConnectionError("managed TX attempt is stale")
+            if current:
+                return None
+            # A refusal this side of the send proves the frame never
+            # reached the wire (MOR-3743): carry the subclass so the
+            # split-mode read-modify-write may retry. Before the send
+            # that is any check here; inside the send it is only the
+            # transport's own ``is_current`` guard refusal — ``sent`` is
+            # reset for nothing else once submission has begun. Every
+            # check after the send keeps the plain error — the frame
+            # may already be applied and must not be repeated.
+            if pre_wire:
+                return StaleBeforeWireError("managed TX attempt is stale")
+            return ConnectionError("managed TX attempt is stale")
 
-        def check_current() -> None:
-            if error := current_error():
+        def check_current(*, pre_wire: bool = False) -> None:
+            if error := current_error(pre_wire=pre_wire):
                 raise error
+
+        def check_current_pre_wire() -> None:
+            # Currency checks this side of the send raise the pre-wire
+            # subclass (MOR-3743): when one of them fires, the frame
+            # provably never reached the transport.
+            check_current(pre_wire=True)
 
         def write_is_current() -> bool:
             return current_error() is None
@@ -4295,6 +4330,7 @@ class CivRuntime:
             if isinstance(token_or_future, int):
                 ack_sink_token = token_or_future
 
+            sent = False
             try:
                 self.start_pump()
                 now = time.monotonic()
@@ -4302,9 +4338,24 @@ class CivRuntime:
                 if delta < self._host._civ_min_interval:
                     await asyncio.sleep(self._host._civ_min_interval - delta)
 
-                check_current()
+                check_current(pre_wire=True)
                 pkt = self._wrap_civ(civ_frame)
-                await transport.send_tracked(pkt, **guard)
+                # Submission begins at this call: the transport may write
+                # before any of its own awaits (the serial link writes,
+                # then drains), so every failure from here on is
+                # potentially sent and must not be retried (MOR-3743).
+                # The one exception is the transport's own explicit
+                # refusal — its ``is_current`` guard raising
+                # ``CommandError`` before it writes anything — which
+                # proves the frame never left this side.
+                sent = True
+                try:
+                    await transport.send_tracked(pkt, **guard)
+                except CommandError:
+                    # The transport refused before writing: the one
+                    # failure behind the call still provably pre-wire.
+                    sent = False
+                    raise
                 # The packet left the wire: stamp before the currency checks
                 # below so a cancel or a stale attempt still paces the next
                 # send from this one.
@@ -4314,13 +4365,15 @@ class CivRuntime:
                 if ack_sink_token is not None:
                     tracker.unregister_ack_sink(ack_sink_token)
                 if not isinstance(exc, asyncio.CancelledError):
-                    check_current()
+                    check_current(pre_wire=not sent)
                 raise
 
             return None
 
-        await self._drain_ack_sinks_before_blocking(check_current=check_current)
-        check_current()
+        await self._drain_ack_sinks_before_blocking(
+            check_current=check_current_pre_wire
+        )
+        check_current(pre_wire=True)
 
         pending: "asyncio.Future[CivFrame] | None" = None
         nak_pending: "asyncio.Future[CivFrame] | None" = None
@@ -4366,10 +4419,21 @@ class CivRuntime:
             if delta < self._host._civ_min_interval:
                 await asyncio.sleep(self._host._civ_min_interval - delta)
 
-            check_current()
+            check_current(pre_wire=True)
             pkt = self._wrap_civ(civ_frame)
-            await transport.send_tracked(pkt, **guard)
+            # Same seam as the fire-and-forget branch above (MOR-3743):
+            # submission begins at this call, so failures from here on
+            # are potentially sent; only the transport's own guard
+            # refusal (``CommandError`` before it writes) is provably
+            # pre-wire.
             sent = True
+            try:
+                await transport.send_tracked(pkt, **guard)
+            except CommandError:
+                # The transport refused before writing: the one failure
+                # behind the call still provably pre-wire.
+                sent = False
+                raise
             check_current()
             self._host._last_civ_send_monotonic = time.monotonic()
             assert pending is not None
@@ -4414,7 +4478,7 @@ class CivRuntime:
                 f"CI-V command 0x{request_key.command:02X} refused (NAK)"
             )
         except Exception:
-            check_current()
+            check_current(pre_wire=not sent)
             raise
         finally:
             if pending is not None:

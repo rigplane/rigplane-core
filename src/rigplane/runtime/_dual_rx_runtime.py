@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from typing import Any, Awaitable, Callable, Iterator
 
     from rigplane.commands.command_map import CommandMap
+    from rigplane.commands.commander import InterferenceScope
 
     from .radio import CoreRadio as _MixinBase  # type: ignore[attr-defined]
 else:
@@ -39,6 +40,7 @@ from rigplane.core.exceptions import (
     CommandError,
     CommandRejectedError,
     ConnectionError,
+    StaleBeforeWireError,
     TimeoutError,
 )
 from rigplane.core.types import Mode, bcd_encode
@@ -110,6 +112,19 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         finally:
             epoch = self._vfo_selection_epoch
             self._vfo_selection_epoch = (epoch >> 1) + (epoch & -epoch)
+
+    def _vfo_selection_epoch_moved(self, selection_epoch: int | None) -> bool:
+        """True when the pinned selection epoch changed or a change is in flight.
+
+        Shared by the pre-attempt, pre-SET and post-readback checks of
+        ``write_relative_vfo_mode`` (MOR-3743): ``selection_epoch`` is
+        the topology pin captured before the first attempt; an even
+        epoch means a selection operation is still in flight.
+        """
+        return selection_epoch is not None and (
+            self._vfo_selection_epoch != selection_epoch
+            or self._vfo_selection_epoch % 2 == 0
+        )
 
     def _require_receiver(self, receiver: int, *, operation: str) -> None:
         """Validate receiver index against active profile."""
@@ -443,7 +458,26 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         filter_width: int | None = None,
         before_set: Callable[[], None] | None = None,
     ) -> RelativeVfoState:
-        """Preserve omitted fields; carry before_set validation through dispatch."""
+        """Preserve omitted fields; carry before_set validation through dispatch.
+
+        The whole preservation read → SET → readback runs inside a
+        commander interference scope (MOR-3743): a concurrent command
+        dispatched by another task between the preservation read and the
+        SET marks the scope, the SET is refused before the wire — a
+        ``StaleBeforeWireError``, the only retryable refusal — and the
+        operation retries from the preservation read — up to three
+        attempts, then a retryable ``CommandError``.  A SET that already
+        reached the wire is never retried: a currency failure behind the
+        send (interference detected while its ACK was pending)
+        propagates as the plain ``ConnectionError``, and interference
+        behind an acknowledged SET is decided by the readback, not by a
+        second SET.  The VFO selection epoch is pinned before the first
+        attempt; a selection change during the write — including one
+        that completes during the readback — fails it with a
+        ``CommandError`` even though the SET was already applied; the
+        caller must re-read.  Nothing is ever delayed or reordered.
+        Without a commander the write runs once, exactly as before.
+        """
         role = "selected" if selected else "unselected"
         cmd_map = self._profile.command_map
         if cmd_map is None or not _relative_vfo_routing_available(
@@ -462,13 +496,84 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             type(filter_width) is not int or filter_width not in (1, 2, 3)
         ):
             raise CommandError("direct VFO filter number must be 1, 2 or 3")
-        selection_epoch = None
-        if data is None or filter_width is None:
-            selection_epoch = self._vfo_selection_epoch
-            if selection_epoch % 2 == 0:
-                raise CommandRejectedError(
-                    "VFO selection is changing; retry mode write"
+
+        commander = self._commander
+        if commander is None:
+            return await self._write_relative_vfo_mode_once(
+                mode_code,
+                selected=selected,
+                data=data,
+                filter_width=filter_width,
+                before_set=before_set,
+                scope=None,
+                selection_epoch=None,
+            )
+        # MOR-3743: pin the VFO topology once for every attempt.  A
+        # selection change between attempts would silently redirect the
+        # retry at a different physical VFO, so each attempt re-validates
+        # this epoch and the write fails instead of retrying across it.
+        selection_epoch = self._vfo_selection_epoch
+        if selection_epoch % 2 == 0:
+            raise CommandRejectedError("VFO selection is changing; retry mode write")
+        for _ in range(3):
+            async with commander.interference_scope() as scope:
+                observed = await self._write_relative_vfo_mode_once(
+                    mode_code,
+                    selected=selected,
+                    data=data,
+                    filter_width=filter_width,
+                    before_set=before_set,
+                    scope=scope,
+                    selection_epoch=selection_epoch,
                 )
+            if observed is not None:
+                return observed
+            # Only a proven pre-wire refusal (``StaleBeforeWireError``
+            # with the scope marked) returns ``None``; every other
+            # failure raises out of the attempt untouched.
+        raise CommandError(
+            "split-mode write interfered with a concurrent command; retry"
+        )
+
+    async def _write_relative_vfo_mode_once(
+        self,
+        mode_code: int,
+        *,
+        selected: bool,
+        data: bool | None,
+        filter_width: int | None,
+        before_set: Callable[[], None] | None,
+        scope: InterferenceScope | None,
+        selection_epoch: int | None,
+    ) -> RelativeVfoState | None:
+        """One preservation read → SET → readback attempt (MOR-3743).
+
+        Returns ``None`` only when the SET was refused before the wire
+        (``StaleBeforeWireError``) because ``scope`` reported
+        interference; every other failure raises exactly as it would
+        without a scope — a currency failure behind the send propagates
+        as the plain ``ConnectionError``, never a retry.
+        ``selection_epoch`` is the topology pin captured before the
+        first attempt (or the per-attempt capture on a commander-less
+        single shot): a move, an in-flight selection change, or one that
+        lands during the readback fails the attempt instead of
+        redirecting its SET at a different physical VFO or reporting
+        success for a topology the caller no longer holds.
+        """
+        role = "selected" if selected else "unselected"
+        cmd_map = self._profile.command_map
+        if self._vfo_selection_epoch_moved(selection_epoch):
+            raise CommandRejectedError(
+                "VFO selection changed during preservation; retry"
+            )
+        if data is None or filter_width is None:
+            if selection_epoch is None:
+                # Commander-less single shot: pin per attempt.
+                selection_epoch = self._vfo_selection_epoch
+                if selection_epoch % 2 == 0:
+                    raise CommandRejectedError(
+                        "VFO selection is changing; retry mode write"
+                    )
             try:
                 current = await self.read_relative_vfo(selected=selected)
             except ValueError as exc:
@@ -496,14 +601,11 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         def is_current() -> bool:
             if before_set is not None:
                 before_set()
-            return True
+            return scope is None or scope.is_current()
 
         if before_set is not None:
             before_set()
-        if selection_epoch is not None and (
-            self._vfo_selection_epoch != selection_epoch
-            or self._vfo_selection_epoch % 2 == 0
-        ):
+        if self._vfo_selection_epoch_moved(selection_epoch):
             raise CommandRejectedError(
                 "VFO selection changed during preservation; retry"
             )
@@ -513,11 +615,28 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 sub,
                 data=prefix + bytes([mode_code, int(data), filter_width]),
                 wait_response=True,
-                is_current=is_current if before_set is not None else None,
+                is_current=is_current
+                if (before_set is not None or scope is not None)
+                else None,
             )
+        except StaleBeforeWireError:
+            if before_set is not None:
+                before_set()
+            if scope is not None and scope.interfered:
+                # The wire seam refused the SET before the transport
+                # because a concurrent command dispatched since the
+                # preservation read: discard the attempt and re-read
+                # (MOR-3743).  This proven pre-wire refusal is the ONLY
+                # retryable outcome — the SET never reached the wire.
+                return None
+            raise
         except ConnectionError:
             if before_set is not None:
                 before_set()
+            # A currency failure raised behind the send — interference
+            # detected while the SET's ACK was pending (MOR-3743): the
+            # SET may already be applied, so never repeat it; surface
+            # the error and let the caller re-read.
             raise
         ack = None if response is None else parse_ack_nak(response)
         if ack is False:
@@ -528,6 +647,17 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             observed = await self.read_relative_vfo(selected=selected)
         except ValueError as exc:
             raise CommandError("Invalid direct VFO mode readback") from exc
+        # The SET is already applied and this attempt can never retry,
+        # but success must not be reported against a topology the caller
+        # pinned: a selection change that completed during the write —
+        # including during this readback — fails the write even though
+        # the SET was applied, and the caller must re-read (MOR-3743).
+        if self._vfo_selection_epoch_moved(selection_epoch):
+            raise CommandError("VFO selection changed during the write; retry")
+        # The SET already reached the wire: never send a second one
+        # (MOR-3743).  Interference behind it is not a retry trigger —
+        # the readback below is the verdict: consistent means success,
+        # contradictory raises the readback error.
         if observed.data_mode not in (0, 1) or observed.filter_num not in (1, 2, 3):
             raise CommandError("direct VFO mode readback is unavailable")
         # ACK alone is not success: a valid but contradictory readback
