@@ -7,7 +7,7 @@ import contextlib
 import json
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,8 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
+from rigplane.core.state_store import StateStore
+from rigplane.profiles import resolve_radio_profile
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 from rigplane.runtime.managed_tx_composition import (
@@ -307,3 +309,72 @@ async def test_simulated_http_has_no_ownerless_ptt_bypass(stack: _Stack) -> None
     assert status >= 400
     assert not stack.sim.ptt_on
     assert not any(on for _, on in stack.sim.ptt_set_writes)
+
+
+@pytest.mark.parametrize("lane", ["http", "ws", "rigctld"])
+@pytest.mark.parametrize("write", ["frequency", "split"])
+async def test_simulated_write_cannot_reuse_prewrite_target(
+    stack: _Stack,
+    lane: str,
+    write: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _command(stack, "set_freq", {"freq": 146_520_000})
+    await _command(stack, "send_civ", {"command": 0x25, "data": "010000000001"})
+    await _wait_target(stack, 146_520_000)
+    dispatch = stack.sim._dispatch_civ
+
+    def missing_readback(command: int, payload: bytes, sender: int) -> bytes | None:
+        if (command in (0x03, 0x0F) and not payload) or (
+            command == 0x25 and len(payload) == 1
+        ):
+            return stack.sim._civ_nak(sender, 0xA4)
+        return dispatch(command, payload, sender)
+
+    monkeypatch.setattr(stack.sim, "_dispatch_civ", missing_readback)
+    await _command(
+        stack,
+        "set_freq" if write == "frequency" else "set_split",
+        {"freq": 100_000_000} if write == "frequency" else {"on": True},
+    )
+    async with _client(stack, lane) as ptt:
+        before = len(stack.sim.ptt_set_writes)
+        _assert_refused(await ptt(True), lane, "tx_target_unknown")
+        assert not stack.sim.ptt_on
+        assert not any(on for _, on in stack.sim.ptt_set_writes[before:])
+        assert (await ptt(False))["ok"] is True
+
+
+@pytest.mark.parametrize("fault", ["expired", "generation", "quality", "frequency"])
+def test_permit_rejects_invalid_proof_even_with_fresh_label(fault: str) -> None:
+    from rigplane.runtime.tx_interlock import (
+        TxInterlockRefusal,
+        require_tx_frequency_permit,
+    )
+
+    store = StateStore()
+    store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "tx_target"),
+            value=KnownTxTarget("MAIN", "A", 14_074_000),
+            source=SourceMetadata(source="test", provider="simulated_fault"),
+            timestamp_monotonic=time.monotonic(),
+            max_age=10.0,
+        )
+    )
+    snapshot = store.snapshot()
+    field = snapshot.fields[0]
+    if fault == "expired":
+        snapshot = replace(
+            snapshot, generated_at_monotonic=field.last_observed_monotonic + 10.0
+        )
+    elif fault == "generation":
+        field = replace(field, provider_generation=field.provider_generation + 1)
+    elif fault == "quality":
+        field = replace(field, quality=("unconfirmed",))
+    else:
+        field = replace(field, value=KnownTxTarget("MAIN", "A", None))
+    snapshot = replace(snapshot, fields=(field,))
+    with pytest.raises(TxInterlockRefusal) as refusal:
+        require_tx_frequency_permit(snapshot, resolve_radio_profile(model="IC-7300"))
+    assert refusal.value.reason_code == "tx_target_unknown"
