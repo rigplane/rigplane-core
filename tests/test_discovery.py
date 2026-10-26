@@ -120,6 +120,11 @@ async def test_discover_cli_keeps_profile_audio_pair_and_refuses_extra_owner(
 
 
 @pytest.mark.parametrize(
+    "profile_error",
+    [None, KeyError("missing profile"), RuntimeError("profile load failed")],
+    ids=["cold_start", "missing_profile", "profile_load_error"],
+)
+@pytest.mark.parametrize(
     "protocol,profile_id,model,address",
     [
         ("civ", "icom_ic705", "IC-705", 0xA4),
@@ -128,7 +133,7 @@ async def test_discover_cli_keeps_profile_audio_pair_and_refuses_extra_owner(
     ],
 )
 async def test_discovery_passes_resolved_profile_identity(
-    monkeypatch, protocol, profile_id, model, address
+    monkeypatch, protocol, profile_id, model, address, profile_error
 ):
     from rigplane import profiles
     from rigplane.profiles import rig_loader
@@ -186,6 +191,15 @@ async def test_discovery_passes_resolved_profile_identity(
     )
     resolve = Mock(return_value=AudioDeviceMapping(2, 1, port))
     monkeypatch.setattr("rigplane.discovery.resolve_audio_for_serial_port", resolve)
+    if profile_error is not None:
+        monkeypatch.setattr(
+            "rigplane.discovery.get_radio_profile", Mock(side_effect=profile_error)
+        )
+        results = await discover_serial_radios()
+        assert len(results) == 1
+        assert results[0].usb_audio is None
+        resolve.assert_not_called()
+        return
     results, profile = await asyncio.gather(
         discover_serial_radios(), lookup_profile(), return_exceptions=True
     )
