@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Discard queued playback on TX streams (MOR-3760).** `TxStream` and
+  `DuplexStream` gain `async discard_queued()`, dropping every playback
+  frame queued but not yet handed to the device and returning how many
+  queued writes were dropped; `TxStreamHealth` reports `discard_events`
+  and `discarded_audio_ms`.
 - **Outside-only TX audio admission (MOR-3764).** New binary TX frame type
   `0x12` on `/api/v1/audio`: admitted only while the radio is observed keyed
   outside Core (intent `rx`, no release debt, a foreign TX observation),
