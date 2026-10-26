@@ -989,6 +989,48 @@ mode = 42
         assert rig.keyboard.bindings[0].params == {"mode": 42}
 
 
+class TestPublishedRxCoverage:
+    """MOR-3782: shipped freq_ranges match the manufacturer's published
+    receiver coverage, and the tune/receive-only additions declare no
+    transmit band."""
+
+    # (min_hz, max_hz) segments read from the manufacturer manuals:
+    # IC-7300MK2_ENG_IM_Basic_1 "11 SPECIFICATIONS / General", receiver
+    # 0.030000 ~ 74.800000*; IC-705_ENG_Basic_9, same section, receiver
+    # 0.030000 ~ 199.999999* and 400.000000 ~ 470.000000*; FTX-1_OM_ENG_
+    # EH084M201_2506E-DS "Specifications / General", "Rx Frequency Range:
+    # 30kHz - 174MHz, 400MHz - 470MHz (operating)".
+    PUBLISHED_RX_SEGMENTS = {
+        "ic7300mk2.toml": ((30_000, 74_800_000),),
+        "ic705.toml": ((30_000, 199_999_999), (400_000_000, 470_000_000)),
+        "ftx1.toml": ((30_000, 174_000_000), (400_000_000, 470_000_000)),
+    }
+
+    @staticmethod
+    def _merged(intervals):
+        ordered = sorted(intervals)
+        merged = []
+        for start, end in ordered:
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        return merged
+
+    @pytest.mark.parametrize("filename", sorted(PUBLISHED_RX_SEGMENTS))
+    def test_ranges_match_published_receiver_coverage(self, filename):
+        profile = load_rig(RIGS_DIR / filename).to_profile()
+        published = self.PUBLISHED_RX_SEGMENTS[filename]
+        union = self._merged((r.start, r.end) for r in profile.freq_ranges)
+        for lo, hi in published:
+            assert any(s <= lo and hi <= e for s, e in union), (filename, lo, hi)
+        for rng in profile.freq_ranges:
+            inside = any(s <= rng.start and rng.end <= e for s, e in published)
+            assert inside, (filename, rng.label, rng.start, rng.end)
+            if rng.label in ("VHF RX", "UHF RX"):
+                assert rng.bands == (), (filename, rng.label)
+
+
 class TestTxPolicy:
     """[tx_policy] parsing and validation (MOR-1912, ADR row 3a).
 
