@@ -313,6 +313,10 @@ Omitted filter/DATA fields are filled from runtime readback before the write.
 When fields need preserving, the runtime checks the selection epoch before
 readback and before the SET call. A selection operation still in progress or
 a changed epoch returns `ERJCTED` (`RPRT -9`); retry `X` after selection settles.
+The epoch is pinned once for the whole write and re-validated on every
+attempt, so a selection change during the write — including one that lands
+between retry attempts — fails the write instead of redirecting a retry at a
+different physical VFO.
 The epoch tracks selection, swap and equalize operations through the
 runtime's own selection methods.
 The check is followed by awaits in the send path. Raw `w` and other direct
@@ -326,9 +330,14 @@ That whole read → SET → readback runs inside a commander interference
 scope (`commands/commander.py: IcomCommander.interference_scope`,
 `_dual_rx_runtime.py: DualRxRuntimeMixin.write_relative_vfo_mode`): any
 non-BACKGROUND command another client dispatches between the read and
-the SET marks the scope, the SET is refused before the wire, and the
-write retries from the read — up to three attempts, then `X` fails with
-a retryable error. No command is delayed or reordered, so TX releases
+the SET — through the commander queue or as a direct raw CI-V
+transaction (HTTP `POST /api/v1/civ/transaction`), which reaches the
+wire without entering the queue — marks the scope, the SET is refused
+before the wire, and the write retries from the read — up to three
+attempts, then `X` fails with a retryable error. Once a SET has been
+sent it is never sent twice: interference behind it is decided by the
+readback, a consistent readback succeeds and a contradictory one fails.
+No command is delayed or reordered, so TX releases
 are unaffected. USB/LSB and packet modes with a positive passband send
 DATA and filter explicitly and do not read first.
 See `handler.py: RigctldHandler._cmd_get_split_freq`,

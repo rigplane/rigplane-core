@@ -1318,6 +1318,13 @@ class CivRuntime:
         pkt = self._wrap_civ(civ_frame)
         transport = token.transport if token is not None else self._host._civ_transport
         assert transport is not None
+        # MOR-3743: this frame is about to reach the wire without ever
+        # entering the commander queue, so the worker's scope marking
+        # never saw it.  Apply the same marking rule here — raw
+        # transactions carry no priority and count as non-BACKGROUND.
+        commander = self._host._commander
+        if commander is not None:
+            commander.note_foreign_dispatch(asyncio.current_task(), Priority.NORMAL)
         task = asyncio.create_task(transport.send_tracked(pkt))
         tasks = None
         if token is not None:

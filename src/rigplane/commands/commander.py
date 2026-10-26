@@ -66,16 +66,22 @@ class InterferenceScope:
     counts as a potential state change.  Fail-safe by design: a false
     positive costs the owner a retry, never a delay.  The owner's own
     frames never mark the scope.
+
+    ``closed`` is set on every exit — normal, exception or cancellation —
+    and ``is_current()`` stays False from then on: the scope's currency
+    dies with the scope, so a retransmit request for its SET is answered
+    with the idle packet instead of the stale tuple.
     """
 
-    __slots__ = ("interfered", "owner")
+    __slots__ = ("closed", "interfered", "owner")
 
     def __init__(self, owner: asyncio.Task[Any]) -> None:
         self.owner = owner
         self.interfered = False
+        self.closed = False
 
     def is_current(self) -> bool:
-        return not self.interfered
+        return not self.interfered and not self.closed
 
 
 def _fail_item(item: _QueueItem, exc: BaseException) -> None:
@@ -291,7 +297,28 @@ class IcomCommander:
         try:
             yield scope
         finally:
+            scope.closed = True
             self._interference_scopes.discard(scope)
+
+    def note_foreign_dispatch(
+        self,
+        enqueued_by: asyncio.Task[Any] | None,
+        priority: int | Priority,
+    ) -> None:
+        """Mark live scopes for a frame about to reach the wire (MOR-3743).
+
+        One marking rule shared by the worker loop and any dispatch that
+        bypasses the commander queue (direct raw CI-V transactions):
+        every non-BACKGROUND frame marks each live scope its owner did
+        not enqueue — only BACKGROUND (the polling/read tier) is exempt,
+        and the owner's own task never marks its own scope.  Fail-safe:
+        a false positive costs the owner a retry, never a delay.
+        """
+        if not self._interference_scopes or int(priority) == int(Priority.BACKGROUND):
+            return
+        for scope in self._interference_scopes:
+            if scope.owner is not enqueued_by:
+                scope.interfered = True
 
     async def _loop(self) -> None:
         queue, worker = self._queue, asyncio.current_task()
@@ -310,14 +337,8 @@ class IcomCommander:
                     # live scope owned by another task may have preserved
                     # state this frame can change; mark those scopes before
                     # the executor runs, so the owner's wire-seam check
-                    # refuses its SET atomically with this dispatch.  Only
-                    # BACKGROUND (the polling/read tier) is exempt.
-                    if self._interference_scopes and item.priority != int(
-                        Priority.BACKGROUND
-                    ):
-                        for scope in self._interference_scopes:
-                            if scope.owner is not item.enqueued_by:
-                                scope.interfered = True
+                    # refuses its SET atomically with this dispatch.
+                    self.note_foreign_dispatch(item.enqueued_by, item.priority)
 
                     # Run execute as an inner task so that a caller-side
                     # timeout (asyncio.wait_for in `send`) cancels JUST this
