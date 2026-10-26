@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import numpy as np
+import pytest
 
 from rigplane_testkit.audio_markers import (
     MarkerSpec,
@@ -115,3 +116,17 @@ def test_partial_tail_corruption_is_reported() -> None:
     pcm = render_marker_pcm16(_SPEC) + np.full(239, 32767, dtype="<i2").tobytes()
     problems = check_marker(analyze_marker_pcm16(pcm, _SPEC), _SPEC)
     assert problems and any("residual" in problem for problem in problems)
+
+
+@pytest.mark.parametrize("freq_hz", [1000.25, 1499.75])
+def test_clean_off_bin_tone_passes_at_default_limits(freq_hz: float) -> None:
+    """A clean tone between FFT bins must pass with the default tolerances.
+
+    At 1 s / 48 kHz the bin width is 1 Hz, so these frequencies sit a
+    quarter-bin off; parabolic interpolation alone leaves the sine fit at
+    a biased frequency whose accumulated phase error inflates the
+    residual above the -30 dB limit despite an undamaged signal.
+    """
+    spec = MarkerSpec(freq_hz=freq_hz, duration_s=1.0, gaps=())
+    report = analyze_marker_pcm16(render_marker_pcm16(spec), spec)
+    assert check_marker(report, spec) == []
