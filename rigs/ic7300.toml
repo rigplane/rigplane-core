@@ -740,29 +740,13 @@ swap_ab = [0xB0]
 equal_ab = [0xA0]
 
 # ── Frequency Ranges ─────────────────────────────────────────────
-# IC-7300 Instruction Manual (English), Specifications p.14: receiver
-# 0.030–74.800 MHz; transmitter 1.8–54.000 MHz on all listed versions, with
-# 70.000–70.500 MHz added on EUR/UK/ITR factory versions. The ``standard``
-# variant matches non–4 m factory coverage; ``eu_4m`` appends the EU/UK 4 m
-# allocation (default — matches the MOR-3782 reporter's EU hardware).
-
-[freq_ranges]
-default_variant = "eu_4m"
-
-[freq_ranges.variants.standard]
-
-[freq_ranges.variants.eu_4m]
-
-[[freq_ranges.variants.eu_4m.ranges]]
-label = "4m"
-start_hz = 70_000_000
-end_hz = 70_500_000
-
-[[freq_ranges.variants.eu_4m.ranges.bands]]
-name = "4m"
-start_hz = 70_000_000
-end_hz = 70_500_000
-default_hz = 70_200_000
+# MOR-3782: receiver coverage per IC-7300_Advanced_Manual_11a,
+# Section 16 SPECIFICATIONS — "Frequency coverage: Receiver
+# 0.030000 ~ 74.800000*1" (footnote: "*1 Some frequency ranges are
+# not guaranteed"), so every IC-7300 tunes and receives up to
+# 74.800 MHz. The VHF RX range below carries no `bands` table on
+# purpose: it is tune/receive only, and transmit permission comes
+# from `bands` — no 4 m TX band is declared.
 
 [[freq_ranges.ranges]]
 label = "HF"
@@ -849,6 +833,11 @@ start_hz = 50_000_000
 end_hz = 54_000_000
 default_hz = 50_125_000
 bsr_code = 0x0A
+
+[[freq_ranges.ranges]]
+label = "VHF RX"
+start_hz = 60_000_000
+end_hz = 74_800_000
 
 # ── CI-V Commands ────────────────────────────────────────────────
 # Grouped by capability area. Wire bytes as integer arrays.

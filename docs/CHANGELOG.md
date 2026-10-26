@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   authorized and pushed atomically against any Core-client keying
   transition; refused otherwise. `0x11` behavior is unchanged.
 
+### Fixed
+
+- **IC-7300 frequency entry and tuning are no longer capped at 60 MHz
+  (MOR-3782).** The profile now covers the receiver range up to 74.800 MHz,
+  which includes the 4 m band; no 4 m transmit band is declared, so the
+  frontend does not offer TX at 70 MHz (EU 4 m transmit needs per-radio
+  variant selection, a separate follow-up); not verified on a radio.
+
 ## [3.0.0b21] — 2026-10-26
 
 ### Added

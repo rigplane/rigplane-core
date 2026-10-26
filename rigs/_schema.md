@@ -506,19 +506,6 @@ Valid VFO schemes:
 - **`ab_shared`** — 1 VFO shared between 2 receivers (FTX-1)
 - **`single`** — 1 VFO, 1 receiver (simple QRP rigs)
 
-## `[freq_ranges]` — Frequency coverage
-
-| Field              | Type   | Required | Description |
-|--------------------|--------|----------|-------------|
-| `default_variant`  | string | no       | When set, names the variant merged into the base `ranges` at profile load time (must exist under `variants`). |
-| `variants`         | table  | no       | Named regional or factory option sets that **append** extra `ranges` entries. |
-
-### `[freq_ranges.variants.<id>]` — Optional range appendices
-
-Each variant is a table keyed by id (e.g. `standard`, `eu_4m`). Non-EU factory
-options may use an empty variant; EU/UK hardware may declare extra
-`[[freq_ranges.variants.<id>.ranges]]` tables in the same shape as base ranges.
-
 ## `[[freq_ranges.ranges]]` — Frequency Ranges
 
 Array of tables, each defining a frequency coverage range.
