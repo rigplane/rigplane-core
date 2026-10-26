@@ -587,7 +587,7 @@ def test_bundle_validation(sessions: list) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("system", ["Darwin", "Linux"])
+@pytest.mark.parametrize("system", ["FreeBSD", "Unknown"])
 async def test_command_non_windows_exits_two(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -596,4 +596,54 @@ async def test_command_non_windows_exits_two(
 ) -> None:
     monkeypatch.setattr(platform, "system", lambda: system)
     assert await _run(_args(tmp_path / "capture.json", "--no-unplug")) == 2
-    assert "usb-capture currently records Windows only" in capsys.readouterr().err
+    assert "usb-capture supports Windows, macOS and Linux" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("system,part", [("Darwin", "macos"), ("Linux", "linux")])
+async def test_unix_cli_capture_validates_and_redacts(
+    tmp_path, readers, monkeypatch, system, part
+):
+    monkeypatch.setattr(platform, "system", lambda: system)
+    serial = _SERIALS[0]
+    document = {
+        "usb_devices": [
+            {
+                "serial_number": serial,
+                "registry_path": f"/usb/{serial}",
+                "path": f"/sys/{serial}",
+            }
+        ],
+        "serial_devices": [
+            {
+                "device": f"/dev/cu.{serial}",
+                "registry_path": f"/usb/{serial}/child",
+                "usb_device": f"/sys/{serial}",
+            }
+        ],
+        "audio_devices": [{"uid": f"AppleUSBAudioEngine:Vendor:{serial}:3121400:2"}],
+        "unavailable": [{"part": f"{part}:optional", "reason": "missing"}],
+    }
+    reader = Mock(return_value=SimpleNamespace(to_json_dict=lambda: document))
+    monkeypatch.setattr(capture, f"read_raw_{part}", reader, raising=False)
+    readers.raw.side_effect = AssertionError("Windows reader must not run")
+    out = tmp_path / "capture.json"
+    assert await _run(_args(out)) == 0
+    bundle = json.loads(out.read_text())
+    capture._validate_bundle(bundle)
+    assert len(bundle["sessions"]) == 5
+    assert reader.call_count == 5
+    for session in bundle["sessions"]:
+        assert session["os"] == part
+        assert "windows" not in session["raw"]
+        assert session["unavailable"] == document["unavailable"]
+        assert serial not in json.dumps(session["raw"][part])
+        assert all("hwid" not in p for p in session["raw"]["serial_ports"])
+        assert session["raw"]["portaudio"]["devices"]
+
+
+def test_capture_help_names_all_supported_platforms():
+    parser = _build_parser()
+    audio = parser._subparsers._group_actions[0].choices["audio"]
+    help_text = audio.format_help()
+    assert all(name in help_text for name in ("Windows", "macOS", "Linux"))

@@ -14,6 +14,70 @@ _SERIAL_B = "SECOND_SERIAL"
 _KEY = b"k" * 32
 
 
+@pytest.mark.parametrize("part", ["macos", "linux"])
+def test_unix_serial_fields_and_child_references_share_bundle_token(part):
+    serial = "SECRET_123"
+    topology = {
+        "usb_devices": [
+            {
+                "serial_number": serial,
+                "registry_path": f"/USB/{serial}",
+                "path": f"/sys/{serial}",
+                "product": serial,
+            }
+        ],
+        "serial_devices": [
+            {
+                "device": f"/dev/cu.usb{serial}",
+                "registry_path": f"/USB/{serial}/child",
+                "usb_device": f"/sys/{serial}",
+            }
+        ],
+        "audio_devices": [
+            {
+                "uid": f"AppleUSBAudioEngine:Vendor:{serial}:3121400:2",
+                "usb_device": f"/sys/{serial}",
+                "name": serial,
+            }
+        ],
+    }
+    session = {
+        "radios": [{"profile": "radio-a", "serial_port": f"/dev/cu.usb{serial}"}],
+        "raw": {
+            part: topology,
+            "serial_ports": [
+                {
+                    "serial_number": serial,
+                    "device": f"/dev/cu.usb{serial}",
+                    "description": serial,
+                }
+            ],
+        },
+    }
+    bundle = {"sessions": [session, copy.deepcopy(session)]}
+    before = copy.deepcopy(bundle)
+    result = _usb_redact.redact_bundle(bundle, key=_KEY)
+    assert bundle == before
+    for session in result["sessions"]:
+        raw = session["raw"]
+        topology = raw[part]
+        token = raw["serial_ports"][0]["serial_number"]
+        assert re.fullmatch(r"R[A-Z2-7]{10}", token)
+        assert topology["usb_devices"][0]["serial_number"] == token
+        assert topology["serial_devices"][0]["registry_path"] == f"/USB/{token}/child"
+        assert topology["serial_devices"][0]["usb_device"] == f"/sys/{token}"
+        assert (
+            topology["audio_devices"][0]["uid"]
+            == f"AppleUSBAudioEngine:Vendor:{token}:3121400:2"
+        )
+        assert session["radios"][0]["serial_port"] == f"/dev/cu.usb{token}"
+        assert raw["serial_ports"][0]["device"] == f"/dev/cu.usb{token}"
+        assert topology["usb_devices"][0]["product"] == serial
+        assert topology["audio_devices"][0]["name"] == serial
+        assert raw["serial_ports"][0]["description"] == serial
+    assert result["sessions"][0] == result["sessions"][1]
+
+
 def _bundle() -> dict:
     rows = json.loads(_FIXTURE.read_text(encoding="utf-8"))["rows"]
     original = json.loads(
