@@ -1957,6 +1957,58 @@ class TestToProfile:
         profile = load_rig(TEMPLATE_PATH).to_profile()
         assert all(fr.repeater is False for fr in profile.freq_ranges)
 
+    def test_band_rx_only_defaults_false_preserving_hf_tx_bands(self):
+        profile = load_rig(TEMPLATE_PATH).to_profile()
+        bands = [band for rng in profile.freq_ranges for band in rng.bands]
+        assert all(band.rx_only is False for band in bands)
+        assert [band.name for band in bands] == [
+            "160m",
+            "80m",
+            "60m",
+            "40m",
+            "30m",
+            "20m",
+            "17m",
+            "15m",
+            "12m",
+            "10m",
+            "6m",
+        ]
+
+    @pytest.mark.parametrize("value", ["true", "false"])
+    def test_band_rx_only_boolean_loads(self, tmp_path, value):
+        declaration = (
+            '[[freq_ranges.ranges.bands]]\nname = "test"\n'
+            "start_hz = 100000\nend_hz = 200000\ndefault_hz = 150000\n"
+            f"rx_only = {value}\n\n[commands]"
+        )
+        path = _write_toml(tmp_path, _MINIMAL_TOML.replace("[commands]", declaration))
+        band = load_rig(path).to_profile().freq_ranges[0].bands[0]
+        assert band.rx_only is (value == "true")
+
+    @pytest.mark.parametrize("value", ["1", '"true"', "[]", "{}"])
+    def test_band_rx_only_rejects_non_boolean(self, tmp_path, value):
+        declaration = (
+            '[[freq_ranges.ranges.bands]]\nname = "test"\n'
+            "start_hz = 100000\nend_hz = 200000\ndefault_hz = 150000\n"
+            f"rx_only = {value}\n\n[commands]"
+        )
+        path = _write_toml(tmp_path, _MINIMAL_TOML.replace("[commands]", declaration))
+        with pytest.raises(
+            RigLoadError,
+            match=r"freq_ranges\.ranges\[0\]\.bands\[0\]\.rx_only must be a boolean",
+        ):
+            load_rig(path)
+
+    def test_ic705_receive_only_bands_are_explicit(self):
+        profile = load_rig(RIGS_DIR / "ic705.toml").to_profile()
+        assert {
+            band.name
+            for rng in profile.freq_ranges
+            for band in rng.bands
+            if band.rx_only
+        } == {"2200m", "630m", "WFM", "Air", "Gen"}
+
     @pytest.mark.parametrize(
         ("filename", "expected"),
         [

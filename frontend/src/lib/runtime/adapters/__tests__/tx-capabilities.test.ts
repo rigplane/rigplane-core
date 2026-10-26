@@ -161,6 +161,26 @@ describe('getFrequencyPermit', () => {
       { status: 'allowed', band: '20m' },
     );
   });
+  it('IC-705 golden permits only its TX bands, preserving HF', () => {
+    const { txBands } = goldenFile['IC-705'].capabilities;
+    expect(txBands.map(({ name }) => name)).toEqual([
+      '160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m',
+      '6m', '2m', '70cm',
+    ]);
+    for (const frequency of [136_000, 475_000, 100_000_000, 121_500_000, 162_000_000]) {
+      expect(getFrequencyPermit(frequency, txBands)).toEqual(
+        { status: 'denied', reason: 'outside-configured-ranges' },
+      );
+    }
+    for (const [frequency, band] of [
+      [14_074_000, '20m'], [146_520_000, '2m'], [446_000_000, '70cm'],
+    ] as const) {
+      expect(getFrequencyPermit(frequency, txBands)).toEqual({ status: 'allowed', band });
+    }
+    expect(getFrequencyPermit(null, txBands)).toEqual(
+      { status: 'unknown', reason: 'tx-target-unknown' },
+    );
+  });
   it.each([
     [150, undefined, 'denied'], [150, null, 'denied'], [150, [], 'denied'],
     [Number.NaN, [{ name: 'test', start: 100, end: 200 }], 'denied'],

@@ -109,6 +109,27 @@ async def _endpoint_vfo_tags(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["_serve_info", "_serve_capabilities"])
+@pytest.mark.parametrize("model", ["IC-705", "IC-7300", "IC-9700", "FTX-1"])
+async def test_tx_bands_exclude_receive_only_rows(endpoint, model):
+    server = WebServer(_make_radio(model))
+    writer = _FakeWriter()
+    await getattr(server, endpoint)(writer)
+    data = _parse_json_body(writer)
+    bands = (data["capabilities"] if endpoint == "_serve_info" else data)["txBands"]
+    hf = ["160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m", "6m"]
+    expected = {
+        "IC-705": [*hf, "2m", "70cm"],
+        "IC-7300": hf,
+        "IC-9700": ["2m", "70cm", "23cm"],
+        "FTX-1": [*hf, "4m", "2m", "70cm"],
+    }
+    assert [band["name"] for band in bands] == expected[model]
+    for frequency in (100_000_000, 121_500_000, 162_000_000):
+        assert not any(band["start"] <= frequency <= band["end"] for band in bands)
+
+
 # ── /api/v1/info tests ─────────────────────────────────────────
 
 
