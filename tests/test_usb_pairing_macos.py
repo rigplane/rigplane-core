@@ -271,7 +271,7 @@ def test_partial_read_refuses_even_when_remaining_records_look_pairable(part):
     assert result.candidates
 
 
-@pytest.mark.parametrize("indices", [(2, 1), (1, 2)])
+@pytest.mark.parametrize("indices", [(2, 1), (1, 2), (3, 3)])
 async def test_stable_uid_overrides_survive_reorder_and_bypass_pairing(
     monkeypatch, indices
 ):
@@ -287,8 +287,15 @@ async def test_stable_uid_overrides_survive_reorder_and_bypass_pairing(
     backend, _ = _inject_macos(monkeypatch, session)
     pairing = Mock(side_effect=AssertionError("explicit choice must bypass pairing"))
     monkeypatch.setattr(_usb_pairing, "pair", pairing)
+    rx_id, tx_id, port = MAC_RX_ID, MAC_TX_ID, MAC_PORT
+    if indices == (3, 3):
+        rx_id = tx_id = (
+            "Core Audio|AppleUSBAudioEngine:C-Media Electronics Inc.:"
+            "USB Audio Device:3122200:2,1"
+        )
+        port = FTX_PORT
     driver = UsbAudioDriver(
-        backend=backend, serial_port=MAC_PORT, rx_device=MAC_RX_ID, tx_device=MAC_TX_ID
+        backend=backend, serial_port=port, rx_device=rx_id, tx_device=tx_id
     )
     rx, tx = await driver._select_devices_bounded(direction="rx")
     assert (rx.index, tx.index) == indices

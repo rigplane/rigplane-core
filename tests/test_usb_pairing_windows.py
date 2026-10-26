@@ -511,7 +511,7 @@ async def test_public_refusal_subclass_matches_wire_reason(
         candidates,
     )
     assert str(error) == (
-        "Windows USB audio parents do not match the serial radio or "
+        "USB audio parents do not match the serial radio or "
         "cannot establish a unique same-host-API pair "
         f"({reason}); select explicit RX/TX devices."
     )

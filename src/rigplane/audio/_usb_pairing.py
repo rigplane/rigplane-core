@@ -72,7 +72,7 @@ class WindowsAudioTopologyError(RuntimeError):
         self.evidence = refusal.evidence
         self.candidates = refusal.candidates
         super().__init__(
-            "Windows USB audio parents do not match the serial radio or "
+            "USB audio parents do not match the serial radio or "
             "cannot establish a unique same-host-API pair "
             f"({refusal.reason}); select explicit RX/TX devices."
         )

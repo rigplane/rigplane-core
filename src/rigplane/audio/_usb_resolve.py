@@ -1,85 +1,10 @@
-"""Resolve USB Audio devices associated with a serial CI-V port.
-
-When multiple USB radios are connected, each exposes a USB Audio Class
-device (Icom: "USB Audio CODEC"; Yaesu: "USB Audio Device"; Xiegu X6200:
-a C-Media "USB Audio Device"). This module maps a serial CI-V port
-(e.g. ``/dev/cu.usbserial-201410`` or the X6200's ``/dev/cu.usbmodemXXXXX``)
-to the correct audio input/output device indices by correlating USB
-topology information — anchoring on the physical hub the port sits on
-rather than fragile, collision-prone device-name strings.
-
-**Algorithm (macOS — IORegistry)**:
-
-1. Parse the serial port's TTY suffix → find its ``locationID`` in IORegistry.
-   Both ``usbserial-XXXX`` (FTDI/CP210x) and ``usbmodemXXXX`` (CDC-ACM, e.g.
-   the X6200's WCH CH342 bridge) suffixes are recognised.
-2. Find all USB audio devices (``USB Audio CODEC``, ``USB Audio Device``) in
-   IORegistry with their ``locationID``.
-3. Score each candidate audio device by its longest shared ``locationID``
-   component prefix with the serial port — the controller byte, then each
-   remaining hex digit, from the most-significant end (see
-   :func:`_common_location_prefix_score`); the candidate with the longest
-   match wins, ties kept at the lowest ``locationID``. The upper 16 bits
-   alone do not work here: the FTX-1's CAT (``0x00110000``) and audio
-   (``0x00120000``) match the controller byte and the next digit, then
-   diverge, while the IC-7300, X6200 and existing Yaesu fixture pairs each
-   match one digit further, and the IC-7610 pair two (MOR-2107).
-4. Map the matched audio device to ``sounddevice`` indices by **identity**:
-   group the enumerated USB-audio entries into per-device clusters (a duplex
-   entry stands alone; an output-only entry adjacent to a same-named
-   input-only entry forms one split-pair cluster), then select the cluster
-   whose product name and same-name rank match the IORegistry device. This
-   survives mixed-vendor / mixed-shape sets (a single duplex C-Media device
-   next to a split-pair Icom CODEC), where a flat positional index over
-   inputs/outputs would desync (MOR-230).
-
-**Fallback**: When IORegistry is unavailable, ``ioreg`` is missing, or the
-platform is not macOS, falls back to name-based matching (see
-:func:`_is_usb_audio_codec` and ``usb_driver._USB_NAME_PATTERNS``). Name
-matching recognises the C-Media identity used by the X6200 so single-device
-setups resolve even without topology.
-
-Platform support:
-- **macOS**: Full topology-based resolution via ``/usr/sbin/ioreg`` for both
-  FTDI/CP210x and CDC-ACM (``usbmodem``) serial ports.
-- **Linux**: Full topology-based resolution via ``/sys`` sysfs traversal for
-  both CDC-ACM (``ttyACM*``, e.g. the X6200's WCH CH342) and FTDI/CP210x
-  (``ttyUSB*``) serial ports. The serial port and each ALSA card are resolved
-  to their USB device node; the audio card sharing the **longest common
-  USB-device path prefix** (same physical device or hub) with the serial port
-  is the link, with ``idVendor``/``idProduct`` as a robust-identity tie-break
-  (MOR-228).
-- **Windows**: Raw topology and PortAudio enumeration feed the shared
-  :func:`rigplane.audio._usb_pairing.pair` rule.
-
-For hosts with multiple identical radios (same VID:PID, ambiguous topology),
-capture the exact audio device names on hardware and set the ``[usb]`` override
-in ``audio.toml`` (MOR-219).
-
-**Algorithm (Linux — sysfs)**:
-
-1. Serial port → USB device path: read ``<sysfs_root>/class/tty/<ttyXXX>/device``
-   and ``realpath`` it into the USB tree (``.../usbN/N-x[.y]/...``). The USB
-   *device* node is the deepest ancestor whose basename has no ``:`` (an
-   interface node is ``N-x:c.i``; its parent device node is ``N-x``).
-2. Each ALSA card → USB device path: enumerate
-   ``<sysfs_root>/class/sound/card*/device`` and ``realpath`` likewise.
-3. Link = the audio card whose USB device path shares the **longest common
-   USB-device path prefix** with the serial port (same physical device/hub).
-4. Map to ``sounddevice`` indices by **identity**: the ALSA card name (the USB
-   ``product`` string) is the CoreAudio/PortAudio device-name key, matched
-   against the :func:`_cluster_usb_audio_devices` clusters with same-name rank
-   (shared with the macOS path, MOR-230).
-5. Robust-identity fallback: ``idVendor``/``idProduct`` read from the USB node
-   disambiguate when the topology prefix match is ambiguous.
-"""
+"""Resolve serial USB audio through shared pairing on macOS and Windows."""
 
 from __future__ import annotations
 
 import logging
 import platform
 import re
-import subprocess
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -111,10 +36,8 @@ class AudioDeviceMapping:
         tx_device_index: ``sounddevice`` index for the TX (output/playback) device.
         serial_port: The serial port path that was resolved.
         location_prefix: A platform-specific USB-topology diagnostic value,
-            not used to select the match: the serial port's ``locationID``
-            upper 16 bits on macOS, a synthesized bus/port identity on
-            Linux (see :func:`_usb_path_location_prefix`), or always
-            ``None`` on Windows.
+            not used to select the match: a synthesized bus/port identity on
+            Linux (see :func:`_usb_path_location_prefix`), or ``None`` otherwise.
     """
 
     rx_device_index: int
@@ -139,24 +62,25 @@ def resolve_audio_for_serial_port(
         An :class:`AudioDeviceMapping` with RX/TX device indices, or ``None``
         if resolution failed (no matching audio devices found).
     """
-    if platform.system() == "Darwin":
-        return _resolve_macos(serial_port, sounddevice_module=sounddevice_module)
     if platform.system() == "Linux":
         return _resolve_linux(serial_port, sounddevice_module=sounddevice_module)
-    if platform.system() == "Windows":
+    if platform.system() in {"Darwin", "Windows"}:
         from ._portaudio_enum import read_portaudio_enumeration
+        from ._usb_adapt_macos import adapt_macos
         from ._usb_adapt_windows import adapt_windows
         from ._usb_pairing import PairRefused, pair, pairing_refusal_error
+        from ._usb_raw_macos import RawMacos, read_raw_macos
         from ._usb_raw_windows import read_raw_windows
 
+        macos = platform.system() == "Darwin"
         try:
-            raw = read_raw_windows(5.0)
+            raw = read_raw_macos(5.0) if macos else read_raw_windows(5.0)
         except Exception:
-            logger.warning(
-                "usb-audio-resolve: Windows topology unavailable", exc_info=True
-            )
-            return None
-        if not raw.devnodes:
+            logger.warning("usb-audio-resolve: USB topology unavailable", exc_info=True)
+            if not macos:
+                return None
+            raw = RawMacos(unavailable=({"part": "macos", "reason": "reader failed"},))
+        if not isinstance(raw, RawMacos) and not raw.devnodes:
             return None
         sd: Any = sounddevice_module
         if sd is None:
@@ -165,14 +89,19 @@ def resolve_audio_for_serial_port(
             except ImportError:
                 return None
             sd = sd_mod
-        snapshot = adapt_windows(
-            {
-                "raw": {
-                    "windows": raw.to_json_dict(),
-                    "serial_ports": [],
-                    "portaudio": read_portaudio_enumeration(sd).to_json_dict(),
+        enumeration = read_portaudio_enumeration(sd)
+        snapshot = (
+            adapt_macos(raw, enumeration)
+            if isinstance(raw, RawMacos)
+            else adapt_windows(
+                {
+                    "raw": {
+                        "windows": raw.to_json_dict(),
+                        "serial_ports": [],
+                        "portaudio": enumeration.to_json_dict(),
+                    }
                 }
-            }
+            )
         )
         result = pair(snapshot, serial_port, usb_identity)
         if isinstance(result, PairRefused):
@@ -184,112 +113,6 @@ def resolve_audio_for_serial_port(
         platform.system(),
     )
     return None
-
-
-def _resolve_macos(
-    serial_port: str,
-    *,
-    sounddevice_module: object | None = None,
-    ioreg_output: str | None = None,
-) -> AudioDeviceMapping | None:
-    """macOS-specific resolution via IORegistry.
-
-    Args:
-        serial_port: Serial port path.
-        sounddevice_module: Injected sounddevice (for testing).
-        ioreg_output: Pre-captured ioreg output (for testing without hardware).
-    """
-    # 1. Extract TTY suffix from port path
-    tty_suffix = _extract_tty_suffix(serial_port)
-    if tty_suffix is None:
-        logger.warning(
-            "usb-audio-resolve: cannot extract TTY suffix from %r", serial_port
-        )
-        return None
-
-    # 2. Get IORegistry data (cached single call)
-    ioreg_text = ioreg_output or _run_ioreg()
-    if not ioreg_text:
-        logger.warning("usb-audio-resolve: ioreg returned no output")
-        return None
-
-    # 3. Find serial port's locationID
-    serial_location = _find_serial_location(ioreg_text, tty_suffix)
-    if serial_location is None:
-        logger.warning(
-            "usb-audio-resolve: no locationID found for TTY suffix %r", tty_suffix
-        )
-        return None
-
-    serial_prefix = serial_location >> 16  # diagnostic only — not the match key
-
-    # 4. Find all USB Audio CODEC (name, locationID) pairs
-    audio_entries = _find_audio_codec_entries(ioreg_text)
-    if not audio_entries:
-        logger.warning("usb-audio-resolve: no USB Audio CODEC devices found in ioreg")
-        return None
-
-    # 5. Check that some audio device shares USB topology with the serial
-    # port at all (longest-shared-component score > 0) before attempting to
-    # pair one. A >>16 mask misses the FTX-1: its CAT (0x00110000) and
-    # audio (0x00120000) match only the controller byte and the next digit
-    # before diverging, one digit short of what >>16 requires (MOR-2107).
-    best_score = max(
-        _common_location_prefix_score(serial_location, loc)
-        for _name, loc in audio_entries
-    )
-    if best_score <= 0:
-        logger.warning(
-            "usb-audio-resolve: no audio devices share USB topology with %s "
-            "(serial loc %#010x)",
-            serial_port,
-            serial_location,
-        )
-        return None
-
-    # 6. Get sounddevice indices
-    sd: Any = sounddevice_module
-    if sd is None:
-        try:
-            import sounddevice as sd_mod
-
-            sd = sd_mod
-        except ImportError:
-            logger.warning(
-                "usb-audio-resolve: sounddevice not available, cannot map indices"
-            )
-            return None
-
-    devices = list(sd.query_devices())
-
-    # 7. Pair by identity, not positional order across flat input/output lists.
-    pair = _pair_audio_device_for_location(devices, audio_entries, serial_location)
-    if pair is None:
-        logger.warning(
-            "usb-audio-resolve: could not pair an audio device for prefix %#06x "
-            "(serial loc %#010x, audio entries %s)",
-            serial_prefix,
-            serial_location,
-            [(n, f"{loc:#010x}") for n, loc in audio_entries],
-        )
-        return None
-
-    rx_idx, tx_idx = pair
-
-    logger.info(
-        "usb-audio-resolve: %s → prefix %#06x → RX device [%d], TX device [%d]",
-        serial_port,
-        serial_prefix,
-        rx_idx,
-        tx_idx,
-    )
-
-    return AudioDeviceMapping(
-        rx_device_index=rx_idx,
-        tx_device_index=tx_idx,
-        serial_port=serial_port,
-        location_prefix=serial_prefix,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -381,9 +204,7 @@ def _resolve_linux(
 
     devices = list(sd.query_devices())
 
-    # Rank the matched card among USB-backed cards carrying the same name, in
-    # sysfs card order — mirrors the macOS same-name rank semantics so
-    # _cluster_usb_audio_devices can be shared unchanged (MOR-230).
+    # Rank the matched card among same-named cards in sysfs order.
     same_name_rank = sum(
         1
         for c_dev, c_name in cards
@@ -427,9 +248,7 @@ def _extract_linux_tty_name(serial_port: str) -> str | None:
     Recognises both CDC-ACM (``ttyACM*``) and USB-serial (``ttyUSB*``) device
     nodes. These are the two enumeration schemes Linux uses for USB CI-V
     bridges: ``ttyACM*`` for CDC-ACM composite bridges (the X6200's WCH CH342),
-    ``ttyUSB*`` for FTDI/CP210x. This is the Linux counterpart of the macOS
-    :func:`_extract_tty_suffix`; it is deliberately separate because the sysfs
-    lookup keys on the full kernel name (``ttyACM0``), not a chip-serial suffix.
+    ``ttyUSB*`` for FTDI/CP210x. The sysfs lookup keys on the full kernel name.
 
     >>> _extract_linux_tty_name("/dev/ttyACM0")
     'ttyACM0'
@@ -514,16 +333,7 @@ def _sysfs_usb_audio_cards(sysfs_root: str) -> list[tuple[str, str]]:
 
 
 def _common_prefix_score(a: Sequence[Any], b: Sequence[Any]) -> int:
-    """Count the shared leading elements of two sequences.
-
-    Compares ``a`` and ``b`` element-by-element from the start and counts
-    matching leading elements before the first divergence (or before either
-    sequence ends). The shared primitive behind :func:`_common_usb_path_score`
-    (Linux) and :func:`_common_location_prefix_score` (macOS); each supplies
-    its own platform adapter, and the two scores are not comparable to one
-    another — see :func:`_resolve_linux`'s identity-bonus addition, which
-    this primitive has no equivalent for.
-    """
+    """Count the shared leading elements of two sequences."""
     score = 0
     for x, y in zip(a, b):
         if x != y:
@@ -543,43 +353,6 @@ def _common_usb_path_score(serial_dev: str, card_dev: str) -> int:
     return _common_prefix_score(
         _usb_path_components(serial_dev), _usb_path_components(card_dev)
     )
-
-
-def _common_location_prefix_score(serial_location: int, audio_location: int) -> int:
-    """Score the shared ``locationID`` component prefix of a serial port and
-    an audio device candidate — the macOS analogue of
-    :func:`_common_usb_path_score`.
-
-    Compares both ``locationID`` values as the component lists
-    :func:`_location_id_components` produces (controller byte, then each
-    remaining hex digit, from the most-significant end) and counts matching
-    leading components before the first divergence. Used by
-    :func:`_resolve_macos` and :func:`_pair_audio_device_for_location` to
-    pick the best-matching audio device instead of requiring a fixed-width
-    prefix match (MOR-2107): the FTX-1's CAT (``0x00110000``) and audio
-    (``0x00120000``) match the controller byte and the next digit, then
-    diverge, while the IC-7300, X6200 and existing Yaesu fixture pairs each
-    match one digit further before diverging, and the IC-7610 pair two.
-    """
-    return _common_prefix_score(
-        _location_id_components(serial_location),
-        _location_id_components(audio_location),
-    )
-
-
-def _location_id_components(loc: int) -> list[int]:
-    """Split a macOS ``locationID`` into a controller byte and per-digit nibbles.
-
-    ``locationID`` is a 32-bit value; this returns 7 components: the top
-    byte (bits 31-24) as one integer, then each of the remaining 6 hex
-    digits (bits 23-0), most-significant first. The components are nibbles
-    (and one leading byte) because that is how ``locationID`` is packed;
-    whether one nibble corresponds to one USB hub hop is not established in
-    this repository.
-    """
-    controller = (loc >> 24) & 0xFF
-    nibbles = [(loc >> shift) & 0xF for shift in range(20, -1, -4)]
-    return [controller, *nibbles]
 
 
 def _usb_path_components(usb_dev: str) -> list[str]:
@@ -676,13 +449,6 @@ def _pair_audio_cluster_by_name_rank(
 ) -> tuple[int, int] | None:
     """Select ``(rx_index, tx_index)`` for the rank-th same-named audio cluster.
 
-    This is the platform-neutral tail of :func:`_pair_audio_device_for_location`,
-    factored out so the Windows and Linux resolvers can reuse the exact
-    cluster-and-rank selection. They derive the identity key (product / ALSA
-    card name + same-name rank) from PnP records and sysfs respectively, rather
-    than from IORegistry ``locationID``s; the macOS path continues to derive the
-    name+rank from ``locationID``-sorted entries.
-
     Returns ``None`` when no same-named cluster occupies ``same_name_rank`` or
     the matched cluster is missing an RX or TX index.
     """
@@ -733,9 +499,7 @@ def _cluster_usb_audio_devices(
       physical device sit next to each other.
 
     Clusters are returned in enumeration order. The ``name`` is the identity
-    key that :func:`_pair_audio_device_for_location` matches against the
-    IORegistry product name. Identity-based, not positional across flattened
-    input/output lists.
+    key used by the Linux resolver.
     """
     clusters: list[tuple[str, int | None, int | None]] = []
     # pending split cluster: (name, rx_index|None, tx_index|None)
@@ -783,154 +547,6 @@ def _cluster_usb_audio_devices(
         clusters.append(pending)
 
     return clusters
-
-
-def _pair_audio_device_for_location(
-    devices: list[Any],
-    audio_entries: list[tuple[str, int]],
-    serial_location: int,
-) -> tuple[int, int] | None:
-    """Select the ``(rx_index, tx_index)`` for the matched audio device.
-
-    Pairing is by **identity**, not positional order across flattened
-    input/output lists. The audio device with the longest shared
-    ``locationID`` component prefix (see :func:`_common_location_prefix_score`)
-    is the matched device (an IORegistry ``(product_name, locationID)``
-    entry); that device's identity is its product name plus its **rank
-    among same-named audio devices** (sorted by ``locationID``). The
-    corresponding ``sounddevice`` cluster (see
-    :func:`_cluster_usb_audio_devices`) is the rank-th cluster carrying the
-    same product name, and it yields the device indices.
-
-    This is the reusable, platform-neutral pairing primitive the future
-    Linux/Windows resolvers (MOR-228/229) can call once they enumerate audio
-    ``(name, locationID)`` entries and ``sounddevice`` clusters.
-
-    Why name + same-name rank, not a global location rank: ``sounddevice``
-    exposes no ``locationID`` field, and CoreAudio does **not** enumerate USB
-    audio devices in ``locationID`` order across vendors (a C-Media device
-    may enumerate before an Icom CODEC with a lower ``locationID``). The
-    CoreAudio product name *is* the IORegistry node name, so it is the
-    strongest available identity link. Within one vendor/name the remaining
-    ambiguity (e.g. two identical Icom CODECs) is resolved by enumeration
-    order, which for same-model devices tracks ``locationID`` order — this
-    preserves the validated homogeneous-multi-radio behaviour.
-
-    Returns ``None`` when no audio device shares even the leading
-    ``locationID`` component (the controller byte) with the serial port, or
-    when no same-named cluster occupies the matched device's rank.
-    """
-    sorted_entries = sorted(audio_entries, key=lambda e: e[1])
-
-    # The matched audio device has the longest shared locationID component
-    # prefix with the serial port (MOR-2107). ``list.index`` on the max
-    # picks the first (lowest-locationID) tie, mirroring the previous
-    # exact-match lookup's tie-break.
-    scores = [
-        _common_location_prefix_score(serial_location, loc)
-        for _n, loc in sorted_entries
-    ]
-    best_score = max(scores, default=0)
-    if best_score <= 0:
-        return None
-    matched_idx = scores.index(best_score)
-    matched_name, _matched_loc = sorted_entries[matched_idx]
-    # Rank of the matched device among same-named audio devices.
-    same_name_rank = sum(
-        1 for _n, _loc in sorted_entries[:matched_idx] if _n == matched_name
-    )
-    return _pair_audio_cluster_by_name_rank(devices, matched_name, same_name_rank)
-
-
-def _extract_tty_suffix(serial_port: str) -> str | None:
-    """Extract TTY suffix from a macOS serial port path.
-
-    Handles both macOS USB serial enumeration schemes:
-
-    - **FTDI / CP210x bridges** (``/dev/cu.usbserial-XXXXXX``) — the suffix
-      follows a dash and is the chip serial number. Used by Icom CI-V
-      cables (CP2102), Yaesu HRI, etc.
-    - **CDC-ACM composite bridges** (``/dev/cu.usbmodemXXXXX``) — the suffix
-      follows ``usbmodem`` directly (no dash) and is a location-derived id.
-      Used by the WCH CH342 dual-serial bridge in the Xiegu X6200 (MOR-219).
-
-    The matched suffix corresponds to the IORegistry ``IOTTYSuffix`` value,
-    which is what :func:`_find_serial_location` correlates against.
-
-    >>> _extract_tty_suffix("/dev/cu.usbserial-201410")
-    '201410'
-    >>> _extract_tty_suffix("/dev/tty.usbserial-201410")
-    '201410'
-    >>> _extract_tty_suffix("/dev/cu.usbmodem14201")
-    '14201'
-    >>> _extract_tty_suffix("/dev/tty.usbmodem1434203")
-    '1434203'
-    """
-    m = re.search(r"usb(?:serial-|modem)(\w+)", serial_port)
-    if m:
-        return m.group(1)
-    return None
-
-
-def _run_ioreg() -> str | None:
-    """Run ``/usr/sbin/ioreg -l`` and return stdout, or ``None`` on failure."""
-    try:
-        result = subprocess.run(
-            ["/usr/sbin/ioreg", "-l"],
-            capture_output=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            # ioreg may contain non-UTF-8 bytes (e.g. firmware blobs),
-            # decode leniently to avoid UnicodeDecodeError.
-            return result.stdout.decode("utf-8", errors="replace")
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        logger.debug("usb-audio-resolve: ioreg failed: %s", exc)
-    return None
-
-
-def _find_serial_location(ioreg_text: str, tty_suffix: str) -> int | None:
-    """Find the ``locationID`` for a serial port identified by its TTY suffix.
-
-    Searches backward from the ``IOTTYSuffix`` line to find the nearest
-    ``locationID`` in the IORegistry tree.
-    """
-    lines = ioreg_text.split("\n")
-    for i, line in enumerate(lines):
-        if f'"IOTTYSuffix" = "{tty_suffix}"' in line:
-            # Search backward for the nearest locationID
-            for j in range(i, max(i - 80, 0), -1):
-                m = re.search(r'"locationID"\s*=\s*(\d+)', lines[j])
-                if m:
-                    return int(m.group(1))
-    return None
-
-
-def _find_audio_codec_locations(ioreg_text: str) -> list[int]:
-    """Find all ``locationID`` values for USB audio devices.
-
-    Parses IORegistry tree node addresses to extract the location encoded
-    in the node path.  Supports multiple naming conventions:
-
-    - ``USB Audio CODEC@...`` — Icom (Burr-Brown/TI chip)
-    - ``USB Audio Device@...`` — Yaesu FTX-1 and similar
-    """
-    return sorted(loc for _name, loc in _find_audio_codec_entries(ioreg_text))
-
-
-def _find_audio_codec_entries(ioreg_text: str) -> list[tuple[str, int]]:
-    """Find ``(product_name, locationID)`` pairs for USB audio devices.
-
-    The product name (``USB Audio CODEC`` / ``USB Audio Device``) is the same
-    string CoreAudio reports as the ``sounddevice`` device name, so it is the
-    identity key used to disambiguate mixed-vendor sets in
-    :func:`_pair_audio_device_for_location` (MOR-230). Returned in ascending
-    ``locationID`` order.
-    """
-    entries: list[tuple[str, int]] = []
-    for m in re.finditer(r"(USB Audio (?:CODEC|Device))@([0-9a-fA-F]+)", ioreg_text):
-        entries.append((m.group(1), int(m.group(2), 16)))
-    return sorted(entries, key=lambda e: e[1])
 
 
 def _is_usb_audio_codec(name: str) -> bool:
