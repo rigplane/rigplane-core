@@ -195,6 +195,12 @@ def _assert_refused(reply: dict[str, Any], lane: str, reason: str) -> None:
         assert reply["error"] == reason
 
 
+async def _wait_unkey(stack: _Stack) -> None:
+    async with asyncio.timeout(5.0):
+        while stack.sim.ptt_on:
+            await asyncio.sleep(0.01)
+
+
 @pytest.mark.parametrize("lane", ["http", "ws", "rigctld"])
 @pytest.mark.parametrize(
     "frequency,allowed",
@@ -227,6 +233,7 @@ async def test_simulated_profile_frequency_permit(
             assert not stack.sim.ptt_on
             assert not any(on for _, on in stack.sim.ptt_set_writes[before:])
         assert (await ptt(False))["ok"] is True
+        await _wait_unkey(stack)
         assert not stack.sim.ptt_on
 
 
@@ -260,6 +267,7 @@ async def test_simulated_split_uses_transmit_vfo(
             _assert_refused(reply, lane, "tx_frequency_not_allowed")
             assert not stack.sim.ptt_on
         assert (await ptt(False))["ok"] is True
+        await _wait_unkey(stack)
         assert not stack.sim.ptt_on
 
 

@@ -186,6 +186,7 @@ class BandInfo:
     end: int  # Hz
     default: int  # Hz — default tuning frequency
     bsr_code: int | None = None  # Band Stack Register code for CI-V 0x1A 0x01
+    rx_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)

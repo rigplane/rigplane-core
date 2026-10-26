@@ -1579,6 +1579,8 @@ class ControlHandler:
             error = "command_cancelled"
         elif isinstance(exc, CommandUnsupportedError):
             error = "unsupported_command"
+        elif isinstance(exc, TxInterlockRefusal):
+            error = exc.reason_code
         elif isinstance(exc, CommandRejectedError):
             error = "radio_nak"
         elif isinstance(exc, (TimeoutError, RigplaneTimeoutError)):
@@ -1862,6 +1864,8 @@ class ControlHandler:
                 )
             else:
                 submission = await authority.submit_ptt(False, self._tx_owner)
+        except TxInterlockRefusal:
+            raise
         except (CommandError, RuntimeError, TimeoutError) as exc:
             if _queue_refused_for_ptt_holder(exc, pending, self._tx_owner):
                 raise CommandRejectedError(_PTT_HOLDER_CONFLICT) from exc

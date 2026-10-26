@@ -33,6 +33,7 @@ import asyncio
 import dataclasses
 import logging
 import time
+from math import isfinite
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Callable, cast
 
@@ -129,9 +130,12 @@ from ..runtime.tx_interlock import (
     TxInterlockDeferredOutcome,
     TxInterlockDisposition,
     TxInterlockRefusal,
+    classify_raw_civ_frame_tx_family,
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
     is_exact_raw_dekey_frame,
+    is_exact_raw_transmission_end_frame,
+    require_tx_frequency_permit,
     resolve_rf_state,
     send_civ_frame,
 )
@@ -670,6 +674,15 @@ class RadioPoller:
                     else "rf_state_unknown"
                 ),
             )
+        starts_tx = isinstance(cmd, PttOn)
+        if isinstance(cmd, SendCiv):
+            frame = send_civ_frame(cmd.command, cmd.sub, cmd.data)
+            starts_tx = frame is not None and (
+                classify_raw_civ_frame_tx_family(frame) is not False
+                and not is_exact_raw_transmission_end_frame(frame)
+            )
+        if starts_tx:
+            require_tx_frequency_permit(self._state_store.snapshot(), self._profile)
 
     @staticmethod
     def _deferred_intent(entry: CommandQueueEntry) -> CommandIntent | None:
@@ -3782,6 +3795,22 @@ class RadioPoller:
             return None, UnknownTxTarget(reason="stale")
         if field.freshness is not FreshnessState.FRESH:
             return None, UnknownTxTarget(reason="not-observed")
+        if (
+            field.provider_generation != snapshot.provider_generation
+            or "confirmed" not in field.quality
+            or not isfinite(snapshot.generated_at_monotonic)
+            or not isfinite(field.last_observed_monotonic)
+            or field.last_observed_monotonic < 0
+            or snapshot.generated_at_monotonic < field.last_observed_monotonic
+        ):
+            return None, UnknownTxTarget(reason="not-observed")
+        if field.max_age is not None and (
+            not isfinite(field.max_age)
+            or field.max_age <= 0
+            or snapshot.generated_at_monotonic - field.last_observed_monotonic
+            >= field.max_age
+        ):
+            return None, UnknownTxTarget(reason="stale")
         return field.value, None
 
     def _compute_tx_target(self) -> TxTarget:

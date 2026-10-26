@@ -15,6 +15,8 @@ from rigplane.commands._frame import build_civ_frame
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import FreshnessState, StateSnapshot
+from rigplane.core.tx_target import KnownTxTarget
+from rigplane.profiles import RadioProfile
 from rigplane.core.tx_interlock_contract import (
     TX_INTERLOCK_COMMAND_FAMILY_METADATA,
     TxInterlockCommandFamily,
@@ -73,6 +75,7 @@ __all__ = [
     "is_exact_raw_dekey_frame",
     "is_exact_raw_transmission_end_frame",
     "resolve_rf_state",
+    "require_tx_frequency_permit",
     "send_civ_frame",
 ]
 
@@ -94,6 +97,59 @@ class TxInterlockRefusal(CommandError):
     def __init__(self, message: str, *, reason_code: str) -> None:
         super().__init__(message)
         self.reason_code = reason_code
+
+
+def require_tx_frequency_permit(
+    snapshot: StateSnapshot,
+    profile: RadioProfile | None,
+) -> None:
+    """Admit only a current observed TX frequency in a profile transmit band."""
+    try:
+        field = snapshot.field(FieldPath.global_("tx_state", "tx_target"))
+    except KeyError:
+        field = None
+    if field is not None:
+        timing = (
+            snapshot.generated_at_monotonic,
+            field.last_observed_monotonic,
+            field.max_age,
+        )
+    if (
+        field is None
+        or field.freshness is not FreshnessState.FRESH
+        or not isinstance(field.value, KnownTxTarget)
+        or field.value.frequency_hz is None
+        or "confirmed" not in field.quality
+        or type(snapshot.provider_generation) is not int
+        or snapshot.provider_generation < 0
+        or type(field.provider_generation) is not int
+        or field.provider_generation != snapshot.provider_generation
+        or any(
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not isfinite(value)
+            for value in timing
+        )
+        or field.max_age is None
+        or field.max_age <= 0
+        or field.last_observed_monotonic < 0
+        or not 0
+        <= snapshot.generated_at_monotonic - field.last_observed_monotonic
+        < field.max_age
+    ):
+        raise TxInterlockRefusal(
+            "Transmit frequency is unknown or stale; wait for radio readback.",
+            reason_code="tx_target_unknown",
+        )
+    if not isinstance(profile, RadioProfile) or not any(
+        not band.rx_only and band.start <= field.value.frequency_hz <= band.end
+        for frequency_range in profile.freq_ranges
+        for band in frequency_range.bands
+    ):
+        raise TxInterlockRefusal(
+            "Transmit frequency is outside the profile's transmit bands.",
+            reason_code="tx_frequency_not_allowed",
+        )
 
 
 class RfState(StrEnum):

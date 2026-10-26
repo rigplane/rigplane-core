@@ -531,6 +531,7 @@ class _RigctldCommandExecutor:
                     connection_generation=connection_generation,
                     positive_tx_ready=queue_ready,
                     positive_tx_submission=submission,
+                    positive_tx_validate=self.handler._require_tx_frequency_permit,
                 )
                 if ready is not None and not ready.done():
                     ready.set_result(None)
@@ -826,6 +827,12 @@ class _RigctldCommandExecutor:
             if send_fn is None:
                 raise _RigctldCommandFailure(HamlibError.ENIMPL)
             frame_bytes = params["frame_bytes"]
+            if tx_interlock.classify_raw_civ_frame_tx_family(
+                frame_bytes
+            ) is not False and not tx_interlock.is_exact_raw_transmission_end_frame(
+                frame_bytes
+            ):
+                self.handler._require_tx_frequency_permit()
             # A timeout here is deliberately NOT swallowed (MOR-1882): the
             # radio never answered, so there is no evidence the raw frame was
             # applied. Letting it propagate gives the command a ``timed_out``
@@ -1036,6 +1043,12 @@ class RigctldHandler:
     def _resolve_rigctld_rf_state(self) -> tx_interlock.RfState:
         """Resolve strict, generation-bound RF truth for hard-block writes."""
         return tx_interlock.resolve_rf_state(self._state_store.snapshot())
+
+    def _require_tx_frequency_permit(self) -> None:
+        tx_interlock.require_tx_frequency_permit(
+            self._state_store.snapshot(),
+            getattr(self._radio, "profile", None),
+        )
 
     def _defer_write_gate(self, intent: CommandIntent) -> RigctldResponse | None:
         """Decide a DEFER-classified write's fate before it can touch state.
@@ -1666,6 +1679,8 @@ class RigctldHandler:
                 # narrowly: other CommandError subclasses (e.g.
                 # BackgroundSendDropped, a local cap) stay on EINTERNAL.
                 logger.warning("rigctld: %s refused by the radio", cmd.long_cmd)
+                return _err(HamlibError.ERJCTED)
+            except tx_interlock.TxInterlockRefusal:
                 return _err(HamlibError.ERJCTED)
             except Exception:
                 logger.exception("Internal error executing %s", cmd.long_cmd)
@@ -2308,6 +2323,8 @@ class RigctldHandler:
         is bounded by that owner's own teardown and by the max key-down
         watchdog, which is exactly where MOR-1175 put it.
         """
+        if on:
+            self._require_tx_frequency_permit()
         managed = bind_managed_tx(self._radio, "rigctld", session_id)
         if managed is None:
             if on and refuse_key_without_owner(self._radio, "rigctld", session_id):

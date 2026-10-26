@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Literal, TypeAlias
 
 from rigplane.core.command_dispatch import DispatchRadio, prepare_command_intent
@@ -1140,6 +1140,7 @@ class CommandQueueEntry:
     connection_generation: object | None = None
     positive_tx_ready: asyncio.Future[None] | None = None
     positive_tx_submission: asyncio.Task[Any] | None = None
+    positive_tx_validate: Callable[[], None] | None = None
     controller_ticket: ControllerTicket | None = None
 
 
@@ -1180,6 +1181,8 @@ async def execute_positive_tx_queue_entry(entry: CommandQueueEntry) -> None:
         raise CommandError("positive TX queue entry is incomplete")
     if ready.cancelled():
         raise CommandError("positive TX queue entry was cancelled")
+    if entry.positive_tx_validate is not None:
+        entry.positive_tx_validate()
     if not ready.done():
         ready.set_result(None)
     owner = asyncio.current_task()
@@ -1212,7 +1215,25 @@ async def execute_command_queue_entry(
     async def invoke() -> Any:
         if reply is not None and reply.cancelled():
             return None
-        return await execute(entry)
+        result = await execute(entry)
+        if entry.command is not None and entry.command_service is not None:
+            command = entry.command
+            name = (
+                command.name
+                if isinstance(command, CommandIntent)
+                else LEGACY_COMMAND_NAMES.get(type(command))
+            )
+            if name is not None:
+                params = (
+                    command.params
+                    if isinstance(command, CommandIntent)
+                    else {
+                        item.name: getattr(command, item.name)
+                        for item in fields(command)
+                    }
+                )
+                entry.command_service.invalidate_tx_target_after_write(name, params)
+        return result
 
     owner = asyncio.current_task()
     cancelling = owner.cancelling() if owner is not None else 0
@@ -1448,6 +1469,7 @@ class CommandQueue:
         connection_generation: object | None = None,
         positive_tx_ready: asyncio.Future[None] | None = None,
         positive_tx_submission: asyncio.Task[Any] | None = None,
+        positive_tx_validate: Callable[[], None] | None = None,
     ) -> CommandQueueEntry:
         controller_ticket = self._controller_ticket(cmd)
         self._record_scope_demand(cmd)
@@ -1463,6 +1485,7 @@ class CommandQueue:
             connection_generation=connection_generation,
             positive_tx_ready=positive_tx_ready,
             positive_tx_submission=positive_tx_submission,
+            positive_tx_validate=positive_tx_validate,
             controller_ticket=controller_ticket,
         )
         self._segments.append(_CommandQueueSegment.ordered_entry(entry))

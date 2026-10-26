@@ -103,6 +103,7 @@ from ..runtime.tx_interlock import (
     classify_raw_civ_frame_tx_family,
     is_exact_raw_dekey_frame,
     is_exact_raw_transmission_end_frame,
+    require_tx_frequency_permit,
     resolve_rf_state,
     send_civ_frame,
 )
@@ -603,12 +604,20 @@ class _HttpCommandExecutor:
                             else "rf_state_unknown"
                         ),
                     )
+                if not is_exact_raw_transmission_end_frame(frame):
+                    require_tx_frequency_permit(
+                        self.server.command_state_store.snapshot(),
+                        self.server._get_profile_unless_provider_owned(),
+                    )
             result = await radio.send_civ_transaction(
                 int(params["command"]),
                 sub=params.get("sub"),
                 data=params["data"],
                 expect=params["expect"],
                 timeout=params.get("timeout"),
+            )
+            self.server.command_service.invalidate_tx_target_after_write(
+                "send_raw", {"frame_bytes": frame}
             )
             return CommandExecutionResult(details={"transaction_result": result})
         if intent.name == "set_powerstat":
@@ -2123,6 +2132,10 @@ class WebServer:
             connection_generation=connection_generation,
             positive_tx_ready=ready,
             positive_tx_submission=submission,
+            positive_tx_validate=lambda: require_tx_frequency_permit(
+                self.command_state_store.snapshot(),
+                self._get_profile_unless_provider_owned(),
+            ),
         )
         try:
             await asyncio.wait_for(
@@ -4278,6 +4291,7 @@ class WebServer:
                         {"name": b.name, "start": b.start, "end": b.end}
                         for fr in profile.freq_ranges
                         for b in fr.bands
+                        if not b.rx_only
                     ]
                     or None,
                 }
@@ -4996,6 +5010,7 @@ class WebServer:
                 {"name": b.name, "start": b.start, "end": b.end}
                 for fr in profile.freq_ranges
                 for b in fr.bands
+                if not b.rx_only
             ] or None
         payload["webrtc"] = {
             "available": webrtc_available(),
@@ -5813,6 +5828,14 @@ class WebServer:
                 # Controller currency failed after routing (MOR-3534): e.g. ended.
                 await self._send_json(
                     writer, exc.status, "Forbidden", {"error": exc.code}
+                )
+                return
+            except TxInterlockRefusal as exc:
+                await self._send_json(
+                    writer,
+                    409,
+                    "Conflict",
+                    {"ok": False, "error": exc.reason_code, "message": str(exc)},
                 )
                 return
             except CommandError:

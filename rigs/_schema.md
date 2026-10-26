@@ -537,6 +537,7 @@ Array of tables, each defining a frequency coverage range.
 | `end_hz`     | int    | yes      | Band end frequency in Hz                    |
 | `default_hz` | int    | yes      | Default tuning frequency in Hz (within band)|
 | `bsr_code`   | int    | no       | Band Stack Register code for CI-V 0x1A 0x01 |
+| `rx_only`    | bool   | no       | Default `false`. A receive-only band stays in the tuning selector but is excluded from `txBands` and the server TX frequency permit. A non-boolean value is a load error. Overlapping TX-capable bands remain allowed. |
 
 ## `[cmd29]` — Command 29 Routes
 

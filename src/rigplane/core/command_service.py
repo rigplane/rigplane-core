@@ -260,6 +260,7 @@ class CommandService:
             )
             raise CommandExecutionInvalidatedError(message)
 
+        self.invalidate_tx_target_after_write(intent.name, intent.params)
         self.emit_lifecycle(intent, "acknowledged", details=executor_result.details)
         changes: list[ChangeSet] = []
         for observation in executor_result.observations:
@@ -278,6 +279,58 @@ class CommandService:
             lifecycle_events=tuple(self._events[start:]),
             observation_changes=tuple(changes),
             executor_result=executor_result,
+        )
+
+    def invalidate_tx_target_after_write(
+        self,
+        name: str,
+        params: Mapping[str, Any],
+    ) -> None:
+        """Discard pre-write target proof until the existing producer observes it."""
+        paths = expected_observations_for_command(name, params)
+        frequency = any(
+            path.name in {"freq_hz", "active", "active_slot"} for path in paths
+        )
+        split = any(path.name == "split" for path in paths)
+        frequency |= name in {
+            "set_split_freq",
+            "set_band",
+            "vfo_swap",
+            "vfo_equalize",
+            "memory_to_vfo",
+            "set_memory_mode",
+            "quick_split",
+            "quick_split_trigger",
+        }
+        if name in {"send_civ", "send_raw"}:
+            if name == "send_raw":
+                frame = params["frame_bytes"]
+                command, data = frame[4], frame[5:-1]
+            else:
+                command = params["command"]
+                data = params.get("data", b"")
+                data = bytes.fromhex(data) if isinstance(data, str) else data
+                if params.get("sub") is not None:
+                    data = bytes([params["sub"]]) + data
+            if command == 0x29 and len(data) >= 2:
+                command, data = data[1], data[2:]
+            frequency = (
+                (command == 0x05 and len(data) == 5)
+                or (command == 0x25 and len(data) == 6)
+                or (
+                    command == 0x07
+                    and data in (b"\x00", b"\x01", b"\xa0", b"\xb0", b"\xd0", b"\xd1")
+                )
+            )
+            split = command == 0x0F and data in (b"\x00", b"\x01")
+        if not frequency and not split:
+            return
+        self._state_store.discard(
+            field.path
+            for field in self._state_store.snapshot().fields
+            if field.path == FieldPath.global_("tx_state", "tx_target")
+            or (frequency and field.path.name == "freq_hz")
+            or (split and field.path == FieldPath.global_("tx_state", "split"))
         )
 
     def _request_write_confirmation(

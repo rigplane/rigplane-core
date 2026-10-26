@@ -672,12 +672,14 @@ end_hz = 60_000_000
 
 [[freq_ranges.ranges.bands]]
 name = "2200m"
+rx_only = true
 start_hz = 135_000
 end_hz = 138_000
 default_hz = 136_000
 
 [[freq_ranges.ranges.bands]]
 name = "630m"
+rx_only = true
 start_hz = 472_000
 end_hz = 479_000
 default_hz = 475_000
@@ -770,6 +772,7 @@ end_hz = 108_000_000
 
 [[freq_ranges.ranges.bands]]
 name = "WFM"
+rx_only = true
 start_hz = 74_800_000
 end_hz = 108_000_000
 default_hz = 100_000_000
@@ -782,6 +785,7 @@ end_hz = 137_000_000
 
 [[freq_ranges.ranges.bands]]
 name = "Air"
+rx_only = true
 start_hz = 108_000_000
 end_hz = 137_000_000
 default_hz = 121_500_000
@@ -826,6 +830,7 @@ end_hz = 199_999_999
 
 [[freq_ranges.ranges.bands]]
 name = "Gen"
+rx_only = true
 start_hz = 30_000
 end_hz = 199_999_999
 default_hz = 14_200_000
