@@ -5,9 +5,10 @@ planted windows of exact digital silence. ``render_marker_pcm16``
 synthesizes one; ``analyze_marker_pcm16`` measures a captured buffer
 (frequency by Hann-windowed FFT with parabolic interpolation, level and
 residual by a least-squares sine fit on the tone-on samples, gaps as runs
-of all-zero 5 ms windows); ``check_marker`` turns the measurement into a
-list of readable problems (empty = pass). Stdlib + numpy only. Used by the
-Core simulated-TX end-to-end test and by the Pro nightly scenario.
+of all-zero 5 ms windows — the final partial window counts as one shorter
+window); ``check_marker`` turns the measurement into a list of readable
+problems (empty = pass). Stdlib + numpy only. Used by the Core simulated-TX
+end-to-end test and by the Pro nightly scenario.
 """
 
 from __future__ import annotations
@@ -62,7 +63,8 @@ class MarkerReport:
 
     freq_hz: float  # FFT peak, parabolic interpolation, tone-on windows
     level_dbfs: float  # peak-equivalent level of the tone (sine fit)
-    gaps: tuple[tuple[float, float], ...]  # silence windows, 5 ms resolution
+    gaps: tuple[tuple[float, float], ...]  # silence windows (5 ms windows; a
+    # trailing run ends at the buffer end when it reaches into the tail)
     residual_db: float  # non-tone energy vs the tone (more negative = cleaner)
     duration_s: float
     gap_energy_dbfs: float  # RMS inside the PLANTED gaps (-inf = silence)
@@ -74,22 +76,30 @@ def analyze_marker_pcm16(pcm: bytes, spec: MarkerSpec) -> MarkerReport:
     x = np.frombuffer(pcm, dtype="<i2").astype(np.float64) / _FULL_SCALE
     n = len(x)
     win = max(1, int(round(sr * _GAP_WINDOW_S)))
-    nwin = n // win  # the partial tail window carries no verdict
-    usable = x[: nwin * win]
+    nwin, tail = divmod(n, win)
     silent = (
-        ~np.any(usable.reshape(nwin, win) != 0.0, axis=1)
+        ~np.any(x[: nwin * win].reshape(nwin, win) != 0.0, axis=1)
         if nwin
         else np.zeros(0, dtype=bool)
     )
+    if tail:
+        # The partial tail window counts as one shorter window: all-zero it
+        # extends a gap run (which then ends at n/sr), otherwise it is
+        # tone-on and enters every signal measurement below.
+        silent = np.append(silent, not np.any(x[nwin * win :] != 0.0))
+    nwindows = len(silent)
+    # A window's end offset: full windows end on win boundaries; the tail
+    # window (when present) ends at n.
+    ends = np.minimum((np.arange(nwindows) + 1) * win, n)
     gaps: list[tuple[float, float]] = []
-    tone_on = np.ones(nwin, dtype=bool)
+    tone_on = np.ones(nwindows, dtype=bool)
     i = 0
-    while i < nwin:
+    while i < nwindows:
         if silent[i]:
             j = i
-            while j + 1 < nwin and silent[j + 1]:
+            while j + 1 < nwindows and silent[j + 1]:
                 j += 1
-            gaps.append((i * win / sr, (j + 1) * win / sr))
+            gaps.append((i * win / sr, ends[j] / sr))
             tone_on[i : j + 1] = False
             i = j + 1
         else:
@@ -98,8 +108,12 @@ def analyze_marker_pcm16(pcm: bytes, spec: MarkerSpec) -> MarkerReport:
     if not tone_on.any():
         # No tone at all: frequency/level fail their checks on their own.
         return MarkerReport(0.0, -math.inf, tuple(gaps), 0.0, n / sr, gap_energy)
-    freq_hz = _measure_freq(usable, sr)
-    level_dbfs, residual_db = _fit_tone(usable, tone_on, sr, freq_hz)
+    mask = np.repeat(tone_on[:nwin], win) if nwin else np.zeros(0, dtype=bool)
+    if tail:
+        mask = np.concatenate([mask, np.full(tail, tone_on[nwin])])
+    idx = np.nonzero(mask)[0]
+    freq_hz = _measure_freq(x, sr)
+    level_dbfs, residual_db = _fit_tone(x, idx, sr, freq_hz)
     return MarkerReport(
         freq_hz, level_dbfs, tuple(gaps), residual_db, n / sr, gap_energy
     )
@@ -127,16 +141,15 @@ def _measure_freq(x: np.ndarray, sr: int) -> float:
 
 
 def _fit_tone(
-    x: np.ndarray, tone_on: np.ndarray, sr: int, freq_hz: float
+    x: np.ndarray, idx: np.ndarray, sr: int, freq_hz: float
 ) -> tuple[float, float]:
     """Least-squares sin/cos fit at ``freq_hz`` over the tone-on samples.
 
-    The fit uses the samples' true time indices, so the gaps break no
+    ``idx`` holds the tone-on SAMPLE indices (the fit skips the planted
+    gaps); the samples' true time indices keep the gaps from breaking
     phase. Returns (peak level dBFS, residual energy relative to the fit
     in dB).
     """
-    win = len(x) // len(tone_on)
-    idx = np.nonzero(np.repeat(tone_on, win))[0]
     t = idx / sr
     basis = np.column_stack(
         [np.cos(2.0 * math.pi * freq_hz * t), np.sin(2.0 * math.pi * freq_hz * t)]
