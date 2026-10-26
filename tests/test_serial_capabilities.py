@@ -25,6 +25,7 @@ from rigplane.backends.discovery import (
     SerialPortCandidate,
     resolve_civ_radio_identity,
 )
+from rigplane.runtime.radios import SERIAL_RADIO_MAP
 
 # Wire bytes shared with tests/test_discovery.py: the Xiegu-only 0x1D 0x19
 # model-ID reply and the Icom NAK at the shared IC-705/X6200 address 0xA4.
@@ -183,6 +184,40 @@ class TestResolveCivRadioIdentity:
             _civ_hit(0xA4, b"\x01\x05"), port, _open_serial=_never_open
         )
         assert (model, profile_id) == ("X6200", "xiegu_x6200")
+
+    @pytest.mark.parametrize(
+        ("address", "model_id", "expected"),
+        [
+            pytest.param(
+                0x94,
+                SERIAL_RADIO_MAP[0x94][1],
+                ("IC-7300", "icom_ic7300"),
+                id="ic7300",
+            ),
+            pytest.param(
+                0xB6, b"\xb6", ("IC-7300MK2", "icom_ic7300mk2"), id="mk2-address-echo"
+            ),
+            pytest.param(
+                0xB6,
+                SERIAL_RADIO_MAP[0x94][1],
+                ("IC-7300MK2", "icom_ic7300mk2"),
+                id="mk2-with-ic7300-id-bytes",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_ic7300_family_identity_cannot_be_confused(
+        self, address: int, model_id: bytes, expected: tuple[str, str]
+    ) -> None:
+        """MOR-3792: 0xB6 resolves through the real identity table with no
+        extra probe; the MK2's model-ID reply bytes are undocumented, so
+        the single-byte address echo alone names the radio. A model-ID
+        mismatch only logs at debug level, so 0xB6 stays the MK2 even when
+        the bytes are the IC-7300's own: the address decides."""
+        model, profile_id = await resolve_civ_radio_identity(
+            _civ_hit(address, model_id), _open_serial=_never_open
+        )
+        assert (model, profile_id) == expected
 
     @pytest.mark.asyncio
     async def test_shared_0xA4_without_fingerprint_confirms_xiegu_by_opcode(

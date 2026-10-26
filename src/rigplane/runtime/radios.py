@@ -93,11 +93,15 @@ RADIOS: dict[str, RadioModel] = {
 
 #: Mapping from CI-V address to (model name, model ID bytes).
 #: Model ID is the 2-byte BCD identifier from the 0x19 0x00 response.
-#: Source: wfview rigidentities.h
+#: Source: wfview rigidentities.h, except rows carrying their own comment.
 SERIAL_RADIO_MAP: dict[int, tuple[str, bytes]] = {
     0x98: ("IC-7610", b"\x01\x06"),
     0xA4: ("IC-705", b"\x01\x05"),
     0x94: ("IC-7300", b"\x01\x01"),
+    # MK2: the CI-V guide lists 19 00 but never documents the reply bytes;
+    # no model token is invented — the 0xB6 address alone identifies the
+    # radio (identify_radio only logs a debug line on an ID mismatch).
+    0xB6: ("IC-7300MK2", b""),
     0xA2: ("IC-9700", b"\x01\x20"),
     0x8E: ("IC-7851", b"\x01\x35"),
     0x96: ("IC-R8600", b"\x01\x26"),
