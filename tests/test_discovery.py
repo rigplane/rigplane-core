@@ -9,6 +9,7 @@ import logging
 import sys
 from contextlib import ExitStack, contextmanager
 from functools import partial
+from threading import Event, get_ident
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -129,7 +130,34 @@ async def test_discover_cli_keeps_profile_audio_pair_and_refuses_extra_owner(
 async def test_discovery_passes_resolved_profile_identity(
     monkeypatch, protocol, profile_id, model, address
 ):
-    from rigplane.profiles import get_radio_profile
+    from rigplane import profiles
+    from rigplane.profiles import rig_loader
+
+    loop = asyncio.get_running_loop()
+    loop_thread = get_ident()
+    lookup_ready = asyncio.Event()
+    lookup_done = Event()
+    loader_threads = []
+    discover_rigs = rig_loader.discover_rigs
+
+    def load_rigs(rig_dir):
+        loader_threads.append(get_ident())
+        loop.call_soon_threadsafe(lookup_ready.set)
+        if get_ident() != loop_thread:
+            assert lookup_done.wait(10)
+        return discover_rigs(rig_dir)
+
+    async def lookup_profile():
+        await asyncio.wait_for(lookup_ready.wait(), 10)
+        try:
+            return profiles.get_radio_profile(profile_id)
+        finally:
+            lookup_done.set()
+
+    monkeypatch.setattr(profiles, "_profiles", None)
+    for index in ("_by_normalized", "_by_id", "_by_civ_addr"):
+        monkeypatch.setattr(profiles, index, {})
+    monkeypatch.setattr(rig_loader, "discover_rigs", load_rigs)
 
     port = "/dev/cu.fixture"
     monkeypatch.setattr(
@@ -156,12 +184,23 @@ async def test_discovery_passes_resolved_profile_identity(
         "rigplane.discovery.resolve_civ_radio_identity",
         AsyncMock(return_value=(model, profile_id)),
     )
-    resolve = Mock(return_value=None)
+    resolve = Mock(return_value=AudioDeviceMapping(2, 1, port))
     monkeypatch.setattr("rigplane.discovery.resolve_audio_for_serial_port", resolve)
-    assert len(await discover_serial_radios()) == 1
-    resolve.assert_called_once_with(
-        port, usb_identity=get_radio_profile(profile_id).usb_identity
+    results, profile = await asyncio.gather(
+        discover_serial_radios(), lookup_profile(), return_exceptions=True
     )
+    assert not isinstance(profile, BaseException), repr(profile)
+    assert profile.id == profile_id
+    assert not isinstance(results, BaseException), repr(results)
+    assert len(results) == 1
+    assert results[0].usb_audio == {
+        "rx_device_index": 2,
+        "tx_device_index": 1,
+        "serial_port": port,
+        "location_prefix": None,
+    }
+    assert loader_threads == [loop_thread]
+    resolve.assert_called_once_with(port, usb_identity=profile.usb_identity)
 
 
 @contextmanager
