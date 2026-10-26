@@ -132,10 +132,16 @@ def redact_bundle(
                         return match[1] + replace_field(candidate) + match[2]
         return value
 
-    def redact_topology(value: Any, part: str, aliases: dict[str, str]) -> None:
+    def redact_topology(
+        value: Any,
+        part: str,
+        aliases: dict[str, str],
+        uid_serials: set[str],
+        uid_locations: set[int],
+    ) -> None:
         if isinstance(value, list):
             for child in value:
-                redact_topology(child, part, aliases)
+                redact_topology(child, part, aliases, uid_serials, uid_locations)
         elif isinstance(value, dict):
             for field, child in value.items():
                 if field == "serial_number":
@@ -149,13 +155,26 @@ def redact_bundle(
                             name, sep, location = segment.partition("@")
                             segments.append(replace_field(name) + sep + location)
                         value[field] = "/".join(segments)
-                    elif field == "uid" and child.startswith("AppleUSBAudioEngine:"):
+                    elif (
+                        field == "uid"
+                        and child.startswith("AppleUSBAudioEngine:")
+                        and child.count(":") >= 2
+                    ):
                         prefix, identity, streams = child.rsplit(":", 2)
-                        value[field] = ":".join(
-                            (prefix, replace_field(identity), streams)
-                        )
+                        try:
+                            location = int(identity, 16)
+                        except ValueError:
+                            location = None
+                        if (
+                            location is None
+                            or uid_locations
+                            and location not in uid_locations
+                        ) and _ascii_lower(identity.replace(" ", "_")) in uid_serials:
+                            value[field] = ":".join(
+                                (prefix, replace_field(identity), streams)
+                            )
                 else:
-                    redact_topology(child, part, aliases)
+                    redact_topology(child, part, aliases, uid_serials, uid_locations)
 
     result = copy.deepcopy(bundle)
     for session in result["sessions"]:
@@ -166,6 +185,16 @@ def redact_bundle(
             usb = {
                 row.get("registry_id"): row.get("serial_number")
                 for row in raw.get("macos", {}).get("usb_devices", [])
+            }
+            uid_serials = {
+                _ascii_lower(serial.replace(" ", "_"))
+                for serial in usb.values()
+                if serial
+            }
+            uid_locations = {
+                row["location_id"]
+                for row in raw.get("macos", {}).get("usb_devices", [])
+                if isinstance(row.get("location_id"), int)
             }
             ports += [
                 {**row, "serial_number": usb.get(row.get("usb_registry_id"))}
@@ -187,7 +216,9 @@ def redact_bundle(
                     if field in port:
                         port[field] = aliases.get(port[field], port[field])
             for part in ("macos", "linux"):
-                redact_topology(raw.get(part), part, aliases)
+                redact_topology(
+                    raw.get(part), part, aliases, uid_serials, uid_locations
+                )
         for port in raw.get("serial_ports", []):
             if "serial_number" in port:
                 port["serial_number"] = replace_field(port["serial_number"])

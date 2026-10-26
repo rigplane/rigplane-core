@@ -22,6 +22,7 @@ def test_unix_serial_fields_and_child_references_share_bundle_token(part):
         "usb_devices": [
             {
                 "registry_id": 3,
+                "location_id": 0x3121300,
                 "serial_number": serial,
                 "registry_path": f"/USB/{serial}",
                 "path": "/sys/devices/usb1/1-2",
@@ -97,6 +98,7 @@ def test_short_unix_serial_preserves_topology_location_and_stream(part, serial):
             "usb_devices": [
                 {
                     "registry_id": 3,
+                    "location_id": 0x3121300,
                     "serial_number": serial,
                     "path": path,
                     "registry_path": "IOUSB:/Codec@03121400",
@@ -128,6 +130,36 @@ def test_short_unix_serial_preserves_topology_location_and_stream(part, serial):
             result[part]["audio_devices"][1]["uid"]
             == f"AppleUSBAudioEngine:Vendor:Codec:{token}:1"
         )
+
+
+@pytest.mark.parametrize("identity", ["3121400", "03121400", "03ABCd00"])
+def test_macos_uid_location_wins_over_another_devices_serial(identity):
+    uid = f"AppleUSBAudioEngine:Vendor:Codec:{identity}:1"
+    raw = {
+        "macos": {
+            "usb_devices": [
+                {"registry_id": 1, "location_id": 0x3121300, "serial_number": identity},
+                {
+                    "registry_id": 2,
+                    "location_id": int(identity, 16),
+                    "serial_number": None,
+                },
+            ],
+            "audio_devices": [{"uid": uid}],
+        }
+    }
+    result = _usb_redact.redact_bundle({"sessions": [{"raw": raw}]}, key=_KEY)
+    topology = result["sessions"][0]["raw"]["macos"]
+    assert topology["audio_devices"][0]["uid"] == uid
+    assert topology["usb_devices"][0]["serial_number"] != identity
+
+
+def test_malformed_macos_uid_is_preserved_without_crashing_redaction():
+    uid = "AppleUSBAudioEngine:incomplete"
+    result = _usb_redact.redact_bundle(
+        {"sessions": [{"raw": {"macos": {"audio_devices": [{"uid": uid}]}}}]}, key=_KEY
+    )
+    assert result["sessions"][0]["raw"]["macos"]["audio_devices"][0]["uid"] == uid
 
 
 def _bundle() -> dict:
