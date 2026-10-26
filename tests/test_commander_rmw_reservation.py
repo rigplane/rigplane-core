@@ -13,6 +13,7 @@ whole write retries from the preservation read.
 from __future__ import annotations
 
 import asyncio
+import struct
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,7 @@ from rigplane.commands.commander import IcomCommander, Priority
 from rigplane.core.exceptions import CommandError, ConnectionError
 from rigplane.core.types import CivFrame
 from rigplane.runtime.radio import IcomRadio
+from rigplane.transport import IcomTransport
 
 if TYPE_CHECKING:
     from rigplane.commands.commander import InterferenceScope
@@ -707,3 +709,252 @@ async def test_concurrent_scopes_mark_each_other() -> None:
     assert scopes["b"].interfered is True
     assert commander._interference_scopes == set()
     await commander.stop()
+
+
+async def test_scope_currency_dies_with_the_scope() -> None:
+    """A finished scope is never current again, even without interference.
+
+    The SET's retransmit guard in ``IcomTransport._tx_guards`` outlives the
+    scope's ``async with`` block, so a scope that exited normally or by
+    cancellation must answer ``is_current()`` False forever: a delayed
+    retransmit request for its SET is answered with the idle packet, not
+    the stale tuple (MOR-3743).
+    """
+    hold = _Hold()
+    commander = IcomCommander(hold)
+    commander.start()
+    scopes: list[InterferenceScope] = []
+
+    async def clean() -> None:
+        async with commander.interference_scope() as scope:
+            scopes.append(scope)
+            assert scope.is_current() is True
+
+    await asyncio.wait_for(clean(), 1)
+    assert scopes[0].closed is True
+    assert scopes[0].interfered is False
+    assert scopes[0].is_current() is False
+
+    async def boom() -> None:
+        async with commander.interference_scope() as scope:
+            scopes.append(scope)
+            raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(boom(), 1)
+    assert scopes[1].closed is True
+    assert scopes[1].is_current() is False
+
+    entered = asyncio.Event()
+
+    async def parked() -> None:
+        async with commander.interference_scope() as scope:
+            scopes.append(scope)
+            entered.set()
+            await asyncio.Event().wait()
+
+    parked_task = asyncio.create_task(parked())
+    await asyncio.wait_for(entered.wait(), 1)
+    parked_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await parked_task
+    assert scopes[2].closed is True
+    assert scopes[2].interfered is False
+    assert scopes[2].is_current() is False
+    await commander.stop()
+
+
+async def test_note_foreign_dispatch_marks_scopes_like_the_worker() -> None:
+    """The direct-dispatch marking rule equals the worker's rule.
+
+    Raw CI-V transactions reach the wire without entering the commander
+    queue; ``note_foreign_dispatch`` is the one public seam that applies
+    the worker's marking rule to them: a non-BACKGROUND frame from
+    another task marks every live scope, the owner's own task is exempt,
+    and BACKGROUND never marks (MOR-3743).
+    """
+    hold = _Hold()
+    commander = IcomCommander(hold)
+    commander.start()
+    inside = asyncio.Event()
+    scopes: list[InterferenceScope] = []
+
+    async def owner() -> None:
+        async with commander.interference_scope() as scope:
+            scopes.append(scope)
+            inside.set()
+            await asyncio.Event().wait()
+
+    owner_task = asyncio.create_task(owner())
+    await asyncio.wait_for(inside.wait(), 1)
+    me = asyncio.current_task()
+    assert me is not None
+    try:
+        commander.note_foreign_dispatch(me, Priority.NORMAL)
+        assert scopes[0].interfered is True
+
+        scopes[0].interfered = False
+        commander.note_foreign_dispatch(owner_task, Priority.NORMAL)
+        assert scopes[0].interfered is False
+
+        commander.note_foreign_dispatch(me, Priority.BACKGROUND)
+        assert scopes[0].interfered is False
+    finally:
+        owner_task.cancel()
+        await asyncio.gather(owner_task, return_exceptions=True)
+        await commander.stop()
+
+
+class _RetransmitBackend:
+    """CI-V peer whose sends go through a real ``IcomTransport``.
+
+    Mirrors ``CivRuntime._execute_civ_raw``'s wire seam: the caller's
+    ``is_current`` predicate is enforced before the wire and handed to
+    ``IcomTransport.send_tracked``, which stores it in ``_tx_guards`` as
+    the retransmit guard for that sequence. Replies are canned relative
+    VFO state, so a real ``write_relative_vfo_mode`` drives the SET.
+    """
+
+    def __init__(self, addr: int) -> None:
+        self.addr = addr
+        self.transport = IcomTransport()
+        self.transport.my_id = 0x00010001
+        self.transport.remote_id = 0xAABBCCDD
+        self.wire: list[bytes] = []
+        self.transport._raw_send = self.wire.append
+        self.mode = 0x01
+        self.data = 0x01
+        self.filter = 0x03
+        self.mode_reads = 0
+        self.set_seqs: list[int] = []
+        self.on_mode_read: Callable[[int], Awaitable[None]] | None = None
+
+    def _wrap(self, civ_frame: bytes) -> bytes:
+        total = 0x15 + len(civ_frame)
+        pkt = bytearray(total)
+        struct.pack_into("<I", pkt, 0, total)
+        struct.pack_into("<H", pkt, 4, 0x00)
+        struct.pack_into("<I", pkt, 8, self.transport.my_id)
+        struct.pack_into("<I", pkt, 0x0C, self.transport.remote_id)
+        pkt[0x10] = 0xC1
+        struct.pack_into(">H", pkt, 0x11, len(civ_frame))
+        pkt[0x15:] = civ_frame
+        return bytes(pkt)
+
+    async def __call__(
+        self,
+        payload: bytes,
+        wait_response: bool = True,
+        is_current: object = None,
+    ) -> CivFrame:
+        del wait_response
+        if is_current is not None and not is_current():
+            raise ConnectionError("managed TX attempt is stale")
+        frame = parse_civ_frame(payload)
+        if frame.command == 0x26 and len(frame.data) == 1:
+            self.mode_reads += 1
+            if self.on_mode_read is not None:
+                await self.on_mode_read(self.mode_reads)
+            await self.transport.send_tracked(
+                self._wrap(payload), is_current=is_current
+            )
+            return _reply(
+                self.addr,
+                f"26 {frame.data[0]:02X} {self.mode:02X} "
+                f"{self.data:02X} {self.filter:02X}",
+            )
+        await self.transport.send_tracked(self._wrap(payload), is_current=is_current)
+        if frame.command == 0x26 and len(frame.data) > 1:
+            self.set_seqs.append((self.transport.send_seq - 1) & 0xFFFF)
+            self.mode = frame.data[1]
+            self.data = frame.data[2]
+            self.filter = frame.data[3]
+        return _reply(self.addr, "FB")
+
+
+def _setup_retransmit_radio(
+    monkeypatch: pytest.MonkeyPatch, model: str
+) -> tuple[IcomRadio, _RetransmitBackend, IcomCommander]:
+    radio = IcomRadio("127.0.0.1", model=model)
+    backend = _RetransmitBackend(radio.profile.civ_addr)
+    commander = IcomCommander(backend)
+    radio._commander = commander
+    radio._connected = True
+    radio._civ_transport = object()  # type: ignore[assignment]
+    monkeypatch.setattr(radio, "_check_connected", lambda: None)
+    commander.start()
+    return radio, backend, commander
+
+
+def _assert_idle_reply(backend: _RetransmitBackend, seq: int) -> None:
+    """The retransmit request for ``seq`` was answered with the idle packet."""
+    idle = backend.transport._build_control(ptype=0x00, seq=seq)
+    assert backend.wire[-1] == idle
+    assert backend.wire[-1] != backend.transport.tx_buffer[seq]
+
+
+@pytest.mark.parametrize("model", _MODELS)
+async def test_retired_scope_set_is_not_retransmitted_after_completion(
+    monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    """After a normal write the SET's sequence is never resent (MOR-3743).
+
+    The write completes, the scope retires, another client may have
+    changed the radio since — a delayed retransmit request for the old
+    SET sequence must be answered with the idle packet, not the stale
+    SET tuple the scope's predicate was still vouching for.
+    """
+    radio, backend, commander = _setup_retransmit_radio(monkeypatch, model)
+    try:
+        write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
+        observed = await asyncio.wait_for(write, 1)
+    finally:
+        radio._connected = False
+        await commander.stop()
+
+    assert observed.filter_num == 3
+    assert backend.set_seqs, "no mode SET reached the wire"
+    seq = backend.set_seqs[0]
+    sent_before = len(backend.wire)
+    backend.transport._retransmit(seq)
+    assert len(backend.wire) == sent_before + 1
+    _assert_idle_reply(backend, seq)
+
+
+@pytest.mark.parametrize("model", _MODELS)
+async def test_retired_scope_set_is_not_retransmitted_after_cancellation(
+    monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    """A cancelled write's SET sequence is never resent (MOR-3743).
+
+    The owner is parked at its readback with the SET already buffered;
+    cancelling it retires the scope, so the retransmit guard must refuse
+    the old SET even though no interference ever happened.
+    """
+    radio, backend, commander = _setup_retransmit_radio(monkeypatch, model)
+    parked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def on_mode_read(index: int) -> None:
+        if index == 2:
+            parked.set()
+            await release.wait()
+
+    backend.on_mode_read = on_mode_read
+    write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
+    try:
+        await asyncio.wait_for(parked.wait(), 1)
+        assert backend.set_seqs, "no mode SET reached the wire"
+    finally:
+        release.set()
+        radio._connected = False
+        write.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await write
+        await commander.stop()
+
+    seq = backend.set_seqs[0]
+    sent_before = len(backend.wire)
+    backend.transport._retransmit(seq)
+    assert len(backend.wire) == sent_before + 1
+    _assert_idle_reply(backend, seq)

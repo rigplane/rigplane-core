@@ -72,6 +72,31 @@ def _pause_mode_preservation(monkeypatch, radio):
     return read_done, release
 
 
+def _pause_relative_read(monkeypatch, radio, *, call):
+    """Pause the ``call``-th ``read_relative_vfo`` after it returns.
+
+    Unlike ``_pause_mode_preservation`` (first call only) this gates one
+    exact read, so a test can park the owner after its SET (the readback)
+    or between attempts while the commander worker stays free for other
+    clients.
+    """
+    read_done, release = asyncio.Event(), asyncio.Event()
+    seen = 0
+    read_relative_vfo = radio.read_relative_vfo
+
+    async def paused_read(*, selected):
+        nonlocal seen
+        observed = await read_relative_vfo(selected=selected)
+        seen += 1
+        if seen == call:
+            read_done.set()
+            await release.wait()
+        return observed
+
+    monkeypatch.setattr(radio, "read_relative_vfo", paused_read)
+    return read_done, release
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("command", [b"X USB\n", b"X USB 0\n"])
@@ -180,6 +205,183 @@ async def test_split_competing_client_write_is_rechecked_not_overwritten(
                     *(task for task in (reply_a, reply_b) if task is not None),
                     return_exceptions=True,
                 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
+async def test_split_direct_raw_transaction_marks_interference_scope(
+    model, monkeypatch
+):
+    """A direct raw CI-V transaction counts as interference (MOR-3743).
+
+    ``POST /api/v1/civ/transaction`` reaches the wire through
+    ``radio.send_civ_transaction`` without ever entering the commander
+    queue, so the worker's scope marking never saw it. While client A's
+    ``X`` is paused at its preservation read, a raw ``0x26`` write from
+    that entry lands: it must mark A's scope like any queued frame — the
+    stale SET is refused before the wire, the retry re-reads and the
+    newer fields survive.
+    """
+    async with _peer(model) as (radio, peer, server, reader, writer):
+        commander = radio._commander = IcomCommander(radio._execute_civ_raw)
+        commander.start()
+        read_done, release = _pause_relative_read(monkeypatch, radio, call=1)
+        reply = None
+        foreign = None
+        try:
+            reply = asyncio.create_task(_exchange(writer, reader, b"X USB\n"))
+            await asyncio.wait_for(read_done.wait(), 1)
+            foreign = asyncio.create_task(
+                radio.send_civ_transaction(
+                    0x26, data=b"\x01\x05\x01\x01", expect="ack", timeout=1.0
+                )
+            )
+            result = await asyncio.wait_for(foreign, 1)
+            assert result.status == "ack"
+            release.set()
+            assert await asyncio.wait_for(reply, 2) == b"RPRT 0\n"
+        finally:
+            release.set()
+            radio._commander = None
+            await commander.stop()
+            for task in (reply, foreign):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *(task for task in (reply, foreign) if task is not None),
+                return_exceptions=True,
+            )
+        assert peer.slots["B"] == (7_076_000, Mode.USB, 1, 0)
+        sets = [
+            data for cmd, _sub, data in peer.requests if cmd == 0x26 and len(data) > 1
+        ]
+        assert sets == [
+            bytes([0x01, 0x05, 0x01, 0x01]),
+            bytes([0x01, Mode.USB.value, 0x00, 0x01]),
+        ]
+        _assert_no_relative_overlays(server)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
+async def test_split_vfo_switch_during_readback_sends_exactly_one_set(
+    model, monkeypatch
+):
+    """A selection change during the readback never triggers a second SET.
+
+    ``X FM 0`` on B: the SET reaches the wire, then another client
+    completes ``V VFOB`` while the write is parked at its readback. One
+    request must not change both physical VFOs: the SET is already out,
+    so no retry happens — the consistent readback is the success, exactly
+    one SET reached the wire and A is untouched (MOR-3743).
+    """
+    async with _peer(model) as (radio, peer, server, reader, writer):
+        commander = radio._commander = IcomCommander(radio._execute_civ_raw)
+        commander.start()
+        read_done, release = _pause_relative_read(monkeypatch, radio, call=2)
+        before = dict(peer.slots)
+        reply = None
+        try:
+            reply = asyncio.create_task(_exchange(writer, reader, b"X FM 0\n"))
+            await asyncio.wait_for(read_done.wait(), 1)
+            async with _client(server) as (other_reader, other_writer):
+                assert (
+                    await _exchange(other_writer, other_reader, b"V VFOB\n")
+                    == b"RPRT 0\n"
+                )
+            assert peer.selected == "B"
+            release.set()
+            assert await asyncio.wait_for(reply, 2) == b"RPRT 0\n"
+        finally:
+            release.set()
+            radio._commander = None
+            await commander.stop()
+            if reply is not None and not reply.done():
+                reply.cancel()
+            if reply is not None:
+                await asyncio.gather(reply, return_exceptions=True)
+        sets = [
+            data for cmd, _sub, data in peer.requests if cmd == 0x26 and len(data) > 1
+        ]
+        assert sets == [bytes([0x01, Mode.FM.value, 0x01, 0x03])]
+        assert peer.slots["B"] == (7_076_000, Mode.FM, 3, 1)
+        assert peer.slots["A"] == before["A"]
+        _assert_no_relative_overlays(server)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
+async def test_split_vfo_switch_between_attempts_fails_the_write(model, monkeypatch):
+    """A selection change between attempts fails the write (MOR-3743).
+
+    A competing raw ``w`` write refuses A's first SET, and while the
+    retry is held at its start another client completes ``V VFOB``. The
+    retry must not adopt the new topology and write the newly unselected
+    VFO: the pinned selection epoch raises, the reply is ``RPRT -9`` and
+    no SET follows the foreign write.
+    """
+    async with _peer(model) as (radio, peer, server, reader, writer):
+        commander = radio._commander = IcomCommander(radio._execute_civ_raw)
+        commander.start()
+        addr = radio.profile.civ_addr
+        read_done, release = _pause_relative_read(monkeypatch, radio, call=1)
+        real_scope = commander.interference_scope
+        attempt2_started = asyncio.Event()
+        attempt2_release = asyncio.Event()
+        entries: list[object] = []
+
+        @asynccontextmanager
+        async def gated_scope():
+            if entries:
+                # Second attempt: hold it before its preservation read.
+                attempt2_started.set()
+                await attempt2_release.wait()
+            async with real_scope() as scope:
+                entries.append(scope)
+                yield scope
+
+        monkeypatch.setattr(commander, "interference_scope", gated_scope)
+        before = dict(peer.slots)
+        reply = None
+        try:
+            reply = asyncio.create_task(_exchange(writer, reader, b"X USB\n"))
+            await asyncio.wait_for(read_done.wait(), 1)
+            async with _client(server) as (b_reader, b_writer):
+                assert (
+                    await _exchange(
+                        b_writer,
+                        b_reader,
+                        b"w FE FE "
+                        + f"{addr:02X} E0 26 01 05 01 01 FD".encode()
+                        + b"\n",
+                    )
+                    == f"FE FE E0 {addr:02X} FB FD\n".encode()
+                )
+            release.set()
+            await asyncio.wait_for(attempt2_started.wait(), 1)
+            async with _client(server) as (other_reader, other_writer):
+                assert (
+                    await _exchange(other_writer, other_reader, b"V VFOB\n")
+                    == b"RPRT 0\n"
+                )
+            assert peer.selected == "B"
+            attempt2_release.set()
+            assert await asyncio.wait_for(reply, 2) == b"RPRT -9\n"
+        finally:
+            release.set()
+            attempt2_release.set()
+            radio._commander = None
+            await commander.stop()
+            if reply is not None and not reply.done():
+                reply.cancel()
+            if reply is not None:
+                await asyncio.gather(reply, return_exceptions=True)
+        sets = [
+            data for cmd, _sub, data in peer.requests if cmd == 0x26 and len(data) > 1
+        ]
+        assert sets == [bytes([0x01, 0x05, 0x01, 0x01])]
+        assert peer.slots == before | {"B": (7_076_000, Mode.FM, 1, 1)}
+        _assert_no_relative_overlays(server)
 
 
 @pytest.mark.asyncio
