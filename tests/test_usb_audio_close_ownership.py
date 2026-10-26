@@ -12,10 +12,19 @@ import pytest
 
 from rigplane.audio import backend, usb_driver
 
+from _mor3777_pool_observer import PoolPhaseObserver, current_for, set_current
+
 
 @pytest.fixture
 def fake_ownership_driver(monkeypatch: pytest.MonkeyPatch):
     pool = usb_driver._BoundedPortAudioPool()
+    # MOR-3777 diagnostics: fixture-scoped phase ring plus production
+    # INFO caller/native states captured at emission; bounded block is
+    # printed after executor shutdown below (pytest keeps it silent on
+    # passing runs).
+    observer = PoolPhaseObserver(pool)
+    observer.attach(monkeypatch, usb_driver.logger)
+    set_current(observer)
     monkeypatch.setattr(usb_driver, "bounded_portaudio_pool", pool)
     monkeypatch.setattr(usb_driver, "_get_uid_map", lambda: {})
     monkeypatch.setattr(usb_driver, "resolve_usb_duplex_mode", lambda *_args: "full")
@@ -41,12 +50,18 @@ def fake_ownership_driver(monkeypatch: pytest.MonkeyPatch):
 
     yield pool, fake, make
     pool._executor.shutdown(wait=True)
+    set_current(None)
+    observer.flush()
+    observer.close()
 
 
 async def _drain(pool: usb_driver._BoundedPortAudioPool) -> None:
     async with asyncio.timeout(5):
         while pool.inflight:
             await asyncio.sleep(0.01)
+    observer = current_for(pool)
+    if observer is not None:
+        observer.mark_pool_state("after_drain")
 
 
 @pytest.mark.parametrize("kind", ["rx", "tx", "duplex"])

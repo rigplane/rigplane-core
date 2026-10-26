@@ -24,7 +24,10 @@
  * Contract pinned by `src/__tests__/storage-isolation.isolated.test.ts`.
  */
 
-import { afterEach } from 'vitest';
+import { afterAll, afterEach, beforeEach, expect, onTestFinished, vi } from 'vitest';
+import type { OnTestFinishedHandler } from 'vitest';
+import { threadId } from 'node:worker_threads';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { resetSharedTuningAccumulatorForTests } from './src/lib/runtime/commands/tuning-accumulator';
 
 /** Marker property test code can use to assert the stub is installed. */
@@ -75,4 +78,149 @@ for (const name of ['localStorage', 'sessionStorage'] as const) {
 // per-test — same class of leak `localStorage` above was patched for).
 afterEach(() => {
   resetSharedTuningAccumulatorForTests();
+});
+
+// ---------------------------------------------------------------------------
+// MOR-3777 instrument-only failure snapshots (observability; parent-
+// authorized). Active for EXACTLY four allowlisted files via one suffix
+// check; unrelated files get zero output and zero further work. Numeric or
+// enumerated metadata only: file F-id + case ordinal, real threadId/poolId,
+// fake-timer READS (timerCount only while fake timers are active), the
+// native event-loop-delay histogram (all-zero samples report UNKNOWN, not
+// "no lag") and read-only resource counters. No raw test names, paths or
+// parameter values; no timer wrapping/reset/advance, no vi mocks, no sleeps
+// or yields; nothing throws and no output happens inside a measured test
+// body — the per-failure line and per-file summary run in after-test hooks
+// and are capped. Verdicts come from the pinned Vitest 4.1 `onTestFinished`
+// hook reading `context.task.result.state` (typed TaskState); anything
+// unreadable stays UNKNOWN. Observation adds real, unmeasured overhead per
+// test; no effect outside these reads is claimed.
+// ---------------------------------------------------------------------------
+
+const MOR3777_FILES: ReadonlyArray<readonly [string, string]> = [
+  ['src/components-v2/layout/__tests__/RadioLayout.isolated.test.ts', 'F1'],
+  ['src/components-v2/layout/__tests__/RadioLayout.audio-fft.component.test.ts', 'F2'],
+  ['src/components-v2/wiring/__tests__/freshness-invisibility.component.test.ts', 'F3'],
+  ['src/components-v2/wiring/__tests__/semantic-rf-front-end-wiring.component.test.ts', 'F4'],
+];
+const MOR3777_STARTS_MAX = 64;
+const MOR3777_EMIT_MAX = 8;
+const MOR3777_VERDICTS = new Set(['pass', 'fail', 'skip', 'todo']);
+
+type Mor3777Timers = { fake: boolean | 'UNKNOWN'; timerCount: number | null };
+
+const mor3777 = {
+  active: false,
+  fileId: '?',
+  cases: 0,
+  emitted: 0,
+  verdicts: { pass: 0, fail: 0, other: 0 },
+  starts: [] as Mor3777Timers[],
+  histogram: null as ReturnType<typeof monitorEventLoopDelay> | null,
+};
+
+function mor3777Timers(): Mor3777Timers {
+  try {
+    if (!vi.isFakeTimers()) return { fake: false, timerCount: null };
+    return { fake: true, timerCount: vi.getTimerCount() };
+  } catch {
+    return { fake: 'UNKNOWN', timerCount: null };
+  }
+}
+
+function mor3777Lag(): { mean: string; max: string } {
+  const histogram = mor3777.histogram;
+  if (!histogram) return { mean: 'UNAVAILABLE', max: 'UNAVAILABLE' };
+  try {
+    if (histogram.count === 0) return { mean: 'UNKNOWN', max: 'UNKNOWN' };
+    return { mean: (histogram.mean / 1e6).toFixed(3), max: (histogram.max / 1e6).toFixed(3) };
+  } catch {
+    return { mean: 'UNKNOWN', max: 'UNKNOWN' };
+  }
+}
+
+function mor3777PoolId(): string {
+  const raw = process.env.VITEST_POOL_ID;
+  return typeof raw === 'string' && /^\d+$/.test(raw) ? raw : 'UNKNOWN';
+}
+
+function mor3777Resource(): string {
+  try {
+    const rssMb = (process.memoryUsage().rss / 1048576).toFixed(1);
+    const usage = typeof process.resourceUsage === 'function' ? process.resourceUsage() : null;
+    if (!usage) return `rss_mb=${rssMb}`;
+    return (
+      `rss_mb=${rssMb} cpu_user_ms=${Math.round(usage.userCPUTime / 1000)}` +
+      ` max_rss_kb=${usage.maxRSS} vctx=${usage.voluntaryContextSwitches}` +
+      ` ictx=${usage.involuntaryContextSwitches}`
+    );
+  } catch {
+    return 'resource=UNAVAILABLE';
+  }
+}
+
+function mor3777Finish(
+  context: Parameters<OnTestFinishedHandler>[0],
+  start: Mor3777Timers,
+): void {
+  try {
+    const state = context?.task?.result?.state;
+    const verdict = typeof state === 'string' && MOR3777_VERDICTS.has(state) ? state : 'other';
+    if (verdict === 'pass' || verdict === 'fail') mor3777.verdicts[verdict] += 1;
+    else mor3777.verdicts.other += 1;
+    if (verdict !== 'fail' || mor3777.emitted >= MOR3777_EMIT_MAX) return;
+    mor3777.emitted += 1;
+    const timers = mor3777Timers();
+    const lag = mor3777Lag();
+    console.log(
+      `[mor-3777-obs case ${mor3777.fileId}/${mor3777.cases} tid=${threadId}` +
+        ` pool=${mor3777PoolId()} fake_start=${String(start.fake)}` +
+        ` fake_end=${String(timers.fake)} timers_end=${timers.timerCount ?? 'UNAVAILABLE'}` +
+        ` evd_mean_ms=${lag.mean} evd_max_ms=${lag.max} ${mor3777Resource()}` +
+        ` verdict=fail]`,
+    );
+  } catch {
+    /* diagnostics never mask a test failure */
+  }
+}
+
+beforeEach(() => {
+  try {
+    const testPath = expect.getState().testPath;
+    const fileId = MOR3777_FILES.find(([suffix]) => testPath?.endsWith(suffix))?.[1];
+    if (!fileId) return;
+    if (!mor3777.active) {
+      mor3777.active = true;
+      mor3777.fileId = fileId;
+      mor3777.histogram = monitorEventLoopDelay({ resolution: 20 });
+      mor3777.histogram.enable();
+    }
+    mor3777.cases += 1;
+    const start = mor3777Timers();
+    mor3777.starts.push(start);
+    if (mor3777.starts.length > MOR3777_STARTS_MAX) mor3777.starts.shift();
+    onTestFinished((context) => mor3777Finish(context, start));
+  } catch {
+    /* never break a test */
+  }
+});
+
+afterAll(() => {
+  try {
+    if (!mor3777.active) return;
+    const lag = mor3777Lag();
+    console.log(
+      `[mor-3777-obs file ${mor3777.fileId} cases=${mor3777.cases}` +
+        ` emitted=${mor3777.emitted} pass=${mor3777.verdicts.pass}` +
+        ` fail=${mor3777.verdicts.fail} other=${mor3777.verdicts.other}` +
+        ` evd_mean_ms=${lag.mean} evd_max_ms=${lag.max} ${mor3777Resource()}]`,
+    );
+    mor3777.histogram?.disable();
+  } catch {
+    /* never break a test */
+  } finally {
+    mor3777.histogram = null;
+    mor3777.active = false;
+    mor3777.starts = [];
+  }
 });
