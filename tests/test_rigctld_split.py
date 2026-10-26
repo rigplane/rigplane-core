@@ -466,60 +466,6 @@ async def test_split_mode_authority_change_during_preservation_never_sets(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", MODELS)
-async def test_split_competing_client_writes_serialize_on_commander(model):
-    """Two clients' relative mode writes serialize through the reservation.
-
-    Client A's preservation read pauses at the CI-V peer while client B
-    submits a competing write. The commander reservation keeps B's whole
-    read-modify-write behind A's: both replies report success, A's SET
-    reaches the wire before B's, and B preserves A's DATA-off instead of
-    reading the pre-A value (MOR-3743).
-    """
-    async with _peer(model) as (radio, peer, server, reader, writer):
-        commander = radio._commander = IcomCommander(radio._execute_civ_raw)
-        commander.start()
-        gate = peer.relative_mode_read_gate = asyncio.Event()
-        reply_a = None
-        reply_b = None
-        try:
-            reply_a = asyncio.create_task(_exchange(writer, reader, b"X USB 0\n"))
-            await asyncio.wait_for(peer.relative_mode_read.wait(), 1)
-            async with _client(server) as (b_reader, b_writer):
-                reply_b = asyncio.create_task(
-                    _exchange(b_writer, b_reader, b"X RTTY 1800\n")
-                )
-                gate.set()
-                assert await asyncio.wait_for(reply_a, 2) == b"RPRT 0\n"
-                assert await asyncio.wait_for(reply_b, 2) == b"RPRT 0\n"
-            assert peer.slots["B"][1] is Mode.RTTY
-            assert peer.slots["B"][3] == 0
-            sets = [
-                data
-                for cmd, _sub, data in peer.requests
-                if cmd == 0x26 and len(data) > 1
-            ]
-            assert sets == [
-                bytes([0x01, Mode.USB.value, 0x00, 0x03]),
-                bytes([0x01, Mode.RTTY.value, 0x00, 0x03]),
-            ]
-            _assert_no_relative_overlays(server)
-        finally:
-            gate.set()
-            radio._commander = None
-            await commander.stop()
-            peer.relative_mode_read_gate = None
-            for task in (reply_a, reply_b):
-                if task is not None and not task.done():
-                    task.cancel()
-            if reply_a is not None or reply_b is not None:
-                await asyncio.gather(
-                    *(task for task in (reply_a, reply_b) if task is not None),
-                    return_exceptions=True,
-                )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("command", [b"I 14080100\n", b"X PKTUSB 2400\n"])
 async def test_split_authority_change_while_commander_queued_never_sets(
     monkeypatch, model, command

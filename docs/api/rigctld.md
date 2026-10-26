@@ -318,13 +318,19 @@ runtime's own selection methods.
 The check is followed by awaits in the send path. Raw `w` and other direct
 writers are outside this epoch check.
 
-**Known limitation (two clients on one radio).** An `X` that does not carry both
-DATA and filter explicitly (an omitted or `0` passband, or a mode other than
-USB/LSB/packet modes with a passband) reads the target DATA and filter first and writes them back in the SET.
-If another client's raw `w` frame or another `X` changes that VFO between the read
-and the SET, `X` can write the wrong DATA/filter back, and DATA also selects the
-TX audio source. USB/LSB and packet modes with a positive passband send DATA
-and filter explicitly and are not affected; tracked in MOR-3743.
+**Concurrent writes during a preserved `X` (two clients on one radio).**
+An `X` that does not carry both DATA and filter explicitly (an omitted or
+`0` passband, or a mode other than USB/LSB/packet modes with a passband)
+reads the target DATA and filter first and writes them back in the SET.
+That whole read → SET → readback runs inside a commander interference
+scope (`commands/commander.py: IcomCommander.interference_scope`,
+`_dual_rx_runtime.py: DualRxRuntimeMixin.write_relative_vfo_mode`): any
+non-BACKGROUND command another client dispatches between the read and
+the SET marks the scope, the SET is refused before the wire, and the
+write retries from the read — up to three attempts, then `X` fails with
+a retryable error. No command is delayed or reordered, so TX releases
+are unaffected. USB/LSB and packet modes with a positive passband send
+DATA and filter explicitly and do not read first.
 See `handler.py: RigctldHandler._cmd_get_split_freq`,
 `handler.py: RigctldHandler._cmd_get_split_mode`, and
 `_dual_rx_runtime.py: DualRxRuntimeMixin.write_relative_vfo_mode`.

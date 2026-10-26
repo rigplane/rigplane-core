@@ -39,6 +39,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bytes are not documented in the CI-V guide and the radio has not been
   verified on hardware; the profile's identity gate stays unverified.
 
+- **Split-mode read-modify-write detects concurrent commands
+  (MOR-3743).** A split-mode mode write that preserves DATA or filter
+  (`DualRxRuntimeMixin.write_relative_vfo_mode`, rigctld `X`) now runs
+  its preservation read → SET → readback inside an
+  `IcomCommander.interference_scope`: any non-BACKGROUND command
+  dispatched by another task between the preservation read and the SET
+  marks the scope, the SET is refused before the wire, and the whole
+  write retries from the preservation read — up to three attempts, then
+  a retryable `CommandError`. No command is ever delayed or reordered
+  and no send priority changed; TX releases are unaffected. This
+  detects and retries; it does not exclude anyone.
+
 ## [3.0.0b21] — 2026-10-26
 
 ### Added
