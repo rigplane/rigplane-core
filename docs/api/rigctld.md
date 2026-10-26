@@ -324,9 +324,12 @@ write, including a preservation read and the following SET
 `_dual_rx_runtime.py: DualRxRuntimeMixin.write_relative_vfo_mode`).
 A frame queued by another task stays queued until the hold ends, so it
 cannot land between that read and the SET. `Priority.FORCE_RELEASE` and
-`Priority.ABORT` still run during the hold. A send that does not enter
-the commander is outside the reservation. USB/LSB and packet modes with a
-positive passband still send DATA and filter explicitly.
+`Priority.ABORT` still run during the hold, and so does a TX release
+(a de-key frame or CW stop) together with everything queued before it,
+in order (`runtime/_civ_rx.py: CivRuntime._send_civ_raw`). A send that
+does not enter the commander is outside the reservation. USB/LSB and
+packet modes with a positive passband still send DATA and filter
+explicitly.
 See `handler.py: RigctldHandler._cmd_get_split_freq`,
 `handler.py: RigctldHandler._cmd_get_split_mode`, and
 `_dual_rx_runtime.py: DualRxRuntimeMixin.write_relative_vfo_mode`.

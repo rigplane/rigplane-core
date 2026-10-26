@@ -116,7 +116,7 @@ async def test_admitted_request_loses_transport_before_execution(
     )
     try:
         await admitted.wait()
-        future = commander._pending_by_key["admitted-read"].future
+        future = commander._pending_by_key["admitted-read"][0].future
         assert not future.done() and not caller.done()
         assert radio._civ_transport is transport
         assert transport.sent_packets == []
@@ -185,7 +185,7 @@ async def test_disconnect_stops_inflight_and_queued_reads_before_transport_retir
             )
             is None
         )
-        queued = commander._pending_by_key["queued-read"].future
+        queued = commander._pending_by_key["queued-read"][0].future
         assert queue.qsize() == 1 and not queued.done()
 
         await radio._control_phase.disconnect()

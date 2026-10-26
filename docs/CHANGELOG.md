@@ -29,14 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Split-mode read-modify-write is one commander reservation (MOR-3743).**
   `IcomCommander.exclusive` runs the frames queued by one task. Frames
   queued by any other task stay queued for the hold, except
-  `Priority.FORCE_RELEASE` and `Priority.ABORT`, which still run.
+  `Priority.FORCE_RELEASE`, `Priority.ABORT`, and TX releases: a de-key
+  (`CoreRadio.set_ptt(False)`, tuner-off, voice-memory stop, a raw de-key
+  frame, `stop_cw_text`) runs during the hold together with every command
+  queued before it, in order, so it neither waits out the hold nor
+  overtakes an earlier queued key-on. No send priority changed. A
+  read-modify-write whose preserved fields that traffic changes fails its
+  own readback instead of committing a mixed state (classified at
+  `runtime/_civ_rx.py: CivRuntime._send_civ_raw`).
   `DualRxRuntimeMixin.write_relative_vfo_mode` holds that reservation for
   the whole write, so a second command queued on the same commander cannot
   land between a preservation read and the mode SET.
   A send that never enters the commander is outside the reservation.
-  `CoreRadio.set_ptt` still sends at `Priority.IMMEDIATE`, including
-  `set_ptt(False)`, so that send waits while a reservation is held
-  (`runtime/radio.py: CoreRadio.set_ptt`).
 
 ## [3.0.0b21] — 2026-10-26
 

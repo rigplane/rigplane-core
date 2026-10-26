@@ -2518,6 +2518,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         timeout: float | None = None,
         wait_dispatch: bool = True,
         is_current: "Callable[[], bool] | None" = None,
+        releases_backlog: bool = False,
     ) -> CivFrame | None:
         """Delegate to CI-V runtime (keeps existing call sites unchanged)."""
         return await self._civ_runtime.send_civ_raw(
@@ -2529,6 +2530,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             timeout=timeout,
             wait_dispatch=wait_dispatch,
             is_current=is_current,
+            releases_backlog=releases_backlog,
         )
 
     async def _send_civ_expect(
@@ -6163,7 +6165,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """Stop CW sending."""
         self._check_connected()
         civ = self._commands.stop_cw(to_addr=self._radio_addr)
-        resp = await self._send_civ_raw(civ, priority=Priority.IMMEDIATE)
+        # The CW stop frame is not a raw de-key the runtime seam would
+        # classify, so the release flag is explicit: the stop runs during
+        # a commander reservation together with the backlog queued before
+        # it (MOR-3743).
+        resp = await self._send_civ_raw(
+            civ, priority=Priority.IMMEDIATE, releases_backlog=True
+        )
         if resp is not None and parse_ack_nak(resp) is False:
             raise CommandError("Radio rejected CW stop")
 

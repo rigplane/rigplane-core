@@ -55,6 +55,12 @@ class _QueueItem:
     # Task that queued the frame.  An exclusive reservation runs that task's
     # frames and leaves every other task's frames queued.
     enqueued_by: asyncio.Task[Any] | None = None
+    # True for a TX release (MOR-3743).  Queued while a reservation is
+    # held, such an item opens a seq barrier: it and every item queued
+    # before it become runnable during the hold, in (priority, seq)
+    # order, so a de-key never waits out a hold nor overtakes an earlier
+    # queued key-on.  Items queued after it stay deferred as before.
+    releases_backlog: bool = False
 
 
 def _fail_item(item: _QueueItem, exc: BaseException) -> None:
@@ -91,7 +97,11 @@ class IcomCommander:
         self._queue: asyncio.PriorityQueue[tuple[int, int, _QueueItem]] | None = None
         self._worker: asyncio.Task[None] | None = None
         self._seq = 0
-        self._pending_by_key: dict[str, _QueueItem] = {}
+        # Pending keyed items per key, oldest first.  Several items may be
+        # pending under one key while a reservation defers some of them
+        # (MOR-3743); a joiner joins the first item it may join, and each
+        # item's completion removes exactly that item.
+        self._pending_by_key: dict[str, list[_QueueItem]] = {}
         # Count of outstanding fire-and-forget BACKGROUND sends (see
         # ``_MAX_BG_INFLIGHT``).  Incremented at enqueue, decremented in the
         # worker's ``finally`` for items flagged ``counts_bg_inflight``.
@@ -101,11 +111,25 @@ class IcomCommander:
         self._reservation_gate = asyncio.Condition()
         self._deferred: list[tuple[int, int, _QueueItem]] = []
         self._work_ready = asyncio.Event()
+        # Highest seq opened by a ``releases_backlog`` item queued during
+        # the current hold; 0 = no barrier.  Cleared when the hold ends.
+        self._release_barrier_seq = 0
+        # Items still to dispatch before the next reservation may start
+        # (everything queued when the previous hold ended).  The worker
+        # counts down as it dispatches items from that snapshot — bounded
+        # by ``_reservation_drain_mark``, the highest seq it covers — and
+        # notifies the gate at zero, so alternating holds cannot starve
+        # older deferred work (MOR-3743).
+        self._reservation_drain_pending = 0
+        self._reservation_drain_mark = 0
 
     def start(self) -> None:
         if self._worker is None or self._worker.done():
             self._queue = asyncio.PriorityQueue()
             self._deferred.clear()
+            self._release_barrier_seq = 0
+            self._reservation_drain_pending = 0
+            self._reservation_drain_mark = 0
             self._worker = asyncio.create_task(self._loop())
 
     def _accepting(self) -> bool:
@@ -123,11 +147,30 @@ class IcomCommander:
             return True
         if item.priority <= int(Priority.ABORT):
             return True
-        return item.enqueued_by is owner
+        if item.enqueued_by is owner:
+            return True
+        # A TX release runs during the hold (MOR-3743): once queued, it
+        # opens the barrier at its own seq, which also makes it runnable.
+        if item.releases_backlog:
+            return True
+        return item.seq <= self._release_barrier_seq
+
+    def _unregister_pending(self, item: _QueueItem) -> None:
+        """Remove exactly this item from its key's pending list."""
+        if item.key is None:
+            return
+        pending = self._pending_by_key.get(item.key)
+        if pending is None:
+            return
+        for index, candidate in enumerate(pending):
+            if candidate is item:
+                del pending[index]
+                break
+        if not pending:
+            self._pending_by_key.pop(item.key, None)
 
     def _fail_pending(self, item: _QueueItem) -> None:
-        if item.key is not None and self._pending_by_key.get(item.key) is item:
-            self._pending_by_key.pop(item.key, None)
+        self._unregister_pending(item)
         if item.counts_bg_inflight and self._bg_inflight > 0:
             self._bg_inflight -= 1
         _fail_item(item, ConnectionError("Commander stopped"))
@@ -181,9 +224,16 @@ class IcomCommander:
         """Keep this task's frames together until the context ends.
 
         Frames queued by any other task stay queued, except
-        ``Priority.FORCE_RELEASE`` and ``Priority.ABORT``, which still run.
-        Cancellation releases the hold. A keyed dedupe send by the owner
-        never joins a deferred foreign item; it enqueues its own frame.
+        ``Priority.FORCE_RELEASE``, ``Priority.ABORT`` and TX releases: a
+        ``releases_backlog`` send runs during the hold together with every
+        command queued before it, in (priority, seq) order, so an earlier
+        deferred key-on still keys first and a read-modify-write whose
+        preserved fields that traffic changes fails its own readback
+        instead of committing a mixed state. Cancellation releases the
+        hold. A keyed dedupe send never joins an item the caller's own
+        send could outrun (the owner joining a deferred foreign item); it
+        enqueues its own frame. A new reservation starts only after every
+        command queued before the previous release has been dispatched.
         """
         task = asyncio.current_task()
         if task is None:
@@ -201,7 +251,10 @@ class IcomCommander:
             while True:
                 if not self._accepting():
                     raise ConnectionError("Commander is not started")
-                if self._reservation_owner is None:
+                if (
+                    self._reservation_owner is None
+                    and self._reservation_drain_pending == 0
+                ):
                     break
                 await self._reservation_gate.wait()
             self._reservation_owner = task
@@ -215,6 +268,18 @@ class IcomCommander:
                     if self._reservation_depth <= 0:
                         self._reservation_owner = None
                         self._reservation_depth = 0
+                        self._release_barrier_seq = 0
+                        # Grant the next hold only after the worker has
+                        # dispatched everything queued before this release
+                        # (MOR-3743): snapshot the backlog now and let the
+                        # worker notify the gate as it drains to zero.
+                        queue = self._queue
+                        if queue is not None:
+                            self._drain_into_deferred(queue)
+                        self._reservation_drain_pending = len(self._deferred)
+                        self._reservation_drain_mark = max(
+                            (item.seq for _, _, item in self._deferred), default=0
+                        )
                         self._reservation_gate.notify_all()
             self._work_ready.set()
 
@@ -259,6 +324,9 @@ class IcomCommander:
                 self._queue = None
                 self._pending_by_key.clear()
                 self._bg_inflight = 0
+                self._release_barrier_seq = 0
+                self._reservation_drain_pending = 0
+                self._reservation_drain_mark = 0
 
     async def send(
         self,
@@ -271,6 +339,7 @@ class IcomCommander:
         wait_response: bool = True,
         wait_dispatch: bool = True,
         is_current: Callable[[], bool] | None = None,
+        releases_backlog: bool = False,
     ) -> CivFrame | None:
         """Enqueue a CI-V command.
 
@@ -286,6 +355,10 @@ class IcomCommander:
                 ``Priority.BACKGROUND`` fire-and-forget sends a defensive
                 ``_MAX_BG_INFLIGHT`` cap bounds outstanding work (drop-newest,
                 raising ``BackgroundSendDropped``).
+            releases_backlog: True for a TX release (MOR-3743).  Queued
+                while a reservation is held, the item opens a seq barrier
+                so it and everything queued before it run during the hold
+                in (priority, seq) order.  It changes no priority.
         """
         if (
             self._queue is None
@@ -295,24 +368,6 @@ class IcomCommander:
         ):
             raise ConnectionError("Commander is not started")
 
-        if dedupe and key is not None:
-            existing = self._pending_by_key.get(key)
-            if (
-                existing is not None
-                and not existing.future.done()
-                # The reservation owner never joins a deferred foreign item:
-                # that item cannot run until the hold ends, and only the
-                # owner ends the hold, so joining it would deadlock
-                # (MOR-3743). The owner enqueues its own item instead.
-                and not (
-                    self._reservation_owner is asyncio.current_task()
-                    and not self._reservation_allows(existing)
-                )
-            ):
-                if timeout is not None:
-                    return await asyncio.wait_for(existing.future, timeout=timeout)
-                return await existing.future
-
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[CivFrame | None] = loop.create_future()
         self._seq += 1
@@ -320,12 +375,9 @@ class IcomCommander:
         # Defensive cap on fire-and-forget BACKGROUND sends only.  NORMAL,
         # IMMEDIATE, and any wait_dispatch=True send is never capped.
         counts_bg_inflight = not wait_dispatch and priority == Priority.BACKGROUND
-        if counts_bg_inflight and self._bg_inflight >= _MAX_BG_INFLIGHT:
-            # Drop-newest: do not enqueue. Raising (rather than returning
-            # ``None``) is what tells a fire-and-forget caller the send never
-            # left; ``None`` is also what an enqueued send returns.
-            raise BackgroundSendDropped("background send dropped: commander at cap")
 
+        # Built before the dedupe decision: the join rule asks whether the
+        # item this caller would enqueue can run during a hold (MOR-3743).
         item = _QueueItem(
             int(priority),
             self._seq,
@@ -337,15 +389,45 @@ class IcomCommander:
             fire_and_forget=not wait_dispatch,
             is_current=is_current,
             enqueued_by=asyncio.current_task(),
+            releases_backlog=releases_backlog,
         )
 
+        if dedupe and key is not None:
+            caller_runs_during_hold = self._reservation_allows(item)
+            for existing in self._pending_by_key.get(key, ()):
+                if existing.future.done():
+                    continue
+                # A caller whose own item would run during the hold (the
+                # owner, an abort-tier send, or a TX release) never joins
+                # a deferred item: that item cannot run until the hold
+                # ends, and the owner of the hold may be this very caller,
+                # so joining it would deadlock (MOR-3743). Such a caller
+                # enqueues its own item instead.
+                if caller_runs_during_hold and not self._reservation_allows(existing):
+                    continue
+                if timeout is not None:
+                    return await asyncio.wait_for(existing.future, timeout=timeout)
+                return await existing.future
+
+        if counts_bg_inflight and self._bg_inflight >= _MAX_BG_INFLIGHT:
+            # Drop-newest: do not enqueue. Raising (rather than returning
+            # ``None``) is what tells a fire-and-forget caller the send never
+            # left; ``None`` is also what an enqueued send returns.
+            raise BackgroundSendDropped("background send dropped: commander at cap")
+
         if key is not None:
-            self._pending_by_key[key] = item
+            self._pending_by_key.setdefault(key, []).append(item)
 
         if counts_bg_inflight:
             self._bg_inflight += 1
 
         await self._queue.put((item.priority, item.seq, item))
+        if (
+            item.releases_backlog
+            and self._reservation_owner is not None
+            and item.seq > self._release_barrier_seq
+        ):
+            self._release_barrier_seq = item.seq
         self._work_ready.set()
 
         if not wait_dispatch:
@@ -362,8 +444,7 @@ class IcomCommander:
             # Cancel queued/inflight future so worker can skip abandoned work.
             if not fut.done():
                 fut.cancel()
-            if key is not None and self._pending_by_key.get(key) is item:
-                self._pending_by_key.pop(key, None)
+            self._unregister_pending(item)
             raise
 
     async def transaction(
@@ -450,13 +531,21 @@ class IcomCommander:
                     if worker.cancelling():
                         raise asyncio.CancelledError
                 finally:
+                    if (
+                        self._reservation_drain_pending > 0
+                        and item.seq <= self._reservation_drain_mark
+                    ):
+                        self._reservation_drain_pending -= 1
+                        if self._reservation_drain_pending == 0:
+                            self._reservation_drain_mark = 0
+                            # Backlog from the previous hold fully
+                            # dispatched: the next reservation may start
+                            # (MOR-3743).
+                            async with self._reservation_gate:
+                                self._reservation_gate.notify_all()
                     if item.counts_bg_inflight and self._bg_inflight > 0:
                         self._bg_inflight -= 1
-                    if (
-                        item.key is not None
-                        and self._pending_by_key.get(item.key) is item
-                    ):
-                        self._pending_by_key.pop(item.key, None)
+                    self._unregister_pending(item)
                     queue.task_done()
         except asyncio.CancelledError:
             pass
