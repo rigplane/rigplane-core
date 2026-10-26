@@ -24,6 +24,18 @@ that class of defect is release-blocking by definition and is not on this list.
   an SSH tunnel. This limitation concerns microphone capture and voice TX; it
   does not make all control or RX operations unavailable over HTTP.
 
+## rigctld split mode with two clients
+
+- **`X` can copy the wrong DATA/filter when a second client changes the same
+  VFO at the same moment.** An `X` without an explicit DATA and filter (omitted or
+  `0` passband, or an ordinary mode with a passband) reads the target VFO's DATA
+  and filter before it writes the mode. A raw `w` frame or another `X` from a
+  second rigctld client that lands between the read and the write can make `X`
+  write the wrong DATA/filter back, and DATA also selects the TX audio source. A
+  VFO selection change through the runtime's own methods is refused with
+  `RPRT -9` instead. A packet mode with a passband sends DATA and filter
+  explicitly and is not affected. (MOR-3743)
+
 ## Receive-control feedback and precision
 
 - **PBT values across acquisition gaps: the last confirmed value is kept in
@@ -47,6 +59,11 @@ that class of defect is release-blocking by definition and is not on this list.
   `RA`/`PA` commands have no SUB form; the controls are shown disabled with
   the hint "Not available on this receiver" while SUB is active. (MOR-2511,
   owner ruling 2026-09-17)
+
+## IC-7300 specific
+
+- **IC-7300: 4 m (70 MHz) can be tuned and received, transmit on 4 m is
+  not offered (MOR-3782).**
 
 ## rigctld write handling during transmit
 

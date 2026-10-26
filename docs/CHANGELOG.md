@@ -26,21 +26,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Split-mode read-modify-write is one commander reservation (MOR-3743).**
-  `IcomCommander.exclusive` runs the frames queued by one task. Frames
-  queued by any other task stay queued for the hold, except
-  `Priority.FORCE_RELEASE`, `Priority.ABORT`, and TX releases: a de-key
-  (`CoreRadio.set_ptt(False)`, tuner-off, voice-memory stop, a raw de-key
-  frame, `stop_cw_text`) runs during the hold together with every command
-  queued before it, in order, so it neither waits out the hold nor
-  overtakes an earlier queued key-on. No send priority changed. A
-  read-modify-write whose preserved fields that traffic changes fails its
-  own readback instead of committing a mixed state (classified at
-  `runtime/_civ_rx.py: CivRuntime._send_civ_raw`).
-  `DualRxRuntimeMixin.write_relative_vfo_mode` holds that reservation for
-  the whole write, so a second command queued on the same commander cannot
-  land between a preservation read and the mode SET.
-  A send that never enters the commander is outside the reservation.
+- **IC-7300 frequency entry and tuning are no longer capped at 60 MHz
+  (MOR-3782).** The profile now covers the receiver range up to 74.800 MHz,
+  which includes the 4 m band; no 4 m transmit band is declared, so the
+  frontend does not offer TX at 70 MHz (EU 4 m transmit needs per-radio
+  variant selection, a separate follow-up); not verified on a radio.
+
+- **IC-7300MK2 CI-V identity (MOR-3792).** The shared serial identity
+  table now maps the MK2's default CI-V address `0xB6` to `IC-7300MK2`,
+  so `identify_radio` — and the CI-V identity resolver Pro consumes —
+  answers `IC-7300MK2` instead of `Unknown (0xB6)`. The MK2 model-ID
+  bytes are not documented in the CI-V guide and the radio has not been
+  verified on hardware; the profile's identity gate stays unverified.
 
 ## [3.0.0b21] — 2026-10-26
 

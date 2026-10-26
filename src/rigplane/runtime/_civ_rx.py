@@ -82,7 +82,6 @@ from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime import radio_reconnect
 from rigplane.runtime._state_queries import tx_target_max_age
 from rigplane.runtime.meter_cal import interpolate_meter
-from rigplane.runtime.tx_interlock import is_exact_raw_dekey_frame
 
 if TYPE_CHECKING:
     from ._runtime_protocols import CivRuntimeHost
@@ -1284,7 +1283,6 @@ class CivRuntime:
         timeout: "float | None" = None,
         wait_dispatch: bool = True,
         is_current: Callable[[], bool] | None = None,
-        releases_backlog: bool = False,
     ) -> "CivFrame | None":
         """Enqueue a CI-V command and wait for its response (public API)."""
         return await self._send_civ_raw(
@@ -1296,7 +1294,6 @@ class CivRuntime:
             timeout=timeout,
             wait_dispatch=wait_dispatch,
             is_current=is_current,
-            releases_backlog=releases_backlog,
         )
 
     async def _send_civ_frame_now(
@@ -4130,16 +4127,8 @@ class CivRuntime:
         timeout: "float | None" = None,
         wait_dispatch: bool = True,
         is_current: Callable[[], bool] | None = None,
-        releases_backlog: bool = False,
     ) -> "CivFrame | None":
-        """Enqueue a CI-V command and wait for its response.
-
-        A TX release — an exact raw de-key frame (``is_exact_raw_dekey_frame``)
-        or a caller that passes ``releases_backlog`` (CW stop) — travels with
-        ``releases_backlog`` so the commander reservation lets it and the
-        backlog queued before it run during a hold (MOR-3743).  No priority
-        changes here.
-        """
+        """Enqueue a CI-V command and wait for its response."""
         if self._host._civ_transport is None or not self._host._connected:
             await self._wait_for_civ_transport_recovery(timeout=timeout)
         assert self._host._civ_transport is not None
@@ -4164,7 +4153,6 @@ class CivRuntime:
             timeout=timeout,
             wait_dispatch=wait_dispatch,
             is_current=is_current,
-            releases_backlog=(releases_backlog or is_exact_raw_dekey_frame(civ_frame)),
         )
 
     @staticmethod

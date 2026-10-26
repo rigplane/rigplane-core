@@ -1,23 +1,31 @@
-"""Split-mode read-modify-write must not admit another commander frame.
+"""Split-mode read-modify-write detects concurrent commands (MOR-3743).
 
 CI-V ``0x26`` split-mode writes that omit DATA or filter
 (``DualRxRuntimeMixin.write_relative_vfo_mode``, rigctld ``X``) read the
 target VFO and then SET. Those are separate ``IcomCommander`` exchanges.
-A second command queued in that gap used to run before the SET and the
-SET then wrote the stale DATA/filter back.
+A second command dispatched in that gap used to overwrite the preserved
+fields with stale values. Nothing is deferred or reordered now: the write
+runs inside a commander interference scope, any concurrent non-poll
+dispatch marks the scope, the SET is refused before the wire, and the
+whole write retries from the preservation read.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
 import pytest
 
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.commands.commander import IcomCommander, Priority
-from rigplane.core.exceptions import CommandRejectedError
+from rigplane.core.exceptions import CommandError, ConnectionError
 from rigplane.core.types import CivFrame
 from rigplane.runtime.radio import IcomRadio
+
+if TYPE_CHECKING:
+    from rigplane.commands.commander import InterferenceScope
 
 _MODELS = ("IC-7300", "IC-705", "IC-7610")
 
@@ -27,15 +35,28 @@ def _reply(addr: int, payload: str) -> CivFrame:
 
 
 class _SplitBackend:
-    """CI-V peer whose preservation read waits until the test says so."""
+    """CI-V peer for split-mode read-modify-write tests.
+
+    Tracks the unselected VFO's ``(mode, data, filter)`` triple. Relative
+    mode reads (``0x26`` with a one-byte selector) report the tracked
+    state and can run a per-read hook while the read holds the commander
+    worker, so a test can queue foreign frames inside the gap the write
+    must survive. Honors the wire-seam ``is_current`` contract exactly as
+    ``CivRuntime._execute_civ_raw`` does: a stale frame raises before it
+    is recorded, so a refused SET never reaches the wire.
+    """
 
     def __init__(self, addr: int) -> None:
         self.addr = addr
         self.frames: list[bytes] = []
-        self.filter = 3
-        self._mode_reads = 0
-        self.preservation_entered = asyncio.Event()
-        self.release_preservation = asyncio.Event()
+        self.mode = 0x01
+        self.data = 0x01
+        self.filter = 0x03
+        self.mode_reads = 0
+        # One-shot gate consumed by the first 0x25 read (tests that need
+        # the worker busy before the write starts).
+        self.freq_read_release: asyncio.Event | None = None
+        self.on_mode_read: Callable[[int], Awaitable[None]] | None = None
 
     async def __call__(
         self,
@@ -43,25 +64,31 @@ class _SplitBackend:
         wait_response: bool = True,
         is_current: object = None,
     ) -> CivFrame:
-        del wait_response, is_current
+        del wait_response
+        if is_current is not None and not is_current():
+            raise ConnectionError("managed TX attempt is stale")
         self.frames.append(payload)
         frame = parse_civ_frame(payload)
+        if frame.command == 0x25 and len(frame.data) == 1:
+            gate = self.freq_read_release
+            if gate is not None:
+                self.freq_read_release = None
+                await gate.wait()
+            return _reply(self.addr, f"25 {frame.data[0]:02X} 00 40 07 14 00")
         if frame.command == 0x26 and len(frame.data) == 1:
-            self._mode_reads += 1
-            selector = frame.data[0]
-            if self._mode_reads == 1:
-                self.preservation_entered.set()
-                await self.release_preservation.wait()
+            self.mode_reads += 1
+            if self.on_mode_read is not None:
+                await self.on_mode_read(self.mode_reads)
             return _reply(
                 self.addr,
-                f"26 {selector:02X} 01 01 {self.filter:02X}",
+                f"26 {frame.data[0]:02X} {self.mode:02X} "
+                f"{self.data:02X} {self.filter:02X}",
             )
         if frame.command == 0x26 and len(frame.data) > 1:
-            self.filter = frame.data[-1]
+            self.mode = frame.data[1]
+            self.data = frame.data[2]
+            self.filter = frame.data[3]
             return _reply(self.addr, "FB")
-        if frame.command == 0x25 and len(frame.data) == 1:
-            selector = frame.data[0]
-            return _reply(self.addr, f"25 {selector:02X} 00 40 07 14 00")
         return _reply(self.addr, "FB")
 
 
@@ -72,379 +99,6 @@ def _mode_sets(frames: list[bytes]) -> list[bytes]:
         if parsed.command == 0x26 and len(parsed.data) > 1:
             sets.append(parsed.data)
     return sets
-
-
-@pytest.mark.parametrize("model", _MODELS)
-async def test_split_mode_read_modify_write_excludes_foreign_command(
-    monkeypatch: pytest.MonkeyPatch, model: str
-) -> None:
-    """A queued mode write cannot land between the preservation read and the SET."""
-    radio = IcomRadio("127.0.0.1", model=model)
-    backend = _SplitBackend(radio.profile.civ_addr)
-    commander = IcomCommander(backend)
-    radio._commander = commander
-    radio._connected = True
-    radio._civ_transport = object()  # type: ignore[assignment]
-    monkeypatch.setattr(radio, "_check_connected", lambda: None)
-    commander.start()
-    foreign: asyncio.Task[CivFrame | None] | None = None
-    entered = asyncio.Event()
-
-    async def competing() -> None:
-        entered.set()
-        # Selector 01, USB, DATA on, filter 1 — the newer split-VFO write.
-        await radio.send_civ(0x26, data=bytes([0x01, 0x01, 0x01, 0x01]))
-
-    try:
-        write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
-        await asyncio.wait_for(backend.preservation_entered.wait(), 1)
-        foreign = asyncio.create_task(competing())
-        await asyncio.wait_for(entered.wait(), 1)
-        # ``send`` queues the frame before awaiting its result, and this read
-        # still owns the worker, so the frame is queued once ``entered`` wakes.
-        assert commander._queue is not None and commander._queue.qsize() == 1
-        assert not any(
-            parse_civ_frame(frame).command == 0x26
-            and len(parse_civ_frame(frame).data) > 1
-            for frame in backend.frames
-        )
-        backend.release_preservation.set()
-        await asyncio.wait_for(write, 1)
-        await asyncio.wait_for(foreign, 1)
-    finally:
-        backend.release_preservation.set()
-        radio._connected = False
-        if foreign is not None and not foreign.done():
-            foreign.cancel()
-        await commander.stop()
-
-    sets = _mode_sets(backend.frames)
-    assert [item[-1] for item in sets] == [3, 1]
-    assert backend.filter == 1
-
-
-@pytest.mark.parametrize("model", _MODELS)
-async def test_selection_during_preserved_write_does_not_run_before_rejection(
-    monkeypatch: pytest.MonkeyPatch, model: str
-) -> None:
-    """A VFO select queued during the read changes the epoch and does not SET.
-
-    ``CoreRadio._set_vfo_wire`` shifts ``_vfo_selection_epoch`` before its
-    send. The reservation keeps that frame queued, so the mode write sees
-    the even epoch and rejects before the SET.
-    """
-    radio = IcomRadio("127.0.0.1", model=model)
-    backend = _SplitBackend(radio.profile.civ_addr)
-    commander = IcomCommander(backend)
-    radio._commander = commander
-    radio._connected = True
-    radio._civ_transport = object()  # type: ignore[assignment]
-    monkeypatch.setattr(radio, "_check_connected", lambda: None)
-    commander.start()
-    select: asyncio.Task[None] | None = None
-    entered = asyncio.Event()
-
-    async def change_selection() -> None:
-        entered.set()
-        await radio._set_vfo_wire("B")
-
-    try:
-        write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
-        await asyncio.wait_for(backend.preservation_entered.wait(), 1)
-        select = asyncio.create_task(change_selection())
-        await asyncio.wait_for(entered.wait(), 1)
-        assert radio._vfo_selection_epoch % 2 == 0
-        assert commander._queue is not None and commander._queue.qsize() == 1
-        backend.release_preservation.set()
-        with pytest.raises(CommandRejectedError, match="selection changed"):
-            await asyncio.wait_for(write, 1)
-        await asyncio.wait_for(select, 1)
-    finally:
-        backend.release_preservation.set()
-        radio._connected = False
-        if select is not None and not select.done():
-            select.cancel()
-        await commander.stop()
-
-    assert _mode_sets(backend.frames) == []
-    assert any(parse_civ_frame(frame).command == 0x07 for frame in backend.frames)
-
-
-class _Hold:
-    def __init__(self) -> None:
-        self.order: list[bytes] = []
-        self.entered = asyncio.Event()
-        self.release = asyncio.Event()
-
-    async def __call__(
-        self,
-        payload: bytes,
-        wait_response: bool = True,
-        is_current: object = None,
-    ) -> None:
-        del wait_response, is_current
-        self.order.append(payload)
-        if payload == b"R":
-            self.entered.set()
-            await self.release.wait()
-
-
-async def _await_queued(
-    entered: asyncio.Event, commander: IcomCommander, n: int
-) -> None:
-    """``send`` queues before it waits, so the frame is queued once ``entered`` wakes."""
-    await entered.wait()
-    queue = commander._queue
-    assert queue is not None and queue.qsize() == n
-
-
-async def test_reservation_runs_abort_tiers_and_defers_other_priorities() -> None:
-    hold = _Hold()
-    commander = IcomCommander(hold)
-    commander.start()
-    tasks: list[asyncio.Task[object]] = []
-    try:
-
-        async def owner() -> None:
-            async with commander.exclusive():
-                await commander.send(b"R")
-                await commander.send(b"W")
-
-        owner_task = asyncio.create_task(owner())
-        tasks.append(owner_task)
-        await asyncio.wait_for(hold.entered.wait(), 1)
-
-        async def competing(
-            payload: bytes, priority: Priority, entered: asyncio.Event
-        ) -> None:
-            entered.set()
-            await commander.send(payload, priority=priority)
-
-        queued = 0
-        for payload, priority in (
-            (b"N", Priority.NORMAL),
-            (b"I", Priority.IMMEDIATE),
-            (b"A", Priority.ABORT),
-            (b"F", Priority.FORCE_RELEASE),
-        ):
-            entered = asyncio.Event()
-            task = asyncio.create_task(competing(payload, priority, entered))
-            tasks.append(task)
-            queued += 1
-            await asyncio.wait_for(_await_queued(entered, commander, queued), 1)
-        hold.release.set()
-        await asyncio.wait_for(owner_task, 1)
-        await asyncio.wait_for(asyncio.gather(*tasks[1:]), 1)
-        assert hold.order == [b"R", b"F", b"A", b"W", b"I", b"N"]
-    finally:
-        hold.release.set()
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await commander.stop()
-
-
-async def test_cancelled_reservation_allows_the_next_command() -> None:
-    hold = _Hold()
-    commander = IcomCommander(hold)
-    commander.start()
-    owner: asyncio.Task[None] | None = None
-    try:
-
-        async def reserved() -> None:
-            async with commander.exclusive():
-                await commander.send(b"R")
-                await asyncio.Event().wait()
-
-        owner = asyncio.create_task(reserved())
-        await asyncio.wait_for(hold.entered.wait(), 1)
-        owner.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await owner
-        await asyncio.wait_for(commander.send(b"Z"), 1)
-        assert hold.order == [b"R", b"Z"]
-    finally:
-        hold.release.set()
-        if owner is not None and not owner.done():
-            owner.cancel()
-        await commander.stop()
-
-
-async def test_owner_dedupe_never_joins_a_deferred_foreign_item() -> None:
-    """The owner's keyed dedupe send must not join a deferred foreign item.
-
-    A foreign task's keyed ``BACKGROUND`` send cannot run until the hold
-    ends, and only the owner ends the hold: joining that future would wait
-    forever (MOR-3743). The owner enqueues its own frame instead, and both
-    frames run — the owner's during the hold, the foreign one after it.
-    """
-    hold = _Hold()
-    commander = IcomCommander(hold)
-    commander.start()
-    tasks: list[asyncio.Task[object]] = []
-    foreign: asyncio.Task[None] | None = None
-    try:
-
-        async def owner() -> None:
-            async with commander.exclusive():
-                await commander.send(b"R")
-                await commander.send(b"Q", key="k", dedupe=True)
-                # Still inside the hold: the owner's frame ran, the foreign
-                # frame has not.
-                assert hold.order == [b"R", b"Q"]
-                assert foreign is not None and not foreign.done()
-
-        owner_task = asyncio.create_task(owner())
-        tasks.append(owner_task)
-        await asyncio.wait_for(hold.entered.wait(), 1)
-
-        foreign_entered = asyncio.Event()
-
-        async def foreign_send() -> None:
-            foreign_entered.set()
-            await commander.send(
-                b"Q", key="k", dedupe=True, priority=Priority.BACKGROUND
-            )
-
-        foreign = asyncio.create_task(foreign_send())
-        tasks.append(foreign)
-        await asyncio.wait_for(_await_queued(foreign_entered, commander, 1), 1)
-
-        hold.release.set()
-        await asyncio.wait_for(owner_task, 1)
-        await asyncio.wait_for(foreign, 1)
-        assert hold.order == [b"R", b"Q", b"Q"]
-        # No stale key entry: a fresh keyed send enqueues and runs a new item.
-        await asyncio.wait_for(commander.send(b"Q", key="k", dedupe=True), 1)
-        assert hold.order == [b"R", b"Q", b"Q", b"Q"]
-        queue = commander._queue
-        assert queue is not None
-        await asyncio.wait_for(queue.join(), 1)
-        assert commander._pending_by_key == {}
-    finally:
-        hold.release.set()
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await commander.stop()
-
-
-async def test_foreign_dedupe_joins_the_owners_pending_item_during_the_hold() -> None:
-    """A foreign keyed send may join the owner's pending item.
-
-    The owner's item runs during the hold, so the foreign joiner resolves
-    before the hold ends and only one frame reaches the wire.
-    """
-    hold = _Hold()
-    commander = IcomCommander(hold)
-    commander.start()
-    tasks: list[asyncio.Task[object]] = []
-    joiner: asyncio.Task[None] | None = None
-    try:
-
-        async def owner() -> None:
-            async with commander.exclusive():
-                await commander.send(b"R", wait_dispatch=False)
-                await commander.send(b"Q", key="k", dedupe=True)
-                assert hold.order == [b"R", b"Q"]
-                assert joiner is not None
-                await asyncio.wait_for(joiner, 1)
-
-        owner_task = asyncio.create_task(owner())
-        tasks.append(owner_task)
-        await asyncio.wait_for(hold.entered.wait(), 1)
-
-        async def join_send() -> None:
-            await commander.send(b"Q", key="k", dedupe=True)
-
-        joiner = asyncio.create_task(join_send())
-        tasks.append(joiner)
-        await asyncio.sleep(0)
-        hold.release.set()
-        await asyncio.wait_for(owner_task, 1)
-        await asyncio.wait_for(joiner, 1)
-        assert hold.order == [b"R", b"Q"]
-    finally:
-        hold.release.set()
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await commander.stop()
-
-
-async def test_unreserved_dedupe_still_joins_across_tasks() -> None:
-    """Without a reservation, keyed dedupe still joins one wire frame."""
-    hold = _Hold()
-    commander = IcomCommander(hold)
-    commander.start()
-    tasks: list[asyncio.Task[object]] = []
-    try:
-        gate = asyncio.create_task(commander.send(b"R"))
-        tasks.append(gate)
-        await asyncio.wait_for(hold.entered.wait(), 1)
-
-        first_entered = asyncio.Event()
-
-        async def first() -> None:
-            first_entered.set()
-            await commander.send(b"Q", key="k", dedupe=True)
-
-        first_task = asyncio.create_task(first())
-        tasks.append(first_task)
-        await asyncio.wait_for(_await_queued(first_entered, commander, 1), 1)
-
-        second_entered = asyncio.Event()
-
-        async def second() -> None:
-            second_entered.set()
-            await commander.send(b"Q", key="k", dedupe=True)
-
-        second_task = asyncio.create_task(second())
-        tasks.append(second_task)
-        await asyncio.wait_for(second_entered.wait(), 1)
-
-        hold.release.set()
-        await asyncio.wait_for(gate, 1)
-        await asyncio.wait_for(first_task, 1)
-        await asyncio.wait_for(second_task, 1)
-        assert hold.order == [b"R", b"Q"]
-    finally:
-        hold.release.set()
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await commander.stop()
-
-
-async def test_owner_dedupe_joins_its_own_pending_item_during_the_hold() -> None:
-    """The owner's keyed dedupe still joins its own pending item."""
-    hold = _Hold()
-    commander = IcomCommander(hold)
-    commander.start()
-    owner: asyncio.Task[None] | None = None
-    second_entered = asyncio.Event()
-    try:
-
-        async def reserved() -> None:
-            async with commander.exclusive():
-                await commander.send(b"R", wait_dispatch=False)
-                await commander.send(b"Q", key="k", dedupe=True, wait_dispatch=False)
-                second_entered.set()
-                await commander.send(b"Q", key="k", dedupe=True)
-                assert hold.order == [b"R", b"Q"]
-
-        owner = asyncio.create_task(reserved())
-        await asyncio.wait_for(hold.entered.wait(), 1)
-        await asyncio.wait_for(second_entered.wait(), 1)
-
-        hold.release.set()
-        await asyncio.wait_for(owner, 1)
-        assert hold.order == [b"R", b"Q"]
-    finally:
-        hold.release.set()
-        if owner is not None and not owner.done():
-            owner.cancel()
-        await commander.stop()
 
 
 def _find_wire_frame(
@@ -469,18 +123,26 @@ def _first_mode_set(frames: list[bytes]) -> int:
     raise AssertionError("no mode SET reached the wire")
 
 
+async def _await_queued(
+    entered: asyncio.Event, commander: IcomCommander, n: int
+) -> None:
+    """``send`` queues before it waits, so the frame is queued once ``entered`` wakes."""
+    await entered.wait()
+    queue = commander._queue
+    assert queue is not None and queue.qsize() == n
+
+
 @pytest.mark.parametrize("model", _MODELS)
-async def test_tx_releases_reach_the_wire_during_the_reservation(
+async def test_split_mode_write_rechecks_preservation_after_foreign_write(
     monkeypatch: pytest.MonkeyPatch, model: str
 ) -> None:
-    """Every TX release flushes through a hold before the owner's next frame.
+    """A foreign write dispatched before the SET is refused and retried.
 
-    While ``write_relative_vfo_mode`` holds the reservation with its
-    preservation read paused, foreign ``set_ptt(False)``, ``stop_cw_text()``,
-    ``set_tuner_status(0)`` and a raw de-key sent through the runtime raw
-    seam all reach the wire before the owner's mode SET (MOR-3743). Without
-    the release flush they stay queued until the hold ends and the SET
-    lands first.
+    The owner pauses inside its first preservation read while a foreign
+    NORMAL mode write queues behind it. Queue order runs the foreign
+    write first, which marks the scope; the owner's stale SET is refused
+    before the wire and the retry composes from the foreign values, so
+    the final state keeps both changes (MOR-3743).
     """
     radio = IcomRadio("127.0.0.1", model=model)
     backend = _SplitBackend(radio.profile.civ_addr)
@@ -490,74 +152,184 @@ async def test_tx_releases_reach_the_wire_during_the_reservation(
     radio._civ_transport = object()  # type: ignore[assignment]
     monkeypatch.setattr(radio, "_check_connected", lambda: None)
     commander.start()
-    tasks: list[asyncio.Task[object]] = []
-    write: asyncio.Task[object] | None = None
+    foreign: asyncio.Task[None] | None = None
     try:
 
-        async def foreign(entered: asyncio.Event, call) -> None:
-            entered.set()
-            await call()
+        async def on_mode_read(index: int) -> None:
+            nonlocal foreign
+            if index != 1:
+                return
+            entered = asyncio.Event()
 
+            async def competing() -> None:
+                entered.set()
+                # Selector 01, FM, DATA on, filter 1 — the newer write.
+                await radio.send_civ(0x26, data=bytes([0x01, 0x05, 0x01, 0x01]))
+
+            foreign = asyncio.create_task(competing())
+            await asyncio.wait_for(_await_queued(entered, commander, 1), 1)
+
+        backend.on_mode_read = on_mode_read
         write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
-        await asyncio.wait_for(backend.preservation_entered.wait(), 1)
-
-        entered_ptt = asyncio.Event()
-        tasks.append(
-            asyncio.create_task(foreign(entered_ptt, lambda: radio.set_ptt(False)))
-        )
-        await asyncio.wait_for(_await_queued(entered_ptt, commander, 1), 1)
-        entered_cw = asyncio.Event()
-        tasks.append(asyncio.create_task(foreign(entered_cw, radio.stop_cw_text)))
-        await asyncio.wait_for(_await_queued(entered_cw, commander, 2), 1)
-        entered_tuner = asyncio.Event()
-        tasks.append(
-            asyncio.create_task(
-                foreign(entered_tuner, lambda: radio.set_tuner_status(0))
-            )
-        )
-        await asyncio.wait_for(_await_queued(entered_tuner, commander, 3), 1)
-        dekey = build_civ_frame(
-            radio._radio_addr, CONTROLLER_ADDR, 0x28, sub=0x00, data=b"\x00"
-        )
-        entered_raw = asyncio.Event()
-
-        async def raw_release() -> None:
-            entered_raw.set()
-            await radio.send_civ_raw_fire_and_forget(dekey)
-
-        tasks.append(asyncio.create_task(raw_release()))
-        await asyncio.wait_for(_await_queued(entered_raw, commander, 4), 1)
-
-        backend.release_preservation.set()
-        await asyncio.wait_for(write, 1)
-        await asyncio.wait_for(asyncio.gather(*tasks), 1)
-
-        set_index = _first_mode_set(backend.frames)
-        assert _find_wire_frame(backend.frames, 0x1C, 0x00, b"\x00") < set_index
-        assert _find_wire_frame(backend.frames, 0x17, None, b"\xff") < set_index
-        assert _find_wire_frame(backend.frames, 0x1C, 0x01, b"\x00") < set_index
-        assert _find_wire_frame(backend.frames, 0x28, None, b"\x00\x00") < set_index
+        observed = await asyncio.wait_for(write, 1)
     finally:
-        backend.release_preservation.set()
         radio._connected = False
-        if write is not None and not write.done():
-            write.cancel()
-        for task in tasks:
-            if not task.done():
-                task.cancel()
+        if foreign is not None:
+            if not foreign.done():
+                foreign.cancel()
+            await asyncio.gather(foreign, return_exceptions=True)
         await commander.stop()
+
+    # Exactly two SETs: the foreign write, then the owner's retry. The
+    # owner's first (stale) SET never reached the wire.
+    assert _mode_sets(backend.frames) == [
+        bytes([0x01, 0x05, 0x01, 0x01]),
+        bytes([0x01, 0x01, 0x01, 0x01]),
+    ]
+    # Final state: the foreign filter survives, the owner's mode wins.
+    assert (backend.mode, backend.data, backend.filter) == (0x01, 0x01, 0x01)
+    assert observed.data_mode == 1 and observed.filter_num == 1
+    # One preservation read per attempt plus the readback.
+    assert backend.mode_reads == 3
 
 
 @pytest.mark.parametrize("model", _MODELS)
-async def test_tx_release_does_not_overtake_an_earlier_deferred_key_on(
+async def test_split_mode_write_fails_after_persistent_interference(
     monkeypatch: pytest.MonkeyPatch, model: str
 ) -> None:
-    """A deferred foreign key-on still runs before the release behind it.
+    """Three interfered attempts fail the write without a stale SET."""
+    radio = IcomRadio("127.0.0.1", model=model)
+    backend = _SplitBackend(radio.profile.civ_addr)
+    commander = IcomCommander(backend)
+    radio._commander = commander
+    radio._connected = True
+    radio._civ_transport = object()  # type: ignore[assignment]
+    monkeypatch.setattr(radio, "_check_connected", lambda: None)
+    commander.start()
+    foreign_rounds: list[asyncio.Task[None]] = []
+    try:
 
-    The foreign PTT-on is queued first and deferred; the tuner-off release
-    queued second opens the backlog barrier. Both flush during the hold in
-    (priority, seq) order — key-on, then key-off — and the owner's mode SET
-    follows only after both (MOR-3743).
+        async def on_mode_read(index: int) -> None:
+            del index
+            entered = asyncio.Event()
+
+            async def competing() -> None:
+                entered.set()
+                # FM distinguishes the foreign SETs from the owner's USB.
+                await radio.send_civ(0x26, data=bytes([0x01, 0x05, 0x00, 0x02]))
+
+            foreign_rounds.append(asyncio.create_task(competing()))
+            await asyncio.wait_for(_await_queued(entered, commander, 1), 1)
+
+        backend.on_mode_read = on_mode_read
+        write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
+        with pytest.raises(CommandError, match="interfered with a concurrent command"):
+            await asyncio.wait_for(write, 1)
+    finally:
+        radio._connected = False
+        await asyncio.gather(*foreign_rounds, return_exceptions=True)
+        await commander.stop()
+
+    # Every preservation read was met by a foreign write; no readback ran.
+    assert backend.mode_reads == 3
+    assert [item for item in _mode_sets(backend.frames) if item[1] == 0x05] == [
+        bytes([0x01, 0x05, 0x00, 0x02])
+    ] * 3
+    # The owner's SET never reached the wire.
+    assert [item for item in _mode_sets(backend.frames) if item[1] == 0x01] == []
+
+
+@pytest.mark.parametrize("model", _MODELS)
+async def test_split_mode_write_without_interference_writes_once(
+    monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    """Without interference the write is one read, one SET, one readback."""
+    radio = IcomRadio("127.0.0.1", model=model)
+    backend = _SplitBackend(radio.profile.civ_addr)
+    commander = IcomCommander(backend)
+    radio._commander = commander
+    radio._connected = True
+    radio._civ_transport = object()  # type: ignore[assignment]
+    monkeypatch.setattr(radio, "_check_connected", lambda: None)
+    commander.start()
+    try:
+        write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
+        observed = await asyncio.wait_for(write, 1)
+    finally:
+        radio._connected = False
+        await commander.stop()
+
+    assert backend.mode_reads == 2
+    assert _mode_sets(backend.frames) == [bytes([0x01, 0x01, 0x01, 0x03])]
+    assert observed.data_mode == 1 and observed.filter_num == 3
+
+
+@pytest.mark.parametrize("model", _MODELS)
+async def test_background_frames_do_not_interfere_with_split_write(
+    monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    """A BACKGROUND poll from another task never marks the scope."""
+    radio = IcomRadio("127.0.0.1", model=model)
+    backend = _SplitBackend(radio.profile.civ_addr)
+    commander = IcomCommander(backend)
+    radio._commander = commander
+    radio._connected = True
+    radio._civ_transport = object()  # type: ignore[assignment]
+    monkeypatch.setattr(radio, "_check_connected", lambda: None)
+    commander.start()
+    foreign: asyncio.Task[None] | None = None
+    try:
+
+        async def on_mode_read(index: int) -> None:
+            nonlocal foreign
+            if index != 1 or foreign is not None:
+                return
+            entered = asyncio.Event()
+
+            async def poll() -> None:
+                entered.set()
+                await radio.send_civ(
+                    0x25,
+                    data=b"\x00",
+                    priority=Priority.BACKGROUND,
+                    wait_dispatch=False,
+                )
+
+            foreign = asyncio.create_task(poll())
+            await asyncio.wait_for(_await_queued(entered, commander, 1), 1)
+
+        backend.on_mode_read = on_mode_read
+        write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
+        observed = await asyncio.wait_for(write, 1)
+        assert foreign is not None
+        await asyncio.wait_for(foreign, 1)
+        queue = commander._queue
+        assert queue is not None
+        await asyncio.wait_for(queue.join(), 1)
+    finally:
+        radio._connected = False
+        if foreign is not None and not foreign.done():
+            foreign.cancel()
+            await asyncio.gather(foreign, return_exceptions=True)
+        await commander.stop()
+
+    # The write succeeded on its first attempt: no retry read.
+    assert backend.mode_reads == 2
+    assert _mode_sets(backend.frames) == [bytes([0x01, 0x01, 0x01, 0x03])]
+    assert observed.filter_num == 3
+
+
+@pytest.mark.parametrize("model", _MODELS)
+async def test_ptt_frames_keep_priority_order_during_split_write(
+    monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    """PTT frames queued mid-write dispatch in (priority, seq) order.
+
+    A raw NORMAL PTT-on queues while the owner is mid-read, then an
+    IMMEDIATE ``set_ptt(False)`` queues behind it. Neither is delayed or
+    reordered: the IMMEDIATE de-key dispatches first (priority order,
+    exactly as origin/main's queue orders them), both mark the scope, and
+    the owner's first SET is refused and retried (MOR-3743 round-2 P0).
     """
     radio = IcomRadio("127.0.0.1", model=model)
     backend = _SplitBackend(radio.profile.civ_addr)
@@ -567,58 +339,61 @@ async def test_tx_release_does_not_overtake_an_earlier_deferred_key_on(
     radio._civ_transport = object()  # type: ignore[assignment]
     monkeypatch.setattr(radio, "_check_connected", lambda: None)
     commander.start()
-    tasks: list[asyncio.Task[object]] = []
-    write: asyncio.Task[object] | None = None
+    tasks: list[asyncio.Task[None]] = []
     try:
 
-        async def foreign(entered: asyncio.Event, call) -> None:
-            entered.set()
-            await call()
+        async def on_mode_read(index: int) -> None:
+            if index != 1:
+                return
+            key_entered = asyncio.Event()
 
+            async def key_on() -> None:
+                key_entered.set()
+                await radio.send_civ(0x1C, 0x00, b"\x01", wait_response=False)
+
+            tasks.append(asyncio.create_task(key_on()))
+            await asyncio.wait_for(_await_queued(key_entered, commander, 1), 1)
+            dekey_entered = asyncio.Event()
+
+            async def dekey() -> None:
+                dekey_entered.set()
+                await radio.set_ptt(False)
+
+            tasks.append(asyncio.create_task(dekey()))
+            await asyncio.wait_for(_await_queued(dekey_entered, commander, 2), 1)
+
+        backend.on_mode_read = on_mode_read
         write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
-        await asyncio.wait_for(backend.preservation_entered.wait(), 1)
-
-        entered_key = asyncio.Event()
-        tasks.append(
-            asyncio.create_task(foreign(entered_key, lambda: radio.set_ptt(True)))
-        )
-        await asyncio.wait_for(_await_queued(entered_key, commander, 1), 1)
-        entered_release = asyncio.Event()
-        tasks.append(
-            asyncio.create_task(
-                foreign(entered_release, lambda: radio.set_tuner_status(0))
-            )
-        )
-        await asyncio.wait_for(_await_queued(entered_release, commander, 2), 1)
-
-        backend.release_preservation.set()
         await asyncio.wait_for(write, 1)
         await asyncio.wait_for(asyncio.gather(*tasks), 1)
-
-        key_on = _find_wire_frame(backend.frames, 0x1C, 0x00, b"\x01")
-        tuner_off = _find_wire_frame(backend.frames, 0x1C, 0x01, b"\x00")
-        set_index = _first_mode_set(backend.frames)
-        assert key_on < tuner_off < set_index
     finally:
-        backend.release_preservation.set()
         radio._connected = False
-        if write is not None and not write.done():
-            write.cancel()
         for task in tasks:
             if not task.done():
                 task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await commander.stop()
+
+    dekey_at = _find_wire_frame(backend.frames, 0x1C, 0x00, b"\x00")
+    key_at = _find_wire_frame(backend.frames, 0x1C, 0x00, b"\x01")
+    set_at = _first_mode_set(backend.frames)
+    assert dekey_at < key_at < set_at
+    # Both PTT frames marked the scope: one refused SET, then a clean retry.
+    assert backend.mode_reads == 3
+    assert _mode_sets(backend.frames) == [bytes([0x01, 0x01, 0x01, 0x03])]
 
 
 @pytest.mark.parametrize("model", _MODELS)
-async def test_frame_queued_after_a_release_stays_deferred(
+async def test_ptt_frames_queued_before_the_write_are_not_delayed(
     monkeypatch: pytest.MonkeyPatch, model: str
 ) -> None:
-    """The backlog barrier covers only what was queued before the release.
+    """PTT frames queued before the write keep their queue order.
 
-    A foreign ordinary frame queued after the release stays deferred for
-    the whole hold and runs behind the owner's SET and readbacks, while
-    the release ahead of it still flushes before the SET (MOR-3743).
+    With the worker busy on an unrelated read, a NORMAL PTT-on and an
+    IMMEDIATE PTT-off queue, then the write starts behind them. Wire
+    order is the plain (priority, seq) order of origin/main — the de-key
+    first, the key-on behind it, both ahead of the write's SET; nothing
+    waits out the write (MOR-3743 round-2 P0).
     """
     radio = IcomRadio("127.0.0.1", model=model)
     backend = _SplitBackend(radio.profile.civ_addr)
@@ -628,302 +403,307 @@ async def test_frame_queued_after_a_release_stays_deferred(
     radio._civ_transport = object()  # type: ignore[assignment]
     monkeypatch.setattr(radio, "_check_connected", lambda: None)
     commander.start()
-    tasks: list[asyncio.Task[object]] = []
+    tasks: list[asyncio.Task[None]] = []
+    gate = asyncio.Event()
+    backend.freq_read_release = gate
     write: asyncio.Task[object] | None = None
     try:
+        helper_entered = asyncio.Event()
 
-        async def foreign(entered: asyncio.Event, call) -> None:
-            entered.set()
-            await call()
+        async def helper_read() -> None:
+            helper_entered.set()
+            await radio.send_civ(0x25, data=b"\x00")
+
+        tasks.append(asyncio.create_task(helper_read()))
+        await asyncio.wait_for(helper_entered.wait(), 1)
+
+        key_entered = asyncio.Event()
+
+        async def key_on() -> None:
+            key_entered.set()
+            await radio.send_civ(0x1C, 0x00, b"\x01", wait_response=False)
+
+        tasks.append(asyncio.create_task(key_on()))
+        await asyncio.wait_for(_await_queued(key_entered, commander, 1), 1)
+        dekey_entered = asyncio.Event()
+
+        async def dekey() -> None:
+            dekey_entered.set()
+            await radio.set_ptt(False)
+
+        tasks.append(asyncio.create_task(dekey()))
+        await asyncio.wait_for(_await_queued(dekey_entered, commander, 2), 1)
 
         write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
-        await asyncio.wait_for(backend.preservation_entered.wait(), 1)
-
-        entered_release = asyncio.Event()
-        tasks.append(
-            asyncio.create_task(foreign(entered_release, lambda: radio.set_ptt(False)))
-        )
-        await asyncio.wait_for(_await_queued(entered_release, commander, 1), 1)
-        entered_plain = asyncio.Event()
-        tasks.append(
-            asyncio.create_task(
-                foreign(entered_plain, lambda: radio.set_xfc_status(False))
-            )
-        )
-        await asyncio.wait_for(_await_queued(entered_plain, commander, 2), 1)
-
-        backend.release_preservation.set()
+        gate.set()
         await asyncio.wait_for(write, 1)
         await asyncio.wait_for(asyncio.gather(*tasks), 1)
-
-        release_at = _find_wire_frame(backend.frames, 0x1C, 0x00, b"\x00")
-        set_index = _first_mode_set(backend.frames)
-        plain_at = _find_wire_frame(backend.frames, 0x1C, 0x02, b"\x00")
-        assert release_at < set_index < plain_at
     finally:
-        backend.release_preservation.set()
+        gate.set()
         radio._connected = False
         if write is not None and not write.done():
             write.cancel()
         for task in tasks:
             if not task.done():
                 task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await commander.stop()
 
-
-async def test_releases_backlog_flushes_queued_predecessor_and_holds_successor() -> (
-    None
-):
-    """The release barrier covers the release and everything queued before it.
-
-    ``releases_backlog`` opens the reservation at the sending item's seq:
-    the release and the ordinary frame queued ahead of it run during the
-    hold in (priority, seq) order, while a frame queued behind the release
-    stays deferred until the hold ends (MOR-3743).
-    """
-    hold = _Hold()
-    commander = IcomCommander(hold)
-    commander.start()
-    tasks: list[asyncio.Task[object]] = []
-    pause = asyncio.Event()
-    try:
-
-        async def owner() -> None:
-            async with commander.exclusive():
-                await commander.send(b"R", wait_dispatch=False)
-                await pause.wait()
-                await commander.send(b"W")
-
-        owner_task = asyncio.create_task(owner())
-        tasks.append(owner_task)
-        await asyncio.wait_for(hold.entered.wait(), 1)
-
-        y_entered = asyncio.Event()
-
-        async def send_y() -> None:
-            y_entered.set()
-            await commander.send(b"Y")
-
-        y = asyncio.create_task(send_y())
-        tasks.append(y)
-        await asyncio.wait_for(_await_queued(y_entered, commander, 1), 1)
-
-        l_entered = asyncio.Event()
-
-        async def send_l() -> None:
-            l_entered.set()
-            await commander.send(b"L", releases_backlog=True)
-
-        release_task = asyncio.create_task(send_l())
-        tasks.append(release_task)
-        await asyncio.wait_for(_await_queued(l_entered, commander, 2), 1)
-
-        z_entered = asyncio.Event()
-
-        async def send_z() -> None:
-            z_entered.set()
-            await commander.send(b"Z")
-
-        z = asyncio.create_task(send_z())
-        tasks.append(z)
-        await asyncio.wait_for(_await_queued(z_entered, commander, 3), 1)
-
-        hold.release.set()
-        await asyncio.wait_for(release_task, 1)
-        await asyncio.wait_for(y, 1)
-        assert not z.done()
-        assert hold.order == [b"R", b"Y", b"L"]
-
-        pause.set()
-        await asyncio.wait_for(owner_task, 1)
-        await asyncio.wait_for(z, 1)
-        assert hold.order == [b"R", b"Y", b"L", b"W", b"Z"]
-    finally:
-        hold.release.set()
-        pause.set()
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await commander.stop()
+    dekey_at = _find_wire_frame(backend.frames, 0x1C, 0x00, b"\x00")
+    key_at = _find_wire_frame(backend.frames, 0x1C, 0x00, b"\x01")
+    set_at = _first_mode_set(backend.frames)
+    assert dekey_at < key_at < set_at
 
 
-@pytest.mark.parametrize("priority", [Priority.FORCE_RELEASE, Priority.ABORT])
-async def test_bypass_tier_dedupe_enqueues_instead_of_joining_a_deferred_item(
-    priority: Priority,
+@pytest.mark.parametrize("model", _MODELS)
+async def test_tx_releases_run_unhindered_and_mark_the_scope(
+    monkeypatch: pytest.MonkeyPatch, model: str
 ) -> None:
-    """A bypass-tier keyed send never joins a deferred same-key item.
+    """TX releases dispatch at their own priority and count as interference.
 
-    ``FORCE_RELEASE`` and ``ABORT`` sends run during a hold; joining a
-    deferred item would park them until the hold ends. The caller that
-    may run enqueues its own frame instead (MOR-3743).
+    ``set_ptt(False)``, ``stop_cw_text``, ``set_tuner_status(0)`` and a
+    raw de-key queued while the write's preservation read is in flight
+    dispatch before the owner's SET without waiting for the write, in
+    their natural (priority, seq) order, and they mark the scope so the
+    stale SET is refused (MOR-3743).
     """
+    radio = IcomRadio("127.0.0.1", model=model)
+    backend = _SplitBackend(radio.profile.civ_addr)
+    commander = IcomCommander(backend)
+    radio._commander = commander
+    radio._connected = True
+    radio._civ_transport = object()  # type: ignore[assignment]
+    monkeypatch.setattr(radio, "_check_connected", lambda: None)
+    commander.start()
+    tasks: list[asyncio.Task[None]] = []
+    try:
+
+        async def on_mode_read(index: int) -> None:
+            if index != 1:
+                return
+            queued = 0
+
+            async def spawn(entered: asyncio.Event, call) -> None:
+                entered.set()
+                await call()
+
+            for call in (
+                lambda: radio.set_ptt(False),
+                radio.stop_cw_text,
+                lambda: radio.set_tuner_status(0),
+            ):
+                entered = asyncio.Event()
+                tasks.append(asyncio.create_task(spawn(entered, call)))
+                queued += 1
+                await asyncio.wait_for(_await_queued(entered, commander, queued), 1)
+
+            dekey = build_civ_frame(
+                radio._radio_addr, CONTROLLER_ADDR, 0x28, sub=0x00, data=b"\x00"
+            )
+            entered_raw = asyncio.Event()
+
+            async def raw_release() -> None:
+                entered_raw.set()
+                await radio.send_civ_raw_fire_and_forget(dekey)
+
+            tasks.append(asyncio.create_task(raw_release()))
+            queued += 1
+            await asyncio.wait_for(_await_queued(entered_raw, commander, queued), 1)
+
+        backend.on_mode_read = on_mode_read
+        write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
+        await asyncio.wait_for(write, 1)
+        await asyncio.wait_for(asyncio.gather(*tasks), 1)
+    finally:
+        radio._connected = False
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await commander.stop()
+
+    # Natural (priority, seq) order: IMMEDIATE PTT-off and CW stop first
+    # (queue order among equals), then the NORMAL tuner-off and raw de-key.
+    ptt_at = _find_wire_frame(backend.frames, 0x1C, 0x00, b"\x00")
+    cw_at = _find_wire_frame(backend.frames, 0x17, None, b"\xff")
+    tuner_at = _find_wire_frame(backend.frames, 0x1C, 0x01, b"\x00")
+    dekey_at = _find_wire_frame(backend.frames, 0x28, None, b"\x00\x00")
+    set_at = _first_mode_set(backend.frames)
+    assert ptt_at < cw_at < tuner_at < dekey_at < set_at
+    # The four releases marked the scope: one refused SET, then a retry.
+    assert backend.mode_reads == 3
+    assert _mode_sets(backend.frames) == [bytes([0x01, 0x01, 0x01, 0x03])]
+
+
+class _Hold:
+    def __init__(self) -> None:
+        self.order: list[bytes] = []
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __call__(
+        self,
+        payload: bytes,
+        wait_response: bool = True,
+        is_current: object = None,
+    ) -> None:
+        del wait_response, is_current
+        self.order.append(payload)
+        if payload == b"R":
+            self.entered.set()
+            await self.release.wait()
+
+
+async def test_scope_marks_interference_from_foreign_frames() -> None:
+    """Any foreign non-BACKGROUND dispatch marks the active scope."""
     hold = _Hold()
     commander = IcomCommander(hold)
     commander.start()
     tasks: list[asyncio.Task[object]] = []
-    pause = asyncio.Event()
+    inside = asyncio.Event()
+    scopes: list[InterferenceScope] = []
     try:
 
         async def owner() -> None:
-            async with commander.exclusive():
-                await commander.send(b"X", wait_dispatch=False)
-                await pause.wait()
+            async with commander.interference_scope() as scope:
+                scopes.append(scope)
+                inside.set()
+                await asyncio.Event().wait()
 
         owner_task = asyncio.create_task(owner())
         tasks.append(owner_task)
-        await asyncio.sleep(0)
+        await asyncio.wait_for(inside.wait(), 1)
 
-        async def deferred_send() -> None:
-            await commander.send(
-                b"Q", key="k", dedupe=True, priority=Priority.BACKGROUND
-            )
+        async def foreign(payload: bytes, priority: Priority) -> None:
+            await commander.send(payload, priority=priority)
 
-        deferred = asyncio.create_task(deferred_send())
-        tasks.append(deferred)
-        await asyncio.sleep(0)
-
-        async def bypass_send() -> None:
-            await commander.send(b"Q", key="k", dedupe=True, priority=priority)
-
-        await asyncio.wait_for(asyncio.create_task(bypass_send()), 1)
-
-        pause.set()
-        await asyncio.wait_for(owner_task, 1)
-        await asyncio.wait_for(deferred, 1)
-        assert hold.order == [b"X", b"Q", b"Q"]
+        for payload, priority in (
+            (b"W", Priority.NORMAL),
+            (b"I", Priority.IMMEDIATE),
+            (b"A", Priority.ABORT),
+            (b"F", Priority.FORCE_RELEASE),
+        ):
+            await asyncio.wait_for(asyncio.create_task(foreign(payload, priority)), 1)
+        assert scopes[0].interfered is True
+        assert scopes[0].is_current() is False
     finally:
-        pause.set()
         for task in tasks:
             if not task.done():
                 task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await commander.stop()
+    assert commander._interference_scopes == set()
 
 
-async def test_deferred_item_keeps_dedupe_registration_after_owner_item_completes() -> (
-    None
-):
-    """The deferred item keeps its key registration beside the owner's item.
-
-    The owner's keyed send registers its own item without dropping the
-    foreign deferred item's registration, so a later foreign dedupe send
-    joins that deferred item: one wire frame serves both foreign callers
-    (MOR-3743).
-    """
+async def test_scope_ignores_foreign_background_frames() -> None:
+    """A BACKGROUND frame from another task never marks the scope."""
     hold = _Hold()
     commander = IcomCommander(hold)
     commander.start()
     tasks: list[asyncio.Task[object]] = []
-    step2 = asyncio.Event()
-    step3 = asyncio.Event()
-    owner_q_done = asyncio.Event()
+    inside = asyncio.Event()
+    scopes: list[InterferenceScope] = []
     try:
 
         async def owner() -> None:
-            async with commander.exclusive():
-                await commander.send(b"X", wait_dispatch=False)
-                await step2.wait()
-                await commander.send(b"Q", key="k", dedupe=True)
-                owner_q_done.set()
-                await step3.wait()
+            async with commander.interference_scope() as scope:
+                scopes.append(scope)
+                inside.set()
+                await asyncio.Event().wait()
 
         owner_task = asyncio.create_task(owner())
         tasks.append(owner_task)
-        await asyncio.sleep(0)
+        await asyncio.wait_for(inside.wait(), 1)
 
-        async def foreign_a() -> None:
-            await commander.send(
-                b"Q", key="k", dedupe=True, priority=Priority.BACKGROUND
-            )
+        async def poll() -> None:
+            await commander.send(b"P", priority=Priority.BACKGROUND)
 
-        first = asyncio.create_task(foreign_a())
-        tasks.append(first)
-        await asyncio.sleep(0)
-
-        step2.set()
-        await asyncio.wait_for(owner_q_done.wait(), 1)
-        assert hold.order == [b"X", b"Q"]
-
-        async def foreign_b() -> None:
-            await commander.send(
-                b"Q", key="k", dedupe=True, priority=Priority.BACKGROUND
-            )
-
-        second = asyncio.create_task(foreign_b())
-        tasks.append(second)
-        await asyncio.sleep(0)
-
-        step3.set()
-        await asyncio.wait_for(owner_task, 1)
-        await asyncio.wait_for(first, 1)
-        await asyncio.wait_for(second, 1)
-        assert hold.order == [b"X", b"Q", b"Q"]
+        await asyncio.wait_for(asyncio.create_task(poll()), 1)
+        assert scopes[0].interfered is False
+        assert scopes[0].is_current() is True
     finally:
-        step2.set()
-        step3.set()
         for task in tasks:
             if not task.done():
                 task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await commander.stop()
+    assert commander._interference_scopes == set()
 
 
-async def test_next_reservation_waits_for_the_previous_deferred_dispatch() -> None:
-    """A release grants the next hold only after the backlog is dispatched.
-
-    The owner exits its reservation while the worker is still busy on its
-    held frame and a foreign command is queued. The next reservation
-    starts only after that foreign command has been dispatched, so
-    alternating holds cannot starve older queued work (MOR-3743).
-    """
+async def test_scope_deregisters_on_exit_error_and_cancellation() -> None:
+    """Normal exit, an exception and cancellation all deregister the scope."""
     hold = _Hold()
     commander = IcomCommander(hold)
     commander.start()
-    tasks: list[asyncio.Task[object]] = []
-    proceed1 = asyncio.Event()
-    owner2_waiting = asyncio.Event()
-    owner2_entered = asyncio.Event()
-    try:
 
-        async def owner1() -> None:
-            async with commander.exclusive():
-                await commander.send(b"R", wait_dispatch=False)
-                await proceed1.wait()
+    async def clean() -> None:
+        async with commander.interference_scope():
+            pass
 
-        owner1_task = asyncio.create_task(owner1())
-        tasks.append(owner1_task)
-        await asyncio.wait_for(hold.entered.wait(), 1)
+    await asyncio.wait_for(clean(), 1)
+    assert commander._interference_scopes == set()
 
-        older_entered = asyncio.Event()
+    async def boom() -> None:
+        async with commander.interference_scope():
+            raise RuntimeError("boom")
 
-        async def older_send() -> None:
-            older_entered.set()
-            await commander.send(b"O")
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(boom(), 1)
+    assert commander._interference_scopes == set()
 
-        older = asyncio.create_task(older_send())
-        tasks.append(older)
-        await asyncio.wait_for(_await_queued(older_entered, commander, 1), 1)
+    entered = asyncio.Event()
+    dead: list[InterferenceScope] = []
 
-        async def owner2() -> None:
-            owner2_waiting.set()
-            async with commander.exclusive():
-                owner2_entered.set()
-                await commander.send(b"S")
+    async def parked() -> None:
+        async with commander.interference_scope() as scope:
+            dead.append(scope)
+            entered.set()
+            await asyncio.Event().wait()
 
-        owner2_task = asyncio.create_task(owner2())
-        tasks.append(owner2_task)
-        await asyncio.wait_for(owner2_waiting.wait(), 1)
-        await asyncio.sleep(0)
+    parked_task = asyncio.create_task(parked())
+    await asyncio.wait_for(entered.wait(), 1)
+    assert len(commander._interference_scopes) == 1
+    parked_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await parked_task
+    assert commander._interference_scopes == set()
 
-        proceed1.set()
-        hold.release.set()
-        await asyncio.wait_for(owner2_entered.wait(), 1)
-        await asyncio.wait_for(owner1_task, 1)
-        await asyncio.wait_for(older, 1)
-        await asyncio.wait_for(owner2_task, 1)
-        assert hold.order == [b"R", b"O", b"S"]
-    finally:
-        proceed1.set()
-        hold.release.set()
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await commander.stop()
+    # A later foreign frame does not touch the deregistered scope.
+    await asyncio.wait_for(commander.send(b"W"), 1)
+    assert dead[0].interfered is False
+    assert commander._interference_scopes == set()
+    await commander.stop()
+
+
+async def test_concurrent_scopes_mark_each_other() -> None:
+    """Two live scopes each see the other's frames as interference."""
+    hold = _Hold()
+    commander = IcomCommander(hold)
+    commander.start()
+    entered_a, entered_b = asyncio.Event(), asyncio.Event()
+    sent_a, sent_b = asyncio.Event(), asyncio.Event()
+    scopes: dict[str, InterferenceScope] = {}
+
+    async def side_a() -> None:
+        async with commander.interference_scope() as scope:
+            scopes["a"] = scope
+            entered_a.set()
+            await entered_b.wait()
+            await commander.send(b"WA")
+            sent_a.set()
+            await sent_b.wait()
+
+    async def side_b() -> None:
+        async with commander.interference_scope() as scope:
+            scopes["b"] = scope
+            entered_b.set()
+            await entered_a.wait()
+            await commander.send(b"WB")
+            sent_b.set()
+            await sent_a.wait()
+
+    await asyncio.wait_for(asyncio.gather(side_a(), side_b()), 1)
+    assert scopes["a"].interfered is True
+    assert scopes["b"].interfered is True
+    assert commander._interference_scopes == set()
+    await commander.stop()

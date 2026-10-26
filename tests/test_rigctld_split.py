@@ -106,6 +106,84 @@ async def test_split_selection_change_after_preservation_never_sets(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", MODELS)
+async def test_split_competing_client_write_is_rechecked_not_overwritten(
+    model, monkeypatch
+):
+    """A preserved split write survives a concurrent client's raw write.
+
+    Client A's preservation read pauses at the CI-V peer while client B
+    submits a raw ``w`` mode write for the same VFO. B's frame dispatches
+    first (queue order) and marks A's scope, so A's stale SET is refused
+    before the wire and A's retry composes from B's values: both replies
+    succeed and B's filter survives A's write (MOR-3743).
+    """
+    async with _peer(model) as (radio, peer, server, reader, writer):
+        commander = radio._commander = IcomCommander(radio._execute_civ_raw)
+        commander.start()
+        gate = peer.relative_mode_read_gate = asyncio.Event()
+        addr = radio.profile.civ_addr
+        # Unselected VFO mode write: FM, DATA on, filter 1.
+        raw = bytes.fromhex(f"FE FE {addr:02X} E0 26 01 05 01 01 FD")
+        raw_queued = asyncio.Event()
+        send = commander.send
+
+        async def observe_send(payload, **kwargs):
+            if payload == raw:
+                raw_queued.set()
+            return await send(payload, **kwargs)
+
+        monkeypatch.setattr(commander, "send", observe_send)
+        reply_a = None
+        reply_b = None
+        try:
+            reply_a = asyncio.create_task(_exchange(writer, reader, b"X USB 0\n"))
+            await asyncio.wait_for(peer.relative_mode_read.wait(), 1)
+            # Later relative mode reads (A's retry) pass ungated.
+            peer.relative_mode_read_gate = None
+            async with _client(server) as (b_reader, b_writer):
+                reply_b = asyncio.create_task(
+                    _exchange(
+                        b_writer,
+                        b_reader,
+                        b"w FE FE "
+                        + f"{addr:02X} E0 26 01 05 01 01 FD".encode()
+                        + b"\n",
+                    )
+                )
+                await asyncio.wait_for(raw_queued.wait(), 1)
+                gate.set()
+                assert await asyncio.wait_for(reply_a, 2) == b"RPRT 0\n"
+                assert await asyncio.wait_for(reply_b, 2) == (
+                    f"FE FE E0 {addr:02X} FB FD\n".encode()
+                )
+            assert peer.slots["B"] == (7_076_000, Mode.USB, 1, 0)
+            sets = [
+                data
+                for cmd, _sub, data in peer.requests
+                if cmd == 0x26 and len(data) > 1
+            ]
+            assert sets == [
+                bytes([0x01, 0x05, 0x01, 0x01]),
+                bytes([0x01, Mode.USB.value, 0x00, 0x01]),
+            ]
+            _assert_no_relative_overlays(server)
+        finally:
+            gate.set()
+            radio._commander = None
+            await commander.stop()
+            peer.relative_mode_read_gate = None
+            for task in (reply_a, reply_b):
+                if task is not None and not task.done():
+                    task.cancel()
+            if reply_a is not None or reply_b is not None:
+                await asyncio.gather(
+                    *(task for task in (reply_a, reply_b) if task is not None),
+                    return_exceptions=True,
+                )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize(
     ("command", "rejected"),
     [(b"I 14080100\n", "reject_frequency"), (b"X RTTY 1800\n", "reject_mode")],
