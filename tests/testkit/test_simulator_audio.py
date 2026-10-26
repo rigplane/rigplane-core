@@ -781,7 +781,7 @@ async def test_write_tx_wav_roundtrip(
     half = len(pcm) // 2
     client.send(_tx_audio(1, 0, pcm[:half], radio_id), capture_server.audio_port)
     client.send(_tx_audio(2, 1, pcm[half:], radio_id), capture_server.audio_port)
-    await asyncio.sleep(0.1)
+    await _await_client_seq_value(capture_server, 2)  # both frames processed
 
     path = tmp_path / "tx.wav"
     capture_server.write_tx_wav(path, sample_rate=48000)
@@ -801,7 +801,7 @@ async def test_tx_capture_off_keeps_payload_empty(
     but the payload is not retained — b"" per frame, empty audio_tx_pcm."""
     radio_id = await _open_audio(client, server)
     client.send(_tx_audio(1, 0, bytes(64), radio_id), server.audio_port)
-    await asyncio.sleep(0.1)
+    await _await_client_seq_value(server, 1)  # the frame was processed
     assert len(server.audio_tx_frames) == 1
     assert server.audio_tx_frames[0].payload == b""
     assert server.audio_tx_frames[0].payload_len == 64  # metadata unchanged
