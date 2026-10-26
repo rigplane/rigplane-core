@@ -109,7 +109,9 @@ async def test_pool_phase_observer_qualification(
 
         before_fail = observer.latest_sub()
         with pytest.raises(RuntimeError, match="deliberate"):
-            await pool.run_bounded(failing_body, what="qual", direction="rx", timeout=5.0)
+            await pool.run_bounded(
+                failing_body, what="qual", direction="rx", timeout=5.0
+            )
         await _wait_until(lambda: observer.latest_sub() > before_fail)
         fail_sub = observer.latest_sub()
         await _wait_until(lambda: observer.has(fail_sub, "settled"))
@@ -139,7 +141,10 @@ async def test_pool_phase_observer_qualification(
         assert "cancelled" in observer.caller_states()
         release_cancel.set()
         await _wait_until(lambda: observer.has(cancel_sub, "settled"))
-        assert await pool.run_bounded(lambda: 3, what="qual", direction="rx", timeout=5.0) == 3
+        assert (
+            await pool.run_bounded(lambda: 3, what="qual", direction="rx", timeout=5.0)
+            == 3
+        )
 
         # after_drain snapshot semantics (what _drain records per test).
         await _wait_until(lambda: pool.inflight == 0)
@@ -150,7 +155,12 @@ async def test_pool_phase_observer_qualification(
         # Passivity: an unobserved pool behaves the same.
         plain = usb_driver._BoundedPortAudioPool()
         try:
-            assert await plain.run_bounded(lambda: 7, what="qual", direction="rx", timeout=5.0) == 7
+            assert (
+                await plain.run_bounded(
+                    lambda: 7, what="qual", direction="rx", timeout=5.0
+                )
+                == 7
+            )
             assert plain.inflight == 0
         finally:
             plain._executor.shutdown(wait=True)
@@ -158,7 +168,10 @@ async def test_pool_phase_observer_qualification(
         # Seam restoration: the raw method is back and functional.
         monkeypatch.undo()
         assert "submit_tracked" not in vars(pool)
-        assert await pool.run_bounded(lambda: 5, what="qual", direction="rx", timeout=5.0) == 5
+        assert (
+            await pool.run_bounded(lambda: 5, what="qual", direction="rx", timeout=5.0)
+            == 5
+        )
     finally:
         release_blockers.set()
         release_body.set()

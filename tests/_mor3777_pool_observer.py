@@ -228,9 +228,7 @@ class PoolPhaseObserver:
             return self._subs
 
     def has(self, sub: int, event: str) -> bool:
-        return any(
-            m["ev"] == event and m.get("sub") == sub for m in self.events()
-        )
+        return any(m["ev"] == event and m.get("sub") == sub for m in self.events())
 
     def order(self, sub: int, event: str) -> int:
         for m in self.events():
