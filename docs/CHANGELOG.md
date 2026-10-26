@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Profile receive ranges match published coverage (MOR-3782).** The
+  IC-7300MK2, IC-705 and FTX-1 profiles' tuning/receive ranges now match
+  the manufacturer's published receiver coverage (IC-7300MK2 up to
+  74.800 MHz; IC-705 0.030-199.999999 and 400-470 MHz; FTX-1 0.030-174
+  and 400-470 MHz); no transmit band was added or widened; not verified
+  on radios.
+
 - **IC-7300 frequency entry and tuning are no longer capped at 60 MHz
   (MOR-3782).** The profile now covers the receiver range up to 74.800 MHz,
   which includes the 4 m band; no 4 m transmit band is declared, so the

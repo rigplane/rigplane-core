@@ -72,7 +72,7 @@ class WindowsAudioTopologyError(RuntimeError):
         self.evidence = refusal.evidence
         self.candidates = refusal.candidates
         super().__init__(
-            "Windows USB audio parents do not match the serial radio or "
+            "USB audio parents do not match the serial radio or "
             "cannot establish a unique same-host-API pair "
             f"({refusal.reason}); select explicit RX/TX devices."
         )
@@ -253,7 +253,23 @@ def pair(
         id.casefold() for id in snapshot.serial_devices if id.casefold() in boundary_ids
     }
     if serial_devices != {serial.id.casefold()}:  # rule: S3
-        return refuse("serial_ambiguous")
+        if not identity or not identity.serial_functions:
+            return refuse("serial_ambiguous")
+        declared_functions = {
+            (function.vid, function.pid) for function in identity.serial_functions
+        }
+        observed_functions = set()
+        for device_id in serial_devices:
+            device = devices.get(device_id)
+            if (
+                device is None
+                or device.parent is None
+                or device.parent.casefold() != hub.id.casefold()
+                or (device.vid, device.pid) not in declared_functions
+                or (device.vid, device.pid) in observed_functions
+            ):
+                return refuse("serial_ambiguous")
+            observed_functions.add((device.vid, device.pid))
     codecs = [
         node
         for key, node in devices.items()

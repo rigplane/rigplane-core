@@ -740,7 +740,7 @@ async def test_late_close_counted_against_pool_bound() -> None:
 @pytest.fixture
 def windows_selection(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("rigplane.audio.usb_driver.platform.system", lambda: "Windows")
-    monkeypatch.setattr("rigplane.audio.usb_driver._WINDOWS_PNP_TIMEOUT_S", 0.02)
+    monkeypatch.setattr("rigplane.audio.usb_driver._USB_TOPOLOGY_TIMEOUT_S", 0.02)
     monkeypatch.setattr(
         "rigplane.audio._usb_raw_windows.read_raw_windows",
         lambda timeout_s: RawWindows("cfgmgr32", ()),
@@ -759,13 +759,13 @@ async def test_optional_pnp_timeout_falls_back_while_worker_stays_tracked(
     driver.set_serial_port("COM3")
     before = bounded_portaudio_pool.inflight
     seen: list[list] = []
-    select = driver._select_windows_devices
+    select = driver._select_topology_devices
 
     def record_selection(devices, records, serial_port):
         seen.append(records.devnodes)
         return select(devices, records, serial_port)
 
-    monkeypatch.setattr(driver, "_select_windows_devices", record_selection)
+    monkeypatch.setattr(driver, "_select_topology_devices", record_selection)
 
     def slow_pnp(timeout_s):
         entered.set()
@@ -860,13 +860,13 @@ async def test_windows_selection_has_one_deadline_and_no_late_cache(
         return devices
 
     monkeypatch.setattr(backend, "list_devices", delayed_list)
-    original = driver._select_windows_devices
+    original = driver._select_topology_devices
 
     def delayed_mapping(*args):
         gate.wait()
         return original(*args)
 
-    monkeypatch.setattr(driver, "_select_windows_devices", delayed_mapping)
+    monkeypatch.setattr(driver, "_select_topology_devices", delayed_mapping)
     started = time.monotonic()
     try:
         with pytest.raises(AudioCaptureOpenTimeoutError) as raised:
@@ -1082,7 +1082,7 @@ async def test_actual_windows_resolver_mapping_shares_selection_deadline(
         assert sdk_threads and all(t != threading.get_ident() for t in sdk_threads)
         assert [what for what, _, _ in submissions] == [
             "device enumeration",
-            "optional Windows topology",
+            "optional USB topology",
             "device enumeration",
         ]
         _, enum_entry, enum_timeout = submissions[0]

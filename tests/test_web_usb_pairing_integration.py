@@ -1,13 +1,22 @@
-"""Twin of owner E2E: W1 GTR7 + IC-7300 Windows browser audio start."""
+"""Browser audio start; Linux uses synthetic sysfs, not hardware-verified."""
 
 import asyncio
 import json
+import sys
 from dataclasses import replace
 from unittest.mock import Mock
 
 import pytest
 from test_icom7610_serial_radio import _FakeSerialCivLink
 from test_usb_pairing_windows import _inject_windows, _w1_session
+from test_usb_pairing_macos import (
+    MAC_PORT,
+    MAC_RX_ID,
+    MAC_TX_ID,
+    _inject_macos,
+    _macos_session,
+)
+from test_usb_pairing_linux import LINUX_ID, LINUX_NAME, LINUX_PORT, _inject_linux
 from test_web_server import (
     _close_ws,
     _http_get,
@@ -18,6 +27,7 @@ from test_web_server import (
 
 from rigplane.audio import usb_driver
 from rigplane.backends.ic7300 import Ic7300SerialRadio
+from rigplane.backends.ic705 import Ic705SerialRadio
 from rigplane.core.types import AudioCodec
 from rigplane.core.usb_identity import UsbAudioIdentity, UsbFunctionId
 from rigplane.profiles import get_radio_profile
@@ -35,6 +45,9 @@ W1_TX_ID = r"MME|SWD\MMDEVAPI\{0.0.0.00000000}.{9082644E-6A88-4638-B416-E1788AAC
 
 
 @pytest.mark.parametrize(
+    "os_name", ["windows", "macos", "macos-frozen", "linux", "linux-frozen"]
+)
+@pytest.mark.parametrize(
     "codec_matches,explicit_choice",
     [
         (True, False),
@@ -44,27 +57,63 @@ W1_TX_ID = r"MME|SWD\MMDEVAPI\{0.0.0.00000000}.{9082644E-6A88-4638-B416-E1788AAC
     ids=["w1-mme", "wrong-codec", "stable-choice-overrides-wrong-codec"],
 )
 async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
-    monkeypatch, codec_matches, explicit_choice
+    tmp_path, monkeypatch, codec_matches, explicit_choice, os_name
 ):
+    """Real web/driver seam; Linux fixtures are not hardware-verified."""
     from rigplane.audio import _usb_pairing
 
-    backend, _ = _inject_windows(monkeypatch, _w1_session())
+    if os_name.startswith("linux"):
+        if os_name == "linux-frozen":
+            monkeypatch.setattr(sys, "frozen", True, raising=False)
+            monkeypatch.setattr(sys, "executable", "frozen-sidecar-must-not-relaunch")
+            monkeypatch.setattr(
+                "subprocess.Popen",
+                Mock(side_effect=AssertionError("Linux pairing must stay in process")),
+            )
+        backend, _, _, _ = _inject_linux(tmp_path, monkeypatch)
+        rx_id = tx_id = LINUX_ID
+        indices = (0, 0)
+        radio_class, port, model, address = Ic705SerialRadio, LINUX_PORT, "IC-705", 0xA4
+        expected_candidates = (
+            (rx_id, 0, LINUX_NAME, "capture"),
+            (tx_id, 0, LINUX_NAME, "render"),
+        )
+    elif os_name.startswith("macos"):
+        frozen = os_name == "macos-frozen"
+        if frozen:
+            monkeypatch.setattr(sys, "frozen", True, raising=False)
+            monkeypatch.setattr(sys, "executable", "frozen-sidecar-must-not-relaunch")
+        backend, _ = _inject_macos(monkeypatch, _macos_session(), real_reader=frozen)
+        rx_id, tx_id, indices = MAC_RX_ID, MAC_TX_ID, (2, 1)
+        radio_class, port, model, address = Ic705SerialRadio, MAC_PORT, "IC-705", 0xA4
+        expected_candidates = (
+            (rx_id, 2, "USB Audio CODEC", "capture"),
+            (tx_id, 1, "USB Audio CODEC", "render"),
+        )
+    else:
+        backend, _ = _inject_windows(monkeypatch, _w1_session())
+        rx_id, tx_id, indices = W1_RX_ID, W1_TX_ID, (1, 5)
+        radio_class, port, model, address = Ic7300SerialRadio, "COM3", "IC-7300", 0x94
+        expected_candidates = (
+            (rx_id, 1, "Microphone (USB Audio CODEC )", "capture"),
+            (tx_id, 5, "Speakers (USB Audio CODEC )", "render"),
+        )
     monkeypatch.setattr(usb_driver, "PortAudioBackend", lambda: backend)
     pairing = Mock(wraps=_usb_pairing.pair)
     monkeypatch.setattr(_usb_pairing, "pair", pairing)
-    profile = get_radio_profile("IC-7300")
+    profile = get_radio_profile(model)
     if not codec_matches:
         profile = replace(
             profile,
             usb_identity=UsbAudioIdentity(frozenset({UsbFunctionId("0D8C", "0016")})),
         )
-    radio = Ic7300SerialRadio(
-        device="COM3",
+    radio = radio_class(
+        device=port,
         profile=profile,
         audio_codec=AudioCodec.PCM_1CH_16BIT,
-        rx_device=W1_RX_ID if explicit_choice else None,
-        tx_device=W1_TX_ID if explicit_choice else None,
-        civ_link=_FakeSerialCivLink(model_id=0x94),
+        rx_device=rx_id if explicit_choice else None,
+        tx_device=tx_id if explicit_choice else None,
+        civ_link=_FakeSerialCivLink(model_id=address),
         _enumerate_serial_ports_fn=lambda: [],
     )
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
@@ -110,15 +159,16 @@ async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
                 "reason": "usb_topology_unavailable",
             }
             candidates = failure["candidates"]
-            for stable_id, index, name, direction in (
-                (W1_RX_ID, 1, "Microphone (USB Audio CODEC )", "capture"),
-                (W1_TX_ID, 5, "Speakers (USB Audio CODEC )", "render"),
-            ):
+            for stable_id, index, name, direction in expected_candidates:
                 assert {
                     "stableId": stable_id,
                     "displayName": name,
                     "direction": direction,
-                    "hostApi": "MME",
+                    "hostApi": "ALSA"
+                    if os_name.startswith("linux")
+                    else "Core Audio"
+                    if os_name.startswith("macos")
+                    else "MME",
                     "portAudioIndex": index,
                     "nearRadio": True,
                 } in candidates
@@ -147,10 +197,10 @@ async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
         assert not any(message["type"] == "error" for message in messages)
         assert radio.audio_session.rx_demand == 1
         driver = radio._serial_audio_driver
-        assert (driver.selected_rx_device.index, driver.selected_tx_device.index) == (
-            1,
-            5,
-        )
+        assert (
+            driver.selected_rx_device.index,
+            driver.selected_tx_device.index,
+        ) == indices
         assert len(backend.rx_streams) == 1
         assert backend.rx_streams[0].running
         pcm = b"\x01\x00" * 960

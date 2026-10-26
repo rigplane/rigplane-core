@@ -813,17 +813,34 @@ end_hz = 450_000_000
 default_hz = 446_000_000
 bsr_code = 0x0E
 
+# MOR-3782: receiver coverage per IC-705_ENG_Basic_9, "11 SPECIFICATIONS /
+# General / Frequency coverage (unit: MHz)": USA, EUR and UK versions all
+# list Receiver 0.030000 ~ 199.999999* and 400.000000 ~ 470.000000*
+# (asterisk: some ranges not guaranteed). The general-coverage range below
+# is trimmed to the published HF/VHF segment; the Gen band keeps its name,
+# default_hz and bsr_code (0x0F GENE). Not hardware-verified.
 [[freq_ranges.ranges]]
 label = "General coverage RX"
-start_hz = 10_000
-end_hz = 470_000_000
+start_hz = 30_000
+end_hz = 199_999_999
 
 [[freq_ranges.ranges.bands]]
 name = "Gen"
-start_hz = 10_000
-end_hz = 470_000_000
+start_hz = 30_000
+end_hz = 199_999_999
 default_hz = 14_200_000
 bsr_code = 0x0F
+
+# MOR-3782: the published UHF receive segment (400.000000 ~ 470.000000*,
+# same manual section) as its own range. Not hardware-verified. The UHF RX
+# range below carries no `bands` table on purpose: it is tune/receive
+# only, and transmit permission comes from `bands` — 70 cm transmit stays
+# governed by the 70cm range's own band above.
+
+[[freq_ranges.ranges]]
+label = "UHF RX"
+start_hz = 400_000_000
+end_hz = 470_000_000
 
 # ── CI-V Commands ────────────────────────────────────────────────
 # Every opcode from wfview IC-705.rig Commands\1–124 (excluding TRX placeholders 0x00/0x01).

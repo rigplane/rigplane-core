@@ -9,7 +9,6 @@ import math
 import plistlib
 import struct
 import subprocess
-import sys
 import time
 from typing import Any
 
@@ -178,16 +177,6 @@ def read_raw_macos(timeout_s: float) -> RawMacos:
     for part, command in (
         ("usb", ["/usr/sbin/ioreg", "-a", "-l", "-p", "IOUSB"]),
         ("serial", ["/usr/sbin/ioreg", "-a", "-l", "-p", "IOService"]),
-        (
-            "coreaudio",
-            [
-                sys.executable,
-                "-c",
-                "import json; "
-                "from rigplane.audio._usb_raw_macos import _read_coreaudio; "
-                "print(json.dumps(_read_coreaudio()))",
-            ],
-        ),
     ):
         try:
             remaining = deadline - time.monotonic()
@@ -200,14 +189,22 @@ def read_raw_macos(timeout_s: float) -> RawMacos:
                 stdin=subprocess.DEVNULL,
             )
             result.check_returncode()
-            if part == "coreaudio":
-                devices, failures = json.loads(result.stdout)
-                results[part] = devices
-                unavailable.extend(failures)
-            else:
-                results[part] = _registry(result.stdout, serial=part == "serial")
+            results[part] = _registry(result.stdout, serial=part == "serial")
         except Exception as exc:
             unavailable.append({"part": f"macos:{part}", "reason": type(exc).__name__})
+    try:
+        from .usb_driver import bounded_portaudio_pool
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("capture deadline expired")
+        devices, failures = bounded_portaudio_pool.run_bounded_sync(
+            _read_coreaudio, timeout=remaining
+        )
+        results["coreaudio"] = devices
+        unavailable.extend(failures)
+    except Exception as exc:
+        unavailable.append({"part": "macos:coreaudio", "reason": type(exc).__name__})
     return RawMacos(
         tuple(results.get("usb", [])),
         tuple(results.get("serial", [])),
