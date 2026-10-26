@@ -197,7 +197,10 @@ def test_linux_topology_refusals(tmp_path, monkeypatch, shape, reason):
     assert result.reason == reason
     if shape != "missing-codec":
         assert result.candidates
-        assert result.candidates[0].stable_id == LINUX_ID
+        expected_id = (
+            "ALSA|/sys/devices/usb1/1-1.5:pcm0" if shape == "root-only" else LINUX_ID
+        )
+        assert result.candidates[0].stable_id == expected_id
 
 
 @pytest.mark.parametrize("declared", [False, True])
