@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import partial
@@ -151,6 +151,11 @@ _ProviderRetirement = Callable[[int], Awaitable[None]]
 ATTEMPT_TIMEOUT_S: float = 3.0
 RETRY_DELAY_S: float = 1.0
 
+# MOR-3764: upper bound for one admitted outside-only TX audio push. A stuck
+# push must never hold the keying-exclusion lock, so the caller's body is
+# cancelled (TimeoutError) once the budget expires.
+OUTSIDE_TX_SUBMISSION_BUDGET_S: float = 0.25
+
 
 def _log_release_attempt(settled: ActuationSettled) -> None:
     """Log one settled FORCE_RECEIVE; an UNCERTAIN one also warns (MOR-2860)."""
@@ -199,6 +204,11 @@ class ManagedTxAuthority:
         self._attempt_timeout = attempt_timeout_seconds
         self._retry_delay = retry_delay_seconds
         self._lock = asyncio.Lock()
+        # MOR-3764: serializes an admitted outside-only TX audio push against
+        # every Core-client keying transition. Lock order is outside lock
+        # BEFORE ``self._lock`` (only ``_begin_positive_operation`` takes
+        # both); unkeying, settlement, scheduler and shutdown never take it.
+        self._outside_tx_lock = asyncio.Lock()
         self._state = ManagedTxState()
         self._change_listeners: set[ManagedTxChangeListener] = set()
         self._provider_generation = provider_generation
@@ -380,7 +390,10 @@ class ManagedTxAuthority:
                     await asyncio.wait((started,))
                 if ready is not None:
                     await asyncio.wait((ready,))
-                async with self._lock:
+                # MOR-3764: the outside-only audio lock is taken BEFORE
+                # ``self._lock`` so an admitted frame's push and this keying
+                # transition can never interleave.
+                async with self._outside_tx_lock, self._lock:
                     self._require_ingress_open_locked()
                     if controller_ticket is not None:
                         controller_ticket.authority.validate_positive(controller_ticket)
@@ -771,6 +784,54 @@ class ManagedTxAuthority:
         did not release or the operator's own mic or PTT; ``None`` otherwise.
         """
         return self._radio_tx_refusal_locked()
+
+    @contextlib.asynccontextmanager
+    async def outside_tx_submission(self) -> AsyncIterator[bool]:
+        """Outside-only TX audio admission, atomic with the push (MOR-3764).
+
+        Yields True only while ALL hold, evaluated synchronously at the
+        submission (no await between reading the state and yielding): the
+        authority is open (not closing/closed/shutting down/terminated) with
+        a provider generation; the state is clean (intent RX, no release
+        debt, no pending effect) with no ``last_error``; and the radio's PTT
+        readback reports a TX keyed outside Core — exactly
+        ``RadioTxOrigin.FOREIGN`` (UNRELEASED, ``None``, a missing probe or
+        a probe exception all refuse).
+
+        Guarantee: a frame admitted under this authorization is handed to
+        the radio's push entirely before any Core-client keying transition
+        is applied, or not at all after it. Nothing is claimed about audio
+        already buffered in the radio or the OS.
+
+        The caller's body after a True yield is bounded by
+        ``OUTSIDE_TX_SUBMISSION_BUDGET_S``; on expiry the body is cancelled
+        and ``TimeoutError`` propagates to the caller. This context never
+        takes ``self._lock``; the keying side holds ``_outside_tx_lock``
+        before ``self._lock``, so unkeying never waits behind audio.
+        """
+        async with self._outside_tx_lock:
+            if not self._outside_tx_admitted_locked():
+                yield False
+                return
+            async with asyncio.timeout(OUTSIDE_TX_SUBMISSION_BUDGET_S):
+                yield True
+
+    def _outside_tx_admitted_locked(self) -> bool:
+        """The MOR-3764 outside-only admission rule; no await between reads."""
+        if self._closing or self._closed or self._shutting_down or self._terminated:
+            return False
+        if self._provider_generation is None:
+            return False
+        if not self._state_is_clean_locked() or self._state.last_error is not None:
+            return False
+        try:
+            origin = self._radio_tx_origin_locked()
+        except Exception:
+            logger.warning(
+                "managed TX outside-only admission probe failed", exc_info=True
+            )
+            return False
+        return origin is RadioTxOrigin.FOREIGN
 
     def _projection_locked(self) -> ManagedTxProjection:
         deadline = self._tot_deadline_locked()
@@ -1288,11 +1349,15 @@ class ManagedTxAuthority:
             and self._state.pending_effect is None
         )
 
-    def _radio_tx_refusal_locked(self) -> str | None:
-        """Refusal code while the radio transmits and Core holds and owes no TX."""
+    def _radio_tx_origin_locked(self) -> RadioTxOrigin | None:
+        """Origin of the radio-reported TX while Core holds and owes none."""
         if self._radio_tx is None or not self._state_is_clean_locked():
             return None
-        origin = self._radio_tx.radio_tx_since(self._idle_since)
+        return self._radio_tx.radio_tx_since(self._idle_since)
+
+    def _radio_tx_refusal_locked(self) -> str | None:
+        """Refusal code while the radio transmits and Core holds and owes no TX."""
+        origin = self._radio_tx_origin_locked()
         return None if origin is None else _RADIO_TX_REFUSALS[origin]
 
     def _pending_settlements_locked(self) -> tuple[_SubmissionCompletion, ...]:
