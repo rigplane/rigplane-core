@@ -68,11 +68,15 @@ def test_unrecorded_profile_has_no_usb_identity(rig):
     ],
 )
 def test_invalid_usb_function_lists_are_rejected(tmp_path, key, value):
-    test_invalid_usb_table_is_rejected(tmp_path, f"[usb]\n{key} = {value}")
+    _assert_invalid_usb_table(tmp_path, f"[usb]\n{key} = {value}")
 
 
 @pytest.mark.parametrize("table", ["[usb]\nunknown = []", "usb = []"])
 def test_invalid_usb_table_is_rejected(tmp_path, table):
+    _assert_invalid_usb_table(tmp_path, table)
+
+
+def _assert_invalid_usb_table(tmp_path, table):
     source = Path("rigs/ic7610.toml").read_text()
     path = tmp_path / "usb.toml"
     path.write_text(table + "\n" + source)
