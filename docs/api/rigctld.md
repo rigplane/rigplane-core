@@ -318,13 +318,15 @@ runtime's own selection methods.
 The check is followed by awaits in the send path. Raw `w` and other direct
 writers are outside this epoch check.
 
-**Known limitation (two clients on one radio).** An `X` that does not carry both
-DATA and filter explicitly (an omitted or `0` passband, or a mode other than
-USB/LSB/packet modes with a passband) reads the target DATA and filter first and writes them back in the SET.
-If another client's raw `w` frame or another `X` changes that VFO between the read
-and the SET, `X` can write the wrong DATA/filter back, and DATA also selects the
-TX audio source. USB/LSB and packet modes with a positive passband send DATA
-and filter explicitly and are not affected; tracked in MOR-3743.
+`write_relative_vfo_mode` holds `IcomCommander.exclusive` for the whole
+write, including a preservation read and the following SET
+(`commands/commander.py: IcomCommander.exclusive`,
+`_dual_rx_runtime.py: DualRxRuntimeMixin.write_relative_vfo_mode`).
+A frame queued by another task stays queued until the hold ends, so it
+cannot land between that read and the SET. `Priority.FORCE_RELEASE` and
+`Priority.ABORT` still run during the hold. A send that does not enter
+the commander is outside the reservation. USB/LSB and packet modes with a
+positive passband still send DATA and filter explicitly.
 See `handler.py: RigctldHandler._cmd_get_split_freq`,
 `handler.py: RigctldHandler._cmd_get_split_mode`, and
 `_dual_rx_runtime.py: DualRxRuntimeMixin.write_relative_vfo_mode`.

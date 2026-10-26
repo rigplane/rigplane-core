@@ -19,8 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   IC-7300MK2 and IC-705 routing is retained. `S 1 VFOB` does not change RX
   selection; plain USB/LSB clears DATA, including IC-7610 D2/D3 with an
   omitted passband. This change has not been verified on IC-7610 or IC-9700
-  hardware. IC-9700 satellite/memory operation is not added. The documented
-  multi-client read/modify/write limitation MOR-3743 remains.
+  hardware. IC-9700 satellite/memory operation is not added.
+- **Split-mode read-modify-write is one commander reservation (MOR-3743).**
+  `IcomCommander.exclusive` runs the frames queued by one task. Frames
+  queued by any other task stay queued for the hold, except
+  `Priority.FORCE_RELEASE` and `Priority.ABORT`, which still run.
+  `DualRxRuntimeMixin.write_relative_vfo_mode` holds that reservation for
+  the whole write, so a second command queued on the same commander cannot
+  land between a preservation read and the mode SET.
+  A send that never enters the commander is outside the reservation.
+  `CoreRadio.set_ptt` still sends at `Priority.IMMEDIATE`, including
+  `set_ptt(False)`, so that send waits while a reservation is held
+  (`runtime/radio.py: CoreRadio.set_ptt`).
 
 ## [3.0.0b20] — 2026-10-23
 
