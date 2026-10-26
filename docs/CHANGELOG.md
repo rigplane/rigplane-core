@@ -38,15 +38,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   25 slots on mount and further pages only with More; cancelled loads cannot
   replace a newer list. Browser geometry remains unverified (MOR-3766),
   and this UI has not been checked with a real-radio session.
+- **Read-only Windows USB capture (MOR-3772, #4325).**
+  `rigplane audio usb-capture --radio PROFILE=PORT --out FILE` accepts
+  repeated `--radio` and optional `--no-unplug`. It writes a redacted
+  JSON bundle of Windows device topology, PortAudio enumeration and
+  serial-port inventory without opening radio devices.
 
 ### Changed
 
 - **Shared Windows USB audio pairing and explicit device choices
   (MOR-3775, MOR-3774, #4329, #4331).** Pairing uses serial/audio topology
   and optional `[usb].audio_codec` identity instead of an IC-7300-only rule.
-  A pairing refusal publishes RX and TX candidates in
-  `/api/v1/info` `audioReceive.failure.candidates`, with `stableId`,
-  `displayName`, `direction`, `hostApi`, `portAudioIndex` and `nearRadio`.
+  A retained RX-start pairing refusal exposes the available capture and
+  render candidates in `/api/v1/info` `audioReceive.failure.candidates`,
+  with `stableId`, `displayName`, `direction`, `hostApi`, `portAudioIndex`
+  and `nearRadio`. The field is absent when there are no candidates.
   `rx_device`/`tx_device` and `--rx-device`/`--tx-device` accept these stable
   IDs; missing or ambiguous choices fail without an automatic fallback.
   Without a codec identity, a shared hub containing just one foreign audio
@@ -74,8 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DATA-U`/`DATA-L` as `PKTUSB`/`PKTLSB`. Native `read_relative_vfo`,
   `write_relative_vfo_mode` and `write_relative_vfo_frequency` require MAIN
   RX and address the receiver directly, with readback required for writes
-  and explicit filter-bank numbers refused. The FTX-1 profile still leaves
-  rigctld split operations unavailable. These changes
+  and explicit filter-bank numbers refused. The FTX-1 profile leaves
+  rigctld `I`/`i`/`X`/`x` unavailable. These changes
   have not been verified on IC-7300, IC-7300MK2, IC-705, IC-7610, IC-9700
   or FTX-1 hardware. IC-9700 satellite/memory routing is excluded; the
   multi-client read/modify/write limitation MOR-3743 remains.
@@ -108,6 +114,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   #4343).** An explicit stop request survives a poll's cancellation/completion
   race, so its observation loop exits before another reconnect or sleep
   during shutdown.
+- **Duplicate `rigplane.log` writes (MOR-3777, #4326).** The CLI removes
+  the diagnostic handler when its file handler targets the same file.
+  `ICOM_LOG_FILE=off` disables both CLI and diagnostic file logging.
 
 ## [3.0.0b20] — 2026-10-23
 
@@ -144,7 +153,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **IC-9700 attenuator declared as the documented 10 dB step (#4027).**
   The profile changes `[0, 20]` to `[0, 10]`; the CI-V Reference Guide lists
-  only `00` (OFF) and `10` (10 dB). Not exercised on hardware.
+  only `00` (OFF) and `10` (10 dB). The radio's owner reported on IC-9700
+  over LAN that the ATT button takes effect with `values = [0, 10]`
+  (rigplane 3.0.0b14, #4026 also applied); not otherwise verified.
 - **A CW text send a stop or force-off ends gets a defined answer
   (MOR-3700).** A pending `send_cw_text` that a CW stop ended answered HTTP
   `500` with the transport's "Managed Yaesu CAT write is no longer current",
