@@ -33,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and 400-470 MHz); no transmit band was added or widened; not verified
   on radios.
 
+- **IC-7300 frequency entry and tuning are no longer capped at 60 MHz
+  (MOR-3782).** The profile now covers the receiver range up to 74.800 MHz,
+  which includes the 4 m band; no 4 m transmit band is declared, so the
+  frontend does not offer TX at 70 MHz (EU 4 m transmit needs per-radio
+  variant selection, a separate follow-up); not verified on a radio.
+
 - **IC-7300MK2 CI-V identity (MOR-3792).** The shared serial identity
   table now maps the MK2's default CI-V address `0xB6` to `IC-7300MK2`,
   so `identify_radio` — and the CI-V identity resolver Pro consumes —

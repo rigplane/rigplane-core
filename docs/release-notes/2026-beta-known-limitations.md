@@ -60,6 +60,11 @@ that class of defect is release-blocking by definition and is not on this list.
   the hint "Not available on this receiver" while SUB is active. (MOR-2511,
   owner ruling 2026-09-17)
 
+## IC-7300 specific
+
+- **IC-7300: 4 m (70 MHz) can be tuned and received, transmit on 4 m is
+  not offered (MOR-3782).**
+
 ## rigctld write handling during transmit
 
 - **While the radio is known to be transmitting, rigctld silently drops

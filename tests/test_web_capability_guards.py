@@ -456,6 +456,30 @@ class TestCapabilitiesEndpoint:
         assert data["powerOnCommand"] is expected
 
     @pytest.mark.asyncio
+    async def test_capabilities_ic7300_4m_receive_without_tx_band(self):
+        """MOR-3782: the 4 m range is tunable but offers no TX band.
+
+        The profile's receive envelope covers 70.2 MHz (receiver
+        0.030–74.800 MHz per the Advanced Manual 11a §16), while
+        ``txBands`` — built from the ranges' ``bands`` tables — declares
+        no band covering it, so no IC-7300 gets TX permission at 70 MHz.
+        """
+        radio = _make_radio("IC-7300")
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+
+        data = _parse_json_body(writer)
+        assert any(
+            freq_range["start"] <= 70_200_000 <= freq_range["end"]
+            for freq_range in data["freqRanges"]
+        )
+        assert not any(
+            band["start"] <= 70_200_000 <= band["end"] for band in data["txBands"]
+        )
+
+    @pytest.mark.asyncio
     async def test_capabilities_reports_hardware_and_audio_scope_independently(self):
         """Audio FFT availability is not inferred from hardware scope support."""
         hardware_radio = _make_radio("IC-7610")
