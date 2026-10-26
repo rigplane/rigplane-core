@@ -911,7 +911,7 @@ def test_unselected_mode_set_matcher_accepts_the_production_ten_byte_set() -> No
     addr = radio.profile.civ_addr
     cmd_map = radio.profile.command_map
     assert cmd_map is not None
-    opcode, sub, prefix = decode_wire_tuple(cmd_map["set_unselected_mode"])
+    opcode, sub, prefix = decode_wire_tuple(cmd_map.get("set_unselected_mode"))
     set_frame = build_civ_frame(
         addr,
         CONTROLLER_ADDR,
