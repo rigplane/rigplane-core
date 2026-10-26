@@ -86,6 +86,7 @@ class PoolPhaseObserver:
         self._subs = 0
         self._logger: logging.Logger | None = None
         self._handler: _OpStateHandler | None = None
+        self._orig_level: int | None = None
 
     @property
     def pool(self) -> Any:
@@ -109,10 +110,13 @@ class PoolPhaseObserver:
     def attach(self, monkeypatch: Any, logger: logging.Logger) -> None:
         """Wrap instance-level ``submit_tracked`` and capture INFO states."""
         self._logger = logger
+        self._orig_level = logger.level
         self._handler = _OpStateHandler(self)
         logger.addHandler(self._handler)
         if not logger.isEnabledFor(logging.INFO):
-            monkeypatch.setattr(logger, "level", logging.INFO)
+            # Only setLevel clears the isEnabledFor cache; patching the
+            # ``level`` attribute would leave a stale False verdict cached.
+            logger.setLevel(logging.INFO)
         submit = self._pool.submit_tracked
 
         def observed_submit(fn: Callable[[], Any]) -> Any:
@@ -174,12 +178,15 @@ class PoolPhaseObserver:
         monkeypatch.setattr(self._pool, "submit_tracked", observed_submit)
 
     def close(self) -> None:
-        """Always remove the fixture handler; idempotent, never raises."""
+        """Remove own handler, restore the level; idempotent, never raises."""
         handler, self._handler = self._handler, None
         logger, self._logger = self._logger, None
+        orig_level, self._orig_level = self._orig_level, None
         try:
             if handler is not None and logger is not None:
                 logger.removeHandler(handler)
+            if logger is not None and orig_level is not None:
+                logger.setLevel(orig_level)
         except Exception:  # noqa: BLE001
             pass
 

@@ -15,6 +15,7 @@ that any historical failure reached such a queue or was caused by it.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 
 import pytest
@@ -44,8 +45,8 @@ async def test_pool_phase_observer_qualification(
 ) -> None:
     pool = usb_driver._BoundedPortAudioPool()
     observer = PoolPhaseObserver(pool)
-    observer.attach(monkeypatch, usb_driver.logger)
-    set_current(observer)
+    logger = usb_driver.logger
+    ambient_level = logger.level
     release_blockers = threading.Event()
     release_body = threading.Event()
     release_cancel = threading.Event()
@@ -59,6 +60,14 @@ async def test_pool_phase_observer_qualification(
         assert release_blockers.wait(10)
 
     try:
+        # Logger-cache contract (MOR-3777): warm a disabled-INFO cache
+        # before attach; attach must clear it via setLevel so INFO state
+        # capture works, and close must restore, cache-correctly.
+        logger.setLevel(logging.WARNING)
+        assert not logger.isEnabledFor(logging.INFO)
+        observer.attach(monkeypatch, logger)
+        assert logger.isEnabledFor(logging.INFO)
+        set_current(observer)
         # Occupy every worker NATIVELY (test-only): pool.inflight stays 0,
         # so run_bounded passes its saturation check and queues for real.
         for index in range(_WORKERS):
@@ -172,6 +181,12 @@ async def test_pool_phase_observer_qualification(
             await pool.run_bounded(lambda: 5, what="qual", direction="rx", timeout=5.0)
             == 5
         )
+
+        # close restores the attach-time level and disabled enablement
+        # via setLevel; the finally's second close is an idempotent no-op.
+        observer.close()
+        assert logger.level == logging.WARNING
+        assert not logger.isEnabledFor(logging.INFO)
     finally:
         release_blockers.set()
         release_body.set()
@@ -190,4 +205,5 @@ async def test_pool_phase_observer_qualification(
         set_current(None)
         observer.flush()
         observer.close()
+        logger.setLevel(ambient_level)
         pool._executor.shutdown(wait=True)
