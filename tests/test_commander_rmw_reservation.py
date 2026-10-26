@@ -14,22 +14,34 @@ from __future__ import annotations
 
 import asyncio
 import struct
+import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 import pytest
 
+from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
+from rigplane.backends.icom7610.drivers.serial_session import SerialCivTransport
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.commands.commander import IcomCommander, Priority
-from rigplane.core.exceptions import CommandError, StaleBeforeWireError
-from rigplane.core.types import CivFrame
+from rigplane.core.exceptions import (
+    CommandError,
+    ConnectionError,
+    StaleBeforeWireError,
+)
+from rigplane.core.types import CivFrame, Mode
+from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
 from rigplane.runtime.radio import IcomRadio
 from rigplane.transport import IcomTransport
+from test_serial_civ_link import _FakeReader, _FakeWriter
 
 if TYPE_CHECKING:
     from rigplane.commands.commander import InterferenceScope
 
 _MODELS = ("IC-7300", "IC-705", "IC-7610")
+
+# Bounded awaits for the transport-level scenarios (MOR-3743 round 4).
+_BOUND_S = 2.0
 
 
 def _reply(addr: int, payload: str) -> CivFrame:
@@ -965,3 +977,269 @@ async def test_retired_scope_set_is_not_retransmitted_after_cancellation(
     backend.transport._retransmit(seq)
     assert len(backend.wire) == sent_before + 1
     _assert_idle_reply(backend, seq)
+
+
+# ----------------------------------------------------------------------
+# Transport-level submission seams (MOR-3743 round 4): a failure behind
+# the send_tracked call is POTENTIALLY SENT and must never be retried;
+# only the transport's own is_current guard refusal is provably pre-wire.
+# ----------------------------------------------------------------------
+
+
+class _DrainFailsOnceWriter(_FakeWriter):
+    """Serial writer whose first drain parks on the gate, then fails.
+
+    Models the P1 shape on the real serial link (MOR-3743 round 4): the
+    frame bytes are already written when ``drain`` parks; a competing
+    transaction lands in that window; the drain then fails with the
+    classic recoverable ``OSError``. Every drain after the first behaves
+    normally, so the competitor queued behind the failed write still
+    leaves the wire and teardown stays clean.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(drain_gate=asyncio.Event())
+        self.drain_failed = asyncio.Event()
+
+    async def drain(self) -> None:
+        if self.drain_failed.is_set():
+            return
+        self.drain_started.set()
+        await self._drain_gate.wait()
+        self.drain_failed.set()
+        raise OSError("simulated serial drain failure after the write")
+
+
+class _GuardedUdpTransport:
+    """UDP-style transport with the production ``send_tracked`` contract.
+
+    Mirrors the guard order of ``IcomTransport.send_tracked`` (and the
+    serial link's writer-loop guard): the caller's ``is_current``
+    predicate is evaluated before anything is written, and its refusal
+    is the transport's own ``CommandError`` — the one failure
+    ``_execute_civ_raw`` may still classify as pre-wire once submission
+    has begun. ``on_submit`` fires synchronously before the guard: the
+    test's stand-in for a foreign transaction landing in exactly that
+    window (a separate task cannot be timed into it — the runtime's
+    pre-send check and this guard run in one event-loop slice).
+    """
+
+    def __init__(self) -> None:
+        self.my_id = 0x00010001
+        self.remote_id = 0x98
+        self.sent_packets: list[bytes] = []
+        self.replies: asyncio.Queue[bytes] = asyncio.Queue()
+        self.on_submit: Callable[[bytes], None] | None = None
+
+    async def send_tracked(
+        self,
+        packet: bytes,
+        *,
+        is_current: Callable[[], bool] | None = None,
+    ) -> None:
+        if self.on_submit is not None:
+            self.on_submit(packet)
+        if is_current is not None and not is_current():
+            raise CommandError("Tracked write is no longer current")
+        self.sent_packets.append(packet)
+
+    async def receive_packet(self, timeout: float = 5.0) -> bytes:
+        return await asyncio.wait_for(self.replies.get(), timeout)
+
+    @property
+    def civ_frames(self) -> list[bytes]:
+        return [packet[CIV_HEADER_SIZE:] for packet in self.sent_packets]
+
+
+def _wrap_reply(frame: bytes) -> bytes:
+    """LAN-style envelope the CI-V pump parses (``_civ_rx._wrap_civ``)."""
+    pkt = bytearray(CIV_HEADER_SIZE + len(frame))
+    pkt[0x10] = 0xC1
+    struct.pack_into("<H", pkt, 0x11, len(frame))
+    pkt[CIV_HEADER_SIZE:] = frame
+    return bytes(pkt)
+
+
+async def _start_stack(
+    monkeypatch: pytest.MonkeyPatch, transport: object
+) -> tuple[IcomRadio, IcomCommander]:
+    radio = IcomRadio("127.0.0.1", model="IC-7610")
+    radio._civ_transport = transport  # type: ignore[assignment]
+    radio._connected = True
+    radio._civ_min_interval = 0.0
+    radio._civ_get_timeout = 0.5
+    monkeypatch.setattr(radio, "_check_connected", lambda: None)
+    commander = IcomCommander(radio._civ_runtime.execute_civ_raw)
+    radio._commander = commander
+    commander.start()
+    return radio, commander
+
+
+async def _stop_stack(radio: IcomRadio) -> None:
+    radio._connected = False
+    await radio._civ_runtime.stop_worker()
+    await radio._civ_runtime.stop_pump()
+    radio._civ_transport = None
+
+
+async def test_serial_drain_failure_after_submission_fails_the_write_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transport failure behind submission is potentially sent (P1).
+
+    The owner's SET is WRITTEN on the real serial link when ``drain``
+    parks; a competing raw transaction marks the scope in that window
+    (the marking the HTTP raw path performs synchronously); the drain
+    then fails with ``OSError``. The SET may already be on the wire, so
+    ``write_relative_vfo_mode`` must surface the connection failure and
+    never repeat the SET: exactly one owner SET reaches the writer and
+    the competitor's queued frame still leaves. On the previous head
+    ``sent`` was set only after ``send_tracked`` returned, the drain
+    failure was reclassified as a pre-wire refusal, and the write
+    retried an already-written SET.
+    """
+    writer = _DrainFailsOnceWriter()
+    reader = _FakeReader()
+
+    async def _open() -> tuple[_FakeReader, _DrainFailsOnceWriter]:
+        return reader, writer
+
+    link = SerialCivLink(
+        device="/dev/tty.usbmodem-IC7610", open_serial_connection=_open
+    )
+    await link.connect()
+    radio, commander = await _start_stack(monkeypatch, SerialCivTransport(link))
+    addr = radio.profile.civ_addr
+    owner_set = build_civ_frame(
+        addr, CONTROLLER_ADDR, 0x26, sub=0x01, data=bytes([Mode.RTTY.value, 0x01, 0x03])
+    )
+    competitor_set = build_civ_frame(
+        addr, CONTROLLER_ADDR, 0x26, sub=0x01, data=bytes([Mode.FM.value, 0x01, 0x01])
+    )
+    entered = asyncio.Event()
+    write = asyncio.create_task(
+        radio.write_relative_vfo_mode(
+            Mode.RTTY.value, selected=False, data=True, filter_width=3
+        )
+    )
+    competitor: asyncio.Task[object] | None = None
+    try:
+        # The SET frame is written and its drain parks: submission has
+        # begun on the serial wire.
+        await asyncio.wait_for(writer.drain_started.wait(), _BOUND_S)
+        assert writer.writes == [owner_set]
+
+        async def compete() -> None:
+            entered.set()
+            # The direct raw-transaction seam — the wire path the HTTP
+            # endpoint uses. note_foreign_dispatch runs synchronously
+            # inside, before the frame parks behind the held drain, so
+            # once ``entered`` is observed the scope is already marked.
+            await radio._civ_runtime.execute_civ_transaction(
+                competitor_set, expect="none"
+            )
+
+        competitor = asyncio.create_task(compete())
+        await asyncio.wait_for(entered.wait(), _BOUND_S)
+        writer._drain_gate.set()
+        with pytest.raises(ConnectionError):
+            await asyncio.wait_for(write, _BOUND_S)
+        # The competitor's queued frame still leaves the wire.
+        await asyncio.wait_for(competitor, _BOUND_S)
+    finally:
+        writer._drain_gate.set()
+        for task in (write, competitor):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *[task for task in (write, competitor) if task is not None],
+            return_exceptions=True,
+        )
+        await _stop_stack(radio)
+        await link.disconnect()
+    # Exactly one owner SET; no retry read, no second SET, and the
+    # competitor's newer write is what the radio keeps.
+    assert writer.writes.count(owner_set) == 1
+    assert writer.writes == [owner_set, competitor_set]
+
+
+async def test_transport_guard_refusal_before_the_write_still_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the transport's own guard refusal stays retryable.
+
+    A ``CommandError`` raised by ``send_tracked``'s ``is_current`` guard
+    before the transport writes anything is the one failure behind the
+    submission call that is still provably pre-wire: the first attempt
+    is discarded and the write retries — even though ``sent`` now turns
+    True before the call. The refused SET never reaches the wire; the
+    retry's SET is acknowledged and read back, so the write ends with
+    exactly one SET on the wire.
+    """
+    transport = _GuardedUdpTransport()
+    radio, commander = await _start_stack(monkeypatch, transport)
+    addr = radio.profile.civ_addr
+    owner_set = build_civ_frame(
+        addr, CONTROLLER_ADDR, 0x26, sub=0x01, data=bytes([Mode.RTTY.value, 0x01, 0x03])
+    )
+    freq_get = build_civ_frame(addr, CONTROLLER_ADDR, 0x25, data=b"\x01")
+    mode_get = build_civ_frame(addr, CONTROLLER_ADDR, 0x26, sub=0x01)
+    marked = asyncio.Event()
+    write = asyncio.create_task(
+        radio.write_relative_vfo_mode(
+            Mode.RTTY.value, selected=False, data=True, filter_width=3
+        )
+    )
+
+    def on_submit(packet: bytes) -> None:
+        # A foreign transaction landing between the runtime's pre-send
+        # check and the transport guard: mark the live scope through the
+        # same commander seam the direct raw path uses.
+        if packet[CIV_HEADER_SIZE:] == owner_set and not marked.is_set():
+            marked.set()
+            commander.note_foreign_dispatch(None, Priority.NORMAL)
+
+    transport.on_submit = on_submit
+
+    def reply_for(frame: bytes) -> bytes | None:
+        if frame == owner_set:
+            return bytes.fromhex(f"FE FE E0 {addr:02X} FB FD")
+        if frame == freq_get:
+            return bytes.fromhex(f"FE FE E0 {addr:02X} 25 01 00 40 07 14 00 FD")
+        if frame == mode_get:
+            return bytes.fromhex(
+                f"FE FE E0 {addr:02X} 26 01 {Mode.RTTY.value:02X} 01 03 FD"
+            )
+        return None
+
+    async def respond() -> None:
+        answered = 0
+        deadline = time.monotonic() + _BOUND_S
+        while time.monotonic() < deadline:
+            while answered < len(transport.sent_packets):
+                frame = transport.sent_packets[answered][CIV_HEADER_SIZE:]
+                answered += 1
+                reply = reply_for(frame)
+                if reply is not None:
+                    transport.replies.put_nowait(_wrap_reply(reply))
+            if write.done():
+                return
+            await asyncio.sleep(0.01)
+
+    responder = asyncio.create_task(respond())
+    try:
+        observed = await asyncio.wait_for(write, _BOUND_S)
+        assert marked.is_set(), "the guard refusal was never exercised"
+    finally:
+        responder.cancel()
+        await asyncio.gather(responder, return_exceptions=True)
+        if not write.done():
+            write.cancel()
+        await asyncio.gather(write, return_exceptions=True)
+        await _stop_stack(radio)
+    assert observed.filter_num == 3
+    assert observed.data_mode == 1
+    # Attempt one's SET was refused before the transport wrote it; the
+    # retry's SET is the only one on the wire, followed by its readback.
+    assert transport.civ_frames.count(owner_set) == 1
+    assert transport.civ_frames == [owner_set, freq_get, mode_get]

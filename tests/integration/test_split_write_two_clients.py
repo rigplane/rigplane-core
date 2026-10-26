@@ -83,10 +83,13 @@ import pytest
 # All tests in this module use MockIcomRadio and require no real hardware.
 pytestmark = pytest.mark.mock_integration
 
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame  # noqa: E402
+from rigplane.commands._frame import decode_wire_tuple  # noqa: E402
 from rigplane.commands.commander import Priority  # noqa: E402
 from rigplane.core.acquisition_scheduler import (  # noqa: E402
     AcquisitionScheduler,
 )
+from rigplane.runtime.radio import IcomRadio  # noqa: E402
 from rigplane.types import Mode  # noqa: E402
 from rigplane_testkit.icom import MockIcomRadio  # noqa: E402
 from rigplane_testkit.icom.simulator import _CIV_HEADER_SIZE  # noqa: E402
@@ -143,7 +146,9 @@ def _is_unselected_mode_set(packet: bytes, radio_addr: int) -> bool:
 
     Same parse as :func:`_is_unselected_mode_get`; the frame carries the
     unselected-receiver selector plus the three-byte mode/DATA/filter
-    payload, so holding it parks the radio's ACK to that SET.
+    payload — ``FE FE <addr> E0 26 01 <mode> <DATA> <filter> FD``, ten
+    bytes with the terminator — so holding it parks the radio's ACK to
+    that SET.
     """
     datalen = struct.unpack_from("<H", packet, 0x11)[0]
     end = _CIV_HEADER_SIZE + datalen
@@ -156,7 +161,7 @@ def _is_unselected_mode_set(packet: bytes, radio_addr: int) -> bool:
         and civ[-1:] == b"\xfd"
         and civ[2] == radio_addr
         and civ[4] == 0x26
-        and len(civ) == 9
+        and len(civ) == 10
         and civ[5] == 0x01
     )
 
@@ -886,3 +891,40 @@ async def test_ptt_off_keeps_plain_dispatch_order_across_a_held_split_write(
             a_set,
             get,
         ], _frames_debug(arena.sim)
+
+
+def test_unselected_mode_set_matcher_accepts_the_production_ten_byte_set() -> None:
+    """The SET hold matcher must match the SET the runtime really sends.
+
+    ``_is_unselected_mode_set`` required a nine-byte CI-V frame, but the
+    SET the runtime composes — profile wire tuple ``set_unselected_mode``
+    decoded and built through ``write_relative_vfo_mode`` →
+    ``build_civ_frame``, then wrapped by ``_civ_rx._wrap_civ`` — is ten
+    bytes: the extracted frame includes the terminating ``FD``. With the
+    nine-byte pin the held-ACK regression never held its owner SET and
+    ``hold.wait_read(1)`` timed out (MOR-3743 round 4). Built here with
+    the production builders so the matcher cannot drift from the wire
+    again.
+    """
+    radio = IcomRadio("127.0.0.1", model="IC-7610")
+    addr = radio.profile.civ_addr
+    cmd_map = radio.profile.command_map
+    assert cmd_map is not None
+    opcode, sub, prefix = decode_wire_tuple(cmd_map["set_unselected_mode"])
+    set_frame = build_civ_frame(
+        addr,
+        CONTROLLER_ADDR,
+        opcode,
+        sub=sub,
+        data=prefix + bytes([Mode.RTTY.value, 0x00, 0x03]),
+    )
+    assert set_frame == bytes(
+        (0xFE, 0xFE, addr, 0xE0, 0x26, 0x01, Mode.RTTY.value, 0x00, 0x03, 0xFD)
+    )
+    radio._civ_transport = SimpleNamespace(my_id=0x00010001, remote_id=addr)
+    wrap = radio._civ_runtime._wrap_civ  # noqa: SLF001
+    assert _is_unselected_mode_set(wrap(set_frame), addr)
+    # The nine-byte truncation (terminator dropped) and the GET never
+    # hold anything.
+    assert not _is_unselected_mode_set(wrap(set_frame[:9]), addr)
+    assert not _is_unselected_mode_set(wrap(_get_frame(addr)), addr)
