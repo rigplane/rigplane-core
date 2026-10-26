@@ -94,10 +94,12 @@ class _Arena:
         *,
         enable_audio: bool = False,
         web_max_clients: int | None = None,
+        sim_options: dict[str, Any] | None = None,
     ) -> None:
         self._tmp_path = tmp_path
         self._enable_audio = enable_audio
         self._web_max_clients = web_max_clients
+        self._sim_options = sim_options or {}
         self._clients: list[_WsKeyClient] = []
         self._rigs: list[_RigctldKeyClient] = []
 
@@ -110,6 +112,7 @@ class _Arena:
             sim_options={
                 "enable_audio": self._enable_audio,
                 "capture_civ_frames": True,
+                **self._sim_options,
             },
             web_max_clients=self._web_max_clients,
         )

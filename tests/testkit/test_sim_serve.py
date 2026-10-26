@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import io
 import json
 import signal
 import sys
+import wave
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +39,7 @@ from rigplane_testkit.sim.serve import (
 )
 
 from _perf_helpers import fast_connect
+from testkit.test_simulator_audio import _open_audio, _tx_audio, _udp
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -322,7 +325,84 @@ async def test_same_seed_and_events_produce_identical_trace() -> None:
     assert len(first) == 1 + len(_DETERMINISM_EVENTS)
 
 
+# --- TX audio capture routes (IC-7610 backend only) ---------------------------
+
+_AUDIO_TX_EMPTY = {
+    "frames": 0,
+    "payload_bytes": 0,
+    "ptt_off_frames": 0,
+    "inner_seq_gaps": 0,
+    "first_received_at": None,
+    "last_received_at": None,
+    "sample_rate": 48000,
+    "channels": 1,
+    "codec": "pcm16",
+}
+
+
+async def test_audio_tx_capture_routes() -> None:
+    """GET /audio/tx reports the sink; GET /audio/tx.wav returns it as WAV."""
+    async with _stack() as s:
+        radio = s.inner.backend.radio
+        assert radio.capture_tx_audio  # serve builds the IC-7610 with capture on
+        resp = await s.client.get("/audio/tx")
+        assert resp.status == 200
+        assert await resp.json() == _AUDIO_TX_EMPTY
+
+        pcm = bytes(range(256)) * 4  # 512 samples, s16le-shaped
+        client = await _udp()
+        try:
+            radio_id = await _open_audio(client, radio)
+            radio._set_simulated_ptt(True, wire_set=False)  # noqa: SLF001
+            client.send(_tx_audio(1, 0, pcm, radio_id), radio.audio_port)
+            # inner_seq 0 -> 2: one sequence gap in the stats.
+            client.send(_tx_audio(2, 2, pcm, radio_id), radio.audio_port)
+            end = asyncio.get_running_loop().time() + 2.0
+            while len(radio.audio_tx_frames) < 2:
+                assert asyncio.get_running_loop().time() < end, "frames not sunk"
+                await asyncio.sleep(0.02)
+        finally:
+            client.close()
+
+        body = await (await s.client.get("/audio/tx")).json()
+        assert body["frames"] == 2
+        assert body["payload_bytes"] == 2 * len(pcm)
+        assert body["ptt_off_frames"] == 0
+        assert body["inner_seq_gaps"] == 1
+        assert body["first_received_at"] <= body["last_received_at"]
+        assert (
+            body["sample_rate"],
+            body["channels"],
+            body["codec"],
+        ) == (48000, 1, "pcm16")
+
+        since = await (await s.client.get("/audio/tx?since=1")).json()
+        assert since["frames"] == 1
+        assert since["inner_seq_gaps"] == 0  # one frame left: no pair to gap
+
+        resp = await s.client.get("/audio/tx.wav")
+        assert resp.status == 200
+        assert resp.content_type == "audio/wav"
+        with wave.open(io.BytesIO(await resp.read()), "rb") as wav:
+            assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (
+                1,
+                2,
+                48000,
+            )
+            assert wav.readframes(wav.getnframes()) == pcm + pcm
+
+
 # --- Serial events (in-process) ---------------------------------------------
+
+
+async def test_audio_tx_endpoints_unsupported_on_serial_radios() -> None:
+    """The TX-audio capture routes exist on the IC-7610 backend only."""
+    for radio in ("ic7300", "ftx1"):
+        async with _stack("--radio", radio) as s:
+            for path in ("/audio/tx", "/audio/tx.wav"):
+                resp = await s.client.get(path)
+                assert resp.status == 404, (radio, path)
+                assert await resp.json() == {"ok": False, "outcome": "unsupported"}
 
 
 async def test_stop_cancels_pending_reappear_timer() -> None:
