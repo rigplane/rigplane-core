@@ -129,6 +129,89 @@ def test_recording_adapter_uses_usb_ancestry_and_uid_location(
         assert snapshot.portaudio.devices[result.tx_index].name == "USB Audio Device"
 
 
+@pytest.mark.parametrize("radio_capture_present", [True, False])
+def test_uid_serial_location_collision_never_assigns_webcam_to_radio(
+    radio_capture_present,
+):
+    session = _macos_session()
+    raw = session["raw"]["macos"]
+    camera = next(row for row in raw["usb_devices"] if row["registry_id"] == 4294970494)
+    camera["serial_number"] = "03121400"
+    webcam = next(row for row in raw["audio_devices"] if row["device_id"] == 127)
+    webcam["uid"] = webcam["uid"].replace("R62PGXVOTB4", "03121400")
+    if not radio_capture_present:
+        raw["audio_devices"] = [
+            row for row in raw["audio_devices"] if row["device_id"] != 137
+        ]
+    snapshot = _adapt(session)
+    result = pair(snapshot, MAC_PORT, get_radio_profile("IC-705").usb_identity)
+    if radio_capture_present:
+        assert isinstance(result, PairOk), result
+        assert (result.rx_index, result.tx_index, result.codec_node) == (
+            2,
+            1,
+            "4295496626",
+        )
+    else:
+        assert isinstance(result, PairRefused), result
+        assert result.reason == "no_codec"
+        assert result.candidates
+        candidate = next(c for c in result.candidates if c.portaudio_index == 4)
+        assert (candidate.direction, candidate.near_radio) == ("capture", False)
+    endpoint = next(e for e in snapshot.endpoints if e.os_id == webcam["uid"])
+    assert endpoint.owner == "opaque:" + webcam["uid"]
+
+
+@pytest.mark.parametrize("serial", ["R62PGXVOTB4", "03121400", "0000000003121400"])
+def test_serial_form_uid_uses_its_own_corroborated_usb_device(serial):
+    session = _macos_session()
+    raw = session["raw"]["macos"]
+    camera = next(row for row in raw["usb_devices"] if row["registry_id"] == 4294970494)
+    camera.update(serial_number=serial, manufacturer="Camera vendor")
+    webcam = next(row for row in raw["audio_devices"] if row["device_id"] == 127)
+    webcam["uid"] = (
+        "AppleUSBAudioEngine: Camera  vendor : HD  Pro Webcam C920 :" + serial + ":3"
+    )
+    snapshot = _adapt(session)
+    endpoint = next(e for e in snapshot.endpoints if e.os_id == webcam["uid"])
+    assert (endpoint.owner, endpoint.flow) == ("4294970494", "capture")
+    result = pair(snapshot, MAC_PORT, get_radio_profile("IC-705").usb_identity)
+    assert isinstance(result, PairOk), result
+    assert (result.rx_index, result.tx_index) == (2, 1)
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "wrong-manufacturer",
+        "wrong-product",
+        "missing-manufacturer",
+        "missing-product",
+        "duplicate-location",
+        "conflicting-serial",
+    ],
+)
+def test_uid_ownership_without_unique_name_corroboration_stays_opaque(evidence):
+    session = _synthetic_macos()
+    raw = session["raw"]["macos"]
+    codec = next(row for row in raw["usb_devices"] if row["registry_id"] == 4295496626)
+    if evidence.startswith("wrong-"):
+        codec[evidence.removeprefix("wrong-")] = "Other device"
+    elif evidence.startswith("missing-"):
+        codec[evidence.removeprefix("missing-")] = None
+    else:
+        other = {**codec, "registry_id": 123}
+        if evidence == "conflicting-serial":
+            other.update(location_id=0xFFFFFFFF, serial_number="3121400")
+        raw["usb_devices"].append(other)
+    snapshot = _adapt(session)
+    assert all(e.owner == "opaque:" + e.os_id for e in snapshot.endpoints)
+    result = pair(snapshot, MAC_PORT, get_radio_profile("IC-705").usb_identity)
+    assert isinstance(result, PairRefused), result
+    assert result.reason == "no_codec"
+    assert result.candidates
+
+
 @pytest.mark.parametrize(
     "condition",
     [

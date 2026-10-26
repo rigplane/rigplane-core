@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from rigplane.audio._portaudio_enum import PortAudioEnumeration
+from rigplane.audio._usb_names import endpoint_name_key
 from rigplane.audio._usb_raw_macos import RawMacos
 from rigplane.audio._usb_snapshot import (
     AudioEndpoint,
@@ -17,10 +18,9 @@ from rigplane.audio._usb_snapshot import (
 
 
 def adapt_macos(raw: RawMacos, portaudio: PortAudioEnumeration) -> UsbSnapshot:
-    """Link USB audio UIDs by exact locationID; retain unlinked endpoints."""
+    """Link UID locations or serials with corroborating USB names."""
     nodes = []
     roots = {}
-    locations: dict[int, list[str]] = {}
     for row in raw.usb_devices:
         id = str(row["registry_id"])
         parent = row["parent_registry_id"]
@@ -39,9 +39,6 @@ def adapt_macos(raw: RawMacos, portaudio: PortAudioEnumeration) -> UsbSnapshot:
                 f"{row['product_id']:04X}" if row["product_id"] is not None else None,
             )
         )
-        location = row["location_id"]
-        if location:
-            locations.setdefault(location, []).append(id)
     serial_ports = tuple(
         SerialPortRef(
             row["device"],
@@ -69,13 +66,30 @@ def adapt_macos(raw: RawMacos, portaudio: PortAudioEnumeration) -> UsbSnapshot:
         if not uid or name is None:
             unavailable.append(Unavailable("endpoints", "CoreAudio identity missing"))
             continue
-        location_match = (
-            re.search(r":([0-9a-fA-F]{1,8}):[^:]+$", uid)
-            if uid.startswith("AppleUSBAudioEngine:")
-            else None
+        uid_match = re.fullmatch(
+            r"AppleUSBAudioEngine:([^:]+):([^:]+):([^:]+):[^:]+", uid
         )
-        owners = locations.get(int(location_match[1], 16), []) if location_match else []
-        owner = owners[0] if len(owners) == 1 else "opaque:" + uid
+        owners = set()
+        if uid_match:
+            manufacturer, product, identity = uid_match.groups()
+            location = (
+                int(identity, 16)
+                if re.fullmatch(r"[0-9a-fA-F]{1,8}", identity)
+                else None
+            )
+            owners = {
+                str(device["registry_id"])
+                for device in raw.usb_devices
+                if (
+                    (location is not None and location == device["location_id"])
+                    or identity == device["serial_number"]
+                )
+                and endpoint_name_key(manufacturer)
+                == endpoint_name_key(device["manufacturer"] or "")
+                and endpoint_name_key(product)
+                == endpoint_name_key(device["product"] or "")
+            }
+        owner = next(iter(owners)) if len(owners) == 1 else "opaque:" + uid
         directions: tuple[tuple[Flow, str], ...] = (
             ("capture", "input_channels"),
             ("render", "output_channels"),
