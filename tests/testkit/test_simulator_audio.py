@@ -34,13 +34,16 @@ from rigplane_testkit.icom.simulator import (
 from rigplane_testkit.icom.simulator_audio import (
     _AUDIO_BURST_PERIOD_S,
     AUDIO_HEADER_SIZE,
+    TxAudioFormat,
 )
 from testkit.test_simulator_faults import (
     _CLIENT_ID,
     _HOST,
     _UdpClient,
     _ayt,
+    _bare_conninfo,
     _conninfo,
+    _conninfo_tx_format,
     _header,
     _login,
     _openclose,
@@ -803,6 +806,106 @@ async def test_tx_capture_off_keeps_payload_empty(
     assert server.audio_tx_frames[0].payload == b""
     assert server.audio_tx_frames[0].payload_len == 64  # metadata unchanged
     assert server.audio_tx_pcm() == b""
+
+
+# ---------------------------------------------------------------------------
+# Learned TX format: the sink records the conninfo-declared TX format
+# ---------------------------------------------------------------------------
+
+
+async def test_tx_sink_learns_the_accepted_conninfo_tx_format(
+    server: MockIcomRadio,
+) -> None:
+    """Only the fresh login's OWN accepted conninfo teaches the TX format
+    (production conninfo layout, ``core/auth.py``: tx codec at 0x73, BE u32
+    tx sample rate at 0x78): the production-faithful default learns 48 kHz
+    PCM16, a bare conninfo (rate 0, never sent by a real client) teaches
+    nothing, and a renegotiated conninfo replaces the learned format."""
+    ctrl = await _udp()
+    try:
+        ctrl.send(_login(), server.control_port)
+        await ctrl.recv()
+        assert server.audio_tx_format is None
+
+        ctrl.send(_conninfo(), server.control_port)
+        await ctrl.recv()
+        assert server.audio_tx_format == TxAudioFormat(codec=0x04, sample_rate=48000)
+
+        ctrl.send(_bare_conninfo(), server.control_port)
+        await ctrl.recv()
+        assert server.audio_tx_format == TxAudioFormat(codec=0x04, sample_rate=48000)
+
+        ctrl.send(
+            _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=16000),
+            server.control_port,
+        )
+        await ctrl.recv()
+        assert server.audio_tx_format == TxAudioFormat(codec=0x04, sample_rate=16000)
+    finally:
+        ctrl.close()
+
+
+async def test_tx_capture_format_marks_a_mixed_capture() -> None:
+    """Sink frames snapshot the format learned at their arrival;
+    ``tx_capture_format`` returns the single distinct learned format
+    across the slice, or None when the slice carries none or spans a
+    format change (a new session renegotiating its conninfo mid-capture)."""
+    server = MockIcomRadio(enable_audio=True)
+    await server.start()
+    ctrl_a, ctrl_b, audio = await _udp(), await _udp(), await _udp()
+    try:
+        ctrl_a.send(_login(), server.control_port)
+        await ctrl_a.recv()
+        ctrl_a.send(_conninfo(), server.control_port)
+        await ctrl_a.recv()
+        radio_id = await _open_audio(audio, server)
+        audio.send(_tx_audio(1, 0, bytes(64), radio_id), server.audio_port)
+        await _await_client_seq_value(server, 1)
+        learned_48k = TxAudioFormat(codec=0x04, sample_rate=48000)
+        assert server.audio_tx_frames[0].tx_format == learned_48k
+        assert server.tx_capture_format() == learned_48k
+
+        # A new session: new login, new conninfo at 16 kHz.
+        ctrl_b.send(_login(), server.control_port)
+        await ctrl_b.recv()
+        ctrl_b.send(
+            _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=16000),
+            server.control_port,
+        )
+        await ctrl_b.recv()
+        audio.send(_tx_audio(2, 1, bytes(64), radio_id), server.audio_port)
+        await _await_client_seq_value(server, 2)
+        first, second = server.audio_tx_frames
+        learned_16k = TxAudioFormat(codec=0x04, sample_rate=16000)
+        assert first.tx_format == learned_48k
+        assert second.tx_format == learned_16k
+        assert server.tx_capture_format() is None  # mixed: no single label
+        assert server.tx_capture_format(since=1) == learned_16k
+    finally:
+        for c in (ctrl_a, ctrl_b, audio):
+            c.close()
+        await server.stop()
+
+
+async def test_tx_capture_format_without_frames_or_format_is_none(
+    server: MockIcomRadio, client: _UdpClient
+) -> None:
+    """No frames (nothing captured) and frames with no learned format
+    (a bare conninfo, rate 0) both give no capture format."""
+    assert server.tx_capture_format() is None
+    ctrl = await _udp()
+    try:
+        ctrl.send(_login(), server.control_port)
+        await ctrl.recv()
+        ctrl.send(_bare_conninfo(), server.control_port)
+        await ctrl.recv()
+        radio_id = await _open_audio(client, server)
+        client.send(_tx_audio(1, 0, bytes(64), radio_id), server.audio_port)
+        await _await_client_seq_value(server, 1)
+        assert server.audio_tx_frames[0].tx_format is None
+        assert server.tx_capture_format() is None
+    finally:
+        ctrl.close()
 
 
 # ---------------------------------------------------------------------------

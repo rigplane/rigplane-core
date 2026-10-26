@@ -17,6 +17,7 @@ FAKE RADIO ONLY — the simulator; nothing here can key a real radio.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 import time
 from dataclasses import replace
@@ -29,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 pytestmark = pytest.mark.mock_integration
 
+from rigplane.radio import IcomRadio  # noqa: E402
 from rigplane.runtime.tx_interlock import RfState  # noqa: E402
 from rigplane.web.protocol import (  # noqa: E402
     AUDIO_CODEC_PCM16,
@@ -42,7 +44,9 @@ from rigplane_testkit.audio_markers import (  # noqa: E402
     check_marker,
     render_marker_pcm16,
 )
+from rigplane_testkit.icom.simulator_audio import TxAudioFormat  # noqa: E402
 
+from _perf_helpers import fast_connect  # noqa: E402
 from test_multi_session_tx_lanes import _Arena  # noqa: E402
 from test_tx_under_fault_matrix import (  # noqa: E402
     _GATE_TIMEOUT_S,
@@ -203,3 +207,44 @@ async def test_marker_check_catches_a_wrong_tone(tmp_path: Path) -> None:
         )
         assert any("frequency" in problem for problem in problems)
         await arena.unkey(session)
+
+
+async def test_real_client_negotiated_tx_format_is_learned() -> None:
+    """A real Core ``IcomRadio(audio_sample_rate=16000)`` against the
+    simulator: the accepted conninfo teaches the sink the negotiated TX
+    format, and streamed TX frames snapshot it — the label source of the
+    ``/audio/tx[.wav]`` capture routes."""
+    sim = MockIcomRadio(
+        single_owner=True,
+        keepalive_hold_s=10.0,
+        enable_audio=True,
+        capture_tx_audio=True,
+    )
+    await sim.start()
+    radio = IcomRadio(
+        host="127.0.0.1",
+        port=sim.control_port,
+        username="testuser",
+        password="testpass",
+        timeout=5.0,
+        model="IC-7610",
+        audio_sample_rate=16000,
+    )
+    try:
+        with fast_connect():
+            await radio.connect()
+        learned = TxAudioFormat(codec=0x04, sample_rate=16000)
+        assert sim.audio_tx_format == learned
+
+        await radio.start_tx()
+        await radio.push_tx(b"\x01\x00" * 320)  # 20 ms of 16 kHz mono s16le
+        end = time.monotonic() + _GATE_TIMEOUT_S
+        while not sim.audio_tx_frames:
+            assert time.monotonic() < end, "TX frame never reached the sink"
+            await asyncio.sleep(0.02)
+        assert sim.audio_tx_frames[0].tx_format == learned
+        assert sim.tx_capture_format() == learned
+    finally:
+        with contextlib.suppress(Exception):
+            await radio.disconnect()
+        await sim.stop()

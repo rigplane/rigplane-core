@@ -96,9 +96,36 @@ def _login() -> bytes:
 
 
 def _conninfo(token: int = 0) -> bytes:
+    """Client conninfo in the production layout (``core/auth.py``:
+    ``build_conninfo_packet``): the rx/tx codec and sample-rate fields the
+    production client always sends — rx codec at 0x72, tx codec at 0x73,
+    BE u32 rx/tx sample rates at 0x74/0x78 (48 kHz PCM_1CH_16BIT, the
+    IC-7610 profile's legs)."""
     pkt = _header(0x90, _PT_DATA)
     pkt[0x15] = 0x03  # requesttype: client conninfo
     struct.pack_into("<I", pkt, 0x1C, token)
+    pkt[0x72] = 0x04  # rx codec: AudioCodec.PCM_1CH_16BIT
+    pkt[0x73] = 0x04  # tx codec: AudioCodec.PCM_1CH_16BIT
+    struct.pack_into(">I", pkt, 0x74, 48000)  # rx sample rate
+    struct.pack_into(">I", pkt, 0x78, 48000)  # tx sample rate
+    return bytes(pkt)
+
+
+def _bare_conninfo(token: int = 0) -> bytes:
+    """A conninfo with the codec/rate fields left zero — never sent by a
+    real client; pins the "no format learned" handling."""
+    pkt = _header(0x90, _PT_DATA)
+    pkt[0x15] = 0x03  # requesttype: client conninfo
+    struct.pack_into("<I", pkt, 0x1C, token)
+    return bytes(pkt)
+
+
+def _conninfo_tx_format(*, tx_codec: int, tx_sample_rate: int, token: int = 0) -> bytes:
+    """A production-layout conninfo with an explicit TX codec/rate (e.g. a
+    Core client negotiating ``audio_sample_rate=16000``)."""
+    pkt = bytearray(_conninfo(token))
+    pkt[0x73] = tx_codec
+    struct.pack_into(">I", pkt, 0x78, tx_sample_rate)
     return bytes(pkt)
 
 
