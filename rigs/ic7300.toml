@@ -740,6 +740,29 @@ swap_ab = [0xB0]
 equal_ab = [0xA0]
 
 # ── Frequency Ranges ─────────────────────────────────────────────
+# IC-7300 Instruction Manual (English), Specifications p.14: receiver
+# 0.030–74.800 MHz; transmitter 1.8–54.000 MHz on all listed versions, with
+# 70.000–70.500 MHz added on EUR/UK/ITR factory versions. The ``standard``
+# variant matches non–4 m factory coverage; ``eu_4m`` appends the EU/UK 4 m
+# allocation (default — matches the MOR-3782 reporter's EU hardware).
+
+[freq_ranges]
+default_variant = "eu_4m"
+
+[freq_ranges.variants.standard]
+
+[freq_ranges.variants.eu_4m]
+
+[[freq_ranges.variants.eu_4m.ranges]]
+label = "4m"
+start_hz = 70_000_000
+end_hz = 70_500_000
+
+[[freq_ranges.variants.eu_4m.ranges.bands]]
+name = "4m"
+start_hz = 70_000_000
+end_hz = 70_500_000
+default_hz = 70_200_000
 
 [[freq_ranges.ranges]]
 label = "HF"

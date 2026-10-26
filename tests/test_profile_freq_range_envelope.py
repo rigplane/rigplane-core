@@ -6,7 +6,12 @@ radio's ``freq_ranges`` profile data — not from per-model constants.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from rigplane.profiles import RadioProfile, get_radio_profile, reload_profiles
+from rigplane.profiles.rig_loader import load_rig
+
+RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 
 
 def tuning_envelope_hz(profile: RadioProfile) -> tuple[int, int]:
@@ -38,6 +43,13 @@ class TestProfileTuningEnvelope:
             f"IC-7300 tuneMaxHz {tune_max} must cover EU 4 m (70.0–70.5 MHz)"
         )
         assert frequency_in_profile_rx_ranges(profile, 70_200_000)
+
+    def test_ic7300_standard_variant_keeps_60_mhz_envelope(self) -> None:
+        rig = load_rig(RIGS_DIR / "ic7300.toml")
+        profile = rig.to_profile(freq_range_variant="standard")
+        _, tune_max = tuning_envelope_hz(profile)
+        assert tune_max == 60_000_000
+        assert not frequency_in_profile_rx_ranges(profile, 70_200_000)
 
     def test_ic705_tune_max_from_profile_not_ic7300_cap(self) -> None:
         profile = get_radio_profile("IC-705")
