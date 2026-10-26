@@ -101,6 +101,7 @@ def redact_bundle(
         canonical: _token(key, canonical)
         for canonical in {_ascii_lower(value.replace(" ", "_")) for value in values}
     }
+    known_serials = {_ascii_lower(value.replace(" ", "_")) for value in values}
 
     def replace_field(value: Any) -> Any:
         if isinstance(value, str):
@@ -119,10 +120,20 @@ def redact_bundle(
         mac = re.fullmatch(r"(/dev/(?:cu|tty)\.(?:usbserial-|usbmodem))(.*)", value)
         for candidate in sorted({serial} if serial else values, key=len, reverse=True):
             for spelling in {candidate, candidate.replace(" ", "_")}:
-                pattern = re.compile(re.escape(spelling), re.IGNORECASE | re.ASCII)
-                if serial and mac and (match := pattern.match(mac[2])):
-                    return mac[1] + replace_field(candidate) + mac[2][match.end() :]
+                if mac:
+                    # A BSD suffix hides a serial only when it equals the serial
+                    # exactly, plus at most one trailing interface digit
+                    # (macOS "usbserial-<serial><n>"). Anything else, e.g. the
+                    # location-derived "usbmodem14201", stays as recorded.
+                    exact = re.fullmatch(
+                        re.escape(spelling) + r"\d?", mac[2], re.IGNORECASE | re.ASCII
+                    )
+                    if exact:
+                        return (
+                            mac[1] + replace_field(candidate) + mac[2][len(spelling) :]
+                        )
                 if value.startswith("/dev/serial/by-id/"):
+                    pattern = re.compile(re.escape(spelling), re.IGNORECASE | re.ASCII)
                     match = re.fullmatch(
                         r"(.+_)" + pattern.pattern + r"(-if\d+.*|$)",
                         value,
@@ -136,12 +147,11 @@ def redact_bundle(
         value: Any,
         part: str,
         aliases: dict[str, str],
-        uid_serials: set[str],
         uid_locations: set[int],
     ) -> None:
         if isinstance(value, list):
             for child in value:
-                redact_topology(child, part, aliases, uid_serials, uid_locations)
+                redact_topology(child, part, aliases, uid_locations)
         elif isinstance(value, dict):
             for field, child in value.items():
                 if field == "serial_number":
@@ -166,15 +176,13 @@ def redact_bundle(
                         except ValueError:
                             location = None
                         if (
-                            location is None
-                            or uid_locations
-                            and location not in uid_locations
-                        ) and _ascii_lower(identity.replace(" ", "_")) in uid_serials:
+                            location is None or location not in uid_locations
+                        ) and _ascii_lower(identity.replace(" ", "_")) in known_serials:
                             value[field] = ":".join(
                                 (prefix, replace_field(identity), streams)
                             )
                 else:
-                    redact_topology(child, part, aliases, uid_serials, uid_locations)
+                    redact_topology(child, part, aliases, uid_locations)
 
     result = copy.deepcopy(bundle)
     for session in result["sessions"]:
@@ -185,11 +193,6 @@ def redact_bundle(
             usb = {
                 row.get("registry_id"): row.get("serial_number")
                 for row in raw.get("macos", {}).get("usb_devices", [])
-            }
-            uid_serials = {
-                _ascii_lower(serial.replace(" ", "_"))
-                for serial in usb.values()
-                if serial
             }
             uid_locations = {
                 row["location_id"]
@@ -216,9 +219,7 @@ def redact_bundle(
                     if field in port:
                         port[field] = aliases.get(port[field], port[field])
             for part in ("macos", "linux"):
-                redact_topology(
-                    raw.get(part), part, aliases, uid_serials, uid_locations
-                )
+                redact_topology(raw.get(part), part, aliases, uid_locations)
         for port in raw.get("serial_ports", []):
             if "serial_number" in port:
                 port["serial_number"] = replace_field(port["serial_number"])

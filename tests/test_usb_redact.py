@@ -132,6 +132,188 @@ def test_short_unix_serial_preserves_topology_location_and_stream(part, serial):
         )
 
 
+def test_bundle_wide_serial_evidence_redacts_partial_capture_sessions() -> None:
+    serial = "01AE340D"
+    callout = f"/dev/cu.usbserial-{serial}0"
+    dialin = f"/dev/tty.usbserial-{serial}1"
+    uid = f"AppleUSBAudioEngine:Generic:USB Audio Device:{serial}:2"
+    connected = {
+        "radios": [{"profile": "radio-a", "serial_port": callout}],
+        "raw": {
+            # IOUSB unavailable: registry rows are empty, CoreAudio still enumerated.
+            "macos": {
+                "usb_devices": [],
+                "serial_devices": [],
+                "audio_devices": [{"uid": uid}],
+                "unavailable": [{"part": "macos:usb", "reason": "ioreg failed"}],
+            },
+            "serial_ports": [
+                {"serial_number": serial, "device": callout, "name": "radio-a"}
+            ],
+        },
+    }
+    replugged = {
+        "radios": [{"profile": "radio-a", "serial_port": callout}],
+        "raw": {
+            # pyserial unavailable: the serial_ports part is absent altogether.
+            "macos": {
+                "usb_devices": [
+                    {
+                        "registry_id": 3,
+                        "location_id": 0x3121300,
+                        "serial_number": serial,
+                    }
+                ],
+                "serial_devices": [{"device": dialin, "usb_registry_id": 3}],
+                "audio_devices": [{"uid": uid}],
+                "unavailable": [{"part": "serial_ports", "reason": "comports failed"}],
+            },
+        },
+    }
+    result = _usb_redact.redact_bundle({"sessions": [connected, replugged]}, key=_KEY)
+    first, second = (session["raw"] for session in result["sessions"])
+    token = first["serial_ports"][0]["serial_number"]
+    assert re.fullmatch(r"R[A-Z2-7]{10}", token)
+    expected_callout = f"/dev/cu.usbserial-{token}0"
+    expected_dialin = f"/dev/tty.usbserial-{token}1"
+    expected_uid = f"AppleUSBAudioEngine:Generic:USB Audio Device:{token}:2"
+    assert first["serial_ports"][0]["device"] == expected_callout
+    assert result["sessions"][0]["radios"][0]["serial_port"] == expected_callout
+    assert first["macos"]["audio_devices"][0]["uid"] == expected_uid
+    assert second["macos"]["usb_devices"][0]["serial_number"] == token
+    assert second["macos"]["serial_devices"][0]["device"] == expected_dialin
+    assert second["macos"]["audio_devices"][0]["uid"] == expected_uid
+    assert result["sessions"][1]["radios"][0]["serial_port"] == expected_callout
+    for raw in (first, second):
+        assert serial not in json.dumps(raw)
+
+
+def test_bsd_path_suffix_redacts_only_exact_serial_plus_one_interface_digit() -> None:
+    serial = "01AE340D"
+    ports = [
+        {"serial_number": "1", "device": "/dev/cu.usbmodem14201"},
+        {"serial_number": "1", "device": "/dev/tty.usbmodem14201"},
+        {"serial_number": serial, "device": f"/dev/cu.usbserial-{serial}0"},
+        {"serial_number": serial, "device": f"/dev/tty.usbserial-{serial}"},
+        {"serial_number": serial, "device": f"/dev/cu.usbserial-{serial}01"},
+    ]
+    session = {
+        "radios": [
+            {"profile": f"radio-{index}", "serial_port": port["device"]}
+            for index, port in enumerate(ports)
+        ],
+        # A macOS capture always records the macos part, even when partially
+        # unavailable; the serial_port aliases are built under that gate.
+        "raw": {
+            "macos": {
+                "usb_devices": [],
+                "serial_devices": [],
+                "audio_devices": [],
+                "unavailable": [{"part": "macos:usb", "reason": "ioreg failed"}],
+            },
+            "serial_ports": ports,
+        },
+    }
+    result = _usb_redact.redact_bundle({"sessions": [session]}, key=_KEY)["sessions"][0]
+    token = result["raw"]["serial_ports"][2]["serial_number"]
+    assert re.fullmatch(r"R[A-Z2-7]{10}", token)
+    assert result["raw"]["serial_ports"][0]["serial_number"] != token
+    paths = [radio["serial_port"] for radio in result["radios"]]
+    assert paths[0] == "/dev/cu.usbmodem14201"
+    assert paths[1] == "/dev/tty.usbmodem14201"
+    assert paths[2] == f"/dev/cu.usbserial-{token}0"
+    assert paths[3] == f"/dev/tty.usbserial-{token}"
+    # Two trailing digits exceed the single interface digit and stay unchanged.
+    assert paths[4] == f"/dev/cu.usbserial-{serial}01"
+
+
+def test_mini_capture_shape_keeps_location_derived_bsd_names() -> None:
+    ic705 = "R5RVE6IAXAX"
+    yaesu = "RMTN4JEWAJW"
+    cp2105 = "RDFXHT5X7PT"
+    webcam = "RFXGLS5P2O6"
+    usb_devices = [
+        {"registry_id": 1, "location_id": 0x3121200, "serial_number": ic705},
+        {"registry_id": 2, "location_id": 0x3121400, "serial_number": None},
+        {"registry_id": 3, "location_id": 0x3122100, "serial_number": yaesu},
+        {"registry_id": 4, "location_id": 0x3122200, "serial_number": cp2105},
+        {"registry_id": 5, "location_id": 0x03200000, "serial_number": webcam},
+    ]
+    serial_devices = [
+        {"device": f"/dev/{kind}.usbmodem3121201", "usb_registry_id": 1}
+        for kind in ("cu", "tty")
+    ]
+    serial_devices += [
+        {"device": f"/dev/{kind}.usbmodem3121203", "usb_registry_id": 1}
+        for kind in ("cu", "tty")
+    ]
+    serial_devices += [
+        {"device": f"/dev/{kind}.usbserial-{cp2105}{index}", "usb_registry_id": 4}
+        for kind in ("cu", "tty")
+        for index in (0, 1)
+    ]
+    serial_devices += [
+        {"device": f"/dev/{kind}.usbmodem{yaesu}1", "usb_registry_id": 3}
+        for kind in ("cu", "tty")
+    ]
+    location_uid = "AppleUSBAudioEngine:Burr-Brown from TI:USB Audio CODEC:3121400:1"
+    webcam_uid = (
+        f"AppleUSBAudioEngine:Unknown Manufacturer:HD Pro Webcam C920:{webcam}:3"
+    )
+    session = {
+        "radios": [
+            {"profile": "radio-a", "serial_port": "/dev/cu.usbmodem3121201"},
+            {"profile": "radio-b", "serial_port": f"/dev/cu.usbserial-{cp2105}1"},
+        ],
+        "raw": {
+            "macos": {
+                "usb_devices": usb_devices,
+                "serial_devices": serial_devices,
+                "audio_devices": [{"uid": location_uid}, {"uid": webcam_uid}],
+                "unavailable": [],
+            },
+            "serial_ports": [
+                {"serial_number": yaesu, "device": f"/dev/cu.usbmodem{yaesu}1"}
+            ],
+        },
+    }
+    result = _usb_redact.redact_bundle({"sessions": [session]}, key=_KEY)["sessions"][0]
+    raw = result["raw"]
+    token_yaesu = raw["serial_ports"][0]["serial_number"]
+    token_cp2105 = raw["macos"]["usb_devices"][3]["serial_number"]
+    token_webcam = raw["macos"]["usb_devices"][4]["serial_number"]
+    for token in (token_yaesu, token_cp2105, token_webcam):
+        assert re.fullmatch(r"R[A-Z2-7]{10}", token)
+    assert len({token_yaesu, token_cp2105, token_webcam}) == 3
+    # Location-derived modem names stay exactly as recorded.
+    assert result["radios"][0]["serial_port"] == "/dev/cu.usbmodem3121201"
+    assert raw["macos"]["audio_devices"][0]["uid"] == location_uid
+    devices = [row["device"] for row in raw["macos"]["serial_devices"]]
+    assert devices[0:4] == [
+        "/dev/cu.usbmodem3121201",
+        "/dev/tty.usbmodem3121201",
+        "/dev/cu.usbmodem3121203",
+        "/dev/tty.usbmodem3121203",
+    ]
+    # Serial-derived names share the bundle token plus the interface digit.
+    assert devices[4:8] == [
+        f"/dev/cu.usbserial-{token_cp2105}0",
+        f"/dev/cu.usbserial-{token_cp2105}1",
+        f"/dev/tty.usbserial-{token_cp2105}0",
+        f"/dev/tty.usbserial-{token_cp2105}1",
+    ]
+    assert devices[8:10] == [
+        f"/dev/cu.usbmodem{token_yaesu}1",
+        f"/dev/tty.usbmodem{token_yaesu}1",
+    ]
+    assert result["radios"][1]["serial_port"] == f"/dev/cu.usbserial-{token_cp2105}1"
+    assert raw["macos"]["audio_devices"][1]["uid"] == (
+        f"AppleUSBAudioEngine:Unknown Manufacturer:HD Pro Webcam C920:{token_webcam}:3"
+    )
+    for serial in (ic705, yaesu, cp2105, webcam):
+        assert serial not in json.dumps(result)
+
+
 @pytest.mark.parametrize("identity", ["3121400", "03121400", "03ABCd00"])
 def test_macos_uid_location_wins_over_another_devices_serial(identity):
     uid = f"AppleUSBAudioEngine:Vendor:Codec:{identity}:1"
