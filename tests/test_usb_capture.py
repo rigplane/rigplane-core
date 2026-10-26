@@ -140,6 +140,138 @@ def test_capture_bundle_records_supplied_tool_version(
     ] * 5
 
 
+@pytest.mark.parametrize(
+    "serial",
+    [
+        "AUDIO",
+        "connected",
+        "unplugged",
+        "replugged",
+        "windows",
+        "radio-a",
+        "radio-b",
+        "cfgmgr32",
+        "powershell",
+        "Ports",
+        "AudioEndpoint",
+    ],
+)
+def test_capture_serial_collision_preserves_discriminators_and_scrubs_data(
+    tmp_path: Path, readers: SimpleNamespace, serial: str
+) -> None:
+    readers.ports[0].serial_number = serial
+    readers.ports[0].description = f"Device ({serial.lower()}) / {serial.upper()}"
+    readers.sound.query_hostapis.side_effect = RuntimeError(
+        f"missing {serial.swapcase()}"
+    )
+    source = "powershell" if serial == "powershell" else "cfgmgr32"
+    readers.raw.side_effect = None
+    readers.raw.return_value = RawWindows(
+        source,
+        (
+            DevNodeRecord(
+                rf"USB\VID_10C4&PID_EA60\{serial.upper()}",
+                "",
+                "Ports",
+                f"Device {serial.lower()}",
+                f"Device {serial.upper()}",
+                (),
+                (),
+            ),
+            DevNodeRecord(
+                r"SWD\MMDEVAPI\ENDPOINT",
+                rf"USB\VID_10C4&PID_EA60\{serial.upper()}",
+                "AudioEndpoint",
+                f"Endpoint {serial.lower()}",
+                f"Endpoint {serial.upper()}",
+                (),
+                (),
+            ),
+        ),
+    )
+    out = tmp_path / "capture.json"
+    capture.capture_bundle(out, radios=_RADIOS, tool_version="test")
+    bundle = json.loads(out.read_text(encoding="utf-8"))
+    capture._validate_bundle(bundle)
+    assert bundle["schema"] == "rigplane.usb_audio_capture/1"
+    assert [(s["session"], s["target"]) for s in bundle["sessions"]] == [
+        ("connected", None),
+        ("unplugged", "radio-a"),
+        ("replugged", "radio-a"),
+        ("unplugged", "radio-b"),
+        ("replugged", "radio-b"),
+    ]
+    for session in bundle["sessions"]:
+        assert session["schema"] == "rigplane.usb_audio_session/1"
+        assert session["os"] == "windows"
+        assert session["radios"] == (
+            _RADIOS if session["session"] == "connected" else []
+        )
+        raw = session["raw"]
+        assert raw["windows"]["source"] == source
+        assert [node["class_name"] for node in raw["windows"]["devnodes"]] == [
+            "Ports",
+            "AudioEndpoint",
+        ]
+        token = raw["serial_ports"][0]["serial_number"]
+        assert raw["serial_ports"][0]["description"] == f"Device ({token}) / {token}"
+        assert session["unavailable"] == [
+            {"part": "portaudio", "reason": f"missing {token}"}
+        ]
+    pending = [bundle]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            pending.extend(
+                child
+                for field, child in value.items()
+                if field
+                not in {
+                    "schema",
+                    "session",
+                    "target",
+                    "os",
+                    "profile",
+                    "source",
+                    "part",
+                    "class_name",
+                }
+            )
+        elif isinstance(value, list):
+            pending.extend(value)
+        elif isinstance(value, str):
+            assert serial.lower() not in value.lower(), value
+
+
+@pytest.mark.parametrize("schema_field", ["bundle", "session"])
+def test_capture_rejects_invalid_redacted_bundle_before_writing(
+    tmp_path: Path,
+    readers: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    schema_field: str,
+) -> None:
+    redact = capture.redact_bundle
+
+    def corrupt_schema(bundle):
+        redacted = redact(bundle)
+        document = redacted if schema_field == "bundle" else redacted["sessions"][0]
+        document["schema"] = "invalid"
+        return redacted
+
+    write = Mock()
+    monkeypatch.setattr(capture, "redact_bundle", corrupt_schema)
+    monkeypatch.setattr(capture, "_write_private_json", write)
+    with pytest.raises(ValueError, match=f"invalid USB capture {schema_field} schema"):
+        capture.capture_bundle(
+            tmp_path / "capture.json",
+            radios=_RADIOS,
+            tool_version="test",
+            no_unplug=True,
+        )
+    write.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_captured_session_omits_hwid_even_when_port_has_it(
     readers: SimpleNamespace,
 ) -> None:

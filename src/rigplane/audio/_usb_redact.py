@@ -12,6 +12,20 @@ from typing import Any
 
 _USB_SERIAL_PREFIX = r"USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}\\"
 _USB_SERIAL_ID = re.compile(_USB_SERIAL_PREFIX + r"([^\\&]+)", re.IGNORECASE | re.ASCII)
+_SCHEMA_FIELDS = frozenset(
+    {
+        "schema",
+        "session",
+        "target",
+        "os",
+        "profile",
+        "source",
+        "part",
+        "class_name",
+        "device_class",
+        "interface_class",
+    }
+)
 
 
 def _ascii_lower(value: str) -> str:
@@ -262,7 +276,7 @@ def redact_bundle(
             return {name: scrub(child, name) for name, child in value.items()}
         if isinstance(value, list):
             return [scrub(child, field) for child in value]
-        if not isinstance(value, str) or not serial_pattern:
+        if field in _SCHEMA_FIELDS or not isinstance(value, str) or not serial_pattern:
             return value
         locations: list[tuple[int, int]] = []
         if (

@@ -235,6 +235,7 @@ def capture_bundle(
                 )
             )
     bundle = {"schema": "rigplane.usb_audio_capture/1", "sessions": sessions}
-    _validate_bundle(bundle)
-    _write_private_json(out, redact_bundle(bundle))
+    redacted = redact_bundle(bundle)
+    _validate_bundle(redacted)
+    _write_private_json(out, redacted)
     return out
