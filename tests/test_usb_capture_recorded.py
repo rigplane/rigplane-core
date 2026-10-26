@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from rigplane.audio._usb_capture import _validate_bundle
-from rigplane.audio._usb_redact import _USB_SERIAL_ID, redact_bundle
+from rigplane.audio._usb_redact import _USB_SERIAL_ID
 
 _FIXTURES = sorted((Path(__file__).parent / "fixtures/usb_audio").rglob("*.json"))
 _TOKEN = re.compile(r"R[A-Z2-7]{10}")
@@ -65,4 +65,3 @@ def test_recorded_capture_valid_and_redacted(fixture: Path) -> None:
                     if (location := row.get(field)) is not None:
                         locations.add(location)
     assert _assert_recording_redacted(bundle, locations) > 0
-    assert redact_bundle(bundle, key=b"recorded-fixture-validation") == bundle

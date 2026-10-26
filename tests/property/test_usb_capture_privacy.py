@@ -228,6 +228,7 @@ def test_generated_capture_has_no_serial_anywhere(
     _validate_bundle(bundle)
     before = copy.deepcopy(bundle)
     result = redact_bundle(bundle, key=b"generated-capture-privacy")
+    # Whole-document scans use long serials; short serials are checked by position below.
     document = json.dumps(result)
     for serial in serials:
         for spelling in {serial, serial.replace(" ", "_")}:
