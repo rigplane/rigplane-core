@@ -1049,7 +1049,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     audio_usb_capture_p = audio_sub.add_parser(
-        "usb-capture", help="Record Windows USB topology without opening radio devices"
+        "usb-capture",
+        help="Record Windows, macOS and Linux USB topology without opening radio devices",
     )
     audio_usb_capture_p.add_argument(
         "--radio", action="append", required=True, metavar="PROFILE=PORT"
@@ -2579,8 +2580,8 @@ def _cmd_audio_usb_capture(args: argparse.Namespace) -> int:
 
     from rigplane.audio._usb_capture import capture_bundle
 
-    if platform.system() != "Windows":
-        print("usb-capture currently records Windows only", file=sys.stderr)
+    if platform.system() not in {"Windows", "Darwin", "Linux"}:
+        print("usb-capture supports Windows, macOS and Linux", file=sys.stderr)
         return 2
     try:
         path = capture_bundle(

@@ -1,4 +1,4 @@
-"""Collect Windows USB sessions in memory and write one redacted bundle."""
+"""Collect USB sessions in memory and write one redacted bundle."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ import tempfile
 from typing import Any
 
 from rigplane.audio._portaudio_enum import read_portaudio_enumeration
+from rigplane.audio._usb_raw_linux import read_raw_linux
+from rigplane.audio._usb_raw_macos import read_raw_macos
 from rigplane.audio._usb_raw_windows import read_raw_windows
 from rigplane.audio._usb_redact import redact_bundle
 
@@ -102,10 +104,17 @@ def _read_session(
     _validate_session(session, target, radios)
     raw: dict[str, Any] = {}
     unavailable: list[dict[str, str]] = []
-    for part in ("windows", "portaudio", "serial_ports"):
+    os_name = {"Windows": "windows", "Darwin": "macos", "Linux": "linux"}[
+        platform.system()
+    ]
+    for part in (os_name, "portaudio", "serial_ports"):
         try:
             if part == "windows":
                 raw[part] = read_raw_windows(timeout_s).to_json_dict()
+            elif part in {"macos", "linux"}:
+                reader = read_raw_macos if part == "macos" else read_raw_linux
+                raw[part] = reader(timeout_s=timeout_s).to_json_dict()
+                unavailable.extend(raw[part].get("unavailable", []))
             elif part == "portaudio":
                 sound = import_module("sounddevice")
                 if session != "connected":
@@ -128,7 +137,7 @@ def _read_session(
         "session": session,
         "target": target,
         "radios": radios,
-        "os": "windows",
+        "os": os_name,
         "os_version": " ".join(
             [
                 platform.system(),
@@ -192,8 +201,8 @@ def capture_bundle(
     if out.exists() or out.is_symlink():
         raise FileExistsError(f"output already exists: {out}")
     _validate_session("connected", None, radios)
-    if platform.system() != "Windows":
-        raise OSError("usb-capture currently records Windows only")
+    if platform.system() not in {"Windows", "Darwin", "Linux"}:
+        raise OSError("usb-capture supports Windows, macOS and Linux")
     prompt = input if input_fn is None else input_fn
     sessions = [
         _read_session(
@@ -226,9 +235,7 @@ def capture_bundle(
                 )
             )
     bundle = {"schema": "rigplane.usb_audio_capture/1", "sessions": sessions}
-    _validate_bundle(bundle)
-    print(
-        "Note: device and audio endpoint names are kept as recorded; review the file before sending it."
-    )
-    _write_private_json(out, redact_bundle(bundle))
+    redacted = redact_bundle(bundle)
+    _validate_bundle(redacted)
+    _write_private_json(out, redacted)
     return out
