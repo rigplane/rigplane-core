@@ -13,6 +13,7 @@ import logging
 import math
 import time
 from collections.abc import AsyncIterator, Awaitable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
 
@@ -35,6 +36,7 @@ from ..protocol import (  # noqa: TID251
     AUDIO_HEADER_SIZE,
     MSG_TYPE_AUDIO_RX,
     MSG_TYPE_AUDIO_TX,
+    MSG_TYPE_AUDIO_TX_OUTSIDE,
     decode_json,
     encode_audio_frame,
     encode_json,
@@ -1534,6 +1536,11 @@ class AudioHandler:
             mic audio flows only while RigPlane holds the key: managed
             intent keyed or a fresh ``ObservedPtt.ON`` (MOR-2870). ``None``
             leaves the handler ungated (direct-construction test doubles).
+        outside_tx_admission: Optional async-context-manager factory —
+            the outside-only (``0x12``) TX audio authorization (MOR-3764).
+            On ``/api/v1/audio`` the server passes
+            ``WebServer._controller_outside_tx_admission``; ``None`` (e.g.
+            the WebRTC audio channel) refuses every ``0x12`` frame.
     """
 
     def __init__(
@@ -1550,11 +1557,14 @@ class AudioHandler:
         controller_track_stop: Callable[[Awaitable[None]], Awaitable[None]]
         | None = None,
         managed_tx_authority: ManagedTxAuthority | None = None,
+        outside_tx_admission: Callable[[], AbstractAsyncContextManager[bool]]
+        | None = None,
     ) -> None:
         self._ws = ws
         self._radio = radio
         self._broadcaster = broadcaster
         self._tx_gate = tx_gate
+        self._outside_tx_admission = outside_tx_admission
         self._controller = controller
         self._controller_ticket = controller_ticket
         self._controller_audio_source = controller_audio_source
@@ -2180,10 +2190,14 @@ class AudioHandler:
         *,
         legacy_method: str,
         tx_currency: tuple[int, int, str] | None = None,
+        outside: bool = False,
     ) -> None:
         """Push TX bytes via the held session lease (MOR-580); without one,
         via neutral ``push_tx``, falling back to the named legacy per-codec
         push method (MOR-544)."""
+        if outside:
+            await self._push_tx_outside(data, legacy_method=legacy_method)
+            return
         ticket = self._controller_ticket
         remote = ticket is not None and ticket.remote
 
@@ -2220,6 +2234,41 @@ class AudioHandler:
             await push_tx(data)
         else:
             await getattr(self._radio, legacy_method)(data)
+
+    async def _push_tx_outside(self, data: bytes, *, legacy_method: str) -> None:
+        """Push one outside-only (``0x12``) frame under the admission (MOR-3764).
+
+        The managed-key gate is never consulted here: the frame reaches the
+        radio only while the admission's critical section yields True (the
+        radio observed keyed outside Core). A refused frame is counted, never
+        pushed.
+        """
+        admission = self._outside_tx_admission
+        if admission is None:
+            return  # ``_handle_tx_audio`` already refused; defense in depth
+        lease = self._tx_lease
+        if lease is not None and not lease.released:
+            await lease.push(data, admission=admission)
+            return
+        facts = self._tx_facts
+        if facts is not None and facts.lifecycle is not None:
+            if facts.path == "session":
+                raise RuntimeError("browser TX audio session lease is unavailable")
+            push = facts.lifecycle[1]
+        else:
+            push = getattr(self._radio, "push_tx", None)
+            if push is None:
+                push = getattr(self._radio, legacy_method)
+        async with admission() as admitted:
+            if admitted is not True:
+                self._warn_tx_throttled(
+                    "outside_tx_refused",
+                    "audio: outside-only TX frame refused "
+                    "action=dropped_outside_tx_refused size=%d",
+                    len(data),
+                )
+                return
+            await push(data)
 
     async def _start_rx(
         self,
@@ -2296,12 +2345,33 @@ class AudioHandler:
             tx_currency = self._remote_tx_currency()
             if tx_currency is None:
                 return
+        # MOR-3764: 0x12 ("TX audio, outside-only") never consults the
+        # managed-key gate — it is admitted only by the outside-only
+        # authorization (radio observed keyed outside Core), evaluated
+        # atomically with the push in ``_push_tx``. Channels without an
+        # admission hook (WebRTC) and remote controller tickets never carry
+        # it.
+        outside = (
+            len(payload) >= AUDIO_HEADER_SIZE
+            and payload[0] == MSG_TYPE_AUDIO_TX_OUTSIDE
+        )
+        if outside:
+            if self._outside_tx_admission is None or (
+                ticket is not None and ticket.remote
+            ):
+                self._warn_tx_throttled(
+                    "outside_tx_unsupported",
+                    "audio: outside-only TX frame unsupported on this channel, "
+                    "dropping size=%d",
+                    len(payload),
+                )
+                return
         # MOR-2870: the web path gets the bridge's fail-closed rule — a
         # browser frame reaches the rig only while RigPlane holds the key
         # (managed intent keyed or a fresh ObservedPtt.ON). ``_tx_active``
         # merely says the client started its stream; a late or lost
         # ``audio_stop`` must never keep mic audio flowing on RF.
-        if self._tx_gate is not None:
+        elif self._tx_gate is not None:
             try:
                 gate_open = await self._tx_gate() is True
             except Exception:
@@ -2335,7 +2405,7 @@ class AudioHandler:
                 AUDIO_HEADER_SIZE,
             )
             return
-        if payload[0] != MSG_TYPE_AUDIO_TX:
+        if payload[0] not in (MSG_TYPE_AUDIO_TX, MSG_TYPE_AUDIO_TX_OUTSIDE):
             self._warn_tx_throttled(
                 "wrong_type",
                 "audio: TX frame wrong type 0x%02x, ignoring",
@@ -2355,6 +2425,7 @@ class AudioHandler:
                         audio_data,
                         legacy_method="push_audio_tx_pcm",
                         tx_currency=tx_currency,
+                        outside=outside,
                     )
                     tx_data_desc = f"{len(audio_data)} bytes pcm"
                 elif (
@@ -2391,6 +2462,7 @@ class AudioHandler:
                         pcm_data,
                         legacy_method="push_audio_tx_pcm",
                         tx_currency=tx_currency,
+                        outside=outside,
                     )
                     tx_data_desc = f"{len(pcm_data)} bytes pcm"
                 elif browser_codec == AUDIO_CODEC_OPUS:
@@ -2399,6 +2471,7 @@ class AudioHandler:
                         audio_data,
                         legacy_method="push_audio_tx_opus",
                         tx_currency=tx_currency,
+                        outside=outside,
                     )
                     tx_data_desc = f"{len(audio_data)} bytes opus"
                 else:

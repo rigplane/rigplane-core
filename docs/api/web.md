@@ -1303,7 +1303,7 @@ Binary audio frames use an 8-byte header followed by codec-specific payload:
 
 | Offset | Size | Field | Notes |
 |--------|------|-------|-------|
-| `0` | 1 | `msg_type` | `0x10` RX, `0x11` TX |
+| `0` | 1 | `msg_type` | `0x10` RX, `0x11` TX, `0x12` TX outside-only |
 | `1` | 1 | `codec` | `0x01` Opus, `0x02` PCM16 |
 | `2` | 2 | `sequence` | uint16 little-endian |
 | `4` | 2 | `sample_rate` | encoded as Hz / 100, uint16 little-endian |
@@ -1316,6 +1316,13 @@ payload and metadata, not from a fixed frame-duration assumption. For PCM16,
 use `payload_bytes / (channels * 2)` to compute sample frames and use the
 header sample rate for playback timing; Opus consumers should decode the
 payload and use decoder output metadata.
+
+`0x12` is the outside-only TX variant of `0x11` (same 8-byte header and
+payload): a frame is admitted only while the radio is observed keyed outside
+Core (managed TX intent `rx`, no release debt, a foreign TX observation) and
+is refused from the moment any Core client keys; see `managed_tx_authority.py:
+ManagedTxAuthority.outside_tx_submission`. A Core without this feature drops
+`0x12` as an unknown type (fail-closed); `0x11` behavior is unchanged.
 
 ### `/api/v1/ws` command envelope
 
