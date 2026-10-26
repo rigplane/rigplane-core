@@ -6361,8 +6361,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if memory is None:
             raise CommandError(f"{self._profile.model} declares no memory channels")
         entries: list[MemoryEntry] = []
-        async with memory_slot_operation(self):
-            for channel in channels:
+        for channel in channels:
+            async with memory_slot_operation(self):
                 civ = self._commands.build_memory_entry_read(
                     memory, group, channel, to_addr=self._radio_addr
                 )

@@ -3,19 +3,32 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
+from _helpers import CIV_HEADER_SIZE
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.backends.yaesu_cat.transport import CatCommandRejected, YaesuCatTransport
 from rigplane.commands import CONTROLLER_ADDR
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from rigplane.core.types import CivFrame
 from rigplane.radio import IcomRadio
 from rigplane.rig_loader import load_rig
+from rigplane.web.radio_poller import RadioPoller
+from rigplane.web.server import WebConfig, WebServer
+from test_memory_list_api import _reply
 from test_memory_recall import _radio as _icom_recall_radio
 from test_radio import MockTransport
+from test_web_server import _addr, _http_get
+from test_web_split_writes import _request
 
 _RIGS_DIR = Path(__file__).parents[1] / "rigs"
 
@@ -113,3 +126,114 @@ async def test_ftx1_memory_reads_do_not_interleave_across_callers() -> None:
     finally:
         radio._transport._connected = False
     assert order == ["MR00025;", "MT00025;", "MR00026;"]
+
+
+class _GatedIc705Transport(MockTransport):
+    """Answers each ``1A 00`` slot read only after its test-owned gate opens.
+
+    A read is recorded when its frame is dispatched; the reply is queued only
+    when the gate for that channel opens, so the test holds each slot read in
+    flight. A ``0x0B`` memory-clear frame is recorded and passed through.
+    """
+
+    def __init__(self, channels: list[int]) -> None:
+        super().__init__()
+        self.events: list[str] = []
+        self._gates = {channel: asyncio.Event() for channel in channels}
+        self._in_flight = {channel: asyncio.Event() for channel in channels}
+
+    def release(self, channel: int) -> None:
+        self._gates[channel].set()
+
+    async def wait_in_flight(self, channel: int) -> None:
+        await asyncio.wait_for(self._in_flight[channel].wait(), timeout=5)
+
+    async def send_tracked(self, data: bytes) -> None:
+        civ = data[CIV_HEADER_SIZE:]
+        if civ[4:6] == b"\x1a\x00":
+            address = civ[6:-1]
+            channel = int(address[2:4].hex())
+            self.events.append(f"read {channel}")
+            self._in_flight[channel].set()
+            await self._gates[channel].wait()
+            await super().send_tracked(data)
+            self.queue_response(_reply(0xA4, address + b"\xff"))
+            return
+        if civ[4] == 0x0B:
+            self.events.append("clear")
+        await super().send_tracked(data)
+
+
+@pytest.mark.asyncio
+async def test_web_memory_clear_runs_between_the_listed_slot_reads() -> None:
+    transport = _GatedIc705Transport([0, 1, 2])
+    radio = _icom_recall_radio("IC-705", transport)
+    radio._civ_stream_ready = True
+    radio._last_civ_data_received = time.monotonic()
+    web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    poller = RadioPoller(radio, web.command_queue, state_store=web.command_state_store)
+    web.command_state_store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=asyncio.get_running_loop().time(),
+            max_age=60,
+        )
+    )
+    web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
+    entry_taken = asyncio.Event()
+
+    async def consume() -> None:
+        await web.command_queue.wait(2)
+        entry = web.command_queue.take_entry()
+        assert entry is not None
+        entry_taken.set()
+        await poller._execute_queued_entry(entry)
+
+    consumer = asyncio.create_task(consume())
+    try:
+        host, port = _addr(web)
+        get = asyncio.create_task(
+            _http_get(host, port, "/api/v1/memories?group=0&start=0&count=3")
+        )
+        await transport.wait_in_flight(0)
+        post = asyncio.create_task(
+            _request(web, "http", "memory_clear", {"channel": 5})
+        )
+        await asyncio.wait_for(entry_taken.wait(), timeout=5)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        transport.release(0)
+        await transport.wait_in_flight(1)
+        transport.release(1)
+        await transport.wait_in_flight(2)
+        transport.release(2)
+
+        status, _headers, body = await asyncio.wait_for(get, timeout=5)
+        post_status, post_result = await asyncio.wait_for(post, timeout=5)
+    finally:
+        web._server.close()
+        await web._server.wait_closed()
+        web._server = None
+        tasks = (consumer, *tuple(web._client_tasks))
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        radio._connected = False
+        await radio._force_cleanup_civ()
+
+    assert status == 200
+    page = json.loads(body)
+    assert [entry["channel"] for entry in page["entries"]] == [0, 1, 2]
+    assert all(entry["empty"] for entry in page["entries"])
+    assert post_status == 200
+    assert post_result["ok"] is True
+    assert [event for event in transport.events if event != "clear"] == [
+        "read 0",
+        "read 1",
+        "read 2",
+    ]
+    assert 0 < transport.events.index("clear") < len(transport.events) - 1

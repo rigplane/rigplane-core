@@ -4196,13 +4196,13 @@ class YaesuCatRadio:
         if group != memory.first_group:
             raise ValueError(f"memory group must be {memory.first_group}, got {group}")
         entries: list[MemoryEntry] = []
-        async with memory_slot_operation(self):
-            for channel in channels:
-                if not memory.first_channel <= channel <= memory.last_channel:
-                    raise ValueError(
-                        f"memory channel must be {memory.first_channel}-"
-                        f"{memory.last_channel}, got {channel}"
-                    )
+        for channel in channels:
+            if not memory.first_channel <= channel <= memory.last_channel:
+                raise ValueError(
+                    f"memory channel must be {memory.first_channel}-"
+                    f"{memory.last_channel}, got {channel}"
+                )
+            async with memory_slot_operation(self):
                 chan = f"{channel:05d}"
                 try:
                     mr = await self._query(
