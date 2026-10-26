@@ -345,6 +345,70 @@ def test_complete_capture_keeps_recorded_serial_for_overlapping_bsd_suffixes() -
     assert result["radios"][0]["serial_port"] == "/dev/cu.usbserial-RHE7PFHYDOF1"
 
 
+@pytest.mark.parametrize("collision", ["RHE7", "rhe7"])
+def test_known_serial_inside_token_keeps_bundle_mapping_consistent(
+    collision: str,
+) -> None:
+    serial = "01AE340D"
+    device = f"/dev/cu.usbserial-{serial}0"
+    instance = rf"USB\VID_1234&PID_5678\{serial}"
+    bundle = {
+        "sessions": [
+            {
+                "radios": [{"serial_port": device}],
+                "raw": {
+                    "serial_ports": [
+                        {
+                            "serial_number": serial,
+                            "device": device,
+                            "description": f"Device {serial}",
+                        },
+                        {"serial_number": collision, "description": collision},
+                    ],
+                    "macos": {"usb_devices": [{"serial_number": serial}]},
+                    "linux": {"usb_devices": [{"serial_number": serial}]},
+                    "windows": {
+                        "devnodes": [
+                            {
+                                "instance_id": serial,
+                                "parent_id": "",
+                                "class_name": "System",
+                            },
+                            {
+                                "instance_id": instance,
+                                "parent_id": serial,
+                                "class_name": "USB",
+                            },
+                        ]
+                    },
+                },
+            }
+        ]
+    }
+    before = copy.deepcopy(bundle)
+    result = _usb_redact.redact_bundle(bundle, key=_KEY)
+    assert bundle == before
+    assert _usb_redact.redact_bundle(bundle, key=_KEY) == result
+    session = result["sessions"][0]
+    raw = session["raw"]
+    token = raw["serial_ports"][0]["serial_number"]
+    assert re.fullmatch(r"R[A-Z2-7]{10}", token)
+    assert token != "RHE7PFHYDOF"
+    assert raw["serial_ports"][0]["description"] == f"Device {token}"
+    assert raw["serial_ports"][0]["device"] == f"/dev/cu.usbserial-{token}0"
+    assert session["radios"][0]["serial_port"] == f"/dev/cu.usbserial-{token}0"
+    for part in ("macos", "linux"):
+        assert raw[part]["usb_devices"][0]["serial_number"] == token
+    other = raw["serial_ports"][1]
+    assert re.fullmatch(r"R[A-Z2-7]{10}", other["serial_number"])
+    assert other["description"] == other["serial_number"]
+    ancestor, usb = raw["windows"]["devnodes"]
+    assert ancestor["instance_id"] == usb["parent_id"] == f"opaque:{token}"
+    assert usb["instance_id"] == rf"USB\VID_1234&PID_5678\{token}"
+    for known in (serial, collision):
+        assert known.lower() not in json.dumps(result).lower()
+
+
 def test_mini_capture_shape_keeps_location_derived_bsd_names() -> None:
     ic705 = "R5RVE6IAXAX"
     yaesu = "RMTN4JEWAJW"

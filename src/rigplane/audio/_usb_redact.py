@@ -20,13 +20,20 @@ def _ascii_lower(value: str) -> str:
     )
 
 
-def _token(key: bytes, value: str) -> str:
-    digest = hmac.new(key, value.encode("utf-8"), hashlib.sha256).digest()
-    return "R" + base64.b32encode(digest).decode("ascii")[:10]
+def _token(key: bytes, value: str, known_serials: frozenset[str] = frozenset()) -> str:
+    counter = 0
+    while True:
+        message = value if counter == 0 else f"{value}\0{counter}"
+        digest = hmac.new(key, message.encode("utf-8"), hashlib.sha256).digest()
+        token = "R" + base64.b32encode(digest).decode("ascii")[:10]
+        folded = _ascii_lower(token)
+        if not any(len(serial) >= 4 and serial in folded for serial in known_serials):
+            return token
+        counter += 1
 
 
 def _prune_windows_nodes(
-    rows: list[dict[str, Any]], key: bytes
+    rows: list[dict[str, Any]], key: bytes, known_serials: frozenset[str]
 ) -> list[dict[str, Any]]:
     by_id = {_ascii_lower(row.get("instance_id", "")): row for row in rows}
     kept: set[str] = set()
@@ -62,7 +69,7 @@ def _prune_windows_nodes(
             return instance_id
         if folded.startswith("swd\\mmdevapi\\"):
             return by_id.get(folded, {"instance_id": instance_id})["instance_id"]
-        return "opaque:" + _token(key, folded)
+        return "opaque:" + _token(key, folded, known_serials)
 
     result = []
     for row in rows:
@@ -133,8 +140,10 @@ def redact_bundle(
             ):
                 device_serials[device] = serial
 
-    known_serials = {_ascii_lower(value.replace(" ", "_")) for value in values}
-    replacements = {canonical: _token(key, canonical) for canonical in known_serials}
+    known_serials = frozenset(_ascii_lower(value.replace(" ", "_")) for value in values)
+    replacements = {
+        canonical: _token(key, canonical, known_serials) for canonical in known_serials
+    }
 
     def replace_field(value: Any) -> Any:
         if isinstance(value, str):
@@ -235,7 +244,9 @@ def redact_bundle(
                     port[field] = aliases.get(port[field], port[field])
         windows = raw.get("windows")
         if windows is not None:
-            windows["devnodes"] = _prune_windows_nodes(windows.get("devnodes", []), key)
+            windows["devnodes"] = _prune_windows_nodes(
+                windows.get("devnodes", []), key, known_serials
+            )
             for row in windows["devnodes"]:
                 for name in ("instance_id", "parent_id"):
                     row[name] = replace_id(row.get(name, ""))
