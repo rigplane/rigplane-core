@@ -136,7 +136,7 @@ rigplane now uses a **shared-core backend-neutral architecture**. Consumers (CLI
 3. **Backend Adapters** — thin adapters for LAN (UDP) and serial (USB CI-V + audio)
 4. **Shared Core** — `CoreRadio` with commander, state, CI-V routing, scope assembly
 5. **Transports** — LAN uses UDP sockets, serial uses `SerialCivLink` + `UsbAudioDriver`
-6. **USB Audio Resolver** — `src/rigplane/audio/_usb_resolve.py` maps a serial port to the correct `sounddevice` indices via macOS IORegistry topology (used by `UsbAudioDriver` when `serial_port` is provided)
+6. **USB Audio Pairing** — `src/rigplane/audio/_usb_pairing.py: pair` maps a serial port to PortAudio indices using normalized USB containment and endpoint ownership on Windows, macOS and Linux.
 
 ### Backend-Neutral Boundary
 
@@ -170,10 +170,10 @@ See [IC-7610 USB Serial Backend Setup Guide](../guide/ic7610-usb-setup.md) for d
 
 When multiple Icom radios are connected via USB simultaneously (e.g. IC-7300 + IC-7610), each exposes an identically named "USB Audio CODEC" device. The library cannot determine which audio device belongs to which radio by name alone.
 
-**`src/rigplane/audio/_usb_resolve.py`** solves this by correlating USB hub topology:
+`src/rigplane/audio/_usb_resolve.py: resolve_audio_for_serial_port` uses the shared pairing rule:
 
 ```
-macOS IORegistry + CoreAudio / Windows devnodes + audio endpoints
+macOS IORegistry + CoreAudio / Windows devnodes + endpoints / Linux sysfs + ALSA
                                 │
                      platform snapshot adapter
                                 │
@@ -183,10 +183,10 @@ macOS IORegistry + CoreAudio / Windows devnodes + audio endpoints
 ```
 
 - **macOS**: `src/rigplane/audio/_usb_raw_macos.py: read_raw_macos` reads IORegistry parent links and in-process CoreAudio properties. `src/rigplane/audio/_usb_adapt_macos.py: adapt_macos` combines them with PortAudio enumeration into the shared snapshot consumed by `src/rigplane/audio/_usb_pairing.py: pair`. Profile USB identity declares serial functions that may share the radio's hub; ambiguous or unavailable ownership produces a typed refusal.
-- **Linux**: Implemented via sysfs USB-topology traversal (`_resolve_linux`): the serial port and each ALSA card are resolved to their USB device node, and the card sharing the longest common USB-device path prefix (`_common_usb_path_score`) wins, with `idVendor`/`idProduct` as a tie-break. Exercised by unit tests against a fixture sysfs tree.
+- **Linux**: `src/rigplane/audio/_usb_raw_linux.py: read_raw_linux` reads sysfs parent links, tty and ALSA card ownership, and `/proc/asound/cards`. `src/rigplane/audio/_usb_adapt_linux.py: adapt_linux` builds the shared snapshot. ALSA name decorations are handled by `src/rigplane/audio/_usb_names.py: endpoint_name_key`, retaining the hardware card address rather than ranking equal names. `tests/test_usb_pairing_linux.py` exercises synthetic sysfs trees; Linux pairing is **not hardware-verified**.
 - **Windows**: Raw cfgmgr32 topology (with PowerShell fallback) and PortAudio enumeration feed `src/rigplane/audio/_usb_adapt_windows.py: adapt_windows` and the shared `src/rigplane/audio/_usb_pairing.py: pair` rule. The serial device's hub bounds codec selection, endpoint rows establish ownership, and optional profile VID:PID data checks the selected codec. See [shared USB audio pairing](usb-audio-pairing.md) for refusals and capture replay tests.
 
-On macOS and Windows, `src/rigplane/audio/usb_driver.py: UsbAudioDriver._select_devices_bounded` uses the same snapshot adapters and `pair()` rule as `src/rigplane/audio/_usb_resolve.py: resolve_audio_for_serial_port`. Automatic selection refuses ambiguous or unavailable topology; explicit device choices use the override path. Linux uses the sysfs resolver described above.
+On macOS, Linux and Windows, `src/rigplane/audio/usb_driver.py: UsbAudioDriver._select_devices_bounded` uses the same snapshot adapters and `pair()` rule as the public resolver. Linux and macOS topology reads run in process off the event loop within the driver's selection deadline. Automatic selection refuses ambiguous or unavailable ownership; explicit device choices use the override path. Windows retains its unambiguous-name fallback when raw topology is unavailable.
 
 ## Rig Profiles (Data-Driven Radio Config)
 

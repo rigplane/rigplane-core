@@ -1,3 +1,5 @@
+"""Native-reader fixtures; Linux sysfs cases are synthetic, not hardware-verified."""
+
 import asyncio
 import ctypes
 from importlib import import_module

@@ -436,10 +436,7 @@ async def test_driver_shared_pairing_selects_mme_indices(
         await driver.stop_rx()
 
 
-@pytest.mark.parametrize("bounded", [False, True])
-async def test_driver_refusal_carries_candidates_and_profile_identity(
-    monkeypatch, bounded
-):
+async def test_driver_refusal_carries_candidates_and_profile_identity(monkeypatch):
     from rigplane.audio.usb_driver import UsbAudioDriver, audio_start_failure_reason
 
     backend, _ = _inject_windows(monkeypatch, _w1_session())
@@ -449,10 +446,7 @@ async def test_driver_refusal_carries_candidates_and_profile_identity(
         usb_identity=UsbAudioIdentity(frozenset({UsbFunctionId("0D8C", "0016")})),
     )
     with pytest.raises(RuntimeError) as raised:
-        if bounded:
-            await driver.start_rx(lambda _frame: None)
-        else:
-            driver._ensure_selected_devices()
+        await driver.start_rx(lambda _frame: None)
     error = raised.value
     assert error.reason == "codec_identity_mismatch"
     assert error.evidence[-1] == "refused:codec_identity_mismatch"
@@ -552,7 +546,7 @@ def test_windows_refusal_exceptions_are_public_shim_exports():
         assert issubclass(error_type, WindowsAudioTopologyError)
 
 
-@pytest.mark.parametrize("entrypoint", ["driver", "bounded_driver", "resolver"])
+@pytest.mark.parametrize("entrypoint", ["bounded_driver", "resolver"])
 @pytest.mark.parametrize(
     "reason,category,error_name",
     [
@@ -578,10 +572,7 @@ async def test_public_refusal_subclass_matches_wire_reason(
             public.resolve_audio_for_serial_port("COM3", sounddevice_module=sd)
         else:
             driver = UsbAudioDriver(backend=backend, serial_port="COM3")
-            if entrypoint == "bounded_driver":
-                await driver.start_rx(lambda _frame: None)
-            else:
-                driver._ensure_selected_devices()
+            await driver.start_rx(lambda _frame: None)
 
     error = raised.value
     assert type(error) is getattr(public, error_name)

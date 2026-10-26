@@ -13,5 +13,8 @@ The capture writer redacts serial values before writing the bundle. Serial
 fields and serial-derived port names use redaction tokens; location-derived
 port names remain available for topology matching.
 
-There is no real Linux recording in this directory. Linux coverage consists
-only of synthetic sysfs tests; those tests have not been hardware-verified.
+There is no real Linux recording in this directory. Linux pairing is
+**not hardware-verified**. `tests/test_usb_pairing_linux.py` builds synthetic sysfs
+device/interface trees, tty and sound-card links, and ALSA/PortAudio records.
+`tests/test_web_usb_pairing_integration.py` reuses those inputs through the real
+Linux reader and browser audio-start dispatcher, including frozen-app cases.

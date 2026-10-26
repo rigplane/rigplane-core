@@ -19,11 +19,13 @@ from rigplane.profiles import get_radio_profile
 
 
 LINUX_PORT = "/dev/ttyUSB0"
-LINUX_ID = "ALSA|alsa:card2:pcm0"
+LINUX_ID = "ALSA|/sys/devices/usb1/1-1/1-1.5:pcm0"
 LINUX_NAME = "USB Audio CODEC: USB Audio (hw:2,0)"
 
 
-def _linux_tree(root, monkeypatch, *, profile="IC-705", shape="normal"):
+def _linux_tree(
+    root, monkeypatch, *, profile="IC-705", shape="normal", first_card=2, reverse=False
+):
     """Build kernel-shaped links from profile data; not hardware-verified."""
     identity = get_radio_profile(profile).usb_identity
     bus = root / "bus/usb/devices"
@@ -82,7 +84,7 @@ def _linux_tree(root, monkeypatch, *, profile="IC-705", shape="normal"):
         codec_paths.append("/sys/" + codec.relative_to(root).as_posix())
         for offset in range(2 if shape == "foreign-audio" else 1):
             owner = codec if offset == 0 else node(hub, hub_name + ".6", "FFFF", "0001")
-            card = 2 + number + offset
+            card = first_card + number + offset
             directory = link(owner, "sound", f"card{card}", "01")
             (directory / "id").write_text("CODEC\n")
             cards.append(f" {card} [CODEC ]: USB-Audio - USB Audio CODEC, USB Audio\n")
@@ -102,6 +104,8 @@ def _linux_tree(root, monkeypatch, *, profile="IC-705", shape="normal"):
             )
     if shape == "no-tty-link":
         (root / "class/tty/ttyUSB0/device").unlink()
+    if reverse:
+        records.reverse()
     monkeypatch.setattr(_usb_raw_linux, "_read_asound_cards", lambda: "".join(cards))
     sd = SimpleNamespace(
         query_devices=lambda: records,
@@ -168,7 +172,7 @@ def test_linux_adapter_pairs_sysfs_owners_without_ranking(
             number,
             codec,
         )
-        assert result.rx_id == result.tx_id == f"alsa:card{number + 2}:pcm0"
+        assert result.rx_id == result.tx_id == codec + ":pcm0"
 
 
 @pytest.mark.parametrize(
@@ -306,6 +310,32 @@ async def test_linux_reader_is_off_loop_and_late_result_cannot_select(
     finally:
         release.set()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("reverse,first_card", [(False, 2), (True, 9)])
+async def test_linux_stable_override_survives_portaudio_and_alsa_renumbering(
+    tmp_path, monkeypatch, reverse, first_card
+):
+    """Synthetic identity and enumeration changes; not hardware-verified."""
+    from rigplane.audio import _usb_pairing
+    from rigplane.audio.usb_driver import UsbAudioDriver
+
+    backend, _, _, _ = _inject_linux(
+        tmp_path,
+        monkeypatch,
+        shape="two-radios",
+        reverse=reverse,
+        first_card=first_card,
+    )
+    pairing = Mock(side_effect=AssertionError("explicit choice must bypass pairing"))
+    monkeypatch.setattr(_usb_pairing, "pair", pairing)
+    driver = UsbAudioDriver(
+        backend=backend, serial_port=LINUX_PORT, rx_device=LINUX_ID, tx_device=LINUX_ID
+    )
+    rx, tx = await driver._select_devices_bounded(direction="rx")
+    assert rx.index == tx.index == int(reverse)
+    assert rx.platform_uid == tx.platform_uid == f"hw:{first_card},0"
+    pairing.assert_not_called()
 
 
 @pytest.mark.parametrize(
