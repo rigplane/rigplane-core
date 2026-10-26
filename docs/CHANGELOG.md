@@ -11,16 +11,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b21] — 2026-10-26
+
+### Added
+
+- **Stored memory listing over HTTP (MOR-3627, #4298, #4299).**
+  `GET /api/v1/memories?group=&start=&count=` reads IC-705 and IC-9700
+  channels with CI-V `1A 00` without selecting them. Pages default to 25
+  slots, at most 50, with names, frequency, mode, DATA, duplex and tone
+  fields; empty slots carry their address and `empty: true`. The endpoint
+  has not been verified on hardware; IC-9700 decoding follows the reference
+  layout without a radio recording.
+- **FTX-1 stored memory listing (MOR-3628, #4304).** The same endpoint
+  reads channels 1–99 with `MR` and `MT`, including names and empty slots.
+  Tone frequency, DCS code and per-channel offset remain unknown; PMS,
+  5 MHz and EMGCH slots are excluded. Recall remains disabled because
+  `MC`/`VM` semantics have not been verified on hardware.
+- **Explicit IC-705 memory recall (MOR-3645, #4300).**
+  `set_memory_mode` accepts `group` and `channel` for the IC-705, selecting
+  the group with `08 A0` and then the channel with `08`, under one lock
+  with an ACK required for each. It writes no memory contents. Grouped
+  recall is unavailable on IC-9700 and has not been verified on hardware.
+- **Radio memories in the Web UI (MOR-3629, #4301).** The memory surface
+  lists stored channels when `memory_read` is available, with group
+  selection, Reload and explicit Recall where the API permits it. It loads
+  25 slots on mount and further pages only with More; cancelled loads cannot
+  replace a newer list. Browser geometry remains unverified (MOR-3766),
+  and this UI has not been checked with a real-radio session.
+
+### Changed
+
+- **Shared Windows USB audio pairing and explicit device choices
+  (MOR-3775, MOR-3774, #4329, #4331).** Pairing uses serial/audio topology
+  and optional `[usb].audio_codec` identity instead of an IC-7300-only rule.
+  A pairing refusal publishes RX and TX candidates in
+  `/api/v1/info` `audioReceive.failure.candidates`, with `stableId`,
+  `displayName`, `direction`, `hostApi`, `portAudioIndex` and `nearRadio`.
+  `rx_device`/`tx_device` and `--rx-device`/`--tx-device` accept these stable
+  IDs; missing or ambiguous choices fail without an automatic fallback.
+  Without a codec identity, a shared hub containing just one foreign audio
+  device can still pair to that device (MOR-3710).
+- **Shared serial capability and identity APIs (MOR-3777, #4342).**
+  `supports_serial_model(model)` reports the native factory's serial
+  routing, including IC-7300MK2; `resolve_civ_radio_identity` exposes the
+  CI-V/X6200 identity resolver used by discovery. IC-7300MK2 native identity
+  remains unverified on hardware.
+- **Radio connection control is REST-only (MOR-3777, #4327).** Use
+  `POST /api/v1/radio/connect` and `POST /api/v1/radio/disconnect`.
+  The old control-WebSocket `radio_connect` and `radio_disconnect` messages
+  no longer dispatch an operation or receive a reply.
+
 ### Fixed
 
-- **Dual-receiver rigctld split routing (MOR-3754).** `I`/`i` and `X`/`x`
-  use the profile-declared split target on IC-7610 (physical SUB) and IC-9700
-  (unselected MAIN A/B, not its independent SUB band). Existing IC-7300,
-  IC-7300MK2 and IC-705 routing is retained. `S 1 VFOB` does not change RX
-  selection; plain USB/LSB clears DATA, including IC-7610 D2/D3 with an
-  omitted passband. This change has not been verified on IC-7610 or IC-9700
-  hardware. IC-9700 satellite/memory operation is not added. The documented
+- **rigctld split routing and native Yaesu mode control (MOR-3754,
+  #4341, #4345, #4346, #4347, #4350).** `I`/`i` and `X`/`x` target IC-7610
+  SUB or IC-9700's unselected MAIN A/B; `S 1 VFOB` leaves RX selection
+  alone. Contradictory split mode/DATA/filter readback returns `RPRT -11`.
+  Protocol-1 `dump_state` advertises `targetable_vfo=0x3`, and `s` reads
+  live split state where the backend provides it. IC-7300 packet-mode
+  changes retain the requested DATA1 filter. Native Yaesu mode changes
+  select DATA partners and require mode readback; rigctld reports
+  `DATA-U`/`DATA-L` as `PKTUSB`/`PKTLSB`. Native `read_relative_vfo`,
+  `write_relative_vfo_mode` and `write_relative_vfo_frequency` require MAIN
+  RX and address the receiver directly, with readback required for writes
+  and explicit filter-bank numbers refused. The FTX-1 profile still leaves
+  rigctld split operations unavailable. These changes
+  have not been verified on IC-7300, IC-7300MK2, IC-705, IC-7610, IC-9700
+  or FTX-1 hardware. IC-9700 satellite/memory routing is excluded; the
   multi-client read/modify/write limitation MOR-3743 remains.
+- **Plain rigctld SSB clears DATA (MOR-3750, #4333).** `M`/`X` with
+  `USB` or `LSB` explicitly clear supported DATA mode, including IC-7610
+  D2/D3 on the split path. An omitted or `0` passband preserves the target
+  filter; packet modes still select DATA.
+- **Browser audio failures retain their ownership (MOR-3753, #4335,
+  #4337, #4338).** RX/TX errors survive automatic resource, controller and
+  session cleanup; explicit stop/disconnect or a new audio attempt clears
+  the corresponding error.
+  The audio indicator is neutral when browser audio is idle and shows
+  latched failures after cleanup. Stale capture results cannot latch an
+  error after cancellation, and an older preparation cannot clean up a
+  newer attempt.
+- **IC-9700 receiver controls and preamp combinations (MOR-3574,
+  #4026, #4028).** Polling `global.slow_state.active` with `07 D2` supplies
+  the active receiver needed by Web UI mode/filter controls. Treating that
+  query as a data read also avoids a leftover write-ACK sink during unkey;
+  the IC-7610 effect has not been verified on hardware. Preamp values are
+  `[0, 1, 2, 3]`, labelled `OFF`/`INT`/`EXT`/`INT+EXT`; the CLI accepts
+  profile-declared levels and prints their labels. In rigctld's index-to-dB
+  `PREAMP` path, unrepresentable indices return `RPRT -11`, and pending
+  writes keep native index units.
+- **PTT-holder conflicts have specific wording (MOR-3684, #4344).**
+  A rejected WebSocket PTT submission whose receipt identifies another
+  PTT owner reports `another client is transmitting`. Queue failures
+  without that evidence retain `managed transmit authority unavailable`.
+- **External rigctld pollers stop across cancellation races (MOR-3786,
+  #4343).** An explicit stop request survives a poll's cancellation/completion
+  race, so its observation loop exits before another reconnect or sleep
+  during shutdown.
 
 ## [3.0.0b20] — 2026-10-23
 
@@ -55,6 +142,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **IC-9700 attenuator declared as the documented 10 dB step (#4027).**
+  The profile changes `[0, 20]` to `[0, 10]`; the CI-V Reference Guide lists
+  only `00` (OFF) and `10` (10 dB). Not exercised on hardware.
 - **A CW text send a stop or force-off ends gets a defined answer
   (MOR-3700).** A pending `send_cw_text` that a CW stop ended answered HTTP
   `500` with the transport's "Managed Yaesu CAT write is no longer current",
@@ -4710,7 +4800,9 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b19...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b21...HEAD
+[3.0.0b21]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b20...v3.0.0b21
+[3.0.0b20]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b19...v3.0.0b20
 [3.0.0b19]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b18...v3.0.0b19
 [3.0.0b18]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b17...v3.0.0b18
 [3.0.0b17]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b16...v3.0.0b17
