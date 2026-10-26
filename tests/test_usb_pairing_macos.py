@@ -246,11 +246,22 @@ def test_synthetic_refusals_keep_typed_candidates(shape, reason):
         )
         raw["usb_devices"].append({**raw["usb_devices"][-1], "registry_id": 123})
     else:
+        raw["usb_devices"].append(
+            {**raw["usb_devices"][-1], "registry_id": 123, "location_id": 0xFFFFFFFF}
+        )
         for row in tuple(raw["audio_devices"]):
-            raw["audio_devices"].append(
-                {**row, "uid": row["uid"].replace("3121400", "ffffffff")}
-            )
-    result = pair(_adapt(session), MAC_PORT, None)
+            if row["input_channels"]:
+                raw["audio_devices"].append(
+                    {**row, "uid": row["uid"].replace("3121400", "ffffffff")}
+                )
+    snapshot = _adapt(session)
+    if shape == "foreign-audio":
+        assert any(endpoint.owner == "123" for endpoint in snapshot.endpoints)
+        assert (
+            next(node.parent for node in snapshot.usb if node.id == "123")
+            == "4295496583"
+        )
+    result = pair(snapshot, MAC_PORT, None)
     assert isinstance(result, PairRefused)
     assert result.reason == reason
     assert {(c.portaudio_index, c.direction) for c in result.candidates} == {
