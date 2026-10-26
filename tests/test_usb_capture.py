@@ -609,19 +609,29 @@ async def test_unix_cli_capture_validates_and_redacts(
     document = {
         "usb_devices": [
             {
+                "registry_id": 3,
                 "serial_number": serial,
-                "registry_path": f"/usb/{serial}",
-                "path": f"/sys/{serial}",
+                "registry_path": "IOUSB:/Serial@03121300",
+                "path": "/sys/devices/usb1/1-2",
             }
         ],
         "serial_devices": [
             {
-                "device": f"/dev/cu.{serial}",
-                "registry_path": f"/usb/{serial}/child",
-                "usb_device": f"/sys/{serial}",
+                "device": f"/dev/cu.usbserial-{serial}0"
+                if part == "macos"
+                else "/dev/ttyUSB0",
+                "usb_registry_id": 3,
+                "registry_path": "IOService:/Serial@03121300/child",
+                "usb_device": "/sys/devices/usb1/1-2",
             }
         ],
-        "audio_devices": [{"uid": f"AppleUSBAudioEngine:Vendor:{serial}:3121400:2"}],
+        "audio_devices": [
+            {
+                "uid": f"AppleUSBAudioEngine:Vendor:Codec:{serial}:2"
+                if part == "macos"
+                else "alsa:card0"
+            }
+        ],
         "unavailable": [{"part": f"{part}:optional", "reason": "missing"}],
     }
     reader = Mock(return_value=SimpleNamespace(to_json_dict=lambda: document))

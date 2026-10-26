@@ -48,6 +48,9 @@ def test_macos_records_tree_serial_ancestry_and_audio_uid(monkeypatch):
             dict(
                 IORegistryEntryName="Interface",
                 IORegistryEntryID=5,
+                idVendor=0x1234,
+                idProduct=1,
+                bInterfaceClass=10,
                 IORegistryEntryChildren=[
                     dict(
                         IORegistryEntryName="IOSerialBSDClient",
@@ -263,6 +266,17 @@ def test_linux_missing_sources_and_broken_links_are_unavailable(tmp_path, monkey
     result = raw.read_raw_linux(str(tmp_path), timeout_s=5).to_json_dict()
     assert any(item["part"].startswith("linux:tty") for item in result["unavailable"])
     assert len(result["usb_devices"]) == 3
+
+
+def test_linux_virtual_tty_without_device_link_is_not_a_failure(tmp_path, monkeypatch):
+    raw = import_module("rigplane.audio._usb_raw_linux")
+    _linux_tree(tmp_path)
+    (tmp_path / "class/tty/console").mkdir()
+    (tmp_path / "class/tty/tty0").mkdir()
+    monkeypatch.setattr(raw, "_read_asound_cards", lambda: "")
+    result = raw.read_raw_linux(str(tmp_path), timeout_s=5)
+    assert result.unavailable == ()
+    assert [row["device"] for row in result.serial_devices] == ["/dev/ttyUSB0"]
 
 
 @pytest.mark.parametrize("module", ["macos", "linux"])

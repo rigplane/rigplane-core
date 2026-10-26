@@ -17,38 +17,41 @@ _KEY = b"k" * 32
 @pytest.mark.parametrize("part", ["macos", "linux"])
 def test_unix_serial_fields_and_child_references_share_bundle_token(part):
     serial = "SECRET_123"
+    device = f"/dev/cu.usbserial-{serial}0" if part == "macos" else "/dev/ttyUSB0"
     topology = {
         "usb_devices": [
             {
+                "registry_id": 3,
                 "serial_number": serial,
                 "registry_path": f"/USB/{serial}",
-                "path": f"/sys/{serial}",
+                "path": "/sys/devices/usb1/1-2",
                 "product": serial,
             }
         ],
         "serial_devices": [
             {
-                "device": f"/dev/cu.usb{serial}",
+                "device": device,
+                "usb_registry_id": 3,
                 "registry_path": f"/USB/{serial}/child",
-                "usb_device": f"/sys/{serial}",
+                "usb_device": "/sys/devices/usb1/1-2",
             }
         ],
         "audio_devices": [
             {
-                "uid": f"AppleUSBAudioEngine:Vendor:{serial}:3121400:2",
-                "usb_device": f"/sys/{serial}",
+                "uid": f"AppleUSBAudioEngine:Vendor:Codec:{serial}:2",
+                "usb_device": "/sys/devices/usb1/1-2",
                 "name": serial,
             }
         ],
     }
     session = {
-        "radios": [{"profile": "radio-a", "serial_port": f"/dev/cu.usb{serial}"}],
+        "radios": [{"profile": "radio-a", "serial_port": device}],
         "raw": {
             part: topology,
             "serial_ports": [
                 {
                     "serial_number": serial,
-                    "device": f"/dev/cu.usb{serial}",
+                    "device": device,
                     "description": serial,
                 }
             ],
@@ -64,18 +67,67 @@ def test_unix_serial_fields_and_child_references_share_bundle_token(part):
         token = raw["serial_ports"][0]["serial_number"]
         assert re.fullmatch(r"R[A-Z2-7]{10}", token)
         assert topology["usb_devices"][0]["serial_number"] == token
-        assert topology["serial_devices"][0]["registry_path"] == f"/USB/{token}/child"
-        assert topology["serial_devices"][0]["usb_device"] == f"/sys/{token}"
-        assert (
-            topology["audio_devices"][0]["uid"]
-            == f"AppleUSBAudioEngine:Vendor:{token}:3121400:2"
-        )
-        assert session["radios"][0]["serial_port"] == f"/dev/cu.usb{token}"
-        assert raw["serial_ports"][0]["device"] == f"/dev/cu.usb{token}"
+        assert topology["serial_devices"][0]["usb_device"] == "/sys/devices/usb1/1-2"
+        expected_device = device
+        if part == "macos":
+            assert (
+                topology["serial_devices"][0]["registry_path"] == f"/USB/{token}/child"
+            )
+            assert (
+                topology["audio_devices"][0]["uid"]
+                == f"AppleUSBAudioEngine:Vendor:Codec:{token}:2"
+            )
+            expected_device = f"/dev/cu.usbserial-{token}0"
+        assert session["radios"][0]["serial_port"] == expected_device
+        assert raw["serial_ports"][0]["device"] == expected_device
         assert topology["usb_devices"][0]["product"] == serial
         assert topology["audio_devices"][0]["name"] == serial
         assert raw["serial_ports"][0]["description"] == serial
     assert result["sessions"][0] == result["sessions"][1]
+
+
+@pytest.mark.parametrize("part", ["macos", "linux"])
+@pytest.mark.parametrize("serial", ["1", "USB"])
+def test_short_unix_serial_preserves_topology_location_and_stream(part, serial):
+    path = "/sys/devices/usb1/1-1/1-1:1.0"
+    uid = "AppleUSBAudioEngine:Vendor:Codec:3121400:1"
+    device = "/dev/cu.usbmodem3121401" if part == "macos" else "/dev/ttyUSB1"
+    raw = {
+        part: {
+            "usb_devices": [
+                {
+                    "registry_id": 3,
+                    "serial_number": serial,
+                    "path": path,
+                    "registry_path": "IOUSB:/Codec@03121400",
+                }
+            ],
+            "serial_devices": [
+                {"device": device, "usb_registry_id": 3, "usb_device": path}
+            ],
+            "audio_devices": [
+                {"uid": uid},
+                {"uid": f"AppleUSBAudioEngine:Vendor:Codec:{serial}:1"},
+            ],
+        },
+        "serial_ports": [{"device": device, "serial_number": serial}],
+    }
+    result = _usb_redact.redact_bundle({"sessions": [{"raw": raw}]}, key=_KEY)[
+        "sessions"
+    ][0]["raw"]
+    assert result[part]["usb_devices"][0]["path"] == path
+    assert result[part]["usb_devices"][0]["registry_path"] == "IOUSB:/Codec@03121400"
+    assert result[part]["serial_devices"][0]["device"] == device
+    assert result[part]["serial_devices"][0]["usb_device"] == path
+    assert result[part]["audio_devices"][0]["uid"] == uid
+    assert result["serial_ports"][0]["device"] == device
+    assert result["serial_ports"][0]["serial_number"] != serial
+    if part == "macos":
+        token = result["serial_ports"][0]["serial_number"]
+        assert (
+            result[part]["audio_devices"][1]["uid"]
+            == f"AppleUSBAudioEngine:Vendor:Codec:{token}:1"
+        )
 
 
 def _bundle() -> dict:
