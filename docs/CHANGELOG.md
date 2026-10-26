@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Outside-only TX audio admission (MOR-3764).** New binary TX frame type
+  `0x12` on `/api/v1/audio`: admitted only while the radio is observed keyed
+  outside Core (intent `rx`, no release debt, a foreign TX observation),
+  authorized and pushed atomically against any Core-client keying
+  transition; refused otherwise. `0x11` behavior is unchanged.
+
 ## [3.0.0b21] — 2026-10-26
 
 ### Added
