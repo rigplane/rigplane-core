@@ -1,13 +1,14 @@
 # Shared USB audio pairing
 
-The pure Windows rule lives in `src/rigplane/audio/_usb_pairing.py: pair`.
-`src/rigplane/audio/_usb_adapt_windows.py: adapt_windows` converts one capture
-session into a normalized snapshot without querying devices. Both
-`src/rigplane/audio/usb_driver.py: UsbAudioDriver._select_windows_devices` and
+The shared rule lives in `src/rigplane/audio/_usb_pairing.py: pair`.
+`src/rigplane/audio/_usb_adapt_windows.py: adapt_windows` and
+`src/rigplane/audio/_usb_adapt_macos.py: adapt_macos` normalize platform evidence
+without querying devices. Both
+`src/rigplane/audio/usb_driver.py: UsbAudioDriver._select_topology_devices` and
 `src/rigplane/audio/_usb_resolve.py: resolve_audio_for_serial_port` use this rule.
 Driver refusals raise `src/rigplane/audio/_usb_pairing.py: WindowsAudioTopologyError`,
 which retains the reason, evidence, and candidates. The driver keeps its
-unambiguous-name fallback when raw topology is unavailable.
+unambiguous-name fallback on Windows when raw topology is unavailable.
 
 The stages run in order, stopping at the first refusal:
 
@@ -18,8 +19,13 @@ The stages run in order, stopping at the first refusal:
 - **S2/S3 — containment and uniqueness.** The serial device's direct parent H
   must be an ordinary hub, never a root hub or controller. Inspect H's direct
   children and the children of any direct child hub, with no deeper search.
-  There must be exactly one serial-owning USB device (the requested device)
-  and exactly one USB device owning both capture and render endpoints. A
+  There must be exactly one serial-owning USB device (the requested device),
+  unless the profile declares `serial_functions`. Multiple serial owners may
+  count as one radio only when each is directly under H, each VID:PID is
+  declared, and no VID:PID occurs on two physical serial owners. Undeclared,
+  nested, or repeated additional serial owners refuse with `serial_ambiguous`.
+  Multiple ports on one USB owner still count as one device. There must also
+  be exactly one USB device owning both capture and render endpoints; a
   capture-only camera does not qualify. Missing parent links, cycles, and
   duplicate node IDs refuse with `topology_incomplete`; absent or unsuitable H
   gives `containment_unproven`. Other refusals are `serial_ambiguous`,
@@ -37,12 +43,14 @@ The stages run in order, stopping at the first refusal:
   both directions. If none qualifies, return `contested` when any API was
   rejected for a collision, otherwise `endpoint_names`.
 
-Profiles may carry an optional `[usb] audio_codec` VID:PID list, stored as
+Profiles may carry optional `[usb] audio_codec` and `serial_functions` VID:PID
+lists, stored as
 `src/rigplane/core/usb_identity.py: UsbAudioIdentity`. Only our own recordings
-justify entries. A non-empty list checks the chosen codec after containment;
-a mismatch refuses with `codec_identity_mismatch`. Absence or an empty list
-uses the same rule without this additional check. Radio facts belong in profile
-data; the mechanism has no model-specific branches or product-name heuristics.
+justify entries. A non-empty `audio_codec` list checks the chosen codec after
+containment; a mismatch refuses with `codec_identity_mismatch`. Absence or an
+empty codec list omits that check. Absence or an empty `serial_functions` list
+retains strict single-serial S3. Radio facts belong in profile data; the
+mechanism has no model-specific branches or product-name heuristics.
 
 **Accepted residual risk:** without a codec list, a serial device directly on
 a shared external hub can pair with a foreign headset when the radio codec is

@@ -174,16 +174,3 @@ async def test_linux_without_serial_keeps_standalone_device_selection(
         assert driver.selected_rx_device.index == 0
     finally:
         await _close(driver)
-
-
-async def test_linux_auto_guard_does_not_change_darwin_selection_branch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    driver, _ = _driver(tmp_path, monkeypatch, usb_present=False)
-    monkeypatch.setattr(usb_driver.platform, "system", lambda: "Darwin")
-    try:
-        await driver.start_rx(lambda _: None)
-        assert driver.selected_rx_device is not None
-        assert driver.selected_rx_device.index == 0
-    finally:
-        await _close(driver)

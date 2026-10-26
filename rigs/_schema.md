@@ -71,22 +71,32 @@ only a server-to-browser transport policy after radio-native audio is received.
 
 ## `[usb]` — Optional USB Audio Identity
 
-`audio_codec` is an optional list of `{ vid = "XXXX", pid = "YYYY" }` tables.
-Both identifiers must be strings of four uppercase hexadecimal digits. Unknown
-keys in `[usb]` or its codec entries are rejected. See
+`audio_codec` and `serial_functions` are optional lists of
+`{ vid = "XXXX", pid = "YYYY" }` tables. Both identifiers must be strings of
+four uppercase hexadecimal digits. Unknown keys in `[usb]` or its function
+entries are rejected; duplicate entries are deduplicated. See
 `src/rigplane/profiles/rig_loader.py: load_rig` and
 `src/rigplane/core/usb_identity.py: UsbFunctionId`.
 
 ```toml
 [usb]
 # Record the capture that establishes these identifiers beside the data.
-audio_codec = [{ vid = "08BB", pid = "2901" }]
+audio_codec = [{ vid = "0D8C", pid = "0016" }]
+serial_functions = [{ vid = "10C4", pid = "EA70" }, { vid = "26AA", pid = "0030" }]
 ```
 
-Populate this list only from our own USB recordings. It constrains the codec
-chosen by the shared pairing rule; it does not establish containment by itself.
-An omitted `[usb]` gives `usb_identity = None`; an empty table or list imposes no
-codec filter. `RigConfig.to_profile` copies the identity to `RadioProfile`.
+Populate these lists only from our own USB recordings; the example matches
+`rigs/ftx1.toml`. `audio_codec` constrains the codec chosen by the shared pairing
+rule; it does not establish containment by itself. `serial_functions` identifies
+the radio's own serial USB functions: distinct declared VID:PID devices directly
+under the requested serial device's hub may count as one radio. An undeclared
+serial device, a repeated serial VID:PID, or an additional serial device under a
+nested hub still refuses with `serial_ambiguous`.
+
+An omitted `[usb]` gives `usb_identity = None`. Omitted or empty lists default
+to empty sets: no codec filter for `audio_codec`, and the strict single-serial
+rule for `serial_functions`. Either list may be supplied alone.
+`RigConfig.to_profile` copies the identity to `RadioProfile`.
 See `docs/internals/usb-audio-pairing.md` for the complete rule.
 
 ## `[capabilities]` — Feature Flags

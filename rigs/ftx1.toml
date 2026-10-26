@@ -32,6 +32,7 @@ rx_audio_channel = "left"
 [usb]
 # macOS USB and audio recording, 2026-10-22: codec under the internal hub.
 audio_codec = [{ vid = "0D8C", pid = "0016" }]
+serial_functions = [{ vid = "10C4", pid = "EA70" }, { vid = "26AA", pid = "0030" }]
 
 [power]
 max_watts = 100

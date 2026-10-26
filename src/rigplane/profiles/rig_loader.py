@@ -3198,31 +3198,40 @@ def load_rig(path: Path) -> RigConfig:
     if "usb" in data:
         if not isinstance(usb_section, dict):
             raise RigLoadError(f"{filename}: [usb] must be a table")
-        _reject_unknown_keys(filename, "[usb]", usb_section, frozenset({"audio_codec"}))
-        codecs = usb_section.get("audio_codec", [])
-        if not isinstance(codecs, list):
-            raise RigLoadError(
-                f"{filename}: [usb].audio_codec must be a list of tables"
-            )
-        functions: set[UsbFunctionId] = set()
-        for codec in codecs:
-            if not isinstance(codec, dict):
-                raise RigLoadError(
-                    f"{filename}: [usb].audio_codec entries must be tables"
+        _reject_unknown_keys(
+            filename,
+            "[usb]",
+            usb_section,
+            frozenset({"audio_codec", "serial_functions"}),
+        )
+        usb_functions: dict[str, frozenset[UsbFunctionId]] = {}
+        for key in ("audio_codec", "serial_functions"):
+            entries = usb_section.get(key, [])
+            if not isinstance(entries, list):
+                raise RigLoadError(f"{filename}: [usb].{key} must be a list of tables")
+            functions: set[UsbFunctionId] = set()
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise RigLoadError(
+                        f"{filename}: [usb].{key} entries must be tables"
+                    )
+                _reject_unknown_keys(
+                    filename, f"[usb].{key}", entry, frozenset({"vid", "pid"})
                 )
-            _reject_unknown_keys(
-                filename, "[usb].audio_codec", codec, frozenset({"vid", "pid"})
-            )
-            vid, pid = codec.get("vid"), codec.get("pid")
-            if not isinstance(vid, str) or not isinstance(pid, str):
-                raise RigLoadError(
-                    f"{filename}: [usb].audio_codec requires string vid and pid"
-                )
-            try:
-                functions.add(UsbFunctionId(vid, pid))
-            except ValueError as exc:
-                raise RigLoadError(f"{filename}: [usb].audio_codec: {exc}") from exc
-        usb_identity = UsbAudioIdentity(frozenset(functions))
+                vid, pid = entry.get("vid"), entry.get("pid")
+                if not isinstance(vid, str) or not isinstance(pid, str):
+                    raise RigLoadError(
+                        f"{filename}: [usb].{key} requires string vid and pid"
+                    )
+                try:
+                    functions.add(UsbFunctionId(vid, pid))
+                except ValueError as exc:
+                    raise RigLoadError(f"{filename}: [usb].{key}: {exc}") from exc
+            usb_functions[key] = frozenset(functions)
+        usb_identity = UsbAudioIdentity(
+            audio_codec=usb_functions["audio_codec"],
+            serial_functions=usb_functions["serial_functions"],
+        )
 
     max_watts: int | None = None
     min_watts: int | None = None
