@@ -84,10 +84,12 @@ afterEach(() => {
 // MOR-3777 instrument-only failure snapshots (observability; parent-
 // authorized). Active for EXACTLY four allowlisted files via one suffix
 // check; unrelated files get zero output and zero further work. Numeric or
-// enumerated metadata only: file F-id + case ordinal, real threadId/poolId,
-// fake-timer READS (timerCount only while fake timers are active), the
-// native event-loop-delay histogram (all-zero samples report UNKNOWN, not
-// "no lag") and read-only resource counters. No raw test names, paths or
+// enumerated metadata only: file F-id + case ordinal, real
+// threadId/poolId/pid, fake-timer READS (timerCount only while fake timers
+// are active), a native monotonic case-lifecycle span, the native
+// event-loop-delay histogram (CUMULATIVE over the file's run in this
+// worker; all-zero samples report UNKNOWN, not "no lag") and read-only
+// PROCESS-scope resource counters. No raw test names, paths or
 // parameter values; no timer wrapping/reset/advance, no vi mocks, no sleeps
 // or yields; nothing throws and no output happens inside a measured test
 // body — the per-failure line and per-file summary run in after-test hooks
@@ -107,7 +109,16 @@ const MOR3777_STARTS_MAX = 64;
 const MOR3777_EMIT_MAX = 8;
 const MOR3777_VERDICTS = new Set(['pass', 'fail', 'skip', 'todo']);
 
-type Mor3777Timers = { fake: boolean | 'UNKNOWN'; timerCount: number | null };
+// Native monotonic clock bound ONCE at module import, i.e. before any test
+// can install vi fake timers (even `toFake: ['hrtime']`). Span semantics:
+// beforeEach entry -> onTestFinished callback (case lifecycle); NOT the
+// test body and NOT Vitest's own duration. Null => UNKNOWN, never a throw.
+const mor3777Hrtime: (() => bigint) | null =
+  typeof process.hrtime?.bigint === 'function'
+    ? process.hrtime.bigint.bind(process.hrtime)
+    : null;
+
+type Mor3777Timers = { fake: boolean | 'UNKNOWN'; timerCount: number | null; t0: bigint | null };
 
 const mor3777 = {
   active: false,
@@ -121,10 +132,11 @@ const mor3777 = {
 
 function mor3777Timers(): Mor3777Timers {
   try {
-    if (!vi.isFakeTimers()) return { fake: false, timerCount: null };
-    return { fake: true, timerCount: vi.getTimerCount() };
+    const t0 = mor3777Hrtime ? mor3777Hrtime() : null;
+    if (!vi.isFakeTimers()) return { fake: false, timerCount: null, t0 };
+    return { fake: true, timerCount: vi.getTimerCount(), t0 };
   } catch {
-    return { fake: 'UNKNOWN', timerCount: null };
+    return { fake: 'UNKNOWN', timerCount: null, t0: null };
   }
 }
 
@@ -148,14 +160,14 @@ function mor3777Resource(): string {
   try {
     const rssMb = (process.memoryUsage().rss / 1048576).toFixed(1);
     const usage = typeof process.resourceUsage === 'function' ? process.resourceUsage() : null;
-    if (!usage) return `rss_mb=${rssMb}`;
+    if (!usage) return `proc_rss_mb=${rssMb}`;
     return (
-      `rss_mb=${rssMb} cpu_user_ms=${Math.round(usage.userCPUTime / 1000)}` +
-      ` max_rss_kb=${usage.maxRSS} vctx=${usage.voluntaryContextSwitches}` +
-      ` ictx=${usage.involuntaryContextSwitches}`
+      `proc_rss_mb=${rssMb} proc_cpu_user_ms=${Math.round(usage.userCPUTime / 1000)}` +
+      ` proc_max_rss_kb=${usage.maxRSS} proc_vctx=${usage.voluntaryContextSwitches}` +
+      ` proc_ictx=${usage.involuntaryContextSwitches}`
     );
   } catch {
-    return 'resource=UNAVAILABLE';
+    return 'proc_resource=UNAVAILABLE';
   }
 }
 
@@ -172,11 +184,14 @@ function mor3777Finish(
     mor3777.emitted += 1;
     const timers = mor3777Timers();
     const lag = mor3777Lag();
+    const span =
+      start.t0 !== null && timers.t0 !== null ? Number(timers.t0 - start.t0) / 1e6 : null;
     console.log(
       `[mor-3777-obs case ${mor3777.fileId}/${mor3777.cases} tid=${threadId}` +
-        ` pool=${mor3777PoolId()} fake_start=${String(start.fake)}` +
+        ` pool=${mor3777PoolId()} pid=${process.pid} fake_start=${String(start.fake)}` +
         ` fake_end=${String(timers.fake)} timers_end=${timers.timerCount ?? 'UNAVAILABLE'}` +
-        ` evd_mean_ms=${lag.mean} evd_max_ms=${lag.max} ${mor3777Resource()}` +
+        ` case_lifecycle_ms=${span === null ? 'UNKNOWN' : span.toFixed(3)}` +
+        ` evd_cum_mean_ms=${lag.mean} evd_cum_max_ms=${lag.max} ${mor3777Resource()}` +
         ` verdict=fail]`,
     );
   } catch {
@@ -213,7 +228,7 @@ afterAll(() => {
       `[mor-3777-obs file ${mor3777.fileId} cases=${mor3777.cases}` +
         ` emitted=${mor3777.emitted} pass=${mor3777.verdicts.pass}` +
         ` fail=${mor3777.verdicts.fail} other=${mor3777.verdicts.other}` +
-        ` evd_mean_ms=${lag.mean} evd_max_ms=${lag.max} ${mor3777Resource()}]`,
+        ` evd_cum_mean_ms=${lag.mean} evd_cum_max_ms=${lag.max} ${mor3777Resource()}]`,
     );
     mor3777.histogram?.disable();
   } catch {
