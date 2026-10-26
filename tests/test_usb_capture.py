@@ -140,6 +140,138 @@ def test_capture_bundle_records_supplied_tool_version(
     ] * 5
 
 
+@pytest.mark.parametrize(
+    "serial",
+    [
+        "AUDIO",
+        "connected",
+        "unplugged",
+        "replugged",
+        "windows",
+        "radio-a",
+        "radio-b",
+        "cfgmgr32",
+        "powershell",
+        "Ports",
+        "AudioEndpoint",
+    ],
+)
+def test_capture_serial_collision_preserves_discriminators_and_scrubs_data(
+    tmp_path: Path, readers: SimpleNamespace, serial: str
+) -> None:
+    readers.ports[0].serial_number = serial
+    readers.ports[0].description = f"Device ({serial.lower()}) / {serial.upper()}"
+    readers.sound.query_hostapis.side_effect = RuntimeError(
+        f"missing {serial.swapcase()}"
+    )
+    source = "powershell" if serial == "powershell" else "cfgmgr32"
+    readers.raw.side_effect = None
+    readers.raw.return_value = RawWindows(
+        source,
+        (
+            DevNodeRecord(
+                rf"USB\VID_10C4&PID_EA60\{serial.upper()}",
+                "",
+                "Ports",
+                f"Device {serial.lower()}",
+                f"Device {serial.upper()}",
+                (),
+                (),
+            ),
+            DevNodeRecord(
+                r"SWD\MMDEVAPI\ENDPOINT",
+                rf"USB\VID_10C4&PID_EA60\{serial.upper()}",
+                "AudioEndpoint",
+                f"Endpoint {serial.lower()}",
+                f"Endpoint {serial.upper()}",
+                (),
+                (),
+            ),
+        ),
+    )
+    out = tmp_path / "capture.json"
+    capture.capture_bundle(out, radios=_RADIOS, tool_version="test")
+    bundle = json.loads(out.read_text(encoding="utf-8"))
+    capture._validate_bundle(bundle)
+    assert bundle["schema"] == "rigplane.usb_audio_capture/1"
+    assert [(s["session"], s["target"]) for s in bundle["sessions"]] == [
+        ("connected", None),
+        ("unplugged", "radio-a"),
+        ("replugged", "radio-a"),
+        ("unplugged", "radio-b"),
+        ("replugged", "radio-b"),
+    ]
+    for session in bundle["sessions"]:
+        assert session["schema"] == "rigplane.usb_audio_session/1"
+        assert session["os"] == "windows"
+        assert session["radios"] == (
+            _RADIOS if session["session"] == "connected" else []
+        )
+        raw = session["raw"]
+        assert raw["windows"]["source"] == source
+        assert [node["class_name"] for node in raw["windows"]["devnodes"]] == [
+            "Ports",
+            "AudioEndpoint",
+        ]
+        token = raw["serial_ports"][0]["serial_number"]
+        assert raw["serial_ports"][0]["description"] == f"Device ({token}) / {token}"
+        assert session["unavailable"] == [
+            {"part": "portaudio", "reason": f"missing {token}"}
+        ]
+    pending = [bundle]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            pending.extend(
+                child
+                for field, child in value.items()
+                if field
+                not in {
+                    "schema",
+                    "session",
+                    "target",
+                    "os",
+                    "profile",
+                    "source",
+                    "part",
+                    "class_name",
+                }
+            )
+        elif isinstance(value, list):
+            pending.extend(value)
+        elif isinstance(value, str):
+            assert serial.lower() not in value.lower(), value
+
+
+@pytest.mark.parametrize("schema_field", ["bundle", "session"])
+def test_capture_rejects_invalid_redacted_bundle_before_writing(
+    tmp_path: Path,
+    readers: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    schema_field: str,
+) -> None:
+    redact = capture.redact_bundle
+
+    def corrupt_schema(bundle):
+        redacted = redact(bundle)
+        document = redacted if schema_field == "bundle" else redacted["sessions"][0]
+        document["schema"] = "invalid"
+        return redacted
+
+    write = Mock()
+    monkeypatch.setattr(capture, "redact_bundle", corrupt_schema)
+    monkeypatch.setattr(capture, "_write_private_json", write)
+    with pytest.raises(ValueError, match=f"invalid USB capture {schema_field} schema"):
+        capture.capture_bundle(
+            tmp_path / "capture.json",
+            radios=_RADIOS,
+            tool_version="test",
+            no_unplug=True,
+        )
+    write.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_captured_session_omits_hwid_even_when_port_has_it(
     readers: SimpleNamespace,
 ) -> None:
@@ -189,8 +321,9 @@ async def test_cli_captures_two_radios_in_one_process(
         for port in raw["serial_ports"]:
             assert port["serial_number"] not in _SERIALS
             assert "hwid" not in port
-            assert port["description"] in {f"Radio:{serial}" for serial in _SERIALS}
-        assert raw["portaudio"]["devices"][0]["name"] == f"Radio:{_SERIALS[0]}"
+            assert port["description"] == f"Radio:{port['serial_number']}"
+        assert raw["portaudio"]["devices"][0]["name"].startswith("Radio:R")
+        assert all(serial not in json.dumps(session) for serial in _SERIALS)
     b_ids = [s["raw"]["windows"]["devnodes"][-1]["instance_id"] for s in sessions[:3]]
     assert b_ids[0] == b_ids[1] == b_ids[2]
     assert readers.raw.call_count == readers.comports.call_count == 5
@@ -212,9 +345,7 @@ async def test_cli_captures_two_radios_in_one_process(
         "Plug radio-b back in (any USB port), wait 10 seconds, then press Enter.",
     ]
     output = capsys.readouterr().out
-    assert output.splitlines()[0] == (
-        "Note: device and audio endpoint names are kept as recorded; review the file before sending it."
-    )
+    assert "names are kept" not in output
     assert str(out) in output and "5 sessions" in output and "2 radios" in output
     assert list(tmp_path.iterdir()) == [out]
 
@@ -348,7 +479,7 @@ def test_atomic_write_refuses_unsupported_safe_write_and_cleans_temp(
 
 
 @pytest.mark.asyncio
-async def test_cli_prints_names_note_before_writing(
+async def test_cli_writes_scrubbed_document_without_obsolete_names_note(
     tmp_path: Path,
     readers: SimpleNamespace,
     monkeypatch: pytest.MonkeyPatch,
@@ -357,9 +488,8 @@ async def test_cli_prints_names_note_before_writing(
     write = capture._write_private_json
 
     def check_note(path, value):
-        assert capsys.readouterr().out == (
-            "Note: device and audio endpoint names are kept as recorded; review the file before sending it.\n"
-        )
+        assert capsys.readouterr().out == ""
+        assert all(serial not in json.dumps(value) for serial in _SERIALS)
         write(path, value)
 
     monkeypatch.setattr(capture, "_write_private_json", check_note)
@@ -587,7 +717,7 @@ def test_bundle_validation(sessions: list) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("system", ["Darwin", "Linux"])
+@pytest.mark.parametrize("system", ["FreeBSD", "Unknown"])
 async def test_command_non_windows_exits_two(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -596,4 +726,64 @@ async def test_command_non_windows_exits_two(
 ) -> None:
     monkeypatch.setattr(platform, "system", lambda: system)
     assert await _run(_args(tmp_path / "capture.json", "--no-unplug")) == 2
-    assert "usb-capture currently records Windows only" in capsys.readouterr().err
+    assert "usb-capture supports Windows, macOS and Linux" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("system,part", [("Darwin", "macos"), ("Linux", "linux")])
+async def test_unix_cli_capture_validates_and_redacts(
+    tmp_path, readers, monkeypatch, system, part
+):
+    monkeypatch.setattr(platform, "system", lambda: system)
+    serial = _SERIALS[0]
+    document = {
+        "usb_devices": [
+            {
+                "registry_id": 3,
+                "serial_number": serial,
+                "registry_path": "IOUSB:/Serial@03121300",
+                "path": "/sys/devices/usb1/1-2",
+            }
+        ],
+        "serial_devices": [
+            {
+                "device": f"/dev/cu.usbserial-{serial}0"
+                if part == "macos"
+                else "/dev/ttyUSB0",
+                "usb_registry_id": 3,
+                "registry_path": "IOService:/Serial@03121300/child",
+                "usb_device": "/sys/devices/usb1/1-2",
+            }
+        ],
+        "audio_devices": [
+            {
+                "uid": f"AppleUSBAudioEngine:Vendor:Codec:{serial}:2"
+                if part == "macos"
+                else "alsa:card0"
+            }
+        ],
+        "unavailable": [{"part": f"{part}:optional", "reason": "missing"}],
+    }
+    reader = Mock(return_value=SimpleNamespace(to_json_dict=lambda: document))
+    monkeypatch.setattr(capture, f"read_raw_{part}", reader, raising=False)
+    readers.raw.side_effect = AssertionError("Windows reader must not run")
+    out = tmp_path / "capture.json"
+    assert await _run(_args(out)) == 0
+    bundle = json.loads(out.read_text())
+    capture._validate_bundle(bundle)
+    assert len(bundle["sessions"]) == 5
+    assert reader.call_count == 5
+    for session in bundle["sessions"]:
+        assert session["os"] == part
+        assert "windows" not in session["raw"]
+        assert session["unavailable"] == document["unavailable"]
+        assert serial not in json.dumps(session["raw"][part])
+        assert all("hwid" not in p for p in session["raw"]["serial_ports"])
+        assert session["raw"]["portaudio"]["devices"]
+
+
+def test_capture_help_names_all_supported_platforms():
+    parser = _build_parser()
+    audio = parser._subparsers._group_actions[0].choices["audio"]
+    help_text = audio.format_help()
+    assert all(name in help_text for name in ("Windows", "macOS", "Linux"))

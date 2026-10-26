@@ -13,7 +13,7 @@ import pytest
 from _helpers import wrap_civ_in_udp
 from test_radio import MockTransport
 
-from rigplane.core.exceptions import CommandRejectedError
+from rigplane.core.exceptions import CommandError, CommandRejectedError
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
     FieldPath,
@@ -31,6 +31,7 @@ from rigplane.web.radio_poller import (
     SetFreq,
     SetMode,
     SetPower,
+    SetVfoFreq,
 )
 from rigplane.web.server import WebConfig, WebServer
 
@@ -555,6 +556,156 @@ async def test_http_single_set_vfo_freq_reports_readback_body(model: str) -> Non
     assert state["main"]["unselectedVfo"]["freqHz"] == 14_074_000
     assert state["main"]["activeSlot"] == "A"
     assert state["main"]["freqHz"] == 7_074_000
+
+
+@pytest.mark.asyncio
+async def test_http_set_vfo_freq_ic7300_4m_receive_envelope() -> None:
+    """MOR-3782: IC-7300 direct VFO tuning spans the 4 m receive range.
+
+    Receiver coverage is 0.030–74.800 MHz on every version (Advanced
+    Manual 11a §16 SPECIFICATIONS; some frequency ranges are not
+    guaranteed), so a 70.2 MHz write passes the profile receive-range
+    guard, reaches the wire and the state readback. 74.800001 MHz is
+    outside every declared range and is refused before anything is sent.
+    The profile declares no 4 m ``bands`` entry, so this range is
+    receive-only by data, not by a per-model branch.
+    """
+    from rigplane.commands import parse_civ_frame
+    from rigplane.runtime._dual_rx_runtime import DualRxRuntimeMixin
+
+    profile = resolve_radio_profile(model="IC-7300")
+    reply_prefix = bytes((0xFE, 0xFE, 0xE0, profile.civ_addr))
+
+    def _radio_with_readback(readback_bcd: bytes) -> SimpleNamespace:
+        radio = SimpleNamespace(
+            profile=profile,
+            _profile=profile,
+            model=profile.model,
+            capabilities=set(),
+            _civ_epoch=1,
+            send_civ=AsyncMock(
+                side_effect=[
+                    parse_civ_frame(reply_prefix + bytes.fromhex("FB FD")),
+                    parse_civ_frame(
+                        reply_prefix + b"\x25\x01" + readback_bcd + b"\xfd"
+                    ),
+                ]
+            ),
+            set_freq=AsyncMock(),
+            set_vfo=AsyncMock(),
+            set_vfo_slot=AsyncMock(),
+            select_receiver=AsyncMock(),
+            swap_vfo_ab=AsyncMock(),
+        )
+        radio.write_relative_vfo_frequency = (
+            DualRxRuntimeMixin.write_relative_vfo_frequency.__get__(radio)
+        )
+        return radio
+
+    async def _posted_set_vfo_freq(
+        radio: SimpleNamespace, freq: int
+    ) -> tuple[WebServer, RadioPoller, asyncio.Task[_FakeWriter], CommandQueueEntry]:
+        srv = WebServer(  # type: ignore[arg-type]
+            radio, WebConfig(host="127.0.0.1", port=0)
+        )
+        store = srv.command_state_store
+        store.apply(
+            Observation(
+                path=FieldPath.active_slot("0"),
+                value="A",
+                source=SourceMetadata(
+                    source="command_response", provider="vfo_binding"
+                ),
+                timestamp_monotonic=time.monotonic(),
+                max_age=5,
+                provider_generation=store.provider_generation,
+            )
+        )
+        generation = store.provider_generation
+        poller = RadioPoller(  # type: ignore[arg-type]
+            radio, srv.command_queue, state_store=store
+        )
+        for path, value in (
+            (FieldPath.active("0", "freq_mode", "freq_hz"), 7_074_000),
+            (FieldPath.active("0", "freq_mode", "mode"), "LSB"),
+            (FieldPath.unselected("0", "freq_mode", "mode"), "USB"),
+            (FieldPath.unselected("0", "freq_mode", "filter_num"), 1),
+            (FieldPath.unselected("0", "freq_mode", "data_mode"), 0),
+        ):
+            store.apply(
+                Observation(
+                    path=path,
+                    value=value,
+                    source=SourceMetadata(source="poll_response", provider="icom_civ"),
+                    timestamp_monotonic=time.monotonic(),
+                    provider_generation=generation,
+                )
+            )
+        request = asyncio.create_task(
+            _post_json(
+                srv,
+                "/api/v1/commands",
+                {
+                    "id": f"vfo-{freq}",
+                    "name": "set_vfo_freq",
+                    "params": {
+                        "freq": freq,
+                        "receiver": 0,
+                        "slot": "B",
+                        "expected_active_slot": "A",
+                        "provider_generation": generation,
+                    },
+                },
+            )
+        )
+        await srv.command_queue.wait(timeout=5.0)
+        entries = srv.command_queue.drain_entries()
+        assert len(entries) == 1
+        assert isinstance(entries[0].command, SetVfoFreq)
+        return srv, poller, request, entries[0]
+
+    # Accepted: 70.2 MHz lies inside the declared VHF RX receive range.
+    accepted = _radio_with_readback(bytes.fromhex("00 00 20 70 00"))
+    srv, poller, request, entry = await _posted_set_vfo_freq(accepted, 70_200_000)
+    await poller._execute_queued_entry(entry)  # noqa: SLF001
+    writer = await asyncio.wait_for(request, timeout=10.0)
+
+    assert writer.response_status == 200
+    assert writer.response_body["ok"] is True
+    assert writer.response_body["result"]["freq"] == 70_200_000
+    assert accepted.send_civ.await_args_list == [
+        call(
+            0x25,
+            None,
+            data=bytes.fromhex("01 00 00 20 70 00"),
+            wait_response=True,
+            is_current=ANY,
+        ),
+        call(0x25, None, data=b"\x01", wait_response=True),
+    ]
+    state_writer = _FakeWriter()
+    await srv._handle_http(  # noqa: SLF001
+        state_writer,  # type: ignore[arg-type]
+        "GET",
+        "/api/v1/state",
+        headers={},
+    )
+    assert state_writer.response_status == 200
+    assert state_writer.response_body["main"]["unselectedVfo"]["freqHz"] == 70_200_000
+
+    # Rejected: 74.800001 MHz lies outside every declared receive range,
+    # so the poller refuses the write before any CI-V frame is sent.
+    refused = _radio_with_readback(bytes.fromhex("00 00 80 74 00"))
+    _srv2, poller2, request2, entry2 = await _posted_set_vfo_freq(refused, 74_800_001)
+    with pytest.raises(CommandError, match="outside profile receive ranges"):
+        await poller2._execute_queued_entry(entry2)  # noqa: SLF001
+    writer2 = await asyncio.wait_for(request2, timeout=10.0)
+
+    assert writer2.response_status == 500
+    assert writer2.response_body["ok"] is False
+    assert writer2.response_body["error"] == "command_failed"
+    assert "outside profile receive ranges" in writer2.response_body["message"]
+    refused.send_civ.assert_not_awaited()
 
 
 @pytest.mark.asyncio
