@@ -10,9 +10,8 @@ import re
 import secrets
 from typing import Any
 
-_USB_SERIAL_ID = re.compile(
-    r"USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}\\([^\\&]+)", re.IGNORECASE | re.ASCII
-)
+_USB_SERIAL_PREFIX = r"USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}\\"
+_USB_SERIAL_ID = re.compile(_USB_SERIAL_PREFIX + r"([^\\&]+)", re.IGNORECASE | re.ASCII)
 
 
 def _ascii_lower(value: str) -> str:
@@ -99,6 +98,9 @@ def redact_bundle(
                 devices.add(value)
             elif value.startswith(("cu.", "tty.", "serial/by-id/")):
                 devices.add("/dev/" + value)
+            devices.update(
+                path.rstrip(".") for path in re.findall(r"/dev/[^\s'\"(),;:]+", value)
+            )
 
     collect_devices(bundle)
     for session in bundle["sessions"]:
@@ -109,9 +111,10 @@ def redact_bundle(
                 if device := port.get("device"):
                     device_serials[device] = serial
         for row in raw.get("windows", {}).get("devnodes", []):
-            match = _USB_SERIAL_ID.fullmatch(row.get("instance_id", ""))
-            if match:
-                values.add(match[1])
+            for field in ("instance_id", "parent_id"):
+                reference = row.get(field, "")
+                if match := _USB_SERIAL_ID.fullmatch(reference):
+                    values.add(match[1])
         for part in ("macos", "linux"):
             for row in raw.get(part, {}).get("usb_devices", []):
                 if serial := row.get("serial_number"):
@@ -176,6 +179,43 @@ def redact_bundle(
         redacted = replace_device(device, device_serials.get(device))
         aliases[device] = redacted
         aliases[device.removeprefix("/dev/")] = redacted.removeprefix("/dev/")
+    diagnostic_aliases = {
+        source: target for source, target in aliases.items() if source != target
+    }
+    diagnostic_boundary = r"(?![\w/\\-]|\.[\w./\\-])"
+    diagnostic_pattern = (
+        re.compile(
+            r"(?<![\w./\\-])(?:"
+            + "|".join(
+                re.escape(source)
+                for source in sorted(diagnostic_aliases, key=len, reverse=True)
+            )
+            + ")"
+            + diagnostic_boundary
+        )
+        if diagnostic_aliases
+        else None
+    )
+    diagnostic_serials = {
+        spelling for serial in values for spelling in (serial, serial.replace(" ", "_"))
+    }
+    diagnostic_windows_pattern = (
+        re.compile(
+            r"(?<![\w./\\-])"
+            + _USB_SERIAL_PREFIX
+            + "(?:"
+            + "|".join(
+                re.escape(serial)
+                for serial in sorted(diagnostic_serials, key=len, reverse=True)
+            )
+            + ")"
+            + r"(?!&)"
+            + diagnostic_boundary,
+            re.IGNORECASE | re.ASCII,
+        )
+        if diagnostic_serials
+        else None
+    )
 
     def redact_topology(value: Any, part: str) -> None:
         if isinstance(value, list):
@@ -187,6 +227,16 @@ def redact_bundle(
                     value[field] = replace_field(child)
                 elif field == "device":
                     value[field] = aliases.get(child, child)
+                elif field == "reason" and isinstance(child, str):
+                    if diagnostic_pattern is not None:
+                        child = diagnostic_pattern.sub(
+                            lambda match: diagnostic_aliases[match[0]], child
+                        )
+                    if diagnostic_windows_pattern is not None:
+                        child = diagnostic_windows_pattern.sub(
+                            lambda match: replace_id(match[0]), child
+                        )
+                    value[field] = child
                 elif part == "macos" and isinstance(child, str):
                     if field in {"registry_path", "parent_path"}:
                         segments = []
@@ -217,6 +267,7 @@ def redact_bundle(
     result = copy.deepcopy(bundle)
     for session in result["sessions"]:
         raw = session.get("raw", {})
+        redact_topology(session.get("unavailable", []), "")
         for radio in session.get("radios", []):
             if "serial_port" in radio:
                 device = radio["serial_port"]
