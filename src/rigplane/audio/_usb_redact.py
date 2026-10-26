@@ -179,43 +179,6 @@ def redact_bundle(
         redacted = replace_device(device, device_serials.get(device))
         aliases[device] = redacted
         aliases[device.removeprefix("/dev/")] = redacted.removeprefix("/dev/")
-    diagnostic_aliases = {
-        source: target for source, target in aliases.items() if source != target
-    }
-    diagnostic_boundary = r"(?![\w/\\-]|\.[\w./\\-])"
-    diagnostic_pattern = (
-        re.compile(
-            r"(?<![\w./\\-])(?:"
-            + "|".join(
-                re.escape(source)
-                for source in sorted(diagnostic_aliases, key=len, reverse=True)
-            )
-            + ")"
-            + diagnostic_boundary
-        )
-        if diagnostic_aliases
-        else None
-    )
-    diagnostic_serials = {
-        spelling for serial in values for spelling in (serial, serial.replace(" ", "_"))
-    }
-    diagnostic_windows_pattern = (
-        re.compile(
-            r"(?<![\w./\\-])"
-            + _USB_SERIAL_PREFIX
-            + "(?:"
-            + "|".join(
-                re.escape(serial)
-                for serial in sorted(diagnostic_serials, key=len, reverse=True)
-            )
-            + ")"
-            + r"(?!&)"
-            + diagnostic_boundary,
-            re.IGNORECASE | re.ASCII,
-        )
-        if diagnostic_serials
-        else None
-    )
 
     def redact_topology(value: Any, part: str) -> None:
         if isinstance(value, list):
@@ -227,16 +190,6 @@ def redact_bundle(
                     value[field] = replace_field(child)
                 elif field == "device":
                     value[field] = aliases.get(child, child)
-                elif field == "reason" and isinstance(child, str):
-                    if diagnostic_pattern is not None:
-                        child = diagnostic_pattern.sub(
-                            lambda match: diagnostic_aliases[match[0]], child
-                        )
-                    if diagnostic_windows_pattern is not None:
-                        child = diagnostic_windows_pattern.sub(
-                            lambda match: replace_id(match[0]), child
-                        )
-                    value[field] = child
                 elif part == "macos" and isinstance(child, str):
                     if field in {"registry_path", "parent_path"}:
                         segments = []
@@ -286,4 +239,60 @@ def redact_bundle(
             for row in windows["devnodes"]:
                 for name in ("instance_id", "parent_id"):
                     row[name] = replace_id(row.get(name, ""))
-    return result
+    serial_pattern = "|".join(
+        re.escape(serial).replace("_", "[ _]")
+        for serial in sorted(known_serials, key=lambda value: (-len(value), value))
+        if len(serial) >= 4
+    )
+    pattern = re.compile(serial_pattern, re.IGNORECASE | re.ASCII)
+
+    def scrub(value: Any, field: str = "") -> Any:
+        if isinstance(value, dict):
+            return {name: scrub(child, name) for name, child in value.items()}
+        if isinstance(value, list):
+            return [scrub(child, field) for child in value]
+        if not isinstance(value, str) or not serial_pattern:
+            return value
+        locations: list[tuple[int, int]] = []
+        if (
+            field == "uid"
+            and value.startswith("AppleUSBAudioEngine:")
+            and value.count(":") >= 2
+        ):
+            prefix, identity, streams = value.rsplit(":", 2)
+            try:
+                location = int(identity, 16)
+            except ValueError:
+                location = None
+            if identity in uid_locations or location in uid_locations:
+                locations.append((len(prefix) + 1, len(value) - len(streams) - 1))
+        if field in {"registry_path", "parent_path"}:
+            for match in re.finditer(
+                r"(?<=@)[0-9a-f]+(?=/|$)", value, re.IGNORECASE | re.ASCII
+            ):
+                if int(match[0], 16) in uid_locations:
+                    locations.append(match.span())
+        if field in {"location", "devpath", "path", "usb_device"}:
+            for match in re.finditer(r"(?<=/)[^/:]+(?=[:/]|$)|^[^/:]+$", value):
+                if match[0] in uid_locations:
+                    locations.append(match.span())
+        if field in {"device", "name", "serial_port"}:
+            match = re.fullmatch(
+                r"(?:/dev/)?(?:cu|tty)\.usbmodem([0-9a-f]+)",
+                value,
+                re.IGNORECASE | re.ASCII,
+            )
+            if match and int(match[1], 16) & ~0xF in uid_locations:
+                locations.append(match.span(1))
+
+        def replacement(match: re.Match[str]) -> str:
+            if any(
+                start <= match.start() and match.end() <= end
+                for start, end in locations
+            ):
+                return match[0]
+            return replacements[_ascii_lower(match[0].replace(" ", "_"))]
+
+        return pattern.sub(replacement, value)
+
+    return scrub(result)

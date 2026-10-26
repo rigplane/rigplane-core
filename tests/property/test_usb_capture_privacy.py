@@ -315,13 +315,23 @@ def test_short_and_colliding_serials_keep_exact_path_rule(
     assert bundle == before
     tokens = _serial_tokens(bundle, result, part)
     assert set(tokens) == {serial, *serials[1:]}
-    assert result == _replace_serials(
+    expected = _replace_serials(
         template,
         {
             original: tokens[serial if index == 0 else original]
             for index, original in enumerate(serials)
         },
     )
+    if len(serial) < 4:
+        for original, redacted in zip(
+            bundle["sessions"], expected["sessions"], strict=True
+        ):
+            redacted["unavailable"] = copy.deepcopy(original["unavailable"])
+            if part != "windows" and part in original["raw"]:
+                redacted["raw"][part]["unavailable"] = copy.deepcopy(
+                    original["raw"][part]["unavailable"]
+                )
+    assert result == expected
 
 
 def test_windows_parent_reference_is_bundle_serial_evidence() -> None:

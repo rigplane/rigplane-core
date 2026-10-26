@@ -1025,7 +1025,7 @@ def test_observed_unicode_spelling_is_redacted(serial: str) -> None:
     assert row["compatible_ids"] == [expected]
 
 
-@pytest.mark.parametrize("serial", ["ABC", "abc", "ABC123", "abc123"])
+@pytest.mark.parametrize("serial", ["ABC", "abc", "ABCD", "abcd", "ABC123", "abc123"])
 def test_names_scrub_long_serials_across_sources_and_sessions(serial: str) -> None:
     text = f"Radio:{serial.upper()}"
     session = {
@@ -1162,6 +1162,37 @@ def test_final_scrub_covers_root_scalars_lists_and_preserves_keys() -> None:
     result = _usb_redact.redact_bundle(bundle, key=_KEY)
     token = result["sessions"][0]["raw"]["serial_ports"][0]["serial_number"]
     assert result[serial] == [f"prefix:{token}:suffix", {"nested": token}, None, 4]
+
+
+def test_final_scrub_prefers_longest_serial_and_preserves_only_location_identity() -> (
+    None
+):
+    bundle = {
+        "sessions": [
+            {
+                "raw": {
+                    "serial_ports": [
+                        {"serial_number": value}
+                        for value in ("ABCD", "ABCD_EFG", "03121400")
+                    ],
+                    "macos": {
+                        "usb_devices": [{"location_id": 0x3121400}],
+                        "audio_devices": [
+                            {
+                                "uid": "AppleUSBAudioEngine:03121400:Codec:03121400:1",
+                                "name": "Codec 03121400 ABCD_EFG ABCD",
+                            }
+                        ],
+                    },
+                }
+            }
+        ],
+    }
+    raw = _usb_redact.redact_bundle(bundle, key=_KEY)["sessions"][0]["raw"]
+    first, second, location = [port["serial_number"] for port in raw["serial_ports"]]
+    audio = raw["macos"]["audio_devices"][0]
+    assert audio["uid"] == f"AppleUSBAudioEngine:{location}:Codec:03121400:1"
+    assert audio["name"] == f"Codec {location} {second} {first}"
 
 
 def test_missing_devnode_name_and_hardware_fields_are_not_added() -> None:

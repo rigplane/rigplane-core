@@ -236,8 +236,5 @@ def capture_bundle(
             )
     bundle = {"schema": "rigplane.usb_audio_capture/1", "sessions": sessions}
     _validate_bundle(bundle)
-    print(
-        "Note: device and audio endpoint names are kept as recorded; review the file before sending it."
-    )
     _write_private_json(out, redact_bundle(bundle))
     return out
