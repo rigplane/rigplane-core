@@ -103,3 +103,15 @@ def test_wrong_duration_is_reported() -> None:
     pcm = render_marker_pcm16(_SPEC)[: int(0.8 * _SPEC.sample_rate) * 2]
     problems = check_marker(analyze_marker_pcm16(pcm, _SPEC), _SPEC)
     assert any("duration" in problem for problem in problems)
+
+
+def test_partial_tail_corruption_is_reported() -> None:
+    """A corrupt partial 5 ms tail window must reach the signal checks.
+
+    Appending 239 full-scale samples to a clean render adds only 5 ms, so
+    the duration check stays inside its tolerance — but the tail's energy
+    is far above the marker tone's, so a residual problem must be reported.
+    """
+    pcm = render_marker_pcm16(_SPEC) + np.full(239, 32767, dtype="<i2").tobytes()
+    problems = check_marker(analyze_marker_pcm16(pcm, _SPEC), _SPEC)
+    assert problems and any("residual" in problem for problem in problems)
