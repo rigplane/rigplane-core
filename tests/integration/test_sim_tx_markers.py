@@ -34,6 +34,7 @@ from rigplane.radio import IcomRadio  # noqa: E402
 from rigplane.runtime.tx_interlock import RfState  # noqa: E402
 from rigplane.web.protocol import (  # noqa: E402
     AUDIO_CODEC_PCM16,
+    MSG_TYPE_AUDIO_RX,
     MSG_TYPE_AUDIO_TX,
     encode_audio_frame,
 )
@@ -53,6 +54,7 @@ from test_tx_under_fault_matrix import (  # noqa: E402
     _KEY_DEADLINE_S,
     _wait_ptt,
     _wait_rf,
+    _ws_recv_frame,
     _WsKeyClient,
 )
 
@@ -77,6 +79,15 @@ async def _open_tx_mic(
     await mic.send({"type": "audio_start", "direction": "tx"})
     reply = await mic._until(lambda message: message.get("type") == "audio_tx_format")  # noqa: SLF001
     return mic, reply
+
+
+async def _collect_rx_audio(mic: _WsKeyClient, frames: list[bytes]) -> None:
+    """Read binary RX frames off the mic socket until cancelled; keep the
+    MSG_TYPE_AUDIO_RX payloads in arrival order."""
+    while True:
+        opcode, payload = await _ws_recv_frame(mic._reader, timeout=10.0)  # noqa: SLF001
+        if opcode == 0x2 and payload[:1] == bytes([MSG_TYPE_AUDIO_RX]):
+            frames.append(payload)
 
 
 async def _send_pcm(mic: _WsKeyClient, pcm: bytes, sample_rate: int) -> float:
@@ -141,6 +152,12 @@ async def test_marker_streamed_while_keyed_lands_clean_in_the_sink(
         spec = MarkerSpec(sample_rate=rate)
         pcm = render_marker_pcm16(spec)
 
+        # The RX-leak claim needs RX audio OBSERVED AT THIS CLIENT while
+        # the marker streams — a simulator-side emission counter proves
+        # nothing about the client's RX path.
+        rx_frames: list[bytes] = []
+        rx_collector = asyncio.create_task(_collect_rx_audio(mic, rx_frames))
+
         # PTT-gated: with nobody keyed, the WS gate drops every TX frame.
         probe_frames = 5
         await _send_pcm(mic, pcm[: probe_frames * rate * 2 * _FRAME_MS // 1000], rate)
@@ -154,9 +171,13 @@ async def test_marker_streamed_while_keyed_lands_clean_in_the_sink(
         t_ptt_on = next(t for t, on in reversed(sim.ptt_transitions) if on)
 
         sent_first = await _send_pcm(mic, pcm, rate)
-        # The RX byte ramp ran on the same port all along (leak condition).
-        assert sim.audio_rx_frames_sent > 0
         await _wait_sink_bytes(sim, len(pcm))
+        # The RX byte ramp ran on the same port all along (leak condition):
+        # RX audio must have reached THIS client while TX streamed.
+        rx_collector.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await rx_collector
+        assert rx_frames, "no RX audio frames reached the client"
 
         frames = sim.audio_tx_frames
         captured = sim.audio_tx_pcm()
