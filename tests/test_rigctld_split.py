@@ -267,13 +267,15 @@ async def test_split_direct_raw_transaction_marks_interference_scope(
 async def test_split_vfo_switch_during_readback_sends_exactly_one_set(
     model, monkeypatch
 ):
-    """A selection change during the readback never triggers a second SET.
+    """A selection change during the readback fails the write, one SET.
 
     ``X FM 0`` on B: the SET reaches the wire, then another client
     completes ``V VFOB`` while the write is parked at its readback. One
     request must not change both physical VFOs: the SET is already out,
-    so no retry happens — the consistent readback is the success, exactly
-    one SET reached the wire and A is untouched (MOR-3743).
+    so no retry happens — but the readback can no longer be reported as
+    success for the topology the caller pinned, so the write fails with
+    ``RPRT -11`` (the client must re-read), exactly one SET reached the
+    wire and A is untouched (MOR-3743).
     """
     async with _peer(model) as (radio, peer, server, reader, writer):
         commander = radio._commander = IcomCommander(radio._execute_civ_raw)
@@ -291,7 +293,7 @@ async def test_split_vfo_switch_during_readback_sends_exactly_one_set(
                 )
             assert peer.selected == "B"
             release.set()
-            assert await asyncio.wait_for(reply, 2) == b"RPRT 0\n"
+            assert await asyncio.wait_for(reply, 2) == b"RPRT -11\n"
         finally:
             release.set()
             radio._commander = None

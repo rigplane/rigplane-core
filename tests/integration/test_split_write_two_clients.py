@@ -20,7 +20,10 @@ detection):
 4. an interference scope changes no dispatch order or priority: a
    PTT-off queued at FORCE_RELEASE priority while the owner's write is
    mid-flight is dispatched in plain (priority, seq) order right after
-   the in-flight exchange.
+   the in-flight exchange;
+5. a competitor landing while the owner's SET ACK is pending buys no
+   retry: the behind-the-send staleness surfaces as ``RPRT -6`` and no
+   second SET (composed from a re-read) reaches the wire.
 
 Two facts about the real wire shape this file's model (learned from the
 Mac mini traces at head a9db58531):
@@ -72,6 +75,7 @@ import asyncio
 import struct
 import time
 from pathlib import Path
+from collections.abc import Callable
 from types import SimpleNamespace
 
 import pytest
@@ -131,6 +135,29 @@ def _is_unselected_mode_get(packet: bytes, radio_addr: int) -> bool:
         and civ[2] == radio_addr
         and civ[4] == 0x26
         and civ[5:-1] == b"\x01"
+    )
+
+
+def _is_unselected_mode_set(packet: bytes, radio_addr: int) -> bool:
+    """True for a DATA packet whose CI-V frame is a ``26 01`` SET.
+
+    Same parse as :func:`_is_unselected_mode_get`; the frame carries the
+    unselected-receiver selector plus the three-byte mode/DATA/filter
+    payload, so holding it parks the radio's ACK to that SET.
+    """
+    datalen = struct.unpack_from("<H", packet, 0x11)[0]
+    end = _CIV_HEADER_SIZE + datalen
+    if end > len(packet):
+        return False
+    civ = packet[_CIV_HEADER_SIZE:end]
+    return (
+        len(civ) >= 6
+        and civ[:2] == b"\xfe\xfe"
+        and civ[-1:] == b"\xfd"
+        and civ[2] == radio_addr
+        and civ[4] == 0x26
+        and len(civ) == 9
+        and civ[5] == 0x01
     )
 
 
@@ -223,19 +250,21 @@ async def _drain_in_flight_polls(arena: _Arena) -> None:
             quiet_from = time.monotonic() + _WIRE_QUIET_S
 
 
-class _SplitModeReadHold:
-    """Hold the simulator's replies to chosen unselected-receiver mode reads.
+class _SplitModeFrameHold:
+    """Hold the simulator's processing of chosen ``26 01`` frames.
 
     Wraps ``MockIcomRadio._handle_civ_data`` — the simulator's parsed
-    CI-V reply funnel — with no production change. Matching ``26 01``
-    GETs are counted in arrival order; the GETs whose 1-based ordinal is
-    in ``ordinals`` are received but not answered: each held read fires
-    its ``received`` event the moment the frame arrives (so the test
-    knows the owning write is parked waiting for that readback), and is
-    only processed — LAN echo, capture, state, reply — by the original
-    handler after the test sets that round's ``release`` event. Every
-    other matching frame passes straight through, so a read the test did
-    not plan for can never wedge the radio.
+    CI-V reply funnel — with no production change. Frames matching
+    ``match`` (by default the unselected-receiver mode GET) are counted
+    in arrival order; the frames whose 1-based ordinal is in
+    ``ordinals`` are received but not processed: each held frame fires
+    its ``received`` event the moment it arrives (so the test knows what
+    owns the wire — a read parked waiting for its reply, or a SET whose
+    ACK has not gone out — even when the frame itself is not captured
+    until release) and is only processed — LAN echo, capture, state,
+    reply — by the original handler after the test sets that round's
+    ``release`` event. Every other frame passes straight through, so
+    traffic the test did not plan for can never wedge the radio.
     """
 
     def __init__(
@@ -244,6 +273,7 @@ class _SplitModeReadHold:
         sim: MockIcomRadio,
         *,
         ordinals: tuple[int, ...],
+        match: Callable[[bytes, int], bool] = _is_unselected_mode_get,
     ) -> None:
         assert ordinals, "the hold needs at least one GET ordinal"
         assert list(ordinals) == sorted(ordinals), "ordinals must be sorted"
@@ -257,7 +287,7 @@ class _SplitModeReadHold:
         original = sim._handle_civ_data  # noqa: SLF001
 
         def held(data: bytes, addr: object, sender_id: int, proto: object) -> None:
-            if _is_unselected_mode_get(data, radio_addr):
+            if match(data, radio_addr):
                 self._seen += 1
                 round_ = self.rounds.get(self._seen)
                 if round_ is not None:
@@ -279,12 +309,12 @@ class _SplitModeReadHold:
         monkeypatch.setattr(sim, "_handle_civ_data", held)
 
     async def wait_read(self, ordinal: int) -> None:
-        """Bounded wait for the held read at ``ordinal`` to arrive."""
+        """Bounded wait for the held frame at ``ordinal`` to arrive."""
         try:
             await asyncio.wait_for(self.rounds[ordinal].received.wait(), _EVENT_WAIT_S)
         except asyncio.TimeoutError:
             raise AssertionError(
-                f"mode read #{ordinal} never reached the simulator; "
+                f"held frame #{ordinal} never reached the simulator; "
                 f"{_frames_debug(self._sim)}"
             ) from None
 
@@ -330,6 +360,15 @@ async def _await_probe(event: asyncio.Event, sim: MockIcomRadio, claim: str) -> 
         await asyncio.wait_for(event.wait(), _EVENT_WAIT_S)
     except asyncio.TimeoutError:
         raise AssertionError(f"{claim}; {_frames_debug(sim)}") from None
+
+
+async def _await_wire_frame(sim: MockIcomRadio, frame: bytes, claim: str) -> None:
+    """Bounded wait until ``frame`` is captured by the simulator."""
+    deadline = time.monotonic() + _WIRE_WAIT_S
+    while frame not in sim.civ_frames_received:
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"{claim}; {_frames_debug(sim)}") from None
+        await asyncio.sleep(0.02)
 
 
 async def _await_line(task: asyncio.Task[str], sim: MockIcomRadio, claim: str) -> str:
@@ -447,7 +486,7 @@ async def test_two_rigctld_clients_composing_write_keeps_bs_newer_fields(
         a, b = await arena.tcp(), await arena.tcp()
         n = await _control_write(arena, a)
         start = len(arena.sim.civ_frames_received)
-        hold = _SplitModeReadHold(monkeypatch, arena.sim, ordinals=(n,))
+        hold = _SplitModeFrameHold(monkeypatch, arena.sim, ordinals=(n,))
         probe = _CommanderEnqueueProbe(monkeypatch, arena.stack.radio)
         # B's competing unselected-receiver write: FM, DATA on, FIL1.
         b_set = _set_frame(addr, Mode.FM.value, 0x01, 0x01)
@@ -517,7 +556,7 @@ async def test_http_raw_transaction_competitor_keeps_bs_newer_fields(
         a = await arena.tcp()
         n = await _control_write(arena, a)
         start = len(arena.sim.civ_frames_received)
-        hold = _SplitModeReadHold(monkeypatch, arena.sim, ordinals=(n,))
+        hold = _SplitModeFrameHold(monkeypatch, arena.sim, ordinals=(n,))
         reply_a = asyncio.create_task(arena.tcp_line(a, "X RTTY 0"))
         try:
             await hold.wait_read(n)
@@ -572,6 +611,95 @@ async def test_http_raw_transaction_competitor_keeps_bs_newer_fields(
         ], _frames_debug(arena.sim)
 
 
+async def test_competitor_during_a_held_set_ack_never_buys_a_second_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A competitor landing while the SET's ACK is pending buys no retry.
+
+    MOR-3743 P1-A regression: the owner's first SET is on the wire with
+    its ACK held at the simulator, and a competing HTTP raw CI-V write —
+    the direct dispatch seam, invisible to the commander queue — lands
+    in that window and marks the scope. When the SET's ACK exchange then
+    completes, the SET's currency check fires BEHIND the send: the SET
+    may already be applied, so the write must surface the I/O error
+    (``RPRT -6``) instead of retrying. Exactly one owner SET reaches the
+    wire, and no second SET composed from a re-read can overwrite the
+    competitor's values. On the unfixed write path the owner swallowed
+    that behind-the-send error and sent a second SET, buying ``RPRT 0``
+    with the competitor's DATA/filter.
+    """
+    async with _Arena(tmp_path) as arena:
+        _pause_acquisition(arena)
+        await _drain_in_flight_polls(arena)
+        addr = arena.stack.radio.profile.civ_addr
+        _seed_unselected(arena.sim, Mode.USB.value, 0x00, 0x03)
+        a = await arena.tcp()
+        n = await _control_write(arena, a)
+        start = len(arena.sim.civ_frames_received)
+        hold = _SplitModeFrameHold(
+            monkeypatch, arena.sim, ordinals=(1,), match=_is_unselected_mode_set
+        )
+        reply_a = asyncio.create_task(arena.tcp_line(a, "X RTTY 0"))
+        competitor: asyncio.Task[tuple[int, dict[str, object]]] | None = None
+        try:
+            # The owner's first SET arrived; the simulator has not
+            # processed it, so its ACK is pending.
+            await hold.wait_read(1)
+            competitor = asyncio.create_task(
+                _http_json(
+                    arena.port,
+                    "POST",
+                    "/api/v1/civ/transaction",
+                    {
+                        "command": 0x26,
+                        "data": "01050101",
+                        "expect": "ack",
+                        "timeout_ms": 5000,
+                    },
+                )
+            )
+            # The competitor's SET on the wire proves the scope was
+            # marked at the direct seam. Its ACK settles the owner's
+            # ACK waiter first (registration order), so the owner's
+            # currency check now fires behind its own send.
+            await _await_wire_frame(
+                arena.sim,
+                _set_frame(addr, Mode.FM.value, 0x01, 0x01),
+                "B's competing SET never reached the wire",
+            )
+            # Releasing processes the owner's parked SET (its ACK is the
+            # one the competitor's transaction waits for).
+            hold.release(1)
+            assert await _await_line(reply_a, arena.sim, "A's write") == "RPRT -6\n", (
+                _frames_debug(arena.sim)
+            )
+            status, body = await asyncio.wait_for(competitor, _EVENT_WAIT_S)
+            assert (status, body.get("ok"), body.get("status")) == (
+                200,
+                True,
+                "ack",
+            ), f"body={body}; {_frames_debug(arena.sim)}"
+        finally:
+            hold.release_all()
+            await _settle(reply_a)
+            if competitor is not None and not competitor.done():
+                competitor.cancel()
+            if competitor is not None:
+                await asyncio.gather(competitor, return_exceptions=True)
+        a_set = _set_frame(addr, Mode.RTTY.value, 0x00, 0x03)
+        b_set = _set_frame(addr, Mode.FM.value, 0x01, 0x01)
+        get = _get_frame(addr)
+        window = _split_mode_frames(arena.sim, start)
+        # One owner SET — composed from the pre-competitor values — plus
+        # the competitor's SET, and nothing after: no retry reads, no
+        # second SET, no readback; the write failed behind its applied
+        # SET. The owner's SET is captured (and applied) at the release,
+        # after the competitor's capture — the hold's artifact, not wire
+        # order; the regression signal is the absence of every frame a
+        # retry would have added.
+        assert window == [get] * n + [b_set, a_set], _frames_debug(arena.sim)
+
+
 async def test_persistent_interference_fails_the_write_without_a_stale_set(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -592,7 +720,7 @@ async def test_persistent_interference_fails_the_write_without_a_stale_set(
         n = await _control_write(arena, a)
         hold_ordinals = (n, 2 * n, 3 * n)
         start = len(arena.sim.civ_frames_received)
-        hold = _SplitModeReadHold(monkeypatch, arena.sim, ordinals=hold_ordinals)
+        hold = _SplitModeFrameHold(monkeypatch, arena.sim, ordinals=hold_ordinals)
         probe = _CommanderEnqueueProbe(monkeypatch, arena.stack.radio)
         # Three distinct competing writes; the last one must win.
         b_sets = [
@@ -695,7 +823,7 @@ async def test_ptt_off_keeps_plain_dispatch_order_across_a_held_split_write(
         rig = await arena.tcp()
         n = await _control_write(arena, rig)
         start = len(arena.sim.civ_frames_received)
-        hold = _SplitModeReadHold(monkeypatch, arena.sim, ordinals=(n,))
+        hold = _SplitModeFrameHold(monkeypatch, arena.sim, ordinals=(n,))
         probe = _CommanderEnqueueProbe(monkeypatch, arena.stack.radio)
         radio = arena.stack.radio
         ptt_off = _ptt_off_frame(addr)
