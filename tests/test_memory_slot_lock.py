@@ -59,8 +59,12 @@ async def test_grouped_recall_never_interleaves_channel_only_select() -> None:
     order: list[str] = []
 
     async def fake_expect(civ: bytes, **_: object) -> CivFrame:
-        order.append("group")
-        await asyncio.sleep(0)
+        payload = civ[4:-1]
+        if len(payload) >= 2 and payload[0] == 0x08 and payload[1] == 0xA0:
+            order.append("group")
+            await asyncio.sleep(0)
+        elif payload and payload[0] == 0x08:
+            order.append("channel")
         return CivFrame(CONTROLLER_ADDR, 0xA4, 0x00, None, b"", 0x00)
 
     async def fake_fire_and_forget(_civ: bytes) -> None:

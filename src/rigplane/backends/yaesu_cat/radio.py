@@ -38,6 +38,7 @@ from ...profiles.control_domain import (
 from ...radio_state import RadioState
 from ...runtime.callable_support import supports_callable
 from ...runtime.local_tx_work import LocalTxWorkRunner
+from ...runtime.memory_slot_lock import memory_slot_operation
 from ...runtime.managed_tx_fence import TxAbortFence
 from ...runtime.managed_tx_state import (
     AbortOperation,
@@ -192,6 +193,7 @@ class YaesuCatRadio:
         # stays paired with the KY that plays it.
         self._cw_text_lock = asyncio.Lock()
         self._mode_lock = asyncio.Lock()
+        self._memory_select_lock = asyncio.Lock()
         # Bumped by stop_cw_text and the managed CW abort: a send admitted
         # under an older generation can no longer write KM or KY.
         self._cw_text_generation = 0
@@ -4194,46 +4196,51 @@ class YaesuCatRadio:
         if group != memory.first_group:
             raise ValueError(f"memory group must be {memory.first_group}, got {group}")
         entries: list[MemoryEntry] = []
-        for channel in channels:
-            if not memory.first_channel <= channel <= memory.last_channel:
-                raise ValueError(
-                    f"memory channel must be {memory.first_channel}-"
-                    f"{memory.last_channel}, got {channel}"
-                )
-            chan = f"{channel:05d}"
-            try:
-                mr = await self._query(
-                    "get_memory_channel", chan=chan, expect_rejection=True
-                )
-            except CatCommandRejected:
-                entries.append(MemoryEntry(group=group, channel=channel, empty=True))
-                continue
-            except (CatParseError, CatTransportError) as exc:
-                raise CommandError(
-                    f"unreadable memory channel {channel}: {exc}"
-                ) from exc
-            try:
-                mt = await self._query(
-                    "get_memory_tag", chan=chan, expect_rejection=True
-                )
-            except CatCommandRejected:
-                mt = {"chan": chan, "tag": ""}
-            except (CatParseError, CatTransportError) as exc:
-                raise CommandError(f"unreadable memory tag {channel}: {exc}") from exc
-            try:
-                if mt["chan"] != chan:
+        async with memory_slot_operation(self):
+            for channel in channels:
+                if not memory.first_channel <= channel <= memory.last_channel:
                     raise ValueError(
-                        f"MT answered channel {mt['chan']!r} for {channel}"
+                        f"memory channel must be {memory.first_channel}-"
+                        f"{memory.last_channel}, got {channel}"
                     )
-                entries.append(
-                    memory_entry_from_cat(
-                        channel, mr, mt["tag"], self._mode_name(mr["mode"])
+                chan = f"{channel:05d}"
+                try:
+                    mr = await self._query(
+                        "get_memory_channel", chan=chan, expect_rejection=True
                     )
-                )
-            except (ValueError, CatParseError) as exc:
-                raise CommandError(
-                    f"unreadable memory channel {channel}: {exc}"
-                ) from exc
+                except CatCommandRejected:
+                    entries.append(
+                        MemoryEntry(group=group, channel=channel, empty=True)
+                    )
+                    continue
+                except (CatParseError, CatTransportError) as exc:
+                    raise CommandError(
+                        f"unreadable memory channel {channel}: {exc}"
+                    ) from exc
+                try:
+                    mt = await self._query(
+                        "get_memory_tag", chan=chan, expect_rejection=True
+                    )
+                except CatCommandRejected:
+                    mt = {"chan": chan, "tag": ""}
+                except (CatParseError, CatTransportError) as exc:
+                    raise CommandError(
+                        f"unreadable memory tag {channel}: {exc}"
+                    ) from exc
+                try:
+                    if mt["chan"] != chan:
+                        raise ValueError(
+                            f"MT answered channel {mt['chan']!r} for {channel}"
+                        )
+                    entries.append(
+                        memory_entry_from_cat(
+                            channel, mr, mt["tag"], self._mode_name(mr["mode"])
+                        )
+                    )
+                except (ValueError, CatParseError) as exc:
+                    raise CommandError(
+                        f"unreadable memory channel {channel}: {exc}"
+                    ) from exc
         return entries
 
     async def set_memory_mode(self, channel: int, group: int | None = None) -> None:
