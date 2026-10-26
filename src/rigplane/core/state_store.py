@@ -763,6 +763,56 @@ class StateStore:
             ),
         )
 
+    def invalidate_tx_inputs(
+        self, paths: Iterable[FieldPath], *, timestamp: float
+    ) -> ChangeSet:
+        """Retain dial values but withdraw proof before a possibly applied write.
+
+        Bypass relative tuple staging: invalidation must be immediate. The
+        existing same-clock ordering rejects reads begun before this boundary.
+        No new generation or independent target cache is introduced.
+        """
+        from rigplane.core.tx_target import (
+            TX_PROOF_CLOCK,
+            TX_TARGET_PATH,
+            UnknownTxTarget,
+        )
+
+        paths = tuple(paths)
+        retention = self._relative_vfo_retention
+        if retention is not None:
+            receivers = {path.receiver_id for path in paths}
+            retention.pending = {
+                path: value
+                for path, value in retention.pending.items()
+                if path.receiver_id not in receivers
+            }
+        changes = []
+        for path in paths:
+            previous = self._entries.get(path)
+            value = (
+                UnknownTxTarget("not-observed")
+                if str(path) == TX_TARGET_PATH
+                else (None if previous is None else previous.value)
+            )
+            changes.append(
+                self._apply_one(
+                    Observation(
+                        path=path,
+                        value=value,
+                        source=SourceMetadata(
+                            source="local_reconcile", provider="command_dispatch"
+                        ),
+                        timestamp_monotonic=timestamp,
+                        max_age=0.0,
+                        quality=("unconfirmed",),
+                        clock_domain=TX_PROOF_CLOCK,
+                        provider_generation=self._provider_generation,
+                    )
+                )
+            )
+        return self._merge_changesets(changes)
+
     def discard(self, paths: Iterable[FieldPath | str]) -> ChangeSet:
         """Remove session-scoped facts so a new provider epoch starts unknown.
 

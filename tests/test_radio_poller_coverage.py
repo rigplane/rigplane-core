@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from _tx_target_fixtures import observe_tx_target
 
 from rigplane.commands._frame import build_civ_frame, decode_wire_tuple
 from rigplane.commands.command_map import CommandMap
@@ -4158,6 +4159,7 @@ async def test_release_critical_web_setters_do_not_confirm_state_without_readbac
         radio_state=RadioState(),
         state_store=store,
     )
+    observe_tx_target(store, 14_074_000)
 
     await poller._execute(command)  # noqa: SLF001
 
@@ -6079,7 +6081,9 @@ def _apply_tx_target_input(
             path=path,
             value=value,
             source=SourceMetadata(source="test", provider="test"),
-            timestamp_monotonic=time.monotonic() if now is None else now,
+            timestamp_monotonic=(
+                store.snapshot().generated_at_monotonic if now is None else now
+            ),
             max_age=max_age,
             provider_generation=generation,
         )

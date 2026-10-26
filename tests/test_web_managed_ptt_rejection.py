@@ -17,6 +17,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from _tx_target_fixtures import observe_tx_target
 from test_managed_tx_authority import FakeConfigStore, FakeFence, FakeLane
 
 from rigplane.core.exceptions import CommandError, CommandRejectedError
@@ -96,6 +97,7 @@ class _QueueStack(_Stack):
             state_store=self.server.command_state_store,
             managed_tx_authority=self.authority,
         )
+        observe_tx_target(self.server.command_state_store, 146_520_000, slot="A")
         self.enqueued = asyncio.Event()
         put_ordered = self.queue.put_ordered
 
@@ -154,7 +156,7 @@ def _gate_enqueue_after_failure(
             return await enqueue_managed_positive_tx(*args, **kwargs)
         except BaseException:
             parked.set()
-            await gate.wait()
+            await _wait_barrier(gate)
             raise
 
     server.enqueue_managed_positive_tx = enqueue

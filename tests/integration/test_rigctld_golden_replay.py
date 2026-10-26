@@ -50,7 +50,11 @@ import pytest
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 
-from _ptt_reread_fixtures import PttAnsweringSerialMockRadio, wait_for_known_rf_state
+from _ptt_reread_fixtures import (
+    PttAnsweringSerialMockRadio,
+    wait_for_known_rf_state,
+    wait_for_known_tx_target,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.mock_integration]
 
@@ -195,6 +199,8 @@ async def _replay(server: RigctldServer, steps: list[_Step]) -> None:
         while i < len(steps):
             step = steps[i]
             if step.kind == "send":
+                if step.payload.startswith("T ") and step.payload.split()[-1] == "1":
+                    await wait_for_known_tx_target(server)
                 await _send(writer, step.payload)
                 i += 1
             elif step.kind == "expect":

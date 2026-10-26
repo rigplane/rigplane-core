@@ -35,6 +35,11 @@ weakening the resolver or the gate it feeds:
   ``RigctldHandler._cmd_get_ptt`` — the forbidden direction — and no test
   built on it could ever observe the gate under TX.
 
+The opt-in ``enable_tx_target_reads`` extension models split and transmit
+frequency reads on LAN simulators. The serial double answers these reads from
+its own split and VFO-slot state as well. Both supply the actual TX-target
+observation now required for positive TX, without a permitted-frequency default.
+
 Neither helper touches ``_defer_write_gate``, the TX-interlock family
 classification, or any production module; both only make a test double
 capable of answering a read the gate already requires.
@@ -58,6 +63,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from serial_stub import SerialMockRadio
+from _tx_target_fixtures import observe_tx_target
 
 from rigplane.commands import CONTROLLER_ADDR
 from rigplane.core.state_pipeline_contracts import (
@@ -65,7 +71,8 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import StateStore
+from rigplane.core.state_store import FreshnessState, StateStore
+from rigplane.core.tx_target import KnownTxTarget
 from rigplane.runtime import tx_interlock
 from rigplane.runtime._civ_rx import _observation_max_age
 from rigplane.types import CivFrame
@@ -77,6 +84,15 @@ if TYPE_CHECKING:
     from rigplane.rigctld.server import RigctldServer
 
 _PTT_PATH = FieldPath.global_("tx_state", "ptt")
+
+
+def enable_tx_target_reads(sim: Any) -> None:
+    """Opt a LAN fake into split and actual transmit-frequency wire reads.
+
+    The shared simulator engine owns the protocol behavior. Its refusal hook,
+    LAN faults, and real radio ingestion remain in the path.
+    """
+    sim._stateful_tx_target = True
 
 
 def _ptt_ttl_seconds(profile: Any) -> float | None:
@@ -91,9 +107,9 @@ def _ptt_ttl_seconds(profile: Any) -> float | None:
 
 
 class PttAnsweringSerialMockRadio(SerialMockRadio):
-    """SerialMockRadio that answers rigctld's ``0x1C/0x00`` PTT re-read.
+    """SerialMockRadio that answers PTT, split and TX-frequency reads.
 
-    Every other command still goes through the unmodified base class no-op.
+    Other commands still go through the unmodified base class no-op.
     """
 
     def __init__(self, **kwargs: Any) -> None:
@@ -129,6 +145,35 @@ class PttAnsweringSerialMockRadio(SerialMockRadio):
                     timestamp_monotonic=time.monotonic(),
                     max_age=_ptt_ttl_seconds(self._profile),
                 )
+            )
+            return
+        if command == 0x0F and data is None:
+            self._ptt_state_store.apply_current(
+                Observation(
+                    path=FieldPath.global_("tx_state", "split"),
+                    value=self._split,
+                    source=SourceMetadata(
+                        source="poll_response", provider="serial_mock"
+                    ),
+                    timestamp_monotonic=time.monotonic(),
+                    max_age=60.0,
+                )
+            )
+            return
+        if command == 0x1C and sub == 0x03:
+            receiver = (
+                1
+                if self._split and self._profile.split_tx_target == "sub_receiver"
+                else 0
+            )
+            slot = self._vfo_slot[receiver]
+            if self._split and self._profile.receiver_count == 1:
+                slot = "B" if slot == "A" else "A"
+            observe_tx_target(
+                self._ptt_state_store,
+                self._slots[receiver][slot].freq,
+                receiver="SUB" if receiver else "MAIN",
+                slot=slot,
             )
             return
         await super().send_civ(command, sub, data, wait_response=wait_response)
@@ -205,6 +250,27 @@ async def wait_for_known_rf_state(
         "anything but UNKNOWN",
         timeout,
     )
+
+
+async def wait_for_known_tx_target(
+    server: "RigctldServer", *, timeout: float = 3.0
+) -> None:
+    """Wait for the actual fake readback after an invalidating CAT write."""
+    deadline = time.monotonic() + timeout
+    store = server._rig_handler._state_store  # noqa: SLF001
+    while time.monotonic() < deadline:
+        try:
+            field = store.snapshot().field(FieldPath.global_("tx_state", "tx_target"))
+        except KeyError:
+            pass
+        else:
+            if (
+                isinstance(field.value, KnownTxTarget)
+                and field.freshness is FreshnessState.FRESH
+            ):
+                return
+        await asyncio.sleep(0.02)
+    raise AssertionError("actual TX-target readback did not converge")
 
 
 async def wait_for_rf_state(

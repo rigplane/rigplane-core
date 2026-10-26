@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 
+from _tx_target_fixtures import observe_tx_target
+
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -172,7 +174,8 @@ async def managed_seat(
     await runtime.request_fresh_ptt()  # seeds the OFF ``request_on`` demands
     radio = _Radio()
     radio.managed_tx = runtime  # type: ignore[attr-defined]
-    yield RigctldHandler(radio, RigctldConfig()), radio  # type: ignore[arg-type]
+    handler = RigctldHandler(radio, RigctldConfig())
+    yield handler, radio  # type: ignore[arg-type]
 
     async def _noop() -> None:
         return None
@@ -187,7 +190,7 @@ async def test_an_unmanaged_key_that_is_never_unkeyed_is_forced_off(
     the pre-key ``ptt=False``, our key starts the over, nothing observes it
     afterwards, and no unkey ever comes."""
     rig = seat(ptt=False)
-
+    observe_tx_target(rig.store, 14_074_000)
     await rig.route(True)
     await _past_the_bound()
 
@@ -203,7 +206,7 @@ async def test_an_unknown_rf_state_still_fires(seat: _Make) -> None:
     refused the key before it can arm. The route that reaches this in
     production is decay after a successful arm — pinned below."""
     rig = seat()
-
+    observe_tx_target(rig.store, 14_074_000)
     assert rig.rf is tx_interlock.RfState.UNKNOWN
     await rig.route(True)
     await _past_the_bound()
@@ -215,7 +218,7 @@ async def test_the_bound_survives_the_socket_that_keyed_it(seat: _Make) -> None:
     """The central case. ``release_session_tx`` still writes nothing on an
     unmanaged radio — a standing decision — so the bound is what fires."""
     rig = seat(ptt=False)
-
+    observe_tx_target(rig.store, 14_074_000)
     await rig.route(True)
     await rig.handler.release_session_tx(_S1)
     assert rig.radio.writes == [True]
@@ -231,7 +234,7 @@ async def test_a_failed_backstop_unkey_is_logged_and_not_retried(
     """One attempt: retrying at a rig that is refusing writes is a second
     failure mode, not a recovery."""
     rig = seat(ptt=False, fail_on=False)
-
+    observe_tx_target(rig.store, 14_074_000)
     await rig.route(True)
     await asyncio.sleep(_BOUND * 3)
 
@@ -248,7 +251,7 @@ async def test_a_pre_key_rx_observation_does_not_void_the_bound(
     only asked "is RF RX?" voided the bound one tick after arming on every rig
     whose PTT is observable, i.e. exactly the rigs this ticket is about."""
     rig = seat(ptt=False)
-
+    observe_tx_target(rig.store, 14_074_000)
     await rig.route(True)
     await asyncio.sleep(_TICK * 4)
     assert rig.armed  # the pre-key sample must not have vetoed
@@ -268,6 +271,7 @@ async def test_an_rx_observation_older_than_the_arm_never_voids(
     sample taken before our key describes the rig before our key, however late
     it lands."""
     rig = seat()  # empty at the arm, so the store's own ordering guard is idle
+    observe_tx_target(rig.store, 14_074_000)
     before = time.monotonic()
 
     await rig.route(True)
@@ -288,7 +292,7 @@ async def test_rf_truth_that_decays_after_the_arm_still_fires(
     rather than "RX" would void here and abandon the bound at exactly the
     moment nothing else is watching."""
     rig = seat(ptt=False)
-
+    observe_tx_target(rig.store, 14_074_000)
     await rig.route(True)
     _observe(rig.store, True)  # the rig confirms it is transmitting
     await asyncio.sleep(_TICK * 4)
@@ -306,7 +310,7 @@ async def test_an_rx_observed_after_the_arm_voids_the_bound(seat: _Make) -> None
     off the air by some other route, so this is no longer our over. Only an
     observation taken after the arm can say that."""
     rig = seat()
-
+    observe_tx_target(rig.store, 14_074_000)
     await rig.route(True)
     _observe(rig.store, False)
     await _past_the_bound()
@@ -321,7 +325,7 @@ async def test_an_rx_seen_once_stays_voided_after_the_field_goes_unknown(
     """The void latches. RF truth decays, so an implementation that only looks
     at the deadline would find UNKNOWN there and fire on a rig already down."""
     rig = seat()
-
+    observe_tx_target(rig.store, 14_074_000)
     await rig.route(True)
     _observe(rig.store, False)
     await asyncio.sleep(_TICK * 4)
@@ -336,7 +340,7 @@ async def test_an_rx_seen_once_stays_voided_after_the_field_goes_unknown(
 
 async def test_a_client_unkey_disarms_the_bound(seat: _Make) -> None:
     rig = seat(ptt=False)
-
+    observe_tx_target(rig.store, 14_074_000)
     await rig.route(True)
     await rig.route(False)
     assert not rig.armed
@@ -350,7 +354,7 @@ async def test_a_lost_client_unkey_keeps_the_bound_armed(seat: _Make) -> None:
     that RAISED never reached the rig, so dropping the bound on it would strand
     a keyed transmitter. Mirrors the web precedent MOR-1220 already pins."""
     rig = seat(ptt=True, fail_on=False)
-
+    observe_tx_target(rig.store, 14_074_000)
     await rig.route(True)
     with pytest.raises(ConnectionError):
         await rig.route(False)
@@ -366,7 +370,7 @@ async def test_a_second_sessions_unkey_disarms_the_first_sessions_bound(
 ) -> None:
     """Either polarity, any session: the rig has one PTT, not one per socket."""
     rig = seat(ptt=False)
-
+    observe_tx_target(rig.store, 14_074_000)
     await rig.route(True)
     await rig.route(False, _S2)
     await _past_the_bound()
@@ -380,7 +384,7 @@ async def test_a_second_sessions_key_replaces_the_first_sessions_deadline(
     """One slot, restart-on-key: a later key supersedes the earlier deadline,
     and the fire must name the session that is actually transmitting."""
     rig = seat(ptt=False)
-
+    observe_tx_target(rig.store, 14_074_000)
     await rig.route(True)
     await asyncio.sleep(_BOUND * 0.5)
     await rig.route(True, _S2)
@@ -399,6 +403,7 @@ async def test_a_managed_radio_arms_no_bound(
     """The supervisor keeps its own watchdog; a second bound behind its back
     would de-key an over it believes it still owns."""
     handler, radio = managed_seat
+    observe_tx_target(handler._state_store, 14_074_000)  # noqa: SLF001
 
     await handler._route_ptt(True, session_id=_S1)  # noqa: SLF001
     assert handler._key_down_backstop_task is None  # noqa: SLF001
@@ -411,7 +416,6 @@ async def test_a_key_this_seat_never_issued_arms_no_bound(seat: _Make) -> None:
     """The rig is keyed — by the front panel, or another ingress. A key this
     seat never issued is not its to time out (MOR-1175)."""
     rig = seat(ptt=True)
-
     assert not rig.armed
     await _past_the_bound()
 
@@ -421,7 +425,7 @@ async def test_a_key_this_seat_never_issued_arms_no_bound(seat: _Make) -> None:
 async def test_a_key_write_that_raises_arms_no_bound(seat: _Make) -> None:
     """Arm below the write: a key that never reached the rig started no over."""
     rig = seat(fail_on=True)
-
+    observe_tx_target(rig.store, 14_074_000)
     with pytest.raises(ConnectionError):
         await rig.route(True)
     assert not rig.armed
@@ -435,6 +439,7 @@ async def test_server_stop_cancels_an_outstanding_bound(
 ) -> None:
     """Shutdown adds no write path (owner question 1): it cancels and says so."""
     rig = seat(ptt=False)
+    observe_tx_target(rig.store, 14_074_000)
     server = RigctldServer(rig.radio, RigctldConfig(), _handler=rig.handler)  # type: ignore[arg-type]
 
     await rig.route(True)

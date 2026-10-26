@@ -1579,7 +1579,10 @@ class ControlHandler:
             error = "command_cancelled"
         elif isinstance(exc, CommandUnsupportedError):
             error = "unsupported_command"
-        elif isinstance(exc, TxInterlockRefusal):
+        elif isinstance(exc, TxInterlockRefusal) and exc.reason_code in {
+            "tx_target_unknown",
+            "tx_frequency_not_allowed",
+        }:
             error = exc.reason_code
         elif isinstance(exc, CommandRejectedError):
             error = "radio_nak"
@@ -1853,6 +1856,7 @@ class ControlHandler:
                     self._tx_owner,
                     ready=ready,
                     expires_at_monotonic=expires_at,
+                    validate_positive=self._server.require_tx_frequency_permit,
                 )
                 submission = await self._server.enqueue_managed_positive_tx(
                     ready=ready,
@@ -1873,6 +1877,8 @@ class ControlHandler:
                 "managed transmit authority unavailable"
             ) from exc
         if submission.outcome is not ManagedTxOutcome.ACCEPTED:
+            if not on and authority.tx_holder_nowait() is None:
+                return {"state": False} if name == "ptt" else {}
             if _ptt_refusal_names_holder(submission, self._tx_owner):
                 raise CommandRejectedError(_PTT_HOLDER_CONFLICT)
             raise CommandRejectedError("managed PTT admission rejected")

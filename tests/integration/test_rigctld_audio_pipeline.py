@@ -13,13 +13,14 @@ from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBack
 from rigplane.audio.lan_stream import AudioStream, TX_IDENT
 from rigplane.audio.route import resolve_audio_route, rigctld_wsjtx_policy
 from rigplane.audio_bridge import AudioBridge, FRAME_BYTES, SAMPLES_PER_FRAME
+from rigplane.commands import CONTROLLER_ADDR
 from rigplane.commands.commander import Priority
 from rigplane.radio import IcomRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 from rigplane.runtime import tx_interlock
 from rigplane.runtime._connection_state import RadioConnectionState
-from rigplane.types import AudioCodec, CivFrame
+from rigplane.types import AudioCodec, CivFrame, bcd_encode
 
 from _audio_pipeline_helpers import (
     assert_contiguous_sequences,
@@ -30,6 +31,7 @@ from _audio_pipeline_helpers import (
 from _ptt_reread_fixtures import (
     answer_ptt_reread,
     wait_for_known_rf_state,
+    wait_for_known_tx_target,
     wait_for_rf_state,
 )
 
@@ -72,6 +74,9 @@ class RecordingLanRadio(IcomRadio):
         self._data_mode: int | bool = False
         self._split = False
         self._ptt = False
+        # Explicit fake dial state for the audio-only tests; the readback
+        # below follows this state and the split receiver, like the LAN fake.
+        self._frequencies = {0: 14_074_000, 1: 14_076_000}
 
     def fake_connect_audio(self, transport: _RecordingAudioTransport) -> None:
         self._connected = True
@@ -153,6 +158,21 @@ class RecordingLanRadio(IcomRadio):
         """
         if command == 0x1C and sub == 0x00:
             await answer_ptt_reread(self, transmitting=self._ptt)
+            return None
+        if (command == 0x0F and data is None) or (command == 0x1C and sub == 0x03):
+            frame = CivFrame(
+                to_addr=CONTROLLER_ADDR,
+                from_addr=self._radio_addr,
+                command=command,
+                sub=sub,
+                data=(
+                    bytes([int(self._split)])
+                    if command == 0x0F
+                    else bcd_encode(self._frequencies[int(self._split)])
+                ),
+                receiver=None,
+            )
+            await self._civ_runtime._route_civ_frame(frame, generation=self._civ_epoch)
             return None
         return await super().send_civ(
             command,
@@ -281,6 +301,7 @@ async def test_defer_split_is_dropped_while_the_radio_transmits(
     client = await _make_client(server)
     try:
         await wait_for_known_rf_state(server)
+        await wait_for_known_tx_target(server)
         assert await client.send("T 1") == "RPRT 0"
         # The key state reaches the gate only via the next re-read tick.
         await wait_for_rf_state(server, tx_interlock.RfState.TX)
@@ -322,6 +343,7 @@ async def test_rigctld_wsjtx_replay_drives_data2_lan_tx_audio_pipeline(
     try:
         await wait_for_known_rf_state(server)
         assert await client.send("M PKTUSB") == "RPRT 0"
+        await wait_for_known_tx_target(server)
         assert await client.send("T 1") == "RPRT 0"
 
         frame_count = 4

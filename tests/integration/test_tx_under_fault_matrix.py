@@ -48,7 +48,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # All tests in this module use MockIcomRadio and require no real hardware.
 pytestmark = pytest.mark.mock_integration
 
+from _ptt_reread_fixtures import enable_tx_target_reads  # noqa: E402
+
 from rigplane.core.state_pipeline_contracts import FieldPath  # noqa: E402
+from rigplane.core.tx_target import KnownTxTarget  # noqa: E402
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH  # noqa: E402
 from rigplane.radio import IcomRadio  # noqa: E402
 from rigplane.rigctld.contract import RigctldConfig  # noqa: E402
@@ -345,6 +348,7 @@ async def _stand_up_stack(
         unsolicited_civ=unsolicited,
         **(sim_options or {}),
     )
+    enable_tx_target_reads(sim)
     await sim.start()
 
     radio = IcomRadio(
@@ -510,18 +514,23 @@ async def _wait_recovered(
 
 
 async def _wait_ptt_observed(web: WebServer, deadline_s: float) -> None:
-    """Wait until the poller has observed the PTT field at least once.
+    """Wait until the poller has observed PTT and the actual TX target.
 
     The startup gate (``WebConfig.await_initial_state``) is off because the
     simulator models a narrower CI-V vocabulary than the profile's declared
-    startup reads (split ``0x0F`` NAKs, for one); keying instead waits for
-    the one observation the TX paths consume — a fresh ``1C 00`` readback.
+    startup reads; keying waits for the observations the TX paths consume.
     """
     path = FieldPath.global_("tx_state", "ptt")
     end = time.monotonic() + deadline_s
     while time.monotonic() < end:
         try:
             web.command_state_store.snapshot().field(path)
+            target = web.command_state_store.snapshot().field(
+                FieldPath.global_("tx_state", "tx_target")
+            )
+            if not isinstance(target.value, KnownTxTarget):
+                await asyncio.sleep(0.05)
+                continue
             return
         except KeyError:
             await asyncio.sleep(0.05)

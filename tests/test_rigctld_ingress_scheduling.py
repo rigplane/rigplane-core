@@ -11,6 +11,8 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
+from _tx_target_fixtures import observe_tx_target
+from rigplane.profiles import resolve_radio_profile
 from rigplane.core.exceptions import ConnectionError as ProviderConnectionError
 from rigplane.rigctld import protocol
 from rigplane.rigctld.contract import HamlibError, RigctldConfig, RigctldResponse
@@ -21,6 +23,7 @@ _WAIT_TIMEOUT = 2.0
 _FREQUENCY = 14_074_000
 class _Radio:
     def __init__(self, *, fail: bool = False) -> None:
+        self.profile = resolve_radio_profile(model="IC-7300")
         self.capabilities: set[str] = set()
         self.fail = fail
         self.entered, self.release, self.finished = (asyncio.Event() for _ in range(3))
@@ -35,6 +38,8 @@ class _Radio:
         self.finished.set()
         if self.fail:
             raise ProviderConnectionError("injected")
+        if hasattr(self, "state_store"):
+            observe_tx_target(self.state_store, freq)
 
     async def set_ptt(self, on: bool) -> None:
         self.calls.append(f"T-{int(on)}")
@@ -215,6 +220,7 @@ async def test_quit_retires_an_already_admitted_response() -> None:
         assert await _replies(rig, 2) == [b"RPRT 0\n", b""]
 async def test_pipelined_on_does_not_overtake_held_frequency() -> None:
     async with _connected() as rig:
+        rig.radio.state_store = rig.server._rig_handler._state_store
         rig.writer.write(f"F {_FREQUENCY}\nT 1\n".encode())
         await rig.writer.drain()
         await asyncio.wait_for(rig.radio.entered.wait(), _WAIT_TIMEOUT)

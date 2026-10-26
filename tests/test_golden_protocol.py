@@ -34,6 +34,8 @@ from _caps import FULL_ICOM_CAPS
 from rigplane.exceptions import ConnectionError as IcomConnectionError
 from rigplane.exceptions import TimeoutError as IcomTimeoutError
 from rigplane.radio_protocol import MetersCapable
+from rigplane.profiles import resolve_radio_profile
+from _tx_target_fixtures import observe_tx_target
 from rigplane.rigctld.contract import (
     ClientSession,
     HamlibError,
@@ -79,6 +81,7 @@ def _make_mock_radio(mock_spec: dict) -> _MockRadio:
     await in the handler returns the value.
     """
     radio = _MockRadio()
+    radio.profile = resolve_radio_profile(model="IC-7610")
     radio.capabilities = set(FULL_ICOM_CAPS)
     # Sensible defaults so get_mode doesn't blow up when not explicitly mocked.
     radio.get_freq = AsyncMock(return_value=14_074_000)
@@ -134,6 +137,9 @@ async def test_golden_protocol(fixture: dict) -> None:
         # mock value is the calibrated ratio directly (issue #1173).
         cache.update_swr(float(mock_spec["get_swr"]))
     handler = RigctldHandler(radio, config)
+    frequency = mock_spec.get("get_freq", 14_074_000)
+    if type(frequency) is int and frequency > 0:
+        observe_tx_target(handler._state_store, frequency)
 
     normal_session = ClientSession()
     extended_session = ClientSession(extended_mode=True)

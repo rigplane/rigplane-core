@@ -21,6 +21,7 @@ from rigplane.core.state_pipeline_contracts import (
 )
 from rigplane.exceptions import CommandError
 from serial_stub import SerialMockRadio
+from _tx_target_fixtures import observe_tx_target
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 from rigplane.web.handlers import AudioBroadcaster
@@ -412,6 +413,7 @@ async def test_rigctld_smoke_with_serial_mock_backend() -> None:
             assert pkt_mode_line.strip() == b"PKTUSB"
             assert pkt_passband_line.strip() == b"2400"
 
+            observe_tx_target(store, int(new_freq_resp.strip()))
             writer.write(b"T 1\n")
             await writer.drain()
             set_ptt_resp = await asyncio.wait_for(reader.readuntil(b"\n"), timeout=2.0)

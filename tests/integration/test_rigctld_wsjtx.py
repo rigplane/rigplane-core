@@ -37,7 +37,11 @@ import pytest
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 
-from _ptt_reread_fixtures import PttAnsweringSerialMockRadio, wait_for_known_rf_state
+from _ptt_reread_fixtures import (
+    PttAnsweringSerialMockRadio,
+    wait_for_known_rf_state,
+    wait_for_known_tx_target,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.mock_integration]
 
@@ -100,6 +104,7 @@ class RecordingMockRadio(PttAnsweringSerialMockRadio):
         """Handler uses getattr fallback — must exist here to be observable."""
         self.calls.append(("set_split", (bool(on),)))
         self._split_on = bool(on)
+        await super().set_split(on)
 
     async def set_vfo(self, vfo: str) -> None:
         self.calls.append(("set_vfo", (vfo,)))
@@ -241,6 +246,7 @@ class TestWsjtxSplitOnIc7610:
             assert resp == "RPRT 0"
 
             # PTT on → PTT off
+            await wait_for_known_tx_target(server)
             resp = await client.send("T 1")
             assert resp == "RPRT 0"
             resp = await client.send("T 0")
@@ -526,6 +532,7 @@ class TestHttpCrossProtocolGuard:
             freq = await asyncio.wait_for(reader.read(4096), timeout=1.0)
             assert freq == b"14074000\n"
 
+            await wait_for_known_tx_target(server)
             writer.write(b"T 1\n")
             await writer.drain()
             assert await asyncio.wait_for(reader.read(4096), timeout=1.0) == b"RPRT 0\n"

@@ -240,10 +240,19 @@ class ManagedTxEffectLane:
             if not isinstance(result, ActuationResult):
                 raise TypeError("actuator returned a non-normalized result")
         except BaseException as error:
+            from rigplane.runtime.tx_interlock import TxInterlockRefusal
+
+            cause: BaseException | None = error
+            while cause is not None and not isinstance(cause, TxInterlockRefusal):
+                cause = cause.__cause__
+            refused = isinstance(cause, TxInterlockRefusal)
             await self._finish(
                 claim,
+                # A permit can expire at a post-send currency check too.
+                # Keep the ordinary unconditional release cleanup, but a
+                # policy refusal does not retire the healthy transport.
                 _Outcome(ActuationResult.UNCERTAIN, _error_text(error)),
-                poison=claim.operation in _ON_OPERATIONS,
+                poison=not refused and claim.operation in _ON_OPERATIONS,
             )
             return
         if result is ActuationResult.ACCEPTED and claim.isolation:

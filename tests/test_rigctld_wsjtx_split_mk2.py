@@ -13,7 +13,10 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
+from rigplane.core.tx_target import KnownTxTarget
 from rigplane.radio import IcomRadio
+from rigplane.runtime._poller_types import CommandQueue
+from rigplane.web.radio_poller import RadioPoller
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 from rigplane.types import Mode, bcd_encode
@@ -93,7 +96,23 @@ def _assert_no_relative_overlays(server):
 @pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("initial", ["A", "B"])
 async def test_wsjtx_rig_split_sequence_preserves_physical_rx(model, initial):
-    async with _peer(model, selected=initial) as (_radio, peer, server, reader, writer):
+    async with _peer(model, selected=initial) as (radio, peer, server, reader, writer):
+        # A standalone rigctld listener has no background target producer.
+        # Bind the fixture's actual slot through the production poller path;
+        # the confirmed selection and both tuple reads precede the workload.
+        poller = RadioPoller(radio, CommandQueue(), state_store=radio.state_store)
+        await poller._select_and_bind_vfo_slot(
+            initial,
+            receiver=0,
+            active_name="main",
+            command_id=None,
+            source="rigctld",
+            session_id=None,
+            command_service=None,
+            provider_generation=radio.state_store.provider_generation,
+        )
+        assert peer.selected == initial
+        peer.requests.clear()
         assert server._rig_handler._command_queue is None
         rx_before = peer.slots[initial]
         tx_slot = "B" if initial == "A" else "A"
@@ -119,6 +138,19 @@ async def test_wsjtx_rig_split_sequence_preserves_physical_rx(model, initial):
                 await _exchange(other_writer, other_reader, b"x\n", lines=2)
                 == b"PKTUSB\n2400\n"
             )
+        # Derive from the observed slot, split reply, and frequency replies.
+        # A strict read cannot turn a missing split reply into cached proof.
+        assert await radio.get_split(strict=True)
+        poller._publish_tx_target()
+        target = (
+            radio.state_store.snapshot()
+            .field(FieldPath.global_("tx_state", "tx_target"))
+            .value
+        )
+        assert isinstance(target, KnownTxTarget)
+        assert target.receiver == "MAIN"
+        assert target.slot == tx_slot
+        assert target.frequency_hz == peer.slots[tx_slot][0]
         assert await _exchange(writer, reader, b"T 1\n") == b"RPRT 0\n"
         assert await _exchange(writer, reader, b"T 0\n") == b"RPRT 0\n"
         assert peer.ptt_writes == [True, False]

@@ -21,6 +21,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from _tx_target_fixtures import observe_tx_target
+
 from rigplane.backends.rigctld_client import radio as provider_module
 from rigplane.core.command_dispatch import (
     enqueue_command_intent,
@@ -28,7 +30,7 @@ from rigplane.core.command_dispatch import (
 )
 from rigplane.exceptions import CommandError
 from rigplane.runtime._poller_types import CommandQueue, PttOff, PttOn
-from rigplane.runtime.managed_tx_state import ManagedTxOutcome
+from rigplane.runtime.tx_interlock import TxInterlockRefusal
 
 
 async def test_external_provider_managed_web_startup(tmp_path):
@@ -170,8 +172,11 @@ async def test_rich_intent_shared_leaf_rechecks_currency(managed, monkeypatch, c
 @pytest.mark.parametrize(
     "change", ["none", "provider", "connection", "session", "expiry", "poison"]
 )
-async def test_positive_submission_uses_current_shared_executor(managed, change):
+async def test_profileless_positive_submission_is_refused_with_current_queue_checks(
+    managed, change
+):
     rig = managed
+    observe_tx_target(rig.server.command_state_store, 14_074_000)
     loop = asyncio.get_running_loop()
     ready = loop.create_future()
     expiry = loop.time() + 10
@@ -205,14 +210,15 @@ async def test_positive_submission_uses_current_shared_executor(managed, change)
     await rig.poller._drain_commands()
     await rig.poller._drain_commands()
     if change == "none":
-        receipt = await joined
-        assert receipt.outcome is ManagedTxOutcome.ACCEPTED
-        assert rig.fake.commands_seen.count("T 1") == 1
+        with pytest.raises(TxInterlockRefusal) as refusal:
+            await joined
+        assert refusal.value.reason_code == "tx_frequency_not_allowed"
+        assert "T 1" not in rig.fake.commands_seen
         off = await rig.authority.submit_ptt(False, "operator")
         await off.wait_settlement()
         assert rig.fake.commands_seen.count("T 0") == 1
         await rig.composition.shutdown(asyncio.Event())
-        assert rig.fake.commands_seen.count("T 0") == 2
+        assert rig.fake.commands_seen.count("T 0") == 1
     else:
         with pytest.raises((CommandError, asyncio.CancelledError)):
             await joined

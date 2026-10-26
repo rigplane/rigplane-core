@@ -16,7 +16,6 @@ from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import FreshnessState, StateSnapshot
 from rigplane.core.tx_target import KnownTxTarget
-from rigplane.profiles import RadioProfile
 from rigplane.core.tx_interlock_contract import (
     TX_INTERLOCK_COMMAND_FAMILY_METADATA,
     TxInterlockCommandFamily,
@@ -101,7 +100,7 @@ class TxInterlockRefusal(CommandError):
 
 def require_tx_frequency_permit(
     snapshot: StateSnapshot,
-    profile: RadioProfile | None,
+    profile: object,
 ) -> None:
     """Admit only a current observed TX frequency in a profile transmit band."""
     try:
@@ -141,9 +140,15 @@ def require_tx_frequency_permit(
             "Transmit frequency is unknown or stale; wait for radio readback.",
             reason_code="tx_target_unknown",
         )
-    if not isinstance(profile, RadioProfile) or not any(
-        not band.rx_only and band.start <= field.value.frequency_hz <= band.end
-        for frequency_range in profile.freq_ranges
+    ranges = getattr(profile, "freq_ranges", None)
+    if type(ranges) is not tuple or not any(
+        type(band.rx_only) is bool
+        and not band.rx_only
+        and type(band.start) is int
+        and type(band.end) is int
+        and band.start <= field.value.frequency_hz <= band.end
+        for frequency_range in ranges
+        if type(frequency_range.bands) is tuple
         for band in frequency_range.bands
     ):
         raise TxInterlockRefusal(

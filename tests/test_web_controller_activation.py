@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from _tx_target_fixtures import observe_tx_target
 from test_managed_tx_production_fake_wire import (
     _IcomActuator,
     _drain_managed_positive_queue,
@@ -70,6 +71,7 @@ async def joined_station(
     server.command_queue.bind_connection_generation(lambda: radio)
     await composition.transport_ready(radio)
     await composition.bind_state_store(server.command_state_store)
+    observe_tx_target(server.command_state_store, 146_520_000, slot="A")
     if attach:
         attach_managed_tx_composition(server, composition)
         assert _validate_managed_tx(server) is composition

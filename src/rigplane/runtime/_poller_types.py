@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, fields
+from functools import partial
 from typing import Any, Literal, TypeAlias
 
 from rigplane.core.command_dispatch import DispatchRadio, prepare_command_intent
 from rigplane.core.exceptions import CommandError
+from rigplane.core.tx_target import tx_write_dispatch
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
     CommandSource,
@@ -1215,13 +1217,23 @@ async def execute_command_queue_entry(
     async def invoke() -> Any:
         if reply is not None and reply.cancelled():
             return None
-        result = await execute(entry)
+        invalidate = None
         if entry.command is not None and entry.command_service is not None:
             command = entry.command
             name = (
                 command.name
                 if isinstance(command, CommandIntent)
-                else LEGACY_COMMAND_NAMES.get(type(command))
+                else {
+                    SendCiv: "send_civ",
+                    SetBand: "set_band",
+                    SelectVfo: "select_vfo",
+                    VfoSwap: "vfo_swap",
+                    VfoEqualize: "vfo_equalize",
+                    SetMemoryMode: "set_memory_mode",
+                    MemoryToVfo: "memory_to_vfo",
+                    QuickSplit: "quick_split",
+                    QuickSplitTrigger: "quick_split_trigger",
+                }.get(type(command), LEGACY_COMMAND_NAMES.get(type(command)))
             )
             if name is not None:
                 params = (
@@ -1232,8 +1244,13 @@ async def execute_command_queue_entry(
                         for item in fields(command)
                     }
                 )
-                entry.command_service.invalidate_tx_target_after_write(name, params)
-        return result
+                invalidate = partial(
+                    entry.command_service.invalidate_tx_target_before_write,
+                    name,
+                    params,
+                )
+        with tx_write_dispatch(invalidate):
+            return await execute(entry)
 
     owner = asyncio.current_task()
     cancelling = owner.cancelling() if owner is not None else 0

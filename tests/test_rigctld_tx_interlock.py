@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from _tx_target_fixtures import observe_tx_target
+
 from rigplane.capabilities import CAP_RIT
 from rigplane.core.command_service import CommandExecutor, CommandServiceResult
 from rigplane.core.state_pipeline_contracts import (
@@ -248,6 +250,10 @@ async def test_hard_blocks_require_fresh_known_rx(
 @pytest.mark.parametrize("wire", _BLOCK_WIRES)
 async def test_hard_blocks_dispatch_once_with_fresh_rx(wire: bytes) -> None:
     handler, radio, routing = _handler(_store("rx")[0])
+    from rigplane.profiles import resolve_radio_profile
+
+    radio.profile = resolve_radio_profile(model="IC-7300")
+    observe_tx_target(handler._state_store, 14_074_000)  # noqa: SLF001
     response = await handler.execute(parse_line(wire))
     assert response.ok
     _attempt(radio, routing, wire).assert_awaited_once()

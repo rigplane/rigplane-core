@@ -402,6 +402,22 @@ class CivRequestTracker:
         self._generation += 1
         return self._generation
 
+    def response_started_monotonic(self, frame: CivFrame) -> float | None:
+        """Return the existing matching request's causal start, before resolve."""
+        for pending in self._response_waiters:
+            if pending.generation == self._generation and self._matches(
+                pending.key, frame
+            ):
+                return pending.created_monotonic
+        for waiter in self._ack_waiters:
+            if (
+                waiter.generation == self._generation
+                and waiter.response_key is not None
+                and self._matches(waiter.response_key, frame)
+            ):
+                return waiter.created_monotonic
+        return None
+
     def resolve(self, event: CivEvent, *, generation: int | None = None) -> bool:
         """Resolve a pending request from an incoming event."""
         if generation is not None and generation != self._generation:

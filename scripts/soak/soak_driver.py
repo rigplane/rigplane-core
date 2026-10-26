@@ -1202,9 +1202,32 @@ async def _start_simulator_stack(
         unsolicited_interval_s=0.1,
         enable_audio=enable_audio,
         stateful_ptt=managed_tx,
+        stateful_tx_target=True,
         dual_receiver=dual_receiver,
         capture_civ_frames=capture_civ_frames,
     )
+    tx_bands = tuple(
+        band
+        for frequency_range in profile.freq_ranges
+        for band in frequency_range.bands
+        if not band.rx_only
+    )
+    # The engine's dial defaults describe its original fixture. Preserve
+    # them when valid for this profile; otherwise use profile band data.
+    for attribute in ("_frequency", "_unselected_frequency"):
+        current = getattr(sim, attribute)
+        if not any(band.start <= current <= band.end for band in tx_bands):
+            initial = next(
+                (
+                    band.default
+                    for band in tx_bands
+                    if band.start <= band.default <= band.end
+                ),
+                None,
+            )
+            if initial is None:
+                raise ValueError(f"{profile.model} has no TX-capable default frequency")
+            setattr(sim, attribute, initial)
     if profile.expected_identity_ids:
         sim.model_id = bytes.fromhex(profile.expected_identity_ids[0])
     await sim.start()

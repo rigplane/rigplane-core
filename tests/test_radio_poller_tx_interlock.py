@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from _tx_target_fixtures import observe_tx_target
 
 from rigplane.capabilities import CAP_ANTENNA, CAP_POWER_CONTROL, CAP_TUNER
 from rigplane.core.command_dispatch import bind_command_intent
@@ -176,6 +177,7 @@ async def test_disruptive_write_dispatches_once_in_fresh_rx(
 ) -> None:
     poller, radio, store = _poller()
     _observe_ptt(store, False)
+    observe_tx_target(store, 14_074_000, slot="A")
 
     await _dispatch(poller, cmd)
 

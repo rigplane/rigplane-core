@@ -1415,17 +1415,16 @@ class RigctldServer:
                                 connection_generation=self._command_queue.capture_connection_generation(),
                             )
                         assert self._managed_tx_authority is not None
-                        ptt_submission = (
-                            self._managed_tx_authority.start_ptt_submission(
-                                ptt_on,
-                                session_id,
-                                ready=ptt_ready,
-                                expires_at_monotonic=(
-                                    None
-                                    if ptt_ready is None
-                                    else ptt_ready.expires_at_monotonic
-                                ),
-                            )
+                        ptt_submission = self._managed_tx_authority.start_ptt_submission(
+                            ptt_on,
+                            session_id,
+                            ready=ptt_ready,
+                            validate_positive=self._rig_handler._require_tx_frequency_permit,
+                            expires_at_monotonic=(
+                                None
+                                if ptt_ready is None
+                                else ptt_ready.expires_at_monotonic
+                            ),
                         )
 
                 schedule_response(

@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from _tx_target_fixtures import observe_tx_target
+
 from _caps import FULL_ICOM_CAPS
 from test_radio import MockTransport
 
@@ -1351,6 +1353,8 @@ async def test_get_ptt_projects_state_store_snapshot(
 
 @pytest.mark.asyncio
 async def test_set_ptt_on(handler: RigctldHandler, mock_radio: AsyncMock) -> None:
+    mock_radio.profile = resolve_radio_profile(model="IC-7300")
+    observe_tx_target(handler._state_store, 14_074_000)  # noqa: SLF001
     resp = await handler.execute(set_cmd("set_ptt", "1"))
     assert resp.ok
     mock_radio.set_ptt.assert_awaited_once_with(True)
@@ -1375,6 +1379,8 @@ async def test_set_ptt_on(handler: RigctldHandler, mock_radio: AsyncMock) -> Non
 
 @pytest.mark.asyncio
 async def test_set_ptt_off(handler: RigctldHandler, mock_radio: AsyncMock) -> None:
+    mock_radio.profile = resolve_radio_profile(model="IC-7300")
+    observe_tx_target(handler._state_store, 14_074_000)  # noqa: SLF001
     await handler.execute(set_cmd("set_ptt", "1"))
     resp = await handler.execute(set_cmd("set_ptt", "0"))
     assert resp.ok
@@ -1385,6 +1391,8 @@ async def test_set_ptt_off(handler: RigctldHandler, mock_radio: AsyncMock) -> No
 async def test_ptt_state_reflected_in_get(
     handler: RigctldHandler, mock_radio: AsyncMock
 ) -> None:
+    mock_radio.profile = resolve_radio_profile(model="IC-7300")
+    observe_tx_target(handler._state_store, 14_074_000)  # noqa: SLF001
     await handler.execute(set_cmd("set_ptt", "1"))
     resp = await handler.execute(get_cmd("get_ptt"))
     assert resp.values == ["1"]
@@ -1398,6 +1406,8 @@ async def test_ptt_state_reflected_in_get(
 async def test_get_ptt_keeps_optimistic_state_until_radio_state_catches_up(
     handler: RigctldHandler, mock_radio: AsyncMock
 ) -> None:
+    mock_radio.profile = resolve_radio_profile(model="IC-7300")
+    observe_tx_target(handler._state_store, 14_074_000)  # noqa: SLF001
     state = RadioState()
     state.ptt = False
     mock_radio.radio_state = state
@@ -2718,6 +2728,8 @@ async def test_connection_error_on_set_freq_becomes_eio(
 async def test_timeout_error_on_set_ptt_becomes_etimeout(
     handler: RigctldHandler, mock_radio: AsyncMock
 ) -> None:
+    mock_radio.profile = resolve_radio_profile(model="IC-7300")
+    observe_tx_target(handler._state_store, 14_074_000)  # noqa: SLF001
     mock_radio.set_ptt.side_effect = IcomTimeoutError("timeout")
     resp = await handler.execute(set_cmd("set_ptt", "1"))
     assert resp.error == HamlibError.ETIMEOUT
@@ -6263,6 +6275,8 @@ class TestPerVfoRoutingPtt:
     async def test_dual_rx_set_ptt_vfob_keys_radio_pt_t(
         self, dual_rx_handler: RigctldHandler, dual_rx_radio: AsyncMock
     ) -> None:
+        dual_rx_radio.profile = resolve_radio_profile(model="IC-7610")
+        observe_tx_target(dual_rx_handler._state_store, 14_074_000)  # noqa: SLF001
         # ``T VFOB 1`` is honoured: Hamlib expects per-VFO PTT but Icom only
         # has one PTT path — pragmatic choice is to key it regardless.
         resp = await dual_rx_handler.execute(_vfo_set_cmd("set_ptt", "VFOB", "1"))
@@ -6661,6 +6675,8 @@ class TestSingleRxActiveSlotBRouting:
     async def test_set_ptt_no_vfo_arg_keys_radio(
         self, single_rx_handler: RigctldHandler, single_rx_radio: AsyncMock
     ) -> None:
+        single_rx_radio.profile = resolve_radio_profile(model="IC-7300")
+        observe_tx_target(single_rx_handler._state_store, 14_074_000, slot="B")  # noqa: SLF001
         # PTT is global on the Icom CI-V — no receiver kwarg is involved.
         # Regression-guard: bare ``T 1`` under active_slot="B" on single-RX
         # must succeed (not EVFO) and reach the radio.

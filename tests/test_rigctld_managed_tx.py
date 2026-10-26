@@ -37,6 +37,8 @@ from contextlib import asynccontextmanager
 
 import pytest
 
+from _tx_target_fixtures import observe_tx_target
+
 from rigplane.core.tx_safety import (
     TxOutcome,
     TxOwner,
@@ -163,6 +165,7 @@ async def test_a_key_takes_a_lease_under_this_connection_id(
 ) -> None:
     """The lease is held by the rigctld connection, not by a request."""
     rig = await managed()
+    observe_tx_target(rig.handler._state_store, 14_074_000)  # noqa: SLF001
 
     resp = await rig.handler.execute(_ptt("1"), session_id=_SESSION)
 
@@ -185,6 +188,7 @@ async def test_a_refused_key_answers_rprt_and_never_reaches_the_rig(
     it never held.
     """
     rig = await managed(keyed_by=_OTHER if declined_by == "busy" else None)
+    observe_tx_target(rig.handler._state_store, 14_074_000)  # noqa: SLF001
     if declined_by == "not_ready":
         await rig.runtime.set_provider_ready(ready=False)
 
@@ -208,6 +212,7 @@ async def test_an_unkey_gives_this_session_lease_back_and_reaches_the_rig(
 ) -> None:
     """The ordinary case: our lease, released through the facade."""
     rig = await managed()
+    observe_tx_target(rig.handler._state_store, 14_074_000)  # noqa: SLF001
     await rig.handler.execute(_ptt("1"), session_id=_SESSION)
     rig.wire.clear()
 
@@ -254,6 +259,7 @@ async def test_an_unmanaged_radio_keeps_the_legacy_write_both_ways() -> None:
     byte-identical to what rigctld always sent."""
     radio = _Radio()
     handler = RigctldHandler(radio, RigctldConfig())  # type: ignore[arg-type]
+    observe_tx_target(handler._state_store, 14_074_000)  # noqa: SLF001
 
     key = await handler.execute(_ptt("1"), session_id=_SESSION)
     unkey = await handler.execute(_ptt("0"), session_id=_SESSION)
@@ -274,6 +280,7 @@ async def test_an_ownerless_key_is_refused_and_an_ownerless_unkey_is_not(
     be preventing.
     """
     rig = await managed()
+    observe_tx_target(rig.handler._state_store, 14_074_000)  # noqa: SLF001
 
     with caplog.at_level(logging.WARNING):
         key = await rig.handler.execute(_ptt("1"))
@@ -313,6 +320,7 @@ async def test_a_dropped_connection_hands_the_lease_to_the_next_client(
     assert about itself.
     """
     rig = await managed()
+    observe_tx_target(rig.handler._state_store, 14_074_000)  # noqa: SLF001
     server = RigctldServer(
         rig.radio,  # type: ignore[arg-type]
         RigctldConfig(),
@@ -475,6 +483,7 @@ async def test_every_way_a_session_ends_hands_the_lease_back_exactly_once(
     audited, and the second one carries a spent lease.
     """
     rig = await managed()
+    observe_tx_target(rig.handler._state_store, 14_074_000)  # noqa: SLF001
     releases = _count_releases(rig.handler)
 
     async with _serving(
@@ -534,6 +543,7 @@ async def test_a_cancelled_key_cannot_reach_the_rig_once_the_session_is_gone(
     what this rules out: the last thing on the wire has to be the unkey.
     """
     rig = await managed(provider_factory=lambda wire: _Gated(wire, direction=True))
+    observe_tx_target(rig.handler._state_store, 14_074_000)  # noqa: SLF001
     gate = rig.provider
     assert isinstance(gate, _Gated)
 
@@ -577,6 +587,7 @@ async def test_shutdown_cannot_walk_away_from_a_handback_it_interrupted(
     make ``stop()`` wait for a connection that will never come back.
     """
     rig = await managed(provider_factory=lambda wire: _Gated(wire, direction=False))
+    observe_tx_target(rig.handler._state_store, 14_074_000)  # noqa: SLF001
     gate = rig.provider
     assert isinstance(gate, _Gated)
     releases = _count_releases(rig.handler)
@@ -621,6 +632,7 @@ async def test_a_teardown_cancelled_twice_still_lets_go_of_the_connection(
     the air.
     """
     rig = await managed(provider_factory=lambda wire: _Gated(wire, direction=False))
+    observe_tx_target(rig.handler._state_store, 14_074_000)  # noqa: SLF001
     gate = rig.provider
     assert isinstance(gate, _Gated)
     releases = _count_releases(rig.handler)
@@ -665,6 +677,7 @@ async def test_teardown_shuts_the_door_before_it_starts_retiring_sessions(
     answer that leaves no such session.
     """
     rig = await managed(provider_factory=lambda wire: _Gated(wire, direction=False))
+    observe_tx_target(rig.handler._state_store, 14_074_000)  # noqa: SLF001
     gate = rig.provider
     assert isinstance(gate, _Gated)
 
@@ -714,6 +727,7 @@ async def test_a_spent_sessions_unkey_cannot_de_key_the_newer_owner(
     """
     older, newer = "rigctld-client-1", "rigctld-client-2"
     rig = await managed()
+    observe_tx_target(rig.handler._state_store, 14_074_000)  # noqa: SLF001
     await rig.handler.execute(_ptt("1"), session_id=older)
     await rig.handler.execute(_ptt("0"), session_id=older)  # lease spent
     assert (await rig.handler.execute(_ptt("1"), session_id=newer)).error is (
@@ -753,6 +767,7 @@ async def test_a_wsjtx_session_contends_for_the_same_target_as_the_web(
     must become able to key the moment rigctld gives it back.
     """
     rig = await managed()
+    observe_tx_target(rig.handler._state_store, 14_074_000)  # noqa: SLF001
     assert (await rig.handler.execute(_ptt("1"), session_id=_SESSION)).error is (
         HamlibError.OK
     )

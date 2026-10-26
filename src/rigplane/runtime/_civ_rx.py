@@ -1318,7 +1318,13 @@ class CivRuntime:
         pkt = self._wrap_civ(civ_frame)
         transport = token.transport if token is not None else self._host._civ_transport
         assert transport is not None
-        task = asyncio.create_task(transport.send_tracked(pkt))
+        self._invalidate_tx_proof_before_frame(civ_frame)
+        task = asyncio.create_task(
+            transport.send_tracked(
+                pkt,
+                is_current=lambda: self._invalidate_tx_proof_before_frame(civ_frame),
+            )
+        )
         tasks = None
         if token is not None:
             tasks = self._managed_tx_sends.setdefault(token.provider_generation, set())
@@ -2199,6 +2205,39 @@ class CivRuntime:
             )
             for observation in observations
         )
+        from rigplane.core.tx_target import TX_PROOF_CLOCK, is_tx_target_input
+
+        # Receive time is not causal evidence: a response may answer a read
+        # issued before the write that invalidated these facts. Reuse the
+        # tracker's existing request identity and timestamp before resolve.
+        started = self._host._civ_request_tracker.response_started_monotonic(frame)
+        causal = []
+        for observation in observations:
+            if not is_tx_target_input(observation.path):
+                causal.append(observation)
+                continue
+            if started is None:
+                try:
+                    previous = self._host._state_store.snapshot().field(
+                        observation.path
+                    )
+                except KeyError:
+                    previous = None
+                if previous is not None and previous.clock_domain == TX_PROOF_CLOCK:
+                    # An uncorrelated late reply cannot restore withdrawn proof.
+                    continue
+            causal.append(
+                _replace_dataclass(
+                    observation,
+                    timestamp_monotonic=observation.timestamp_monotonic
+                    if started is None
+                    else started,
+                    clock_domain=TX_PROOF_CLOCK
+                    if started is not None
+                    else observation.clock_domain,
+                )
+            )
+        observations = tuple(causal)
 
         if (
             frame.command in (0x00, 0x01, 0x03, 0x04, 0x25, 0x26)
@@ -4226,6 +4265,17 @@ class CivRuntime:
                 "Dropped %d stale ACK sink waiter(s) before blocking command", dropped
             )
 
+    def _invalidate_tx_proof_before_frame(self, frame: bytes) -> bool:
+        from rigplane.core.tx_target import tx_target_write_paths
+
+        store = self._host._state_store
+        paths = tx_target_write_paths(
+            store.snapshot(), "send_raw", {"frame_bytes": frame}
+        )
+        if paths:
+            store.invalidate_tx_inputs(paths, timestamp=time.monotonic())
+        return True
+
     async def _execute_civ_raw(
         self,
         civ_frame: bytes,
@@ -4255,6 +4305,8 @@ class CivRuntime:
         epoch = self._host._civ_epoch
 
         def current_error() -> ConnectionError | None:
+            from rigplane.runtime.tx_interlock import TxInterlockRefusal
+
             if (
                 self._host._civ_transport is not transport
                 or self._host._civ_request_tracker is not tracker
@@ -4263,6 +4315,8 @@ class CivRuntime:
                 return ConnectionError("CI-V execution belongs to a retired session")
             try:
                 current = is_current is None or is_current()
+            except TxInterlockRefusal:
+                raise
             except Exception:
                 current = False
             return None if current else ConnectionError("managed TX attempt is stale")
@@ -4272,9 +4326,11 @@ class CivRuntime:
                 raise error
 
         def write_is_current() -> bool:
-            return current_error() is None
+            return current_error() is None and self._invalidate_tx_proof_before_frame(
+                civ_frame
+            )
 
-        guard = {"is_current": write_is_current} if is_current is not None else {}
+        guard = {"is_current": write_is_current}
 
         parsed_frame = parse_civ_frame(civ_frame)
         request_key = request_key_from_frame(parsed_frame)
@@ -4304,6 +4360,7 @@ class CivRuntime:
 
                 check_current()
                 pkt = self._wrap_civ(civ_frame)
+                self._invalidate_tx_proof_before_frame(civ_frame)
                 await transport.send_tracked(pkt, **guard)
                 # The packet left the wire: stamp before the currency checks
                 # below so a cancel or a stale attempt still paces the next
@@ -4368,6 +4425,7 @@ class CivRuntime:
 
             check_current()
             pkt = self._wrap_civ(civ_frame)
+            self._invalidate_tx_proof_before_frame(civ_frame)
             await transport.send_tracked(pkt, **guard)
             sent = True
             check_current()

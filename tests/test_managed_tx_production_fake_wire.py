@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
+from _tx_target_fixtures import observe_tx_target
 
 from rigplane.backends.rigctld_client.radio import RigctldClientRadio
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
@@ -232,6 +233,7 @@ async def _joined_web_runtime(
     server.command_queue.bind_connection_generation(lambda: actuator)
     await composition.transport_ready(actuator)
     await composition.bind_state_store(server.command_state_store)
+    observe_tx_target(server.command_state_store, 146_520_000, slot="A")
     attach_managed_tx_composition(server, composition)
     return actuator, composition, server
 

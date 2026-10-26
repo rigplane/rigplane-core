@@ -36,6 +36,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
+from rigplane.core.tx_target import tx_target_write_paths, tx_write_dispatch
 
 if TYPE_CHECKING:
     from rigplane.core.radio_protocol import StateModelService
@@ -212,7 +213,12 @@ class CommandService:
 
         try:
             selected_executor = self._executor if executor is None else executor
-            executor_result = await selected_executor.execute(intent)
+            with tx_write_dispatch(
+                lambda: self.invalidate_tx_target_before_write(
+                    intent.name, intent.params
+                )
+            ):
+                executor_result = await selected_executor.execute(intent)
         except asyncio.CancelledError:
             if self._active_commands.get(key) is sent_event:
                 self.expire_command(
@@ -260,7 +266,6 @@ class CommandService:
             )
             raise CommandExecutionInvalidatedError(message)
 
-        self.invalidate_tx_target_after_write(intent.name, intent.params)
         self.emit_lifecycle(intent, "acknowledged", details=executor_result.details)
         changes: list[ChangeSet] = []
         for observation in executor_result.observations:
@@ -281,64 +286,15 @@ class CommandService:
             executor_result=executor_result,
         )
 
-    def invalidate_tx_target_after_write(
+    def invalidate_tx_target_before_write(
         self,
         name: str,
         params: Mapping[str, Any],
     ) -> None:
-        """Discard pre-write target proof until the existing producer observes it."""
-        paths = expected_observations_for_command(name, params)
-        frequency = any(
-            path.name in {"freq_hz", "active", "active_slot"} for path in paths
-        )
-        split = any(path.name == "split" for path in paths)
-        frequency |= name in {
-            "set_split_freq",
-            "set_band",
-            "vfo_swap",
-            "vfo_equalize",
-            "memory_to_vfo",
-            "set_memory_mode",
-            "quick_split",
-            "quick_split_trigger",
-        }
-        if name in {"send_civ", "send_raw"}:
-            if name == "send_raw":
-                frame = params["frame_bytes"]
-                if (
-                    not isinstance(frame, bytes)
-                    or len(frame) < 6
-                    or frame[:2] != b"\xfe\xfe"
-                    or frame[-1:] != b"\xfd"
-                ):
-                    return
-                command, data = frame[4], frame[5:-1]
-            else:
-                command = params["command"]
-                data = params.get("data", b"")
-                data = bytes.fromhex(data) if isinstance(data, str) else data
-                if params.get("sub") is not None:
-                    data = bytes([params["sub"]]) + data
-            if command == 0x29 and len(data) >= 2:
-                command, data = data[1], data[2:]
-            frequency = (
-                (command == 0x05 and len(data) == 5)
-                or (command == 0x25 and len(data) == 6)
-                or (
-                    command == 0x07
-                    and data in (b"\x00", b"\x01", b"\xa0", b"\xb0", b"\xd0", b"\xd1")
-                )
-            )
-            split = command == 0x0F and data in (b"\x00", b"\x01")
-        if not frequency and not split:
-            return
-        self._state_store.discard(
-            field.path
-            for field in self._state_store.snapshot().fields
-            if field.path == FieldPath.global_("tx_state", "tx_target")
-            or (frequency and field.path.name == "freq_hz")
-            or (split and field.path == FieldPath.global_("tx_state", "split"))
-        )
+        """Withdraw proof before dispatch, including failures and cancellation."""
+        paths = tx_target_write_paths(self._state_store.snapshot(), name, params)
+        if paths:
+            self._state_store.invalidate_tx_inputs(paths, timestamp=self._clock())
 
     def _request_write_confirmation(
         self, intent: CommandIntent, executor_result: CommandExecutionResult

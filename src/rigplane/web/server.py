@@ -616,9 +616,6 @@ class _HttpCommandExecutor:
                 expect=params["expect"],
                 timeout=params.get("timeout"),
             )
-            self.server.command_service.invalidate_tx_target_after_write(
-                "send_raw", {"frame_bytes": frame}
-            )
             return CommandExecutionResult(details={"transaction_result": result})
         if intent.name == "set_powerstat":
             await radio.set_powerstat(bool(params["power_on"]))  # type: ignore[attr-defined]
@@ -2109,6 +2106,12 @@ class WebServer:
         """Command queue consumed by RadioPoller."""
         return self._command_queue
 
+    def require_tx_frequency_permit(self) -> None:
+        require_tx_frequency_permit(
+            self.command_state_store.snapshot(),
+            self._get_profile_unless_provider_owned(),
+        )
+
     async def enqueue_managed_positive_tx(
         self,
         *,
@@ -2132,10 +2135,7 @@ class WebServer:
             connection_generation=connection_generation,
             positive_tx_ready=ready,
             positive_tx_submission=submission,
-            positive_tx_validate=lambda: require_tx_frequency_permit(
-                self.command_state_store.snapshot(),
-                self._get_profile_unless_provider_owned(),
-            ),
+            positive_tx_validate=self.require_tx_frequency_permit,
         )
         try:
             await asyncio.wait_for(
@@ -5810,6 +5810,7 @@ class WebServer:
                     pending = authority.start_transmit_on_submission(
                         ready=ready,
                         expires_at_monotonic=expires_at,
+                        validate_positive=self.require_tx_frequency_permit,
                     )
                     submission = await self.enqueue_managed_positive_tx(
                         ready=ready,

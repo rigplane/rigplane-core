@@ -102,7 +102,11 @@ from rigplane.rigctld.server import RigctldServer
 from rigplane_testkit.icom import MockIcomRadio
 
 from _perf_helpers import fast_connect
-from _ptt_reread_fixtures import wait_for_known_rf_state
+from _ptt_reread_fixtures import (
+    enable_tx_target_reads,
+    wait_for_known_rf_state,
+    wait_for_known_tx_target,
+)
 from testkit.ic7610_fakes import ic7610_lan_fake
 from test_rigctld_golden_replay import (
     _addr,
@@ -215,6 +219,7 @@ def _parse_send(payload: str, line_no: int) -> _SetOp | _ReadOp | None:
 async def _stack() -> AsyncGenerator[tuple[RigctldServer, MockIcomRadio], None]:
     """Live RigctldServer on a CoreRadio connected to the LAN simulator."""
     sim = ic7610_lan_fake(capture_civ_frames=True, stateful_ptt=True)
+    enable_tx_target_reads(sim)
     await sim.start()
     # Trace precondition (wsjtx §4): both receivers start at 14074000 Hz.
     sim._unselected_frequency = 14_074_000  # noqa: SLF001
@@ -629,6 +634,8 @@ async def _replay_checked(
             step = steps[i]
             if step.kind == "send":
                 op = _parse_send(step.payload, step.line_no)
+                if step.payload.startswith("T ") and step.payload.split()[-1] == "1":
+                    await wait_for_known_tx_target(server)
                 mark = len(sim.civ_frames_received)
                 await _send(writer, step.payload)
                 replies: list[str] = []

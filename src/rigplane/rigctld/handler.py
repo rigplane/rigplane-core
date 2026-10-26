@@ -829,9 +829,7 @@ class _RigctldCommandExecutor:
             frame_bytes = params["frame_bytes"]
             if tx_interlock.classify_raw_civ_frame_tx_family(
                 frame_bytes
-            ) is not False and not tx_interlock.is_exact_raw_transmission_end_frame(
-                frame_bytes
-            ):
+            ) is not False and not tx_interlock.is_exact_raw_dekey_frame(frame_bytes):
                 self.handler._require_tx_frequency_permit()
             # A timeout here is deliberately NOT swallowed (MOR-1882): the
             # radio never answered, so there is no evidence the raw frame was

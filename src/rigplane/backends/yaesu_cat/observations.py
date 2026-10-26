@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from rigplane.core.acquisition_scheduler import (
@@ -444,11 +444,16 @@ class YaesuObservationAdapter:
                     adapter.observation(_SUB_MODE, result[0], native_id="read_mode")
                 )
         if self._can_poll(_TX_TARGET):
+            started = self.clock()
             observations.append(
-                adapter.observation(
-                    _TX_TARGET,
-                    await self._read_tx_target(),
-                    native_id="get_tx_func",
+                replace(
+                    adapter.observation(
+                        _TX_TARGET,
+                        await self._read_tx_target(),
+                        native_id="get_tx_func",
+                        timestamp_monotonic=started,
+                    ),
+                    clock_domain="monotonic",
                 )
             )
         if self._can_poll(_PTT):

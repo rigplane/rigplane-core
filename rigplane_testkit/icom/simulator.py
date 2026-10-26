@@ -377,6 +377,10 @@ class MockIcomRadio(AudioPortMixin):
             flips the simulated PTT state (readable as :attr:`ptt_on`),
             GET answers the current state, and any other ``1C 00`` payload
             still NAKs.
+        stateful_tx_target: opt-in split state and transmit-frequency reads.
+            ``0F`` GET/SET models split; ``1C 03`` reports the actual MAIN
+            frequency, or SUB frequency while split is enabled, independent
+            of the selected receiver. Default False preserves native NAKs.
         ptt_on_session_loss: what the simulated radio does with an active
             PTT at every session end. ``"release"`` unkeys at that moment;
             ``"hold"`` keeps PTT on until a client unkeys. The real IC-7610
@@ -455,6 +459,7 @@ class MockIcomRadio(AudioPortMixin):
         fault_plan: FaultPlan | None = None,
         enable_audio: bool = False,
         stateful_ptt: bool = False,
+        stateful_tx_target: bool = False,
         ptt_on_session_loss: Literal["hold", "release"] = "hold",
         recorded_answers: RecordedAnswerTable | None = None,
         capture_civ_frames: bool = False,
@@ -589,6 +594,8 @@ class MockIcomRadio(AudioPortMixin):
         # after the sequence-gap gate and after the LAN echo — recorded
         # IC-7610 order for every request.
         self._stateful_ptt: bool = stateful_ptt
+        self._stateful_tx_target: bool = stateful_tx_target
+        self._split: bool = False
         self._ptt_on_session_loss: Literal["hold", "release"] = ptt_on_session_loss
         self._ptt_state: bool = False
         # Every simulated PTT state change as (monotonic time, new state):
@@ -2483,6 +2490,26 @@ class MockIcomRadio(AudioPortMixin):
                 self._data_mode = 0x00
                 return self._civ_ack(to, frm)
             return self._civ_nak(to, frm)
+
+        # Opt-in TX-target vocabulary. Use the same selected/unselected
+        # frequency state as 03/05/25 and the receiver-selection handler.
+        if self._stateful_tx_target and cmd == 0x0F:
+            if not payload:
+                return self._civ_frame(to, frm, cmd, data=bytes([int(self._split)]))
+            if payload in (b"\x00", b"\x01"):
+                self._split = payload == b"\x01"
+                return self._civ_ack(to, frm)
+            return self._civ_nak(to, frm)
+        if self._stateful_tx_target and cmd == 0x1C and payload == b"\x03":
+            receiver = int(self._split)
+            frequency = (
+                self._frequency
+                if receiver == self._selected_receiver
+                else self._unselected_frequency
+            )
+            return self._civ_frame(
+                to, frm, cmd, sub=0x03, data=_bcd_encode_freq(frequency)
+            )
 
         # --- PTT / Transceiver status (0x1C) ---
         if cmd == _CMD_PTT:

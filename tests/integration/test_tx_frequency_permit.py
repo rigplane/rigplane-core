@@ -54,23 +54,9 @@ class _Stack:
 async def stack(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[_Stack]:
-    sim = ic705_lan_fake(stateful_ptt=True, capture_civ_frames=True)
-    # The recorded personality has a fixed split reply; extend only the
-    # simulator's missing stateful 0F read/write, never the permission code.
-    native = sim._dispatch_civ_native
-    split = False
-
-    def with_split(command: int, payload: bytes, sender: int) -> bytes | None:
-        nonlocal split
-        if command == 0x0F:
-            if not payload:
-                return sim._civ_frame(sender, 0xA4, command, data=bytes([split]))
-            if payload in (b"\x00", b"\x01"):
-                split = bool(payload[0])
-                return sim._civ_ack(sender, 0xA4)
-        return native(command, payload, sender)
-
-    monkeypatch.setattr(sim, "_dispatch_civ_native", with_split)
+    sim = ic705_lan_fake(
+        stateful_ptt=True, stateful_tx_target=True, capture_civ_frames=True
+    )
     await sim.start()
     radio = IcomRadio(
         host="127.0.0.1",
@@ -349,6 +335,116 @@ async def test_simulated_write_cannot_reuse_prewrite_target(
         before = len(stack.sim.ptt_set_writes)
         _assert_refused(await ptt(True), lane, "tx_target_unknown")
         assert not stack.sim.ptt_on
+        assert not any(on for _, on in stack.sim.ptt_set_writes[before:])
+        assert (await ptt(False))["ok"] is True
+
+
+@pytest.mark.parametrize("lane", ["http", "ws", "rigctld"])
+@pytest.mark.parametrize("write", ["lost_ack", "memory_recall"])
+async def test_simulated_uncertain_write_cannot_reuse_target(
+    stack: _Stack, lane: str, write: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _command(stack, "set_freq", {"freq": 146_520_000})
+    await _wait_target(stack, 146_520_000)
+    dispatch = stack.sim._dispatch_civ
+    applied = asyncio.Event()
+
+    def uncertain(command: int, payload: bytes, sender: int) -> bytes | None:
+        if (command in (0x03, 0x0F) and not payload) or (
+            command == 0x25 and len(payload) == 1
+        ):
+            return stack.sim._civ_nak(sender, 0xA4)
+        if command == 0x05 or (write == "memory_recall" and command == 0x08):
+            # A memory recall changes the real simulator frequency as well.
+            dispatch(0x05, bytes.fromhex("0000000001"), sender)
+            applied.set()
+            return None if write == "lost_ack" else stack.sim._civ_ack(sender, 0xA4)
+        return dispatch(command, payload, sender)
+
+    monkeypatch.setattr(stack.sim, "_dispatch_civ", uncertain)
+    status, _ = await _http_json(
+        stack.web.port,
+        "POST",
+        "/api/v1/civ/transaction",
+        {
+            "command": 0x05 if write == "lost_ack" else 0x08,
+            "data": "0000000001" if write == "lost_ack" else "01",
+            "expect": "ack",
+            "timeout_ms": 100,
+        },
+    )
+    assert applied.is_set(), status
+    async with _client(stack, lane) as ptt:
+        before = len(stack.sim.ptt_set_writes)
+        _assert_refused(await ptt(True), lane, "tx_target_unknown")
+        assert not any(on for _, on in stack.sim.ptt_set_writes[before:])
+        assert (await ptt(False))["ok"] is True
+
+
+@pytest.mark.parametrize("lane", ["http", "ws", "rigctld"])
+async def test_simulated_derived_target_expires_with_its_input(
+    stack: _Stack, lane: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _command(stack, "set_freq", {"freq": 146_520_000})
+    await _wait_target(stack, 146_520_000)
+    poller = stack.web._radio_poller
+    assert poller is not None
+    store = stack.web.command_state_store
+    path = FieldPath.global_("tx_state", "split")
+    field = store.snapshot().field(path)
+    store.apply_current(
+        Observation(
+            path=path,
+            value=field.value,
+            source=SourceMetadata(source="test", provider="simulated_expiry"),
+            timestamp_monotonic=time.monotonic(),
+            max_age=0.05,
+        )
+    )
+    store.discard((FieldPath.global_("tx_state", "tx_target"),))
+    poller._publish_tx_target()
+    monkeypatch.setattr(poller, "_publish_tx_target", lambda: None)
+    # The producer is stopped and the dependency expires before the profile TTL.
+    await asyncio.sleep(0.06)
+    async with _client(stack, lane) as ptt:
+        before = len(stack.sim.ptt_set_writes)
+        _assert_refused(await ptt(True), lane, "tx_target_unknown")
+        assert not any(on for _, on in stack.sim.ptt_set_writes[before:])
+
+
+@pytest.mark.parametrize("lane", ["http", "ws", "rigctld"])
+async def test_simulated_final_dispatch_rechecks_target(
+    stack: _Stack, lane: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _command(stack, "set_freq", {"freq": 146_520_000})
+    await _wait_target(stack, 146_520_000)
+    authority = stack.web._managed_tx_authority()
+    actuator = authority._lane._actuator
+    actuate = actuator.actuate
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def paused(token: Any, operation: Any, *, is_current: Any) -> Any:
+        if operation.value in ("ptt_on", "transmit_on"):
+            entered.set()
+            await release.wait()
+        return await actuate(token, operation, is_current=is_current)
+
+    monkeypatch.setattr(actuator, "actuate", paused)
+    async with _client(stack, lane) as ptt:
+        pending = asyncio.create_task(ptt(True))
+        try:
+            await asyncio.wait_for(entered.wait(), 5.0)
+            assert stack.web._radio_poller is not None
+            monkeypatch.setattr(
+                stack.web._radio_poller, "_publish_tx_target", lambda: None
+            )
+            stack.web.command_state_store.discard(
+                (FieldPath.global_("tx_state", "tx_target"),)
+            )
+            before = len(stack.sim.ptt_set_writes)
+        finally:
+            release.set()
+        _assert_refused(await pending, lane, "tx_target_unknown")
         assert not any(on for _, on in stack.sim.ptt_set_writes[before:])
         assert (await ptt(False))["ok"] is True
 

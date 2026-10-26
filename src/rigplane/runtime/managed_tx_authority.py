@@ -11,6 +11,7 @@ from functools import partial
 from typing import Any, Protocol
 
 from rigplane.core.command_dispatch import DescriptorTxPolicy, command_descriptor
+from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.runtime.controller_authority import (
     ControllerAuthority,
@@ -293,6 +294,7 @@ class ManagedTxAuthority:
         *,
         ready: asyncio.Future[Any] | None = None,
         expires_at_monotonic: float | None = None,
+        validate_positive: Callable[[], None] | None = None,
     ) -> asyncio.Task[ManagedTxSubmission]:
         """Start a managed-ingress submission with membership installed.
 
@@ -307,6 +309,7 @@ class ManagedTxAuthority:
                 ready=ready,
                 started=started,
                 expires_at_monotonic=expires_at_monotonic,
+                validate_positive=validate_positive,
             )
             if on
             else self._begin_ptt_operation(False, owner, ready=ready, _started=started)
@@ -351,6 +354,7 @@ class ManagedTxAuthority:
         ready: asyncio.Future[Any] | None,
         started: asyncio.Future[None] | None = None,
         expires_at_monotonic: float | None = None,
+        validate_positive: Callable[[], None] | None = None,
     ) -> tuple[_SubmissionCompletion, asyncio.Future[ManagedTxTransition]]:
         """Register one cancellable positive transition before it can admit."""
         if action not in ("ptt_down", "transmit_on"):
@@ -385,6 +389,20 @@ class ManagedTxAuthority:
 
         async def run() -> tuple[ManagedTxTransition, ActuationSettled | None]:
             execution: asyncio.Task[ActuationSettled | None] | None = None
+            refusal: CommandError | None = None
+
+            def permitted() -> bool:
+                nonlocal refusal
+                if refusal is not None:
+                    raise refusal
+                try:
+                    if validate_positive is not None:
+                        validate_positive()
+                except CommandError as exc:
+                    refusal = exc
+                    raise
+                return True
+
             try:
                 if started is not None:
                     await asyncio.wait((started,))
@@ -431,11 +449,18 @@ class ManagedTxAuthority:
                         if controller_effects:
                             self._controller_effects = controller_effects
                     execution = asyncio.create_task(
-                        self._execute(transition.effects, full_force=full_force)
+                        self._execute(
+                            transition.effects,
+                            full_force=full_force,
+                            positive_current=permitted,
+                        )
                     )
                     if not admitted.done():
                         admitted.set_result(transition)
-                return transition, await asyncio.shield(execution)
+                settlement = await asyncio.shield(execution)
+                if refusal is not None:
+                    raise refusal
+                return transition, settlement
             except asyncio.CancelledError:
                 if execution is not None:
                     await self._drain_cancelled(execution)
@@ -632,6 +657,7 @@ class ManagedTxAuthority:
         *,
         ready: asyncio.Future[Any] | None = None,
         expires_at_monotonic: float | None = None,
+        validate_positive: Callable[[], None] | None = None,
     ) -> asyncio.Task[ManagedTxSubmission]:
         """Install cancellable TRANSMIT_ON membership before queue insertion."""
         started = asyncio.get_running_loop().create_future()
@@ -641,6 +667,7 @@ class ManagedTxAuthority:
             ready=ready,
             started=started,
             expires_at_monotonic=expires_at_monotonic,
+            validate_positive=validate_positive,
         )
         return self._publish_started_submission(worker, admitted, started)
 
@@ -669,7 +696,11 @@ class ManagedTxAuthority:
             return True
 
     def is_effect_current(
-        self, token: EffectToken, operation: ActuationOperation | AbortOperation
+        self,
+        token: EffectToken,
+        operation: ActuationOperation | AbortOperation,
+        *,
+        positive_current: Callable[[], bool] | None = None,
     ) -> bool:
         """Check write currency synchronously against the live pending attempt."""
         pending = self._state.pending_effect
@@ -695,6 +726,11 @@ class ManagedTxAuthority:
             and pending is not None
             and pending.token == token
             and pending.operation is operation
+            and (
+                operation is ActuationOperation.FORCE_RECEIVE
+                or positive_current is None
+                or positive_current()
+            )
         )
 
     async def owner_disconnect(self, owner: str) -> ManagedTxOutcome:
@@ -1191,7 +1227,11 @@ class ManagedTxAuthority:
         return transition
 
     async def _execute(
-        self, effects: tuple[ManagedTxEffect, ...], *, full_force: bool
+        self,
+        effects: tuple[ManagedTxEffect, ...],
+        *,
+        full_force: bool,
+        positive_current: Callable[[], bool] | None = None,
     ) -> ActuationSettled | None:
         original_effects = effects
         original_settlement = None
@@ -1220,7 +1260,10 @@ class ManagedTxAuthority:
                     effect,
                     deadline_monotonic=deadline,
                     is_current=partial(
-                        self.is_effect_current, effect.token, effect.operation
+                        self.is_effect_current,
+                        effect.token,
+                        effect.operation,
+                        positive_current=positive_current,
                     ),
                 ):
                     events.append(settled)

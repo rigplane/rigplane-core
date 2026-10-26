@@ -27,6 +27,8 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
+from rigplane.profiles import resolve_radio_profile
+from _tx_target_fixtures import observe_tx_target
 from rigplane.radio_protocol import MetersCapable
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
@@ -85,6 +87,7 @@ async def _read_eof(reader: asyncio.StreamReader, *, timeout: float = 2.0) -> by
 def _make_mock_radio() -> _MockRadio:
     """Explicit mock radio with sensible default return values."""
     radio = _MockRadio()
+    radio.profile = resolve_radio_profile(model="IC-7610")
     radio.capabilities = set(FULL_ICOM_CAPS)
     # Required by assert_radio_startup_ready (startup_checks.py)
     radio.connected = True
@@ -126,6 +129,7 @@ async def wire_server() -> RigctldServer:  # type: ignore[misc]
         cache_ttl=0.0,  # always fresh → deterministic radio calls
     )
     handler = RigctldHandler(radio, cfg)
+    observe_tx_target(handler._state_store, 14_074_000)
     srv = RigctldServer(radio, cfg, _handler=handler)
     async with srv:
         yield srv  # type: ignore[misc]

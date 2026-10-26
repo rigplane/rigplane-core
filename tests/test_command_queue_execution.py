@@ -327,6 +327,7 @@ async def assert_live_pending_turn(
     service = SimpleNamespace(
         fail_command=fail_command,
         retain_readback_expectations_for_dispatch=lambda **_: (),
+        invalidate_tx_target_before_write=lambda *_args, **_kwargs: None,
     )
 
     async def leaf(command, **_kwargs):

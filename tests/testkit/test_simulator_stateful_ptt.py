@@ -23,6 +23,7 @@ from collections.abc import AsyncGenerator
 import pytest
 
 from rigplane_testkit.icom import MockIcomRadio
+from rigplane.types import bcd_decode, bcd_encode
 
 from testkit.test_simulator_faults import (
     _UdpClient,
@@ -45,6 +46,42 @@ _PTT_BAD_FRAME = b"\xfe\xfe\x98\xe0\x1c\x00\x02\xfd"
 # Reply frames the radio builds (radio 0x98 -> controller 0xE0).
 _FB_FRAME = b"\xfe\xfe\xe0\x98\xfb\xfd"
 _FA_FRAME = b"\xfe\xfe\xe0\x98\xfa\xfd"
+
+
+def test_tx_target_reads_remain_opt_in() -> None:
+    server = MockIcomRadio()
+    assert server._dispatch_civ(0x0F, b"", 0xE0) == _FA_FRAME
+    assert server._dispatch_civ(0x0F, b"\x01", 0xE0) == _FA_FRAME
+    assert server._dispatch_civ(0x1C, b"\x03", 0xE0) == _FA_FRAME
+
+
+def test_stateful_tx_target_follows_split_frequency_and_receiver_selection() -> None:
+    server = MockIcomRadio(stateful_tx_target=True, dual_receiver=True)
+    server._frequency = 14_074_000
+    server._unselected_frequency = 7_074_000
+
+    def target() -> int:
+        reply = server._dispatch_civ(0x1C, b"\x03", 0xE0)
+        assert reply is not None and reply[4:6] == b"\x1c\x03"
+        return bcd_decode(reply[6:-1])
+
+    assert server._dispatch_civ(0x0F, b"", 0xE0) == b"\xfe\xfe\xe0\x98\x0f\x00\xfd"
+    assert target() == 14_074_000
+    assert server._dispatch_civ(0x0F, b"\x01", 0xE0) == _FB_FRAME
+    assert target() == 7_074_000
+    assert server._dispatch_civ(0x07, b"\xd1", 0xE0) == _FB_FRAME
+    assert target() == 7_074_000
+    assert server._dispatch_civ(0x05, bcd_encode(7_076_000), 0xE0) == _FB_FRAME
+    assert target() == 7_076_000
+    assert server._dispatch_civ(0x0F, b"\x00", 0xE0) == _FB_FRAME
+    assert target() == 14_074_000
+    assert server._dispatch_civ(0x0F, b"\x02", 0xE0) == _FA_FRAME
+
+
+def test_stateful_tx_target_preserves_explicit_protocol_refusal() -> None:
+    server = MockIcomRadio(stateful_tx_target=True)
+    server.refused_civ_commands.add((0x1C, 0x03))
+    assert server._dispatch_civ(0x1C, b"\x03", 0xE0) == _FA_FRAME
 
 
 def _civ_packet(frame: bytes, seq: int) -> bytes:

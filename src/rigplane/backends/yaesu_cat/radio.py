@@ -1300,6 +1300,18 @@ class YaesuCatRadio:
             raise CommandError(f"Command {cmd_name!r} has no write template")
 
         cmd = format_command(spec.write, **kwargs)
+        from rigplane.core.tx_target import current_tx_write_invalidation
+
+        invalidate = current_tx_write_invalidation()
+        if invalidate is not None:
+            previous_commit = on_committed
+
+            def committed() -> None:
+                invalidate()
+                if previous_commit is not None:
+                    previous_commit()
+
+            on_committed = committed
         try:
             if on_committed is not None:
                 await self._transport.write(

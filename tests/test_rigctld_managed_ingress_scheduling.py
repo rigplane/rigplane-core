@@ -16,6 +16,7 @@ from rigplane.rigctld.handler import RigctldHandler, _RigctldCommandExecutor, _R
 from rigplane.rigctld.server import _MAX_PENDING_CLIENT_RESPONSES, RigctldServer
 from rigplane.runtime._poller_types import CommandQueue, execute_command_queue_entry, execute_positive_tx_queue_entry, validate_command_queue_entry_currency
 from rigplane.runtime.managed_tx_state import ActuationOperation, ActuationResult, ManagedTxIntentKind, ManagedTxOutcome
+from _tx_target_fixtures import observe_tx_target
 from serial_stub import SerialMockRadio
 from test_managed_tx_authority import authority
 from test_controller_authority import Safety
@@ -42,6 +43,8 @@ class _Radio(SerialMockRadio):
         self.finished.set()
         if self.fail_frequency:
             raise ProviderConnectionError("injected")
+        await super().set_freq(freq, receiver=receiver)
+        observe_tx_target(self.state_store, freq)
     async def set_tuner_status(self, value):
         self.calls.append(("tuner", value))
 @pytest.fixture
@@ -250,6 +253,7 @@ async def test_injected_references_and_per_call_leaf_preserve_shared_default(man
     assert await _replies(managed, 1) == [b"RPRT 0\n"]
     assert managed.default.calls == []
 async def test_rigctld_success_waits_for_shared_queue_provider_settlement(managed):
+    observe_tx_target(managed.store, _FREQUENCY)
     gate = managed.lane.block_next()
     submissions, _ = _observe_starts(managed)
     await _send(managed, "T 1")
@@ -365,6 +369,7 @@ async def test_pending_on_is_revoked_between_spawn_and_validation(managed, vfo):
 @pytest.mark.parametrize(("outcome", "first"), [(ManagedTxOutcome.ACCEPTED, b"RPRT 0\n"),
     (ManagedTxOutcome.REJECTED, b"RPRT -9\n"), (None, b"RPRT -6\n")], ids=["accepted", "rejected", "authority-error"])
 async def test_revocation_marker_preserves_exact_submission_result(managed, outcome, first):
+    observe_tx_target(managed.store, _FREQUENCY)
     entered, release = _gate_on_handler(managed)
     settle = asyncio.Event()
     async def controlled():
@@ -393,6 +398,7 @@ async def test_invalid_validation_committed_before_off_preserves_evfo(managed):
     assert await _replies(managed, 2) == [b"RPRT -16\n", b"RPRT 0\n"]
     assert len(submissions) == 1 and not submissions[0][1].done() and managed.lane.effects == []
 async def test_pending_on_defers_handler_state_evaluation_until_predecessor(managed):
+    observe_tx_target(managed.store, _FREQUENCY)
     handler, seen = managed.server._rig_handler, []
     execute = handler.execute
     async def observed(cmd, **kwargs):
@@ -409,8 +415,10 @@ async def test_pending_on_defers_handler_state_evaluation_until_predecessor(mana
     assert seen == [True]
 @pytest.mark.parametrize("provider_error", [False, True])
 async def test_off_bypasses_but_later_on_keeps_held_frequency_barrier(managed, provider_error):
+    observe_tx_target(managed.store, _FREQUENCY)
     await _key(managed)
     later_on_received = asyncio.Event()
+    recovered_target = asyncio.Event()
     start, execute = managed.authority.start_ptt_submission, managed.server._rig_handler.execute
     def observed(on, owner, **kwargs):
         submission = start(on, owner, **kwargs)
@@ -420,6 +428,8 @@ async def test_off_bypasses_but_later_on_keeps_held_frequency_barrier(managed, p
     async def gated(cmd, **kwargs):
         if cmd.long_cmd == "set_ptt" and not int(cmd.args[0]):
             await asyncio.wait_for(later_on_received.wait(), _WAIT)
+        if provider_error and cmd.long_cmd == "set_ptt" and int(cmd.args[0]):
+            await asyncio.wait_for(recovered_target.wait(), _WAIT)
         return await execute(cmd, **kwargs)
     managed.authority.start_ptt_submission = observed
     managed.server._rig_handler.execute = gated
@@ -430,7 +440,14 @@ async def test_off_bypasses_but_later_on_keeps_held_frequency_barrier(managed, p
     assert [effect.operation for effect in managed.lane.effects] == [ActuationOperation.PTT_ON, ActuationOperation.FORCE_RECEIVE]
     managed.radio.release.set()
     first = b"RPRT -6\n" if provider_error else b"RPRT 0\n"
-    assert await _replies(managed, 3) == [first, b"RPRT 0\n", b"RPRT 0\n"]
+    assert await _replies(managed, 1) == [first]
+    if provider_error:
+        # A failed write leaves the target uncertain until a fresh readback.
+        assert [effect.operation for effect in managed.lane.effects] == [ActuationOperation.PTT_ON, ActuationOperation.FORCE_RECEIVE]
+        actual_frequency = await managed.radio.get_freq()
+        observe_tx_target(managed.store, actual_frequency)
+        recovered_target.set()
+    assert await _replies(managed, 2) == [b"RPRT 0\n", b"RPRT 0\n"]
     assert managed.lane.effects[-1].operation is ActuationOperation.PTT_ON
 @pytest.mark.parametrize("ending", ["eof", "server-stop"])
 async def test_disconnect_revokes_pending_on(managed, ending):
@@ -446,6 +463,7 @@ async def test_disconnect_revokes_pending_on(managed, ending):
     await asyncio.gather(*connections, return_exceptions=True)
     assert all(task.done() for task in connections) and managed.lane.effects == []
 async def test_sequential_frequency_then_ptt_preserves_wire_order(managed):
+    observe_tx_target(managed.store, _FREQUENCY)
     managed.radio.release.set()
     for command in (f"F {_FREQUENCY}", "T 1", "T 0"):
         await _send(managed, command)

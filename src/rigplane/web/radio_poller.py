@@ -884,6 +884,8 @@ class RadioPoller:
                 value=freq,
                 source=metadata,
                 timestamp_monotonic=observed_at,
+                max_age=self._tx_target_max_age(),
+                clock_domain="monotonic",
                 correlation_id=f"{command_id}:freq" if command_id else None,
                 provider_generation=provider_generation,
             ),
@@ -2156,6 +2158,8 @@ class RadioPoller:
                         native_id="direct_vfo_frequency_readback",
                     ),
                     timestamp_monotonic=self._clock(),
+                    max_age=self._tx_target_max_age(),
+                    clock_domain="monotonic",
                     correlation_id=command_id,
                     provider_generation=provider_generation,
                 )
@@ -3941,6 +3945,26 @@ class RadioPoller:
         path = FieldPath.global_("tx_state", "tx_target")
         max_age = self._tx_target_max_age()
         now = self._clock()
+        if isinstance(target, KnownTxTarget):
+            receiver, _ = self._tx_target_receiver()
+            snapshot = self._state_store.snapshot()
+            split_path = FieldPath.global_("tx_state", "split")
+            frequency_path = (
+                FieldPath.unselected(str(receiver), "freq_mode", "freq_hz")
+                if snapshot.field(split_path).value
+                else FieldPath.active(str(receiver), "freq_mode", "freq_hz")
+            )
+            for dependency in (
+                FieldPath.active_slot(str(receiver)),
+                split_path,
+                frequency_path,
+            ):
+                field = snapshot.field(dependency)
+                if field.max_age is not None:
+                    max_age = min(
+                        max_age,
+                        max(0.0, field.last_observed_monotonic + field.max_age - now),
+                    )
         try:
             current = self._state_store.snapshot().field(path)
         except KeyError:
@@ -3949,6 +3973,8 @@ class RadioPoller:
             current is not None
             and current.freshness is FreshnessState.FRESH
             and current.value == target
+            and current.max_age is not None
+            and current.last_observed_monotonic + current.max_age <= now + max_age
             and now - current.last_observed_monotonic < max_age * 0.5
         ):
             return
@@ -3963,6 +3989,7 @@ class RadioPoller:
             ),
             timestamp_monotonic=now,
             max_age=max_age,
+            clock_domain="monotonic",
         )
         self._state_store.apply_current(observation)
 
@@ -3997,6 +4024,10 @@ class RadioPoller:
                     native_id="explicit_slot_ack_readback",
                 ),
                 timestamp_monotonic=self._clock(),
+                max_age=None
+                if path.name == "active_slot"
+                else self._tx_target_max_age(),
+                clock_domain="monotonic",
                 correlation_id=command_id,
                 provider_generation=provider_generation,
             )

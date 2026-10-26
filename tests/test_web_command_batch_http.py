@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, call
 
 import pytest
+from _tx_target_fixtures import observe_tx_target
 
 from _helpers import wrap_civ_in_udp
 from test_radio import MockTransport
@@ -1619,15 +1620,14 @@ async def test_http_raw_civ_transaction_unmanaged_refuses_smuggled_while_tx(
 
 @pytest.mark.asyncio
 async def test_http_raw_civ_transaction_unmanaged_passes_ptt_on_with_fresh_rx() -> None:
-    """With a fresh-known RX observation the unmanaged HTTP raw
-    seat passes a TX-family frame to the radio, exactly as unmanaged
-    rigctld raw ``w`` and the typed ``T 1`` do."""
+    """Fresh RX and a permitted target admit a raw PTT-on."""
     radio = _radio()
     radio.send_civ_transaction = AsyncMock(
         return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
     )
     srv = _unmanaged_server(radio)
     _observe_ptt(srv, False)
+    observe_tx_target(srv.command_state_store, 14_074_000)
 
     writer = await _post_json(
         srv,
@@ -1649,15 +1649,14 @@ async def test_http_raw_civ_transaction_unmanaged_passes_ptt_on_with_fresh_rx() 
 async def test_http_raw_civ_transaction_unmanaged_passes_voice_tx_with_fresh_rx() -> (
     None
 ):
-    """MOR-3374: with a fresh-known RX observation the unmanaged HTTP raw
-    seat passes a voice TX memory transmit frame to the radio, exactly as
-    it passes a raw PTT-on in the same state."""
+    """Fresh RX and a permitted target admit raw voice TX memory."""
     radio = _radio()
     radio.send_civ_transaction = AsyncMock(
         return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
     )
     srv = _unmanaged_server(radio)
     _observe_ptt(srv, False)
+    observe_tx_target(srv.command_state_store, 14_074_000)
 
     writer = await _post_json(
         srv,
