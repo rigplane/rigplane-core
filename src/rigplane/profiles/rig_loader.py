@@ -748,8 +748,12 @@ class RigConfig:
     # Keyword-only so the positional constructor contract cannot shift.
     cw_text: CwTextSpec = field(default_factory=CwTextSpec, kw_only=True)
     usb_identity: UsbAudioIdentity | None = field(default=None, kw_only=True)
+    default_freq_range_variant: str | None = field(default=None, kw_only=True)
+    freq_range_variants: dict[str, tuple[dict[str, Any], ...]] = field(
+        default_factory=dict, kw_only=True
+    )
 
-    def to_profile(self) -> RadioProfile:
+    def to_profile(self, freq_range_variant: str | None = None) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
         vfo_main = self.vfo_main_select[0] if self.vfo_main_select else None
         vfo_sub = self.vfo_sub_select[0] if self.vfo_sub_select else None
@@ -757,6 +761,22 @@ class RigConfig:
         equal_ab = self.vfo_equal_ab[0] if self.vfo_equal_ab else None
         swap_main_sub = self.vfo_swap_main_sub[0] if self.vfo_swap_main_sub else None
         equal_main_sub = self.vfo_equal_main_sub[0] if self.vfo_equal_main_sub else None
+
+        variant_id = (
+            freq_range_variant
+            if freq_range_variant is not None
+            else self.default_freq_range_variant
+        )
+        raw_range_dicts = list(self.freq_ranges)
+        if variant_id:
+            extra = self.freq_range_variants.get(variant_id)
+            if extra is None:
+                known = ", ".join(sorted(self.freq_range_variants))
+                raise ValueError(
+                    f"Unknown freq_ranges variant {variant_id!r} for {self.model}. "
+                    f"Known variants: {known or '(none)'}"
+                )
+            raw_range_dicts.extend(extra)
 
         ranges = tuple(
             FreqRangeInfo(
@@ -775,7 +795,7 @@ class RigConfig:
                     for b in r.get("bands", ())
                 ),
             )
-            for r in self.freq_ranges
+            for r in raw_range_dicts
         )
         controls = cast(
             dict[str, ControlSpec | ControlDomainSpec] | None, self.controls
@@ -2680,20 +2700,76 @@ def load_rig(path: Path) -> RigConfig:
     tone_squelch_types = _resolve_tone_squelch_types(path, data, commands)
 
     # Parse freq_ranges
-    freq_ranges_data = data.get("freq_ranges", {}).get("ranges", [])
+    freq_section = data.get("freq_ranges", {})
+    if not isinstance(freq_section, dict):
+        raise RigLoadError(f"{filename}: freq_ranges must be a table")
+    freq_ranges_data = freq_section.get("ranges", [])
 
-    # MOR-2111: the optional per-range ``repeater`` flag marks a VHF/UHF
-    # repeater band. It is data only — no band name or frequency lives in
-    # code. Omitted defaults to false; any non-boolean value is a load error.
-    for index, rng in enumerate(freq_ranges_data):
-        if (
-            isinstance(rng, dict)
-            and "repeater" in rng
-            and not isinstance(rng["repeater"], bool)
-        ):
-            raise RigLoadError(
-                f"{filename}: freq_ranges.ranges[{index}].repeater must be a boolean"
+    def _validate_freq_range_repeater_flags(
+        ranges: list[dict[str, Any]], path_prefix: str
+    ) -> None:
+        # MOR-2111: the optional per-range ``repeater`` flag marks a VHF/UHF
+        # repeater band. It is data only — no band name or frequency lives in
+        # code. Omitted defaults to false; any non-boolean value is a load error.
+        for index, rng in enumerate(ranges):
+            if (
+                isinstance(rng, dict)
+                and "repeater" in rng
+                and not isinstance(rng["repeater"], bool)
+            ):
+                raise RigLoadError(
+                    f"{filename}: {path_prefix}[{index}].repeater must be a boolean"
+                )
+
+    _validate_freq_range_repeater_flags(freq_ranges_data, "freq_ranges.ranges")
+
+    default_variant_raw = freq_section.get("default_variant")
+    default_freq_range_variant: str | None
+    if default_variant_raw is None:
+        default_freq_range_variant = None
+    elif isinstance(default_variant_raw, str) and default_variant_raw.strip():
+        default_freq_range_variant = default_variant_raw.strip()
+    else:
+        raise RigLoadError(
+            f"{filename}: freq_ranges.default_variant must be a non-empty string"
+        )
+
+    variants_raw = freq_section.get("variants", {})
+    freq_range_variants: dict[str, tuple[dict[str, Any], ...]] = {}
+    if variants_raw:
+        if not isinstance(variants_raw, dict):
+            raise RigLoadError(f"{filename}: freq_ranges.variants must be a table")
+        for variant_id, variant_body in variants_raw.items():
+            if not isinstance(variant_id, str) or not variant_id.strip():
+                raise RigLoadError(
+                    f"{filename}: freq_ranges.variants keys must be non-empty strings"
+                )
+            body = variant_body if variant_body is not None else {}
+            if not isinstance(body, dict):
+                raise RigLoadError(
+                    f"{filename}: freq_ranges.variants.{variant_id} must be a table"
+                )
+            extra_ranges = body.get("ranges", [])
+            if not isinstance(extra_ranges, list):
+                raise RigLoadError(
+                    f"{filename}: freq_ranges.variants.{variant_id}.ranges "
+                    "must be an array"
+                )
+            _validate_freq_range_repeater_flags(
+                extra_ranges,
+                f"freq_ranges.variants.{variant_id}.ranges",
             )
+            freq_range_variants[variant_id.strip()] = tuple(extra_ranges)
+
+    if (
+        default_freq_range_variant is not None
+        and default_freq_range_variant not in freq_range_variants
+    ):
+        raise RigLoadError(
+            f"{filename}: freq_ranges.default_variant "
+            f"{default_freq_range_variant!r} is not declared under "
+            "freq_ranges.variants"
+        )
 
     # Parse VFO bytes — explicit split (issue #710)
     vfo_main = tuple(vfo["main_select"]) if "main_select" in vfo else None
@@ -3372,6 +3448,8 @@ def load_rig(path: Path) -> RigConfig:
         memory=memory,
         cw_text=cw_text,
         usb_identity=usb_identity,
+        default_freq_range_variant=default_freq_range_variant,
+        freq_range_variants=freq_range_variants,
     )
 
 
