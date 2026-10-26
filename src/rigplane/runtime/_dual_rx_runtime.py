@@ -7,7 +7,8 @@ Part of the radio.py decomposition (#505). All methods are accessed via
 from __future__ import annotations
 
 import logging
-from contextlib import contextmanager
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, contextmanager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -434,6 +435,15 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             raise CommandError("direct VFO readback selector mismatch")
         return observed_freq
 
+    @asynccontextmanager
+    async def _reserve_commander(self) -> AsyncIterator[None]:
+        commander = self._commander
+        if commander is None:
+            yield
+            return
+        async with commander.exclusive():
+            yield
+
     async def write_relative_vfo_mode(
         self,
         mode: int,
@@ -444,6 +454,24 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         before_set: Callable[[], None] | None = None,
     ) -> RelativeVfoState:
         """Preserve omitted fields; carry before_set validation through dispatch."""
+        async with self._reserve_commander():
+            return await self._write_relative_vfo_mode_body(
+                mode,
+                selected=selected,
+                data=data,
+                filter_width=filter_width,
+                before_set=before_set,
+            )
+
+    async def _write_relative_vfo_mode_body(
+        self,
+        mode: int,
+        *,
+        selected: bool,
+        data: bool | None = None,
+        filter_width: int | None = None,
+        before_set: Callable[[], None] | None = None,
+    ) -> RelativeVfoState:
         role = "selected" if selected else "unselected"
         cmd_map = self._profile.command_map
         if cmd_map is None or not _relative_vfo_routing_available(

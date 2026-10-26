@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from rigplane.core.exceptions import BackgroundSendDropped, ConnectionError
 from rigplane.core.types import CivFrame
@@ -51,6 +52,9 @@ class _QueueItem:
     # to the executor; the final wire seam decides whether the attempt still
     # belongs to the live authority effect.
     is_current: Callable[[], bool] | None = None
+    # Task that queued the frame.  An exclusive reservation runs that task's
+    # frames and leaves every other task's frames queued.
+    enqueued_by: asyncio.Task[Any] | None = None
 
 
 def _fail_item(item: _QueueItem, exc: BaseException) -> None:
@@ -76,6 +80,7 @@ class IcomCommander:
     - strict in-order execution within priority levels
     - optional dedup for background polling keys
     - transaction helper (snapshot/restore)
+    - exclusive reservation around one task's read-modify-write
     """
 
     def __init__(
@@ -91,11 +96,126 @@ class IcomCommander:
         # ``_MAX_BG_INFLIGHT``).  Incremented at enqueue, decremented in the
         # worker's ``finally`` for items flagged ``counts_bg_inflight``.
         self._bg_inflight = 0
+        self._reservation_owner: asyncio.Task[Any] | None = None
+        self._reservation_depth = 0
+        self._reservation_gate = asyncio.Condition()
+        self._deferred: list[tuple[int, int, _QueueItem]] = []
+        self._work_ready = asyncio.Event()
 
     def start(self) -> None:
         if self._worker is None or self._worker.done():
             self._queue = asyncio.PriorityQueue()
+            self._deferred.clear()
             self._worker = asyncio.create_task(self._loop())
+
+    def _accepting(self) -> bool:
+        worker = self._worker
+        return (
+            self._queue is not None
+            and worker is not None
+            and not worker.done()
+            and not worker.cancelling()
+        )
+
+    def _reservation_allows(self, item: _QueueItem) -> bool:
+        owner = self._reservation_owner
+        if owner is None:
+            return True
+        if item.priority <= int(Priority.ABORT):
+            return True
+        return item.enqueued_by is owner
+
+    def _fail_pending(self, item: _QueueItem) -> None:
+        if item.key is not None and self._pending_by_key.get(item.key) is item.future:
+            self._pending_by_key.pop(item.key, None)
+        if item.counts_bg_inflight and self._bg_inflight > 0:
+            self._bg_inflight -= 1
+        _fail_item(item, ConnectionError("Commander stopped"))
+
+    def _drain_into_deferred(
+        self, queue: asyncio.PriorityQueue[tuple[int, int, _QueueItem]]
+    ) -> None:
+        while True:
+            try:
+                self._deferred.append(queue.get_nowait())
+            except asyncio.QueueEmpty:
+                return
+
+    def _pop_runnable(self) -> tuple[int, int, _QueueItem] | None:
+        best_at = -1
+        best_key: tuple[int, int] | None = None
+        for index, queued in enumerate(self._deferred):
+            if not self._reservation_allows(queued[2]):
+                continue
+            key = (queued[0], queued[1])
+            if best_key is None or key < best_key:
+                best_key = key
+                best_at = index
+        if best_at < 0:
+            return None
+        return self._deferred.pop(best_at)
+
+    async def _next_item(
+        self, queue: asyncio.PriorityQueue[tuple[int, int, _QueueItem]]
+    ) -> tuple[int, int, _QueueItem]:
+        while True:
+            self._drain_into_deferred(queue)
+            chosen = self._pop_runnable()
+            if chosen is not None:
+                return chosen
+            if self._reservation_owner is None and not self._deferred:
+                queued = await queue.get()
+                if self._reservation_allows(queued[2]):
+                    return queued
+                self._deferred.append(queued)
+                continue
+            self._work_ready.clear()
+            self._drain_into_deferred(queue)
+            chosen = self._pop_runnable()
+            if chosen is not None:
+                return chosen
+            await self._work_ready.wait()
+
+    @asynccontextmanager
+    async def exclusive(self) -> AsyncIterator[None]:
+        """Keep this task's frames together until the context ends.
+
+        Frames queued by any other task stay queued, except
+        ``Priority.FORCE_RELEASE`` and ``Priority.ABORT``, which still run.
+        Cancellation releases the hold.
+        """
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("exclusive reservation requires a running task")
+        if self._reservation_owner is task:
+            if not self._accepting():
+                raise ConnectionError("Commander is not started")
+            self._reservation_depth += 1
+            try:
+                yield
+            finally:
+                self._reservation_depth -= 1
+            return
+        async with self._reservation_gate:
+            while True:
+                if not self._accepting():
+                    raise ConnectionError("Commander is not started")
+                if self._reservation_owner is None:
+                    break
+                await self._reservation_gate.wait()
+            self._reservation_owner = task
+            self._reservation_depth = 1
+        try:
+            yield
+        finally:
+            async with self._reservation_gate:
+                if self._reservation_owner is task:
+                    self._reservation_depth -= 1
+                    if self._reservation_depth <= 0:
+                        self._reservation_owner = None
+                        self._reservation_depth = 0
+                        self._reservation_gate.notify_all()
+            self._work_ready.set()
 
     async def stop(self) -> None:
         worker, queue = self._worker, self._queue
@@ -108,15 +228,15 @@ class IcomCommander:
                     _, _, item = queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-                if (
-                    item.key is not None
-                    and self._pending_by_key.get(item.key) is item.future
-                ):
-                    self._pending_by_key.pop(item.key, None)
-                if item.counts_bg_inflight and self._bg_inflight > 0:
-                    self._bg_inflight -= 1
-                _fail_item(item, ConnectionError("Commander stopped"))
+                self._fail_pending(item)
                 queue.task_done()
+            while self._deferred:
+                _, _, item = self._deferred.pop()
+                self._fail_pending(item)
+                queue.task_done()
+        self._work_ready.set()
+        async with self._reservation_gate:
+            self._reservation_gate.notify_all()
 
         try:
             if worker is not None:
@@ -129,6 +249,11 @@ class IcomCommander:
             # A cancelled waiter retains the live join handle. A completed old
             # worker may already have restarted through a done callback.
             if self._worker is worker and (worker is None or worker.done()):
+                while self._deferred:
+                    _, _, item = self._deferred.pop()
+                    self._fail_pending(item)
+                    if queue is not None:
+                        queue.task_done()
                 self._worker = None
                 self._queue = None
                 self._pending_by_key.clear()
@@ -199,6 +324,7 @@ class IcomCommander:
             counts_bg_inflight=counts_bg_inflight,
             fire_and_forget=not wait_dispatch,
             is_current=is_current,
+            enqueued_by=asyncio.current_task(),
         )
 
         if key is not None:
@@ -208,6 +334,7 @@ class IcomCommander:
             self._bg_inflight += 1
 
         await self._queue.put((item.priority, item.seq, item))
+        self._work_ready.set()
 
         if not wait_dispatch:
             # Fire-and-forget: the worker still executes and resolves
@@ -245,7 +372,7 @@ class IcomCommander:
         assert queue is not None and worker is not None
         try:
             while True:
-                _, _, item = await queue.get()
+                _, _, item = await self._next_item(queue)
                 execute_task: asyncio.Future[CivFrame | None] | None = None
                 try:
                     # Skip abandoned requests (caller cancelled/timed out
