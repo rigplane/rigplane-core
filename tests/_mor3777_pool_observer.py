@@ -175,7 +175,7 @@ class PoolPhaseObserver:
             future.add_done_callback(settled)
             return future
 
-        monkeypatch.setattr(self._pool, "submit_tracked", observed_submit)
+        monkeypatch.setitem(vars(self._pool), "submit_tracked", observed_submit)
 
     def close(self) -> None:
         """Remove own handler, restore the level; idempotent, never raises."""
