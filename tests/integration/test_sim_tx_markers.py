@@ -147,6 +147,13 @@ async def test_marker_streamed_while_keyed_lands_clean_in_the_sink(
         sim = arena.sim
         session = await arena.session()
         mic, tx_format = await _open_tx_mic(arena, session.key)
+        # RX runs on the same mic for the whole test, started through the
+        # real WS audio API: the marker must survive ACTIVE RX decoding on
+        # this connection (the leak condition), not merely an emitting
+        # simulator.
+        await mic.send({"type": "audio_start", "direction": "rx"})
+        rx_ack = await mic._until(lambda message: message.get("type") == "audio_format")  # noqa: SLF001
+        assert isinstance(rx_ack.get("sample_rate"), int) and rx_ack["sample_rate"] > 0
         rate = tx_format["sample_rate"]
         assert isinstance(rate, int) and rate > 0, tx_format
         spec = MarkerSpec(sample_rate=rate)
@@ -170,14 +177,21 @@ async def test_marker_streamed_while_keyed_lands_clean_in_the_sink(
         await _wait_rf(arena.web, RfState.TX, _GATE_TIMEOUT_S)
         t_ptt_on = next(t for t, on in reversed(sim.ptt_transitions) if on)
 
+        rx_before = len(rx_frames)
         sent_first = await _send_pcm(mic, pcm, rate)
         await _wait_sink_bytes(sim, len(pcm))
-        # The RX byte ramp ran on the same port all along (leak condition):
-        # RX audio must have reached THIS client while TX streamed.
+        # RX audio must keep flowing at THIS client for the whole TX
+        # stream: the captured marker is exactly the tone (asserted
+        # below), so contamination from the active RX path would fail it.
+        end = time.monotonic() + _GATE_TIMEOUT_S
+        while len(rx_frames) == rx_before:
+            assert time.monotonic() < end, (
+                "no RX audio frames reached the client during the TX stream"
+            )
+            await asyncio.sleep(0.02)
         rx_collector.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await rx_collector
-        assert rx_frames, "no RX audio frames reached the client"
 
         frames = sim.audio_tx_frames
         captured = sim.audio_tx_pcm()
