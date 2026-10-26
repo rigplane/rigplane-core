@@ -300,6 +300,7 @@ class _BoundedPortAudioPool:
             thread_name_prefix="rigplane-audio-open",
         )
         self.inflight = 0
+        self._inflight_lock = Lock()
         # A timed-out close still owns its worker and must not be run twice
         # concurrently. Cleanup retains the stream until success, even when
         # its caller (e.g. AudioBridge) drops the slot after logging an error.
@@ -316,14 +317,44 @@ class _BoundedPortAudioPool:
         Abandoned (timed-out) calls stay counted, keeping saturation honest.
         """
         loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(self._executor, fn)
-        self.inflight += 1
+        with self._inflight_lock:
+            if self.inflight >= _CAPTURE_OPEN_MAX_WORKERS:
+                raise AudioCaptureOpenTimeoutError("PortAudio worker pool saturated.")
+            self.inflight += 1
+        try:
+            future = loop.run_in_executor(self._executor, fn)
+        except BaseException:
+            with self._inflight_lock:
+                self.inflight -= 1
+            raise
 
         def _on_settled(_future: "asyncio.Future[Any]") -> None:
-            self.inflight -= 1
+            with self._inflight_lock:
+                self.inflight -= 1
 
         future.add_done_callback(_on_settled)
         return future
+
+    def run_bounded_sync(self, fn: Callable[[], Any], *, timeout: float) -> Any:
+        """Bound synchronous readers with the same executor and worker budget."""
+        deadline = time.monotonic() + timeout
+        with self._inflight_lock:
+            if self.inflight >= _CAPTURE_OPEN_MAX_WORKERS:
+                raise AudioCaptureOpenTimeoutError("PortAudio worker pool saturated.")
+            self.inflight += 1
+        try:
+            future = self._executor.submit(fn)
+        except BaseException:
+            with self._inflight_lock:
+                self.inflight -= 1
+            raise
+
+        def settled(_future: object) -> None:
+            with self._inflight_lock:
+                self.inflight -= 1
+
+        future.add_done_callback(settled)
+        return future.result(timeout=max(0.0, deadline - time.monotonic()))
 
     async def run_bounded(
         self,

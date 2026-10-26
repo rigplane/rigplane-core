@@ -74,7 +74,7 @@ def resolve_audio_for_serial_port(
 
         macos = platform.system() == "Darwin"
         try:
-            raw = read_raw_macos(5.0) if macos else read_raw_windows(5.0)
+            raw = read_raw_macos(timeout_s=5.0) if macos else read_raw_windows(5.0)
         except Exception:
             logger.warning("usb-audio-resolve: USB topology unavailable", exc_info=True)
             if not macos:

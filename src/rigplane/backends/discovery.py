@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from rigplane.core.serial_open import open_serial_port, serial_open_diagnostic
+from rigplane.profiles import get_radio_profile
 from rigplane.usb_audio_resolve import AudioDeviceMapping, resolve_audio_for_serial_port
 
 from .hamlib_probe import (
@@ -1071,7 +1072,9 @@ async def discover_serial_radios(
                     manufacturer=port.manufacturer,
                     product=port.product,
                     serial_number=port.serial_number,
-                    usb_audio=_resolve_usb_audio_metadata(civ.port),
+                    usb_audio=await asyncio.to_thread(
+                        _resolve_usb_audio_metadata, civ.port, profile_id
+                    ),
                 )
             )
             continue
@@ -1089,7 +1092,9 @@ async def discover_serial_radios(
             yaesu.manufacturer = port.manufacturer
             yaesu.product = port.product
             yaesu.serial_number = port.serial_number
-            yaesu.usb_audio = _resolve_usb_audio_metadata(yaesu.port)
+            yaesu.usb_audio = await asyncio.to_thread(
+                _resolve_usb_audio_metadata, yaesu.port, yaesu.profile_id
+            )
             results.append(yaesu)
             continue
 
@@ -1103,17 +1108,20 @@ async def discover_serial_radios(
             kenwood.manufacturer = port.manufacturer
             kenwood.product = port.product
             kenwood.serial_number = port.serial_number
-            kenwood.usb_audio = _resolve_usb_audio_metadata(kenwood.port)
+            kenwood.usb_audio = await asyncio.to_thread(
+                _resolve_usb_audio_metadata, kenwood.port, kenwood.profile_id
+            )
             results.append(kenwood)
 
     return results
 
 
-def _resolve_usb_audio_metadata(port: str) -> dict[str, object] | None:
+def _resolve_usb_audio_metadata(port: str, profile_id: str) -> dict[str, object] | None:
     """Return optional USB audio mapping metadata without failing discovery."""
     mapping: AudioDeviceMapping | None
     try:
-        mapping = resolve_audio_for_serial_port(port)
+        identity = get_radio_profile(profile_id).usb_identity if profile_id else None
+        mapping = resolve_audio_for_serial_port(port, usb_identity=identity)
     except Exception as exc:
         logger.debug("discover_serial_radios: USB audio resolve failed: %s", exc)
         return None

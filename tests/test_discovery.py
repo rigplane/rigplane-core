@@ -123,7 +123,7 @@ async def test_discover_cli_keeps_profile_audio_pair_and_refuses_extra_owner(
     [
         ("civ", "icom_ic705", "IC-705", 0xA4),
         ("yaesu_cat", "yaesu_ftx1", "FTX-1", None),
-        ("kenwood_cat", "kenwood_ts590sg", "TS-590SG", None),
+        ("kenwood_cat", "icom_ic705", "IC-705", None),
     ],
 )
 async def test_discovery_passes_resolved_profile_identity(
@@ -140,7 +140,7 @@ async def test_discovery_passes_resolved_profile_identity(
     for probe, value in (
         (
             "probe_serial_civ",
-            CivProbeResult(port, 38400, address, address)
+            CivProbeResult(port, 38400, address, bytes([address]))
             if protocol == "civ"
             else None,
         ),

@@ -105,6 +105,15 @@ def _inject_macos_hardware(monkeypatch, session):
             "bDeviceClass": row["device_class"],
             "locationID": row["location_id"],
             "IORegistryEntryChildren": [],
+            **{
+                key: row[field]
+                for key, field in (
+                    ("USB Product Name", "product"),
+                    ("USB Vendor Name", "manufacturer"),
+                    ("USB Serial Number", "serial_number"),
+                )
+                if row[field] is not None
+            },
         }
         for row in recording["usb_devices"]
     }

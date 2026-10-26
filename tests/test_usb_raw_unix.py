@@ -324,5 +324,3 @@ def test_invalid_deadlines_fail_closed(module, timeout):
     raw = import_module(f"rigplane.audio._usb_raw_{module}")
     result = getattr(raw, f"read_raw_{module}")(timeout_s=timeout)
     assert result.unavailable
-
-
