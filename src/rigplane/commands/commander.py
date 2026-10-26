@@ -91,7 +91,7 @@ class IcomCommander:
         self._queue: asyncio.PriorityQueue[tuple[int, int, _QueueItem]] | None = None
         self._worker: asyncio.Task[None] | None = None
         self._seq = 0
-        self._pending_by_key: dict[str, asyncio.Future[CivFrame | None]] = {}
+        self._pending_by_key: dict[str, _QueueItem] = {}
         # Count of outstanding fire-and-forget BACKGROUND sends (see
         # ``_MAX_BG_INFLIGHT``).  Incremented at enqueue, decremented in the
         # worker's ``finally`` for items flagged ``counts_bg_inflight``.
@@ -126,7 +126,7 @@ class IcomCommander:
         return item.enqueued_by is owner
 
     def _fail_pending(self, item: _QueueItem) -> None:
-        if item.key is not None and self._pending_by_key.get(item.key) is item.future:
+        if item.key is not None and self._pending_by_key.get(item.key) is item:
             self._pending_by_key.pop(item.key, None)
         if item.counts_bg_inflight and self._bg_inflight > 0:
             self._bg_inflight -= 1
@@ -182,7 +182,8 @@ class IcomCommander:
 
         Frames queued by any other task stay queued, except
         ``Priority.FORCE_RELEASE`` and ``Priority.ABORT``, which still run.
-        Cancellation releases the hold.
+        Cancellation releases the hold. A keyed dedupe send by the owner
+        never joins a deferred foreign item; it enqueues its own frame.
         """
         task = asyncio.current_task()
         if task is None:
@@ -296,10 +297,21 @@ class IcomCommander:
 
         if dedupe and key is not None:
             existing = self._pending_by_key.get(key)
-            if existing is not None and not existing.done():
+            if (
+                existing is not None
+                and not existing.future.done()
+                # The reservation owner never joins a deferred foreign item:
+                # that item cannot run until the hold ends, and only the
+                # owner ends the hold, so joining it would deadlock
+                # (MOR-3743). The owner enqueues its own item instead.
+                and not (
+                    self._reservation_owner is asyncio.current_task()
+                    and not self._reservation_allows(existing)
+                )
+            ):
                 if timeout is not None:
-                    return await asyncio.wait_for(existing, timeout=timeout)
-                return await existing
+                    return await asyncio.wait_for(existing.future, timeout=timeout)
+                return await existing.future
 
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[CivFrame | None] = loop.create_future()
@@ -328,7 +340,7 @@ class IcomCommander:
         )
 
         if key is not None:
-            self._pending_by_key[key] = fut
+            self._pending_by_key[key] = item
 
         if counts_bg_inflight:
             self._bg_inflight += 1
@@ -350,7 +362,7 @@ class IcomCommander:
             # Cancel queued/inflight future so worker can skip abandoned work.
             if not fut.done():
                 fut.cancel()
-            if key is not None and self._pending_by_key.get(key) is fut:
+            if key is not None and self._pending_by_key.get(key) is item:
                 self._pending_by_key.pop(key, None)
             raise
 
@@ -442,7 +454,7 @@ class IcomCommander:
                         self._bg_inflight -= 1
                     if (
                         item.key is not None
-                        and self._pending_by_key.get(item.key) is item.future
+                        and self._pending_by_key.get(item.key) is item
                     ):
                         self._pending_by_key.pop(item.key, None)
                     queue.task_done()
