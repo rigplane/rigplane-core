@@ -305,6 +305,13 @@ class CommandService:
         if name in {"send_civ", "send_raw"}:
             if name == "send_raw":
                 frame = params["frame_bytes"]
+                if (
+                    not isinstance(frame, bytes)
+                    or len(frame) < 6
+                    or frame[:2] != b"\xfe\xfe"
+                    or frame[-1:] != b"\xfd"
+                ):
+                    return
                 command, data = frame[4], frame[5:-1]
             else:
                 command = params["command"]

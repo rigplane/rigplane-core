@@ -1140,8 +1140,8 @@ class CommandQueueEntry:
     connection_generation: object | None = None
     positive_tx_ready: asyncio.Future[None] | None = None
     positive_tx_submission: asyncio.Task[Any] | None = None
-    positive_tx_validate: Callable[[], None] | None = None
     controller_ticket: ControllerTicket | None = None
+    positive_tx_validate: Callable[[], None] | None = None
 
 
 def validate_command_queue_entry_currency(
