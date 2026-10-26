@@ -752,11 +752,13 @@ async def test_tx_sink_captures_payload_and_ptt_per_frame(
     radio_id = await _open_audio(client, capture_server)
     tone = bytes(range(256)) * 2
     client.send(_tx_audio(1, 0, tone, radio_id), capture_server.audio_port)
+    await _await_client_seq_value(capture_server, 1)  # the frame was processed
     capture_server._set_simulated_ptt(True, wire_set=False)  # noqa: SLF001
     client.send(_tx_audio(2, 1, b"\x01\x02", radio_id), capture_server.audio_port)
+    await _await_client_seq_value(capture_server, 2)
     capture_server._set_simulated_ptt(False, wire_set=False)  # noqa: SLF001
     client.send(_tx_audio(3, 2, b"\x03\x04", radio_id), capture_server.audio_port)
-    await asyncio.sleep(0.1)
+    await _await_client_seq_value(capture_server, 3)
 
     frames = capture_server.audio_tx_frames
     assert len(frames) == 3

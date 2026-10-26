@@ -395,6 +395,11 @@ class MockIcomRadio(AudioPortMixin):
         capture_civ_frames: record every well-formed inbound CI-V frame
             addressed to the radio in :attr:`civ_frames_received`.
             Default False (no recording, no retention).
+        capture_tx_audio: retain the payload bytes of every recorded
+            client audio frame (``audio_tx_frames`` ``payload``, readable
+            as PCM via :meth:`audio_tx_pcm` / :meth:`write_tx_wav`).
+            Default False keeps the sink metadata-only (``payload`` is
+            ``b""``), so long soaks grow no memory.
         civ_state_survives_unclean_end: keep the CI-V stream state
             (frontier plus gap list) of a session whose hold expires on
             its own as orphan state for the next opener (recorded IC-7610,
@@ -458,6 +463,7 @@ class MockIcomRadio(AudioPortMixin):
         ptt_on_session_loss: Literal["hold", "release"] = "hold",
         recorded_answers: RecordedAnswerTable | None = None,
         capture_civ_frames: bool = False,
+        capture_tx_audio: bool = False,
         civ_state_survives_unclean_end: bool = False,
         orphan_civ_state_expiry_s: float = ORPHAN_CIV_STATE_EXPIRY_S,
         civ_inherited_fills_per_round: int = 0,
@@ -618,6 +624,10 @@ class MockIcomRadio(AudioPortMixin):
         # command builders.
         self.capture_civ_frames: bool = capture_civ_frames
         self.civ_frames_received: list[bytes] = []
+        # Opt-in retention of client audio-frame payloads (default off):
+        # ``audio_tx_frames`` entries carry the bytes after the 0x18 header
+        # in ``payload`` (``b""`` when off, so long soaks grow no memory).
+        self.capture_tx_audio: bool = capture_tx_audio
         # Opt-in CI-V refusal hook (default off, additive): (cmd, sub) pairs the
         # simulator answers with a bare NAK (0xFA) instead of dispatching — a
         # radio that refuses a command it would normally take. An entry

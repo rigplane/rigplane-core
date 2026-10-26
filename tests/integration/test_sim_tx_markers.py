@@ -56,10 +56,12 @@ from rigplane_testkit.icom import MockIcomRadio  # noqa: E402
 
 _FRAME_MS = 20  # one WS TX frame per 20 ms of PCM, paced in real time
 
-# Latency bounds, measured on the Mac mini and set at ~4x the observed value
-# (the observed numbers are in the MOR-3256 PR text).
-_WS_TO_SINK_BOUND_S = 2.0
-_PTT_ON_TO_SINK_BOUND_S = 2.0
+# Latency bounds, measured on the Mac mini and set at ~4x the observed
+# values (observed: WS frame sent -> sink 0.004 s; simulator PTT-on ->
+# first sink frame 0.372 s — the latter is mostly the test's own
+# observe-then-send path; both numbers are in the MOR-3256 PR text).
+_WS_TO_SINK_BOUND_S = 0.02
+_PTT_ON_TO_SINK_BOUND_S = 1.5
 
 
 async def _open_tx_mic(
@@ -102,13 +104,21 @@ async def _send_pcm(mic: _WsKeyClient, pcm: bytes, sample_rate: int) -> float:
     return first_nonzero_at
 
 
-async def _wait_frame_count(sim: MockIcomRadio, count: int) -> None:
-    """Wait until the sink holds exactly ``count`` frames (delivery of the
-    last sent datagram takes a loop tick; a fixed sleep would hope)."""
+async def _wait_sink_bytes(sim: MockIcomRadio, payload_bytes: int) -> None:
+    """Wait until the sink holds ``payload_bytes`` captured payload bytes.
+
+    The radio's TX path chunks each WS frame to MAX_AUDIO_PAYLOAD (1364
+    bytes; ``src/rigplane/audio/lan_stream.py``: ``push_tx``), so the sink
+    frame count is not the WS frame count — the byte count is the exact
+    one. Delivery of the last datagrams takes a loop tick; a fixed sleep
+    would hope.
+    """
     end = time.monotonic() + _GATE_TIMEOUT_S
-    while len(sim.audio_tx_frames) < count:
+    while sum(frame.payload_len for frame in sim.audio_tx_frames) < payload_bytes:
         assert time.monotonic() < end, (
-            f"TX sink stuck at {len(sim.audio_tx_frames)}/{count} frames"
+            f"TX sink stuck at "
+            f"{sum(frame.payload_len for frame in sim.audio_tx_frames)}"
+            f"/{payload_bytes} bytes"
         )
         await asyncio.sleep(0.02)
 
@@ -142,25 +152,31 @@ async def test_marker_streamed_while_keyed_lands_clean_in_the_sink(
         sent_first = await _send_pcm(mic, pcm, rate)
         # The RX byte ramp ran on the same port all along (leak condition).
         assert sim.audio_rx_frames_sent > 0
-        await _wait_frame_count(sim, len(pcm) // (rate * 2 * _FRAME_MS // 1000))
-
-        await arena.unkey(session)
-        frozen = len(sim.audio_tx_frames)
-        # PTT off -> frames stop: 0.5 s more tone never reaches the sink.
-        await _send_pcm(mic, pcm[: rate], rate)
-        assert len(sim.audio_tx_frames) == frozen
+        await _wait_sink_bytes(sim, len(pcm))
 
         frames = sim.audio_tx_frames
+        captured = sim.audio_tx_pcm()
+        assert len(captured) == len(pcm)  # exactly the marker, nothing else
         assert all(frame.ptt for frame in frames)
         seqs = [frame.inner_seq for frame in frames]
         assert all((b - a) & 0xFFFF == 1 for a, b in zip(seqs, seqs[1:]))
 
-        problems = check_marker(analyze_marker_pcm16(sim.audio_tx_pcm(), spec), spec)
+        problems = check_marker(analyze_marker_pcm16(captured, spec), spec)
         assert problems == [], problems
 
         first = frames[0]
         assert first.received_at - sent_first <= _WS_TO_SINK_BOUND_S
         assert first.received_at - t_ptt_on <= _PTT_ON_TO_SINK_BOUND_S
+
+        # PTT off -> frames stop. The audio gate follows the OBSERVED RF
+        # state (the poller must read RX first, as in
+        # test_multi_session_tx_lanes path4), so the freeze is pinned from
+        # the observed RX, not from the unkey reply.
+        await arena.unkey(session)
+        await _wait_rf(arena.web, RfState.RX, _GATE_TIMEOUT_S)
+        frozen = len(sim.audio_tx_frames)
+        await _send_pcm(mic, pcm[:rate], rate)  # 0.5 s more tone
+        assert len(sim.audio_tx_frames) == frozen
 
 
 async def test_marker_check_catches_a_wrong_tone(tmp_path: Path) -> None:
@@ -180,10 +196,10 @@ async def test_marker_check_catches_a_wrong_tone(tmp_path: Path) -> None:
         await _wait_ptt(arena.sim, True, _KEY_DEADLINE_S)
         await _wait_rf(arena.web, RfState.TX, _GATE_TIMEOUT_S)
         await _send_pcm(mic, sent, rate)
-        await _wait_frame_count(arena.sim, len(sent) // (rate * 2 * _FRAME_MS // 1000))
-        await arena.unkey(session)
+        await _wait_sink_bytes(arena.sim, len(sent))
 
         problems = check_marker(
             analyze_marker_pcm16(arena.sim.audio_tx_pcm(), spec), spec
         )
         assert any("frequency" in problem for problem in problems)
+        await arena.unkey(session)

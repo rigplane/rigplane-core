@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import io
 import json
 import logging
 import math
@@ -203,7 +204,10 @@ class TraceLog:
 @dataclass
 class RadioBackend:
     """One radio kind's seam: radio, lifecycle, startup fields (key order
-    is the contract), /state body and event handlers."""
+    is the contract), /state body and event handlers. The audio_tx_*
+    callables back ``GET /audio/tx[.wav]``; only the IC-7610 backend sets
+    them (its simulator captures TX audio), the serial backends leave them
+    None and the routes answer 404 ``unsupported``."""
 
     radio: Any
     start: Callable[[], Awaitable[None]]
@@ -212,6 +216,8 @@ class RadioBackend:
     state: Callable[[], dict]
     events: dict[str, Callable[[Any, dict], dict]]
     vanish: _VanishController | None = None  # serial: restore-timer seam
+    audio_tx_stats: Callable[[int], dict] | None = None  # since -> /audio/tx body
+    audio_tx_wav: Callable[[int], bytes] | None = None  # since -> WAV body
 
 
 # aiohttp 3.13 AppKeys instead of plain string keys (NotAppKeyWarning).
@@ -271,7 +277,9 @@ class ServeStack:
 
 def build_radio(args: argparse.Namespace) -> MockIcomRadio:
     """The IC-7610 simulator with the serve defaults (MOR-3593): the recorded
-    real dead-session hold (83.4-85.9 s), not the 0.5 s fast-test default."""
+    real dead-session hold (83.4-85.9 s), not the 0.5 s fast-test default.
+    TX-audio payload capture is on so ``GET /audio/tx[.wav]`` can serve the
+    sink (MOR-3256)."""
     # None = do not pass the kwarg: MockIcomRadio's own default applies.
     pairs = (("username", args.username), ("password", args.password))
     credentials = {key: value for key, value in pairs if value is not None}
@@ -285,8 +293,41 @@ def build_radio(args: argparse.Namespace) -> MockIcomRadio:
         enable_audio=True,
         dual_receiver=True,
         stateful_ptt=True,
+        capture_tx_audio=True,
         **credentials,
     )
+
+
+# The IC-7610 profile's TX leg (rigs/ic7610.toml: tx_codec PCM_1CH_16BIT,
+# 48 kHz). The simulator never parses the conninfo codec fields, so the
+# capture routes state the profile value, not a negotiated one.
+_IC7610_TX_SAMPLE_RATE = 48000
+
+
+def _audio_tx_stats(radio: MockIcomRadio, since: int) -> dict:
+    """The ``GET /audio/tx`` body over the sink frames from index ``since``."""
+    frames = radio.audio_tx_frames[since:]
+    return {
+        "frames": len(frames),
+        "payload_bytes": sum(frame.payload_len for frame in frames),
+        "ptt_off_frames": sum(not frame.ptt for frame in frames),
+        "inner_seq_gaps": sum(
+            (b.inner_seq - a.inner_seq) & 0xFFFF != 1
+            for a, b in zip(frames, frames[1:])
+        ),
+        "first_received_at": frames[0].received_at if frames else None,
+        "last_received_at": frames[-1].received_at if frames else None,
+        "sample_rate": _IC7610_TX_SAMPLE_RATE,
+        "channels": 1,
+        "codec": "pcm16",
+    }
+
+
+def _audio_tx_wav(radio: MockIcomRadio, since: int) -> bytes:
+    """The captured TX audio from frame ``since`` as a RIFF/WAV body."""
+    body = io.BytesIO()
+    radio.write_tx_wav(body, sample_rate=_IC7610_TX_SAMPLE_RATE, since=since)
+    return body.getvalue()
 
 
 def _ic7610_backend(args: argparse.Namespace) -> RadioBackend:
@@ -316,7 +357,14 @@ def _ic7610_backend(args: argparse.Namespace) -> RadioBackend:
         }
 
     return RadioBackend(
-        radio, radio.start, radio.stop, _startup_fields, _state, _EVENTS
+        radio,
+        radio.start,
+        radio.stop,
+        _startup_fields,
+        _state,
+        _EVENTS,
+        audio_tx_stats=lambda since: _audio_tx_stats(radio, since),
+        audio_tx_wav=lambda since: _audio_tx_wav(radio, since),
     )
 
 
@@ -497,6 +545,8 @@ def build_stack(args: argparse.Namespace) -> ServeStack:
     app.router.add_post("/event", _handle_event)
     app.router.add_get("/trace", _handle_trace)
     app.router.add_post("/stop", _handle_stop)
+    app.router.add_get("/audio/tx", _handle_audio_tx)
+    app.router.add_get("/audio/tx.wav", _handle_audio_tx_wav)
     control_host, control_port = args.control
     # Deterministic args only: the bound (ephemeral) port never appears.
     start_args = {
@@ -580,6 +630,34 @@ async def _handle_trace(request: web.Request) -> web.Response:
     except ValueError:
         since = 0
     return web.json_response(trace.snapshot(max(0, since)), dumps=_dumps)
+
+
+def _since(request: web.Request) -> int:
+    """The shared ``?since=N`` query rule (a bad value reads as 0)."""
+    try:
+        return max(0, int(request.query.get("since", "0")))
+    except ValueError:
+        return 0
+
+
+async def _handle_audio_tx(request: web.Request) -> web.Response:
+    """The TX-audio sink as JSON; IC-7610 only, 404 unsupported elsewhere."""
+    stats = request.app[_BACKEND_KEY].audio_tx_stats
+    if stats is None:
+        return web.json_response(
+            {"ok": False, "outcome": "unsupported"}, status=404, dumps=_dumps
+        )
+    return web.json_response(stats(_since(request)), dumps=_dumps)
+
+
+async def _handle_audio_tx_wav(request: web.Request) -> web.Response:
+    """The captured TX audio as audio/wav; IC-7610 only, 404 elsewhere."""
+    wav = request.app[_BACKEND_KEY].audio_tx_wav
+    if wav is None:
+        return web.json_response(
+            {"ok": False, "outcome": "unsupported"}, status=404, dumps=_dumps
+        )
+    return web.Response(body=wav(_since(request)), content_type="audio/wav")
 
 
 async def _handle_stop(request: web.Request) -> web.Response:

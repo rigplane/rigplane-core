@@ -46,6 +46,17 @@ loop — one loop, no threads).
 
 - `GET /state` → `{"frequency_hz":int,"mode":int,"ptt":bool,"session_held":bool,"login_count":int}`
 - `GET /trace?since=N` → `{"events":[...],"next":int}` — records with `n >= N`.
+- `GET /audio/tx?since=N` → the simulator's TX-audio sink over frames `N..`:
+  `{"frames":int,"payload_bytes":int,"ptt_off_frames":int,"inner_seq_gaps":int,
+  "first_received_at":float|null,"last_received_at":float|null,
+  "sample_rate":48000,"channels":1,"codec":"pcm16"}` (monotonic-clock values of
+  the simulator process; sample rate/codec state the IC-7610 profile's TX leg —
+  `rigs/ic7610.toml`: PCM_1CH_16BIT at 48 kHz — which every Core client
+  negotiates; `inner_seq_gaps` counts sequence discontinuities inside the
+  slice). The IC-7610 backend is built with `capture_tx_audio=True` for this.
+- `GET /audio/tx.wav?since=N` → the same frames as an `audio/wav` body
+  (16-bit PCM, mono, 48 kHz). Both routes answer HTTP 404
+  `{"ok":false,"outcome":"unsupported"}` on the serial backends.
 - `POST /stop` → `{"ok":true}`, then a clean shutdown (same path as
   SIGINT/SIGTERM); a second `POST /stop` before it completes is harmless.
 - `POST /event` with `{"event":"<name>", ...args}` → `{"ok":true,...}`, or

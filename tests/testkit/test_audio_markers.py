@@ -66,7 +66,17 @@ def test_unplanned_dropout_is_reported() -> None:
 def test_second_tone_is_reported_as_residual() -> None:
     samples = _samples(render_marker_pcm16(_SPEC))
     t = np.arange(len(samples)) / _SPEC.sample_rate
-    samples += 10.0 ** (-30.0 / 20.0) * 32767.0 * np.sin(2.0 * np.pi * 1500.0 * t)
+    # -30 dB RELATIVE to the marker tone, and silent inside the planted
+    # gaps, so the only problem the mix plants is the residual.
+    leak = 10.0 ** ((_SPEC.level_dbfs - 30.0) / 20.0) * 32767.0
+    second = leak * np.sin(2.0 * np.pi * 1500.0 * t)
+    for start_s, end_s in _SPEC.gaps:
+        second[
+            int(round(start_s * _SPEC.sample_rate)) : int(
+                round(end_s * _SPEC.sample_rate)
+            )
+        ] = 0.0
+    samples += second
     problems = check_marker(analyze_marker_pcm16(_to_pcm(samples), _SPEC), _SPEC)
     assert len(problems) == 1 and "residual" in problems[0]
 

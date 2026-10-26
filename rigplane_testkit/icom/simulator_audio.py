@@ -42,7 +42,10 @@ import asyncio
 import logging
 import struct
 import time
+import wave
 from dataclasses import dataclass
+from os import PathLike
+from typing import BinaryIO
 
 logger = logging.getLogger(__name__)
 
@@ -79,13 +82,18 @@ class ClientAudioFrame:
     only reference: ``seq`` is the tracked header sequence (LE u16 at
     0x06), ``inner_seq`` the audio-level sequence (BE u16 at 0x12),
     ``payload_len`` the bytes after the header, ``received_at`` the
-    arrival ``time.monotonic()``.
+    arrival ``time.monotonic()``, ``ptt`` the simulator's PTT state at
+    arrival. ``payload`` retains the bytes after the header only with
+    ``capture_tx_audio=True`` (long soaks keep the default metadata-only
+    recording); otherwise it is ``b""``.
     """
 
     seq: int
     inner_seq: int
     payload_len: int
     received_at: float
+    ptt: bool
+    payload: bytes
 
 
 class AudioPortMixin:
@@ -205,6 +213,46 @@ class AudioPortMixin:
         recorded says the radio re-sends audio on request.
         """
         return self._audio_retransmit_requests_received
+
+    def audio_tx_pcm(self, since: int = 0) -> bytes:
+        """The captured TX payloads concatenated in arrival order.
+
+        From frame index ``since`` (a running offset a poller keeps, like
+        ``/trace?since=``). Empty unless the radio was constructed with
+        ``capture_tx_audio=True``.
+        """
+        return b"".join(frame.payload for frame in self.audio_tx_frames[since:])
+
+    def write_tx_wav(
+        self,
+        path: str | PathLike[str] | BinaryIO,
+        *,
+        sample_rate: int,
+        channels: int = 1,
+        since: int = 0,
+    ) -> None:
+        """Write the captured TX audio as RIFF/WAV, 16-bit PCM.
+
+        The sample rate and channels are the CALLER's statement of the
+        negotiated TX format: the simulator never parses the conninfo
+        codec fields, so the sink records bytes, not samples. ``path``
+        may be a filesystem path or a binary file-like object.
+        """
+        if isinstance(path, (str, PathLike)):
+            # wave.open treats only str as a path; open PathLike ourselves.
+            with open(path, "wb") as file:
+                self._write_tx_wav(file, sample_rate, channels, since)
+        else:
+            self._write_tx_wav(path, sample_rate, channels, since)
+
+    def _write_tx_wav(
+        self, file: BinaryIO, sample_rate: int, channels: int, since: int
+    ) -> None:
+        with wave.open(file, "wb") as wav:
+            wav.setnchannels(channels)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(self.audio_tx_pcm(since))
 
     # ------------------------------------------------------------------
     # Events
@@ -346,6 +394,12 @@ class AudioPortMixin:
                             inner_seq=struct.unpack_from(">H", data, 0x12)[0],
                             payload_len=n - AUDIO_HEADER_SIZE,
                             received_at=time.monotonic(),
+                            ptt=self.ptt_on,
+                            payload=(
+                                data[AUDIO_HEADER_SIZE:]
+                                if self.capture_tx_audio
+                                else b""
+                            ),
                         )
                     )
                 return
