@@ -35,12 +35,13 @@ def _assert_recording_redacted(
                 assert int(suffix, 16) & ~0xF in locations, value
             count += 1
         for match in re.finditer(
-            r"USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}\\([^\s\\&'\"(),;:]+)",
+            r"USB\\[^\s'\"(),;:]+",
             value,
             re.IGNORECASE | re.ASCII,
         ):
-            assert _TOKEN.fullmatch(match[1].rstrip(".")), value
-            count += 1
+            if reference := _USB_SERIAL_ID.fullmatch(match[0].rstrip(".")):
+                assert _TOKEN.fullmatch(reference[1]), value
+                count += 1
         return count
     if not isinstance(value, dict):
         return count
@@ -120,3 +121,14 @@ def test_recorded_capture_valid_and_redacted(fixture: Path) -> None:
 def test_recording_check_rejects_serials_in_every_string_leaf(value: Any) -> None:
     with pytest.raises(AssertionError):
         _assert_recording_redacted(value, set())
+
+
+@pytest.mark.parametrize("suffix", ["6&3878EF1F&0&5", "123456&GENERATED&0"])
+def test_recording_check_accepts_generated_windows_ids_in_text(suffix: str) -> None:
+    reference = rf"USB\VID_8087&PID_0029\{suffix}"
+    assert (
+        _assert_recording_redacted(
+            {"instance_id": reference, "description": f"Device ({reference})."}, set()
+        )
+        == 0
+    )
