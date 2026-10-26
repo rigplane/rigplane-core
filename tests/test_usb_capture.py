@@ -189,8 +189,9 @@ async def test_cli_captures_two_radios_in_one_process(
         for port in raw["serial_ports"]:
             assert port["serial_number"] not in _SERIALS
             assert "hwid" not in port
-            assert port["description"] in {f"Radio:{serial}" for serial in _SERIALS}
-        assert raw["portaudio"]["devices"][0]["name"] == f"Radio:{_SERIALS[0]}"
+            assert port["description"] == f"Radio:{port['serial_number']}"
+        assert raw["portaudio"]["devices"][0]["name"].startswith("Radio:R")
+        assert all(serial not in json.dumps(session) for serial in _SERIALS)
     b_ids = [s["raw"]["windows"]["devnodes"][-1]["instance_id"] for s in sessions[:3]]
     assert b_ids[0] == b_ids[1] == b_ids[2]
     assert readers.raw.call_count == readers.comports.call_count == 5
@@ -212,9 +213,7 @@ async def test_cli_captures_two_radios_in_one_process(
         "Plug radio-b back in (any USB port), wait 10 seconds, then press Enter.",
     ]
     output = capsys.readouterr().out
-    assert output.splitlines()[0] == (
-        "Note: device and audio endpoint names are kept as recorded; review the file before sending it."
-    )
+    assert "names are kept" not in output
     assert str(out) in output and "5 sessions" in output and "2 radios" in output
     assert list(tmp_path.iterdir()) == [out]
 
@@ -348,7 +347,7 @@ def test_atomic_write_refuses_unsupported_safe_write_and_cleans_temp(
 
 
 @pytest.mark.asyncio
-async def test_cli_prints_names_note_before_writing(
+async def test_cli_writes_scrubbed_document_without_obsolete_names_note(
     tmp_path: Path,
     readers: SimpleNamespace,
     monkeypatch: pytest.MonkeyPatch,
@@ -357,9 +356,8 @@ async def test_cli_prints_names_note_before_writing(
     write = capture._write_private_json
 
     def check_note(path, value):
-        assert capsys.readouterr().out == (
-            "Note: device and audio endpoint names are kept as recorded; review the file before sending it.\n"
-        )
+        assert capsys.readouterr().out == ""
+        assert all(serial not in json.dumps(value) for serial in _SERIALS)
         write(path, value)
 
     monkeypatch.setattr(capture, "_write_private_json", check_note)

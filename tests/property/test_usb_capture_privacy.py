@@ -35,7 +35,9 @@ def _replace_serials(value: Any, tokens: dict[str, str]) -> Any:
 
 
 @st.composite
-def _capture_bundles(draw: st.DrawFn, part: str) -> tuple[dict[str, Any], list[str]]:
+def _capture_bundles(
+    draw: st.DrawFn, part: str, descriptive: bool = True
+) -> tuple[dict[str, Any], list[str]]:
     serials = [
         "PRIVATE_SERIAL_" + value + "_END"
         for value in draw(
@@ -125,6 +127,15 @@ def _capture_bundles(draw: st.DrawFn, part: str) -> tuple[dict[str, Any], list[s
                 }
                 for device in devices
             )
+            if descriptive:
+                text = f"Device ({serial.lower()}) / {path_serial}"
+                for port in ports[-len(devices) :]:
+                    port.update(description=text, product=text, manufacturer=text)
+                if part == "windows":
+                    nodes[-1]["device_desc"] = f"Device {instance}"
+                else:
+                    usb[-1].update(product=text, manufacturer=text)
+                    audio[-1]["name"] = text
         topology = (
             {"source": "cfgmgr32", "devnodes": nodes}
             if part == "windows"
@@ -137,6 +148,19 @@ def _capture_bundles(draw: st.DrawFn, part: str) -> tuple[dict[str, Any], list[s
         )
         raw = {part: topology, "serial_ports": ports, "portaudio": {"devices": []}}
         unavailable = []
+        if descriptive:
+            raw["portaudio"]["devices"] = [
+                {"name": f"Audio ({serial})"} for serial in serials
+            ]
+            raw["diagnostics"] = {
+                "nested": [
+                    [f"diagnostic ({serial})", {"message": serial.lower()}]
+                    for serial in serials
+                ]
+            }
+            unavailable.append(
+                {"part": "optional", "reason": f"missing ({serials[0]})"}
+            )
         private_path = (
             rf"USB\VID_1234&PID_5678\{serials[0]}"
             if part == "windows"
@@ -228,13 +252,19 @@ def test_generated_capture_has_no_serial_anywhere(
     _validate_bundle(bundle)
     before = copy.deepcopy(bundle)
     result = redact_bundle(bundle, key=b"generated-capture-privacy")
-    # Whole-document scans use long serials; short serials are checked by position below.
-    document = json.dumps(result)
-    for serial in serials:
-        for spelling in {serial, serial.replace(" ", "_")}:
-            assert spelling.lower() not in document.lower(), (
-                f"raw serial survived: {spelling}"
-            )
+    pending = [result]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+        elif isinstance(value, str):
+            for serial in serials:
+                for spelling in {serial, serial.replace(" ", "_")}:
+                    assert spelling.lower() not in value.lower(), (
+                        f"raw serial survived: {spelling} in {value}"
+                    )
     assert bundle == before
     tokens = _serial_tokens(bundle, result, part)
     assert set(tokens) == set(serials)
@@ -249,7 +279,7 @@ def test_generated_capture_has_no_serial_anywhere(
 def test_short_and_colliding_serials_keep_exact_path_rule(
     part: str, serial: str, data: st.DataObject
 ) -> None:
-    template, serials = data.draw(_capture_bundles(part))
+    template, serials = data.draw(_capture_bundles(part, descriptive=False))
     substitutions = {
         original: serial if index == 0 else original
         for index, original in enumerate(serials)
