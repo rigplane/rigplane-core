@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and 400-470 MHz); no transmit band was added or widened; not verified
   on radios.
 
+- **IC-7300MK2 CI-V identity (MOR-3792).** The shared serial identity
+  table now maps the MK2's default CI-V address `0xB6` to `IC-7300MK2`,
+  so `identify_radio` — and the CI-V identity resolver Pro consumes —
+  answers `IC-7300MK2` instead of `Unknown (0xB6)`. The MK2 model-ID
+  bytes are not documented in the CI-V guide and the radio has not been
+  verified on hardware; the profile's identity gate stays unverified.
+
 ## [3.0.0b21] — 2026-10-26
 
 ### Added
