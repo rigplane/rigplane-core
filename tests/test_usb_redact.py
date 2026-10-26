@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from rigplane.audio import _usb_redact
+from rigplane.audio._usb_capture import _write_private_json
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "windows_pnp_gtr7_ic7300_ids.json"
 _SERIAL = "IC-7300_00000001"
@@ -188,6 +189,95 @@ def test_bundle_wide_serial_evidence_redacts_partial_capture_sessions() -> None:
         assert serial not in json.dumps(raw)
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("pyserial_missing", [False, True])
+@pytest.mark.parametrize("identity", ["3121400", "1-2.3"])
+def test_partial_bundle_shares_path_aliases_and_location_evidence(
+    tmp_path: Path, reverse: bool, pyserial_missing: bool, identity: str
+) -> None:
+    serial = "01AE340D"
+    callout = f"/dev/cu.usbserial-{serial}0"
+    dialin = f"/dev/tty.usbserial-{serial}1"
+    uid = f"AppleUSBAudioEngine:Vendor:Codec:{identity}:1"
+    serial_uid = f"AppleUSBAudioEngine:Vendor:Codec:{serial}:2"
+    complete = {
+        "radios": [{"profile": "radio-a", "serial_port": callout}],
+        "raw": {
+            "macos": {
+                "usb_devices": [
+                    {"registry_id": 1, "serial_number": serial},
+                    {"registry_id": 2, "location_id": 0x3121400},
+                    {"registry_id": 3, "serial_number": identity},
+                ],
+                "serial_devices": [{"device": callout, "usb_registry_id": 1}],
+                "audio_devices": [{"uid": uid}, {"uid": serial_uid}],
+            },
+            "linux": {"usb_devices": [{"devpath": "1-2.3", "serial_number": serial}]},
+            "serial_ports": [
+                {"serial_number": serial, "device": callout, "name": callout[5:]}
+            ],
+        },
+    }
+    partial = {
+        "radios": [{"profile": "radio-a", "serial_port": dialin}],
+        "raw": {
+            "macos": {
+                "usb_devices": [],
+                "serial_devices": [{"device": dialin, "usb_registry_id": None}],
+                "audio_devices": [{"uid": uid}, {"uid": serial_uid}],
+            },
+        },
+        "unavailable": [
+            {"part": "macos:usb", "reason": "ioreg failed"},
+            {"part": "serial_ports", "reason": "comports failed"},
+        ],
+    }
+    if not pyserial_missing:
+        partial["raw"]["serial_ports"] = [
+            {"device": dialin, "name": dialin[5:], "serial_number": None}
+        ]
+    sessions = [complete, partial]
+    if reverse:
+        sessions.reverse()
+    bundle = {"sessions": sessions}
+    before = copy.deepcopy(bundle)
+    result = _usb_redact.redact_bundle(bundle, key=_KEY)
+    assert bundle == before
+    out = tmp_path / "capture.json"
+    _write_private_json(out, result)
+    saved = out.read_text(encoding="utf-8")
+    assert json.loads(saved) == result
+    token = result["sessions"][int(reverse)]["raw"]["serial_ports"][0]["serial_number"]
+    assert re.fullmatch(r"R[A-Z2-7]{10}", token)
+    for original, session in zip(sessions, result["sessions"]):
+        device = original["radios"][0]["serial_port"].replace(serial, token)
+        raw = session["raw"]
+        assert {
+            "radio": session["radios"][0]["serial_port"],
+            "topology": raw["macos"]["serial_devices"][0]["device"],
+            "uids": [row["uid"] for row in raw["macos"]["audio_devices"]],
+            "ports": raw.get("serial_ports"),
+        } == {
+            "radio": device,
+            "topology": device,
+            "uids": [uid, serial_uid.replace(serial, token)],
+            "ports": [
+                {
+                    "device": device,
+                    "name": device[5:],
+                    "serial_number": token if original is complete else None,
+                }
+            ]
+            if "serial_ports" in original["raw"]
+            else None,
+        }
+    complete_raw = result["sessions"][int(reverse)]["raw"]
+    assert complete_raw["macos"]["usb_devices"][0]["serial_number"] == token
+    assert complete_raw["linux"]["usb_devices"][0]["serial_number"] == token
+    assert complete_raw["macos"]["usb_devices"][2]["serial_number"] != identity
+    assert serial not in saved
+
+
 def test_bsd_path_suffix_redacts_only_exact_serial_plus_one_interface_digit() -> None:
     serial = "01AE340D"
     ports = [
@@ -202,8 +292,6 @@ def test_bsd_path_suffix_redacts_only_exact_serial_plus_one_interface_digit() ->
             {"profile": f"radio-{index}", "serial_port": port["device"]}
             for index, port in enumerate(ports)
         ],
-        # A macOS capture always records the macos part, even when partially
-        # unavailable; the serial_port aliases are built under that gate.
         "raw": {
             "macos": {
                 "usb_devices": [],
@@ -225,6 +313,37 @@ def test_bsd_path_suffix_redacts_only_exact_serial_plus_one_interface_digit() ->
     assert paths[3] == f"/dev/tty.usbserial-{token}"
     # Two trailing digits exceed the single interface digit and stay unchanged.
     assert paths[4] == f"/dev/cu.usbserial-{serial}01"
+
+
+def test_complete_capture_keeps_recorded_serial_for_overlapping_bsd_suffixes() -> None:
+    serial = "01AE340D"
+    device = f"/dev/cu.usbserial-{serial}1"
+    bundle = {
+        "sessions": [
+            {
+                "raw": {
+                    "macos": {
+                        "usb_devices": [
+                            {"registry_id": 1, "serial_number": serial},
+                            {"registry_id": 2, "serial_number": serial + "1"},
+                        ],
+                        "serial_devices": [{"device": device, "usb_registry_id": 1}],
+                    },
+                    "serial_ports": [{"device": device, "serial_number": serial}],
+                },
+                "radios": [{"profile": "radio-a", "serial_port": device}],
+            }
+        ]
+    }
+    result = _usb_redact.redact_bundle(bundle, key=_KEY)["sessions"][0]
+    assert result["raw"]["serial_ports"][0] == {
+        "device": "/dev/cu.usbserial-RHE7PFHYDOF1",
+        "serial_number": "RHE7PFHYDOF",
+    }
+    assert result["raw"]["macos"]["serial_devices"][0]["device"] == (
+        "/dev/cu.usbserial-RHE7PFHYDOF1"
+    )
+    assert result["radios"][0]["serial_port"] == "/dev/cu.usbserial-RHE7PFHYDOF1"
 
 
 def test_mini_capture_shape_keeps_location_derived_bsd_names() -> None:
@@ -312,6 +431,21 @@ def test_mini_capture_shape_keeps_location_derived_bsd_names() -> None:
     )
     for serial in (ic705, yaesu, cp2105, webcam):
         assert serial not in json.dumps(result)
+    expected = copy.deepcopy(session)
+    expected["radios"][1]["serial_port"] = f"/dev/cu.usbserial-{token_cp2105}1"
+    expected_raw = expected["raw"]
+    expected_raw["serial_ports"][0].update(
+        serial_number=token_yaesu, device=f"/dev/cu.usbmodem{token_yaesu}1"
+    )
+    for row in expected_raw["macos"]["usb_devices"]:
+        if serial := row.get("serial_number"):
+            row["serial_number"] = _usb_redact._token(_KEY, serial.lower())
+    for row, device in zip(expected_raw["macos"]["serial_devices"], devices):
+        row["device"] = device
+    expected_raw["macos"]["audio_devices"][1]["uid"] = webcam_uid.replace(
+        webcam, token_webcam
+    )
+    assert result == expected
 
 
 @pytest.mark.parametrize("identity", ["3121400", "03121400", "03ABCd00"])

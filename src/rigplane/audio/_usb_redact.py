@@ -83,11 +83,31 @@ def redact_bundle(
 ) -> dict[str, Any]:
     key = secrets.token_bytes(32) if key is None else key
     values: set[str] = set()
+    devices: set[str] = set()
+    device_serials: dict[str, str] = {}
+    uid_locations: set[int | str] = set()
+
+    def collect_devices(value: Any) -> None:
+        if isinstance(value, list):
+            for child in value:
+                collect_devices(child)
+        elif isinstance(value, dict):
+            for child in value.values():
+                collect_devices(child)
+        elif isinstance(value, str):
+            if value.startswith("/dev/"):
+                devices.add(value)
+            elif value.startswith(("cu.", "tty.", "serial/by-id/")):
+                devices.add("/dev/" + value)
+
+    collect_devices(bundle)
     for session in bundle["sessions"]:
         raw = session.get("raw", {})
         for port in raw.get("serial_ports", []):
             if serial := port.get("serial_number"):
                 values.add(serial)
+                if device := port.get("device"):
+                    device_serials[device] = serial
         for row in raw.get("windows", {}).get("devnodes", []):
             match = _USB_SERIAL_ID.fullmatch(row.get("instance_id", ""))
             if match:
@@ -96,12 +116,22 @@ def redact_bundle(
             for row in raw.get(part, {}).get("usb_devices", []):
                 if serial := row.get("serial_number"):
                     values.add(serial)
+                if isinstance(location := row.get("location_id"), int):
+                    uid_locations.add(location)
+                if isinstance(devpath := row.get("devpath"), str):
+                    uid_locations.add(devpath)
+        usb = {
+            row.get("registry_id"): row.get("serial_number")
+            for row in raw.get("macos", {}).get("usb_devices", [])
+        }
+        for row in raw.get("macos", {}).get("serial_devices", []):
+            if (device := row.get("device")) and (
+                serial := usb.get(row.get("usb_registry_id"))
+            ):
+                device_serials[device] = serial
 
-    replacements = {
-        canonical: _token(key, canonical)
-        for canonical in {_ascii_lower(value.replace(" ", "_")) for value in values}
-    }
     known_serials = {_ascii_lower(value.replace(" ", "_")) for value in values}
+    replacements = {canonical: _token(key, canonical) for canonical in known_serials}
 
     def replace_field(value: Any) -> Any:
         if isinstance(value, str):
@@ -114,9 +144,7 @@ def redact_bundle(
             return value
         return value[: match.start(1)] + replace_field(match[1])
 
-    def replace_device(value: Any, serial: str | None = None) -> Any:
-        if not isinstance(value, str):
-            return value
+    def replace_device(value: str, serial: str | None = None) -> str:
         mac = re.fullmatch(r"(/dev/(?:cu|tty)\.(?:usbserial-|usbmodem))(.*)", value)
         for candidate in sorted({serial} if serial else values, key=len, reverse=True):
             for spelling in {candidate, candidate.replace(" ", "_")}:
@@ -143,15 +171,16 @@ def redact_bundle(
                         return match[1] + replace_field(candidate) + match[2]
         return value
 
-    def redact_topology(
-        value: Any,
-        part: str,
-        aliases: dict[str, str],
-        uid_locations: set[int],
-    ) -> None:
+    aliases: dict[str, str] = {}
+    for device in devices:
+        redacted = replace_device(device, device_serials.get(device))
+        aliases[device] = redacted
+        aliases[device.removeprefix("/dev/")] = redacted.removeprefix("/dev/")
+
+    def redact_topology(value: Any, part: str) -> None:
         if isinstance(value, list):
             for child in value:
-                redact_topology(child, part, aliases, uid_locations)
+                redact_topology(child, part)
         elif isinstance(value, dict):
             for field, child in value.items():
                 if field == "serial_number":
@@ -176,53 +205,30 @@ def redact_bundle(
                         except ValueError:
                             location = None
                         if (
-                            location is None or location not in uid_locations
+                            identity not in uid_locations
+                            and (location is None or location not in uid_locations)
                         ) and _ascii_lower(identity.replace(" ", "_")) in known_serials:
                             value[field] = ":".join(
                                 (prefix, replace_field(identity), streams)
                             )
                 else:
-                    redact_topology(child, part, aliases, uid_locations)
+                    redact_topology(child, part)
 
     result = copy.deepcopy(bundle)
     for session in result["sessions"]:
         raw = session.get("raw", {})
-        if any(part in raw for part in ("macos", "linux")):
-            aliases = {}
-            ports = list(raw.get("serial_ports", []))
-            usb = {
-                row.get("registry_id"): row.get("serial_number")
-                for row in raw.get("macos", {}).get("usb_devices", [])
-            }
-            uid_locations = {
-                row["location_id"]
-                for row in raw.get("macos", {}).get("usb_devices", [])
-                if isinstance(row.get("location_id"), int)
-            }
-            ports += [
-                {**row, "serial_number": usb.get(row.get("usb_registry_id"))}
-                for row in raw.get("macos", {}).get("serial_devices", [])
-            ]
-            for port in ports:
-                if (device := port.get("device")) and (
-                    serial := port.get("serial_number")
-                ):
-                    aliases[device] = replace_device(device, serial)
-                    aliases[device.removeprefix("/dev/")] = aliases[
-                        device
-                    ].removeprefix("/dev/")
-            for radio in session.get("radios", []):
-                device = radio.get("serial_port")
-                radio["serial_port"] = aliases.get(device, replace_device(device))
-            for port in raw.get("serial_ports", []):
-                for field in ("device", "name"):
-                    if field in port:
-                        port[field] = aliases.get(port[field], port[field])
-            for part in ("macos", "linux"):
-                redact_topology(raw.get(part), part, aliases, uid_locations)
+        for radio in session.get("radios", []):
+            if "serial_port" in radio:
+                device = radio["serial_port"]
+                radio["serial_port"] = aliases.get(device, device)
+        for part in ("macos", "linux"):
+            redact_topology(raw.get(part), part)
         for port in raw.get("serial_ports", []):
             if "serial_number" in port:
                 port["serial_number"] = replace_field(port["serial_number"])
+            for field in ("device", "name"):
+                if field in port:
+                    port[field] = aliases.get(port[field], port[field])
         windows = raw.get("windows")
         if windows is not None:
             windows["devnodes"] = _prune_windows_nodes(windows.get("devnodes", []), key)
