@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import json
 import logging
+import sys
 from contextlib import ExitStack, contextmanager
 from functools import partial
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -32,6 +34,132 @@ from rigplane.discovery import (
     probe_xiegu_model_id,
 )
 from rigplane.usb_audio_resolve import AudioDeviceMapping
+
+
+@pytest.mark.parametrize("os_name,indices", [("macos", (3, 3)), ("windows", (1, 5))])
+@pytest.mark.parametrize("extra_owner", [False, True])
+async def test_discover_cli_keeps_profile_audio_pair_and_refuses_extra_owner(
+    monkeypatch, capsys, os_name, indices, extra_owner
+):
+    from test_usb_pairing_macos import FTX_PORT, _inject_macos, _macos_session
+    from test_usb_pairing_windows import _inject_windows, _synthetic_session
+    from rigplane.cli import _build_parser, _cmd_discover
+
+    if os_name == "macos":
+        session = _macos_session()
+        if extra_owner:
+            raw = session["raw"]["macos"]
+            raw["usb_devices"].append(
+                {
+                    **next(
+                        row
+                        for row in raw["usb_devices"]
+                        if row["registry_id"] == 4295976929
+                    ),
+                    "registry_id": 999,
+                    "vendor_id": 0xFFFF,
+                    "product_id": 1,
+                }
+            )
+            raw["serial_devices"].append(
+                {"device": "/dev/cu.undeclared", "usb_registry_id": 999}
+            )
+        _, sd = _inject_macos(monkeypatch, session)
+        port = FTX_PORT
+    else:
+        session = _synthetic_session(codec=("0D8C", "0016"))
+        rows = session["raw"]["windows"]["devnodes"]
+        rows[2]["instance_id"] = r"USB\VID_10C4&PID_EA70\S"
+        rows.append(
+            {
+                **rows[2],
+                "instance_id": r"USB\VID_26AA&PID_0030\HRI",
+                "friendly_name": "HRI (COM5)",
+            }
+        )
+        if extra_owner:
+            rows.append(
+                {
+                    **rows[2],
+                    "instance_id": r"USB\VID_FFFF&PID_0001\extra",
+                    "friendly_name": "Extra (COM6)",
+                }
+            )
+        _, sd = _inject_windows(monkeypatch, session)
+        port = "COM3"
+    monkeypatch.setitem(sys.modules, "sounddevice", sd)
+    monkeypatch.setattr(
+        "rigplane.discovery.enumerate_serial_ports",
+        lambda: [SerialPortCandidate(port, "Dual UART", None)],
+    )
+    monkeypatch.setattr(
+        "rigplane.discovery.probe_serial_civ", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        "rigplane.discovery.probe_serial_yaesu_cat",
+        AsyncMock(
+            return_value=RadioDiscoveryResult(
+                port, "yaesu_cat", "FTX-1", "yaesu_ftx1", 38400
+            )
+        ),
+    )
+    args = _build_parser().parse_args(["discover", "--serial-only", "--json"])
+    assert await _cmd_discover(None, args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    connection = payload["radios"][0]["connections"][0]
+    if extra_owner:
+        assert "usbAudio" not in connection
+    else:
+        assert connection["usbAudio"] == {
+            "rxDeviceIndex": indices[0],
+            "txDeviceIndex": indices[1],
+            "serialPort": port,
+            "locationPrefix": None,
+        }
+
+
+@pytest.mark.parametrize(
+    "protocol,profile_id,model,address",
+    [
+        ("civ", "icom_ic705", "IC-705", 0xA4),
+        ("yaesu_cat", "yaesu_ftx1", "FTX-1", None),
+        ("kenwood_cat", "kenwood_ts590sg", "TS-590SG", None),
+    ],
+)
+async def test_discovery_passes_resolved_profile_identity(
+    monkeypatch, protocol, profile_id, model, address
+):
+    from rigplane.profiles import get_radio_profile
+
+    port = "/dev/cu.fixture"
+    monkeypatch.setattr(
+        "rigplane.discovery.enumerate_serial_ports",
+        lambda: [SerialPortCandidate(port, "Serial", None)],
+    )
+    result = RadioDiscoveryResult(port, protocol, model, profile_id, 38400)
+    for probe, value in (
+        (
+            "probe_serial_civ",
+            CivProbeResult(port, 38400, address, address)
+            if protocol == "civ"
+            else None,
+        ),
+        ("probe_serial_yaesu_cat", result if protocol == "yaesu_cat" else None),
+        ("probe_serial_kenwood_cat", result if protocol == "kenwood_cat" else None),
+    ):
+        monkeypatch.setattr(
+            "rigplane.discovery." + probe, AsyncMock(return_value=value)
+        )
+    monkeypatch.setattr(
+        "rigplane.discovery.resolve_civ_radio_identity",
+        AsyncMock(return_value=(model, profile_id)),
+    )
+    resolve = Mock(return_value=None)
+    monkeypatch.setattr("rigplane.discovery.resolve_audio_for_serial_port", resolve)
+    assert len(await discover_serial_radios()) == 1
+    resolve.assert_called_once_with(
+        port, usb_identity=get_radio_profile(profile_id).usb_identity
+    )
 
 
 @contextmanager

@@ -5,6 +5,9 @@ from copy import deepcopy
 from dataclasses import replace
 import json
 from pathlib import Path
+import plistlib
+import struct
+import subprocess
 from threading import Event, get_ident
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -49,7 +52,7 @@ def _adapt(session):
     )
 
 
-def _inject_macos(monkeypatch, session):
+def _inject_macos(monkeypatch, session, *, real_reader=False):
     enumeration = session["raw"]["portaudio"]
     sd = SimpleNamespace(
         query_devices=lambda: enumeration["devices"],
@@ -79,11 +82,75 @@ def _inject_macos(monkeypatch, session):
     monkeypatch.setattr(
         "rigplane.audio.usb_driver._extract_sounddevice_module", lambda _backend: sd
     )
-    monkeypatch.setattr(
-        "rigplane.audio._usb_raw_macos.read_raw_macos",
-        lambda timeout_s: _raw_macos(session),
-    )
+    if real_reader:
+        _inject_macos_hardware(monkeypatch, session)
+    else:
+        monkeypatch.setattr(
+            "rigplane.audio._usb_raw_macos.read_raw_macos",
+            lambda timeout_s: _raw_macos(session),
+        )
     return backend, sd
+
+
+def _inject_macos_hardware(monkeypatch, session):
+    from rigplane.audio import _usb_raw_macos as raw
+
+    recording = session["raw"]["macos"]
+    nodes = {
+        row["registry_id"]: {
+            "IORegistryEntryID": row["registry_id"],
+            "IORegistryEntryName": str(row["registry_id"]),
+            "idVendor": row["vendor_id"],
+            "idProduct": row["product_id"],
+            "bDeviceClass": row["device_class"],
+            "locationID": row["location_id"],
+            "IORegistryEntryChildren": [],
+        }
+        for row in recording["usb_devices"]
+    }
+    roots = []
+    for row in recording["usb_devices"]:
+        parent = nodes.get(row["parent_registry_id"])
+        children = roots if parent is None else parent["IORegistryEntryChildren"]
+        children.append(nodes[row["registry_id"]])
+    for row in recording["serial_devices"]:
+        nodes[row["usb_registry_id"]]["IORegistryEntryChildren"].append(
+            {
+                "IORegistryEntryName": "Serial",
+                "IOObjectClass": "IOSerialBSDClient",
+                "IOCalloutDevice": row["device"],
+            }
+        )
+    plist = plistlib.dumps(roots)
+
+    def ioreg(command, **kwargs):
+        assert command[0] == "/usr/sbin/ioreg", "frozen sidecar was relaunched"
+        return subprocess.CompletedProcess(command, 0, plist)
+
+    monkeypatch.setattr(raw.subprocess, "run", ioreg)
+    audio = {row["device_id"]: row for row in recording["audio_devices"]}
+    monkeypatch.setattr(raw, "_load_coreaudio", object)
+    monkeypatch.setattr(
+        raw,
+        "_get_string_property",
+        lambda ca, obj, selector: audio[obj][
+            "uid" if selector == 0x75696420 else "name"
+        ],
+    )
+
+    def property_bytes(ca, obj, selector, scope="glob"):
+        if selector == "dev#":
+            return struct.pack(f"={len(audio)}I", *audio)
+        if selector == "tran":
+            return struct.pack("=I", audio[obj]["transport_type"])
+        channels = audio[obj][
+            "input_channels" if scope == "inpt" else "output_channels"
+        ]
+        return struct.pack("=I", 1).ljust(
+            raw._AudioBufferList.mBuffers.offset, b"\0"
+        ) + bytes(raw._AudioBuffer(channels, 0, None))
+
+    monkeypatch.setattr(raw, "_property", property_bytes)
 
 
 def _synthetic_macos():

@@ -1,3 +1,4 @@
+import asyncio
 import ctypes
 from importlib import import_module
 import json
@@ -5,6 +6,7 @@ from pathlib import Path
 import plistlib
 import struct
 import subprocess
+from threading import Event, get_ident
 from unittest.mock import Mock
 
 import pytest
@@ -77,10 +79,10 @@ def test_macos_records_tree_serial_ancestry_and_audio_uid(monkeypatch):
         side_effect=[
             subprocess.CompletedProcess([], 0, plistlib.dumps(usb)),
             subprocess.CompletedProcess([], 0, plistlib.dumps([service])),
-            subprocess.CompletedProcess([], 0, json.dumps([audio, []]).encode()),
         ]
     )
     monkeypatch.setattr(raw.subprocess, "run", run)
+    monkeypatch.setattr(raw, "_read_coreaudio", lambda: (audio, []))
     result = raw.read_raw_macos(5).to_json_dict()
     assert result["unavailable"] == []
     nodes = {n["registry_id"]: n for n in result["usb_devices"]}
@@ -100,6 +102,7 @@ def test_macos_records_tree_serial_ancestry_and_audio_uid(monkeypatch):
     assert result["audio_devices"] == audio
     assert f"{nodes[4]['location_id']:x}" in audio[0]["uid"]
     assert all(0 < call.kwargs["timeout"] <= 5 for call in run.call_args_list)
+    assert run.call_count == 2
 
 
 @pytest.mark.parametrize(
@@ -109,6 +112,7 @@ def test_macos_records_tree_serial_ancestry_and_audio_uid(monkeypatch):
 def test_macos_source_failures_are_unavailable(monkeypatch, failure):
     raw = import_module("rigplane.audio._usb_raw_macos")
     monkeypatch.setattr(raw.subprocess, "run", Mock(side_effect=failure))
+    monkeypatch.setattr(raw, "_read_coreaudio", Mock(side_effect=failure))
     result = raw.read_raw_macos(1).to_json_dict()
     assert (
         result["usb_devices"]
@@ -132,12 +136,47 @@ def test_macos_malformed_plist_does_not_discard_other_sources(monkeypatch):
             side_effect=[
                 subprocess.CompletedProcess([], 0, b"not a plist"),
                 subprocess.CompletedProcess([], 0, plistlib.dumps([])),
-                subprocess.CompletedProcess([], 0, b"[[], []]"),
             ]
         ),
     )
+    monkeypatch.setattr(raw, "_read_coreaudio", lambda: ([], []))
     result = raw.read_raw_macos(1)
     assert [item["part"] for item in result.unavailable] == ["macos:usb"]
+
+
+async def test_coreaudio_timeout_is_unavailable_without_blocking_loop(monkeypatch):
+    from _portaudio_pool_helpers import drain_pool
+    from rigplane.audio import _usb_raw_macos as raw
+    from rigplane.audio.usb_driver import bounded_portaudio_pool
+
+    entered, release = Event(), Event()
+    caller = get_ident()
+    monkeypatch.setattr(
+        raw.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess([], 0, plistlib.dumps([])),
+    )
+
+    def blocked():
+        assert get_ident() != caller
+        entered.set()
+        assert release.wait(5)
+        return object()
+
+    monkeypatch.setattr(raw, "_load_coreaudio", blocked)
+    task = asyncio.create_task(asyncio.to_thread(raw.read_raw_macos, 0.15))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        result = await asyncio.wait_for(task, 1)
+        assert result.audio_devices == ()
+        assert result.unavailable == (
+            {"part": "macos:coreaudio", "reason": "TimeoutError"},
+        )
+        assert bounded_portaudio_pool.inflight == 1
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await drain_pool()
 
 
 def test_coreaudio_ctypes_counts_buffers_and_reports_property_errors(monkeypatch):
@@ -285,3 +324,5 @@ def test_invalid_deadlines_fail_closed(module, timeout):
     raw = import_module(f"rigplane.audio._usb_raw_{module}")
     result = getattr(raw, f"read_raw_{module}")(timeout_s=timeout)
     assert result.unavailable
+
+

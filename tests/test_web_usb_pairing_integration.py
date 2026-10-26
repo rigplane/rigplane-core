@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from dataclasses import replace
 from unittest.mock import Mock
 
@@ -42,7 +43,7 @@ W1_RX_ID = r"MME|SWD\MMDEVAPI\{0.0.1.00000000}.{963D478C-4D8C-412E-A32C-387169AF
 W1_TX_ID = r"MME|SWD\MMDEVAPI\{0.0.0.00000000}.{9082644E-6A88-4638-B416-E1788AAC0FDF}"
 
 
-@pytest.mark.parametrize("os_name", ["windows", "macos"])
+@pytest.mark.parametrize("os_name", ["windows", "macos", "macos-frozen"])
 @pytest.mark.parametrize(
     "codec_matches,explicit_choice",
     [
@@ -57,8 +58,12 @@ async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
 ):
     from rigplane.audio import _usb_pairing
 
-    if os_name == "macos":
-        backend, _ = _inject_macos(monkeypatch, _macos_session())
+    if os_name.startswith("macos"):
+        frozen = os_name == "macos-frozen"
+        if frozen:
+            monkeypatch.setattr(sys, "frozen", True, raising=False)
+            monkeypatch.setattr(sys, "executable", "frozen-sidecar-must-not-relaunch")
+        backend, _ = _inject_macos(monkeypatch, _macos_session(), real_reader=frozen)
         rx_id, tx_id, indices = MAC_RX_ID, MAC_TX_ID, (2, 1)
         radio_class, port, model, address = Ic705SerialRadio, MAC_PORT, "IC-705", 0xA4
         expected_candidates = (
@@ -139,7 +144,7 @@ async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
                     "stableId": stable_id,
                     "displayName": name,
                     "direction": direction,
-                    "hostApi": "Core Audio" if os_name == "macos" else "MME",
+                    "hostApi": "Core Audio" if os_name.startswith("macos") else "MME",
                     "portAudioIndex": index,
                     "nearRadio": True,
                 } in candidates
