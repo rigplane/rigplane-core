@@ -253,7 +253,23 @@ def pair(
         id.casefold() for id in snapshot.serial_devices if id.casefold() in boundary_ids
     }
     if serial_devices != {serial.id.casefold()}:  # rule: S3
-        return refuse("serial_ambiguous")
+        if not identity or not identity.serial_functions:
+            return refuse("serial_ambiguous")
+        declared_functions = {
+            (function.vid, function.pid) for function in identity.serial_functions
+        }
+        observed_functions = set()
+        for device_id in serial_devices:
+            device = devices.get(device_id)
+            if (
+                device is None
+                or device.parent is None
+                or device.parent.casefold() != hub.id.casefold()
+                or (device.vid, device.pid) not in declared_functions
+                or (device.vid, device.pid) in observed_functions
+            ):
+                return refuse("serial_ambiguous")
+            observed_functions.add((device.vid, device.pid))
     codecs = [
         node
         for key, node in devices.items()
