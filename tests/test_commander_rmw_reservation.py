@@ -851,6 +851,11 @@ class _RetransmitBackend:
         if is_current is not None and not is_current():
             raise ConnectionError("managed TX attempt is stale")
         frame = parse_civ_frame(payload)
+        if frame.command == 0x25 and len(frame.data) == 1:
+            await self.transport.send_tracked(
+                self._wrap(payload), is_current=is_current
+            )
+            return _reply(self.addr, f"25 {frame.data[0]:02X} 00 40 07 14 00")
         if frame.command == 0x26 and len(frame.data) == 1:
             self.mode_reads += 1
             if self.on_mode_read is not None:
