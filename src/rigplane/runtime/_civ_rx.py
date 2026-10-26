@@ -52,6 +52,7 @@ from rigplane.commands import (
 )
 from rigplane.commands.scope import _span_index_for_hz
 from rigplane.core.exceptions import (
+    CommandError,
     CommandRejectedError,
     ConnectionError,
     StaleBeforeWireError,
@@ -4283,11 +4284,14 @@ class CivRuntime:
                 current = False
             if current:
                 return None
-            # A refusal this side of the transport proves the frame never
+            # A refusal this side of the send proves the frame never
             # reached the wire (MOR-3743): carry the subclass so the
-            # split-mode read-modify-write may retry. Every check after
-            # the send keeps the plain error — the frame may already be
-            # applied and must not be repeated.
+            # split-mode read-modify-write may retry. Before the send
+            # that is any check here; inside the send it is only the
+            # transport's own ``is_current`` guard refusal — ``sent`` is
+            # reset for nothing else once submission has begun. Every
+            # check after the send keeps the plain error — the frame
+            # may already be applied and must not be repeated.
             if pre_wire:
                 return StaleBeforeWireError("managed TX attempt is stale")
             return ConnectionError("managed TX attempt is stale")
@@ -4336,8 +4340,22 @@ class CivRuntime:
 
                 check_current(pre_wire=True)
                 pkt = self._wrap_civ(civ_frame)
-                await transport.send_tracked(pkt, **guard)
+                # Submission begins at this call: the transport may write
+                # before any of its own awaits (the serial link writes,
+                # then drains), so every failure from here on is
+                # potentially sent and must not be retried (MOR-3743).
+                # The one exception is the transport's own explicit
+                # refusal — its ``is_current`` guard raising
+                # ``CommandError`` before it writes anything — which
+                # proves the frame never left this side.
                 sent = True
+                try:
+                    await transport.send_tracked(pkt, **guard)
+                except CommandError:
+                    # The transport refused before writing: the one
+                    # failure behind the call still provably pre-wire.
+                    sent = False
+                    raise
                 # The packet left the wire: stamp before the currency checks
                 # below so a cancel or a stale attempt still paces the next
                 # send from this one.
@@ -4403,8 +4421,19 @@ class CivRuntime:
 
             check_current(pre_wire=True)
             pkt = self._wrap_civ(civ_frame)
-            await transport.send_tracked(pkt, **guard)
+            # Same seam as the fire-and-forget branch above (MOR-3743):
+            # submission begins at this call, so failures from here on
+            # are potentially sent; only the transport's own guard
+            # refusal (``CommandError`` before it writes) is provably
+            # pre-wire.
             sent = True
+            try:
+                await transport.send_tracked(pkt, **guard)
+            except CommandError:
+                # The transport refused before writing: the one failure
+                # behind the call still provably pre-wire.
+                sent = False
+                raise
             check_current()
             self._host._last_civ_send_monotonic = time.monotonic()
             assert pending is not None
