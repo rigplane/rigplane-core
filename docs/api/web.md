@@ -1295,9 +1295,15 @@ from the radio's hardware scope.
 | `/api/v1/audio` | bi-directional | JSON control + binary audio frames |
 
 The optional gated WebRTC transport uses `control`, `scope`, and `audio`
-DataChannels that carry the same payloads as these WebSocket routes. WebRTC
-changes only the transport, not command names, event names, binary headers, or
-audio frame semantics.
+DataChannels that mirror these WebSocket routes. WebRTC changes only the
+transport, not command names, event names, or binary headers. One exception
+applies to TX audio: `0x12` (outside-only TX) is accepted only on the
+`/api/v1/audio` WebSocket route for a local (non-remote) controller ticket.
+The WebRTC `audio` channel builds its `AudioHandler` without an outside-TX
+admission callback (see the handler construction in
+`webrtc_session.py`), and a remote controller ticket yields no admission, so
+both paths drop every `0x12` frame in `AudioHandler._handle_tx_audio`; `0x11`
+behaves identically on both transports.
 
 Binary audio frames use an 8-byte header followed by codec-specific payload:
 
