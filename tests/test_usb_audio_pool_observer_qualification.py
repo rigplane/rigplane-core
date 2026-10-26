@@ -1,22 +1,12 @@
-"""MOR-3777 observer qualification — event-controlled, one bounded case.
-
-Proves the fixture observer distinguishes the three unanswered phases
-(queued-not-started, body-not-returned, body-done-then-settled) via
-explicit thread events, never sleep calibration; that output is
-bounded and redacted; that INFO capture survives caller cancellation;
-and that the seam restores. The phase-1 queue is artificial: workers
-are kept busy by TEST-ONLY blockers submitted straight to the pool's
-native executor, so tracked admission stays at zero and run_bounded's
-saturation fail-fast (which a tracked-submission fill would trigger)
-never fires. This qualifies the OBSERVER only — it is not evidence
-that any historical failure reached such a queue or was caused by it.
-"""
+"""Event-controlled observer qualification; historical CI causes remain UNKNOWN."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 
 import pytest
 
@@ -26,6 +16,7 @@ from _mor3777_pool_observer import (
     OP_STATES_MAX,
     RING_MAX,
     PoolPhaseObserver,
+    current_for,
     set_current,
 )
 
@@ -37,6 +28,52 @@ async def _wait_until(predicate, timeout: float = 5.0) -> None:
     async with asyncio.timeout(timeout):
         while not predicate():
             await asyncio.sleep(0.005)
+
+
+async def _teardown_observed_pool(
+    pool: object,
+    observer: PoolPhaseObserver,
+    logger: logging.Logger,
+    ambient_level: int,
+    release_events: "tuple[threading.Event, ...]",
+    queued: "asyncio.Task[int] | None",
+    blockers: "list[Future[object]]",
+) -> None:
+    """Restore qualification resources despite interrupted waits."""
+    # --- MOR3777-RED-REGION-START (guarded cleanup steps) ---
+    for event in release_events:
+        event.set()
+    try:
+        if queued is not None and not queued.done():
+            await asyncio.gather(queued, return_exceptions=True)
+    finally:
+        try:
+            async with asyncio.timeout(10):
+                while pool.inflight:
+                    await asyncio.sleep(0.01)
+        finally:
+            try:
+                for blocker_future in blockers:
+                    if not blocker_future.cancelled():
+                        try:
+                            blocker_future.result(timeout=10)
+                        except Exception:  # noqa: BLE001 — never mask the original
+                            pass
+            finally:
+                try:
+                    set_current(None)
+                finally:
+                    try:
+                        observer.flush()
+                    finally:
+                        try:
+                            observer.close()
+                        finally:
+                            try:
+                                logger.setLevel(ambient_level)
+                            finally:
+                                pool._executor.shutdown(wait=True)
+    # --- MOR3777-RED-REGION-END ---
 
 
 @pytest.mark.timeout(30)
@@ -60,24 +97,16 @@ async def test_pool_phase_observer_qualification(
         assert release_blockers.wait(10)
 
     try:
-        # Logger-cache contract (MOR-3777): warm a disabled-INFO cache
-        # before attach; attach must clear it via setLevel so INFO state
-        # capture works, and close must restore, cache-correctly.
         logger.setLevel(logging.WARNING)
         assert not logger.isEnabledFor(logging.INFO)
         observer.attach(monkeypatch, logger)
         assert logger.isEnabledFor(logging.INFO)
         set_current(observer)
-        # Occupy every worker NATIVELY (test-only): pool.inflight stays 0,
-        # so run_bounded passes its saturation check and queues for real.
         for index in range(_WORKERS):
             blockers.append(pool._executor.submit(lambda i=index: blocker(i)))
         await _wait_until(lambda: all(e.is_set() for e in entered))
         assert pool.inflight == 0
 
-        # Phase 1 — queued, not picked up. Bind the NEW submission via the
-        # counter captured BEFORE create_task (the task may not have
-        # started when we look); never assume it started.
         before_queued = observer.latest_sub()
 
         def gated_body() -> int:
@@ -93,13 +122,11 @@ async def test_pool_phase_observer_qualification(
         assert not observer.has(sub, "start")
         assert not observer.has(sub, "settled")
 
-        # Phase 2 — started, body not returned.
         release_blockers.set()
         await _wait_until(body_entered.is_set)
         assert observer.has(sub, "start")
         assert not observer.has(sub, "body_end")
 
-        # Phase 3 — body ends before the bound; caller gets the value.
         release_body.set()
         assert await queued == 7
         await _wait_until(lambda: observer.has(sub, "settled"))
@@ -111,8 +138,6 @@ async def test_pool_phase_observer_qualification(
             <= observer.order(sub, "settled")
         )
 
-        # Injected body failure: distinct settled outcome; the payload
-        # (exception text) never reaches the bounded report.
         def failing_body() -> None:
             raise RuntimeError("deliberate observer qualification payload")
 
@@ -129,10 +154,6 @@ async def test_pool_phase_observer_qualification(
         assert "deliberate" not in "\n".join(report)
         assert len(report) <= 1 + OP_STATES_MAX + RING_MAX
 
-        # Caller cancellation: INFO caller=cancelled captured at emission;
-        # the abandoned body still settles; the pool stays usable. The
-        # victim's own future outcome is NOT asserted — whether the wait
-        # cancels the member future is runtime behaviour we do not claim.
         before_cancel = observer.latest_sub()
 
         def cancelled_body() -> None:
@@ -155,13 +176,11 @@ async def test_pool_phase_observer_qualification(
             == 3
         )
 
-        # after_drain snapshot semantics (what _drain records per test).
         await _wait_until(lambda: pool.inflight == 0)
         observer.mark_pool_state("after_drain")
         state = [m for m in observer.events() if m["ev"] == "after_drain"][-1]
         assert state["inflight"] == 0
 
-        # Passivity: an unobserved pool behaves the same.
         plain = usb_driver._BoundedPortAudioPool()
         try:
             assert (
@@ -174,7 +193,6 @@ async def test_pool_phase_observer_qualification(
         finally:
             plain._executor.shutdown(wait=True)
 
-        # Seam restoration: the raw method is back and functional.
         monkeypatch.undo()
         assert "submit_tracked" not in vars(pool)
         assert (
@@ -182,28 +200,126 @@ async def test_pool_phase_observer_qualification(
             == 5
         )
 
-        # close restores the attach-time level and disabled enablement
-        # via setLevel; the finally's second close is an idempotent no-op.
         observer.close()
         assert logger.level == logging.WARNING
         assert not logger.isEnabledFor(logging.INFO)
     finally:
-        release_blockers.set()
-        release_body.set()
-        release_cancel.set()
-        if queued is not None and not queued.done():
-            await asyncio.gather(queued, return_exceptions=True)
-        async with asyncio.timeout(10):
-            while pool.inflight:
-                await asyncio.sleep(0.01)
-        for blocker_future in blockers:
-            if not blocker_future.cancelled():
-                try:
-                    blocker_future.result(timeout=10)
-                except Exception:  # noqa: BLE001 — never mask the original failure
-                    pass
+        await _teardown_observed_pool(
+            pool,
+            observer,
+            logger,
+            ambient_level,
+            (release_blockers, release_body, release_cancel),
+            queued,
+            blockers,
+        )
+
+
+@pytest.mark.timeout(30)
+async def test_pool_phase_observer_cleanup_restores_after_drain_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Injected drain timeout must propagate after restoring every resource."""
+    pool = usb_driver._BoundedPortAudioPool()
+    observer = PoolPhaseObserver(pool)
+    logger = usb_driver.logger
+    ambient_level = logger.level
+    ambient_info = logger.isEnabledFor(logging.INFO)
+    handlers_before = list(logger.handlers)
+    release_events = (threading.Event(), threading.Event(), threading.Event())
+
+    class _InjectedDrainTimeout:
+        async def __aenter__(self) -> "_InjectedDrainTimeout":
+            return self
+
+        async def __aexit__(self, *exc_info: object) -> None:
+            raise asyncio.TimeoutError("injected drain timeout")
+
+    try:
+        monkeypatch.setattr(asyncio, "timeout", lambda *_: _InjectedDrainTimeout())
+        logger.setLevel(logging.WARNING)
+        assert not logger.isEnabledFor(logging.INFO)
+        observer.attach(monkeypatch, logger)
+        assert logger.isEnabledFor(logging.INFO)
+        set_current(observer)
+        assert current_for(pool) is observer
+        with pytest.raises(asyncio.TimeoutError, match="injected drain timeout"):
+            await _teardown_observed_pool(
+                pool, observer, logger, ambient_level, release_events, None, []
+            )
+        monkeypatch.undo()
+        assert current_for(pool) is None
+        assert logger.level == ambient_level
+        assert logger.isEnabledFor(logging.INFO) == ambient_info
+        assert logger.handlers == handlers_before
+        assert "submit_tracked" not in vars(pool)
+        assert all(event.is_set() for event in release_events)
+        with pytest.raises(RuntimeError, match="shutdown"):
+            pool._executor.submit(lambda: None)
+    finally:
+        monkeypatch.undo()
         set_current(None)
-        observer.flush()
+        observer.close()
+        logger.setLevel(ambient_level)
+        pool._executor.shutdown(wait=True)
+
+
+@pytest.mark.timeout(30)
+async def test_pool_phase_observer_cleanup_restores_after_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancel a suspended drain; preserve cancellation and restore resources."""
+    inflight_reads = [0]
+
+    class _HangingDrainPool:
+        def __init__(self) -> None:
+            self._executor = ThreadPoolExecutor(max_workers=1)
+            self.submit_tracked = staticmethod(lambda fn: None)
+
+        @property
+        def inflight(self) -> int:
+            inflight_reads[0] += 1
+            return 1
+
+    pool = _HangingDrainPool()
+    original_submit = pool.submit_tracked
+    observer = PoolPhaseObserver(pool)
+    logger = usb_driver.logger
+    ambient_level = logger.level
+    ambient_info = logger.isEnabledFor(logging.INFO)
+    handlers_before = list(logger.handlers)
+    release_events = (threading.Event(), threading.Event(), threading.Event())
+    task = None
+    try:
+        logger.setLevel(logging.WARNING)
+        observer.attach(monkeypatch, logger)
+        set_current(observer)
+        task = asyncio.create_task(
+            _teardown_observed_pool(
+                pool, observer, logger, ambient_level, release_events, None, []
+            )
+        )
+        await _wait_until(lambda: inflight_reads[0] >= 3)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+        monkeypatch.undo()
+        assert current_for(pool) is None
+        assert logger.level == ambient_level
+        assert logger.isEnabledFor(logging.INFO) == ambient_info
+        assert logger.handlers == handlers_before
+        assert pool.submit_tracked is original_submit
+        assert all(event.is_set() for event in release_events)
+        with pytest.raises(RuntimeError, match="shutdown"):
+            pool._executor.submit(lambda: None)
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        monkeypatch.undo()
+        set_current(None)
         observer.close()
         logger.setLevel(ambient_level)
         pool._executor.shutdown(wait=True)
