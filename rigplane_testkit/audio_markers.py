@@ -61,7 +61,8 @@ def _sample_range(spec: MarkerSpec, start_s: float, end_s: float, n: int) -> sli
 class MarkerReport:
     """What a captured buffer measured against a spec looks like."""
 
-    freq_hz: float  # FFT peak, parabolic interpolation, tone-on windows
+    freq_hz: float  # parabolic FFT estimate refined against the tone-on
+    # samples (coherent DTFT maximum within one bin)
     level_dbfs: float  # peak-equivalent level of the tone (sine fit)
     gaps: tuple[tuple[float, float], ...]  # silence windows (5 ms windows; a
     # trailing run ends at the buffer end when it reaches into the tail)
@@ -112,18 +113,25 @@ def analyze_marker_pcm16(pcm: bytes, spec: MarkerSpec) -> MarkerReport:
     if tail:
         mask = np.concatenate([mask, np.full(tail, tone_on[nwin])])
     idx = np.nonzero(mask)[0]
-    freq_hz = _measure_freq(x, sr)
+    freq_hz = _measure_freq(x, sr, idx)
     level_dbfs, residual_db = _fit_tone(x, idx, sr, freq_hz)
     return MarkerReport(
         freq_hz, level_dbfs, tuple(gaps), residual_db, n / sr, gap_energy
     )
 
 
-def _measure_freq(x: np.ndarray, sr: int) -> float:
-    """FFT peak frequency with parabolic interpolation.
+def _measure_freq(x: np.ndarray, sr: int, idx: np.ndarray) -> float:
+    """The tone frequency: FFT peak, then a coherent-samples refinement.
 
     The planted gaps are zeros, so the whole buffer transforms as the
-    windowed tone; the gap modulation only smears the skirts.
+    windowed tone; the gap modulation only smears the skirts. Parabolic
+    interpolation of the FFT peak leaves a residual frequency error that
+    accumulates into phase error across the fit's true time base — a clean
+    quarter-bin-off tone at these settings measured -20.8 dB residual,
+    above the -30 dB limit. A golden-section search of the coherent DTFT
+    magnitude over the tone-on samples (true time indices, so the planted
+    gaps break no phase) within one FFT bin of the estimate removes that
+    error.
     """
     windowed = x * np.hanning(len(x))
     magnitude = np.abs(np.fft.rfft(windowed))
@@ -137,7 +145,29 @@ def _measure_freq(x: np.ndarray, sr: int) -> float:
     if denominator == 0.0:
         return k * sr / len(x)
     delta = 0.5 * (left - right) / denominator
-    return (k + delta) * sr / len(x)
+    coarse = (k + delta) * sr / len(x)
+
+    samples = x[idx]
+    t = idx / sr
+    bin_hz = sr / len(x)
+
+    def _coherent(freq: float) -> float:
+        return float(np.abs(np.dot(samples, np.exp(-2j * math.pi * freq * t))))
+
+    lo, hi = coarse - bin_hz, coarse + bin_hz
+    ratio = (math.sqrt(5.0) - 1.0) / 2.0  # golden-section bracket shrink
+    c, d = hi - ratio * (hi - lo), lo + ratio * (hi - lo)
+    fc, fd = _coherent(c), _coherent(d)
+    for _ in range(60):
+        if fc < fd:
+            lo, c, fc = c, d, fd
+            d = lo + ratio * (hi - lo)
+            fd = _coherent(d)
+        else:
+            hi, d, fd = d, c, fc
+            c = hi - ratio * (hi - lo)
+            fc = _coherent(c)
+    return (lo + hi) / 2.0
 
 
 def _fit_tone(
