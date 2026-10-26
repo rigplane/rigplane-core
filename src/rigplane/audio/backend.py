@@ -1751,7 +1751,10 @@ class FakeTxStream:
     also models a real playback queue: ``pending_frames`` holds written
     frames not yet played, :meth:`play` is the fake's "device clock" and
     moves the oldest pending frames to ``played_frames``, and
-    :meth:`discard_queued` drops the pending ones (MOR-3760).
+    :meth:`discard_queued` drops the pending ones (MOR-3760). Like the real
+    PortAudio streams (``_PortAudioTxStream.stop`` → ``_clear_buffer``),
+    :meth:`stop` clears the pending ring so a restart does not replay
+    frames queued before the stop.
     """
 
     def __init__(
@@ -1809,6 +1812,10 @@ class FakeTxStream:
         _release_exclusive_device(self._exclusive, self._device, self)
         self._running = False
         self.stopped_count += 1
+        # Match _PortAudioTxStream.stop (→ _clear_buffer): stop drops the
+        # pending playback ring; written_frames/played_frames/discard_events
+        # are cumulative records and stay untouched.
+        self.pending_frames.clear()
 
     async def write(self, frame: bytes) -> None:
         if not self._running:
@@ -1914,6 +1921,10 @@ class FakeDuplexStream:
         self._running = False
         self._callback = None
         self.stopped_count += 1
+        # Match _PortAudioDuplexStream.stop (→ _tx._clear_buffer): stop drops
+        # the pending TX playback ring; written_frames/played_frames and
+        # discard_events are cumulative records and stay untouched.
+        self.pending_frames.clear()
 
     async def write(self, frame: bytes) -> None:
         if not self._running:

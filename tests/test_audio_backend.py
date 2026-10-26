@@ -1503,3 +1503,28 @@ class TestFakeTxStreamPlaybackQueue:
         # Not running: discard is a no-op.
         assert await stream.discard_queued() == 0
         assert stream.discard_events == 1
+
+    @pytest.mark.asyncio()
+    async def test_stop_clears_pending_frames_for_a_restart(
+        self, fake_backend: FakeAudioBackend
+    ) -> None:
+        """stop() drops the pending ring like the real PortAudio streams
+        (``_PortAudioTxStream.stop`` → ``_clear_buffer``): after a restart,
+        play() returns only frames written after the restart (MOR-3760)."""
+        stream = fake_backend.open_tx(DUPLEX_DEVICE.id)
+        await stream.start()
+        await stream.write(b"\x01")
+        assert await stream.discard_queued() == 1  # a real discard event
+        await stream.write(b"\x02")
+        await stream.stop()
+        # stop is not a discard event and does not reset the counters.
+        assert stream.discard_events == 1
+
+        await stream.start()
+        await stream.write(b"\x03")
+        assert stream.play() == [b"\x03"]
+        assert stream.played_frames == [b"\x03"]
+        # written_frames keeps every frame ever written, in order.
+        assert stream.written_frames == [b"\x01", b"\x02", b"\x03"]
+        assert stream.discard_events == 1
+        await stream.stop()
