@@ -103,7 +103,7 @@ async def test_discover_cli_keeps_profile_audio_pair_and_refuses_extra_owner(
             )
         ),
     )
-    args = _build_parser().parse_args(["discover", "--serial-only", "--json"])
+    args = _build_parser().parse_args(["--json", "discover", "--serial-only"])
     assert await _cmd_discover(None, args) == 0
     payload = json.loads(capsys.readouterr().out)
     connection = payload["radios"][0]["connections"][0]
