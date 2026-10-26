@@ -74,6 +74,20 @@ _PCM_RAMP = bytes(range(256))
 
 
 @dataclass(frozen=True, slots=True)
+class TxAudioFormat:
+    """The TX audio format a client declares in its accepted conninfo.
+
+    Production conninfo layout (``src/rigplane/core/auth.py``:
+    ``build_conninfo_packet``): tx codec byte at 0x73, BE u32 tx sample
+    rate at 0x78. Learned from the fresh login's own accepted conninfo;
+    sink frames snapshot it at arrival.
+    """
+
+    codec: int
+    sample_rate: int
+
+
+@dataclass(frozen=True, slots=True)
 class ClientAudioFrame:
     """One client→radio audio DATA frame observed on the audio port.
 
@@ -83,7 +97,9 @@ class ClientAudioFrame:
     0x06), ``inner_seq`` the audio-level sequence (BE u16 at 0x12),
     ``payload_len`` the bytes after the header, ``received_at`` the
     arrival ``time.monotonic()``, ``ptt`` the simulator's PTT state at
-    arrival. ``payload`` retains the bytes after the header only with
+    arrival, ``tx_format`` the TX format learned from the client's
+    conninfo at arrival (``None`` when none was learned). ``payload``
+    retains the bytes after the header only with
     ``capture_tx_audio=True`` (long soaks keep the default metadata-only
     recording); otherwise it is ``b""``.
     """
@@ -94,6 +110,7 @@ class ClientAudioFrame:
     received_at: float
     ptt: bool
     payload: bytes
+    tx_format: TxAudioFormat | None
 
 
 class AudioPortMixin:
@@ -132,6 +149,10 @@ class AudioPortMixin:
         self.audio_tx_frames: list[ClientAudioFrame] = []
         self._audio_last_client_seq: int | None = None
         self._audio_retransmit_requests_received: int = 0
+        # TX format learned from the fresh login's own accepted conninfo
+        # (None until then; a conninfo with a zero sample rate teaches
+        # nothing).
+        self._audio_tx_format: TxAudioFormat | None = None
 
     async def _audio_start(self) -> None:
         """Bind the audio port at the CI-V port + 1 when free (else any).
@@ -188,6 +209,29 @@ class AudioPortMixin:
         return self._audio_rx_frames_sent
 
     @property
+    def audio_tx_format(self) -> TxAudioFormat | None:
+        """The TX format learned from the most recently accepted conninfo
+        (``None`` until one arrives; the tx codec byte and the BE u32 tx
+        sample rate, ``core/auth.py``: ``build_conninfo_packet``)."""
+        return self._audio_tx_format
+
+    def tx_capture_format(self, since: int = 0) -> TxAudioFormat | None:
+        """The single TX format across ``audio_tx_frames[since:]``.
+
+        The capture's label: the one distinct learned format among the
+        frames, or ``None`` when no frame carries one (no conninfo taught
+        a format) or the slice spans a format change (two or more
+        distinct learned formats — no single label is true of the whole
+        capture).
+        """
+        learned = {
+            frame.tx_format
+            for frame in self.audio_tx_frames[since:]
+            if frame.tx_format is not None
+        }
+        return learned.pop() if len(learned) == 1 else None
+
+    @property
     def audio_last_client_seq(self) -> int | None:
         """The client's last tracked audio-port number, per stream.
 
@@ -233,10 +277,12 @@ class AudioPortMixin:
     ) -> None:
         """Write the captured TX audio as RIFF/WAV, 16-bit PCM.
 
-        The sample rate and channels are the CALLER's statement of the
-        negotiated TX format: the simulator never parses the conninfo
-        codec fields, so the sink records bytes, not samples. ``path``
-        may be a filesystem path or a binary file-like object.
+        The sample rate and channels are the CALLER's label for the file:
+        the WAV header states them; what the bytes mean depends on the
+        negotiated TX format the sink recorded (``tx_capture_format`` —
+        the ``sim serve`` routes label their exports with that, and
+        refuse rather than mislabel). ``path`` may be a filesystem path
+        or a binary file-like object.
         """
         if isinstance(path, (str, PathLike)):
             # wave.open treats only str as a path; open PathLike ourselves.
@@ -400,6 +446,7 @@ class AudioPortMixin:
                                 if self.capture_tx_audio
                                 else b""
                             ),
+                            tx_format=self._audio_tx_format,
                         )
                     )
                 return

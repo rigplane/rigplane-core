@@ -32,10 +32,12 @@ from typing import Any
 
 from aiohttp import web
 
+from rigplane.core.types import AudioCodec
 from rigplane.profiles.rig_loader import RigLoadError
 
 from rigplane_testkit.icom.faults import FaultPlan
 from rigplane_testkit.icom.simulator import MockIcomRadio
+from rigplane_testkit.icom.simulator_audio import TxAudioFormat
 from rigplane_testkit.serial import CivSerialFake
 from rigplane_testkit.serial.endpoints import PtyEndpoint, TcpEndpoint, pty_supported
 from rigplane_testkit.sim.adapters.yaesu_cat import (
@@ -299,14 +301,61 @@ def build_radio(args: argparse.Namespace) -> MockIcomRadio:
 
 
 # The IC-7610 profile's TX leg (rigs/ic7610.toml: tx_codec PCM_1CH_16BIT,
-# 48 kHz). The simulator never parses the conninfo codec fields, so the
-# capture routes state the profile value, not a negotiated one.
-_IC7610_TX_SAMPLE_RATE = 48000
+# 48 kHz), reported ONLY when nothing was captured and no TX format was
+# learned from a client conninfo: an empty capture mislabels nothing.
+_IC7610_TX_DEFAULT = TxAudioFormat(
+    codec=int(AudioCodec.PCM_1CH_16BIT), sample_rate=48000
+)
+
+
+def _capture_tx_format(
+    radio: MockIcomRadio, since: int
+) -> tuple[TxAudioFormat | None, str]:
+    """The format-label rule shared by ``/audio/tx`` and ``/audio/tx.wav``.
+
+    Returns ``(format, state)``; ``format`` is ``None`` exactly when no
+    single learned format labels the whole slice. ``state`` is
+    ``"pcm16"`` when every frame in the slice carries one learned
+    PCM_1CH_16BIT format (the rate the client's accepted conninfo
+    declared — the only label that is true of the whole capture),
+    ``"non_pcm16"`` when the single learned format is another codec,
+    ``"unknown"`` when frames exist but no conninfo taught a format (a
+    bare conninfo), ``"mixed"`` when the slice spans a format change
+    (two or more learned formats), and ``"default"`` when nothing was
+    captured and nothing was learned (the profile default, which
+    mislabels nothing because there is nothing to play back).
+    """
+    frames = radio.audio_tx_frames[since:]
+    learned = {frame.tx_format for frame in frames if frame.tx_format is not None}
+    if len(learned) == 1:
+        fmt = next(iter(learned))
+        return fmt, "pcm16" if fmt.codec == _IC7610_TX_DEFAULT.codec else "non_pcm16"
+    if learned:
+        return None, "mixed"
+    if frames:
+        return None, "unknown"
+    learned_now = radio.audio_tx_format
+    if learned_now is not None:
+        return learned_now, (
+            "pcm16" if learned_now.codec == _IC7610_TX_DEFAULT.codec else "non_pcm16"
+        )
+    return _IC7610_TX_DEFAULT, "default"
 
 
 def _audio_tx_stats(radio: MockIcomRadio, since: int) -> dict:
-    """The ``GET /audio/tx`` body over the sink frames from index ``since``."""
+    """The ``GET /audio/tx`` body over the sink frames from index ``since``.
+
+    The sample rate/codec are the TX format the sink LEARNED from the
+    client's accepted conninfo — never a profile constant — so a capture
+    at a negotiated 16 kHz is not mislabeled 48 kHz. ``"format"`` makes
+    the label state explicit: ``"pcm16"`` (uniform learned PCM16; the
+    rate is the learned one), ``"non_pcm16"`` (uniform learned, another
+    codec), ``"unknown"`` (frames but no learned format), ``"mixed"`` (a
+    format change inside the slice; ``sample_rate``/``codec`` are null),
+    ``"default"`` (nothing captured, nothing learned; the profile value).
+    """
     frames = radio.audio_tx_frames[since:]
+    fmt, state = _capture_tx_format(radio, since)
     return {
         "frames": len(frames),
         "payload_bytes": sum(frame.payload_len for frame in frames),
@@ -317,16 +366,27 @@ def _audio_tx_stats(radio: MockIcomRadio, since: int) -> dict:
         ),
         "first_received_at": frames[0].received_at if frames else None,
         "last_received_at": frames[-1].received_at if frames else None,
-        "sample_rate": _IC7610_TX_SAMPLE_RATE,
+        "sample_rate": fmt.sample_rate if fmt is not None else None,
         "channels": 1,
-        "codec": "pcm16",
+        "codec": "pcm16" if state in ("pcm16", "default") else None,
+        "format": state,
     }
 
 
 def _audio_tx_wav(radio: MockIcomRadio, since: int) -> bytes:
-    """The captured TX audio from frame ``since`` as a RIFF/WAV body."""
+    """The captured TX audio from frame ``since`` as a RIFF/WAV body.
+
+    The WAV is labeled with the sink's learned TX format. Raises
+    ``ValueError("format_unknown")`` / ``ValueError("format_mixed")`` /
+    ``ValueError("format_non_pcm16")`` when the capture has no single
+    learned PCM16 format to label it with — the route answers 409 rather
+    than writing a mislabeled file.
+    """
+    fmt, state = _capture_tx_format(radio, since)
+    if state != "pcm16" or fmt is None:
+        raise ValueError(f"format_{state}")
     body = io.BytesIO()
-    radio.write_tx_wav(body, sample_rate=_IC7610_TX_SAMPLE_RATE, since=since)
+    radio.write_tx_wav(body, sample_rate=fmt.sample_rate, since=since)
     return body.getvalue()
 
 
@@ -651,13 +711,23 @@ async def _handle_audio_tx(request: web.Request) -> web.Response:
 
 
 async def _handle_audio_tx_wav(request: web.Request) -> web.Response:
-    """The captured TX audio as audio/wav; IC-7610 only, 404 elsewhere."""
+    """The captured TX audio as audio/wav; IC-7610 only, 404 elsewhere.
+
+    409 ``{"ok": false, "outcome": "format_unknown"|"format_mixed"|
+    "format_non_pcm16"}`` when the capture has no single learned PCM16 TX
+    format: a WAV header must not mislabel the payload."""
     wav = request.app[_BACKEND_KEY].audio_tx_wav
     if wav is None:
         return web.json_response(
             {"ok": False, "outcome": "unsupported"}, status=404, dumps=_dumps
         )
-    return web.Response(body=wav(_since(request)), content_type="audio/wav")
+    try:
+        body = wav(_since(request))
+    except ValueError as exc:
+        return web.json_response(
+            {"ok": False, "outcome": str(exc)}, status=409, dumps=_dumps
+        )
+    return web.Response(body=body, content_type="audio/wav")
 
 
 async def _handle_stop(request: web.Request) -> web.Response:

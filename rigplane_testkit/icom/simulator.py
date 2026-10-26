@@ -35,7 +35,7 @@ from typing import Literal
 from rigplane_testkit.icom.faults import Direction, FaultPlan, Port
 from rigplane_testkit.icom.fixtures import scope_wave_templates
 from rigplane_testkit.icom.replay import RecordedAnswerTable
-from rigplane_testkit.icom.simulator_audio import AudioPortMixin
+from rigplane_testkit.icom.simulator_audio import AudioPortMixin, TxAudioFormat
 
 logger = logging.getLogger(__name__)
 
@@ -1647,6 +1647,17 @@ class MockIcomRadio(AudioPortMixin):
                 # permission where it was (MOR-3340).
                 self._fence_login_ip = addr[0]
                 self._fence_login_civ_port = declared_port
+                # Learn the TX format it declares (production layout,
+                # core/auth.py: build_conninfo_packet: tx codec at 0x73,
+                # BE u32 tx sample rate at 0x78) so the sink frames and
+                # the capture exports can label what they record. A bare
+                # conninfo (zero rate, never sent by a real client)
+                # teaches nothing.
+                tx_sample_rate = struct.unpack_from(">I", data, 0x78)[0]
+                if tx_sample_rate > 0:
+                    self._audio_tx_format = TxAudioFormat(
+                        codec=data[0x73], sample_rate=tx_sample_rate
+                    )
             self._send(proto, reply, addr, "ctrl")
             return
 
