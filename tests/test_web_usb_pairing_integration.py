@@ -1,4 +1,4 @@
-"""Recorded USB topology through the real browser audio-start dispatcher."""
+"""Browser audio start; Linux uses synthetic sysfs, not hardware-verified."""
 
 import asyncio
 import json
@@ -16,6 +16,7 @@ from test_usb_pairing_macos import (
     _inject_macos,
     _macos_session,
 )
+from test_usb_pairing_linux import LINUX_ID, LINUX_NAME, LINUX_PORT, _inject_linux
 from test_web_server import (
     _close_ws,
     _http_get,
@@ -43,7 +44,9 @@ W1_RX_ID = r"MME|SWD\MMDEVAPI\{0.0.1.00000000}.{963D478C-4D8C-412E-A32C-387169AF
 W1_TX_ID = r"MME|SWD\MMDEVAPI\{0.0.0.00000000}.{9082644E-6A88-4638-B416-E1788AAC0FDF}"
 
 
-@pytest.mark.parametrize("os_name", ["windows", "macos", "macos-frozen"])
+@pytest.mark.parametrize(
+    "os_name", ["windows", "macos", "macos-frozen", "linux", "linux-frozen"]
+)
 @pytest.mark.parametrize(
     "codec_matches,explicit_choice",
     [
@@ -54,11 +57,28 @@ W1_TX_ID = r"MME|SWD\MMDEVAPI\{0.0.0.00000000}.{9082644E-6A88-4638-B416-E1788AAC
     ids=["w1-mme", "wrong-codec", "stable-choice-overrides-wrong-codec"],
 )
 async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
-    monkeypatch, codec_matches, explicit_choice, os_name
+    tmp_path, monkeypatch, codec_matches, explicit_choice, os_name
 ):
+    """Real web/driver seam; Linux fixtures are not hardware-verified."""
     from rigplane.audio import _usb_pairing
 
-    if os_name.startswith("macos"):
+    if os_name.startswith("linux"):
+        if os_name == "linux-frozen":
+            monkeypatch.setattr(sys, "frozen", True, raising=False)
+            monkeypatch.setattr(sys, "executable", "frozen-sidecar-must-not-relaunch")
+            monkeypatch.setattr(
+                "subprocess.Popen",
+                Mock(side_effect=AssertionError("Linux pairing must stay in process")),
+            )
+        backend, _, _, _ = _inject_linux(tmp_path, monkeypatch)
+        rx_id = tx_id = LINUX_ID
+        indices = (0, 0)
+        radio_class, port, model, address = Ic705SerialRadio, LINUX_PORT, "IC-705", 0xA4
+        expected_candidates = (
+            (rx_id, 0, LINUX_NAME, "capture"),
+            (tx_id, 0, LINUX_NAME, "render"),
+        )
+    elif os_name.startswith("macos"):
         frozen = os_name == "macos-frozen"
         if frozen:
             monkeypatch.setattr(sys, "frozen", True, raising=False)
@@ -144,7 +164,11 @@ async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
                     "stableId": stable_id,
                     "displayName": name,
                     "direction": direction,
-                    "hostApi": "Core Audio" if os_name.startswith("macos") else "MME",
+                    "hostApi": "ALSA"
+                    if os_name.startswith("linux")
+                    else "Core Audio"
+                    if os_name.startswith("macos")
+                    else "MME",
                     "portAudioIndex": index,
                     "nearRadio": True,
                 } in candidates

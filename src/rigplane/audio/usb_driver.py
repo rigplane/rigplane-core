@@ -26,6 +26,7 @@ from typing import Any, Callable, Coroutine, Iterator, Literal
 from rigplane.core.usb_identity import UsbAudioIdentity
 
 from ._usb_pairing import AudioCandidate, candidate_stable_id
+from ._usb_raw_linux import RawLinux
 from ._usb_raw_macos import RawMacos
 from ._usb_raw_windows import RawWindows
 from ._usb_snapshot import Flow, UsbSnapshot
@@ -1412,23 +1413,6 @@ class UsbAudioDriver:
     def _ensure_selected_devices(self) -> tuple[UsbAudioDevice, UsbAudioDevice]:
         devices = _devices_from_backend(self._backend)
 
-        # If serial_port is set and no explicit rx/tx overrides, try
-        # topology-based resolution to find the correct audio pair.
-        if (
-            self._serial_port
-            and self._config.rx_device is None
-            and self._config.tx_device is None
-        ):
-            resolved = self._try_resolve_from_serial(devices)
-            if resolved is not None:
-                self._selected_rx, self._selected_tx = resolved
-                return resolved
-            if platform.system() == "Linux":
-                raise AudioDeviceSelectionError(
-                    "Linux serial USB audio pair could not be resolved; reconnect "
-                    "the radio's USB audio device or select explicit RX/TX devices."
-                )
-
         selected_rx, selected_tx = select_usb_audio_devices(
             devices,
             rx_device=self._config.rx_device,
@@ -1443,7 +1427,7 @@ class UsbAudioDriver:
     ) -> tuple[UsbAudioDevice, UsbAudioDevice]:
         serial_port = self._serial_port
         if not (
-            platform.system() in {"Windows", "Darwin"}
+            platform.system() in {"Windows", "Darwin", "Linux"}
             and (
                 (
                     serial_port
@@ -1484,23 +1468,30 @@ class UsbAudioDriver:
             direction=direction,
             timeout=remaining(),
         )
+        from ._usb_raw_linux import read_raw_linux
         from ._usb_raw_macos import read_raw_macos
         from ._usb_raw_windows import read_raw_windows
 
-        macos = platform.system() == "Darwin"
-        empty: RawWindows | RawMacos = (
-            RawMacos(unavailable=({"part": "macos", "reason": "reader unavailable"},))
-            if macos
-            else RawWindows("cfgmgr32", ())
-        )
+        system = platform.system()
+        empty: RawWindows | RawMacos | RawLinux
+        if system == "Linux":
+            empty = RawLinux(
+                unavailable=({"part": "linux", "reason": "reader unavailable"},)
+            )
+        elif system == "Darwin":
+            empty = RawMacos(
+                unavailable=({"part": "macos", "reason": "reader unavailable"},)
+            )
+        else:
+            empty = RawWindows("cfgmgr32", ())
 
-        def query() -> RawWindows | RawMacos:
+        def query() -> RawWindows | RawMacos | RawLinux:
             try:
-                return (
-                    read_raw_macos(topology_timeout)
-                    if macos
-                    else read_raw_windows(topology_timeout)
-                )
+                if system == "Linux":
+                    return read_raw_linux(timeout_s=topology_timeout)
+                if system == "Darwin":
+                    return read_raw_macos(topology_timeout)
+                return read_raw_windows(topology_timeout)
             except Exception:  # noqa: BLE001 — optional metadata only
                 logger.warning(
                     "usb-audio: optional USB topology unavailable", exc_info=True
@@ -1543,17 +1534,18 @@ class UsbAudioDriver:
     def _select_topology_devices(
         self,
         devices: list[UsbAudioDevice],
-        records: RawWindows | RawMacos,
+        records: RawWindows | RawMacos | RawLinux,
         serial_port: str,
     ) -> tuple[UsbAudioDevice, UsbAudioDevice]:
         from ._portaudio_enum import read_portaudio_enumeration
+        from ._usb_adapt_linux import adapt_linux
         from ._usb_adapt_macos import adapt_macos
         from ._usb_adapt_windows import adapt_windows
         from ._usb_pairing import PairRefused, pair, pairing_refusal_error
 
         sd_module = _extract_sounddevice_module(self._backend)
         if (
-            isinstance(records, RawMacos)
+            isinstance(records, (RawMacos, RawLinux))
             or records.devnodes
             or self._config.rx_device is not None
             or self._config.tx_device is not None
@@ -1561,11 +1553,14 @@ class UsbAudioDriver:
             enumeration = (
                 read_portaudio_enumeration(sd_module) if sd_module is not None else None
             )
-            if isinstance(records, RawMacos):
+            if isinstance(records, (RawMacos, RawLinux)):
                 from ._portaudio_enum import PortAudioEnumeration
 
-                snapshot = adapt_macos(
-                    records, enumeration or PortAudioEnumeration((), (), 0, False)
+                enumeration = enumeration or PortAudioEnumeration((), (), 0, False)
+                snapshot = (
+                    adapt_linux(records, enumeration)
+                    if isinstance(records, RawLinux)
+                    else adapt_macos(records, enumeration)
                 )
             else:
                 session: dict[str, Any] = {
@@ -1607,55 +1602,6 @@ class UsbAudioDriver:
                     "select explicit RX/TX devices for the serial radio."
                 )
         return select_usb_audio_devices(candidates)
-
-    def _try_resolve_from_serial(
-        self,
-        devices: list[UsbAudioDevice],
-    ) -> tuple[UsbAudioDevice, UsbAudioDevice] | None:
-        """Attempt topology-based audio device resolution from serial port."""
-        sd_module = _extract_sounddevice_module(self._backend)
-        if sd_module is None:
-            logger.debug(
-                "usb-audio: topology resolution skipped — backend %s "
-                "is not PortAudioBackend; falling back to name-based selection",
-                type(self._backend).__name__,
-            )
-            return None
-
-        from ..usb_audio_resolve import resolve_audio_for_serial_port
-
-        mapping = resolve_audio_for_serial_port(
-            self._serial_port,  # type: ignore[arg-type]
-            sounddevice_module=sd_module,
-            **(
-                {"usb_identity": self._usb_identity}
-                if platform.system() in {"Windows", "Darwin"}
-                else {}
-            ),
-        )
-        if mapping is None:
-            return None
-
-        rx_dev = next((d for d in devices if d.index == mapping.rx_device_index), None)
-        tx_dev = next((d for d in devices if d.index == mapping.tx_device_index), None)
-        if rx_dev is None or tx_dev is None:
-            logger.warning(
-                "usb-audio: topology resolved indices [%d, %d] but devices "
-                "not found in normalized list",
-                mapping.rx_device_index,
-                mapping.tx_device_index,
-            )
-            return None
-
-        logger.info(
-            "usb-audio: topology-resolved devices for %s: RX=[%d] %s, TX=[%d] %s",
-            self._serial_port,
-            rx_dev.index,
-            rx_dev.name,
-            tx_dev.index,
-            tx_dev.name,
-        )
-        return rx_dev, tx_dev
 
     def list_devices(self) -> list[UsbAudioDevice]:
         """List normalized devices from the active audio backend."""

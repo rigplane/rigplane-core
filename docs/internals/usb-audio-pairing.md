@@ -1,8 +1,9 @@
 # Shared USB audio pairing
 
 The shared rule lives in `src/rigplane/audio/_usb_pairing.py: pair`.
-`src/rigplane/audio/_usb_adapt_windows.py: adapt_windows` and
-`src/rigplane/audio/_usb_adapt_macos.py: adapt_macos` normalize platform evidence
+`src/rigplane/audio/_usb_adapt_windows.py: adapt_windows`,
+`src/rigplane/audio/_usb_adapt_macos.py: adapt_macos` and
+`src/rigplane/audio/_usb_adapt_linux.py: adapt_linux` normalize platform evidence
 without querying devices. Both
 `src/rigplane/audio/usb_driver.py: UsbAudioDriver._select_topology_devices` and
 `src/rigplane/audio/_usb_resolve.py: resolve_audio_for_serial_port` use this rule.
@@ -37,6 +38,12 @@ The stages run in order, stopping at the first refusal:
   name of exactly 31 characters when its normalized key prefixes the endpoint
   key. Multiple owners of a matching name contest that record, including
   non-USB and virtual devices.
+  `src/rigplane/audio/_usb_names.py: endpoint_name_key` normalizes ALSA's
+  `: <PCM>` and `, USB Audio` decorations only with a trailing `(hw:N,M)` or
+  `(plughw:N,M)` address, retaining that address in the key. Linux endpoints
+  use the linked card's name and `(hw:N,0)` address; directions come from
+  matching PortAudio channel counts. Separate cards with equal product names
+  remain distinct without relying on enumeration order.
 - **S5 — host API.** In PortAudio's host API order, select the first API with
   exactly one owned capture record and one owned render record, and no
   contested record matching the selected codec. A duplex record can serve
@@ -72,3 +79,14 @@ Ambiguity refusals map to `usb_ambiguous`, name failures to `usb_topology_names`
 and the remaining reasons to `usb_topology_unavailable`. Capture replay tests
 are in `tests/test_usb_adapt_windows.py` and `tests/test_usb_pairing_windows.py`;
 the graph clause pins and stage anchors are in `tests/test_usb_pairing_rules.py`.
+
+Linux uses `src/rigplane/audio/_usb_raw_linux.py: read_raw_linux` in process,
+including in frozen applications. The adapter identifies root hubs from their
+parentless sysfs `devpath=0` and hub class, and retains USB device ownership
+across tty and audio interface links. Endpoint IDs use the linked sysfs device
+path plus `:pcm0`, so PortAudio order and ALSA card numbering are not identity.
+Explicit `<host API>|<endpoint OS ID>` overrides use the same picker path.
+The real web audio-start seam is exercised in
+`tests/test_web_usb_pairing_integration.py`; Linux's sysfs/ALSA/PortAudio inputs
+are synthetic and **not hardware-verified**. Topology, profile, refusal and
+deadline coverage lives in `tests/test_usb_pairing_linux.py`.
