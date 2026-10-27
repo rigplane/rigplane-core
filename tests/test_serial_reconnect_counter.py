@@ -128,7 +128,7 @@ async def test_serial_retries_inside_one_loss_count_once() -> None:
 
 @pytest.mark.asyncio
 async def test_serial_user_connect_from_disconnected_counts_zero() -> None:
-    """The web ``radio_connect`` route after a user disconnect is no episode."""
+    """A ``soft_reconnect()`` after a user disconnect is no episode."""
     radio, link = _serial_radio()
     await _connect_without_watchdog(radio)
     await radio.disconnect()

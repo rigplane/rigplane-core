@@ -36,6 +36,7 @@ from rigplane.core.types import (
     RepeaterOffsetProfile,
     ToneSquelchType,
 )
+from rigplane.core.usb_identity import UsbAudioIdentity, UsbFunctionId
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.profiles.control_domain import (
     _on_control_lattice,
@@ -71,6 +72,7 @@ from rigplane.profiles import (
     FreqRangeInfo,
     KeyboardBinding,
     KeyboardConfig,
+    MemoryProfile,
     MeterCalibrationPoint,
     RadioProfile,
     RuleSpec,
@@ -139,6 +141,7 @@ VALID_AUDIO_SAMPLE_RATES_HZ = {8000, 12000, 16000, 24000, 48000}
 VALID_BROWSER_RX_TRANSPORTS = {"auto", "pcm", "opus"}
 VALID_RX_AUDIO_CHANNELS = {"mix", "left", "right"}
 VALID_VFO_READBACK = {"absolute", "selected_unselected", "none"}
+VALID_SPLIT_TX_TARGETS = {"none", "main_unselected", "sub_receiver"}
 # How a transceiver-wide reply (no receiver of its own) names the
 # transmitting receiver. ``main_unless_split``: MAIN, or SUB while a FRESH
 # split readback is ON (IC-7610 Basic Manual p.3-2 "transmit on only the
@@ -669,6 +672,7 @@ class RigConfig:
     # (``VALID_TX_RECEIVER_RULES``); ``"none"`` keeps the selected-band
     # label.
     tx_receiver_rule: str = "none"
+    split_tx_target: str = "none"
     # MOR-1447 leg 2: "separate" (default) or "combined" (Icom-style single
     # RF/SQL knob — see ``VALID_RF_SQL_CONTROL_MODELS``).
     rf_sql_control_model: str = "separate"
@@ -738,6 +742,7 @@ class RigConfig:
     # top-level ``[identity].expected_ids``. Empty means no/unverified
     # identity configuration.
     expected_identity_ids: tuple[str, ...] = ()
+    memory: MemoryProfile | None = field(default=None, kw_only=True)
     # Optional ``[modes] families`` (MOR-3679): family name -> member mode
     # names from ``modes``, in declared order. Empty when not declared.
     # Keyword-only and appended so no positional argument shifts.
@@ -751,6 +756,7 @@ class RigConfig:
     # ``[repeater_offset]`` section. ``None`` = the profile declares no
     # offset surface.
     repeater_offset: RepeaterOffsetProfile | None = field(default=None, kw_only=True)
+    usb_identity: UsbAudioIdentity | None = field(default=None, kw_only=True)
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -874,6 +880,7 @@ class RigConfig:
             vfo_scheme=self.vfo_scheme,
             vfo_readback=self.vfo_readback,
             tx_receiver_rule=self.tx_receiver_rule,
+            split_tx_target=self.split_tx_target,
             has_lan=self.has_lan,
             freq_ranges=ranges,
             modes=tuple(self.modes),
@@ -972,8 +979,10 @@ class RigConfig:
             state_acquisition=self.state_acquisition,
             tx_policy=self.tx_policy,
             expected_identity_ids=self.expected_identity_ids,
+            memory=self.memory,
             cw_text=self.cw_text,
             repeater_offset=self.repeater_offset,
+            usb_identity=self.usb_identity,
         )
 
     def to_command_map(self) -> CommandMap:
@@ -2156,6 +2165,81 @@ def _is_control_char(ch: str) -> bool:
     return code <= 0x1F or 0x7F <= code <= 0x9F
 
 
+_MEMORY_KEYS = frozenset(
+    {
+        "addressing",
+        "first_group",
+        "last_group",
+        "first_channel",
+        "last_channel",
+        "recall",
+        "dd_groups",
+        "offset_10mhz_groups",
+    }
+)
+_MEMORY_ADDRESSING = frozenset({"group_channel", "band_channel", "channel"})
+
+
+def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
+    """Parse the optional ``[memory]`` section (MOR-3627)."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [memory] must be a table")
+    _reject_unknown_keys(filename, "[memory]", raw, _MEMORY_KEYS)
+    addressing = raw.get("addressing")
+    if not isinstance(addressing, str) or addressing not in _MEMORY_ADDRESSING:
+        raise RigLoadError(
+            f"{filename}: [memory].addressing must be one of "
+            f"{sorted(_MEMORY_ADDRESSING)}, got {addressing!r}"
+        )
+    bounds: dict[str, int] = {}
+    for key in ("first_group", "last_group", "first_channel", "last_channel"):
+        value = raw.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise RigLoadError(f"{filename}: [memory].{key} must be an integer")
+        if not 0 <= value <= 9999:
+            raise RigLoadError(f"{filename}: [memory].{key} must be 0..9999")
+        bounds[key] = value
+    if bounds["first_group"] > bounds["last_group"]:
+        raise RigLoadError(f"{filename}: [memory].first_group must be <= last_group")
+    if bounds["first_channel"] > bounds["last_channel"]:
+        raise RigLoadError(
+            f"{filename}: [memory].first_channel must be <= last_channel"
+        )
+    if addressing == "channel" and bounds["last_group"] != 0:
+        raise RigLoadError(f"{filename}: [memory] a channel list has only group 0")
+    if addressing == "band_channel" and bounds["last_group"] > 99:
+        raise RigLoadError(f"{filename}: [memory] band codes are one BCD byte (0-99)")
+    recall = raw.get("recall", False)
+    if not isinstance(recall, bool):
+        raise RigLoadError(f"{filename}: [memory].recall must be a boolean")
+    if recall and addressing != "group_channel":
+        raise RigLoadError(
+            f"{filename}: [memory].recall is only implemented for group_channel"
+        )
+    groups: dict[str, tuple[int, ...]] = {}
+    for key in ("dd_groups", "offset_10mhz_groups"):
+        values = raw.get(key, [])
+        if not isinstance(values, list) or any(
+            isinstance(value, bool) or not isinstance(value, int) for value in values
+        ):
+            raise RigLoadError(f"{filename}: [memory].{key} must be a list of integers")
+        if any(
+            not bounds["first_group"] <= value <= bounds["last_group"]
+            for value in values
+        ):
+            raise RigLoadError(
+                f"{filename}: [memory].{key} must be within first_group..last_group"
+            )
+        if len(set(values)) != len(values):
+            raise RigLoadError(
+                f"{filename}: [memory].{key} must not contain duplicates"
+            )
+        groups[key] = tuple(values)
+    return MemoryProfile(addressing=addressing, recall=recall, **bounds, **groups)  # type: ignore[arg-type]
+
+
 _CW_TEXT_KEYS = frozenset({"supported", "max_length", "memory_channel", "memory_type"})
 _CW_TEXT_MEMORY_TYPES = frozenset({"text", "message"})
 
@@ -2515,6 +2599,19 @@ def load_rig(path: Path) -> RigConfig:
         raise RigLoadError(
             f"{filename}: [vfo].tx_receiver_rule must be one of "
             f"{sorted(VALID_TX_RECEIVER_RULES)}, got {tx_receiver_rule!r}"
+        )
+    split_tx_target = vfo.get("split_tx_target", "none")
+    if (
+        not isinstance(split_tx_target, str)
+        or split_tx_target not in VALID_SPLIT_TX_TARGETS
+    ):
+        raise RigLoadError(
+            f"{filename}: [vfo].split_tx_target must be one of "
+            f"{sorted(VALID_SPLIT_TX_TARGETS)}, got {split_tx_target!r}"
+        )
+    if split_tx_target != "none" and scheme != "main_sub":
+        raise RigLoadError(
+            f"{filename}: [vfo].split_tx_target requires main_sub scheme"
         )
     expected_receiver_count = 1 if scheme in {"single", "ab"} else 2
     receiver_count = radio["receiver_count"]
@@ -3163,6 +3260,46 @@ def load_rig(path: Path) -> RigConfig:
                 )
             rx_audio_channel = rx_channel_raw
 
+    usb_identity: UsbAudioIdentity | None = None
+    usb_section = data.get("usb")
+    if "usb" in data:
+        if not isinstance(usb_section, dict):
+            raise RigLoadError(f"{filename}: [usb] must be a table")
+        _reject_unknown_keys(
+            filename,
+            "[usb]",
+            usb_section,
+            frozenset({"audio_codec", "serial_functions"}),
+        )
+        usb_functions: dict[str, frozenset[UsbFunctionId]] = {}
+        for key in ("audio_codec", "serial_functions"):
+            entries = usb_section.get(key, [])
+            if not isinstance(entries, list):
+                raise RigLoadError(f"{filename}: [usb].{key} must be a list of tables")
+            functions: set[UsbFunctionId] = set()
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise RigLoadError(
+                        f"{filename}: [usb].{key} entries must be tables"
+                    )
+                _reject_unknown_keys(
+                    filename, f"[usb].{key}", entry, frozenset({"vid", "pid"})
+                )
+                vid, pid = entry.get("vid"), entry.get("pid")
+                if not isinstance(vid, str) or not isinstance(pid, str):
+                    raise RigLoadError(
+                        f"{filename}: [usb].{key} requires string vid and pid"
+                    )
+                try:
+                    functions.add(UsbFunctionId(vid, pid))
+                except ValueError as exc:
+                    raise RigLoadError(f"{filename}: [usb].{key}: {exc}") from exc
+            usb_functions[key] = frozenset(functions)
+        usb_identity = UsbAudioIdentity(
+            audio_codec=usb_functions["audio_codec"],
+            serial_functions=usb_functions["serial_functions"],
+        )
+
     max_watts: int | None = None
     min_watts: int | None = None
     power_section = data.get("power")
@@ -3192,6 +3329,7 @@ def load_rig(path: Path) -> RigConfig:
     )
     tx_policy = _parse_tx_policy(filename, data.get("tx_policy"))
     expected_identity_ids = _parse_identity(filename, data.get("identity"))
+    memory = _parse_memory(filename, data.get("memory"))
     cw_text = _parse_cw_text(
         filename,
         data.get("cw_text"),
@@ -3250,6 +3388,7 @@ def load_rig(path: Path) -> RigConfig:
         vfo_scheme=scheme,
         vfo_readback=vfo_readback,
         tx_receiver_rule=tx_receiver_rule,
+        split_tx_target=split_tx_target,
         vfo_main_select=vfo_main,
         vfo_sub_select=vfo_sub,
         vfo_swap_ab=vfo_swap_ab,
@@ -3315,8 +3454,10 @@ def load_rig(path: Path) -> RigConfig:
         state_acquisition=state_acquisition,
         tx_policy=tx_policy,
         expected_identity_ids=expected_identity_ids,
+        memory=memory,
         cw_text=cw_text,
         repeater_offset=repeater_offset,
+        usb_identity=usb_identity,
     )
 
 

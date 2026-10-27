@@ -12,7 +12,11 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from rigplane.backends.yaesu_cat.parser import CatCommandParser, format_command
+from rigplane.backends.yaesu_cat.parser import (
+    CatCommandParser,
+    CatParseError,
+    format_command,
+)
 from rigplane.commands._codec import _bcd_decode_value, bcd_encode_value
 from rigplane.core.types import bcd_decode, bcd_encode
 
@@ -91,7 +95,9 @@ def test_packed_bcd_rejects_invalid_nibbles(
 
 _FTX1_PROFILE = Path(__file__).resolve().parents[2] / "rigs" / "ftx1.toml"
 _FIXED_WIDTH_INT = re.compile(r"0(\d+)d")
-_CAT_CHAR = st.characters(min_codepoint=0x20, max_codepoint=0x7E)
+_CAT_CHAR = st.characters(
+    min_codepoint=0x20, max_codepoint=0x7E, blacklist_characters=";"
+)
 
 
 def _parse_templates(node: Any) -> set[str]:
@@ -125,6 +131,8 @@ def _field_strategy(name: str, spec: str) -> st.SearchStrategy[Any]:
         return st.sampled_from(("+", "-"))
     if name == "chan":
         return st.text(_CAT_CHAR, min_size=5, max_size=5)
+    if name == "tag":
+        return st.text(_CAT_CHAR, min_size=0, max_size=12)
     return _CAT_CHAR
 
 
@@ -141,4 +149,19 @@ def test_ftx1_reply_parse_inverts_format(template: str, data: st.DataObject) -> 
         if name
     }
     reply = format_command(template, **fields)
-    assert CatCommandParser(template).parse(reply) == fields
+    parser = CatCommandParser(template)
+    assert parser.parse(reply) == fields
+    if "tag" in fields:
+        with pytest.raises(CatParseError):
+            parser.parse(format_command(template, **(fields | {"tag": ";"})))
+
+
+@pytest.mark.parametrize(
+    "tag", [" " * length for length in range(13)] + ["TAG   ", "ABCDEFGHIJKL"]
+)
+def test_ftx1_memory_tag_preserves_empty_text_and_spaces(tag: str) -> None:
+    template = "MT{chan}{tag};"
+    fields = {"chan": "00001", "tag": tag}
+    assert (
+        CatCommandParser(template).parse(format_command(template, **fields)) == fields
+    )

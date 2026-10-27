@@ -58,6 +58,7 @@ from ..startup_checks import _radio_details, assert_radio_startup_ready
 from . import audit as _audit  # noqa: TID251
 from .circuit_breaker import CircuitBreaker, CircuitState  # noqa: TID251
 from .contract import ClientSession, HamlibError, RigctldConfig  # noqa: TID251
+from .protocol import ArgumentCountError  # noqa: TID251
 from .utils import get_mode_reader  # noqa: TID251
 
 if TYPE_CHECKING:
@@ -1343,15 +1344,18 @@ class RigctldServer:
                 try:
                     cmd = proto.parse_line(raw, session)
                 except ValueError as exc:
-                    # Unknown command or bad args → ENIMPL, not EPROTO
-                    # (WSJT-X sends commands we don't support yet)
                     logger.debug("client #%d unknown/bad command: %s", client_id, exc)
                     if at_capacity:
                         logger.warning(
                             "client #%d response capacity reached", client_id
                         )
                         break
-                    schedule_response(None, immediate_error=HamlibError.ENIMPL)
+                    error = (
+                        HamlibError.EINVAL
+                        if isinstance(exc, ArgumentCountError)
+                        else HamlibError.ENIMPL
+                    )
+                    schedule_response(None, immediate_error=error)
                     continue
                 except Exception as exc:
                     logger.warning("client #%d parse error: %s", client_id, exc)

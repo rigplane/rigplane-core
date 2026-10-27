@@ -232,7 +232,8 @@ class _Diagnostics:
                         task_frames = None
                         try:
                             output.add(
-                                f"done={task.done()} cancelled={task.cancelled()}\n"
+                                f"done={task.done()} cancelled={task.cancelled()} "
+                                f"cancelling={task.cancelling()}\n"
                             )
                             awaitable = task.get_coro()
                             for depth in range(24):
@@ -645,8 +646,9 @@ def finalize_directory(directory):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "--finalize":
+    if len(sys.argv) == 3 and sys.argv[1] in ("--finalize", "--finalize-strict"):
         try:
             finalize_directory(sys.argv[2])
         except BaseException:
-            pass
+            if sys.argv[1] == "--finalize-strict":
+                raise

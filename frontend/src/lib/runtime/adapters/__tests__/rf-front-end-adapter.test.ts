@@ -223,6 +223,19 @@ describe('preValues/attValues choice sets (MOR-1292)', () => {
     expect(view.rfFrontEnd!.preValues).toEqual([]);
     expect(view.rfFrontEnd!.attValues).toEqual([]);
   });
+
+  it('carries the capability-declared preamp labels verbatim', () => {
+    const preLabels = { '0': 'OFF', '1': 'INT', '2': 'EXT', '3': 'INT+EXT' };
+    const view = model(bareState(), caps({ capabilities: ['preamp'], preValues: [0, 1, 2, 3], preLabels }));
+    expect(view.rfFrontEnd!.preLabels).toEqual(preLabels);
+  });
+
+  it('omits preLabels when caps declares none or an empty map', () => {
+    for (const preLabels of [undefined, {}]) {
+      const view = model(bareState(), caps({ capabilities: ['preamp'], preValues: [0, 1], preLabels }));
+      expect(Object.keys(view.rfFrontEnd!)).not.toContain('preLabels');
+    }
+  });
 });
 
 /**

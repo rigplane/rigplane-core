@@ -56,7 +56,10 @@ def _template_regex(template: str) -> re.Pattern[str]:
     for field in _FIELD.finditer(template):
         parts.append(re.escape(template[pos : field.start()]))
         width = field.group(1)
-        parts.append(f"[0-9]{{{width}}}" if width else "[0-9A-Za-z]")
+        if field.group(0) == "{chan}":  # MR/MT memory slot: five digits (MOR-3628)
+            parts.append("[0-9]{5}")
+        else:
+            parts.append(f"[0-9]{{{width}}}" if width else "[0-9A-Za-z]")
         pos = field.end()
     parts.append(re.escape(template[pos:]))
     return re.compile("".join(parts))

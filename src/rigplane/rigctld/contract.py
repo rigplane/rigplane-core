@@ -144,8 +144,9 @@ class CommandDef:
         max_args: Maximum number of payload arguments (same convention).
         accepts_vfo_arg: True when Hamlib prefixes the command with a
             leading ``VFOA``/``VFOB``/``currVFO`` token under
-            ``chk_vfo=1``. Per ``rigctl(1)``: ``f m t j s l u`` (read)
-            and ``F M T L U S`` (write). The parser uses this flag to
+            ``chk_vfo=1``. Per ``rigctl(1)``: ``f m t j s l u i x``
+            (read) and ``F M T L U S I X`` (write). The parser uses
+            this flag to
             decide whether to attempt to strip a leading VFO label
             before the min/max arg check. Note: ``v`` (get_vfo) and
             ``V`` (set_vfo) are NOT prefixed — VFO is the data, not a
@@ -228,6 +229,20 @@ _register(
         accepts_vfo_arg=True,
         description="Get split VFO status",
     ),
+    CommandDef(
+        "i",
+        "get_split_freq",
+        is_set=False,
+        accepts_vfo_arg=True,
+        description="Get split TX frequency in Hz",
+    ),
+    CommandDef(
+        "x",
+        "get_split_mode",
+        is_set=False,
+        accepts_vfo_arg=True,
+        description="Get split TX mode and passband",
+    ),
     # Set commands
     CommandDef(
         "F",
@@ -285,6 +300,24 @@ _register(
         max_args=2,
         accepts_vfo_arg=True,
         description="Set split VFO",
+    ),
+    CommandDef(
+        "I",
+        "set_split_freq",
+        is_set=True,
+        min_args=1,
+        max_args=1,
+        accepts_vfo_arg=True,
+        description="Set split TX frequency in Hz",
+    ),
+    CommandDef(
+        "X",
+        "set_split_mode",
+        is_set=True,
+        min_args=1,
+        max_args=2,
+        accepts_vfo_arg=True,
+        description="Set split TX mode and optional passband",
     ),
     # Control / info commands (not set, not get — special)
     CommandDef("q", "quit", is_set=False, description="Close connection"),

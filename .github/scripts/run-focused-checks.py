@@ -68,7 +68,10 @@ def build_plan(
     ruff_raw: str,
     vitest_raw: str,
     repo: Path,
+    diagnostics_raw: str = "false",
 ) -> dict[str, object]:
+    if diagnostics_raw not in ("true", "false"):
+        raise InputError("diagnostics must be true or false")
     if not REVISION_RE.fullmatch(revision):
         raise InputError("revision must be an exact 40-character lowercase commit SHA")
 
@@ -97,12 +100,18 @@ def build_plan(
     if not pytest_targets and not ruff_targets and not vitest_targets:
         raise InputError("at least one focused target is required")
 
-    return {
+    if diagnostics_raw == "true" and not pytest_targets:
+        raise InputError("diagnostics requires pytest targets")
+
+    plan = {
         "revision": revision,
         "pytest_targets": pytest_targets,
         "ruff_targets": ruff_targets,
         "vitest_targets": vitest_targets,
     }
+    if diagnostics_raw == "true":
+        plan["diagnostics"] = True
+    return plan
 
 
 def _record_outputs(plan: dict[str, object]) -> None:
@@ -124,14 +133,35 @@ def execute_plan(
     *,
     repo: Path,
     runner: Runner = subprocess.run,
+    diagnostics_dir: Path | None = None,
 ) -> list[dict[str, object]]:
+    diagnostic = plan.get("diagnostics", False)
+    if diagnostic and diagnostics_dir is None:
+        raise InputError("diagnostics requires an output directory")
     commands: list[tuple[str, list[str], Path]] = []
     pytest_targets = list(plan["pytest_targets"])
     ruff_targets = list(plan["ruff_targets"])
     vitest_targets = list(plan["vitest_targets"])
 
     if pytest_targets:
-        commands.append(("pytest", ["uv", "run", "pytest", *pytest_targets], repo))
+        options = (
+            [
+                "-n",
+                "4",
+                "--timeout=300",
+                "--timeout-method=thread",
+                "--max-worker-restart=0",
+                "--tb=long",
+                "-ra",
+                "-p",
+                "pytest_worker_diagnostics",
+            ]
+            if diagnostic
+            else []
+        )
+        commands.append(
+            ("pytest", ["uv", "run", "pytest", *pytest_targets, *options], repo)
+        )
     if ruff_targets:
         commands.extend(
             (
@@ -159,7 +189,16 @@ def execute_plan(
     results: list[dict[str, object]] = []
     for name, command, cwd in commands:
         started = time.monotonic()
-        completed = runner(command, cwd=cwd, check=False)
+        if diagnostic and name == "pytest":
+            env = os.environ.copy()
+            env.update(
+                UV_PYTHON="3.11.17",
+                PYTHONPATH=str(Path(__file__).resolve().parent),
+                RIGPLANE_WORKER_DIAG_DIR=str(diagnostics_dir.resolve()),
+            )
+            completed = runner(command, cwd=cwd, check=False, env=env)
+        else:
+            completed = runner(command, cwd=cwd, check=False)
         results.append(
             {
                 "name": name,
@@ -177,6 +216,7 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--results", type=Path)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--diagnostics-dir", type=Path)
     return parser.parse_args(argv)
 
 
@@ -189,6 +229,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ruff_raw=os.environ.get("FOCUSED_RUFF_TARGETS", "[]"),
             vitest_raw=os.environ.get("FOCUSED_VITEST_TARGETS", "[]"),
             repo=args.repo,
+            diagnostics_raw=os.environ.get("FOCUSED_DIAGNOSTICS", "false"),
         )
     except InputError as exc:
         print(f"focused-check input rejected: {exc}", file=sys.stderr)
@@ -202,7 +243,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.results is None:
         print("--results is required with --execute", file=sys.stderr)
         return 2
-    results = execute_plan(plan, repo=args.repo)
+    if plan.get("diagnostics") and args.diagnostics_dir is None:
+        print("--diagnostics-dir is required for diagnostics", file=sys.stderr)
+        return 2
+    results = execute_plan(plan, repo=args.repo, diagnostics_dir=args.diagnostics_dir)
     args.results.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     return 0 if all(result["returncode"] == 0 for result in results) else 1
 

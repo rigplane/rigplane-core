@@ -9,7 +9,9 @@ type IntentSpec = { names: readonly string[]; params: Readonly<Record<string, Fi
 
 const intentSpecs = [
   { names: ['cw_auto_tune', 'memory_write', 'scan_stop', 'vfo_equalize', 'vfo_swap'], params: {} },
-  { names: ['memory_clear', 'memory_to_vfo', 'set_memory_mode'], params: { channel: 'integer' } },
+  { names: ['memory_clear', 'memory_to_vfo'], params: { channel: 'integer' } },
+  // MOR-3627: `group` selects a listed channel on radios whose profile declares recall.
+  { names: ['set_memory_mode'], params: { channel: 'integer', group: 'integer?' } },
   { names: [
     'set_antenna_1', 'set_antenna_2', 'set_compressor', 'set_dial_lock', 'set_dual_watch',
     'set_main_sub_tracking', 'set_monitor', 'set_powerstat', 'set_rit_status', 'set_rit_tx_status',

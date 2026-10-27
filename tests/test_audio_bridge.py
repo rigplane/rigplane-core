@@ -144,6 +144,66 @@ def test_constants():
     assert FRAME_BYTES == 1920
 
 
+def test_pcm_gain_zero_db_preserves_original_bytes():
+    from rigplane.audio.bridge import _apply_pcm_gain_db
+
+    pcm = b"\x00\x80\xff\x7f\x34\x12"
+
+    assert _apply_pcm_gain_db(pcm, 0.0) is pcm
+
+
+def test_pcm_gain_attenuates_and_amplifies_with_saturation():
+    from rigplane.audio.bridge import _apply_pcm_gain_db
+
+    pcm = b"".join(
+        sample.to_bytes(2, "little", signed=True)
+        for sample in (-20_000, -1_000, 1_000, 20_000)
+    )
+
+    attenuated = _apply_pcm_gain_db(pcm, -6.020599913279624)
+    amplified = _apply_pcm_gain_db(pcm, 6.020599913279624)
+
+    assert list(memoryview(attenuated).cast("h")) == [-10_000, -500, 500, 10_000]
+    assert list(memoryview(amplified).cast("h")) == [-32_768, -2_000, 2_000, 32_767]
+
+
+def test_bridge_gain_can_be_updated_dynamically():
+    bridge = AudioBridge(_bare_radio())
+
+    bridge.set_gains(input_gain_db=6.0)
+    bridge.set_gains(output_gain_db=-10.0)
+
+    assert bridge.input_gain_db == 6.0
+    assert bridge.output_gain_db == -10.0
+
+
+@pytest.mark.parametrize(
+    ("gain_db", "expected"),
+    [
+        (1e308, [-32768, 0, 32767]),
+        (-1e308, [0, 0, 0]),
+    ],
+)
+def test_pcm_gain_extreme_finite_values(gain_db, expected):
+    from rigplane.audio.bridge import _apply_pcm_gain_db
+
+    pcm = b"".join(sample.to_bytes(2, "little", signed=True) for sample in (-1, 0, 1))
+    result = _apply_pcm_gain_db(pcm, gain_db)
+
+    assert [
+        int.from_bytes(result[index : index + 2], "little", signed=True)
+        for index in range(0, len(result), 2)
+    ] == expected
+
+
+@pytest.mark.parametrize("gain_db", [float("nan"), float("inf"), float("-inf")])
+def test_bridge_gain_rejects_non_finite_values(gain_db: float):
+    bridge = AudioBridge(_bare_radio())
+
+    with pytest.raises(ValueError, match="finite"):
+        bridge.set_gains(input_gain_db=gain_db)
+
+
 # ---------------------------------------------------------------------------
 # find_loopback_device (legacy compat)
 # ---------------------------------------------------------------------------
@@ -1469,6 +1529,75 @@ async def test_bridge_metrics_surface_capture_overflow_separately_from_queue_dro
         assert bridge.metrics.capture_callback_status_flags == {"input_overflow": 1}
         assert bridge.metrics.tx_overruns == 0
         radio.push_audio_tx_pcm.assert_awaited_once_with(frame)
+    finally:
+        await bridge.stop()
+
+
+async def test_bridge_applies_output_gain_to_radio_audio_playback():
+    radio = _make_radio()
+    backend = _bridge_backend()
+    bridge = AudioBridge(
+        radio,
+        device_name="RigPlane Virtual Cable",
+        tx_enabled=False,
+        output_gain_db=-6.020599913279624,
+        backend=backend,
+    )
+    await bridge.start()
+    try:
+        frame = (2_000).to_bytes(2, "little", signed=True) * SAMPLES_PER_FRAME
+        radio.audio_bus._on_opus_packet(AudioPacket(ident=0x80, send_seq=1, data=frame))
+
+        await _drain_bridge_callbacks()
+
+        expected = (1_000).to_bytes(2, "little", signed=True) * SAMPLES_PER_FRAME
+        assert backend.tx_streams[0].written_frames == [expected]
+    finally:
+        await bridge.stop()
+
+
+async def test_bridge_output_gain_does_not_mutate_shared_radio_audio():
+    radio = _make_radio()
+    backend = _bridge_backend()
+    bridge = AudioBridge(
+        radio,
+        device_name="RigPlane Virtual Cable",
+        tx_enabled=False,
+        output_gain_db=-10.0,
+        backend=backend,
+    )
+    await bridge.start()
+    try:
+        frame = (2_000).to_bytes(2, "little", signed=True) * SAMPLES_PER_FRAME
+        packet = AudioPacket(ident=0x80, send_seq=1, data=frame)
+        radio.audio_bus._on_opus_packet(packet)
+
+        await _drain_bridge_callbacks()
+
+        assert packet.data is frame
+        assert backend.tx_streams[0].written_frames[0] != frame
+    finally:
+        await bridge.stop()
+
+
+async def test_bridge_applies_input_gain_to_captured_audio():
+    radio = _make_radio()
+    backend = _bridge_backend()
+    bridge = AudioBridge(
+        radio,
+        device_name="RigPlane Virtual Cable",
+        input_gain_db=6.020599913279624,
+        backend=backend,
+    )
+    await bridge.start()
+    try:
+        frame = (1_000).to_bytes(2, "little", signed=True) * SAMPLES_PER_FRAME
+        backend.rx_streams[0].inject_frame(frame)
+
+        await _drain_bridge_callbacks()
+
+        expected = (2_000).to_bytes(2, "little", signed=True) * SAMPLES_PER_FRAME
+        radio.push_audio_tx_pcm.assert_awaited_once_with(expected)
     finally:
         await bridge.stop()
 

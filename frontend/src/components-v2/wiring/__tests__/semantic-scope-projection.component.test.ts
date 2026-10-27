@@ -254,6 +254,10 @@ describe('one managed scope owner through the real region and panel', () => {
     expect(target.querySelector('.passband-freshness')).toBeNull();
     renew(10); expect(push).toHaveBeenCalledTimes(1);
     radio.current!.ptt = true; publishAuthority(); flushSync(); expect(push).toHaveBeenCalledTimes(1);
+    // MOR-3471: the gate collapses sub-40ms-spaced deliveries as a replay
+    // burst; advance to the live fps=20 cadence (50 ms) so this consecutive
+    // frame classifies as live, not burst drain.
+    vi.advanceTimersByTime(50); flushSync();
     wire.frame(); expect(push).toHaveBeenCalledTimes(2);
     const shared = h.resources.acquire('hardware-scope', 'independent');
     toggle(); clear(); wire.frame(); expect(push).toHaveBeenCalledTimes(2);
@@ -546,6 +550,10 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
     wire.frame();
     expect(push.mock.calls.length).toBe(painted);
     wire.connected(); flushSync();
+    // MOR-3471: the gate collapses sub-40ms-spaced deliveries as a replay
+    // burst; advance to the live fps=20 cadence (50 ms) so the first frame
+    // of the new epoch classifies as live.
+    vi.advanceTimersByTime(50); flushSync();
     wire.frame();
     expect(push.mock.calls.length).toBe(painted + 1);
   });

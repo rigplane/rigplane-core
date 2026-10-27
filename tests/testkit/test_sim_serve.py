@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import io
 import json
 import signal
 import sys
+import wave
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +27,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.radio import IcomRadio
 
+from rigplane_testkit.icom.simulator import _HEADER_SIZE, _PT_DISCONNECT
+from rigplane_testkit.icom.simulator_audio import TxAudioFormat
 from rigplane_testkit.serial.endpoints import pty_supported
 from rigplane_testkit.sim.__main__ import _control_arg, build_parser
 from rigplane_testkit.sim.engine import Ok, SetMeter
@@ -37,6 +41,19 @@ from rigplane_testkit.sim.serve import (
 )
 
 from _perf_helpers import fast_connect
+from testkit.test_simulator_audio import (
+    _await_client_seq_value,
+    _claim,
+    _open_audio,
+    _tx_audio,
+    _udp,
+)
+from testkit.test_simulator_faults import (
+    _bare_conninfo,
+    _conninfo_tx_format,
+    _header,
+    _login,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -322,7 +339,351 @@ async def test_same_seed_and_events_produce_identical_trace() -> None:
     assert len(first) == 1 + len(_DETERMINISM_EVENTS)
 
 
+# --- TX audio capture routes (IC-7610 backend only) ---------------------------
+
+_AUDIO_TX_EMPTY = {
+    "frames": 0,
+    "payload_bytes": 0,
+    "ptt_off_frames": 0,
+    "inner_seq_gaps": 0,
+    "first_received_at": None,
+    "last_received_at": None,
+    "sample_rate": 48000,
+    "channels": 1,
+    "codec": "pcm16",
+    "format": "default",
+}
+
+
+async def test_audio_tx_capture_routes() -> None:
+    """GET /audio/tx reports the sink; GET /audio/tx.wav returns it as WAV."""
+    async with _stack() as s:
+        radio = s.inner.backend.radio
+        assert radio.capture_tx_audio  # serve builds the IC-7610 with capture on
+        resp = await s.client.get("/audio/tx")
+        assert resp.status == 200
+        assert await resp.json() == _AUDIO_TX_EMPTY
+        resp = await s.client.get("/audio/tx.wav")
+        assert resp.status == 409
+        assert await resp.json() == {"ok": False, "outcome": "format_default"}
+
+        pcm = bytes(range(256)) * 4  # 512 samples, s16le-shaped
+        client = await _udp()
+        ctrl = await _udp()
+        try:
+            # The production dance: the control login's conninfo declares
+            # the negotiated TX format before the audio stream opens.
+            await _claim(radio, ctrl)
+            radio_id = await _open_audio(client, radio)
+            radio._set_simulated_ptt(True, wire_set=False)  # noqa: SLF001
+            client.send(_tx_audio(1, 0, pcm, radio_id), radio.audio_port)
+            # inner_seq 0 -> 2: one sequence gap in the stats.
+            client.send(_tx_audio(2, 2, pcm, radio_id), radio.audio_port)
+            end = asyncio.get_running_loop().time() + 2.0
+            while len(radio.audio_tx_frames) < 2:
+                assert asyncio.get_running_loop().time() < end, "frames not sunk"
+                await asyncio.sleep(0.02)
+        finally:
+            client.close()
+            ctrl.close()
+
+        body = await (await s.client.get("/audio/tx")).json()
+        assert body["frames"] == 2
+        assert body["payload_bytes"] == 2 * len(pcm)
+        assert body["ptt_off_frames"] == 0
+        assert body["inner_seq_gaps"] == 1
+        assert body["first_received_at"] <= body["last_received_at"]
+        assert (
+            body["sample_rate"],
+            body["channels"],
+            body["codec"],
+        ) == (48000, 1, "pcm16")
+        assert body["format"] == "pcm16"
+
+        since = await (await s.client.get("/audio/tx?since=1")).json()
+        assert since["frames"] == 1
+        assert since["inner_seq_gaps"] == 0  # one frame left: no pair to gap
+
+        resp = await s.client.get("/audio/tx.wav")
+        assert resp.status == 200
+        assert resp.content_type == "audio/wav"
+        with wave.open(io.BytesIO(await resp.read()), "rb") as wav:
+            assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (
+                1,
+                2,
+                48000,
+            )
+            assert wav.readframes(wav.getnframes()) == pcm + pcm
+
+
+async def _stream_tx_frame(radio, payload: bytes) -> None:
+    """One production-layout TX frame into the sink, awaited."""
+    client = await _udp()
+    try:
+        radio_id = await _open_audio(client, radio)
+        before = len(radio.audio_tx_frames)
+        client.send(_tx_audio(1, 0, payload, radio_id), radio.audio_port)
+        end = asyncio.get_running_loop().time() + 2.0
+        while len(radio.audio_tx_frames) <= before:
+            assert asyncio.get_running_loop().time() < end, "frame not sunk"
+            await asyncio.sleep(0.02)
+    finally:
+        client.close()
+
+
+async def _claim_with(radio, conninfos: list[bytes]) -> None:
+    """A control login followed by explicit conninfo packets on that socket
+    (a renegotiation is a second conninfo from the same login, like the
+    production soft reconnect — a new login would busy-reject while the
+    single-owner session is held)."""
+    ctrl = await _udp()
+    try:
+        ctrl.send(_login(), radio.control_port)
+        await ctrl.recv()
+        for conninfo in conninfos:
+            ctrl.send(conninfo, radio.control_port)
+            await ctrl.recv()
+    finally:
+        ctrl.close()
+
+
+async def test_audio_tx_capture_reports_the_learned_tx_format() -> None:
+    """A client whose conninfo declares TX 16 kHz PCM16 (a Core client with
+    ``audio_sample_rate=16000``): both routes label the capture 16 kHz —
+    a 48 kHz WAV would play back at triple speed and shift every marker
+    frequency by 3x."""
+    async with _stack() as s:
+        radio = s.inner.backend.radio
+        await _claim_with(
+            radio, [_conninfo_tx_format(tx_codec=0x04, tx_sample_rate=16000)]
+        )
+        pcm = bytes(range(256)) * 4
+        await _stream_tx_frame(radio, pcm)
+
+        body = await (await s.client.get("/audio/tx")).json()
+        assert (body["sample_rate"], body["channels"], body["codec"]) == (
+            16000,
+            1,
+            "pcm16",
+        )
+        assert body["format"] == "pcm16"
+
+        resp = await s.client.get("/audio/tx.wav")
+        assert resp.status == 200
+        with wave.open(io.BytesIO(await resp.read()), "rb") as wav:
+            assert wav.getframerate() == 16000
+            assert wav.readframes(wav.getnframes()) == pcm
+
+
+@pytest.mark.parametrize("response_delay", [0.0, 0.05])
+async def test_audio_tx_capture_spanning_a_format_change_is_flagged(
+    response_delay: float,
+) -> None:
+    """A capture spanning a TX-format change (the client renegotiates its
+    conninfo mid-capture) cannot be labeled with one sample rate: the JSON
+    flags it 'mixed' with no rate/codec, and the WAV route answers 409
+    instead of writing a mislabeled file."""
+    async with _stack() as s:
+        radio = s.inner.backend.radio
+        radio.response_delay = response_delay
+        ctrl = await _udp()
+        try:
+            ctrl.send(_login(), radio.control_port)
+            await ctrl.recv()
+            ctrl.send(
+                _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=48000),
+                radio.control_port,
+            )
+            await ctrl.recv()
+            await _stream_tx_frame(radio, bytes(range(256)) * 2)
+            assert len(radio.audio_tx_frames) == 1
+            # Mid-capture the client renegotiates: a fresh conninfo at 16 kHz.
+            ctrl.send(
+                _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=16000),
+                radio.control_port,
+            )
+            await ctrl.recv()
+            await _stream_tx_frame(radio, bytes(range(256)) * 2)
+            assert len(radio.audio_tx_frames) == 2
+        finally:
+            ctrl.close()
+
+        body = await (await s.client.get("/audio/tx")).json()
+        assert body["frames"] == 2
+        assert body["sample_rate"] is None
+        assert body["codec"] is None
+        assert body["format"] == "mixed"
+
+        resp = await s.client.get("/audio/tx.wav")
+        assert resp.status == 409
+        assert await resp.json() == {"ok": False, "outcome": "format_mixed"}
+
+
+async def test_audio_tx_capture_without_a_learned_format_is_flagged() -> None:
+    """A client that streamed with a bare conninfo (rate 0, never sent by
+    a real client) taught the sink no format: the routes must flag that
+    explicitly instead of claiming the profile's 48 kHz."""
+    async with _stack() as s:
+        radio = s.inner.backend.radio
+        await _claim_with(radio, [_bare_conninfo()])
+        await _stream_tx_frame(radio, bytes(range(256)) * 2)
+
+        body = await (await s.client.get("/audio/tx")).json()
+        assert body["sample_rate"] is None
+        assert body["codec"] is None
+        assert body["format"] == "unknown"
+
+        resp = await s.client.get("/audio/tx.wav")
+        assert resp.status == 409
+        assert await resp.json() == {"ok": False, "outcome": "format_unknown"}
+
+
+async def test_audio_tx_owner_renegotiates_after_another_client_is_busy() -> None:
+    async with _stack() as s:
+        radio = s.inner.backend.radio
+        ctrl_a, ctrl_b, audio = await _udp(), await _udp(), await _udp()
+        try:
+            ctrl_a.send(_login(), radio.control_port)
+            await ctrl_a.recv()
+            ctrl_a.send(
+                _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=48000),
+                radio.control_port,
+            )
+            await ctrl_a.recv()
+            ctrl_b.send(_login(), radio.control_port)
+            await ctrl_b.recv()
+            ctrl_b.send(
+                _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=8000),
+                radio.control_port,
+            )
+            busy = await ctrl_b.recv()
+            assert int.from_bytes(busy[0x42:0x44], "big") == 0
+            assert radio.audio_tx_format == TxAudioFormat(0x04, 48000)
+
+            ctrl_a.send(
+                _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=16000),
+                radio.control_port,
+            )
+            accepted = await ctrl_a.recv()
+            assert int.from_bytes(accepted[0x42:0x44], "big") == radio.civ_port
+            pcm = bytes(range(256))
+            radio_id = await _open_audio(audio, radio)
+            audio.send(_tx_audio(1, 0, pcm, radio_id), radio.audio_port)
+            await _await_client_seq_value(radio, 1)
+            assert radio.audio_tx_frames[0].tx_format == TxAudioFormat(0x04, 16000)
+            resp = await s.client.get("/audio/tx.wav")
+            assert resp.status == 200
+            with wave.open(io.BytesIO(await resp.read()), "rb") as wav:
+                assert wav.getframerate() == 16000
+                assert wav.readframes(wav.getnframes()) == pcm
+        finally:
+            for client in (ctrl_a, ctrl_b, audio):
+                client.close()
+
+
+async def test_audio_tx_session_end_forgets_format_but_keeps_snapshots() -> None:
+    async with _stack() as s:
+        radio = s.inner.backend.radio
+        ctrl_a, ctrl_b, audio = await _udp(), await _udp(), await _udp()
+        try:
+            ctrl_a.send(_login(), radio.control_port)
+            await ctrl_a.recv()
+            ctrl_a.send(
+                _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=48000),
+                radio.control_port,
+            )
+            await ctrl_a.recv()
+            radio_id = await _open_audio(audio, radio)
+            audio.send(_tx_audio(1, 0, bytes(64), radio_id), radio.audio_port)
+            await _await_client_seq_value(radio, 1)
+
+            ctrl_a.send(
+                bytes(_header(_HEADER_SIZE, _PT_DISCONNECT)), radio.control_port
+            )
+            # This login follows the disconnect on the same socket; its reply
+            # confirms that the control handler processed the disconnect.
+            ctrl_a.send(_login(), radio.control_port)
+            await ctrl_a.recv()
+            assert radio.audio_tx_format is None
+            ctrl_b.send(_login(), radio.control_port)
+            await ctrl_b.recv()
+            ctrl_b.send(_bare_conninfo(), radio.control_port)
+            await ctrl_b.recv()
+            radio_id = await _open_audio(audio, radio)
+            audio.send(_tx_audio(2, 0, bytes(64), radio_id), radio.audio_port)
+            await _await_client_seq_value(radio, 2)
+            first, second = radio.audio_tx_frames
+            assert first.tx_format == TxAudioFormat(0x04, 48000)
+            assert second.tx_format is None
+            assert radio.tx_capture_format(since=1) is None
+            body = await (await s.client.get("/audio/tx?since=1")).json()
+            assert body["frames"] == 1
+            assert body["format"] == "unknown"
+            assert body["sample_rate"] is None
+            resp = await s.client.get("/audio/tx.wav?since=1")
+            assert resp.status == 409
+            assert await resp.json() == {"ok": False, "outcome": "format_unknown"}
+        finally:
+            for client in (ctrl_a, ctrl_b, audio):
+                client.close()
+
+
+async def test_audio_tx_unknown_then_known_format_refuses_whole_export() -> None:
+    async with _stack() as s:
+        radio = s.inner.backend.radio
+        ctrl, audio = await _udp(), await _udp()
+        try:
+            ctrl.send(_login(), radio.control_port)
+            await ctrl.recv()
+            ctrl.send(_bare_conninfo(), radio.control_port)
+            await ctrl.recv()
+            radio_id = await _open_audio(audio, radio)
+            audio.send(_tx_audio(1, 0, bytes(64), radio_id), radio.audio_port)
+            await _await_client_seq_value(radio, 1)
+            ctrl.send(
+                _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=16000),
+                radio.control_port,
+            )
+            await ctrl.recv()
+            pcm = bytes(range(256))
+            audio.send(_tx_audio(2, 1, pcm, radio_id), radio.audio_port)
+            await _await_client_seq_value(radio, 2)
+
+            assert radio.tx_capture_format() is None
+            body = await (await s.client.get("/audio/tx")).json()
+            assert body["format"] == "mixed"
+            assert body["sample_rate"] is None
+            assert body["codec"] is None
+            resp = await s.client.get("/audio/tx.wav")
+            assert resp.status == 409
+            assert await resp.json() == {"ok": False, "outcome": "format_mixed"}
+
+            assert radio.tx_capture_format(since=1) == TxAudioFormat(0x04, 16000)
+            body = await (await s.client.get("/audio/tx?since=1")).json()
+            assert body["frames"] == 1
+            assert body["format"] == "pcm16"
+            assert body["sample_rate"] == 16000
+            resp = await s.client.get("/audio/tx.wav?since=1")
+            assert resp.status == 200
+            with wave.open(io.BytesIO(await resp.read()), "rb") as wav:
+                assert wav.getframerate() == 16000
+                assert wav.readframes(wav.getnframes()) == pcm
+        finally:
+            ctrl.close()
+            audio.close()
+
+
 # --- Serial events (in-process) ---------------------------------------------
+
+
+async def test_audio_tx_endpoints_unsupported_on_serial_radios() -> None:
+    """The TX-audio capture routes exist on the IC-7610 backend only."""
+    for radio in ("ic7300", "ftx1"):
+        async with _stack("--radio", radio) as s:
+            for path in ("/audio/tx", "/audio/tx.wav"):
+                resp = await s.client.get(path)
+                assert resp.status == 404, (radio, path)
+                assert await resp.json() == {"ok": False, "outcome": "unsupported"}
 
 
 async def test_stop_cancels_pending_reappear_timer() -> None:

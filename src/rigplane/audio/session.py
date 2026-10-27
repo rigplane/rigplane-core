@@ -199,8 +199,18 @@ class TxLease:
         audio_data: bytes,
         *,
         submission_guard: Callable[[], Awaitable[bool]] | None = None,
+        admission: (
+            Callable[[], contextlib.AbstractAsyncContextManager[bool]] | None
+        ) = None,
     ) -> None:
-        """Push TX audio (encoded per the radio's ``audio_tx_codec``)."""
+        """Push TX audio (encoded per the radio's ``audio_tx_codec``).
+
+        ``admission`` (MOR-3764) is the outside-only authorization: when
+        given, the push runs INSIDE its critical section and only while it
+        yields True. Mutually exclusive with ``submission_guard``.
+        """
+        if submission_guard is not None and admission is not None:
+            raise ValueError("TX lease push takes a guard or an admission, not both")
         if self._released:
             raise RuntimeError(f"TX lease {self.owner!r} already released")
         # A held lease IS TX demand: converge the session to its armed state
@@ -208,7 +218,8 @@ class TxLease:
         # live. Converges, never rejects: the digital-TX (FT8/WSJT-X over the
         # companion) path where only a TX lease is held and the transport was
         # rebuilt (so the LAN stream is RECEIVING and ``push_tx`` would be
-        # rejected) is re-armed here instead of failing.
+        # rejected) is re-armed here instead of failing. The converge stays
+        # OUTSIDE the admission critical section.
         await self._session._converge_for_push()
         if submission_guard is not None:
             try:
@@ -218,6 +229,12 @@ class TxLease:
                 return
             if self._released:
                 return
+        if admission is not None:
+            async with admission() as admitted:
+                if admitted is not True or self._released:
+                    return
+                await self._session._radio.push_tx(audio_data)
+            return
         await self._session._radio.push_tx(audio_data)
 
     async def release(self) -> None:

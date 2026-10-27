@@ -2,7 +2,8 @@
 
 Pure. The list comes from the rig profile's read templates, never from a
 hand-typed table: a template without fields is one probe; a field is
-expanded over the values in ``FIELD_VALUES`` (receiver 0/1; meter types 1-8).
+expanded over the values in ``FIELD_VALUES`` (receiver 0/1; meter types 1-8;
+one memory channel).
 ``CatReadOnlyGuard`` is the second, independent gate: the driver's bridge
 drops anything that is not a profile read, so a mistake here cannot reach
 the radio.
@@ -23,6 +24,8 @@ from rigplane.profiles.rig_loader import RigConfig
 FIELD_VALUES: dict[str, tuple[str, ...]] = {
     "receiver": ("0", "1"),
     "type": tuple("12345678"),
+    # MR/MT memory reads (MOR-3628): one stored slot, no selection.
+    "chan": ("00001",),
 }
 
 _FIELD = re.compile(r"\{([^{}:]*)\}")

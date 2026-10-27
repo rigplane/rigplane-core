@@ -59,21 +59,21 @@ def ic7300_radio(ic7300_profile):
 
 _EXPECTED_COUNTS = {
     # MOR-3678: send_cw_text is unsupported while [cw_text].supported = false.
-    "FTX-1": (13, 19),
-    "IC-705": (25, 7),
-    "IC-7300": (24, 8),
-    # MK2 = the IC-7300's 24 plus the four shared ANT1/RX-ANT relations:
+    "FTX-1": (13, 21),
+    "IC-705": (27, 7),
+    "IC-7300": (26, 8),
+    # MK2 = the IC-7300's 26 plus the four shared ANT1/RX-ANT relations:
     # get/set_antenna [0x12] is declared, and get_antenna_1/set_antenna_1/
     # get_rx_antenna_ant1/set_rx_antenna_ant1 all resolve through it.
     # get_antenna_2/set_antenna_2 stay absent-declared (single SO-239, RX-ANT
     # SMA only), and set_dual_watch/set_scope_receiver stay undeclared
     # (single receiver, no set_scope_main_sub), for exactly 4 unsupported.
-    "IC-7300MK2": (28, 4),
-    "IC-7610": (32, 0),
-    "IC-9700": (32, 0),
-    "TX-500": (11, 21),
-    "X6100": (15, 17),
-    "X6200": (15, 17),
+    "IC-7300MK2": (30, 4),
+    "IC-7610": (34, 0),
+    "IC-9700": (34, 0),
+    "TX-500": (11, 23),
+    "X6100": (15, 19),
+    "X6200": (15, 19),
 }
 _ALIASES = {
     "disable_scope": ScopeRuntimeMixin,
@@ -187,7 +187,7 @@ def _assert_parity(relations, sources=None) -> None:
 
 class TestProfileDerivedSupport:
     def test_registry_partition_and_all_profile_matrix(self, profiles):
-        assert len(CALLABLE_RELATIONS) == 32
+        assert len(CALLABLE_RELATIONS) == 34
         assert len(BUILDER_RELATIONS) == 21
         assert {r.operation for r in BUILDER_RELATIONS if r.kind == "alias"} == set(
             _ALIASES
@@ -242,6 +242,90 @@ class TestProfileDerivedSupport:
 
 
 class TestRelationMutations:
+    @pytest.mark.parametrize("model", ["IC-7300", "IC-7300MK2", "IC-705"])
+    @pytest.mark.parametrize(
+        "operation,keys",
+        [
+            (
+                "write_relative_vfo_frequency",
+                (
+                    "set_selected_freq",
+                    "get_selected_freq",
+                    "set_unselected_freq",
+                    "get_unselected_freq",
+                ),
+            ),
+            (
+                "write_relative_vfo_mode",
+                ("set_unselected_mode", "get_unselected_mode", "get_unselected_freq"),
+            ),
+        ],
+    )
+    def test_relative_vfo_writes_require_profile_shape_and_every_command(
+        self, profiles, model, operation, keys
+    ):
+        from rigplane.commands.command_map import CommandMap
+
+        profile = profiles[model]
+        assert supports_callable(profile, operation)
+        for changes in (
+            {"receiver_count": 2},
+            {"vfo_scheme": "main_sub"},
+            {"vfo_readback": "none"},
+            {"command_map": None},
+            {"absent_command_names": profile.absent_command_names | {operation}},
+        ):
+            assert not supports_callable(
+                dataclasses.replace(profile, **changes), operation
+            )
+        commands = profile.command_map
+        assert commands is not None
+        for key in keys:
+            assert not supports_callable(_without(profile, key), operation)
+            without_wire = dataclasses.replace(
+                profile,
+                command_map=CommandMap(
+                    {name: commands.get(name) for name in commands if name != key}
+                ),
+            )
+            assert not supports_callable(without_wire, operation)
+
+    @pytest.mark.parametrize("model", ["IC-7610", "IC-9700"])
+    @pytest.mark.parametrize(
+        ("operation", "keys"),
+        [
+            (
+                "write_relative_vfo_frequency",
+                ("set_unselected_freq", "get_unselected_freq"),
+            ),
+            (
+                "write_relative_vfo_mode",
+                ("set_unselected_mode", "get_unselected_mode", "get_unselected_freq"),
+            ),
+        ],
+    )
+    def test_dual_split_writes_require_target_and_every_command(
+        self, profiles, model, operation, keys
+    ):
+        from rigplane.commands.command_map import CommandMap
+
+        profile = profiles[model]
+        assert supports_callable(profile, operation)
+        assert not supports_callable(
+            dataclasses.replace(profile, split_tx_target="none"), operation
+        )
+        commands = profile.command_map
+        assert commands is not None
+        for key in keys:
+            assert not supports_callable(_without(profile, key), operation)
+            without_wire = dataclasses.replace(
+                profile,
+                command_map=CommandMap(
+                    {name: commands.get(name) for name in commands if name != key}
+                ),
+            )
+            assert not supports_callable(without_wire, operation)
+
     @pytest.mark.parametrize(
         "relation",
         [r for r in BUILDER_RELATIONS if r.kind == "alias"],

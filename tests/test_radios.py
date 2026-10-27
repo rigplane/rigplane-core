@@ -5,6 +5,7 @@ import logging
 import pytest
 
 from rigplane.radios import (
+    CIV_PROFILE_MAP,
     RADIOS,
     SERIAL_RADIO_MAP,
     RadioModel,
@@ -93,6 +94,26 @@ class TestIdentifyRadio:
     def test_unknown_address(self) -> None:
         assert identify_radio(0xFF, b"\x00\x00") == "Unknown (0xFF)"
 
+    @pytest.mark.parametrize(
+        ("address", "model_id", "expected"),
+        [
+            (0x94, SERIAL_RADIO_MAP[0x94][1], "IC-7300"),
+            (0x98, SERIAL_RADIO_MAP[0x98][1], "IC-7610"),
+            (0xA4, SERIAL_RADIO_MAP[0xA4][1], "IC-705"),
+            (0xA2, SERIAL_RADIO_MAP[0xA2][1], "IC-9700"),
+            # 0xB6: the CI-V guide documents no 0x19 00 reply bytes, so any
+            # model ID — including the single-byte address echo — must still
+            # resolve; the address alone identifies the radio.
+            (0xB6, b"\xff\xff", "IC-7300MK2"),
+            (0xB6, b"\xb6", "IC-7300MK2"),
+            (0xFF, b"\x00\x00", "Unknown (0xFF)"),
+        ],
+    )
+    def test_identify_by_address(
+        self, address: int, model_id: bytes, expected: str
+    ) -> None:
+        assert identify_radio(address, model_id) == expected
+
     def test_model_id_mismatch_returns_name(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -102,7 +123,28 @@ class TestIdentifyRadio:
         assert "model id" in caplog.text.lower()
 
     def test_all_map_entries_covered(self) -> None:
-        assert len(SERIAL_RADIO_MAP) == 6
+        # 7 since MOR-3792: the IC-7300MK2 (0xB6) row joined the table.
+        assert len(SERIAL_RADIO_MAP) == 7
+
+
+class TestCivIdentityDataConsistency:
+    def test_every_profiled_address_has_serial_map_name(self) -> None:
+        # MOR-3792: 0xB6 had a rig profile (icom_ic7300mk2) but no
+        # SERIAL_RADIO_MAP row, so identify_radio answered "Unknown (0xB6)"
+        # and Pro's USB onboarding hit model_mismatch.
+        radios_by_addr: dict[int, list[str]] = {}
+        for radio in RADIOS.values():
+            radios_by_addr.setdefault(radio.civ_addr, []).append(radio.name)
+        for address, profile_id in CIV_PROFILE_MAP.items():
+            if not profile_id:
+                continue  # no rig profile exists for this address yet
+            assert address in SERIAL_RADIO_MAP, f"0x{address:02X}"
+            names = radios_by_addr.get(address, [])
+            if not names:
+                continue  # no RADIOS registry entry to cross-check the name
+            # 0xA4 maps to both IC-705 and X6200 in RADIOS; the serial
+            # table must name one of the radios at this address.
+            assert SERIAL_RADIO_MAP[address][0] in names, f"0x{address:02X}"
 
 
 class TestRadioModelDataclass:

@@ -532,10 +532,10 @@ async def _dispatch_http_routes(
         return
 
     if path == "/api/v1/bridge":
-        if method not in ("GET", "HEAD", "POST", "DELETE"):
+        if method not in ("GET", "HEAD", "POST", "PATCH", "DELETE"):
             await _send_response(writer, 405, "Method Not Allowed", b"", {})
             return
-        await server._handle_bridge(method, writer)
+        await server._handle_bridge(method, writer, headers, reader)
         return
     if path in (
         "/api/v1/radio/disconnect",
@@ -718,6 +718,8 @@ async def _dispatch_http_routes(
         await server._serve_band_plan_segments(writer, query or {})
     elif path == "/api/v1/band-plan/layers":
         await server._serve_band_plan_layers(writer)
+    elif path == "/api/v1/memories":
+        await server._serve_memories(writer, query or {})
     elif path == "/api/v1/audio/analysis":
         await server._serve_audio_analysis(writer, headers)
     elif path == "/" or path == "/index.html":

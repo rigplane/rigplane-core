@@ -114,8 +114,9 @@ const DESKTOP_V2_ZONES = [
   // MOR-2425 (Memory lane, phase B2): memory becomes zone-OWNED here too,
   // closing the ledger entry `zone-ownership-coverage.test.ts` opened in
   // phase B1. Unlike its siblings above, `memory` has no MOR-1262
-  // RadioViewModel group to self-gate on — the radio itself cannot report
-  // memory-channel contents (see `MemorySurface.svelte`'s header), so the
+  // RadioViewModel group to self-gate on — its local catalogue is
+  // browser-side (see `MemorySurface.svelte`'s header; the radio's own
+  // stored channels arrive through `radioMemories`), so the
   // surface mounts unconditionally, matching the legacy `MemoryPanel`'s own
   // unconditional render. Declaring this zone activates the MOR-1364
   // suppression channel for both sidebars' legacy `MemoryPanel` mount.

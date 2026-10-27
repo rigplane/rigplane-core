@@ -31,6 +31,7 @@ from ...core.command_dispatch import (
 from ...core.exceptions import CommandError, CommandRejectedError
 from ...core.exceptions import TimeoutError as RigplaneTimeoutError
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource, FieldPath
+from ...core.types import MemoryProfile
 from ...runtime.controller_authority import ControllerAuthority, ControllerError
 from ...core.state_store import FreshnessState, StateStore
 from ..monitor_mute import MonitorMuteState, apply_monitor_mute  # noqa: TID251
@@ -53,7 +54,7 @@ from ...runtime.tx_interlock import (
     send_civ_frame,
 )
 from ...runtime.managed_tx_authority import ManagedTxAuthority
-from ...runtime.managed_tx_state import ManagedTxOutcome
+from ...runtime.managed_tx_state import ManagedTxIntentKind, ManagedTxOutcome
 from ..protocol import (  # noqa: TID251
     decode_json,
     encode_json,
@@ -214,6 +215,50 @@ __all__ = ["ControlHandler"]
 logger = logging.getLogger(__name__)
 # Intent param carrying the TX owner `_enqueue_command` checked (MOR-3537).
 _TX_OWNER_PARAM = "_tx_owner"
+# Refusal wording when a rejected PTT receipt proves another owner held (MOR-3684).
+_PTT_HOLDER_CONFLICT = "another client is transmitting"
+# The only queue exception a rejected receipt may translate (MOR-3684):
+# `execute_positive_tx_queue_entry` collapsing a refused admission.
+_QUEUE_ADMISSION_REJECTED = "positive TX admission was rejected"
+
+
+def _ptt_refusal_names_holder(submission: object, owner: str | None) -> bool:
+    """Whether a refused managed-PTT receipt proves another PTT owner held.
+
+    Only the receipt's immutable transition state is evidence: a rejected
+    PttDown returns the held intent (``reduce_managed_tx``). A latched
+    TRANSMIT intent holds no owner in its state, so it never names a
+    holder here.
+    """
+    state = getattr(getattr(submission, "transition", None), "state", None)
+    intent = getattr(state, "intent", None)
+    return (
+        getattr(submission, "outcome", None) is ManagedTxOutcome.REJECTED
+        and intent is not None
+        and getattr(intent, "kind", None) is ManagedTxIntentKind.PTT
+        and bool(intent.owner_token)
+        and intent.owner_token != owner
+    )
+
+
+def _queue_refused_for_ptt_holder(
+    exc: BaseException, pending: asyncio.Task[Any] | None, owner: str | None
+) -> bool:
+    """Bind the holder wording to the queue's admission-rejection path only."""
+    if (
+        not isinstance(exc, CommandError)
+        or isinstance(exc, CommandRejectedError)
+        or str(exc) != _QUEUE_ADMISSION_REJECTED
+    ):
+        return False
+    return (
+        pending is not None
+        and pending.done()
+        and not pending.cancelled()
+        and pending.exception() is None
+        and _ptt_refusal_names_holder(pending.result(), owner)
+    )
+
 
 # MOR-624: maps the per-DATA-group MOD-input SET command name (as sent by the
 # frontend auto-restore) to its allowed teardown arm name (MOR-993).
@@ -1118,14 +1163,6 @@ class ControlHandler:
             await self._handle_unsubscribe(msg)
         elif msg_type == "cmd":
             await self._handle_command(msg)
-        elif msg_type == "radio_connect":
-            if self._controller_remote():
-                raise ControllerError("controller_local_required")
-            await self._handle_radio_connect(msg)
-        elif msg_type == "radio_disconnect":
-            if self._controller_remote():
-                raise ControllerError("controller_local_required")
-            await self._handle_radio_disconnect(msg)
         elif msg_type == "controller_heartbeat":
             controller = getattr(self._radio, "_controller_authority", None)
             if isinstance(controller, ControllerAuthority):
@@ -1135,199 +1172,10 @@ class ControlHandler:
         elif msg_type == "ping":
             await self._send_json({"type": "pong"})
         else:
+            # Radio connect/disconnect is REST-only (``POST
+            # /api/v1/radio/{connect,disconnect}``, MOR-3777); the old
+            # ``radio_connect``/``radio_disconnect`` messages land here.
             logger.debug("control: unknown message type: %r", msg_type)
-
-    def _note_operator_disconnect(self) -> None:
-        """Mark an intentional operator disconnect on the server (MOR-3452).
-
-        Defensive ``getattr``: unit doubles attach a bare namespace as
-        the server, the way the provider-epoch invalidation above does.
-        """
-
-        note = getattr(self._server, "note_operator_disconnect", None)
-        if callable(note):
-            note()
-
-    def _note_operator_connect(self) -> None:
-        """Clear the operator-disconnect mark on the server (MOR-3452)."""
-
-        note = getattr(self._server, "note_operator_connect", None)
-        if callable(note):
-            note()
-
-    async def _handle_radio_connect(self, msg: dict[str, Any]) -> None:
-        """Handle radio_connect request — reconnect the radio."""
-        logger.info("radio_connect requested")
-        msg_id = msg.get("id", "")
-        if self._radio is None:
-            await self._send_json(
-                {
-                    "type": "response",
-                    "id": msg_id,
-                    "ok": False,
-                    "error": "no_radio",
-                    "message": "no radio instance",
-                }
-            )
-            return
-        if self._backend_recovering():
-            await self._send_json(
-                {
-                    "type": "response",
-                    "id": msg_id,
-                    "ok": False,
-                    "error": "backend_recovering",
-                    "message": "backend is already managing radio recovery",
-                }
-            )
-            return
-        try:
-            if self._radio.connected:
-                # MOR-3452: the operator asked back in — clear the mark
-                # when the connect starts; the stale mark must not survive
-                # even this no-op path.
-                self._note_operator_connect()
-                await self._send_json(
-                    {
-                        "type": "response",
-                        "id": msg_id,
-                        "ok": True,
-                        "result": {"status": "already_connected"},
-                    }
-                )
-                return
-            # MOR-3452: clear the disconnect mark when the connect starts,
-            # before any await, so an in-flight or failed connect never
-            # reads as an operator disconnect.
-            self._note_operator_connect()
-            from ...radio_protocol import RecoverableConnection
-
-            if isinstance(self._radio, RecoverableConnection):
-                recoverable = cast(RecoverableConnection, self._radio)
-                try:
-                    await recoverable.soft_reconnect()
-                except Exception:
-                    logger.info("soft_reconnect failed, trying full connect")
-                    await self._radio.connect()
-            else:
-                await self._radio.connect()
-            await self._send_json(
-                {
-                    "type": "response",
-                    "id": msg_id,
-                    "ok": True,
-                    "result": {"status": "connected"},
-                }
-            )
-            await self._broadcast_connection_state(True)
-        except Exception as exc:
-            logger.warning("radio_connect failed: %s", exc)
-            await self._send_json(
-                {
-                    "type": "response",
-                    "id": msg_id,
-                    "ok": False,
-                    "error": "connect_failed",
-                    "message": str(exc),
-                }
-            )
-
-    async def _handle_radio_disconnect(self, msg: dict[str, Any]) -> None:
-        """Handle radio_disconnect request — disconnect the radio."""
-        logger.info("radio_disconnect requested")
-        msg_id = msg.get("id", "")
-        if self._radio is None:
-            await self._send_json(
-                {
-                    "type": "response",
-                    "id": msg_id,
-                    "ok": False,
-                    "error": "no_radio",
-                    "message": "no radio instance",
-                }
-            )
-            return
-        try:
-            if not self._radio.connected:
-                conn_state = getattr(self._radio, "conn_state", None)
-                state_value = getattr(conn_state, "value", conn_state)
-                if state_value == "disconnecting":
-                    await self._send_json(
-                        {
-                            "type": "response",
-                            "id": msg_id,
-                            "ok": True,
-                            "result": {"status": "already_disconnected"},
-                        }
-                    )
-                    return
-                # Not connected and no teardown in flight: take the
-                # owner-level disconnect() path even when conn_state reads
-                # "disconnected" — during the lifecycle recovery's backoff
-                # wait between attempts it reads disconnected while
-                # _run_recover still owns another attempt, so only
-                # disconnect() (which cancels the recovery, bumps the
-                # owner-stop epoch and releases the session) stops the
-                # reconnect. disconnect() is idempotent, so a truly idle
-                # radio answers "disconnected" after a no-op teardown.
-                # MOR-2615: the same provider-epoch invalidation as the
-                # HTTP disconnect path, via the attached server when present.
-                await self._radio.disconnect()
-                store = getattr(self._server, "command_state_store", None)
-                begin_generation = getattr(store, "begin_provider_generation", None)
-                if callable(begin_generation):
-                    begin_generation()
-                # MOR-3452: mark the intentional disconnect for the runtime.
-                self._note_operator_disconnect()
-                await self._send_json(
-                    {
-                        "type": "response",
-                        "id": msg_id,
-                        "ok": True,
-                        "result": {"status": "disconnected"},
-                    }
-                )
-                await self._broadcast_connection_state(False)
-                return
-            from ...radio_protocol import RecoverableConnection
-
-            if isinstance(self._radio, RecoverableConnection):
-                await cast(RecoverableConnection, self._radio).soft_disconnect()
-            else:
-                await self._radio.disconnect()
-            # MOR-3452: mark the intentional disconnect for the runtime.
-            self._note_operator_disconnect()
-            await self._send_json(
-                {
-                    "type": "response",
-                    "id": msg_id,
-                    "ok": True,
-                    "result": {"status": "disconnected"},
-                }
-            )
-            await self._broadcast_connection_state(False)
-        except Exception as exc:
-            logger.warning("radio_disconnect failed: %s", exc)
-            await self._send_json(
-                {
-                    "type": "response",
-                    "id": msg_id,
-                    "ok": False,
-                    "error": "disconnect_failed",
-                    "message": str(exc),
-                }
-            )
-
-    async def _broadcast_connection_state(self, connected: bool) -> None:
-        """Broadcast connection state change to this client."""
-        await self._send_json(
-            {
-                "type": "event",
-                "event": "connection_state",
-                "connected": connected,
-                "radio_ready": self._radio_ready(),
-            }
-        )
 
     async def _send_json(self, obj: dict[str, Any]) -> None:
         """Send a JSON message to the WebSocket client."""
@@ -1861,10 +1709,7 @@ class ControlHandler:
             or (name == "set_tuner_status" and params.get("value") == 2)
             or (name == "set_break_in" and params.get("mode") != 0)
         )
-        if ticket.remote and (
-            name in {"send_civ", "transmit_on", "radio_connect", "radio_disconnect"}
-            or starts_tx
-        ):
+        if ticket.remote and (name in {"send_civ", "transmit_on"} or starts_tx):
             raise ControllerError("controller_tx_unsupported")
         # MOR-3534: while one owner holds the transmitter, CW text, VOX,
         # TUNE and break-in from any other owner are refused like the remote
@@ -1990,6 +1835,7 @@ class ControlHandler:
             on = name == "ptt_on"
         # Before the submission: a close while the key is in flight releases.
         self._last_ptt_on = on
+        pending: asyncio.Task[Any] | None = None
         try:
             if on:
                 if self._server is None:
@@ -2017,10 +1863,14 @@ class ControlHandler:
             else:
                 submission = await authority.submit_ptt(False, self._tx_owner)
         except (CommandError, RuntimeError, TimeoutError) as exc:
+            if _queue_refused_for_ptt_holder(exc, pending, self._tx_owner):
+                raise CommandRejectedError(_PTT_HOLDER_CONFLICT) from exc
             raise CommandRejectedError(
                 "managed transmit authority unavailable"
             ) from exc
         if submission.outcome is not ManagedTxOutcome.ACCEPTED:
+            if _ptt_refusal_names_holder(submission, self._tx_owner):
+                raise CommandRejectedError(_PTT_HOLDER_CONFLICT)
             raise CommandRejectedError("managed PTT admission rejected")
         return {"state": on} if name == "ptt" else {}
 
@@ -3520,11 +3370,41 @@ class ControlHandler:
                         "command set_memory_mode is not supported by this radio "
                         "(missing MemoryCapable)"
                     )
+                if "group" in params:
+                    for field in ("group", "channel"):
+                        value = params[field]
+                        if isinstance(value, bool) or (
+                            isinstance(value, float) and not value.is_integer()
+                        ):
+                            raise ValueError(
+                                f"{field} must be an integer, got {value!r}"
+                            )
                 channel = _int_param(params["channel"], "channel")
-                if not 1 <= channel <= 101:
-                    raise ValueError(f"channel must be 1-101, got {channel}")
-                q.put(SetMemoryMode(channel))
-                return {"channel": channel}
+                if "group" not in params:
+                    # The channel-only form every radio has always taken.
+                    if not 1 <= channel <= 101:
+                        raise ValueError(f"channel must be 1-101, got {channel}")
+                    q.put(SetMemoryMode(channel))
+                    return {"channel": channel}
+                # Recall of a listed channel (MOR-3627): profile-declared bounds.
+                memory = getattr(getattr(radio, "profile", None), "memory", None)
+                if not isinstance(memory, MemoryProfile):
+                    raise ValueError("this radio's memory has no groups")
+                if not memory.recall:
+                    raise ValueError("this radio's profile does not support recall")
+                group = _int_param(params["group"], "group")
+                if not memory.first_group <= group <= memory.last_group:
+                    raise ValueError(
+                        f"group must be {memory.first_group}-{memory.last_group}, "
+                        f"got {group}"
+                    )
+                if not memory.first_channel <= channel <= memory.last_channel:
+                    raise ValueError(
+                        f"channel must be {memory.first_channel}-"
+                        f"{memory.last_channel}, got {channel}"
+                    )
+                q.put(SetMemoryMode(channel, group))
+                return {"group": group, "channel": channel}
             case "memory_write":
                 if not isinstance(radio, MemoryCapable):
                     raise ValueError(

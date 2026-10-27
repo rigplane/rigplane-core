@@ -1,0 +1,250 @@
+{
+ "source": "GTR7 Windows 11 x64, IC-7300 on USB, 2026-10-24, Get-PnpDevice -PresentOnly filtered to the radio, root hubs and audio endpoints; serial number redacted; read-only",
+ "rows": [
+  {
+   "instance_id": "USB\\VID_08BB&PID_2901&MI_00\\8&2DD4048C&0&0000",
+   "parent_id": "USB\\VID_08BB&PID_2901\\7&1b4bbb56&1&4",
+   "class_name": "MEDIA",
+   "friendly_name": "USB Audio CODEC ",
+   "hardware_ids": [
+    "USB\\VID_08BB&PID_2901&REV_0100&MI_00",
+    "USB\\VID_08BB&PID_2901&MI_00"
+   ],
+   "compatible_ids": [
+    "USB\\COMPAT_VID_08bb&Class_01&SubClass_01&Prot_00",
+    "USB\\COMPAT_VID_08bb&Class_01&SubClass_01",
+    "USB\\COMPAT_VID_08bb&Class_01",
+    "USB\\Class_01&SubClass_01&Prot_00",
+    "USB\\Class_01&SubClass_01",
+    "USB\\Class_01"
+   ]
+  },
+  {
+   "instance_id": "USB\\ROOT_HUB30\\5&19C782B&0&0",
+   "parent_id": "PCI\\VEN_1022&DEV_15B9&SUBSYS_15B91022&REV_00\\4&98c338a&0&0341",
+   "class_name": "USB",
+   "friendly_name": "USB Root Hub (USB 3.0)",
+   "hardware_ids": [
+    "USB\\ROOT_HUB30&VID1022&PID15B9&REV0000",
+    "USB\\ROOT_HUB30&VID1022&PID15B9",
+    "USB\\ROOT_HUB30"
+   ],
+   "compatible_ids": []
+  },
+  {
+   "instance_id": "SWD\\MMDEVAPI\\{0.0.0.00000000}.{6EF31112-9C93-4E7D-9FD1-B5EE856E561E}",
+   "parent_id": "ROOT\\{83ED7F0E-2028-4956-B0B4-39C76FDAEF1D}\\0000",
+   "class_name": "AudioEndpoint",
+   "friendly_name": "Line 1 (Virtual Audio Cable)",
+   "hardware_ids": [
+    "MMDEVAPI\\AudioEndpoints"
+   ],
+   "compatible_ids": [
+    "GenericAudioEndpoint",
+    "SWD\\GenericRaw",
+    "SWD\\Generic"
+   ]
+  },
+  {
+   "instance_id": "USB\\ROOT_HUB30\\5&284CF363&0&0",
+   "parent_id": "PCI\\VEN_1022&DEV_15C1&SUBSYS_15C11022&REV_00\\4&1be72dc0&0&0443",
+   "class_name": "USB",
+   "friendly_name": "USB Root Hub (USB 3.0)",
+   "hardware_ids": [
+    "USB\\ROOT_HUB30&VID1022&PID15C1&REV0000",
+    "USB\\ROOT_HUB30&VID1022&PID15C1",
+    "USB\\ROOT_HUB30"
+   ],
+   "compatible_ids": []
+  },
+  {
+   "instance_id": "USB\\ROOT_HUB30\\5&1FEB54E4&0&0",
+   "parent_id": "PCI\\VEN_1022&DEV_15C0&SUBSYS_15C01022&REV_00\\4&1be72dc0&0&0343",
+   "class_name": "USB",
+   "friendly_name": "USB Root Hub (USB 3.0)",
+   "hardware_ids": [
+    "USB\\ROOT_HUB30&VID1022&PID15C0&REV0000",
+    "USB\\ROOT_HUB30&VID1022&PID15C0",
+    "USB\\ROOT_HUB30"
+   ],
+   "compatible_ids": []
+  },
+  {
+   "instance_id": "USB\\VID_0451&PID_2046\\6&3878EF1F&0&2",
+   "parent_id": "USB\\ROOT_HUB30\\5&19c782b&0&0",
+   "class_name": "USB",
+   "friendly_name": "Generic USB Hub",
+   "hardware_ids": [
+    "USB\\VID_0451&PID_2046&REV_0125",
+    "USB\\VID_0451&PID_2046"
+   ],
+   "compatible_ids": [
+    "USB\\USB20_HUB"
+   ]
+  },
+  {
+   "instance_id": "SWD\\MMDEVAPI\\{0.0.0.00000000}.{994DFFF9-2FA9-4222-9C51-84330761724B}",
+   "parent_id": "ROOT\\MEDIA\\0001",
+   "class_name": "AudioEndpoint",
+   "friendly_name": "RigPlane Virtual Cable Output (RigPlane Virtual Audio Cable)",
+   "hardware_ids": [
+    "MMDEVAPI\\AudioEndpoints"
+   ],
+   "compatible_ids": [
+    "GenericAudioEndpoint",
+    "SWD\\GenericRaw",
+    "SWD\\Generic"
+   ]
+  },
+  {
+   "instance_id": "USB\\ROOT_HUB30\\5&1424396A&0&0",
+   "parent_id": "PCI\\VEN_1B21&DEV_2142&SUBSYS_21421B21&REV_00\\4&25c6da53&0&0009",
+   "class_name": "USB",
+   "friendly_name": "USB Root Hub (USB 3.0)",
+   "hardware_ids": [
+    "USB\\ROOT_HUB30&VID1B21&PID2142&REV0000",
+    "USB\\ROOT_HUB30&VID1B21&PID2142",
+    "USB\\ROOT_HUB30"
+   ],
+   "compatible_ids": []
+  },
+  {
+   "instance_id": "SWD\\MMDEVAPI\\{0.0.0.00000000}.{9082644E-6A88-4638-B416-E1788AAC0FDF}",
+   "parent_id": "USB\\VID_08BB&PID_2901&MI_00\\8&2dd4048c&0&0000",
+   "class_name": "AudioEndpoint",
+   "friendly_name": "Speakers (USB Audio CODEC )",
+   "hardware_ids": [
+    "MMDEVAPI\\AudioEndpoints"
+   ],
+   "compatible_ids": [
+    "GenericAudioEndpoint",
+    "SWD\\GenericRaw",
+    "SWD\\Generic"
+   ]
+  },
+  {
+   "instance_id": "SWD\\MMDEVAPI\\{0.0.1.00000000}.{963D478C-4D8C-412E-A32C-387169AFB3A0}",
+   "parent_id": "USB\\VID_08BB&PID_2901&MI_00\\8&2dd4048c&0&0000",
+   "class_name": "AudioEndpoint",
+   "friendly_name": "Microphone (USB Audio CODEC )",
+   "hardware_ids": [
+    "MMDEVAPI\\AudioEndpoints"
+   ],
+   "compatible_ids": [
+    "GenericAudioEndpoint",
+    "SWD\\GenericRaw",
+    "SWD\\Generic"
+   ]
+  },
+  {
+   "instance_id": "USB\\VID_08BB&PID_2901&MI_03\\8&2DD4048C&0&0003",
+   "parent_id": "USB\\VID_08BB&PID_2901\\7&1b4bbb56&1&4",
+   "class_name": "HIDClass",
+   "friendly_name": "USB Input Device",
+   "hardware_ids": [
+    "USB\\VID_08BB&PID_2901&REV_0100&MI_03",
+    "USB\\VID_08BB&PID_2901&MI_03"
+   ],
+   "compatible_ids": [
+    "USB\\COMPAT_VID_08bb&Class_03&SubClass_00&Prot_00",
+    "USB\\COMPAT_VID_08bb&Class_03&SubClass_00",
+    "USB\\COMPAT_VID_08bb&Class_03",
+    "USB\\Class_03&SubClass_00&Prot_00",
+    "USB\\Class_03&SubClass_00",
+    "USB\\Class_03"
+   ]
+  },
+  {
+   "instance_id": "HID\\VID_08BB&PID_2901&MI_03\\9&2B8FE2C2&0&0000",
+   "parent_id": "USB\\VID_08BB&PID_2901&MI_03\\8&2dd4048c&0&0003",
+   "class_name": "HIDClass",
+   "friendly_name": "HID-compliant consumer control device",
+   "hardware_ids": [
+    "HID\\VID_08BB&PID_2901&REV_0100&MI_03",
+    "HID\\VID_08BB&PID_2901&MI_03",
+    "HID\\VID_08BB&UP:000C_U:0001",
+    "HID_DEVICE_SYSTEM_CONSUMER",
+    "HID_DEVICE_UP:000C_U:0001",
+    "HID_DEVICE"
+   ],
+   "compatible_ids": []
+  },
+  {
+   "instance_id": "SWD\\MMDEVAPI\\{0.0.1.00000000}.{B2622763-C85C-4E34-B625-D672872E3C23}",
+   "parent_id": "ROOT\\{83ED7F0E-2028-4956-B0B4-39C76FDAEF1D}\\0000",
+   "class_name": "AudioEndpoint",
+   "friendly_name": "Line 1 (Virtual Audio Cable)",
+   "hardware_ids": [
+    "MMDEVAPI\\AudioEndpoints"
+   ],
+   "compatible_ids": [
+    "GenericAudioEndpoint",
+    "SWD\\GenericRaw",
+    "SWD\\Generic"
+   ]
+  },
+  {
+   "instance_id": "USB\\VID_08BB&PID_2901\\7&1B4BBB56&1&4",
+   "parent_id": "USB\\VID_0451&PID_2046\\6&3878ef1f&0&2",
+   "class_name": "USB",
+   "friendly_name": "USB Composite Device",
+   "hardware_ids": [
+    "USB\\VID_08BB&PID_2901&REV_0100",
+    "USB\\VID_08BB&PID_2901"
+   ],
+   "compatible_ids": [
+    "USB\\COMPAT_VID_08BB&DevClass_00&SubClass_00&Prot00",
+    "USB\\COMPAT_VID_08BB&DevClass_00&SubClass_00",
+    "USB\\COMPAT_VID_08BB&DevClass_00",
+    "USB\\DevClass_00&SubClass_00&Prot_00",
+    "USB\\DevClass_00&SubClass_00",
+    "USB\\DevClass_00",
+    "USB\\COMPOSITE"
+   ]
+  },
+  {
+   "instance_id": "USB\\VID_10C4&PID_EA60\\IC-7300_00000001",
+   "parent_id": "USB\\VID_0451&PID_2046\\6&3878ef1f&0&2",
+   "class_name": "Ports",
+   "friendly_name": "Silicon Labs CP210x USB to UART Bridge (COM3)",
+   "hardware_ids": [
+    "USB\\VID_10C4&PID_EA60&REV_0100",
+    "USB\\VID_10C4&PID_EA60"
+   ],
+   "compatible_ids": [
+    "USB\\COMPAT_VID_10C4&Class_FF&SubClass_00&Prot_00",
+    "USB\\COMPAT_VID_10C4&Class_FF&SubClass_00",
+    "USB\\COMPAT_VID_10C4&Class_FF",
+    "USB\\Class_FF&SubClass_00&Prot_00",
+    "USB\\Class_FF&SubClass_00",
+    "USB\\Class_FF"
+   ]
+  },
+  {
+   "instance_id": "USB\\ROOT_HUB30\\5&38F471A6&0&0",
+   "parent_id": "PCI\\VEN_1022&DEV_15BA&SUBSYS_15B91022&REV_00\\4&98c338a&0&0441",
+   "class_name": "USB",
+   "friendly_name": "USB Root Hub (USB 3.0)",
+   "hardware_ids": [
+    "USB\\ROOT_HUB30&VID1022&PID15BA&REV0000",
+    "USB\\ROOT_HUB30&VID1022&PID15BA",
+    "USB\\ROOT_HUB30"
+   ],
+   "compatible_ids": []
+  },
+  {
+   "instance_id": "SWD\\MMDEVAPI\\{0.0.1.00000000}.{DF17AAC6-167D-40DF-AF54-7FA5CE29892E}",
+   "parent_id": "ROOT\\MEDIA\\0001",
+   "class_name": "AudioEndpoint",
+   "friendly_name": "RigPlane Virtual Cable Input (RigPlane Virtual Audio Cable)",
+   "hardware_ids": [
+    "MMDEVAPI\\AudioEndpoints"
+   ],
+   "compatible_ids": [
+    "GenericAudioEndpoint",
+    "SWD\\GenericRaw",
+    "SWD\\Generic"
+   ]
+  }
+ ]
+}

@@ -474,6 +474,7 @@ class YaesuCatTransport:
         command: str,
         *,
         timeout: float | None = None,
+        expect_rejection: bool = False,
         is_current: Callable[[], bool] | None = None,
         tier: ExchangeTier = ExchangeTier.ORDINARY,
     ) -> str:
@@ -486,6 +487,9 @@ class YaesuCatTransport:
         Args:
             command: CAT command string (e.g. ``"FA;"``).
             timeout: Read timeout per attempt (default: instance timeout).
+            expect_rejection: Still raise CatCommandRejected for ``?;``,
+                but leave error counters and the failure streak unchanged.
+                Other failures keep their normal accounting.
             is_current: Managed-exchange currency check (MOR-2862), honoured
                 the same way :meth:`write` honours it — checked before the
                 command bytes are sent.
@@ -524,7 +528,8 @@ class YaesuCatTransport:
 
                 # ── ?; = command rejected ──
                 if response == "?":
-                    self._stats.record_error(f"rejected: {command}")
+                    if not expect_rejection:
+                        self._stats.record_error(f"rejected: {command}")
                     raise CatCommandRejected(
                         f"Radio rejected command {command!r} (returned '?;')",
                         command=command,

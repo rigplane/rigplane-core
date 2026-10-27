@@ -109,6 +109,17 @@ playback-side queue pressure after audio has already left the bridge queue.
 | `callback_errors` | events | Callback-level errors while filling playback output | Bridge capture callback errors |
 | `callback_status_flags` | map | Per-flag totals such as `output_underflow` from PortAudio status callbacks | Bridge metrics or radio send errors |
 | `last_error` | string or `null` | Most recent callback/write failure summary | Callback status flag counts |
+| `discard_events` | events | `discard_queued()` calls that dropped at least one queued playback write | `frames_dropped` queue-overflow evictions |
+| `discarded_audio_ms` | milliseconds | Total playback duration dropped by `discard_queued()` | `dropped_audio_ms` overflow drops |
+
+#### Discarding queued playback (`TxStream.discard_queued`, `DuplexStream.discard_queued`)
+
+`await stream.discard_queued()` drops every playback frame queued but not yet
+handed to the device and returns how many queued writes were dropped. The
+stream keeps running; later `write()` calls queue normally. Audio already
+handed to the device/OS is not recalled. On a stream that is not running it
+returns `0` and changes nothing. Discards that dropped something are counted
+in `TxStreamHealth.discard_events` / `discarded_audio_ms`.
 
 Canonical producer/callback names above are the stable contract. Legacy aliases
 remain available on `TxStreamHealth` attributes and in `TxStreamHealth.to_dict()`

@@ -37,6 +37,7 @@ from rigplane.core.exceptions import (
     AuthenticationError,
     CommandError,
     CommandRejectedError,
+    ModeReadbackError,
     ConnectionError as RigConnectionError,
     RigplaneError,
     TimeoutError as RigTimeoutError,
@@ -1088,17 +1089,23 @@ async def _guard(
             error=str(exc),
         )
     except CommandRejectedError as exc:
-        # MOR-2103: a positively-identified command rejection (a Yaesu "?;",
-        # translated by YaesuCatRadio._write) is structurally distinct from
-        # every other CommandError below it in this except chain — those
-        # never reached the radio at all (no write template, a local
-        # encoder ValueError, any other RigplaneError).
         return None, _base_result(
             entry,
             CheckStatus.FAIL,
             failure_domain=FailureDomain.COMMAND_EXECUTION,
             error=str(exc),
             outcome=RmvrOutcome.REJECTED,
+        )
+    except ModeReadbackError as exc:
+        return None, _base_result(
+            entry,
+            CheckStatus.FAIL,
+            failure_domain=FailureDomain.READBACK,
+            error=str(exc),
+            evidence={
+                "requested_mode": exc.requested_mode,
+                "readback_mode": exc.observed_mode,
+            },
         )
     except CommandError as exc:
         return None, _base_result(
@@ -1749,6 +1756,19 @@ async def _check_mode_set(
         if w_fail is not None:
             evidence["write_error"] = w_fail.error
             outcome = w_fail
+            if (
+                w_fail.failure_domain is FailureDomain.READBACK
+                and "readback_mode" in w_fail.evidence
+            ):
+                evidence["readback_mode"] = w_fail.evidence["readback_mode"]
+                if evidence["readback_mode"] == orig_mode:
+                    evidence["outcome"] = RmvrOutcome.IGNORED.value
+                    outcome = _base_result(
+                        entry,
+                        CheckStatus.FAIL,
+                        failure_domain=FailureDomain.READBACK,
+                        error="control did not react: readback equals original",
+                    )
             write_outcome = _rmvr_failure_outcome(w_fail, leg="write")
             if write_outcome is not None:
                 evidence["outcome"] = write_outcome.value

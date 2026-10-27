@@ -572,6 +572,16 @@ class TestBuildStateQueries:
         assert acquisition_query(0x14, sub=0x01) in queries
         assert acquisition_query(0x14, sub=0x01, receiver=0) not in queries
 
+    @pytest.mark.parametrize("model", ["IC-7610", "IC-9700"])
+    def test_main_sub_profiles_poll_active_receiver(self, model: str) -> None:
+        """Dual-RX MAIN/SUB radios read the selected band via 0x07 0xD2.
+
+        The web UI's mode handler (panel-commands.ts: knownActiveReceiver)
+        drops the click on a dual-RX radio until this field is observed.
+        """
+        profile = resolve_radio_profile(model=model)
+        assert acquisition_query(0x07, data=b"\xd2") in build_state_queries(profile)
+
     def test_ic7610_includes_scope_queries(self) -> None:
         """IC-7610 should have scope sub-commands (0x27)."""
         profile = resolve_radio_profile(model="IC-7610")
@@ -739,7 +749,7 @@ class TestBuildStateQueries:
         queries = build_state_queries(profile)
         # IC-9700 stays out of MOR-2540 (unverified band-selection/split
         # semantics, no bench radio): no 1C 03 read is declared for it.
-        assert len(pollable) == len(queries) == 34
+        assert len(pollable) == len(queries) == 35
         assert all(query.receiver is None for query in queries)
         assert not any(
             query.command in {0x25, 0x26} and query.data == b"\x01" for query in queries

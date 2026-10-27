@@ -29,8 +29,9 @@
   //   prints the raw mode uppercased: OFF/AUTO/MANUAL).
   // - ATT: `ATT 45 dB` — the largest attenuator step across profiles
   //   (IC-7610 0..45 dB); attValues do not reach this component.
-  // - P.AMP: `P.AMP 2` — the largest preamp level across profiles
-  //   (0/1/2 everywhere shipped); preValues do not reach this component.
+  // - P.AMP: `P.AMP 3` — the largest preamp level across profiles
+  //   (IC-9700 0..3, rigs/ic9700.toml [preamp]); preValues do not reach
+  //   this component.
   // - ANT: `ANT 2` — the largest antenna index across profiles
   //   (IC-7610 has two TX ports); the port count does not reach this
   //   component.
@@ -51,7 +52,7 @@
     nr: 'NR OFF'.length,
     notch: 'NOTCH MANUAL'.length,
     attenuator: 'ATT 45 dB'.length,
-    preamp: 'P.AMP 2'.length,
+    preamp: 'P.AMP 3'.length,
     'ip-plus': 'IP+ OFF'.length,
     'digi-sel': 'DIGI-SEL OFF'.length,
     'rf-gain': 8,

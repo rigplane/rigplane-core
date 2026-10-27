@@ -21,8 +21,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import count
 from threading import Lock
-from types import SimpleNamespace
 from typing import Any, Callable, Coroutine, Iterator, Literal
+
+from rigplane.core.usb_identity import UsbAudioIdentity
+
+from ._usb_pairing import AudioCandidate, candidate_stable_id
+from ._usb_raw_linux import RawLinux
+from ._usb_raw_macos import RawMacos
+from ._usb_raw_windows import RawWindows
+from ._usb_snapshot import Flow, UsbSnapshot
 
 from .backend import (
     AudioBackend,
@@ -146,11 +153,13 @@ def audio_start_failure_reason(exc: BaseException) -> AudioStartFailureReason:
 
     The category is safe to publish: it never carries exception text.
     """
-    from ._usb_resolve import (
-        WindowsAudioAmbiguityError,
-        WindowsAudioEndpointNameError,
-        WindowsAudioTopologyError,
-    )
+    return audio_start_failure_details(exc)[0]
+
+
+def audio_start_failure_details(
+    exc: BaseException,
+) -> tuple[AudioStartFailureReason, tuple[AudioCandidate, ...]]:
+    from ._usb_pairing import WindowsAudioTopologyError
 
     chain: list[BaseException] = []
     current: BaseException | None = exc
@@ -164,19 +173,17 @@ def audio_start_failure_reason(exc: BaseException) -> AudioStartFailureReason:
     ] = (
         ((AudioCaptureOpenTimeoutError,), "open_timeout"),
         ((AudioFormatUnsupportedError,), "format"),
-        ((AudioDeviceAmbiguousError, WindowsAudioAmbiguityError), "usb_ambiguous"),
-        ((WindowsAudioEndpointNameError,), "usb_topology_names"),
-        (
-            (AudioTopologyUnavailableError, WindowsAudioTopologyError),
-            "usb_topology_unavailable",
-        ),
+        ((AudioDeviceAmbiguousError,), "usb_ambiguous"),
+        ((AudioTopologyUnavailableError,), "usb_topology_unavailable"),
     )
     # The outermost classified exception is the newest failure.
     for error in chain:
+        if isinstance(error, WindowsAudioTopologyError):
+            return error.refusal.wire_reason, error.candidates
         for types, reason in reasons:
             if isinstance(error, types):
-                return reason
-    return "other"
+                return reason, ()
+    return "other", ()
 
 
 _DEFAULT_SAMPLE_RATE_CANDIDATES: tuple[int, ...] = (48_000, 24_000, 16_000, 8_000)
@@ -184,8 +191,8 @@ _DEFAULT_SAMPLE_RATE_CANDIDATES: tuple[int, ...] = (48_000, 24_000, 16_000, 8_00
 _CAPTURE_OPEN_TIMEOUT_S = 8.0
 """Default bound (seconds) on an RX/TX stream open, see ``_open_stream``."""
 
-_WINDOWS_PNP_TIMEOUT_S = 5.0
-_WINDOWS_SELECTION_RESERVE_S = 0.25
+_USB_TOPOLOGY_TIMEOUT_S = 5.0
+_USB_SELECTION_RESERVE_S = 0.25
 
 _CAPTURE_OPEN_MAX_WORKERS = 8
 """Size of the driver-owned open/close thread pool (MOR-1438, F3).
@@ -293,6 +300,7 @@ class _BoundedPortAudioPool:
             max_workers=_CAPTURE_OPEN_MAX_WORKERS,
             thread_name_prefix="rigplane-audio-open",
         )
+        self._inflight_lock = Lock()
         self.inflight = 0
         # A timed-out close still owns its worker and must not be run twice
         # concurrently. Cleanup retains the stream until success, even when
@@ -310,14 +318,53 @@ class _BoundedPortAudioPool:
         Abandoned (timed-out) calls stay counted, keeping saturation honest.
         """
         loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(self._executor, fn)
-        self.inflight += 1
+        counter_lock = self._inflight_lock
+        with counter_lock:
+            if self.inflight >= _CAPTURE_OPEN_MAX_WORKERS:
+                raise AudioCaptureOpenTimeoutError("PortAudio worker pool saturated.")
+            self.inflight += 1
+        try:
+            future = loop.run_in_executor(self._executor, fn)
+        except BaseException:
+            with counter_lock:
+                if self._inflight_lock is counter_lock:
+                    self.inflight -= 1
+            raise
 
         def _on_settled(_future: "asyncio.Future[Any]") -> None:
-            self.inflight -= 1
+            with counter_lock:
+                if self._inflight_lock is counter_lock:
+                    self.inflight -= 1
 
         future.add_done_callback(_on_settled)
         return future
+
+    def run_bounded_sync(self, fn: Callable[[], Any], *, timeout: float) -> Any:
+        """Bound synchronous readers with the same executor and worker budget."""
+        deadline = time.monotonic() + timeout
+        counter_lock = self._inflight_lock
+        with counter_lock:
+            if self.inflight >= _CAPTURE_OPEN_MAX_WORKERS:
+                raise AudioCaptureOpenTimeoutError("PortAudio worker pool saturated.")
+            self.inflight += 1
+        try:
+            future = self._executor.submit(fn)
+        except BaseException:
+            with counter_lock:
+                if self._inflight_lock is counter_lock:
+                    self.inflight -= 1
+            raise
+
+        def settled(_future: object) -> None:
+            with counter_lock:
+                if self._inflight_lock is counter_lock:
+                    self.inflight -= 1
+
+        future.add_done_callback(settled)
+        result = future.result(timeout=max(0.0, deadline - time.monotonic()))
+        if time.monotonic() > deadline:
+            raise TimeoutError("Audio reader deadline expired.")
+        return result
 
     async def run_bounded(
         self,
@@ -491,9 +538,19 @@ class _BoundedPortAudioPool:
                     f"{direction.upper()} endpoint still has a pending open."
                 )
         key = id(stream)
+        previous_resources = self._stream_resources.get(key)
         if resources is not None:
             self._stream_resources[key] = resources
-        future = self.submit_tracked(lambda: _drive_stream_open(start_coro))
+        try:
+            future = self.submit_tracked(lambda: _drive_stream_open(start_coro))
+        except BaseException:
+            if resources is not None:
+                if previous_resources is None:
+                    self._stream_resources.pop(key, None)
+                else:
+                    self._stream_resources[key] = previous_resources
+            start_coro.close()
+            raise
         self._opens[key] = future
 
         def settled(done: asyncio.Future[Any]) -> None:
@@ -841,6 +898,7 @@ def _find_by_override(
     *,
     override: str,
     direction: str,
+    snapshot: UsbSnapshot | None = None,
 ) -> UsbAudioDevice:
     selector = override.strip()
     if not selector:
@@ -861,10 +919,47 @@ def _find_by_override(
     if match is not None:
         return match
 
+    api_name, separator, identity = override.partition("|")
+    stable_selector = bool(separator) and (
+        identity.lower().startswith(("name:", "swd\\"))
+        or (
+            snapshot is not None
+            and any(
+                api.name.casefold() == api_name.casefold()
+                for api in snapshot.portaudio.hostapis
+            )
+        )
+    )
+    if stable_selector:
+        selector = override
+        stable_matches = []
+        if snapshot is not None:
+            flow: Flow = "capture" if direction == "rx" else "render"
+            apis = {api.index: api for api in snapshot.portaudio.hostapis}
+            records = {record.index: record for record in snapshot.portaudio.devices}
+            for dev in devices:
+                record = records.get(dev.index)
+                if record is None or record.name != dev.name:
+                    continue
+                api = apis.get(record.hostapi)
+                if (
+                    api is not None
+                    and candidate_stable_id(snapshot, record, api, flow) == selector
+                ):
+                    stable_matches.append(dev)
+        match = _unique_override_match(
+            stable_matches, override=selector, direction=direction
+        )
+        if match is not None:
+            return match
+
     exact = [
         dev
         for dev in devices
-        if dev.name == selector or (dev.platform_uid and dev.platform_uid == selector)
+        if not stable_selector
+        and (
+            dev.name == selector or (dev.platform_uid and dev.platform_uid == selector)
+        )
     ]
     match = _unique_override_match(
         exact,
@@ -878,8 +973,11 @@ def _find_by_override(
     exact_ci = [
         dev
         for dev in devices
-        if dev.name.lower() == selector_ci
-        or (dev.platform_uid and dev.platform_uid.lower() == selector_ci)
+        if not stable_selector
+        and (
+            dev.name.lower() == selector_ci
+            or (dev.platform_uid and dev.platform_uid.lower() == selector_ci)
+        )
     ]
     match = _unique_override_match(
         exact_ci,
@@ -892,8 +990,11 @@ def _find_by_override(
     partial = [
         dev
         for dev in devices
-        if selector_ci in dev.name.lower()
-        or (dev.platform_uid and selector_ci in dev.platform_uid.lower())
+        if not stable_selector
+        and (
+            selector_ci in dev.name.lower()
+            or (dev.platform_uid and selector_ci in dev.platform_uid.lower())
+        )
     ]
     match = _unique_override_match(
         partial,
@@ -936,11 +1037,21 @@ def select_usb_audio_devices(
     *,
     rx_device: str | None = None,
     tx_device: str | None = None,
+    snapshot: UsbSnapshot | None = None,
 ) -> tuple[UsbAudioDevice, UsbAudioDevice]:
     """Select RX/TX devices deterministically with override precedence."""
     rx_candidates = [dev for dev in devices if dev.supports_rx]
     tx_candidates = [dev for dev in devices if dev.supports_tx]
     duplex_candidates = [dev for dev in devices if dev.duplex]
+
+    for candidates, override, direction in (
+        (rx_candidates, rx_device, "rx"),
+        (tx_candidates, tx_device, "tx"),
+    ):
+        if not candidates and override is not None and "|" in override:
+            _find_by_override(
+                candidates, override=override, direction=direction, snapshot=snapshot
+            )
 
     if not rx_candidates:
         raise AudioDeviceSelectionError("No suitable RX USB audio device was found.")
@@ -956,11 +1067,11 @@ def select_usb_audio_devices(
 
     if rx_device is not None:
         selected_rx = _find_by_override(
-            rx_candidates, override=rx_device, direction="rx"
+            rx_candidates, override=rx_device, direction="rx", snapshot=snapshot
         )
     elif tx_device is not None:
         selected_tx = _find_by_override(
-            tx_candidates, override=tx_device, direction="tx"
+            tx_candidates, override=tx_device, direction="tx", snapshot=snapshot
         )
         selected_rx = (
             selected_tx
@@ -972,7 +1083,7 @@ def select_usb_audio_devices(
 
     if tx_device is not None:
         selected_tx = _find_by_override(
-            tx_candidates, override=tx_device, direction="tx"
+            tx_candidates, override=tx_device, direction="tx", snapshot=snapshot
         )
     elif rx_device is not None and selected_rx.supports_tx:
         selected_tx = selected_rx
@@ -1138,6 +1249,7 @@ class UsbAudioDriver:
         rx_device: str | None = None,
         tx_device: str | None = None,
         serial_port: str | None = None,
+        usb_identity: UsbAudioIdentity | None = None,
         sample_rate: int = 48_000,
         channels: int = 1,
         frame_ms: int = 20,
@@ -1172,6 +1284,7 @@ class UsbAudioDriver:
             )
         )
         self._serial_port = serial_port
+        self._usb_identity = usb_identity
         self._backend: AudioBackend = backend or PortAudioBackend()
         # MOR-1438: bound on how long an RX/TX stream open may block before
         # it is treated as stuck (see ``_open_stream``). Overridable so
@@ -1300,23 +1413,6 @@ class UsbAudioDriver:
     def _ensure_selected_devices(self) -> tuple[UsbAudioDevice, UsbAudioDevice]:
         devices = _devices_from_backend(self._backend)
 
-        # If serial_port is set and no explicit rx/tx overrides, try
-        # topology-based resolution to find the correct audio pair.
-        if (
-            self._serial_port
-            and self._config.rx_device is None
-            and self._config.tx_device is None
-        ):
-            resolved = self._try_resolve_from_serial(devices)
-            if resolved is not None:
-                self._selected_rx, self._selected_tx = resolved
-                return resolved
-            if platform.system() == "Linux":
-                raise AudioDeviceSelectionError(
-                    "Linux serial USB audio pair could not be resolved; reconnect "
-                    "the radio's USB audio device or select explicit RX/TX devices."
-                )
-
         selected_rx, selected_tx = select_usb_audio_devices(
             devices,
             rx_device=self._config.rx_device,
@@ -1331,10 +1427,19 @@ class UsbAudioDriver:
     ) -> tuple[UsbAudioDevice, UsbAudioDevice]:
         serial_port = self._serial_port
         if not (
-            platform.system() == "Windows"
-            and serial_port
-            and self._config.rx_device is None
-            and self._config.tx_device is None
+            platform.system() in {"Windows", "Darwin", "Linux"}
+            and (
+                (
+                    serial_port
+                    and self._config.rx_device is None
+                    and self._config.tx_device is None
+                )
+                or any(
+                    "|" in selector
+                    for selector in (self._config.rx_device, self._config.tx_device)
+                    if selector is not None
+                )
+            )
         ):
             return await self._run_portaudio_bounded(
                 self._ensure_selected_devices,
@@ -1363,36 +1468,55 @@ class UsbAudioDriver:
             direction=direction,
             timeout=remaining(),
         )
-        from ._usb_resolve import _query_windows_pnp_devices
+        from ._usb_raw_linux import read_raw_linux
+        from ._usb_raw_macos import read_raw_macos
+        from ._usb_raw_windows import read_raw_windows
 
-        def query() -> list[Any]:
+        system = platform.system()
+        empty: RawWindows | RawMacos | RawLinux
+        if system == "Linux":
+            empty = RawLinux(
+                unavailable=({"part": "linux", "reason": "reader unavailable"},)
+            )
+        elif system == "Darwin":
+            empty = RawMacos(
+                unavailable=({"part": "macos", "reason": "reader unavailable"},)
+            )
+        else:
+            empty = RawWindows("cfgmgr32", ())
+
+        def query() -> RawWindows | RawMacos | RawLinux:
             try:
-                return list(_query_windows_pnp_devices())
+                if system == "Linux":
+                    return read_raw_linux(timeout_s=topology_timeout)
+                if system == "Darwin":
+                    return read_raw_macos(topology_timeout)
+                return read_raw_windows(topology_timeout)
             except Exception:  # noqa: BLE001 — optional metadata only
                 logger.warning(
-                    "usb-audio: optional Windows topology unavailable", exc_info=True
+                    "usb-audio: optional USB topology unavailable", exc_info=True
                 )
-                return []
+                return empty
 
-        records: list[Any] = []
-        reserve = min(_WINDOWS_SELECTION_RESERVE_S, self._capture_open_timeout / 4)
-        topology_timeout = min(_WINDOWS_PNP_TIMEOUT_S, remaining() - reserve)
+        records = empty
+        reserve = min(_USB_SELECTION_RESERVE_S, self._capture_open_timeout / 4)
+        topology_timeout = min(_USB_TOPOLOGY_TIMEOUT_S, remaining() - reserve)
         if topology_timeout > 0:
             try:
                 records = await bounded_portaudio_pool.run_bounded(
                     query,
-                    what="optional Windows topology",
+                    what="optional USB topology",
                     direction=direction,
                     timeout=topology_timeout,
                     warn_on_timeout=False,
                 )
             except AudioCaptureOpenTimeoutError:
                 logger.warning(
-                    "usb-audio: optional Windows topology did not settle; "
+                    "usb-audio: optional USB topology did not settle; "
                     "requiring an unambiguous audio pair"
                 )
         selected = await bounded_portaudio_pool.run_bounded(
-            lambda: self._select_windows_devices(devices, records, serial_port),
+            lambda: self._select_topology_devices(devices, records, serial_port or ""),
             what="device enumeration",
             direction=direction,
             timeout=remaining(),
@@ -1407,47 +1531,64 @@ class UsbAudioDriver:
         self._selected_rx, self._selected_tx = selected
         return selected
 
-    def _select_windows_devices(
+    def _select_topology_devices(
         self,
         devices: list[UsbAudioDevice],
-        records: list[Any],
+        records: RawWindows | RawMacos | RawLinux,
         serial_port: str,
     ) -> tuple[UsbAudioDevice, UsbAudioDevice]:
-        from ._usb_resolve import WindowsAudioTopologyError, _resolve_windows
+        from ._portaudio_enum import read_portaudio_enumeration
+        from ._usb_adapt_linux import adapt_linux
+        from ._usb_adapt_macos import adapt_macos
+        from ._usb_adapt_windows import adapt_windows
+        from ._usb_pairing import PairRefused, pair, pairing_refusal_error
 
         sd_module = _extract_sounddevice_module(self._backend)
-        if records:
-            if any(r.com_port for r in records) and not any(
-                r.com_port and r.com_port.strip().upper() == serial_port.strip().upper()
-                for r in records
-            ):
+        if (
+            isinstance(records, (RawMacos, RawLinux))
+            or records.devnodes
+            or self._config.rx_device is not None
+            or self._config.tx_device is not None
+        ):
+            enumeration = (
+                read_portaudio_enumeration(sd_module) if sd_module is not None else None
+            )
+            if isinstance(records, (RawMacos, RawLinux)):
+                from ._portaudio_enum import PortAudioEnumeration
+
+                enumeration = enumeration or PortAudioEnumeration((), (), 0, False)
+                snapshot = (
+                    adapt_linux(records, enumeration)
+                    if isinstance(records, RawLinux)
+                    else adapt_macos(records, enumeration)
+                )
+            else:
+                session: dict[str, Any] = {
+                    "raw": {
+                        "windows": records.to_json_dict(),
+                        "serial_ports": [],
+                    }
+                }
+                if enumeration is not None:
+                    session["raw"]["portaudio"] = enumeration.to_json_dict()
+                snapshot = adapt_windows(session)
+            if self._config.rx_device is not None or self._config.tx_device is not None:
+                return select_usb_audio_devices(
+                    devices,
+                    rx_device=self._config.rx_device,
+                    tx_device=self._config.tx_device,
+                    snapshot=snapshot,
+                )
+            mapping = pair(snapshot, serial_port, self._usb_identity)
+            if isinstance(mapping, PairRefused):
+                raise pairing_refusal_error(mapping)
+            rx = next((d for d in devices if d.index == mapping.rx_index), None)
+            tx = next((d for d in devices if d.index == mapping.tx_index), None)
+            if rx is None or tx is None or not rx.supports_rx or not tx.supports_tx:
                 raise AudioDeviceSelectionError(
-                    "Windows USB topology does not include the selected serial radio."
+                    "USB topology does not match enumerated audio devices."
                 )
-            try:
-                mapping = _resolve_windows(
-                    serial_port,
-                    sounddevice_module=(
-                        sd_module
-                        if sd_module is not None
-                        else SimpleNamespace(query_devices=lambda: [])
-                    ),
-                    pnp_query=lambda: records,
-                )
-            except WindowsAudioTopologyError as exc:
-                raise AudioDeviceSelectionError(str(exc)) from exc
-            if mapping is not None:
-                rx = next(
-                    (d for d in devices if d.index == mapping.rx_device_index), None
-                )
-                tx = next(
-                    (d for d in devices if d.index == mapping.tx_device_index), None
-                )
-                if rx is None or tx is None or not rx.supports_rx or not tx.supports_tx:
-                    raise AudioDeviceSelectionError(
-                        "Windows USB topology does not match enumerated audio devices."
-                    )
-                return rx, tx
+            return rx, tx
         candidates = [d for d in devices if _name_score(d.name) < 99]
         for direction in ("rx", "tx"):
             identities = {
@@ -1456,62 +1597,11 @@ class UsbAudioDriver:
                 if (d.supports_rx if direction == "rx" else d.supports_tx)
             }
             if len(identities) != 1:
-                error = (
-                    AudioTopologyUnavailableError
-                    if not records
-                    else AudioDeviceAmbiguousError
-                    if identities
-                    else AudioDeviceSelectionError
-                )
-                raise error(
+                raise AudioTopologyUnavailableError(
                     "Windows USB audio selection is ambiguous or unavailable; "
                     "select explicit RX/TX devices for the serial radio."
                 )
         return select_usb_audio_devices(candidates)
-
-    def _try_resolve_from_serial(
-        self,
-        devices: list[UsbAudioDevice],
-    ) -> tuple[UsbAudioDevice, UsbAudioDevice] | None:
-        """Attempt topology-based audio device resolution from serial port."""
-        sd_module = _extract_sounddevice_module(self._backend)
-        if sd_module is None:
-            logger.debug(
-                "usb-audio: topology resolution skipped — backend %s "
-                "is not PortAudioBackend; falling back to name-based selection",
-                type(self._backend).__name__,
-            )
-            return None
-
-        from ..usb_audio_resolve import resolve_audio_for_serial_port
-
-        mapping = resolve_audio_for_serial_port(
-            self._serial_port,  # type: ignore[arg-type]
-            sounddevice_module=sd_module,
-        )
-        if mapping is None:
-            return None
-
-        rx_dev = next((d for d in devices if d.index == mapping.rx_device_index), None)
-        tx_dev = next((d for d in devices if d.index == mapping.tx_device_index), None)
-        if rx_dev is None or tx_dev is None:
-            logger.warning(
-                "usb-audio: topology resolved indices [%d, %d] but devices "
-                "not found in normalized list",
-                mapping.rx_device_index,
-                mapping.tx_device_index,
-            )
-            return None
-
-        logger.info(
-            "usb-audio: topology-resolved devices for %s: RX=[%d] %s, TX=[%d] %s",
-            self._serial_port,
-            rx_dev.index,
-            rx_dev.name,
-            tx_dev.index,
-            tx_dev.name,
-        )
-        return rx_dev, tx_dev
 
     def list_devices(self) -> list[UsbAudioDevice]:
         """List normalized devices from the active audio backend."""

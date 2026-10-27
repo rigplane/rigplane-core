@@ -41,8 +41,7 @@ def main() -> None:
     rec.add_argument(
         "--listen-host",
         default="127.0.0.1",
-        help="bind address for the client-facing listeners only "
-        "(default: 127.0.0.1)",
+        help="bind address for the client-facing listeners only (default: 127.0.0.1)",
     )
     rec.add_argument(
         "--listen-port",

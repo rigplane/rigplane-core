@@ -27,6 +27,7 @@ const txStart = vi.fn().mockResolvedValue(null);
 const txStop = vi.fn();
 const txApplyServerCodec = vi.fn(() => ({ switched: false, error: null }));
 let txCaptureFailureCategory: string | null = null;
+let txCaptureEpoch = 0;
 let txCaptureDied: ((reason: string) => void) | null = null;
 let txSend: ((data: ArrayBuffer) => void) | null = null;
 
@@ -57,6 +58,7 @@ vi.mock('../tx-mic', () => ({
     applyServerCodec = txApplyServerCodec;
     get active() { return true; }
     get lastCaptureFailureCategory() { return txCaptureFailureCategory; }
+    get captureEpoch() { return txCaptureEpoch; }
     static supported() { return true; }
     constructor(
       send: (data: ArrayBuffer) => void,
@@ -76,6 +78,8 @@ vi.mock('../../stores/audio.svelte', () => ({
   setRxEnabled: vi.fn(),
   setTxEnabled: vi.fn(),
   setTxCodecFallback: vi.fn(),
+  setRxError: vi.fn(),
+  setTxError: vi.fn(),
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
@@ -268,6 +272,141 @@ describe('AudioManager controller currency', () => {
   });
 });
 
+describe('AudioManager TX start failure latch (MOR-3753)', () => {
+  beforeEach(() => {
+    vi.resetModules(); vi.useFakeTimers(); vi.clearAllMocks();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('location', { protocol: 'https:', host: 'station.test' });
+  });
+  afterEach(async () => {
+    const { audioManager } = await import('../audio-manager');
+    audioManager.destroy(); vi.useRealTimers(); vi.unstubAllGlobals();
+  });
+
+  /** The store mock is re-created by each resetModules import; read the
+   *  instance the freshly imported manager is wired to. */
+  async function rig() {
+    const { audioManager } = await import('../audio-manager');
+    const audio = await import('../../stores/audio.svelte');
+    return { audioManager, setTxError: vi.mocked(audio.setTxError) };
+  }
+
+  it.each([
+    'TX MIC: permission denied',
+    'TX MIC: microphone capture not supported',
+    'TX MIC: insecure context',
+    'TX MIC: capture failed (NotFoundError)',
+    'TX MIC: capture failed (unknown)',
+  ])('genuine capture failure %s latches the failed state without TX admission', async (reason) => {
+    txStart.mockResolvedValueOnce(reason);
+    const { audioManager, setTxError } = await rig();
+    audioManager.setOperatorNotifier(vi.fn());
+
+    await expect(audioManager.startTx()).resolves.toBe(reason);
+
+    expect(audioManager.txEnabled).toBe(false);
+    expect(setTxError).toHaveBeenLastCalledWith(true);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('a retry clears the latch at entry while the new capture is pending; a fresh genuine failure re-latches', async () => {
+    txStart.mockResolvedValueOnce('TX MIC: permission denied');
+    const { audioManager, setTxError } = await rig();
+    await expect(audioManager.startTx()).resolves.toBe('TX MIC: permission denied');
+    expect(setTxError).toHaveBeenLastCalledWith(true);
+
+    let settleCapture!: (reason: string | null) => void;
+    txStart.mockImplementationOnce(() => new Promise((resolve) => { settleCapture = resolve; }));
+    const retry = audioManager.startTx();
+    expect(setTxError).toHaveBeenLastCalledWith(false);
+
+    settleCapture('TX MIC: capture failed (NotReadableError)');
+    await expect(retry).resolves.toBe('TX MIC: capture failed (NotReadableError)');
+    expect(setTxError).toHaveBeenLastCalledWith(true);
+  });
+
+  it.each([
+    'TX MIC: capture start cancelled',
+    'TX MIC: capture stopped before start completed',
+  ])('non-failure reason %s never latches', async (reason) => {
+    txStart.mockResolvedValueOnce(reason);
+    const { audioManager, setTxError } = await rig();
+
+    await expect(audioManager.startTx()).resolves.toBe(reason);
+
+    expect(setTxError).not.toHaveBeenCalledWith(true);
+    expect(audioManager.txEnabled).toBe(false);
+  });
+
+  it('an obsolete controller attempt is not a failure: no latch, capture stopped', async () => {
+    const { audioManager, setTxError } = await rig();
+    let current = true;
+    audioManager.setControllerBinding({
+      remote: () => true, ready: () => current, epoch: () => 7,
+      current: (epoch: number) => epoch === 7 && current,
+      protocols: () => [],
+    });
+    let settleCapture!: (reason: string | null) => void;
+    txStart.mockImplementationOnce(() => new Promise((resolve) => { settleCapture = resolve; }));
+    const pending = audioManager.startTx();
+    current = false;
+    settleCapture(null);
+
+    await expect(pending).resolves.toBe('Удалённое управление потеряно. Подключитесь заново.');
+
+    expect(setTxError).not.toHaveBeenCalledWith(true);
+    expect(txStop).toHaveBeenCalledOnce();
+    expect(audioManager.txEnabled).toBe(false);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it.each(['controller', 'capture'] as const)('a rejected obsolete %s attempt does not create a failure', async (obsolete) => {
+    const { audioManager, setTxError } = await rig();
+    let current = true;
+    audioManager.setControllerBinding({
+      remote: () => true, ready: () => current, epoch: () => 7,
+      current: (epoch: number) => epoch === 7 && current, protocols: () => [],
+    });
+    const failure = new Error('late capture setup failure');
+    let rejectCapture!: (reason: Error) => void;
+    txStart.mockImplementationOnce(() => new Promise<string | null>((_resolve, reject) => {
+      rejectCapture = reject;
+    }));
+    const pending = audioManager.startTx();
+    if (obsolete === 'controller') current = false;
+    else {
+      txStop.mockImplementationOnce(() => { txCaptureEpoch++; });
+      audioManager.stopTx();
+    }
+    rejectCapture(failure);
+
+    await expect(pending).rejects.toBe(failure);
+    expect(setTxError).not.toHaveBeenCalledWith(true);
+    expect(audioManager.txEnabled).toBe(false);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('a start refused by the controller-ready guard neither captures nor disturbs the latch', async () => {
+    const { audioManager, setTxError } = await rig();
+    let ready = true;
+    audioManager.setControllerBinding({
+      remote: () => true, ready: () => ready, epoch: () => 7,
+      current: (epoch: number) => epoch === 7 && ready,
+      protocols: () => [],
+    });
+    txStart.mockResolvedValueOnce('TX MIC: permission denied');
+    await expect(audioManager.startTx()).resolves.toBe('TX MIC: permission denied');
+    expect(setTxError).toHaveBeenLastCalledWith(true);
+
+    ready = false;
+    const callsBefore = setTxError.mock.calls.length;
+    await expect(audioManager.startTx()).resolves.toBe('Удалённое управление недоступно.');
+    expect(setTxError.mock.calls).toHaveLength(callsBefore);
+    expect(txStart).toHaveBeenCalledOnce();
+  });
+});
+
 describe('remote TX audio admission before managed PTT', () => {
   const controllers: ManagedTxController[] = [];
   beforeEach(() => {
@@ -417,6 +556,31 @@ describe('remote TX audio admission before managed PTT', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(r.sendPtt).not.toHaveBeenCalled();
     serverText(freshSocket, ack);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.sendPtt).toHaveBeenCalledExactlyOnceWith('ptt_on');
+    await r.controller.pttOff();
+    expect(r.sendPtt.mock.calls.map(([operation]) => operation)).toEqual(['ptt_on', 'ptt_off']);
+    expect(r.submit).not.toHaveBeenCalled();
+  });
+
+  it.each(['returned', 'rejected'] as const)('a late %s capture failure cannot clean up a fresh PTT preparation', async (outcome) => {
+    const r = await rig();
+    let finish!: () => void;
+    txStart.mockImplementationOnce(() => new Promise<string | null>((resolve, reject) => {
+      finish = () => outcome === 'returned'
+        ? resolve('TX MIC: permission denied') : reject(new Error('late capture failure'));
+    }));
+    r.controller.pttOn();
+    await r.controller.pttOff();
+    r.controller.pttOn();
+    await vi.advanceTimersByTimeAsync(0);
+    const stops = txStop.mock.calls.length;
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(txStop).toHaveBeenCalledTimes(stops);
+    expect(r.audioManager.txEnabled).toBe(true);
+    expect(r.sendPtt).not.toHaveBeenCalled();
+    serverText(r.socket, ack);
     await vi.advanceTimersByTimeAsync(0);
     expect(r.sendPtt).toHaveBeenCalledExactlyOnceWith('ptt_on');
     await r.controller.pttOff();

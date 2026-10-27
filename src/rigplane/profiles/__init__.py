@@ -22,7 +22,12 @@ from rigplane.commands._codec import (
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
-from rigplane.core.types import RepeaterOffsetProfile, ToneSquelchType
+from rigplane.core.types import (
+    MemoryProfile,
+    RepeaterOffsetProfile,
+    ToneSquelchType,
+)
+from rigplane.core.usb_identity import UsbAudioIdentity
 
 __all__ = [
     "CwTextSendCancelledError",
@@ -44,6 +49,7 @@ __all__ = [
     "resolve_radio_profile",
     "KeyboardBinding",
     "KeyboardConfig",
+    "MemoryProfile",
 ]
 
 logger = logging.getLogger(__name__)
@@ -370,6 +376,9 @@ class RadioProfile:
     # target (fail closed). ``none`` (default) keeps the selected-band
     # label, which is exact for single-receiver radios.
     tx_receiver_rule: str = "none"
+    # Meaning of selector 01 for split TX on dual-RX radios. This is
+    # separate from receiver attribution of transceiver-wide replies.
+    split_tx_target: str = "none"
     has_lan: bool = False
     freq_ranges: tuple[FreqRangeInfo, ...] = ()
     modes: tuple[str, ...] = ()
@@ -565,6 +574,10 @@ class RadioProfile:
     # unverified identity configuration; the loader validates shape only.
     # Appended to preserve the positional constructor contract.
     expected_identity_ids: tuple[str, ...] = ()
+    # Memory channel addressing from the optional ``[memory]`` section
+    # (MOR-3627); None when the profile declares none. Appended for the same
+    # reason as the fields above.
+    memory: MemoryProfile | None = field(default=None, kw_only=True)
     # ``[modes] families`` (MOR-3679): family name -> member modes, e.g.
     # ``{"cw": ("CW-U", "CW-L")}``. Empty when the profile declares none.
     # Keyword-only and appended so no positional argument shifts.
@@ -578,6 +591,7 @@ class RadioProfile:
     # ``[repeater_offset]`` bands. ``None`` = the profile declares no offset
     # surface; the ``set_repeater_offset`` guard then refuses every write.
     repeater_offset: RepeaterOffsetProfile | None = field(default=None, kw_only=True)
+    usb_identity: UsbAudioIdentity | None = field(default=None, kw_only=True)
 
     @property
     def vfo_swap_code(self) -> int | None:

@@ -220,14 +220,13 @@ async def ic7300_setup() -> AsyncGenerator[
 class TestWsjtxSplitOnIc7610:
     """WSJT-X split-on-TX-freq sequence against IC-7610 (dual-RX)."""
 
-    async def test_split_enable_routes_tx_to_sub_receiver(
+    async def test_split_enable_preserves_rx_selection(
         self, ic7610_setup: tuple[RecordingMockRadio, RigctldServer]
     ) -> None:
-        """``set_split_vfo 1 VFOB`` must enable split and route TX to SUB.
+        """``S 1 VFOB`` enables split without changing the RX selection.
 
-        Expected Radio-level call order (IC-7610, receiver_count=2):
-            1. set_split(True)
-            2. set_vfo("SUB")   # VFOB → SUB on main_sub scheme
+        The profile routes split frequency/mode writes to physical SUB;
+        enabling split must not select SUB as the receive bank.
         """
         radio, server = ic7610_setup
         client = await _make_client(server)
@@ -249,7 +248,6 @@ class TestWsjtxSplitOnIc7610:
 
             assert radio.calls == [
                 ("set_split", (True,)),
-                ("set_vfo", ("SUB",)),
                 ("set_ptt", (True,)),
                 ("set_ptt", (False,)),
             ]
@@ -259,10 +257,7 @@ class TestWsjtxSplitOnIc7610:
     async def test_split_disable_does_not_switch_vfo(
         self, ic7610_setup: tuple[RecordingMockRadio, RigctldServer]
     ) -> None:
-        """``set_split_vfo 0 VFOA`` only disables split — no set_vfo call.
-
-        The handler only issues set_vfo when ``on=True`` (split enable).
-        """
+        """``set_split_vfo 0 VFOA`` disables split without changing RX."""
         radio, server = ic7610_setup
         client = await _make_client(server)
         try:
@@ -281,7 +276,13 @@ class TestFldigiModeFreqSequence:
     async def test_fldigi_sequence_ic7610(
         self, ic7610_setup: tuple[RecordingMockRadio, RigctldServer]
     ) -> None:
-        """fldigi: get_mode → set_mode USB → set_freq 7074000 → get_freq."""
+        """fldigi: get_mode → set_mode USB → DATA-off → set_freq → get_freq.
+
+        A plain-SSB ``M USB`` must clear DATA (the handler's
+        ``_apply_plain_ssb_data_off``; the IC-7610 profile maps
+        ``set_data_mode`` to unwrapped 1A 06), so the DATA-off write sits
+        between ``set_mode`` and ``set_freq``.
+        """
         radio, server = ic7610_setup
         client = await _make_client(server)
         try:
@@ -290,6 +291,12 @@ class TestFldigiModeFreqSequence:
             lines = resp.splitlines()
             assert lines[0] == "USB"
             assert lines[1].isdigit()
+
+            # Seed DATA on through the radio API (after the plain-mode
+            # check above), verify it took, then start the tested
+            # sequence from a clean call record.
+            await radio.set_data_mode(True)
+            assert await radio.get_data_mode() is True
 
             radio.reset_calls()
 
@@ -305,23 +312,44 @@ class TestFldigiModeFreqSequence:
             resp = await client.send("f")
             assert resp == "7074000"
 
-            # Active receiver is MAIN → receiver=0.
+            # Active receiver is MAIN → receiver=0. The plain-SSB mode
+            # change clears DATA between set_mode and set_freq.
             assert radio.calls == [
                 ("set_mode", ("USB", None, 0)),
+                ("set_data_mode", (False, 0)),
                 ("set_freq", (7074000, 0)),
             ]
+
+            # The seeded DATA is gone after the ordinary M USB: the
+            # radio's own getter reports OFF (not the handler's mode
+            # overlay).
+            assert await radio.get_data_mode() is False
+
+            # Readback through the rigctld surface: the mode GET still
+            # answers USB after the DATA-off clear.
+            resp = await client.send("m")
+            assert resp.splitlines()[0] == "USB"
         finally:
             await client.close()
 
     async def test_fldigi_sequence_ic7300(
         self, ic7300_setup: tuple[RecordingMockRadio, RigctldServer]
     ) -> None:
-        """Same fldigi flow on IC-7300 (single-RX) — no regression."""
+        """Same fldigi flow on IC-7300 (single-RX) — no regression.
+
+        The plain-SSB DATA-off clear applies here too, between set_mode
+        and set_freq.
+        """
         radio, server = ic7300_setup
         client = await _make_client(server)
         try:
             resp = await client.send("m")
             assert resp.splitlines()[0] == "USB"
+
+            # Seed DATA on (after the plain-mode check), verify, then
+            # start the tested sequence from a clean call record.
+            await radio.set_data_mode(True)
+            assert await radio.get_data_mode() is True
 
             radio.reset_calls()
 
@@ -335,8 +363,17 @@ class TestFldigiModeFreqSequence:
             # IC-7300 has one receiver; handler still uses receiver=0.
             assert radio.calls == [
                 ("set_mode", ("USB", None, 0)),
+                ("set_data_mode", (False, 0)),
                 ("set_freq", (7074000, 0)),
             ]
+
+            # The seeded DATA is cleared by the ordinary M USB: the
+            # radio's own getter reports OFF.
+            assert await radio.get_data_mode() is False
+
+            # Mode readback through the rigctld surface stays USB.
+            resp = await client.send("m")
+            assert resp.splitlines()[0] == "USB"
         finally:
             await client.close()
 
@@ -479,7 +516,8 @@ class TestHttpCrossProtocolGuard:
                     break
                 dump += chunk
             dump_lines = bytes(dump).decode().splitlines()
-            assert dump_lines[0] == "0"
+            assert dump_lines[0] == "1"
+            assert dump_lines[-2:] == ["targetable_vfo=0x3", "done"]
             assert dump_lines[1].isdigit()
             assert len(dump) > 200
 

@@ -2895,7 +2895,7 @@ async def test_http_connect_and_power_on_leave_the_port_retry_running(
     ``connect()`` on a missing port fails and rests the radio
     ``DISCONNECTED``, which the watchdog never retries. So
     ``/api/v1/radio/connect`` and the power-on reconnect refuse with the
-    WebSocket ``radio_connect`` handler's ``backend_recovering`` error, and
+    ``backend_recovering`` error (409), and
     the port still connects when it appears.
 
     MOR-3078: this is the test the Linux quick runner failed (the port

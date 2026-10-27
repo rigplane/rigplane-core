@@ -234,6 +234,7 @@ async def test_get_mode_sub_receiver(connected_radio):
 
 @pytest.mark.asyncio
 async def test_set_mode_usb(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="MD02")
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_mode("USB", receiver=0)
     connected_radio._transport.write.assert_called_once_with("MD02;")
@@ -242,6 +243,7 @@ async def test_set_mode_usb(connected_radio):
 
 @pytest.mark.asyncio
 async def test_set_mode_sub(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="MD11")
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_mode("LSB", receiver=1)
     connected_radio._transport.write.assert_called_once_with("MD11;")
@@ -310,6 +312,7 @@ async def test_get_mode_data_u(connected_radio):
 @pytest.mark.asyncio
 async def test_set_mode_data_u(connected_radio):
     """MOR-473: set_mode("DATA-U") writes the hex code ``MD0C;``."""
+    connected_radio._transport.query = AsyncMock(return_value="MD0C")
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_mode("DATA-U", receiver=0)
     connected_radio._transport.write.assert_called_once_with("MD0C;")
@@ -354,6 +357,7 @@ async def test_read_mode_rejects_unused_code(connected_radio):
 async def test_set_mode_c4fm_dn_writes_md0h(connected_radio):
     """MOR-2518: set_mode("C4FM-DN") writes the manual's one-character
     code H, not a two-character index-derived code."""
+    connected_radio._transport.query = AsyncMock(return_value="MD0H")
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_mode("C4FM-DN")
     connected_radio._transport.write.assert_called_once_with("MD0H;")
@@ -362,6 +366,7 @@ async def test_set_mode_c4fm_dn_writes_md0h(connected_radio):
 @pytest.mark.asyncio
 async def test_set_mode_c4fm_vw_sub_writes_md1i(connected_radio):
     """MOR-2518: set_mode("C4FM-VW", receiver=1) writes ``MD1I;``."""
+    connected_radio._transport.query = AsyncMock(return_value="MD1I")
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_mode("C4FM-VW", receiver=1)
     connected_radio._transport.write.assert_called_once_with("MD1I;")

@@ -71,7 +71,7 @@ def test_audio_driver_default_construction():
         patch("rigplane.audio.usb_driver.UsbAudioDriver") as MockDriver,
     ):
         MockDriver.return_value = MagicMock()
-        YaesuCatRadio(
+        radio = YaesuCatRadio(
             device="/dev/ttyUSB0",
             rx_device="hw:1,0",
             tx_device="hw:1,1",
@@ -89,6 +89,7 @@ def test_audio_driver_default_construction():
                 rx_audio_channel="left",
             ),
             serial_port="/dev/ttyUSB0",
+            usb_identity=radio.profile.usb_identity,
             backend=None,
         )
 

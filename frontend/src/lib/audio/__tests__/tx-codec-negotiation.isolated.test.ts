@@ -18,8 +18,10 @@ import { TxMic } from '../tx-mic';
 import { ManagedTxController, type ManagedOperation } from '../../runtime/tx-controller/managed-controller';
 import { AUDIO_HEADER_SIZE, CODEC_PCM16, SAMPLE_RATE } from '../constants';
 
-const setTxCodecFallbackMock = vi.fn();
-const setTxEnabledMock = vi.fn();
+const { setTxEnabledMock, setTxCodecFallbackMock } = vi.hoisted(() => ({
+  setTxEnabledMock: vi.fn(),
+  setTxCodecFallbackMock: vi.fn(),
+}));
 
 vi.mock('../rx-player', () => ({
   RxPlayer: class {
@@ -48,6 +50,8 @@ vi.mock('../../stores/audio.svelte', () => ({
   setRxEnabled: vi.fn(),
   setTxEnabled: setTxEnabledMock,
   setTxCodecFallback: setTxCodecFallbackMock,
+  setRxError: vi.fn(),
+  setTxError: vi.fn(),
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({

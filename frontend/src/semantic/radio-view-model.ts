@@ -638,6 +638,9 @@ export type RfFrontEndField<T> = TxAuxField<T>;
 export interface RfFrontEndViewModel {
   preamp: RfFrontEndField<number>;
   preValues: readonly number[];
+  /** `Capabilities.preLabels` verbatim, keyed by `String(level)`; absent when
+   *  the profile declares none. */
+  preLabels?: Readonly<Record<string, string>>;
   attenuator: RfFrontEndField<number>;
   attValues: readonly number[];
   rfGain: RfFrontEndField<number>;
@@ -1942,6 +1945,11 @@ function numArray(value: unknown, path: string): number[] {
   return value.map((item, i) => num(item, `${path}[${i}]`));
 }
 
+function strRecord(value: unknown, path: string): Record<string, string> {
+  const v = record(value, path);
+  return Object.fromEntries(Object.entries(v).map(([key, item]) => [key, str(item, `${path}.${key}`)]));
+}
+
 function positiveHz(value: unknown, path: string): number {
   const n = num(value, path);
   if (n <= 0) invalid(path, 'positive Hz');
@@ -2170,17 +2178,20 @@ function validateDsp(value: unknown, path: string): DspViewModel {
   };
 }
 
-/** N4 again: exactly the eight facts the adapter reads (MOR-1293 added
- *  `digiSel`/`ipPlus` to 6A's original six), no speculative keys.
+/** N4 again: exactly the nine facts the adapter reads (MOR-1293 added
+ *  `digiSel`/`ipPlus` to 6A's original six; MOR-3574 added the optional
+ *  `preLabels`), no speculative keys.
  *  See `radio-view-model-adapter.ts::deriveRfFrontEnd`. */
 function validateRfFrontEnd(value: unknown, path: string): RfFrontEndViewModel {
   const v = record(value, path);
   exactKeys(v, [
-    'preamp', 'preValues', 'attenuator', 'attValues', 'rfGain', 'squelch', 'digiSel', 'ipPlus',
+    'preamp', 'preValues', 'preLabels', 'attenuator', 'attValues', 'rfGain', 'squelch', 'digiSel',
+    'ipPlus',
   ], path);
   return {
     preamp: validateTxAuxField(v.preamp, `${path}.preamp`, num),
     preValues: numArray(v.preValues, `${path}.preValues`),
+    ...(v.preLabels === undefined ? {} : { preLabels: strRecord(v.preLabels, `${path}.preLabels`) }),
     attenuator: validateTxAuxField(v.attenuator, `${path}.attenuator`, num),
     attValues: numArray(v.attValues, `${path}.attValues`),
     rfGain: validateTxAuxField(v.rfGain, `${path}.rfGain`, num),

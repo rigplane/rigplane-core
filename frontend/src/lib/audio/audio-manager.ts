@@ -12,7 +12,7 @@ import { RxPlayer, type RxAudioFocus } from './rx-player';
 import { TxMic, type TxCodec } from './tx-mic';
 import { SAMPLE_RATE, TX_PCM_SAMPLE_RATES } from './constants';
 import { setAudioConnected } from '../stores/connection.svelte';
-import { setRxEnabled, setTxEnabled, setTxCodecFallback } from '../stores/audio.svelte';
+import { setRxEnabled, setTxEnabled, setTxCodecFallback, setRxError, setTxError } from '../stores/audio.svelte';
 import { authenticatedWsUrl } from '../transport/ws-url';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
 
@@ -100,6 +100,8 @@ class AudioManager {
   private txMic: TxMic;
   private _rxEnabled = false;
   private _txEnabled = false;
+  // Manager cancellation identity; internal TxMic teardown is still a genuine result.
+  private txStartGeneration = 0;
   private appliedAudioConfig: Readonly<Partial<AudioRoutingConfig>> | null = null;
   private backoff = BACKOFF_MIN;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -176,6 +178,9 @@ class AudioManager {
     if (this._rxEnabled) return;
     this._rxEnabled = true;
     setRxEnabled(true);
+    // MOR-3753: a new attempt supersedes a latched refusal; a fresh refusal
+    // below re-latches it.
+    setRxError(false);
     const audioCfg = getCapabilities()?.audioConfig;
     if (audioCfg?.jitterFloorMs !== undefined && audioCfg?.jitterCeilingMs !== undefined) {
       this.rxPlayer.setJitterBounds(audioCfg.jitterFloorMs, audioCfg.jitterCeilingMs);
@@ -194,9 +199,14 @@ class AudioManager {
     this.notify();
   }
 
-  stopRx(): void {
+  stopRx(options?: { automatic?: boolean }): void {
     this._clearRxDiagnosticOverlay();
     this._lastRxResumeError = null;
+    // MOR-3753: an explicit stop clears a latched refusal — including the
+    // no-op stop after a refusal already cleared the demand. Automatic
+    // cleanup passes { automatic: true } and preserves the latch; it never
+    // sets one.
+    if (!options?.automatic) setRxError(false);
     if (!this._rxEnabled) return;
     this._rxEnabled = false;
     setRxEnabled(false);
@@ -290,7 +300,25 @@ class AudioManager {
     if (this.controller?.remote() && !this.controller.ready()) return 'Удалённое управление недоступно.';
     const epoch = this.controller?.epoch() ?? 0;
     if (this._txEnabled) return this.txAdmission?.promise ?? null;
-    const err = await this.txMic.start();
+    const startGeneration = ++this.txStartGeneration;
+    // MOR-3753: a new attempt supersedes a latched TX failure — cleared at
+    // entry, after the guards, so a stale failure never outlives its retry
+    // while the fresh capture is still pending.
+    setTxError(false);
+    let err: string | null;
+    let captureEpoch = this.txMic.captureEpoch;
+    try {
+      const capture = this.txMic.start();
+      captureEpoch = this.txMic.captureEpoch;
+      err = await capture;
+    } catch (error) {
+      // Preserve the original rejection, but only the current capture and
+      // controller attempt may publish a new failure after this await.
+      if (startGeneration === this.txStartGeneration && captureEpoch === this.txMic.captureEpoch
+        && (!this.controller || this.controller.current(epoch))) setTxError(true);
+      throw error;
+    }
+    if (startGeneration !== this.txStartGeneration) return 'TX MIC: capture start cancelled';
     if (this.controller && !this.controller.current(epoch)) {
       this.txMic.stop();
       return 'Удалённое управление потеряно. Подключитесь заново.';
@@ -300,6 +328,9 @@ class AudioManager {
       // merely to report a capture failure. Periodic stats retain the category.
       this._sendAudioStats();
       this._notifyTxStartFailure(err);
+      // MOR-3753: a genuine refusal latches the failed state; the silent
+      // cancellation reasons above latch nothing.
+      if (!TX_START_SILENT_REASONS.has(err)) setTxError(true);
       return err;
     }
     if (!this.txMic.active) return 'TX MIC: capture stopped before start completed';
@@ -312,6 +343,8 @@ class AudioManager {
     this._txEnabled = true;
     this.txControllerEpoch = epoch;
     setTxEnabled(true);
+    // MOR-3753: a new attempt supersedes a latched TX failure.
+    setTxError(false);
     this.connect();
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'audio_start', direction: 'tx' }));
@@ -320,7 +353,14 @@ class AudioManager {
     return admission;
   }
 
-  stopTx(): void {
+  stopTx(options?: { automatic?: boolean }): void {
+    ++this.txStartGeneration;
+    // MOR-3753: an explicit stop clears a latched TX failure — including the
+    // no-op stop after a failure already cleared the demand. Automatic safety
+    // cleanup (ManagedTxController forceOff after _failTxAudio) passes
+    // { automatic: true } so the latch survives the de-key instead of the UI
+    // falsely returning to neutral/green.
+    if (!options?.automatic) setTxError(false);
     const admission = this.txAdmission;
     this.txAdmission = null;
     admission?.resolve('TX MIC: capture start cancelled');
@@ -336,6 +376,15 @@ class AudioManager {
       if (this._rxEnabled) this.connect();
     } else this.maybeDisconnect();
     this.notify();
+  }
+
+  /** A dead live socket under browser demand latches a fault per active
+   *  direction — failed/red, never an endless yellow attempt. Silent when
+   *  idle; a superseded socket cannot fault the live one. */
+  private _latchSocketFault(ws: WebSocket): void {
+    if (this.ws !== ws) return;
+    if (this._rxEnabled) setRxError(true);
+    if (this._txEnabled) setTxError(true);
   }
 
   // ── WS lifecycle ──
@@ -375,6 +424,10 @@ class AudioManager {
         && (this.ws !== ws || this.controller?.current(epoch) !== true || ws.protocol !== protocols[0])) { ws.close(); return; }
       this.backoff = BACKOFF_MIN;
       setAudioConnected(true);
+      // The link is back under live demand: a fault latched while it was
+      // down no longer holds. A fresh refusal re-latches per direction.
+      if (this._rxEnabled) setRxError(false);
+      if (this._txEnabled) setTxError(false);
       console.log('[audio-ws] connected');
       if (this._rxEnabled) {
         // Idempotent resume nudge: if the AudioContext re-entered
@@ -416,11 +469,15 @@ class AudioManager {
 
     ws.onerror = () => {
       console.error('[audio-ws] error');
+      this._latchSocketFault(ws);
       ws.close();
     };
 
     ws.onclose = (ev) => {
       console.warn(`[audio-ws] closed code=${ev.code} reason=${ev.reason}`);
+      // Socket death under demand is a real fault; the TX admission path
+      // below still owns its own resolve/notify/teardown unchanged.
+      this._latchSocketFault(ws);
       this._clearStatsTimer();
       this.ws = null;
       setAudioConnected(false);
@@ -493,7 +550,11 @@ class AudioManager {
         && msg.message.startsWith(SERVER_RX_REFUSAL_PREFIX) && this._rxEnabled) {
         // End only failed RX demand; keep concurrent TX and allow an explicit
         // retry. Do not expose backend/native details in operator banners.
+        // MOR-3753: stopRx cleared the demand, so latch the refusal itself —
+        // demand alone would hide it as idle. Cleared by an explicit stop
+        // or a new attempt; a failed retry re-latches.
         this.stopRx();
+        setRxError(true);
         this._operatorNotifier?.('error', 'Radio audio capture could not start.', 'rxAudioStartFailed');
       }
       return;
@@ -556,6 +617,9 @@ class AudioManager {
     );
     this._setTxCodecFallback(false);
     this.stopTx();
+    // MOR-3753: stopTx cleared the demand, so latch the failure itself —
+    // demand alone would hide it as idle.
+    setTxError(true);
     // Snapshot + isolate: one throwing subscriber must not starve the rest.
     for (const callback of [...this.txAudioDiedCallbacks]) {
       try {
@@ -697,10 +761,11 @@ class AudioManager {
     }
   }
 
-  /** Full cleanup */
-  destroy(): void {
-    this.stopRx();
-    this.stopTx();
+  /** Full cleanup. Explicit by default: acknowledges latched audio errors.
+   *  { automatic: true } forwards to stopRx/stopTx and preserves them. */
+  destroy(options?: { automatic?: boolean }): void {
+    this.stopRx(options);
+    this.stopTx(options);
     this.close();
   }
 }

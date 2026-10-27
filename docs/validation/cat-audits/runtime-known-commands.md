@@ -35,7 +35,7 @@ This is the IC-7300-*mentioned* denominator: `cfg.commands` contains positive an
 
 ## Interpretation and ownership boundary
 
-The registry contains 16 builder-derived aliases, five builder-derived composites, ten audio-capability operations, and one CI-V protocol operation. Builder targets are evaluated from their existing `cmd_map_key`; the registry does not duplicate profile command-key strings or branch on model/vendor identity. Explicit profile absence wins over a direct positive declaration or a relation.
+The registry contains 16 builder-derived aliases, five builder-derived composites, ten audio-capability operations, one CI-V protocol operation, and two relative-VFO write relations. Builder targets are evaluated from their existing `cmd_map_key`; relative writes require single-RX A/B selected/unselected profile data and their declared wire commands (`callable_support.py: RelativeVfoCommands`). No relation branches on model/vendor identity. Explicit profile absence wins over a direct positive declaration or a relation.
 
 `get_mode_info` derives base support from `get_mode`; SUB use separately requires receiver 1 and `get_unselected_mode`. The exact ten audio operations derive from the profile's `audio` capability, while `send_civ` derives only from `protocol.type = "civ"`.
 

@@ -622,6 +622,8 @@ def test_descriptor_is_the_only_migrated_name_source() -> None:
         "set_rx_antenna_ant2",
         "set_civ_output_ant",
         "set_tuner_status",
+        "set_split_freq",
+        "set_split_mode",
         "set_repeater_tone",
         "set_repeater_tsql",
         "set_tone_freq",

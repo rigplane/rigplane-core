@@ -527,6 +527,66 @@ class TestYaesuCatTransport:
 
         assert writer.written == [b"MD0E;"]
 
+    @pytest.mark.parametrize(
+        ("options", "error_delta"),
+        [
+            pytest.param({}, 1, id="default"),
+            pytest.param({"expect_rejection": False}, 1, id="unexpected"),
+            pytest.param({"expect_rejection": True}, 0, id="expected"),
+        ],
+    )
+    async def test_query_rejection_accounting_is_opt_in(
+        self, options: dict[str, bool], error_delta: int
+    ) -> None:
+        transport = YaesuCatTransport(device="/dev/test")
+        transport._reader = FakeStreamReader([b"?;"])  # type: ignore[assignment]
+        transport._writer = FakeStreamWriter()  # type: ignore[assignment]
+        transport._connected = True
+        transport.stats.record_error("earlier failure")
+        last_error = transport.stats.last_error
+        last_error_time = transport.stats.last_error_time
+
+        with pytest.raises(CatCommandRejected) as caught:
+            await transport.query("MR00025;", **options)
+
+        assert caught.value.command == "MR00025;"
+        assert transport.stats.queries == 1
+        assert transport.stats.errors == 1 + error_delta
+        assert transport.stats.consecutive_errors == 1 + error_delta
+        assert transport.stats.timeouts == 0
+        if not error_delta:
+            assert transport.stats.last_error == last_error
+            assert transport.stats.last_error_time == last_error_time
+
+    @pytest.mark.parametrize("expect_rejection", [False, True])
+    @pytest.mark.parametrize(
+        ("responses", "error", "errors", "timeouts"),
+        [
+            pytest.param([], CatTimeoutError, 0, 1, id="timeout"),
+            pytest.param([b"\xff;"], CatGarbledFrameError, 1, 0, id="garbled"),
+        ],
+    )
+    async def test_expected_rejection_keeps_other_failure_accounting(
+        self,
+        expect_rejection: bool,
+        responses: list[bytes],
+        error: type[CatTransportError],
+        errors: int,
+        timeouts: int,
+    ) -> None:
+        transport = YaesuCatTransport(device="/dev/test")
+        transport._reader = FakeStreamReader(responses)  # type: ignore[assignment]
+        transport._writer = FakeStreamWriter()  # type: ignore[assignment]
+        transport._connected = True
+        transport.stats.record_error("earlier failure")
+
+        with pytest.raises(error):
+            await transport.query("MR00025;", expect_rejection=expect_rejection)
+
+        assert transport.stats.errors == 1 + errors
+        assert transport.stats.consecutive_errors == 1 + errors
+        assert transport.stats.timeouts == timeouts
+
     async def test_query_sends_and_reads(self, mock_serial_connection: Any) -> None:
         """query() sends command and returns response."""
         reader = FakeStreamReader([b"FA014074000;"])

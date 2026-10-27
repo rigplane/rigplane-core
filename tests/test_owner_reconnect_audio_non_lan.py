@@ -448,7 +448,16 @@ async def test_yaesu_cat_owner_stop_during_connect_runs_no_recovery() -> None:
 
 async def test_yaesu_cat_identity_hold_reestablishes_once_after_completion() -> None:
     """A connect that returns into the identity hold re-establishes
-    nothing until the hold completes, then exactly once."""
+    nothing until the hold completes, then exactly once.
+
+    ``connected`` reflects transport + identity only: the deferred audio
+    re-establishment runs after the identity re-read resolves, so
+    ``connected`` turning True does not promise the driver's RX leg yet.
+    The gate on ``session.reestablish`` (the same session-call seam the
+    owner-stop test spies on) parks the deferred tail across the verified
+    identity, proving that window deterministically — event barriers, no
+    sleeps — before requiring the completed readiness.
+    """
     radio, driver, fake = await _yaesu_radio()
     try:
         await radio.connect()
@@ -458,6 +467,24 @@ async def test_yaesu_cat_identity_hold_reestablishes_once_after_completion() -> 
             await radio.disconnect()
             assert driver.rx_running is False
 
+            # Park the deferred audio re-establishment behind an event
+            # barrier so the post-identity window is observed, not raced
+            # for at the connected barrier.
+            in_reestablish = asyncio.Event()
+            release_reestablish = asyncio.Event()
+            reestablish_done = asyncio.Event()
+            real_reestablish = session.reestablish
+
+            async def _gated_reestablish() -> None:
+                in_reestablish.set()
+                await release_reestablish.wait()
+                try:
+                    await real_reestablish()
+                finally:
+                    reestablish_done.set()
+
+            session.reestablish = _gated_reestablish  # type: ignore[method-assign]
+
             # The reconnect's ID read falls inside the silence window (the
             # transport query times out at ~1 s), then the re-read answers.
             fake.silence(1.2)
@@ -466,7 +493,18 @@ async def test_yaesu_cat_identity_hold_reestablishes_once_after_completion() -> 
             assert driver.rx_running is False  # nothing re-armed during the hold
             assert radio._audio_reestablish_generation is not None
 
-            assert await _wait_until(lambda: radio.connected, timeout_s=5.0)
+            # Barrier: the deferred tail reached the session call, so the
+            # identity re-read has already resolved.
+            await asyncio.wait_for(in_reestablish.wait(), timeout=5.0)
+            # The contract window, held open by the gate: connected is
+            # True while the audio re-establishment has not yet run.
+            assert radio.connected is True
+            assert driver.rx_running is False
+            assert driver.rx_starts == 1  # still only the pre-disconnect leg
+
+            release_reestablish.set()
+            await asyncio.wait_for(reestablish_done.wait(), timeout=5.0)
+
             assert driver.rx_running is True
             assert driver.rx_starts == 2  # re-established exactly once, after
             assert radio._audio_reestablish_generation is None

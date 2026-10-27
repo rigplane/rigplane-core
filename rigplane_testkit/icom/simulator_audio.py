@@ -42,7 +42,10 @@ import asyncio
 import logging
 import struct
 import time
+import wave
 from dataclasses import dataclass
+from os import PathLike
+from typing import BinaryIO
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +74,19 @@ _PCM_RAMP = bytes(range(256))
 
 
 @dataclass(frozen=True, slots=True)
+class TxAudioFormat:
+    """The TX audio format a client declares in its accepted conninfo.
+
+    Production conninfo layout (``src/rigplane/core/auth.py``:
+    ``build_conninfo_packet``): tx codec byte at 0x73, BE u32 tx sample
+    rate at 0x78. Sink frames snapshot it at arrival.
+    """
+
+    codec: int
+    sample_rate: int
+
+
+@dataclass(frozen=True, slots=True)
 class ClientAudioFrame:
     """One client→radio audio DATA frame observed on the audio port.
 
@@ -79,13 +95,21 @@ class ClientAudioFrame:
     only reference: ``seq`` is the tracked header sequence (LE u16 at
     0x06), ``inner_seq`` the audio-level sequence (BE u16 at 0x12),
     ``payload_len`` the bytes after the header, ``received_at`` the
-    arrival ``time.monotonic()``.
+    arrival ``time.monotonic()``, ``ptt`` the simulator's PTT state at
+    arrival, ``tx_format`` the TX format learned from the client's
+    conninfo at arrival (``None`` when none was learned). ``payload``
+    retains the bytes after the header only with
+    ``capture_tx_audio=True`` (long soaks keep the default metadata-only
+    recording); otherwise it is ``b""``.
     """
 
     seq: int
     inner_seq: int
     payload_len: int
     received_at: float
+    ptt: bool
+    payload: bytes
+    tx_format: TxAudioFormat | None
 
 
 class AudioPortMixin:
@@ -115,6 +139,8 @@ class AudioPortMixin:
         # step 1 per packet and wrap at 0xFFFF.
         self._audio_client: tuple[tuple[str, int], int] | None = None
         self._audio_rx_task: asyncio.Task[None] | None = None
+        self._audio_rx_generation: int = 0
+        self._audio_next_burst_at: float = 0.0
         self._audio_rx_seq: int = 0
         self._audio_rx_inner_seq: int = 0
         # audio_port_silence deadline (0.0 = inactive).
@@ -124,6 +150,13 @@ class AudioPortMixin:
         self.audio_tx_frames: list[ClientAudioFrame] = []
         self._audio_last_client_seq: int | None = None
         self._audio_retransmit_requests_received: int = 0
+        # Optional RX audio source (``rigplane_testkit/icom/rx_source.py``),
+        # set by the radio constructor; None keeps the synthetic ramp.
+        self._rx_source = getattr(self, "_rx_source", None)
+        # TX format learned from the fresh login's own accepted conninfo
+        # (None until then; a conninfo with a zero sample rate teaches
+        # nothing).
+        self._audio_tx_format: TxAudioFormat | None = None
 
     async def _audio_start(self) -> None:
         """Bind the audio port at the CI-V port + 1 when free (else any).
@@ -180,6 +213,22 @@ class AudioPortMixin:
         return self._audio_rx_frames_sent
 
     @property
+    def audio_tx_format(self) -> TxAudioFormat | None:
+        """The TX format learned from the most recently accepted conninfo
+        (``None`` until one arrives; the tx codec byte and the BE u32 tx
+        sample rate, ``core/auth.py``: ``build_conninfo_packet``)."""
+        return self._audio_tx_format
+
+    def tx_capture_format(self, since: int = 0) -> TxAudioFormat | None:
+        """The single TX format across ``audio_tx_frames[since:]``.
+
+        Returns ``None`` for an empty slice, any unknown-format frame,
+        or a slice spanning more than one learned format.
+        """
+        learned = {frame.tx_format for frame in self.audio_tx_frames[since:]}
+        return learned.pop() if len(learned) == 1 else None
+
+    @property
     def audio_last_client_seq(self) -> int | None:
         """The client's last tracked audio-port number, per stream.
 
@@ -205,6 +254,48 @@ class AudioPortMixin:
         recorded says the radio re-sends audio on request.
         """
         return self._audio_retransmit_requests_received
+
+    def audio_tx_pcm(self, since: int = 0) -> bytes:
+        """The captured TX payloads concatenated in arrival order.
+
+        From frame index ``since`` (a running offset a poller keeps, like
+        ``/trace?since=``). Empty unless the radio was constructed with
+        ``capture_tx_audio=True``.
+        """
+        return b"".join(frame.payload for frame in self.audio_tx_frames[since:])
+
+    def write_tx_wav(
+        self,
+        path: str | PathLike[str] | BinaryIO,
+        *,
+        sample_rate: int,
+        channels: int = 1,
+        since: int = 0,
+    ) -> None:
+        """Write the captured TX audio as RIFF/WAV, 16-bit PCM.
+
+        The sample rate and channels are the CALLER's label for the file:
+        the WAV header states them; what the bytes mean depends on the
+        negotiated TX format the sink recorded (``tx_capture_format`` —
+        the ``sim serve`` routes label their exports with that, and
+        refuse rather than mislabel). ``path`` may be a filesystem path
+        or a binary file-like object.
+        """
+        if isinstance(path, (str, PathLike)):
+            # wave.open treats only str as a path; open PathLike ourselves.
+            with open(path, "wb") as file:
+                self._write_tx_wav(file, sample_rate, channels, since)
+        else:
+            self._write_tx_wav(path, sample_rate, channels, since)
+
+    def _write_tx_wav(
+        self, file: BinaryIO, sample_rate: int, channels: int, since: int
+    ) -> None:
+        with wave.open(file, "wb") as wav:
+            wav.setnchannels(channels)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(self.audio_tx_pcm(since))
 
     # ------------------------------------------------------------------
     # Events
@@ -257,9 +348,12 @@ class AudioPortMixin:
         """
         self._audio_stop_rx(reason)
         self._audio_last_client_seq = None
+        self._audio_tx_format = None
 
     def _audio_stop_rx(self, reason: str) -> None:
         """Cancel the RX stream task and forget the audio client."""
+        self._audio_rx_generation += 1
+        self._audio_next_burst_at = 0.0
         if self._audio_rx_task is not None:
             self._audio_rx_task.cancel()
             self._audio_rx_task = None
@@ -346,6 +440,13 @@ class AudioPortMixin:
                             inner_seq=struct.unpack_from(">H", data, 0x12)[0],
                             payload_len=n - AUDIO_HEADER_SIZE,
                             received_at=time.monotonic(),
+                            ptt=self.ptt_on,
+                            payload=(
+                                data[AUDIO_HEADER_SIZE:]
+                                if self.capture_tx_audio
+                                else b""
+                            ),
+                            tx_format=self._audio_tx_format,
                         )
                     )
                 return
@@ -357,11 +458,19 @@ class AudioPortMixin:
         (new addr) retargets the stream within the same session; the
         numbering never restarts on a re-open — the epoch is the session.
         """
-        self._audio_client = (addr, sender_id)
-        if self._audio_rx_task is None or self._audio_rx_task.done():
-            self._audio_rx_task = asyncio.get_running_loop().create_task(
-                self._audio_rx_loop()
-            )
+        client = (addr, sender_id)
+        restart = self._audio_rx_task is None or self._audio_rx_task.done()
+        if self._audio_client != client or restart:
+            self._audio_rx_generation += 1
+            self._audio_next_burst_at = 0.0
+        self._audio_client = client
+        if restart:
+            loop = asyncio.get_running_loop()
+            origin = loop.time()
+            if self._rx_source is not None:
+                # Stream (re)start: the file plays from its head again.
+                self._rx_source.reset()
+            self._audio_rx_task = loop.create_task(self._audio_rx_loop(origin))
 
     # ------------------------------------------------------------------
     # Outbound funnel and RX streamer
@@ -386,52 +495,73 @@ class AudioPortMixin:
             return True
         return False
 
-    async def _audio_rx_loop(self) -> None:
-        """Emit the recorded RX stream: three packets every 20 ms."""
+    async def _audio_rx_loop(self, origin: float) -> None:
+        """Emit the recorded RX stream: three packets every 20 ms.
+
+        Bursts sit at ABSOLUTE deadlines on the loop clock (a relative
+        ``sleep(0.02)`` accumulates overshoot and stretches playback,
+        breaking slot alignment for file sources); more than five bursts
+        behind, drop stale deadlines without moving the timebase.
+        """
         try:
+            loop = asyncio.get_running_loop()
+            next_t = origin + _AUDIO_BURST_PERIOD_S
             while True:
-                await asyncio.sleep(_AUDIO_BURST_PERIOD_S)
+                now = loop.time()
+                if next_t - now < -5 * _AUDIO_BURST_PERIOD_S:
+                    skipped = int((now - next_t) / _AUDIO_BURST_PERIOD_S)
+                    if self._rx_source is not None:
+                        for _ in range(skipped):
+                            self._rx_source.read_burst()
+                    next_t += skipped * _AUDIO_BURST_PERIOD_S
+                await asyncio.sleep(max(0.0, next_t - now))
+                next_t += _AUDIO_BURST_PERIOD_S
                 client = self._audio_client
                 if client is None or self._audio_udp is None:
                     continue
                 addr, client_id = client
-                loop = asyncio.get_running_loop()
-                for position, offset in enumerate(_AUDIO_IN_BURST_OFFSETS_S):
-                    loop.call_later(
-                        offset,
-                        self._audio_emit_rx_packet,
-                        position,
-                        addr,
-                        client_id,
-                    )
+                self._audio_queue_rx_burst(addr, client_id)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Mock: audio RX loop error")
 
-    def _audio_emit_rx_packet(
-        self, position: int, addr: tuple[str, int], client_id: int
-    ) -> None:
-        """Build and send one RX packet (dropped unless the stream lives).
+    def _audio_queue_rx_burst(self, addr: tuple[str, int], client_id: int) -> None:
+        """Build one burst and schedule its sends after earlier bursts."""
+        src = self._rx_source
+        burst = src.read_burst() if src is not None else None
+        loop = asyncio.get_running_loop()
+        start_t = max(loop.time(), self._audio_next_burst_at)
+        generation = self._audio_rx_generation
+        for position, offset in enumerate(_AUDIO_IN_BURST_OFFSETS_S):
+            pkt = self._audio_rx_packet(position, client_id, burst)
+            loop.call_at(
+                start_t + offset, self._audio_emit_prebuilt, pkt, addr, generation
+            )
+        self._audio_next_burst_at = (
+            start_t + _AUDIO_IN_BURST_OFFSETS_S[-1] + _AUDIO_IN_BURST_OFFSETS_S[1]
+        )
 
-        The emission slot still steps both sequences when the packet is
-        suppressed (silence/reboot window), so the client sees the gap;
-        only actually-sent packets advance ``audio_rx_frames_sent``.
-        """
-        if self._audio_client is None:
-            return  # the stream stopped after this emission was scheduled
-        pkt = self._audio_rx_packet(position, client_id)
+    def _audio_emit_prebuilt(
+        self, pkt: bytes, addr: tuple[str, int], generation: int
+    ) -> None:
+        """Send a prebuilt RX packet only in its stream generation."""
+        if generation != self._audio_rx_generation or self._audio_client is None:
+            return
         if self._audio_send(pkt, addr):
             self._audio_rx_frames_sent += 1
 
-    def _audio_rx_packet(self, position: int, client_id: int) -> bytes:
+    def _audio_rx_packet(
+        self, position: int, client_id: int, burst: bytes | None
+    ) -> bytes:
         """Build one RX packet with the recorded header layout.
 
         ``position`` is the packet's place in its burst (0..2): the first
         packet of a burst carries the first-fragment ident. Both sequences
-        step 1 per packet (wrap at 0xFFFF); the payload is the byte ramp
-        seeded by the inner sequence. Building never counts: the caller
-        counts only packets the funnel actually sent.
+        step 1 per packet (wrap at 0xFFFF). The payload is the byte ramp
+        seeded by the inner sequence, unless an RX source is set: the
+        burst's 20 ms (fetched by the loop) is sliced by the recorded
+        payload split.
         """
         import rigplane_testkit.icom.simulator as _sim
 
@@ -448,10 +578,14 @@ class AudioPortMixin:
         struct.pack_into(">H", pkt, 0x12, self._audio_rx_inner_seq)
         struct.pack_into(">H", pkt, 0x14, 0)  # recorded: always 0
         struct.pack_into(">H", pkt, 0x16, payload_len)
-        start = self._audio_rx_inner_seq & 0xFF
-        pkt[AUDIO_HEADER_SIZE:] = (_PCM_RAMP * (payload_len // 256 + 2))[
-            start : start + payload_len
-        ]
+        if burst is not None:
+            start_off = sum(_AUDIO_BURST_PAYLOADS[:position])  # 0/1364/2728
+            pkt[AUDIO_HEADER_SIZE:] = burst[start_off : start_off + payload_len]
+        else:
+            start = self._audio_rx_inner_seq & 0xFF
+            pkt[AUDIO_HEADER_SIZE:] = (_PCM_RAMP * (payload_len // 256 + 2))[
+                start : start + payload_len
+            ]
         self._audio_rx_seq = (self._audio_rx_seq + 1) & 0xFFFF
         self._audio_rx_inner_seq = (self._audio_rx_inner_seq + 1) & 0xFFFF
         return bytes(pkt)

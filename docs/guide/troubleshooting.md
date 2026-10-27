@@ -130,12 +130,12 @@ Only one resident command (`web`, `station`, `serve`) may serve an explicitly na
 
 A one-shot command (`status`, `freq`, …) against a LAN or local-serial radio takes the same per-radio lock in `_run` (`src/rigplane/cli/__init__.py: _run`) and holds it for the run, so the one-shot refuses before the radio is opened instead of operating beside the running server. For LAN radios a second login from this computer makes the radio drop the running server's live session; for serial radios the port cannot be shared safely between two processes. Without `--host`/`--serial-port`, discovery runs before the lock (LAN discovery is a broadcast, not a login; serial discovery probes ports). Send the command to the running server instead (its HTTP API or rigctld; for a readiness check, `GET /readyz`), or stop the server first. In the reverse order — a resident start while a one-shot holds the lock — the start refuses once with the "already serving this radio" message above.
 
-### `radio_connect` returns `backend_recovering`
+### `POST /api/v1/radio/connect` returns `backend_recovering`
 
-**Symptom:** WebSocket response:
+**Symptom:** HTTP 409 response:
 
 ```json
-{"type":"response","ok":false,"error":"backend_recovering"}
+{"error":"backend_recovering","message":"backend is already managing radio recovery"}
 ```
 
 **Cause:** Backend is already in reconnect/recovery state. Parallel manual reconnect

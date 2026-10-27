@@ -70,6 +70,25 @@ def test_request_key_ignores_data_for_non_selector_commands() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("sub", "data", "prefix"),
+    [
+        (0x00, b"\x02\x00\x01", b"\x02\x00\x01"),
+        (0x00, b"\x00\x00\x00\x04", b"\x00\x00\x00\x04"),
+        (0x00, b"\x00" * 114, b""),
+        (0x00, b"\x00\x01", b""),
+        (0x00, b"\x00" * 5, b""),
+        (0x01, b"\x02\x00\x01", b""),
+        (0x05, b"\x00\x00\x00\x04", b""),
+    ],
+)
+def test_request_key_prefixes_only_address_only_memory_reads(
+    sub: int, data: bytes, prefix: bytes
+) -> None:
+    frame = CivFrame(0xA4, 0xE0, 0x1A, sub=sub, data=data)
+    assert request_key_from_frame(frame).data_prefix == prefix
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("command", "expected_prefix", "wrong_prefix"),

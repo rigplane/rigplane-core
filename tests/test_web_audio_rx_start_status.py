@@ -124,6 +124,33 @@ async def test_late_retired_attempt_cannot_overwrite_current_source_fact(
     assert old.audio_session.rx_demand == 0
 
 
+@pytest.mark.parametrize("old_fails", [True, False])
+async def test_provider_retirement_rejects_late_rx_result_with_same_radio(
+    station, old_fails
+):
+    server, radio, broadcaster = station
+    radio.fails = old_fails
+    radio.gate = asyncio.Event()
+    source = radio.audio_session
+    pending = asyncio.create_task(broadcaster.ensure_relay())
+    try:
+        await asyncio.wait_for(radio.entered.wait(), timeout=1)
+        server._on_provider_generation(12)
+        assert broadcaster._radio is radio
+        assert radio.audio_session is source
+        assert await info(server) == CLEAR
+    finally:
+        radio.gate.set()
+        await pending
+    assert await info(server) == CLEAR
+    assert broadcaster._subscription is None
+    assert source.rx_demand == 0
+    radio.gate = None
+    radio.fails = True
+    await broadcaster.ensure_relay()
+    assert await info(server) == FAILED
+
+
 def _chained(outer, inner):
     outer.__cause__ = inner
     return outer
@@ -137,24 +164,29 @@ def _rx_start_failures():
         AudioFormatUnsupportedError,
         AudioTopologyUnavailableError,
     )
-    from rigplane.usb_audio_resolve import (
-        WindowsAudioAmbiguityError,
-        WindowsAudioEndpointNameError,
-        WindowsAudioTopologyError,
-    )
+    from rigplane.audio._usb_pairing import PairRefused, WindowsAudioTopologyError
 
     private = "private device /private/example could not open"
     return {
         "usb_topology_names": _chained(
-            AudioDeviceSelectionError(private), WindowsAudioEndpointNameError(private)
+            AudioDeviceSelectionError(private),
+            WindowsAudioTopologyError(
+                PairRefused("endpoint_names", "usb_topology_names", (), (private,))
+            ),
         ),
         "usb_topology_unavailable": AudioTopologyUnavailableError(private),
         "usb_topology_unavailable-graph": _chained(
-            AudioDeviceSelectionError(private), WindowsAudioTopologyError(private)
+            AudioDeviceSelectionError(private),
+            WindowsAudioTopologyError(
+                PairRefused("no_codec", "usb_topology_unavailable", (), (private,))
+            ),
         ),
         "usb_ambiguous": AudioDeviceAmbiguousError(private),
         "usb_ambiguous-graph": _chained(
-            AudioDeviceSelectionError(private), WindowsAudioAmbiguityError(private)
+            AudioDeviceSelectionError(private),
+            WindowsAudioTopologyError(
+                PairRefused("contested", "usb_ambiguous", (), (private,))
+            ),
         ),
         "open_timeout": AudioCaptureOpenTimeoutError(private),
         "format": AudioFormatUnsupportedError(private),

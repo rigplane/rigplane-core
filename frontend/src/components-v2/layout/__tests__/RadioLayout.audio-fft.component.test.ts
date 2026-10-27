@@ -327,6 +327,10 @@ describe('MOR-2355 central default scope source', () => {
       ['recentered', 1025, 12000, 6000],
       ['cropped', 257, 3000, 1500],
     ] as const) {
+      // MOR-3471: the waterfall freshness gate collapses sub-40ms-spaced
+      // deliveries as a replay burst; the producer cadence is fps=20
+      // (50 ms), so pace the frames to live spacing before firing.
+      await new Promise(resolve => setTimeout(resolve, 50));
       const input = producerFrame(name);
       audio.fire(input.data); draw();
       const projected = render.mock.calls.at(-1)![1];

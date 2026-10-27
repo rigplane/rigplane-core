@@ -12,6 +12,9 @@ from enum import StrEnum
 from .types import CivFrame
 
 _REQUEST_DATA_PREFIX_COMMANDS = frozenset({0x07, 0x25, 0x26})
+_REQUEST_DATA_PREFIX_LENGTHS: dict[tuple[int, int | None], tuple[int, ...]] = {
+    (0x1A, 0x00): (3, 4),
+}
 
 __all__ = [
     "CivEvent",
@@ -84,7 +87,13 @@ def request_key_from_frame(frame: CivFrame) -> CivRequestKey:
         sub=frame.sub,
         receiver=frame.receiver,
         data_prefix=(
-            frame.data if frame.command in _REQUEST_DATA_PREFIX_COMMANDS else b""
+            frame.data
+            if (
+                frame.command in _REQUEST_DATA_PREFIX_COMMANDS
+                or len(frame.data)
+                in _REQUEST_DATA_PREFIX_LENGTHS.get((frame.command, frame.sub), ())
+            )
+            else b""
         ),
     )
 

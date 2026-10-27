@@ -30,11 +30,12 @@ import {
   getRxAudioTargetSnapshot,
   setVolume,
   setMuted,
+  setRxError,
   subscribeRxAudioTarget,
   toggleMute,
 } from '$lib/stores/audio.svelte';
 import * as transport from '$lib/transport/ws-client';
-import { fetchInfo } from '$lib/transport/http-client';
+import { fetchInfo, fetchMemoryPage } from '$lib/transport/http-client';
 import { controllerClient } from '$lib/transport/controller-client';
 import { audioManager } from '$lib/audio/audio-manager';
 import { makeAudioRoutingHandlers } from './commands/panel-commands';
@@ -150,7 +151,7 @@ class FrontendRuntime {
           return audioManager;
         },
         stop: () => {
-          audioManager.stopRx();
+          audioManager.stopRx({ automatic: true });
         },
       },
     });
@@ -334,6 +335,10 @@ class FrontendRuntime {
     });
   }
 
+  fetchMemoryPage(...args: Parameters<typeof fetchMemoryPage>): ReturnType<typeof fetchMemoryPage> {
+    return fetchMemoryPage(...args);
+  }
+
   // ── Bootstrap ──
 
   /**
@@ -398,7 +403,10 @@ class FrontendRuntime {
       cleanupInFlight = (async () => {
         stopController();
         signal?.removeEventListener('abort', abort);
-        const disconnect = (controllerClient.remote ? systemController.disconnect() : Promise.resolve())
+        // MOR-3753: bootstrap cleanup is automatic — the remote disconnect
+        // must preserve a latched audio failure for the operator, not
+        // acknowledge it the way an explicit user disconnect does.
+        const disconnect = (controllerClient.remote ? systemController.disconnect({ automatic: true }) : Promise.resolve())
           .then(() => ({ ok: true as const }), (error: unknown) => ({ ok: false as const, error }));
         this._ended = true;
         // Drop the cached registration so a later `bootstrap()` (a remounted
@@ -435,14 +443,17 @@ class FrontendRuntime {
       signal?.throwIfAborted();
       stopController = controllerClient.onLoss(() => {
         if (controllerClient.remote) {
-          void systemController.disconnect().catch(() => {
+          // MOR-3753: automatic teardown — preserve a latched audio failure.
+          void systemController.disconnect({ automatic: true }).catch(() => {
             transport.emitLocalNotification('error', 'Удалённое управление потеряно. Подключитесь заново.', 'controller_lost');
           });
           return;
         }
         // MOR-3535: a lost local session recovers silently; TX audio stops
         // and never replays — only a deliberate new PTT may key again.
-        audioManager.stopTx();
+        // MOR-3753: the stop is automatic, so a latched TX failure survives
+        // it; only an explicit user stop acknowledges the latch.
+        audioManager.stopTx({ automatic: true });
       });
 
       // Re-arm a remounted App only after controller admission succeeds.
@@ -467,7 +478,9 @@ class FrontendRuntime {
       this._capabilitiesUnsubscribe = null;
       if (controllerClient.remote) {
         this._configurePresentationResources(null);
-        await systemController.disconnect();
+        // MOR-3753: a failed bootstrap is automatic rollback, not a user
+        // acknowledgement — preserve a latched audio failure.
+        await systemController.disconnect({ automatic: true });
       }
       throw error;
     }
@@ -520,6 +533,8 @@ class FrontendRuntime {
       return;
     }
 
+    // The user acknowledges RX failure even if automatic teardown retired the lease.
+    setRxError(false);
     const lease = this._rxAudioLease;
     this._rxAudioLease = null;
     if (lease) presentationResources.release(lease);
@@ -537,8 +552,8 @@ class FrontendRuntime {
     return audioManager.startTx();
   }
 
-  stopTx(): void {
-    audioManager.stopTx();
+  stopTx(options?: { automatic?: boolean }): void {
+    audioManager.stopTx(options);
   }
 
   /** MOR-1796: subscribe to mid-transmission local TX capture death. */

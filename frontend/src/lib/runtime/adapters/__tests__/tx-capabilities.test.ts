@@ -3,6 +3,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { KnownTxTargetPublic } from '$lib/types/state';
 import { getFrequencyPermit, getTxPermit } from '$lib/utils/tx-permit';
 import { deriveTxCapabilities, type TxCapabilityInput } from '../tx-capabilities';
+import goldenFile from '../../../transport/__tests__/fixtures/state-wire-goldens.json';
 // MOR-2467: `main_sub` (this suite's default scheme) is slot-less — the
 // default target names MAIN with no A/B slot, the IC-7610's real shape.
 const TARGET: KnownTxTargetPublic = {
@@ -137,6 +138,28 @@ describe('getFrequencyPermit', () => {
       { status: 'unknown', reason: 'tx-target-unknown' },
     );
     expect(bands).toEqual(before);
+  });
+  // MOR-3782: the IC-7300 golden is the shipped capabilities payload —
+  // its freqRanges cover the 4 m receive range while its txBands declare
+  // no 4 m entry, so 70 MHz denies TX by data even though it is tunable.
+  it('IC-7300 golden: 4 m (70 MHz) is tunable but not a TX band', () => {
+    const { capabilities } = (goldenFile as unknown as Record<string, {
+      capabilities: {
+        freqRanges: { start: number; end: number }[];
+        txBands: { name: string; start: number; end: number }[];
+      };
+    }>)['IC-7300'];
+    const { freqRanges, txBands } = capabilities;
+
+    expect(
+      freqRanges.some((range) => range.start <= 70_200_000 && range.end >= 70_200_000),
+    ).toBe(true);
+    expect(getFrequencyPermit(70_200_000, txBands)).toEqual(
+      { status: 'denied', reason: 'outside-configured-ranges' },
+    );
+    expect(getFrequencyPermit(14_074_000, txBands)).toEqual(
+      { status: 'allowed', band: '20m' },
+    );
   });
   it.each([
     [150, undefined, 'denied'], [150, null, 'denied'], [150, [], 'denied'],

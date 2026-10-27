@@ -152,6 +152,24 @@ def _pcm16le_samples(pcm: bytes) -> array[int]:
     return samples
 
 
+def _apply_pcm_gain_db(pcm: bytes, gain_db: float) -> bytes:
+    """Apply gain to s16le PCM, saturating samples at the int16 limits."""
+    if gain_db == 0.0:
+        return pcm
+    if not math.isfinite(gain_db):
+        raise ValueError("Audio gain must be a finite dB value")
+
+    # A factor of 32768 already clips every nonzero int16 sample.
+    scale = 10.0 ** (min(gain_db, 20.0 * math.log10(32768)) / 20.0)
+    samples = _pcm16le_samples(pcm)
+    for index, sample in enumerate(samples):
+        scaled = round(sample * scale)
+        samples[index] = max(-32768, min(32767, scaled))
+    if sys.byteorder != "little":
+        samples.byteswap()
+    return samples.tobytes()
+
+
 def _downmix_stereo_to_mono(pcm: bytes) -> bytes:
     """Downmix L+R interleaved s16le → mono s16le via average.
 
@@ -288,6 +306,8 @@ class AudioBridge:
         sample_rate: PCM sample rate (default 48000).
         channels: Number of audio channels (default 1, mono).
         frame_ms: PCM frame duration in milliseconds (default 20).
+        input_gain_db: Gain applied to device-to-radio PCM (default 0 dB).
+        output_gain_db: Gain applied to radio-to-device PCM (default 0 dB).
         tx_enabled: Whether to bridge TX audio (device → radio). Default True.
         tx_executor: Accepted but ignored (deprecated) — the backend owns
             threading. Kept only so existing callers passing it keep working.
@@ -317,6 +337,8 @@ class AudioBridge:
         sample_rate: int = SAMPLE_RATE,
         channels: int = CHANNELS,
         frame_ms: int = FRAME_MS,
+        input_gain_db: float = 0.0,
+        output_gain_db: float = 0.0,
         tx_enabled: bool = True,
         tx_executor: Executor | None = None,
         label: str = "rigplane",
@@ -336,6 +358,12 @@ class AudioBridge:
         self._sample_rate = sample_rate
         self._channels = channels
         self._frame_ms = frame_ms
+        self._input_gain_db = 0.0
+        self._output_gain_db = 0.0
+        self.set_gains(
+            input_gain_db=input_gain_db,
+            output_gain_db=output_gain_db,
+        )
         self._tx_enabled = tx_enabled
         self._tx_started = False
         self._backend: AudioBackend = backend or PortAudioBackend()
@@ -421,6 +449,29 @@ class AudioBridge:
     @property
     def running(self) -> bool:
         return self._running
+
+    @property
+    def input_gain_db(self) -> float:
+        return self._input_gain_db
+
+    @property
+    def output_gain_db(self) -> float:
+        return self._output_gain_db
+
+    def set_gains(
+        self,
+        *,
+        input_gain_db: float | None = None,
+        output_gain_db: float | None = None,
+    ) -> None:
+        """Update local bridge gains without changing shared Web UI audio."""
+        for value in (input_gain_db, output_gain_db):
+            if value is not None and not math.isfinite(value):
+                raise ValueError("Audio gain must be a finite dB value")
+        if input_gain_db is not None:
+            self._input_gain_db = input_gain_db
+        if output_gain_db is not None:
+            self._output_gain_db = output_gain_db
 
     @property
     def bridge_state(self) -> BridgeState:
@@ -1189,15 +1240,16 @@ class AudioBridge:
                         if len(self._rx_latency_samples) > 100:
                             self._rx_latency_samples.pop(0)
                     self._last_rx_time = now
+                    out_data = pcm_data
+                    if self._input_channels == 2:
+                        out_data = _downmix_stereo_to_mono(out_data)
+                    out_data = _apply_pcm_gain_db(out_data, self._output_gain_db)
                     self._rx_frames += 1
-                    self._last_rx_level_dbfs = _rms_dbfs(pcm_data)
+                    self._last_rx_level_dbfs = _rms_dbfs(out_data)
                     if self._rx_frames % 50 == 0:
                         self._emit_metrics()
                     playback = self._playback_stream
                     if playback and playback.running:
-                        out_data = pcm_data
-                        if self._input_channels == 2:
-                            out_data = _downmix_stereo_to_mono(out_data)
                         await playback.write(out_data)
                 except OSError:
                     raise  # device-level error → outer handler → reconnect
@@ -1245,6 +1297,7 @@ class AudioBridge:
                     self._drop_queued_tx()
                     continue
 
+                pcm_bytes = _apply_pcm_gain_db(pcm_bytes, self._input_gain_db)
                 samples = _pcm16le_samples(pcm_bytes)
                 peak = max((abs(sample) for sample in samples), default=0)
                 if peak < silence_threshold:

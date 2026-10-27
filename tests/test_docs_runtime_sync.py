@@ -10,8 +10,7 @@ import pytest
 
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.radio import IcomRadio
-from rigplane.web.handlers import ControlHandler
-from rigplane.web.protocol import decode_json
+from rigplane.web.server import WebConfig, WebServer
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,26 +54,27 @@ def test_runtime_invariant_radio_ready_tracks_civ_health() -> None:
 async def test_runtime_invariant_control_rejects_manual_connect_during_backend_recovery() -> (
     None
 ):
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
-    sent: list[str] = []
+    # MOR-3777: manual connect is REST-only (``POST /api/v1/radio/connect``).
+    from test_web_server_coverage import _FakeWriter, _response_json
 
-    async def _send_text(payload: str) -> None:
-        sent.append(payload)
-
-    ws.send_text = _send_text
     radio = SimpleNamespace(
+        capabilities=set(),
         connected=True,
         radio_ready=False,
         conn_state=SimpleNamespace(value="reconnecting"),
+        connect=AsyncMock(),
+        soft_reconnect=AsyncMock(),
     )
-    handler = ControlHandler(ws, radio, "test", "IC-7610", server=None)
+    server = WebServer(radio, WebConfig(port=0))  # type: ignore[arg-type]
+    writer = _FakeWriter()
 
-    await handler._handle_radio_connect({"id": "busy"})
+    await server._handle_radio_control("/api/v1/radio/connect", writer)  # type: ignore[arg-type]
 
-    assert sent, "expected backend_recovering response"
-    msg = decode_json(sent[-1])
-    assert msg["ok"] is False
-    assert msg["error"] == "backend_recovering"
+    status, body = _response_json(writer)
+    assert status == 409
+    assert body["error"] == "backend_recovering"
+    radio.connect.assert_not_awaited()
+    radio.soft_reconnect.assert_not_awaited()
 
 
 def test_docs_sync_radio_contract_invariants() -> None:

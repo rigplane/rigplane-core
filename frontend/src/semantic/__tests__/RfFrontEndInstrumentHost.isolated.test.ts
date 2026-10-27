@@ -566,6 +566,16 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
     expect(r.el('attenuator-6')?.textContent).toBe('6 dB');
   });
 
+  it('presents profile-declared preamp labels instead of the generic P<n> text', () => {
+    const view = finiteBase();
+    const r = renderFinite({
+      ...view, rfFrontEnd: { ...view.rfFrontEnd!, preLabels: { '1': 'INT', '2': 'EXT' } },
+    });
+    expect(r.el('preamp-0')?.textContent).toBe('OFF');
+    expect(r.el('preamp-1')?.textContent).toBe('INT');
+    expect(r.el('preamp-2')?.textContent).toBe('EXT');
+  });
+
   it.each([0, 6, 12, 18] as const)(
     'sends attenuator step %s dB exactly once, from a fresh mount, independent of the other buttons',
     (value) => {
@@ -744,6 +754,24 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
     if (view === null) throw new Error('expected the real adapter to derive a view');
     return view;
   };
+
+  it.each<{
+    profile: string; preLabels: Record<string, string>; labels: string[];
+  }>([
+    { profile: 'labelled', preLabels: { '1': 'INT', '2': 'EXT' }, labels: ['OFF', 'INT', 'EXT'] },
+    { profile: 'unlabelled', preLabels: {}, labels: ['OFF', 'P1', 'P2'] },
+  ])('renders $profile preamp capabilities through the real adapter and dispatches a numeric level', ({ preLabels, labels }) => {
+    const caps: Capabilities = { ...mor2511Caps(), preLabels };
+    const view = toRadioViewModel(mor2511State('MAIN'), caps);
+    expect(view).not.toBeNull();
+    const onPreampChange = vi.fn();
+    const r = renderFinite(view!, { onPreampChange });
+
+    expect([0, 1, 2].map((level) => r.el(`preamp-${level}`)?.textContent)).toEqual(labels);
+    r.el('preamp-2')!.click();
+    flushSync();
+    expect(onPreampChange).toHaveBeenCalledExactlyOnceWith(2);
+  });
 
   it('renders the preamp row from the real adapter: kept, disabled, with the receiver-lacks-control hint', () => {
     const r = renderFinite(mor2511View('SUB'));

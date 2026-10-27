@@ -220,6 +220,23 @@ async def _http_get(
         await writer.wait_closed()
 
 
+async def _http_post_empty(
+    host: str, port: int, path: str
+) -> tuple[int, dict[str, str], bytes]:
+    reader, writer = await asyncio.open_connection(host, port)
+    try:
+        req = (
+            f"POST {path} HTTP/1.1\r\nHost: {host}:{port}\r\n"
+            "Content-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        writer.write(req.encode("ascii"))
+        await writer.drain()
+        return await asyncio.wait_for(_read_http_response(reader), timeout=2.0)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
 async def _ws_connect(
     host: str, port: int, path: str
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
@@ -308,16 +325,13 @@ async def test_web_server_smoke_with_serial_mock_backend() -> None:
             if _msg.get("type") == "state_update":
                 pass  # consumed initial state
 
-            # Verify radio_connect WS command works (re-connect while already connected)
-            await _ws_send_text(
-                writer,
-                json.dumps({"type": "radio_connect", "id": "connect-1"}),
+            # Verify the REST connect works (re-connect while already connected).
+            # MOR-3777: REST is the only connect path; WS ``radio_connect`` is gone.
+            status, _, body = await _http_post_empty(
+                host, port, "/api/v1/radio/connect"
             )
-            _op, payload = await _ws_recv_frame(reader)
-            connect_resp = json.loads(payload.decode("utf-8"))
-            assert connect_resp["type"] == "response"
-            assert connect_resp["id"] == "connect-1"
-            assert connect_resp["ok"] is True
+            assert status == 200
+            assert json.loads(body.decode("utf-8"))["status"] == "connecting"
 
             status, _, body = await _http_get(host, port, "/api/v1/state")
             assert status == 200
