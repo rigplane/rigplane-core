@@ -1457,6 +1457,146 @@ describe('RF gain additive display observation', () => {
 });
 
 
+describe('MOR-3630 squelch-open (BUSY) lamp fact', () => {
+  const lampCaps = { ...INDICATOR_CAPS, capabilities: [...INDICATOR_CAPS.capabilities, 'squelch'] };
+  function lampState(mainDcd?: boolean, subDcd?: boolean): ServerState {
+    const state = indicatorState();
+    if (mainDcd !== undefined) {
+      state.main!.dcd = mainDcd;
+      state.fieldStatus!['main.dcd'] = fresh;
+    }
+    if (subDcd !== undefined) {
+      state.sub!.dcd = subDcd;
+      state.fieldStatus!['sub.dcd'] = fresh;
+    }
+    return state;
+  }
+  const lamps = (state: ServerState, c: Capabilities = lampCaps) =>
+    toRadioViewModel(state, c, RECEIVING)!.receiverIndicators!;
+
+  it('lights MAIN when the MAIN dcd leaf reads true', () => {
+    expect(lamps(lampState(true))[0].squelchOpen).toEqual({
+      reading: { status: 'known', value: true },
+      availability: { structural: true, operational: true },
+    });
+  });
+
+  it('shows closed when the MAIN dcd leaf reads false, preserving false', () => {
+    expect(lamps(lampState(false))[0].squelchOpen?.reading).toEqual({ status: 'known', value: false });
+  });
+
+  it('reads unknown until the receiver leaf is observed', () => {
+    expect(lamps(lampState())[0].squelchOpen).toEqual({
+      reading: { status: 'unknown' },
+      availability: { structural: true, operational: false },
+    });
+  });
+
+  it('addresses each receiver from its own leaf only', () => {
+    const view = lamps(lampState(false, true));
+    expect(view[0].squelchOpen?.reading).toEqual({ status: 'known', value: false });
+    expect(view[1].squelchOpen?.reading).toEqual({ status: 'known', value: true });
+  });
+
+  it('omits the fact when the radio declares no squelch capability', () => {
+    expect(lamps(lampState(true), INDICATOR_CAPS)[0].squelchOpen).toBeUndefined();
+  });
+});
+
+describe('MOR-3630 FM-refused controls are not offered (pinning)', () => {
+  // Pinning, not red-first: the FM gate lives in profile data
+  // (rigs/ic705.toml available_when) and the backend resolves it into
+  // fieldStatus; the adapter below only renders that status. These cases
+  // lock the contract each profile's status feed must satisfy: the
+  // unavailable feed hides or disables, the available feed offers.
+  // Topology stays dual (shared harness); only the tags, filterConfig
+  // and field statuses vary per profile. Tag sets mirror
+  // projected_receiver_control_tags for each profile: the IC-705 serves
+  // manual_notch_width but no agc_time_constant (undeclared, MOR-2915),
+  // the IC-9700 serves neither, the IC-7300 serves both.
+  const FM_FIXED = { defaults: [15000, 10000, 7000], fixed: true };
+  const USB_TWIN = {
+    defaults: [3000, 2400, 1800], fixed: false, minHz: 50, maxHz: 3600,
+    stepHz: 50, pbtStepHz: 50,
+    segments: [{ hzMin: 50, hzMax: 500, stepHz: 50, indexMin: 0 }],
+  };
+  const unavailable: FieldStatus = {
+    storePath: 'x', observed: false, freshness: 'unknown', availability: 'unavailable',
+  };
+  const undeclared: FieldStatus = {
+    storePath: 'x', observed: false, freshness: 'unknown', availability: 'undeclared',
+  };
+  const fmCaps = (tags: string[]) => caps({
+    capabilities: [...SINGLE, ...tags],
+    modes: ['USB', 'LSB', 'CW', 'CW-R', 'AM', 'FM'],
+    filters: ['FIL1', 'FIL2', 'FIL3'],
+    filterConfig: { FM: FM_FIXED, USB: USB_TWIN },
+    controls: {
+      pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 },
+    },
+  });
+  const DSP_TAGS = ['notch', 'agc', 'filter_width', 'pbt', 'filter_shape'];
+  function fmState(mode: 'FM' | 'USB', leaves: Record<string, FieldStatus>): ServerState {
+    const state = observedState();
+    state.main!.mode = mode;
+    state.fieldStatus!['main.mode'] = fresh;
+    for (const [leaf, status] of Object.entries(leaves)) state.fieldStatus![`main.${leaf}`] = status;
+    return state;
+  }
+  const GATED = ['pbtInner', 'pbtOuter', 'manualNotchWidth', 'filterShape'] as const;
+  const gated = (status: FieldStatus): Record<string, FieldStatus> =>
+    Object.fromEntries(GATED.map((leaf) => [leaf, status]));
+
+  it('IC-705 in FM: PBT hidden, notch width and shape disabled, FM slots from the profile', () => {
+    const view = toRadioViewModel(
+      fmState('FM', gated(unavailable)),
+      fmCaps([...DSP_TAGS, 'manual_notch_width']), RECEIVING)!;
+    expect(view.filterPassband?.pbtInner.availability.structural).toBe(false);
+    expect(view.filterPassband?.pbtOuter.availability.structural).toBe(false);
+    expect(view.dsp?.manualNotchWidth.availability).toEqual({ structural: true, operational: false });
+    expect(view.filterPassband?.filterShape.availability.operational).toBe(false);
+    expect(view.dsp?.agcTimeConstant.availability.structural).toBe(false);
+    expect(view.modeFilter?.activeFilterConfiguration?.fixed).toBe(true);
+    expect(view.modeFilter?.activeFilterConfiguration?.slots.map((slot) => slot.factoryWidthHz))
+      .toEqual([15000, 10000, 7000]);
+  });
+
+  it('IC-705 in USB: the same controls are offered once observed', () => {
+    const view = toRadioViewModel(
+      fmState('USB', gated(fresh)),
+      fmCaps([...DSP_TAGS, 'manual_notch_width']), RECEIVING)!;
+    expect(view.filterPassband?.pbtInner.availability.structural).toBe(true);
+    expect(view.filterPassband?.pbtOuter.availability.structural).toBe(true);
+    expect(view.dsp?.manualNotchWidth.availability).toEqual({ structural: true, operational: true });
+    expect(view.filterPassband?.filterShape.availability.operational).toBe(true);
+  });
+
+  it('IC-9700 in FM: nothing FM-refused is offered', () => {
+    const view = toRadioViewModel(
+      fmState('FM', { ...gated(unavailable), filterShape: undeclared }),
+      fmCaps(DSP_TAGS), RECEIVING)!;
+    expect(view.filterPassband?.pbtInner.availability.structural).toBe(false);
+    expect(view.filterPassband?.pbtOuter.availability.structural).toBe(false);
+    expect(view.dsp?.manualNotchWidth.availability.structural).toBe(false);
+    expect(view.dsp?.agcTimeConstant.availability.structural).toBe(false);
+    expect(view.filterPassband?.filterShape.availability.operational).toBe(false);
+    expect(view.modeFilter?.activeFilterConfiguration?.fixed).toBe(true);
+  });
+
+  it('IC-7300 in FM: the ungated radio offers notch width, shape and AGC time', () => {
+    // PBT stays hidden: fixed FM carries no twin-PBT step on any Icom
+    // (filterConfig data, not the FM gate) — the USB case above is the
+    // PBT contrast instead.
+    const view = toRadioViewModel(
+      fmState('FM', { ...gated(fresh), agcTimeConstant: fresh }),
+      fmCaps([...DSP_TAGS, 'manual_notch_width', 'agc_time_constant']), RECEIVING)!;
+    expect(view.filterPassband?.pbtInner.availability.structural).toBe(false);
+    expect(view.dsp?.manualNotchWidth.availability).toEqual({ structural: true, operational: true });
+    expect(view.filterPassband?.filterShape.availability.operational).toBe(true);
+    expect(view.dsp?.agcTimeConstant.availability).toEqual({ structural: true, operational: true });
+  });
+});
+
 describe('MOR-2374 shared DATA and filter configuration', () => {
   const config = {
     defaults: [2400], fixed: false, minHz: 50, maxHz: 3600, stepHz: 50,

@@ -45,7 +45,10 @@
   //   offset range this surface family renders (RitXitScanSurface
   //   OFFSET_MIN/MAX; the local RIT/XIT panel falls back to the same
   //   -9999..9999 bounds when no domain is present).
+  // - BUSY (MOR-3630): `BUSY` — the lamp prints its label only, in every
+  //   state; the lit state lives in data-state, never in longer text.
   export const FACT_SLOT_RESERVATIONS = {
+    busy: 'BUSY'.length,
     bandwidth: 'BW 9999 Hz'.length,
     agc: 'AGC TUNING'.length,
     nb: 'NB OFF'.length,
@@ -120,6 +123,15 @@
    *  composes. */
   function sharedBoolean(field: TxAuxField<boolean>): string {
     return readingText(field, (v) => (v ? 'ON' : 'OFF'));
+  }
+
+  /** MOR-3630: the BUSY lamp's accessible state sentence — present only
+   *  while the squelch state is known (the RF-gain conditional-label
+   *  pattern); unread shows the dimmed label with no sentence. */
+  function busyLabel(field: ReceiverIndicatorField<boolean>): string | undefined {
+    return field.reading.status === 'known'
+      ? (field.reading.value ? 'Squelch open' : 'Squelch closed')
+      : undefined;
   }
 
   /** The RF gain the display shows, independent of provenance: the observed
@@ -269,6 +281,17 @@
   {#if children}{@render children()}{/if}
 
   <div class="facts" aria-label={`${indicator.receiver} receiver facts`}>
+    {#if indicator.squelchOpen?.availability.structural}
+      <!-- MOR-3630: the BUSY lamp — first fact, adjacent to the S-meter
+           above. A lamp, not a readout: the label never changes, the lit
+           state lives in data-state (and the state sentence). Deliberately
+           absent from the 'chips' appearance, which draws no S-meter. -->
+      <span class="fact" data-indicator-fact="busy" data-state={booleanState(indicator.squelchOpen)}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.busy}ch`}
+        role="img" aria-label={busyLabel(indicator.squelchOpen)}
+        >BUSY</span
+      >
+    {/if}
     {#if indicator.agcMode.availability.structural}
       <span class="fact" data-indicator-fact="agc" data-state={indicator.agcMode.reading.status}
         style:min-inline-size={`${FACT_SLOT_RESERVATIONS.agc}ch`}
@@ -446,7 +469,8 @@
   .fact[data-indicator-fact='preamp'], .fact[data-indicator-fact='ip-plus'],
   .fact[data-indicator-fact='digi-sel'], .fact[data-indicator-fact='rf-gain'],
   .fact[data-indicator-fact='antenna'], .fact[data-indicator-fact='atu'],
-  .fact[data-indicator-fact='rit'], .fact[data-indicator-fact='xit'] {
+  .fact[data-indicator-fact='rit'], .fact[data-indicator-fact='xit'],
+  .fact[data-indicator-fact='busy'] {
     box-sizing: content-box;
   }
   /* Empty (a displayed 100%, or unread): the slot stays reserved at the same
