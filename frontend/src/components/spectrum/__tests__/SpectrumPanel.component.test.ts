@@ -413,10 +413,6 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasDualReceiver: vi.fn(() => false),
 }));
 
-vi.mock('$lib/utils/filter-width', () => ({
-  getFilterWidthHz: vi.fn(() => 2400),
-}));
-
 vi.mock('../passband-geometry', () => ({
   canResizeFromRightEdge: vi.fn((mode: string) => mode.toUpperCase() !== 'LSB'),
   getFilterWidthFromRightEdgePx: passbandHarness.getFilterWidthFromRightEdgePx,
