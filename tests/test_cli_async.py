@@ -11,6 +11,7 @@ import threading
 import time
 import wave
 from argparse import Namespace
+from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -1007,12 +1008,15 @@ def _signal_a_real_ptt_hold(
     *,
     child_source: str = _PTT_SIGNAL_CHILD,
     budget_s: float = _SIGNAL_CHILD_BUDGET_S,
+    before_signal: Callable[[], None] | None = None,
 ) -> tuple[int, list[str], list[str]]:
     """Run a real ``rigplane ptt on``, signal it, and report what it did.
 
     The child never outlives the call: it is killed and reaped on every exit
     path, so one that hangs cannot keep holding the radio's lock for the tests
     that run after it. Its lock directory is private to this call.
+    ``before_signal`` runs once the child has reached the hold and before it is
+    signalled, so a caller can keep it alive until something else has happened.
     """
     child = tmp_path / "child.py"
     child.write_text(child_source)
@@ -1056,6 +1060,8 @@ def _signal_a_real_ptt_hold(
                 if time.monotonic() >= deadline:
                     raise _hung(f"never reached the hold within {budget_s:g} s")
                 time.sleep(0.02)
+            if before_signal is not None:
+                before_signal()
             proc.send_signal(signum)
             # PYTHONUNBUFFERED above is load bearing: ``main()`` ends in
             # ``os._exit``, which flushes no stdio, so a piped stdout is lost
@@ -1112,22 +1118,33 @@ def test_real_signal_children_in_parallel_do_not_share_the_radio_lock(
     # Every child names the same radio (``--host 127.0.0.1``), and the guard's
     # lock directory is per computer, so children of tests running on
     # different workers refused each other ("another rigplane process ... is
-    # already using this radio") whenever their lifetimes overlapped. Both are
-    # held in the pre-key window here, so they overlap by construction.
+    # already using this radio") whenever their lifetimes overlapped. The
+    # overlap is made by construction, not by timing: each child holds the
+    # keyed rig until BOTH have reached the hold, and one starts late so the
+    # first has to wait for it.
+    rendezvous = threading.Barrier(2)
     results: dict[str, tuple[int, list[str], list[str]]] = {}
     errors: list[BaseException] = []
 
-    def _run(name: str) -> None:
+    def _run_child(name: str, delay_s: float) -> None:
         try:
+            time.sleep(delay_s)
             sub = tmp_path / name
             sub.mkdir()
             results[name] = _signal_a_real_ptt_hold(
-                sub, signal.SIGTERM, widen=3.0, budget_s=60
+                sub,
+                signal.SIGTERM,
+                budget_s=60,
+                before_signal=lambda: rendezvous.wait(timeout=60),
             )
         except BaseException as exc:  # noqa: BLE001 — reported by the main thread
+            rendezvous.abort()
             errors.append(exc)
 
-    threads = [threading.Thread(target=_run, args=(n,)) for n in ("a", "b")]
+    threads = [
+        threading.Thread(target=_run_child, args=("a", 0.0)),
+        threading.Thread(target=_run_child, args=("b", 2.0)),
+    ]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -1135,7 +1152,8 @@ def test_real_signal_children_in_parallel_do_not_share_the_radio_lock(
 
     assert not errors, errors
     for rc, out, journal in results.values():
-        assert journal == ["armed"]
+        assert journal == ["key", "unkey"]
+        assert out == ["PTT ON", "PTT OFF"]
         assert rc == 128 + signal.SIGTERM
 
 
@@ -1166,16 +1184,23 @@ def test_a_child_that_ignores_the_signal_is_killed_and_reaped(
 
     monkeypatch.setattr(subprocess, "Popen", _recording_popen)
 
-    with pytest.raises(AssertionError, match="still alive 1 s after SIGTERM"):
-        _signal_a_real_ptt_hold(
-            tmp_path,
-            signal.SIGTERM,
-            child_source=_PTT_SIGNAL_DEAF_CHILD,
-            budget_s=1,
-        )
+    try:
+        with pytest.raises(AssertionError, match="still alive 1 s after SIGTERM"):
+            _signal_a_real_ptt_hold(
+                tmp_path,
+                signal.SIGTERM,
+                child_source=_PTT_SIGNAL_DEAF_CHILD,
+                budget_s=1,
+            )
 
-    assert len(children) == 1
-    assert children[0].poll() is not None  # reaped, not left running
+        assert len(children) == 1
+        # ``returncode`` is only set by a wait or poll the helper itself made:
+        # polling here would reap the child and hide a helper that did not.
+        assert children[0].returncode is not None
+    finally:
+        for child in children:
+            child.kill()
+            child.wait()
 
 
 # ---------------------------------------------------------------------------
