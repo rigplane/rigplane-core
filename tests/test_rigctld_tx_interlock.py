@@ -98,14 +98,26 @@ def test_all_current_level_setters_are_typed_tx_safe() -> None:
 
 
 def test_all_current_function_setters_use_shared_policy() -> None:
-    funcs = "NB NR COMP VOX TONE TSQL ANF LOCK MON APF AGC".split()
-    type_names = "SetNB SetNR SetCompressor SetVox SetRepeaterTone SetRepeaterTsql SetAutoNotch SetDialLock SetMonitor SetAudioPeakFilter SetAgc".split()
+    funcs = "NB NR COMP VOX ANF LOCK MON APF AGC".split()
+    type_names = "SetNB SetNR SetCompressor SetVox SetAutoNotch SetDialLock SetMonitor SetAudioPeakFilter SetAgc".split()
     for func, type_name in zip(funcs, type_names, strict=True):
         classified = _classify_rigctld_tx_intent(
             _intent("set_func", func=func, on=True)
         )
         assert isinstance(classified.command, getattr(commands, type_name))
         assert classified.disposition is TxInterlockDisposition.TX_SAFE
+
+    # MOR-3633: TONE/TSQL move a repeater tone while keyed, so they defer
+    # like the other repeater writes instead of passing as TX-safe.
+    for func, type_name in (
+        ("TONE", "SetRepeaterTone"),
+        ("TSQL", "SetRepeaterTsql"),
+    ):
+        classified = _classify_rigctld_tx_intent(
+            _intent("set_func", func=func, on=True)
+        )
+        assert isinstance(classified.command, getattr(commands, type_name))
+        assert classified.disposition is TxInterlockDisposition.DEFER
 
     for func, on, disposition in (
         ("TUNER", False, "always-pass"),
@@ -384,15 +396,16 @@ async def test_structural_exemptions_never_resolve_rf_truth(
 # design in PR #2755): DEFER-classified writes are silently dropped (RPRT 0,
 # radio untouched) during known TX, and truthfully refused under UNKNOWN/
 # stale RF -- never held in-band. See ``RigctldHandler._defer_write_gate``.
-# The parametrized rows below cover the two remaining DEFER wire families
-# (``S`` → ``set_split_vfo``, ``U SPLIT`` → ``set_func`` SPLIT); each row
-# asserts on the call path its own wire command takes (MOR-1893). Freq/mode/
-# VFO/RIT/XIT are no longer DEFER (MOR-1940, MOR-2171) and are pinned by
+# The parametrized rows below cover the DEFER wire families (``S`` →
+# ``set_split_vfo``, ``U SPLIT``/``U TONE``/``U TSQL`` → ``set_func``;
+# MOR-3633 moved the repeater funcs here); each row asserts on the call
+# path its own wire command takes (MOR-1893). Freq/mode/VFO/RIT/XIT are no
+# longer DEFER (MOR-1940, MOR-2171) and are pinned by
 # ``test_authority_approved_writes_dispatch_in_every_rf_state`` and
 # ``test_rit_xit_now_dispatch_in_every_rf_state`` instead.
 
 
-_DEFER_WIRES = (b"S 1 VFOA", b"U SPLIT 1")
+_DEFER_WIRES = (b"S 1 VFOA", b"U SPLIT 1", b"U TONE 1", b"U TSQL 1")
 
 
 def _defer_wire_mocks(

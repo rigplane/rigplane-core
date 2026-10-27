@@ -13,6 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Repeater writes defer while keyed; PTT-on needs a known TX-side
+  frequency (MOR-3633).** Repeater shift, tone/TSQL and tone-frequency
+  writes join the TX interlock's new REPEATER family (deferred while
+  keyed, like the memory family); managed-mode admission refuses them
+  through the same typed policy instead of a second list. PTT-on is
+  refused with the stable error `ptt_tx_frequency_unknown` while the
+  TX-side frequency is unknown on profiles that report a TX target
+  (IC-705, IC-7300, IC-7610, FTX-1), at the interlock seats and unmanaged
+  rigctld; the refusal names the receiver that would transmit. Radios
+  that cannot report a target (IC-9700) key unchanged, as does
+  managed-PTT admission (whose degraded-session contract is MOR-620).
 - **Memory writes and clears refused without a verified write layout
   (MOR-3644).** `set_memory_contents` builds one fixed 26-byte `1A 00`
   record and `memory_clear` one fixed `0x0B` clear frame — wire forms this

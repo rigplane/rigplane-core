@@ -343,3 +343,34 @@ def tx_target_max_age(profile: RadioProfile) -> float:
         return _TX_TARGET_FALLBACK_MAX_AGE
     ttl = acquisition.policy_for(_TX_TARGET_PATH).freshness_ttl_seconds
     return ttl if ttl is not None else _TX_TARGET_FALLBACK_MAX_AGE
+
+
+def profile_publishes_tx_target(profile: RadioProfile) -> bool:
+    """Whether this profile can ever publish ``global.tx_state.tx_target``.
+
+    The PTT-on guard's support gate (MOR-3633): radios that can never
+    report the target (IC-9700: no VFO readback, no native read, no
+    declared poll) skip the guard and keep keying. Three producers, all
+    data-driven, never a model-name branch:
+
+    * the ``RadioPoller`` derivation for ``selected_unselected`` readback
+      (IC-705, IC-7300),
+    * the radio's own transmit-frequency read, declared as
+      ``get_tx_target`` in ``[commands]`` (IC-7610's CI-V 1C 03),
+    * a declared pollable acquisition capability for the path (the Yaesu
+      ``FT;`` read).
+
+    Support must be proven from profile data: anything that is not a
+    ``RadioProfile`` (``None``, a test double) answers False.
+    """
+
+    if not isinstance(profile, RadioProfile):
+        return False
+    if profile.vfo_readback == "selected_unselected":
+        return True
+    if profile.supports_command("get_tx_target"):
+        return True
+    acquisition = profile.state_acquisition
+    return (
+        acquisition is not None and acquisition.capability_for(_TX_TARGET_PATH).can_poll
+    )
