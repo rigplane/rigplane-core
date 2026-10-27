@@ -36,7 +36,7 @@ from ...profiles.control_domain import (
     validate_control_raw_value,
 )
 from ...profiles.power_ceilings import (
-    active_receiver_freq_hz,
+    observed_band_freq_hz,
     resolve_power_ceiling_watts,
 )
 from ...radio_state import RadioState
@@ -2941,24 +2941,30 @@ class YaesuCatRadio:
 
         MOR-3634: a profile-declared per-band / per-source rated ceiling
         (``[power.ceilings_w]`` / ``[power.sources]``) caps the request
-        down to the active receiver's band (or source) ceiling after the
-        floor lift — the same clamp admission applies, kept here for
-        paths that bypass it (rigctld ``\\set_level RFPOWER`` routing,
-        the CLI ``power`` command). A profile without the tables is
-        unchanged; the ceiling wins over the floor when both apply.
+        down to the band (or source) ceiling after the floor lift — the
+        same clamp admission applies, kept here for paths that bypass it
+        (rigctld ``\\set_level RFPOWER`` routing, the CLI ``power``
+        command). A profile without the tables is unchanged; the ceiling
+        wins over the floor when both apply. Resolution and the write run
+        under ``_mode_lock`` so a concurrent frequency change cannot slip
+        a higher-ceiling resolution between the band change and this
+        write (``set_freq`` updates the band under the same lock).
+        Frequency facts come from the canonical store when attached, the
+        compatibility mirror otherwise.
 
         Args:
             watts: Power in watts.
             head: Head selector (default 2).
         """
-        if self._config.min_watts is not None:
-            watts = max(self._config.min_watts, watts)
-        ceiling = resolve_power_ceiling_watts(
-            self.profile, freq_hz=active_receiver_freq_hz(self)
-        )
-        if ceiling is not None:
-            watts = min(ceiling, watts)
-        await self._write("set_power", head=str(head), watts=watts)
+        async with self._mode_lock:
+            if self._config.min_watts is not None:
+                watts = max(self._config.min_watts, watts)
+            ceiling = resolve_power_ceiling_watts(
+                self.profile, freq_hz=observed_band_freq_hz(self)
+            )
+            if ceiling is not None:
+                watts = min(ceiling, watts)
+            await self._write("set_power", head=str(head), watts=watts)
 
     async def set_rf_power(self, level: int) -> None:
         """Set TX power level — :class:`PowerControlCapable` interface.

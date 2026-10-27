@@ -45,8 +45,8 @@ from ...profiles import (
 )
 from ...profiles.control_domain import encode_legacy_control, validate_control_raw_value
 from ...profiles.power_ceilings import (
-    active_receiver_freq_hz,
     effective_power_max_watts,
+    observed_band_freq_hz,
 )
 from ...runtime._poller_types import SetNarrow
 from ...runtime._dual_rx_runtime import require_receiver_for_profile
@@ -370,7 +370,7 @@ def _level_for_power(value: Any, radio: Any) -> int:
         value,
         power_native_unit=getattr(radio, "native_power_unit", "raw_255"),
         power_max_watts=effective_power_max_watts(
-            profile, freq_hz=active_receiver_freq_hz(radio)
+            profile, freq_hz=observed_band_freq_hz(radio)
         ),
         power_min_watts=getattr(profile, "min_watts", None),
     )
@@ -1789,7 +1789,7 @@ class ControlHandler:
             # MOR-3634: the per-band/per-source rated ceiling when the
             # profile declares one, the flat max otherwise.
             power_max_watts = effective_power_max_watts(
-                profile, freq_hz=active_receiver_freq_hz(self._radio)
+                profile, freq_hz=observed_band_freq_hz(self._radio)
             )
             power_min_watts = getattr(profile, "min_watts", None)
         descriptor = command_descriptor(name)
