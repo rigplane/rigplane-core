@@ -2165,9 +2165,14 @@ _MEMORY_KEYS = frozenset(
         "recall",
         "dd_groups",
         "offset_10mhz_groups",
+        "write_layout",
     }
 )
 _MEMORY_ADDRESSING = frozenset({"group_channel", "band_channel", "channel"})
+# Write record layouts the package can actually build (MOR-3644). The loader
+# is the one authority for the vocabulary; the admission gate only checks
+# that a layout is declared at all.
+_MEMORY_WRITE_LAYOUTS = frozenset({"civ_26"})
 
 
 def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
@@ -2227,7 +2232,21 @@ def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
                 f"{filename}: [memory].{key} must not contain duplicates"
             )
         groups[key] = tuple(values)
-    return MemoryProfile(addressing=addressing, recall=recall, **bounds, **groups)  # type: ignore[arg-type]
+    write_layout = raw.get("write_layout")
+    if write_layout is not None and (
+        not isinstance(write_layout, str) or write_layout not in _MEMORY_WRITE_LAYOUTS
+    ):
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout must be one of "
+            f"{sorted(_MEMORY_WRITE_LAYOUTS)} or absent, got {write_layout!r}"
+        )
+    return MemoryProfile(  # type: ignore[arg-type]
+        addressing=addressing,
+        recall=recall,
+        write_layout=write_layout,
+        **bounds,
+        **groups,
+    )
 
 
 _CW_TEXT_KEYS = frozenset({"supported", "max_length", "memory_channel", "memory_type"})

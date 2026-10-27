@@ -76,6 +76,7 @@ from ..core.command_dispatch import (
 )
 from ..core.exceptions import CommandError, CommandRejectedError
 from ..core.exceptions import ConnectionError as RadioConnectionError
+from ..profiles import MemoryWriteUnverifiedError
 from ..core.state_pipeline_contracts import (
     CommandIntent,
     CommandLifecycleEvent,
@@ -487,6 +488,9 @@ class _HttpCommandCollector:
 
 
 def _command_error_code(exc: BaseException) -> str:
+    if isinstance(exc, MemoryWriteUnverifiedError):
+        # MOR-3644: stable refusal code carried on the exception.
+        return exc.reason_code
     if isinstance(exc, CommandUnsupportedError):
         return "unsupported_command"
     if isinstance(exc, CommandRejectedError):
@@ -6220,7 +6224,11 @@ class WebServer:
             code = _command_error_code(exc)
             if code == "command_timeout":
                 status, reason = 504, "Gateway Timeout"
-            elif code in {"unsupported_command", "radio_nak"}:
+            elif code in {
+                "unsupported_command",
+                "radio_nak",
+                "memory_write_unverified",
+            }:
                 status, reason = 409, "Conflict"
             else:
                 status, reason = 500, "Internal Server Error"
@@ -6762,6 +6770,19 @@ class WebServer:
             try:
                 step = await self._prepare_http_batch_step(index, raw_step)
             except TxInterlockRefusal as exc:
+                results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "ok": False,
+                        "status": "refused",
+                        "error": exc.reason_code,
+                        "message": str(exc),
+                    }
+                )
+                step = None
+            except MemoryWriteUnverifiedError as exc:
+                # MOR-3644: the memory write admission gate fired at prepare.
                 results.append(
                     {
                         "index": index,

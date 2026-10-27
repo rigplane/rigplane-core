@@ -264,8 +264,8 @@ the memory protocol reject these commands.
 | `set_memory_mode` | `channel: int` (1–101), optional `group: int` | MemoryCapable | Yes | Switch to memory channel mode. Without `group`: the channel-only form (1–101). With `group`: select a listed channel on a profile whose `[memory]` section has `recall = true` (IC-705: group 0–99, channel 0–99; IC-9700 and IC-7610 refuse it); bounds come from the profile. |
 | `memory_write` | — | MemoryCapable | Yes | Write current VFO state to the active memory channel. |
 | `memory_to_vfo` | `channel: int` (1–101) | MemoryCapable | Yes | Recall channel to VFO. |
-| `memory_clear` | `channel: int` (1–101) | MemoryCapable | Yes | Clear a memory channel. |
-| `set_memory_contents` | `MemoryChannel` fields | MemoryCapable | Yes | Write memory fields; params must match the `MemoryChannel` dataclass. |
+| `memory_clear` | `channel: int` (1–101) | MemoryCapable | Yes | Clear a memory channel. Refused with the stable error `memory_write_unverified` (HTTP 409 / WebSocket `error` field) unless the profile's `[memory]` section declares a verified `write_layout` (MOR-3644; IC-7610 only today). |
+| `set_memory_contents` | `MemoryChannel` fields | MemoryCapable | Yes | Write memory fields; params must match the `MemoryChannel` dataclass. Refused with the stable error `memory_write_unverified` (HTTP 409 / WebSocket `error` field) unless the profile's `[memory]` section declares a verified `write_layout` (MOR-3644; IC-7610 only today). |
 | `set_bsr` | `BandStackRegister` fields | MemoryCapable | Yes | Write Band Stack Register; params must match the `BandStackRegister` dataclass. |
 
 ---

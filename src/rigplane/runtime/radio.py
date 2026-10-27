@@ -205,6 +205,7 @@ from rigplane.commands.command_map import CommandMap
 from rigplane.profiles import (
     RadioProfile,
     admit_cw_text,
+    admit_memory_write,
     await_fenced_cw_text,
     cw_text_cancelled,
     resolve_radio_profile,
@@ -6309,7 +6310,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             )
 
     async def memory_clear(self, channel: int) -> None:
-        """Clear memory channel."""
+        """Clear memory channel.
+
+        MOR-3644: refused unless the profile's ``[memory]`` section declares
+        a verified write layout; nothing is sent otherwise.
+        """
+        admit_memory_write(self._profile)
         if not 1 <= channel <= 101:
             raise ValueError(f"Channel must be 1-101, got {channel}")
         async with memory_slot_operation(self):
@@ -6336,7 +6342,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
 
     async def set_memory_contents(self, mem: MemoryChannel) -> None:
-        """Write full memory channel data."""
+        """Write full memory channel data.
+
+        MOR-3644: refused unless the profile's ``[memory]`` section declares
+        a verified write layout — the fixed 26-byte record this builder
+        emits is only proven for the opted-in profiles; nothing is sent
+        otherwise.
+        """
+        admit_memory_write(self._profile)
         if not 1 <= mem.channel <= 101:
             raise ValueError(f"Channel must be 1-101, got {mem.channel}")
         async with memory_slot_operation(self):

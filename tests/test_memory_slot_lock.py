@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -168,6 +169,14 @@ class _GatedIc705Transport(MockTransport):
 async def test_web_memory_clear_runs_between_the_listed_slot_reads() -> None:
     transport = _GatedIc705Transport([0, 1, 2])
     radio = _icom_recall_radio("IC-705", transport)
+    # Simulated opt-in (MOR-3644): the slot-lock ordering pinned here is
+    # profile-agnostic, and the shipped IC-705 profile now refuses
+    # memory_clear (no verified write layout), so this synthetic profile
+    # declares the IC-7610-proven one to let the clear reach the wire.
+    radio._profile = replace(
+        radio._profile,
+        memory=replace(radio._profile.memory, write_layout="civ_26"),
+    )
     radio._civ_stream_ready = True
     radio._last_civ_data_received = time.monotonic()
     web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))

@@ -310,6 +310,10 @@ class TestIcomRadioMemoryMethods:
         rig = load_rig(RIG_DIR / "ic7610.toml")
         radio = MagicMock()
         radio._radio_addr = RADIO_ADDR
+        # MOR-3644: the write gate reads the real profile; this mock radio
+        # stands for the IC-7610, whose profile declares the verified
+        # 26-byte write layout.
+        radio._profile = rig.to_profile()
         radio._send_fire_and_forget = AsyncMock()
         radio._commands = BoundCommands(rig.to_command_map())
         return radio
@@ -567,6 +571,10 @@ class TestHandlerMemoryDispatch:
         radio.radio_ready = True
         radio.model = "IC-7610"
         radio.capabilities = {"memory"}
+        # MOR-3644: the dispatch write gate reads the real profile; this
+        # handler's radio stands for the IC-7610, the profile whose
+        # [memory] section declares the verified write layout.
+        radio.profile = load_rig(RIG_DIR / "ic7610.toml").to_profile()
 
         if memory_capable:
             radio.set_memory_mode = AsyncMock()

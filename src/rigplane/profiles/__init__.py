@@ -29,8 +29,10 @@ __all__ = [
     "CwTextSendCancelledError",
     "CwTextSpec",
     "CwTextUnsupportedError",
+    "MemoryWriteUnverifiedError",
     "await_fenced_cw_text",
     "admit_cw_text",
+    "admit_memory_write",
     "ControlLookupPoint",
     "EncodedControlChoice",
     "ControlDomainSpec",
@@ -960,3 +962,41 @@ def admit_cw_text(profile: RadioProfile, text: str) -> None:
             f"CW text too long for {profile.model}: got {len(text)} characters, "
             f"limit is {spec.max_length}"
         )
+
+
+class MemoryWriteUnverifiedError(CommandError):
+    """A memory contents write or clear was refused (MOR-3644).
+
+    The profile's ``[memory]`` section declares no verified write layout,
+    so the fixed record the package would build is not proven for this
+    radio; writing it could corrupt a stored channel. ``reason_code`` is
+    the stable machine-readable refusal reason, carried by the WebSocket
+    ``error`` field and the HTTP error envelope so a client never has to
+    parse English prose.
+    """
+
+    reason_code = "memory_write_unverified"
+
+
+def admit_memory_write(profile: RadioProfile | None) -> None:
+    """The one admission check every memory contents write/clear passes.
+
+    Called first thing by the shared dispatch arm in the web control
+    handler (every WebSocket and HTTP ingress) and by the Icom backend's
+    ``memory_clear``/``set_memory_contents``, so a direct SDK call refuses
+    the same way. The profile's ``[memory].write_layout`` is the only
+    authority; a profile without the section, or with the section but
+    without the declaration, refuses. Nothing is sent to the radio.
+
+    Raises:
+        MemoryWriteUnverifiedError: no verified write layout is declared.
+    """
+    memory = profile.memory if isinstance(profile, RadioProfile) else None
+    if isinstance(memory, MemoryProfile) and memory.write_layout is not None:
+        return
+    model = profile.model if isinstance(profile, RadioProfile) else "this radio"
+    raise MemoryWriteUnverifiedError(
+        f"{model} has no verified memory write layout: memory contents "
+        "writes and clears are refused (declare [memory].write_layout in "
+        "the profile)"
+    )
