@@ -18,6 +18,7 @@ from ..core.state_store import (
 )
 from ..core.tx_target import TxTarget, tx_target_from_dict, validate_tx_target
 from ..profiles import RadioProfile, resolve_radio_profile
+from ..profiles.power_ceilings import effective_power_max_watts
 from ..radio_protocol import (
     AudioCapable,
     DualReceiverCapable,
@@ -1227,11 +1228,17 @@ def _normalize_public_level_snapshot_value(
     return value
 
 
-def _power_level_max_value(field: FieldSnapshot, radio: "Radio | None") -> float:
+def _power_level_max_value(
+    field: FieldSnapshot, radio: "Radio | None", freq_hz: int | None = None
+) -> float:
     if field.source.provider != "yaesu_cat":
         return 255.0
     profile = getattr(radio, "profile", None) if radio is not None else None
-    max_watts = getattr(profile, "max_watts", None)
+    # MOR-3634: the watt scale follows the per-band/per-source rated
+    # ceiling when the profile declares one (the active receiver's band),
+    # the flat max_watts otherwise — so full scale tracks the band the
+    # write path clamps against.
+    max_watts = effective_power_max_watts(profile, freq_hz=freq_hz)
     if isinstance(max_watts, (int, float)) and not isinstance(max_watts, bool):
         if max_watts > 0:
             return float(max_watts)
@@ -1328,6 +1335,7 @@ def _apply_snapshot_field(
     field: FieldSnapshot,
     *,
     radio: "Radio | None",
+    freq_hz: int | None = None,
 ) -> None:
     path = field.path
     value = field.value
@@ -1422,7 +1430,7 @@ def _apply_snapshot_field(
             if path.name in _NORMALIZED_GLOBAL_OPERATOR_CONTROL_FIELDS:
                 value = _normalize_public_level_snapshot_value(
                     value,
-                    max_value=_power_level_max_value(field, radio),
+                    max_value=_power_level_max_value(field, radio, freq_hz=freq_hz),
                 )
             state[path.name] = value
             return
@@ -1468,14 +1476,53 @@ def _apply_snapshot_field(
             scope_controls[path.name] = value
 
 
+def _snapshot_active_freq_hz(snapshot: StateSnapshot) -> int | None:
+    """The active receiver's frequency from a snapshot, or ``None``.
+
+    MOR-3634: the watt scale the public ``powerLevel`` projects follows
+    the active receiver's band ceiling, so the projection resolves the
+    band from the same snapshot it projects — independent of field order
+    (the frequency fields may land before or after ``power_level``).
+    Receiver-id aliases (``"0"``/``"main"``, ``"1"``/``"sub"``) collapse
+    onto the same receiver; a missing or non-positive frequency resolves
+    ``None`` (the caller then applies the lowest declared ceiling).
+    """
+    active = "MAIN"
+    freqs: dict[str, int] = {}
+    for field in snapshot.fields:
+        path = field.path
+        if (
+            path.scope is FieldScope.GLOBAL
+            and path.family is FieldFamily.SLOW_STATE
+            and path.name == "active"
+            and field.value in ("MAIN", "SUB")
+        ):
+            active = field.value
+            continue
+        if (
+            path.scope is FieldScope.RECEIVER
+            and path.family is FieldFamily.FREQ_MODE
+            and path.name == "freq_hz"
+            and path.slot in (None, VfoSlot.ACTIVE)
+            and isinstance(field.value, int)
+            and not isinstance(field.value, bool)
+            and field.value > 0
+        ):
+            receiver_key = _snapshot_receiver_key(path.receiver_id)
+            if receiver_key in ("main", "sub"):
+                freqs[receiver_key] = field.value
+    return freqs.get("sub" if active == "SUB" else "main")
+
+
 def _project_snapshot_state_dict(
     snapshot: StateSnapshot,
     *,
     radio: "Radio | None",
 ) -> dict[str, Any]:
     state = copy.deepcopy(_EMPTY_STATE_DICT)
+    active_freq_hz = _snapshot_active_freq_hz(snapshot)
     for field in snapshot.fields:
-        _apply_snapshot_field(state, field, radio=radio)
+        _apply_snapshot_field(state, field, radio=radio, freq_hz=active_freq_hz)
     required_relative_fields = frozenset(_VFO_SLOT_FIELDS.values())
     for receiver_key in ("main", "sub"):
         receiver = state.get(receiver_key)

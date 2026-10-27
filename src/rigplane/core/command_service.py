@@ -988,11 +988,15 @@ def resolve_power_level_target(
 ) -> tuple[int, float]:
     """Resolve the native power integer and its exact normalized readback.
 
-    On a watts-native radio with a valid max and a valid positive min,
-    the native value is clamped to ``[min, max]`` — normalized floats and
-    bare ints alike (MOR-2998: a profile floor such as the FTX-1's 5 W
-    lifts the bottom of the range off the refused 0 W write). A radio
-    without ``min_watts`` keeps today's behaviour exactly.
+    On a watts-native radio with a valid max, the native value is clamped
+    to ``[min, max]`` — normalized floats and bare ints alike (MOR-2998: a
+    profile floor such as the FTX-1's 5 W lifts the bottom of the range
+    off the refused 0 W write; MOR-3634: the max — the flat
+    ``[power].max_watts`` or the caller-resolved per-band/per-source
+    rated ceiling — caps a bare int from above with or without a floor,
+    which is the rated-power clamp). A radio without ``min_watts`` keeps
+    the zero bottom of the range. Raw-255 radios are unchanged: a bare
+    int stays the wire value and floats scale onto 0-255.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"level {value!r} must be an int or a normalized float")
@@ -1020,7 +1024,7 @@ def resolve_power_level_target(
         if not (0.0 <= value <= 1.0):
             raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
         native = max(lower, min(upper, round(value * scale)))
-    elif valid_min:
+    elif watts_native and valid_max:
         native = max(lower, min(upper, value))
     else:
         native = value

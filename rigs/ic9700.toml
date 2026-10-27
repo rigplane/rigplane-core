@@ -338,6 +338,16 @@ width_max = 255
 
 [power]
 max_watts = 100
+# Per-band rated TX-power ceilings (MOR-3634). IC-9700 manuals: 144 MHz
+# 100 W, 430 MHz 75 W, 1.2 GHz 10 W (band-power context CI-V 1A 05
+# 0332-0337). Tier B- -- not hardware-verified; no recording of this model
+# exists. An absolute-watt write above the active receiver's band ceiling
+# is clamped down to it; an unknown band resolves to the lowest declared
+# ceiling (10 W). Band names are the [[freq_ranges.ranges.bands]] entries.
+[power.ceilings_w]
+2m = 100
+70cm = 75
+23cm = 10
 
 # ── Memory channels (MOR-3627) ───────────────────────────────────
 # CI-V 1A 00 reads a channel by band code (01 144, 02 430 MHz, 03 1.2 GHz) and
