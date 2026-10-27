@@ -1103,6 +1103,7 @@ function deriveReceiverIndicators(
   const hasRfGain = hasCap(caps, 'rf_gain');
   const hasDigiSel = hasCap(caps, 'digisel');
   const hasIpPlus = hasCap(caps, 'ip_plus');
+  const hasSquelch = hasCap(caps, 'squelch');
 
   return structuralReceivers.map((receiver) => {
     const receiverOperational = operationalReceivers.includes(receiver);
@@ -1174,6 +1175,14 @@ function deriveReceiverIndicators(
             }
           : null,
       },
+      // MOR-3630: the BUSY lamp seat exists wherever the radio has a
+      // squelch control to report on. Unlike attenuator/preamp (MOR-2588),
+      // no per-receiver declared-field tag gates this: the reading comes
+      // from the receiver's own strictly-addressed `dcd` leaf and stays
+      // unknown until that leaf is observed, so an undeclared field can
+      // never light it — and Icom observes `dcd` from spontaneous 0x15
+      // frames without declaring a polled field at all.
+      ...(hasSquelch ? { squelchOpen: strictField(true, 'dcd', boolOrUndef(rx?.dcd)) } : {}),
       bandwidthHz: strictField(hasWidth, 'filterWidth', numOrUndef(rx?.filterWidth)),
       // MOR-2706: the structural ceiling the BW fact's slot reservation
       // derives from — fixed when the capabilities load, never a reading.
