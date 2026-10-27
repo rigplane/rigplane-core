@@ -24,6 +24,8 @@ through the same shared, profile-driven paths the IC-705 tests use:
 
 from __future__ import annotations
 
+import asyncio
+import time
 from pathlib import Path
 
 import pytest
@@ -40,16 +42,23 @@ from rigplane.commands import (
 )
 from rigplane.core.command_dispatch import prepare_command_intent
 from rigplane.core.radio_protocol import RepeaterShiftCapable
-from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from rigplane.core.types import Mode, RepeaterShiftDirection
 from rigplane.exceptions import CommandError, TimeoutError
 from rigplane.radio import IcomRadio
 from rigplane.rig_loader import load_rig
 from rigplane.runtime._state_queries import acquisition_query_resolver_for_profile
 from rigplane.types import CivFrame
+from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.runtime_helpers import runtime_capabilities
+from rigplane.web.server import WebConfig, WebServer
 from test_icom_memory_entry import _block, _ic9700_reply
 from test_radio import MockTransport, _wrap_civ_in_udp
+from test_web_split_writes import _request
 
 RIGS = Path(__file__).resolve().parent.parent / "rigs"
 IC9700_PATH = RIGS / "ic9700.toml"
@@ -413,6 +422,31 @@ def test_0f_reply_publishes_the_shift(transport, byte, direction) -> None:
     assert snapshot.field("global.tx_state.split").value is (byte == 0x01)
 
 
+@pytest.mark.parametrize(
+    ("model", "addr"),
+    [
+        pytest.param("IC-705", 0xA4, id="ic705"),
+        pytest.param("IC-9700", IC9700_ADDR, id="ic9700"),
+    ],
+)
+def test_rps_readback_invalidates_the_previous_shift(transport, model, addr) -> None:
+    """0F 13 (RPS, the DD-mode duplex) is unrepresentable as a shift
+    direction: observing it must clear the previous reading, not leave a
+    stale MINUS visible (pre-review P2, MOR-3623). RPS stays distinct from
+    ARS — no direction is published for it."""
+    radio = _radio(transport, model=model)
+    _observe_0f(radio, 0x11, addr)
+    assert radio._state_store.snapshot().field(SHIFT_OBSERVED).value == int(
+        RepeaterShiftDirection.MINUS
+    )
+    _observe_0f(radio, 0x13, addr)
+    assert radio._state_store.snapshot().field(SHIFT_OBSERVED).value is None
+    _observe_0f(radio, 0x12, addr)
+    assert radio._state_store.snapshot().field(SHIFT_OBSERVED).value == int(
+        RepeaterShiftDirection.PLUS
+    )
+
+
 # ── Tone squelch type over 16 5D ──────────────────────────────────────
 
 # Same selector command and codes as the IC-705 (MOR-2131): 00=OFF,
@@ -611,3 +645,142 @@ def test_parity_table(model) -> None:
     bands = {b.name: b.default for r in profile.freq_ranges for b in r.bands}
     assert bands["2m"] == expected["2m_default"]
     assert bands["70cm"] == expected["70cm_default"]
+
+
+# ── Real-endpoint integration ─────────────────────────────────────────
+
+
+@pytest.fixture
+async def ic9700_web():
+    """A live HTTP/WS server over the real IC-9700 runtime (fake wire).
+
+    The pattern of ``test_memory_recall.py: recall_web``: ``IcomRadio``
+    with the shipped IC-9700 profile, a ``MockTransport`` in place of the
+    hardware, and commands drained through a real ``RadioPoller``.
+    Simulated; fake wire only.
+    """
+    transport = MockTransport()
+    radio = _radio(transport)
+    radio._civ_stream_ready = True
+    radio._last_civ_data_received = time.monotonic()
+    web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    poller = RadioPoller(radio, web.command_queue, state_store=web.command_state_store)
+    web.command_state_store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=asyncio.get_running_loop().time(),
+            max_age=60,
+        )
+    )
+    web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
+    entries = []
+
+    async def consume(count: int) -> None:
+        while len(entries) < count:
+            await web.command_queue.wait(2)
+            entry = web.command_queue.take_entry()
+            assert entry is not None
+            entries.append(entry)
+            await poller._execute_queued_entry(entry)
+
+    try:
+        yield web, radio, transport, entries, consume
+    finally:
+        web._server.close()
+        await web._server.wait_closed()
+        web._server = None
+        for task in tuple(web._client_tasks):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*web._client_tasks, return_exceptions=True)
+        radio._connected = False
+        await radio._force_cleanup_civ()
+
+
+def _observe_mode(radio: IcomRadio, mode_byte: int) -> None:
+    frame = CivFrame(
+        to_addr=CONTROLLER_ADDR,
+        from_addr=IC9700_ADDR,
+        command=0x04,
+        sub=None,
+        data=bytes([mode_byte]),
+    )
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["http", "ws"])
+async def test_ic9700_controls_through_the_real_endpoint(
+    ic9700_web, protocol: str
+) -> None:
+    """Shift, tone readback and DV/DD selection, starting at the real
+    HTTP/WS endpoint with the actual IC-9700 runtime (pre-review P2,
+    MOR-3623). Only the transport is faked. Simulated; fake wire only."""
+    web, radio, transport, entries, consume = ic9700_web
+    radio._radio_state.active = "MAIN"
+    for n in (1, 2, 3):
+        transport.queue_response_on_send(n, _reply(0xFB))
+    consumer = asyncio.create_task(consume(3))
+    try:
+        status, shift = await _request(
+            web,
+            protocol,
+            "set_repeater_shift",
+            {"direction": int(RepeaterShiftDirection.MINUS), "receiver": 1},
+        )
+        assert status == (200 if protocol == "http" else None)
+        assert shift["ok"] is True
+
+        status, dv = await _request(
+            web, protocol, "set_mode", {"mode": "DV", "receiver": 0}
+        )
+        assert status == (200 if protocol == "http" else None)
+        assert dv["ok"] is True
+
+        status, dd = await _request(
+            web, protocol, "set_mode", {"mode": "DD", "receiver": 0}
+        )
+        assert status == (200 if protocol == "http" else None)
+        assert dd["ok"] is True
+    finally:
+        await asyncio.wait_for(consumer, 5)
+
+    assert len(entries) == 3
+    # Receiver targeting: the SUB shift rode the shared MAIN/SUB
+    # switch-and-restore; the MAIN mode sets went out as bare 06.
+    assert [(f.command, f.data) for f in _sent_frames(transport)] == [
+        (0x07, b"\xd1"),  # select SUB
+        (0x0F, b"\x11"),  # DUP− on SUB
+        (0x07, b"\xd0"),  # restore MAIN
+        (0x06, b"\x17"),  # DV on MAIN
+        (0x06, b"\x22"),  # DD on MAIN
+    ]
+    assert radio._radio_state.active == "MAIN"
+
+    # Resulting public state: the shift readback, the tone-selector
+    # readback and the DV/DD mode readbacks land in the runtime store.
+    _observe_0f(radio, 0x11, IC9700_ADDR)
+    assert radio._state_store.snapshot().field(SHIFT_OBSERVED).value == int(
+        RepeaterShiftDirection.MINUS
+    )
+    radio._civ_runtime._update_state_cache_from_frame(_tone_frame(0x01))
+    snapshot = radio._state_store.snapshot()
+    assert snapshot.field(TYPE_OBSERVED).value == "tone"
+    assert snapshot.field("receiver.0.operator_toggles.repeater_tone").value is True
+    assert snapshot.field("receiver.0.operator_toggles.repeater_tsql").value is False
+    _observe_mode(radio, 0x17)
+    assert (
+        radio._state_store.snapshot()
+        .field(FieldPath.active("0", "freq_mode", "mode"))
+        .value
+        == "DV"
+    )
+    _observe_mode(radio, 0x22)
+    assert (
+        radio._state_store.snapshot()
+        .field(FieldPath.active("0", "freq_mode", "mode"))
+        .value
+        == "DD"
+    )

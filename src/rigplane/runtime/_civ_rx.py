@@ -3059,19 +3059,20 @@ class CivRuntime:
             )
             # The same byte carries the repeater shift direction (MOR-2930),
             # published only where the profile declares the shift getter.
+            # An unrepresentable readback (0F 13 RPS, the DD-mode duplex on
+            # the IC-9700) publishes None — the same unknown-value pattern
+            # the 16 5D tone-squelch branch uses — so the previous reading
+            # does not linger as a false value (MOR-3623). RPS is not ARS
+            # and maps to no direction.
             shift = parse_repeater_shift_response(frame.data)
             command_map = self._host._profile.command_map
-            if (
-                shift is not None
-                and command_map is not None
-                and command_map.has("get_repeater_shift")
-            ):
+            if command_map is not None and command_map.has("get_repeater_shift"):
                 observations.append(
                     self._observation(
                         FieldPath.receiver(
                             receiver_id, "operator_controls", "repeater_shift"
                         ),
-                        int(shift),
+                        None if shift is None else int(shift),
                         frame=frame,
                     )
                 )
