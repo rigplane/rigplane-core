@@ -44,6 +44,24 @@ def test_clean_render_passes() -> None:
     assert check_marker(report, _SPEC) == []
 
 
+def test_clean_non_aligned_gap_passes_at_default_limits() -> None:
+    spec = replace(_SPEC, gaps=((0.201, 0.249),))
+    report = analyze_marker_pcm16(render_marker_pcm16(spec), spec)
+    assert report.residual_db < -60.0
+    assert check_marker(report, spec) == []
+
+
+@pytest.mark.parametrize("boundary_s", [0.201, 0.249 - 1 / 48000])
+def test_contaminated_gap_boundary_is_reported(boundary_s: float) -> None:
+    spec = replace(_SPEC, gaps=((0.201, 0.249),))
+    samples = _samples(render_marker_pcm16(spec))
+    samples[int(round(boundary_s * spec.sample_rate))] = 32767
+    report = analyze_marker_pcm16(_to_pcm(samples), spec)
+    assert report.residual_db < -60.0
+    problems = check_marker(report, spec)
+    assert len(problems) == 1 and "energy inside the planted gaps" in problems[0]
+
+
 def test_wrong_frequency_is_reported() -> None:
     pcm = render_marker_pcm16(replace(_SPEC, freq_hz=_SPEC.freq_hz + 50.0))
     problems = check_marker(analyze_marker_pcm16(pcm, _SPEC), _SPEC)

@@ -523,6 +523,7 @@ async def test_rx_keeps_flowing_across_civ_soft_reconnect(
             )
             civ2.send(_openclose(seq=0), server.civ_port)
             await civ2.recv()
+            assert server.audio_tx_format == TxAudioFormat(codec=0x04, sample_rate=48000)
         finally:
             civ2.close()
         window = await task
@@ -816,7 +817,7 @@ async def test_tx_capture_off_keeps_payload_empty(
 async def test_tx_sink_learns_the_accepted_conninfo_tx_format(
     server: MockIcomRadio,
 ) -> None:
-    """Only the fresh login's OWN accepted conninfo teaches the TX format
+    """An accepted conninfo teaches the TX format
     (production conninfo layout, ``core/auth.py``: tx codec at 0x73, BE u32
     tx sample rate at 0x78): the production-faithful default learns 48 kHz
     PCM16, a bare conninfo (rate 0, never sent by a real client) teaches
