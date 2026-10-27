@@ -657,14 +657,18 @@ class ControlPhaseRuntime:
                 await self._send_open_close(open_stream=False)
             except Exception:
                 logger.debug("disconnect: civ open/close failed", exc_info=True)
-            if civ_rt is not None:
-                await civ_rt.stop_data_watchdog()
-                await civ_rt.stop_worker()
-                await civ_rt.stop_pump()
-            else:
-                await h._stop_civ_data_watchdog()
-                await h._stop_civ_worker()
-                await h._stop_civ_rx_pump()
+        # MOR-3807: stop the CI-V tasks even when the CI-V transport is
+        # already gone, as ``release`` does; a surviving pump keeps its old
+        # generation and drops every reply of the next session.
+        if civ_rt is not None:
+            await civ_rt.stop_data_watchdog()
+            await civ_rt.stop_worker()
+            await civ_rt.stop_pump()
+        else:
+            await h._stop_civ_data_watchdog()
+            await h._stop_civ_worker()
+            await h._stop_civ_rx_pump()
+        if h._civ_transport:
             await h._civ_transport.disconnect()
             h._civ_transport = None
         # Shield the token-remove on the graceful CONNECTED path too (A3-verifier

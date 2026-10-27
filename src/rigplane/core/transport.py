@@ -400,6 +400,7 @@ class IcomTransport:
         earlier let a reconnect rebind the same local port and fail with
         EADDRINUSE.
         Idempotent — safe to call again after a partial start.
+        A sent DISCONNECT also forgets the learned ids (MOR-3807).
         """
         tasks = [
             task
@@ -415,6 +416,14 @@ class IcomTransport:
             if self.state != ConnectionState.DISCONNECTED and self.remote_id:
                 pkt = self._build_control(ptype=PacketType.DISCONNECT, seq=0)
                 self._raw_send(pkt)
+                # MOR-3807: DISCONNECT makes the radio forget this session,
+                # so forget the learned ids with it. The next connect then
+                # falls back from reconnect() to a full handshake (a zero
+                # remote_id selects connect()). Paths that deliberately keep
+                # the radio session (soft_reconnect's CI-V rebuild) never
+                # disconnect the control transport, so their reuse is kept.
+                self.remote_id = 0
+                self.my_id = 0
         except BaseException as exc:
             # Defer, rather than suppress, the initiating error until retirement.
             send_error = exc
