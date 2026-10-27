@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import wave
 from argparse import Namespace
@@ -926,13 +927,25 @@ class TestCmdPttArming:
 
 
 _PTT_SIGNAL_CHILD = '''\
+import faulthandler
 import os
+import pathlib
+import signal
 import sys
 
 import rigplane.cli as cli
+import rigplane.cli._instance_guard as instance_guard
 
 JOURNAL = sys.argv[1]
-WIDEN = float(sys.argv[2]) if len(sys.argv) > 2 else None
+LOCK_DIR = pathlib.Path(sys.argv[2])
+WIDEN = float(sys.argv[3]) if len(sys.argv) > 3 else None
+
+# The single-instance guard's lock directory is per computer, so every child
+# of every worker would share one lock for ``--host 127.0.0.1``. Each child
+# gets its own directory, the same test seam the in-process guard tests use.
+instance_guard._default_lock_dir = lambda: LOCK_DIR
+# The parent asks for the stacks of a child that outlives its budget.
+faulthandler.register(signal.SIGUSR2, file=sys.stderr, all_threads=True)
 
 
 def note(line):
@@ -988,14 +1001,24 @@ _SIGNAL_CHILD_BUDGET_S = 120
 
 
 def _signal_a_real_ptt_hold(
-    tmp_path, signum: signal.Signals, widen: float | None = None
+    tmp_path,
+    signum: signal.Signals,
+    widen: float | None = None,
+    *,
+    child_source: str = _PTT_SIGNAL_CHILD,
+    budget_s: float = _SIGNAL_CHILD_BUDGET_S,
 ) -> tuple[int, list[str], list[str]]:
-    """Run a real ``rigplane ptt on``, signal it, and report what it did."""
+    """Run a real ``rigplane ptt on``, signal it, and report what it did.
+
+    The child never outlives the call: it is killed and reaped on every exit
+    path, so one that hangs cannot keep holding the radio's lock for the tests
+    that run after it. Its lock directory is private to this call.
+    """
     child = tmp_path / "child.py"
-    child.write_text(_PTT_SIGNAL_CHILD)
+    child.write_text(child_source)
     journal, err_path = tmp_path / "journal.txt", tmp_path / "err.txt"
     journal.write_text("")
-    argv = [sys.executable, str(child), str(journal)]
+    argv = [sys.executable, str(child), str(journal), str(tmp_path / "locks")]
     argv += [] if widen is None else [str(widen)]
     with err_path.open("w") as err_fh:
         proc = subprocess.Popen(
@@ -1006,25 +1029,47 @@ def _signal_a_real_ptt_hold(
             env={**os.environ, "PYTHONUNBUFFERED": "1", "ICOM_DEBUG": "0"},
         )
 
-        # Handshake, so the signal cannot race process start-up: the hint is
-        # printed once the hold owns the signals and the rig is keyed, and
-        # the journal's "armed" line once they are owned but before the key.
-        def _reached() -> bool:
-            if widen is not None:
-                return "armed" in journal.read_text()
-            return "Ctrl-C" in err_path.read_text()
-
-        deadline = time.monotonic() + _SIGNAL_CHILD_BUDGET_S
-        while not _reached():
-            assert proc.poll() is None and time.monotonic() < deadline, (
-                f"child never reached the hold: {err_path.read_text()}"
+        def _hung(what: str) -> AssertionError:
+            # Stacks first, while the child is still alive to print them.
+            proc.send_signal(signal.SIGUSR2)
+            time.sleep(0.5)
+            return AssertionError(
+                f"child {what}; stderr:\n{err_path.read_text()}\n"
+                f"journal: {journal.read_text()!r}"
             )
-            time.sleep(0.02)
-        proc.send_signal(signum)
-        # PYTHONUNBUFFERED above is load bearing: ``main()`` ends in
-        # ``os._exit``, which flushes no stdio, so a piped stdout is lost
-        # without it. Pre-existing and not specific to ``ptt``.
-        out, _ = proc.communicate(timeout=_SIGNAL_CHILD_BUDGET_S)
+
+        try:
+            # Handshake, so the signal cannot race process start-up: the hint
+            # is printed once the hold owns the signals and the rig is keyed,
+            # and the journal's "armed" line once they are owned but before
+            # the key.
+            def _reached() -> bool:
+                if widen is not None:
+                    return "armed" in journal.read_text()
+                return "Ctrl-C" in err_path.read_text()
+
+            deadline = time.monotonic() + budget_s
+            while not _reached():
+                assert proc.poll() is None, (
+                    f"child exited before reaching the hold: {err_path.read_text()}"
+                )
+                if time.monotonic() >= deadline:
+                    raise _hung(f"never reached the hold within {budget_s:g} s")
+                time.sleep(0.02)
+            proc.send_signal(signum)
+            # PYTHONUNBUFFERED above is load bearing: ``main()`` ends in
+            # ``os._exit``, which flushes no stdio, so a piped stdout is lost
+            # without it. Pre-existing and not specific to ``ptt``.
+            try:
+                out, _ = proc.communicate(timeout=budget_s)
+            except subprocess.TimeoutExpired:
+                raise _hung(f"still alive {budget_s:g} s after {signum.name}") from None
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            if proc.stdout is not None:
+                proc.stdout.close()
     return proc.returncode, out.splitlines(), journal.read_text().split()
 
 
@@ -1059,6 +1104,78 @@ def test_a_signal_before_the_key_leaves_the_rig_unkeyed(signum, tmp_path) -> Non
     assert journal == ["armed"]  # it never keyed, so there was nothing to unkey
     assert out == []  # and it never announced a transmission
     assert rc == 128 + signum
+
+
+def test_real_signal_children_in_parallel_do_not_share_the_radio_lock(
+    tmp_path,
+) -> None:
+    # Every child names the same radio (``--host 127.0.0.1``), and the guard's
+    # lock directory is per computer, so children of tests running on
+    # different workers refused each other ("another rigplane process ... is
+    # already using this radio") whenever their lifetimes overlapped. Both are
+    # held in the pre-key window here, so they overlap by construction.
+    results: dict[str, tuple[int, list[str], list[str]]] = {}
+    errors: list[BaseException] = []
+
+    def _run(name: str) -> None:
+        try:
+            sub = tmp_path / name
+            sub.mkdir()
+            results[name] = _signal_a_real_ptt_hold(
+                sub, signal.SIGTERM, widen=3.0, budget_s=60
+            )
+        except BaseException as exc:  # noqa: BLE001 — reported by the main thread
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_run, args=(n,)) for n in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors, errors
+    for rc, out, journal in results.values():
+        assert journal == ["armed"]
+        assert rc == 128 + signal.SIGTERM
+
+
+_PTT_SIGNAL_DEAF_CHILD = """\
+import signal
+import sys
+import time
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal(signal.SIGUSR2, signal.SIG_IGN)  # the parent's stack request too
+print("Transmitting — press Ctrl-C to unkey.", file=sys.stderr, flush=True)
+time.sleep(600)
+"""
+
+
+def test_a_child_that_ignores_the_signal_is_killed_and_reaped(
+    tmp_path, monkeypatch
+) -> None:
+    # A child that outlives its budget must not outlive the test: it would
+    # keep the radio's lock and refuse every later test's child.
+    children: list[subprocess.Popen] = []
+    real_popen = subprocess.Popen
+
+    def _recording_popen(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        children.append(proc)
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", _recording_popen)
+
+    with pytest.raises(AssertionError, match="still alive 1 s after SIGTERM"):
+        _signal_a_real_ptt_hold(
+            tmp_path,
+            signal.SIGTERM,
+            child_source=_PTT_SIGNAL_DEAF_CHILD,
+            budget_s=1,
+        )
+
+    assert len(children) == 1
+    assert children[0].poll() is not None  # reaped, not left running
 
 
 # ---------------------------------------------------------------------------
