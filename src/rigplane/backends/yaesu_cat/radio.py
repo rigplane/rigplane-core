@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
@@ -19,6 +20,7 @@ from ...command_spec import CatCommandSpec
 from ...commands import hz_to_table_index, table_index_to_hz
 from ...core.priority_exchange import ExchangeTier
 from ...core.radio_protocol import RadioIdentity, RadioIdentityStatus, RelativeVfoState
+from ...core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
 from ...core.tx_observation import TxStateReading
 from ...core.types import MemoryEntry
 from ...exceptions import (
@@ -65,7 +67,6 @@ if TYPE_CHECKING:
     from ...audio.session import AudioSession
     from ...audio.usb_driver import UsbAudioDriver
     from ...audio_bus import AudioBus
-    from ...core.state_pipeline_contracts import FieldPath, Observation
     from ...profiles import RadioProfile
     from ...profiles.rig_loader import RigConfig
     from ...types import BandStackRegister, MemoryChannel
@@ -1394,6 +1395,36 @@ class YaesuCatRadio:
                 self._state.main.freq = freq
             else:
                 self._state.sub.freq = freq
+            self._echo_band_context_freq(receiver, freq)
+
+    def _echo_band_context_freq(self, receiver: int, freq: int) -> None:
+        """Echo our own frequency write into the canonical store (MOR-3634).
+
+        The rated-power ceiling resolves the band from the attached
+        StateStore when one exists (production observation polling feeds
+        only the store). Without this echo, a direct-backend ``set_freq``
+        leaves the store on the previous band until the next poll cycle,
+        and a following ``set_power`` would resolve the old — possibly
+        higher — ceiling. Same unconfirmed ``local_reconcile`` echo class
+        the web command ingress uses for its expected-value echoes; a
+        radio-answered value still overwrites it on the next poll.
+        """
+        store = getattr(self, "_state_store", None)
+        apply_current = getattr(store, "apply_current", None)
+        if not callable(apply_current):
+            return
+        receiver_id = "sub" if receiver == 1 else "main"
+        apply_current(
+            Observation(
+                path=FieldPath.active(receiver_id, "freq_mode", "freq_hz"),
+                value=freq,
+                source=SourceMetadata(
+                    source="local_reconcile",
+                    provider=str(getattr(self, "backend_id", "yaesu_cat")),
+                ),
+                timestamp_monotonic=time.monotonic(),
+            )
+        )
 
     # -- Mode ---------------------------------------------------------------
 
@@ -2622,8 +2653,14 @@ class YaesuCatRadio:
         return int(result["vfo"])
 
     async def set_tx_func(self, vfo: int) -> None:
-        """Set TX function (0 = MAIN, 1 = SUB)."""
-        await self._write("set_tx_func", vfo=str(vfo))
+        """Set TX function (0 = MAIN, 1 = SUB).
+
+        Serialized under ``_mode_lock`` (MOR-3634) so a concurrent power
+        write cannot resolve its band ceiling between this TX-route
+        change and the next bracketed-FT observation.
+        """
+        async with self._mode_lock:
+            await self._write("set_tx_func", vfo=str(vfo))
 
     # -- TransceiverBankCapable --------------------------------------------
 
@@ -2648,7 +2685,9 @@ class YaesuCatRadio:
                 f"xcvr must be 0 or 1, got {xcvr!r} "
                 f"(transceiver_count={self.transceiver_count})"
             )
-        await self._write("set_tx_func", vfo=str(xcvr))
+        # Serialized under ``_mode_lock`` like set_tx_func (MOR-3634).
+        async with self._mode_lock:
+            await self._write("set_tx_func", vfo=str(xcvr))
 
     async def get_tx_source(self) -> int:
         """Return the 0-based index of the currently active TX transceiver.

@@ -717,15 +717,17 @@ A profile without the tables keeps the flat `max_watts` behaviour.
 \* `max_watts` is required when either table is present.
 
 The runtime resolves one effective ceiling radio-agnostically from this data
-(`src/rigplane/profiles/power_ceilings.py`): the row for the active
-receiver's band, and the row for the known power source, combined as their
-minimum. Anything unknown — no frequency observed yet, a frequency no
-declared band covers, a source the state has not observed (no shipped
-observation names one yet) — resolves to the LOWEST declared row of that
-table, never the widest. The ceiling clamps absolute-watt writes down
-(`resolve_power_level_target` inputs, and the Yaesu backend's `set_power`
-beside its floor) and is the watt scale the UI projects for `powerLevel`
-full scale.
+(`src/rigplane/profiles/power_ceilings.py`): the row for the band the resolved
+context names — a KNOWN `global.tx_state.tx_target` frequency (the band that
+actually transmits, also during split / cross-band), else the active
+receiver's frequency — and the row for the known power source, combined as
+their minimum. Anything unknown — no frequency observed yet, a frequency no
+declared band covers, an observed-but-unknown TX target, STALE context, a
+source the state has not observed (no shipped observation names one yet) —
+resolves to the LOWEST declared row of that table, never the widest. The
+ceiling clamps absolute-watt writes down (`resolve_power_level_target`
+inputs, and the Yaesu backend's `set_power` beside its floor) and is the watt
+scale the UI projects for `powerLevel` full scale.
 
 Shipped data: IC-9700 declares `ceilings_w` (2 m 100 W, 70 cm 75 W, 23 cm
 10 W — tier B-, not hardware-verified); IC-705 declares `sources` (dc 10 W,

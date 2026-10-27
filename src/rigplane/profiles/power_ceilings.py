@@ -27,12 +27,19 @@ Resolution rules, shared by band and source:
 Which frequency defines the band: the canonical ``global.tx_state.tx_target``
 authority when it names a KNOWN transmitting receiver with a frequency (the
 band that actually transmits, also during split / cross-band operation), else
-the active receiver's frequency. Both are read from the canonical StateStore
-snapshot when the radio carries one (production observation polling feeds
-only the store), falling back to the backend-neutral ``radio_state``
-compatibility mirror. No shipped observation populates the power source yet,
-so callers pass ``power_source=None`` and the lower source ceiling applies
-until one does.
+the active receiver's frequency. A tx_target that is OBSERVED-but-unknown
+does not fall back to the selected receiver — the authority exists and says
+it cannot name the transmitter, so no band is known and the lowest declared
+ceiling applies; only a radio that never observes tx_target at all (no such
+field in the snapshot, e.g. a single-receiver profile) uses the selected
+receiver. Fields the freshness driver has aged to STALE are treated as
+unobserved for the same reason. Both are read from the canonical StateStore
+snapshot when the radio carries one — with a store attached it is the only
+authority (production observation polling feeds it; the compatibility mirror
+may lag or survive a provider reset) — falling back to the mirror only for
+store-less radios. No shipped observation populates the power source yet, so
+callers pass ``power_source=None`` and the lower source ceiling applies until
+one does.
 """
 
 from __future__ import annotations
@@ -41,6 +48,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..core.state_pipeline_contracts import FieldFamily, FieldScope, VfoSlot
+from ..core.state_store import FreshnessState
 
 __all__ = [
     "active_receiver_freq_hz",
@@ -167,15 +175,22 @@ def band_frequency_hz_from_snapshot(snapshot: Any) -> int | None:
     """The band-defining frequency of one canonical state snapshot.
 
     Precedence: a KNOWN ``global.tx_state.tx_target`` frequency (the band
-    that transmits), else the ACTIVE receiver's ``freq_mode.freq_hz``.
-    Receiver-id aliases (``"0"``/``"main"``, ``"1"``/``"sub"``) collapse
-    onto the same receiver. ``None`` when neither is observed — the caller
-    then applies the lowest declared ceiling.
+    that transmits), else the ACTIVE receiver's ``freq_mode.freq_hz``. A
+    tx_target that is present but unknown (or without a frequency)
+    resolves ``None`` — the transmitter cannot be named, so no band is
+    known; a snapshot with no tx_target field at all (a radio that never
+    observes one) uses the selected receiver. STALE fields count as
+    unobserved. Receiver-id aliases (``"0"``/``"main"``, ``"1"``/``"sub"``)
+    collapse onto the same receiver. ``None`` when nothing qualifies —
+    the caller then applies the lowest declared ceiling.
     """
     active = "MAIN"
     freqs: dict[str, int] = {}
     tx_freq: int | None = None
+    tx_observed = False
     for field in getattr(snapshot, "fields", ()) or ():
+        if getattr(field, "freshness", None) is FreshnessState.STALE:
+            continue
         path = getattr(field, "path", None)
         if path is None:
             continue
@@ -184,6 +199,7 @@ def band_frequency_hz_from_snapshot(snapshot: Any) -> int | None:
             and path.family is FieldFamily.TX_STATE
             and path.name == "tx_target"
         ):
+            tx_observed = True
             tx_freq = _known_tx_target_freq_hz(getattr(field, "value", None))
             continue
         if (
@@ -205,7 +221,7 @@ def band_frequency_hz_from_snapshot(snapshot: Any) -> int | None:
             receiver_key = "sub" if receiver_id in ("1", "sub") else "main"
             if freq_hz is not None:
                 freqs[receiver_key] = freq_hz
-    if tx_freq is not None:
+    if tx_observed:
         return tx_freq
     return freqs.get("sub" if active == "SUB" else "main")
 
@@ -233,14 +249,15 @@ def observed_band_freq_hz(radio: Any) -> int | None:
     """The band-defining frequency from the radio's canonical observations.
 
     The canonical StateStore the web layer attaches as ``radio._state_store``
-    (the only thing production observation polling feeds) is read first;
-    the ``radio_state`` compatibility mirror is the fallback for radios
-    without a store (Icom keeps the mirror fresh from the CI-V stream).
+    (the only thing production observation polling feeds) is the sole
+    authority when attached: its answer stands even when ``None`` (an empty
+    or provider-reset store must apply the unknown-band ceiling, not
+    resurrect the compatibility mirror, which may hold the previous
+    connection's frequency). Store-less radios (direct backend use) fall
+    back to the ``radio_state`` mirror, which ``set_freq`` keeps current.
     """
     store = getattr(radio, "_state_store", None)
     snapshot = getattr(store, "snapshot", None)
     if callable(snapshot):
-        freq_hz = band_frequency_hz_from_snapshot(snapshot())
-        if freq_hz is not None:
-            return freq_hz
+        return band_frequency_hz_from_snapshot(snapshot())
     return active_receiver_freq_hz(radio)
