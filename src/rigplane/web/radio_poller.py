@@ -121,6 +121,7 @@ from ..runtime._state_queries import (
     wire_parts_for_query,
 )
 from ..runtime.managed_tx_ingress import bind_managed_tx
+from ..runtime.managed_tx_state import submission_refused_for_release_debt
 from ..types import AudioCodec
 from ..runtime.tx_interlock import (
     DeferredTxCommandLane,
@@ -493,6 +494,31 @@ def _post_write_receiver_id(cmd: Any) -> str:
     """
 
     return "sub" if getattr(cmd, "receiver", 0) == 1 else "main"
+
+
+def _positive_tx_refused_for_release_debt(
+    exc: BaseException, entry: CommandQueueEntry
+) -> bool:
+    """Whether the failure is the expected owed-release refusal (MOR-3810).
+
+    Only the queue's admission-rejection path, proven by the entry's own
+    refused receipt — a key-down refused because the previous release is
+    still unconfirmed is routine, so it logs one line instead of a
+    traceback. Anything else keeps today's traceback.
+    """
+    if (
+        not isinstance(exc, CommandError)
+        or str(exc) != "positive TX admission was rejected"
+    ):
+        return False
+    submission = entry.positive_tx_submission
+    return (
+        submission is not None
+        and submission.done()
+        and not submission.cancelled()
+        and submission.exception() is None
+        and submission_refused_for_release_debt(submission.result())
+    )
 
 
 # ``ensure_fresh``'s ``max_age`` asks "how old may the CURRENT StateStore
@@ -1718,12 +1744,20 @@ class RadioPoller:
                         )
                     except (ConnectionError, RadioConnectionError):
                         _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
-                    except Exception:
-                        logger.warning(
-                            "radio-poller: cmd error: %s",
-                            type(cmd).__name__,
-                            exc_info=True,
-                        )
+                    except Exception as exc:
+                        if _positive_tx_refused_for_release_debt(exc, entry):
+                            logger.info(
+                                "radio-poller: cmd refused: %s: "
+                                "the previous transmission is still "
+                                "being released",
+                                type(cmd).__name__,
+                            )
+                        else:
+                            logger.warning(
+                                "radio-poller: cmd error: %s",
+                                type(cmd).__name__,
+                                exc_info=True,
+                            )
                     await asyncio.sleep(self._adaptive_gap())
 
                 # If disconnected, back off to avoid log spam
