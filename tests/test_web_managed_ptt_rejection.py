@@ -614,3 +614,68 @@ async def test_poller_logs_only_release_debt_without_traceback(
         if release is not None:
             await release.wait_settlement()
         await _release(stack.authority)
+
+
+async def _ws_command(
+    stack: _QueueStack, handler: ControlHandler, ws: Any, cmd_id: str, name: str
+) -> dict[str, Any]:
+    """Dispatch one WebSocket command and return the envelope it sent."""
+    task = asyncio.create_task(handler._dispatch_command(cmd_id, name, {}))
+    if name == "ptt_on":
+        stack.enqueued.clear()
+        await _wait_barrier(stack.enqueued)
+        await _drain_one(stack)
+    await task
+    envelope: dict[str, Any] = decode_json(ws.send_text.await_args.args[0])
+    assert envelope["id"] == cmd_id
+    return envelope
+
+
+async def test_ws_key_down_during_an_unconfirmed_release_says_it_is_releasing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3810: the releasing refusal reaches the client's envelope."""
+    stack = _QueueStack()
+    releases: list[ManagedTxSubmission] = []
+    submit_ptt = stack.authority.submit_ptt
+
+    async def capture(*args: Any, **kwargs: Any) -> ManagedTxSubmission:
+        submission = await submit_ptt(*args, **kwargs)
+        releases.append(submission)
+        return submission
+
+    monkeypatch.setattr(stack.authority, "submit_ptt", capture)
+    gate: asyncio.Event | None = None
+    try:
+        holder_ws = SimpleNamespace(send_text=AsyncMock())
+        holder = stack.handler("a", ws=holder_ws)
+        assert (await _ws_command(stack, holder, holder_ws, "1", "ptt_on"))["ok"]
+        gate = stack.lane.block_next()
+        assert (await _ws_command(stack, holder, holder_ws, "2", "ptt_off"))["ok"]
+        assert (await stack.authority.snapshot()).state.release_required
+
+        ws = SimpleNamespace(send_text=AsyncMock())
+        refused = await _ws_command(stack, stack.handler("b", ws=ws), ws, "3", "ptt_on")
+        assert refused["ok"] is False
+        assert _RELEASING in refused["message"]
+        keyed = [ActuationOperation.PTT_ON, ActuationOperation.FORCE_RECEIVE]
+        assert [effect.operation for effect in stack.lane.effects] == keyed
+
+        gate.set()
+        await releases[0].wait_settlement()
+        assert (await stack.authority.snapshot()).state.release_required is False
+        admitted = await _ws_command(
+            stack, stack.handler("b", ws=ws), ws, "4", "ptt_on"
+        )
+        assert admitted["ok"] is True
+        assert [effect.operation for effect in stack.lane.effects] == [
+            *keyed,
+            ActuationOperation.PTT_ON,
+        ]
+        stack.radio.set_ptt.assert_not_awaited()
+    finally:
+        if gate is not None:
+            gate.set()
+        for release in releases:
+            await release.wait_settlement()
+        await _release(stack.authority)

@@ -91,7 +91,7 @@ from rigplane.runtime._control_phase import (
 )
 from rigplane.runtime.session_lifecycle import CoreRadioSessionLifecycle
 from rigplane.audio import AudioPacket, AudioStream
-from rigplane.core.civ import CivEvent, CivRequestTracker
+from rigplane.core.civ import CivEvent, CivRequestKey, CivRequestTracker
 from rigplane.commands.commander import IcomCommander, Priority
 from rigplane.commands import (
     _SUB_REPEATER_TONE,
@@ -191,7 +191,6 @@ from rigplane.core.radio_protocol import (
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_observation import (
-    RADIO_READBACK_SOURCES,
     TX_READ_DEADLINE_SECONDS,
     TxStateReading,
 )
@@ -4554,9 +4553,17 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         keying attribution. Wire-level failures return a ``failure`` tag;
         connection preconditions still raise. The unkey's confirming
         read-back (MOR-3810) rides the unkey's own priority and currency.
+
+        A reply is verified only when it has the exact directed one-byte
+        ``poll_response`` shape, came in a packet newer than any the pump had
+        read when this read began, and no ``1C 00`` read was abandoned from
+        the tracker's ``stale_ttl`` before this read began onward: a ``1C 00``
+        answer names no request (MOR-3810).
         """
         self._check_connected()
         frame = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1C, sub=0x00)
+        seq_before = self._civ_runtime.rx_seq_high
+        started = time.monotonic()
         try:
             reply = await self._send_civ_expect(
                 frame,
@@ -4575,11 +4582,17 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return TxStateReading(value=None, failure="timeout")
         except CommandError:
             return TxStateReading(value=None, failure="read-error")
+        tracker = self._civ_request_tracker
+        abandoned = tracker.response_unclaimed_at(CivRequestKey(0x1C, 0x00))
+        if not self._civ_runtime.received_after(reply, seq_before) or (
+            abandoned is not None and abandoned >= started - tracker.stale_ttl
+        ):
+            return TxStateReading(value=None, failure="unverifiable-provenance")
         for observation in self._civ_runtime._observations_from_frame(reply):
             if str(observation.path) != "global.tx_state.ptt":
                 continue
             source = str(observation.source.source)
-            if source in RADIO_READBACK_SOURCES:
+            if source == "poll_response":
                 return TxStateReading(
                     value=bool(observation.value),
                     attributed=None,  # Icom reports no attribution (§3.7)

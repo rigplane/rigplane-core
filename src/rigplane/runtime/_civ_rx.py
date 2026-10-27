@@ -703,6 +703,10 @@ class CivRuntime:
         self._reconnect_task: asyncio.Task[None] | None = None
         self._soft_recovery_epoch: int | None = None
         self._raw_received_frame_bytes: dict[int, bytes] = {}
+        # MOR-3810: packet sequence numbers of recently received frames, and
+        # the newest sequence number the current pump has read.
+        self._received_frame_seq: dict[int, int] = {}
+        self._rx_seq_high: int | None = None
         self._ptt_observer: Callable[[ProviderPttObservation], None] | None = None
         self._ptt_observer_provider_generation: int | None = None
         self._ptt_observer_civ_generation: int | None = None
@@ -1376,6 +1380,22 @@ class CivRuntime:
         """Return exact inbound bytes for a parsed frame when still available."""
         return self._raw_received_frame_bytes.pop(id(frame), None)
 
+    @property
+    def rx_seq_high(self) -> int | None:
+        """Newest packet sequence number the current pump has read, if any."""
+        return self._rx_seq_high
+
+    def received_after(self, frame: CivFrame, seq: int | None) -> bool:
+        """Whether ``frame`` came in a packet newer than sequence ``seq``.
+
+        False when the frame's packet sequence is no longer remembered;
+        ``seq`` of ``None`` accepts any remembered frame.
+        """
+        frame_seq = self._received_frame_seq.get(id(frame))
+        if frame_seq is None:
+            return False
+        return seq is None or 0 < ((frame_seq - seq) & 0xFFFF) < 0x8000
+
     def start_worker(self) -> None:
         """Start serialized CI-V commander."""
         self._ensure_civ_runtime()
@@ -1793,6 +1813,7 @@ class CivRuntime:
         assert self._host._civ_transport is not None
         self._active_rx_source_generation = source_generation
         self._host._last_civ_data_received = time.monotonic()
+        self._rx_seq_high = None
         try:
             while self._host._civ_transport is not None:
                 try:
@@ -1820,12 +1841,25 @@ class CivRuntime:
                     self._host._civ_stream_ready = True
                     self._host._civ_recovering = False
                     payload = pkt[CIV_HEADER_SIZE:]
+                    seq = int.from_bytes(pkt[6:8], "little")
+                    high = self._rx_seq_high
+                    if high is None or 0 < ((seq - high) & 0xFFFF) < 0x8000:
+                        self._rx_seq_high = seq
                     for frame_bytes in iter_civ_frames(payload):
                         try:
                             frame = parse_civ_frame(frame_bytes)
                         except ValueError:
                             continue
                         self._remember_raw_received_frame_bytes(frame, frame_bytes)
+                        self._received_frame_seq.pop(id(frame), None)
+                        self._received_frame_seq[id(frame)] = seq
+                        while (
+                            len(self._received_frame_seq)
+                            > _RAW_RECEIVED_FRAME_BYTES_LIMIT
+                        ):
+                            self._received_frame_seq.pop(
+                                next(iter(self._received_frame_seq))
+                            )
                         self.deliver_raw_civ(frame_bytes)
                         try:
                             await self._route_civ_frame(

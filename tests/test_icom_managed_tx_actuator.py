@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -346,7 +347,9 @@ async def test_serial_distrusted_ack_then_receive_readback_is_accepted() -> None
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "column", ("icom7610-serial", "lan-icom"), ids=("serial", "lan")
+    "column",
+    ("icom7610-serial", "ic7300-serial", "lan-icom"),
+    ids=("ic7610-serial", "ic7300-serial", "lan"),
 )
 @pytest.mark.parametrize(
     ("answer", "expected"),
@@ -354,8 +357,18 @@ async def test_serial_distrusted_ack_then_receive_readback_is_accepted() -> None
         ("rx", ActuationResult.ACCEPTED),
         ("tx_cat", ActuationResult.UNCERTAIN),
         ("silence", ActuationResult.UNCERTAIN),
+        ("unmapped", ActuationResult.UNCERTAIN),
+        ("broadcast_rx", ActuationResult.UNCERTAIN),
+        ("broadcast_unmapped", ActuationResult.UNCERTAIN),
     ],
-    ids=("receive", "still-tx", "timeout"),
+    ids=(
+        "receive",
+        "still-tx",
+        "timeout",
+        "directed-malformed",
+        "broadcast",
+        "broadcast-malformed",
+    ),
 )
 async def test_unanswered_unkey_settles_from_the_read_back_answer(
     column: str, answer: str, expected: ActuationResult
@@ -370,6 +383,75 @@ async def test_unanswered_unkey_settles_from_the_read_back_answer(
     harness.radio._civ_get_timeout = 0.2
     try:
         harness.script(answer)
+        result = await harness.radio.actuate(
+            _token(), ActuationOperation.FORCE_RECEIVE, is_current=lambda: True
+        )
+    finally:
+        await harness.close()
+    assert result is expected
+
+
+def _deliver_before_next_reply(harness: Any, frame: bytes) -> None:
+    """Put ``frame`` on the wire just ahead of the next read's own answer."""
+    wire = harness.extras["wire"]
+    wire.before_next_reply.append(
+        wire.wrap(frame) if harness.name == "lan-icom" else frame
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "column",
+    ("icom7610-serial", "ic7300-serial", "lan-icom"),
+    ids=("ic7610-serial", "ic7300-serial", "lan"),
+)
+async def test_a_late_answer_to_an_abandoned_read_does_not_confirm_release(
+    column: str,
+) -> None:
+    """MOR-3810: an earlier read's RX answer, arriving first, is not ours."""
+    harness = await build_harness(column)
+    harness.radio._civ_get_timeout = 0.2
+    try:
+        harness.script("silence")
+        assert (await harness.radio.read_transmit_state()).failure == "timeout"
+        # The abandoned read's RX answer lands ahead of the radio's TX answer
+        # to the release's own read-back.
+        _deliver_before_next_reply(
+            harness,
+            build_civ_frame(
+                CONTROLLER_ADDR, harness.radio._radio_addr, 0x1C, sub=0x00, data=b"\x00"
+            ),
+        )
+        harness.script("tx_cat")
+        result = await harness.radio.actuate(
+            _token(), ActuationOperation.FORCE_RECEIVE, is_current=lambda: True
+        )
+    finally:
+        await harness.close()
+    assert result is ActuationResult.UNCERTAIN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("replayed", "expected"),
+    [(True, ActuationResult.UNCERTAIN), (False, ActuationResult.ACCEPTED)],
+    ids=("replayed-rx-before-tx", "fresh-rx"),
+)
+async def test_a_replayed_lan_packet_does_not_confirm_release(
+    replayed: bool, expected: ActuationResult
+) -> None:
+    """MOR-3810: a re-delivered old LAN packet is not the read-back's answer."""
+    harness = await build_harness("lan-icom")
+    harness.radio._civ_get_timeout = 0.2
+    wire = harness.extras["wire"]
+    try:
+        harness.script("rx")
+        assert (await harness.radio.read_transmit_state()).value is False
+        if replayed:
+            # The radio's earlier RX packet, same sequence number, arrives
+            # again ahead of its TX answer to the release's read-back.
+            wire.before_next_reply.append(wire.delivered[-1])
+            harness.script("tx_cat")
         result = await harness.radio.actuate(
             _token(), ActuationOperation.FORCE_RECEIVE, is_current=lambda: True
         )
