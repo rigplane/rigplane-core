@@ -2174,6 +2174,10 @@ class TestToProfile:
                 "RTTY-R": 50,
                 "AM": 200,
                 "FM": None,
+                # MOR-3623: the D-STAR modes are fixed-width digital modes
+                # with no twin PBT, like the IC-705's DV.
+                "DV": None,
+                "DD": None,
             },
         }
         for name, per_mode in expected.items():

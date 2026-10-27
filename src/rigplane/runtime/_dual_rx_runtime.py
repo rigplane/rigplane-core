@@ -6,6 +6,7 @@ Part of the radio.py decomposition (#505). All methods are accessed via
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -199,7 +200,9 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         routed action's send; that mechanism change is the deferred
         follow-up recorded in MOR-3623's PR body.
         """
-        return await self._run_receiver_routed_once(receiver, operation, action)
+        return await self._run_receiver_routed_once(
+            receiver, operation=operation, action=action
+        )
 
     async def _run_receiver_routed_once(
         self,
@@ -239,9 +242,14 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 except BaseException:
                     # The switch may have reached the radio while its answer
                     # was lost: attempt one restoration, then propagate the
-                    # original error whatever the restoration did.
+                    # original error whatever the restoration did. The
+                    # restoration is shielded so a cancellation delivered
+                    # while it runs cannot cut it short and strand the radio
+                    # on a receiver nobody asked for.
                     try:
-                        await restore_selection()
+                        await asyncio.shield(restore_selection())
+                    except asyncio.CancelledError:
+                        raise
                     except Exception:
                         logger.warning(
                             "%s: restoring receiver %s after a failed %s selection "
@@ -258,7 +266,12 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         finally:
             if switched and selection_still_ours():
                 try:
-                    await restore_selection()
+                    # Shielded for the same reason as the failure-path
+                    # restoration above: cancellation of the caller must not
+                    # strand the radio on the temporary receiver.
+                    await asyncio.shield(restore_selection())
+                except asyncio.CancelledError:
+                    raise
                 except TimeoutError:
                     # Do not swallow — radio would silently remain on the
                     # temporary receiver. Retry once (the first attempt may
@@ -269,7 +282,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                         operation,
                         current,
                     )
-                    await restore_selection()
+                    await asyncio.shield(restore_selection())
 
     async def _get_frequency_main(
         self, *, bypass_cache: bool = False, update_cache: bool = True

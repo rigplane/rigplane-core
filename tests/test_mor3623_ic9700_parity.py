@@ -42,7 +42,7 @@ from rigplane.core.command_dispatch import prepare_command_intent
 from rigplane.core.radio_protocol import RepeaterShiftCapable
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.types import Mode, RepeaterShiftDirection
-from rigplane.exceptions import CommandError
+from rigplane.exceptions import CommandError, TimeoutError
 from rigplane.radio import IcomRadio
 from rigplane.rig_loader import load_rig
 from rigplane.runtime._state_queries import acquisition_query_resolver_for_profile
@@ -183,8 +183,8 @@ async def test_set_sends_the_guide_code_on_every_band(
     assert band_info.bsr_code == band_code
 
     radio = _radio(transport)
-    transport.queue_response(_reply(0xFB))
-    transport.queue_response(_reply(0xFB))
+    transport.queue_response_on_send(1, _reply(0xFB))  # set_freq ACK
+    transport.queue_response_on_send(2, _reply(0xFB))  # shift ACK
     await radio.set_freq(freq)
     await radio.set_repeater_shift(RepeaterShiftDirection.MINUS)
     sent = _sent_frames(transport)
@@ -207,8 +207,8 @@ async def test_set_on_the_sub_receiver_switches_and_restores(transport) -> None:
     (pre-review P1, MOR-3623)."""
     radio = _radio(transport)
     radio._radio_state.active = "MAIN"
-    for _ in range(3):
-        transport.queue_response(_reply(0xFB))
+    for n in (1, 2, 3):
+        transport.queue_response_on_send(n, _reply(0xFB))
     await radio.set_repeater_shift(RepeaterShiftDirection.MINUS, receiver=1)
     assert [(f.command, f.data) for f in _sent_frames(transport)] == [
         (0x07, b"\xd1"),  # select SUB
@@ -222,9 +222,9 @@ async def test_set_on_the_sub_receiver_switches_and_restores(transport) -> None:
 async def test_get_on_the_sub_receiver_switches_and_restores(transport) -> None:
     radio = _radio(transport)
     radio._radio_state.active = "MAIN"
-    transport.queue_response(_reply(0xFB))
-    transport.queue_response(_reply(0x0F, bytes([0x11])))
-    transport.queue_response(_reply(0xFB))
+    transport.queue_response_on_send(1, _reply(0xFB))
+    transport.queue_response_on_send(2, _reply(0x0F, bytes([0x11])))
+    transport.queue_response_on_send(3, _reply(0xFB))
     assert await radio.get_repeater_shift(receiver=1) is RepeaterShiftDirection.MINUS
     assert [(f.command, f.data) for f in _sent_frames(transport)] == [
         (0x07, b"\xd1"),
@@ -243,8 +243,8 @@ async def test_set_on_main_with_sub_selected_switches_and_restores(
     SUB by accident — the dispatch path has no poller-side dance."""
     radio = _radio(transport)
     radio._radio_state.active = "SUB"
-    for _ in range(3):
-        transport.queue_response(_reply(0xFB))
+    for n in (1, 2, 3):
+        transport.queue_response_on_send(n, _reply(0xFB))
     await radio.set_repeater_shift(RepeaterShiftDirection.MINUS, receiver=0)
     assert [(f.command, f.data) for f in _sent_frames(transport)] == [
         (0x07, b"\xd0"),  # select MAIN
@@ -257,16 +257,33 @@ async def test_set_on_main_with_sub_selected_switches_and_restores(
 @pytest.mark.asyncio
 async def test_a_lost_ack_on_the_initial_switch_still_restores(transport) -> None:
     """Pre-review round 2: the switch may reach the radio while its ACK is
-    lost — one best-effort restoration runs before the error propagates."""
+    lost — one best-effort restoration runs before the error propagates.
+    The restoration's ACK is bound to the SECOND send: the first (the
+    lost switch) stays unanswered."""
     radio = _radio(transport)
     radio._radio_state.active = "MAIN"
-    transport.queue_response(_reply(0xFB))  # only the restoration's ACK
+    transport.queue_response_on_send(2, _reply(0xFB))
     with pytest.raises((TimeoutError, CommandError)):
         await radio.set_repeater_shift(RepeaterShiftDirection.MINUS, receiver=1)
     assert [(f.command, f.data) for f in _sent_frames(transport)] == [
         (0x07, b"\xd1"),  # the switch whose ACK was lost
         (0x07, b"\xd0"),  # the best-effort restoration
     ]
+    assert radio._radio_state.active == "MAIN"
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_direction_changes_nothing_not_even_the_selection(
+    transport,
+) -> None:
+    """Pre-review round 3: the direction is validated before any receiver
+    routing — an invalid value raises ValueError with zero wire traffic,
+    even when the requested receiver is not the selected one."""
+    radio = _radio(transport)
+    radio._radio_state.active = "MAIN"
+    with pytest.raises(ValueError):
+        await radio.set_repeater_shift(RepeaterShiftDirection.ARS, receiver=1)
+    assert _sent_frames(transport) == []
     assert radio._radio_state.active == "MAIN"
 
 
@@ -297,6 +314,52 @@ async def test_a_foreign_selection_during_the_action_skips_the_restore(
     assert result == "written"
     # The SUB switch ran; the MAIN restoration was skipped.
     assert calls == ["SUB"]
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_the_restore_still_completes_it(
+    transport,
+) -> None:
+    """Pre-review round 3: cancelling the caller while the restoration is
+    on the wire must not strand the radio on the temporary receiver — the
+    shielded restoration runs to completion (simulated; fake wire only)."""
+    import asyncio as _asyncio
+
+    radio = _radio(transport)
+    radio._radio_state.active = "MAIN"
+    restore_started = _asyncio.Event()
+    restore_gate = _asyncio.Event()
+    calls: list[str] = []
+
+    async def fake_set_vfo_wire(vfo: str) -> None:
+        calls.append(vfo)
+        if vfo == "MAIN":
+            restore_started.set()
+            await restore_gate.wait()
+
+    radio._set_vfo_wire = fake_set_vfo_wire  # type: ignore[method-assign]
+
+    async def action():
+        return "written"
+
+    task = _asyncio.create_task(
+        radio._run_receiver_routed_once(
+            1, operation="set_repeater_shift", action=action
+        )
+    )
+    await _asyncio.wait_for(restore_started.wait(), 5.0)
+    task.cancel()
+    with pytest.raises(_asyncio.CancelledError):
+        await task
+    # The shielded restoration finishes once its gate opens.
+    restore_gate.set()
+    for _ in range(100):
+        if len(calls) >= 2:
+            break
+        await _asyncio.sleep(0)
+    await _asyncio.sleep(0)
+    assert calls == ["SUB", "MAIN"]
+    assert radio._radio_state.active == "MAIN"
 
 
 @pytest.mark.asyncio

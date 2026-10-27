@@ -4954,9 +4954,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """
         self._check_connected()
         self._require_receiver(receiver, operation="set_repeater_shift")
+        # Build (and thereby validate) the frame before any receiver
+        # routing: an invalid direction must change nothing on the radio,
+        # not even its selection.
+        civ = self._commands.set_repeater_shift(direction, to_addr=self._radio_addr)
 
         async def write() -> None:
-            civ = self._commands.set_repeater_shift(direction, to_addr=self._radio_addr)
             resp = await self._send_civ_expect(civ, label="set_repeater_shift")
             if parse_ack_nak(resp) is False:
                 raise CommandError(f"Radio rejected repeater shift {direction!r}")
