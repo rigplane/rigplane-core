@@ -422,6 +422,20 @@ async def _declare_civ_port(server: MockIcomRadio, ctrl: _UdpClient, port: int) 
 # ---------------------------------------------------------------------------
 
 
+def _assert_burst_cadence(starts: list[float]) -> None:
+    assert len(starts) >= 8, f"only {len(starts)} complete bursts"
+    assert all(0.0 <= c - p <= 0.080 for p, c in zip(starts, starts[1:]))
+    elapsed = starts[-1] - starts[0]
+    expected = (len(starts) - 1) * _AUDIO_BURST_PERIOD_S
+    assert elapsed == pytest.approx(expected, abs=6 * _AUDIO_BURST_PERIOD_S)
+
+
+@pytest.mark.parametrize("period", [0.005, 0.015, 0.030, 0.060])
+def test_burst_cadence_rejects_sustained_wrong_period(period: float) -> None:
+    with pytest.raises(AssertionError):
+        _assert_burst_cadence([i * period for i in range(50)])
+
+
 async def test_rx_stream_matches_recorded_layout_and_cadence(
     server: MockIcomRadio, client: _UdpClient
 ) -> None:
@@ -461,7 +475,7 @@ async def test_rx_stream_matches_recorded_layout_and_cadence(
         assert p[AUDIO_HEADER_SIZE + 1] == (_u16be(p, 0x12) + 1) & 0xFF
 
     starts = [b[0][0] for b in bursts]  # bursts every ~20 ms (recorded)
-    assert all(0.012 <= c - p <= 0.080 for p, c in zip(starts, starts[1:]))
+    _assert_burst_cadence(starts)
     assert {sum(len(p) - AUDIO_HEADER_SIZE for _, p in b) for b in bursts} == {3840}
     assert server.audio_rx_frames_sent >= len(flat)
 
