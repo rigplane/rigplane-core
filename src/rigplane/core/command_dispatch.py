@@ -207,38 +207,33 @@ def _repeater_offset_target(params: Mapping[str, Any]) -> FieldPath:
 
 
 def _guard_repeater_offset(radio: Any, params: Mapping[str, Any]) -> dict[str, Any]:
-    """Band-envelope guard for ``set_repeater_offset`` (MOR-3624).
+    """Envelope guard for ``set_repeater_offset`` (MOR-3624).
 
     Runs in :func:`prepare_command_intent` — after the capability check,
-    before queueing — so a refused magnitude never reaches the wire. The
-    band comes from the profile's ``[[repeater_offset.bands]]`` row that
-    contains the receiver's current frequency; an unknown frequency or no
-    containing band refuses rather than guesses. Radio-agnostic: reads the
-    duck-typed ``profile``/``radio_state`` seats, never a model name.
+    before queueing — so a magnitude no band could accept never queues.
+    Band-INDEPENDENT: at most the ``max`` over all bands and a multiple of
+    the smallest ``step_hz``. It never reads the radio's frequency, which
+    may change bands between queueing and execution; the band containing
+    the write-time frequency is enforced at execution by the shim via
+    :meth:`RepeaterOffsetProfile.limits_for`.
     """
     offset_profile = getattr(getattr(radio, "profile", None), "repeater_offset", None)
-    if offset_profile is None:
+    if offset_profile is None or not offset_profile.bands:
         raise CommandUnsupportedError(
             "command 'set_repeater_offset' is not supported by active profile "
             "(missing capability: repeater_offset)"
         )
-    state = getattr(radio, "radio_state", None)
-    receiver_state = getattr(state, "sub" if params["receiver"] else "main", None)
-    freq_hz = getattr(receiver_state, "freq", 0) or 0
-    band = offset_profile.band_for(freq_hz)
-    if band is None:
-        raise ValueError(
-            f"repeater offset refused: receiver frequency {freq_hz} Hz is "
-            "unknown or outside every [repeater_offset] band"
-        )
+    envelope_max = max(band.max_hz for band in offset_profile.bands)
+    envelope_step = min(band.step_hz for band in offset_profile.bands)
     offset = params["offset_hz"]
-    if offset > band.max_hz:
+    if offset > envelope_max:
         raise ValueError(
-            f"offset_hz {offset} exceeds the band maximum {band.max_hz} Hz"
+            f"offset_hz {offset} exceeds the profile maximum {envelope_max} Hz"
         )
-    if offset % band.step_hz:
+    if offset % envelope_step:
         raise ValueError(
-            f"offset_hz {offset} is not a multiple of the band step {band.step_hz} Hz"
+            f"offset_hz {offset} is not a multiple of the profile step "
+            f"{envelope_step} Hz"
         )
     return dict(params)
 
@@ -448,11 +443,12 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             tx_policy=DescriptorTxPolicy.TX_SAFE,
             public_names=("set_repeater_shift",),
         ),
-        # Repeater offset MAGNITUDE (MOR-3624): the band guard runs in
+        # Repeater offset MAGNITUDE (MOR-3624): the envelope guard runs in
         # ``prepare_command_intent`` via ``project_expectation`` — the one
-        # descriptor hook with radio access before queueing — so refused
-        # magnitudes never reach the wire. ``required_capability`` hides the
-        # command from profiles that declare no offset surface.
+        # descriptor hook with radio access before queueing — so magnitudes
+        # no band could accept never queue. ``required_capability`` hides
+        # the command from profiles that declare no offset surface; the shim
+        # enforces the write-time band via ``limits_for`` at execution.
         "set_repeater_offset": CommandDescriptor(
             name="set_repeater_offset",
             method_name="set_repeater_offset",
@@ -884,4 +880,9 @@ async def execute_command_intent(
         and validate_currency is not None
     ):
         arguments["before_set"] = validate_currency
-    await method(**arguments)
+    try:
+        await method(**arguments)
+    except ValueError as exc:
+        # MOR-3624: backend refusals (the offset shim's write-time band
+        # check) report as command errors, never raw ValueErrors.
+        raise CommandError(str(exc)) from exc

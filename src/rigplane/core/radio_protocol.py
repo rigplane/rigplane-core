@@ -104,6 +104,7 @@ __all__ = [
     "VoiceControlCapable",
     "SystemControlCapable",
     "RepeaterControlCapable",
+    "RepeaterOffsetCapable",
     "LevelsCapable",
     "ManagedTxApi",
     "ManagedTxCapable",
@@ -2117,10 +2118,17 @@ class RepeaterOffsetCapable(Protocol):
 
     Sibling to :class:`RepeaterShiftCapable`, which covers direction only;
     this protocol covers only the offset magnitude, never its direction.
-    The magnitude a backend may write is not a protocol concern: the
-    descriptor-level guard refuses anything outside the active profile's
-    ``[[repeater_offset.bands]]`` envelope before this method is called, so
-    an implementer receives an already-admitted ``offset_hz``.
+
+    Admission is envelope-only: the descriptor refuses before queueing
+    just what no band could accept (not an int, negative, over the
+    profile maximum, off the smallest step). The band-specific limits
+    are enforced HERE, at write time, because the receiver may change
+    bands between queueing and execution: resolve the band from the
+    frequency read at write time via
+    :meth:`RepeaterOffsetProfile.limits_for` and raise ``ValueError``
+    (unknown frequency, no band, over ``max_hz``, off ``step_hz``) BEFORE
+    writing anything. The command layer reports that refusal as a
+    command error.
     """
 
     async def get_repeater_offset(self, receiver: int = 0) -> int:
@@ -2128,7 +2136,12 @@ class RepeaterOffsetCapable(Protocol):
         ...
 
     async def set_repeater_offset(self, offset_hz: int, receiver: int = 0) -> None:
-        """Set repeater offset magnitude in Hz."""
+        """Set repeater offset magnitude in Hz.
+
+        Enforce the write-time band limits first: an unknown frequency, no
+        containing band, over ``max_hz`` or off ``step_hz`` raises
+        ``ValueError`` before anything is written.
+        """
         ...
 
 

@@ -159,8 +159,8 @@ class RepeaterOffsetBand:
     """One band's repeater-offset envelope (``[[repeater_offset.bands]]`` row,
     MOR-3624). ``max_hz`` is the largest accepted offset magnitude; an offset
     must also be a multiple of ``step_hz``. Both are band data, not radio
-    code — the guarded ``set_repeater_offset`` command reads them for the
-    band containing the receiver's current frequency.
+    code — the ``set_repeater_offset`` shim reads them at execution for the
+    band containing the write-time frequency.
     """
 
     low_hz: int
@@ -187,6 +187,18 @@ class RepeaterOffsetProfile:
             if band.contains(freq_hz):
                 return band
         return None
+
+    def limits_for(self, freq_hz: int) -> RepeaterOffsetBand:
+        """Return the band containing ``freq_hz``; raise ``ValueError`` when
+        no band contains it. The write-time lookup every
+        ``RepeaterOffsetCapable`` shim runs before touching the wire."""
+        band = self.band_for(freq_hz)
+        if band is None:
+            raise ValueError(
+                f"repeater offset refused: receiver frequency {freq_hz} Hz is "
+                "outside every [repeater_offset] band"
+            )
+        return band
 
 
 class ToneSquelchType(StrEnum):

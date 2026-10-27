@@ -649,9 +649,9 @@ These optional sections provide detailed configuration for specific capabilities
 ## `[repeater_offset]` — Repeater Offset Magnitude Envelopes (MOR-3624)
 
 Band envelopes for the guarded `set_repeater_offset` command: for the band
-containing the receiver's current frequency, an offset magnitude must be a
+containing the receiver's write-time frequency, an offset magnitude must be a
 multiple of `step_hz` and at most `max_hz`; anything else is refused before
-the wire. Required when `[capabilities].features` lists `repeater_offset`
+the wire (at admission or by the shim at execution). Required when `[capabilities].features` lists `repeater_offset`
 (a load error otherwise); unknown keys, non-positive integers,
 `low_hz >= high_hz`, a `step_hz` that does not divide `max_hz`, and
 overlapping bands are all load errors.

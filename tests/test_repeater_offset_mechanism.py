@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+import rigplane.core.radio_protocol as canonical_radio_protocol
 from rigplane.core.capabilities import CAP_REPEATER_OFFSET
 from rigplane.core.command_dispatch import (
     CommandUnsupportedError,
@@ -21,10 +22,11 @@ from rigplane.core.command_dispatch import (
     execute_command_intent,
     prepare_command_intent,
 )
+from rigplane.core.exceptions import CommandError
 from rigplane.core.radio_protocol import RepeaterOffsetCapable
-from rigplane.core.radio_state import RadioState
 from rigplane.core.state_pipeline_contracts import (
     DEFAULT_FIELD_REGISTRY,
+    CommandIntent,
     FieldPath,
     Observation,
     SourceMetadata,
@@ -48,6 +50,10 @@ UHF = RepeaterOffsetBand(
 )
 BANDS = RepeaterOffsetProfile(bands=(VHF, UHF))
 MAIN_PATH = FieldPath.receiver("main", "operator_controls", "repeater_offset")
+_FREQ_PATHS = {
+    0: FieldPath.active("main", "freq_mode", "freq_hz"),
+    1: FieldPath.active("sub", "freq_mode", "freq_hz"),
+}
 
 
 @dataclass(frozen=True)
@@ -57,27 +63,62 @@ class ShimFixture:
 
     profile_model: str  # never branched on
     bands: RepeaterOffsetProfile
-    freq_hz: int  # receiver's current frequency; picks the guard's band
+    freq_hz: int  # observed before execution; picks the write-time band
     accepted_hz: tuple[int, ...]
-    refused_hz: tuple[int, ...]  # per-band refusals: sign, step, max
+    refused_hz: tuple[int, ...]  # admission refusals: sign, step, max
     write_frames: tuple[bytes, ...] = ()
     read_frames: tuple[bytes, ...] = ()
 
 
 SHIM_FIXTURES = [
-    ShimFixture("SYNTHETIC-OFFSET", BANDS, 145_000_000, (0, 600_000, 1_000_000), (-5_000, 600_001, 1_005_000))
+    ShimFixture(
+        "SYNTHETIC-OFFSET",
+        BANDS,
+        145_000_000,
+        (0, 600_000, 1_000_000),
+        (-5_000, 600_001, 10_005_000),
+    )
 ]
 
 
-class FakeOffsetRadio:
-    """``RepeaterOffsetCapable`` double with the duck-typed seats the guard
-    reads (``capabilities``, ``profile``, ``radio_state``)."""
+def _observe_freq(store: StateStore, freq_hz: int, receiver: int = 0) -> None:
+    """Feed the fake's frequency through the observation path, not a mirror."""
+    store.apply(
+        Observation(
+            path=_FREQ_PATHS[receiver],
+            value=freq_hz,
+            source=SourceMetadata(
+                source="poll_response",
+                provider="offset_contract",
+                transport="fake",
+                native_id="freq",
+            ),
+            timestamp_monotonic=10.0,
+            quality=("confirmed",),
+        )
+    )
 
-    def __init__(self, profile: RadioProfile, *, freq_hz: int = 145_000_000) -> None:
+
+def _observed_freq_hz(store: StateStore, receiver: int) -> int | None:
+    for field in store.snapshot().fields:
+        if field.path == _FREQ_PATHS[receiver]:
+            return field.value
+    return None
+
+
+class FakeOffsetRadio:
+    """``RepeaterOffsetCapable`` double (``capabilities``/``profile`` seats).
+    The frequency lives in a real ``StateStore``; the setter reads it at
+    write time, like a shim reading the radio."""
+
+    def __init__(
+        self, profile: RadioProfile, *, freq_hz: int | None = 145_000_000
+    ) -> None:
         self.capabilities = set(profile.capabilities)
         self.profile = profile
-        self.radio_state = RadioState()
-        self.radio_state.main.freq = freq_hz
+        self.store = StateStore()
+        if freq_hz is not None:
+            _observe_freq(self.store, freq_hz)
         self.writes: list[tuple[int, int]] = []
 
     def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
@@ -87,6 +128,21 @@ class FakeOffsetRadio:
         return self.writes[-1][0] if self.writes else 0
 
     async def set_repeater_offset(self, offset_hz: int, receiver: int = 0) -> None:
+        offset_profile = self.profile.repeater_offset
+        assert offset_profile is not None
+        freq_hz = _observed_freq_hz(self.store, receiver)
+        if freq_hz is None:
+            raise ValueError("repeater offset refused: receiver frequency is unknown")
+        band = offset_profile.limits_for(freq_hz)
+        if offset_hz > band.max_hz:
+            raise ValueError(
+                f"offset_hz {offset_hz} exceeds the band maximum {band.max_hz} Hz"
+            )
+        if offset_hz % band.step_hz:
+            raise ValueError(
+                f"offset_hz {offset_hz} is not a multiple of the band step "
+                f"{band.step_hz} Hz"
+            )
         self.writes.append((offset_hz, receiver))
 
 
@@ -102,8 +158,8 @@ def _profile(offset: RepeaterOffsetProfile | None = BANDS) -> RadioProfile:
     )
 
 
-def _prepare(radio: FakeOffsetRadio, offset_hz: Any) -> None:
-    prepare_command_intent(
+def _prepare(radio: FakeOffsetRadio, offset_hz: Any) -> CommandIntent:
+    return prepare_command_intent(
         radio, "set_repeater_offset", {"offset_hz": offset_hz}, source="websocket"
     )
 
@@ -116,32 +172,36 @@ async def test_accepted_offsets_forward_exact_call(fixture: ShimFixture) -> None
     radio = FakeOffsetRadio(_profile(fixture.bands), freq_hz=fixture.freq_hz)
     assert fixture.write_frames == fixture.read_frames == ()  # no shim yet
     for offset in fixture.accepted_hz:
-        intent = prepare_command_intent(
-            radio, "set_repeater_offset", {"offset_hz": offset}, source="websocket"
-        )
-        await execute_command_intent(radio, intent)
+        await execute_command_intent(radio, _prepare(radio, offset))
     assert radio.writes == [(offset, 0) for offset in fixture.accepted_hz]
 
 
 async def test_second_band_uses_its_own_step_and_max() -> None:
     radio = FakeOffsetRadio(_profile(), freq_hz=435_000_000)
-    await execute_command_intent(
-        radio,
-        prepare_command_intent(
-            radio, "set_repeater_offset", {"offset_hz": 5_000_000}, source="websocket"
-        ),
-    )
+    await execute_command_intent(radio, _prepare(radio, 5_000_000))
     assert radio.writes == [(5_000_000, 0)]
-    with pytest.raises(ValueError, match="multiple"):
-        _prepare(radio, 5_005_000)  # not a multiple of the UHF 25 kHz step
+    # 5_005_000 clears admission (multiple of the 5 kHz envelope step) but
+    # the UHF 25 kHz step refuses it at execution, as a command error.
+    admitted = _prepare(radio, 5_005_000)
+    with pytest.raises(CommandError, match="multiple"):
+        await execute_command_intent(radio, admitted)
     assert radio.writes == [(5_000_000, 0)]
+
+
+async def test_late_band_change_is_refused_at_execution() -> None:
+    radio = FakeOffsetRadio(_profile(), freq_hz=435_000_000)
+    intent = _prepare(radio, 5_000_000)
+    _observe_freq(radio.store, 145_000_000)  # VHF before the write lands
+    with pytest.raises(CommandError, match="band maximum"):
+        await execute_command_intent(radio, intent)
+    assert radio.writes == []
 
 
 # ── Refusals happen before anything reaches the wire ─────────────
 
 
 @pytest.mark.parametrize("fixture", SHIM_FIXTURES, ids=lambda f: f.profile_model)
-def test_band_refusals_forward_nothing(fixture: ShimFixture) -> None:
+def test_admission_refusals_forward_nothing(fixture: ShimFixture) -> None:
     radio = FakeOffsetRadio(_profile(fixture.bands), freq_hz=fixture.freq_hz)
     for offset in fixture.refused_hz:
         with pytest.raises(ValueError):
@@ -157,11 +217,16 @@ def test_non_int_offsets_are_refused_and_forward_nothing(offset: Any) -> None:
     assert radio.writes == []
 
 
-@pytest.mark.parametrize("freq_hz", [0, 20_000_000])  # unknown; outside every band
-def test_unbanded_frequency_is_refused_and_forwards_nothing(freq_hz: int) -> None:
+@pytest.mark.parametrize(
+    ("freq_hz", "match"),  # unknown; outside every band
+    [(None, "unknown"), (20_000_000, "outside every")],
+)
+async def test_unbanded_frequency_is_refused_at_execution(
+    freq_hz: int | None, match: str
+) -> None:
     radio = FakeOffsetRadio(_profile(), freq_hz=freq_hz)
-    with pytest.raises(ValueError, match="band"):
-        _prepare(radio, 600_000)
+    with pytest.raises(CommandError, match=match):
+        await execute_command_intent(radio, _prepare(radio, 600_000))
     assert radio.writes == []
 
 
@@ -196,6 +261,19 @@ def test_protocol_is_runtime_checkable_and_gates_the_tag() -> None:
     assert CAP_REPEATER_OFFSET in runtime_capabilities(FakeOffsetRadio(_profile()))
     assert not isinstance(_GetOnlyRadio(), RepeaterOffsetCapable)
     assert CAP_REPEATER_OFFSET not in runtime_capabilities(_GetOnlyRadio())
+
+
+def test_protocol_wildcard_export_is_identical_on_both_modules() -> None:
+    canonical_namespace: dict[str, Any] = {}
+    exec("from rigplane.core.radio_protocol import *", canonical_namespace)
+    compat_namespace: dict[str, Any] = {}
+    exec("from rigplane.radio_protocol import *", compat_namespace)
+    assert (
+        canonical_namespace["RepeaterOffsetCapable"]
+        is compat_namespace["RepeaterOffsetCapable"]
+        is RepeaterOffsetCapable
+    )
+    assert "RepeaterOffsetCapable" in canonical_radio_protocol.__all__
 
 
 # ── State, registry and public projection ────────────────────────
