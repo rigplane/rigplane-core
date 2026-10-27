@@ -1808,6 +1808,40 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     expect(pttOff.mock.calls).toEqual([[{ automatic: true }]]);
   });
 
+  // A page interruption inside the double-tap window must cancel that window:
+  // otherwise the next press reads as the second tap of a latch.
+  it('release, rotate, page blur: the next press is a momentary PTT, never a latch, and lifts to OFF', () => {
+    const t = mountMobile();
+    fabPress(t);
+    fabRelease(t);
+    rotate(true);
+    window.dispatchEvent(new Event('blur'));
+    window.dispatchEvent(new Event('focus'));
+    flushSync();
+    pointer(stripEl(t), 'pointerdown', { pointerId: 2 });
+    pointer(document.body, 'pointerup', { pointerId: 2 });
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS * 2);
+    const operations = tx.trace().map((event) => event.operation);
+    expect(operations).not.toContain('transmit_on');
+    expect(operations).toEqual(['ptt_on', 'ptt_off', 'ptt_on', 'ptt_off']);
+  });
+
+  it('page loss while a second press is still inside the FAB guard cancels the pending window', () => {
+    const t = mountMobile();
+    fabPress(t);
+    fabRelease(t);
+    pointer(fabEl(t), 'pointerdown', { pointerId: 2 });
+    vi.advanceTimersByTime(HOLD_MS - 20);
+    window.dispatchEvent(new Event('blur'));
+    flushSync();
+    pointer(fabEl(t), 'pointerdown', { pointerId: 3 });
+    vi.advanceTimersByTime(HOLD_MS);
+    flushSync();
+    pointer(document.body, 'pointerup', { pointerId: 3 });
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS * 2);
+    expect(tx.trace().map((event) => event.operation)).toEqual(['ptt_on', 'ptt_off', 'ptt_on', 'ptt_off']);
+  });
+
   it('every mobile PTT button blocks browser panning under the finger', () => {
     expect(fabEl(mountMobile()).style.touchAction).toBe('none');
     expect(stripEl(mountLandscape()).style.touchAction).toBe('none');

@@ -205,6 +205,31 @@ describe('shared PTT hold (MOR-3817)', () => {
     expect(target.release).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['the page is hidden', () => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+      document.dispatchEvent(new Event('visibilitychange'));
+    }],
+    ['the window loses focus', () => window.dispatchEvent(new Event('blur'))],
+  ] as const)('forwards an abort when %s with no hold, or a hold still inside its guard', (_name, loseThePage) => {
+    const { target, mountButton } = setup(() => ({ delayMs: 50, moveCancelPx: 8 }));
+    const { node } = mountButton();
+    loseThePage();
+    expect(target.abort).toHaveBeenCalledOnce();
+    pointer(node, 'pointerdown');
+    loseThePage();
+    vi.advanceTimersByTime(100);
+    expect(target.abort).toHaveBeenCalledTimes(2);
+    expect(target.press).not.toHaveBeenCalled();
+  });
+
+  it('stops forwarding page loss after destroy', () => {
+    const { target, hold } = setup();
+    hold.destroy();
+    window.dispatchEvent(new Event('blur'));
+    expect(target.abort).not.toHaveBeenCalled();
+  });
+
   it('a visible-again visibilitychange does not end the hold', () => {
     const { target, mountButton } = setup();
     pointer(mountButton().node, 'pointerdown');

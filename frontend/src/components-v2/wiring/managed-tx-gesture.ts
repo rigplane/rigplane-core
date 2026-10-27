@@ -95,7 +95,7 @@ export function createManagedTxGesture(
   return { down, up, abort, destroy };
 }
 
-/** What a PTT hold drives; `abort` is page loss (hidden, window blur) or teardown. */
+/** What a PTT hold drives; `abort` is page loss (hidden, window blur) or teardown, and must be safe when nothing is held. */
 export interface PttHoldTarget {
   press(): void;
   release(): void;
@@ -147,8 +147,6 @@ export function createPttHold(target: PttHoldTarget): PttHold {
     window.removeEventListener('pointerup', onPointerEnd, true);
     window.removeEventListener('pointercancel', onPointerEnd, true);
     window.removeEventListener('pointermove', onPointerMove, true);
-    window.removeEventListener('blur', onPageLoss);
-    document.removeEventListener('visibilitychange', onVisibility);
     if (current.kind === 'pointer') {
       if (current.timer !== null) clearTimeout(current.timer);
       if (!current.engaged) return;
@@ -162,8 +160,6 @@ export function createPttHold(target: PttHoldTarget): PttHold {
     window.addEventListener('pointerup', onPointerEnd, true);
     window.addEventListener('pointercancel', onPointerEnd, true);
     window.addEventListener('pointermove', onPointerMove, true);
-    window.addEventListener('blur', onPageLoss);
-    document.addEventListener('visibilitychange', onVisibility);
   };
 
   function onPointerEnd(event: PointerEvent) {
@@ -175,8 +171,15 @@ export function createPttHold(target: PttHoldTarget): PttHold {
     const dy = event.clientY - hold.y;
     if (dx * dx + dy * dy > hold.moveCancelPx * hold.moveCancelPx) end('drop');
   }
-  function onPageLoss() { end('abort'); }
-  function onVisibility() { if (document.visibilityState === 'hidden') end('abort'); }
+  // Page loss aborts the target even with no engaged hold: the target may still
+  // own a pending double-tap window that would latch the next press.
+  function onPageLoss() {
+    end('drop');
+    target.abort();
+  }
+  function onVisibility() { if (document.visibilityState === 'hidden') onPageLoss(); }
+  window.addEventListener('blur', onPageLoss);
+  document.addEventListener('visibilitychange', onVisibility);
 
   const attach: PttHold['attach'] = (node, initial) => {
     let options = initial;
@@ -239,6 +242,8 @@ export function createPttHold(target: PttHoldTarget): PttHold {
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      window.removeEventListener('blur', onPageLoss);
+      document.removeEventListener('visibilitychange', onVisibility);
       end('abort');
     },
   };
