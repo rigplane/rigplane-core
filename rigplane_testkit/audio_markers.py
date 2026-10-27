@@ -106,12 +106,14 @@ def analyze_marker_pcm16(pcm: bytes, spec: MarkerSpec) -> MarkerReport:
         else:
             i += 1
     gap_energy = _gap_energy_dbfs(x, spec)
-    if not tone_on.any():
-        # No tone at all: frequency/level fail their checks on their own.
-        return MarkerReport(0.0, -math.inf, tuple(gaps), 0.0, n / sr, gap_energy)
     mask = np.repeat(tone_on[:nwin], win) if nwin else np.zeros(0, dtype=bool)
     if tail:
         mask = np.concatenate([mask, np.full(tail, tone_on[nwin])])
+    for start_s, end_s in spec.gaps:
+        mask[_sample_range(spec, start_s, end_s, n)] = False
+    if not mask.any():
+        # No tone at all: frequency/level fail their checks on their own.
+        return MarkerReport(0.0, -math.inf, tuple(gaps), 0.0, n / sr, gap_energy)
     idx = np.nonzero(mask)[0]
     freq_hz = _measure_freq(x, sr, idx)
     level_dbfs, residual_db = _fit_tone(x, idx, sr, freq_hz)

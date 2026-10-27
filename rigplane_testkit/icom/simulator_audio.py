@@ -79,8 +79,7 @@ class TxAudioFormat:
 
     Production conninfo layout (``src/rigplane/core/auth.py``:
     ``build_conninfo_packet``): tx codec byte at 0x73, BE u32 tx sample
-    rate at 0x78. Learned from the fresh login's own accepted conninfo;
-    sink frames snapshot it at arrival.
+    rate at 0x78. Sink frames snapshot it at arrival.
     """
 
     codec: int
@@ -218,17 +217,10 @@ class AudioPortMixin:
     def tx_capture_format(self, since: int = 0) -> TxAudioFormat | None:
         """The single TX format across ``audio_tx_frames[since:]``.
 
-        The capture's label: the one distinct learned format among the
-        frames, or ``None`` when no frame carries one (no conninfo taught
-        a format) or the slice spans a format change (two or more
-        distinct learned formats — no single label is true of the whole
-        capture).
+        Returns ``None`` for an empty slice, any unknown-format frame,
+        or a slice spanning more than one learned format.
         """
-        learned = {
-            frame.tx_format
-            for frame in self.audio_tx_frames[since:]
-            if frame.tx_format is not None
-        }
+        learned = {frame.tx_format for frame in self.audio_tx_frames[since:]}
         return learned.pop() if len(learned) == 1 else None
 
     @property
@@ -351,6 +343,7 @@ class AudioPortMixin:
         """
         self._audio_stop_rx(reason)
         self._audio_last_client_seq = None
+        self._audio_tx_format = None
 
     def _audio_stop_rx(self, reason: str) -> None:
         """Cancel the RX stream task and forget the audio client."""

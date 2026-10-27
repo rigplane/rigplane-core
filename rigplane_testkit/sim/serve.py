@@ -319,21 +319,22 @@ def _capture_tx_format(
     PCM_1CH_16BIT format (the rate the client's accepted conninfo
     declared — the only label that is true of the whole capture),
     ``"non_pcm16"`` when the single learned format is another codec,
-    ``"unknown"`` when frames exist but no conninfo taught a format (a
-    bare conninfo), ``"mixed"`` when the slice spans a format change
-    (two or more learned formats), and ``"default"`` when nothing was
-    captured and nothing was learned (the profile default, which
-    mislabels nothing because there is nothing to play back).
+    ``"unknown"`` when every frame has unknown format (a bare conninfo),
+    ``"mixed"`` when frame formats differ (including known and unknown),
+    and ``"default"`` when nothing was captured and nothing was learned
+    (the profile default, which mislabels nothing because there is nothing
+    to play back).
     """
     frames = radio.audio_tx_frames[since:]
-    learned = {frame.tx_format for frame in frames if frame.tx_format is not None}
-    if len(learned) == 1:
-        fmt = next(iter(learned))
+    fmt = radio.tx_capture_format(since)
+    if fmt is not None:
         return fmt, "pcm16" if fmt.codec == _IC7610_TX_DEFAULT.codec else "non_pcm16"
-    if learned:
-        return None, "mixed"
     if frames:
-        return None, "unknown"
+        return None, (
+            "mixed"
+            if any(frame.tx_format is not None for frame in frames)
+            else "unknown"
+        )
     learned_now = radio.audio_tx_format
     if learned_now is not None:
         return learned_now, (

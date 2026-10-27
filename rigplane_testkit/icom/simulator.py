@@ -1649,6 +1649,9 @@ class MockIcomRadio(AudioPortMixin):
                 # permission where it was (MOR-3340).
                 self._fence_login_ip = addr[0]
                 self._fence_login_civ_port = declared_port
+            if _status_accepted(reply) and (
+                own_conninfo or self._owner == (addr, sender_id)
+            ):
                 # Learn the TX format it declares (production layout,
                 # core/auth.py: build_conninfo_packet: tx codec at 0x73,
                 # BE u32 tx sample rate at 0x78) so the sink frames and
