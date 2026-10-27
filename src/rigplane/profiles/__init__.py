@@ -997,6 +997,7 @@ def admit_memory_write(profile: RadioProfile | None) -> None:
     memory = profile.memory if isinstance(profile, RadioProfile) else None
     if (
         isinstance(memory, MemoryProfile)
+        and isinstance(memory.write_layout, str)
         and memory.write_layout in MEMORY_WRITE_LAYOUTS
     ):
         return

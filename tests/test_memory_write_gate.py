@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -27,6 +28,7 @@ from rigplane.radio import IcomRadio
 from rigplane.types import MemoryChannel
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import WebConfig, WebServer
+from _helpers import CIV_HEADER_SIZE
 from test_radio import MockTransport
 from test_web_server import _addr, _http_get
 from test_web_split_writes import _request
@@ -120,9 +122,11 @@ async def test_ic7610_set_memory_contents_still_writes_the_record() -> None:
         radio._connected = False
     assert len(transport.sent_packets) == 1
     # Complete-frame golden (MOR-3644): the exact 35-byte IC-7610 record.
-    assert transport.sent_packets[0] == bytes.fromhex(
+    # sent_packets carry the UDP envelope; the CI-V frame starts at
+    # CIV_HEADER_SIZE.
+    assert transport.sent_packets[0][CIV_HEADER_SIZE:] == bytes.fromhex(
         "fefe98e01a00"  # envelope + 1A 00
-        "0100"  # channel 1, 2-byte BCD
+        "0001"  # channel 1, 2-byte BCD (MSB first)
         "00"  # scan
         "0040071400"  # 14_074_000, LE BCD (core.types.bcd_encode docstring)
         "01"  # mode USB
@@ -147,17 +151,20 @@ async def test_ic7610_memory_clear_still_writes() -> None:
     assert len(transport.sent_packets) == 1
     # Complete-frame golden; the 2-byte channel payload itself is the
     # open MOR-2055 question, unchanged by this fix on purpose.
-    assert transport.sent_packets[0] == bytes.fromhex("fefe98e00b1000fd")
+    assert transport.sent_packets[0][CIV_HEADER_SIZE:] == bytes.fromhex(
+        "fefe98e00b0010fd"
+    )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("layout", ["civ_47", "", "CIV_26"])
+@pytest.mark.parametrize("layout", ["civ_47", "", "CIV_26", [], {}])
 async def test_sdk_supplied_profile_with_an_unlisted_layout_refuses(
-    layout: str,
+    layout: object,
 ) -> None:
     """The admission gate checks the shared vocabulary, not mere presence:
     a hand-built profile (no TOML loader in play) carrying an unlisted
-    layout string refuses exactly like one that declares none."""
+    layout value refuses exactly like one that declares none — including
+    unhashable values, which must refuse rather than crash."""
     from dataclasses import replace
 
     transport = MockTransport()
@@ -388,7 +395,7 @@ async def test_http_seam_still_writes_for_the_opted_in_profile() -> None:
     assert body["ok"] is True
     assert body["result"] == {"channel": 1}
     assert len(transport.sent_packets) == 1
-    assert transport.sent_packets[0][4:6] == b"\x1a\x00"
+    assert transport.sent_packets[0][CIV_HEADER_SIZE:][4:6] == b"\x1a\x00"
 
 
 @pytest.mark.asyncio
@@ -435,9 +442,10 @@ async def test_http_batch_refuses_unverified_memory_writes_and_skips_the_rest() 
 async def test_memory_writes_from_the_http_api_defer_until_quiet_rx(
     name: str, params: dict[str, Any], wire: bytes
 ) -> None:
-    """API to drain while keyed: the real request enqueues, the production
-    staging holds it (no wire bytes, request unanswered), and one quiet-RX
-    release lets it complete with exactly one frame on the wire."""
+    """API to drain while keyed, through the production poller loop: the
+    real request enqueues, the loop's own staging holds it (no wire bytes,
+    request unanswered), and the loop's own quiet-RX release lets it
+    complete with exactly one frame on the wire."""
     from rigplane.core.state_pipeline_contracts import (
         FieldPath,
         Observation,
@@ -448,6 +456,11 @@ async def test_memory_writes_from_the_http_api_defer_until_quiet_rx(
     radio = _radio("IC-7610", transport)
     web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     poller = RadioPoller(radio, web.command_queue, state_store=web.command_state_store)
+    # Keep the loop off the radio's poll surfaces: this test's wire
+    # assertions must see only the memory command under test.
+    poller._send_query = AsyncMock()  # noqa: SLF001
+    poller._fetch_nb_controls = AsyncMock()  # noqa: SLF001
+    poller._fetch_mod_inputs = AsyncMock()  # noqa: SLF001
     loop = asyncio.get_running_loop()
 
     def _observe(ptt: bool) -> None:
@@ -461,8 +474,16 @@ async def test_memory_writes_from_the_http_api_defer_until_quiet_rx(
             )
         )
 
+    async def _until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
+        deadline = loop.time() + timeout
+        while not predicate():
+            if loop.time() > deadline:
+                pytest.fail("condition not reached before the deadline")
+            await asyncio.sleep(0.02)
+
     _observe(True)  # keyed: the request must be held, not sent
     web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
+    drain = asyncio.create_task(poller._run())  # noqa: SLF001
     try:
         request = asyncio.create_task(
             _post_json(
@@ -472,30 +493,27 @@ async def test_memory_writes_from_the_http_api_defer_until_quiet_rx(
                 timeout=8,
             )
         )
-        await asyncio.wait_for(web.command_queue.wait(2), timeout=5)
-        entry = web.command_queue.take_entry()
-        assert entry is not None
-        assert poller._stage_tx_interlocked_entries([entry]) == []  # noqa: SLF001
-        await asyncio.sleep(0)
+        # The production loop staged and held the entry (MOR-3644 deferral).
+        await _until(lambda: poller._deferred_tx_lane.pending is not None)  # noqa: SLF001
+        # Bounded observation window: were the deferral missing, the loop
+        # would have executed the entry and answered the request by now.
+        await asyncio.sleep(0.2)
         assert transport.sent_packets == []
         assert not request.done()
 
-        # The first RX staging call starts the lane's quiet window...
+        # Quiet known RX: the loop itself releases and executes the entry;
+        # the request completing is the bounded release condition.
         _observe(False)
-        assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
-        # ...and this waits out that window (the mechanism under test, not
-        # a synchronization sleep): the deferred lane releases after one
-        # second of quiet RX.
-        await asyncio.sleep(1.05)
-        assert poller._stage_tx_interlocked_entries([]) == [entry]  # noqa: SLF001
-        await poller._execute_queued_entry(entry)  # noqa: SLF001
-        status, body = await asyncio.wait_for(request, timeout=5)
+        status, body = await asyncio.wait_for(request, timeout=8)
     finally:
+        drain.cancel()
+        await asyncio.gather(drain, return_exceptions=True)
         await _shutdown(web, radio)
     assert status == 200
     assert body["ok"] is True
-    assert len(transport.sent_packets) == 1
-    assert transport.sent_packets[0][4 : 4 + len(wire)] == wire
+    frames = [packet[CIV_HEADER_SIZE:] for packet in transport.sent_packets]
+    assert len(frames) == 1
+    assert frames[0][4 : 4 + len(wire)] == wire
 
 
 @pytest.mark.asyncio
