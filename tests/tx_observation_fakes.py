@@ -34,9 +34,7 @@ read (INV-13): an ACK, a setter echo, and a mis-addressed frame. They are not
 filtered here — they go onto the wire and are rejected by the shipped
 directed-exact-reply discipline (``runtime/_civ_rx.py:1489-1492`` routing
 guards and ``:2636-2650`` provenance narrowing), which is the whole point: the
-fake proves the *product's* validation discriminates, not its own. The
-transceive broadcasts ``broadcast_rx`` and ``broadcast_unmapped`` are scripted
-for the same reason (MOR-3810).
+fake proves the *product's* validation discriminates, not its own.
 
 The ``unmapped`` CI-V answer is deliberately ``00 00`` rather than a junk byte.
 Its first byte is ``0x00``, so if the shape check were ever loosened it would
@@ -134,10 +132,6 @@ def civ_transmit_state_reply(answer: str, radio_addr: int) -> bytes | None:
         return build_civ_frame(
             CONTROLLER_ADDR, FOREIGN_CIV_ADDR, 0x1C, sub=0x00, data=b"\x00"
         )
-    if answer == "broadcast_rx":
-        return build_civ_frame(0x00, radio_addr, 0x1C, sub=0x00, data=b"\x00")
-    if answer == "broadcast_unmapped":
-        return build_civ_frame(0x00, radio_addr, 0x1C, sub=0x00, data=b"\x00\x00")
     if answer == "silence":
         return None
     raise AssertionError(f"unscripted transmit-state answer {answer!r}")
@@ -171,8 +165,6 @@ class ScriptedCivLink:
         self.radio_addr: int = 0x94
         self.model_id: int = 0x94
         self._replies: asyncio.Queue[bytes] = asyncio.Queue()
-        #: Frames delivered ahead of the next scripted read's answer.
-        self.before_next_reply: list[bytes] = []
 
     def set_device(self, device: str) -> None:
         """Reconnection seam the serial base class calls."""
@@ -189,9 +181,6 @@ class ScriptedCivLink:
         payload = bytes(frame)
         self.sent_frames.append(payload)
         if _is_civ_transmit_state_read(payload):
-            for frame_bytes in self.before_next_reply:
-                self._replies.put_nowait(frame_bytes)
-            self.before_next_reply.clear()
             reply = civ_transmit_state_reply(self.answer, self.radio_addr)
             if reply is not None:
                 self._replies.put_nowait(reply)
@@ -240,29 +229,14 @@ class ScriptedLanTransport(MockTransport):
         super().__init__()
         self.answer: str = "rx"
         self.radio_addr: int = 0x98
-        #: UDP packets delivered ahead of the next scripted read's answer.
-        self.before_next_reply: list[bytes] = []
-        #: Every answer packet delivered, in order.
-        self.delivered: list[bytes] = []
-        self._seq = 0
 
-    def wrap(self, frame: bytes) -> bytes:
-        """Wrap a CI-V frame in the radio's next data-packet sequence."""
-        self._seq = (self._seq + 1) & 0xFFFF
-        return wrap_civ_in_udp(frame, seq=self._seq)
-
-    async def send_tracked(self, data: bytes, **_guard: object) -> None:
+    async def send_tracked(self, data: bytes) -> None:
         await super().send_tracked(data)
         payload = bytes(data)[0x15:]
         if _is_civ_transmit_state_read(payload):
-            for packet in self.before_next_reply:
-                self.queue_response(packet)
-            self.before_next_reply.clear()
             reply = civ_transmit_state_reply(self.answer, self.radio_addr)
             if reply is not None:
-                packet = self.wrap(reply)
-                self.delivered.append(packet)
-                self.queue_response(packet)
+                self.queue_response(wrap_civ_in_udp(reply))
 
     def civ_wire(self) -> list[bytes]:
         """The CI-V payloads, unwrapped from their UDP envelopes."""
@@ -408,7 +382,6 @@ async def _build_lan_icom() -> TxObservationHarness:
         key=lambda: radio.set_ptt(True),
         unkey=lambda: radio.set_ptt(False),
         close=close,
-        extras={"wire": transport},
     )
 
 
@@ -433,7 +406,6 @@ async def _build_icom_serial(name: str) -> TxObservationHarness:
         key=lambda: radio.set_ptt(True),
         unkey=lambda: radio.set_ptt(False),
         close=radio.disconnect,
-        extras={"wire": link},
     )
 
 

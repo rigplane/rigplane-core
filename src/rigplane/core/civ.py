@@ -136,7 +136,6 @@ class CivRequestTracker:
         self._ack_backlog_drops = 0
         self._ack_orphans = 0
         self._ack_unclaimed_at: float | None = None
-        self._response_unclaimed_at: dict[tuple[int, int | None], float] = {}
 
     @property
     def pending_count(self) -> int:
@@ -211,24 +210,6 @@ class CivRequestTracker:
     def note_ack_unclaimed(self) -> None:
         """Record that a write's ACK/NAK can still arrive with no waiter."""
         self._ack_unclaimed_at = time.monotonic()
-
-    @property
-    def stale_ttl(self) -> float:
-        """Age at which ``cleanup_stale`` retires a waiter."""
-        return self._stale_ttl
-
-    def response_unclaimed_at(self, key: CivRequestKey) -> float | None:
-        """Monotonic time a read with ``key``'s command and sub-command was
-        last abandoned, if ever.
-
-        A data response names no request, so the answer to an abandoned read
-        can still settle a later read with the same key (MOR-3810).
-        """
-        return self._response_unclaimed_at.get((key.command, key.sub))
-
-    def _note_response_unclaimed(self, key: CivRequestKey | None) -> None:
-        if key is not None:
-            self._response_unclaimed_at[(key.command, key.sub)] = time.monotonic()
 
     def snapshot_stats(self) -> dict[str, int]:
         """Return tracker counters for monitoring."""
@@ -315,9 +296,6 @@ class CivRequestTracker:
     def unregister(self, future: asyncio.Future[CivFrame]) -> None:
         """Remove a request future from pending list."""
         self._ack_waiters = [w for w in self._ack_waiters if w.future is not future]
-        for w in self._response_waiters:
-            if w.future is future and not future.done():
-                self._note_response_unclaimed(w.key)
         self._response_waiters = [
             w for w in self._response_waiters if w.future is not future
         ]
@@ -327,7 +305,6 @@ class CivRequestTracker:
         for i, waiter in enumerate(self._ack_waiters):
             if waiter.token == token and waiter.future is None:
                 self._ack_waiters.pop(i)
-                self._note_response_unclaimed(waiter.response_key)
                 return True
         return False
 
@@ -341,9 +318,6 @@ class CivRequestTracker:
         # A sink without ``response_key`` belongs to a write, answered by FB/FA.
         if any(w.future is None and w.response_key is None for w in self._ack_waiters):
             self.note_ack_unclaimed()
-        for w in self._ack_waiters:
-            if w.future is None:
-                self._note_response_unclaimed(w.response_key)
         self._ack_waiters = [w for w in self._ack_waiters if w.future is not None]
         return before - len(self._ack_waiters)
 
@@ -366,8 +340,6 @@ class CivRequestTracker:
                 fresh_ack.append(waiter)
                 continue
             cleaned += 1
-            if waiter.future is None:
-                self._note_response_unclaimed(waiter.response_key)
             if waiter.future is not None and not waiter.future.done():
                 waiter.future.set_exception(
                     asyncio.TimeoutError("CI-V ACK waiter expired")
@@ -382,7 +354,6 @@ class CivRequestTracker:
                 continue
             cleaned += 1
             if not pending.future.done():
-                self._note_response_unclaimed(pending.key)
                 pending.future.set_exception(
                     asyncio.TimeoutError("CI-V response waiter expired")
                 )
@@ -514,14 +485,11 @@ class CivRequestTracker:
         for w in self._ack_waiters:
             if w.future is not None and not w.future.done():
                 w.future.set_exception(exc)
-            elif w.future is None:
-                self._note_response_unclaimed(w.response_key)
         self._ack_waiters.clear()
         self._ack_backlog.clear()
 
         for pending in self._response_waiters:
             if not pending.future.done():
-                self._note_response_unclaimed(pending.key)
                 pending.future.set_exception(exc)
         self._response_waiters.clear()
 
