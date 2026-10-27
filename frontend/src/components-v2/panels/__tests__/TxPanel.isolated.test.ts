@@ -510,6 +510,28 @@ describe('PTT via the App TX controller (MOR-1011)', () => {
     expect(tx.trace()).toEqual([{ transport: 'http', operation: 'force_off' }]);
   });
 
+  it('keeps transmitting when the pointer leaves the PTT button, until the lift (MOR-3817)', () => {
+    const t = mountPanel();
+    down(t);
+    tx.emitServerSnapshot({ intent: 'ptt', observedPtt: 'on', releaseRequired: true });
+    flushSync();
+    button(t).dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 500, clientY: 500 }));
+    button(t).dispatchEvent(new PointerEvent('pointerleave', { bubbles: true, clientX: 500, clientY: 500 }));
+    vi.advanceTimersByTime(600);
+    flushSync();
+    expect(tx.trace()).toEqual([{ transport: 'ws', operation: 'ptt_on' }]);
+    expect(t.querySelector('[data-testid="tx-strip"]')?.getAttribute('data-rf')).toBe('on');
+    document.body.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: 500, clientY: 500 }));
+    vi.advanceTimersByTime(300);
+    expect(tx.trace()).toEqual([
+      { transport: 'ws', operation: 'ptt_on' },
+      { transport: 'ws', operation: 'ptt_off' },
+    ]);
+    tx.emitServerSnapshot({ intent: 'rx', observedPtt: 'off', releaseRequired: false });
+    flushSync();
+    expect(t.querySelector('[data-testid="tx-strip"]')?.getAttribute('data-rf')).toBe('off');
+  });
+
   it('releases pending momentary exactly once when the panel unmounts', () => {
     const t = mountPanel();
     down(t); up(t);

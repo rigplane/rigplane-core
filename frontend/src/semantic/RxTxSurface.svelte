@@ -15,6 +15,7 @@
   import '../components-v2/controls/control-button.css';
   import { t } from '$lib/i18n';
   import { renderSlot } from './design-language-renderers';
+  import { createPttHold } from '../components-v2/wiring/managed-tx-gesture';
   import type { RadioViewModel } from './radio-view-model';
   import {
     RF_LABEL, RF_MARK, SESSION_LABEL, blockedLabel, faultMessage, keyBlockedReasons, nextSurfaceId,
@@ -44,7 +45,7 @@
     standard?: boolean;
     momentary?: boolean;
     onPttDown?: () => void;
-    onPttUp?: () => void;
+    onPttUp?: (options?: { automatic?: boolean }) => void;
     onRequestKey: () => void;
     onRequestUnkey: () => void;
   }
@@ -72,7 +73,7 @@
   // Input ownership only; displayed TX state remains the server projection.
   let held = $state(false);
   // Retain the matching release synchronously, independent of render batches.
-  let releaseHeld: (() => void) | null = null;
+  let releaseHeld: ((options?: { automatic?: boolean }) => void) | null = null;
   let alive = true;
   function beginHold(): void {
     if (!alive || !momentary || releaseHeld !== null || keyUnavailable) return;
@@ -80,15 +81,21 @@
     held = true;
     onPttDown();
   }
-  function endHold(): void {
+  /** `automatic` marks cleanup the operator did not ask for (MOR-3753). */
+  function endHold(options?: { automatic?: boolean }): void {
     const release = releaseHeld;
     if (release === null) return;
     releaseHeld = null;
     held = false;
-    release();
+    if (options) release(options);
+    else release();
   }
-  $effect(() => { if (!momentary || tx.fresh === false) endHold(); });
-  onDestroy(() => { alive = false; endHold(); });
+  $effect(() => { if (!momentary || tx.fresh === false) endHold({ automatic: true }); });
+  const pttHold = createPttHold({
+    press: beginHold, release: () => endHold(), abort: () => endHold({ automatic: true }),
+  });
+  const pttButton = pttHold.attach;
+  onDestroy(() => { alive = false; pttHold.destroy(); });
   let pressed = $derived(tx.phase !== 'idle' && tx.phase !== 'failed');
   let showTxState = $derived(
     tx.phase !== 'idle' || rf === 'transmitting' || rf === 'uncertain' || tx.fault !== null,
@@ -185,23 +192,7 @@
       disabled={keyUnavailable && !held} aria-pressed={pressed}
       aria-describedby={blockedDescription ? blockedId : undefined}
       aria-label="PTT"
-      onpointerdown={(event) => {
-        if (event.button !== 0) return;
-        event.preventDefault();
-        event.currentTarget.setPointerCapture?.(event.pointerId);
-        beginHold();
-      }}
-      onpointerup={endHold} onpointercancel={endHold} onlostpointercapture={endHold} onblur={endHold}
-      onkeydown={(event) => {
-        if (event.key !== ' ' && event.key !== 'Enter') return;
-        event.preventDefault();
-        if (!event.repeat) beginHold();
-      }}
-      onkeyup={(event) => {
-        if (event.key !== ' ' && event.key !== 'Enter') return;
-        event.preventDefault();
-        endHold();
-      }}
+      use:pttButton
     >PTT</button>
     {:else}
     <button

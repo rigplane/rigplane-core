@@ -14,138 +14,37 @@
     1. Spatial isolation — the strip is fixed chrome outside the
        scroller; nothing scrolls under the button (MOR-2874).
     2. Press-and-hold minimum 50ms — `pointerdown` must persist at least
-       50ms before `onDown()` is invoked. Prevents tap-through from
+       50ms before the press engages. Prevents tap-through from
        scroll gestures.
     3. Pointer-move 8px cancel — if the finger moves >8px before the
        50ms window closes, the press is cancelled (user was scrolling,
        not pressing).
-    4. Haptic feedback on engage (navigator.vibrate).
-    5. TX permit remains advisory presentation; server authority admits PTT.
+    4. TX permit remains advisory presentation; server authority admits PTT.
 
-  State machine is kept in the parent (`pttMode`, safety timer, etc.);
-  this component applies gesture guards to the `onDown/onUp` callbacks.
-  Parent passes `mode` so visuals reflect held / latched server state
-  using the existing CSS conventions.
+  The hold is the parent's `hold`; this component attaches it with
+  guards 2 and 3. Parent passes `mode` so visuals reflect held /
+  latched server state using the existing CSS conventions.
 
   Part of #840 / epic #818 mobile IA followup.
 -->
 <script lang="ts">
   import { Mic, MicOff } from 'lucide-svelte';
+  import type { PttHold } from '../wiring/managed-tx-gesture';
 
   interface Props {
     /** Current PTT state from the parent state machine. */
     mode: 'idle' | 'held' | 'latched';
     /** Advisory radio-level TX permit used only for presentation. */
     txPermit?: 'allowed' | 'denied';
-    /** Called when a guarded press engages. Parent runs its pttDown(). */
-    onDown: () => void;
-    /** Called when the press ends. Parent runs its pttUp(). */
-    onUp: () => void;
+    /** The parent's hold; it outlives this button (MOR-3817). */
+    hold: PttHold;
   }
 
-  let { mode, txPermit = 'allowed', onDown, onUp }: Props = $props();
+  let { mode, txPermit = 'allowed', hold }: Props = $props();
 
-  const HOLD_DELAY_MS = 50;
-  const MOVE_CANCEL_PX = 8;
-
-  // Gesture state — local to this component.
-  let holdTimer: ReturnType<typeof setTimeout> | null = null;
-  let engaged = false;               // true once onDown() was invoked
-  let startX = 0;
-  let startY = 0;
-  // MOR-1376: the callbacks the CURRENT press was armed against. The hold timer
-  // below is deliberately not cleared on unmount, so a rotation can destroy this
-  // FAB mid-delay; reading the `onDown`/`onUp` props at fire time would then
-  // resolve to whatever handler the parent has live BY THEN — a recognizer
-  // generation that never saw this press. Snapshot them while the press is
-  // still this instance's own, and complete the press against those.
-  let armedDown: (() => void) | null = null;
-  let armedUp: (() => void) | null = null;
-
-
-  function vibrate(ms: number) {
-    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-      try { navigator.vibrate(ms); } catch { /* silent on unsupported */ }
-    }
-  }
-
-  function clearHoldTimer() {
-    if (holdTimer !== null) {
-      clearTimeout(holdTimer);
-      holdTimer = null;
-    }
-  }
-
-  function cancelPress() {
-    clearHoldTimer();
-    if (engaged) {
-      // A press that already engaged — release cleanly, against the handler
-      // that press was armed on (MOR-1376).
-      armedUp?.();
-      engaged = false;
-    }
-  }
-
-  function handlePointerDown(event: PointerEvent) {
-    // Latched mode: delegate immediately so tap unlatches.
-    if (mode === 'latched') {
-      onDown();
-      return;
-    }
-
-    // Capture so pointermove/pointerup still fire if the finger slides off.
-    (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
-    startX = event.clientX;
-    startY = event.clientY;
-    engaged = false;
-    armedDown = onDown;
-    armedUp = onUp;
-
-    holdTimer = setTimeout(() => {
-      holdTimer = null;
-      engaged = true;
-      vibrate(10);
-      armedDown?.();
-    }, HOLD_DELAY_MS);
-  }
-
-  function handlePointerMove(event: PointerEvent) {
-    if (holdTimer === null && !engaged) return;
-    const dx = event.clientX - startX;
-    const dy = event.clientY - startY;
-    if (dx * dx + dy * dy > MOVE_CANCEL_PX * MOVE_CANCEL_PX) {
-      cancelPress();
-    }
-  }
-
-  function handlePointerUp() {
-    if (holdTimer !== null) {
-      // Released before 50ms threshold — no engage at all.
-      clearHoldTimer();
-      return;
-    }
-    if (engaged) {
-      armedUp?.();
-      engaged = false;
-    }
-  }
-
-  function handleContextMenu(event: Event) {
-    // Long-press should engage TX, not show a system context menu.
-    event.preventDefault();
-  }
-
-  function handleKeyDown(event: KeyboardEvent) {
-    if ((event.key !== ' ' && event.key !== 'Enter') || event.repeat) return;
-    event.preventDefault();
-    if (mode === 'latched') { onDown(); return; }
-    engaged = true; armedDown = onDown; armedUp = onUp; armedDown();
-  }
-
-  function handleKeyUp(event: KeyboardEvent) {
-    if (event.key !== ' ' && event.key !== 'Enter') return;
-    event.preventDefault(); handlePointerUp();
-  }
+  // Latched mode skips the guard so a tap unlatches at once.
+  const guard = () => (mode === 'latched' ? null : { delayMs: 50, moveCancelPx: 8 });
+  const holdButton = (node: HTMLElement) => hold.attach(node, { guard });
 </script>
 
 <button
@@ -153,15 +52,7 @@
   class:ptt-fab-held={mode === 'held'}
   class:ptt-fab-latched={mode === 'latched'}
   class:ptt-fab-permit-denied={txPermit === 'denied'}
-  onpointerdown={handlePointerDown}
-  onpointermove={handlePointerMove}
-  onpointerup={handlePointerUp}
-  onpointercancel={handlePointerUp}
-  onlostpointercapture={() => cancelPress()}
-  onkeydown={handleKeyDown}
-  onkeyup={handleKeyUp}
-  onblur={() => cancelPress()}
-  oncontextmenu={handleContextMenu}
+  use:holdButton
   aria-label={mode === 'latched' ? 'Release TX lock' : 'Push to talk'}
 >
   {#if mode === 'latched'}

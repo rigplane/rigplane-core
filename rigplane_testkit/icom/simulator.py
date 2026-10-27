@@ -35,6 +35,7 @@ from typing import Literal
 from rigplane_testkit.icom.faults import Direction, FaultPlan, Port
 from rigplane_testkit.icom.fixtures import scope_wave_templates
 from rigplane_testkit.icom.replay import RecordedAnswerTable
+from rigplane_testkit.icom.rx_source import RxSource
 from rigplane_testkit.icom.simulator_audio import AudioPortMixin, TxAudioFormat
 
 logger = logging.getLogger(__name__)
@@ -441,6 +442,11 @@ class MockIcomRadio(AudioPortMixin):
         scope_stream: opt-in replay of recorded ``27 00`` scope waves at
             the measured MAIN/SUB cadence. Off by default. Only complete
             frames from the committed ``scope`` window are emitted.
+        rx_source: optional RX audio source (``rx_source.WavSource``)
+            played in place of the byte ramp; None (default) keeps the
+            ramp. Restarts from its head on each stream start.
+        require_control_discovery: reject login from sender IDs that have
+            not sent control discovery, or have since sent DISCONNECT.
     """
 
     def __init__(
@@ -472,6 +478,8 @@ class MockIcomRadio(AudioPortMixin):
         clock: Callable[[], float] | None = None,
         dual_receiver: bool = False,
         scope_stream: bool = False,
+        rx_source: RxSource | None = None,
+        require_control_discovery: bool = False,
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -479,6 +487,8 @@ class MockIcomRadio(AudioPortMixin):
         self._username = username
         self._password = password
         self._radio_addr = radio_addr
+        self._require_control_discovery = require_control_discovery
+        self._discovered_control_ids: set[int] = set()
 
         # UDP transports (set after start())
         self._ctrl_udp: asyncio.DatagramTransport | None = None
@@ -581,6 +591,9 @@ class MockIcomRadio(AudioPortMixin):
         # Audio-port listener switch: default off, when the status reply
         # advertises the dummy port and nothing listens.
         self.enable_audio: bool = enable_audio
+        # Optional RX audio source (``rx_source.py``); None keeps the ramp.
+        # Must be set before ``_audio_init`` reads it below.
+        self._rx_source: RxSource | None = rx_source
         # Owner identity = (remote_addr, my_id); None when no session is held.
         self._owner: tuple[tuple[str, int], int] | None = None
         self._keepalive_timer: asyncio.TimerHandle | None = None
@@ -1561,6 +1574,7 @@ class MockIcomRadio(AudioPortMixin):
 
         # Are You There → I Am Here
         if n == _HEADER_SIZE and ptype == _PT_ARE_YOU_THERE:
+            self._discovered_control_ids.add(sender_id)
             self._send(proto, self._ctrl_pkt(_PT_I_AM_HERE, 0, sender_id), addr, "ctrl")
             return
 
@@ -1581,6 +1595,11 @@ class MockIcomRadio(AudioPortMixin):
 
         # Login (0x80 bytes)
         if n == 0x80:
+            if (
+                self._require_control_discovery
+                and sender_id not in self._discovered_control_ids
+            ):
+                return
             # A login never starts a new token epoch by itself: the previous
             # token is retired only when the previous session actually ends
             # (owner token-remove, disconnect, OpenClose close, hold expiry,
@@ -1669,6 +1688,7 @@ class MockIcomRadio(AudioPortMixin):
         # Disconnect → free a held session for this owner and end its token
         # epoch, so later renewals with it are rejected.
         if n == _HEADER_SIZE and ptype == _PT_DISCONNECT:
+            self._discovered_control_ids.discard(sender_id)
             if self.single_owner and self._owner == (addr, sender_id):
                 self._release_session("disconnect")
                 self._retire_token()

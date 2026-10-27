@@ -187,6 +187,25 @@ class ManagedTxTransition:
     effects: tuple[ManagedTxEffect, ...] = ()
 
 
+def submission_refused_for_release_debt(submission: object) -> bool:
+    """Whether a refused receipt proves a release is still owed (MOR-3810).
+
+    Only the receipt's immutable transition state is evidence (the MOR-3684
+    discipline): a rejected key-down returns the held state, and
+    ``release_required`` together with an RX intent means a release is
+    being sought, not a latched transmit (which also owes a release) or a
+    missing authority.
+    """
+    state = getattr(getattr(submission, "transition", None), "state", None)
+    return (
+        getattr(submission, "outcome", None) is ManagedTxOutcome.REJECTED
+        and state is not None
+        and bool(getattr(state, "release_required", False))
+        and getattr(getattr(state, "intent", None), "kind", None)
+        is ManagedTxIntentKind.RX
+    )
+
+
 def _token(
     state: ManagedTxState,
     provider_generation: int,

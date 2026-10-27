@@ -43,6 +43,7 @@ from rigplane.web.server import WebConfig, WebServer
 _HOLDER_CONFLICT = "another client is transmitting"
 _UNAVAILABLE = "managed transmit authority unavailable"
 _ADMISSION_REJECTED = "managed PTT admission rejected"
+_RELEASING = "the previous transmission is still being released"
 
 
 class _LoopClock:
@@ -497,3 +498,184 @@ async def test_queue_exception_translates_only_the_admission_rejection(
     handler = _handler_on(_Authority(), enqueue, "b")
     with pytest.raises(CommandRejectedError, match=expected):
         await handler._enqueue_command("ptt_on", {})
+
+
+async def test_key_down_is_admitted_once_the_previous_release_settles() -> None:
+    """MOR-3810 (a), tail: a settled release re-admits key-down (MOR-3684 rig)."""
+    stack = _QueueStack()
+    try:
+        await _key(stack, stack.handler("a"))
+        release = await stack.authority.submit_ptt(False, "websocket-a")
+        await release.wait_settlement()
+        assert (await stack.authority.snapshot()).state.release_required is False
+        assert await _run_ptt_on(stack, stack.handler("b")) == {}
+        assert stack.authority.tx_holder_nowait() == "websocket-b"
+    finally:
+        await _release(stack.authority)
+
+
+@pytest.mark.parametrize("queued", (False, True), ids=("direct", "queued"))
+async def test_ptt_refusal_reports_release_debt_without_waiting(queued: bool) -> None:
+    stack = _QueueStack()
+    gate: asyncio.Event | None = None
+    release: ManagedTxSubmission | None = None
+    try:
+        await _key(stack, stack.handler("a"))
+        gate = stack.lane.block_next()
+        release = await stack.authority.submit_ptt(False, "websocket-a")
+        state = (await stack.authority.snapshot()).state
+        assert state.intent.kind is ManagedTxIntentKind.RX
+        assert state.release_required
+        handler = stack.handler("b") if queued else _direct_handler(stack, "b")
+        with pytest.raises(CommandRejectedError, match=_RELEASING):
+            await asyncio.wait_for(
+                _run_ptt_on(stack, handler)
+                if queued
+                else handler._enqueue_command("ptt_on", {}),
+                timeout=1.0,
+            )
+        assert not gate.is_set()
+        assert all(
+            effect.operation is not ActuationOperation.PTT_ON
+            for effect in stack.lane.effects[1:]
+        )
+    finally:
+        if gate is not None:
+            gate.set()
+        if release is not None:
+            await release.wait_settlement()
+        await _release(stack.authority)
+
+
+@pytest.mark.parametrize("release_debt", (True, False), ids=("debt", "real_error"))
+async def test_poller_logs_only_release_debt_without_traceback(
+    release_debt: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    stack = _QueueStack()
+    gate: asyncio.Event | None = None
+    release: ManagedTxSubmission | None = None
+    runner: asyncio.Task[None] | None = None
+    request: asyncio.Task[Any] | None = None
+    queried = asyncio.Event()
+
+    async def query() -> None:
+        queried.set()
+
+    try:
+        await _key(stack, stack.handler("a"))
+        if release_debt:
+            gate = stack.lane.block_next()
+            release = await stack.authority.submit_ptt(False, "websocket-a")
+        else:
+
+            async def fail(entry: Any) -> Any:
+                raise RuntimeError("unexpected executor failure")
+
+            monkeypatch.setattr(stack.poller, "_execute_queued_entry_action", fail)
+        monkeypatch.setattr(stack.poller, "_fetch_nb_controls", query)
+        monkeypatch.setattr(stack.poller, "_fetch_mod_inputs", query)
+        monkeypatch.setattr(stack.poller, "_seed_scan_facts_at_connect", lambda: None)
+        monkeypatch.setattr(stack.poller, "_send_query", query)
+        monkeypatch.setattr(
+            stack.poller, "_refresh_mod_inputs_on_data_mode_change", query
+        )
+        monkeypatch.setattr(stack.poller, "_publish_tx_target", lambda: None)
+        stack.enqueued.clear()
+        request = asyncio.create_task(stack.handler("b")._enqueue_command("ptt_on", {}))
+        await _wait_barrier(stack.enqueued)
+        caplog.set_level("INFO", logger="rigplane.web.radio_poller")
+        runner = asyncio.create_task(stack.poller._run())
+        with pytest.raises(CommandRejectedError):
+            await request
+        await _wait_barrier(queried)
+        records = [
+            record
+            for record in caplog.records
+            if record.name == "rigplane.web.radio_poller" and "cmd " in record.message
+        ]
+        assert len(records) == 1
+        assert bool(records[0].exc_info) is not release_debt
+        if release_debt:
+            assert _RELEASING in records[0].getMessage()
+        else:
+            assert "unexpected executor failure" in caplog.text
+    finally:
+        if runner is not None:
+            runner.cancel()
+            await runner
+        if request is not None and not request.done():
+            request.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await request
+        if gate is not None:
+            gate.set()
+        if release is not None:
+            await release.wait_settlement()
+        await _release(stack.authority)
+
+
+async def _ws_command(
+    stack: _QueueStack, handler: ControlHandler, ws: Any, cmd_id: str, name: str
+) -> dict[str, Any]:
+    """Dispatch one WebSocket command and return the envelope it sent."""
+    task = asyncio.create_task(handler._dispatch_command(cmd_id, name, {}))
+    if name == "ptt_on":
+        stack.enqueued.clear()
+        await _wait_barrier(stack.enqueued)
+        await _drain_one(stack)
+    await task
+    envelope: dict[str, Any] = decode_json(ws.send_text.await_args.args[0])
+    assert envelope["id"] == cmd_id
+    return envelope
+
+
+async def test_ws_key_down_during_an_unconfirmed_release_says_it_is_releasing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3810: the releasing refusal reaches the client's envelope."""
+    stack = _QueueStack()
+    releases: list[ManagedTxSubmission] = []
+    submit_ptt = stack.authority.submit_ptt
+
+    async def capture(*args: Any, **kwargs: Any) -> ManagedTxSubmission:
+        submission = await submit_ptt(*args, **kwargs)
+        releases.append(submission)
+        return submission
+
+    monkeypatch.setattr(stack.authority, "submit_ptt", capture)
+    gate: asyncio.Event | None = None
+    try:
+        holder_ws = SimpleNamespace(send_text=AsyncMock())
+        holder = stack.handler("a", ws=holder_ws)
+        assert (await _ws_command(stack, holder, holder_ws, "1", "ptt_on"))["ok"]
+        gate = stack.lane.block_next()
+        assert (await _ws_command(stack, holder, holder_ws, "2", "ptt_off"))["ok"]
+        assert (await stack.authority.snapshot()).state.release_required
+
+        ws = SimpleNamespace(send_text=AsyncMock())
+        refused = await _ws_command(stack, stack.handler("b", ws=ws), ws, "3", "ptt_on")
+        assert refused["ok"] is False
+        assert _RELEASING in refused["message"]
+        keyed = [ActuationOperation.PTT_ON, ActuationOperation.FORCE_RECEIVE]
+        assert [effect.operation for effect in stack.lane.effects] == keyed
+
+        gate.set()
+        await releases[0].wait_settlement()
+        assert (await stack.authority.snapshot()).state.release_required is False
+        admitted = await _ws_command(
+            stack, stack.handler("b", ws=ws), ws, "4", "ptt_on"
+        )
+        assert admitted["ok"] is True
+        assert [effect.operation for effect in stack.lane.effects] == [
+            *keyed,
+            ActuationOperation.PTT_ON,
+        ]
+        stack.radio.set_ptt.assert_not_awaited()
+    finally:
+        if gate is not None:
+            gate.set()
+        for release in releases:
+            await release.wait_settlement()
+        await _release(stack.authority)

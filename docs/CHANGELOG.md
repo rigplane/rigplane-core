@@ -27,6 +27,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are also classified in the TX interlock's MEMORY family (deferred while
   keyed, like `SetMemoryMode`).
 
+## [3.0.0] — 2026-10-27
+
+The same code as 3.0.0rc1 plus three fixes made during the release freeze.
+
+### Fixed
+
+- **Icom LAN disconnect then connect in the same process (MOR-3807, #4378).**
+  After an explicit `disconnect()` the next `connect()` failed with "login
+  response timed out": the transport kept the previous session's ids and
+  skipped the discovery handshake the radio had already forgotten, and the
+  CI-V receive pump of the old session survived and dropped every reply of
+  the next one. The transport now forgets its session ids when it sends the
+  disconnect, so the next connect runs the full discovery handshake, and
+  `disconnect()` stops the CI-V watchdog, worker and receive pump even when
+  the CI-V transport is already gone; a `disconnect()` cancelled while one of
+  those tasks stops still finishes releasing the session. Covered by LAN
+  simulator tests for the IC-7610 and IC-705 profiles; not yet verified on a
+  real IC-705 over Wi-Fi.
+
+- **Honest refusal while the previous release is still owed (MOR-3810,
+  #4377).** A key-down refused because the previous release is not yet
+  confirmed now answers "the previous transmission is still being released"
+  instead of "managed transmit authority unavailable", and the command poller
+  logs it as one info line instead of a warning with a traceback. Release
+  behaviour is unchanged: an ambiguous Icom unkey still stays uncertain and a
+  key-down is refused until it settles. Not verified on hardware.
+
+- **Phone PTT no longer drops when the phone is rotated or the finger slides
+  (MOR-3817, #4379).** The four PTT button implementations of the web UI now
+  share one hold mechanism: pointer capture on press; a pointer hold ends on
+  pointer up or cancel of the same pointer, page hidden or window blur, not
+  when the pointer leaves the button; the held state lives outside the button
+  and survives a layout swap. Before, rotating re-created the PTT binding
+  and its teardown released PTT, the TX panel released on `pointerleave`, and
+  a finger drift of more than 8 px released an already-pressed button.
+  Verified in Chromium with emulated touch (Playwright); not verified on real
+  iOS or Android devices.
+
 ## [3.0.0rc1] — 2026-10-26
 
 ### Added
