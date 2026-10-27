@@ -494,16 +494,28 @@ class TestCapabilitiesEndpoint:
         capabilities_writer = _FakeWriter()
         info_writer = _FakeWriter()
 
-        await srv._serve_capabilities(capabilities_writer)  # noqa: SLF001
-        await srv._serve_info(info_writer)  # noqa: SLF001
+        # Through the public HTTP router, not the private producers, so the
+        # regression also catches a routing mistake.
+        await srv._handle_http(  # noqa: SLF001
+            capabilities_writer, "GET", "/api/v1/capabilities", headers={}
+        )
+        await srv._handle_http(  # noqa: SLF001
+            info_writer, "GET", "/api/v1/info", headers={}
+        )
+
+        def _body(writer: _FakeWriter) -> dict:
+            text = writer.buffer.decode("ascii", errors="replace")
+            head, _, body = text.partition("\r\n\r\n")
+            assert head.split("\r\n", 1)[0] == "HTTP/1.1 200 OK"
+            return json.loads(body)
 
         rx_only_names = {"2200m", "630m", "WFM", "Air", "Gen"}
-        # Both public producers that build txBands: the /api/v1/info
+        # Both public routes that build txBands: the /api/v1/info
         # capabilities object and the /api/v1/capabilities body. Removing
         # either rx_only filter fails below.
         payloads = {
-            "capabilities": _parse_json_body(capabilities_writer),
-            "info": _parse_json_body(info_writer)["capabilities"],
+            "capabilities": _body(capabilities_writer),
+            "info": _body(info_writer)["capabilities"],
         }
         for route, payload in payloads.items():
             tx_names = {band["name"] for band in payload["txBands"]}
