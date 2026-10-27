@@ -567,18 +567,17 @@ class TestIc9700Bands:
     6 m. Band edges are the USA version coverage from the IC-9700 Basic
     Manual, Specifications, "Frequency coverage (unit: MHz)" (USA Version
     Receiver/Transmitter: 144.000000~148.000000, 430.000000~450.000000,
-    1240.000000~1300.000000). BSR codes are the Frequency band codes of
-    the IC-9700 CI-V Reference Guide's "Band stacking register" (1A 01) table:
-    01=VHF, 02=UHF, 03=1.2GHz. default_hz is the IARU Region 1 simplex
-    calling frequency on 2 m and 70 cm and the band start edge on 23 cm
-    (MOR-3623; the manuals state no separate default tuning frequency, and
+    1240.000000~1300.000000). BSR codes are the Frequency band codes of the
+    IC-9700 CI-V Reference Guide's "Band stacking register" (1A 01) table:
+    01=VHF, 02=UHF, 03=1.2GHz. default_hz is each band's manual-given
+    start edge (the manuals state no separate default tuning frequency;
     the loader requires the key).
     """
 
     _EXPECTED: dict[str, tuple[int, int, int, int]] = {
         # name: (start_hz, end_hz, default_hz, bsr_code)
-        "2m": (144_000_000, 148_000_000, 145_500_000, 0x01),
-        "70cm": (430_000_000, 450_000_000, 433_500_000, 0x02),
+        "2m": (144_000_000, 148_000_000, 144_000_000, 0x01),
+        "70cm": (430_000_000, 450_000_000, 430_000_000, 0x02),
         "23cm": (1_240_000_000, 1_300_000_000, 1_240_000_000, 0x03),
     }
 

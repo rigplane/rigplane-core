@@ -603,10 +603,9 @@ equal_main_sub = [0xB1]
 # bsr_code: IC-9700 CI-V Reference Guide, "Band stacking register"
 # (command 1A 01), Frequency band codes: 01=VHF 144.000000~148.000000,
 # 02=UHF 430.000000~450.000000, 03=1.2GHz 1240.000000~1300.000000.
-# default_hz: the manuals state no per-band default tuning frequency, and
-# _schema.md makes the key required. 2 m and 70 cm carry the IARU Region 1
-# simplex calling frequencies (MOR-3623); 23 cm keeps its manual-given
-# start edge as the BSR-recall fallback frequency.
+# default_hz: the manuals state no per-band default tuning frequency,
+# and _schema.md makes the key required, so each band carries its
+# manual-given start edge as the BSR-recall fallback frequency.
 
 [[freq_ranges.ranges]]
 label = "2m"
@@ -618,7 +617,7 @@ repeater = true
 name = "2m"
 start_hz = 144_000_000
 end_hz = 148_000_000
-default_hz = 145_500_000
+default_hz = 144_000_000
 bsr_code = 0x01
 
 [[freq_ranges.ranges]]
@@ -631,7 +630,7 @@ repeater = true
 name = "70cm"
 start_hz = 430_000_000
 end_hz = 450_000_000
-default_hz = 433_500_000
+default_hz = 430_000_000
 bsr_code = 0x02
 
 [[freq_ranges.ranges]]

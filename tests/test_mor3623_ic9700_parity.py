@@ -18,8 +18,8 @@ through the same shared, profile-driven paths the IC-705 tests use:
   mechanism the profiles carry; the mode-set path carries no frequency,
   so a band-conditional gate there would be a new mechanism, out of this
   profile-data slice;
-* the band ``default_hz`` values (IARU Region 1 simplex calling
-  frequencies on 2 m and 70 cm, band start edge on 23 cm).
+* the band ``default_hz`` values (each band's start edge — the manuals
+  state no separate default tuning frequency).
 """
 
 from __future__ import annotations
@@ -55,12 +55,12 @@ IC9700_PATH = RIGS / "ic9700.toml"
 IC705_PATH = RIGS / "ic705.toml"
 IC9700_ADDR = 0xA2
 
-# Each band's default tuning frequency (the profile data this ticket sets:
-# IARU Region 1 simplex calling on 2 m / 70 cm, band start on 23 cm), with
-# its 1A 01 band code — the memory group number on this radio.
+# Each band's default tuning frequency (the band start edge, carried by
+# the profile as the BSR-recall fallback), with its 1A 01 band code — the
+# memory group number on this radio.
 _BANDS = [
-    pytest.param("2m", 145_500_000, 1, id="2m"),
-    pytest.param("70cm", 433_500_000, 2, id="70cm"),
+    pytest.param("2m", 144_000_000, 1, id="2m"),
+    pytest.param("70cm", 430_000_000, 2, id="70cm"),
     pytest.param("23cm", 1_240_000_000, 3, id="23cm"),
 ]
 
@@ -169,11 +169,11 @@ def test_readback_decode(byte, direction) -> None:
 async def test_set_sends_the_guide_code_on_every_band(
     transport, band, freq, band_code, ic9700_profile
 ) -> None:
-    """DUP− rides 0F 11 after tuning inside each of the three bands.
+    """DUP− rides 0F 11 after tuning to each band's default.
 
-    The frequency is the band's own (new) default, so the test also pins
-    that each band entry the repeater strip serves carries that default
-    and its 1A 01 band code.
+    The frequency is the band's own default (its start edge), so the test
+    also pins that each band entry the repeater strip serves carries that
+    default and its 1A 01 band code.
     """
     band_info = next(
         b for r in ic9700_profile.freq_ranges for b in r.bands if b.name == band
@@ -387,15 +387,14 @@ def test_dv_declares_the_fixed_width_dd_none(ic9700_profile) -> None:
 # ── Band defaults ─────────────────────────────────────────────────────
 
 
-def test_band_defaults_are_the_calling_frequencies(ic9700_profile) -> None:
+def test_band_defaults_are_the_start_edges(ic9700_profile) -> None:
     bands = {
         b.name: (b.start, b.end, b.default)
         for r in ic9700_profile.freq_ranges
         for b in r.bands
     }
-    assert bands["2m"] == (144_000_000, 148_000_000, 145_500_000)
-    assert bands["70cm"] == (430_000_000, 450_000_000, 433_500_000)
-    # 23 cm keeps its band start edge.
+    assert bands["2m"] == (144_000_000, 148_000_000, 144_000_000)
+    assert bands["70cm"] == (430_000_000, 450_000_000, 430_000_000)
     assert bands["23cm"] == (1_240_000_000, 1_300_000_000, 1_240_000_000)
 
 
@@ -422,8 +421,8 @@ _PARITY = {
     "IC-9700": {
         "path": "ic9700.toml",
         "dd": True,
-        "2m_default": 145_500_000,
-        "70cm_default": 433_500_000,
+        "2m_default": 144_000_000,
+        "70cm_default": 430_000_000,
     },
 }
 

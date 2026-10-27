@@ -28,9 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1.2 GHz band by the profile's existing `[memory] dd_groups = [3]`
   fact: a DD mode byte outside band 3 is refused with an explicit
   error, and the mode-set path carries no frequency, so it has no band
-  gate. The 2 m and 70 cm band defaults become the IARU Region 1
-  simplex calling frequencies (145.500 / 433.500 MHz); 23 cm keeps its
-  band start edge; the `repeater` range flags stay. Not
+  gate. The band `default_hz` values stay the band start edges and the
+  `repeater` range flags stay. Not
   hardware-verified (tier B-): no IC-9700 has been on the bench, and
   the older MOR-2015 0x16-family sub-list cited in the profile does
   not name `5D` — reconciled in the MOR-3623 PR body.
