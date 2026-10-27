@@ -445,6 +445,8 @@ class MockIcomRadio(AudioPortMixin):
         rx_source: optional RX audio source (``rx_source.WavSource``)
             played in place of the byte ramp; None (default) keeps the
             ramp. Restarts from its head on each stream start.
+        require_control_discovery: reject login from sender IDs that have
+            not sent control discovery, or have since sent DISCONNECT.
     """
 
     def __init__(
@@ -477,6 +479,7 @@ class MockIcomRadio(AudioPortMixin):
         dual_receiver: bool = False,
         scope_stream: bool = False,
         rx_source: RxSource | None = None,
+        require_control_discovery: bool = False,
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -484,6 +487,8 @@ class MockIcomRadio(AudioPortMixin):
         self._username = username
         self._password = password
         self._radio_addr = radio_addr
+        self._require_control_discovery = require_control_discovery
+        self._discovered_control_ids: set[int] = set()
 
         # UDP transports (set after start())
         self._ctrl_udp: asyncio.DatagramTransport | None = None
@@ -1569,6 +1574,7 @@ class MockIcomRadio(AudioPortMixin):
 
         # Are You There → I Am Here
         if n == _HEADER_SIZE and ptype == _PT_ARE_YOU_THERE:
+            self._discovered_control_ids.add(sender_id)
             self._send(proto, self._ctrl_pkt(_PT_I_AM_HERE, 0, sender_id), addr, "ctrl")
             return
 
@@ -1589,6 +1595,11 @@ class MockIcomRadio(AudioPortMixin):
 
         # Login (0x80 bytes)
         if n == 0x80:
+            if (
+                self._require_control_discovery
+                and sender_id not in self._discovered_control_ids
+            ):
+                return
             # A login never starts a new token epoch by itself: the previous
             # token is retired only when the previous session actually ends
             # (owner token-remove, disconnect, OpenClose close, hold expiry,
@@ -1677,6 +1688,7 @@ class MockIcomRadio(AudioPortMixin):
         # Disconnect → free a held session for this owner and end its token
         # epoch, so later renewals with it are rejected.
         if n == _HEADER_SIZE and ptype == _PT_DISCONNECT:
+            self._discovered_control_ids.discard(sender_id)
             if self.single_owner and self._owner == (addr, sender_id):
                 self._release_session("disconnect")
                 self._retire_token()
