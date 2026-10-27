@@ -35,7 +35,7 @@ from typing import Literal
 from rigplane_testkit.icom.faults import Direction, FaultPlan, Port
 from rigplane_testkit.icom.fixtures import scope_wave_templates
 from rigplane_testkit.icom.replay import RecordedAnswerTable
-from rigplane_testkit.icom.simulator_audio import AudioPortMixin
+from rigplane_testkit.icom.simulator_audio import AudioPortMixin, TxAudioFormat
 
 logger = logging.getLogger(__name__)
 
@@ -395,6 +395,12 @@ class MockIcomRadio(AudioPortMixin):
         capture_civ_frames: record every well-formed inbound CI-V frame
             addressed to the radio in :attr:`civ_frames_received`.
             Default False (no recording, no retention).
+        capture_tx_audio: retain the payload bytes of every recorded
+            client audio frame (``audio_tx_frames`` ``payload``, readable
+            as PCM via :meth:`audio_tx_pcm` / :meth:`write_tx_wav`).
+            Default False keeps payloads unretained (``payload`` is
+            ``b""``), so long soaks retain no payload bytes — the
+            per-frame metadata list still grows.
         civ_state_survives_unclean_end: keep the CI-V stream state
             (frontier plus gap list) of a session whose hold expires on
             its own as orphan state for the next opener (recorded IC-7610,
@@ -458,6 +464,7 @@ class MockIcomRadio(AudioPortMixin):
         ptt_on_session_loss: Literal["hold", "release"] = "hold",
         recorded_answers: RecordedAnswerTable | None = None,
         capture_civ_frames: bool = False,
+        capture_tx_audio: bool = False,
         civ_state_survives_unclean_end: bool = False,
         orphan_civ_state_expiry_s: float = ORPHAN_CIV_STATE_EXPIRY_S,
         civ_inherited_fills_per_round: int = 0,
@@ -618,6 +625,11 @@ class MockIcomRadio(AudioPortMixin):
         # command builders.
         self.capture_civ_frames: bool = capture_civ_frames
         self.civ_frames_received: list[bytes] = []
+        # Opt-in retention of client audio-frame payloads (default off):
+        # ``audio_tx_frames`` entries carry the bytes after the 0x18 header
+        # in ``payload`` (``b""`` when off, so long soaks retain no payload
+        # bytes — the per-frame metadata list still grows).
+        self.capture_tx_audio: bool = capture_tx_audio
         # Opt-in CI-V refusal hook (default off, additive): (cmd, sub) pairs the
         # simulator answers with a bare NAK (0xFA) instead of dispatching — a
         # radio that refuses a command it would normally take. An entry
@@ -1637,6 +1649,20 @@ class MockIcomRadio(AudioPortMixin):
                 # permission where it was (MOR-3340).
                 self._fence_login_ip = addr[0]
                 self._fence_login_civ_port = declared_port
+            if _status_accepted(reply) and (
+                own_conninfo or self._owner == (addr, sender_id)
+            ):
+                # Learn the TX format it declares (production layout,
+                # core/auth.py: build_conninfo_packet: tx codec at 0x73,
+                # BE u32 tx sample rate at 0x78) so the sink frames and
+                # the capture exports can label what they record. A bare
+                # conninfo (zero rate, never sent by a real client)
+                # teaches nothing.
+                tx_sample_rate = struct.unpack_from(">I", data, 0x78)[0]
+                if tx_sample_rate > 0:
+                    self._audio_tx_format = TxAudioFormat(
+                        codec=data[0x73], sample_rate=tx_sample_rate
+                    )
             self._send(proto, reply, addr, "ctrl")
             return
 

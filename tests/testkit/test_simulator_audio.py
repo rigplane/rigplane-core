@@ -16,6 +16,7 @@ import json
 import socket
 import struct
 import time
+import wave
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -33,13 +34,16 @@ from rigplane_testkit.icom.simulator import (
 from rigplane_testkit.icom.simulator_audio import (
     _AUDIO_BURST_PERIOD_S,
     AUDIO_HEADER_SIZE,
+    TxAudioFormat,
 )
 from testkit.test_simulator_faults import (
     _CLIENT_ID,
     _HOST,
     _UdpClient,
     _ayt,
+    _bare_conninfo,
     _conninfo,
+    _conninfo_tx_format,
     _header,
     _login,
     _openclose,
@@ -376,6 +380,20 @@ async def server() -> AsyncGenerator[MockIcomRadio]:
 
 
 @pytest.fixture
+async def capture_server() -> AsyncGenerator[MockIcomRadio]:
+    """The audio listener with opt-in TX payload capture (capture_tx_audio)."""
+    s = MockIcomRadio(
+        single_owner=True,
+        keepalive_hold_s=10.0,
+        enable_audio=True,
+        capture_tx_audio=True,
+    )
+    await s.start()
+    yield s
+    await s.stop()
+
+
+@pytest.fixture
 async def client() -> AsyncGenerator[_UdpClient]:
     c = await _udp()
     yield c
@@ -505,6 +523,9 @@ async def test_rx_keeps_flowing_across_civ_soft_reconnect(
             )
             civ2.send(_openclose(seq=0), server.civ_port)
             await civ2.recv()
+            assert server.audio_tx_format == TxAudioFormat(
+                codec=0x04, sample_rate=48000
+            )
         finally:
             civ2.close()
         window = await task
@@ -719,6 +740,173 @@ async def test_tx_sink_records_production_frames_until_the_session_ends(
         await asyncio.sleep(0.1)
         assert server.audio_tx_frames == [first, second]
         assert server.audio_last_client_seq is None
+    finally:
+        ctrl.close()
+
+
+# ---------------------------------------------------------------------------
+# TX sink capture: payload bytes and PTT state per frame (capture_tx_audio)
+# ---------------------------------------------------------------------------
+
+
+async def test_tx_sink_captures_payload_and_ptt_per_frame(
+    capture_server: MockIcomRadio, client: _UdpClient
+) -> None:
+    """With capture_tx_audio=True each sink frame carries the payload bytes
+    after the 0x18 header (byte-exact) and the simulator's PTT state at
+    arrival; ``audio_tx_pcm`` concatenates payloads in arrival order."""
+    radio_id = await _open_audio(client, capture_server)
+    tone = bytes(range(256)) * 2
+    client.send(_tx_audio(1, 0, tone, radio_id), capture_server.audio_port)
+    await _await_client_seq_value(capture_server, 1)  # the frame was processed
+    capture_server._set_simulated_ptt(True, wire_set=False)  # noqa: SLF001
+    client.send(_tx_audio(2, 1, b"\x01\x02", radio_id), capture_server.audio_port)
+    await _await_client_seq_value(capture_server, 2)
+    capture_server._set_simulated_ptt(False, wire_set=False)  # noqa: SLF001
+    client.send(_tx_audio(3, 2, b"\x03\x04", radio_id), capture_server.audio_port)
+    await _await_client_seq_value(capture_server, 3)
+
+    frames = capture_server.audio_tx_frames
+    assert len(frames) == 3
+    assert [f.payload for f in frames] == [tone, b"\x01\x02", b"\x03\x04"]
+    assert [f.ptt for f in frames] == [False, True, False]
+    assert capture_server.audio_tx_pcm() == tone + b"\x01\x02\x03\x04"
+    assert capture_server.audio_tx_pcm(since=1) == b"\x01\x02\x03\x04"
+
+
+async def test_write_tx_wav_roundtrip(
+    capture_server: MockIcomRadio, client: _UdpClient, tmp_path: Path
+) -> None:
+    """write_tx_wav writes a RIFF/WAV (16-bit PCM) that reads back via the
+    stdlib wave module to exactly the captured PCM."""
+    radio_id = await _open_audio(client, capture_server)
+    pcm = bytes(range(256)) * 8  # 1024 samples of a byte ramp, s16le-shaped
+    half = len(pcm) // 2
+    client.send(_tx_audio(1, 0, pcm[:half], radio_id), capture_server.audio_port)
+    client.send(_tx_audio(2, 1, pcm[half:], radio_id), capture_server.audio_port)
+    await _await_client_seq_value(capture_server, 2)  # both frames processed
+
+    path = tmp_path / "tx.wav"
+    capture_server.write_tx_wav(path, sample_rate=48000)
+    with wave.open(str(path), "rb") as wav:
+        assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (
+            1,
+            2,
+            48000,
+        )
+        assert wav.readframes(wav.getnframes()) == pcm
+
+
+async def test_tx_capture_off_keeps_payload_empty(
+    server: MockIcomRadio, client: _UdpClient
+) -> None:
+    """Default (capture_tx_audio=False): the sink still records metadata,
+    but the payload is not retained — b"" per frame, empty audio_tx_pcm."""
+    radio_id = await _open_audio(client, server)
+    client.send(_tx_audio(1, 0, bytes(64), radio_id), server.audio_port)
+    await _await_client_seq_value(server, 1)  # the frame was processed
+    assert len(server.audio_tx_frames) == 1
+    assert server.audio_tx_frames[0].payload == b""
+    assert server.audio_tx_frames[0].payload_len == 64  # metadata unchanged
+    assert server.audio_tx_pcm() == b""
+
+
+# ---------------------------------------------------------------------------
+# Learned TX format: the sink records the conninfo-declared TX format
+# ---------------------------------------------------------------------------
+
+
+async def test_tx_sink_learns_the_accepted_conninfo_tx_format(
+    server: MockIcomRadio,
+) -> None:
+    """An accepted conninfo teaches the TX format
+    (production conninfo layout, ``core/auth.py``: tx codec at 0x73, BE u32
+    tx sample rate at 0x78): the production-faithful default learns 48 kHz
+    PCM16, a bare conninfo (rate 0, never sent by a real client) teaches
+    nothing, and a renegotiated conninfo replaces the learned format."""
+    ctrl = await _udp()
+    try:
+        ctrl.send(_login(), server.control_port)
+        await ctrl.recv()
+        assert server.audio_tx_format is None
+
+        ctrl.send(_conninfo(), server.control_port)
+        await ctrl.recv()
+        assert server.audio_tx_format == TxAudioFormat(codec=0x04, sample_rate=48000)
+
+        ctrl.send(_bare_conninfo(), server.control_port)
+        await ctrl.recv()
+        assert server.audio_tx_format == TxAudioFormat(codec=0x04, sample_rate=48000)
+
+        ctrl.send(
+            _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=16000),
+            server.control_port,
+        )
+        await ctrl.recv()
+        assert server.audio_tx_format == TxAudioFormat(codec=0x04, sample_rate=16000)
+    finally:
+        ctrl.close()
+
+
+async def test_tx_capture_format_marks_a_mixed_capture() -> None:
+    """Sink frames snapshot the format learned at their arrival;
+    ``tx_capture_format`` returns the single distinct learned format
+    across the slice, or None when the slice carries none or spans a
+    format change (a new session renegotiating its conninfo mid-capture)."""
+    server = MockIcomRadio(enable_audio=True)
+    await server.start()
+    ctrl_a, ctrl_b, audio = await _udp(), await _udp(), await _udp()
+    try:
+        ctrl_a.send(_login(), server.control_port)
+        await ctrl_a.recv()
+        ctrl_a.send(_conninfo(), server.control_port)
+        await ctrl_a.recv()
+        radio_id = await _open_audio(audio, server)
+        audio.send(_tx_audio(1, 0, bytes(64), radio_id), server.audio_port)
+        await _await_client_seq_value(server, 1)
+        learned_48k = TxAudioFormat(codec=0x04, sample_rate=48000)
+        assert server.audio_tx_frames[0].tx_format == learned_48k
+        assert server.tx_capture_format() == learned_48k
+
+        # A new session: new login, new conninfo at 16 kHz.
+        ctrl_b.send(_login(), server.control_port)
+        await ctrl_b.recv()
+        ctrl_b.send(
+            _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=16000),
+            server.control_port,
+        )
+        await ctrl_b.recv()
+        audio.send(_tx_audio(2, 1, bytes(64), radio_id), server.audio_port)
+        await _await_client_seq_value(server, 2)
+        first, second = server.audio_tx_frames
+        learned_16k = TxAudioFormat(codec=0x04, sample_rate=16000)
+        assert first.tx_format == learned_48k
+        assert second.tx_format == learned_16k
+        assert server.tx_capture_format() is None  # mixed: no single label
+        assert server.tx_capture_format(since=1) == learned_16k
+    finally:
+        for c in (ctrl_a, ctrl_b, audio):
+            c.close()
+        await server.stop()
+
+
+async def test_tx_capture_format_without_frames_or_format_is_none(
+    server: MockIcomRadio, client: _UdpClient
+) -> None:
+    """No frames (nothing captured) and frames with no learned format
+    (a bare conninfo, rate 0) both give no capture format."""
+    assert server.tx_capture_format() is None
+    ctrl = await _udp()
+    try:
+        ctrl.send(_login(), server.control_port)
+        await ctrl.recv()
+        ctrl.send(_bare_conninfo(), server.control_port)
+        await ctrl.recv()
+        radio_id = await _open_audio(client, server)
+        client.send(_tx_audio(1, 0, bytes(64), radio_id), server.audio_port)
+        await _await_client_seq_value(server, 1)
+        assert server.audio_tx_frames[0].tx_format is None
+        assert server.tx_capture_format() is None
     finally:
         ctrl.close()
 

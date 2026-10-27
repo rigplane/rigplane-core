@@ -65,8 +65,14 @@ What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fa
   `audio_rx_headers.jsonl`). Every client audio DATA frame sent while
   the audio stream lives is recorded
   in `audio_tx_frames` (header seq, inner seq at 0x12, payload length,
-  arrival time; the client's format is the only reference — the TX path
-  is unrecorded). The stream survives a CI-V-only soft reconnect
+  arrival time, the simulator's PTT state at arrival; the client's
+  format is the only reference — the TX path is unrecorded). With
+  `capture_tx_audio=True` (default off, so soaks stay metadata-only)
+  each frame also retains its payload bytes, readable as PCM via
+  `audio_tx_pcm(since)` and `write_tx_wav(path, sample_rate=...)`; the
+  standalone `sim serve --radio ic7610` enables it and serves the sink
+  over `GET /audio/tx` and `GET /audio/tx.wav` (the tone-with-gaps
+  markers of `rigplane_testkit/audio_markers.py` check a capture). The stream survives a CI-V-only soft reconnect
   (recorded) and stops when the session ends (token-remove/logout,
   `drop_session`, reboot); without an owned session the audio opener's
   own token-remove/control-disconnect still ends it, while a foreign one
@@ -258,7 +264,6 @@ the legacy compatibility shim. It exists for development and testing only.
 
 ## Planned next
 
-- Audio (RTP) port simulation alongside control and CI-V ports.
 - Wiring the replayer's unsolicited timeline into the simulator so recorded
   sessions stream on their recorded cadence (the recorder, the pure
   `ReplayResponder` and the `RecordedAnswerTable` mount — `recorded_answers=`
