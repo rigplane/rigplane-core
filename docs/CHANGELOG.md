@@ -28,8 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1.2 GHz band by the profile's existing `[memory] dd_groups = [3]`
   fact: a DD mode byte outside band 3 is refused with an explicit
   error, and the mode-set path carries no frequency, so it has no band
-  gate. Not hardware-verified (tier B-): no IC-9700 has been on the
-  bench.
+  gate. On a dual-receiver radio the shift read/write for a non-MAIN
+  receiver is routed through the shared MAIN/SUB switch-and-restore
+  (the same routing `set_mode` uses), restoring the selection
+  afterwards — `0F` carries no receiver selector of its own. Not
+  hardware-verified (tier B-): no IC-9700 has been on the bench.
 
 ## [3.0.1] — 2026-10-28
 
@@ -143,7 +146,6 @@ The same code as 3.0.0rc1 plus three fixes made during the release freeze.
   a finger drift of more than 8 px released an already-pressed button.
   Verified in Chromium with emulated touch (Playwright); not verified on real
   iOS or Android devices.
-
 ## [3.0.0rc1] — 2026-10-26
 
 ### Added

@@ -197,6 +197,41 @@ async def test_get_decodes_the_readback(transport, byte, direction) -> None:
 
 
 @pytest.mark.asyncio
+async def test_set_on_the_sub_receiver_switches_and_restores(transport) -> None:
+    """0F carries no receiver byte: a dual-receiver radio is addressed
+    through the shared MAIN/SUB switch-and-restore (the same routing
+    ``set_mode`` uses), and the selection is restored after the write
+    (pre-review P1, MOR-3623)."""
+    radio = _radio(transport)
+    radio._radio_state.active = "MAIN"
+    for _ in range(3):
+        transport.queue_response(_reply(0xFB))
+    await radio.set_repeater_shift(RepeaterShiftDirection.MINUS, receiver=1)
+    assert [(f.command, f.data) for f in _sent_frames(transport)] == [
+        (0x07, b"\xd1"),  # select SUB
+        (0x0F, b"\x11"),  # DUP− on SUB
+        (0x07, b"\xd0"),  # restore MAIN
+    ]
+    assert radio._radio_state.active == "MAIN"
+
+
+@pytest.mark.asyncio
+async def test_get_on_the_sub_receiver_switches_and_restores(transport) -> None:
+    radio = _radio(transport)
+    radio._radio_state.active = "MAIN"
+    transport.queue_response(_reply(0xFB))
+    transport.queue_response(_reply(0x0F, bytes([0x11])))
+    transport.queue_response(_reply(0xFB))
+    assert await radio.get_repeater_shift(receiver=1) is RepeaterShiftDirection.MINUS
+    assert [(f.command, f.data) for f in _sent_frames(transport)] == [
+        (0x07, b"\xd1"),
+        (0x0F, b""),
+        (0x07, b"\xd0"),
+    ]
+    assert radio._radio_state.active == "MAIN"
+
+
+@pytest.mark.asyncio
 async def test_dispatch_admits_the_ic9700(transport) -> None:
     intent = prepare_command_intent(
         _radio(transport),

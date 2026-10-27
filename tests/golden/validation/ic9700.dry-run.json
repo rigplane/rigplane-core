@@ -208,6 +208,11 @@
       "declaration": "supported"
     },
     {
+      "check_id": "repeater_shift.presence",
+      "status": "pass",
+      "declaration": "unsupported_pending_evidence"
+    },
+    {
       "check_id": "repeater_tone.set",
       "status": "skip",
       "declaration": "supported"

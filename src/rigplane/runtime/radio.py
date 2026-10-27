@@ -4916,32 +4916,59 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         return False
 
     async def get_repeater_shift(self, receiver: int = 0) -> RepeaterShiftDirection:
-        """Read the repeater shift direction (CI-V ``0x0F``, MOR-2930)."""
+        """Read the repeater shift direction (CI-V ``0F``, MOR-2930)."""
         self._check_connected()
         self._require_receiver(receiver, operation="get_repeater_shift")
-        civ = self._commands.get_repeater_shift(to_addr=self._radio_addr)
-        resp = await self._send_civ_expect(civ, label="get_repeater_shift")
-        direction = parse_repeater_shift_response(resp.data)
-        if direction is None:
-            raise CommandError(
-                f"invalid repeater shift readback: {resp.data.hex() or 'empty'}"
-            )
-        return direction
+
+        async def read() -> RepeaterShiftDirection:
+            civ = self._commands.get_repeater_shift(to_addr=self._radio_addr)
+            resp = await self._send_civ_expect(civ, label="get_repeater_shift")
+            direction = parse_repeater_shift_response(resp.data)
+            if direction is None:
+                raise CommandError(
+                    f"invalid repeater shift readback: {resp.data.hex() or 'empty'}"
+                )
+            return direction
+
+        if receiver == RECEIVER_MAIN:
+            return await read()
+        # 0F carries no receiver selector, so a non-cmd29 dual-receiver
+        # radio (IC-9700, MOR-3623) is addressed by switching to that
+        # receiver and restoring the selection afterwards — the same
+        # routing ``set_mode`` uses for a bare 0x06.
+        return await self._run_with_receiver_vfo_fallback(
+            receiver=receiver,
+            operation="get_repeater_shift",
+            action=read,
+        )
 
     async def set_repeater_shift(
         self, direction: RepeaterShiftDirection | int, receiver: int = 0
     ) -> None:
-        """Set the repeater shift direction (CI-V ``0x0F``, MOR-2930).
+        """Set the repeater shift direction (CI-V ``0F``, MOR-2930).
 
         Only SIMPLEX, MINUS and PLUS have a code; any other direction, ARS
         included, raises ``ValueError`` before anything is sent.
         """
         self._check_connected()
         self._require_receiver(receiver, operation="set_repeater_shift")
-        civ = self._commands.set_repeater_shift(direction, to_addr=self._radio_addr)
-        resp = await self._send_civ_expect(civ, label="set_repeater_shift")
-        if parse_ack_nak(resp) is False:
-            raise CommandError(f"Radio rejected repeater shift {direction!r}")
+
+        async def write() -> None:
+            civ = self._commands.set_repeater_shift(direction, to_addr=self._radio_addr)
+            resp = await self._send_civ_expect(civ, label="set_repeater_shift")
+            if parse_ack_nak(resp) is False:
+                raise CommandError(f"Radio rejected repeater shift {direction!r}")
+
+        if receiver == RECEIVER_MAIN:
+            await write()
+            return
+        # See get_repeater_shift: address a non-cmd29 dual-receiver radio by
+        # switching to the requested receiver and restoring the selection.
+        await self._run_with_receiver_vfo_fallback(
+            receiver=receiver,
+            operation="set_repeater_shift",
+            action=write,
+        )
 
     async def get_tuning_step(self) -> int:
         """Read the tuning step index (0-8, BCD-encoded per IC-7610, CI-V 0x10)."""
