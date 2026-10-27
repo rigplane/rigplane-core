@@ -167,6 +167,13 @@ test('no scope toolbar on the phone; the S-meter sits directly above the panoram
   await page.setViewportSize({ width: 390, height: 664 });
   await page.goto('/');
   await settled(page);
+  // `settled` only waits for the layout shell. Under CPU load the measurement
+  // ran before the S-meter and the panorama mounted (S-meter bar 1 px high, no
+  // `.spectrum-split-region`), so no element overflowed and `scrollers` was [].
+  await expect(page.locator('.spectrum-split-region')).toBeVisible();
+  await expect
+    .poll(() => page.locator('.m-smeter-bar').evaluate((el) => el.getBoundingClientRect().height))
+    .toBeGreaterThan(1);
   const geometry = await page.evaluate(() => {
     const scrollers: string[] = [];
     for (const el of Array.from(document.querySelectorAll<HTMLElement>('*'))) {
