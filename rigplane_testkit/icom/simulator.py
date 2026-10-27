@@ -35,6 +35,7 @@ from typing import Literal
 from rigplane_testkit.icom.faults import Direction, FaultPlan, Port
 from rigplane_testkit.icom.fixtures import scope_wave_templates
 from rigplane_testkit.icom.replay import RecordedAnswerTable
+from rigplane_testkit.icom.rx_source import RxSource
 from rigplane_testkit.icom.simulator_audio import AudioPortMixin, TxAudioFormat
 
 logger = logging.getLogger(__name__)
@@ -441,6 +442,9 @@ class MockIcomRadio(AudioPortMixin):
         scope_stream: opt-in replay of recorded ``27 00`` scope waves at
             the measured MAIN/SUB cadence. Off by default. Only complete
             frames from the committed ``scope`` window are emitted.
+        rx_source: optional RX audio source (``rx_source.WavSource``)
+            played in place of the byte ramp; None (default) keeps the
+            ramp. Restarts from its head on each stream start.
     """
 
     def __init__(
@@ -472,6 +476,7 @@ class MockIcomRadio(AudioPortMixin):
         clock: Callable[[], float] | None = None,
         dual_receiver: bool = False,
         scope_stream: bool = False,
+        rx_source: RxSource | None = None,
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -581,6 +586,9 @@ class MockIcomRadio(AudioPortMixin):
         # Audio-port listener switch: default off, when the status reply
         # advertises the dummy port and nothing listens.
         self.enable_audio: bool = enable_audio
+        # Optional RX audio source (``rx_source.py``); None keeps the ramp.
+        # Must be set before ``_audio_init`` reads it below.
+        self._rx_source: RxSource | None = rx_source
         # Owner identity = (remote_addr, my_id); None when no session is held.
         self._owner: tuple[tuple[str, int], int] | None = None
         self._keepalive_timer: asyncio.TimerHandle | None = None
