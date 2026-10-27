@@ -186,6 +186,11 @@ class BandInfo:
     end: int  # Hz
     default: int  # Hz — default tuning frequency
     bsr_code: int | None = None  # Band Stack Register code for CI-V 0x1A 0x01
+    #: True when this band row is receive-only (MOR-3632): the radio tunes
+    #: it (band selector, ``freqRanges``) but it must never grant transmit
+    #: permission, so the capabilities ``txBands`` payload omits it. Data
+    #: only — no band name or frequency lives in code.
+    rx_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)

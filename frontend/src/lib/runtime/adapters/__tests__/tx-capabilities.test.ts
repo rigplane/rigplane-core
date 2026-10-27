@@ -161,6 +161,44 @@ describe('getFrequencyPermit', () => {
       { status: 'allowed', band: '20m' },
     );
   });
+  // MOR-3632: the IC-705 golden is the shipped capabilities payload with
+  // the receive-only band rows (2200m/630m/WFM/Air/Gen) flagged rx_only:
+  // they stay tunable band-selector entries, but txBands no longer lists
+  // them, so a frequency whose only covering band is receive-only denies
+  // TX by data. Amateur rows (HF, 2 m, 70 cm) keep their TX permission.
+  it('IC-705 golden: WFM/Air/Gen are tunable but not TX bands; 2 m, 70 cm and HF are', () => {
+    const { capabilities } = (goldenFile as unknown as Record<string, {
+      capabilities: {
+        freqRanges: { start: number; end: number }[];
+        txBands: { name: string; start: number; end: number }[];
+      };
+    }>)['IC-705'];
+    const { freqRanges, txBands } = capabilities;
+
+    const tunable = (freq: number) =>
+      freqRanges.some((range) => range.start <= freq && range.end >= freq);
+    // 100 MHz sits in the WFM broadcast row, 121.5 MHz in the Air row, and
+    // 29.8 MHz only in the general-coverage Gen row (10 m ends at 29.7 MHz,
+    // 6 m starts at 50 MHz) — all three tunable, none TX-permitted.
+    expect(tunable(100_000_000)).toBe(true);
+    expect(tunable(121_500_000)).toBe(true);
+    expect(tunable(29_800_000)).toBe(true);
+    for (const freq of [100_000_000, 121_500_000, 29_800_000]) {
+      expect(getFrequencyPermit(freq, txBands)).toEqual(
+        { status: 'denied', reason: 'outside-configured-ranges' },
+      );
+    }
+    expect(getFrequencyPermit(146_520_000, txBands)).toEqual(
+      { status: 'allowed', band: '2m' },
+    );
+    expect(getFrequencyPermit(446_000_000, txBands)).toEqual(
+      { status: 'allowed', band: '70cm' },
+    );
+    // No HF behaviour change: the 20 m amateur row keeps its TX permission.
+    expect(getFrequencyPermit(14_074_000, txBands)).toEqual(
+      { status: 'allowed', band: '20m' },
+    );
+  });
   it.each([
     [150, undefined, 'denied'], [150, null, 'denied'], [150, [], 'denied'],
     [Number.NaN, [{ name: 'test', start: 100, end: 200 }], 'denied'],

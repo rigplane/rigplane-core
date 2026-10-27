@@ -480,6 +480,35 @@ class TestCapabilitiesEndpoint:
         )
 
     @pytest.mark.asyncio
+    async def test_capabilities_ic705_rx_only_bands_absent_from_tx_bands(self):
+        """MOR-3632: the IC-705's receive-only band rows (2200m, 630m, WFM,
+        Air, Gen) stay tunable band-selector entries but must never appear
+        in ``txBands`` — before the ``rx_only`` flag they counted as
+        TX-allowed, granting transmit permission on broadcast, airband and
+        general-coverage receive rows."""
+        radio = _make_radio("IC-705")
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+
+        data = _parse_json_body(writer)
+        rx_only_names = {"2200m", "630m", "WFM", "Air", "Gen"}
+        tx_names = {band["name"] for band in data["txBands"]}
+        assert not (rx_only_names & tx_names)
+        # TX-capable rows keep their classification: HF amateur bands and
+        # both VHF/UHF amateur bands remain TX-permitted.
+        assert {"20m", "2m", "70cm"} <= tx_names
+        # The receive-only rows remain tunable: freqRanges still lists them
+        # as band-selector entries.
+        range_band_names = {
+            band["name"]
+            for freq_range in data["freqRanges"]
+            for band in freq_range["bands"]
+        }
+        assert rx_only_names <= range_band_names
+
+    @pytest.mark.asyncio
     async def test_capabilities_reports_hardware_and_audio_scope_independently(self):
         """Audio FFT availability is not inferred from hardware scope support."""
         hardware_radio = _make_radio("IC-7610")
