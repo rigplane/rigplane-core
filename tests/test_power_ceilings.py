@@ -40,7 +40,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import FreshnessState, StateStore
+from rigplane.core.state_store import StateStore
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.profiles import get_radio_profile
 from rigplane.profiles.power_ceilings import (
@@ -413,12 +413,12 @@ def _stale_tx_target_store() -> StateStore:
         (
             FieldPath.active("main", "freq_mode", "freq_hz"),
             145_000_000,
-            1.0,
+            30.0,
         ),
         (
             FieldPath.active("sub", "freq_mode", "freq_hz"),
             435_000_000,
-            1.0,
+            30.0,
         ),
         (
             FieldPath.global_("tx_state", "tx_target"),
@@ -437,9 +437,7 @@ def _stale_tx_target_store() -> StateStore:
         )
     # Age ONLY the TX target past its TTL; the receiver frequencies stay
     # inside theirs.
-    store._entries[FieldPath.global_("tx_state", "tx_target")].freshness = (  # noqa: SLF001
-        FreshnessState.STALE
-    )
+    store.mark_stale_due(now=20.0)
     return store
 
 
@@ -563,8 +561,7 @@ def test_normalized_write_scales_by_the_ceiling():
 # ── Backend clamp (paths that bypass admission) ───────────────────
 
 
-@pytest.fixture()
-def watts_radio_with_ceilings():
+def _yaesu_radio_with_ceilings(*, store: bool = False) -> YaesuCatRadio:
     """A YaesuCatRadio on the ftx1 profile plus per-band ceiling rows."""
     config = replace(
         load_rig(_RIGS_DIR / "ftx1.toml"),
@@ -573,7 +570,14 @@ def watts_radio_with_ceilings():
     radio = YaesuCatRadio("/dev/null", profile=config)
     radio._transport._connected = True
     radio._transport.write = AsyncMock()
+    if store:
+        radio._state_store = StateStore()
     return radio
+
+
+@pytest.fixture()
+def watts_radio_with_ceilings():
+    return _yaesu_radio_with_ceilings()
 
 
 @pytest.mark.asyncio
@@ -625,14 +629,7 @@ async def test_backend_band_change_then_power_uses_destination_ceiling():
     resolves the DESTINATION band instead of the TX target's stale
     embedded frequency (75 W would leave the wire at PC2075).
     """
-    config = replace(
-        load_rig(_RIGS_DIR / "ftx1.toml"),
-        power_ceilings_w={"2m": 75, "70cm": 50},
-    )
-    radio = YaesuCatRadio("/dev/null", profile=config)
-    radio._transport._connected = True
-    radio._transport.write = AsyncMock()
-    radio._state_store = StateStore()
+    radio = _yaesu_radio_with_ceilings(store=True)
     radio._state_store.apply(
         _snapshot_observation(
             FieldPath.active("main", "freq_mode", "freq_hz"),
@@ -663,13 +660,7 @@ async def test_backend_power_waits_for_an_in_flight_band_change():
     write must not resolve the ceiling until the band change (wire and
     store echo) completes, then clamp to the destination band.
     """
-    config = replace(
-        load_rig(_RIGS_DIR / "ftx1.toml"),
-        power_ceilings_w={"2m": 75, "70cm": 50},
-    )
-    radio = YaesuCatRadio("/dev/null", profile=config)
-    radio._transport._connected = True
-    radio._state_store = StateStore()
+    radio = _yaesu_radio_with_ceilings(store=True)
     radio._state_store.apply(
         _snapshot_observation(
             FieldPath.active("main", "freq_mode", "freq_hz"),
@@ -710,13 +701,7 @@ async def test_backend_freq_echo_is_bound_to_the_provider_generation():
     the previous generation's requested frequency as fresh proof in the
     newly emptied store.
     """
-    config = replace(
-        load_rig(_RIGS_DIR / "ftx1.toml"),
-        power_ceilings_w={"2m": 75, "70cm": 50},
-    )
-    radio = YaesuCatRadio("/dev/null", profile=config)
-    radio._transport._connected = True
-    radio._state_store = StateStore()
+    radio = _yaesu_radio_with_ceilings(store=True)
     write_started = asyncio.Event()
     release = asyncio.Event()
     wire_mock = AsyncMock()
@@ -751,14 +736,7 @@ async def test_backend_freq_echo_expires_like_an_observed_frequency():
     polled entry's TTL and stay FRESH forever, authorizing its band past
     the freshness budget.
     """
-    config = replace(
-        load_rig(_RIGS_DIR / "ftx1.toml"),
-        power_ceilings_w={"2m": 75, "70cm": 50},
-    )
-    radio = YaesuCatRadio("/dev/null", profile=config)
-    radio._transport._connected = True
-    radio._transport.write = AsyncMock()
-    radio._state_store = StateStore()
+    radio = _yaesu_radio_with_ceilings(store=True)
 
     # Park on 2 m (75 W): an unexpired echo would authorize PC2075.
     await radio.set_freq(145_000_000)
@@ -785,13 +763,15 @@ class _QueueRecorder:
         self.items.append(item)
 
 
-def _watts_handler(profile: Any, state: RadioState):
+def _watts_handler(
+    profile: Any, state: RadioState, *, native_power_unit: str = "watts"
+):
     from rigplane.web.handlers.control import ControlHandler
 
     radio = SimpleNamespace(
         capabilities={"tx"},
         profile=profile,
-        native_power_unit="watts",
+        native_power_unit=native_power_unit,
         radio_state=state,
         set_rf_power=AsyncMock(),
         get_rf_power=AsyncMock(return_value=0),
@@ -809,7 +789,7 @@ def _watts_handler(profile: Any, state: RadioState):
             "9.9.9",
             "IC-9700",
             server=server,
-            session_id="power-ceilings",
+            session_id=f"power-ceilings-{native_power_unit}",
         ),
     )
 
@@ -864,34 +844,16 @@ async def test_handler_raw_255_radio_keeps_the_raw_wire_scale():
     int is the documented 0-255 raw value and a float scales onto 0-255,
     exactly as before the ceilings landed.
     """
-    from rigplane.web.handlers.control import ControlHandler
-
-    radio = SimpleNamespace(
-        capabilities={"tx"},
-        profile=get_radio_profile("IC-9700"),
+    _radio, handler = _watts_handler(
+        get_radio_profile("IC-9700"),
+        _state_double(main_hz=1_297_000_000),
         native_power_unit="raw_255",
-        radio_state=_state_double(main_hz=1_297_000_000),
-        set_rf_power=AsyncMock(),
-        get_rf_power=AsyncMock(return_value=0),
-        get_powerstat=AsyncMock(return_value=True),
-        set_powerstat=AsyncMock(),
-    )
-    server = SimpleNamespace(
-        command_queue=_QueueRecorder(), command_state_store=StateStore()
-    )
-    handler = ControlHandler(
-        SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock()),
-        radio,
-        "9.9.9",
-        "IC-9700",
-        server=server,
-        session_id="power-ceilings-raw",
     )
 
     await handler._enqueue_command("set_power", {"level": 90})
     await handler._enqueue_command("set_power", {"level": 1.0})
 
-    [first, second] = server.command_queue.items
+    [first, second] = handler._server.command_queue.items
     assert (first.level, first.unit) == (90, "raw_255")
     assert (second.level, second.unit) == (255, "raw_255")
 
@@ -918,6 +880,19 @@ def _observation_profile() -> RadioAcquisitionProfile:
     return profile.state_acquisition
 
 
+async def _polled_power_level(
+    profile: Any, state: RadioState, watts: int
+) -> tuple[StateStore, MagicMock]:
+    radio = _yaesu_poll_radio(profile, state)
+    radio.read_power = AsyncMock(return_value=(2, watts))
+    store = StateStore()
+    for observation in await YaesuObservationAdapter(
+        radio, profile=_observation_profile(), clock=lambda: 123.456
+    ).poll_tx_controls():
+        store.apply(observation)
+    return store, radio
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("freq_hz", "expected_fraction"),
@@ -934,13 +909,9 @@ async def test_power_level_observation_scales_watts_by_band_ceiling(
         get_radio_profile("FTX-1"),
         power_ceilings_w={"2m": 75, "70cm": 50},
     )
-    radio = _yaesu_poll_radio(profile, _state_double(main_hz=freq_hz))
-
-    store = StateStore()
-    for observation in await YaesuObservationAdapter(
-        radio, profile=_observation_profile(), clock=lambda: 123.456
-    ).poll_tx_controls():
-        store.apply(observation)
+    store, _radio = await _polled_power_level(
+        profile, _state_double(main_hz=freq_hz), 40
+    )
 
     assert store.snapshot().field(
         "global.operator_controls.power_level"
@@ -961,14 +932,7 @@ async def test_over_ceiling_readback_saturates_through_the_public_projection():
         get_radio_profile("FTX-1"),
         power_ceilings_w={"2m": 75, "70cm": 50},
     )
-    radio = _yaesu_poll_radio(profile, _state_double(main_hz=0))
-    radio.read_power = AsyncMock(return_value=(2, 60))
-
-    store = StateStore()
-    for observation in await YaesuObservationAdapter(
-        radio, profile=_observation_profile(), clock=lambda: 123.456
-    ).poll_tx_controls():
-        store.apply(observation)
+    store, radio = await _polled_power_level(profile, _state_double(main_hz=0), 60)
 
     assert store.snapshot().field(
         "global.operator_controls.power_level"
