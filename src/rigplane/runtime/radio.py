@@ -4916,64 +4916,32 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         return False
 
     async def get_repeater_shift(self, receiver: int = 0) -> RepeaterShiftDirection:
-        """Read the repeater shift direction (CI-V ``0F``, MOR-2930)."""
+        """Read the repeater shift direction (CI-V ``0x0F``, MOR-2930)."""
         self._check_connected()
         self._require_receiver(receiver, operation="get_repeater_shift")
-
-        async def read() -> RepeaterShiftDirection:
-            civ = self._commands.get_repeater_shift(to_addr=self._radio_addr)
-            resp = await self._send_civ_expect(civ, label="get_repeater_shift")
-            direction = parse_repeater_shift_response(resp.data)
-            if direction is None:
-                raise CommandError(
-                    f"invalid repeater shift readback: {resp.data.hex() or 'empty'}"
-                )
-            return direction
-
-        # 0F carries no receiver selector. A single-receiver radio is
-        # addressed directly; a dual-receiver radio (IC-9700, MOR-3623) is
-        # addressed by switching to the requested receiver and restoring
-        # the selection afterwards — the same shared routing ``set_mode``
-        # uses for a bare 0x06, for the MAIN receiver too, so a shift read
-        # while SUB is selected never reads SUB by accident.
-        if self._profile.receiver_count <= 1:
-            return await read()
-        return await self._run_with_receiver_vfo_fallback(
-            receiver=receiver,
-            operation="get_repeater_shift",
-            action=read,
-        )
+        civ = self._commands.get_repeater_shift(to_addr=self._radio_addr)
+        resp = await self._send_civ_expect(civ, label="get_repeater_shift")
+        direction = parse_repeater_shift_response(resp.data)
+        if direction is None:
+            raise CommandError(
+                f"invalid repeater shift readback: {resp.data.hex() or 'empty'}"
+            )
+        return direction
 
     async def set_repeater_shift(
         self, direction: RepeaterShiftDirection | int, receiver: int = 0
     ) -> None:
-        """Set the repeater shift direction (CI-V ``0F``, MOR-2930).
+        """Set the repeater shift direction (CI-V ``0x0F``, MOR-2930).
 
         Only SIMPLEX, MINUS and PLUS have a code; any other direction, ARS
         included, raises ``ValueError`` before anything is sent.
         """
         self._check_connected()
         self._require_receiver(receiver, operation="set_repeater_shift")
-        # Build (and thereby validate) the frame before any receiver
-        # routing: an invalid direction must change nothing on the radio,
-        # not even its selection.
         civ = self._commands.set_repeater_shift(direction, to_addr=self._radio_addr)
-
-        async def write() -> None:
-            resp = await self._send_civ_expect(civ, label="set_repeater_shift")
-            if parse_ack_nak(resp) is False:
-                raise CommandError(f"Radio rejected repeater shift {direction!r}")
-
-        # See get_repeater_shift: address a dual-receiver radio through the
-        # shared switch-and-restore, both receivers.
-        if self._profile.receiver_count <= 1:
-            await write()
-            return
-        await self._run_with_receiver_vfo_fallback(
-            receiver=receiver,
-            operation="set_repeater_shift",
-            action=write,
-        )
+        resp = await self._send_civ_expect(civ, label="set_repeater_shift")
+        if parse_ack_nak(resp) is False:
+            raise CommandError(f"Radio rejected repeater shift {direction!r}")
 
     async def get_tuning_step(self) -> int:
         """Read the tuning step index (0-8, BCD-encoded per IC-7610, CI-V 0x10)."""

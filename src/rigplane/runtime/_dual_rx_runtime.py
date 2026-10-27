@@ -6,7 +6,6 @@ Part of the radio.py decomposition (#505). All methods are accessed via
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -174,104 +173,35 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         *,
         receiver: int,
         operation: str,
-        action: "Callable[..., Awaitable[Any]]",
+        action: Callable[[], Awaitable[Any]],
     ) -> Any:
-        """Run an operation for a receiver using temporary MAIN/SUB VFO switching.
-
-        MOR-3623 pre-review hardening:
-
-        * the initial selection sits inside the failure boundary: when its
-          ACK is lost (or the awaiting task is cancelled while it is
-          pending) the switch may still have reached the radio, so one
-          best-effort restoration is attempted before the original error
-          propagates;
-        * the restoration is skipped when another caller moved the
-          selection meanwhile (``RadioState.active`` no longer names the
-          receiver we switched to): their selection owns the radio, and a
-          blind restore would overwrite it.
-
-        Known limit, deliberate for this slice: a competing selection
-        dispatched in the window between our switch and our action can
-        still redirect the action's frame at the radio. Closing that
-        window needs the MOR-3743 selection-epoch discipline extended to
-        nested selection scopes — ``set_vfo_slot`` wraps this helper in
-        ``_vfo_selection_change``, so the epoch's in-flight encoding
-        cannot simply be pinned here — plus a currency hook on every
-        routed action's send; that mechanism change is the deferred
-        follow-up recorded in MOR-3623's PR body.
-        """
-        return await self._run_receiver_routed_once(
-            receiver, operation=operation, action=action
-        )
-
-    async def _run_receiver_routed_once(
-        self,
-        receiver: int,
-        *,
-        operation: str,
-        action: "Callable[..., Awaitable[Any]]",
-    ) -> Any:
-        """One switch → action → restore attempt for the fallback above."""
+        """Run an operation for a receiver using temporary MAIN/SUB VFO switching."""
         target = "MAIN" if receiver == RECEIVER_MAIN else "SUB"
         current = self._active_receiver_name()
         switched = False
 
-        async def restore_selection() -> None:
-            await self._set_vfo_wire(current)
-            self._radio_state.active = current
-
-        def selection_still_ours() -> bool:
-            """False once another caller (or a radio announcement) moved the
-            active receiver away from the one we switched to."""
-            return not switched or self._radio_state.active == target
+        if current != target:
+            if target == "SUB" and self._profile.vfo_sub_code is None:
+                raise CommandError(
+                    f"{operation} receiver={receiver} is unsupported for profile "
+                    f"{self._profile.model}: no SUB VFO select code"
+                )
+            if target == "MAIN" and self._profile.vfo_main_code is None:
+                raise CommandError(
+                    f"{operation} receiver={receiver} is unsupported for profile "
+                    f"{self._profile.model}: no MAIN VFO select code"
+                )
+            await self._set_vfo_wire(target)
+            self._radio_state.active = target
+            switched = True
 
         try:
-            if current != target:
-                if target == "SUB" and self._profile.vfo_sub_code is None:
-                    raise CommandError(
-                        f"{operation} receiver={receiver} is unsupported for profile "
-                        f"{self._profile.model}: no SUB VFO select code"
-                    )
-                if target == "MAIN" and self._profile.vfo_main_code is None:
-                    raise CommandError(
-                        f"{operation} receiver={receiver} is unsupported for profile "
-                        f"{self._profile.model}: no MAIN VFO select code"
-                    )
-                try:
-                    await self._set_vfo_wire(target)
-                except BaseException:
-                    # The switch may have reached the radio while its answer
-                    # was lost: attempt one restoration, then propagate the
-                    # original error whatever the restoration did. The
-                    # restoration is shielded so a cancellation delivered
-                    # while it runs cannot cut it short and strand the radio
-                    # on a receiver nobody asked for.
-                    try:
-                        await asyncio.shield(restore_selection())
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        logger.warning(
-                            "%s: restoring receiver %s after a failed %s selection "
-                            "also failed; the radio's receiver selection is "
-                            "uncertain",
-                            operation,
-                            current,
-                            target,
-                        )
-                    raise
-                self._radio_state.active = target
-                switched = True
             return await action()
         finally:
-            if switched and selection_still_ours():
+            if switched:
                 try:
-                    # Shielded for the same reason as the failure-path
-                    # restoration above: cancellation of the caller must not
-                    # strand the radio on the temporary receiver.
-                    await asyncio.shield(restore_selection())
-                except asyncio.CancelledError:
-                    raise
+                    await self._set_vfo_wire(current)
+                    self._radio_state.active = current
                 except TimeoutError:
                     # Do not swallow — radio would silently remain on the
                     # temporary receiver. Retry once (the first attempt may
@@ -282,7 +212,8 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                         operation,
                         current,
                     )
-                    await asyncio.shield(restore_selection())
+                    await self._set_vfo_wire(current)
+                    self._radio_state.active = current
 
     async def _get_frequency_main(
         self, *, bypass_cache: bool = False, update_cache: bool = True
@@ -313,10 +244,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             raise
 
     async def _set_frequency_main(
-        self,
-        freq_hz: int,
-        *,
-        update_cache: bool = True,
+        self, freq_hz: int, *, update_cache: bool = True
     ) -> None:
         """Set MAIN receiver frequency with optional cache updates."""
         civ = self._commands.set_freq(

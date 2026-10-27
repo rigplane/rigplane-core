@@ -53,7 +53,7 @@ class TestActionRaisesMidSwap:
 
         ic9700_radio._set_vfo_wire = fake_set_vfo_wire  # type: ignore[method-assign]
 
-        async def failing_action(is_current=None) -> None:
+        async def failing_action() -> None:
             raise ValueError("boom mid-swap")
 
         with pytest.raises(ValueError, match="boom mid-swap"):
@@ -82,7 +82,7 @@ class TestTimeoutRetryOnRestore:
 
         ic9700_radio._set_vfo_wire = flaky_restore  # type: ignore[method-assign]
 
-        async def action(is_current=None) -> str:
+        async def action() -> str:
             return "action-result"
 
         result = await ic9700_radio._run_with_receiver_vfo_fallback(
@@ -109,7 +109,7 @@ class TestTimeoutRetryOnRestore:
 
         ic9700_radio._set_vfo_wire = always_timeout_restore  # type: ignore[method-assign]
 
-        async def action(is_current=None) -> str:
+        async def action() -> str:
             return "action-result"
 
         with pytest.raises(TimeoutError, match="restore timed out"):
@@ -138,7 +138,7 @@ class TestSelectBackFailureSemantics:
 
         ic9700_radio._set_vfo_wire = always_timeout_restore  # type: ignore[method-assign]
 
-        async def action(is_current=None) -> str:
+        async def action() -> str:
             return "action-result"
 
         with pytest.raises(TimeoutError):
@@ -163,7 +163,7 @@ class TestSelectBackFailureSemantics:
 
         ic9700_radio._set_vfo_wire = always_timeout_restore  # type: ignore[method-assign]
 
-        async def failing_action(is_current=None) -> None:
+        async def failing_action() -> None:
             raise ValueError("original action failure")
 
         with pytest.raises(TimeoutError) as excinfo:
