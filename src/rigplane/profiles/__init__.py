@@ -197,6 +197,7 @@ class BandInfo:
     #: permission, so the capabilities ``txBands`` payload omits it. Data
     #: only — no band name or frequency lives in code.
     rx_only: bool = False
+    default_mode: str | None = None  # e.g. "FM" — used on BSR-miss fallback
 
 
 @dataclass(frozen=True, slots=True)

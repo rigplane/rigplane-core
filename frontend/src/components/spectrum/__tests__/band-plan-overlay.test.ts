@@ -159,3 +159,36 @@ describe('shouldSkipFetch (containment)', () => {
     expect(shouldSkipFetch(14_000_000, 14_550_000, 13_825_000, 14_525_000)).toBe(false);
   });
 });
+
+describe('VHF/UHF overlay (MOR-3631)', () => {
+  it('formats GHz for 23 cm', () => {
+    expect(formatFreq(1_296_100_000)).toBe('1.296 GHz');
+    expect(formatFreq(1_240_000_000)).toBe('1.240 GHz');
+  });
+
+  it('positions a 2 m simplex segment inside a 2 m span', () => {
+    const pos = computePosition(146_400_000, 146_580_000, 144_000_000, 148_000_000);
+    expect(pos.leftPct).toBeCloseTo(60, 0);
+    expect(pos.widthPct).toBeCloseTo(4.5, 1);
+  });
+
+  it('positions a 70 cm calling point inside a 70 cm span', () => {
+    const pos = computePosition(446_000_000, 446_000_000, 430_000_000, 450_000_000);
+    expect(pos.leftPct).toBeCloseTo(80, 0);
+    expect(pos.widthPct).toBe(0);
+  });
+
+  it('keeps ham VHF segments and suppresses overlapping utility', () => {
+    const ham: RemoteSegment = {
+      start: 144_000_000, end: 148_000_000, mode: 'phone', label: 'FM',
+      color: '#60A5FA', opacity: 0.2, band: '2m', layer: 'ham', priority: 10,
+    };
+    const utility: RemoteSegment = {
+      start: 145_000_000, end: 147_000_000, mode: 'utility', label: 'UTIL',
+      color: '#F97316', opacity: 0.2, band: 'UTIL', layer: 'utility', priority: 3,
+    };
+    const result = filterOverlapping([ham, utility], 144_000_000, 148_000_000);
+    expect(result).toHaveLength(1);
+    expect(result[0].layer).toBe('ham');
+  });
+});

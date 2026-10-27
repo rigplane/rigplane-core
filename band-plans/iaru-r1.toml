@@ -1,13 +1,16 @@
-# IARU Region 1 HF Band Plan (Europe, Africa, Middle East, Northern Asia)
+# IARU Region 1 Band Plan (Europe, Africa, Middle East, Northern Asia; HF + VHF/UHF)
 # Source: https://www.iaru-r1.org/on-the-air/band-plans/
+# VHF/UHF/SHF sections follow the IARU-R1 VHF Handbook band plans;
+# only widely documented sub-bands are included (MOR-3631, owner review pending).
 
 [meta]
-name = "IARU Region 1 HF"
+name = "IARU Region 1"
 region = "IARU-R1"
 source = "https://www.iaru-r1.org/on-the-air/band-plans/"
 layer = "ham"
 priority = 10
 version = "2025.1"
+updated = "2026-10-27"
 
 # ── 160m ──────────────────────────────────────────────
 
@@ -384,3 +387,269 @@ end = 29_700_000
   mode = "phone"
   label = "FM-RPT"
   notes = "FM repeaters"
+
+# ── 6m (50-52 MHz, Region 1) ──────────────────────────
+
+[[band]]
+name = "6m"
+start = 50_000_000
+end = 52_000_000
+
+  [[band.segment]]
+  start = 50_000_000
+  end = 50_100_000
+  mode = "cw"
+  label = "CW"
+  notes = "Telegraphy, EME 50.000-50.010"
+
+  [[band.segment]]
+  start = 50_000_000
+  end = 50_080_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "Beacons"
+
+  [[band.segment]]
+  start = 50_100_000
+  end = 50_300_000
+  mode = "phone"
+  label = "SSB"
+  notes = "SSB, DX calling 50.110, SSB calling 50.150"
+
+  [[band.segment]]
+  start = 50_300_000
+  end = 50_500_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "Digital"
+
+  [[band.segment]]
+  start = 50_500_000
+  end = 52_000_000
+  mode = "phone"
+  label = "FM"
+  notes = "FM, FM calling 51.510"
+
+# ── 2m (144-146 MHz, Region 1) ────────────────────────
+
+[[band]]
+name = "2m"
+start = 144_000_000
+end = 146_000_000
+
+  [[band.segment]]
+  start = 144_000_000
+  end = 144_110_000
+  mode = "cw"
+  label = "CW"
+  notes = "CW, EME 144.000-144.025"
+
+  [[band.segment]]
+  start = 144_110_000
+  end = 144_400_000
+  mode = "phone"
+  label = "SSB"
+  notes = "SSB, SSB calling 144.300"
+
+  [[band.segment]]
+  start = 144_400_000
+  end = 144_500_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "Beacons"
+
+  [[band.segment]]
+  start = 144_500_000
+  end = 144_800_000
+  mode = "phone"
+  label = "ALL"
+  notes = "All modes, SSTV 144.500, RTTY 144.600"
+
+  [[band.segment]]
+  start = 144_800_000
+  end = 144_990_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "Digital, APRS 144.800"
+
+  [[band.segment]]
+  start = 145_000_000
+  end = 145_200_000
+  mode = "phone"
+  label = "RPT"
+  notes = "FM repeater inputs, 600 kHz shift, outputs 145.600-145.800"
+
+  [[band.segment]]
+  start = 145_200_000
+  end = 145_600_000
+  mode = "phone"
+  label = "FM"
+  notes = "FM simplex, FM calling 145.500"
+
+  [[band.segment]]
+  start = 145_600_000
+  end = 145_800_000
+  mode = "phone"
+  label = "RPT"
+  notes = "FM repeater outputs, 600 kHz shift, inputs 145.000-145.200"
+
+  [[band.segment]]
+  start = 145_800_000
+  end = 146_000_000
+  mode = "phone"
+  label = "SAT"
+  notes = "Satellite"
+
+# ── 70cm (430-440 MHz, Region 1) ─────────────────────
+
+[[band]]
+name = "70cm"
+start = 430_000_000
+end = 440_000_000
+
+  [[band.segment]]
+  start = 430_000_000
+  end = 432_000_000
+  mode = "other"
+  label = "ATV"
+  notes = "ATV"
+
+  [[band.segment]]
+  start = 432_000_000
+  end = 432_150_000
+  mode = "cw"
+  label = "CW"
+  notes = "CW, EME 432.000-432.025"
+
+  [[band.segment]]
+  start = 432_150_000
+  end = 432_500_000
+  mode = "phone"
+  label = "SSB"
+  notes = "SSB, SSB calling 432.200"
+
+  [[band.segment]]
+  start = 432_500_000
+  end = 432_800_000
+  mode = "other"
+  label = "LIN"
+  notes = "Linear transponders"
+
+  [[band.segment]]
+  start = 432_800_000
+  end = 433_000_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "Beacons"
+
+  [[band.segment]]
+  start = 433_000_000
+  end = 433_375_000
+  mode = "phone"
+  label = "RPT"
+  notes = "FM repeater inputs, 1.6 MHz shift, outputs 434.600-434.975"
+
+  [[band.segment]]
+  start = 433_375_000
+  end = 433_600_000
+  mode = "phone"
+  label = "FM"
+  notes = "FM simplex, FM calling 433.500"
+
+  [[band.segment]]
+  start = 433_600_000
+  end = 434_000_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "Digital, SSTV, APRS"
+
+  [[band.segment]]
+  start = 434_000_000
+  end = 434_600_000
+  mode = "other"
+  label = "ATV"
+  notes = "ATV"
+
+  [[band.segment]]
+  start = 434_600_000
+  end = 434_975_000
+  mode = "phone"
+  label = "RPT"
+  notes = "FM repeater outputs, 1.6 MHz shift, inputs 433.000-433.375"
+
+  [[band.segment]]
+  start = 435_000_000
+  end = 438_000_000
+  mode = "phone"
+  label = "SAT"
+  notes = "Satellite"
+
+  [[band.segment]]
+  start = 438_000_000
+  end = 440_000_000
+  mode = "other"
+  label = "ATV"
+  notes = "ATV"
+
+# ── 23cm (1240-1300 MHz, Region 1) ───────────────────
+
+[[band]]
+name = "23cm"
+start = 1_240_000_000
+end = 1_300_000_000
+
+  [[band.segment]]
+  start = 1_240_000_000
+  end = 1_243_250_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "Digital"
+
+  [[band.segment]]
+  start = 1_243_250_000
+  end = 1_260_000_000
+  mode = "other"
+  label = "ATV"
+  notes = "ATV"
+
+  [[band.segment]]
+  start = 1_260_000_000
+  end = 1_270_000_000
+  mode = "phone"
+  label = "SAT"
+  notes = "Satellite"
+
+  [[band.segment]]
+  start = 1_272_000_000
+  end = 1_290_000_000
+  mode = "other"
+  label = "ATV"
+  notes = "ATV"
+
+  [[band.segment]]
+  start = 1_290_000_000
+  end = 1_296_000_000
+  mode = "phone"
+  label = "FM"
+  notes = "FM"
+
+  [[band.segment]]
+  start = 1_296_000_000
+  end = 1_296_150_000
+  mode = "cw"
+  label = "CW"
+  notes = "CW, EME"
+
+  [[band.segment]]
+  start = 1_296_150_000
+  end = 1_296_800_000
+  mode = "phone"
+  label = "SSB"
+  notes = "SSB, SSB calling 1296.200"
+
+  [[band.segment]]
+  start = 1_297_000_000
+  end = 1_298_000_000
+  mode = "phone"
+  label = "FM"
+  notes = "FM simplex, FM calling 1297.500"

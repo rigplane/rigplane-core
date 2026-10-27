@@ -2673,20 +2673,35 @@ class RadioPoller:
                     logger.debug("BSR recall failed", exc_info=True)
 
                 if not bsr_ok:
-                    # Fallback: set default freq from rig profile
+                    # Fallback: set default freq (and optional default mode)
+                    # from the rig profile (MOR-3631).
                     default_freq: int | None = None
+                    default_mode: str | None = None
                     for fr in self._profile.freq_ranges:
                         for bi in fr.bands:
                             if bi.bsr_code == band:
                                 default_freq = bi.default
+                                default_mode = bi.default_mode
                                 break
                         if default_freq is not None:
                             break
                     if default_freq is not None:
-                        logger.info(
-                            "BSR fallback: band=%d → freq=%d", band, default_freq
-                        )
+                        if default_mode is not None:
+                            logger.info(
+                                "BSR fallback: band=%d → freq=%d mode=%s",
+                                band,
+                                default_freq,
+                                default_mode,
+                            )
+                        else:
+                            logger.info(
+                                "BSR fallback: band=%d → freq=%d",
+                                band,
+                                default_freq,
+                            )
                         await radio.set_freq(default_freq)
+                        if default_mode is not None:
+                            await radio.set_mode(default_mode)
                     else:
                         logger.warning("set_band: unknown bsr_code=%d", band)
             case SelectVfo(vfo=vfo):

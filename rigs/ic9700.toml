@@ -573,6 +573,7 @@ start_hz = 144_000_000
 end_hz = 148_000_000
 default_hz = 144_000_000
 bsr_code = 0x01
+default_mode = "FM"
 
 [[freq_ranges.ranges]]
 label = "70cm"
@@ -586,6 +587,7 @@ start_hz = 430_000_000
 end_hz = 450_000_000
 default_hz = 430_000_000
 bsr_code = 0x02
+default_mode = "FM"
 
 [[freq_ranges.ranges]]
 # The CI-V guide names this band "1.2GHz".
@@ -600,6 +602,7 @@ start_hz = 1_240_000_000
 end_hz = 1_300_000_000
 default_hz = 1_240_000_000
 bsr_code = 0x03
+default_mode = "FM"
 
 # ── Command 29 Routes ───────────────────────────────────────────
 # The IC-9700 uses the MAIN/SUB receiver-select scheme (0x07 0xD0/0xD1)

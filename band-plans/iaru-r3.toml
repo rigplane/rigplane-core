@@ -1,0 +1,492 @@
+# IARU Region 3 Band Plan (Asia-Pacific; HF + VHF/UHF)
+# Source: https://www.iaru-r3.org/documents/band-plans/
+# HF sections are broad IARU-style sub-bands (no license classes);
+# VHF/UHF sections cover 6 m, 2 m, 70 cm and 23 cm with widely
+# documented sub-bands only. Region 3 calling frequencies and repeater
+# details need owner review (MOR-3631, Deferred).
+
+[meta]
+name = "IARU Region 3"
+region = "IARU-R3"
+source = "https://www.iaru-r3.org/documents/band-plans/"
+layer = "ham"
+priority = 10
+version = "2025.1"
+updated = "2026-10-27"
+
+# ── 160m ──────────────────────────────────────────────
+
+[[band]]
+name = "160m"
+start = 1_800_000
+end = 2_000_000
+
+  [[band.segment]]
+  start = 1_800_000
+  end = 1_840_000
+  mode = "cw"
+  label = "CW"
+
+  [[band.segment]]
+  start = 1_840_000
+  end = 1_850_000
+  mode = "digital"
+  label = "DIGI"
+
+  [[band.segment]]
+  start = 1_850_000
+  end = 2_000_000
+  mode = "phone"
+  label = "PHONE"
+
+# ── 80m ───────────────────────────────────────────────
+
+[[band]]
+name = "80m"
+start = 3_500_000
+end = 3_900_000
+
+  [[band.segment]]
+  start = 3_500_000
+  end = 3_570_000
+  mode = "cw"
+  label = "CW"
+
+  [[band.segment]]
+  start = 3_570_000
+  end = 3_600_000
+  mode = "digital"
+  label = "DIGI"
+
+  [[band.segment]]
+  start = 3_600_000
+  end = 3_900_000
+  mode = "phone"
+  label = "PHONE"
+
+# ── 60m (channelized) ─────────────────────────────────
+
+[[band]]
+name = "60m"
+start = 5_330_500
+end = 5_406_500
+
+  [[band.segment]]
+  start = 5_330_500
+  end = 5_406_500
+  mode = "phone"
+  label = "60m"
+  notes = "Channelized (Region 3 allocations need review)"
+
+# ── 40m ───────────────────────────────────────────────
+
+[[band]]
+name = "40m"
+start = 7_000_000
+end = 7_300_000
+
+  [[band.segment]]
+  start = 7_000_000
+  end = 7_070_000
+  mode = "cw"
+  label = "CW"
+
+  [[band.segment]]
+  start = 7_070_000
+  end = 7_125_000
+  mode = "digital"
+  label = "DIGI"
+
+  [[band.segment]]
+  start = 7_125_000
+  end = 7_300_000
+  mode = "phone"
+  label = "PHONE"
+
+# ── 30m ───────────────────────────────────────────────
+
+[[band]]
+name = "30m"
+start = 10_100_000
+end = 10_150_000
+
+  [[band.segment]]
+  start = 10_100_000
+  end = 10_130_000
+  mode = "cw"
+  label = "CW"
+
+  [[band.segment]]
+  start = 10_130_000
+  end = 10_150_000
+  mode = "digital"
+  label = "DIGI"
+
+# ── 20m ───────────────────────────────────────────────
+
+[[band]]
+name = "20m"
+start = 14_000_000
+end = 14_350_000
+
+  [[band.segment]]
+  start = 14_000_000
+  end = 14_070_000
+  mode = "cw"
+  label = "CW"
+
+  [[band.segment]]
+  start = 14_070_000
+  end = 14_150_000
+  mode = "digital"
+  label = "DIGI"
+
+  [[band.segment]]
+  start = 14_150_000
+  end = 14_350_000
+  mode = "phone"
+  label = "PHONE"
+
+# ── 17m ───────────────────────────────────────────────
+
+[[band]]
+name = "17m"
+start = 18_068_000
+end = 18_168_000
+
+  [[band.segment]]
+  start = 18_068_000
+  end = 18_100_000
+  mode = "cw"
+  label = "CW"
+
+  [[band.segment]]
+  start = 18_100_000
+  end = 18_110_000
+  mode = "digital"
+  label = "DIGI"
+
+  [[band.segment]]
+  start = 18_110_000
+  end = 18_168_000
+  mode = "phone"
+  label = "PHONE"
+
+# ── 15m ───────────────────────────────────────────────
+
+[[band]]
+name = "15m"
+start = 21_000_000
+end = 21_450_000
+
+  [[band.segment]]
+  start = 21_000_000
+  end = 21_070_000
+  mode = "cw"
+  label = "CW"
+
+  [[band.segment]]
+  start = 21_070_000
+  end = 21_150_000
+  mode = "digital"
+  label = "DIGI"
+
+  [[band.segment]]
+  start = 21_150_000
+  end = 21_450_000
+  mode = "phone"
+  label = "PHONE"
+
+# ── 12m ───────────────────────────────────────────────
+
+[[band]]
+name = "12m"
+start = 24_890_000
+end = 24_990_000
+
+  [[band.segment]]
+  start = 24_890_000
+  end = 24_920_000
+  mode = "cw"
+  label = "CW"
+
+  [[band.segment]]
+  start = 24_920_000
+  end = 24_930_000
+  mode = "digital"
+  label = "DIGI"
+
+  [[band.segment]]
+  start = 24_930_000
+  end = 24_990_000
+  mode = "phone"
+  label = "PHONE"
+
+# ── 10m ───────────────────────────────────────────────
+
+[[band]]
+name = "10m"
+start = 28_000_000
+end = 29_700_000
+
+  [[band.segment]]
+  start = 28_000_000
+  end = 28_070_000
+  mode = "cw"
+  label = "CW"
+
+  [[band.segment]]
+  start = 28_070_000
+  end = 28_150_000
+  mode = "beacon"
+  label = "BCN"
+
+  [[band.segment]]
+  start = 28_150_000
+  end = 28_300_000
+  mode = "digital"
+  label = "DIGI"
+
+  [[band.segment]]
+  start = 28_300_000
+  end = 29_700_000
+  mode = "phone"
+  label = "PHONE"
+
+# ── 6m (50-54 MHz, Region 3) ──────────────────────────
+
+[[band]]
+name = "6m"
+start = 50_000_000
+end = 54_000_000
+
+  [[band.segment]]
+  start = 50_000_000
+  end = 50_100_000
+  mode = "cw"
+  label = "CW"
+  notes = "CW, EME"
+
+  [[band.segment]]
+  start = 50_060_000
+  end = 50_080_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "Beacons"
+
+  [[band.segment]]
+  start = 50_100_000
+  end = 50_300_000
+  mode = "phone"
+  label = "SSB"
+  notes = "SSB weak-signal"
+
+  [[band.segment]]
+  start = 50_300_000
+  end = 50_600_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "Digital"
+
+  [[band.segment]]
+  start = 51_120_000
+  end = 51_480_000
+  mode = "phone"
+  label = "RPT"
+  notes = "FM repeater outputs"
+
+  [[band.segment]]
+  start = 51_620_000
+  end = 51_980_000
+  mode = "phone"
+  label = "RPT"
+  notes = "FM repeater inputs"
+
+  [[band.segment]]
+  start = 52_000_000
+  end = 54_000_000
+  mode = "phone"
+  label = "FM"
+  notes = "FM simplex"
+
+# ── 2m (144-148 MHz, Region 3) ────────────────────────
+
+[[band]]
+name = "2m"
+start = 144_000_000
+end = 148_000_000
+
+  [[band.segment]]
+  start = 144_000_000
+  end = 144_100_000
+  mode = "cw"
+  label = "CW"
+  notes = "CW weak-signal, EME"
+
+  [[band.segment]]
+  start = 144_100_000
+  end = 144_300_000
+  mode = "phone"
+  label = "SSB"
+  notes = "SSB weak-signal"
+
+  [[band.segment]]
+  start = 144_275_000
+  end = 144_300_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "Beacons"
+
+  [[band.segment]]
+  start = 144_300_000
+  end = 144_500_000
+  mode = "phone"
+  label = "SAT"
+  notes = "Satellite"
+
+  [[band.segment]]
+  start = 144_600_000
+  end = 144_900_000
+  mode = "phone"
+  label = "RPT"
+  notes = "FM repeater inputs, 600 kHz shift, outputs 145.200-145.500"
+
+  [[band.segment]]
+  start = 145_200_000
+  end = 145_500_000
+  mode = "phone"
+  label = "RPT"
+  notes = "FM repeater outputs, 600 kHz shift, inputs 144.600-144.900"
+
+  [[band.segment]]
+  start = 145_800_000
+  end = 146_000_000
+  mode = "phone"
+  label = "SAT"
+  notes = "Satellite"
+
+  [[band.segment]]
+  start = 146_000_000
+  end = 148_000_000
+  mode = "phone"
+  label = "FM"
+  notes = "FM simplex and repeaters, 600 kHz shift"
+
+# ── 70cm (430-440 MHz, Region 3) ─────────────────────
+
+[[band]]
+name = "70cm"
+start = 430_000_000
+end = 440_000_000
+
+  [[band.segment]]
+  start = 432_000_000
+  end = 432_100_000
+  mode = "cw"
+  label = "CW"
+  notes = "CW, EME"
+
+  [[band.segment]]
+  start = 432_100_000
+  end = 432_300_000
+  mode = "phone"
+  label = "SSB"
+  notes = "SSB weak-signal"
+
+  [[band.segment]]
+  start = 432_300_000
+  end = 432_400_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "Beacons"
+
+  [[band.segment]]
+  start = 433_000_000
+  end = 433_600_000
+  mode = "phone"
+  label = "RPT"
+  notes = "FM repeater inputs"
+
+  [[band.segment]]
+  start = 433_600_000
+  end = 434_000_000
+  mode = "phone"
+  label = "FM"
+  notes = "FM simplex"
+
+  [[band.segment]]
+  start = 435_000_000
+  end = 438_000_000
+  mode = "phone"
+  label = "SAT"
+  notes = "Satellite"
+
+  [[band.segment]]
+  start = 438_000_000
+  end = 439_000_000
+  mode = "phone"
+  label = "RPT"
+  notes = "FM repeater outputs"
+
+# ── 23cm (1240-1300 MHz, Region 3) ───────────────────
+
+[[band]]
+name = "23cm"
+start = 1_240_000_000
+end = 1_300_000_000
+
+  [[band.segment]]
+  start = 1_240_000_000
+  end = 1_246_000_000
+  mode = "other"
+  label = "ATV"
+  notes = "ATV"
+
+  [[band.segment]]
+  start = 1_260_000_000
+  end = 1_270_000_000
+  mode = "phone"
+  label = "SAT"
+  notes = "Satellite"
+
+  [[band.segment]]
+  start = 1_270_000_000
+  end = 1_276_000_000
+  mode = "phone"
+  label = "RPT"
+  notes = "FM repeater inputs"
+
+  [[band.segment]]
+  start = 1_282_000_000
+  end = 1_288_000_000
+  mode = "phone"
+  label = "RPT"
+  notes = "FM repeater outputs"
+
+  [[band.segment]]
+  start = 1_290_000_000
+  end = 1_295_000_000
+  mode = "phone"
+  label = "FM"
+  notes = "FM simplex"
+
+  [[band.segment]]
+  start = 1_296_000_000
+  end = 1_296_050_000
+  mode = "cw"
+  label = "EME"
+  notes = "EME"
+
+  [[band.segment]]
+  start = 1_296_050_000
+  end = 1_296_300_000
+  mode = "phone"
+  label = "SSB"
+  notes = "SSB weak-signal"
+
+  [[band.segment]]
+  start = 1_296_400_000
+  end = 1_296_700_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "Beacons"

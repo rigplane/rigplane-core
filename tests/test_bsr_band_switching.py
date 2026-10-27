@@ -618,3 +618,106 @@ class TestIc9700Bands:
             f"(start={start_hz}, end={end_hz}, default={default_hz}, "
             f"bsr={bsr_code}), got {bands[band_name]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Per-band mode defaults (MOR-3631)
+# ---------------------------------------------------------------------------
+
+
+class TestBandDefaultModeLoader:
+    """Optional ``default_mode`` on a band row, used on BSR-miss fallback."""
+
+    @pytest.mark.parametrize(
+        "model,band_name,expected_mode",
+        [
+            ("IC-705", "6m", "USB"),
+            ("IC-705", "2m", "FM"),
+            ("IC-705", "70cm", "FM"),
+            ("IC-9700", "2m", "FM"),
+            ("IC-9700", "70cm", "FM"),
+            ("IC-9700", "23cm", "FM"),
+            ("FTX-1", "6m", "USB"),
+            ("FTX-1", "2m", "FM"),
+            ("FTX-1", "70cm", "FM"),
+        ],
+    )
+    def test_vhf_bands_carry_default_mode(
+        self, model: str, band_name: str, expected_mode: str
+    ) -> None:
+        profile = resolve_radio_profile(model=model)
+        for fr in profile.freq_ranges:
+            for bi in fr.bands:
+                if bi.name == band_name:
+                    assert bi.default_mode == expected_mode, (
+                        f"{model} {band_name}: expected default_mode "
+                        f"{expected_mode}, got {bi.default_mode}"
+                    )
+                    return
+        pytest.fail(f"Band {band_name} not found in {model} profile")
+
+    def test_profile_without_key_has_none(self) -> None:
+        """IC-7300 HF bands carry no default_mode; they are unchanged."""
+        profile = resolve_radio_profile(model="IC-7300")
+        for fr in profile.freq_ranges:
+            for bi in fr.bands:
+                if bi.name == "20m":
+                    assert bi.default_mode is None
+                    return
+        pytest.fail("Band 20m not found in IC-7300 profile")
+
+
+class TestSetBandDefaultModeFallback:
+    """BSR-miss fallback tunes default freq AND default mode (MOR-3631)."""
+
+    @pytest.mark.asyncio
+    async def test_ic705_two_m_falls_back_to_fm(self) -> None:
+        radio = _make_radio(model="IC-705")
+        radio.send_civ = AsyncMock(return_value=None)
+        poller = _make_poller(radio, model="IC-705")
+        await poller._execute(SetBand(band=0x0D))  # noqa: SLF001
+        radio.set_freq.assert_awaited_once_with(146_520_000)
+        radio.set_mode.assert_awaited_once()
+        assert radio.set_mode.call_args[0][0] == "FM"
+
+    @pytest.mark.asyncio
+    async def test_ic705_six_m_falls_back_to_usb(self) -> None:
+        radio = _make_radio(model="IC-705")
+        radio.send_civ = AsyncMock(return_value=None)
+        poller = _make_poller(radio, model="IC-705")
+        await poller._execute(SetBand(band=0x0A))  # noqa: SLF001
+        radio.set_freq.assert_awaited_once_with(50_125_000)
+        radio.set_mode.assert_awaited_once()
+        assert radio.set_mode.call_args[0][0] == "USB"
+
+    @pytest.mark.asyncio
+    async def test_ic9700_70cm_falls_back_to_fm(self) -> None:
+        radio = _make_radio(model="IC-9700")
+        radio.send_civ = AsyncMock(return_value=None)
+        poller = _make_poller(radio, model="IC-9700")
+        await poller._execute(SetBand(band=0x02))  # noqa: SLF001
+        radio.set_freq.assert_awaited_once_with(430_000_000)
+        radio.set_mode.assert_awaited_once()
+        assert radio.set_mode.call_args[0][0] == "FM"
+
+    @pytest.mark.asyncio
+    async def test_no_key_means_no_mode_change(self) -> None:
+        """Bands without default_mode keep the old freq-only fallback."""
+        radio = _make_radio(model="IC-7300")
+        radio.send_civ = AsyncMock(return_value=None)
+        poller = _make_poller(radio, model="IC-7300")
+        await poller._execute(SetBand(band=5))  # noqa: SLF001
+        radio.set_freq.assert_awaited_once()
+        radio.set_mode.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_bsr_readback_wins_over_default(self) -> None:
+        """A successful BSR recall still applies the radio's mode, not FM."""
+        radio = _make_radio(model="IC-705")
+        freq_bcd = b"\x00\x00\x52\x46\x01"  # 146520000 in BCD
+        bsr_resp = _bsr_response_frame(0x0D, 0x01, freq_bcd, 0x01, 0x01)
+        radio.send_civ = AsyncMock(return_value=bsr_resp)
+        poller = _make_poller(radio, model="IC-705")
+        await poller._execute(SetBand(band=0x0D))  # noqa: SLF001
+        radio.set_freq.assert_awaited_once_with(146520000)
+        radio.set_mode.assert_awaited_once_with("USB", 1)

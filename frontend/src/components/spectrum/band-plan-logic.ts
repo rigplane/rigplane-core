@@ -21,8 +21,9 @@ export interface RemoteSegment {
   schedule?: string | null;
 }
 
-/** Format frequency for human display: Hz → "X.XXX MHz" / "X.X kHz" / "X Hz". */
+/** Format frequency for human display: Hz → "X.XXX GHz" / "X.XXX MHz" / "X.X kHz" / "X Hz". */
 export function formatFreq(hz: number): string {
+  if (hz >= 1_000_000_000) return `${(hz / 1_000_000_000).toFixed(3)} GHz`;
   if (hz >= 1_000_000) return `${(hz / 1_000_000).toFixed(3)} MHz`;
   if (hz >= 1_000) return `${(hz / 1_000).toFixed(1)} kHz`;
   return `${hz} Hz`;

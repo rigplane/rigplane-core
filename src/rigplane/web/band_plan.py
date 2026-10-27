@@ -48,7 +48,7 @@ def _sanitize_freq(val: Any) -> int:
         freq = int(val)
     except (TypeError, ValueError):
         return 0
-    return max(0, min(freq, 500_000_000))  # 0 – 500 MHz
+    return max(0, min(freq, 2_000_000_000))  # 0 – 2 GHz (covers 23 cm)
 
 
 def _sanitize_opacity(val: Any, default: float = 0.20) -> float:
@@ -80,7 +80,7 @@ _REGION_HAM_FILE: dict[str, str] = {
     "US": "arrl-hf.toml",
     "IARU-R1": "iaru-r1.toml",
     "IARU-R2": "arrl-hf.toml",  # Region 2 = Americas, ARRL is primary
-    "IARU-R3": "arrl-hf.toml",  # Fallback until R3 file is created
+    "IARU-R3": "iaru-r3.toml",
 }
 
 
@@ -92,11 +92,23 @@ class BandPlanRegistry:
         self._layers: dict[str, dict[str, Any]] = {}  # layer_name -> meta
         self._segments: list[dict[str, Any]] = []  # flat list, sorted by start
         self._region: str = "US"
+        self._requested_region: str | None = "US"
+        self._region_fallback_reason: str | None = None
 
     @property
     def region(self) -> str:
-        """Current active region."""
+        """Current active region (effective, after fallback)."""
         return self._region
+
+    @property
+    def requested_region(self) -> str | None:
+        """Region requested in _config.toml (None when unset)."""
+        return self._requested_region
+
+    @property
+    def region_fallback_reason(self) -> str | None:
+        """Why the effective region differs from requested (None when explicit)."""
+        return self._region_fallback_reason
 
     def load(self, band_plans_dir: str | Path | None = None) -> None:
         """Load TOML files from the directory, respecting region config."""
@@ -112,19 +124,41 @@ class BandPlanRegistry:
         self._layers.clear()
         self._segments.clear()
 
-        # Read config for region setting
+        # Read config for region setting (MOR-1861: never a silent US fallback).
+        requested: str | None = None
+        reason: str | None = None
         config_path = search_dir / "_config.toml"
-        if config_path.is_file():
+        if not config_path.is_file():
+            reason = "no _config.toml; defaulted to US"
+            logger.warning("band-plan: %s", reason)
+        else:
             try:
                 with open(config_path, "rb") as f:
                     config = tomllib.load(f)
-                self._region = config.get("settings", {}).get("region", "US")
+                settings = config.get("settings", {})
+                raw = settings.get("region") if isinstance(settings, dict) else None
+                if isinstance(raw, str) and raw.strip():
+                    requested = raw.strip()
+                else:
+                    reason = "unset region in _config.toml; defaulted to US"
+                    logger.warning("band-plan: %s", reason)
             except Exception:
-                logger.warning("band-plan: failed to load _config.toml, using US")
-                self._region = "US"
+                reason = "failed to load _config.toml; defaulted to US"
+                logger.warning("band-plan: %s", reason)
+        if requested is not None and requested not in _REGION_HAM_FILE:
+            reason = f"unknown region {requested!r}; defaulted to US"
+            logger.warning("band-plan: %s", reason)
+        effective = (
+            requested
+            if requested is not None and requested in _REGION_HAM_FILE
+            else "US"
+        )
+        self._region = effective
+        self._requested_region = requested
+        self._region_fallback_reason = reason
 
-        # Determine which ham file to load based on region
-        ham_file = _REGION_HAM_FILE.get(self._region, "arrl-hf.toml")
+        # Determine which ham file to load based on the effective region.
+        ham_file = _REGION_HAM_FILE[effective]
 
         toml_files = sorted(search_dir.glob("*.toml"))
         if not toml_files:
@@ -147,13 +181,25 @@ class BandPlanRegistry:
 
         # Sort all segments by start frequency
         self._segments.sort(key=lambda s: s["start"])
-        logger.info(
-            "band-plan: loaded %d segments from %d files (%d layers), region=%s",
-            len(self._segments),
-            len(self._layers),
-            len(self._layers),
-            self._region,
-        )
+        if self._region_fallback_reason:
+            logger.info(
+                "band-plan: loaded %d segments from %d files (%d layers), "
+                "region=%s (requested=%s, %s)",
+                len(self._segments),
+                len(self._layers),
+                len(self._layers),
+                self._region,
+                self._requested_region,
+                self._region_fallback_reason,
+            )
+        else:
+            logger.info(
+                "band-plan: loaded %d segments from %d files (%d layers), region=%s",
+                len(self._segments),
+                len(self._layers),
+                len(self._layers),
+                self._region,
+            )
 
     def _load_file(self, path: Path) -> None:
         """Parse a single TOML band plan file."""

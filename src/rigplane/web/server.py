@@ -5146,6 +5146,8 @@ class WebServer:
         body = json.dumps(
             {
                 "region": self._band_plan.region,
+                "requestedRegion": self._band_plan.requested_region,
+                "fallbackReason": self._band_plan.region_fallback_reason,
                 "availableRegions": ["US", "IARU-R1", "IARU-R2", "IARU-R3"],
             },
             separators=(",", ":"),

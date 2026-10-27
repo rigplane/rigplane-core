@@ -1075,6 +1075,7 @@ start_hz = 50000000
 end_hz = 54000000
 default_hz = 50125000
 bsr_code = 0x0A
+default_mode = "USB"
 
 [[freq_ranges.ranges]]
 label = "4m"
@@ -1100,6 +1101,7 @@ start_hz = 144000000
 end_hz = 148000000
 default_hz = 145000000
 bsr_code = 0x0D
+default_mode = "FM"
 
 [[freq_ranges.ranges]]
 label = "70cm"
@@ -1113,6 +1115,7 @@ start_hz = 430000000
 end_hz = 450000000
 default_hz = 432100000
 bsr_code = 0x0E
+default_mode = "FM"
 
 [[freq_ranges.ranges]]
 label = "Air"
