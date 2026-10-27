@@ -44,6 +44,13 @@ def test_clean_render_passes() -> None:
     assert check_marker(report, _SPEC) == []
 
 
+def test_clean_short_low_frequency_tone_passes_at_default_limits() -> None:
+    spec = MarkerSpec(freq_hz=100.0, duration_s=0.02, gaps=())
+    report = analyze_marker_pcm16(render_marker_pcm16(spec), spec)
+    assert report.residual_db < -60.0
+    assert check_marker(report, spec) == []
+
+
 def test_clean_non_aligned_gap_passes_at_default_limits() -> None:
     spec = replace(_SPEC, gaps=((0.201, 0.249),))
     report = analyze_marker_pcm16(render_marker_pcm16(spec), spec)

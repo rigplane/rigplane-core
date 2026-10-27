@@ -363,6 +363,9 @@ async def test_audio_tx_capture_routes() -> None:
         resp = await s.client.get("/audio/tx")
         assert resp.status == 200
         assert await resp.json() == _AUDIO_TX_EMPTY
+        resp = await s.client.get("/audio/tx.wav")
+        assert resp.status == 409
+        assert await resp.json() == {"ok": False, "outcome": "format_default"}
 
         pcm = bytes(range(256)) * 4  # 512 samples, s16le-shaped
         client = await _udp()
@@ -418,9 +421,10 @@ async def _stream_tx_frame(radio, payload: bytes) -> None:
     client = await _udp()
     try:
         radio_id = await _open_audio(client, radio)
+        before = len(radio.audio_tx_frames)
         client.send(_tx_audio(1, 0, payload, radio_id), radio.audio_port)
         end = asyncio.get_running_loop().time() + 2.0
-        while not radio.audio_tx_frames:
+        while len(radio.audio_tx_frames) <= before:
             assert asyncio.get_running_loop().time() < end, "frame not sunk"
             await asyncio.sleep(0.02)
     finally:
@@ -471,13 +475,17 @@ async def test_audio_tx_capture_reports_the_learned_tx_format() -> None:
             assert wav.readframes(wav.getnframes()) == pcm
 
 
-async def test_audio_tx_capture_spanning_a_format_change_is_flagged() -> None:
+@pytest.mark.parametrize("response_delay", [0.0, 0.05])
+async def test_audio_tx_capture_spanning_a_format_change_is_flagged(
+    response_delay: float,
+) -> None:
     """A capture spanning a TX-format change (the client renegotiates its
     conninfo mid-capture) cannot be labeled with one sample rate: the JSON
     flags it 'mixed' with no rate/codec, and the WAV route answers 409
     instead of writing a mislabeled file."""
     async with _stack() as s:
         radio = s.inner.backend.radio
+        radio.response_delay = response_delay
         ctrl = await _udp()
         try:
             ctrl.send(_login(), radio.control_port)
@@ -488,6 +496,7 @@ async def test_audio_tx_capture_spanning_a_format_change_is_flagged() -> None:
             )
             await ctrl.recv()
             await _stream_tx_frame(radio, bytes(range(256)) * 2)
+            assert len(radio.audio_tx_frames) == 1
             # Mid-capture the client renegotiates: a fresh conninfo at 16 kHz.
             ctrl.send(
                 _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=16000),
@@ -495,6 +504,7 @@ async def test_audio_tx_capture_spanning_a_format_change_is_flagged() -> None:
             )
             await ctrl.recv()
             await _stream_tx_frame(radio, bytes(range(256)) * 2)
+            assert len(radio.audio_tx_frames) == 2
         finally:
             ctrl.close()
 
