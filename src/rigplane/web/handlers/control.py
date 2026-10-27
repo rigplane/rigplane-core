@@ -54,7 +54,11 @@ from ...runtime.tx_interlock import (
     send_civ_frame,
 )
 from ...runtime.managed_tx_authority import ManagedTxAuthority
-from ...runtime.managed_tx_state import ManagedTxIntentKind, ManagedTxOutcome
+from ...runtime.managed_tx_state import (
+    ManagedTxIntentKind,
+    ManagedTxOutcome,
+    submission_refused_for_release_debt,
+)
 from ..protocol import (  # noqa: TID251
     decode_json,
     encode_json,
@@ -220,6 +224,8 @@ _PTT_HOLDER_CONFLICT = "another client is transmitting"
 # The only queue exception a rejected receipt may translate (MOR-3684):
 # `execute_positive_tx_queue_entry` collapsing a refused admission.
 _QUEUE_ADMISSION_REJECTED = "positive TX admission was rejected"
+# Refusal wording when a rejected PTT receipt proves a release is owed (MOR-3810).
+_PTT_RELEASING = "the previous transmission is still being released"
 
 
 def _ptt_refusal_names_holder(submission: object, owner: str | None) -> bool:
@@ -257,6 +263,25 @@ def _queue_refused_for_ptt_holder(
         and not pending.cancelled()
         and pending.exception() is None
         and _ptt_refusal_names_holder(pending.result(), owner)
+    )
+
+
+def _queue_refused_for_release_debt(
+    exc: BaseException, pending: asyncio.Task[Any] | None
+) -> bool:
+    """Bind the releasing wording to the queue's admission-rejection path only."""
+    if (
+        not isinstance(exc, CommandError)
+        or isinstance(exc, CommandRejectedError)
+        or str(exc) != _QUEUE_ADMISSION_REJECTED
+    ):
+        return False
+    return (
+        pending is not None
+        and pending.done()
+        and not pending.cancelled()
+        and pending.exception() is None
+        and submission_refused_for_release_debt(pending.result())
     )
 
 
@@ -1865,12 +1890,16 @@ class ControlHandler:
         except (CommandError, RuntimeError, TimeoutError) as exc:
             if _queue_refused_for_ptt_holder(exc, pending, self._tx_owner):
                 raise CommandRejectedError(_PTT_HOLDER_CONFLICT) from exc
+            if _queue_refused_for_release_debt(exc, pending):
+                raise CommandRejectedError(_PTT_RELEASING) from exc
             raise CommandRejectedError(
                 "managed transmit authority unavailable"
             ) from exc
         if submission.outcome is not ManagedTxOutcome.ACCEPTED:
             if _ptt_refusal_names_holder(submission, self._tx_owner):
                 raise CommandRejectedError(_PTT_HOLDER_CONFLICT)
+            if submission_refused_for_release_debt(submission):
+                raise CommandRejectedError(_PTT_RELEASING)
             raise CommandRejectedError("managed PTT admission rejected")
         return {"state": on} if name == "ptt" else {}
 
