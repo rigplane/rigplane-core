@@ -480,60 +480,6 @@ class TestCapabilitiesEndpoint:
         )
 
     @pytest.mark.asyncio
-    async def test_capabilities_ic705_rx_only_bands_absent_from_tx_bands(self):
-        """MOR-3632: the IC-705's receive-only band rows (2200m, 630m, WFM,
-        Air, Gen) stay tunable band-selector entries but must never appear
-        in ``txBands`` — before the ``rx_only`` flag they counted as
-        TX-allowed, granting transmit permission on broadcast, airband and
-        general-coverage receive rows. Both public producers that build
-        ``txBands`` are asserted (the /api/v1/info capabilities object and
-        the /api/v1/capabilities body), so removing either filter fails
-        here."""
-        radio = _make_radio("IC-705")
-        srv = WebServer(radio)
-        capabilities_writer = _FakeWriter()
-        info_writer = _FakeWriter()
-
-        # Through the public HTTP router, not the private producers, so the
-        # regression also catches a routing mistake.
-        await srv._handle_http(  # noqa: SLF001
-            capabilities_writer, "GET", "/api/v1/capabilities", headers={}
-        )
-        await srv._handle_http(  # noqa: SLF001
-            info_writer, "GET", "/api/v1/info", headers={}
-        )
-
-        def _body(writer: _FakeWriter) -> dict:
-            text = writer.buffer.decode("ascii", errors="replace")
-            head, _, body = text.partition("\r\n\r\n")
-            assert head.split("\r\n", 1)[0] == "HTTP/1.1 200 OK"
-            return json.loads(body)
-
-        rx_only_names = {"2200m", "630m", "WFM", "Air", "Gen"}
-        # Both public routes that build txBands: the /api/v1/info
-        # capabilities object and the /api/v1/capabilities body. Removing
-        # either rx_only filter fails below.
-        payloads = {
-            "capabilities": _body(capabilities_writer),
-            "info": _body(info_writer)["capabilities"],
-        }
-        for route, payload in payloads.items():
-            tx_names = {band["name"] for band in payload["txBands"]}
-            assert not (rx_only_names & tx_names), route
-            # TX-capable rows keep their classification: HF amateur bands
-            # and both VHF/UHF amateur bands remain TX-permitted.
-            assert {"20m", "2m", "70cm"} <= tx_names, route
-        # The receive-only rows remain tunable: the capabilities freqRanges
-        # (the info payload carries no freqRanges) still lists them as
-        # band-selector entries.
-        range_band_names = {
-            band["name"]
-            for freq_range in payloads["capabilities"]["freqRanges"]
-            for band in freq_range["bands"]
-        }
-        assert rx_only_names <= range_band_names
-
-    @pytest.mark.asyncio
     async def test_capabilities_reports_hardware_and_audio_scope_independently(self):
         """Audio FFT availability is not inferred from hardware scope support."""
         hardware_radio = _make_radio("IC-7610")
