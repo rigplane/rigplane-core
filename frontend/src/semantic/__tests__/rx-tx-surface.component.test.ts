@@ -272,7 +272,24 @@ describe('fault display without a second authority', () => {
 // ── 2. TX action intents ────────────────────────────────────────────────────
 
 describe('key intent gating', () => {
-  it.each(['pointerup', 'pointercancel', 'blur'])('releases remote momentary PTT on %s without a click latch', (release) => {
+  it('keeps a remote momentary pointer hold through focus loss, pointer leave and lost capture (MOR-3817)', () => {
+    const handlers = { ...inertHandlers(), momentary: true, onPttDown: vi.fn(), onPttUp: vi.fn() };
+    const s = render(topologyFixtures['1/single'], snap({ fresh: true }), handlers);
+    try {
+      expect(s.key().style.touchAction).toBe('none');
+      s.key().dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 7, bubbles: true }));
+      expect(handlers.onPttDown).toHaveBeenCalledOnce();
+      s.key().dispatchEvent(new FocusEvent('blur'));
+      for (const type of ['pointerleave', 'lostpointercapture']) {
+        s.key().dispatchEvent(new PointerEvent(type, { pointerId: 7, bubbles: true }));
+      }
+      expect(handlers.onPttUp).not.toHaveBeenCalled();
+      s.key().dispatchEvent(new PointerEvent('pointerup', { pointerId: 7, bubbles: true }));
+      expect(handlers.onPttUp).toHaveBeenCalledOnce();
+    } finally { s.dispose(); }
+  });
+
+  it.each(['pointerup', 'pointercancel'])('releases remote momentary PTT on %s without a click latch', (release) => {
     const handlers = { ...inertHandlers(), momentary: true, onPttDown: vi.fn(), onPttUp: vi.fn() };
     const s = render(topologyFixtures['1/single'], snap({ fresh: true }), handlers);
     try {

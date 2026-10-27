@@ -15,6 +15,7 @@
   import '../components-v2/controls/control-button.css';
   import { t } from '$lib/i18n';
   import { renderSlot } from './design-language-renderers';
+  import { createPttHold } from '../components-v2/wiring/managed-tx-gesture';
   import type { RadioViewModel } from './radio-view-model';
   import {
     RF_LABEL, RF_MARK, SESSION_LABEL, blockedLabel, faultMessage, keyBlockedReasons, nextSurfaceId,
@@ -88,7 +89,9 @@
     release();
   }
   $effect(() => { if (!momentary || tx.fresh === false) endHold(); });
-  onDestroy(() => { alive = false; endHold(); });
+  const pttHold = createPttHold({ press: beginHold, release: endHold, abort: endHold });
+  const pttButton = pttHold.attach;
+  onDestroy(() => { alive = false; pttHold.destroy(); });
   let pressed = $derived(tx.phase !== 'idle' && tx.phase !== 'failed');
   let showTxState = $derived(
     tx.phase !== 'idle' || rf === 'transmitting' || rf === 'uncertain' || tx.fault !== null,
@@ -185,23 +188,7 @@
       disabled={keyUnavailable && !held} aria-pressed={pressed}
       aria-describedby={blockedDescription ? blockedId : undefined}
       aria-label="PTT"
-      onpointerdown={(event) => {
-        if (event.button !== 0) return;
-        event.preventDefault();
-        event.currentTarget.setPointerCapture?.(event.pointerId);
-        beginHold();
-      }}
-      onpointerup={endHold} onpointercancel={endHold} onlostpointercapture={endHold} onblur={endHold}
-      onkeydown={(event) => {
-        if (event.key !== ' ' && event.key !== 'Enter') return;
-        event.preventDefault();
-        if (!event.repeat) beginHold();
-      }}
-      onkeyup={(event) => {
-        if (event.key !== ' ' && event.key !== 'Enter') return;
-        event.preventDefault();
-        endHold();
-      }}
+      use:pttButton
     >PTT</button>
     {:else}
     <button

@@ -1521,7 +1521,7 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     flushSync();
   }
 
-  /** A completed FAB press: PttFab only calls onDown() past its 50 ms guard. */
+  /** A completed FAB press: the FAB's press engages only past its 50 ms guard. */
   function fabPress(t: HTMLElement) {
     pointer(fabEl(t), 'pointerdown');
     vi.advanceTimersByTime(HOLD_MS);
@@ -1681,16 +1681,104 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     ]);
   });
 
-  it('destroyed orientation generations stay inert while the survivor remains usable', () => {
+  // -- MOR-3817: a held PTT ends only on the operator's lift or page loss -----
+
+  const PTT_ON = { transport: 'ws', operation: 'ptt_on' } as const;
+  const PTT_OFF = { transport: 'ws', operation: 'ptt_off' } as const;
+
+  it('a FAB hold survives rotation and releases when the finger lifts', () => {
+    const t = mountMobile();
+    fabPress(t);
+    rotate(true);
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS * 2);
+    expect(tx.trace()).toEqual([PTT_ON]);
+    rotate(false);
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS * 2);
+    expect(tx.trace()).toEqual([PTT_ON]);
+    // The FAB that took the press is gone; the lift lands wherever it lands.
+    pointer(document.body, 'pointerup');
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS);
+    expect(tx.trace()).toEqual([PTT_ON, PTT_OFF]);
+  });
+
+  it('a landscape hold survives rotation to portrait', () => {
+    const t = mountLandscape();
+    pointer(stripEl(t), 'pointerdown');
+    rotate(false);
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS * 2);
+    expect(tx.trace()).toEqual([PTT_ON]);
+    pointer(fabEl(t), 'pointerup');
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS);
+    expect(tx.trace()).toEqual([PTT_ON, PTT_OFF]);
+  });
+
+  it('a press still inside the FAB guard when the layout rotates engages for the finger still down', () => {
     const t = mountMobile();
     pointer(fabEl(t), 'pointerdown');
     vi.advanceTimersByTime(HOLD_MS - 30);
     rotate(true);
     rotate(false);
-    vi.advanceTimersByTime(HOLD_MS * 4);
-    expect(tx.trace()).toEqual([]);
+    vi.advanceTimersByTime(HOLD_MS);
+    expect(tx.trace()).toEqual([PTT_ON]);
+    fabRelease(t);
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS);
+    expect(tx.trace()).toEqual([PTT_ON, PTT_OFF]);
+  });
+
+  it.each([
+    ['portrait FAB', mountMobile, fabEl],
+    ['landscape strip', mountLandscape, stripEl],
+  ] as const)('a %s hold survives the finger sliding off the button', (_name, mountAt, buttonOf) => {
+    const t = mountAt();
+    pointer(buttonOf(t), 'pointerdown');
+    vi.advanceTimersByTime(HOLD_MS);
+    pointer(buttonOf(t), 'pointermove', { clientX: 60, clientY: -60 });
+    pointer(buttonOf(t), 'pointerleave', { clientX: 60, clientY: -60 });
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS * 2);
+    expect(tx.trace()).toEqual([PTT_ON]);
+    pointer(document.body, 'pointerup', { clientX: 60, clientY: -60 });
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS);
+    expect(tx.trace()).toEqual([PTT_ON, PTT_OFF]);
+  });
+
+  it('a hold ignores the lift and cancel of a different pointer', () => {
+    const t = mountMobile();
     fabPress(t);
-    expect(tx.trace()).toEqual([{ transport: 'ws', operation: 'ptt_on' }]);
+    pointer(document.body, 'pointerup', { pointerId: 2 });
+    pointer(document.body, 'pointercancel', { pointerId: 2 });
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS * 2);
+    expect(tx.trace()).toEqual([PTT_ON]);
+  });
+
+  it('the captured pointer cancelling releases the hold', () => {
+    const t = mountMobile();
+    fabPress(t);
+    pointer(fabEl(t), 'pointercancel');
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS);
+    expect(tx.trace()).toEqual([PTT_ON, PTT_OFF]);
+  });
+
+  it.each([
+    ['the page is hidden', () => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+      document.dispatchEvent(new Event('visibilitychange'));
+    }],
+    ['the window loses focus', () => window.dispatchEvent(new Event('blur'))],
+  ] as const)('a hold releases at once when %s', (_name, loseThePage) => {
+    const t = mountMobile();
+    fabPress(t);
+    try {
+      loseThePage();
+      flushSync();
+      expect(tx.trace()).toEqual([PTT_ON, PTT_OFF]);
+    } finally {
+      Reflect.deleteProperty(document, 'visibilityState');
+    }
+  });
+
+  it('every mobile PTT button blocks browser panning under the finger', () => {
+    expect(fabEl(mountMobile()).style.touchAction).toBe('none');
+    expect(stripEl(mountLandscape()).style.touchAction).toBe('none');
   });
 
   // -- E: source-level proof the legacy machine is gone ----------------------
@@ -1706,9 +1794,9 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     expect(mobileLayoutSource).not.toContain('txStartToken');
     expect(mobileLayoutSource).not.toContain('lastPttDown');
     // Deliberately NOT asserting on 'ptt' as a bare substring — PttFab and the
-    // landscape lsPtt* handlers legitimately keep it.
+    // landscape PTT button legitimately keep it.
     expect(mobileLayoutSource).toContain('getManagedAppTxController');
-    expect(mobileLayoutSource).toContain('createManagedMobilePttSurface');
+    expect(mobileLayoutSource).toContain('createPttHold');
     expect(mobileLayoutSource).not.toContain('createPttGesture');
   });
 

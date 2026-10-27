@@ -71,9 +71,8 @@
   } from '$lib/stores/connection.svelte';
   import { deriveRadioHealthLabel } from '$lib/runtime/adapters/radio-health-label';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
-  import {
-    createManagedMobilePttSurface, type ManagedMobilePttBinding,
-  } from '../wiring/managed-tx-gesture';
+  import { createManagedTxGesture, createPttHold } from '../wiring/managed-tx-gesture';
+  import { vibrate } from '$lib/utils/haptics';
   import { onMount, onDestroy } from 'svelte';
 
   // ── State — via runtime ──
@@ -399,7 +398,7 @@
   const txCtl = getManagedAppTxController();
   let txState = $state.raw(txCtl.snapshot());
   const stopWatchingTx = txCtl.subscribe((next) => { txState = next; });
-  // Registered BEFORE the recognizer effect below on purpose: Svelte tears
+  // Registered BEFORE the PTT teardown below on purpose: Svelte tears
   // effects down in creation order, so the subscription is dropped first and
   // the teardown release runs to completion inside the controller instead of
   // bouncing back into a component that is already being destroyed.
@@ -428,90 +427,32 @@
     txPermit === 'allowed' ? 'var(--v2-accent-green, #4ade80)' : 'var(--v2-text-dim, #555)'
   );
 
-  // One recognizer per input surface — the orchestration itself lives in
-  // The per-orientation recognizer is gesture-only. Presentation replacement
-  // releases an in-progress session PTT but never changes canonical TRANSMIT.
-  let pttSurface: 'none' | 'portrait' | 'landscape' = $derived(
-    !txCapable ? 'none' : isLandscape ? 'landscape' : 'portrait'
-  );
-  let ptt = $state<ManagedMobilePttBinding | null>(null);
-
-  $effect(() => {
-    const surface = pttSurface;
-    if (surface === 'none') return;
-    const binding = createManagedMobilePttSurface(
-      surface,
-      {
-        latched: () => txCtl.snapshot().intent === 'latched',
-        transmitAvailable: () => txCtl.snapshot().fresh,
-        latchAllowed: () => !runtime.remoteController,
-      },
-      {
-        pttOn: txCtl.pttOn, pttOff: txCtl.pttOff,
-        transmitOn: txCtl.transmitOn, forceOff: txCtl.forceOff,
-      }, {
-      schedule: (callback, ms) => setTimeout(callback, ms),
-      cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-    });
-    ptt = binding;
-    return () => { ptt = null; binding.destroy(); };
+  // One recognizer and one hold for the whole layout (MOR-3817): rotation
+  // swaps the PTT button, and a hold must outlive the button it started on.
+  const pttGesture = createManagedTxGesture(
+    {
+      latched: () => txCtl.snapshot().intent === 'latched',
+      transmitAvailable: () => txCtl.snapshot().fresh,
+      latchAllowed: () => !runtime.remoteController,
+    },
+    {
+      pttOn: txCtl.pttOn, pttOff: txCtl.pttOff,
+      transmitOn: txCtl.transmitOn, forceOff: txCtl.forceOff,
+    }, {
+    schedule: (callback, ms) => setTimeout(callback, ms),
+    cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   });
-
-  // MOR-1376: the FAB gets THIS generation's own handlers, never a stable
-  // forwarder that re-reads `ptt`. PttFab snapshots them when a press arms, so
-  // a press stranded by a rotation completes against the (now destroyed)
-  // binding it started on instead of spuriously keying whichever generation is
-  // live 50 ms later; the destroyed generation must stay inert.
-  const noPtt = () => {};
-
-  // ── Landscape PTT guards (#843 parity with FAB) ──
-  // Adds pointermove-8px cancel + haptic + TX-permit dim-state so the
-  // landscape strip mirrors the guarded FAB (#840). Skips the 50ms hold
-  // delay — in landscape the thumb is already poised on PTT, so an
-  // intentional press should engage immediately once TX permit allows.
-  let lsPttStartX = 0;
-  let lsPttStartY = 0;
-  let lsPttEngaged = false;
-  const LS_PTT_MOVE_CANCEL_PX = 8;
-
-  function lsPttPointerDown(event: PointerEvent) {
-    if (pttMode === 'latched') return;
-    (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
-    lsPttStartX = event.clientX;
-    lsPttStartY = event.clientY;
-    lsPttEngaged = true;
-    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-      try { navigator.vibrate(10); } catch { /* noop */ }
-    }
-    ptt?.down();
-  }
-
-  function lsPttPointerMove(event: PointerEvent) {
-    if (!lsPttEngaged) return;
-    const dx = event.clientX - lsPttStartX;
-    const dy = event.clientY - lsPttStartY;
-    if (dx * dx + dy * dy > LS_PTT_MOVE_CANCEL_PX * LS_PTT_MOVE_CANCEL_PX) {
-      lsPttEngaged = false;
-      ptt?.up();
-    }
-  }
-
-  function lsPttPointerUp() {
-    if (!lsPttEngaged) return;
-    lsPttEngaged = false;
-    ptt?.up();
-  }
-
-  function lsPttKeyDown(event: KeyboardEvent) {
-    if ((event.key !== ' ' && event.key !== 'Enter') || event.repeat) return;
-    if (pttMode === 'latched') return;
-    event.preventDefault(); lsPttEngaged = true; ptt?.down();
-  }
-
-  function lsPttKeyUp(event: KeyboardEvent) {
-    if (event.key !== ' ' && event.key !== 'Enter') return;
-    event.preventDefault(); lsPttPointerUp();
-  }
+  const pttHold = createPttHold({
+    press: () => { vibrate('tap'); pttGesture.down(); },
+    release: () => pttGesture.up(),
+    abort: () => pttGesture.abort(),
+  });
+  const pttButton = pttHold.attach;
+  // Losing TX capability ends the transmission even while the finger is down.
+  $effect(() => {
+    if (!txCapable) pttGesture.abort();
+  });
+  onDestroy(() => { pttHold.destroy(); pttGesture.destroy(); });
 
   // ── ATU (long-press = tune) ──
   let atuTimer: ReturnType<typeof setTimeout> | null = null;
@@ -656,15 +597,7 @@
             class="m-ls-ptt"
             class:m-ptt-held={owned}
             class:m-ls-ptt-dim={txPermit === 'denied' && pttMode === 'idle'}
-            onpointerdown={lsPttPointerDown}
-            onpointermove={lsPttPointerMove}
-            onpointerup={lsPttPointerUp}
-            onpointercancel={lsPttPointerUp}
-            onlostpointercapture={lsPttPointerUp}
-            onkeydown={lsPttKeyDown}
-            onkeyup={lsPttKeyUp}
-            onblur={lsPttPointerUp}
-            oncontextmenu={(e) => e.preventDefault()}
+            use:pttButton
             title={txPermit === 'denied' ? t('core.mobile.tx.notAllowedFreq') : t('core.mobile.tx.pushToTalk')}
           >
             {pttMode === 'held' ? 'TX' : 'PTT'}
@@ -1050,18 +983,16 @@
          owner's 2026-09-28 ticket: the floating placement drew MUTE
          half-hidden under the circle). Portrait only: this strip exists
          only in the portrait branch, and landscape keeps its own
-         guarded `.m-ls-ptt` button (#843) — mounting the FAB there
+         `.m-ls-ptt` button (#843) — mounting the FAB there
          would give two simultaneous TX controls (codex P1 on PR #928).
-         Layered guards (50 ms hold, 8 px move-cancel, haptics, TX
-         permit styling) live in the FAB component; server authority
-         owns TX. PTT stays large (72 px) and under the thumb
-         (MOR-2816). -->
+         Both buttons attach the layout's one `pttHold`; the FAB adds
+         its press guard. Server authority owns TX. PTT stays large
+         (72 px) and under the thumb (MOR-2816). -->
     {#if txCapable}
       <PttFab
         mode={pttMode}
         txPermit={txPermit}
-        onDown={ptt?.fabDown ?? noPtt}
-        onUp={ptt?.fabUp ?? noPtt}
+        hold={pttHold}
       />
     {/if}
   </nav>

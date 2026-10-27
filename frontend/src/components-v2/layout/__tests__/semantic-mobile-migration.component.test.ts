@@ -271,7 +271,7 @@ function pointer(el: Element, type: string, init: PointerEventInit = {}) {
 const fabEl = (t: HTMLElement) => t.querySelector<HTMLButtonElement>('.ptt-fab')!;
 const flushAudio = async () => { await Promise.resolve(); await Promise.resolve(); flushSync(); };
 
-/** A completed FAB press: PttFab only calls onDown() past its 50 ms guard. */
+/** A completed FAB press: the FAB's press engages only past its 50 ms guard. */
 function fabPress(t: HTMLElement) {
   pointer(fabEl(t), 'pointerdown');
   vi.advanceTimersByTime(HOLD_MS);
@@ -732,7 +732,7 @@ describe('mobile managed TX intent routing', () => {
   // re-asserted here because this slice edits the same file).
   it('still routes every mobile TX path through the App controller alone', () => {
     expect(mobileLayoutSource).toContain('getManagedAppTxController');
-    expect(mobileLayoutSource).toContain('createManagedMobilePttSurface');
+    expect(mobileLayoutSource).toContain('createPttHold');
     // Deliberately NOT asserting on 'ptt_on'/'ptt_off' as bare substrings —
     // the retirement note in the layout's own comments names them.
     for (const retired of [
@@ -749,10 +749,14 @@ describe('mobile managed TX intent routing', () => {
 // 3. Lifecycle and explicit unlock preserve transport meaning
 // ---------------------------------------------------------------------------
 describe('managed mobile lifecycle', () => {
-  it('rotation releases an in-progress momentary PTT exactly once', async () => {
+  it('rotation keeps an in-progress momentary PTT; the finger lift releases it exactly once (MOR-3817)', async () => {
     const t = mountMobile();
     await hold(t);
     rotate(true);
+    vi.advanceTimersByTime(HOLD_MS * 10);
+    expect(tx.pttOff).not.toHaveBeenCalled();
+    pointer(document.body, 'pointerup');
+    vi.advanceTimersByTime(HOLD_MS * 10);
     expect(tx.pttOff).toHaveBeenCalledTimes(1);
     expect(tx.forceOff).not.toHaveBeenCalled();
     expect(tx.transmitOn).not.toHaveBeenCalled();
