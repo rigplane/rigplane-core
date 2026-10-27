@@ -289,6 +289,25 @@ describe('key intent gating', () => {
     } finally { s.dispose(); }
   });
 
+  it.each([
+    ['the page is hidden', () => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+      document.dispatchEvent(new Event('visibilitychange'));
+    }],
+    ['the window loses focus', () => window.dispatchEvent(new Event('blur'))],
+  ] as const)('ends a remote momentary hold as automatic cleanup when %s (MOR-3753)', (_name, loseThePage) => {
+    const handlers = { ...inertHandlers(), momentary: true, onPttDown: vi.fn(), onPttUp: vi.fn() };
+    const s = render(topologyFixtures['1/single'], snap({ fresh: true }), handlers);
+    try {
+      s.key().dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 7, bubbles: true }));
+      loseThePage();
+      expect(handlers.onPttUp.mock.calls).toEqual([[{ automatic: true }]]);
+    } finally {
+      Reflect.deleteProperty(document, 'visibilityState');
+      s.dispose();
+    }
+  });
+
   it.each(['pointerup', 'pointercancel'])('releases remote momentary PTT on %s without a click latch', (release) => {
     const handlers = { ...inertHandlers(), momentary: true, onPttDown: vi.fn(), onPttUp: vi.fn() };
     const s = render(topologyFixtures['1/single'], snap({ fresh: true }), handlers);

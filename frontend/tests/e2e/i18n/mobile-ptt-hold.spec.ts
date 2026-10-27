@@ -7,7 +7,21 @@ import type { ServerState } from '../../../src/lib/types/state';
  * MOR-3817 — a held phone PTT keeps transmitting when the phone rotates or
  * the finger slides, and stops when the finger lifts or the page is hidden.
  * Touches are real CDP touch input; PTT ON/OFF are read from the WS
- * commands the page sends.
+ * commands the page sends, and the rendered PTT button's held class is
+ * checked against them.
+ *
+ * Mocked exchange. The Python tests that pin the shapes this fake speaks:
+ * - WS `ptt_on` / `ptt_off` admission and result `{}`:
+ *   tests/test_web_managed_ptt_rejection.py
+ *   (test_first_client_ptt_admits_through_the_shared_queue,
+ *   test_the_holder_releases_with_ptt_off);
+ * - the WS success envelope `{type: 'response', id, ok: true, result}`:
+ *   `web/handlers/control.py`, whose refusal envelope is pinned by
+ *   test_second_client_ws_envelope_carries_the_conflict_message;
+ * - the GET /api/v1/managed-transmit document:
+ *   tests/test_managed_tx_http_route.py
+ *   (test_get_projects_one_authority_snapshot_and_separate_observation).
+ * This spec does not replay its own documents against the real handlers.
  */
 
 const workspace = { version: 1, layout: 'standard', designLanguage: 'studioline', theme: 'github-light' };
@@ -114,7 +128,7 @@ async function prepare(page: Page) {
       if ((frame.type !== 'cmd' && frame.type !== 'command') || !frame.id || !frame.name) return;
       commands.push(frame.name);
       intent = admitted(frame.name) ?? intent;
-      setTimeout(() => socket.send(JSON.stringify({ type: 'response', id: frame.id, ok: true })), 0);
+      setTimeout(() => socket.send(JSON.stringify({ type: 'response', id: frame.id, ok: true, result: {} })), 0);
     });
     if (pathname === '/api/v1/ws') {
       socket.send(JSON.stringify({ type: 'state_update', data: { ...state, type: 'full', data: state } }));
@@ -160,6 +174,13 @@ class Finger {
 
 const settle = (page: Page) => page.waitForTimeout(700);
 
+/** The one mounted PTT button (FAB in portrait, strip button in landscape) shows held or idle. */
+async function expectRenderedHeld(page: Page, held: boolean) {
+  const button = page.locator('.ptt-fab, .m-ls-ptt');
+  if (held) await expect(button).toHaveClass(/ptt-fab-held|m-ptt-held/);
+  else await expect(button).not.toHaveClass(/ptt-fab-held|m-ptt-held/);
+}
+
 /** Landscape entry requests fullscreen; the browser resizes only a normal window. */
 async function rotate(page: Page, viewport: { width: number; height: number }) {
   await page.evaluate(async () => {
@@ -174,17 +195,21 @@ test('a held FAB keeps transmitting through rotation and stops when the finger l
   await open(page, PORTRAIT);
   const finger = await Finger.down(page, page.locator('.ptt-fab'));
   await expect.poll(() => commands).toEqual(['ptt_on']);
+  await expectRenderedHeld(page, true);
 
   await rotate(page, LANDSCAPE);
   await settle(page);
   expect(commands).toEqual(['ptt_on']);
+  await expectRenderedHeld(page, true);
 
   await rotate(page, PORTRAIT);
   await settle(page);
   expect(commands).toEqual(['ptt_on']);
+  await expectRenderedHeld(page, true);
 
   await finger.lift();
   await expect.poll(() => commands).toEqual(['ptt_on', 'ptt_off']);
+  await expectRenderedHeld(page, false);
 });
 
 test('a held landscape PTT keeps transmitting through rotation to portrait', async ({ page }) => {
@@ -192,13 +217,16 @@ test('a held landscape PTT keeps transmitting through rotation to portrait', asy
   await open(page, LANDSCAPE);
   const finger = await Finger.down(page, page.locator('.m-ls-ptt'));
   await expect.poll(() => commands).toEqual(['ptt_on']);
+  await expectRenderedHeld(page, true);
 
   await rotate(page, PORTRAIT);
   await settle(page);
   expect(commands).toEqual(['ptt_on']);
+  await expectRenderedHeld(page, true);
 
   await finger.lift();
   await expect.poll(() => commands).toEqual(['ptt_on', 'ptt_off']);
+  await expectRenderedHeld(page, false);
 });
 
 for (const [name, viewport, selector] of [
@@ -211,15 +239,18 @@ for (const [name, viewport, selector] of [
     const button = page.locator(selector);
     const finger = await Finger.down(page, button);
     await expect.poll(() => commands).toEqual(['ptt_on']);
+    await expectRenderedHeld(page, true);
 
     await finger.slide(-90, -90);
     const box = await button.boundingBox();
     expect(finger.x < box!.x || finger.y < box!.y, 'the finger ends outside the button').toBe(true);
     await settle(page);
     expect(commands).toEqual(['ptt_on']);
+    await expectRenderedHeld(page, true);
 
     await finger.lift();
     await expect.poll(() => commands).toEqual(['ptt_on', 'ptt_off']);
+    await expectRenderedHeld(page, false);
   });
 }
 
@@ -228,8 +259,10 @@ test('lifting the finger ends a held FAB press', async ({ page }) => {
   await open(page, PORTRAIT);
   const finger = await Finger.down(page, page.locator('.ptt-fab'));
   await expect.poll(() => commands).toEqual(['ptt_on']);
+  await expectRenderedHeld(page, true);
   await finger.lift();
   await expect.poll(() => commands).toEqual(['ptt_on', 'ptt_off']);
+  await expectRenderedHeld(page, false);
 });
 
 test('the page becoming hidden ends a held FAB press before the finger lifts', async ({ page }) => {
@@ -237,12 +270,14 @@ test('the page becoming hidden ends a held FAB press before the finger lifts', a
   await open(page, PORTRAIT);
   const finger = await Finger.down(page, page.locator('.ptt-fab'));
   await expect.poll(() => commands).toEqual(['ptt_on']);
+  await expectRenderedHeld(page, true);
 
   await page.evaluate(() => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     document.dispatchEvent(new Event('visibilitychange'));
   });
   await expect.poll(() => commands).toEqual(['ptt_on', 'ptt_off']);
+  await expectRenderedHeld(page, false);
 
   await finger.lift();
   await settle(page);

@@ -274,12 +274,36 @@ describe('shared PTT hold (MOR-3817)', () => {
     expect(target.release).toHaveBeenCalledOnce();
   });
 
-  it('keyboard: a key hold releases when its button detaches', () => {
+  it('keyboard: a key hold aborts, not releases, when its button detaches', () => {
     const { target, mountButton } = setup();
     const button = mountButton();
     key(button.node, 'keydown');
     button.detach();
-    expect(target.release).toHaveBeenCalledOnce();
+    expect(target.abort).toHaveBeenCalledOnce();
+    expect(target.release).not.toHaveBeenCalled();
+  });
+
+  it('abort cancels a press still inside its guard and leaves the hold usable', () => {
+    const { target, hold, mountButton } = setup(() => ({ delayMs: 50, moveCancelPx: 8 }));
+    const { node } = mountButton();
+    pointer(node, 'pointerdown');
+    vi.advanceTimersByTime(20);
+    hold.abort();
+    vi.advanceTimersByTime(100);
+    expect(target.press).not.toHaveBeenCalled();
+    expect(target.abort).not.toHaveBeenCalled();
+    pointer(node, 'pointerdown', { pointerId: 2 });
+    vi.advanceTimersByTime(50);
+    expect(target.press).toHaveBeenCalledOnce();
+  });
+
+  it('abort ends an engaged hold as abort and ignores that pointer\'s later lift', () => {
+    const { target, hold, mountButton } = setup();
+    pointer(mountButton().node, 'pointerdown');
+    hold.abort();
+    pointer(document.body, 'pointerup');
+    expect(target.abort).toHaveBeenCalledOnce();
+    expect(target.release).not.toHaveBeenCalled();
   });
 
   it('destroy aborts an engaged hold, then ignores further input', () => {

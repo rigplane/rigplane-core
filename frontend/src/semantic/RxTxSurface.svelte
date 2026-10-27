@@ -45,7 +45,7 @@
     standard?: boolean;
     momentary?: boolean;
     onPttDown?: () => void;
-    onPttUp?: () => void;
+    onPttUp?: (options?: { automatic?: boolean }) => void;
     onRequestKey: () => void;
     onRequestUnkey: () => void;
   }
@@ -73,7 +73,7 @@
   // Input ownership only; displayed TX state remains the server projection.
   let held = $state(false);
   // Retain the matching release synchronously, independent of render batches.
-  let releaseHeld: (() => void) | null = null;
+  let releaseHeld: ((options?: { automatic?: boolean }) => void) | null = null;
   let alive = true;
   function beginHold(): void {
     if (!alive || !momentary || releaseHeld !== null || keyUnavailable) return;
@@ -81,15 +81,19 @@
     held = true;
     onPttDown();
   }
-  function endHold(): void {
+  /** `automatic` marks cleanup the operator did not ask for (MOR-3753). */
+  function endHold(options?: { automatic?: boolean }): void {
     const release = releaseHeld;
     if (release === null) return;
     releaseHeld = null;
     held = false;
-    release();
+    if (options) release(options);
+    else release();
   }
-  $effect(() => { if (!momentary || tx.fresh === false) endHold(); });
-  const pttHold = createPttHold({ press: beginHold, release: endHold, abort: endHold });
+  $effect(() => { if (!momentary || tx.fresh === false) endHold({ automatic: true }); });
+  const pttHold = createPttHold({
+    press: beginHold, release: () => endHold(), abort: () => endHold({ automatic: true }),
+  });
   const pttButton = pttHold.attach;
   onDestroy(() => { alive = false; pttHold.destroy(); });
   let pressed = $derived(tx.phase !== 'idle' && tx.phase !== 'failed');

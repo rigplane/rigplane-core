@@ -1776,6 +1776,38 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     }
   });
 
+  it('TX capability loss inside the FAB guard cancels the press; a fresh press works once TX returns', () => {
+    const capability = $state({ tx: true });
+    vi.mocked(hasTx).mockImplementation(() => capability.tx);
+    const t = mountMobile();
+    pointer(fabEl(t), 'pointerdown');
+    vi.advanceTimersByTime(HOLD_MS - 20);
+    capability.tx = false;
+    flushSync();
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS * 2);
+    flushSync();
+    expect(tx.trace()).toEqual([]);
+    capability.tx = true;
+    flushSync();
+    pointer(fabEl(t), 'pointerdown', { pointerId: 2 });
+    vi.advanceTimersByTime(HOLD_MS);
+    flushSync();
+    expect(tx.trace()).toEqual([PTT_ON]);
+  });
+
+  // The facade's automatic release preserves a latched failure; that half is
+  // pinned in app-host.isolated.test.ts (MOR-3753).
+  it('a keyboard hold whose button rotates away ends as automatic cleanup, never an operator release', () => {
+    const pttOff = vi.fn();
+    txHost.current = { ...tx.controller, pttOff };
+    const t = mountMobile();
+    fabEl(t).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    flushSync();
+    rotate(true);
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS * 2);
+    expect(pttOff.mock.calls).toEqual([[{ automatic: true }]]);
+  });
+
   it('every mobile PTT button blocks browser panning under the finger', () => {
     expect(fabEl(mountMobile()).style.touchAction).toBe('none');
     expect(stripEl(mountLandscape()).style.touchAction).toBe('none');

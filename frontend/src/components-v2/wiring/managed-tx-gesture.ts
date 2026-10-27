@@ -116,6 +116,8 @@ export interface PttHoldOptions {
 export interface PttHold {
   /** Svelte action for a PTT button; detaching it does not end a pointer hold. */
   attach(node: HTMLElement, options?: PttHoldOptions): { update(options?: PttHoldOptions): void; destroy(): void };
+  /** Ends any hold as `abort`, cancelling a press still inside its guard; later presses still work. */
+  abort(): void;
   destroy(): void;
 }
 
@@ -132,7 +134,7 @@ const isPttKey = (event: KeyboardEvent) => event.key === ' ' || event.key === 'E
  * on pointerup or pointercancel of the pointer that started it, on the page
  * becoming hidden, or on window blur; pointerleave, lost capture and element
  * blur do not end it. A keyboard hold ends on key up or when its button loses
- * focus or detaches.
+ * focus, and aborts when its button detaches.
  */
 export function createPttHold(target: PttHoldTarget): PttHold {
   let hold: HoldState | null = null;
@@ -226,13 +228,14 @@ export function createPttHold(target: PttHoldTarget): PttHold {
         node.removeEventListener('keyup', onKeyUp);
         node.removeEventListener('blur', onBlur);
         node.removeEventListener('contextmenu', onContextMenu);
-        if (hold?.kind === 'key' && hold.node === node) end('release');
+        if (hold?.kind === 'key' && hold.node === node) end('abort');
       },
     };
   };
 
   return {
     attach,
+    abort() { end('abort'); },
     destroy() {
       if (destroyed) return;
       destroyed = true;

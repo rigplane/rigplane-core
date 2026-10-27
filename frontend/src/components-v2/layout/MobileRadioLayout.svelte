@@ -450,7 +450,7 @@
   const pttButton = pttHold.attach;
   // Losing TX capability ends the transmission even while the finger is down.
   $effect(() => {
-    if (!txCapable) pttGesture.abort();
+    if (!txCapable) { pttHold.abort(); pttGesture.abort(); }
   });
   onDestroy(() => { pttHold.destroy(); pttGesture.destroy(); });
 
