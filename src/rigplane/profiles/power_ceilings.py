@@ -13,8 +13,9 @@ consume.
 
 Resolution rules, shared by band and source:
 
-- a known band (the active receiver's frequency inside a declared band that
-  carries a row) or a known source names its own row;
+- a known band (the frequency the ceiling-defining observation resolves,
+  inside a declared band that carries a row) or a known source names its own
+  row;
 - anything unknown — no frequency observed yet, a frequency no declared band
   covers, a source the state has not observed — resolves to the LOWEST
   declared row of that table, never the widest: an over-rated write is the
@@ -23,17 +24,29 @@ Resolution rules, shared by band and source:
 - a profile declaring neither table resolves ``None`` and every caller keeps
   today's flat-``max_watts`` behaviour.
 
-No shipped observation populates the power source yet, so callers pass
-``power_source=None`` and the lower source ceiling applies until one does.
+Which frequency defines the band: the canonical ``global.tx_state.tx_target``
+authority when it names a KNOWN transmitting receiver with a frequency (the
+band that actually transmits, also during split / cross-band operation), else
+the active receiver's frequency. Both are read from the canonical StateStore
+snapshot when the radio carries one (production observation polling feeds
+only the store), falling back to the backend-neutral ``radio_state``
+compatibility mirror. No shipped observation populates the power source yet,
+so callers pass ``power_source=None`` and the lower source ceiling applies
+until one does.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
+
+from ..core.state_pipeline_contracts import FieldFamily, FieldScope, VfoSlot
 
 __all__ = [
     "active_receiver_freq_hz",
+    "band_frequency_hz_from_snapshot",
     "effective_power_max_watts",
+    "observed_band_freq_hz",
     "resolve_power_ceiling_watts",
 ]
 
@@ -126,13 +139,86 @@ def effective_power_max_watts(
     return None
 
 
+def _positive_int(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def _known_tx_target_freq_hz(value: Any) -> int | None:
+    """The frequency of a KNOWN ``global.tx_state.tx_target`` value.
+
+    Accepts the ``KnownTxTarget`` dataclass or its ``to_dict`` form
+    (``{"status": "known", ..., "frequencyHz": ...}``). An unknown target,
+    a target without a frequency, or any other shape resolves ``None`` —
+    the caller then falls back to the active receiver's band.
+    """
+    if isinstance(value, Mapping):
+        if value.get("status") != "known":
+            return None
+        return _positive_int(value.get("frequencyHz"))
+    status = getattr(value, "status", None)
+    if status != "known":
+        return None
+    return _positive_int(getattr(value, "frequency_hz", None))
+
+
+def band_frequency_hz_from_snapshot(snapshot: Any) -> int | None:
+    """The band-defining frequency of one canonical state snapshot.
+
+    Precedence: a KNOWN ``global.tx_state.tx_target`` frequency (the band
+    that transmits), else the ACTIVE receiver's ``freq_mode.freq_hz``.
+    Receiver-id aliases (``"0"``/``"main"``, ``"1"``/``"sub"``) collapse
+    onto the same receiver. ``None`` when neither is observed — the caller
+    then applies the lowest declared ceiling.
+    """
+    active = "MAIN"
+    freqs: dict[str, int] = {}
+    tx_freq: int | None = None
+    for field in getattr(snapshot, "fields", ()) or ():
+        path = getattr(field, "path", None)
+        if path is None:
+            continue
+        if (
+            path.scope is FieldScope.GLOBAL
+            and path.family is FieldFamily.TX_STATE
+            and path.name == "tx_target"
+        ):
+            tx_freq = _known_tx_target_freq_hz(getattr(field, "value", None))
+            continue
+        if (
+            path.scope is FieldScope.GLOBAL
+            and path.family is FieldFamily.SLOW_STATE
+            and path.name == "active"
+            and getattr(field, "value", None) in ("MAIN", "SUB")
+        ):
+            active = field.value
+            continue
+        if (
+            path.scope is FieldScope.RECEIVER
+            and path.family is FieldFamily.FREQ_MODE
+            and path.name == "freq_hz"
+            and path.slot in (None, VfoSlot.ACTIVE)
+        ):
+            freq_hz = _positive_int(getattr(field, "value", None))
+            receiver_id = str(getattr(path, "receiver_id", ""))
+            receiver_key = "sub" if receiver_id in ("1", "sub") else "main"
+            if freq_hz is not None:
+                freqs[receiver_key] = freq_hz
+    if tx_freq is not None:
+        return tx_freq
+    return freqs.get("sub" if active == "SUB" else "main")
+
+
 def active_receiver_freq_hz(radio: Any) -> int | None:
-    """The active receiver's frequency, or ``None`` while unobserved.
+    """The active receiver's frequency from the compatibility mirror.
 
     Reads the backend-neutral ``radio.radio_state`` (``RadioState``:
     ``main``/``sub`` receivers plus the ``active`` selector). A missing
     attribute, a non-``RadioState`` object or a non-positive frequency
-    resolves ``None`` — the caller then applies the lowest declared ceiling.
+    resolves ``None`` — the caller then applies the lowest declared
+    ceiling. Production observation polling does not feed this mirror on
+    every backend; prefer :func:`observed_band_freq_hz`.
     """
     state = getattr(radio, "radio_state", None)
     receiver = (
@@ -140,7 +226,21 @@ def active_receiver_freq_hz(radio: Any) -> int | None:
         if getattr(state, "active", None) == "SUB"
         else getattr(state, "main", None)
     )
-    freq_hz = getattr(receiver, "freq", None)
-    if isinstance(freq_hz, int) and not isinstance(freq_hz, bool) and freq_hz > 0:
-        return freq_hz
-    return None
+    return _positive_int(getattr(receiver, "freq", None))
+
+
+def observed_band_freq_hz(radio: Any) -> int | None:
+    """The band-defining frequency from the radio's canonical observations.
+
+    The canonical StateStore the web layer attaches as ``radio._state_store``
+    (the only thing production observation polling feeds) is read first;
+    the ``radio_state`` compatibility mirror is the fallback for radios
+    without a store (Icom keeps the mirror fresh from the CI-V stream).
+    """
+    store = getattr(radio, "_state_store", None)
+    snapshot = getattr(store, "snapshot", None)
+    if callable(snapshot):
+        freq_hz = band_frequency_hz_from_snapshot(snapshot())
+        if freq_hz is not None:
+            return freq_hz
+    return active_receiver_freq_hz(radio)

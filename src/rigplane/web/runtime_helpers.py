@@ -18,7 +18,10 @@ from ..core.state_store import (
 )
 from ..core.tx_target import TxTarget, tx_target_from_dict, validate_tx_target
 from ..profiles import RadioProfile, resolve_radio_profile
-from ..profiles.power_ceilings import effective_power_max_watts
+from ..profiles.power_ceilings import (
+    band_frequency_hz_from_snapshot,
+    effective_power_max_watts,
+)
 from ..radio_protocol import (
     AudioCapable,
     DualReceiverCapable,
@@ -1476,51 +1479,18 @@ def _apply_snapshot_field(
             scope_controls[path.name] = value
 
 
-def _snapshot_active_freq_hz(snapshot: StateSnapshot) -> int | None:
-    """The active receiver's frequency from a snapshot, or ``None``.
-
-    MOR-3634: the watt scale the public ``powerLevel`` projects follows
-    the active receiver's band ceiling, so the projection resolves the
-    band from the same snapshot it projects — independent of field order
-    (the frequency fields may land before or after ``power_level``).
-    Receiver-id aliases (``"0"``/``"main"``, ``"1"``/``"sub"``) collapse
-    onto the same receiver; a missing or non-positive frequency resolves
-    ``None`` (the caller then applies the lowest declared ceiling).
-    """
-    active = "MAIN"
-    freqs: dict[str, int] = {}
-    for field in snapshot.fields:
-        path = field.path
-        if (
-            path.scope is FieldScope.GLOBAL
-            and path.family is FieldFamily.SLOW_STATE
-            and path.name == "active"
-            and field.value in ("MAIN", "SUB")
-        ):
-            active = field.value
-            continue
-        if (
-            path.scope is FieldScope.RECEIVER
-            and path.family is FieldFamily.FREQ_MODE
-            and path.name == "freq_hz"
-            and path.slot in (None, VfoSlot.ACTIVE)
-            and isinstance(field.value, int)
-            and not isinstance(field.value, bool)
-            and field.value > 0
-        ):
-            receiver_key = _snapshot_receiver_key(path.receiver_id)
-            if receiver_key in ("main", "sub"):
-                freqs[receiver_key] = field.value
-    return freqs.get("sub" if active == "SUB" else "main")
-
-
 def _project_snapshot_state_dict(
     snapshot: StateSnapshot,
     *,
     radio: "Radio | None",
 ) -> dict[str, Any]:
     state = copy.deepcopy(_EMPTY_STATE_DICT)
-    active_freq_hz = _snapshot_active_freq_hz(snapshot)
+    # MOR-3634: the watt scale the public ``powerLevel`` projects follows
+    # the band ceiling; the band comes from the same snapshot (a known TX
+    # target's frequency, else the active receiver's), resolved once so
+    # field order cannot matter. Shared with the write-side clamp in
+    # ``profiles/power_ceilings.py``.
+    active_freq_hz = band_frequency_hz_from_snapshot(snapshot)
     for field in snapshot.fields:
         _apply_snapshot_field(state, field, radio=radio, freq_hz=active_freq_hz)
     required_relative_fields = frozenset(_VFO_SLOT_FIELDS.values())

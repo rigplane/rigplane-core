@@ -38,10 +38,13 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
+from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.profiles import get_radio_profile
 from rigplane.profiles.power_ceilings import (
     active_receiver_freq_hz,
+    band_frequency_hz_from_snapshot,
     effective_power_max_watts,
+    observed_band_freq_hz,
     resolve_power_ceiling_watts,
 )
 from rigplane.rig_loader import RigLoadError, load_rig
@@ -300,6 +303,90 @@ def test_active_receiver_freq_is_none_when_unobserved():
     assert active_receiver_freq_hz(SimpleNamespace()) is None
 
 
+# ── Which observation defines the band ────────────────────────────
+
+
+def _store_with_observations(*observations: Observation) -> StateStore:
+    store = StateStore()
+    for observation in observations:
+        store.apply(observation)
+    return store
+
+
+def test_known_tx_target_frequency_defines_the_band():
+    """Split/cross-band: the TRANSMITTING receiver's band governs."""
+    store = _store_with_observations(
+        _snapshot_observation(
+            FieldPath.active("main", "freq_mode", "freq_hz"),
+            145_000_000,
+            provider="test",
+        ),
+        _snapshot_observation(
+            FieldPath.active("sub", "freq_mode", "freq_hz"),
+            435_000_000,
+            provider="test",
+        ),
+        _snapshot_observation(
+            FieldPath.global_("slow_state", "active"), "MAIN", provider="test"
+        ),
+        _snapshot_observation(
+            FieldPath.global_("tx_state", "tx_target"),
+            KnownTxTarget(receiver="SUB", slot=None, frequency_hz=435_000_000),
+            provider="test",
+        ),
+    )
+    profile = replace(
+        get_radio_profile("FTX-1"), power_ceilings_w={"2m": 75, "70cm": 50}
+    )
+
+    freq_hz = band_frequency_hz_from_snapshot(store.snapshot())
+    assert freq_hz == 435_000_000
+    # The active receiver sits on 2 m (75 W) but TX routes to 70 cm: 50 W.
+    assert effective_power_max_watts(profile, freq_hz=freq_hz) == 50
+
+
+def test_unknown_tx_target_falls_back_to_the_active_receiver():
+    store = _store_with_observations(
+        _snapshot_observation(
+            FieldPath.active("main", "freq_mode", "freq_hz"),
+            145_000_000,
+            provider="test",
+        ),
+        _snapshot_observation(
+            FieldPath.global_("slow_state", "active"), "MAIN", provider="test"
+        ),
+        _snapshot_observation(
+            FieldPath.global_("tx_state", "tx_target"),
+            UnknownTxTarget(reason="not-observed"),
+            provider="test",
+        ),
+    )
+    assert band_frequency_hz_from_snapshot(store.snapshot()) == 145_000_000
+
+
+def test_observed_band_freq_prefers_the_canonical_store_over_the_mirror():
+    """Production polling feeds the store; the mirror may lag or stay empty."""
+    store = _store_with_observations(
+        _snapshot_observation(
+            FieldPath.active("main", "freq_mode", "freq_hz"),
+            435_000_000,
+            provider="test",
+        )
+    )
+    radio = SimpleNamespace(
+        _state_store=store,
+        radio_state=_state_double(main_hz=145_000_000),
+    )
+    assert observed_band_freq_hz(radio) == 435_000_000
+    # Without a store the compatibility mirror answers.
+    assert (
+        observed_band_freq_hz(
+            SimpleNamespace(radio_state=_state_double(main_hz=145_000_000))
+        )
+        == 145_000_000
+    )
+
+
 # ── Admission clamp in the watts domain ───────────────────────────
 
 
@@ -475,6 +562,47 @@ async def test_handler_profile_without_tables_keeps_flat_max_and_floor():
     assert await _enqueued_level(profile, state, 2) == 5
 
 
+@pytest.mark.asyncio
+async def test_handler_raw_255_radio_keeps_the_raw_wire_scale():
+    """The shipped IC-9700 rides raw-255 CI-V: the ceiling never re-scales it.
+
+    The watts doubles above force ``native_power_unit = "watts"`` to
+    exercise the radio-agnostic mechanism; on the real Icom wire a bare
+    int is the documented 0-255 raw value and a float scales onto 0-255,
+    exactly as before the ceilings landed.
+    """
+    from rigplane.web.handlers.control import ControlHandler
+
+    radio = SimpleNamespace(
+        capabilities={"tx"},
+        profile=get_radio_profile("IC-9700"),
+        native_power_unit="raw_255",
+        radio_state=_state_double(main_hz=1_297_000_000),
+        set_rf_power=AsyncMock(),
+        get_rf_power=AsyncMock(return_value=0),
+        get_powerstat=AsyncMock(return_value=True),
+        set_powerstat=AsyncMock(),
+    )
+    server = SimpleNamespace(
+        command_queue=_QueueRecorder(), command_state_store=StateStore()
+    )
+    handler = ControlHandler(
+        SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock()),
+        radio,
+        "9.9.9",
+        "IC-9700",
+        server=server,
+        session_id="power-ceilings-raw",
+    )
+
+    await handler._enqueue_command("set_power", {"level": 90})
+    await handler._enqueue_command("set_power", {"level": 1.0})
+
+    [first, second] = server.command_queue.items
+    assert (first.level, first.unit) == (90, "raw_255")
+    assert (second.level, second.unit) == (255, "raw_255")
+
+
 # ── Watt scale shown per band (observation + public projection) ──
 
 
@@ -522,6 +650,40 @@ async def test_power_level_observation_scales_watts_by_band_ceiling(
     assert store.snapshot().field(
         "global.operator_controls.power_level"
     ).value == pytest.approx(expected_fraction)
+
+
+@pytest.mark.asyncio
+async def test_over_ceiling_readback_saturates_through_the_public_projection():
+    """A readback above the resolved ceiling stays a valid 0.0-1.0 fraction.
+
+    Pre-review round 1: with the band unobserved the conservative 50 W
+    ceiling applies while the radio still reports a legal-on-2m 60 W
+    setpoint; ``60 / 50 = 1.2`` used to leave the normalized domain and
+    the public projection divided by the scale a second time (2.4 %).
+    The observation saturates at 1.0 and the projection keeps it there.
+    """
+    profile = replace(
+        get_radio_profile("FTX-1"),
+        power_ceilings_w={"2m": 75, "70cm": 50},
+    )
+    radio = _yaesu_poll_radio(profile, _state_double(main_hz=0))
+    radio.read_power = AsyncMock(return_value=(2, 60))
+
+    store = StateStore()
+    for observation in await YaesuObservationAdapter(
+        radio, profile=_observation_profile(), clock=lambda: 123.456
+    ).poll_tx_controls():
+        store.apply(observation)
+
+    assert store.snapshot().field(
+        "global.operator_controls.power_level"
+    ).value == pytest.approx(1.0)
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=radio,
+        receiver_count=2,
+    )
+    assert payload["powerLevel"] == pytest.approx(1.0)
 
 
 def _snapshot_observation(
