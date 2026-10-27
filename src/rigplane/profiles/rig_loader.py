@@ -688,6 +688,11 @@ class RigConfig:
     filter_config: dict[str, FilterWidthRule] | None = None
     max_watts: int | None = None
     min_watts: int | None = None
+    # Per-band / per-power-source rated-power ceilings in watts (MOR-3634),
+    # from ``[power.ceilings_w]`` / ``[power.sources]``; parsed and
+    # validated by ``_parse_power_watts_table``.
+    power_ceilings_w: dict[str, int] | None = None
+    power_sources_w: dict[str, int] | None = None
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
     data_mode_inputs: tuple[tuple[int, str], ...] | None = None
@@ -908,6 +913,12 @@ class RigConfig:
             filter_config=self.filter_config,
             max_watts=self.max_watts,
             min_watts=self.min_watts,
+            power_ceilings_w=(
+                None if self.power_ceilings_w is None else dict(self.power_ceilings_w)
+            ),
+            power_sources_w=(
+                None if self.power_sources_w is None else dict(self.power_sources_w)
+            ),
             att_values=self.att_values,
             att_labels=self.att_labels,
             pre_values=self.pre_values,
@@ -2614,6 +2625,49 @@ def _parse_identity(filename: str, raw: Any) -> tuple[str, ...]:
     return tuple(ids)
 
 
+def _parse_power_watts_table(
+    filename: str,
+    power_section: dict[str, Any],
+    key: str,
+    max_watts: int | None,
+    *,
+    allowed_keys: frozenset[str] | None,
+) -> dict[str, int] | None:
+    """Parse one ``[power]`` watts table (MOR-3634).
+
+    ``ceilings_w`` (band name → watts) and ``sources`` (source name →
+    watts) share this shape: a non-empty table of positive integer watts,
+    each within ``1..max_watts``, requiring ``max_watts`` to exist. With
+    ``allowed_keys`` (the declared band names) a key outside the set is a
+    load error — a ceiling for a band the profile does not declare can
+    never be resolved and hides a typo.
+    """
+    raw = power_section.get(key)
+    if raw is None:
+        return None
+    if max_watts is None:
+        raise RigLoadError(f"{filename}: [power].{key} requires [power].max_watts")
+    if not isinstance(raw, dict) or not raw:
+        raise RigLoadError(
+            f"{filename}: [power].{key} must be a non-empty table of watts values"
+        )
+    table: dict[str, int] = {}
+    for name, watts in raw.items():
+        if allowed_keys is not None and name not in allowed_keys:
+            raise RigLoadError(
+                f"{filename}: [power].{key} names no declared band: {name!r}"
+            )
+        if not isinstance(watts, int) or isinstance(watts, bool):
+            raise RigLoadError(f"{filename}: [power].{key}.{name} must be an integer")
+        if watts <= 0 or watts > max_watts:
+            raise RigLoadError(
+                f"{filename}: [power].{key}.{name} must be in 1..max_watts "
+                f"({max_watts}), got {watts}"
+            )
+        table[name] = watts
+    return table
+
+
 def load_rig(path: Path) -> RigConfig:
     """Load and validate a rig TOML file.
 
@@ -3461,6 +3515,8 @@ def load_rig(path: Path) -> RigConfig:
 
     max_watts: int | None = None
     min_watts: int | None = None
+    power_ceilings_w: dict[str, int] | None = None
+    power_sources_w: dict[str, int] | None = None
     power_section = data.get("power")
     if power_section is not None:
         if not isinstance(power_section, dict):
@@ -3481,6 +3537,45 @@ def load_rig(path: Path) -> RigConfig:
             min_watts = min_watts_raw
         if min_watts is not None and max_watts is not None and min_watts > max_watts:
             raise RigLoadError(f"{filename}: [power].min_watts must be <= max_watts")
+        # MOR-3634: per-band / per-source rated-power ceilings. Keys of
+        # ``ceilings_w`` must name declared bands (the freq_ranges bands
+        # parsed above this block); both tables require the flat maximum.
+        declared_band_names = frozenset(
+            band["name"]
+            for rng in freq_ranges_data
+            if isinstance(rng, dict)
+            for band in rng.get("bands", ())
+            if isinstance(band, dict) and isinstance(band.get("name"), str)
+        )
+        power_ceilings_w = _parse_power_watts_table(
+            filename,
+            power_section,
+            "ceilings_w",
+            max_watts,
+            allowed_keys=declared_band_names,
+        )
+        power_sources_w = _parse_power_watts_table(
+            filename,
+            power_section,
+            "sources",
+            max_watts,
+            allowed_keys=None,
+        )
+        declared_ceiling_values = [
+            watts
+            for table in (power_ceilings_w, power_sources_w)
+            if table is not None
+            for watts in table.values()
+        ]
+        if (
+            min_watts is not None
+            and declared_ceiling_values
+            and min_watts > min(declared_ceiling_values)
+        ):
+            raise RigLoadError(
+                f"{filename}: [power].min_watts must be <= every declared "
+                "ceilings_w/sources value"
+            )
 
     state_acquisition = _parse_state_acquisition(
         filename,
@@ -3535,6 +3630,8 @@ def load_rig(path: Path) -> RigConfig:
         filter_config=filter_config,
         max_watts=max_watts,
         min_watts=min_watts,
+        power_ceilings_w=power_ceilings_w,
+        power_sources_w=power_sources_w,
         vfo_scheme=scheme,
         vfo_readback=vfo_readback,
         tx_receiver_rule=tx_receiver_rule,

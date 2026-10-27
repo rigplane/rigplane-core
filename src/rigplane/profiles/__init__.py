@@ -451,6 +451,17 @@ class RadioProfile:
     # Lower bound of the ``PC`` power range in watts (MOR-2998). ``None``
     # keeps today's behaviour: a request below the range is sent as-is.
     min_watts: int | None = None
+    # Per-band rated-power ceilings in watts (MOR-3634), keyed by the band
+    # names declared under ``[[freq_ranges.ranges.bands]]``. ``None`` keeps
+    # today's behaviour: the flat ``max_watts`` is the only ceiling.
+    # Resolved by ``profiles/power_ceilings.py``; an unknown band takes the
+    # lowest declared row.
+    power_ceilings_w: dict[str, int] | None = None
+    # Per-power-source rated-power ceilings in watts (MOR-3634), keyed by
+    # source name (e.g. ``dc`` / ``battery``). ``None`` keeps today's
+    # behaviour. No shipped observation names the live source yet, so the
+    # resolver applies the lowest declared row until one does.
+    power_sources_w: dict[str, int] | None = None
     att_values: tuple[int, ...] | None = None
     att_labels: dict[str, str] | None = None
     pre_values: tuple[int, ...] | None = None

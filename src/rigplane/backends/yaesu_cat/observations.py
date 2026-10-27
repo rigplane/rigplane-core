@@ -29,6 +29,10 @@ from rigplane.core.tx_observation import (
 )
 from rigplane.core.tx_target import KnownTxTarget, TxTarget, UnknownTxTarget
 from rigplane.core.types import ctcss_booleans_for_tone_squelch_type
+from rigplane.profiles.power_ceilings import (
+    active_receiver_freq_hz,
+    effective_power_max_watts,
+)
 from rigplane.runtime.meter_cal import interpolate_meter
 
 from .parser import CatFormatError, CatParseError
@@ -748,7 +752,14 @@ class YaesuObservationAdapter:
 
     def _normalize_power_level(self, watts: object) -> float | None:
         profile = getattr(self.radio, "profile", None)
-        max_watts = getattr(profile, "max_watts", None)
+        # MOR-3634: the watt scale is the per-band/per-source rated
+        # ceiling when the profile declares one (the active receiver's
+        # band, from the radio state), the flat max_watts otherwise — the
+        # same scale the write path clamps against, so a full-scale
+        # reading reconciles with a full-scale write on every band.
+        max_watts = effective_power_max_watts(
+            profile, freq_hz=active_receiver_freq_hz(self.radio)
+        )
         if isinstance(max_watts, bool) or not isinstance(max_watts, (int, float)):
             self._log_field_skip(
                 "power_level",

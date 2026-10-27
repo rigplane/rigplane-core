@@ -493,6 +493,14 @@ width_max = 255
 
 [power]
 max_watts = 10
+# Per-power-source rated TX-power ceilings (MOR-3634): 10 W on an external
+# DC supply, 5 W on the battery pack (IC-705 Basic Manual A7560D-1EX-9
+# p.3-10; band-power context CI-V 1A 05 0036 battery / 0037 external).
+# Nothing observes the live source yet, so the clamp resolves an unknown
+# source to the lower (battery, 5 W) ceiling until one does.
+[power.sources]
+dc = 10
+battery = 5
 
 # ── Memory channels (MOR-3627) ───────────────────────────────────
 # CI-V 1A 00 reads a channel by group and channel (guide p.18; empty slot

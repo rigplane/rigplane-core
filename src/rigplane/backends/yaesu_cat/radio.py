@@ -35,6 +35,10 @@ from ...profiles.control_domain import (
     snap_control_domain,
     validate_control_raw_value,
 )
+from ...profiles.power_ceilings import (
+    active_receiver_freq_hz,
+    resolve_power_ceiling_watts,
+)
 from ...radio_state import RadioState
 from ...runtime.callable_support import supports_callable
 from ...runtime.local_tx_work import LocalTxWorkRunner
@@ -2935,12 +2939,25 @@ class YaesuCatRadio:
         ``PC2000;``). A profile without ``min_watts`` sends the request
         unchanged.
 
+        MOR-3634: a profile-declared per-band / per-source rated ceiling
+        (``[power.ceilings_w]`` / ``[power.sources]``) caps the request
+        down to the active receiver's band (or source) ceiling after the
+        floor lift — the same clamp admission applies, kept here for
+        paths that bypass it (rigctld ``\\set_level RFPOWER`` routing,
+        the CLI ``power`` command). A profile without the tables is
+        unchanged; the ceiling wins over the floor when both apply.
+
         Args:
             watts: Power in watts.
             head: Head selector (default 2).
         """
         if self._config.min_watts is not None:
             watts = max(self._config.min_watts, watts)
+        ceiling = resolve_power_ceiling_watts(
+            self.profile, freq_hz=active_receiver_freq_hz(self)
+        )
+        if ceiling is not None:
+            watts = min(ceiling, watts)
         await self._write("set_power", head=str(head), watts=watts)
 
     async def set_rf_power(self, level: int) -> None:

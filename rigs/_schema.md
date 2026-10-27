@@ -643,7 +643,7 @@ These optional sections provide detailed configuration for specific capabilities
 | `[rit]`        | RIT range in Hz                                |
 | `[cw]`         | CW pitch, speed, dash ratio ranges             |
 | `[nb]`         | Noise blanker depth and width ranges            |
-| `[power]`      | Maximum TX power in watts                      |
+| `[power]`      | TX power limits: flat watts maximum/minimum, per-band and per-source rated ceilings |
 | `[memory]`     | How stored memory channels are addressed       |
 
 ### `[memory]`
@@ -697,6 +697,54 @@ error `memory_write_unverified` before any byte reaches the wire, at the
 dispatch handler and in the backend. Declaring the read-side fields
 alone proves nothing about the write layout; the `memory_read`
 capability is still what turns on the read-only listing.
+
+### `[power]`
+
+Optional: the radio's TX power limits in watts (MOR-3634). Four keys:
+
+| Key          | Type                | Required | Description |
+|--------------|---------------------|----------|-------------|
+| `max_watts`  | int                 | no*      | Flat rated maximum, the ceiling every table row must not exceed |
+| `min_watts`  | int                 | no       | Lower bound of the `PC` range (MOR-2998); a lower request is lifted to it |
+| `ceilings_w` | table (band → int)  | no       | Per-band rated-power ceilings, keyed by declared band names |
+| `sources`    | table (source → int)| no       | Per-power-source rated-power ceilings (e.g. `dc`, `battery`) |
+
+Both tables require `max_watts` and must be non-empty; every row is an
+integer in `1..max_watts`; `ceilings_w` keys must name a band declared under
+`[[freq_ranges.ranges.bands]]`; `min_watts` must not exceed any declared row.
+A profile without the tables keeps the flat `max_watts` behaviour.
+
+\* `max_watts` is required when either table is present.
+
+The runtime resolves one effective ceiling radio-agnostically from this data
+(`src/rigplane/profiles/power_ceilings.py`): the row for the active
+receiver's band, and the row for the known power source, combined as their
+minimum. Anything unknown — no frequency observed yet, a frequency no
+declared band covers, a source the state has not observed (no shipped
+observation names one yet) — resolves to the LOWEST declared row of that
+table, never the widest. The ceiling clamps absolute-watt writes down
+(`resolve_power_level_target` inputs, and the Yaesu backend's `set_power`
+beside its floor) and is the watt scale the UI projects for `powerLevel`
+full scale.
+
+Shipped data: IC-9700 declares `ceilings_w` (2 m 100 W, 70 cm 75 W, 23 cm
+10 W — tier B-, not hardware-verified); IC-705 declares `sources` (dc 10 W,
+battery 5 W). The FTX-1 declares neither: its per-band rows (field head 5-10
+W versus SPA-1 5-100 W) are **unverified**, so no numbers are invented for it.
+
+```toml
+[power]
+max_watts = 100
+min_watts = 5
+
+[power.ceilings_w]
+2m = 100
+70cm = 75
+
+[power.sources]
+dc = 100
+battery = 50
+```
 
 ## `[cw_text]` — Typed CW Text (MOR-3678)
 

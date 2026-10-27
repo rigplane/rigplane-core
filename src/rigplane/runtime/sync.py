@@ -37,6 +37,10 @@ from .ic705 import (
 from .radio import IcomRadio as _AsyncIcomRadio, _DEFAULT_AUDIO_CODEC  # noqa: TID251
 from rigplane.core.capabilities import CAP_METERS, CAP_POWER_CONTROL
 from rigplane.core.types import AudioCodec, Mode, ScopeCompletionPolicy
+from rigplane.profiles.power_ceilings import (
+    active_receiver_freq_hz,
+    effective_power_max_watts,
+)
 
 T = TypeVar("T")
 
@@ -296,7 +300,11 @@ class IcomRadio:
         power_min_watts = None
         if getattr(self._radio, "native_power_unit", "raw_255") == "watts":
             profile = getattr(self._radio, "profile", None)
-            power_max_watts = getattr(profile, "max_watts", None)
+            # MOR-3634: the per-band/per-source rated ceiling when the
+            # profile declares one, the flat max otherwise.
+            power_max_watts = effective_power_max_watts(
+                profile, freq_hz=active_receiver_freq_hz(self._radio)
+            )
             power_min_watts = getattr(profile, "min_watts", None)
         self._run(
             self._command_service.execute(
