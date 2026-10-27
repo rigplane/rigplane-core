@@ -523,7 +523,9 @@ async def test_rx_keeps_flowing_across_civ_soft_reconnect(
             )
             civ2.send(_openclose(seq=0), server.civ_port)
             await civ2.recv()
-            assert server.audio_tx_format == TxAudioFormat(codec=0x04, sample_rate=48000)
+            assert server.audio_tx_format == TxAudioFormat(
+                codec=0x04, sample_rate=48000
+            )
         finally:
             civ2.close()
         window = await task
