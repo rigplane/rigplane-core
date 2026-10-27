@@ -22,7 +22,7 @@
   } from '../controls/value-control/skin';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import { runtime } from '$lib/runtime';
-  import { createManagedTxGesture } from '../wiring/managed-tx-gesture';
+  import { createManagedTxGesture, createPttHold } from '../wiring/managed-tx-gesture';
   import {
     deriveAutoLanModInputProps,
     setAutoLanModInputEnabled,
@@ -195,18 +195,14 @@
       cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
     },
   );
-  const isPttKey = (event: KeyboardEvent) => event.key === ' ' || event.key === 'Enter';
-  const pttKeyDown = (event: KeyboardEvent) => {
-    if (!isPttKey(event) || event.repeat) return;
-    event.preventDefault(); ptt.down();
-  };
-  const pttKeyUp = (event: KeyboardEvent) => {
-    if (!isPttKey(event)) return;
-    event.preventDefault(); ptt.up();
-  };
+  const pttHold = createPttHold({
+    press: () => ptt.down(), release: () => ptt.up(), abort: () => ptt.abort(),
+  });
+  const pttButton = pttHold.attach;
 
   onDestroy(() => {
     stopWatchingTx();
+    pttHold.destroy();
     ptt.destroy();
     rfPowerBinding.destroy();
     micGainBinding.destroy();
@@ -290,14 +286,7 @@
       class:ptt-held={owned && !latched}
       class:ptt-latched={latched}
       aria-disabled={starting || busy}
-      onpointerdown={(e) => { e.preventDefault(); ptt.down(); }}
-      onpointerup={(e) => { e.preventDefault(); ptt.up(); }}
-      onpointerleave={() => ptt.cancel()}
-      onpointercancel={() => ptt.cancel()}
-      onlostpointercapture={() => ptt.cancel()}
-      onkeydown={pttKeyDown}
-      onkeyup={pttKeyUp}
-      onblur={() => ptt.cancel()}
+      use:pttButton
     >
       {latched ? 'TX 🔒' : starting ? 'MIC…' : keyed ? 'TX' : busy ? 'UNKEYING…' : 'PTT'}
     </button>

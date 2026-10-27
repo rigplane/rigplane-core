@@ -223,7 +223,7 @@ const SCENARIOS = [
     },
   },
   {
-    name: 'orientation-swap-idle-recreates-recognizer',
+    name: 'orientation-swap-idle-remounts-button',
     async run(page) {
       const before = await page.evaluate(() => window.__ptt.generation());
       await page.evaluate(() => window.__ptt.setSurface('landscape'));
@@ -239,7 +239,8 @@ const SCENARIOS = [
     },
   },
   {
-    name: 'orientation-swap-while-held-releases-cleanly-no-strand',
+    // MOR-3817: a hold outlives the button that started it; the lift releases it.
+    name: 'orientation-swap-while-held-keeps-ptt-until-lift',
     async run(page) {
       await pointer(page, '.ptt-fab', 'pointerdown');
       await wait(page, 70);
@@ -247,18 +248,23 @@ const SCENARIOS = [
       await emit(page, SERVER.held);
       const held = await snap(page);
       await page.evaluate(() => window.__ptt.setSurface('landscape'));
+      await wait(page, 320);
+      const swappedTrace = await trace(page);
+      await pointer(page, '[data-testid="ls-ptt"]', 'pointerup');
+      await wait(page, 320);
       const releaseTrace = await trace(page);
       await emit(page, SERVER.rx);
       const after = await snap(page);
       return {
         ok: matches(heldTrace, ['ws.ptt_on']) && held.intent === 'momentary'
+          && matches(swappedTrace, ['ws.ptt_on'])
           && matches(releaseTrace, ['ws.ptt_on', 'ws.ptt_off']) && after.intent === null,
-        detail: `delivery=${releaseTrace.join(' -> ')} · server intent ${held.intent} -> ${after.intent}`,
+        detail: `after swap=${swappedTrace.join(' -> ')} · delivery=${releaseTrace.join(' -> ')} · server intent ${held.intent} -> ${after.intent}`,
       };
     },
   },
   {
-    name: 'orientation-swap-during-pending-release-window-no-surviving-timer',
+    name: 'orientation-swap-during-pending-release-window-releases-once',
     async run(page) {
       await pointer(page, '.ptt-fab', 'pointerdown');
       await wait(page, 70);
@@ -266,8 +272,8 @@ const SCENARIOS = [
       await emit(page, SERVER.held);
       await pointer(page, '.ptt-fab', 'pointerup'); // arms the 300ms deferred-release window
       await wait(page, 50); // still pending
-      await page.evaluate(() => window.__ptt.setSurface('landscape')); // destroy() must cancel it, not just abandon it
-      await wait(page, 320); // past where the abandoned timer would have fired a SECOND release
+      await page.evaluate(() => window.__ptt.setSurface('landscape')); // the swap must not add a release of its own
+      await wait(page, 320); // past the end of the deferred-release window
       const releaseTrace = await trace(page);
       await emit(page, SERVER.rx);
       const after = await snap(page);
@@ -279,29 +285,27 @@ const SCENARIOS = [
     },
   },
   {
-    // MOR-1376: a destroyed surface generation must not deliver its delayed
-    // intent, while the surviving generation must remain usable.
-    name: 'orientation-double-flip-newer-owner-survives',
+    // MOR-3817: a press still inside the FAB guard when the surface flips
+    // engages for the finger that is still down, and the lift releases it once.
+    name: 'orientation-double-flip-inside-guard-keeps-the-press',
     async run(page) {
       await pointer(page, '.ptt-fab', 'pointerdown');
       await wait(page, 15);
-      await page.evaluate(() => window.__ptt.setSurface('landscape')); // generation 2
+      await page.evaluate(() => window.__ptt.setSurface('landscape'));
       await wait(page, 5);
-      await page.evaluate(() => window.__ptt.setSurface('portrait')); // generation 3 — a NEW, unrelated recognizer
+      await page.evaluate(() => window.__ptt.setSurface('portrait'));
       await wait(page, 60);
-      const ghostTrace = await trace(page);
-      await emit(page, SERVER.rx);
-      const afterGhostWindow = await snap(page);
-      await pointer(page, '.ptt-fab', 'pointerdown');
-      await wait(page, 70);
-      const realTrace = await trace(page);
+      const pressTrace = await trace(page);
       await emit(page, SERVER.held);
-      const afterRealPress = await snap(page);
+      const held = await snap(page);
+      await pointer(page, '.ptt-fab', 'pointerup');
+      await wait(page, 320);
+      const releaseTrace = await trace(page);
       return {
-        ok: matches(ghostTrace, []) && afterGhostWindow.intent === null
-          && matches(realTrace, ['ws.ptt_on']) && afterRealPress.intent === 'momentary',
-        detail: `ghost delivery=${ghostTrace.join(' -> ') || '(none)'} · `
-          + `surviving delivery=${realTrace.join(' -> ')} · server intent=${afterRealPress.intent}`,
+        ok: matches(pressTrace, ['ws.ptt_on']) && held.intent === 'momentary'
+          && matches(releaseTrace, ['ws.ptt_on', 'ws.ptt_off']),
+        detail: `press delivery=${pressTrace.join(' -> ') || '(none)'} · `
+          + `release delivery=${releaseTrace.join(' -> ')}`,
       };
     },
   },
@@ -375,15 +379,11 @@ const manifest = {
     intentionalDifferences: [
       'The harness records managed WS/HTTP delivery and renders only explicitly emitted '
       + 'server-shaped snapshots; there is no live radio.',
-      'The orientation-swap effect (one recognizer per surface, shared live-reading fabDown/fabUp) '
-      + 'is a hand-mirror of MobileRadioLayout.svelte\'s own $effect, not an import of it — that '
-      + 'component pulls in $lib/runtime/stores singletons this harness does not construct. Scenarios '
-      + '10/11 therefore prove the PATTERN is load-bearing where mirrored faithfully, not that '
-      + 'MobileRadioLayout.svelte\'s own copy is byte-identical (verified by direct reading instead; '
-      + 'see build report). A follow-up worth ticketing: extract that wiring into a reusable function '
-      + 'the same way managed-tx-gesture.ts already is, so a future harness can mount the real thing.',
-      'The landscape "role" is a plain button with direct handlers (matching the real m-ls-ptt '
-      + 'strip\'s undelayed handlers), not a second PttFab instance — production does not reuse '
+      'The orientation swap (one page-level gesture and createPttHold; a swap remounts only the '
+      + 'button) is a hand-mirror of MobileRadioLayout.svelte, not an import of it — that '
+      + 'component pulls in $lib/runtime/stores singletons this harness does not construct.',
+      'The landscape "role" is a plain button attached to the same hold without a press guard '
+      + '(as the real m-ls-ptt button is), not a second PttFab instance — production does not reuse '
       + 'PttFab for landscape either.',
     ],
   },
