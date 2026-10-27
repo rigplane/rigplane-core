@@ -3,7 +3,7 @@
 A marker is a mono 16-bit PCM tone at a known frequency and level with
 planted windows of exact digital silence. ``render_marker_pcm16``
 synthesizes one; ``analyze_marker_pcm16`` measures a captured buffer
-(frequency by Hann-windowed FFT with parabolic interpolation, level and
+(frequency by Hann-windowed FFT refined by a least-squares sine fit, level and
 residual by a least-squares sine fit on the tone-on samples, gaps as runs
 of all-zero 5 ms windows — the final partial window counts as one shorter
 window); ``check_marker`` turns the measurement into a list of readable
@@ -62,7 +62,7 @@ class MarkerReport:
     """What a captured buffer measured against a spec looks like."""
 
     freq_hz: float  # parabolic FFT estimate refined against the tone-on
-    # samples (coherent DTFT maximum within one bin)
+    # samples (least-squares sine-fit residual minimum within one bin)
     level_dbfs: float  # peak-equivalent level of the tone (sine fit)
     gaps: tuple[tuple[float, float], ...]  # silence windows (5 ms windows; a
     # trailing run ends at the buffer end when it reaches into the tail)
@@ -123,17 +123,17 @@ def analyze_marker_pcm16(pcm: bytes, spec: MarkerSpec) -> MarkerReport:
 
 
 def _measure_freq(x: np.ndarray, sr: int, idx: np.ndarray) -> float:
-    """The tone frequency: FFT peak, then a coherent-samples refinement.
+    """The tone frequency: FFT peak, then a least-squares sine-fit refinement.
 
     The planted gaps are zeros, so the whole buffer transforms as the
     windowed tone; the gap modulation only smears the skirts. Parabolic
     interpolation of the FFT peak leaves a residual frequency error that
     accumulates into phase error across the fit's true time base — a clean
     quarter-bin-off tone at these settings measured -20.8 dB residual,
-    above the -30 dB limit. A golden-section search of the coherent DTFT
-    magnitude over the tone-on samples (true time indices, so the planted
-    gaps break no phase) within one FFT bin of the estimate removes that
-    error.
+    above the -30 dB limit. A golden-section search minimizes the sin/cos
+    least-squares residual over the tone-on samples within one FFT bin of
+    the estimate. Fitting both basis vectors accounts for their norms and
+    overlap on short tones; true time indices preserve phase across gaps.
     """
     windowed = x * np.hanning(len(x))
     magnitude = np.abs(np.fft.rfft(windowed))
@@ -153,22 +153,26 @@ def _measure_freq(x: np.ndarray, sr: int, idx: np.ndarray) -> float:
     t = idx / sr
     bin_hz = sr / len(x)
 
-    def _coherent(freq: float) -> float:
-        return float(np.abs(np.dot(samples, np.exp(-2j * math.pi * freq * t))))
+    def _residual(freq: float) -> float:
+        phase = 2.0 * math.pi * freq * t
+        basis = np.column_stack([np.cos(phase), np.sin(phase)])
+        coef, *_ = np.linalg.lstsq(basis, samples, rcond=None)
+        residual = samples - basis @ coef
+        return float(residual @ residual)
 
     lo, hi = coarse - bin_hz, coarse + bin_hz
     ratio = (math.sqrt(5.0) - 1.0) / 2.0  # golden-section bracket shrink
     c, d = hi - ratio * (hi - lo), lo + ratio * (hi - lo)
-    fc, fd = _coherent(c), _coherent(d)
+    fc, fd = _residual(c), _residual(d)
     for _ in range(60):
-        if fc < fd:
+        if fc > fd:
             lo, c, fc = c, d, fd
             d = lo + ratio * (hi - lo)
-            fd = _coherent(d)
+            fd = _residual(d)
         else:
             hi, d, fd = d, c, fc
             c = hi - ratio * (hi - lo)
-            fc = _coherent(c)
+            fc = _residual(c)
     return (lo + hi) / 2.0
 
 

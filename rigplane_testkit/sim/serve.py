@@ -378,10 +378,12 @@ def _audio_tx_wav(radio: MockIcomRadio, since: int) -> bytes:
     """The captured TX audio from frame ``since`` as a RIFF/WAV body.
 
     The WAV is labeled with the sink's learned TX format. Raises
-    ``ValueError("format_unknown")`` / ``ValueError("format_mixed")`` /
+    ``ValueError("format_default")`` / ``ValueError("format_unknown")`` /
+    ``ValueError("format_mixed")`` /
     ``ValueError("format_non_pcm16")`` when the capture has no single
     learned PCM16 format to label it with — the route answers 409 rather
-    than writing a mislabeled file.
+    than writing a mislabeled file. ``format_default`` means the slice has
+    no captured frames and no TX format is currently known.
     """
     fmt, state = _capture_tx_format(radio, since)
     if state != "pcm16" or fmt is None:
@@ -714,9 +716,10 @@ async def _handle_audio_tx(request: web.Request) -> web.Response:
 async def _handle_audio_tx_wav(request: web.Request) -> web.Response:
     """The captured TX audio as audio/wav; IC-7610 only, 404 elsewhere.
 
-    409 ``{"ok": false, "outcome": "format_unknown"|"format_mixed"|
+    409 ``{"ok": false, "outcome": "format_default"|"format_unknown"|"format_mixed"|
     "format_non_pcm16"}`` when the capture has no single learned PCM16 TX
-    format: a WAV header must not mislabel the payload."""
+    format: a WAV header must not mislabel the payload. ``format_default``
+    means no captured frames in the slice and no TX format is currently known."""
     wav = request.app[_BACKEND_KEY].audio_tx_wav
     if wav is None:
         return web.json_response(

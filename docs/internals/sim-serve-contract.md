@@ -61,9 +61,10 @@ loop — one loop, no threads).
   IC-7610 backend is built with `capture_tx_audio=True` for this.
 - `GET /audio/tx.wav?since=N` → the same frames as an `audio/wav` body
   (16-bit PCM, mono) labeled with the learned TX format, or HTTP 409
-  `{"ok":false,"outcome":"format_unknown"|"format_mixed"|"format_non_pcm16"}`
-  when the capture has no single learned PCM16 format. Both routes answer
-  HTTP 404 `{"ok":false,"outcome":"unsupported"}` on the serial backends.
+  `{"ok":false,"outcome":"format_default"|"format_unknown"|"format_mixed"|"format_non_pcm16"}`
+  when the capture has no single learned PCM16 format. `"format_default"`
+  means the slice has no captured frames and no TX format is currently known.
+  Both routes answer HTTP 404 `{"ok":false,"outcome":"unsupported"}` on the serial backends.
 - `POST /stop` → `{"ok":true}`, then a clean shutdown (same path as
   SIGINT/SIGTERM); a second `POST /stop` before it completes is harmless.
 - `POST /event` with `{"event":"<name>", ...args}` → `{"ok":true,...}`, or
