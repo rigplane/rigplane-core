@@ -7,6 +7,7 @@ being corrected, and a missing union member cannot create a privileged path.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from math import isfinite
@@ -14,13 +15,21 @@ from math import isfinite
 from rigplane.commands._frame import build_civ_frame
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.core.state_store import FreshnessState, StateSnapshot
+from rigplane.core.state_store import FreshnessState, StateSnapshot, StateStore
 from rigplane.core.tx_interlock_contract import (
     TX_INTERLOCK_COMMAND_FAMILY_METADATA,
     TxInterlockCommandFamily,
     TxInterlockCommandFamilyMetadata,
     TxInterlockDisposition,
 )
+from rigplane.core.tx_target import (
+    KnownTxTarget,
+    TxTarget,
+    UnknownTxTarget,
+    evaluate_tx_frequency_permit,
+    tx_target_from_dict,
+)
+from rigplane.profiles import RadioProfile
 from rigplane.runtime._poller_types import (
     MemoryToVfo,
     PttOff,
@@ -68,12 +77,14 @@ __all__ = [
     "TxInterlockRefusal",
     "classify_raw_civ_frame_tx_family",
     "classify_tx_interlock",
+    "current_tx_target",
     "evaluate_tx_interlock",
     "get_tx_interlock_command_family_metadata",
     "is_exact_raw_dekey_frame",
     "is_exact_raw_transmission_end_frame",
     "resolve_rf_state",
     "send_civ_frame",
+    "tx_frequency_permit_refusal",
 ]
 
 
@@ -293,6 +304,100 @@ def resolve_rf_state(snapshot: StateSnapshot) -> RfState:
     ):
         return RfState.UNKNOWN
     return RfState.TX if field.value else RfState.RX
+
+
+# ---------------------------------------------------------------------------
+# PTT-on TX frequency permit (MOR-3632)
+# ---------------------------------------------------------------------------
+#
+# The adversary is an operator typo or an external client (rigctld, WSJT-X, a
+# tracker) that sets a TX frequency and keys up; the radio firmware stays the
+# last line of defence against everything else.  The permit reads only what
+# the server already knows and publishes — the split-aware ``tx_target``
+# field — and the profile's band rows (slice A: non-``rx_only`` rows permit
+# TX).  No new timestamps, TTLs, generations, or response matching: the field
+# already carries its own TTL, and the state after our own writes counts as
+# current.  A front-panel retune inside one poll interval is NOT covered.
+
+_TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
+
+
+def current_tx_target(snapshot: StateSnapshot) -> TxTarget | None:
+    """Return the FRESH published ``tx_state.tx_target`` value, else None.
+
+    None means "the server does not currently know the TX target": the field
+    was never observed, has aged stale under its own TTL, or carries a value
+    that is not a valid ``TxTarget``.  A stored mapping (wire/golden form)
+    is parsed through the same ``tx_target_from_dict`` contract the pipeline
+    uses; an unparseable value reads as unknown rather than raising.
+    """
+
+    try:
+        field = snapshot.field(_TX_TARGET_PATH)
+    except KeyError:
+        return None
+    if field.freshness is not FreshnessState.FRESH:
+        return None
+    value = field.value
+    if isinstance(value, (KnownTxTarget, UnknownTxTarget)):
+        return value
+    if isinstance(value, Mapping):
+        try:
+            return tx_target_from_dict(value)
+        except ValueError:
+            return None
+    return None
+
+
+_PERMIT_REASON_CODES = {
+    "tx-target-unknown": "tx_target_unknown",
+    "receive-only-band": "receive_only_band",
+    "outside-tx-range": "outside_tx_range",
+}
+
+
+def tx_frequency_permit_refusal(
+    profile: object, state_store: object
+) -> TxInterlockRefusal | None:
+    """The one PTT-on frequency-permit gate both ingress paths call.
+
+    Returns None when PTT-on may proceed, else a :class:`TxInterlockRefusal`
+    carrying a stable ``reason_code`` (``tx_target_unknown``,
+    ``receive_only_band``, ``outside_tx_range``).  Not applicable — returns
+    None — when the radio has no resolved :class:`RadioProfile` (test
+    doubles, profile-less providers) or the profile declares no band rows at
+    all, which keeps the pre-permit behaviour there.  PTT-off never reaches
+    this gate: callers invoke it only on the key-down path.
+    """
+
+    if not isinstance(profile, RadioProfile):
+        return None
+    bands = tuple(band for rng in profile.freq_ranges for band in rng.bands)
+    if not bands:
+        return None
+    target = (
+        current_tx_target(state_store.snapshot())
+        if isinstance(state_store, StateStore)
+        else None
+    )
+    decision = evaluate_tx_frequency_permit(bands, target)
+    if decision.permitted:
+        return None
+    assert decision.reason is not None
+    reason_code = _PERMIT_REASON_CODES[decision.reason]
+    if decision.reason == "tx-target-unknown":
+        message = "PTT refused: transmit target frequency is unknown"
+    elif decision.reason == "receive-only-band":
+        message = (
+            f"PTT refused: transmit target {decision.frequency_hz} Hz is in "
+            f"the receive-only band {decision.band_name!r}"
+        )
+    else:
+        message = (
+            f"PTT refused: transmit target {decision.frequency_hz} Hz is "
+            "outside every transmit band of the active profile"
+        )
+    return TxInterlockRefusal(f"{message} ({reason_code})", reason_code=reason_code)
 
 
 # These structural exemptions are intentionally checked before all disruptive

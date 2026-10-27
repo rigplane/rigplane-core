@@ -657,6 +657,18 @@ class _RigctldCommandExecutor:
                 ticket.authority.validate(ticket)
 
         managed = self.handler._managed_tx_authority is not None
+        if intent.name == "set_ptt" and bool(intent.params.get("ptt")):
+            # MOR-3632: server-side TX frequency permit at PTT-on — the same
+            # gate the WS control path runs, on the same store and profile.
+            # PTT-off (``ptt`` False) never reaches it. Maps to the RPRT
+            # code every other TX refusal on this seat already uses.
+            refusal = tx_interlock.tx_frequency_permit_refusal(
+                getattr(self.handler._radio, "profile", None),
+                self.handler._state_store,
+            )
+            if refusal is not None:
+                logger.info("rigctld: PTT-on refused: %s", refusal)
+                raise _RigctldCommandFailure(HamlibError.ERJCTED) from refusal
         if managed and intent.name == "set_ptt":
             return await self._execute_managed_ptt(intent)
         if (
