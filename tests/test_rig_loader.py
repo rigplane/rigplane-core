@@ -2093,9 +2093,10 @@ class TestToProfile:
         means "nobody filled CW in". So the modes left without a step must be
         exactly the ones with no twin PBT: the IC-7300 Advanced Manual p.40
         heads its section "SSB, CW, RTTY and AM modes", which leaves FM, and
-        the FM variants WFM and DV that the IC-705 adds.
+        the FM variants WFM and DV that the IC-705 adds, plus DD, the
+        IC-9700's 1.2 GHz digital-data mode (MOR-3623).
         """
-        no_twin_pbt = {"FM", "WFM", "DV"}
+        no_twin_pbt = {"FM", "WFM", "DV", "DD"}
         checked = 0
         for name, config in sorted(discover_rigs(RIGS_DIR).items()):
             profile = config.to_profile()

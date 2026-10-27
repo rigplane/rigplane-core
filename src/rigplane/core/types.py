@@ -99,6 +99,10 @@ class Mode(IntEnum):
     PSK = 0x12
     PSK_R = 0x13
     DV = 0x17
+    # IC-9700 digital-data mode (DD), IC-9700 CI-V Reference Guide (Icom,
+    # 2019) "Operating mode" table; valid only on the 1.2 GHz band — the
+    # band scope is profile data ([memory] dd_groups). MOR-3623, tier B-.
+    DD = 0x22
 
 
 class AgcMode(IntEnum):

@@ -11,6 +11,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **IC-9700 profile parity with the IC-705 for VHF/UHF repeater work
+  (MOR-3623).** The IC-9700 profile declares the `repeater_shift`
+  capability with the `get_repeater_shift`/`set_repeater_shift` keys
+  (CI-V `0F`: 10 simplex, 11 DUP−, 12 DUP+ — the same codes as the
+  IC-705, MOR-2930; `0F 13` RPS is a DD-mode duplex, not a shift
+  direction) and polls `receiver.main.operator_controls.repeater_shift`
+  beside split, so the repeater strip offers the shift control on 2 m,
+  70 cm and 23 cm. It gains a `[tone_squelch_types]` table and the
+  `16 5D` selector pair — the same selector codes as the IC-705 — and
+  polls the tone-squelch type and the two CTCSS booleans through that
+  one read. The mode list adds DV (CI-V `0x17`) on every band and DD
+  (`0x22`, now a member of the shared CI-V `Mode` enum) scoped to the
+  1.2 GHz band by the profile's existing `[memory] dd_groups = [3]`
+  fact: a DD mode byte outside band 3 is refused with an explicit
+  error, and the mode-set path carries no frequency, so it has no band
+  gate. Not hardware-verified (tier B-): no IC-9700 has been on the
+  bench.
+
 ## [3.0.1] — 2026-10-28
 
 3.0.0 was prepared and tagged but never published to PyPI, so no user received
