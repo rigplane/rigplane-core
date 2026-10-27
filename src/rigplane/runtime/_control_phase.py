@@ -659,15 +659,25 @@ class ControlPhaseRuntime:
                 logger.debug("disconnect: civ open/close failed", exc_info=True)
         # MOR-3807: stop the CI-V tasks even when the CI-V transport is
         # already gone, as ``release`` does; a surviving pump keeps its old
-        # generation and drops every reply of the next session.
+        # generation and drops every reply of the next session. A stop that
+        # fails or is cancelled must not skip the remaining stops, the token
+        # removal or the control disconnect: the first error is raised after
+        # them, as ``IcomTransport.disconnect`` defers its initiating error.
         if civ_rt is not None:
-            await civ_rt.stop_data_watchdog()
-            await civ_rt.stop_worker()
-            await civ_rt.stop_pump()
+            stops = (civ_rt.stop_data_watchdog, civ_rt.stop_worker, civ_rt.stop_pump)
         else:
-            await h._stop_civ_data_watchdog()
-            await h._stop_civ_worker()
-            await h._stop_civ_rx_pump()
+            stops = (
+                h._stop_civ_data_watchdog,
+                h._stop_civ_worker,
+                h._stop_civ_rx_pump,
+            )
+        stop_error: BaseException | None = None
+        for stop in stops:
+            try:
+                await stop()
+            except BaseException as exc:  # noqa: BLE001 - re-raised below
+                if stop_error is None:
+                    stop_error = exc
         if h._civ_transport:
             await h._civ_transport.disconnect()
             h._civ_transport = None
@@ -688,6 +698,8 @@ class ControlPhaseRuntime:
         h._civ_stream_ready = False
         h._civ_recovering = False
         logger.info("Disconnected from %s:%d", h._host, h._port)
+        if stop_error is not None:
+            raise stop_error
 
     # ------------------------------------------------------------------
     # Packet-mechanism seam for the unified session lifecycle (task A2)
