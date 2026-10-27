@@ -20,10 +20,12 @@ per-band rows are unverified, so it declares none).
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -345,7 +347,8 @@ def test_known_tx_target_frequency_defines_the_band():
     assert effective_power_max_watts(profile, freq_hz=freq_hz) == 50
 
 
-def test_unknown_tx_target_falls_back_to_the_active_receiver():
+def test_absent_tx_target_uses_the_active_receiver():
+    """A radio that never observes tx_target (e.g. single-receiver) reads focus."""
     store = _store_with_observations(
         _snapshot_observation(
             FieldPath.active("main", "freq_mode", "freq_hz"),
@@ -355,17 +358,60 @@ def test_unknown_tx_target_falls_back_to_the_active_receiver():
         _snapshot_observation(
             FieldPath.global_("slow_state", "active"), "MAIN", provider="test"
         ),
+    )
+    assert band_frequency_hz_from_snapshot(store.snapshot()) == 145_000_000
+
+
+def test_observed_unknown_tx_target_is_conservative():
+    """A tx_target the authority cannot name resolves no band at all.
+
+    Pre-review round 2: substituting receiver focus here would let an
+    unreadable FT answer authorize the focused (possibly wider) band
+    while TX is routed elsewhere — the lowest declared ceiling applies.
+    """
+    store = _store_with_observations(
+        _snapshot_observation(
+            FieldPath.active("main", "freq_mode", "freq_hz"),
+            145_000_000,
+            provider="test",
+        ),
         _snapshot_observation(
             FieldPath.global_("tx_state", "tx_target"),
             UnknownTxTarget(reason="not-observed"),
             provider="test",
         ),
     )
-    assert band_frequency_hz_from_snapshot(store.snapshot()) == 145_000_000
+    profile = replace(
+        get_radio_profile("FTX-1"), power_ceilings_w={"2m": 75, "70cm": 50}
+    )
+    assert band_frequency_hz_from_snapshot(store.snapshot()) is None
+    assert effective_power_max_watts(profile, freq_hz=None) == 50
+
+
+def test_stale_band_context_resolves_no_band():
+    """A frequency the freshness driver aged to STALE is unobserved evidence."""
+    store = StateStore()
+    store.apply(
+        Observation(
+            path=FieldPath.active("main", "freq_mode", "freq_hz"),
+            value=145_000_000,
+            source=SourceMetadata("poll_response", "test", "fake", "test"),
+            timestamp_monotonic=10.0,
+            max_age=1.0,
+        )
+    )
+    store.mark_stale_due(now=20.0)
+
+    assert band_frequency_hz_from_snapshot(store.snapshot()) is None
 
 
 def test_observed_band_freq_prefers_the_canonical_store_over_the_mirror():
-    """Production polling feeds the store; the mirror may lag or stay empty."""
+    """Production polling feeds the store; the mirror may lag or stay empty.
+
+    With a store attached its answer is final even when ``None`` (an
+    emptied/provider-reset store must not resurrect the mirror's
+    previous-connection frequency).
+    """
     store = _store_with_observations(
         _snapshot_observation(
             FieldPath.active("main", "freq_mode", "freq_hz"),
@@ -378,6 +424,17 @@ def test_observed_band_freq_prefers_the_canonical_store_over_the_mirror():
         radio_state=_state_double(main_hz=145_000_000),
     )
     assert observed_band_freq_hz(radio) == 435_000_000
+
+    emptied = _store_with_observations()
+    assert (
+        observed_band_freq_hz(
+            SimpleNamespace(
+                _state_store=emptied,
+                radio_state=_state_double(main_hz=145_000_000),
+            )
+        )
+        is None
+    )
     # Without a store the compatibility mirror answers.
     assert (
         observed_band_freq_hz(
@@ -476,6 +533,85 @@ async def test_backend_without_tables_keeps_todays_wire():
     radio.radio_state.main.freq = 435_000_000
     await radio.set_power(90)
     radio._transport.write.assert_called_once_with("PC2090;")
+
+
+@pytest.mark.asyncio
+async def test_backend_band_change_then_power_uses_destination_ceiling():
+    """Pre-review round 2: set_freq must refresh the band the clamp reads.
+
+    With a canonical store attached (production shape), a direct-backend
+    band change echoes into the store under the same lock, so the next
+    power write resolves the DESTINATION band instead of the store's
+    previous (wider) one.
+    """
+    config = replace(
+        load_rig(_RIGS_DIR / "ftx1.toml"),
+        power_ceilings_w={"2m": 75, "70cm": 50},
+    )
+    radio = YaesuCatRadio("/dev/null", profile=config)
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    radio._state_store = StateStore()
+    radio._state_store.apply(
+        _snapshot_observation(
+            FieldPath.active("main", "freq_mode", "freq_hz"),
+            145_000_000,
+            provider="test",
+        )
+    )
+
+    await radio.set_freq(435_000_000)
+    await radio.set_power(90)
+
+    wires = [call.args[0] for call in radio._transport.write.await_args_list]
+    assert wires == ["FA435000000;", "PC2050;"]
+
+
+@pytest.mark.asyncio
+async def test_backend_power_waits_for_an_in_flight_band_change():
+    """A power write racing a band change resolves the new band (lock).
+
+    The frequency write pauses inside the lock; the concurrent power
+    write must not resolve the ceiling until the band change (wire and
+    store echo) completes, then clamp to the destination band.
+    """
+    config = replace(
+        load_rig(_RIGS_DIR / "ftx1.toml"),
+        power_ceilings_w={"2m": 75, "70cm": 50},
+    )
+    radio = YaesuCatRadio("/dev/null", profile=config)
+    radio._transport._connected = True
+    radio._state_store = StateStore()
+    radio._state_store.apply(
+        _snapshot_observation(
+            FieldPath.active("main", "freq_mode", "freq_hz"),
+            145_000_000,
+            provider="test",
+        )
+    )
+    freq_started = asyncio.Event()
+    freq_release = asyncio.Event()
+    wire_mock = AsyncMock()
+
+    async def gated_write(payload: str, **kwargs: object) -> None:
+        if payload.startswith("FA"):
+            freq_started.set()
+            await freq_release.wait()
+        await wire_mock(payload, **kwargs)
+
+    radio._transport.write = gated_write
+
+    freq_task = asyncio.create_task(radio.set_freq(435_000_000))
+    await asyncio.wait_for(freq_started.wait(), timeout=1.0)
+    power_task = asyncio.create_task(radio.set_power(90))
+    await asyncio.sleep(0)  # let the power write reach the lock
+    assert not power_task.done(), "power write must wait for the band change"
+    freq_release.set()
+    await asyncio.wait_for(freq_task, timeout=1.0)
+    await asyncio.wait_for(power_task, timeout=1.0)
+
+    wires = [call.args[0] for call in wire_mock.await_args_list]
+    assert wires == ["FA435000000;", "PC2050;"]
 
 
 # ── Web handler seam: enqueue set_power on a watts radio ─────────
@@ -610,6 +746,8 @@ def _yaesu_poll_radio(profile: Any, state: RadioState) -> MagicMock:
     radio = MagicMock()
     radio.profile = profile
     radio.radio_state = state
+    # No canonical store attached: the compatibility mirror answers.
+    radio._state_store = None
     radio.capabilities = {"tx"}
     radio.read_power = AsyncMock(return_value=(2, 40))
     # mic_gain rides the same lane ungated by any capability.
