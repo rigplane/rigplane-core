@@ -24,22 +24,24 @@ Resolution rules, shared by band and source:
 - a profile declaring neither table resolves ``None`` and every caller keeps
   today's flat-``max_watts`` behaviour.
 
-Which frequency defines the band: the canonical ``global.tx_state.tx_target``
-authority when it names a KNOWN transmitting receiver with a frequency (the
-band that actually transmits, also during split / cross-band operation), else
-the active receiver's frequency. A tx_target that is OBSERVED-but-unknown
-does not fall back to the selected receiver — the authority exists and says
-it cannot name the transmitter, so no band is known and the lowest declared
-ceiling applies; only a radio that never observes tx_target at all (no such
-field in the snapshot, e.g. a single-receiver profile) uses the selected
-receiver. Fields the freshness driver has aged to STALE are treated as
-unobserved for the same reason. Both are read from the canonical StateStore
-snapshot when the radio carries one — with a store attached it is the only
-authority (production observation polling feeds it; the compatibility mirror
-may lag or survive a provider reset) — falling back to the mirror only for
-store-less radios. No shipped observation populates the power source yet, so
-callers pass ``power_source=None`` and the lower source ceiling applies until
-one does.
+Which frequency defines the band: a KNOWN, FRESH ``global.tx_state.tx_target``
+names the transmitting receiver (also during split / cross-band operation)
+and the band is that receiver's own current frequency — so a frequency
+write or poll after the target was read still moves the band — falling
+back to the target's embedded frequency. A tx_target that is
+OBSERVED-but-unknown, or STALE, does not fall back to the selected
+receiver — the authority exists and says it cannot name the transmitter,
+so no band is known and the lowest declared ceiling applies; only a radio
+that never observes tx_target at all (no such field in the snapshot, e.g.
+a single-receiver profile) uses the selected receiver, and a STALE
+selector is equally unknown. STALE frequency fields count as unobserved.
+All of this is read from the canonical StateStore snapshot when the radio
+carries one — with a store attached it is the only authority (production
+observation polling feeds it; the compatibility mirror may lag or survive
+a provider reset) — falling back to the mirror only for store-less
+radios. No shipped observation populates the power source yet, so
+callers pass ``power_source=None`` and the lower source ceiling applies
+until one does.
 """
 
 from __future__ import annotations
@@ -153,62 +155,82 @@ def _positive_int(value: Any) -> int | None:
     return None
 
 
-def _known_tx_target_freq_hz(value: Any) -> int | None:
-    """The frequency of a KNOWN ``global.tx_state.tx_target`` value.
-
-    Accepts the ``KnownTxTarget`` dataclass or its ``to_dict`` form
-    (``{"status": "known", ..., "frequencyHz": ...}``). An unknown target,
-    a target without a frequency, or any other shape resolves ``None`` —
-    the caller then falls back to the active receiver's band.
-    """
+def _known_tx_target_receiver(value: Any) -> str | None:
+    """The receiver a KNOWN ``tx_target`` names (``"MAIN"``/``"SUB"``)."""
     if isinstance(value, Mapping):
         if value.get("status") != "known":
             return None
+        receiver = value.get("receiver")
+    else:
+        if getattr(value, "status", None) != "known":
+            return None
+        receiver = getattr(value, "receiver", None)
+    return receiver if receiver in ("MAIN", "SUB") else None
+
+
+def _known_tx_target_freq_hz(value: Any) -> int | None:
+    """The embedded frequency of a KNOWN ``tx_target`` value, if any.
+
+    The bracketed TX-target reader stamps the frequency it read at its
+    own observation time; for ceiling resolution it is only the fallback
+    behind that receiver's own (continuously polled) frequency field.
+    """
+    if isinstance(value, Mapping):
         return _positive_int(value.get("frequencyHz"))
-    status = getattr(value, "status", None)
-    if status != "known":
-        return None
     return _positive_int(getattr(value, "frequency_hz", None))
 
 
 def band_frequency_hz_from_snapshot(snapshot: Any) -> int | None:
     """The band-defining frequency of one canonical state snapshot.
 
-    Precedence: a KNOWN ``global.tx_state.tx_target`` frequency (the band
-    that transmits), else the ACTIVE receiver's ``freq_mode.freq_hz``. A
-    tx_target that is present but unknown (or without a frequency)
-    resolves ``None`` — the transmitter cannot be named, so no band is
-    known; a snapshot with no tx_target field at all (a radio that never
-    observes one) uses the selected receiver. STALE fields count as
-    unobserved. Receiver-id aliases (``"0"``/``"main"``, ``"1"``/``"sub"``)
-    collapse onto the same receiver. ``None`` when nothing qualifies —
-    the caller then applies the lowest declared ceiling.
+    Precedence: a KNOWN, FRESH ``global.tx_state.tx_target`` names the
+    transmitting receiver, whose band is that receiver's own (fresh)
+    frequency — falling back to the target's embedded frequency — so a
+    frequency write or poll after the target was read still moves the
+    band. A tx_target that is present but unknown or STALE resolves
+    ``None``: the authority exists and cannot name the transmitter, so
+    no band is known (the lowest declared ceiling applies). A snapshot
+    with no tx_target field at all (a radio that never observes one)
+    uses the active receiver's frequency; a STALE active selector is
+    likewise unknown, while an absent one defaults to MAIN (a snapshot
+    that never observed a selector describes a single-receiver shape).
+    STALE frequency fields count as unobserved. Receiver-id aliases
+    (``"0"``/``"main"``, ``"1"``/``"sub"``) collapse onto the same
+    receiver. ``None`` when nothing qualifies.
     """
-    active = "MAIN"
+    active: str | None = None
+    active_observed = False
     freqs: dict[str, int] = {}
-    tx_freq: int | None = None
     tx_observed = False
+    tx_receiver: str | None = None
+    tx_embedded_freq: int | None = None
     for field in getattr(snapshot, "fields", ()) or ():
-        if getattr(field, "freshness", None) is FreshnessState.STALE:
-            continue
         path = getattr(field, "path", None)
         if path is None:
             continue
+        stale = getattr(field, "freshness", None) is FreshnessState.STALE
         if (
             path.scope is FieldScope.GLOBAL
             and path.family is FieldFamily.TX_STATE
             and path.name == "tx_target"
         ):
             tx_observed = True
-            tx_freq = _known_tx_target_freq_hz(getattr(field, "value", None))
+            if stale:
+                continue
+            value = getattr(field, "value", None)
+            tx_receiver = _known_tx_target_receiver(value)
+            tx_embedded_freq = (
+                _known_tx_target_freq_hz(value) if tx_receiver is not None else None
+            )
             continue
         if (
             path.scope is FieldScope.GLOBAL
             and path.family is FieldFamily.SLOW_STATE
             and path.name == "active"
-            and getattr(field, "value", None) in ("MAIN", "SUB")
         ):
-            active = field.value
+            active_observed = True
+            if not stale and getattr(field, "value", None) in ("MAIN", "SUB"):
+                active = field.value
             continue
         if (
             path.scope is FieldScope.RECEIVER
@@ -219,11 +241,19 @@ def band_frequency_hz_from_snapshot(snapshot: Any) -> int | None:
             freq_hz = _positive_int(getattr(field, "value", None))
             receiver_id = str(getattr(path, "receiver_id", ""))
             receiver_key = "sub" if receiver_id in ("1", "sub") else "main"
-            if freq_hz is not None:
+            if freq_hz is not None and not stale:
                 freqs[receiver_key] = freq_hz
     if tx_observed:
-        return tx_freq
-    return freqs.get("sub" if active == "SUB" else "main")
+        if tx_receiver is None:
+            return None
+        receiver_key = "sub" if tx_receiver == "SUB" else "main"
+        return freqs.get(receiver_key) or tx_embedded_freq
+    if active_observed and active is None:
+        # A selector that was observed and then expired is unknown, not a
+        # silent MAIN default; an absent selector describes a snapshot
+        # that never observes one (single-receiver shape).
+        return None
+    return freqs.get("sub" if (active or "MAIN") == "SUB" else "main")
 
 
 def active_receiver_freq_hz(radio: Any) -> int | None:

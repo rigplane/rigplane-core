@@ -1390,14 +1390,45 @@ class YaesuCatRadio:
         """
         async with self._mode_lock:
             cmd = "set_freq" if receiver == 0 else "set_freq_sub"
+            store = getattr(self, "_state_store", None)
+            generation = getattr(store, "provider_generation", None)
             await self._write(cmd, freq=freq)
             if receiver == 0:
                 self._state.main.freq = freq
             else:
                 self._state.sub.freq = freq
-            self._echo_band_context_freq(receiver, freq)
+            self._echo_band_context_freq(
+                receiver, freq, generation=generation, store=store
+            )
 
-    def _echo_band_context_freq(self, receiver: int, freq: int) -> None:
+    def _band_context_max_age(self, receiver: int) -> float:
+        """Freshness TTL for a band-context echo (profile-derived).
+
+        Mirrors :func:`rigplane.runtime._state_queries.tx_target_max_age` and
+        its pattern: the profile's declared TTL for the receiver's frequency
+        field, with the same 3.0 s stand-in when the profile declares no
+        acquisition policy or TTL for it. Without a ``max_age`` the echo
+        would replace the polled entry's TTL and stay FRESH forever once
+        polling stops answering.
+        """
+        acquisition = self._config.state_acquisition
+        if acquisition is not None:
+            receiver_id = "sub" if receiver == 1 else "main"
+            ttl = acquisition.policy_for(
+                FieldPath.active(receiver_id, "freq_mode", "freq_hz")
+            ).freshness_ttl_seconds
+            if ttl is not None:
+                return float(ttl)
+        return 3.0
+
+    def _echo_band_context_freq(
+        self,
+        receiver: int,
+        freq: int,
+        *,
+        generation: int | None,
+        store: Any = None,
+    ) -> None:
         """Echo our own frequency write into the canonical store (MOR-3634).
 
         The rated-power ceiling resolves the band from the attached
@@ -1406,13 +1437,23 @@ class YaesuCatRadio:
         leaves the store on the previous band until the next poll cycle,
         and a following ``set_power`` would resolve the old — possibly
         higher — ceiling. Same unconfirmed ``local_reconcile`` echo class
-        the web command ingress uses for its expected-value echoes; a
-        radio-answered value still overwrites it on the next poll.
+        the web command ingress uses; a radio-answered value still
+        overwrites it on the next poll. The echo is bound to the provider
+        generation captured before the write — a ``begin_provider_generation``
+        reset that landed while the write was suspended discards it rather
+        than installing the previous generation's request as fresh proof —
+        and carries the profile-derived TTL so an unanswered poll lets it
+        expire like any observed frequency.
         """
-        store = getattr(self, "_state_store", None)
+        if store is None:
+            store = getattr(self, "_state_store", None)
         apply_current = getattr(store, "apply_current", None)
         if not callable(apply_current):
             return
+        if isinstance(generation, int):
+            current = getattr(store, "provider_generation", None)
+            if isinstance(current, int) and current != generation:
+                return
         receiver_id = "sub" if receiver == 1 else "main"
         apply_current(
             Observation(
@@ -1423,6 +1464,7 @@ class YaesuCatRadio:
                     provider=str(getattr(self, "backend_id", "yaesu_cat")),
                 ),
                 timestamp_monotonic=time.monotonic(),
+                max_age=self._band_context_max_age(receiver),
             )
         )
 

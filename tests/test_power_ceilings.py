@@ -21,6 +21,7 @@ per-band rows are unverified, so it declares none).
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,7 +40,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import StateStore
+from rigplane.core.state_store import FreshnessState, StateStore
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.profiles import get_radio_profile
 from rigplane.profiles.power_ceilings import (
@@ -405,6 +406,85 @@ def test_stale_band_context_resolves_no_band():
     assert band_frequency_hz_from_snapshot(store.snapshot()) is None
 
 
+def _stale_tx_target_store() -> StateStore:
+    """Fresh receiver frequencies, an EXPIRED TX-target authority."""
+    store = StateStore()
+    for path, value, max_age in (
+        (
+            FieldPath.active("main", "freq_mode", "freq_hz"),
+            145_000_000,
+            1.0,
+        ),
+        (
+            FieldPath.active("sub", "freq_mode", "freq_hz"),
+            435_000_000,
+            1.0,
+        ),
+        (
+            FieldPath.global_("tx_state", "tx_target"),
+            KnownTxTarget(receiver="SUB", slot=None, frequency_hz=435_000_000),
+            1.0,
+        ),
+    ):
+        store.apply(
+            Observation(
+                path=path,
+                value=value,
+                source=SourceMetadata("poll_response", "test", "fake", "test"),
+                timestamp_monotonic=10.0,
+                max_age=max_age,
+            )
+        )
+    # Age ONLY the TX target past its TTL; the receiver frequencies stay
+    # inside theirs.
+    store._entries[FieldPath.global_("tx_state", "tx_target")].freshness = (  # noqa: SLF001
+        FreshnessState.STALE
+    )
+    return store
+
+
+def test_expired_tx_target_stays_conservative():
+    """Pre-review round 3: an expired target must not resurrect focus.
+
+    MAIN sits on the 75 W band and TX was routed to SUB on the 50 W band;
+    with the target expired, substituting receiver focus would authorize
+    75 W. No band is known: the lowest declared ceiling applies.
+    """
+    profile = replace(
+        get_radio_profile("FTX-1"), power_ceilings_w={"2m": 75, "70cm": 50}
+    )
+    snapshot = _stale_tx_target_store().snapshot()
+
+    assert band_frequency_hz_from_snapshot(snapshot) is None
+    assert effective_power_max_watts(profile, freq_hz=None) == 50
+
+
+def test_expired_active_selector_stays_conservative():
+    """An expired selector is unknown, not a silent MAIN default."""
+    store = StateStore()
+    store.apply(
+        Observation(
+            path=FieldPath.active("main", "freq_mode", "freq_hz"),
+            value=145_000_000,
+            source=SourceMetadata("poll_response", "test", "fake", "test"),
+            timestamp_monotonic=10.0,
+            max_age=30.0,
+        )
+    )
+    store.apply(
+        Observation(
+            path=FieldPath.global_("slow_state", "active"),
+            value="SUB",
+            source=SourceMetadata("poll_response", "test", "fake", "test"),
+            timestamp_monotonic=10.0,
+            max_age=1.0,
+        )
+    )
+    store.mark_stale_due(now=20.0)
+
+    assert band_frequency_hz_from_snapshot(store.snapshot()) is None
+
+
 def test_observed_band_freq_prefers_the_canonical_store_over_the_mirror():
     """Production polling feeds the store; the mirror may lag or stay empty.
 
@@ -537,12 +617,13 @@ async def test_backend_without_tables_keeps_todays_wire():
 
 @pytest.mark.asyncio
 async def test_backend_band_change_then_power_uses_destination_ceiling():
-    """Pre-review round 2: set_freq must refresh the band the clamp reads.
+    """Pre-review rounds 2-3: set_freq must refresh the band the clamp reads.
 
-    With a canonical store attached (production shape), a direct-backend
-    band change echoes into the store under the same lock, so the next
-    power write resolves the DESTINATION band instead of the store's
-    previous (wider) one.
+    With a canonical store attached (production shape) that already holds
+    a KNOWN TX target on MAIN at 145 MHz, a direct-backend band change
+    echoes into the store under the same lock, so the next power write
+    resolves the DESTINATION band instead of the TX target's stale
+    embedded frequency (75 W would leave the wire at PC2075).
     """
     config = replace(
         load_rig(_RIGS_DIR / "ftx1.toml"),
@@ -556,6 +637,13 @@ async def test_backend_band_change_then_power_uses_destination_ceiling():
         _snapshot_observation(
             FieldPath.active("main", "freq_mode", "freq_hz"),
             145_000_000,
+            provider="test",
+        )
+    )
+    radio._state_store.apply(
+        _snapshot_observation(
+            FieldPath.global_("tx_state", "tx_target"),
+            KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=145_000_000),
             provider="test",
         )
     )
@@ -612,6 +700,75 @@ async def test_backend_power_waits_for_an_in_flight_band_change():
 
     wires = [call.args[0] for call in wire_mock.await_args_list]
     assert wires == ["FA435000000;", "PC2050;"]
+
+
+@pytest.mark.asyncio
+async def test_backend_freq_echo_is_bound_to_the_provider_generation():
+    """A provider reset during a suspended write discards its echo.
+
+    Pre-review round 3: applying the echo unconditionally would install
+    the previous generation's requested frequency as fresh proof in the
+    newly emptied store.
+    """
+    config = replace(
+        load_rig(_RIGS_DIR / "ftx1.toml"),
+        power_ceilings_w={"2m": 75, "70cm": 50},
+    )
+    radio = YaesuCatRadio("/dev/null", profile=config)
+    radio._transport._connected = True
+    radio._state_store = StateStore()
+    write_started = asyncio.Event()
+    release = asyncio.Event()
+    wire_mock = AsyncMock()
+
+    async def gated_write(payload: str, **kwargs: object) -> None:
+        write_started.set()
+        await release.wait()
+        await wire_mock(payload, **kwargs)
+
+    radio._transport.write = gated_write
+
+    freq_task = asyncio.create_task(radio.set_freq(145_000_000))
+    await asyncio.wait_for(write_started.wait(), timeout=1.0)
+    radio._state_store.begin_provider_generation()
+    release.set()
+    await asyncio.wait_for(freq_task, timeout=1.0)
+
+    # The reset emptied the store; the obsolete echo must not repopulate it
+    # (its 2 m frequency would authorize PC2075 — the emptied store's
+    # unknown band clamps to the lowest declared ceiling instead).
+    assert radio._state_store.snapshot().fields == ()
+
+    await radio.set_power(90)
+    assert wire_mock.await_args_list[-1].args[0] == "PC2050;"
+
+
+@pytest.mark.asyncio
+async def test_backend_freq_echo_expires_like_an_observed_frequency():
+    """The echo carries the profile TTL: unanswered polls age it out.
+
+    Pre-review round 3: without a ``max_age`` the echo would replace the
+    polled entry's TTL and stay FRESH forever, authorizing its band past
+    the freshness budget.
+    """
+    config = replace(
+        load_rig(_RIGS_DIR / "ftx1.toml"),
+        power_ceilings_w={"2m": 75, "70cm": 50},
+    )
+    radio = YaesuCatRadio("/dev/null", profile=config)
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    radio._state_store = StateStore()
+
+    # Park on 2 m (75 W): an unexpired echo would authorize PC2075.
+    await radio.set_freq(145_000_000)
+    ttl = radio._band_context_max_age(0)  # noqa: SLF001
+    assert isinstance(ttl, float) and ttl > 0
+
+    # No poll answers; drive the store's freshness loop past the TTL.
+    radio._state_store.mark_stale_due(now=time.monotonic() + ttl + 10.0)
+    await radio.set_power(90)
+    assert radio._transport.write.await_args_list[-1].args[0] == "PC2050;"
 
 
 # ── Web handler seam: enqueue set_power on a watts radio ─────────
