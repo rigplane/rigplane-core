@@ -42,6 +42,7 @@ from rigplane.core.command_dispatch import prepare_command_intent
 from rigplane.core.radio_protocol import RepeaterShiftCapable
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.types import Mode, RepeaterShiftDirection
+from rigplane.exceptions import CommandError
 from rigplane.radio import IcomRadio
 from rigplane.rig_loader import load_rig
 from rigplane.runtime._state_queries import acquisition_query_resolver_for_profile
@@ -107,7 +108,9 @@ def transport() -> MockTransport:
 
 
 def _radio(transport: MockTransport, model: str = "IC-9700") -> IcomRadio:
-    r = IcomRadio("192.168.1.100", timeout=0.05, model=model)
+    # timeout 2.0 per MOR-2121: 0.05 raced real scheduling delay under
+    # ``pytest -n auto`` on a loaded host.
+    r = IcomRadio("192.168.1.100", timeout=2.0, model=model)
     r._civ_transport = transport
     r._ctrl_transport = transport
     r._connected = True
@@ -229,6 +232,71 @@ async def test_get_on_the_sub_receiver_switches_and_restores(transport) -> None:
         (0x07, b"\xd0"),
     ]
     assert radio._radio_state.active == "MAIN"
+
+
+@pytest.mark.asyncio
+async def test_set_on_main_with_sub_selected_switches_and_restores(
+    transport,
+) -> None:
+    """The routing is symmetric (pre-review round 2): a MAIN request while
+    SUB is selected must switch to MAIN first, or the bare 0F would write
+    SUB by accident — the dispatch path has no poller-side dance."""
+    radio = _radio(transport)
+    radio._radio_state.active = "SUB"
+    for _ in range(3):
+        transport.queue_response(_reply(0xFB))
+    await radio.set_repeater_shift(RepeaterShiftDirection.MINUS, receiver=0)
+    assert [(f.command, f.data) for f in _sent_frames(transport)] == [
+        (0x07, b"\xd0"),  # select MAIN
+        (0x0F, b"\x11"),  # DUP− on MAIN
+        (0x07, b"\xd1"),  # restore SUB
+    ]
+    assert radio._radio_state.active == "SUB"
+
+
+@pytest.mark.asyncio
+async def test_a_lost_ack_on_the_initial_switch_still_restores(transport) -> None:
+    """Pre-review round 2: the switch may reach the radio while its ACK is
+    lost — one best-effort restoration runs before the error propagates."""
+    radio = _radio(transport)
+    radio._radio_state.active = "MAIN"
+    transport.queue_response(_reply(0xFB))  # only the restoration's ACK
+    with pytest.raises((TimeoutError, CommandError)):
+        await radio.set_repeater_shift(RepeaterShiftDirection.MINUS, receiver=1)
+    assert [(f.command, f.data) for f in _sent_frames(transport)] == [
+        (0x07, b"\xd1"),  # the switch whose ACK was lost
+        (0x07, b"\xd0"),  # the best-effort restoration
+    ]
+    assert radio._radio_state.active == "MAIN"
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_selection_during_the_action_skips_the_restore(
+    transport,
+) -> None:
+    """Pre-review round 2: when another caller moved the selection while our
+    action ran, our restoration is skipped — a blind restore would overwrite
+    their selection. Their selection owns the radio."""
+    radio = _radio(transport)
+    radio._radio_state.active = "MAIN"
+    calls: list[str] = []
+
+    async def fake_set_vfo_wire(vfo: str) -> None:
+        calls.append(vfo)
+
+    radio._set_vfo_wire = fake_set_vfo_wire  # type: ignore[method-assign]
+
+    async def action():
+        # The competitor's selection lands while our write is on the radio.
+        radio._radio_state.active = "MAIN"
+        return "written"
+
+    result = await radio._run_receiver_routed_once(
+        1, operation="set_repeater_shift", action=action
+    )
+    assert result == "written"
+    # The SUB switch ran; the MAIN restoration was skipped.
+    assert calls == ["SUB"]
 
 
 @pytest.mark.asyncio

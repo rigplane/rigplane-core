@@ -28,11 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1.2 GHz band by the profile's existing `[memory] dd_groups = [3]`
   fact: a DD mode byte outside band 3 is refused with an explicit
   error, and the mode-set path carries no frequency, so it has no band
-  gate. On a dual-receiver radio the shift read/write for a non-MAIN
-  receiver is routed through the shared MAIN/SUB switch-and-restore
-  (the same routing `set_mode` uses), restoring the selection
-  afterwards — `0F` carries no receiver selector of its own. Not
-  hardware-verified (tier B-): no IC-9700 has been on the bench.
+  gate. The 2 m and 70 cm band defaults become the IARU Region 1
+  simplex calling frequencies (145.500 / 433.500 MHz); 23 cm keeps its
+  band start edge; the `repeater` range flags stay. On a dual-receiver
+  radio every shift read/write is routed through the shared MAIN/SUB
+  switch-and-restore for the requested receiver (including MAIN, so a
+  shift set while SUB is selected no longer writes SUB by accident), the
+  switch runs inside the failure boundary (a lost ACK still gets one
+  best-effort restoration), and a restoration is skipped when another
+  caller moved the selection meanwhile. Not
+  hardware-verified (tier B-): no IC-9700 has been on the bench, and
+  the older MOR-2015 0x16-family sub-list cited in the profile does
+  not name `5D` — reconciled in the MOR-3623 PR body.
 
 ## [3.0.1] — 2026-10-28
 

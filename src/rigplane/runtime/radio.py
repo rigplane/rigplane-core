@@ -4930,12 +4930,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 )
             return direction
 
-        if receiver == RECEIVER_MAIN:
+        # 0F carries no receiver selector. A single-receiver radio is
+        # addressed directly; a dual-receiver radio (IC-9700, MOR-3623) is
+        # addressed by switching to the requested receiver and restoring
+        # the selection afterwards — the same shared routing ``set_mode``
+        # uses for a bare 0x06, for the MAIN receiver too, so a shift read
+        # while SUB is selected never reads SUB by accident.
+        if self._profile.receiver_count <= 1:
             return await read()
-        # 0F carries no receiver selector, so a non-cmd29 dual-receiver
-        # radio (IC-9700, MOR-3623) is addressed by switching to that
-        # receiver and restoring the selection afterwards — the same
-        # routing ``set_mode`` uses for a bare 0x06.
         return await self._run_with_receiver_vfo_fallback(
             receiver=receiver,
             operation="get_repeater_shift",
@@ -4959,11 +4961,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             if parse_ack_nak(resp) is False:
                 raise CommandError(f"Radio rejected repeater shift {direction!r}")
 
-        if receiver == RECEIVER_MAIN:
+        # See get_repeater_shift: address a dual-receiver radio through the
+        # shared switch-and-restore, both receivers.
+        if self._profile.receiver_count <= 1:
             await write()
             return
-        # See get_repeater_shift: address a non-cmd29 dual-receiver radio by
-        # switching to the requested receiver and restoring the selection.
         await self._run_with_receiver_vfo_fallback(
             receiver=receiver,
             operation="set_repeater_shift",
