@@ -485,25 +485,38 @@ class TestCapabilitiesEndpoint:
         Air, Gen) stay tunable band-selector entries but must never appear
         in ``txBands`` — before the ``rx_only`` flag they counted as
         TX-allowed, granting transmit permission on broadcast, airband and
-        general-coverage receive rows."""
+        general-coverage receive rows. Both public producers that build
+        ``txBands`` are asserted (the /api/v1/info capabilities object and
+        the /api/v1/capabilities body), so removing either filter fails
+        here."""
         radio = _make_radio("IC-705")
         srv = WebServer(radio)
-        writer = _FakeWriter()
+        capabilities_writer = _FakeWriter()
+        info_writer = _FakeWriter()
 
-        await srv._serve_capabilities(writer)  # noqa: SLF001
+        await srv._serve_capabilities(capabilities_writer)  # noqa: SLF001
+        await srv._serve_info(info_writer)  # noqa: SLF001
 
-        data = _parse_json_body(writer)
         rx_only_names = {"2200m", "630m", "WFM", "Air", "Gen"}
-        tx_names = {band["name"] for band in data["txBands"]}
-        assert not (rx_only_names & tx_names)
-        # TX-capable rows keep their classification: HF amateur bands and
-        # both VHF/UHF amateur bands remain TX-permitted.
-        assert {"20m", "2m", "70cm"} <= tx_names
-        # The receive-only rows remain tunable: freqRanges still lists them
-        # as band-selector entries.
+        # Both public producers that build txBands: the /api/v1/info
+        # capabilities object and the /api/v1/capabilities body. Removing
+        # either rx_only filter fails below.
+        payloads = {
+            "capabilities": _parse_json_body(capabilities_writer),
+            "info": _parse_json_body(info_writer)["capabilities"],
+        }
+        for route, payload in payloads.items():
+            tx_names = {band["name"] for band in payload["txBands"]}
+            assert not (rx_only_names & tx_names), route
+            # TX-capable rows keep their classification: HF amateur bands
+            # and both VHF/UHF amateur bands remain TX-permitted.
+            assert {"20m", "2m", "70cm"} <= tx_names, route
+        # The receive-only rows remain tunable: the capabilities freqRanges
+        # (the info payload carries no freqRanges) still lists them as
+        # band-selector entries.
         range_band_names = {
             band["name"]
-            for freq_range in data["freqRanges"]
+            for freq_range in payloads["capabilities"]["freqRanges"]
             for band in freq_range["bands"]
         }
         assert rx_only_names <= range_band_names
