@@ -1,0 +1,855 @@
+{
+  "schema": "rigplane.usb_audio_capture/1",
+  "sessions": [
+    {
+      "schema": "rigplane.usb_audio_session/1",
+      "session": "connected",
+      "target": null,
+      "radios": [
+        {
+          "profile": "ic705",
+          "serial_port": "/dev/cu.usbmodem3121201"
+        },
+        {
+          "profile": "ftx1",
+          "serial_port": "/dev/cu.usbserial-RVDGLVMGQIF0"
+        }
+      ],
+      "os": "macos",
+      "os_version": "Darwin 27.2.0 Darwin Kernel Version 27.2.0: Wed Oct  7 23:15:14 PDT 2026; root:xnu-13432.41.4~3/RELEASE_ARM64_T6041 arm64",
+      "ui_locale": "C",
+      "capture_tool": "rigplane 3.0.0b20 audio usb-capture",
+      "raw": {
+        "macos": {
+          "usb_devices": [
+            {
+              "registry_id": 4294970281,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@03000000",
+              "parent_registry_id": null,
+              "location_id": 51380224,
+              "vendor_id": 1452,
+              "product_id": 32779,
+              "product": "USB2 Hub",
+              "manufacturer": "Apple",
+              "serial_number": "RHKEGB4EA4Z",
+              "device_class": 9,
+              "is_hub": true
+            },
+            {
+              "registry_id": 4294970449,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB Receiver@03110000",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000",
+              "parent_registry_id": 4294970281,
+              "location_id": 51445760,
+              "vendor_id": 1133,
+              "product_id": 50504,
+              "product": "USB Receiver",
+              "manufacturer": "Logitech",
+              "serial_number": null,
+              "device_class": 0,
+              "is_hub": false
+            },
+            {
+              "registry_id": 4294970968,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000",
+              "parent_registry_id": 4294970281,
+              "location_id": 51511296,
+              "vendor_id": 8457,
+              "product_id": 10274,
+              "product": "USB2.0 Hub",
+              "manufacturer": "VIA Labs, Inc.",
+              "serial_number": "RCZKPV2XOVJ",
+              "device_class": 9,
+              "is_hub": true
+            },
+            {
+              "registry_id": 4294971365,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000/Belkin 4 Port USB-C Hub@03125000",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000",
+              "parent_registry_id": 4294970968,
+              "location_id": 51531776,
+              "vendor_id": 1293,
+              "product_id": 395,
+              "product": "Belkin 4 Port USB-C Hub",
+              "manufacturer": "VIA Labs, Inc.",
+              "serial_number": "RNMPYKKX57O",
+              "device_class": 17,
+              "is_hub": false
+            },
+            {
+              "registry_id": 4295496583,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000/IOUSBHostDevice@03121000",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000",
+              "parent_registry_id": 4294970968,
+              "location_id": 51515392,
+              "vendor_id": 1105,
+              "product_id": 8262,
+              "product": null,
+              "manufacturer": null,
+              "serial_number": null,
+              "device_class": 9,
+              "is_hub": true
+            },
+            {
+              "registry_id": 4295496601,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000/IOUSBHostDevice@03121000/IC-705@03121200",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000/IOUSBHostDevice@03121000",
+              "parent_registry_id": 4295496583,
+              "location_id": 51515904,
+              "vendor_id": 3110,
+              "product_id": 54,
+              "product": "IC_705",
+              "manufacturer": "Icom Inc.",
+              "serial_number": "RO6RSKSLO2G",
+              "device_class": 239,
+              "is_hub": false
+            },
+            {
+              "registry_id": 4295496626,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000/IOUSBHostDevice@03121000/USB Audio CODEC@03121400",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000/IOUSBHostDevice@03121000",
+              "parent_registry_id": 4295496583,
+              "location_id": 51516416,
+              "vendor_id": 2235,
+              "product_id": 10497,
+              "product": "USB Audio CODEC",
+              "manufacturer": "Burr-Brown from TI",
+              "serial_number": null,
+              "device_class": 0,
+              "is_hub": false
+            },
+            {
+              "registry_id": 4295976864,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000/USB2.0 Hub@03122000",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000",
+              "parent_registry_id": 4294970968,
+              "location_id": 51519488,
+              "vendor_id": 1507,
+              "product_id": 1552,
+              "product": "USB2.0 Hub",
+              "manufacturer": null,
+              "serial_number": null,
+              "device_class": 9,
+              "is_hub": true
+            },
+            {
+              "registry_id": 4295976883,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000/USB2.0 Hub@03122000/CP2105 Dual USB to UART Bridge Controller@03122100",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000/USB2.0 Hub@03122000",
+              "parent_registry_id": 4295976864,
+              "location_id": 51519744,
+              "vendor_id": 4292,
+              "product_id": 60016,
+              "product": "CP2105 Dual USB to UART Bridge Controller",
+              "manufacturer": "Silicon Labs",
+              "serial_number": "RVDGLVMGQIF",
+              "device_class": 0,
+              "is_hub": false
+            },
+            {
+              "registry_id": 4295976929,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000/USB2.0 Hub@03122000/YAESU HRI USB I/F@03122300",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000/USB2.0 Hub@03122000",
+              "parent_registry_id": 4295976864,
+              "location_id": 51520256,
+              "vendor_id": 9898,
+              "product_id": 48,
+              "product": "YAESU HRI USB I_F",
+              "manufacturer": "YAESUMUSEN",
+              "serial_number": "RSOEYRNC4GL",
+              "device_class": 2,
+              "is_hub": false
+            },
+            {
+              "registry_id": 4295976942,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000/USB2.0 Hub@03122000/USB Audio Device@03122200",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB2 Hub@03100000/USB2.0 Hub@03120000/USB2.0 Hub@03122000",
+              "parent_registry_id": 4295976864,
+              "location_id": 51520000,
+              "vendor_id": 3468,
+              "product_id": 22,
+              "product": "USB Audio Device",
+              "manufacturer": "C-Media Electronics Inc.",
+              "serial_number": null,
+              "device_class": 0,
+              "is_hub": false
+            },
+            {
+              "registry_id": 4294970290,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB3 Gen2 Hub@03200000",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@03000000",
+              "parent_registry_id": null,
+              "location_id": 52428800,
+              "vendor_id": 1452,
+              "product_id": 32780,
+              "product": "USB3 Gen2 Hub",
+              "manufacturer": "Apple",
+              "serial_number": "RHKEGB4EA4Z",
+              "device_class": 9,
+              "is_hub": true
+            },
+            {
+              "registry_id": 4294970981,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB3 Gen2 Hub@03200000/USB3.1 Hub@03220000",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@03000000/USB3 Gen2 Hub@03200000",
+              "parent_registry_id": 4294970290,
+              "location_id": 52559872,
+              "vendor_id": 8457,
+              "product_id": 2082,
+              "product": "USB3.1 Hub",
+              "manufacturer": "VIA Labs, Inc.",
+              "serial_number": "RCZKPV2XOVJ",
+              "device_class": 9,
+              "is_hub": true
+            },
+            {
+              "registry_id": 4294970367,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@00000000/USB2.0 Hub@00100000",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@00000000",
+              "parent_registry_id": null,
+              "location_id": 1048576,
+              "vendor_id": 7516,
+              "product_id": 22529,
+              "product": "USB2.0 Hub",
+              "manufacturer": "Fresco Logic, Inc.",
+              "serial_number": null,
+              "device_class": 9,
+              "is_hub": true
+            },
+            {
+              "registry_id": 4294970416,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@00000000/USB2.0 Hub@00100000/DMC Device@00120000",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@00000000/USB2.0 Hub@00100000",
+              "parent_registry_id": 4294970367,
+              "location_id": 1179648,
+              "vendor_id": 2821,
+              "product_id": 7253,
+              "product": "DMC Device",
+              "manufacturer": "Cypress Semiconductor",
+              "serial_number": "RWNBHLRMBOM",
+              "device_class": 0,
+              "is_hub": false
+            },
+            {
+              "registry_id": 4294970425,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@00000000/USB2.0 Hub@00100000/USB2.1 Hub@00140000",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@00000000/USB2.0 Hub@00100000",
+              "parent_registry_id": 4294970367,
+              "location_id": 1310720,
+              "vendor_id": 2821,
+              "product_id": 3107,
+              "product": "USB2.1 Hub",
+              "manufacturer": "Generic",
+              "serial_number": null,
+              "device_class": 9,
+              "is_hub": true
+            },
+            {
+              "registry_id": 4294970437,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@00000000/USB2.0 Hub@00100000/USB2.1 Hub@00140000/USB2.0 HUB@00143000",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@00000000/USB2.0 Hub@00100000/USB2.1 Hub@00140000",
+              "parent_registry_id": 4294970425,
+              "location_id": 1323008,
+              "vendor_id": 8523,
+              "product_id": 29264,
+              "product": "USB2.0 HUB",
+              "manufacturer": null,
+              "serial_number": null,
+              "device_class": 9,
+              "is_hub": true
+            },
+            {
+              "registry_id": 4294970463,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@00000000/USB2.0 Hub@00100000/USB2.1 Hub@00140000/USB2.0 HUB@00143000/USB2.0 HUB@00143100",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@00000000/USB2.0 Hub@00100000/USB2.1 Hub@00140000/USB2.0 HUB@00143000",
+              "parent_registry_id": 4294970437,
+              "location_id": 1323264,
+              "vendor_id": 8523,
+              "product_id": 29264,
+              "product": "USB2.0 HUB",
+              "manufacturer": null,
+              "serial_number": null,
+              "device_class": 9,
+              "is_hub": true
+            },
+            {
+              "registry_id": 4294970494,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@00000000/USB2.0 Hub@00100000/USB2.1 Hub@00140000/USB2.0 HUB@00143000/USB2.0 HUB@00143100/HD Pro Webcam C920@00143110",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@00000000/USB2.0 Hub@00100000/USB2.1 Hub@00140000/USB2.0 HUB@00143000/USB2.0 HUB@00143100",
+              "parent_registry_id": 4294970463,
+              "location_id": 1323280,
+              "vendor_id": 1133,
+              "product_id": 2093,
+              "product": "HD Pro Webcam C920",
+              "manufacturer": null,
+              "serial_number": "R62PGXVOTB4",
+              "device_class": 239,
+              "is_hub": false
+            },
+            {
+              "registry_id": 4294970475,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@00000000/USB2.0 Hub@00100000/USB2.1 Hub@00140000/USB2.0 HUB@00143000/Icom RC-28 REMOTE ENCODER@00143300",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@00000000/USB2.0 Hub@00100000/USB2.1 Hub@00140000/USB2.0 HUB@00143000",
+              "parent_registry_id": 4294970437,
+              "location_id": 1323776,
+              "vendor_id": 3110,
+              "product_id": 30,
+              "product": "Icom RC-28 REMOTE ENCODER",
+              "manufacturer": "Icom Inc.",
+              "serial_number": "RAVF27FN3S6",
+              "device_class": 0,
+              "is_hub": false
+            },
+            {
+              "registry_id": 4294970379,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@00000000/USB3.0 Hub@00200000",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@00000000",
+              "parent_registry_id": null,
+              "location_id": 2097152,
+              "vendor_id": 32903,
+              "product_id": 2880,
+              "product": "USB3.0 Hub",
+              "manufacturer": "Intel Corporation.",
+              "serial_number": null,
+              "device_class": 9,
+              "is_hub": true
+            },
+            {
+              "registry_id": 4294970400,
+              "registry_path": "IOUSB:/AppleT8132USBXHCI@00000000/USB3.0 Hub@00200000/USB3.2 Hub@00240000",
+              "parent_path": "IOUSB:/AppleT8132USBXHCI@00000000/USB3.0 Hub@00200000",
+              "parent_registry_id": 4294970379,
+              "location_id": 2359296,
+              "vendor_id": 2821,
+              "product_id": 1041,
+              "product": "USB3.2 Hub",
+              "manufacturer": "Generic",
+              "serial_number": null,
+              "device_class": 9,
+              "is_hub": true
+            }
+          ],
+          "serial_devices": [
+            {
+              "device": "/dev/cu.debug-console",
+              "registry_path": "IOService:/J773sAP/AppleARMPE/arm-io@10F00000/AppleH16GFamilyIO/uart0@29200000/AppleSamsungSerial/debug-console/IOSerialBSDClient",
+              "usb_registry_id": null
+            },
+            {
+              "device": "/dev/tty.debug-console",
+              "registry_path": "IOService:/J773sAP/AppleARMPE/arm-io@10F00000/AppleH16GFamilyIO/uart0@29200000/AppleSamsungSerial/debug-console/IOSerialBSDClient",
+              "usb_registry_id": null
+            },
+            {
+              "device": "/dev/cu.usbmodem3121201",
+              "registry_path": "IOService:/J773sAP/AppleARMPE/arm-io@10F00000/AppleH16GFamilyIO/usb-drd3@9A280000/AppleT8132USBXHCI@03000000/usb-drd3-port-hs@03100000/USB2 Hub@03100000/AppleUSB20Hub@03100000/usb2-hub-port2@03120000/USB2.0 Hub@03120000/AppleUSB20Hub@03120000/AppleUSB20HubPort@03121000/IOUSBHostDevice@03121000/AppleUSB20Hub@03121000/AppleUSB20HubPort@03121200/IC-705@03121200/IOUSBHostInterface@1/AppleUSBACMData/IOSerialBSDClient",
+              "usb_registry_id": 4295496601
+            },
+            {
+              "device": "/dev/tty.usbmodem3121201",
+              "registry_path": "IOService:/J773sAP/AppleARMPE/arm-io@10F00000/AppleH16GFamilyIO/usb-drd3@9A280000/AppleT8132USBXHCI@03000000/usb-drd3-port-hs@03100000/USB2 Hub@03100000/AppleUSB20Hub@03100000/usb2-hub-port2@03120000/USB2.0 Hub@03120000/AppleUSB20Hub@03120000/AppleUSB20HubPort@03121000/IOUSBHostDevice@03121000/AppleUSB20Hub@03121000/AppleUSB20HubPort@03121200/IC-705@03121200/IOUSBHostInterface@1/AppleUSBACMData/IOSerialBSDClient",
+              "usb_registry_id": 4295496601
+            },
+            {
+              "device": "/dev/cu.usbmodem3121203",
+              "registry_path": "IOService:/J773sAP/AppleARMPE/arm-io@10F00000/AppleH16GFamilyIO/usb-drd3@9A280000/AppleT8132USBXHCI@03000000/usb-drd3-port-hs@03100000/USB2 Hub@03100000/AppleUSB20Hub@03100000/usb2-hub-port2@03120000/USB2.0 Hub@03120000/AppleUSB20Hub@03120000/AppleUSB20HubPort@03121000/IOUSBHostDevice@03121000/AppleUSB20Hub@03121000/AppleUSB20HubPort@03121200/IC-705@03121200/IOUSBHostInterface@3/AppleUSBACMData/IOSerialBSDClient",
+              "usb_registry_id": 4295496601
+            },
+            {
+              "device": "/dev/tty.usbmodem3121203",
+              "registry_path": "IOService:/J773sAP/AppleARMPE/arm-io@10F00000/AppleH16GFamilyIO/usb-drd3@9A280000/AppleT8132USBXHCI@03000000/usb-drd3-port-hs@03100000/USB2 Hub@03100000/AppleUSB20Hub@03100000/usb2-hub-port2@03120000/USB2.0 Hub@03120000/AppleUSB20Hub@03120000/AppleUSB20HubPort@03121000/IOUSBHostDevice@03121000/AppleUSB20Hub@03121000/AppleUSB20HubPort@03121200/IC-705@03121200/IOUSBHostInterface@3/AppleUSBACMData/IOSerialBSDClient",
+              "usb_registry_id": 4295496601
+            },
+            {
+              "device": "/dev/cu.usbserial-RVDGLVMGQIF0",
+              "registry_path": "IOService:/J773sAP/AppleARMPE/arm-io@10F00000/AppleH16GFamilyIO/usb-drd3@9A280000/AppleT8132USBXHCI@03000000/usb-drd3-port-hs@03100000/USB2 Hub@03100000/AppleUSB20Hub@03100000/usb2-hub-port2@03120000/USB2.0 Hub@03120000/AppleUSB20Hub@03120000/AppleUSB20HubPort@03122000/USB2.0 Hub@03122000/AppleUSB20Hub@03122000/AppleUSB20HubPort@03122100/CP2105 Dual USB to UART Bridge Controller@03122100/Enhanced Com Port@0/AppleUSBSLCOM/IOSerialBSDClient",
+              "usb_registry_id": 4295976883
+            },
+            {
+              "device": "/dev/tty.usbserial-RVDGLVMGQIF0",
+              "registry_path": "IOService:/J773sAP/AppleARMPE/arm-io@10F00000/AppleH16GFamilyIO/usb-drd3@9A280000/AppleT8132USBXHCI@03000000/usb-drd3-port-hs@03100000/USB2 Hub@03100000/AppleUSB20Hub@03100000/usb2-hub-port2@03120000/USB2.0 Hub@03120000/AppleUSB20Hub@03120000/AppleUSB20HubPort@03122000/USB2.0 Hub@03122000/AppleUSB20Hub@03122000/AppleUSB20HubPort@03122100/CP2105 Dual USB to UART Bridge Controller@03122100/Enhanced Com Port@0/AppleUSBSLCOM/IOSerialBSDClient",
+              "usb_registry_id": 4295976883
+            },
+            {
+              "device": "/dev/cu.usbserial-RVDGLVMGQIF1",
+              "registry_path": "IOService:/J773sAP/AppleARMPE/arm-io@10F00000/AppleH16GFamilyIO/usb-drd3@9A280000/AppleT8132USBXHCI@03000000/usb-drd3-port-hs@03100000/USB2 Hub@03100000/AppleUSB20Hub@03100000/usb2-hub-port2@03120000/USB2.0 Hub@03120000/AppleUSB20Hub@03120000/AppleUSB20HubPort@03122000/USB2.0 Hub@03122000/AppleUSB20Hub@03122000/AppleUSB20HubPort@03122100/CP2105 Dual USB to UART Bridge Controller@03122100/Standard Com Port@1/AppleUSBSLCOM/IOSerialBSDClient",
+              "usb_registry_id": 4295976883
+            },
+            {
+              "device": "/dev/tty.usbserial-RVDGLVMGQIF1",
+              "registry_path": "IOService:/J773sAP/AppleARMPE/arm-io@10F00000/AppleH16GFamilyIO/usb-drd3@9A280000/AppleT8132USBXHCI@03000000/usb-drd3-port-hs@03100000/USB2 Hub@03100000/AppleUSB20Hub@03100000/usb2-hub-port2@03120000/USB2.0 Hub@03120000/AppleUSB20Hub@03120000/AppleUSB20HubPort@03122000/USB2.0 Hub@03122000/AppleUSB20Hub@03122000/AppleUSB20HubPort@03122100/CP2105 Dual USB to UART Bridge Controller@03122100/Standard Com Port@1/AppleUSBSLCOM/IOSerialBSDClient",
+              "usb_registry_id": 4295976883
+            },
+            {
+              "device": "/dev/cu.usbmodemRSOEYRNC4GL1",
+              "registry_path": "IOService:/J773sAP/AppleARMPE/arm-io@10F00000/AppleH16GFamilyIO/usb-drd3@9A280000/AppleT8132USBXHCI@03000000/usb-drd3-port-hs@03100000/USB2 Hub@03100000/AppleUSB20Hub@03100000/usb2-hub-port2@03120000/USB2.0 Hub@03120000/AppleUSB20Hub@03120000/AppleUSB20HubPort@03122000/USB2.0 Hub@03122000/AppleUSB20Hub@03122000/AppleUSB20HubPort@03122300/YAESU HRI USB I/F@03122300/IOUSBHostInterface@1/AppleUSBACMData/IOSerialBSDClient",
+              "usb_registry_id": 4295976929
+            },
+            {
+              "device": "/dev/tty.usbmodemRSOEYRNC4GL1",
+              "registry_path": "IOService:/J773sAP/AppleARMPE/arm-io@10F00000/AppleH16GFamilyIO/usb-drd3@9A280000/AppleT8132USBXHCI@03000000/usb-drd3-port-hs@03100000/USB2 Hub@03100000/AppleUSB20Hub@03100000/usb2-hub-port2@03120000/USB2.0 Hub@03120000/AppleUSB20Hub@03120000/AppleUSB20HubPort@03122000/USB2.0 Hub@03122000/AppleUSB20Hub@03122000/AppleUSB20HubPort@03122300/YAESU HRI USB I/F@03122300/IOUSBHostInterface@1/AppleUSBACMData/IOSerialBSDClient",
+              "usb_registry_id": 4295976929
+            },
+            {
+              "device": "/dev/cu.Bluetooth-Incoming-Port",
+              "registry_path": "IOService:/J773sAP/IOResources/IOBluetoothHCIController/IOBluetoothDevice/IOUserBluetoothSerialDriver/IOUserPseudoSerial/IOSerialBSDClient",
+              "usb_registry_id": null
+            },
+            {
+              "device": "/dev/tty.Bluetooth-Incoming-Port",
+              "registry_path": "IOService:/J773sAP/IOResources/IOBluetoothHCIController/IOBluetoothDevice/IOUserBluetoothSerialDriver/IOUserPseudoSerial/IOSerialBSDClient",
+              "usb_registry_id": null
+            }
+          ],
+          "audio_devices": [
+            {
+              "device_id": 139,
+              "uid": "06B30C32-0000-0000-2923-0104B5462778",
+              "name": "PA32QCV",
+              "transport_type": 1685090932,
+              "input_channels": 0,
+              "output_channels": 2
+            },
+            {
+              "device_id": 131,
+              "uid": "AppleUSBAudioEngine:Burr-Brown from TI:USB Audio CODEC:3121400:1",
+              "name": "USB Audio CODEC",
+              "transport_type": 1970496032,
+              "input_channels": 0,
+              "output_channels": 2
+            },
+            {
+              "device_id": 137,
+              "uid": "AppleUSBAudioEngine:Burr-Brown from TI:USB Audio CODEC:3121400:2",
+              "name": "USB Audio CODEC",
+              "transport_type": 1970496032,
+              "input_channels": 2,
+              "output_channels": 0
+            },
+            {
+              "device_id": 154,
+              "uid": "AppleUSBAudioEngine:C-Media Electronics Inc.:USB Audio Device:3122200:2,1",
+              "name": "USB Audio Device",
+              "transport_type": 1970496032,
+              "input_channels": 2,
+              "output_channels": 2
+            },
+            {
+              "device_id": 127,
+              "uid": "AppleUSBAudioEngine:Unknown Manufacturer:HD Pro Webcam C920:R62PGXVOTB4:3",
+              "name": "HD Pro Webcam C920",
+              "transport_type": 1970496032,
+              "input_channels": 2,
+              "output_channels": 0
+            },
+            {
+              "device_id": 116,
+              "uid": "BuiltInSpeakerDevice",
+              "name": "Mac mini Speakers",
+              "transport_type": 1651274862,
+              "input_channels": 0,
+              "output_channels": 2
+            },
+            {
+              "device_id": 125,
+              "uid": "RigPlaneVirtualCable:in:0",
+              "name": "RigPlane Virtual Cable Input",
+              "transport_type": 1986622068,
+              "input_channels": 2,
+              "output_channels": 0
+            },
+            {
+              "device_id": 122,
+              "uid": "RigPlaneVirtualCable:out:0",
+              "name": "RigPlane Virtual Cable Output",
+              "transport_type": 1986622068,
+              "input_channels": 0,
+              "output_channels": 2
+            },
+            {
+              "device_id": 79,
+              "uid": "com.aethersdr.dax.rx.1",
+              "name": "AetherSDR DAX 1",
+              "transport_type": 1986622068,
+              "input_channels": 2,
+              "output_channels": 0
+            },
+            {
+              "device_id": 83,
+              "uid": "com.aethersdr.dax.rx.2",
+              "name": "AetherSDR DAX 2",
+              "transport_type": 1986622068,
+              "input_channels": 2,
+              "output_channels": 0
+            },
+            {
+              "device_id": 87,
+              "uid": "com.aethersdr.dax.rx.3",
+              "name": "AetherSDR DAX 3",
+              "transport_type": 1986622068,
+              "input_channels": 2,
+              "output_channels": 0
+            },
+            {
+              "device_id": 91,
+              "uid": "com.aethersdr.dax.rx.4",
+              "name": "AetherSDR DAX 4",
+              "transport_type": 1986622068,
+              "input_channels": 2,
+              "output_channels": 0
+            },
+            {
+              "device_id": 95,
+              "uid": "com.aethersdr.dax.rx.5",
+              "name": "AetherSDR DAX 5",
+              "transport_type": 1986622068,
+              "input_channels": 2,
+              "output_channels": 0
+            },
+            {
+              "device_id": 99,
+              "uid": "com.aethersdr.dax.rx.6",
+              "name": "AetherSDR DAX 6",
+              "transport_type": 1986622068,
+              "input_channels": 2,
+              "output_channels": 0
+            },
+            {
+              "device_id": 103,
+              "uid": "com.aethersdr.dax.rx.7",
+              "name": "AetherSDR DAX 7",
+              "transport_type": 1986622068,
+              "input_channels": 2,
+              "output_channels": 0
+            },
+            {
+              "device_id": 107,
+              "uid": "com.aethersdr.dax.rx.8",
+              "name": "AetherSDR DAX 8",
+              "transport_type": 1986622068,
+              "input_channels": 2,
+              "output_channels": 0
+            },
+            {
+              "device_id": 111,
+              "uid": "com.aethersdr.dax.tx",
+              "name": "AetherSDR TX",
+              "transport_type": 1986622068,
+              "input_channels": 0,
+              "output_channels": 2
+            }
+          ],
+          "unavailable": []
+        },
+        "portaudio": {
+          "hostapis": [
+            {
+              "index": 0,
+              "name": "Core Audio",
+              "device_count": 17,
+              "default_input": 4,
+              "default_output": 5
+            }
+          ],
+          "devices": [
+            {
+              "index": 0,
+              "name": "PA32QCV",
+              "hostapi": 0,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 48000.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.009833333333333333,
+              "default_high_input_latency": 0.1,
+              "default_high_output_latency": 0.019166666666666665
+            },
+            {
+              "index": 1,
+              "name": "USB Audio CODEC",
+              "hostapi": 0,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 48000.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.003416666666666667,
+              "default_high_input_latency": 0.1,
+              "default_high_output_latency": 0.01275
+            },
+            {
+              "index": 2,
+              "name": "USB Audio CODEC",
+              "hostapi": 0,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 48000.0,
+              "default_low_input_latency": 0.004416666666666667,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.01375,
+              "default_high_output_latency": 0.1
+            },
+            {
+              "index": 3,
+              "name": "USB Audio Device",
+              "hostapi": 0,
+              "max_input_channels": 2,
+              "max_output_channels": 2,
+              "default_samplerate": 48000.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.003416666666666667,
+              "default_high_input_latency": 0.1,
+              "default_high_output_latency": 0.01275
+            },
+            {
+              "index": 4,
+              "name": "HD Pro Webcam C920",
+              "hostapi": 0,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 16000.0,
+              "default_low_input_latency": 0.00725,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.03525,
+              "default_high_output_latency": 0.1
+            },
+            {
+              "index": 5,
+              "name": "Mac mini Speakers",
+              "hostapi": 0,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 48000.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.007395833333333333,
+              "default_high_input_latency": 0.1,
+              "default_high_output_latency": 0.016729166666666666
+            },
+            {
+              "index": 6,
+              "name": "RigPlane Virtual Cable Input",
+              "hostapi": 0,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 48000.0,
+              "default_low_input_latency": 0.012,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.021333333333333333,
+              "default_high_output_latency": 0.1
+            },
+            {
+              "index": 7,
+              "name": "RigPlane Virtual Cable Output",
+              "hostapi": 0,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 48000.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.012,
+              "default_high_input_latency": 0.1,
+              "default_high_output_latency": 0.021333333333333333
+            },
+            {
+              "index": 8,
+              "name": "AetherSDR DAX 1",
+              "hostapi": 0,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 24000.0,
+              "default_low_input_latency": 0.0026666666666666666,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.021333333333333333,
+              "default_high_output_latency": 0.1
+            },
+            {
+              "index": 9,
+              "name": "AetherSDR DAX 2",
+              "hostapi": 0,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 24000.0,
+              "default_low_input_latency": 0.0026666666666666666,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.021333333333333333,
+              "default_high_output_latency": 0.1
+            },
+            {
+              "index": 10,
+              "name": "AetherSDR DAX 3",
+              "hostapi": 0,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 24000.0,
+              "default_low_input_latency": 0.0026666666666666666,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.021333333333333333,
+              "default_high_output_latency": 0.1
+            },
+            {
+              "index": 11,
+              "name": "AetherSDR DAX 4",
+              "hostapi": 0,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 24000.0,
+              "default_low_input_latency": 0.0026666666666666666,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.021333333333333333,
+              "default_high_output_latency": 0.1
+            },
+            {
+              "index": 12,
+              "name": "AetherSDR DAX 5",
+              "hostapi": 0,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 24000.0,
+              "default_low_input_latency": 0.0026666666666666666,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.021333333333333333,
+              "default_high_output_latency": 0.1
+            },
+            {
+              "index": 13,
+              "name": "AetherSDR DAX 6",
+              "hostapi": 0,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 24000.0,
+              "default_low_input_latency": 0.0026666666666666666,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.021333333333333333,
+              "default_high_output_latency": 0.1
+            },
+            {
+              "index": 14,
+              "name": "AetherSDR DAX 7",
+              "hostapi": 0,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 24000.0,
+              "default_low_input_latency": 0.0026666666666666666,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.021333333333333333,
+              "default_high_output_latency": 0.1
+            },
+            {
+              "index": 15,
+              "name": "AetherSDR DAX 8",
+              "hostapi": 0,
+              "max_input_channels": 2,
+              "max_output_channels": 0,
+              "default_samplerate": 24000.0,
+              "default_low_input_latency": 0.0026666666666666666,
+              "default_low_output_latency": 0.01,
+              "default_high_input_latency": 0.021333333333333333,
+              "default_high_output_latency": 0.1
+            },
+            {
+              "index": 16,
+              "name": "AetherSDR TX",
+              "hostapi": 0,
+              "max_input_channels": 0,
+              "max_output_channels": 2,
+              "default_samplerate": 24000.0,
+              "default_low_input_latency": 0.01,
+              "default_low_output_latency": 0.0026666666666666666,
+              "default_high_input_latency": 0.1,
+              "default_high_output_latency": 0.021333333333333333
+            }
+          ],
+          "generation": 0,
+          "fresh": true
+        },
+        "serial_ports": [
+          {
+            "device": "/dev/cu.debug-console",
+            "name": "cu.debug-console",
+            "description": "n/a",
+            "vid": null,
+            "pid": null,
+            "serial_number": null,
+            "location": null,
+            "manufacturer": null,
+            "product": null,
+            "interface": null
+          },
+          {
+            "device": "/dev/cu.Bluetooth-Incoming-Port",
+            "name": "cu.Bluetooth-Incoming-Port",
+            "description": "n/a",
+            "vid": null,
+            "pid": null,
+            "serial_number": null,
+            "location": null,
+            "manufacturer": null,
+            "product": null,
+            "interface": null
+          },
+          {
+            "device": "/dev/cu.usbmodem3121203",
+            "name": "cu.usbmodem3121203",
+            "description": "IC-705",
+            "vid": 3110,
+            "pid": 54,
+            "serial_number": "RO6RSKSLO2G",
+            "location": "3-1.2.1.2",
+            "manufacturer": "Icom Inc.",
+            "product": "IC-705",
+            "interface": null
+          },
+          {
+            "device": "/dev/cu.usbmodem3121201",
+            "name": "cu.usbmodem3121201",
+            "description": "IC-705",
+            "vid": 3110,
+            "pid": 54,
+            "serial_number": "RO6RSKSLO2G",
+            "location": "3-1.2.1.2",
+            "manufacturer": "Icom Inc.",
+            "product": "IC-705",
+            "interface": null
+          },
+          {
+            "device": "/dev/cu.usbserial-RVDGLVMGQIF0",
+            "name": "cu.usbserial-RVDGLVMGQIF0",
+            "description": "CP2105 Dual USB to UART Bridge Controller",
+            "vid": 4292,
+            "pid": 60016,
+            "serial_number": "RVDGLVMGQIF",
+            "location": "3-1.2.2.1",
+            "manufacturer": "Silicon Labs",
+            "product": "CP2105 Dual USB to UART Bridge Controller",
+            "interface": null
+          },
+          {
+            "device": "/dev/cu.usbserial-RVDGLVMGQIF1",
+            "name": "cu.usbserial-RVDGLVMGQIF1",
+            "description": "CP2105 Dual USB to UART Bridge Controller",
+            "vid": 4292,
+            "pid": 60016,
+            "serial_number": "RVDGLVMGQIF",
+            "location": "3-1.2.2.1",
+            "manufacturer": "Silicon Labs",
+            "product": "CP2105 Dual USB to UART Bridge Controller",
+            "interface": null
+          },
+          {
+            "device": "/dev/cu.usbmodemRSOEYRNC4GL1",
+            "name": "cu.usbmodemRSOEYRNC4GL1",
+            "description": "YAESU HRI USB I/F",
+            "vid": 9898,
+            "pid": 48,
+            "serial_number": "RSOEYRNC4GL",
+            "location": "3-1.2.2.3",
+            "manufacturer": "YAESUMUSEN",
+            "product": "YAESU HRI USB I/F",
+            "interface": null
+          }
+        ]
+      },
+      "unavailable": []
+    }
+  ]
+}

@@ -71,7 +71,7 @@ if TYPE_CHECKING:
     from rigplane.runtime._poller_types import CommandQueue
     from rigplane.scope import ScopeFrame
     from .tx_observation import TxStateReading
-    from .types import BandStackRegister, MemoryChannel, ScopeFixedEdge
+    from .types import BandStackRegister, MemoryChannel, MemoryEntry, ScopeFixedEdge
 
 __all__ = [
     "Radio",
@@ -87,6 +87,8 @@ __all__ = [
     "TransceiverBankCapable",
     "VfoSlotCapable",
     "RelativeVfoReadbackCapable",
+    "RelativeVfoFrequencyWritable",
+    "RelativeVfoModeWritable",
     "RelativeVfoState",
     "StateCacheCapable",
     "StateModelCapable",
@@ -128,6 +130,7 @@ __all__ = [
     "UsbAudioCapable",
     "ProviderOwnedStateCapable",
     "MemoryCapable",
+    "MemoryReadCapable",
     "RadioIdentity",
     "RadioIdentityStatus",
 ]
@@ -1360,6 +1363,7 @@ class CivCommandCapable(Protocol):
         wait_response: bool = True,
         priority: Any = ...,
         wait_dispatch: bool = True,
+        is_current: Callable[[], bool] | None = None,
     ) -> Any:
         """Send a CI-V command through the active backend transport.
 
@@ -1685,6 +1689,40 @@ class RelativeVfoReadbackCapable(Protocol):
 
     async def read_relative_vfo(self, *, selected: bool) -> RelativeVfoState:
         """Return a fresh tuple for the radio's current relative role."""
+        ...
+
+
+@runtime_checkable
+class RelativeVfoFrequencyWritable(Protocol):
+    """Radio can write and read back a Selected/Unselected VFO frequency."""
+
+    async def write_relative_vfo_frequency(
+        self,
+        freq_hz: int,
+        *,
+        selected: bool,
+        before_set: Callable[[], None] | None = None,
+        after_ack: Callable[[], None] | None = None,
+        after_readback: Callable[[], None] | None = None,
+    ) -> int:
+        """Return observed Hz; synchronous hooks may raise to reject stale targets."""
+        ...
+
+
+@runtime_checkable
+class RelativeVfoModeWritable(Protocol):
+    """Radio can write and read back a Selected/Unselected VFO mode tuple."""
+
+    async def write_relative_vfo_mode(
+        self,
+        mode: int,
+        *,
+        selected: bool,
+        data: bool | None = None,
+        filter_width: int | None = None,
+        before_set: Callable[[], None] | None = None,
+    ) -> RelativeVfoState:
+        """Preserve omitted fields; the synchronous hook may refuse before SET."""
         ...
 
 
@@ -2123,6 +2161,21 @@ class RitXitCapable(Protocol):
 
 
 @runtime_checkable
+class MemoryReadCapable(Protocol):
+    """Radio can read its stored memory channels without selecting them.
+
+    Read-only (MOR-3627): the write path is :class:`MemoryCapable`. ``group``
+    is the memory group or band code the profile's ``[memory]`` section names.
+    """
+
+    async def read_memory_entries(
+        self, group: int, channels: Sequence[int]
+    ) -> list[MemoryEntry]:
+        """Read the given channels of one group, in order."""
+        ...
+
+
+@runtime_checkable
 class MemoryCapable(Protocol):
     """Radio supports memory channel operations.
 
@@ -2132,8 +2185,8 @@ class MemoryCapable(Protocol):
     radios) do not support GET variants for these commands.
     """
 
-    async def set_memory_mode(self, channel: int) -> None:
-        """Select a memory channel (1-101)."""
+    async def set_memory_mode(self, channel: int, group: int | None = None) -> None:
+        """Select a memory channel (1-101); with ``group``, a listed one (profile-bounded)."""
         ...
 
     async def memory_write(self) -> None:

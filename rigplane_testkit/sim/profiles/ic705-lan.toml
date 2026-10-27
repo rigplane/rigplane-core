@@ -1,0 +1,46 @@
+# IC-705 simulation profile (LAN over Wi-Fi, tier A). Wire facts stay in
+# rigs/ic705.toml; identity/audio/scope select among recorded values.
+# Sourcing: tests/fixtures/ic705/README.md and the fixture files cited per
+# key below. Unsourced keys are omitted.
+
+schema = "rigplane-sim-profile/1"
+
+[sim]
+id = "ic705-lan"
+radio = "IC-705"
+fidelity = "A"
+evidence = ["tests/fixtures/ic705/civ_pairs.jsonl", "tests/golden/wire_oracle/ic705.toml"]
+gaps = [
+    "TX audio path unrecorded",
+    "scope waves recorded at the recorded cadence only",
+    "VHF/UHF answers recorded separately in civ_pairs_vhf_uhf.jsonl (they differ per band) and not mounted",
+    "configured repeater channel (offset, tone, DCS values) not recorded",
+    "firmware version unknown (not readable over CI-V)",
+    "GPS and Bluetooth not modelled",
+    "unknown 1A 05 menu items answered from the recorded table or NAK",
+    "LAN keepalive hold time not measured for this radio",
+]
+
+[transport.lan]
+identity = "A4"  # recorded 19 00 reply (probe_answers_lan.json get_transceiver_id)
+# keepalive_hold_s and single_owner: not measured for the IC-705, omitted.
+
+[initial]
+frequency_hz = 14_074_000  # README "Radio state"; probe get_freq reply 03 00 40 07 14 00
+mode = "USB"               # probe get_mode reply 04 01 01
+filter = 1                 # probe get_mode reply 04 01 01
+
+[answers]
+recorded = [{ file = "tests/fixtures/ic705/civ_pairs.jsonl", transport = "lan" }]
+
+[audio.rx]
+transport = "lan_stream"
+sample_rate_hz = 48000  # audio_stream.json format: PCM 1 channel 16-bit, 48 kHz
+channels = 1            # audio_stream.json format
+sample_format = "s16le" # audio_stream.json format
+
+[scope]
+frame = "27 00"
+bins = 475          # 27 00 sweep payload in the lan_scope window: one 497-byte frame, 475 pixel bytes
+span_hz = 50_000    # recorded 27 15 00 reply 00 00 05 00 00 (BCD) in the lan_scope window
+rate_hz = 29.997    # scope_cadence.json lan.radio_wave.sweeps_per_s

@@ -49,7 +49,9 @@ radio disconnect/connect, and pins:
   settle's own bound adds no task to the counts it takes: on the live
   loop a task delta exactly at tolerance must still settle, measured by
   both count routes with the CI interpreter's task-wrapping
-  ``wait_for`` semantics emulated (Python 3.11; 3.12+ await in-task).
+  ``wait_for`` semantics emulated (Python 3.11; 3.12+ await in-task);
+ * the probe's own instruments cannot mask a real leak (MOR-3575 round
+   2), over a live HTTP probe path with per-route assertions.
 """
 
 from __future__ import annotations
@@ -57,12 +59,15 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import os
+import socket
 import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
+import aiohttp
 
 from scripts.soak import soak_driver
 
@@ -467,13 +472,13 @@ async def test_soak_smoke_report_shape_and_incomplete_verdict() -> None:
 
     fds = report["criteria"]["fdsStability"]
     assert fds["status"] == "PASS"
-    assert fds["tolerance"] == 5
+    assert fds["tolerance"] == 0  # the owned-socket population compares exactly
     assert fds["checks"], "expected at least one completed reconnect check"
     assert all(check["ok"] for check in fds["checks"])
 
     tasks = report["criteria"]["tasksStability"]
     assert tasks["status"] == "PASS"
-    assert tasks["tolerance"] == 5
+    assert tasks["tolerance"] == 2  # the reconnect's task-rebuild bound
     assert tasks["checks"], "expected at least one completed reconnect check"
 
     rss = report["criteria"]["rssGrowth"]
@@ -1279,3 +1284,614 @@ async def test_stability_post_probe_still_fails_a_persistent_tasks_surplus(
     assert _stability_status(entry, "fds")["status"] == "PASS"
     assert _stability_status(entry, "tasks")["status"] == "FAIL"
     assert sleeps == [3.0] + [soak_driver._STABILITY_SETTLE_STEP_S] * 20
+
+
+# ---------------------------------------------------------------------------
+# MOR-3575 step 3: the in-process provider counts the owned population —
+# the pending tasks created after the run's baseline, and sockets on the
+# harness-created ports
+# ---------------------------------------------------------------------------
+
+
+def _stability_criteria_for(
+    fds_pre: int, fds_post: int, tasks_pre: int, tasks_post: int
+) -> dict[str, Any]:
+    """The report's own criterion math on one in-process cycle: the
+    entry carries ``ownedPopulation``, so fds compare exactly and tasks
+    within the rebuild bound, with the constants as committed."""
+    entry = _one_reconnect(300.0, 320.0)
+    entry.update(
+        ownedPopulation=True,
+        fdsPre=fds_pre,
+        fdsPost=fds_post,
+        tasksPre=tasks_pre,
+        tasksPost=tasks_post,
+    )
+    return soak_driver.evaluate_report(
+        _smoke_config(duration_s=3600.0),
+        _hour_of_samples(slope_bytes_per_s=1000.0),
+        [entry],
+    )
+
+
+def _listener(backlog: int = 1) -> socket.socket:
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(backlog)
+    return sock
+
+
+def test_owned_socket_fd_count_sees_only_run_owned_ports() -> None:
+    """Unrelated listener sockets and a pipe are invisible (no regular
+    file is covered by this test); owned sockets count while open, by
+    exactly one each, and stop counting once closed."""
+    unrelated = _listener()
+    read_fd, write_fd = os.pipe()
+    owned = _listener()
+    ports = frozenset({owned.getsockname()[1]})
+    client = accepted = None
+    try:
+        assert soak_driver._owned_socket_fd_count(frozenset()) == 0
+        assert soak_driver._owned_socket_fd_count(ports) == 1
+        client = socket.create_connection(owned.getsockname())
+        accepted, _ = owned.accept()
+        assert soak_driver._owned_socket_fd_count(ports) == 3
+        accepted.close()
+        client.close()
+        assert soak_driver._owned_socket_fd_count(ports) == 1
+    finally:
+        for resource in (client, accepted, owned, unrelated):
+            if resource is not None:
+                resource.close()
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_leaked_run_owned_sockets_fail_the_stability_criterion() -> None:
+    """Negative control through the real criterion (MOR-3575).
+
+    One leaked run-owned socket FAILs the criterion — the in-process
+    owned-socket comparison is exact, no tolerance — and registers its
+    exact delta of one. An unrelated listener socket and a pipe between
+    the probes change nothing: the count returns to pre and the verdict
+    to PASS once the leak closes.
+    """
+    owned = _listener(backlog=8)
+    ports = frozenset({owned.getsockname()[1]})
+    unrelated = _listener()
+    read_fd, write_fd = os.pipe()
+    leaks: list[socket.socket] = []
+    try:
+        pre = soak_driver._owned_socket_fd_count(ports)
+        leaks.append(socket.create_connection(owned.getsockname()))
+        one = soak_driver._owned_socket_fd_count(ports)
+        assert one == pre + 1
+        one_leak = _stability_criteria_for(pre, one, 25, 25)
+        assert one_leak["fdsStability"]["checks"][0]["delta"] == 1
+        assert one_leak["fdsStability"]["status"] == "FAIL"
+        leaks[0].close()
+        leaks.clear()
+        post = soak_driver._owned_socket_fd_count(ports)
+        assert post == pre  # the unrelated listener and pipe never counted
+        assert (
+            _stability_criteria_for(pre, post, 25, 25)["fdsStability"]["status"]
+            == "PASS"
+        )
+    finally:
+        for leak in leaks:
+            leak.close()
+        owned.close()
+        unrelated.close()
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def _module_linger(module_name: str) -> Any:
+    """A linger coroutine whose defining module is ``module_name`` (an
+    ``exec`` stand-in for a product-module task; no product code runs)."""
+    namespace: dict[str, Any] = {"__name__": module_name}
+    exec(
+        "async def linger():\n    import asyncio\n    await asyncio.Event().wait()\n",
+        namespace,
+    )
+    return namespace["linger"]
+
+
+class _OverlayWeb:
+    """A minimal web object the overlay can install on (methods live on
+    the class, so ``install`` sees a clean instance ``vars``);
+    ``_serve_runtime`` writes a real HTTP response over the socket."""
+
+    _radio = None
+    _reconnects_total = 0
+
+    def _runtime_process_payload(self) -> dict[str, Any]:
+        return {"rssBytes": 1, "openFds": 9, "asyncioTasks": 3}
+
+    async def _serve_runtime(
+        self, writer: Any, headers: dict[str, str] | None = None
+    ) -> None:
+        body = json.dumps(
+            {"pid": os.getpid(), "process": self._runtime_process_payload()}
+        ).encode()
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+            + body
+        )
+        await writer.drain()
+
+
+async def test_leaked_run_owned_tasks_fail_the_stability_criterion() -> None:
+    """Production selector, no patched constants (MOR-3575): a real
+    ``_RuntimeTaskAdapter`` baseline counts each leaked run-owned
+    standard-library task (``asyncio.sleep``-style helpers) exactly, and
+    the criterion FAILs on the smallest over-tolerance leak of three —
+    the reconnect's own task rebuild churns the count by up to two in
+    both directions, so one leaked task is under the count criterion's
+    floor (measured on the end-to-end runs; see
+    ``IN_PROCESS_TASK_STABILITY_TOLERANCE``). A matching-product-module
+    task predating the run never enters the population; the overlay
+    reports the same count.
+    """
+
+    foreign = asyncio.create_task(_module_linger("rigplane.core.transport")())
+    leaks: list[asyncio.Task[None]] = []
+    adapter: soak_driver._RuntimeTaskAdapter | None = None
+    try:
+        stack = SimpleNamespace(
+            web=_OverlayWeb(), radio=SimpleNamespace(), rigctld=SimpleNamespace()
+        )
+        adapter = soak_driver._RuntimeTaskAdapter(stack, None)
+        adapter.install()
+        pre = len(adapter.owned_task_population())
+        assert pre == 0  # the product-module task predates the run
+        leaks.append(asyncio.create_task(asyncio.sleep(3600.0)))
+        assert len(adapter.owned_task_population()) == pre + 1
+        for _ in range(soak_driver.IN_PROCESS_TASK_STABILITY_TOLERANCE):
+            leaks.append(asyncio.create_task(asyncio.sleep(3600.0)))
+        post = len(adapter.owned_task_population())
+        assert post == pre + 1 + soak_driver.IN_PROCESS_TASK_STABILITY_TOLERANCE
+        assert (
+            _stability_criteria_for(20, 20, pre, post)["tasksStability"]["status"]
+            == "FAIL"
+        )
+        assert stack.web._runtime_process_payload()["asyncioTasks"] == post
+    finally:
+        for task in leaks:
+            task.cancel()
+        foreign.cancel()
+        await asyncio.gather(foreign, *leaks, return_exceptions=True)
+        if adapter is not None:
+            adapter.close()
+
+
+class _LiveProbeStack:
+    """The live probe path in miniature (MOR-3575, round 2): one
+    ``asyncio.start_server`` with ``WebServer``'s per-request lifecycle
+    (a task per connection, the wrapped ``_serve_runtime`` awaited, the
+    connection closed in a ``finally``), a real aiohttp session, and a
+    second owned listener as the leak target. ``serving["up"] = False``
+    answers 503 — the runtime-payload outage that switches ``sample``
+    onto its driver-side fallback."""
+
+    def __init__(self) -> None:
+        self.serving = {"up": True}
+        self.web = _OverlayWeb()
+        # Headroom over the largest leak these tests make (three
+        # never-accepted connections in the outage regression).
+        self.leak_listener = _listener(
+            backlog=soak_driver.IN_PROCESS_TASK_STABILITY_TOLERANCE + 2
+        )
+        self.leak_addr = self.leak_listener.getsockname()
+        self.adapter: soak_driver._RuntimeTaskAdapter | None = None
+        self.sampler: soak_driver.ProcessMetricsSampler | None = None
+        self._server: asyncio.AbstractServer | None = None
+        self._session: aiohttp.ClientSession | None = None
+        self.hold_probe_close = False
+        self.probe_closing = asyncio.Event()
+        self.release_probe_close = asyncio.Event()
+        self._handlers: set[asyncio.Task[Any]] = set()
+
+    async def start(self) -> "_LiveProbeStack":
+        async def handle(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            task = asyncio.current_task()
+            assert task is not None
+            self._handlers.add(task)
+            try:
+                request = await reader.readline()
+                while line := await reader.readline():
+                    if line in (b"\r\n", b"\n"):
+                        break
+                path = request.decode("ascii", "replace").split(" ")[1:2]
+                if self.serving["up"] and path == ["/api/v1/runtime"]:
+                    await self.web._serve_runtime(writer, {})
+                elif self.hold_probe_close and path == ["/api/v1/runtime"]:
+                    writer.write(
+                        b"HTTP/1.1 503 Unavailable\r\nContent-Length: 2\r\n"
+                        b"Connection: close\r\n\r\n{}"
+                    )
+                    await writer.drain()
+                    self.probe_closing.set()
+                    await self.release_probe_close.wait()
+                else:
+                    status = "200 OK" if self.serving["up"] else "503 Unavailable"
+                    writer.write(
+                        f"HTTP/1.1 {status}\r\nContent-Length: 2\r\n"
+                        "Connection: close\r\n\r\n{}".encode()
+                    )
+                    await writer.drain()
+            finally:
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                finally:
+                    self._handlers.discard(task)
+
+        self._server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        port = self._server.sockets[0].getsockname()[1]
+        stack = SimpleNamespace(
+            web=self.web,
+            radio=SimpleNamespace(),
+            rigctld=SimpleNamespace(),
+            web_port=port,
+            sim=SimpleNamespace(control_port=self.leak_addr[1]),
+        )
+        self.adapter = soak_driver._RuntimeTaskAdapter(stack, None)
+        self.adapter.install()
+        self._session = aiohttp.ClientSession(
+            request_class=soak_driver._ProbeClientRequest
+        )
+        self.sampler = soak_driver.ProcessMetricsSampler(
+            self._session, f"http://127.0.0.1:{port}"
+        )
+        self.sampler._runtime_task_adapter = self.adapter
+        return self
+
+    async def probe(
+        self, t_s: float
+    ) -> tuple[soak_driver.ProcessSample, tuple[str, str]]:
+        """One sampled probe plus the (fds, tasks) route it really used."""
+        assert self.sampler is not None
+        capture = soak_driver._ProbeDiagnostics().begin("pre")
+        sample = await self.sampler.sample(t_s, capture)
+        selections = capture.selections or {}
+        return sample, (
+            selections["fds"]["route"],
+            selections["asyncioTasks"]["route"],
+        )
+
+    async def aclose(self) -> None:
+        self.release_probe_close.set()
+        if self._session is not None:
+            await self._session.close()
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+        await asyncio.gather(*self._handlers)
+        if self.adapter is not None:
+            self.adapter.close()
+        self.leak_listener.close()
+
+
+@pytest.mark.parametrize("slow_probe_close", [False, True])
+async def test_probe_overhead_cannot_mask_a_real_leak(slow_probe_close: bool) -> None:
+    """The probe's own instruments stay out of the measured population
+    (MOR-3575 round 2): over the whole live HTTP path, a leak of the
+    smallest detectable size — one owned socket, the exact in-process
+    comparison — still fails the criterion when the pre probe rides the
+    runtime route and the post probe switches to the fallback."""
+    live = await _LiveProbeStack().start()
+    leaks: list[socket.socket] = []
+    try:
+        pre, routes = await live.probe(1.0)
+        assert routes == ("runtime", "runtime")
+        leaks.append(socket.create_connection(live.leak_addr))
+        live.serving["up"] = False
+        live.hold_probe_close = slow_probe_close
+        post, routes = await live.probe(2.0)
+        assert routes == ("driver", "driver")
+        assert post.fds == pre.fds + 1
+        assert post.asyncio_tasks == pre.asyncio_tasks
+        assert (
+            _stability_criteria_for(
+                pre.fds, post.fds, pre.asyncio_tasks, post.asyncio_tasks
+            )["fdsStability"]["status"]
+            == "FAIL"
+        )
+    finally:
+        for sock in leaks:
+            sock.close()
+        await live.aclose()
+
+
+@pytest.mark.parametrize(
+    ("leaked_fds", "leaked_tasks"),
+    [(0, 0), (1, 0), (0, soak_driver.IN_PROCESS_TASK_STABILITY_TOLERANCE + 1)],
+)
+async def test_fallback_pre_runtime_post_excludes_slow_probe_close(
+    leaked_fds: int, leaked_tasks: int
+) -> None:
+    live = await _LiveProbeStack().start()
+    leaks: list[socket.socket] = []
+    leak_tasks: list[asyncio.Task[None]] = []
+    try:
+        assert live.adapter is not None
+        baseline_fds = live.adapter.owned_fd_count()
+        live.serving["up"] = False
+        live.hold_probe_close = True
+        pre, routes = await live.probe(1.0)
+        assert routes == ("driver", "driver")
+        assert live.probe_closing.is_set()
+        assert not live.release_probe_close.is_set()
+        handlers = set(live._handlers)
+        assert len(handlers) == 1
+        assert all(not task.done() for task in handlers)
+        assert live.adapter.owned_fd_count() == baseline_fds + 2
+        assert pre.fds == baseline_fds
+        live.release_probe_close.set()
+        await asyncio.gather(*handlers)
+        live.serving["up"] = True
+        for _ in range(leaked_fds):
+            leaks.append(socket.create_connection(live.leak_addr))
+        for _ in range(leaked_tasks):
+            leak_tasks.append(asyncio.create_task(asyncio.sleep(3600.0)))
+        post, routes = await live.probe(2.0)
+        assert routes == ("runtime", "runtime")
+        verdict = _stability_criteria_for(
+            pre.fds, post.fds, pre.asyncio_tasks, post.asyncio_tasks
+        )
+        assert verdict["fdsStability"]["status"] == ("FAIL" if leaked_fds else "PASS")
+        assert verdict["fdsStability"]["checks"][0]["delta"] == leaked_fds
+        assert verdict["tasksStability"]["status"] == (
+            "FAIL" if leaked_tasks else "PASS"
+        )
+        assert post.asyncio_tasks == pre.asyncio_tasks + leaked_tasks
+    finally:
+        for sock in leaks:
+            sock.close()
+        for task in leak_tasks:
+            task.cancel()
+        await asyncio.gather(*leak_tasks, return_exceptions=True)
+        await live.aclose()
+
+
+async def test_runtime_outage_keeps_one_owned_population_and_verdict() -> None:
+    """In this fixture an HTTP 503 and recovery preserve owned counts.
+
+    Each sample asserts its runtime/driver route. After recovery, socket
+    and task leaks of the task tolerance + 1 fail both stability criteria.
+    """
+    live = await _LiveProbeStack().start()
+    leaks: list[socket.socket] = []
+    leak_tasks: list[asyncio.Task[None]] = []
+    try:
+        up, routes = await live.probe(1.0)
+        assert routes == ("runtime", "runtime")
+        live.serving["up"] = False
+        down, routes = await live.probe(2.0)
+        assert routes == ("driver", "driver")
+        assert (down.fds, down.asyncio_tasks) == (up.fds, up.asyncio_tasks)
+        live.serving["up"] = True
+        recovered, routes = await live.probe(3.0)
+        assert routes == ("runtime", "runtime")
+        leak_size = soak_driver.IN_PROCESS_TASK_STABILITY_TOLERANCE + 1
+        for _ in range(leak_size):
+            leaks.append(socket.create_connection(live.leak_addr))
+            leak_tasks.append(asyncio.create_task(asyncio.sleep(3600.0)))
+        live.serving["up"] = False
+        post, routes = await live.probe(4.0)
+        assert routes == ("driver", "driver")
+        assert (post.fds, post.asyncio_tasks) == (
+            recovered.fds + leak_size,
+            recovered.asyncio_tasks + leak_size,
+        )
+        verdict = _stability_criteria_for(
+            recovered.fds, post.fds, recovered.asyncio_tasks, post.asyncio_tasks
+        )
+        assert verdict["fdsStability"]["status"] == "FAIL"
+        assert verdict["tasksStability"]["status"] == "FAIL"
+    finally:
+        for sock in leaks:
+            sock.close()
+        for task in leak_tasks:
+            task.cancel()
+        await asyncio.gather(*leak_tasks, return_exceptions=True)
+        await live.aclose()
+    assert "_runtime_process_payload" not in vars(live.web)
+
+
+@pytest.mark.parametrize("leaked_fds", [0, 2])
+async def test_stability_probe_drains_replay_without_hiding_socket_leaks(
+    monkeypatch: pytest.MonkeyPatch, leaked_fds: int
+) -> None:
+    baseline = frozenset(asyncio.all_tasks())
+    stack = await soak_driver._start_simulator_stack()
+    adapter = soak_driver._RuntimeTaskAdapter(stack, None, baseline)
+    adapter.install()
+    tasks: list[asyncio.Task[Any]] = []
+    leaks: list[asyncio.StreamWriter] = []
+    release = asyncio.Event()
+    replay_open = asyncio.Event()
+    replay_done = asyncio.Event()
+    try:
+        async with aiohttp.ClientSession(
+            request_class=soak_driver._ProbeClientRequest
+        ) as session:
+            driver = soak_driver.SoakDriver(
+                _smoke_config(duration_s=3600),
+                f"http://127.0.0.1:{stack.web_port}",
+                f"127.0.0.1:{stack.rigctld_port}",
+                stack.sim,
+            )
+            driver._t0 = time.monotonic()
+            driver._connection_state = "connected"
+            driver._runtime_task_adapter = adapter
+            driver._sampler = soak_driver.ProcessMetricsSampler(
+                session, driver._base_url
+            )
+            driver._sampler._runtime_task_adapter = adapter
+            command = driver._rigctld_cmd
+
+            async def held_command(
+                writer: asyncio.StreamWriter,
+                reader: asyncio.StreamReader,
+                cmd: str,
+                extra_lines: int = 0,
+            ) -> list[str]:
+                reply = await command(writer, reader, cmd, extra_lines)
+                if not replay_open.is_set():
+                    replay_open.set()
+                    await release.wait()
+                return reply
+
+            async def replay() -> None:
+                await driver._rigctld_replay_once()
+                replay_done.set()
+
+            monkeypatch.setattr(driver, "_rigctld_cmd", held_command)
+            tasks.append(
+                asyncio.create_task(
+                    driver._run_periodic("rigctld", 3600, replay),
+                    name="soak-test-replay",
+                )
+            )
+            async with asyncio.timeout(30.0):
+                await replay_open.wait()
+                pre_task = asyncio.create_task(
+                    driver._stability_probe(), name="soak-test-pre"
+                )
+                tasks.append(pre_task)
+                # Without the barrier, retain the replay through the whole pre
+                # trio; with it, release as soon as admission has paused.
+                while not pre_task.done() and not getattr(
+                    driver, "_transient_paused", False
+                ):
+                    await asyncio.sleep(0)
+                release.set()
+                await replay_done.wait()
+                pre = await pre_task
+                assert driver._counts["rigctldReplays"] == 1
+                if leaked_fds:
+                    reader, writer = await asyncio.open_connection(
+                        "127.0.0.1", stack.rigctld_port
+                    )
+                    leaks.append(writer)
+                    assert await command(writer, reader, "t") == ["0"]
+                post = await driver._stability_probe("post")
+            criterion = _stability_criteria_for(
+                pre.fds, post.fds, pre.asyncio_tasks, post.asyncio_tasks
+            )["fdsStability"]
+            assert criterion["status"] == ("FAIL" if leaked_fds else "PASS")
+            assert criterion["checks"][0]["delta"] == leaked_fds
+    finally:
+        release.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for writer in leaks:
+            writer.close()
+            await writer.wait_closed()
+        adapter.close()
+        await stack.aclose()
+
+
+async def test_stability_probe_defers_new_periodic_actions_until_trio_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live = await _LiveProbeStack().start()
+    driver = soak_driver.SoakDriver(
+        _smoke_config(), "", "", SimpleNamespace(fault_plan=None)
+    )
+    driver._t0 = time.monotonic()
+    driver._sampler = live.sampler
+    sampling = asyncio.Event()
+    finish = asyncio.Event()
+    scheduled = asyncio.Event()
+    acted = asyncio.Event()
+    tasks: list[asyncio.Task[Any]] = []
+    assert live.sampler is not None
+    sample = live.sampler.sample
+
+    async def held_sample(t_s: float) -> soak_driver.ProcessSample:
+        sampling.set()
+        await finish.wait()
+        assert not acted.is_set()
+        return await sample(t_s)
+
+    async def action() -> None:
+        acted.set()
+
+    async def periodic() -> None:
+        scheduled.set()
+        await driver._run_periodic("metrics", 3600, action)
+
+    monkeypatch.setattr(live.sampler, "sample", held_sample)
+    try:
+        async with asyncio.timeout(5.0):
+            probe = asyncio.create_task(
+                driver._stability_probe(), name="soak-test-probe"
+            )
+            tasks.append(probe)
+            await sampling.wait()
+            tasks.append(asyncio.create_task(periodic(), name="soak-test-metrics"))
+            await scheduled.wait()
+            finish.set()
+            await probe
+            await acted.wait()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await live.aclose()
+
+
+@pytest.mark.parametrize("interrupt", ["timeout", "cancel"])
+async def test_stability_drain_is_bounded_and_restores_admission(
+    monkeypatch: pytest.MonkeyPatch, interrupt: str
+) -> None:
+    driver = soak_driver.SoakDriver(
+        _smoke_config(), "", "", SimpleNamespace(fault_plan=None)
+    )
+    driver._t0 = time.monotonic()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def action() -> None:
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(
+        soak_driver,
+        "_TRANSIENT_DRAIN_TIMEOUT_S",
+        0.05 if interrupt == "timeout" else 30.0,
+    )
+    traffic = asyncio.create_task(driver._run_periodic("rigctld", 3600, action))
+    probe: asyncio.Task[Any] | None = None
+    try:
+        async with asyncio.timeout(5.0):
+            await entered.wait()
+            probe = asyncio.create_task(driver._stability_probe())
+            while not driver._transient_paused:
+                await asyncio.sleep(0)
+            if interrupt == "cancel":
+                probe.cancel()
+            expected = (
+                TimeoutError if interrupt == "timeout" else asyncio.CancelledError
+            )
+            with pytest.raises(expected):
+                await probe
+            assert not driver._transient_paused
+            assert not driver._transient_condition.locked()
+            assert driver._transient_active == 1
+    finally:
+        release.set()
+        traffic.cancel()
+        if probe is not None:
+            probe.cancel()
+        await asyncio.gather(
+            traffic, *([probe] if probe else []), return_exceptions=True
+        )
+    assert driver._transient_active == 0

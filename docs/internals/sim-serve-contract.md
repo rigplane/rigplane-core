@@ -46,6 +46,25 @@ loop — one loop, no threads).
 
 - `GET /state` → `{"frequency_hz":int,"mode":int,"ptt":bool,"session_held":bool,"login_count":int}`
 - `GET /trace?since=N` → `{"events":[...],"next":int}` — records with `n >= N`.
+- `GET /audio/tx?since=N` → the simulator's TX-audio sink over frames `N..`:
+  `{"frames":int,"payload_bytes":int,"ptt_off_frames":int,"inner_seq_gaps":int,
+  "first_received_at":float|null,"last_received_at":float|null,
+  "sample_rate":int|null,"channels":1,"codec":"pcm16"|null,
+  "format":"pcm16"|"non_pcm16"|"unknown"|"mixed"|"default"}` (monotonic-clock
+  values of the simulator process; `sample_rate`/`codec` are the TX format the
+  sink learned from the client's accepted conninfo — a negotiated 16 kHz
+  capture reports 16000, never a profile constant; `"unknown"` = frames with
+  no learned format (bare conninfo), `"mixed"` = a format change inside the
+  slice (rate/codec null), `"default"` = nothing captured and nothing
+  learned (the IC-7610 profile value, which mislabels nothing);
+  `inner_seq_gaps` counts sequence discontinuities inside the slice). The
+  IC-7610 backend is built with `capture_tx_audio=True` for this.
+- `GET /audio/tx.wav?since=N` → the same frames as an `audio/wav` body
+  (16-bit PCM, mono) labeled with the learned TX format, or HTTP 409
+  `{"ok":false,"outcome":"format_default"|"format_unknown"|"format_mixed"|"format_non_pcm16"}`
+  when the capture has no single learned PCM16 format. `"format_default"`
+  means the slice has no captured frames and no TX format is currently known.
+  Both routes answer HTTP 404 `{"ok":false,"outcome":"unsupported"}` on the serial backends.
 - `POST /stop` → `{"ok":true}`, then a clean shutdown (same path as
   SIGINT/SIGTERM); a second `POST /stop` before it completes is harmless.
 - `POST /event` with `{"event":"<name>", ...args}` → `{"ok":true,...}`, or

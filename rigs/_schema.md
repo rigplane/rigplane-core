@@ -69,6 +69,36 @@ the validation command. Opus must not be used as a stock radio LAN default unles
 the endpoint or protocol explicitly proves native Opus support. Browser Opus is
 only a server-to-browser transport policy after radio-native audio is received.
 
+## `[usb]` — Optional USB Audio Identity
+
+`audio_codec` and `serial_functions` are optional lists of
+`{ vid = "XXXX", pid = "YYYY" }` tables. Both identifiers must be strings of
+four uppercase hexadecimal digits. Unknown keys in `[usb]` or its function
+entries are rejected; duplicate entries are deduplicated. See
+`src/rigplane/profiles/rig_loader.py: load_rig` and
+`src/rigplane/core/usb_identity.py: UsbFunctionId`.
+
+```toml
+[usb]
+# Record the capture that establishes these identifiers beside the data.
+audio_codec = [{ vid = "0D8C", pid = "0016" }]
+serial_functions = [{ vid = "10C4", pid = "EA70" }, { vid = "26AA", pid = "0030" }]
+```
+
+Populate these lists only from our own USB recordings; the example matches
+`rigs/ftx1.toml`. `audio_codec` constrains the codec chosen by the shared pairing
+rule; it does not establish containment by itself. `serial_functions` identifies
+the radio's own serial USB functions: distinct declared VID:PID devices directly
+under the requested serial device's hub may count as one radio. An undeclared
+serial device, a repeated serial VID:PID, or an additional serial device under a
+nested hub still refuses with `serial_ambiguous`.
+
+An omitted `[usb]` gives `usb_identity = None`. Omitted or empty lists default
+to empty sets: no codec filter for `audio_codec`, and the strict single-serial
+rule for `serial_functions`. Either list may be supplied alone.
+`RigConfig.to_profile` copies the identity to `RadioProfile`.
+See `docs/internals/usb-audio-pairing.md` for the complete rule.
+
 ## `[capabilities]` — Feature Flags
 
 | Field      | Type     | Required | Description                    |
@@ -618,11 +648,17 @@ These optional sections provide detailed configuration for specific capabilities
 ### `[memory]`
 
 Optional: how stored memory channels are addressed, for the read-only listing
-(capability `memory_read`; the read is the profile's `get_memory_contents`).
-`addressing` is `"group_channel"` (IC-705) or `"band_channel"` (IC-9700) and
-also picks the `1A 00` record layout; `first_group`/`last_group` bound the
+(capability `memory_read`). CI-V profiles read with their `get_memory_contents`;
+the FTX-1 declares the CAT pair `get_memory_channel` (MR) and `get_memory_tag` (MT).
+`addressing` is `"group_channel"` (IC-705), `"band_channel"` (IC-9700) or
+`"channel"` (FTX-1, one numbered list, group 0 only); the first two also pick the
+`1A 00` record layout; `first_group`/`last_group` bound the
 group number or band code, `first_channel`/`last_channel` the channel;
 `recall = true` marks profiles whose select commands recall a listed channel.
+`dd_groups` lists groups/bands where mode byte `0x22` is DD;
+`offset_10mhz_groups` lists groups/bands with the offset's 10 MHz digit.
+Both default to `[]` and accept only lists of unique integers within
+`first_group..last_group`; booleans are rejected.
 
 ## `[cw_text]` — Typed CW Text (MOR-3678)
 

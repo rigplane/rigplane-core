@@ -9,16 +9,28 @@ from __future__ import annotations
 
 import ctypes
 import sys
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 # (instance_id, parent_instance_id, class name, device name); absent → "".
-DevNodeRow = tuple[str, str, str, str]
 
 _CR_SUCCESS = 0x00
 _CR_NO_SUCH_DEVNODE = 0x0D
 _CR_BUFFER_SMALL = 0x1A
 _CR_NO_SUCH_VALUE = 0x25
 _DEVPROP_TYPE_STRING = 0x12
+_DEVPROP_TYPE_STRING_LIST = 0x2012
+
+
+@dataclass(frozen=True, slots=True)
+class DevNodeRecord:
+    instance_id: str
+    parent_id: str
+    class_name: str
+    friendly_name: str
+    device_desc: str
+    hardware_ids: tuple[str, ...]
+    compatible_ids: tuple[str, ...]
 
 
 class _Guid(ctypes.Structure):
@@ -55,6 +67,8 @@ _DEVPKEY_DEVICE_FMTID = (
     b"\x80\x20\x67\xd1\x46\xa8\x50\xe0",
 )
 DEVPKEY_DEVICE_DESC = _key(*_DEVPKEY_DEVICE_FMTID, 2)
+DEVPKEY_DEVICE_HARDWARE_IDS = _key(*_DEVPKEY_DEVICE_FMTID, 3)
+DEVPKEY_DEVICE_COMPATIBLE_IDS = _key(*_DEVPKEY_DEVICE_FMTID, 4)
 DEVPKEY_DEVICE_CLASS = _key(*_DEVPKEY_DEVICE_FMTID, 9)
 DEVPKEY_DEVICE_FRIENDLY_NAME = _key(*_DEVPKEY_DEVICE_FMTID, 14)
 DEVPKEY_DEVICE_PARENT = _key(
@@ -68,6 +82,9 @@ class DevNodeApi(Protocol):
     def sibling(self, devnode: int) -> int | None: ...
     def device_id(self, devnode: int) -> str: ...
     def string_property(self, devnode: int, key: DevPropKey) -> str | None: ...
+    def string_list_property(
+        self, devnode: int, key: DevPropKey
+    ) -> tuple[str, ...]: ...
 
 
 class _CfgMgr32:
@@ -140,7 +157,9 @@ class _CfgMgr32:
         )
         return buffer.value
 
-    def string_property(self, devnode: int, key: DevPropKey) -> str | None:
+    def _property_text(
+        self, devnode: int, key: DevPropKey, expected_type: int
+    ) -> str | None:
         prop_type = ctypes.c_uint32()
         size = ctypes.c_uint32(0)
         get = self._dll.CM_Get_DevNode_PropertyW
@@ -160,32 +179,41 @@ class _CfgMgr32:
                 ctypes.byref(size), 0,
             ),
         )  # fmt: skip
-        if prop_type.value != _DEVPROP_TYPE_STRING:
-            raise OSError(f"device property type 0x{prop_type.value:X} is not a string")
-        return buffer.raw[: size.value].decode("utf-16-le").split("\0", 1)[0]
+        if prop_type.value != expected_type:
+            raise OSError(
+                f"device property type 0x{prop_type.value:X}, expected 0x{expected_type:X}"
+            )
+        return buffer.raw[: size.value].decode("utf-16-le")
+
+    def string_property(self, devnode: int, key: DevPropKey) -> str | None:
+        text = self._property_text(devnode, key, _DEVPROP_TYPE_STRING)
+        return text.split("\0", 1)[0] if text is not None else None
+
+    def string_list_property(self, devnode: int, key: DevPropKey) -> tuple[str, ...]:
+        text = self._property_text(devnode, key, _DEVPROP_TYPE_STRING_LIST)
+        return tuple(value for value in text.split("\0") if value) if text else ()
 
 
-def present_devnodes(api: DevNodeApi | None = None) -> list[DevNodeRow]:
-    """Every present devnode, depth-first from the root of the device tree.
-
-    The parent is ``DEVPKEY_Device_Parent``, the property PowerShell reads;
-    on GTR7 it kept lower-case parts that ``CM_Get_Device_IDW`` upper-cases.
-    Raises ``OSError`` when cfgmgr32 is unavailable or a call fails.
-    """
+def present_devnode_records(api: DevNodeApi | None = None) -> list[DevNodeRecord]:
     api = api if api is not None else _CfgMgr32()
-    rows: list[DevNodeRow] = []
+    records: list[DevNodeRecord] = []
     stack = [api.root()]
     while stack:
         devnode = stack.pop()
         prop = api.string_property
-        rows.append(
-            (
-                api.device_id(devnode),
-                prop(devnode, DEVPKEY_DEVICE_PARENT) or "",
-                prop(devnode, DEVPKEY_DEVICE_CLASS) or "",
-                prop(devnode, DEVPKEY_DEVICE_FRIENDLY_NAME)
-                or prop(devnode, DEVPKEY_DEVICE_DESC)
-                or "",
+        records.append(
+            DevNodeRecord(
+                instance_id=api.device_id(devnode),
+                parent_id=prop(devnode, DEVPKEY_DEVICE_PARENT) or "",
+                class_name=prop(devnode, DEVPKEY_DEVICE_CLASS) or "",
+                friendly_name=prop(devnode, DEVPKEY_DEVICE_FRIENDLY_NAME) or "",
+                device_desc=prop(devnode, DEVPKEY_DEVICE_DESC) or "",
+                hardware_ids=api.string_list_property(
+                    devnode, DEVPKEY_DEVICE_HARDWARE_IDS
+                ),
+                compatible_ids=api.string_list_property(
+                    devnode, DEVPKEY_DEVICE_COMPATIBLE_IDS
+                ),
             )
         )
         children: list[int] = []
@@ -194,4 +222,4 @@ def present_devnodes(api: DevNodeApi | None = None) -> list[DevNodeRow]:
             children.append(child)
             child = api.sibling(child)
         stack.extend(reversed(children))
-    return rows
+    return records

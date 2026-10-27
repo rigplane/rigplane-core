@@ -23,6 +23,7 @@ from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.types import MemoryProfile, ToneSquelchType
+from rigplane.core.usb_identity import UsbAudioIdentity
 
 __all__ = [
     "CwTextSendCancelledError",
@@ -371,6 +372,9 @@ class RadioProfile:
     # target (fail closed). ``none`` (default) keeps the selected-band
     # label, which is exact for single-receiver radios.
     tx_receiver_rule: str = "none"
+    # Meaning of selector 01 for split TX on dual-RX radios. This is
+    # separate from receiver attribution of transceiver-wide replies.
+    split_tx_target: str = "none"
     has_lan: bool = False
     freq_ranges: tuple[FreqRangeInfo, ...] = ()
     modes: tuple[str, ...] = ()
@@ -579,6 +583,7 @@ class RadioProfile:
     # Typed CW text sending (MOR-3678), from the profile's ``[cw_text]``.
     # Keyword-only so the positional constructor contract cannot shift.
     cw_text: CwTextSpec = field(default_factory=CwTextSpec, kw_only=True)
+    usb_identity: UsbAudioIdentity | None = field(default=None, kw_only=True)
 
     @property
     def vfo_swap_code(self) -> int | None:

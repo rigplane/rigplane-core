@@ -31,6 +31,7 @@ from rigplane.core.state_acquisition_policy import (
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.types import ToneSquelchType
+from rigplane.core.usb_identity import UsbAudioIdentity, UsbFunctionId
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.profiles.control_domain import (
     _on_control_lattice,
@@ -135,6 +136,7 @@ VALID_AUDIO_SAMPLE_RATES_HZ = {8000, 12000, 16000, 24000, 48000}
 VALID_BROWSER_RX_TRANSPORTS = {"auto", "pcm", "opus"}
 VALID_RX_AUDIO_CHANNELS = {"mix", "left", "right"}
 VALID_VFO_READBACK = {"absolute", "selected_unselected", "none"}
+VALID_SPLIT_TX_TARGETS = {"none", "main_unselected", "sub_receiver"}
 # How a transceiver-wide reply (no receiver of its own) names the
 # transmitting receiver. ``main_unless_split``: MAIN, or SUB while a FRESH
 # split readback is ON (IC-7610 Basic Manual p.3-2 "transmit on only the
@@ -665,6 +667,7 @@ class RigConfig:
     # (``VALID_TX_RECEIVER_RULES``); ``"none"`` keeps the selected-band
     # label.
     tx_receiver_rule: str = "none"
+    split_tx_target: str = "none"
     # MOR-1447 leg 2: "separate" (default) or "combined" (Icom-style single
     # RF/SQL knob — see ``VALID_RF_SQL_CONTROL_MODELS``).
     rf_sql_control_model: str = "separate"
@@ -744,6 +747,7 @@ class RigConfig:
     # Typed CW text sending (MOR-3678), from the optional ``[cw_text]``.
     # Keyword-only so the positional constructor contract cannot shift.
     cw_text: CwTextSpec = field(default_factory=CwTextSpec, kw_only=True)
+    usb_identity: UsbAudioIdentity | None = field(default=None, kw_only=True)
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -867,6 +871,7 @@ class RigConfig:
             vfo_scheme=self.vfo_scheme,
             vfo_readback=self.vfo_readback,
             tx_receiver_rule=self.tx_receiver_rule,
+            split_tx_target=self.split_tx_target,
             has_lan=self.has_lan,
             freq_ranges=ranges,
             modes=tuple(self.modes),
@@ -967,6 +972,7 @@ class RigConfig:
             expected_identity_ids=self.expected_identity_ids,
             memory=self.memory,
             cw_text=self.cw_text,
+            usb_identity=self.usb_identity,
         )
 
     def to_command_map(self) -> CommandMap:
@@ -2157,9 +2163,11 @@ _MEMORY_KEYS = frozenset(
         "first_channel",
         "last_channel",
         "recall",
+        "dd_groups",
+        "offset_10mhz_groups",
     }
 )
-_MEMORY_ADDRESSING = frozenset({"group_channel", "band_channel"})
+_MEMORY_ADDRESSING = frozenset({"group_channel", "band_channel", "channel"})
 
 
 def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
@@ -2189,12 +2197,37 @@ def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
         raise RigLoadError(
             f"{filename}: [memory].first_channel must be <= last_channel"
         )
+    if addressing == "channel" and bounds["last_group"] != 0:
+        raise RigLoadError(f"{filename}: [memory] a channel list has only group 0")
     if addressing == "band_channel" and bounds["last_group"] > 99:
         raise RigLoadError(f"{filename}: [memory] band codes are one BCD byte (0-99)")
     recall = raw.get("recall", False)
     if not isinstance(recall, bool):
         raise RigLoadError(f"{filename}: [memory].recall must be a boolean")
-    return MemoryProfile(addressing=addressing, recall=recall, **bounds)  # type: ignore[arg-type]
+    if recall and addressing != "group_channel":
+        raise RigLoadError(
+            f"{filename}: [memory].recall is only implemented for group_channel"
+        )
+    groups: dict[str, tuple[int, ...]] = {}
+    for key in ("dd_groups", "offset_10mhz_groups"):
+        values = raw.get(key, [])
+        if not isinstance(values, list) or any(
+            isinstance(value, bool) or not isinstance(value, int) for value in values
+        ):
+            raise RigLoadError(f"{filename}: [memory].{key} must be a list of integers")
+        if any(
+            not bounds["first_group"] <= value <= bounds["last_group"]
+            for value in values
+        ):
+            raise RigLoadError(
+                f"{filename}: [memory].{key} must be within first_group..last_group"
+            )
+        if len(set(values)) != len(values):
+            raise RigLoadError(
+                f"{filename}: [memory].{key} must not contain duplicates"
+            )
+        groups[key] = tuple(values)
+    return MemoryProfile(addressing=addressing, recall=recall, **bounds, **groups)  # type: ignore[arg-type]
 
 
 _CW_TEXT_KEYS = frozenset({"supported", "max_length", "memory_channel", "memory_type"})
@@ -2499,6 +2532,19 @@ def load_rig(path: Path) -> RigConfig:
         raise RigLoadError(
             f"{filename}: [vfo].tx_receiver_rule must be one of "
             f"{sorted(VALID_TX_RECEIVER_RULES)}, got {tx_receiver_rule!r}"
+        )
+    split_tx_target = vfo.get("split_tx_target", "none")
+    if (
+        not isinstance(split_tx_target, str)
+        or split_tx_target not in VALID_SPLIT_TX_TARGETS
+    ):
+        raise RigLoadError(
+            f"{filename}: [vfo].split_tx_target must be one of "
+            f"{sorted(VALID_SPLIT_TX_TARGETS)}, got {split_tx_target!r}"
+        )
+    if split_tx_target != "none" and scheme != "main_sub":
+        raise RigLoadError(
+            f"{filename}: [vfo].split_tx_target requires main_sub scheme"
         )
     expected_receiver_count = 1 if scheme in {"single", "ab"} else 2
     receiver_count = radio["receiver_count"]
@@ -3147,6 +3193,46 @@ def load_rig(path: Path) -> RigConfig:
                 )
             rx_audio_channel = rx_channel_raw
 
+    usb_identity: UsbAudioIdentity | None = None
+    usb_section = data.get("usb")
+    if "usb" in data:
+        if not isinstance(usb_section, dict):
+            raise RigLoadError(f"{filename}: [usb] must be a table")
+        _reject_unknown_keys(
+            filename,
+            "[usb]",
+            usb_section,
+            frozenset({"audio_codec", "serial_functions"}),
+        )
+        usb_functions: dict[str, frozenset[UsbFunctionId]] = {}
+        for key in ("audio_codec", "serial_functions"):
+            entries = usb_section.get(key, [])
+            if not isinstance(entries, list):
+                raise RigLoadError(f"{filename}: [usb].{key} must be a list of tables")
+            functions: set[UsbFunctionId] = set()
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise RigLoadError(
+                        f"{filename}: [usb].{key} entries must be tables"
+                    )
+                _reject_unknown_keys(
+                    filename, f"[usb].{key}", entry, frozenset({"vid", "pid"})
+                )
+                vid, pid = entry.get("vid"), entry.get("pid")
+                if not isinstance(vid, str) or not isinstance(pid, str):
+                    raise RigLoadError(
+                        f"{filename}: [usb].{key} requires string vid and pid"
+                    )
+                try:
+                    functions.add(UsbFunctionId(vid, pid))
+                except ValueError as exc:
+                    raise RigLoadError(f"{filename}: [usb].{key}: {exc}") from exc
+            usb_functions[key] = frozenset(functions)
+        usb_identity = UsbAudioIdentity(
+            audio_codec=usb_functions["audio_codec"],
+            serial_functions=usb_functions["serial_functions"],
+        )
+
     max_watts: int | None = None
     min_watts: int | None = None
     power_section = data.get("power")
@@ -3226,6 +3312,7 @@ def load_rig(path: Path) -> RigConfig:
         vfo_scheme=scheme,
         vfo_readback=vfo_readback,
         tx_receiver_rule=tx_receiver_rule,
+        split_tx_target=split_tx_target,
         vfo_main_select=vfo_main,
         vfo_sub_select=vfo_sub,
         vfo_swap_ab=vfo_swap_ab,
@@ -3293,6 +3380,7 @@ def load_rig(path: Path) -> RigConfig:
         expected_identity_ids=expected_identity_ids,
         memory=memory,
         cw_text=cw_text,
+        usb_identity=usb_identity,
     )
 
 

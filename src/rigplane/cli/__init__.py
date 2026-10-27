@@ -554,6 +554,7 @@ class _RigplaneArgumentParser(argparse.ArgumentParser):
         argv = _argv_tokens(args)
         try:
             parsed = super().parse_args(args, namespace)
+            _validate_usb_capture_args(self, parsed)
         except SystemExit as exc:
             if exc.code != 0:
                 _print_common_cli_hint(argv)
@@ -563,6 +564,29 @@ class _RigplaneArgumentParser(argparse.ArgumentParser):
         _apply_managed_runtime_defaults(parsed)
         _warn_web_host_ambiguity(parsed)
         return parsed
+
+
+def _validate_usb_capture_args(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> None:
+    if (
+        getattr(args, "command", None) != "audio"
+        or getattr(args, "audio_command", None) != "usb-capture"
+    ):
+        return
+    radios = []
+    for value in args.radio:
+        profile, separator, port = value.partition("=")
+        if not separator:
+            parser.error("--radio requires PROFILE=PORT")
+        radios.append({"profile": profile, "serial_port": port})
+    from rigplane.audio._usb_capture import _validate_session
+
+    try:
+        _validate_session("connected", None, radios)
+    except ValueError as exc:
+        parser.error(str(exc))
+    args.radio = radios
 
 
 def _apply_managed_runtime_defaults(args: argparse.Namespace) -> None:
@@ -584,6 +608,16 @@ def _apply_managed_runtime_defaults(args: argparse.Namespace) -> None:
         args.web_host = "127.0.0.1"
     if getattr(args, "web_rigctld", None) is None:
         args.web_rigctld = True
+
+
+def _bridge_gain_db(raw: str) -> float:
+    try:
+        gain = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not a dB value") from None
+    if not isfinite(gain):
+        raise argparse.ArgumentTypeError(f"{raw!r} must be a finite dB value")
+    return gain
 
 
 def _ptt_hold_seconds(raw: str) -> float:
@@ -787,14 +821,14 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="rx_device",
         default=_get_env("ICOM_USB_RX_DEVICE") or None,
         metavar="NAME",
-        help="USB audio RX device name for --backend serial (default: $ICOM_USB_RX_DEVICE or auto)",
+        help="USB audio RX device name, index or stable id HOSTAPI|endpoint-id / HOSTAPI|name:device-name for --backend serial (default: $ICOM_USB_RX_DEVICE or auto)",
     )
     p.add_argument(
         "--tx-device",
         dest="tx_device",
         default=_get_env("ICOM_USB_TX_DEVICE") or None,
         metavar="NAME",
-        help="USB audio TX device name for --backend serial (default: $ICOM_USB_TX_DEVICE or auto)",
+        help="USB audio TX device name, index or stable id HOSTAPI|endpoint-id / HOSTAPI|name:device-name for --backend serial (default: $ICOM_USB_TX_DEVICE or auto)",
     )
     p.add_argument(
         "--list-audio-devices",
@@ -1014,6 +1048,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to a JSON artifact emitted by `rigplane audio probe`",
     )
 
+    audio_usb_capture_p = audio_sub.add_parser(
+        "usb-capture",
+        help="Record Windows, macOS and Linux USB topology without opening radio devices",
+    )
+    audio_usb_capture_p.add_argument(
+        "--radio", action="append", required=True, metavar="PROFILE=PORT"
+    )
+    audio_usb_capture_p.add_argument("--out", required=True, metavar="FILE")
+    audio_usb_capture_p.add_argument("--no-unplug", action="store_true")
+
     # bridge
     audio_bridge_p = audio_sub.add_parser(
         "bridge",
@@ -1043,6 +1087,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--rx-only",
         action="store_true",
         help="RX only (don't bridge TX from device to radio)",
+    )
+    audio_bridge_p.add_argument(
+        "--input-gain-db",
+        type=_bridge_gain_db,
+        default=0.0,
+        metavar="DB",
+        help="Gain for device-to-radio audio in dB (default: 0.0)",
+    )
+    audio_bridge_p.add_argument(
+        "--output-gain-db",
+        type=_bridge_gain_db,
+        default=0.0,
+        metavar="DB",
+        help="Gain for radio-to-device audio in dB (default: 0.0)",
     )
     audio_bridge_p.add_argument(
         "--list-devices",
@@ -1120,7 +1178,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "value",
         nargs="?",
         type=str,
-        help="Preamp level: 0 (off), 1 (PRE1), 2 (PRE2), or 'off'",
+        help="Preamp levels from radio profile (0, 1, 2, or 'off' if undeclared)",
     )
 
     # antenna
@@ -1448,6 +1506,22 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="web_bridge_rx_only",
         action="store_true",
         help="Bridge RX only (no TX from virtual device to radio)",
+    )
+    web_p.add_argument(
+        "--bridge-input-gain-db",
+        dest="web_bridge_input_gain_db",
+        type=_bridge_gain_db,
+        default=0.0,
+        metavar="DB",
+        help="Bridge gain for device-to-radio audio in dB (default: 0.0)",
+    )
+    web_p.add_argument(
+        "--bridge-output-gain-db",
+        dest="web_bridge_output_gain_db",
+        type=_bridge_gain_db,
+        default=0.0,
+        metavar="DB",
+        help="Bridge gain for radio-to-device audio in dB (default: 0.0)",
     )
     web_p.add_argument(
         "--bridge-label",
@@ -2501,12 +2575,47 @@ async def _run_web_station_with_busy_hold(
     return result
 
 
+def _cmd_audio_usb_capture(args: argparse.Namespace) -> int:
+    import platform
+
+    from rigplane.audio._usb_capture import capture_bundle
+
+    if platform.system() not in {"Windows", "Darwin", "Linux"}:
+        print("usb-capture supports Windows, macOS and Linux", file=sys.stderr)
+        return 2
+    try:
+        path = capture_bundle(
+            args.out,
+            radios=args.radio,
+            tool_version=__version__,
+            no_unplug=args.no_unplug,
+        )
+    except KeyboardInterrupt:
+        print("USB capture cancelled; no output written.", file=sys.stderr)
+        return 130
+    except EOFError:
+        print("USB capture input ended; no output written.", file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    print(f"Wrote {path}")
+    radio_count = len(args.radio)
+    session_count = 1 if args.no_unplug else 1 + 2 * radio_count
+    print(
+        f"Captured {session_count} sessions for {radio_count} radios; serials redacted."
+    )
+    return 0
+
+
 async def _run(args: argparse.Namespace) -> int:
     wants_stats = bool(getattr(args, "stats", False))
     if args.command == "audio" and args.audio_command == "caps" and not wants_stats:
         return await _cmd_audio_caps(args)
     if args.command == "audio" and args.audio_command == "probe-profile":
         return await _cmd_audio_probe_profile(args)
+    if args.command == "audio" and args.audio_command == "usb-capture":
+        return _cmd_audio_usb_capture(args)
 
     # Apply preset before building config (so discovery sees preset-applied backend).
     preset = getattr(args, "preset", None)
@@ -3900,6 +4009,11 @@ _PREAMP_NAMES = {0: "OFF", 1: "PRE1", 2: "PRE2"}
 
 
 async def _cmd_preamp(radio: Radio, args: argparse.Namespace) -> int:
+    profile = getattr(radio, "profile", None)
+    values = (profile.pre_values or ()) if profile is not None else ()
+    labels = (profile.pre_labels or {}) if profile is not None else {}
+    declared_values = ", ".join(str(value) for value in values)
+    allowed_values = values or (0, 1, 2)
     if args.value is not None:
         val = args.value.strip().lower()
         if val == "off":
@@ -3908,19 +4022,32 @@ async def _cmd_preamp(radio: Radio, args: argparse.Namespace) -> int:
             try:
                 level = int(val)
             except ValueError:
-                print(
-                    f"Error: invalid preamp value {val!r}. Use 'off', 0, 1, or 2.",
-                    file=sys.stderr,
-                )
+                if values:
+                    message = (
+                        f"Error: invalid preamp value {val!r}. "
+                        f"Use a declared level: {declared_values} ('off' means 0)."
+                    )
+                else:
+                    message = (
+                        f"Error: invalid preamp value {val!r}. Use 'off', 0, 1, or 2."
+                    )
+                print(message, file=sys.stderr)
                 return 1
-            if level not in (0, 1, 2):
-                print(
-                    f"Error: preamp level must be 0, 1, or 2 (got {level}).",
-                    file=sys.stderr,
+        if level not in allowed_values:
+            if values:
+                message = (
+                    f"Error: preamp level must be one of {declared_values} "
+                    f"(got {level})."
                 )
-                return 1
+            else:
+                message = f"Error: preamp level must be 0, 1, or 2 (got {level})."
+            print(
+                message,
+                file=sys.stderr,
+            )
+            return 1
         await radio.set_preamp(level)
-        print(f"Preamp: {_PREAMP_NAMES.get(level, str(level))}")
+        print(f"Preamp: {labels.get(str(level), _PREAMP_NAMES.get(level, str(level)))}")
     else:
         level = await radio.get_preamp()
         if args.json:
@@ -3930,12 +4057,17 @@ async def _cmd_preamp(radio: Radio, args: argparse.Namespace) -> int:
                 json.dumps(
                     {
                         "preamp_level": level,
-                        "preamp_name": _PREAMP_NAMES.get(level, str(level)),
+                        "preamp_name": labels.get(
+                            str(level), _PREAMP_NAMES.get(level, str(level))
+                        ),
                     }
                 )
             )
         else:
-            print(f"Preamp: {_PREAMP_NAMES.get(level, str(level))}")
+            print(
+                "Preamp: "
+                f"{labels.get(str(level), _PREAMP_NAMES.get(level, str(level)))}"
+            )
     return 0
 
 
@@ -4262,6 +4394,8 @@ async def _cmd_audio_bridge(radio: Radio, args: argparse.Namespace) -> int:
             radio,
             device_name=args.device,
             tx_device_name=getattr(args, "tx_device", None),
+            input_gain_db=getattr(args, "input_gain_db", 0.0),
+            output_gain_db=getattr(args, "output_gain_db", 0.0),
             tx_enabled=not args.rx_only,
             label=bridge_label,
             max_retries=getattr(args, "max_retries", 5),
@@ -4629,6 +4763,8 @@ async def _cmd_web(
             device_name=None,
             tx_device_name=getattr(args, "web_bridge_tx_device", None),
             tx_enabled=not getattr(args, "web_bridge_rx_only", False),
+            input_gain_db=getattr(args, "web_bridge_input_gain_db", 0.0),
+            output_gain_db=getattr(args, "web_bridge_output_gain_db", 0.0),
             label=getattr(args, "web_bridge_label", None),
             max_retries=getattr(args, "web_bridge_max_retries", 5),
             retry_base_delay=getattr(args, "web_bridge_retry_delay", 1.0),
@@ -4647,6 +4783,8 @@ async def _cmd_web(
                 device_name=device_name,
                 tx_device_name=tx_device_name,
                 tx_enabled=not rx_only,
+                input_gain_db=getattr(args, "web_bridge_input_gain_db", 0.0),
+                output_gain_db=getattr(args, "web_bridge_output_gain_db", 0.0),
                 label=bridge_label,
                 max_retries=getattr(args, "web_bridge_max_retries", 5),
                 retry_base_delay=getattr(args, "web_bridge_retry_delay", 1.0),
@@ -5002,7 +5140,8 @@ def main() -> None:
     # ICOM_LOG_FILE=/path/to/file.log — log to file (default: platform cache logs)
     # ICOM_LOG_MAX_BYTES=50000000 — rotate when file reaches this size (default: 50 MB)
     # ICOM_LOG_BACKUP_COUNT=5 — keep N rotated backups (default: 5; 0 disables rotation)
-    # Set ICOM_LOG_FILE=off to disable the default file log on daemon commands.
+    # Set ICOM_LOG_FILE=off to disable file logging entirely (the default
+    # daemon file log and the always-on diagnostic rigplane.log).
     debug_mode = os.environ.get("ICOM_DEBUG", "").strip() not in (
         "",
         "0",
@@ -5045,25 +5184,56 @@ def main() -> None:
             )
         )
 
+    # One writer per log file (MOR-3777). ``import rigplane`` already attached
+    # the always-on diagnostic handler to ``rigplane.log``; the root file
+    # handler below would receive the same ``rigplane.*`` records again.
+    # ``ICOM_LOG_FILE=off`` means no file logging at all, so the diagnostic
+    # writer goes too. With no CLI file (short commands) it stays the sole
+    # writer, so ``rigplane diagnose`` still has a trail to bundle.
+    from rigplane.diagnostics._logging import detach_diagnostic_logging
+
+    if log_file_disabled:
+        detach_diagnostic_logging()
+
     if log_file:
+        from rigplane.diagnostics._logging import diagnostic_log_path_for
+
         log_path = Path(log_file).expanduser().resolve()
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        setattr(args, "runtime_log_path", str(log_path))
         max_bytes = _env_int("ICOM_LOG_MAX_BYTES", 50_000_000)
         backup_count = _env_int("ICOM_LOG_BACKUP_COUNT", 5)
-        file_handler: logging.Handler = RotatingFileHandler(
-            log_path,
-            mode="a",
-            maxBytes=max_bytes if backup_count > 0 else 0,
-            backupCount=backup_count,
-            encoding="utf-8",
-        )
-        file_handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s %(name)s [%(levelname)s] %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
+
+        def _open_cli_log(path: Path) -> logging.Handler:
+            handler = RotatingFileHandler(
+                path,
+                mode="a",
+                maxBytes=max_bytes if backup_count > 0 else 0,
+                backupCount=backup_count,
+                encoding="utf-8",
             )
-        )
+            handler.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s %(name)s [%(levelname)s] %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S",
+                )
+            )
+            return handler
+
+        # Order matters: open (create) the CLI file first, so the identity
+        # check sees it even when ICOM_LOG_FILE is a hard link or case alias
+        # of rigplane.log; then detach the matching diagnostic writer; the
+        # CLI handler is attached last (basicConfig below).
+        file_handler = _open_cli_log(log_path)
+        diagnostic_path = diagnostic_log_path_for(log_path)
+        if diagnostic_path is not None and str(diagnostic_path) != str(log_path):
+            # An alias of rigplane.log: write and rotate the canonical name,
+            # or the first rollover would strand rigplane.log (what
+            # diagnostic bundles collect) on the old inode with no writer.
+            file_handler.close()
+            log_path = diagnostic_path
+            file_handler = _open_cli_log(log_path)
+        detach_diagnostic_logging(log_path)
+        setattr(args, "runtime_log_path", str(log_path))
         handlers.append(file_handler)
         print(
             f"Logging to {log_path} (rotate at {max_bytes} bytes, keep {backup_count} backups)",

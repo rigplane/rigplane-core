@@ -66,6 +66,44 @@ describe('TxMic', () => {
     );
     expect(await new TxMic(vi.fn()).start()).toContain('permission denied');
   });
+
+  it('a rejection settling after stop() is the cancellation, not a refusal (MOR-3753)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let rejectCapture!: (reason?: unknown) => void;
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockImplementationOnce(
+      () => new Promise<MediaStream>((_resolve, reject) => { rejectCapture = reject; }),
+    );
+    const mic = new TxMic(vi.fn());
+    const starting = mic.start();
+    mic.stop();
+    rejectCapture(new DOMException('denied late', 'NotAllowedError'));
+
+    await expect(starting).resolves.toBe('TX MIC: capture start cancelled');
+    expect(mic.lastCaptureFailureCategory).toBeNull();
+    expect(warn).not.toHaveBeenCalled();
+    expect(mic.active).toBe(false);
+    expect(mockTrack.stop).not.toHaveBeenCalled();
+  });
+
+  it('a stream resolved after stop() is stopped and never keys or encodes (MOR-3753)', async () => {
+    let resolveCapture!: (stream: MediaStream) => void;
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockImplementationOnce(
+      () => new Promise<MediaStream>((resolve) => { resolveCapture = resolve; }),
+    );
+    const send = vi.fn();
+    const mic = new TxMic(send);
+    const starting = mic.start();
+    mic.stop();
+    resolveCapture({
+      getTracks: () => [mockTrack], getAudioTracks: () => [mockTrack],
+    } as unknown as MediaStream);
+
+    await expect(starting).resolves.toBe('TX MIC: capture start cancelled');
+    expect(mockTrack.stop).toHaveBeenCalledOnce();
+    expect(mockEncoder.configure).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(mic.active).toBe(false);
+  });
   it.each([
     ['NotAllowedError', 'TX MIC: permission denied'],
     ['NotFoundError', 'TX MIC: capture failed (NotFoundError)'],

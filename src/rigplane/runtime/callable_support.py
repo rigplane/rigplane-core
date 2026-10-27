@@ -64,7 +64,15 @@ class Protocol:
     protocol: str
 
 
-SupportRelation: TypeAlias = BuilderAllOf | Capability | Protocol
+@dataclass(frozen=True, slots=True)
+class RelativeVfoCommands:
+    """A single-RX A/B relative write requiring profile wire commands."""
+
+    operation: str
+    commands: tuple[str, ...]
+
+
+SupportRelation: TypeAlias = BuilderAllOf | Capability | Protocol | RelativeVfoCommands
 
 _SCOPE_BUILDERS = (scope_on, scope_data_output)
 
@@ -115,6 +123,46 @@ EXCLUDED_OPERATIONS: frozenset[str] = frozenset(
     {"set_scope_dual", "get_mode_enum", "get_memory_mode"}
 )
 
+# ``profile.split_tx_target`` values that route split-TX reads/writes
+# through the declared unselected-role CI-V 0x25/0x26 commands on a
+# dual-receiver profile: ``sub_receiver`` (selector 01 is the SUB band)
+# and ``main_unselected`` (selector 01 is the unselected VFO inside
+# MAIN; the independent SUB receiver is never touched). ``none`` — the
+# default, and any unknown value — fails closed to the single-receiver
+# scheme (MOR-3754).
+_DUAL_SPLIT_TX_TARGETS: frozenset[str] = frozenset({"main_unselected", "sub_receiver"})
+
+# Unselected-role commands a dual-receiver split-TX write needs. A GET
+# declaration never licenses the matching SET; the single-receiver
+# scheme keeps its own all-four-commands requirement.
+_DUAL_SPLIT_TX_COMMANDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "write_relative_vfo_frequency": (
+            "set_unselected_freq",
+            "get_unselected_freq",
+        ),
+        "write_relative_vfo_mode": (
+            "set_unselected_mode",
+            "get_unselected_mode",
+            "get_unselected_freq",
+        ),
+    }
+)
+
+
+def split_tx_routes_unselected_selector(profile: RadioProfile) -> bool:
+    """Whether split-TX I/O routes via the unselected-role 0x25/0x26 commands.
+
+    True only on a dual-receiver profile that explicitly declares where
+    split TX lives (``split_tx_target`` in ``_DUAL_SPLIT_TX_TARGETS``).
+    Never derived from the absence of another key: a missing or unknown
+    value fails closed.
+    """
+    return (
+        profile.receiver_count >= 2
+        and getattr(profile, "split_tx_target", "none") in _DUAL_SPLIT_TX_TARGETS
+    )
+
 
 def _validate_relations(
     relations: Iterable[SupportRelation],
@@ -142,14 +190,27 @@ _RELATIONS = _validate_relations(
         *BUILDER_RELATIONS,
         *(Capability(operation, "audio") for operation in AUDIO_OPERATIONS),
         Protocol("send_civ", "civ"),
+        RelativeVfoCommands(
+            "write_relative_vfo_frequency",
+            (
+                "set_selected_freq",
+                "get_selected_freq",
+                "set_unselected_freq",
+                "get_unselected_freq",
+            ),
+        ),
+        RelativeVfoCommands(
+            "write_relative_vfo_mode",
+            ("set_unselected_mode", "get_unselected_mode", "get_unselected_freq"),
+        ),
     )
 )
 CALLABLE_RELATIONS: Mapping[str, SupportRelation] = MappingProxyType(
     {relation.operation: relation for relation in _RELATIONS}
 )
 
-if len(CALLABLE_RELATIONS) != 32:  # pragma: no cover - import-time invariant
-    raise ValueError("callable-support registry must contain exactly 32 operations")
+if len(CALLABLE_RELATIONS) != 34:  # pragma: no cover - import-time invariant
+    raise ValueError("callable-support registry must contain exactly 34 operations")
 if set(CALLABLE_RELATIONS) & EXCLUDED_OPERATIONS:  # pragma: no cover
     raise ValueError("excluded operations must not have callable-support relations")
 
@@ -184,6 +245,25 @@ def _relation_supported(
         )
     if isinstance(relation, Capability):
         return bool(profile.supports_capability(relation.capability))
+    if isinstance(relation, RelativeVfoCommands):
+        command_map = profile.command_map
+        if command_map is None:
+            return False
+        if split_tx_routes_unselected_selector(profile):
+            dual_commands = _DUAL_SPLIT_TX_COMMANDS.get(relation.operation)
+            return dual_commands is not None and all(
+                command_map.has(name) and profile.supports_command(name)
+                for name in dual_commands
+            )
+        return (
+            profile.receiver_count == 1
+            and profile.vfo_scheme == "ab"
+            and profile.vfo_readback == "selected_unselected"
+            and all(
+                command_map.has(name) and profile.supports_command(name)
+                for name in relation.commands
+            )
+        )
     return bool(profile.protocol_type == relation.protocol)
 
 

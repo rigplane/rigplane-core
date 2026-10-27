@@ -196,6 +196,29 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             ):
                 CLASSIFIER.classify([unsafe])
 
+    def test_browser_environment_contract_is_ci_selected_and_invoked(self) -> None:
+        for path in (
+            ".github/workflows/quick.yml",
+            ".github/workflows/new-browser.yaml",
+            ".github/scripts/playwright-browser-env.test.py",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    CLASSIFIER.classify([path]),
+                    {"core": False, "frontend": False, "ci": True, "docs": False},
+                )
+        quick = QUICK_YML.read_text(encoding="utf-8")
+        self.assertIn(
+            "      - name: Quick path and event contract tests\n"
+            "        if: needs.classify.outputs.ci == 'true'\n"
+            "        run: python3 .github/scripts/quick-path-filters.test.py\n"
+            "\n"
+            "      - name: Playwright browser environment contract test\n"
+            "        if: needs.classify.outputs.ci == 'true'\n"
+            "        run: python3 .github/scripts/playwright-browser-env.test.py\n",
+            quick,
+        )
+
     def test_docs_data_files_select_core_by_suffix_rule(self) -> None:
         # The rule covers any *.json/*.toml/*.yaml/*.yml under docs/, including
         # files not in the hand-maintained CORE_DOCS_TEST_INPUT_EXACT list: a

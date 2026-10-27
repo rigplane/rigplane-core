@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from rigplane.core.exceptions import BackgroundSendDropped, ConnectionError
 from rigplane.core.types import CivFrame
 
-__all__ = ["IcomCommander", "Priority"]
+__all__ = ["IcomCommander", "InterferenceScope", "Priority"]
 
 
 class Priority(IntEnum):
@@ -51,6 +52,36 @@ class _QueueItem:
     # to the executor; the final wire seam decides whether the attempt still
     # belongs to the live authority effect.
     is_current: Callable[[], bool] | None = None
+    # Task that queued the frame.  Frames whose task differs from an
+    # interference scope's owner mark that scope at dispatch (MOR-3743).
+    enqueued_by: asyncio.Task[Any] | None = None
+
+
+class InterferenceScope:
+    """Detection handle for one task's read-modify-write (MOR-3743).
+
+    The commander marks ``interfered`` whenever it dispatches a
+    non-BACKGROUND frame enqueued by another task while the scope is
+    active — only BACKGROUND polls are known reads, so every other frame
+    counts as a potential state change.  Fail-safe by design: a false
+    positive costs the owner a retry, never a delay.  The owner's own
+    frames never mark the scope.
+
+    ``closed`` is set on every exit — normal, exception or cancellation —
+    and ``is_current()`` stays False from then on: the scope's currency
+    dies with the scope, so a retransmit request for its SET is answered
+    with the idle packet instead of the stale tuple.
+    """
+
+    __slots__ = ("closed", "interfered", "owner")
+
+    def __init__(self, owner: asyncio.Task[Any]) -> None:
+        self.owner = owner
+        self.interfered = False
+        self.closed = False
+
+    def is_current(self) -> bool:
+        return not self.interfered and not self.closed
 
 
 def _fail_item(item: _QueueItem, exc: BaseException) -> None:
@@ -76,6 +107,7 @@ class IcomCommander:
     - strict in-order execution within priority levels
     - optional dedup for background polling keys
     - transaction helper (snapshot/restore)
+    - interference detection for one task's read-modify-write
     """
 
     def __init__(
@@ -91,6 +123,9 @@ class IcomCommander:
         # ``_MAX_BG_INFLIGHT``).  Incremented at enqueue, decremented in the
         # worker's ``finally`` for items flagged ``counts_bg_inflight``.
         self._bg_inflight = 0
+        # Live read-modify-write scopes (MOR-3743).  The worker marks each
+        # scope when it dispatches a non-BACKGROUND frame from another task.
+        self._interference_scopes: set[InterferenceScope] = set()
 
     def start(self) -> None:
         if self._worker is None or self._worker.done():
@@ -199,6 +234,7 @@ class IcomCommander:
             counts_bg_inflight=counts_bg_inflight,
             fire_and_forget=not wait_dispatch,
             is_current=is_current,
+            enqueued_by=asyncio.current_task(),
         )
 
         if key is not None:
@@ -240,6 +276,50 @@ class IcomCommander:
         finally:
             await restore(state)
 
+    @asynccontextmanager
+    async def interference_scope(self) -> AsyncIterator[InterferenceScope]:
+        """Detect concurrent commands during this task's read-modify-write.
+
+        While the scope is active, every non-BACKGROUND frame the worker
+        dispatches for another task marks it (MOR-3743).  Nothing is
+        delayed or reordered: the owner watches ``scope.interfered`` and
+        decides itself — typically by passing ``scope.is_current`` to the
+        SET's wire seam and retrying the whole operation when the SET is
+        refused.  Several scopes may be live at once; a frame marks every
+        scope whose owner did not enqueue it.  Cancellation and exceptions
+        deregister the scope on exit.
+        """
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("interference scope requires a running task")
+        scope = InterferenceScope(task)
+        self._interference_scopes.add(scope)
+        try:
+            yield scope
+        finally:
+            scope.closed = True
+            self._interference_scopes.discard(scope)
+
+    def note_foreign_dispatch(
+        self,
+        enqueued_by: asyncio.Task[Any] | None,
+        priority: int | Priority,
+    ) -> None:
+        """Mark live scopes for a frame about to reach the wire (MOR-3743).
+
+        One marking rule shared by the worker loop and any dispatch that
+        bypasses the commander queue (direct raw CI-V transactions):
+        every non-BACKGROUND frame marks each live scope its owner did
+        not enqueue — only BACKGROUND (the polling/read tier) is exempt,
+        and the owner's own task never marks its own scope.  Fail-safe:
+        a false positive costs the owner a retry, never a delay.
+        """
+        if not self._interference_scopes or int(priority) == int(Priority.BACKGROUND):
+            return
+        for scope in self._interference_scopes:
+            if scope.owner is not enqueued_by:
+                scope.interfered = True
+
     async def _loop(self) -> None:
         queue, worker = self._queue, asyncio.current_task()
         assert queue is not None and worker is not None
@@ -252,6 +332,13 @@ class IcomCommander:
                     # before worker even started this item).
                     if item.future.done():
                         continue
+
+                    # MOR-3743: this frame is about to go to the wire.  Any
+                    # live scope owned by another task may have preserved
+                    # state this frame can change; mark those scopes before
+                    # the executor runs, so the owner's wire-seam check
+                    # refuses its SET atomically with this dispatch.
+                    self.note_foreign_dispatch(item.enqueued_by, item.priority)
 
                     # Run execute as an inner task so that a caller-side
                     # timeout (asyncio.wait_for in `send`) cancels JUST this

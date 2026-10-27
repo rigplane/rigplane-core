@@ -16,23 +16,18 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
 from ...audio import AudioPacket
 from ...audio.lan_stream import SYNTHETIC_RX_IDENT
 from ...command_spec import CatCommandSpec
-from ...core.radio_protocol import RadioIdentity, RadioIdentityStatus
-from ...runtime.callable_support import supports_callable
-from ...runtime.local_tx_work import LocalTxWorkRunner
-from ...runtime.managed_tx_fence import TxAbortFence
-from ...runtime.managed_tx_state import (
-    AbortOperation,
-    ActuationOperation,
-    ActuationResult,
-    EffectToken,
-)
 from ...commands import hz_to_table_index, table_index_to_hz
 from ...core.priority_exchange import ExchangeTier
+from ...core.radio_protocol import RadioIdentity, RadioIdentityStatus, RelativeVfoState
 from ...core.tx_observation import TxStateReading
-from ...types import AudioCodec, BreakInMode, RepeaterShiftDirection
-from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
+from ...core.types import MemoryEntry
+from ...exceptions import (
+    AudioFormatError,
+    CommandError,
+    CommandRejectedError,
+    ModeReadbackError,
+)
 from ...exceptions import ConnectionError as RadioConnectionError
-from ...radio_state import RadioState
 from ...profiles.control_domain import (
     control_display_band,
     decode_control_domain,
@@ -40,7 +35,20 @@ from ...profiles.control_domain import (
     snap_control_domain,
     validate_control_raw_value,
 )
-from .parser import CatCommandParser, CatParseError, format_command
+from ...radio_state import RadioState
+from ...runtime.callable_support import supports_callable
+from ...runtime.local_tx_work import LocalTxWorkRunner
+from ...runtime.memory_slot_lock import memory_slot_operation
+from ...runtime.managed_tx_fence import TxAbortFence
+from ...runtime.managed_tx_state import (
+    AbortOperation,
+    ActuationOperation,
+    ActuationResult,
+    EffectToken,
+)
+from ...types import AudioCodec, BreakInMode, Mode, RepeaterShiftDirection
+from .memory import memory_entry_from_cat
+from .parser import CatCommandParser, CatParseError, format_command, is_data_mode
 from .transport import (
     CatCommandRejected,
     CatTimeoutError,
@@ -184,6 +192,8 @@ class YaesuCatRadio:
         # MOR-3678: one send_cw_text at a time, so each KM memory write
         # stays paired with the KY that plays it.
         self._cw_text_lock = asyncio.Lock()
+        self._mode_lock = asyncio.Lock()
+        self._memory_select_lock = asyncio.Lock()
         # Bumped by stop_cw_text and the managed CW abort: a send admitted
         # under an older generation can no longer write KM or KY.
         self._cw_text_generation = 0
@@ -220,6 +230,7 @@ class YaesuCatRadio:
                     rx_audio_channel=self._config.rx_audio_channel,
                 ),
                 serial_port=device,
+                usb_identity=self._config.usb_identity,
                 backend=None,  # default PortAudioBackend
             )
         else:
@@ -1216,6 +1227,7 @@ class YaesuCatRadio:
         self,
         cmd_name: str,
         *,
+        expect_rejection: bool = False,
         is_current: Callable[[], bool] | None = None,
         tier: ExchangeTier = ExchangeTier.ORDINARY,
         **params: Any,
@@ -1240,12 +1252,12 @@ class YaesuCatRadio:
             raise CommandError(f"Command {cmd_name!r} has no read template")
 
         read_cmd = format_command(spec.read, **params) if params else spec.read
-        if is_current is None and tier is ExchangeTier.ORDINARY:
-            raw = await self._transport.query(read_cmd)
-        else:
-            raw = await self._transport.query(
-                read_cmd, is_current=is_current, tier=tier
-            )
+        query_kwargs: dict[str, Any] = {}
+        if is_current is not None or tier is not ExchangeTier.ORDINARY:
+            query_kwargs.update(is_current=is_current, tier=tier)
+        if expect_rejection:
+            query_kwargs["expect_rejection"] = True
+        raw = await self._transport.query(read_cmd, **query_kwargs)
 
         parser = self._parsers.get(cmd_name)
         if parser is None:
@@ -1376,12 +1388,13 @@ class YaesuCatRadio:
             freq: Frequency in Hz (e.g. ``14_074_000``).
             receiver: 0 = main (VFO-A), 1 = sub (VFO-B).
         """
-        cmd = "set_freq" if receiver == 0 else "set_freq_sub"
-        await self._write(cmd, freq=freq)
-        if receiver == 0:
-            self._state.main.freq = freq
-        else:
-            self._state.sub.freq = freq
+        async with self._mode_lock:
+            cmd = "set_freq" if receiver == 0 else "set_freq_sub"
+            await self._write(cmd, freq=freq)
+            if receiver == 0:
+                self._state.main.freq = freq
+            else:
+                self._state.sub.freq = freq
 
     # -- Mode ---------------------------------------------------------------
 
@@ -1440,18 +1453,229 @@ class YaesuCatRadio:
             filter_width: Ignored (not supported by this backend).
             receiver: 0 = main, 1 = sub.
         """
-        code = self._mode_to_code.get(mode)
-        if code is None:
+        receiver = self._validate_receiver(receiver)
+        if mode not in self._mode_to_code:
             raise CommandError(
                 f"Unknown mode {mode!r} for {self._config.model!r}. "
                 f"Available: {list(self._mode_to_code)}"
             )
+        async with self._mode_lock:
+            await self._set_mode_verified(mode, receiver)
+
+    async def _set_mode_verified(
+        self, mode: str, receiver: int, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
         cmd = "set_mode" if receiver == 0 else "set_mode_sub"
-        await self._write(cmd, mode=code)
-        if receiver == 0:
-            self._state.main.mode = mode
-        else:
-            self._state.sub.mode = mode
+        await self._write(cmd, mode=self._mode_to_code[mode], is_current=is_current)
+        for attempt in range(5):
+            observed, _ = await self.get_mode(receiver)
+            if observed == mode:
+                return
+            if attempt < 4:
+                await asyncio.sleep(0.05)
+        raise ModeReadbackError(mode, observed)
+
+    async def _relative_receiver(self, selected: bool) -> int:
+        if type(selected) is not bool:
+            raise CommandError("relative VFO selected must be a boolean")
+        if self._config.vfo_scheme != "ab_shared" or self.receiver_count != 2:
+            raise CommandError(
+                "relative MAIN/SUB access is unavailable for this profile"
+            )
+        await self._require_main_relative_role()
+        return 0 if selected else 1
+
+    async def _require_main_relative_role(self) -> None:
+        vfo = await self._relative_readback(
+            "MAIN/SUB selection", lambda: self.read_vfo_select()
+        )
+        if vfo != 0:
+            raise CommandError(
+                "relative split requires MAIN RX (VS0); selector unchanged"
+            )
+
+    @staticmethod
+    async def _relative_readback(label: str, read: Callable[[], Any]) -> Any:
+        """Await a relative-path read, mapping malformed replies to
+        :class:`CommandError`. An explicit radio ``?;`` refusal keeps its
+        :class:`CommandRejectedError` identity; transport failures pass
+        through untouched.
+        """
+        try:
+            return await read()
+        except CatCommandRejected as exc:
+            raise CommandRejectedError(str(exc)) from exc
+        except ValueError as exc:  # includes CatParseError
+            raise CommandError(f"unreadable relative {label}: {exc}") from exc
+
+    @staticmethod
+    def _relative_mode_value(mode: str) -> tuple[str, int]:
+        base = {
+            "DATA-U": "USB",
+            "DATA-L": "LSB",
+            "DATA-FM": "FM",
+            "DATA-FM-N": "FMN",
+            "FM-N": "FMN",
+            "AM-N": "AMN",
+            "CW-U": "CW",
+            "CW-L": "CW_R",
+            "RTTY-L": "RTTY",
+            "RTTY-U": "RTTY_R",
+        }.get(mode, mode)
+        return base, int(is_data_mode(mode))
+
+    async def _read_relative_receiver(self, receiver: int) -> RelativeVfoState:
+        freq = await self._relative_readback(
+            "frequency", lambda: self.read_freq(receiver)
+        )
+        native, _ = await self._relative_readback(
+            "mode", lambda: self.read_mode(receiver)
+        )
+        await self._require_main_relative_role()
+        mode, data = self._relative_mode_value(native)
+        return RelativeVfoState(freq_hz=freq, mode=mode, data_mode=data)
+
+    async def read_relative_vfo(self, *, selected: bool) -> RelativeVfoState:
+        """Read MAIN/SUB split roles with MAIN selected, without switching VFOs."""
+        async with self._mode_lock:
+            receiver = await self._relative_receiver(selected)
+            return await self._read_relative_receiver(receiver)
+
+    async def write_relative_vfo_mode(
+        self,
+        mode: int,
+        *,
+        selected: bool,
+        data: bool | None = None,
+        filter_width: int | None = None,
+        before_set: Callable[[], None] | None = None,
+    ) -> RelativeVfoState:
+        """Set the addressed split-role mode; Icom filter-bank numbers are unavailable."""
+        if isinstance(mode, bool) or not isinstance(mode, int):
+            raise CommandError("relative mode must be an integer Mode value")
+        try:
+            base = Mode(mode).name
+        except ValueError as exc:
+            raise CommandError(f"unsupported relative mode {mode!r}") from exc
+        native = {
+            "CW": "CW-U",
+            "CW_R": "CW-L",
+            "RTTY": "RTTY-L",
+            "RTTY_R": "RTTY-U",
+        }.get(base, base)
+        if native not in self._mode_to_code:
+            raise CommandError(f"relative mode {base!r} is absent from this profile")
+        if data is not None and type(data) is not bool:
+            raise CommandError("relative DATA must be a boolean")
+        if filter_width is not None:
+            raise CommandError(
+                "Icom filter-bank numbers are unavailable; use passband 0"
+            )
+        async with self._mode_lock:
+            receiver = await self._relative_receiver(selected)
+            if data is None:
+                current, _ = await self._relative_readback(
+                    "mode", lambda: self.read_mode(receiver)
+                )
+                data = is_data_mode(current)
+            if data:
+                native = {"USB": "DATA-U", "LSB": "DATA-L", "FM": "DATA-FM"}.get(
+                    base, ""
+                )
+                if native not in self._mode_to_code:
+                    raise CommandError(
+                        f"relative DATA partner unavailable for {base!r}"
+                    )
+
+            # MOR-3754: a before_set refusal at the transport's final
+            # currency check is wrapped in CatTransportError; restore the
+            # caller's exact refusal (identity-checked) so rigctld can
+            # still map ControllerError to EACCESS. Unrelated transport
+            # failures keep their own type.
+            guard_failure: BaseException | None = None
+
+            def current_target() -> bool:
+                nonlocal guard_failure
+                if before_set is not None:
+                    try:
+                        before_set()
+                    except BaseException as exc:
+                        guard_failure = exc
+                        raise
+                return True
+
+            current_target()
+            await self._require_main_relative_role()
+            try:
+                await self._set_mode_verified(
+                    native, receiver, is_current=current_target
+                )
+            except CatCommandRejected as exc:
+                raise CommandRejectedError(str(exc)) from exc
+            except CatTransportError as exc:
+                if guard_failure is not None and exc.__cause__ is guard_failure:
+                    raise guard_failure
+                raise
+            except CatParseError as exc:
+                raise CommandError(f"unreadable relative mode readback: {exc}") from exc
+            observed = await self._read_relative_receiver(receiver)
+            if (observed.mode, bool(observed.data_mode)) != (base, data):
+                raise CommandError("relative mode readback did not match the request")
+            return observed
+
+    async def write_relative_vfo_frequency(
+        self,
+        freq_hz: int,
+        *,
+        selected: bool,
+        before_set: Callable[[], None] | None = None,
+        after_ack: Callable[[], None] | None = None,
+        after_readback: Callable[[], None] | None = None,
+    ) -> int:
+        """Set native FA/FB and confirm it while retaining MAIN RX selection."""
+        if type(freq_hz) is not int or not 30_000 <= freq_hz <= 470_000_000:
+            raise CommandError("relative frequency must be integer Hz within CAT range")
+        async with self._mode_lock:
+            receiver = await self._relative_receiver(selected)
+
+            # MOR-3754: same restore as write_relative_vfo_mode — the
+            # transport wraps a final-check before_set refusal in
+            # CatTransportError; give the caller back the exact refusal.
+            guard_failure: BaseException | None = None
+
+            def current_target() -> bool:
+                nonlocal guard_failure
+                if before_set is not None:
+                    try:
+                        before_set()
+                    except BaseException as exc:
+                        guard_failure = exc
+                        raise
+                return True
+
+            current_target()
+            await self._require_main_relative_role()
+            cmd = "set_freq" if receiver == 0 else "set_freq_sub"
+            try:
+                await self._write(cmd, freq=freq_hz, is_current=current_target)
+            except CatTransportError as exc:
+                if guard_failure is not None and exc.__cause__ is guard_failure:
+                    raise guard_failure
+                raise
+            if after_ack is not None:
+                after_ack()
+            for attempt in range(5):
+                observed = await self._relative_readback(
+                    "frequency", lambda: self.read_freq(receiver)
+                )
+                if observed == freq_hz:
+                    await self._require_main_relative_role()
+                    if after_readback is not None:
+                        after_readback()
+                    return observed
+                if attempt < 4:
+                    await asyncio.sleep(0.05)
+            raise CommandError("relative frequency readback did not match the request")
 
     # -- Data mode ---------------------------------------------------------
 
@@ -1470,20 +1694,36 @@ class YaesuCatRadio:
         (MOR-434).
         """
         mode, _ = await self.read_mode(0)
-        return mode.endswith("-D") or "DATA" in mode.upper()
+        return is_data_mode(mode)
 
     async def set_data_mode(self, on: int | bool, receiver: int = 0) -> None:
-        """Toggle DATA mode.
+        """Select the profile's DATA partner of the live receiver mode."""
+        receiver = self._validate_receiver(receiver)
+        async with self._mode_lock:
+            if self._has_write_command("set_data_mode"):
+                await self._write("set_data_mode", state="1" if on else "0")
+                return
 
-        On Yaesu radios this is done by switching the operating mode
-        (e.g. USB ↔ USB-D).  A full implementation requires the rig
-        profile to map mode pairs.  For now, log a warning if the
-        profile lacks a ``set_data_mode`` CAT command.
-        """
-        if self._has_write_command("set_data_mode"):
-            await self._write("set_data_mode", state="1" if on else "0")
-        else:
-            logger.warning("set_data_mode: no CAT command defined for %s", self.model)
+            mode, _ = await self.read_mode(receiver)
+            pairs = {
+                "USB": "DATA-U",
+                "LSB": "DATA-L",
+                "FM": "DATA-FM",
+                "FM-N": "DATA-FM-N",
+            }
+            if on:
+                if mode in pairs.values():
+                    return
+                target = pairs.get(mode)
+            else:
+                target = {data: plain for plain, data in pairs.items()}.get(mode)
+                if target is None and not is_data_mode(mode):
+                    return
+            if target is None or target not in self._mode_to_code:
+                raise CommandError(
+                    f"No DATA mode partner for {mode!r} on {self._config.model!r}"
+                )
+            await self._set_mode_verified(target, receiver)
 
     # -- Power switch (PS) -------------------------------------------------
 
@@ -2487,15 +2727,18 @@ class YaesuCatRadio:
 
     async def set_vfo_select(self, vfo: int) -> None:
         """Set VFO selection (0 = MAIN, 1 = SUB)."""
-        await self._write("set_vfo_select", vfo=str(vfo))
+        async with self._mode_lock:
+            await self._write("set_vfo_select", vfo=str(vfo))
 
     async def vfo_a_to_b(self) -> None:
         """Copy VFO-A to VFO-B."""
-        await self._write("vfo_a_to_b")
+        async with self._mode_lock:
+            await self._write("vfo_a_to_b")
 
     async def vfo_b_to_a(self) -> None:
         """Copy VFO-B to VFO-A."""
-        await self._write("vfo_b_to_a")
+        async with self._mode_lock:
+            await self._write("vfo_b_to_a")
 
     # -- ReceiverBankCapable -----------------------------------------------
 
@@ -2551,7 +2794,8 @@ class YaesuCatRadio:
         if count <= 1:
             # Single-RX: nothing to switch.
             return
-        await self._write("set_vfo_select", vfo=str(index))
+        async with self._mode_lock:
+            await self._write("set_vfo_select", vfo=str(index))
 
     async def get_active_receiver(self) -> int:
         """Return the index of the currently active receiver.
@@ -2626,7 +2870,8 @@ class YaesuCatRadio:
                 f"(vfo_scheme={self._config.vfo_scheme!r}); "
                 "use select_receiver() for MAIN/SUB on dual-RX Yaesu rigs"
             )
-        await self._write("set_vfo_select", vfo=str(index))
+        async with self._mode_lock:
+            await self._write("set_vfo_select", vfo=str(index))
 
     async def swap_vfo_ab(self, receiver: int = 0) -> None:
         """Swap VFO A and VFO B state on ``receiver``.
@@ -3921,7 +4166,8 @@ class YaesuCatRadio:
         ``vfo_swap`` command raises :class:`~rigplane.exceptions.CommandError`
         from :meth:`_get_spec` before anything is written.
         """
-        await self._write("vfo_swap")
+        async with self._mode_lock:
+            await self._write("vfo_swap")
 
     async def equalize_main_sub(self) -> None:
         """Copy the MAIN-side state onto the SUB-side (FTX-1 ``AB;``).
@@ -3931,11 +4177,73 @@ class YaesuCatRadio:
         :class:`~rigplane.exceptions.CommandError` from :meth:`_get_spec`
         before anything is written.
         """
-        await self._write("vfo_equalize")
+        async with self._mode_lock:
+            await self._write("vfo_equalize")
 
-    # -- Memory (not supported on Yaesu) ----------------------------------------
+    # -- Memory: read-only listing (MOR-3628); writes are not supported --------
 
-    async def set_memory_mode(self, channel: int) -> None:
+    async def read_memory_entries(
+        self, group: int, channels: Sequence[int]
+    ) -> list[MemoryEntry]:
+        """Read stored channels with ``MR`` and ``MT`` without selecting them.
+
+        An unprogrammed channel answers ``?;`` and comes back empty. The
+        radio's tone frequency, DCS code and offset are not in ``MR``.
+        """
+        memory = self.profile.memory
+        if memory is None:
+            raise CommandError(f"{self.profile.model} declares no memory channels")
+        if group != memory.first_group:
+            raise ValueError(f"memory group must be {memory.first_group}, got {group}")
+        entries: list[MemoryEntry] = []
+        for channel in channels:
+            if not memory.first_channel <= channel <= memory.last_channel:
+                raise ValueError(
+                    f"memory channel must be {memory.first_channel}-"
+                    f"{memory.last_channel}, got {channel}"
+                )
+            async with memory_slot_operation(self):
+                chan = f"{channel:05d}"
+                try:
+                    mr = await self._query(
+                        "get_memory_channel", chan=chan, expect_rejection=True
+                    )
+                except CatCommandRejected:
+                    entries.append(
+                        MemoryEntry(group=group, channel=channel, empty=True)
+                    )
+                    continue
+                except (CatParseError, CatTransportError) as exc:
+                    raise CommandError(
+                        f"unreadable memory channel {channel}: {exc}"
+                    ) from exc
+                try:
+                    mt = await self._query(
+                        "get_memory_tag", chan=chan, expect_rejection=True
+                    )
+                except CatCommandRejected:
+                    mt = {"chan": chan, "tag": ""}
+                except (CatParseError, CatTransportError) as exc:
+                    raise CommandError(
+                        f"unreadable memory tag {channel}: {exc}"
+                    ) from exc
+                try:
+                    if mt["chan"] != chan:
+                        raise ValueError(
+                            f"MT answered channel {mt['chan']!r} for {channel}"
+                        )
+                    entries.append(
+                        memory_entry_from_cat(
+                            channel, mr, mt["tag"], self._mode_name(mr["mode"])
+                        )
+                    )
+                except (ValueError, CatParseError) as exc:
+                    raise CommandError(
+                        f"unreadable memory channel {channel}: {exc}"
+                    ) from exc
+        return entries
+
+    async def set_memory_mode(self, channel: int, group: int | None = None) -> None:
         raise NotImplementedError("Memory mode not supported on this radio")
 
     async def memory_write(self) -> None:

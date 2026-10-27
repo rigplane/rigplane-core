@@ -18,7 +18,7 @@ import logging
 import os
 import socket as _socket
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace as _replace_dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -70,6 +70,7 @@ from rigplane.runtime._dual_rx_runtime import DualRxRuntimeMixin
 from rigplane.runtime._scope_runtime import ScopeRuntimeMixin
 from rigplane.runtime.callable_support import supports_callable
 from rigplane.runtime.managed_radio_runtime import ManagedRadioRuntime
+from rigplane.runtime.memory_slot_lock import memory_slot_operation
 from rigplane.runtime.managed_tx_effect_service import managed_tx_effect_service
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
@@ -158,6 +159,7 @@ from rigplane.commands import (
     parse_ack_nak,
     parse_band_stack_response,
     parse_bool_response,
+    parse_memory_entry,
     parse_data_mode_response,
     parse_frequency_response,
     parse_level_response,
@@ -223,6 +225,7 @@ from rigplane.core.types import (
     CivFrame,
     FilterShape,
     MemoryChannel,
+    MemoryEntry,
     Mode,
     RepeaterShiftDirection,
     ScopeCompletionPolicy,
@@ -534,6 +537,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._last_power: int | None = None
         self._last_split: bool | None = None
         self._last_vfo: str | None = None
+        self._vfo_selection_epoch: int = 1
         self._token_task: asyncio.Task[None] | None = None
         self._auto_reconnect = auto_reconnect
         self._reconnect_delay = reconnect_delay
@@ -555,6 +559,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._civ_recovering: bool = False
         self._last_civ_data_received: float | None = None
         self._civ_recovery_lock = asyncio.Lock()
+        # All memory-slot CI-V operations share one lock (MOR-3768).
+        self._memory_select_lock = asyncio.Lock()
         self._civ_recovery_wait_timeout: float = float(
             os.environ.get("ICOM_CIV_RECOVERY_WAIT_TIMEOUT_S", "12.0")
         )
@@ -2596,6 +2602,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         wait_response: bool = True,
         priority: Priority = Priority.NORMAL,
         wait_dispatch: bool = True,
+        is_current: Callable[[], bool] | None = None,
     ) -> CivFrame | None:
         """Send a CI-V command.
 
@@ -2613,6 +2620,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 the poll loop on the commander future (the response still
                 arrives via the RX path). Defaults to True so user commands
                 keep their blocking contract.
+            is_current: Optional request currency predicate for wire dispatch.
 
         Returns:
             Parsed response CivFrame, or None if wait_response=False.
@@ -2621,6 +2629,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         frame = build_civ_frame(
             self._radio_addr, CONTROLLER_ADDR, command, sub=sub, data=data
         )
+        if is_current is not None:
+            return await self._send_civ_raw(
+                frame,
+                wait_response=wait_response,
+                priority=priority,
+                wait_dispatch=wait_dispatch,
+                is_current=is_current,
+            )
         return await self._send_civ_raw(
             frame,
             wait_response=wait_response,
@@ -3082,7 +3098,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         resp = await self._send_civ_expect(civ, label="get_data_mode")
         return parse_data_mode_response(resp)
 
-    async def set_data_mode(self, on: int | bool, receiver: int = 0) -> None:
+    async def set_data_mode_with_filter(
+        self, on: int | bool, *, filter_width: int
+    ) -> None:
+        """Apply DATA with an explicit filter using the declared value variant."""
+        await self.set_data_mode(on, filter_width=filter_width)
+
+    async def set_data_mode(
+        self, on: int | bool, receiver: int = 0, *, filter_width: int | None = None
+    ) -> None:
         """Set receiver DATA mode (command 0x1A 0x06).
 
         Args:
@@ -3098,7 +3122,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
             async def _action() -> None:
                 civ = self._commands.set_data_mode(
-                    on, to_addr=self._radio_addr, receiver=RECEIVER_MAIN
+                    on,
+                    to_addr=self._radio_addr,
+                    receiver=RECEIVER_MAIN,
+                    filter_width=filter_width,
                 )
                 resp = await self._send_civ_expect(civ, label="action")
                 ack = parse_ack_nak(resp)
@@ -3121,7 +3148,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             operation="set_data_mode",
         )
         civ = self._commands.set_data_mode(
-            on, to_addr=self._radio_addr, receiver=receiver
+            on, to_addr=self._radio_addr, receiver=receiver, filter_width=filter_width
         )
         resp = await self._send_civ_expect(civ, label="action")
         ack = parse_ack_nak(resp)
@@ -4782,11 +4809,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 f"profile {self._profile.model} declares no VFO select code for {name}"
             )
         civ = self._commands.set_vfo(code, to_addr=self._radio_addr)
-        resp = await self._send_civ_expect(civ, label="set_vfo")
-        ack = parse_ack_nak(resp)
-        if ack is False:
-            raise CommandError(f"Radio rejected VFO select {vfo}")
-        self._last_vfo = vfo.upper()
+        with self._vfo_selection_change():
+            resp = await self._send_civ_expect(civ, label="set_vfo")
+            ack = parse_ack_nak(resp)
+            if ack is False:
+                raise CommandError(f"Radio rejected VFO select {vfo}")
+            self._last_vfo = vfo.upper()
 
     async def set_split(self, on: bool) -> None:
         """Enable or disable split mode (CI-V ``0x0F``)."""
@@ -4797,6 +4825,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if ack is False:
             raise CommandError(f"Radio rejected split {'on' if on else 'off'}")
         self._last_split = on
+
+    async def read_split(self) -> bool:
+        """Read current split truth without falling back to cached ACK state."""
+        return await self.get_split(strict=True)
 
     async def get_split(self, *, strict: bool = False) -> bool:
         """Read split mode state (CI-V ``0x0F``).
@@ -6220,35 +6252,70 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             "See IC-7610 CI-V Reference Manual page 4."
         )
 
-    async def set_memory_mode(self, channel: int) -> None:
-        """Select memory channel (1-101)."""
-        if not 1 <= channel <= 101:
-            raise ValueError(f"Channel must be 1-101, got {channel}")
-        await self._send_fire_and_forget(
-            self._commands.build_memory_mode_set(channel, to_addr=self._radio_addr)
-        )
+    async def set_memory_mode(self, channel: int, group: int | None = None) -> None:
+        """Select a memory channel (1-101 on the IC-7610).
+
+        With ``group`` this selects a listed channel (MOR-3627) on a profile
+        whose ``[memory]`` section has ``recall = true`` and group+channel
+        addressing (IC-705): the memory group (``08 A0``), then the channel
+        (``08``), each answered with an ACK. It writes no memory contents and
+        sends no transmit-start command; the operating frequency and mode
+        become the stored channel's.
+        """
+        if group is None:
+            if not 1 <= channel <= 101:
+                raise ValueError(f"Channel must be 1-101, got {channel}")
+            async with memory_slot_operation(self):
+                await self._send_fire_and_forget(
+                    self._commands.build_memory_mode_set(
+                        channel, to_addr=self._radio_addr
+                    )
+                )
+            return
+        memory = self._profile.memory
+        if memory is None or not memory.recall or memory.addressing != "group_channel":
+            raise CommandError(f"{self._profile.model} does not support memory recall")
+        self._check_connected()
+        frames = [
+            self._commands.build_memory_group_set(
+                memory, group, to_addr=self._radio_addr
+            ),
+            self._commands.build_memory_mode_set(
+                channel, to_addr=self._radio_addr, memory=memory
+            ),
+        ]
+        async with memory_slot_operation(self):
+            for civ in frames:
+                resp = await self._send_civ_expect(civ, label="recall_memory_channel")
+                if parse_ack_nak(resp) is False:
+                    raise CommandError(
+                        f"Radio rejected memory recall {group}/{channel}"
+                    )
 
     async def memory_write(self) -> None:
         """Write current VFO state to selected memory channel."""
-        await self._send_fire_and_forget(
-            self._commands.build_memory_write(to_addr=self._radio_addr)
-        )
+        async with memory_slot_operation(self):
+            await self._send_fire_and_forget(
+                self._commands.build_memory_write(to_addr=self._radio_addr)
+            )
 
     async def memory_to_vfo(self, channel: int) -> None:
         """Load memory channel to VFO."""
         if not 1 <= channel <= 101:
             raise ValueError(f"Channel must be 1-101, got {channel}")
-        await self._send_fire_and_forget(
-            self._commands.build_memory_to_vfo(channel, to_addr=self._radio_addr)
-        )
+        async with memory_slot_operation(self):
+            await self._send_fire_and_forget(
+                self._commands.build_memory_to_vfo(channel, to_addr=self._radio_addr)
+            )
 
     async def memory_clear(self, channel: int) -> None:
         """Clear memory channel."""
         if not 1 <= channel <= 101:
             raise ValueError(f"Channel must be 1-101, got {channel}")
-        await self._send_fire_and_forget(
-            self._commands.build_memory_clear(channel, to_addr=self._radio_addr)
-        )
+        async with memory_slot_operation(self):
+            await self._send_fire_and_forget(
+                self._commands.build_memory_clear(channel, to_addr=self._radio_addr)
+            )
 
     async def get_memory_contents(self, channel: int) -> MemoryChannel:
         """Read full memory channel data.
@@ -6272,9 +6339,51 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """Write full memory channel data."""
         if not 1 <= mem.channel <= 101:
             raise ValueError(f"Channel must be 1-101, got {mem.channel}")
-        await self._send_fire_and_forget(
-            self._commands.build_memory_contents_set(mem, to_addr=self._radio_addr)
-        )
+        async with memory_slot_operation(self):
+            await self._send_fire_and_forget(
+                self._commands.build_memory_contents_set(mem, to_addr=self._radio_addr)
+            )
+
+    async def read_memory_entries(
+        self, group: int, channels: Sequence[int]
+    ) -> list[MemoryEntry]:
+        """Read stored memory channels without selecting them (``1A 00``).
+
+        One read per channel at background priority, in order, so polls and
+        PTT stay ahead of a sweep. ``group`` is the memory group (IC-705) or
+        band code (IC-9700) per the profile's ``[memory]`` section; an empty
+        slot comes back as an empty entry. Raises :class:`CommandError` when
+        the profile declares no memory channels or the radio answers a
+        different slot than asked.
+        """
+        self._check_connected()
+        memory = self._profile.memory
+        if memory is None:
+            raise CommandError(f"{self._profile.model} declares no memory channels")
+        entries: list[MemoryEntry] = []
+        for channel in channels:
+            async with memory_slot_operation(self):
+                civ = self._commands.build_memory_entry_read(
+                    memory, group, channel, to_addr=self._radio_addr
+                )
+                resp = await self._send_civ_expect(
+                    civ,
+                    label=f"read_memory_entry {group}/{channel}",
+                    priority=Priority.BACKGROUND,
+                )
+                try:
+                    entry = parse_memory_entry(resp.data, memory)
+                except ValueError as exc:
+                    raise CommandError(
+                        f"unreadable memory slot {group}/{channel}: {exc}"
+                    ) from exc
+                if (entry.group, entry.channel) != (group, channel):
+                    raise CommandError(
+                        f"radio answered memory slot {entry.group}/{entry.channel} "
+                        f"to a read of {group}/{channel}"
+                    )
+                entries.append(entry)
+        return entries
 
     async def get_bsr(self, band: int, register: int) -> BandStackRegister:
         """Read band stacking register (band 0-24, register 1-3).

@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from rigplane.core.serial_open import open_serial_port, serial_open_diagnostic
+from rigplane.core.usb_identity import UsbAudioIdentity
+from rigplane.profiles import get_radio_profile
 from rigplane.usb_audio_resolve import AudioDeviceMapping, resolve_audio_for_serial_port
 
 from .hamlib_probe import (
@@ -45,6 +47,7 @@ __all__ = [
     "probe_serial_yaesu_cat",
     "probe_xiegu_model_id",
     "rank_hamlib_probe",
+    "resolve_civ_radio_identity",
 ]
 
 _CIV_PROBE_CMD = bytes([0xFE, 0xFE, 0x00, 0xE0, 0x19, 0x00, 0xFD])
@@ -981,6 +984,52 @@ def _resolve_xiegu_x6200_override(
     return None
 
 
+async def resolve_civ_radio_identity(
+    civ: CivProbeResult,
+    port: SerialPortCandidate | None = None,
+    *,
+    _open_serial: _OpenSerial | None = None,
+) -> tuple[str, str]:
+    """Resolve a CI-V probe hit to ``(model, profile_id)``.
+
+    Single owner of the serial identity rules (MOR-3777), shared by
+    :func:`discover_serial_radios` and by setup consumers that probe one
+    operator-chosen port:
+
+    1. the CI-V address/model-ID table
+       (:func:`rigplane.radios.identify_radio`, ``CIV_PROFILE_MAP``);
+    2. the X6200 USB-hardware fingerprint override at the shared 0xA4
+       address (MOR-170), when *port* metadata is supplied;
+    3. the Xiegu-only ``0x1D 0x19`` model-ID opcode when the fingerprint
+       is absent or inconclusive at 0xA4 (MOR-226) — the one extra probe,
+       never sent to radios outside 0xA4, with *port*/*baud* taken from
+       *civ* and the same ``_open_serial`` injection as the CI-V probe.
+
+    Callers own the address/model *match* decision; this helper only
+    names what answered.
+    """
+    from rigplane.radios import CIV_PROFILE_MAP, identify_radio
+
+    model = identify_radio(civ.address, civ.model_id)
+    profile_id = CIV_PROFILE_MAP.get(civ.address, "")
+    # Hardware-fingerprint override for the IC-705 / X6200 CI-V
+    # address collision (both default to 0xA4). MOR-170.
+    xiegu_override = (
+        _resolve_xiegu_x6200_override(civ.address, port) if port is not None else None
+    )
+    if xiegu_override is None and civ.address == 0xA4:
+        # When the USB fingerprint is missing or inconclusive at the shared
+        # 0xA4 address, confirm via the Xiegu-only CI-V model-ID opcode
+        # (0x1D 0x19) — survives future USB-chip changes the hwid
+        # fingerprint misses and never mislabels an IC-705 (which NAKs the
+        # opcode). MOR-226.
+        if await probe_xiegu_model_id(civ.port, civ.baud, _open_serial=_open_serial):
+            xiegu_override = ("X6200", "xiegu_x6200")
+    if xiegu_override is not None:
+        model, profile_id = xiegu_override
+    return model, profile_id
+
+
 async def discover_serial_radios(
     *,
     _open_serial: _OpenSerial | None = None,
@@ -1000,30 +1049,15 @@ async def discover_serial_radios(
     Returns:
         List of :class:`RadioDiscoveryResult` for all detected radios.
     """
-    from rigplane.radios import CIV_PROFILE_MAP, identify_radio
-
     candidates = enumerate_serial_ports()
     results: list[RadioDiscoveryResult] = []
     for port in candidates:
         # --- CI-V probe ---
         civ = await probe_serial_civ(port.device, _open_serial=_open_serial)
         if civ:
-            model = identify_radio(civ.address, civ.model_id)
-            profile_id = CIV_PROFILE_MAP.get(civ.address, "")
-            # Hardware-fingerprint override for the IC-705 / X6200 CI-V
-            # address collision (both default to 0xA4). MOR-170.
-            xiegu_override = _resolve_xiegu_x6200_override(civ.address, port)
-            # When the USB hwid is inconclusive at the shared 0xA4 address,
-            # confirm via the Xiegu-only CI-V model-ID opcode (0x1D 0x19) —
-            # survives future USB-chip changes the hwid fingerprint misses
-            # and never mislabels an IC-705 (which NAKs the opcode). MOR-226.
-            if xiegu_override is None and civ.address == 0xA4:
-                if await probe_xiegu_model_id(
-                    civ.port, civ.baud, _open_serial=_open_serial
-                ):
-                    xiegu_override = ("X6200", "xiegu_x6200")
-            if xiegu_override is not None:
-                model, profile_id = xiegu_override
+            model, profile_id = await resolve_civ_radio_identity(
+                civ, port, _open_serial=_open_serial
+            )
             results.append(
                 RadioDiscoveryResult(
                     port=civ.port,
@@ -1039,7 +1073,9 @@ async def discover_serial_radios(
                     manufacturer=port.manufacturer,
                     product=port.product,
                     serial_number=port.serial_number,
-                    usb_audio=_resolve_usb_audio_metadata(civ.port),
+                    usb_audio=await _resolve_profile_usb_audio_metadata(
+                        civ.port, profile_id
+                    ),
                 )
             )
             continue
@@ -1057,7 +1093,9 @@ async def discover_serial_radios(
             yaesu.manufacturer = port.manufacturer
             yaesu.product = port.product
             yaesu.serial_number = port.serial_number
-            yaesu.usb_audio = _resolve_usb_audio_metadata(yaesu.port)
+            yaesu.usb_audio = await _resolve_profile_usb_audio_metadata(
+                yaesu.port, yaesu.profile_id
+            )
             results.append(yaesu)
             continue
 
@@ -1071,17 +1109,32 @@ async def discover_serial_radios(
             kenwood.manufacturer = port.manufacturer
             kenwood.product = port.product
             kenwood.serial_number = port.serial_number
-            kenwood.usb_audio = _resolve_usb_audio_metadata(kenwood.port)
+            kenwood.usb_audio = await _resolve_profile_usb_audio_metadata(
+                kenwood.port, kenwood.profile_id
+            )
             results.append(kenwood)
 
     return results
 
 
-def _resolve_usb_audio_metadata(port: str) -> dict[str, object] | None:
+async def _resolve_profile_usb_audio_metadata(
+    port: str, profile_id: str
+) -> dict[str, object] | None:
+    try:
+        identity = get_radio_profile(profile_id).usb_identity if profile_id else None
+    except Exception as exc:
+        logger.debug("discover_serial_radios: USB audio resolve failed: %s", exc)
+        return None
+    return await asyncio.to_thread(_resolve_usb_audio_metadata, port, identity)
+
+
+def _resolve_usb_audio_metadata(
+    port: str, usb_identity: UsbAudioIdentity | None
+) -> dict[str, object] | None:
     """Return optional USB audio mapping metadata without failing discovery."""
     mapping: AudioDeviceMapping | None
     try:
-        mapping = resolve_audio_for_serial_port(port)
+        mapping = resolve_audio_for_serial_port(port, usb_identity=usb_identity)
     except Exception as exc:
         logger.debug("discover_serial_radios: USB audio resolve failed: %s", exc)
         return None

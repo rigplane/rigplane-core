@@ -1,4 +1,5 @@
 import { validateCapabilities, type Capabilities } from '../types/capabilities';
+import type { MemoryPageDto } from '../types/memory-list';
 import type { InfoResponse } from '../types/protocol';
 import { getAuthHeaders, getAuthToken } from '../auth';
 
@@ -23,4 +24,15 @@ export async function fetchInfo(signal?: AbortSignal): Promise<InfoResponse> {
   const res = await fetchApiResponse(`${BASE}/info`, signal);
   if (!res.ok) throw new Error(`fetchInfo: ${res.status}`);
   return res.json() as Promise<InfoResponse>;
+}
+
+export interface MemoryPageRequest { group?: number; start?: number; count?: number }
+
+/** One page of the radio's stored memory channels; omitted fields take the server's defaults. */
+export async function fetchMemoryPage(request: MemoryPageRequest, signal?: AbortSignal): Promise<MemoryPageDto> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(request)) if (value !== undefined) query.set(key, String(value));
+  const res = await fetchApiResponse(`${BASE}/memories?${query}`, signal);
+  if (!res.ok) throw new Error(`fetchMemoryPage: ${res.status}`);
+  return res.json() as Promise<MemoryPageDto>;
 }

@@ -1073,6 +1073,38 @@ line as the startup contract instead of parsing the human-readable banner:
 
 Version, model, capability summary, and connection metadata.
 
+`audioReceive` retains the latest RX-start failure in schema version 1.
+Its `failure` is `null` when clear; otherwise it has `stage` (`rx_start`),
+`code` (`core_rx_start_failed`) and `reason`. Pairing refusals with candidates
+add this field to `failure`:
+
+```json
+{
+  "candidates": [{
+    "stableId": "MME|name:USB Audio CODEC",
+    "displayName": "USB Audio CODEC",
+    "direction": "capture",
+    "hostApi": "MME",
+    "portAudioIndex": 1,
+    "nearRadio": true
+  }]
+}
+```
+
+`direction` is `capture` (RX) or `render` (TX). Candidates cover both directions
+because pairing decides RX and TX together
+(`src/rigplane/audio/_usb_pairing.py: pair`). `candidates` is omitted when
+the failure has no pairing candidates. This is an additive field; the schema
+version remains 1 (`src/rigplane/web/handlers/audio.py: AudioBroadcaster.rx_start_status`).
+Pass a candidate's `stableId` through the existing `rx_device` / `tx_device`
+configuration or `--rx-device` / `--tx-device` flags. Its form is
+`HOSTAPI|endpoint-os-id`, or `HOSTAPI|name:PortAudio-device-name` when there
+is no unique endpoint name match. Explicit stable ids are resolved against
+current enumeration on each open, without automatic pairing; absent or
+ambiguous ids raise the existing unknown/ambiguous override error
+(`src/rigplane/audio/_usb_pairing.py: candidate_stable_id`,
+`src/rigplane/audio/usb_driver.py: _find_by_override`).
+
 ```json
 {
   "server": "rigplane",
@@ -1263,15 +1295,20 @@ from the radio's hardware scope.
 | `/api/v1/audio` | bi-directional | JSON control + binary audio frames |
 
 The optional gated WebRTC transport uses `control`, `scope`, and `audio`
-DataChannels that carry the same payloads as these WebSocket routes. WebRTC
-changes only the transport, not command names, event names, binary headers, or
-audio frame semantics.
+DataChannels that mirror these WebSocket routes. WebRTC changes only the
+transport, not command names, event names, or binary headers. One exception
+applies to TX audio: `0x12` (outside-only TX) is accepted only on the
+`/api/v1/audio` WebSocket route for a local (non-remote) controller ticket.
+The WebRTC `audio` channel builds its `AudioHandler` without an outside-TX
+admission callback (see the handler construction in
+`webrtc_session.py`), and a remote controller ticket yields no admission, so
+both paths drop every `0x12` frame in `AudioHandler._handle_tx_audio`.
 
 Binary audio frames use an 8-byte header followed by codec-specific payload:
 
 | Offset | Size | Field | Notes |
 |--------|------|-------|-------|
-| `0` | 1 | `msg_type` | `0x10` RX, `0x11` TX |
+| `0` | 1 | `msg_type` | `0x10` RX, `0x11` TX, `0x12` TX outside-only |
 | `1` | 1 | `codec` | `0x01` Opus, `0x02` PCM16 |
 | `2` | 2 | `sequence` | uint16 little-endian |
 | `4` | 2 | `sample_rate` | encoded as Hz / 100, uint16 little-endian |
@@ -1284,6 +1321,13 @@ payload and metadata, not from a fixed frame-duration assumption. For PCM16,
 use `payload_bytes / (channels * 2)` to compute sample frames and use the
 header sample rate for playback timing; Opus consumers should decode the
 payload and use decoder output metadata.
+
+`0x12` is the outside-only TX variant of `0x11` (same 8-byte header and
+payload): a frame is admitted only while the radio is observed keyed outside
+Core (managed TX intent `rx`, no release debt, a foreign TX observation) and
+is refused from the moment any Core client keys; see `managed_tx_authority.py:
+ManagedTxAuthority.outside_tx_submission`. A Core without this feature drops
+`0x12` as an unknown type (fail-closed); `0x11` behavior is unchanged.
 
 ### `/api/v1/ws` command envelope
 
