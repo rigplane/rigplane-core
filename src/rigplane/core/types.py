@@ -480,12 +480,13 @@ class MemoryProfile:
     recall: bool = False
     dd_groups: tuple[int, ...] = field(default=(), kw_only=True)
     offset_10mhz_groups: tuple[int, ...] = field(default=(), kw_only=True)
-    # The write-side record layout the repo has proven for this profile
-    # (MOR-3644): ``"civ_26"`` is the 2-byte BCD channel + 26-byte fixed
-    # record ``1A 00`` SET this package's builders emit. Absent (the
-    # default) means NOT verified: memory contents writes and clears are
-    # refused before any byte reaches the wire. Declaring the read-side
-    # fields alone proves nothing about the write layout.
+    # The write-side record layout accepted for this profile (MOR-3644):
+    # ``"civ_26"`` is the 2-byte BCD channel + 26-byte fixed record
+    # ``1A 00`` SET (and the ``0x0B`` clear) this package's builders emit,
+    # validated against :data:`MEMORY_WRITE_LAYOUTS`. Absent (the default)
+    # means NOT verified: memory contents writes and clears are refused
+    # before any byte reaches the wire. Declaring the read-side fields
+    # alone proves nothing about the write layout.
     write_layout: str | None = field(default=None, kw_only=True)
 
 

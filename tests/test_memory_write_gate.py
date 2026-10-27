@@ -124,7 +124,7 @@ async def test_ic7610_set_memory_contents_still_writes_the_record() -> None:
         "fefe98e01a00"  # envelope + 1A 00
         "0100"  # channel 1, 2-byte BCD
         "00"  # scan
-        "0000400714"  # 14_074_000, LE BCD
+        "0040071400"  # 14_074_000, LE BCD (core.types.bcd_encode docstring)
         "01"  # mode USB
         "01"  # filter 1
         "00"  # datamode<<4 | tonemode
@@ -252,6 +252,13 @@ async def _serve(radio: IcomRadio) -> WebServer:
 
 async def _post_batch(web: WebServer, payload: dict[str, Any]) -> tuple[int, Any]:
     """POST /api/v1/commands/batch and return ``(status, json body)``."""
+    return await _post_json(web, "/api/v1/commands/batch", payload, timeout=2)
+
+
+async def _post_json(
+    web: WebServer, path: str, payload: dict[str, Any], *, timeout: float
+) -> tuple[int, Any]:
+    """POST a JSON body to *path* and return ``(status, json body)``."""
     from test_web_server import _read_http_response
 
     reader, writer = await asyncio.open_connection("127.0.0.1", web.port)
@@ -259,7 +266,7 @@ async def _post_batch(web: WebServer, payload: dict[str, Any]) -> tuple[int, Any
         body = json.dumps(payload).encode()
         writer.write(
             (
-                f"POST /api/v1/commands/batch HTTP/1.1\r\n"
+                f"POST {path} HTTP/1.1\r\n"
                 f"Host: 127.0.0.1:{web.port}\r\n"
                 "Connection: close\r\nContent-Type: application/json\r\n"
                 f"Content-Length: {len(body)}\r\n\r\n"
@@ -268,7 +275,7 @@ async def _post_batch(web: WebServer, payload: dict[str, Any]) -> tuple[int, Any
         )
         await writer.drain()
         status, _headers, response = await asyncio.wait_for(
-            _read_http_response(reader), 2
+            _read_http_response(reader), timeout
         )
         return status, json.loads(response)
     finally:
@@ -417,7 +424,17 @@ async def test_http_batch_refuses_unverified_memory_writes_and_skips_the_rest() 
 
 
 @pytest.mark.asyncio
-async def test_memory_clear_from_the_http_api_defers_until_quiet_rx() -> None:
+@pytest.mark.parametrize(
+    ("name", "params", "wire"),
+    [
+        ("memory_clear", {"channel": 5}, b"\x0b"),
+        ("set_memory_contents", _mem().__dict__, b"\x1a\x00"),
+    ],
+    ids=["memory_clear", "set_memory_contents"],
+)
+async def test_memory_writes_from_the_http_api_defer_until_quiet_rx(
+    name: str, params: dict[str, Any], wire: bytes
+) -> None:
     """API to drain while keyed: the real request enqueues, the production
     staging holds it (no wire bytes, request unanswered), and one quiet-RX
     release lets it complete with exactly one frame on the wire."""
@@ -448,7 +465,12 @@ async def test_memory_clear_from_the_http_api_defers_until_quiet_rx() -> None:
     web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
     try:
         request = asyncio.create_task(
-            _request(web, "http", "memory_clear", {"channel": 5})
+            _post_json(
+                web,
+                "/api/v1/commands",
+                {"id": "deferred", "name": name, "params": params},
+                timeout=8,
+            )
         )
         await asyncio.wait_for(web.command_queue.wait(2), timeout=5)
         entry = web.command_queue.take_entry()
@@ -458,9 +480,12 @@ async def test_memory_clear_from_the_http_api_defers_until_quiet_rx() -> None:
         assert transport.sent_packets == []
         assert not request.done()
 
+        # The first RX staging call starts the lane's quiet window...
         _observe(False)
-        # Not a synchronization sleep: this waits out the deferred lane's
-        # own one-second quiet window, the mechanism under test.
+        assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
+        # ...and this waits out that window (the mechanism under test, not
+        # a synchronization sleep): the deferred lane releases after one
+        # second of quiet RX.
         await asyncio.sleep(1.05)
         assert poller._stage_tx_interlocked_entries([]) == [entry]  # noqa: SLF001
         await poller._execute_queued_entry(entry)  # noqa: SLF001
@@ -469,8 +494,8 @@ async def test_memory_clear_from_the_http_api_defers_until_quiet_rx() -> None:
         await _shutdown(web, radio)
     assert status == 200
     assert body["ok"] is True
-    assert body["result"] == {"channel": 5}
-    assert [packet[4] for packet in transport.sent_packets] == [0x0B]
+    assert len(transport.sent_packets) == 1
+    assert transport.sent_packets[0][4 : 4 + len(wire)] == wire
 
 
 @pytest.mark.asyncio
