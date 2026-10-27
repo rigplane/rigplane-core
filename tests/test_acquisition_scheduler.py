@@ -4560,6 +4560,85 @@ def test_ic7610_sub_filter_shape_read_is_gated_by_sub_mode() -> None:
     assert acquisition_query(0x16, sub=0x56, receiver=1) in sent
 
 
+_IC705_FM_POLLED = (
+    FieldPath.receiver("main", "operator_controls", "pbt_inner"),
+    FieldPath.receiver("main", "operator_controls", "pbt_outer"),
+    FieldPath.receiver("main", "operator_controls", "manual_notch_width"),
+)
+_IC705_FM_SHAPE = FieldPath.receiver("main", "operator_controls", "filter_shape")
+_IC705_FM_QUERIES = (
+    acquisition_query(0x14, sub=0x07, receiver=0),
+    acquisition_query(0x14, sub=0x08, receiver=0),
+    acquisition_query(0x16, sub=0x57, receiver=0),
+)
+
+
+def _ic705_scheduler_availability(
+    main_mode: str,
+) -> tuple[
+    AcquisitionScheduler,
+    dict[FieldPath, bool | None],
+]:
+    acquisition = load_rig(RIGS_DIR / "ic705.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    scheduler = AcquisitionScheduler(profile=acquisition)
+    store = StateStore()
+    at = time.monotonic()
+    store.apply(
+        _observation(FieldPath.active("main", "freq_mode", "mode"), main_mode, at=at)
+    )
+    return (
+        scheduler,
+        resolve_available_when(scheduler._profile, store.snapshot()),
+    )
+
+
+def _ic705_due_and_sent(
+    scheduler: AcquisitionScheduler,
+    availability: dict[FieldPath, bool | None],
+) -> tuple[tuple[AcquisitionRequest, ...], list[Any]]:
+    executor, sent = recording_executor(get_radio_profile("IC-705"))
+    requests = scheduler.due_requests(availability=availability)
+    for request in requests:
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+    return requests, sent
+
+
+def test_ic705_fm_absent_reads_are_gated_by_main_mode() -> None:
+    """MAIN in FM: no 14 07/08 or 16 57 reads; MAIN back in USB: they fire (MOR-3630).
+
+    The bench probe NAKed the PBT, notch-width, filter-shape, filter-width
+    and AGC-time reads in FM (tests/fixtures/ic705/README.md). The width
+    keeps its declared FM publication (MOR-2503) and the AGC time stays
+    undeclared (MOR-2915), so the clause covers the other four. The
+    filter-shape read is on demand rather than polled, so only its
+    resolution is asserted here.
+    """
+
+    scheduler, availability = _ic705_scheduler_availability("FM")
+    for path in (*_IC705_FM_POLLED, _IC705_FM_SHAPE):
+        assert availability[path] is False, path
+    requests, sent = _ic705_due_and_sent(scheduler, availability)
+    dispatched = {path for request in requests for path in request.paths}
+    for path in _IC705_FM_POLLED:
+        assert path not in dispatched, path
+    for query in _IC705_FM_QUERIES:
+        assert query not in sent, query
+
+    scheduler, availability = _ic705_scheduler_availability("USB")
+    for path in (*_IC705_FM_POLLED, _IC705_FM_SHAPE):
+        assert availability[path] is True, path
+    requests, sent = _ic705_due_and_sent(scheduler, availability)
+    dispatched = {path for request in requests for path in request.paths}
+    for path in _IC705_FM_POLLED:
+        assert path in dispatched, path
+    for query in _IC705_FM_QUERIES:
+        assert query in sent, query
+
+
 def test_tick_discards_the_attenuator_above_the_declared_band_bound() -> None:
     store = StateStore()
     service = _ftx1_freshness_service(store)

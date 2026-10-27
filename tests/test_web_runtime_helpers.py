@@ -1465,6 +1465,52 @@ def test_transmit_meter_is_available_once_observed_under_ptt() -> None:
     assert field_status["powerMeter"]["availability"] == "available"
 
 
+def test_ic705_fm_absent_controls_are_unavailable_in_fm() -> None:
+    """R42/R52 absence (2): declared, and FM contradicts each clause (MOR-3630).
+
+    ``rigs/ic705.toml`` gates the PBT, notch-width and filter-shape reads
+    on MAIN's mode reading anything but FM; the bench probe NAKed them in
+    FM (tests/fixtures/ic705/README.md).
+    """
+
+    clock = FreshnessClock()
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        _observation(
+            FieldPath.active("main", "freq_mode", "mode"), "FM", at=clock.now()
+        )
+    )
+    field_status = _profile_field_status("IC-705", store.snapshot())
+    for leaf in (
+        "main.pbtInner",
+        "main.pbtOuter",
+        "main.manualNotchWidth",
+        "main.filterShape",
+    ):
+        assert field_status[leaf]["observed"] is False
+        assert field_status[leaf]["availability"] == "unavailable", leaf
+
+
+def test_ic705_fm_absent_controls_are_missing_in_usb_until_observed() -> None:
+    """R42/R52 absence (3): declared, admitted in USB, not yet observed (MOR-3630)."""
+
+    clock = FreshnessClock()
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        _observation(
+            FieldPath.active("main", "freq_mode", "mode"), "USB", at=clock.now()
+        )
+    )
+    field_status = _profile_field_status("IC-705", store.snapshot())
+    for leaf in (
+        "main.pbtInner",
+        "main.pbtOuter",
+        "main.manualNotchWidth",
+        "main.filterShape",
+    ):
+        assert field_status[leaf]["availability"] == "missing", leaf
+
+
 def test_observed_meter_stays_available_while_its_clause_reads_false() -> None:
     """The projection does not pre-empt the freshness tick's discard.
 
