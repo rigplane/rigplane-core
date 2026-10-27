@@ -31,6 +31,7 @@ __all__ = [
     "MemoryChannel",
     "MemoryEntry",
     "MemoryProfile",
+    "MEMORY_WRITE_LAYOUTS",
     "BandStackRegister",
 ]
 
@@ -451,6 +452,14 @@ class MemoryChannel:
 
 
 MemoryAddressing = Literal["group_channel", "band_channel", "channel"]
+
+# Write record layouts this package can build (MOR-3644): ``"civ_26"`` is
+# the 2-byte BCD channel + 26-byte fixed record ``1A 00`` SET (and the
+# ``0x0B`` clear) from ``commands/memory.py``. One authoritative vocabulary
+# shared by the TOML loader and the runtime admission gate, so an
+# SDK-supplied profile carrying an unlisted layout string is refused just
+# like a profile that declares none.
+MEMORY_WRITE_LAYOUTS: frozenset[str] = frozenset({"civ_26"})
 
 
 @dataclass(frozen=True, slots=True)

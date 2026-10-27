@@ -30,7 +30,7 @@ from rigplane.core.state_acquisition_policy import (
     ReconciliationPriority,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.core.types import ToneSquelchType
+from rigplane.core.types import MEMORY_WRITE_LAYOUTS, ToneSquelchType
 from rigplane.core.usb_identity import UsbAudioIdentity, UsbFunctionId
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.profiles.control_domain import (
@@ -2169,10 +2169,6 @@ _MEMORY_KEYS = frozenset(
     }
 )
 _MEMORY_ADDRESSING = frozenset({"group_channel", "band_channel", "channel"})
-# Write record layouts the package can actually build (MOR-3644). The loader
-# is the one authority for the vocabulary; the admission gate only checks
-# that a layout is declared at all.
-_MEMORY_WRITE_LAYOUTS = frozenset({"civ_26"})
 
 
 def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
@@ -2234,11 +2230,11 @@ def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
         groups[key] = tuple(values)
     write_layout = raw.get("write_layout")
     if write_layout is not None and (
-        not isinstance(write_layout, str) or write_layout not in _MEMORY_WRITE_LAYOUTS
+        not isinstance(write_layout, str) or write_layout not in MEMORY_WRITE_LAYOUTS
     ):
         raise RigLoadError(
             f"{filename}: [memory].write_layout must be one of "
-            f"{sorted(_MEMORY_WRITE_LAYOUTS)} or absent, got {write_layout!r}"
+            f"{sorted(MEMORY_WRITE_LAYOUTS)} or absent, got {write_layout!r}"
         )
     return MemoryProfile(  # type: ignore[arg-type]
         addressing=addressing,

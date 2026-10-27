@@ -119,11 +119,21 @@ async def test_ic7610_set_memory_contents_still_writes_the_record() -> None:
     finally:
         radio._connected = False
     assert len(transport.sent_packets) == 1
-    frame = transport.sent_packets[0]
-    # fe fe 98 e0 1a 00 <channel BCD> <26-byte record> fd
-    assert frame[4:6] == b"\x1a\x00"
-    assert frame[-1] == 0xFD
-    assert frame.endswith(b"FT8" + b"\x00" * 8 + b"\xfd")
+    # Complete-frame golden (MOR-3644): the exact 35-byte IC-7610 record.
+    assert transport.sent_packets[0] == bytes.fromhex(
+        "fefe98e01a00"  # envelope + 1A 00
+        "0100"  # channel 1, 2-byte BCD
+        "00"  # scan
+        "0000400714"  # 14_074_000, LE BCD
+        "01"  # mode USB
+        "01"  # filter 1
+        "00"  # datamode<<4 | tonemode
+        "000000"  # tone frequency
+        "000000"  # tsql frequency
+        "46543800000000000000"  # name "FT8", 10 bytes
+        "00"  # record pad byte
+        "fd"
+    )
 
 
 @pytest.mark.asyncio
@@ -135,7 +145,35 @@ async def test_ic7610_memory_clear_still_writes() -> None:
     finally:
         radio._connected = False
     assert len(transport.sent_packets) == 1
-    assert transport.sent_packets[0][4] == 0x0B
+    # Complete-frame golden; the 2-byte channel payload itself is the
+    # open MOR-2055 question, unchanged by this fix on purpose.
+    assert transport.sent_packets[0] == bytes.fromhex("fefe98e00b1000fd")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("layout", ["civ_47", "", "CIV_26"])
+async def test_sdk_supplied_profile_with_an_unlisted_layout_refuses(
+    layout: str,
+) -> None:
+    """The admission gate checks the shared vocabulary, not mere presence:
+    a hand-built profile (no TOML loader in play) carrying an unlisted
+    layout string refuses exactly like one that declares none."""
+    from dataclasses import replace
+
+    transport = MockTransport()
+    radio = _radio("IC-705", transport)
+    radio._profile = replace(
+        radio._profile,
+        memory=replace(radio._profile.memory, write_layout=layout),  # type: ignore[arg-type]
+    )
+    try:
+        with pytest.raises(MemoryWriteUnverifiedError):
+            await radio.set_memory_contents(_mem())
+        with pytest.raises(MemoryWriteUnverifiedError):
+            await radio.memory_clear(5)
+    finally:
+        radio._connected = False
+    assert transport.sent_packets == []
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +248,32 @@ async def _serve(radio: IcomRadio) -> WebServer:
     web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
     return web
+
+
+async def _post_batch(web: WebServer, payload: dict[str, Any]) -> tuple[int, Any]:
+    """POST /api/v1/commands/batch and return ``(status, json body)``."""
+    from test_web_server import _read_http_response
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", web.port)
+    try:
+        body = json.dumps(payload).encode()
+        writer.write(
+            (
+                f"POST /api/v1/commands/batch HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{web.port}\r\n"
+                "Connection: close\r\nContent-Type: application/json\r\n"
+                f"Content-Length: {len(body)}\r\n\r\n"
+            ).encode()
+            + body
+        )
+        await writer.drain()
+        status, _headers, response = await asyncio.wait_for(
+            _read_http_response(reader), 2
+        )
+        return status, json.loads(response)
+    finally:
+        writer.close()
+        await writer.wait_closed()
 
 
 async def _shutdown(web: WebServer, radio: IcomRadio) -> None:
@@ -318,6 +382,95 @@ async def test_http_seam_still_writes_for_the_opted_in_profile() -> None:
     assert body["result"] == {"channel": 1}
     assert len(transport.sent_packets) == 1
     assert transport.sent_packets[0][4:6] == b"\x1a\x00"
+
+
+@pytest.mark.asyncio
+async def test_http_batch_refuses_unverified_memory_writes_and_skips_the_rest() -> None:
+    """The batch endpoint answers the refusal per step and marks the
+    remaining steps skipped; nothing is executed or sent."""
+    transport = MockTransport()
+    radio = _radio("IC-705", transport)
+    web = await _serve(radio)
+    try:
+        status, body = await _post_batch(
+            web,
+            {
+                "steps": [
+                    {"name": "memory_clear", "params": {"channel": 5}},
+                    {"name": "set_memory_contents", "params": _mem().__dict__},
+                ]
+            },
+        )
+    finally:
+        await _shutdown(web, radio)
+    assert status == 200
+    assert body["ok"] is False
+    assert len(body["results"]) == 2
+    refused, skipped = body["results"]
+    assert refused["name"] == "memory_clear"
+    assert refused["ok"] is False
+    assert refused["status"] == "refused"
+    assert refused["error"] == "memory_write_unverified"
+    assert skipped["status"] == "skipped"
+    assert skipped["error"] == "skipped_after_failure"
+    assert transport.sent_packets == []
+
+
+@pytest.mark.asyncio
+async def test_memory_clear_from_the_http_api_defers_until_quiet_rx() -> None:
+    """API to drain while keyed: the real request enqueues, the production
+    staging holds it (no wire bytes, request unanswered), and one quiet-RX
+    release lets it complete with exactly one frame on the wire."""
+    from rigplane.core.state_pipeline_contracts import (
+        FieldPath,
+        Observation,
+        SourceMetadata,
+    )
+
+    transport = MockTransport()
+    radio = _radio("IC-7610", transport)
+    web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    poller = RadioPoller(radio, web.command_queue, state_store=web.command_state_store)
+    loop = asyncio.get_running_loop()
+
+    def _observe(ptt: bool) -> None:
+        web.command_state_store.apply_current(
+            Observation(
+                path=FieldPath.global_("tx_state", "ptt"),
+                value=ptt,
+                source=SourceMetadata(source="test", provider="tests"),
+                timestamp_monotonic=loop.time(),
+                max_age=60,
+            )
+        )
+
+    _observe(True)  # keyed: the request must be held, not sent
+    web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
+    try:
+        request = asyncio.create_task(
+            _request(web, "http", "memory_clear", {"channel": 5})
+        )
+        await asyncio.wait_for(web.command_queue.wait(2), timeout=5)
+        entry = web.command_queue.take_entry()
+        assert entry is not None
+        assert poller._stage_tx_interlocked_entries([entry]) == []  # noqa: SLF001
+        await asyncio.sleep(0)
+        assert transport.sent_packets == []
+        assert not request.done()
+
+        _observe(False)
+        # Not a synchronization sleep: this waits out the deferred lane's
+        # own one-second quiet window, the mechanism under test.
+        await asyncio.sleep(1.05)
+        assert poller._stage_tx_interlocked_entries([]) == [entry]  # noqa: SLF001
+        await poller._execute_queued_entry(entry)  # noqa: SLF001
+        status, body = await asyncio.wait_for(request, timeout=5)
+    finally:
+        await _shutdown(web, radio)
+    assert status == 200
+    assert body["ok"] is True
+    assert body["result"] == {"channel": 5}
+    assert [packet[4] for packet in transport.sent_packets] == [0x0B]
 
 
 @pytest.mark.asyncio

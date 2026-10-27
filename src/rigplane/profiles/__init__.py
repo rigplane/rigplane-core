@@ -22,7 +22,7 @@ from rigplane.commands._codec import (
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
-from rigplane.core.types import MemoryProfile, ToneSquelchType
+from rigplane.core.types import MEMORY_WRITE_LAYOUTS, MemoryProfile, ToneSquelchType
 from rigplane.core.usb_identity import UsbAudioIdentity
 
 __all__ = [
@@ -985,14 +985,20 @@ def admit_memory_write(profile: RadioProfile | None) -> None:
     handler (every WebSocket and HTTP ingress) and by the Icom backend's
     ``memory_clear``/``set_memory_contents``, so a direct SDK call refuses
     the same way. The profile's ``[memory].write_layout`` is the only
-    authority; a profile without the section, or with the section but
-    without the declaration, refuses. Nothing is sent to the radio.
+    authority, checked against the one shared vocabulary
+    (:data:`rigplane.core.types.MEMORY_WRITE_LAYOUTS`) so an SDK-supplied
+    profile carrying an unlisted layout string refuses exactly like a
+    profile that declares none. A profile without the section refuses.
+    Nothing is sent to the radio.
 
     Raises:
         MemoryWriteUnverifiedError: no verified write layout is declared.
     """
     memory = profile.memory if isinstance(profile, RadioProfile) else None
-    if isinstance(memory, MemoryProfile) and memory.write_layout is not None:
+    if (
+        isinstance(memory, MemoryProfile)
+        and memory.write_layout in MEMORY_WRITE_LAYOUTS
+    ):
         return
     model = profile.model if isinstance(profile, RadioProfile) else "this radio"
     raise MemoryWriteUnverifiedError(
