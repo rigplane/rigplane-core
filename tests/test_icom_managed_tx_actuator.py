@@ -16,6 +16,7 @@ from rigplane.commands.bound import BoundCommands
 from rigplane.commands.commander import IcomCommander, Priority
 from rigplane.core.exceptions import ConnectionError
 from rigplane.core.types import CivFrame
+from rigplane.core.tx_observation import TxStateReading
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
@@ -26,6 +27,7 @@ from rigplane.runtime.managed_tx_state import (
 from rigplane.runtime.radio import IcomRadio
 from test_icom7610_serial_radio import _FakeSerialCivLink
 from test_serial_civ_link import _FakeWriter, _cleanup_writes, _make_link
+from tx_observation_fakes import build_harness
 
 
 class _TrackedTransport:
@@ -143,16 +145,16 @@ async def test_release_and_abort_operations_use_profile_bytes_at_strict_priority
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("answer", "expected"),
+    ("answer", "expected", "reads_back"),
     [
-        (0xFB, ActuationResult.ACCEPTED),
-        (0xFA, ActuationResult.REJECTED),
-        (None, ActuationResult.UNCERTAIN),
+        (0xFB, ActuationResult.ACCEPTED, False),
+        (0xFA, ActuationResult.REJECTED, False),
+        (None, ActuationResult.UNCERTAIN, True),
     ],
     ids=["fb", "fa", "no-answer"],
 )
 async def test_force_receive_settles_on_the_radio_answer(
-    answer: int | None, expected: ActuationResult
+    answer: int | None, expected: ActuationResult, reads_back: bool
 ) -> None:
     link = _FakeSerialCivLink(ptt_off_answer=answer)
     radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
@@ -169,11 +171,18 @@ async def test_force_receive_settles_on_the_radio_answer(
     assert result is expected
     # MOR-3071: connect() gates CONNECTED on the identity read (19 00)
     # first, so it is pinned here ahead of the unkey traffic; the
-    # force-receive itself is still exactly one 1C 00 00 frame.
-    assert sent == [
+    # force-receive itself is still exactly one 1C 00 00 frame, followed
+    # by one 1C 00 read-back only when the unkey went unanswered
+    # (MOR-3810).
+    expected_sent = [
         bytes(radio._commands.get_transceiver_id(to_addr=radio._radio_addr)),
         bytes(radio._commands.ptt_off(to_addr=radio._radio_addr)),
     ]
+    if reads_back:
+        expected_sent.append(
+            build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x1C, sub=0x00)
+        )
+    assert sent == expected_sent
 
 
 async def _force_receive(radio: IcomRadio) -> ActuationResult:
@@ -191,10 +200,19 @@ async def test_a_late_answer_to_a_timed_out_unkey_does_not_settle_the_next() -> 
     radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
     radio._civ_get_timeout = 0.2
     await radio.connect()
+    # MOR-3810: each unanswered unkey is followed by a 1C 00 read-back;
+    # answer it TX so this test keeps pinning the unkey's own answer
+    # window (silent read-backs would also trip the link-down counter).
+    in_tx = build_civ_frame(
+        CONTROLLER_ADDR, radio._radio_addr, 0x1C, sub=0x00, data=b"\x01"
+    )
+    first = len(link.sent_frames) + 1
+    link.queue_response_on_send(first + 1, in_tx)
+    link.queue_response_on_send(first + 3, in_tx)
     try:
         results = [await _force_receive(radio)]
         link.queue_response_on_send(
-            2, build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0xFB)
+            first + 2, build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0xFB)
         )
         results.append(await _force_receive(radio))
         await asyncio.sleep(radio._civ_get_timeout)
@@ -228,6 +246,136 @@ async def test_an_unkey_after_a_dropped_write_sink_stays_uncertain() -> None:
         await radio.disconnect()
 
     assert result is ActuationResult.UNCERTAIN
+
+
+def _rx_reading(*, verified: bool = True, ptt: bool = False) -> TxStateReading:
+    return TxStateReading(
+        value=ptt,
+        source="poll_response" if verified else "command_response",
+        verified_readback=verified,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reading", "expected"),
+    [
+        (_rx_reading(), ActuationResult.ACCEPTED),
+        (_rx_reading(ptt=True), ActuationResult.UNCERTAIN),
+        (TxStateReading(value=None, failure="timeout"), ActuationResult.UNCERTAIN),
+        (_rx_reading(verified=False), ActuationResult.UNCERTAIN),
+    ],
+    ids=("receive", "still-tx", "timeout", "unverified"),
+)
+async def test_ambiguous_unkey_ack_confirms_only_verified_receive(
+    monkeypatch: pytest.MonkeyPatch, reading: TxStateReading, expected: ActuationResult
+) -> None:
+    """MOR-3810: an unattributable FB settles only from a verified RX read-back."""
+    radio = _profile_bound_radio()
+    radio._civ_get_timeout = 0.2
+    radio._civ_request_tracker.note_ack_unclaimed()
+    radio._send_civ_raw = AsyncMock(
+        return_value=CivFrame(
+            to_addr=CONTROLLER_ADDR, from_addr=radio._radio_addr, command=0xFB
+        )
+    )
+    seen: dict[str, object] = {}
+
+    async def read_back(
+        *, priority: Priority, is_current: Callable[[], bool] | None
+    ) -> TxStateReading:
+        seen["priority"] = priority
+        seen["current"] = None if is_current is None else is_current()
+        return reading
+
+    monkeypatch.setattr(radio, "read_transmit_state", read_back)
+    result = await _force_receive(radio)
+    call = radio._send_civ_raw.await_args
+    assert result is expected
+    assert call.kwargs["priority"] is Priority.FORCE_RELEASE
+    assert call.kwargs["wait_response"] is True
+    # The confirming read rides the unkey's own priority and currency.
+    assert seen == {"priority": Priority.FORCE_RELEASE, "current": True}
+
+
+@pytest.mark.asyncio
+async def test_a_clean_unkey_ack_does_not_read_the_transmit_state_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio = _profile_bound_radio()
+    radio._send_civ_raw = AsyncMock(
+        return_value=CivFrame(
+            to_addr=CONTROLLER_ADDR, from_addr=radio._radio_addr, command=0xFB
+        )
+    )
+
+    async def fail() -> TxStateReading:
+        raise AssertionError("clean ACK must not read back")
+
+    monkeypatch.setattr(radio, "read_transmit_state", fail)
+    assert await _force_receive(radio) is ActuationResult.ACCEPTED
+
+
+@pytest.mark.asyncio
+async def test_serial_distrusted_ack_then_receive_readback_is_accepted() -> None:
+    """MOR-3810: a distrusted FB settles from the 1C 00 read-back (serial)."""
+    link = _FakeSerialCivLink()
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_get_timeout = 0.2
+    await radio.connect()
+    try:
+        # Send #1 was connect's identity read; #2 is a fire-and-forget
+        # write whose answer stays unclaimed (MOR-2860), so the unkey's
+        # own FB (#3) cannot be attributed to it and the 1C 00
+        # read-back (#4) settles the release.
+        await radio._send_civ_raw(
+            build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x0F, data=b"\x01"),
+            wait_response=False,
+        )
+        link.queue_response_on_send(
+            4,
+            build_civ_frame(
+                CONTROLLER_ADDR, radio._radio_addr, 0x1C, sub=0x00, data=b"\x00"
+            ),
+        )
+        result = await _force_receive(radio)
+    finally:
+        await radio.disconnect()
+    assert result is ActuationResult.ACCEPTED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "column", ("icom7610-serial", "lan-icom"), ids=("serial", "lan")
+)
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        ("rx", ActuationResult.ACCEPTED),
+        ("tx_cat", ActuationResult.UNCERTAIN),
+        ("silence", ActuationResult.UNCERTAIN),
+    ],
+    ids=("receive", "still-tx", "timeout"),
+)
+async def test_unanswered_unkey_settles_from_the_read_back_answer(
+    column: str, answer: str, expected: ActuationResult
+) -> None:
+    """MOR-3810: a timed-out unkey settles from the 1C 00 read-back.
+
+    One shared ``CoreRadio.actuate`` serves serial and LAN alike; the
+    scripted wires answer the read by content and never the set, so the
+    write always times out and only the read-back settles the release.
+    """
+    harness = await build_harness(column)
+    harness.radio._civ_get_timeout = 0.2
+    try:
+        harness.script(answer)
+        result = await harness.radio.actuate(
+            _token(), ActuationOperation.FORCE_RECEIVE, is_current=lambda: True
+        )
+    finally:
+        await harness.close()
+    assert result is expected
 
 
 @pytest.mark.asyncio

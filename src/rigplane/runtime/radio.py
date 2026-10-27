@@ -4501,11 +4501,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return ActuationResult.ACCEPTED
         # MOR-2860: the unkey settles on the radio's answer, which
         # ``_civ_rx.py: CivRuntime._execute_civ_raw`` waits for up to
-        # ``_civ_get_timeout`` from the send. FB is ACCEPTED and FA is
-        # REJECTED; no answer is UNCERTAIN, which keeps the release owed
-        # (``managed_tx_state.py: _settle``). FB/FA name no command, so an
-        # answer is also UNCERTAIN when another write's answer was left
-        # unclaimed within one ``_civ_get_timeout`` before this attempt.
+        # ``_civ_get_timeout`` from the send. A clean FB is ACCEPTED and
+        # FA is REJECTED; an answer that cannot be attributed to this
+        # unkey settles from a transmit-state read-back (MOR-3810, below).
+        # FB/FA name no command, so an answer is also unattributable
+        # when another write's answer was left unclaimed within one
+        # ``_civ_get_timeout`` before this attempt.
         started = time.monotonic()
         try:
             reply = await self._send_civ_raw(
@@ -4515,28 +4516,54 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 is_current=is_current,
             )
         except TimeoutError:
-            return ActuationResult.UNCERTAIN
+            reply = None
         acknowledged = None if reply is None else parse_ack_nak(reply)
         unclaimed = self._civ_request_tracker.ack_unclaimed_at
         if acknowledged is None or (
             unclaimed is not None and unclaimed >= started - self._civ_get_timeout
         ):
+            # MOR-3810: the bare FB/FA names no command, so an
+            # unattributable answer (no answer, a non-ACK shape, or an
+            # answer left unclaimed by another write) settles from one
+            # read-back on the unkey's own priority and currency, the way
+            # Yaesu confirms its silent set (MOR-2862). Only a verified
+            # receive confirms the release; TX, timeout, read-error or an
+            # unverified source stays UNCERTAIN, which keeps the release
+            # owed (``managed_tx_state.py: _settle``).
+            try:
+                reading = await self.read_transmit_state(
+                    priority=priority, is_current=is_current
+                )
+            except Exception:
+                return ActuationResult.UNCERTAIN
+            if reading.value is False and reading.verified_readback:
+                return ActuationResult.ACCEPTED
             return ActuationResult.UNCERTAIN
         return ActuationResult.ACCEPTED if acknowledged else ActuationResult.REJECTED
 
-    async def read_transmit_state(self) -> TxStateReading:
+    async def read_transmit_state(
+        self,
+        *,
+        priority: Priority = Priority.NORMAL,
+        is_current: "Callable[[], bool] | None" = None,
+    ) -> TxStateReading:
         """One solicited CI-V transmit-state observation.
 
         The directed reply is parsed through the shared observation decoder;
         only a matching PTT observation supplies a value. Icom provides no
         keying attribution. Wire-level failures return a ``failure`` tag;
-        connection preconditions still raise.
+        connection preconditions still raise. The unkey's confirming
+        read-back (MOR-3810) rides the unkey's own priority and currency.
         """
         self._check_connected()
         frame = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1C, sub=0x00)
         try:
             reply = await self._send_civ_expect(
-                frame, label="tx-state", timeout=TX_READ_DEADLINE_SECONDS
+                frame,
+                label="tx-state",
+                priority=priority,
+                timeout=TX_READ_DEADLINE_SECONDS,
+                is_current=is_current,
             )
         except (asyncio.TimeoutError, TimeoutError):
             # Both are real outcomes here: ``asyncio.TimeoutError`` from the

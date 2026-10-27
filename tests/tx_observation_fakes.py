@@ -230,7 +230,7 @@ class ScriptedLanTransport(MockTransport):
         self.answer: str = "rx"
         self.radio_addr: int = 0x98
 
-    async def send_tracked(self, data: bytes) -> None:
+    async def send_tracked(self, data: bytes, **_guard: object) -> None:
         await super().send_tracked(data)
         payload = bytes(data)[0x15:]
         if _is_civ_transmit_state_read(payload):
