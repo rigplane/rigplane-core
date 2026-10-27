@@ -40,6 +40,7 @@ class TxInterlockCommandFamily(StrEnum):
     VFO_CONTENTS = "vfo-contents"
     VFO_TOPOLOGY = "vfo-topology"
     MEMORY = "memory"
+    REPEATER = "repeater"
     RIT_XIT = "rit-xit"
 
 
@@ -102,6 +103,9 @@ TX_INTERLOCK_COMMAND_FAMILY_METADATA = (
     ),
     TxInterlockCommandFamilyMetadata(
         TxInterlockCommandFamily.MEMORY, TxInterlockDisposition.DEFER
+    ),
+    TxInterlockCommandFamilyMetadata(
+        TxInterlockCommandFamily.REPEATER, TxInterlockDisposition.DEFER
     ),
     TxInterlockCommandFamilyMetadata(
         TxInterlockCommandFamily.RIT_XIT, TxInterlockDisposition.TX_SAFE

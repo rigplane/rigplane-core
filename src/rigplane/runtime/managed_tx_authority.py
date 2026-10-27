@@ -17,6 +17,11 @@ from rigplane.runtime.controller_authority import (
     ControllerError,
     ControllerTicket,
 )
+from rigplane.runtime.tx_interlock import (
+    TxInterlockDisposition,
+    classify_tx_interlock,
+    interlock_policy_token,
+)
 from rigplane.runtime.managed_tx_config import (
     ManagedTxTotConfig,
     ManagedTxTotConfigStore,
@@ -819,6 +824,16 @@ class ManagedTxAuthority:
                 if descriptor.tx_policy is DescriptorTxPolicy.TUNER_CONTROL:
                     value = intent.params.get("value")
                     return type(value) is int and value == 0
+                # MOR-3633: repeater writes defer while keyed through the one
+                # typed interlock policy, not a second list kept here. The
+                # bridge resolves bound intents by canonical descriptor name,
+                # so this stays a single descriptor lookup per admission.
+                token = interlock_policy_token(intent)
+                if token is not None and classify_tx_interlock(token) in (
+                    TxInterlockDisposition.DEFER,
+                    TxInterlockDisposition.BLOCK,
+                ):
+                    return False
                 return True
             if intent.name == "set_func" and intent.params.get("func") == "TUNER":
                 return intent.params.get("on") is False

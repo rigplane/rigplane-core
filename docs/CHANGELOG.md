@@ -27,6 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default; and the beta report form is now the 3.0 radio report form. The
   PyPI project page shows the new README and classifier from the next upload.
 
+### Fixed
+
+- **Repeater writes defer while keyed; PTT-on needs a known TX-side
+  frequency (MOR-3633).** Repeater shift, tone/TSQL and tone-frequency
+  writes join the TX interlock's new REPEATER family (deferred while
+  keyed, like the memory family); managed-mode admission refuses them
+  through the same typed policy instead of a second list. PTT-on is
+  refused with the stable error `ptt_tx_frequency_unknown` while the
+  TX-side frequency is unknown on profiles that report a TX target
+  (IC-705, IC-7300, IC-7610, FTX-1), at the interlock seats and unmanaged
+  rigctld; the refusal names the receiver that would transmit. Radios
+  that cannot report a target (IC-9700) key unchanged, as does
+  managed-PTT admission (whose degraded-session contract is MOR-620).
+
 ## [3.0.1] — 2026-10-28
 
 3.0.0 was prepared and tagged but never published to PyPI, so no user received

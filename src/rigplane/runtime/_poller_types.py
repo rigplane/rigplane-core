@@ -114,6 +114,7 @@ __all__ = [
     "SetQuickDualWatch",
     "SetQuickSplit",
     "SetRefAdjust",
+    "SetRepeaterShift",
     "SetRepeaterTone",
     "SetRepeaterTsql",
     "SetRfGain",
@@ -140,6 +141,8 @@ __all__ = [
     "SetSsbTxBandwidth",
     "SetSystemDate",
     "SetSystemTime",
+    "SetToneFreq",
+    "SetTsqlFreq",
     "SetTunerStatus",
     "SetTuningStep",
     "SetTwinPeak",
@@ -721,10 +724,12 @@ class SetDashRatio:
 
 @dataclass(frozen=True, slots=True)
 class SetRepeaterTone:
-    """TX-policy classification token for ``set_func TONE`` (rigctld).
+    """TX-policy classification token for repeater-tone toggles.
 
     No dispatch arm executes it: the rigctld TX-policy seat builds it to
-    classify the intent.
+    classify ``set_func TONE``, and the descriptor bridge
+    (:func:`rigplane.runtime.tx_interlock.interlock_policy_token`) builds
+    it for ``set_repeater_tone``.
     """
 
     on: bool
@@ -733,13 +738,54 @@ class SetRepeaterTone:
 
 @dataclass(frozen=True, slots=True)
 class SetRepeaterTsql:
-    """TX-policy classification token for ``set_func TSQL`` (rigctld).
+    """TX-policy classification token for TSQL toggles.
 
     No dispatch arm executes it: the rigctld TX-policy seat builds it to
-    classify the intent.
+    classify ``set_func TSQL``, and the descriptor bridge
+    (:func:`rigplane.runtime.tx_interlock.interlock_policy_token`) builds
+    it for ``set_repeater_tsql``.
     """
 
     on: bool
+    receiver: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class SetRepeaterShift:
+    """TX-policy classification token for ``set_repeater_shift`` (MOR-3633).
+
+    No dispatch arm executes it: the descriptor bridge
+    (:func:`rigplane.runtime.tx_interlock.interlock_policy_token`) builds
+    it to classify the intent.
+    """
+
+    direction: int  # RepeaterShiftDirection value 0-3
+    receiver: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class SetToneFreq:
+    """TX-policy classification token for ``set_tone_freq`` (MOR-3633).
+
+    No dispatch arm executes it: the descriptor bridge
+    (:func:`rigplane.runtime.tx_interlock.interlock_policy_token`) builds
+    it to classify the intent.
+    """
+
+    freq_hz: int  # exact int centiHz, mirroring the descriptor binding
+    receiver: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class SetTsqlFreq:
+    """TX-policy classification token for ``set_tsql_freq`` (MOR-3633).
+
+    No dispatch arm executes it: the descriptor bridge
+    (:func:`rigplane.runtime.tx_interlock.interlock_policy_token`) builds
+    it to classify the intent.
+    """
+
+    freq_hz: int  # exact int centiHz, mirroring the descriptor binding
     receiver: int = 0
 
 
@@ -989,8 +1035,11 @@ Command: TypeAlias = (
     | SetNbDepth
     | SetNbWidth
     | SetDashRatio
+    | SetRepeaterShift
     | SetRepeaterTone
     | SetRepeaterTsql
+    | SetToneFreq
+    | SetTsqlFreq
     | SetRxAntenna
     | SetMemoryMode
     | MemoryWrite

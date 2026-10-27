@@ -7,13 +7,15 @@ being corrected, and a missing union member cannot create a privileged path.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from math import isfinite
+from typing import Any
 
 from rigplane.commands._frame import build_civ_frame
 from rigplane.core.exceptions import CommandError
-from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
 from rigplane.core.state_store import FreshnessState, StateSnapshot
 from rigplane.core.tx_interlock_contract import (
     TX_INTERLOCK_COMMAND_FAMILY_METADATA,
@@ -21,6 +23,7 @@ from rigplane.core.tx_interlock_contract import (
     TxInterlockCommandFamilyMetadata,
     TxInterlockDisposition,
 )
+from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.runtime._poller_types import (
     MemoryClear,
     MemoryToVfo,
@@ -46,12 +49,17 @@ from rigplane.runtime._poller_types import (
     SetMemoryMode,
     SetMode,
     SetPowerstat,
+    SetRepeaterShift,
+    SetRepeaterTone,
+    SetRepeaterTsql,
     SetRitFrequency,
     SetRitTxStatus,
     SetRxAntenna,
     SetRxAntennaAnt1,
     SetRxAntennaAnt2,
     SetSplit,
+    SetToneFreq,
+    SetTsqlFreq,
     SetTunerStatus,
     VfoEqualize,
     VfoSwap,
@@ -72,10 +80,13 @@ __all__ = [
     "classify_tx_interlock",
     "evaluate_tx_interlock",
     "get_tx_interlock_command_family_metadata",
+    "interlock_policy_token",
     "is_exact_raw_dekey_frame",
     "is_exact_raw_transmission_end_frame",
+    "ptt_on_tx_target_refusal",
     "resolve_rf_state",
     "send_civ_frame",
+    "tx_frequency_unknown_refusal",
 ]
 
 
@@ -91,11 +102,21 @@ class TxInterlockRefusal(CommandError):
     the reason codes are policy vocabulary, and every enforcement seat may
     need them. ``reason_code`` rides the failed-lifecycle details whitelist so
     a localized UI never has to parse English prose off the wire (MOR-1879).
+    ``details`` carries optional machine-readable refusal evidence (MOR-3633:
+    the TX-target reason and the receiver that would transmit); seats merge
+    it into the failed-lifecycle details beside ``reason_code``.
     """
 
-    def __init__(self, message: str, *, reason_code: str) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: str,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         self.reason_code = reason_code
+        self.details: dict[str, object] = dict(details) if details is not None else {}
 
 
 class RfState(StrEnum):
@@ -302,6 +323,20 @@ def resolve_rf_state(snapshot: StateSnapshot) -> RfState:
 # de-key/stop operation harder to execute.
 _ALWAYS_PASS_TYPES = (PttOff, ScanStop)
 
+# MOR-3633: the one table that classifies repeater writes. A shift, tone,
+# TSQL or tone-frequency write while keyed moves the TX frequency (up to
+# 5 MHz on 70 cm) mid-transmission, so every member defers like the VFO
+# topology and memory families — never a hard block, so a known-RX pass
+# stays easy. A later repeater command joins by adding one row here; the
+# DEFER table and the family branch below both read this tuple.
+_REPEATER_DEFER_TYPES = (
+    SetRepeaterShift,
+    SetRepeaterTone,
+    SetRepeaterTsql,
+    SetToneFreq,
+    SetTsqlFreq,
+)
+
 _DEFER_TYPES = (
     SetSplit,
     SetDualWatch,
@@ -317,6 +352,7 @@ _DEFER_TYPES = (
     # family members, never a hard block (a known-RX pass must stay easy).
     MemoryClear,
     SetMemoryContents,
+    *_REPEATER_DEFER_TYPES,
 )
 
 _HARD_BLOCK_TYPES = (
@@ -390,6 +426,8 @@ def get_tx_interlock_command_family_metadata(
         command, (SetMemoryMode, MemoryToVfo, MemoryClear, SetMemoryContents)
     ):
         family = TxInterlockCommandFamily.MEMORY
+    elif isinstance(command, _REPEATER_DEFER_TYPES):
+        family = TxInterlockCommandFamily.REPEATER
     elif isinstance(command, (SetRitTxStatus, SetRitFrequency)):
         family = TxInterlockCommandFamily.RIT_XIT
     else:
@@ -454,6 +492,162 @@ def evaluate_tx_interlock(
     return TxInterlockDecision(
         disposition, False, "RF state is TX; command is blocked."
     )
+
+
+# ---------------------------------------------------------------------------
+# Descriptor bridge: one table from intent names to typed policy tokens
+# ---------------------------------------------------------------------------
+#
+# Descriptor-backed intents (``set_repeater_shift`` and friends, WS/HTTP)
+# never become typed commands on the dispatch path — the drain invokes the
+# Radio method directly — so classifying the tokens above does not gate
+# them by itself. This bridge is the one mapping the dispatch seat
+# (``ManagedTxAuthority.admit_managed_write``) uses to reach the same typed
+# policy; the descriptors keep no second list of which commands defer.
+
+
+def _repeater_shift_policy_token(params: Mapping[str, Any]) -> SetRepeaterShift:
+    return SetRepeaterShift(params["direction"], params.get("receiver", 0))
+
+
+def _repeater_tone_policy_token(params: Mapping[str, Any]) -> SetRepeaterTone:
+    return SetRepeaterTone(params["on"], params.get("receiver", 0))
+
+
+def _repeater_tsql_policy_token(params: Mapping[str, Any]) -> SetRepeaterTsql:
+    return SetRepeaterTsql(params["on"], params.get("receiver", 0))
+
+
+def _tone_freq_policy_token(params: Mapping[str, Any]) -> SetToneFreq:
+    return SetToneFreq(params["freq_hz"], params.get("receiver", 0))
+
+
+def _tsql_freq_policy_token(params: Mapping[str, Any]) -> SetTsqlFreq:
+    return SetTsqlFreq(params["freq_hz"], params.get("receiver", 0))
+
+
+_INTERLOCK_POLICY_TOKEN_BUILDERS: Mapping[
+    str, Callable[[Mapping[str, Any]], object]
+] = {
+    "set_repeater_shift": _repeater_shift_policy_token,
+    "set_repeater_tone": _repeater_tone_policy_token,
+    "set_repeater_tsql": _repeater_tsql_policy_token,
+    "set_tone_freq": _tone_freq_policy_token,
+    "set_tsql_freq": _tsql_freq_policy_token,
+}
+
+
+def interlock_policy_token(intent: object) -> object | None:
+    """Bridge one descriptor-backed intent to its typed interlock token.
+
+    Bound intents carry canonical descriptor names, so aliases resolve
+    without a second lookup. Anything the table does not name — other
+    descriptors, non-descriptor intents, typed commands, anything else —
+    bridges to ``None`` and keeps its existing admission path.
+    """
+
+    if not isinstance(intent, CommandIntent):
+        return None
+    builder = _INTERLOCK_POLICY_TOKEN_BUILDERS.get(intent.name)
+    if builder is None:
+        return None
+    return builder(intent.params)
+
+
+# ---------------------------------------------------------------------------
+# PTT-on guard: the TX side's frequency must be known (MOR-3633)
+# ---------------------------------------------------------------------------
+
+_TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
+
+
+def _unknown_tx_frequency_refusal(
+    reason: str, receiver: str | None
+) -> TxInterlockRefusal:
+    details: dict[str, object] = {"txTargetReason": reason}
+    transmit_suffix = f"; {receiver} would transmit" if receiver is not None else ""
+    message = f"PTT refused: the TX frequency is unknown ({reason}{transmit_suffix})."
+    if receiver is not None:
+        details["receiver"] = receiver
+    return TxInterlockRefusal(
+        message, reason_code="ptt_tx_frequency_unknown", details=details
+    )
+
+
+def tx_frequency_unknown_refusal(value: object) -> TxInterlockRefusal | None:
+    """Refuse a TX-side frequency value that cannot key a transmitter.
+
+    The value-level core of the PTT-on guard, for seats that retain the
+    ``tx_state.tx_target`` observation rather than a snapshot. Only a known
+    target carrying a frequency passes; ``None`` (no observation) reads
+    ``not-observed``, and anything outside the ``core.tx_target``
+    vocabulary reads ``contradiction``. The receiver is named only when a
+    trusted known value carries it.
+    """
+
+    if value is None:
+        return _unknown_tx_frequency_refusal("not-observed", None)
+    if isinstance(value, KnownTxTarget):
+        if value.frequency_hz is None:
+            return _unknown_tx_frequency_refusal("not-observed", value.receiver)
+        return None
+    if isinstance(value, UnknownTxTarget):
+        return _unknown_tx_frequency_refusal(value.reason, None)
+    return _unknown_tx_frequency_refusal("contradiction", None)
+
+
+def ptt_on_tx_target_refusal(
+    snapshot: StateSnapshot, *, tx_target_supported: bool
+) -> TxInterlockRefusal | None:
+    """Refuse PTT-on while the TX side's frequency is unknown.
+
+    Reads the one ``global.tx_state.tx_target`` observation through the
+    ``core.tx_target`` vocabulary — never a second target resolver — with
+    the same fail-closed strictness as :func:`resolve_rf_state`: a missing
+    field, a stale flag or TTL, and a foreign provider generation all
+    refuse, as does a malformed observation. ``tx_target_supported`` is
+    the profile's answer from
+    :func:`rigplane.runtime._state_queries.profile_publishes_tx_target`;
+    radios that can never publish the target skip the guard and keep
+    keying. This is unknown-ness only — no frequency-permit logic, which
+    is MOR-3632 slice B.
+    """
+
+    if not tx_target_supported:
+        return None
+    try:
+        field = snapshot.field(_TX_TARGET_PATH)
+    except KeyError:
+        return tx_frequency_unknown_refusal(None)
+    if field.freshness is FreshnessState.STALE:
+        return _unknown_tx_frequency_refusal("stale", None)
+    if field.freshness is not FreshnessState.FRESH:
+        return _unknown_tx_frequency_refusal("not-observed", None)
+    max_age = field.max_age
+    generated_at = snapshot.generated_at_monotonic
+    last_observed = field.last_observed_monotonic
+    if (
+        type(field.provider_generation) is not int
+        or type(snapshot.provider_generation) is not int
+        or snapshot.provider_generation < 0
+        or any(
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not isfinite(value)
+            for value in (generated_at, last_observed, max_age)
+        )
+        or max_age is None
+        or max_age <= 0
+        or last_observed < 0
+        or generated_at < last_observed
+    ):
+        return _unknown_tx_frequency_refusal("contradiction", None)
+    if field.provider_generation != snapshot.provider_generation:
+        return _unknown_tx_frequency_refusal("stale", None)
+    assert isinstance(max_age, (int, float)) and not isinstance(max_age, bool)
+    if generated_at - last_observed >= max_age:
+        return _unknown_tx_frequency_refusal("stale", None)
+    return tx_frequency_unknown_refusal(field.value)
 
 
 # ---------------------------------------------------------------------------

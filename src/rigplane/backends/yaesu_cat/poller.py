@@ -36,11 +36,13 @@ from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.runtime._poller_types import (
+    PttOn,
     canonicalize_level_command,
     execute_command_queue_entry,
     execute_positive_tx_queue_entry,
     validate_command_queue_entry_currency,
 )
+from rigplane.runtime._state_queries import profile_publishes_tx_target
 from rigplane.runtime.tx_interlock import (
     DeferredTxCommandLane,
     RfState,
@@ -49,6 +51,7 @@ from rigplane.runtime.tx_interlock import (
     TxInterlockDisposition,
     classify_tx_interlock,
     evaluate_tx_interlock,
+    tx_frequency_unknown_refusal,
 )
 
 from ...core.exceptions import TimeoutError as RigplaneTimeoutError
@@ -139,6 +142,10 @@ class YaesuCatPoller:
         self._ema_s_sub: float | None = None
         self._ptt_observation: Observation | None = None
         self._ptt_connection_generation: tuple[str | None, int] | None = None
+        # MOR-3633: latest TX-target observation, retained for the PTT-on
+        # guard beside the PTT mirror above.
+        self._tx_target_observation: Observation | None = None
+        self._tx_target_connection_generation: tuple[str | None, int] | None = None
         self._tx_target_generation = self._current_tx_target_generation()
         self._tx_target_invalidation: tuple[str | None, int, int | None] | None = None
         self._tx_target_known_generation: tuple[str | None, int] | None = None
@@ -182,6 +189,10 @@ class YaesuCatPoller:
         self._ptt_observation = None
         self._ptt_connection_generation = None
 
+    def _invalidate_tx_target_observation(self) -> None:
+        self._tx_target_observation = None
+        self._tx_target_connection_generation = None
+
     def _current_ptt_observation(
         self, *, now: float | None = None
     ) -> Observation | None:
@@ -213,6 +224,45 @@ class YaesuCatPoller:
         if observation is None:
             return RfState.UNKNOWN
         return RfState.TX if observation.value else RfState.RX
+
+    def _current_tx_target_observation(
+        self, *, now: float | None = None
+    ) -> Observation | None:
+        """Return the retained TX-target observation while it stays valid.
+
+        Mirrors :meth:`_current_ptt_observation`: a missing, mistyped,
+        foreign-generation or TTL-expired observation invalidates and
+        reads ``None`` (the PTT-on guard's ``not-observed``), never a
+        stale value.
+        """
+
+        observation = self._tx_target_observation
+        if observation is None or not isinstance(
+            observation.value, (KnownTxTarget, UnknownTxTarget)
+        ):
+            self._invalidate_tx_target_observation()
+            return None
+        provider_generation = self._captured_provider_generation()
+        if provider_generation is not None and (
+            observation.provider_generation != provider_generation
+        ):
+            self._invalidate_tx_target_observation()
+            return None
+        if (
+            self._tx_target_connection_generation
+            != self._current_tx_target_generation()
+        ):
+            self._invalidate_tx_target_observation()
+            return None
+        timestamp = time.monotonic() if now is None else now
+        if (
+            observation.max_age is None
+            or timestamp < observation.timestamp_monotonic
+            or timestamp >= observation.timestamp_monotonic + observation.max_age
+        ):
+            self._invalidate_tx_target_observation()
+            return None
+        return observation
 
     def _stamp_provider_generation(
         self,
@@ -437,6 +487,9 @@ class YaesuCatPoller:
                 self._tx_target_invalidation = None
                 if isinstance(observation.value, KnownTxTarget):
                     self._tx_target_known_generation = generation
+                # MOR-3633: retain the latest target for the PTT-on guard.
+                self._tx_target_observation = observation
+                self._tx_target_connection_generation = generation
         if ptt_observation is None:
             self._invalidate_ptt_observation()
         else:
@@ -1090,6 +1143,19 @@ class YaesuCatPoller:
                 or classify_tx_interlock(cmd) is TxInterlockDisposition.TX_SAFE
             ):
                 raise CommandError(decision.reason)
+            if (
+                isinstance(cmd, PttOn)
+                and decision.allowed
+                and profile_publishes_tx_target(getattr(self._radio, "profile", None))
+            ):
+                # MOR-3633: the TX-target guard runs after the RF verdict,
+                # so only a known-RX key consults the retained target.
+                observation = self._current_tx_target_observation()
+                refusal = tx_frequency_unknown_refusal(
+                    None if observation is None else observation.value
+                )
+                if refusal is not None:
+                    raise refusal
 
         from ..._poller_types import (
             PttOff,

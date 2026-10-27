@@ -63,6 +63,7 @@ from ..radio_state import RadioState, ReceiverState
 from ..runtime import _poller_types as tx_commands  # noqa: TID251
 from ..runtime import tx_interlock
 from ..runtime._dual_rx_runtime import require_receiver_for_profile
+from ..runtime._state_queries import profile_publishes_tx_target
 from ..runtime.callable_support import split_tx_routes_unselected_selector
 from ..runtime.managed_tx_authority import ManagedTxAuthority
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
@@ -664,6 +665,24 @@ class _RigctldCommandExecutor:
                 is not tx_interlock.RfState.RX
             ):
                 raise _RigctldCommandFailure(HamlibError.ERJCTED)
+            if (
+                intent.name == "set_ptt"
+                and intent.params.get("ptt") is True
+                and self.handler._has_canonical_state_store
+                and profile_publishes_tx_target(
+                    getattr(self.handler._radio, "profile", None)
+                )
+                and self.handler._resolve_rigctld_rf_state() is tx_interlock.RfState.RX
+            ):
+                # MOR-3633: the TX-target guard runs after the RF verdict,
+                # so a keyed or unknown radio keeps its existing refusal
+                # and only a known-RX key consults the target.
+                refusal = tx_interlock.ptt_on_tx_target_refusal(
+                    self.handler._state_store.snapshot(),
+                    tx_target_supported=True,
+                )
+                if refusal is not None:
+                    raise _RigctldCommandFailure(HamlibError.ERJCTED)
         await self._wait_predecessor()
         if ticket is not None:
             ticket.authority.validate(ticket)
