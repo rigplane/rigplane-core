@@ -25,6 +25,7 @@ from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import attach_managed_tx_composition
+from test_tx_frequency_permit import seed_tx_target
 
 
 class _DelayedWire:
@@ -233,6 +234,9 @@ async def _joined_web_runtime(
     await composition.transport_ready(actuator)
     await composition.bind_state_store(server.command_state_store)
     attach_managed_tx_composition(server, composition)
+    # MOR-3632: the PTT-on TX frequency permit gates on this IC-9700's band
+    # rows; publish the fresh known 2 m target a keyed radio sits on.
+    seed_tx_target(server.command_state_store, 145_000_000)
     return actuator, composition, server
 
 

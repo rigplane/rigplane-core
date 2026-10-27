@@ -37,6 +37,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
+from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.core.tx_safety import (
     TxOutcome,
     TxOwner,
@@ -50,6 +51,7 @@ from rigplane.rigctld.handler import RigctldHandler
 from rigplane.rigctld.server import RigctldServer
 from rigplane.runtime.managed_radio_runtime import ManagedRadioRuntime
 from rigplane.runtime.managed_tx_effect_service import managed_tx_effect_service
+from test_tx_frequency_permit import seed_fresh_rx, seed_tx_target
 from test_web_recovery_durable_off import _Provider
 
 _SESSION = "rigctld-client-1"
@@ -80,6 +82,24 @@ class _Radio:
         self.legacy_writes.append(on)
 
 
+_KEY_FREQ_HZ = 14_074_000  # IC-7610 20m — inside a TX band row of the profile
+
+
+def _permit_store() -> StateStore:
+    """Canonical store seeded for the PTT-on gates the rigctld seat runs.
+
+    The IC-7610 profile carries real band rows, so the MOR-3632 TX frequency
+    permit reads this store on every ``T 1`` and refuses when the published
+    TX target is unknown. Handing the handler a canonical store — the bare
+    fallback has none — also arms the unmanaged RF BLOCK gate, which needs a
+    fresh known-RX fact. Both seeds mirror ``test_tx_frequency_permit``.
+    """
+    store = StateStore(freshness_clock=FreshnessClock(start=10.0))
+    seed_fresh_rx(store)
+    seed_tx_target(store, _KEY_FREQ_HZ, timestamp_monotonic=10.0)
+    return store
+
+
 class _Managed:
     """A managed rig plus the two views the assertions need: wire and policy."""
 
@@ -88,7 +108,11 @@ class _Managed:
     ) -> None:
         self.runtime, self.wire, self.provider = runtime, wire, provider
         self.radio = _Radio(runtime)
-        self.handler = RigctldHandler(self.radio, RigctldConfig())  # type: ignore[arg-type]
+        self.handler = RigctldHandler(  # type: ignore[arg-type]
+            self.radio,
+            RigctldConfig(),
+            state_store=_permit_store(),
+        )
 
     @property
     def owner(self) -> TxOwner | None:
@@ -253,7 +277,11 @@ async def test_an_unmanaged_radio_keeps_the_legacy_write_both_ways() -> None:
     """Legacy unmanaged backends (serial/USB Icom, Yaesu CAT, rigctld-client):
     byte-identical to what rigctld always sent."""
     radio = _Radio()
-    handler = RigctldHandler(radio, RigctldConfig())  # type: ignore[arg-type]
+    handler = RigctldHandler(  # type: ignore[arg-type]
+        radio,
+        RigctldConfig(),
+        state_store=_permit_store(),
+    )
 
     key = await handler.execute(_ptt("1"), session_id=_SESSION)
     unkey = await handler.execute(_ptt("0"), session_id=_SESSION)

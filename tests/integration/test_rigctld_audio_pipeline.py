@@ -32,6 +32,7 @@ from _ptt_reread_fixtures import (
     wait_for_known_rf_state,
     wait_for_rf_state,
 )
+from test_tx_frequency_permit import seed_tx_target
 
 pytestmark = [pytest.mark.integration, pytest.mark.mock_integration]
 
@@ -244,6 +245,11 @@ async def rigctld_audio_setup() -> AsyncGenerator[
 
     await server.start()
     await bridge.start()
+    # MOR-3632: the PTT-on TX frequency permit gates ``T 1`` on the
+    # IC-7610 band rows; the handler reads the radio's own store, and no
+    # 1C 03 reply ever arrives to publish the target, so publish the
+    # fresh known 20 m target a keyed radio sits on.
+    seed_tx_target(radio.state_store, 14_074_000)
     try:
         yield radio, server, bridge, backend, transport
     finally:

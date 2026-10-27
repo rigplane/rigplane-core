@@ -17,6 +17,7 @@ from rigplane.radio import IcomRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 from rigplane.types import Mode, bcd_encode
+from test_tx_frequency_permit import seed_tx_target
 
 MODELS = ["IC-7300", "IC-7300MK2", "IC-705"]
 
@@ -67,6 +68,11 @@ async def _peer(model: str, *, selected: str = "A", profile=None, configure=None
     try:
         await server.start()
         _rf_state(server, False)
+        # MOR-3632: the PTT-on TX frequency permit gates ``T 1`` on the
+        # profile band rows; no poller runs here to publish the target, so
+        # publish the fresh known TX-VFO frequency the keying test sits on
+        # (14 080 100 Hz, 20 m — in-band for every model under test).
+        seed_tx_target(server._state_store, 14_080_100)
         async with _client(server) as (reader, writer):
             yield radio, transport, server, reader, writer
     finally:

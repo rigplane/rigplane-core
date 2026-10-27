@@ -26,6 +26,7 @@ from rigplane.rigctld.server import RigctldServer
 from rigplane.web.handlers import AudioBroadcaster
 from rigplane.web.protocol import AUDIO_CODEC_PCM16, AUDIO_HEADER_SIZE
 from rigplane.web.server import WebConfig, WebServer
+from test_tx_frequency_permit import seed_tx_target
 
 
 _WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -373,6 +374,11 @@ async def test_rigctld_smoke_with_serial_mock_backend() -> None:
                 provider_generation=store.provider_generation,
             )
         )
+        # MOR-3632: the PTT-on TX frequency permit gates ``T 1`` on the
+        # IC-7610 band rows; no 1C 03 reply ever arrives, so publish the
+        # fresh known target the mock sits on at key time (7 074 000 Hz —
+        # the ``F 7074000`` above the ``T 1`` below, 40 m).
+        seed_tx_target(store, 7_074_000)
         host, port = _addr_from_asyncio_server(server._server)
         reader, writer = await asyncio.open_connection(host, port)
         try:

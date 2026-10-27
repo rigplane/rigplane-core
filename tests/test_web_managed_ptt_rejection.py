@@ -18,9 +18,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from test_managed_tx_authority import FakeConfigStore, FakeFence, FakeLane
+from test_tx_frequency_permit import seed_tx_target
 
 from rigplane.core.exceptions import CommandError, CommandRejectedError
 from rigplane.core.radio_protocol import Radio
+from rigplane.core.state_store import StateStore
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime.managed_tx_authority import (
     ManagedTxAuthority,
@@ -89,6 +91,10 @@ class _QueueStack(_Stack):
         super().__init__()
         self.radio = _radio()
         self.server = WebServer(self.radio, WebConfig(host="127.0.0.1", port=0))
+        # MOR-3632: the TX-frequency permit gates PTT-on on this IC-9700's
+        # banded profile; seed a fresh in-band 2 m target so the refusal
+        # under test stays the authority's, never the permit's.
+        seed_tx_target(self.server.command_state_store, 145_000_000)
         self.queue: CommandQueue = self.server.command_queue
         self.poller = RadioPoller(
             self.radio,
@@ -165,8 +171,14 @@ def _handler_on(
     authority: Any, enqueue_managed_positive_tx: Any, name: str
 ) -> ControlHandler:
     """A handler on the queue-less seam (precedent: test_web_managed_tx_ingress)."""
+    # The MOR-3632 permit gate reads the server store before any submission;
+    # a fresh in-band 2 m target keeps the refusal under test the
+    # authority's, never the permit's.
+    state_store = StateStore()
+    seed_tx_target(state_store, 145_000_000)
     server = SimpleNamespace(
         command_queue=MagicMock(),
+        command_state_store=state_store,
         enqueue_managed_positive_tx=enqueue_managed_positive_tx,
     )
     return ControlHandler(
@@ -321,9 +333,15 @@ async def test_missing_authority_keeps_the_unavailable_refusal() -> None:
 async def test_ptt_without_a_command_queue_keeps_the_unavailable_refusal() -> None:
     stack = _QueueStack()
     try:
+        # server=None exposes no command_state_store for the MOR-3632 permit
+        # gate, so this radio must carry no real banded profile: the gate
+        # would refuse on the unknown target before the queue check this
+        # test exercises. The profile is not the subject here.
+        radio = MagicMock(spec=Radio)
+        radio.profile = None
         handler = ControlHandler(
             MagicMock(),
-            stack.radio,
+            radio,
             "test",
             "IC-9700",
             server=None,

@@ -13,6 +13,7 @@ from rigplane.core.state_store import FreshnessState
 from rigplane.runtime._state_queries import build_state_queries
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from scripts.soak import soak_driver
+from test_tx_frequency_permit import seed_tx_target
 
 
 async def _wait_until(predicate: Callable[[], bool]) -> None:
@@ -178,6 +179,15 @@ async def test_poll_then_web_ptt_unkey_allows_rekey_without_fault(model: str) ->
         dual_receiver=True,
         enable_audio=False,
         capture_civ_frames=True,
+    )
+    # MOR-3632: the PTT-on TX frequency permit gates on the profile band
+    # rows, and the simulator never publishes a TX target (it NAKs the
+    # IC-7610's 1C 03 read; the IC-9700 has no producer at all) — publish
+    # the fresh known in-band target a keyed radio sits on. Per-model: the
+    # IC-7610 is HF+6 m only, the IC-9700 VHF/UHF only.
+    seed_tx_target(
+        stack.web.command_state_store,
+        145_000_000 if model == "IC-9700" else 14_074_000,
     )
     base = f"http://127.0.0.1:{stack.web_port}"
     client = soak_driver._TxSessionClient(base)

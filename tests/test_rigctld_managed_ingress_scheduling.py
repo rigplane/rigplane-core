@@ -21,6 +21,7 @@ from test_managed_tx_authority import authority
 from test_controller_authority import Safety
 from test_rigctld_split import _hold_commander_before_set, _pause_mode_preservation
 from test_rigctld_wsjtx_split_mk2 import MODELS, _assert_no_relative_overlays, _client, _exchange, _peer, _rf_state
+from test_tx_frequency_permit import seed_tx_target
 _FREQUENCY, _WAIT = 14_074_000, 2.0
 class _NoTruthProbe:
     def __bool__(self): raise AssertionError("identity checks must use is None")
@@ -50,6 +51,10 @@ async def managed():
     store = StateStore()
     store.apply_current(Observation(path=FieldPath.global_("tx_state", "ptt"), value=False, source=SourceMetadata(source="test", provider="tests"),
         timestamp_monotonic=asyncio.get_running_loop().time(), max_age=1e9))
+    # MOR-3632: the radio's IC-7610 profile declares TX band rows, so the
+    # PTT-on frequency permit reads this store on every ``T 1``; seed the
+    # fresh known 20 m target the keyed tests sit on.
+    seed_tx_target(store, _FREQUENCY)
     radio, default = _Radio(store), _Default()
     await radio.connect()
     service = CommandService(executor=default, state_store=store)

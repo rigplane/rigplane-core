@@ -28,6 +28,7 @@ from rigplane.web.radio_poller import CommandQueue, RadioPoller
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.transport.webrtc_session import WebRtcSessionManager
 from test_managed_tx_http_route import _Writer, _reader
+from test_tx_frequency_permit import seed_tx_target
 
 
 @dataclass
@@ -110,6 +111,10 @@ def _radio() -> MagicMock:
 def _state_store(observed: object = None, *, stale: bool = False) -> StateStore:
     clock = FreshnessClock(start=10.0)
     store = StateStore(freshness_clock=clock)
+    # The PTT-on TX frequency permit (MOR-3632) reads the published
+    # tx_target; the IC-9700 profile declares TX band rows, so the fixture
+    # must publish a fresh in-band (2m) target before any PTT-on.
+    seed_tx_target(store, 145_000_000, timestamp_monotonic=clock.now())
     if observed is not None:
         store.apply(
             Observation(

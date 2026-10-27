@@ -81,6 +81,7 @@ from rigplane.web.web_startup import (  # noqa: E402
 from rigplane_testkit.icom import MockIcomRadio  # noqa: E402
 
 from _perf_helpers import fast_connect  # noqa: E402
+from test_tx_frequency_permit import seed_tx_target  # noqa: E402
 from test_web_server import (  # noqa: E402
     _ws_connect,
     _ws_recv_frame,
@@ -389,6 +390,17 @@ async def _stand_up_stack(
     web.attach_rigctl_channel(rigctld.open_channel)
     await asyncio.wait_for(web.start(), timeout=_GATE_TIMEOUT_S)
     rigctld_port = rigctld._server.sockets[0].getsockname()[1]  # noqa: SLF001
+    # MOR-3632: the PTT-on TX frequency permit gates both lanes on the
+    # IC-7610 band rows — the WS lane reads the web store, the rigctld lane
+    # the radio's own store — and the simulator NAKs the 1C 03 read that
+    # would publish the target, so publish the fresh known 20 m target a
+    # keyed radio sits on. After web.start(): startup rolls the web store's
+    # generation. Every key that must succeed runs before any reconnect
+    # here (matrix cells key, then fault; the lanes' rigctld-lane keys are
+    # pre-fault too, and only a reconnect rolls the radio store), so one
+    # seed per store suffices.
+    seed_tx_target(web.command_state_store, 14_074_000)
+    seed_tx_target(radio.state_store, 14_074_000)
     return _Stack(sim, radio, composition, web, rigctld, rigctld_port)
 
 

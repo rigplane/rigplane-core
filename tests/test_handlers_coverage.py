@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from test_tx_frequency_permit import seed_tx_target
 
 from _caps import FULL_ICOM_CAPS
 from rigplane.audio.bus import AudioBus
@@ -3694,6 +3695,11 @@ def _degraded_server() -> SimpleNamespace:
 
     authority.start_ptt_submission = start_ptt_submission
     queue = _QueueRecorder()
+    # MOR-3632: the TX frequency permit at PTT-on reads this store; seed a
+    # fresh known target on the IC-7610 double's 20m band so the degraded-
+    # session tests exercise readiness/reconnect handling, not the permit.
+    store = StateStore()
+    seed_tx_target(store, 14_074_000)
 
     async def enqueue_managed_positive_tx(
         *,
@@ -3711,7 +3717,7 @@ def _degraded_server() -> SimpleNamespace:
 
     return SimpleNamespace(
         command_queue=queue,
-        command_state_store=StateStore(),
+        command_state_store=store,
         enqueue_managed_positive_tx=enqueue_managed_positive_tx,
         managed_tx_authority=authority,
     )

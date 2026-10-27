@@ -38,6 +38,7 @@ from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 
 from _ptt_reread_fixtures import PttAnsweringSerialMockRadio, wait_for_known_rf_state
+from test_tx_frequency_permit import seed_tx_target
 
 pytestmark = [pytest.mark.integration, pytest.mark.mock_integration]
 
@@ -187,6 +188,10 @@ async def ic7610_setup() -> AsyncGenerator[
     # MODE/BAND/VFO write — see ``_ptt_reread_fixtures.py``.
     keepalive = await _make_client(server)
     await wait_for_known_rf_state(server)
+    # MOR-3632: the PTT-on TX frequency permit gates ``T 1`` on the
+    # profile band rows; the mock answers no 1C 03, so publish the fresh
+    # known target the mock's own ``f`` answer sits on (14 074 000 Hz).
+    seed_tx_target(radio.state_store, 14_074_000)
     radio.reset_calls()
     try:
         yield radio, server
@@ -204,6 +209,10 @@ async def ic7300_setup() -> AsyncGenerator[
     server = await _make_server(radio)
     keepalive = await _make_client(server)
     await wait_for_known_rf_state(server)
+    # MOR-3632: the PTT-on TX frequency permit gates ``T 1`` on the
+    # profile band rows; the mock answers no 1C 03, so publish the fresh
+    # known target the mock's own ``f`` answer sits on (14 074 000 Hz).
+    seed_tx_target(radio.state_store, 14_074_000)
     radio.reset_calls()
     try:
         yield radio, server

@@ -10,6 +10,7 @@ from test_managed_tx_production_fake_wire import (
     _IcomActuator,
     _drain_managed_positive_queue,
 )
+from test_tx_frequency_permit import seed_tx_target
 from test_web_controller import request
 from test_web_server import _read_http_response, _ws_recv_frame, _ws_send_text
 
@@ -74,6 +75,10 @@ async def joined_station(
         attach_managed_tx_composition(server, composition)
         assert _validate_managed_tx(server) is composition
     observe_ptt(server, ObservedPtt.OFF)
+    # MOR-3632: the server-side TX frequency permit arms on this station's
+    # real IC-9700 band rows, so seed the fresh known TX target (inside the
+    # 2m band) that a keyed radio sits on.
+    seed_tx_target(server.command_state_store, 145_000_000)
     return radio, composition, server
 
 
