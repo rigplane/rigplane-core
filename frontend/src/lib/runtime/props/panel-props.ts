@@ -902,7 +902,6 @@ export function toDspProps(
 /* ── TX Panel ────────────────────────────────────────────────── */
 
 export interface TxProps {
-  txActive: boolean;
   rfPower: number;
   atuActive: boolean;
   atuTuning: boolean;
@@ -919,7 +918,6 @@ export interface TxProps {
    *  staying disabled until observed (MOR-2979). */
   hasVox: boolean;
   hasComp: boolean;
-  txActiveAvailable: boolean;
   rfPowerAvailable: boolean;
   micGainAvailable: boolean;
   atuAvailable: boolean;
@@ -935,7 +933,9 @@ export function toTxProps(
   state: ServerState | null,
   caps: Capabilities | null,
 ): TxProps {
-  const txActiveAvailable = topFieldAvailable(state, 'ptt');
+  // MOR-2855: `txActive` (and its `txActiveAvailable` gate) are gone — TX
+  // truth is the managed TX snapshot (invariant R9), never the `state.ptt`
+  // echo these fields projected.
   const rfPowerAvailable = topFieldAvailable(state, 'powerLevel');
   const micGainAvailable = topFieldAvailable(state, 'micGain');
   const atuAvailable = topFieldAvailable(state, 'tunerStatus');
@@ -946,7 +946,6 @@ export function toTxProps(
   const monLevelAvailable = topFieldAvailable(state, 'monitorGain');
   const driveGainAvailable = topFieldAvailable(state, 'driveGain');
   return {
-    txActive: state?.ptt ?? false,
     // MOR-2658: finishes the deferred A12 rfPower fix — an unreported
     // level is `NaN` (this file's non-fabricating sentinel), never the
     // plausible-looking 0.5 the TxPanel/mobile consumers printed as 50%.
@@ -971,7 +970,6 @@ export function toTxProps(
     // VOX/COMP keys stay rendered while held, disabled until observed.
     hasVox: hasCap(caps, 'vox'),
     hasComp: hasCap(caps, 'compressor'),
-    txActiveAvailable,
     rfPowerAvailable,
     micGainAvailable,
     atuAvailable,
@@ -1097,7 +1095,6 @@ export interface MeterProps {
   comp: number;
   vd: number;
   id: number;
-  txActive: boolean;
   hasTx: boolean;
 }
 
@@ -1118,7 +1115,6 @@ export function toMeterProps(
     comp: state?.compMeter ?? Number.NaN,
     vd: state?.vdMeter ?? Number.NaN,
     id: state?.idMeter ?? Number.NaN,
-    txActive: state?.ptt ?? false,
     hasTx: caps?.tx ?? false,
   };
 }

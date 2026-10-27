@@ -168,24 +168,17 @@ async def _read_line(reader: asyncio.StreamReader, *, timeout: float = 1.0) -> s
 async def _drain_dump_state(
     reader: asyncio.StreamReader, *, timeout: float = 1.0
 ) -> int:
-    """Consume the multi-line dump_state response.
-
-    The IC-7610 dump_state emits 25 lines (see ``_IC7610_DUMP_STATE``
-    in ``handler.py``; pinned by the snapshot test). Read exactly that
-    many to keep the stream cursor aligned for the next ``> ...`` send.
-
-    Returns the number of lines drained.
-    """
-    n = 0
-    # _IC7610_DUMP_STATE has 25 entries today; A5 will extend with VFO
-    # blocks (vfo_list, vfo_ops, status_flags, targetable_vfo). When A5
-    # lands the snapshot test owns the new line count and this constant
-    # becomes a derived value.
-    expected_lines = 25
-    while n < expected_lines:
-        await _read_line(reader, timeout=timeout)
-        n += 1
-    return n
+    """Consume protocol-1 capabilities through its bounded ``done`` marker."""
+    assert await _read_line(reader, timeout=timeout) == "1"
+    saw_targetability = False
+    for count in range(2, 65):
+        line = await _read_line(reader, timeout=timeout)
+        if line == "targetable_vfo=0x3":
+            saw_targetability = True
+        if line == "done":
+            assert saw_targetability
+            return count
+    raise AssertionError("dump_state did not terminate within 64 lines")
 
 
 async def _replay(server: RigctldServer, steps: list[_Step]) -> None:

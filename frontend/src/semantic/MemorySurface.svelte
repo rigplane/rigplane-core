@@ -3,9 +3,10 @@
 
   Presentation only, same discipline as every other file in this directory:
   holds no radio state and consults no controller. Memory channels are not
-  in the MOR-1262 RadioViewModel vocabulary at all (the radio itself cannot
-  report their contents — see `MemoryPanel.svelte`'s own docstring), so
-  facts arrive as `toMemoryPanelProps`'s own shape (`activeFreqHz`/
+  in the MOR-1262 RadioViewModel vocabulary: this surface's local catalogue
+  (names, frequency, mode) lives in the browser (`MemoryPanel.svelte`'s own
+  docstring), and the radio's own stored channels, when its profile can list
+  them (MOR-3627), arrive separately through `radioMemories`. Facts arrive as `toMemoryPanelProps`'s own shape (`activeFreqHz`/
   `activeMode`/`vfoIdentityKnown`) via the `facts` prop, imported as a TYPE
   ONLY from `lib/runtime/props/panel-props.ts` — reusing the one shape
   rather than re-deriving it, with zero runtime dependency on the runtime
@@ -39,6 +40,7 @@
 <script lang="ts">
   import { formatFrequencyString } from '../components-v2/display/frequency-format';
   import type { MemoryPanelProps } from '../lib/runtime/props/panel-props';
+  import RadioMemoryList, { type RadioMemoryListProps } from './RadioMemoryList.svelte';
 
   interface Props {
     facts: MemoryPanelProps;
@@ -46,8 +48,10 @@
     onStore?: (channel: number, frequencyHz: number, mode: string) => boolean;
     onClear?: (channel: number) => boolean;
     onRename?: (channel: number, name: string) => void;
+    /** The radio's own stored channels (MOR-3627); absent on radios that cannot list them. */
+    radioMemories?: RadioMemoryListProps;
   }
-  let { facts, onRecall, onStore, onClear, onRename }: Props = $props();
+  let { facts, onRecall, onStore, onClear, onRename, radioMemories }: Props = $props();
 
   let channels = $state(loadMemoryChannels());
   let selectedChannel = $state(1);
@@ -128,6 +132,9 @@
 </script>
 
 <section class="memory-surface" data-testid="memory-surface" aria-label="Memory channels">
+  {#if radioMemories}
+    <RadioMemoryList {...radioMemories} />
+  {/if}
   <div class="memory-toolbar">
     <label class="show-empty">
       <input type="checkbox" bind:checked={showEmpty} />

@@ -29,6 +29,11 @@ expected_ids = ["0840"]
 # (MOR-508). Other rigs omit this and keep the default "mix" average.
 rx_audio_channel = "left"
 
+[usb]
+# macOS USB and audio recording, 2026-10-22: codec under the internal hub.
+audio_codec = [{ vid = "0D8C", pid = "0016" }]
+serial_functions = [{ vid = "10C4", pid = "EA70" }, { vid = "26AA", pid = "0030" }]
+
 [power]
 max_watts = 100
 # PC POWER CONTROL floor (FTX-1 CAT manual FTX-1_CAT_OM_ENG_2508-C, p.21):
@@ -36,6 +41,16 @@ max_watts = 100
 # refuses anything below 5 W -- PC2000; answered "?;" on the bench (MOR-2998).
 # The backend clamps a lower request up to this floor before the wire.
 min_watts = 5
+
+# ── Memory channels (MOR-3628) ───────────────────────────────────
+# One numbered list read with MR/MT (CAT OM 2508-C p.19-20): channels 1-99 are
+# listed; PMS, 5 MHz and EMGCH slots are not.
+[memory]
+addressing = "channel"
+first_group = 0
+last_group = 0
+first_channel = 1
+last_channel = 99
 
 [capabilities]
 # NOTE: ``notch`` KEEPS the capability tag but intentionally declares NO
@@ -62,6 +77,7 @@ features = [
     # value comes from the FR read the `global.tx_state.dual_watch` field
     # policy below declares.
     "dual_watch",
+    "memory_read",
     "af_level",
     "rf_gain",
     "squelch",
@@ -738,6 +754,8 @@ list = [
     "FM-N", "DATA-U", "AM-N", "PSK", "DATA-FM-N",
     "C4FM-DN", "C4FM-VW",
 ]
+# MOR-3679: the CW modes, named once here for every client.
+families = { cw = ["CW-U", "CW-L"] }
 # MD (OPERATING MODE) P2 codes, one per name above, parallel to list
 # (FTX-1 CAT OM 2508-C): 1-9, A-F, then H and I. The manual marks 0, G and
 # J unused; H = C4FM-DN and I = C4FM-VW.
@@ -1106,9 +1124,25 @@ label = "WFM"
 start_hz = 88000000
 end_hz = 108000000
 
+# MOR-3782: receiver coverage per FTX-1_OM_ENG_EH084M201_2506E-DS,
+# "Specifications / General": "Rx Frequency Range: 30kHz - 174MHz,
+# 400MHz - 470MHz (operating)". The Gen range is trimmed to the published
+# HF/VHF segment and extended down to the published 30 kHz floor. Not
+# hardware-verified.
 [[freq_ranges.ranges]]
 label = "Gen"
-start_hz = 100000
+start_hz = 30000
+end_hz = 174000000
+
+# MOR-3782: the published UHF receive segment (400MHz - 470MHz, same
+# manual section) as its own range. Not hardware-verified. The UHF RX
+# range below carries no `bands` table on purpose: it is tune/receive
+# only, and transmit permission comes from `bands` — 70 cm transmit stays
+# governed by the 70cm range's own band above.
+
+[[freq_ranges.ranges]]
+label = "UHF RX"
+start_hz = 400000000
 end_hz = 470000000
 
 [meters.swr]
@@ -1429,6 +1463,9 @@ set_break_in   = { cat = { write = "BI{state};" } }
 get_cw_spot    = { cat = { read = "CS;", parse = "CS{state};" } }
 set_cw_spot    = { cat = { write = "CS{state};" } }
 send_cw        = { cat = { write = "KY{type}{mem};" } }
+# KM KEYING MEMORY (CAT manual 2508-C printed p.17): channel 1-5, up to 50
+# characters. send_cw_text writes the text here, then plays it with send_cw.
+write_keyer_memory = { cat = { write = "KM{chan}{mem};" } }
 get_break_in_delay = { cat = { read = "SD;", parse = "SD{delay:04d};" } }
 set_break_in_delay = { cat = { write = "SD{delay:04d};" } }
 
@@ -1476,6 +1513,15 @@ set_repeater_shift = { cat = { write = "OS{receiver}{shift};" } }
 # separate TX;/ST; commands.
 get_if_status  = { cat = { read = "IF;", parse = "IF{chan}{freq:09d}{sign}{offset:04d}{rx}{tx}{mode}{vfo}{tone}00{shift};" } }
 
+# ── Memory channels, read-only (MOR-3628) ──
+# MR reads a stored channel by number without selecting it, in the IF layout
+# (the P8 tone codes are MR's own: 0 off, 1 ENC/DEC, 2 ENC, 3 DCS, 4 PR FREQ,
+# 5 REV TONE; P10 0 simplex, 1 plus, 2 minus). MT reads its 12-character tag.
+# Real FTX-1 (MOR-3650 and the 2026-10-21 sweep): an unprogrammed channel
+# answers ``?;`` to both. MR carries no tone frequency, DCS code or offset.
+get_memory_channel = { cat = { read = "MR{chan};", parse = "MR{chan}{freq:09d}{sign}{offset:04d}{rx}{tx}{mode}{vfo}{tone}00{shift};" } }
+get_memory_tag = { cat = { read = "MT{chan};", parse = "MT{chan}{tag};" } }
+
 # ── System ──
 get_powerstat  = { cat = { read = "PS;", parse = "PS{state};" } }
 set_powerstat  = { cat = { write = "PS{state};" } }
@@ -1511,3 +1557,20 @@ refused_during_tx = ["mode", "vfo-topology"]
 # receiving, "1" transmitting because CAT keyed it, "2" transmitting
 # because the radio keyed itself (front panel/mic/footswitch/VOX).
 tx_state_map = { "0" = "rx", "1" = "tx_cat", "2" = "tx_other" }
+
+
+# ── Typed CW text (MOR-3678) ──
+# send_cw_text writes the text with KM into keyer memory channel 5, then
+# plays it with KY P1 P2 (CAT manual FTX-1_CAT_OM_ENG_2508-C: KM printed
+# p.17 "up to 50 characters"; KY printed p.18, P1 0 = CW TEXT memory,
+# 1 = CW MESSAGE memory, P2 1-5 = play, 0 = stop). The FTX-1 has no
+# free-text KY form. Channel 5 overwrites the factory "R 5NN K}" memory
+# (Operation Manual 2506E printed p.49).
+[cw_text]
+# Disabled until the memory type is verified on the radio.
+supported = false
+max_length = 50
+memory_channel = 5
+# Advance Manual FTX-1_AM_ENG_2506-B printed p.62, CW MEMORY 1-5: "Default
+# Setting: TEXT". NOT verified on radio (live check item 6 pending).
+memory_type = "text"

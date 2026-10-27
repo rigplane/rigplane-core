@@ -1,0 +1,63 @@
+name: Merge queue gates
+
+# The merge queue tests a temporary gh-readonly-queue/main/pr-<N>-<sha> branch
+# and waits for every required context on its head commit. Two required
+# contexts are PR-level gates that read PR comments and the PR body, which the
+# merge_group event does not carry, so they are re-derived here through the API
+# for the single PR named by the branch (the queue must be configured with a
+# merge group of one PR):
+#   - "Agent Review Gate" (commit status): the PR head must have a
+#     passing Agent Review Gate; the status is then published on the queue commit.
+#   - "Evaluate stabilization-freeze PR contract" (check run): the PR title,
+#     labels and body are evaluated with the same .github/scripts/freeze-gate.js.
+# "quick" reports from quick.yml itself (it has a merge_group trigger).
+# The scripts are checked out from main, not from the queued commit, so a PR
+# cannot change the code that gates it.
+
+on:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  agent-review-gate:
+    name: Agent Review Gate on the merge group
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.merge_group.base_ref }}
+          persist-credentials: false
+      - uses: actions/github-script@v7
+        env:
+          MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
+          MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
+        with:
+          script: |
+            const {run} = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/merge-queue-gates.js`);
+            await run({github, context, core, gate: 'agent-review',
+              ref: process.env.MERGE_GROUP_REF, sha: process.env.MERGE_GROUP_SHA});
+
+  freeze-gate:
+    name: Evaluate stabilization-freeze PR contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.merge_group.base_ref }}
+          persist-credentials: false
+      - uses: actions/github-script@v7
+        env:
+          MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
+          MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
+        with:
+          script: |
+            const {run} = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/merge-queue-gates.js`);
+            await run({github, context, core, gate: 'freeze',
+              ref: process.env.MERGE_GROUP_REF, sha: process.env.MERGE_GROUP_SHA});

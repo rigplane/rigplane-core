@@ -49,6 +49,10 @@ on:
       - "!docs/guide/audio-recipes.md"
       - "!docs/guide/diagnostic-reports.md"
       - "!docs/internals/audio-capture-health.md"
+  # Merge queue: the queue tests the PR on top of main and the
+  # entries ahead of it. merge_group has no path filter; classify decides.
+  merge_group:
+    types: [checks_requested]
   pull_request:
     branches: [main]
     types: [opened, reopened, synchronize, ready_for_review]
@@ -124,8 +128,8 @@ jobs:
       - name: Classify exact changed paths
         id: paths
         env:
-          QUICK_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          QUICK_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          QUICK_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          QUICK_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
         run: >-
           python3 .github/scripts/classify-quick-paths.py
           --repo .
@@ -142,6 +146,7 @@ jobs:
       always() &&
       needs.classify.outputs.docs != 'true' &&
       (github.event_name == 'push' ||
+      github.event_name == 'merge_group' ||
       github.event.pull_request.draft == false)
     # Self-hosted Mac mini build-tier runner. Python 3.11+/uv/Node 24/Rust
     # and the Tauri/audio system libs are pre-baked in the image, so this
@@ -149,12 +154,18 @@ jobs:
     # doc: rigplane-tower/docs/development/mac-mini-self-hosted-runners.md.
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 25
+    # MOR-3778: presetting the variables Chromium's browser process adds at
+    # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
+    # loop test. Nothing in this repo reads them.
     env:
       # Pin uv to the project's minimum Python. Without this, `uv run`
       # satisfies requires-python=">=3.11" with the newest interpreter on
       # the runner (3.13), so the "Python 3.11" job silently tested 3.13
       # (MOR-590).
       UV_PYTHON: "3.11"
+      DBUS_SESSION_BUS_ADDRESS: 'disabled:'
+      FC_FONTATIONS: '1'
+      VK_ICD_FILENAMES: ''
 
     steps:
       - uses: actions/checkout@v6
@@ -192,6 +203,10 @@ jobs:
         if: needs.classify.outputs.ci == 'true'
         run: node --test .github/scripts/agent-review-gate.test.js
 
+      - name: Merge queue gate tests
+        if: needs.classify.outputs.ci == 'true'
+        run: node --test .github/scripts/merge-queue-gates.test.js
+
       - name: Focused workflow contract tests
         if: needs.classify.outputs.ci == 'true'
         run: python3 .github/scripts/run-focused-checks.test.py
@@ -199,6 +214,10 @@ jobs:
       - name: Quick path and event contract tests
         if: needs.classify.outputs.ci == 'true'
         run: python3 .github/scripts/quick-path-filters.test.py
+
+      - name: Playwright browser environment contract test
+        if: needs.classify.outputs.ci == 'true'
+        run: python3 .github/scripts/playwright-browser-env.test.py
 
       - name: Compile Python workflow controls
         if: needs.classify.outputs.ci == 'true'
@@ -383,6 +402,9 @@ jobs:
       - name: Run tests
         id: tests
         if: needs.classify.outputs.core == 'true'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.github/scripts
+          RIGPLANE_WORKER_DIAG_DIR: ${{ runner.temp }}/pytest-worker-diagnostics
         run: |
           # Without pipefail the pipe's exit status is tee's (always 0), so
           # pytest failures were swallowed and the step reported success.
@@ -391,13 +413,35 @@ jobs:
           # with pytest's code so failing tests fail the step.
           # Several quick jobs share one CI host; uncapped workers
           # oversubscribe it and turn timing budgets into flaky timeouts (MOR-2830).
-          uv run pytest tests/ -n auto --maxprocesses 4 --tb=short --timeout=300 --timeout-method=thread \
+          uv run pytest tests/ -p pytest_worker_diagnostics -n auto --maxprocesses 4 --tb=short --timeout=300 --timeout-method=thread \
             | tee pytest-output.txt
           rc=${PIPESTATUS[0]}
           SUMMARY=$(tail -1 pytest-output.txt)
           PASSED=$(echo "$SUMMARY" | grep -oP '\d+ passed' | grep -oP '\d+' || echo "0")
           echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           exit "$rc"
+
+      - name: Bound worker diagnostics
+        if: always() && needs.classify.outputs.core == 'true'
+        continue-on-error: true
+        run: uv run --no-sync python .github/scripts/pytest_worker_diagnostics.py --finalize "${{ runner.temp }}/pytest-worker-diagnostics" || true
+
+      - name: Upload worker diagnostics
+        if: always() && needs.classify.outputs.core == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: worker-diagnostics-quick
+          path: |
+            ${{ runner.temp }}/pytest-worker-diagnostics/events-*.jsonl
+            ${{ runner.temp }}/pytest-worker-diagnostics/phases-*.jsonl
+            ${{ runner.temp }}/pytest-worker-diagnostics/controller-*.jsonl
+            ${{ runner.temp }}/pytest-worker-diagnostics/dump-*.txt
+            ${{ runner.temp }}/pytest-worker-diagnostics/fatal-*.log
+            ${{ runner.temp }}/pytest-worker-diagnostics/timeout-*.log
+            ${{ runner.temp }}/pytest-worker-diagnostics/bounds.json
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Extract version
         if: github.ref == 'refs/heads/main' && needs.classify.outputs.core == 'true'

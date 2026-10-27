@@ -309,6 +309,7 @@ def test_pro_web_api_contract_lists_stable_surface() -> None:
     assert ("PUT", "/api/v1/managed-transmit/tot") in http
     assert ("GET", "/api/v1/bridge") in http
     assert ("POST", "/api/v1/bridge") in http
+    assert ("PATCH", "/api/v1/bridge") in http
     assert ("DELETE", "/api/v1/bridge") in http
     assert ("POST", "/api/v1/commands") in http
     assert ("POST", "/api/v1/commands/batch") in http
@@ -410,6 +411,14 @@ async def test_stable_http_payloads_satisfy_required_field_contract() -> None:
         assert status == expected_status
         required = RESPONSE_FIELD_CONTRACTS[path]["required"]
         assert set(required).issubset(payload)
+
+
+def test_capabilities_contract_requires_mode_families() -> None:
+    """MOR-3679: clients read CW modes from ``modeFamilies``, so the stable
+    contract lists it as required on ``/api/v1/capabilities``."""
+    assert (
+        "modeFamilies" in RESPONSE_FIELD_CONTRACTS["/api/v1/capabilities"]["required"]
+    )
 
 
 def test_runtime_contract_requires_the_process_block() -> None:

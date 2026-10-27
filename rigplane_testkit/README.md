@@ -65,8 +65,14 @@ What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fa
   `audio_rx_headers.jsonl`). Every client audio DATA frame sent while
   the audio stream lives is recorded
   in `audio_tx_frames` (header seq, inner seq at 0x12, payload length,
-  arrival time; the client's format is the only reference — the TX path
-  is unrecorded). The stream survives a CI-V-only soft reconnect
+  arrival time, the simulator's PTT state at arrival; the client's
+  format is the only reference — the TX path is unrecorded). With
+  `capture_tx_audio=True` (default off, so soaks stay metadata-only)
+  each frame also retains its payload bytes, readable as PCM via
+  `audio_tx_pcm(since)` and `write_tx_wav(path, sample_rate=...)`; the
+  standalone `sim serve --radio ic7610` enables it and serves the sink
+  over `GET /audio/tx` and `GET /audio/tx.wav` (the tone-with-gaps
+  markers of `rigplane_testkit/audio_markers.py` check a capture). The stream survives a CI-V-only soft reconnect
   (recorded) and stops when the session ends (token-remove/logout,
   `drop_session`, reboot); without an owned session the audio opener's
   own token-remove/control-disconnect still ends it, while a foreign one
@@ -176,6 +182,10 @@ What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fa
   complete `FE FE ... FD` frames per direction. CLI:
   `python -m rigplane_testkit.serial record --device DEV --out FILE
   [--baud 115200] [--listen-host H] [--listen-port P]`.
+  `python -m rigplane_testkit.serial.fixtures extract` trims a bridge
+  recording into `civ_pairs.jsonl` rows (first occurrence per request, echo,
+  closing reply, scope sweeps; unsolicited frames summarised apart); the
+  IC-7300 capture runbook is `scripts/ic7300_capture/README.md`.
 - `rigplane_testkit.yaesu` — `FakeCatRadio`, a stateful FTX-1-style Yaesu CAT
   personality (frequency, mode, PTT, power, auto-information mode) on a real
   TCP server, reached through pyserial's `socket://` URL handler: the
@@ -190,6 +200,15 @@ What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fa
   processes, ahead of its reply if it has one (plus AI mode pushing info
   lines on state change).
   The implementation lives in `rigplane_testkit/yaesu/cat_fake.py`.
+- `rigplane_testkit.yaesu.recorder` — CAT recording on the same
+  `SerialCivRecorder` bridge (no second recorder). `cat_lines(path)`
+  reassembles a recording into `;`-terminated lines per direction.
+  `CatReadOnlyGuard` makes a capture on a real radio RX-only: the bridge
+  forwards only the rig profile's READ templates and logs every other line
+  (a frequency set, `TX1;`, a setting write) as a `blocked` row. CLI:
+  `python -m rigplane_testkit.yaesu record --device DEV --out FILE
+  [--profile ftx1] [--baud N]`; point the Core server at the printed
+  `socket://127.0.0.1:PORT`.
 - `rigplane_testkit.icom.recorder` — `IcomSessionRecorder`, an asyncio UDP
   proxy that sits between a client and a radio (real or simulated) and writes
   every datagram on the control/CI-V/audio ports to JSONL with direction,
@@ -245,7 +264,6 @@ the legacy compatibility shim. It exists for development and testing only.
 
 ## Planned next
 
-- Audio (RTP) port simulation alongside control and CI-V ports.
 - Wiring the replayer's unsolicited timeline into the simulator so recorded
   sessions stream on their recorded cadence (the recorder, the pure
   `ReplayResponder` and the `RecordedAnswerTable` mount — `recorded_answers=`

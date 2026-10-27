@@ -487,13 +487,15 @@ describe('TX authority: the LCD consumes one App-root managed controller', () =>
 
   it('keeps one controller identity across an LCD presentation switch without TX writes', () => {
     render('cockpit');
-    // The semantic RX/TX surface and the status-bar TOT presentation are
-    // independent consumers of the one injected App-root facade.
-    expect(txHarness.listenerCount()).toBe(2);
+    // The semantic RX/TX surface, the status-bar TOT presentation and the
+    // Amber cockpit/scope face (MOR-2855: the LCD TX look reads the managed
+    // snapshot) are independent consumers of the one injected App-root
+    // facade.
+    expect(txHarness.listenerCount()).toBe(3);
     unmount(mounted.pop()!);
     expect(txHarness.listenerCount()).toBe(0);
     render('scope');
-    expect(txHarness.listenerCount()).toBe(2);
+    expect(txHarness.listenerCount()).toBe(3);
     expect(txHarness.trace()).toEqual([]);
   });
 

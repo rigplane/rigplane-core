@@ -8,13 +8,33 @@ import json
 import os
 from pathlib import Path
 import signal
+import runpy
 import subprocess
 import sys
+import time
+from unittest.mock import create_autospec
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / ".github/scripts/pytest_worker_diagnostics.py"
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_finalizer_strict_mode_propagates_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, strict: bool
+) -> None:
+    def fail_scan(_path):
+        raise OSError("synthetic bounding failure")
+
+    monkeypatch.setattr(Path, "iterdir", fail_scan)
+    flag = "--finalize-strict" if strict else "--finalize"
+    monkeypatch.setattr(sys, "argv", [str(HELPER), flag, str(tmp_path)])
+    if strict:
+        with pytest.raises(OSError, match="synthetic bounding failure"):
+            runpy.run_path(str(HELPER), run_name="__main__")
+    else:
+        runpy.run_path(str(HELPER), run_name="__main__")
 
 
 def test_full_worker_diagnostics_wiring() -> None:
@@ -34,6 +54,299 @@ def test_full_worker_diagnostics_wiring() -> None:
         in text
     )
     assert "rc=${PIPESTATUS[0]}" in text and 'exit "$rc"' in text
+
+
+def test_quick_worker_diagnostics_wiring() -> None:
+    text = (ROOT / ".github/workflows/quick.yml").read_text()
+    assert "- name: Run tests" in text
+    assert "- name: Bound worker diagnostics" in text
+    assert "- name: Upload worker diagnostics" in text
+    run = text.split("- name: Run tests", 1)[1].split("- name:", 1)[0]
+    assert "-p pytest_worker_diagnostics" in run
+    assert (
+        "RIGPLANE_WORKER_DIAG_DIR: ${{ runner.temp }}/pytest-worker-diagnostics" in run
+    )
+    assert "PYTHONPATH: ${{ github.workspace }}/.github/scripts" in run
+    finalize = text.split("- name: Bound worker diagnostics", 1)[1].split("- name:", 1)[
+        0
+    ]
+    assert (
+        "pytest_worker_diagnostics.py --finalize" in finalize
+        and "${{ runner.temp }}/pytest-worker-diagnostics" in finalize
+    )
+    upload = text.split("- name: Upload worker diagnostics", 1)[1].split("- name:", 1)[
+        0
+    ]
+    assert "actions/upload-artifact" in upload and "always()" in upload
+    for leaf in (
+        "events-*.jsonl",
+        "phases-*.jsonl",
+        "controller-*.jsonl",
+        "dump-*.txt",
+        "fatal-*.log",
+        "timeout-*.log",
+        "bounds.json",
+    ):
+        assert f"${{{{ runner.temp }}}}/pytest-worker-diagnostics/{leaf}" in upload
+
+
+# The synthetic child took ~1.4 s in a green quick run on main (2026-10-22,
+# run 39831600325) but missed a 30 s deadline in repeated quick runs of one
+# loaded PR; the deadline only has to catch a real hang.
+_QUALIFICATION_DEADLINE_S = 120
+
+
+def _cgroup_dir(pid: int) -> Path:
+    """cgroup v2 directory of ``pid`` (its ``0::`` line in /proc/<pid>/cgroup).
+
+    Falls back to the hierarchy root when the file is unreadable (for example
+    the process already exited) or has no v2 entry.
+    """
+    root = Path("/sys/fs/cgroup")
+    try:
+        lines = Path(f"/proc/{pid}/cgroup").read_text(errors="replace").splitlines()
+    except OSError:
+        return root
+    for line in lines:
+        if line.startswith("0::"):
+            return root / line[3:].strip().lstrip("/")
+    return root
+
+
+def _hang_diagnostics(pgid: int) -> str:
+    def command_output(command: list[str]) -> str:
+        try:
+            return subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                check=True,
+                timeout=2,
+            ).stdout
+        except (OSError, subprocess.SubprocessError) as error:
+            return f"unavailable: {error}"
+
+    def read_source(path: Path) -> str:
+        try:
+            return path.read_text(errors="replace")
+        except OSError as error:
+            return f"unreadable: {error}"
+
+    fields = (
+        "pid,ppid,stat,wchan,etime,command"
+        if sys.platform == "darwin"
+        else "pid,ppid,stat,wchan:20,etime,cmd"
+    )
+    processes = command_output(["ps", "-g", str(pgid), "-o", fields])
+    meminfo = "\n".join(read_source(Path("/proc/meminfo")).splitlines()[:10])
+    cgroup_dir = _cgroup_dir(pgid)
+    cgroup = "\n".join(
+        [f"path: {cgroup_dir}"]
+        + [
+            f"{leaf}:\n{read_source(cgroup_dir / leaf)[:500]}"
+            for leaf in ("pids.current", "pids.max", "memory.events")
+        ]
+    )
+    dmesg = "\n".join(command_output(["dmesg"]).splitlines()[-30:])[-1900:]
+    return "\n".join(
+        f"{header}:\n{content[:1900]}"
+        for header, content in (
+            ("Process group", processes),
+            ("Meminfo", meminfo),
+            ("Cgroup", cgroup),
+            ("Dmesg", dmesg),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (
+            "0::/system.slice/runner.service\n",
+            "/sys/fs/cgroup/system.slice/runner.service",
+        ),
+        ("12:pids:/legacy\n0::/\n", "/sys/fs/cgroup"),
+        ("12:pids:/legacy\n", "/sys/fs/cgroup"),
+    ],
+)
+def test_cgroup_dir_uses_the_process_v2_entry(
+    monkeypatch: pytest.MonkeyPatch, content: str, expected: str
+) -> None:
+    read = create_autospec(Path.read_text, return_value=content)
+    monkeypatch.setattr(Path, "read_text", read)
+    assert _cgroup_dir(4242) == Path(expected)
+    assert read.call_args.args[0] == Path("/proc/4242/cgroup")
+
+
+def test_cgroup_dir_falls_back_to_the_root_when_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    read = create_autospec(Path.read_text, side_effect=OSError("gone"))
+    monkeypatch.setattr(Path, "read_text", read)
+    assert _cgroup_dir(4242) == Path("/sys/fs/cgroup")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux worker qualification")
+@pytest.mark.parametrize("exit_during_diagnostics", [False, True])
+def test_qualification_timeout_reports_diagnostics_and_reaps_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_during_diagnostics: bool
+) -> None:
+    real_popen = subprocess.Popen
+    children = []
+
+    def spawn(*args, **kwargs):
+        child = real_popen(*args, **kwargs)
+        if args[0][:3] == [sys.executable, "-m", "pytest"]:
+            children.append(child)
+        return child
+
+    real_diagnostics = _hang_diagnostics
+
+    def diagnose(pgid: int) -> str:
+        os.killpg(pgid, 0)
+        diagnostics = real_diagnostics(pgid)
+        if exit_during_diagnostics:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            children[0].wait(timeout=5)
+        return diagnostics
+
+    monkeypatch.setattr(
+        subprocess, "Popen", create_autospec(real_popen, side_effect=spawn)
+    )
+    monkeypatch.setattr(sys.modules[__name__], "_QUALIFICATION_DEADLINE_S", 0.2)
+    diagnostic_spy = create_autospec(real_diagnostics, side_effect=diagnose)
+    monkeypatch.setattr(sys.modules[__name__], "_hang_diagnostics", diagnostic_spy)
+    try:
+        with pytest.raises(pytest.fail.Exception) as failure:
+            test_real_worker_deaths_and_best_effort_writes(
+                tmp_path, write_failure=False
+            )
+        message = str(failure.value)
+        assert "child output tail:" in message
+        for header in ("Process group:", "Meminfo:", "Cgroup:", "Dmesg:"):
+            assert header in message
+            assert message.index(header) > message.index("child output tail:")
+        assert len(children) == 1
+        diagnostic_spy.assert_called_once_with(children[0].pid)
+        _assert_group_gone(children[0].pid)
+    finally:
+        for child in children:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.wait(timeout=5)
+
+
+def _assert_group_gone(pgid: int, timeout_s: float = 5.0) -> None:
+    """Fail unless the process group disappears within ``timeout_s``.
+
+    After SIGKILL the controller is reaped by the test, but its xdist worker
+    may still be exiting or waiting to be reaped by init for a moment.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return
+        if time.monotonic() >= deadline:
+            pytest.fail(f"process group {pgid} still present after {timeout_s}s")
+        time.sleep(0.05)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX ps and process groups")
+def test_hang_diagnostics_includes_live_process_group() -> None:
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+    )
+    try:
+        diagnostics = _hang_diagnostics(child.pid)
+        processes = diagnostics.split("Process group:\n", 1)[1].split("\nMeminfo:", 1)[
+            0
+        ]
+        assert any(
+            line.split()[0] == str(child.pid)
+            for line in processes.splitlines()
+            if line.split()
+        )
+        assert len(diagnostics) <= 8000
+        for header in ("Meminfo:", "Cgroup:", "Dmesg:"):
+            assert header in diagnostics
+    finally:
+        child.kill()
+        child.wait(timeout=5)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        FileNotFoundError("missing command"),
+        subprocess.CalledProcessError(1, ["diagnostic"]),
+        subprocess.TimeoutExpired(["diagnostic"], timeout=2),
+    ],
+)
+def test_hang_diagnostics_unavailable_sources(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    run = create_autospec(subprocess.run, side_effect=error)
+    read = create_autospec(Path.read_text, side_effect=OSError("unreadable source"))
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(Path, "read_text", read)
+    diagnostics = _hang_diagnostics(12345)
+    for header in ("Process group:", "Meminfo:", "Cgroup:", "Dmesg:"):
+        assert header in diagnostics
+    assert diagnostics.count("unavailable") == 2
+    assert diagnostics.count("unreadable") >= 4
+    assert {call.args[0] for call in read.call_args_list} == {
+        Path("/proc/meminfo"),
+        Path("/proc/12345/cgroup"),
+        Path("/sys/fs/cgroup/pids.current"),
+        Path("/sys/fs/cgroup/pids.max"),
+        Path("/sys/fs/cgroup/memory.events"),
+    }
+    assert len(run.call_args_list) == 2
+    assert all(0 < call.kwargs["timeout"] <= 3 for call in run.call_args_list)
+    assert all(call.kwargs["errors"] == "replace" for call in run.call_args_list)
+    assert all(call.kwargs["check"] for call in run.call_args_list)
+
+
+@pytest.mark.parametrize("long_dmesg", [False, True])
+def test_hang_diagnostics_bounds_each_section(
+    monkeypatch: pytest.MonkeyPatch, long_dmesg: bool
+) -> None:
+    lines = "\n".join(f"line-{index}" for index in range(100))
+    kernel_log = (
+        "\n".join("x" * 2000 for _ in range(100)) + "\nLATEST_KERNEL_EVENT"
+        if long_dmesg
+        else lines
+    )
+    results = [
+        subprocess.CompletedProcess(["ps"], 0, stdout="x" * 20000),
+        subprocess.CompletedProcess(["dmesg"], 0, stdout=kernel_log),
+    ]
+    run = create_autospec(subprocess.run, side_effect=results)
+    read = create_autospec(Path.read_text, return_value=lines)
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(Path, "read_text", read)
+    diagnostics = _hang_diagnostics(12345)
+    assert len(diagnostics) <= 8000
+    for header in ("Process group:", "Meminfo:", "Cgroup:", "Dmesg:"):
+        assert header in diagnostics
+    meminfo = diagnostics.split("Meminfo:\n", 1)[1].split("\nCgroup:", 1)[0]
+    assert "line-9" in meminfo and "line-10" not in meminfo
+    dmesg = diagnostics.split("Dmesg:\n", 1)[1]
+    if long_dmesg:
+        assert dmesg.endswith("LATEST_KERNEL_EVENT")
+    else:
+        assert "line-70" in dmesg and "line-69" not in dmesg and "line-99" in dmesg
+    for leaf in ("pids.current", "pids.max", "memory.events"):
+        assert leaf in diagnostics
 
 
 @pytest.mark.skipif(
@@ -107,11 +420,22 @@ def test_03_fatal():
             start_new_session=True,
         )
         try:
-            code = child.wait(timeout=30)
+            code = child.wait(timeout=_QUALIFICATION_DEADLINE_S)
         except subprocess.TimeoutExpired:
-            os.killpg(child.pid, signal.SIGKILL)
-            child.wait()
-            pytest.fail("synthetic diagnostics qualification exceeded 30s")
+            try:
+                diagnostics = _hang_diagnostics(child.pid)
+            finally:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                child.wait()
+            tail = log.read_text(errors="replace")[-4000:]
+            pytest.fail(
+                f"synthetic diagnostics qualification exceeded "
+                f"{_QUALIFICATION_DEADLINE_S}s; child output tail:\n{tail}"
+                f"\n{diagnostics}"
+            )
     output = log.read_text()
     assert code == 1 and "3 failed" in output and "INTERNALERROR" not in output
     assert "INTENTIONAL_SYNTHETIC_ASSERTION" in output
@@ -165,13 +489,22 @@ async def test_snapshot_omits_values_and_task_names(tmp_path: Path) -> None:
     observer = module._Diagnostics(tmp_path, "gw0")
     case = observer.start("test_synthetic.py::test_example[PRIVATE_PARAMETER_SENTINEL]")
     task = asyncio.create_task(asyncio.sleep(0), name="PRIVATE_TASK_SENTINEL")
+    cancelling_task = asyncio.create_task(
+        asyncio.sleep(0), name="PRIVATE_CANCEL_SENTINEL"
+    )
+    cancelling_task.cancel()
+    cancelling_task.cancel()
     try:
         observer._snapshot(case, 120)
         snapshot = next(tmp_path.glob("dump-*.txt")).read_text()
         assert "AWAIT depth=" in snapshot
+        assert "done=False cancelled=False cancelling=2" in snapshot
         assert "PRIVATE_PARAMETER_SENTINEL" not in snapshot
         assert "PRIVATE_TASK_SENTINEL" not in snapshot
+        assert "PRIVATE_CANCEL_SENTINEL" not in snapshot
         assert len(snapshot.encode()) <= module._MAX_DUMP_BYTES
     finally:
         observer.finish(case)
         await task
+        with pytest.raises(asyncio.CancelledError):
+            await cancelling_task

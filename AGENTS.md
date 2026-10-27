@@ -12,10 +12,12 @@ change or a concrete conflict requires it. Do not skip mandatory reads.
 
 The policy governs orchestration, routing, output, CI observation, and session
 lifecycle where older `CLAUDE.md`, role, or command wording conflicts. Platform
-requirements and current user instructions take precedence. Repository rules
-may delegate planning to Linear; preserve that delegation and current Linear
-acceptance criteria. Safety, independent exact-head review, required CI,
-guarded merge, and hardware acceptance remain binding.
+requirements and current user instructions take precedence. Linear is the
+planning authority for all Core development: preserve its scope, acceptance
+criteria, dependencies, priority, milestones, and status. GitHub Projects are
+not used for Core planning; project membership, fields, and GitHub Projects
+OAuth scopes are not prerequisites. Safety, independent exact-head review,
+required CI, guarded merge, and hardware acceptance remain binding.
 
 ## Repo identity
 
@@ -23,7 +25,6 @@ This repository is the public open-core `rigplane` implementation.
 
 - Repository: `rigplane/rigplane-core`
 - License: MIT, unless a file says otherwise
-- Project board: https://github.com/orgs/rigplane/projects/2
 
 ## Stabilization freeze (from 2026-10-13)
 
@@ -97,24 +98,26 @@ validation matrices and decision records stay in Strategy. See
 
 ## Linear planning and GitHub execution
 
-For the `RigPlane Core UI Composition Architecture v3` project, the live,
-project-specific Linear control-plane contract takes precedence over the legacy
-GitHub-Project planning and control-plane language in `CLAUDE.md`. Linear is the
-authoritative control plane: it owns the backlog, scope, parent/child relations,
-dependencies, priority, milestones, acceptance criteria, and status. Resolve
-the Linear owner and its acceptance criteria before starting non-trivial work.
+Linear is the authoritative planning control plane for all Core development:
+it owns the backlog, scope, parent/child relations, dependencies, priority,
+milestones, acceptance criteria, and status. Resolve the Linear owner and its
+acceptance criteria before starting non-trivial work. GitHub Projects are not
+used for Core planning; project membership, fields, and GitHub Projects OAuth
+scopes are not prerequisites.
 
-This precedence is limited to control-plane ownership. All other `CLAUDE.md`
-commands, architecture, hygiene, protected-main, exact-head `Agent Review
-Gate`, and guarded merge rules remain binding. The delivery batching and CI
-cadence below supersede older draft-first CI and per-merge `main`-wait language
-in `CLAUDE.md`; safety, required checks, and independent review remain binding.
+This changes only control-plane ownership. All other `CLAUDE.md` commands,
+architecture, hygiene, protected-main, exact-head `Agent Review Gate`, and
+guarded merge rules remain binding. The delivery batching and CI cadence below
+supersede older draft-first CI and per-merge `main`-wait language in `CLAUDE.md`;
+safety, required checks, and independent review remain binding.
 
 GitHub is the execution plane: branch, commit, PR, diff, checks, independent
 review, and merge evidence. Do not create a GitHub planning issue before
-resolving the Linear owner. A GitHub issue is optional and allowed only for
-atomic, concrete PR-bound scope that links its existing Linear issue; it must
-not duplicate planning or dependency tracking.
+resolving the Linear owner. Ordinary GitHub issues remain available for
+customer intake and discussion without a prior Linear ticket. A GitHub
+execution issue is optional and allowed only for atomic, concrete PR-bound
+scope that links its existing Linear issue; it must not duplicate planning or
+dependency tracking.
 
 Planning-only GitHub issues must be retired: record the Linear issue that owns
 their scope and close them as superseded, without transferring planning status
@@ -252,6 +255,38 @@ missing, short, uppercase, or stale SHA is not a directive. Use this status
 instead of GitHub required approving reviews; same-user approval restrictions
 break automated agent flow.
 
+### Review verdict: local Codex CLI review
+
+Owner decision 2026-10-21 (supersedes the Codex-primary gate of MOR-3616):
+the merge verdict comes from a LOCAL review of the exact head, never from
+waiting for GitHub. The builder runs `tmp/pre-review.sh` before pushing (Codex
+CLI on the owner's ChatGPT subscription, read-only, exhaustive). When it prints
+`PRE-REVIEW: CLEAN` for the pushed head SHA, the lane script `pro-gate.sh` (or
+the coordinator) posts the exact-head `Agent Review: PASS <head sha>` directive
+with the model, the number of rounds and "local Codex CLI pre-review". The
+reviewer's model family differs from the builder's: Codex reviews what Kimi,
+Claude, GLM or Spark built; if Codex built the change, Spark reviews it. A new
+push needs a new local verdict for the new head.
+
+`Agent Review Gate` is green when a valid, trusted, non-minimized exact-head
+`PASS` directive exists (as described above) and no active `BLOCKED` directive
+for the head exists. Codex's GitHub review (`chatgpt-codex-connector[bot]`) is
+advisory and asynchronous: it still reviews when a PR is opened or a draft is
+marked ready and answers `@codex review`, its review and open P0-P2 threads show
+in the status text, and nobody waits for it. If it later finds a P0 or P1 (or a
+behaviour-changing P2) on a PR, the owning session opens a fix PR; that is part of
+its done. The severity policy in "Code Review Rules" says what must be fixed and
+what is deferred (`deferred to MOR-xxxx`, resolve the thread); the gate does not
+read those threads.
+
+A trusted, active (or malformed) `BLOCKED` directive for the head still wins and
+the status is red. If anything fails to evaluate (an API or GraphQL error), the
+status is red as well; there is no silent pass. While no PASS exists the status
+reads "Waiting for the local review PASS". After a comment edit or other change
+that fires no workflow event, re-run the gate:
+`gh workflow run agent-review-gate.yml -f pr_number=N`. The `built-by-gpt` label
+no longer changes the verdict; the lane script picks the reviewer family.
+
 Every non-trivial PR requires independent agent review before merge. The
 implementation agent may not be the review agent.
 
@@ -288,8 +323,8 @@ implementation agent may not be the review agent.
   comment, or writing the corrected squash body at merge — and say in the PR
   that it did.
 - A failed `Agent Review Gate` without valid exact-head BLOCKED feedback usually
-  means no fresh, valid exact-head PASS directive exists; perform or refresh
-  the review instead of skipping the PR.
+  means no fresh, valid exact-head PASS directive exists for the current head:
+  run `pro-gate.sh` (local review of the head) instead of skipping the PR.
 - A PR based on a branch other than `main` shows a partly-populated check
   list, which is more misleading than an empty one:
   `agent-review-gate.yml`'s `pull_request` trigger carries no `branches:`
@@ -367,6 +402,61 @@ implementation agent may not be the review agent.
   `visual` jobs. Finish focused development checks first, then open or mark the
   final candidate Ready; the `ready_for_review` event starts its required CI.
 
+## Code Review Rules
+
+Rules for Codex code review on GitHub. Builders: the same classes are the
+pre-push checklist in
+[`docs/development/review-checklist.md`](docs/development/review-checklist.md).
+
+### One pass, everything at once
+
+- Report every finding that must be fixed (P0, P1 and behaviour-changing P2,
+  see the severity policy below) in a single review pass. Do not stop at the
+  first few; every finding left for a later pass costs the team another 15-30
+  minute round. There is no cap on the number of findings.
+- Group findings by file. Give `file:line`, the concrete input or sequence that
+  breaks, and the concrete fix.
+- One comment per root cause. When the same defect appears in several places,
+  report it once and list the places.
+- Review the lines added by fix commits with the same rigor as the first
+  commit, and search for siblings of a finding (the same defect class in a
+  second code path) in the same pass.
+- Do not repeat a finding that was fixed or that a thread already answered
+  with evidence.
+
+### Severity policy
+
+- Raise P0 and P1. Raise a P2 only when it changes behaviour: a wrong result or
+  verdict, data loss, state left dirty, a hang, a security or radio-transmit
+  safety defect, or a false claim about safety or support in user-facing
+  documentation.
+- Do not raise documentation wording, comments, PR-body phrasing, naming,
+  style, formatting, test-only polish, or robustness nits in internal test and
+  bench tooling that cannot change a verdict or leave state dirty. If you must
+  mention one, mark it P3.
+- For internal test and bench tooling, do not harden against attackers who do
+  not exist in the deployment.
+
+### Defect classes to check on every change
+
+- Untrusted or dynamic input: wrong types, NaN, path escapes, IPv6 brackets,
+  stale or truncated device replies, validation applied to one path but not its
+  siblings.
+- Failure paths: an error that becomes a traceback instead of the documented
+  outcome; one failed step that skips the remaining restore or cleanup steps.
+- State left dirty on interrupt: SIGTERM or cancellation between two
+  statements, handlers installed late, `BaseException` bypassing `except`.
+- Concurrency and cancellation: two instances at once, stale lock or reused
+  PID, cancel before start, fire-and-forget followed by a dependent step.
+- Time: fixed sleeps as synchronization, measurement windows that start at the
+  wrong moment, timeouts shorter than the callee's own bounds.
+- Verdicts that fail open: `|| true`, empty or unmeasurable results counted as
+  PASS, `any()` where `all()` is meant, success without observed evidence.
+- Contract fidelity: code that disagrees with the pinned contract, schema,
+  profile or fixture; sibling files (docs, allow-lists, label lists, tests that
+  pin literals) that must change with the change.
+- Restart, upgrade and rerun behavior of services and deploy code.
+
 ## Release branches
 
 Use release branches only when a public/core release needs stabilization while
@@ -382,5 +472,11 @@ back to `main`.
 - Prefer tests before implementation for bugs and behavior changes.
 - Do not add new layers, abstractions, or broad refactors unless the issue
   explicitly requires it.
+- Pre-push review: walk `docs/development/review-checklist.md` against your
+  diff and run `tmp/pre-review.sh` (a local exhaustive Codex pass; the lane
+  scripts put it in the worktree, see the checklist if it is missing) before
+  the first push and before every re-push, until it prints
+  `PRE-REVIEW: CLEAN`. Target at most 500 changed lines per PR, with the
+  exceptions and limits stated in the checklist; split larger work.
 - Keep hardware-dependent work mockable where possible; otherwise mark the
   issue as requiring human/hardware validation.

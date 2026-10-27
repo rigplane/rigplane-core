@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import io
 import json
 import pathlib
@@ -35,6 +36,11 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.core.tx_observation import (
+    OBSERVED_PTT_PATH,
+    ObservedPtt,
+    project_observed_ptt,
+)
 from rigplane.core.radio_protocol import ScopeCapable
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
@@ -145,6 +151,16 @@ def _response_json(writer: _FakeWriter) -> tuple[int, dict]:
     status = int(text.split(" ", 2)[1])
     body_start = text.index("\r\n\r\n") + 4
     return status, json.loads(text[body_start:] or "{}")
+
+
+class _DelayedBridgeBody(asyncio.StreamReader):
+    def __init__(self) -> None:
+        super().__init__()
+        self.read_started = asyncio.Event()
+
+    async def readexactly(self, n: int) -> bytes:
+        self.read_started.set()
+        return await super().readexactly(n)
 
 
 def _drain_queue(queue: asyncio.Queue[object]) -> None:
@@ -1937,6 +1953,271 @@ async def test_runtime_endpoint_reports_process_bind_radio_and_bridge_status() -
     srv._server = None  # noqa: SLF001
 
 
+@pytest.mark.parametrize(
+    "method_name", ["start_audio_bridge", "defer_audio_bridge_start"]
+)
+def test_bridge_methods_preserve_legacy_positional_arguments(method_name) -> None:
+    srv = WebServer(None)
+    bound = inspect.signature(getattr(srv, method_name)).bind(
+        "rx-device", "tx-device", False, "legacy-label", 3, 0.25
+    )
+    bound.apply_defaults()
+
+    assert bound.arguments == {
+        "device_name": "rx-device",
+        "tx_device_name": "tx-device",
+        "tx_enabled": False,
+        "label": "legacy-label",
+        "max_retries": 3,
+        "retry_base_delay": 0.25,
+        "input_gain_db": 0.0,
+        "output_gain_db": 0.0,
+    }
+
+
+def test_deferred_bridge_preserves_legacy_positional_configuration() -> None:
+    srv = WebServer(None)
+
+    srv.defer_audio_bridge_start(
+        "rx-device", "tx-device", False, "legacy-label", 3, 0.25
+    )
+
+    assert srv._deferred_bridge_start == {  # noqa: SLF001
+        "device_name": "rx-device",
+        "tx_device_name": "tx-device",
+        "tx_enabled": False,
+        "label": "legacy-label",
+        "max_retries": 3,
+        "retry_base_delay": 0.25,
+        "input_gain_db": 0.0,
+        "output_gain_db": 0.0,
+    }
+
+
+@pytest.fixture
+async def gain_bridge_server(monkeypatch: pytest.MonkeyPatch):
+    from rigplane.audio import bridge as bridge_module
+    from test_audio_bridge import _bridge_backend
+    from test_managed_tx_web_projection import _GatePort, _gate_authority
+    from test_web_audio_tx_session import _SessionLanRadio
+
+    backend = _bridge_backend()
+    monkeypatch.setattr(bridge_module, "PortAudioBackend", lambda: backend)
+    radio = _SessionLanRadio()
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    managed = _gate_authority()
+    srv._production_managed_tx_port = _GatePort(managed)  # type: ignore[assignment]  # noqa: SLF001
+    try:
+        await managed.ptt_down("bridge-test")
+        await srv.start_audio_bridge(device_name="RigPlane Virtual Cable")
+        yield srv, radio, backend
+    finally:
+        await srv.stop_audio_bridge()
+        srv._controller.revoke()  # noqa: SLF001
+        await srv._controller.settle()  # noqa: SLF001
+        await managed.ptt_up("bridge-test")
+        await managed.close()
+
+
+async def _bridge_http_request(
+    srv: WebServer,
+    method: str,
+    payload: dict | None = None,
+    *,
+    path: str = "/api/v1/bridge",
+    controller_key: str | None = None,
+) -> tuple[int, dict]:
+    body = json.dumps(payload).encode() if payload is not None else b""
+    headers = {"content-length": str(len(body))}
+    if controller_key is not None:
+        headers["x-rigplane-controller"] = controller_key
+    writer = _FakeWriter()
+    await srv._handle_http(  # noqa: SLF001
+        writer, method, path, headers=headers, reader=_reader_with(body)
+    )
+    return _response_json(writer)
+
+
+@pytest.mark.asyncio
+async def test_bridge_patch_updates_running_gain_and_get_reports_values(
+    gain_bridge_server,
+) -> None:
+    from rigplane.audio.bridge import SAMPLES_PER_FRAME
+    from rigplane.audio.lan_stream import AudioPacket
+
+    srv, radio, backend = gain_bridge_server
+    pcm = (2_000).to_bytes(2, "little", signed=True) * SAMPLES_PER_FRAME
+    gain = 6.020599913279624
+    stages = [
+        (None, 2_000, 2_000),
+        ({"outputGainDb": -gain}, 2_000, 1_000),
+        ({"inputGainDb": gain}, 4_000, 1_000),
+    ]
+    for sequence, (payload, tx_sample, rx_sample) in enumerate(stages, 1):
+        if payload is not None:
+            status, _ = await _bridge_http_request(srv, "PATCH", payload)
+            assert status == 200
+        radio.audio_bus._on_opus_packet(  # noqa: SLF001
+            AudioPacket(ident=0x80, send_seq=sequence, data=pcm)
+        )
+        backend.rx_streams[0].inject_frame(pcm)
+        await _await_condition(
+            lambda: (
+                len(radio.pushed) == sequence
+                and len(backend.tx_streams[0].written_frames) == sequence
+            )
+        )
+        assert radio.pushed[-1] == (
+            tx_sample.to_bytes(2, "little", signed=True) * SAMPLES_PER_FRAME
+        )
+        assert backend.tx_streams[0].written_frames[-1] == (
+            rx_sample.to_bytes(2, "little", signed=True) * SAMPLES_PER_FRAME
+        )
+
+    status, data = await _bridge_http_request(srv, "GET")
+    assert status == 200
+    assert data["inputGainDb"] == gain
+    assert data["outputGainDb"] == -gain
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replace_bridge", [False, True])
+async def test_bridge_patch_rejects_bridge_stopped_during_body(
+    gain_bridge_server, replace_bridge: bool
+) -> None:
+    srv, _, _ = gain_bridge_server
+    original = srv._audio_bridge  # noqa: SLF001
+    assert original is not None
+    reader = _DelayedBridgeBody()
+    writer = _FakeWriter()
+    body = json.dumps({"inputGainDb": 6.0, "outputGainDb": -10.0}).encode()
+    pending = asyncio.create_task(
+        srv._handle_http(  # noqa: SLF001
+            writer,
+            "PATCH",
+            "/api/v1/bridge",
+            headers={"content-length": str(len(body))},
+            reader=reader,
+        )
+    )
+    try:
+        await asyncio.wait_for(reader.read_started.wait(), timeout=2.0)
+        status, _ = await _bridge_http_request(srv, "DELETE")
+        assert status == 200
+        assert not original.running
+        if replace_bridge:
+            status, _ = await _bridge_http_request(srv, "POST")
+            assert status == 200
+        replacement = srv._audio_bridge  # noqa: SLF001
+        reader.feed_data(body)
+        await asyncio.wait_for(pending, timeout=2.0)
+        status, data = _response_json(writer)
+        assert status == 409
+        assert data["error"] == "bridge_not_running"
+        assert (original.input_gain_db, original.output_gain_db) == (0.0, 0.0)
+        if replace_bridge:
+            assert replacement is not None and replacement is not original
+            assert replacement.running
+            assert (replacement.input_gain_db, replacement.output_gain_db) == (0.0, 0.0)
+        else:
+            assert replacement is None
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_bridge_patch_rejects_controller_released_during_body(
+    gain_bridge_server,
+) -> None:
+    srv, _, _ = gain_bridge_server
+    status, session = await _bridge_http_request(
+        srv, "POST", {"kind": "browser"}, path="/api/v1/controller"
+    )
+    assert status == 201
+    key = session["controller_key"]
+    bridge = srv._audio_bridge  # noqa: SLF001
+    assert bridge is not None
+    reader = _DelayedBridgeBody()
+    writer = _FakeWriter()
+    body = json.dumps({"inputGainDb": 6.0, "outputGainDb": -10.0}).encode()
+    pending = asyncio.create_task(
+        srv._handle_http(  # noqa: SLF001
+            writer,
+            "PATCH",
+            "/api/v1/bridge",
+            headers={"content-length": str(len(body)), "x-rigplane-controller": key},
+            reader=reader,
+        )
+    )
+    try:
+        await asyncio.wait_for(reader.read_started.wait(), timeout=2.0)
+        status, _ = await _bridge_http_request(
+            srv, "DELETE", path="/api/v1/controller", controller_key=key
+        )
+        assert status == 200
+        reader.feed_data(body)
+        await asyncio.wait_for(pending, timeout=2.0)
+        status, data = _response_json(writer)
+        assert status == 403
+        assert data["error"] == "controller_invalid"
+        assert srv._audio_bridge is bridge and bridge.running  # noqa: SLF001
+        assert (bridge.input_gain_db, bridge.output_gain_db) == (0.0, 0.0)
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "expected_status"),
+    [
+        ({}, 400),
+        ({"inputGainDb": "loud"}, 400),
+        ({"outputGainDb": float("nan")}, 400),
+        ({"inputGainDb": True}, 400),
+        ({"outputGainDb": float("inf")}, 400),
+        ({"inputGainDb": 10**400}, 400),
+        ({"unknownGainDb": 1.0}, 400),
+    ],
+)
+async def test_bridge_patch_rejects_invalid_gain_payloads(
+    gain_bridge_server, payload: dict[str, object], expected_status: int
+) -> None:
+    srv, _, _ = gain_bridge_server
+    body = json.dumps(payload).encode()
+    writer = _FakeWriter()
+
+    await srv._handle_http(  # noqa: SLF001
+        writer,
+        "PATCH",
+        "/api/v1/bridge",
+        headers={"content-length": str(len(body))},
+        reader=_reader_with(body),
+    )
+
+    status, _data = _response_json(writer)
+    assert status == expected_status
+
+
+@pytest.mark.asyncio
+async def test_bridge_patch_requires_running_bridge() -> None:
+    srv = WebServer(None, WebConfig(host="127.0.0.1", port=0))
+    payload = json.dumps({"inputGainDb": 3.0}).encode()
+    writer = _FakeWriter()
+
+    await srv._handle_http(  # noqa: SLF001
+        writer,
+        "PATCH",
+        "/api/v1/bridge",
+        headers={"content-length": str(len(payload))},
+        reader=_reader_with(payload),
+    )
+
+    status, _data = _response_json(writer)
+    assert status == 409
+
+
 @pytest.mark.asyncio
 async def test_station_endpoint_reports_selection_metadata_and_guidance() -> None:
     serial_radio = SimpleNamespace(
@@ -3338,6 +3619,214 @@ async def test_scope_health_monitor_unconfirmed_session_does_not_reenable() -> N
     await asyncio.gather(task, return_exceptions=True)
 
     assert not srv.command_queue.has_commands
+
+
+def _record_scope_commands_completing_like_a_poller(
+    srv: WebServer,
+    queued: list[EnableScope],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Record EnableScope entries and complete them so the monitor advances."""
+    put_ordered = srv.command_queue.put_ordered
+
+    def observe_and_complete(command: object, **kwargs: object) -> object:
+        entry = put_ordered(command, **kwargs)
+        if isinstance(command, EnableScope):
+            queued.append(command)
+            future = kwargs.get("future")
+            if isinstance(future, asyncio.Future) and not future.done():
+                future.set_result(None)
+        return entry
+
+    monkeypatch.setattr(srv.command_queue, "put_ordered", observe_and_complete)
+
+
+def _observe_scope_ptt(srv: WebServer, value: ObservedPtt, max_age: float) -> None:
+    srv.command_state_store.apply_current(
+        _store_observation(
+            OBSERVED_PTT_PATH, value, at=time.monotonic(), max_age=max_age
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_scope_health_monitor_keyed_tx_queues_nothing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-2859: keyed managed TX pauses scope re-enable writes and retries."""
+    radio = _scope_radio(ready=True, connected=True)
+    srv = WebServer(radio)
+    srv._scope_handlers.add(MagicMock())
+    srv._scope_enabled = True
+    srv._scope_health_interval = 0.01
+    srv._scope_last_nonzero = time.monotonic() - 1.0
+    srv._managed_tx_keyed = True  # noqa: SLF001
+    queued: list[EnableScope] = []
+    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
+
+    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    try:
+        await asyncio.sleep(0.06)  # several monitor intervals under TX
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert queued == []
+    assert "giving up" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scope_health_monitor_observed_ptt_on_queues_nothing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-2859: fresh observed PTT ON pauses scope writes without keyed intent."""
+    radio = _scope_radio(ready=True, connected=True)
+    srv = WebServer(radio)
+    srv._scope_handlers.add(MagicMock())
+    srv._scope_enabled = True
+    srv._scope_health_interval = 0.01
+    srv._scope_last_nonzero = time.monotonic() - 1.0
+    _observe_scope_ptt(srv, ObservedPtt.ON, max_age=60.0)
+    assert srv._managed_tx_keyed is False  # noqa: SLF001
+    queued: list[EnableScope] = []
+    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
+
+    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    try:
+        await asyncio.sleep(0.06)  # several monitor intervals under TX
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert queued == []
+    assert "giving up" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scope_health_monitor_long_tx_never_gives_up(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-2859: a TX longer than the retry budget logs no give-up."""
+    radio = _scope_radio(ready=True, connected=True)
+    srv = WebServer(radio)
+    srv._scope_handlers.add(MagicMock())
+    srv._scope_enabled = True
+    srv._scope_health_interval = 0.01
+    srv._scope_last_nonzero = time.monotonic() - 1.0
+    srv._managed_tx_keyed = True  # noqa: SLF001
+    queued: list[EnableScope] = []
+    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
+
+    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    try:
+        await asyncio.sleep(0.15)  # well past three retries under TX
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert queued == []
+    assert "giving up" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scope_health_monitor_recovers_after_tx_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-2859: de-key with live traffic stays quiet; a later stall re-enables."""
+    radio = _scope_radio(ready=True, connected=True)
+    srv = WebServer(radio)
+    srv._scope_handlers.add(MagicMock())
+    srv._scope_enabled = True
+    srv._scope_health_interval = 0.05
+    srv._scope_last_nonzero = time.monotonic() - 1.0
+    srv._managed_tx_keyed = True  # noqa: SLF001
+    queued: list[EnableScope] = []
+    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
+
+    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    try:
+        await asyncio.sleep(0.3)  # long TX spans the 3-retry budget (6 intervals)
+        assert queued == []
+        srv._managed_tx_keyed = False  # noqa: SLF001 — de-key, traffic resumes
+        for _ in range(25):  # ~250 ms of live traffic, ~10 ms between frames
+            srv._scope_health_check(SimpleNamespace(pixels=b"\x00\x01"))  # noqa: SLF001
+            await asyncio.sleep(0.01)
+        assert queued == []  # live traffic after TX stays quiet
+        # Genuine RX stall: frames stop again.
+        srv._scope_last_nonzero = time.monotonic() - 1.0
+        await _await_condition(lambda: len(queued) > 0, timeout=5.0)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert any(isinstance(command, EnableScope) for command in queued)
+
+
+@pytest.mark.asyncio
+async def test_scope_health_monitor_tx_resets_retry_budget_after_give_up(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-2859: a TX pause restores the retry budget exhausted by an RX stall."""
+    caplog.set_level("WARNING", logger="rigplane.web.server")
+    radio = _scope_radio(ready=True, connected=True)
+    srv = WebServer(radio)
+    srv._scope_handlers.add(MagicMock())
+    srv._scope_enabled = True
+    srv._scope_health_interval = 0.05
+    srv._scope_last_nonzero = time.monotonic() - 1.0
+    queued: list[EnableScope] = []
+    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
+
+    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    try:
+        # RX stall with zero frames until the monitor exhausts its retries.
+        await _await_condition(
+            lambda: len(queued) >= 3 and "giving up" in caplog.text,
+            timeout=5.0,
+        )
+        baseline = len(queued)
+        # TX known for a few intervals: quiet, timer + retries reset.
+        srv._managed_tx_keyed = True  # noqa: SLF001
+        await asyncio.sleep(0.2)
+        assert len(queued) == baseline
+        # De-key with zero frames continuing: fresh budget re-enables.
+        srv._managed_tx_keyed = False  # noqa: SLF001
+        await _await_condition(lambda: len(queued) > baseline, timeout=5.0)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert any(isinstance(command, EnableScope) for command in queued[baseline:])
+
+
+@pytest.mark.asyncio
+async def test_scope_health_monitor_stale_ptt_still_reenables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-2859: stale observed PTT (UNKNOWN) keeps the RX re-enable path."""
+    radio = _scope_radio(ready=True, connected=True)
+    srv = WebServer(radio)
+    srv._scope_handlers.add(MagicMock())
+    srv._scope_enabled = True
+    srv._scope_health_interval = 0.01
+    srv._scope_last_nonzero = time.monotonic() - 1.0
+    _observe_scope_ptt(srv, ObservedPtt.ON, max_age=0.02)
+    await asyncio.sleep(0.05)  # the ON observation goes stale
+    assert srv._managed_tx_keyed is False  # noqa: SLF001
+    assert (
+        project_observed_ptt(srv.command_state_store.snapshot()) is ObservedPtt.UNKNOWN
+    )
+    queued: list[EnableScope] = []
+    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
+
+    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    try:
+        await _await_condition(lambda: len(queued) > 0, timeout=5.0)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert any(isinstance(command, EnableScope) for command in queued)
 
 
 @pytest.mark.asyncio

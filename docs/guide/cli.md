@@ -968,12 +968,18 @@ to preserve diagnostics across reconnects/restarts.
   on macOS, `~/.cache/rigplane/logs/` on Linux. `RIGPLANE_LOG_DIR` replaces that folder.
 - Handler type: Python `RotatingFileHandler`
 - Rotation defaults: `50_000_000` bytes per file, `5` backups
+- One writer per file: when the CLI writes `rigplane.log` itself, the always-on
+  diagnostic handler (attached at `import rigplane`) steps aside, so each record
+  appears once. Short commands that open no CLI log file leave `rigplane.log` to the
+  diagnostic handler (5 MiB × 2 backups), which `rigplane diagnose` bundles. With a
+  custom `ICOM_LOG_FILE` or `--managed`, the CLI writes that file and the diagnostic
+  handler keeps writing `rigplane.log`.
 
 You can tune this behavior with environment variables:
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `ICOM_LOG_FILE` | `rigplane.log` in the folder above (for `web`/`serve`/`station`) | Log file path. Set to `off`, `none`, or `-` to disable file logging entirely. |
+| `ICOM_LOG_FILE` | `rigplane.log` in the folder above (for `web`/`serve`/`station`) | Log file path. Set to `off`, `none`, or `-` to disable file logging entirely, including the diagnostic `rigplane.log`. |
 | `ICOM_LOG_MAX_BYTES` | `50000000` | Rotate when file reaches this size (bytes). |
 | `ICOM_LOG_BACKUP_COUNT` | `5` | Number of rotated files to keep. Set `0` to disable rotation. |
 | `ICOM_DEBUG` | unset | Enables debug-level logging and also enables file logging if `ICOM_LOG_FILE` is not disabled. |

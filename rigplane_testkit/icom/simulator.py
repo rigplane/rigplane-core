@@ -35,7 +35,7 @@ from typing import Literal
 from rigplane_testkit.icom.faults import Direction, FaultPlan, Port
 from rigplane_testkit.icom.fixtures import scope_wave_templates
 from rigplane_testkit.icom.replay import RecordedAnswerTable
-from rigplane_testkit.icom.simulator_audio import AudioPortMixin
+from rigplane_testkit.icom.simulator_audio import AudioPortMixin, TxAudioFormat
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ _CMD_ATT = 0x11
 _CMD_PREAMP = 0x16
 _CMD_CMD29 = 0x29
 _CMD_PTT = 0x1C
-_CMD_CTL_MEM_MENU = 0x1A  # 0x1A 0x05 <item-hi> <item-lo> menu reads/writes
+_CMD_CTL_MEM_MENU = 0x1A  # 0x1A 0x05 menu items; 0x1A 0x06 DATA mode (0-3)
 _CMD_SELECTED_FREQ = 0x25  # Selected/unselected receiver frequency
 _CMD_SELECTED_MODE = 0x26  # Selected/unselected receiver mode
 _CMD_VFO_SELECT = 0x07  # MAIN/SUB receiver select (D0/D1) and read (D2)
@@ -395,6 +395,12 @@ class MockIcomRadio(AudioPortMixin):
         capture_civ_frames: record every well-formed inbound CI-V frame
             addressed to the radio in :attr:`civ_frames_received`.
             Default False (no recording, no retention).
+        capture_tx_audio: retain the payload bytes of every recorded
+            client audio frame (``audio_tx_frames`` ``payload``, readable
+            as PCM via :meth:`audio_tx_pcm` / :meth:`write_tx_wav`).
+            Default False keeps payloads unretained (``payload`` is
+            ``b""``), so long soaks retain no payload bytes — the
+            per-frame metadata list still grows.
         civ_state_survives_unclean_end: keep the CI-V stream state
             (frontier plus gap list) of a session whose hold expires on
             its own as orphan state for the next opener (recorded IC-7610,
@@ -458,6 +464,7 @@ class MockIcomRadio(AudioPortMixin):
         ptt_on_session_loss: Literal["hold", "release"] = "hold",
         recorded_answers: RecordedAnswerTable | None = None,
         capture_civ_frames: bool = False,
+        capture_tx_audio: bool = False,
         civ_state_survives_unclean_end: bool = False,
         orphan_civ_state_expiry_s: float = ORPHAN_CIV_STATE_EXPIRY_S,
         civ_inherited_fills_per_round: int = 0,
@@ -618,6 +625,11 @@ class MockIcomRadio(AudioPortMixin):
         # command builders.
         self.capture_civ_frames: bool = capture_civ_frames
         self.civ_frames_received: list[bytes] = []
+        # Opt-in retention of client audio-frame payloads (default off):
+        # ``audio_tx_frames`` entries carry the bytes after the 0x18 header
+        # in ``payload`` (``b""`` when off, so long soaks retain no payload
+        # bytes — the per-frame metadata list still grows).
+        self.capture_tx_audio: bool = capture_tx_audio
         # Opt-in CI-V refusal hook (default off, additive): (cmd, sub) pairs the
         # simulator answers with a bare NAK (0xFA) instead of dispatching — a
         # radio that refuses a command it would normally take. An entry
@@ -1637,6 +1649,20 @@ class MockIcomRadio(AudioPortMixin):
                 # permission where it was (MOR-3340).
                 self._fence_login_ip = addr[0]
                 self._fence_login_civ_port = declared_port
+            if _status_accepted(reply) and (
+                own_conninfo or self._owner == (addr, sender_id)
+            ):
+                # Learn the TX format it declares (production layout,
+                # core/auth.py: build_conninfo_packet: tx codec at 0x73,
+                # BE u32 tx sample rate at 0x78) so the sink frames and
+                # the capture exports can label what they record. A bare
+                # conninfo (zero rate, never sent by a real client)
+                # teaches nothing.
+                tx_sample_rate = struct.unpack_from(">I", data, 0x78)[0]
+                if tx_sample_rate > 0:
+                    self._audio_tx_format = TxAudioFormat(
+                        codec=data[0x73], sample_rate=tx_sample_rate
+                    )
             self._send(proto, reply, addr, "ctrl")
             return
 
@@ -2444,6 +2470,44 @@ class MockIcomRadio(AudioPortMixin):
                 if len(rest) == 2 + width:  # SET: BCD value bytes, item width
                     self._ctl_mem_menu[item] = _bcd_decode_value(rest[2:])
                     return self._civ_ack(to, frm)
+            return self._civ_nak(to, frm)
+
+        # --- 0x1A 06 DATA mode (the selected receiver's 0x26 DATA flag) ---
+        # Documented full form (IC-7610 CI-V Reference Guide): SET carries
+        # DATA 0-3 plus filter 1-3, with DATA 00 paired to filter 00 only
+        # (manual footnote); GET answers DATA then filter — 00 00 while
+        # DATA is OFF, and DATA OFF never zeroes the physical filter that
+        # 0x26/0x04 keep reporting. ``DD 01-03 FF 01-03`` sets both fields;
+        # ``00 00`` clears DATA and preserves the filter. Repo-compatible
+        # short form (the ``set_data_mode`` builder): one DATA value 0-3,
+        # filter preserved. Other lengths, values or pairings NAK before
+        # any mutation; no write touches mode, frequency or the unselected
+        # receiver, and the DATA flag is the byte 0x26 selector 00 reports,
+        # so 07 D0/D1 selection keeps MAIN/SUB isolated (the swap in the
+        # 0x07 handler owns the mapping).
+        if cmd == _CMD_CTL_MEM_MENU and payload[:1] == b"\x06":
+            rest = payload[1:]
+            if not rest:  # GET: DATA plus filter (00 00 while DATA is OFF)
+                filt = self._filter if self._data_mode else 0x00
+                return self._civ_frame(
+                    to,
+                    frm,
+                    _CMD_CTL_MEM_MENU,
+                    sub=0x06,
+                    data=bytes([self._data_mode, filt]),
+                )
+            if len(rest) == 1 and rest[0] <= 0x03:  # short SET: DATA 0-3
+                self._data_mode = rest[0]
+                return self._civ_ack(to, frm)
+            if (
+                len(rest) == 2 and 0x01 <= rest[0] <= 0x03 and 0x01 <= rest[1] <= 0x03
+            ):  # full SET: DATA 1-3 with filter 1-3
+                self._data_mode = rest[0]
+                self._filter = rest[1]
+                return self._civ_ack(to, frm)
+            if len(rest) == 2 and rest == b"\x00\x00":  # full SET: DATA OFF
+                self._data_mode = 0x00
+                return self._civ_ack(to, frm)
             return self._civ_nak(to, frm)
 
         # --- PTT / Transceiver status (0x1C) ---

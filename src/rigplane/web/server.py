@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import contextlib
 import ctypes
 import ctypes.util
 import functools
@@ -37,7 +38,14 @@ import sys
 import threading
 import time
 import urllib.parse
-from collections.abc import Awaitable, Callable, Collection, Coroutine, Mapping
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Collection,
+    Coroutine,
+    Mapping,
+)
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from inspect import getattr_static
@@ -67,6 +75,7 @@ from ..core.command_dispatch import (
     prepare_command_intent,
 )
 from ..core.exceptions import CommandError, CommandRejectedError
+from ..core.exceptions import ConnectionError as RadioConnectionError
 from ..core.state_pipeline_contracts import (
     CommandIntent,
     CommandLifecycleEvent,
@@ -713,6 +722,26 @@ def _format_band_plan_config(new_region: str, existing: dict[str, Any]) -> str:
         for k, v in existing["layers"].items():
             lines.append(f"{k} = {'true' if v else 'false'}\n")
     return "".join(lines)
+
+
+def _serialize_cw_text(profile: "RadioProfile", radio: object) -> dict[str, object]:
+    """``cwText`` (MOR-3678): whether ``send_cw_text`` works on this radio.
+
+    Separate from the ``cw`` tag / ``hasCw``, which keep driving the CW
+    decoder, console and keyer controls. ``supported`` also needs a backend
+    that can run ``send_cw_text`` (``cw_text_sender``, the check the send
+    path uses); the limits stay the profile's. With no radio attached yet
+    the profile's answer stands (a send then fails as not connected).
+    """
+    from ..profiles import cw_text_sender
+
+    spec = profile.cw_text
+    runs = radio is None or cw_text_sender(radio) is not None
+    return {
+        "supported": spec.supported and runs,
+        "maxLength": spec.max_length,
+        "memoryChannel": spec.memory_channel,
+    }
 
 
 def _serialize_filter_config(profile: "RadioProfile") -> dict[str, dict[str, object]]:
@@ -3465,6 +3494,19 @@ class WebServer:
             if self._scope_reenable_task is current_task:
                 self._scope_reenable_task = None
 
+    def _scope_tx_known(self) -> bool:
+        """Whether a transmit is known from managed intent or observed PTT."""
+        try:
+            if self.tx_active_hint():
+                return True
+            return (
+                project_observed_ptt(self.command_state_store.snapshot())
+                is ObservedPtt.ON
+            )
+        except Exception:
+            logger.debug("scope TX probe: unexpected failure", exc_info=True)
+            return False
+
     def _scope_health_check(self, frame: Any) -> None:
         """Track whether scope frames contain real data (non-zero pixels)."""
         import time
@@ -3502,6 +3544,13 @@ class WebServer:
                     retries = 0
                     continue
                 if not self._scope_enabled:
+                    continue
+                if self._scope_tx_known():
+                    # MOR-2859: all-zero frames are expected during transmit
+                    # (an IC-7300 with scope-during-TX off sends blanks), so
+                    # pause the stall timer instead of re-enabling mid-TX.
+                    self._scope_last_nonzero = time.monotonic()
+                    retries = 0
                     continue
                 now = time.monotonic()
                 if self._scope_last_nonzero == 0.0:
@@ -3723,6 +3772,9 @@ class WebServer:
         label: str | None = None,
         max_retries: int = 5,
         retry_base_delay: float = 1.0,
+        *,
+        input_gain_db: float = 0.0,
+        output_gain_db: float = 0.0,
     ) -> None:
         """Start the audio bridge to a virtual audio device.
 
@@ -3731,6 +3783,8 @@ class WebServer:
             tx_device_name: Separate device for TX (e.g. "RigPlane Virtual Cable Input").
                             Required for bidirectional audio to avoid feedback.
             tx_enabled: Whether to bridge TX (device → radio).
+            input_gain_db: Gain applied to device-to-radio PCM.
+            output_gain_db: Gain applied to radio-to-device PCM.
             label: Descriptive label for log messages. If ``None``, derived from radio model.
         """
         from rigplane.audio.bridge import AudioBridge, derive_bridge_label
@@ -3751,6 +3805,8 @@ class WebServer:
             self._radio,  # type: ignore[arg-type]
             device_name=device_name,
             tx_device_name=tx_device_name,
+            input_gain_db=input_gain_db,
+            output_gain_db=output_gain_db,
             tx_enabled=tx_enabled,
             label=label,
             max_retries=max_retries,
@@ -3785,6 +3841,9 @@ class WebServer:
         label: str | None = None,
         max_retries: int = 5,
         retry_base_delay: float = 1.0,
+        *,
+        input_gain_db: float = 0.0,
+        output_gain_db: float = 0.0,
     ) -> None:
         """Arm ONE deferred auto-start of the audio bridge (MOR-3078).
 
@@ -3801,6 +3860,8 @@ class WebServer:
             "device_name": device_name,
             "tx_device_name": tx_device_name,
             "tx_enabled": tx_enabled,
+            "input_gain_db": input_gain_db,
+            "output_gain_db": output_gain_db,
             "label": label,
             "max_retries": max_retries,
             "retry_base_delay": retry_base_delay,
@@ -3812,6 +3873,8 @@ class WebServer:
         device_name: str | None,
         tx_device_name: str | None,
         tx_enabled: bool,
+        input_gain_db: float,
+        output_gain_db: float,
         label: str | None,
         max_retries: int,
         retry_base_delay: float,
@@ -3833,6 +3896,8 @@ class WebServer:
                 device_name=device_name,
                 tx_device_name=tx_device_name,
                 tx_enabled=tx_enabled,
+                input_gain_db=input_gain_db,
+                output_gain_db=output_gain_db,
                 label=label,
                 max_retries=max_retries,
                 retry_base_delay=retry_base_delay,
@@ -4156,7 +4221,12 @@ class WebServer:
         if profile is not None:
             capabilities.update(
                 {
+                    "cwText": _serialize_cw_text(profile, self._radio),
                     "modes": list(profile.modes),
+                    "modeFamilies": {
+                        name: list(members)
+                        for name, members in profile.mode_families.items()
+                    },
                     "filters": list(profile.filters),
                     "filterWidthMin": profile.filter_width_min,
                     "filterWidthMax": profile.filter_width_max,
@@ -4861,6 +4931,7 @@ class WebServer:
                     # leaving ``power_on`` undeclared (a level-only profile, see
                     # ``RadioProfile.infers_power_on_from_liveness``).
                     "powerOnCommand": profile.supports_command("power_on"),
+                    "cwText": _serialize_cw_text(profile, self._radio),
                     "vfoScheme": profile.vfo_scheme,
                     "vfoReadback": profile.vfo_readback,
                     "freqRanges": freq_ranges,
@@ -4870,6 +4941,10 @@ class WebServer:
                         else {}
                     ),
                     "modes": list(profile.modes),
+                    "modeFamilies": {
+                        name: list(members)
+                        for name, members in profile.mode_families.items()
+                    },
                     "filters": list(profile.filters),
                     "filterWidthMin": profile.filter_width_min,
                     "filterWidthMax": profile.filter_width_max,
@@ -4986,6 +5061,71 @@ class WebServer:
         await _send_response(
             writer, 200, "OK", body, {"Content-Type": "application/json"}
         )
+
+    async def _serve_memories(
+        self,
+        writer: asyncio.StreamWriter,
+        query: dict[str, list[str]],
+    ) -> None:
+        """GET /api/v1/memories?group=<n>&start=<n>&count=<n> (read-only, MOR-3627).
+
+        Reads stored memory channels from the radio without selecting them.
+        """
+        from rigplane.core.radio_protocol import MemoryReadCapable
+
+        from .memory_api import page_payload, parse_memory_query  # noqa: TID251
+
+        radio = self._radio
+        if radio is None:
+            await self._send_json(
+                writer,
+                503,
+                "Service Unavailable",
+                {"error": "no_radio", "message": "No radio configured"},
+            )
+            return
+        memory = None
+        if "memory_read" in self._projected_runtime_capabilities() and isinstance(
+            radio, MemoryReadCapable
+        ):
+            memory = getattr(self._resolve_profile_if_identified(), "memory", None)
+        if memory is None:
+            await self._send_json(
+                writer,
+                404,
+                "Not Found",
+                {"error": "unsupported", "message": "Radio has no memory listing"},
+            )
+            return
+        try:
+            group, channels = parse_memory_query(query, memory)
+        except ValueError as exc:
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {"error": "bad_request", "message": str(exc)},
+            )
+            return
+        try:
+            entries = await radio.read_memory_entries(group, channels)
+        except (OSError, RadioConnectionError) as exc:
+            await self._send_json(
+                writer,
+                503,
+                "Service Unavailable",
+                {"error": "not_connected", "message": str(exc)},
+            )
+            return
+        except (CommandError, RigplaneTimeoutError) as exc:
+            await self._send_json(
+                writer,
+                502,
+                "Bad Gateway",
+                {"error": "memory_read_failed", "message": str(exc)},
+            )
+            return
+        await self._send_json(writer, 200, "OK", page_payload(memory, group, entries))
 
     async def _serve_band_plan_layers(self, writer: asyncio.StreamWriter) -> None:
         """GET /api/v1/band-plan/layers"""
@@ -5423,6 +5563,38 @@ class WebServer:
         authority = self._managed_tx_authority()
         if authority is not None:
             await authority.owner_disconnect(owner)
+
+    @contextlib.asynccontextmanager
+    async def _controller_outside_tx_admission(
+        self, ticket: ControllerTicket
+    ) -> AsyncIterator[bool]:
+        """Outside-only (``0x12``) TX audio admission for one ticket (MOR-3764).
+
+        Yields False when there is no managed TX authority, the ticket is
+        remote, the ticket no longer validates, or the controller is in
+        remote mode (``controller.mode == "remote"``, same rule as
+        ``_bridge_tx_gate_open``). Otherwise the controller checks run
+        INSIDE ``ManagedTxAuthority.outside_tx_submission`` — after its lock
+        is held — and its verdict is yielded. Yields exactly once on every
+        path.
+        """
+        authority = self._managed_tx_authority()
+        if not isinstance(authority, ManagedTxAuthority) or ticket.remote:
+            yield False
+            return
+        async with authority.outside_tx_submission() as admitted:
+            if not admitted:
+                yield False
+                return
+            try:
+                self._controller.validate(ticket)
+            except ControllerError:
+                yield False
+                return
+            if self._controller.mode == "remote":
+                yield False
+                return
+            yield True
 
     async def _controller_audio_gate(
         self, ticket: ControllerTicket, source: object
@@ -6072,13 +6244,16 @@ class WebServer:
             )
             return
         except RuntimeError as exc:
+            from ..profiles import CwTextSendCancelledError
+
             message = str(exc)
-            status, reason, code = (
-                (409, "Conflict", "unsupported_command")
-                if command_descriptor(raw_name) is None
-                and "does not support" in message
-                else (500, "Internal Server Error", "command_failed")
-            )
+            if isinstance(exc, CwTextSendCancelledError):
+                # MOR-3700: a CW stop or a transmit abort ended the send.
+                status, reason, code = (409, "Conflict", "command_cancelled")
+            elif command_descriptor(raw_name) is None and "does not support" in message:
+                status, reason, code = (409, "Conflict", "unsupported_command")
+            else:
+                status, reason, code = (500, "Internal Server Error", "command_failed")
             await self._send_json(
                 writer,
                 status,
@@ -6770,7 +6945,8 @@ class WebServer:
         radio = self._radio
 
         async def refuse_while_recovering() -> None:
-            # MOR-2876: the WebSocket ``radio_connect`` handler's refusal. On a
+            # MOR-2876: refuse a manual connect while the backend owns
+            # recovery (the only connect entry point since MOR-3777). On a
             # serial port the recovery loop is retrying, a failed ``connect()``
             # rests the radio DISCONNECTED, which the watchdog never retries.
             await self._send_json(
@@ -7034,12 +7210,16 @@ class WebServer:
             )
             return
         except RuntimeError as exc:
+            from ..profiles import CwTextSendCancelledError
+
             message = str(exc)
-            status, reason, code = (
-                (409, "Conflict", "unsupported_command")
-                if "does not support" in message
-                else (500, "Internal Server Error", "command_failed")
-            )
+            if isinstance(exc, CwTextSendCancelledError):
+                # MOR-3700: a CW stop or a transmit abort ended the send.
+                status, reason, code = (409, "Conflict", "command_cancelled")
+            elif "does not support" in message:
+                status, reason, code = (409, "Conflict", "unsupported_command")
+            else:
+                status, reason, code = (500, "Internal Server Error", "command_failed")
             body = json.dumps(
                 {"error": code, "message": message},
                 separators=(",", ":"),
@@ -7489,13 +7669,20 @@ class WebServer:
         self,
         method: str,
         writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None = None,
+        reader: asyncio.StreamReader | None = None,
     ) -> None:
-        """Handle /api/v1/bridge — GET status, POST start, DELETE stop."""
+        """Handle bridge status, lifecycle, and dynamic gain updates."""
         if method == "GET":
             stats = self.audio_bridge_stats
+            bridge = self._audio_bridge
             body = json.dumps(
                 {
                     "running": stats is not None and stats.get("running", False),
+                    "inputGainDb": bridge.input_gain_db if bridge is not None else 0.0,
+                    "outputGainDb": (
+                        bridge.output_gain_db if bridge is not None else 0.0
+                    ),
                     **(stats or {}),
                 },
                 separators=(",", ":"),
@@ -7530,6 +7717,80 @@ class WebServer:
                     body,
                     {"Content-Type": "application/json"},
                 )
+        elif method == "PATCH":
+            bridge = self._audio_bridge
+            if bridge is None or not bridge.running:
+                await _send_diag_error(
+                    writer,
+                    409,
+                    "bridge_not_running",
+                    "audio bridge must be running to adjust gain",
+                )
+                return
+            payload = await self._read_json_body(writer, headers, reader)
+            if payload is None:
+                return
+            allowed = {"inputGainDb", "outputGainDb"}
+            if not payload or set(payload) - allowed:
+                await _send_diag_error(
+                    writer,
+                    400,
+                    "invalid_bridge_gain",
+                    "inputGainDb or outputGainDb is required",
+                )
+                return
+
+            gains: dict[str, float] = {}
+            for key in allowed & set(payload):
+                value = payload[key]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or abs(value) > sys.float_info.max
+                    or not math.isfinite(value)
+                ):
+                    await _send_diag_error(
+                        writer,
+                        400,
+                        "invalid_bridge_gain",
+                        f"{key} must be a finite number",
+                    )
+                    return
+                gains[key] = float(value)
+
+            try:
+                self._controller.capture()
+            except ControllerError as exc:
+                await self._send_json(
+                    writer, exc.status, "Forbidden", {"error": exc.code}
+                )
+                return
+            if self._audio_bridge is not bridge or not bridge.running:
+                await _send_diag_error(
+                    writer,
+                    409,
+                    "bridge_not_running",
+                    "audio bridge must be running to adjust gain",
+                )
+                return
+            bridge.set_gains(
+                input_gain_db=gains.get("inputGainDb"),
+                output_gain_db=gains.get("outputGainDb"),
+            )
+            body = json.dumps(
+                {
+                    "inputGainDb": bridge.input_gain_db,
+                    "outputGainDb": bridge.output_gain_db,
+                },
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer,
+                200,
+                "OK",
+                body,
+                {"Content-Type": "application/json"},
+            )
         elif method == "DELETE":
             await self.stop_audio_bridge()
             body = json.dumps({"status": "stopped"}, separators=(",", ":")).encode()
@@ -7739,6 +8000,9 @@ class WebServer:
                 self._radio,
                 self._audio_broadcaster,
                 tx_gate=lambda: self._controller_audio_gate(ticket, audio_source),
+                outside_tx_admission=lambda: self._controller_outside_tx_admission(
+                    ticket
+                ),
                 controller=self._controller,
                 controller_ticket=ticket,
                 controller_audio_source=audio_source,

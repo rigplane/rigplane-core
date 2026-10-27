@@ -80,7 +80,7 @@ Maximum batch size: 128 steps. Per-step timeout: 10 seconds.
 | Command | Params | Capability | Batch | Notes |
 |---------|--------|------------|-------|-------|
 | `set_freq` | `freq: int` (Hz), `receiver?: int=0` | — | Yes | |
-| `set_vfo_freq` | `freq: int` (Hz), `receiver: int`, `slot: A/B`, `expected_active_slot: A/B`, `provider_generation: int` | `vfo_freq_direct` | Yes | IC-7300 receiver 0 only; direct write without selection. Requires current identity and generation; completes after ACK and target readback. |
+| `set_vfo_freq` | `freq: int` (Hz), `receiver: int`, `slot: A/B`, `expected_active_slot: A/B`, `provider_generation: int` | `vfo_freq_direct` | Yes | Direct write without selection, gated by profile data and the runtime API (`runtime_helpers.py: projected_vfo_capability_tags`). Requires current identity and generation; completes after ACK and target readback. |
 | `set_band` | `band: int` (BSR code) | — | Yes | BSR code from `freqRanges[].bands[].bsrCode` in capabilities. See BSR workflow below. |
 | `set_mode` | `mode: str`, `receiver?: int=0` | — | Yes | Mode strings from profile `modes[]`, e.g. `"USB"`, `"FM"`, `"CW"`. |
 | `set_filter` | `filter?: str="FIL1"`, `receiver?: int=0` | — | Yes | Accepted: `"FIL1"`, `"FIL2"`, `"FIL3"`. |
@@ -92,6 +92,8 @@ Maximum batch size: 128 steps. Per-step timeout: 10 seconds.
 | `set_rit_tx_status` | `on?: bool=false` | `rit` | Yes | |
 | `set_rit_frequency` | `freq?: int=0` (Hz offset) | `rit` | Yes | |
 | `set_split` | `on?: bool=false` | `split` | Yes | |
+| `set_split_freq` | `freq_hz: int` (Hz) | — | Yes | Relative unselected-VFO frequency write (`selected=False`) via `_dual_rx_runtime.py: DualRxRuntimeMixin.write_relative_vfo_frequency`. Requires single-RX A/B selected/unselected profile commands; the runtime requires a positive ACK and target readback. TX-safe FREQUENCY classification; no pending overlay. |
+| `set_split_mode` | `mode: int` (CI-V mode code), `filter_width?: int` (CI-V filter number 1–3), `data?: bool` | — | Yes | Relative unselected-VFO mode/DATA/filter write (`selected=False`) via `_dual_rx_runtime.py: DualRxRuntimeMixin.write_relative_vfo_mode`. Requires single-RX A/B selected/unselected profile commands; omitted or null filter/DATA values are preserved from runtime readback. The runtime requires a positive ACK and target readback. TX-safe MODE classification; no pending overlay. |
 | `set_vfo` | `vfo?: str="A"` | — | Yes | Canonical. Values: `"A"` or `"B"`. |
 | `select_vfo` | `vfo?: str="A"` | — | Yes | Alias for `set_vfo`. |
 | `vfo_swap` | — | — | Yes | Swap VFO A↔B (or MAIN↔SUB). |
@@ -259,7 +261,7 @@ the memory protocol reject these commands.
 
 | Command | Params | Capability | Batch | Notes |
 |---------|--------|------------|-------|-------|
-| `set_memory_mode` | `channel: int` (1–101) | MemoryCapable | Yes | Switch to memory channel mode. |
+| `set_memory_mode` | `channel: int` (1–101), optional `group: int` | MemoryCapable | Yes | Switch to memory channel mode. Without `group`: the channel-only form (1–101). With `group`: select a listed channel on a profile whose `[memory]` section has `recall = true` (IC-705: group 0–99, channel 0–99; IC-9700 and IC-7610 refuse it); bounds come from the profile. |
 | `memory_write` | — | MemoryCapable | Yes | Write current VFO state to the active memory channel. |
 | `memory_to_vfo` | `channel: int` (1–101) | MemoryCapable | Yes | Recall channel to VFO. |
 | `memory_clear` | `channel: int` (1–101) | MemoryCapable | Yes | Clear a memory channel. |
@@ -295,7 +297,7 @@ directly and/or use `asyncio`). They are **not** batch-eligible. Use
 | `get_system_time` | — | `system_settings` | No | Returns `{hour, minute}`. |
 | `get_dual_watch` | — | `dual_watch` | No | Returns `{on: bool}`. |
 | `get_tuner_status` | — | `tuner` | No | Returns `{status: int, label: str}`. `label`: `"OFF"`, `"ON"`, or `"TUNING"`. |
-| `send_cw_text` | `text: str` (≤512 chars) | `cw` | No | Sends CW keyed text. TX command — rejected in read-only mode. |
+| `send_cw_text` | `text: str` (≤ `cwText.maxLength`) | `cw` | No | Sends CW keyed text when `cwText.supported`; longer text is refused (`invalid_request`), never truncated; a radio with `cwText.supported: false` answers `unsupported_command`. TX command — rejected in read-only mode. |
 | `stop_cw_text` | — | `cw` | No | Stops CW text transmission. TX command — rejected in read-only mode. |
 | `get_break_in_delay` | — | `break_in` | No | Returns `{level: int}`. |
 | `get_dash_ratio` | — | `cw` | No | Returns `{value: int}`. |

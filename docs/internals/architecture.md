@@ -136,7 +136,7 @@ rigplane now uses a **shared-core backend-neutral architecture**. Consumers (CLI
 3. **Backend Adapters** — thin adapters for LAN (UDP) and serial (USB CI-V + audio)
 4. **Shared Core** — `CoreRadio` with commander, state, CI-V routing, scope assembly
 5. **Transports** — LAN uses UDP sockets, serial uses `SerialCivLink` + `UsbAudioDriver`
-6. **USB Audio Resolver** — `src/rigplane/audio/_usb_resolve.py` maps a serial port to the correct `sounddevice` indices via macOS IORegistry topology (used by `UsbAudioDriver` when `serial_port` is provided)
+6. **USB Audio Pairing** — `src/rigplane/audio/_usb_pairing.py: pair` maps a serial port to PortAudio indices using normalized USB containment and endpoint ownership on Windows, macOS and Linux.
 
 ### Backend-Neutral Boundary
 
@@ -170,25 +170,23 @@ See [IC-7610 USB Serial Backend Setup Guide](../guide/ic7610-usb-setup.md) for d
 
 When multiple Icom radios are connected via USB simultaneously (e.g. IC-7300 + IC-7610), each exposes an identically named "USB Audio CODEC" device. The library cannot determine which audio device belongs to which radio by name alone.
 
-**`src/rigplane/audio/_usb_resolve.py`** solves this by correlating USB hub topology:
+`src/rigplane/audio/_usb_resolve.py: resolve_audio_for_serial_port` uses the shared pairing rule:
 
 ```
-Serial port path  →  TTY suffix  →  IORegistry locationID
-                                                                       │
-USB Audio CODEC entries in IORegistry  →  longest shared locationID   │
-                                          component prefix wins        │
-                                                                       ▼
-                                          sounddevice index lookup  (by product-name identity)
-                                                                       │
-                                                                       ▼
-                                          AudioDeviceMapping(rx_device_index, tx_device_index)
+macOS IORegistry + CoreAudio / Windows devnodes + endpoints / Linux sysfs + ALSA
+                                │
+                     platform snapshot adapter
+                                │
+             shared pair(snapshot, serial_port, usb_identity)
+                                │
+           AudioDeviceMapping(rx_device_index, tx_device_index)
 ```
 
-- **macOS**: Full support via `/usr/sbin/ioreg -l`. Zero external deps. The candidate audio device sharing the longest common `locationID` component prefix with the serial port wins (`_common_location_prefix_score`): the top byte (bits 31-24, the USB controller) is compared as one whole unit, then each remaining hex digit individually, most-significant first (`_location_id_components`) — not a uniform nibble-by-nibble scan of the full 32 bits.
-- **Linux**: Implemented via sysfs USB-topology traversal (`_resolve_linux`): the serial port and each ALSA card are resolved to their USB device node, and the card sharing the longest common USB-device path prefix (`_common_usb_path_score`) wins, with `idVendor`/`idProduct` as a tie-break. Exercised by unit tests against a fixture sysfs tree.
-- **Windows**: Implemented via USB PnP topology (`_resolve_windows`): the serial COM port and audio endpoint are matched by their shared parent composite-device instance path, with VID:PID as a fallback. Unit-tested via an injected PnP query; the real PowerShell/WMI enumeration (`_query_windows_pnp_devices`) is, per its own docstring, unvalidated against real Windows hardware.
+- **macOS**: `src/rigplane/audio/_usb_raw_macos.py: read_raw_macos` reads IORegistry parent links and in-process CoreAudio properties. `src/rigplane/audio/_usb_adapt_macos.py: adapt_macos` combines them with PortAudio enumeration into the shared snapshot consumed by `src/rigplane/audio/_usb_pairing.py: pair`. Profile USB identity declares serial functions that may share the radio's hub; ambiguous or unavailable ownership produces a typed refusal.
+- **Linux**: `src/rigplane/audio/_usb_raw_linux.py: read_raw_linux` reads sysfs parent links, tty and ALSA card ownership, and `/proc/asound/cards`. `src/rigplane/audio/_usb_adapt_linux.py: adapt_linux` builds the shared snapshot. ALSA name decorations are handled by `src/rigplane/audio/_usb_names.py: endpoint_name_key`, retaining the hardware card address rather than ranking equal names. `tests/test_usb_pairing_linux.py` exercises synthetic sysfs trees; Linux pairing is **not hardware-verified**.
+- **Windows**: Raw cfgmgr32 topology (with PowerShell fallback) and PortAudio enumeration feed `src/rigplane/audio/_usb_adapt_windows.py: adapt_windows` and the shared `src/rigplane/audio/_usb_pairing.py: pair` rule. The serial device's hub bounds codec selection, endpoint rows establish ownership, and optional profile VID:PID data checks the selected codec. See [shared USB audio pairing](usb-audio-pairing.md) for refusals and capture replay tests.
 
-`UsbAudioDriver` calls `resolve_audio_for_serial_port(serial_port)` when a `serial_port` is provided. If resolution succeeds, the returned device indices take precedence over any name-based or default selection. If resolution fails (platform not supported, `ioreg` missing, or no matching devices), name-based fallback applies.
+On macOS, Linux and Windows, `src/rigplane/audio/usb_driver.py: UsbAudioDriver._select_devices_bounded` uses the same snapshot adapters and `pair()` rule as the public resolver. Linux and macOS topology reads run in process off the event loop within the driver's selection deadline. Automatic selection refuses ambiguous or unavailable ownership; explicit device choices use the override path. Windows retains its unambiguous-name fallback when raw topology is unavailable.
 
 ## Rig Profiles (Data-Driven Radio Config)
 

@@ -103,6 +103,7 @@ class RigctldClientObservationPoller:
         self._medium_interval = medium_interval
         self._slow_interval = slow_interval
         self._tasks: list[asyncio.Task[None]] = []
+        self._stop_requested = False
         self._pending_readback_entries: list[_ReadbackCorrelation] = []
         self._capture_provider_generation: Callable[[], int] | None = None
         self._clock = clock
@@ -163,6 +164,7 @@ class RigctldClientObservationPoller:
         if self._tasks:
             return
         self._bind_connection_generation()
+        self._stop_requested = False
         loop = asyncio.get_running_loop()
         self._tasks = [
             loop.create_task(self._run_loop(self._poll_medium, self._medium_interval)),
@@ -170,6 +172,7 @@ class RigctldClientObservationPoller:
         ]
 
     async def stop(self) -> None:
+        self._stop_requested = True
         for task in self._tasks:
             task.cancel()
         if self._tasks:
@@ -187,14 +190,18 @@ class RigctldClientObservationPoller:
         poll: Callable[[], Awaitable[None]],
         interval: float,
     ) -> None:
-        while True:
+        while not self._stop_requested:
             try:
                 await poll()
             except asyncio.CancelledError:
                 raise
             except Exception:
+                if self._stop_requested:
+                    return
                 logger.warning("rigctld-client observation poll failed", exc_info=True)
                 await self._reconnect_transport()
+            if self._stop_requested:
+                return
             await asyncio.sleep(interval)
 
     async def _reconnect_transport(self) -> None:

@@ -69,6 +69,36 @@ the validation command. Opus must not be used as a stock radio LAN default unles
 the endpoint or protocol explicitly proves native Opus support. Browser Opus is
 only a server-to-browser transport policy after radio-native audio is received.
 
+## `[usb]` — Optional USB Audio Identity
+
+`audio_codec` and `serial_functions` are optional lists of
+`{ vid = "XXXX", pid = "YYYY" }` tables. Both identifiers must be strings of
+four uppercase hexadecimal digits. Unknown keys in `[usb]` or its function
+entries are rejected; duplicate entries are deduplicated. See
+`src/rigplane/profiles/rig_loader.py: load_rig` and
+`src/rigplane/core/usb_identity.py: UsbFunctionId`.
+
+```toml
+[usb]
+# Record the capture that establishes these identifiers beside the data.
+audio_codec = [{ vid = "0D8C", pid = "0016" }]
+serial_functions = [{ vid = "10C4", pid = "EA70" }, { vid = "26AA", pid = "0030" }]
+```
+
+Populate these lists only from our own USB recordings; the example matches
+`rigs/ftx1.toml`. `audio_codec` constrains the codec chosen by the shared pairing
+rule; it does not establish containment by itself. `serial_functions` identifies
+the radio's own serial USB functions: distinct declared VID:PID devices directly
+under the requested serial device's hub may count as one radio. An undeclared
+serial device, a repeated serial VID:PID, or an additional serial device under a
+nested hub still refuses with `serial_ambiguous`.
+
+An omitted `[usb]` gives `usb_identity = None`. Omitted or empty lists default
+to empty sets: no codec filter for `audio_codec`, and the strict single-serial
+rule for `serial_functions`. Either list may be supplied alone.
+`RigConfig.to_profile` copies the identity to `RadioProfile`.
+See `docs/internals/usb-audio-pairing.md` for the complete rule.
+
 ## `[capabilities]` — Feature Flags
 
 | Field      | Type     | Required | Description                    |
@@ -424,6 +454,7 @@ Optional section for radios that support the spectrum scope.
 |--------|----------|----------|----------------------------------------------------|
 | `list` | string[] | yes      | Supported operating modes (e.g. `"USB"`, `"CW"`)  |
 | `codes` | string[] | no | One single-character code per mode, parallel to `list` (validated: same length, one character each, unique). Yaesu CAT `MD` P2 codes. |
+| `families` | table | no | Family name -> non-empty list of mode names from `list`, e.g. `families = { cw = ["CW-U", "CW-L"] }`. The only family name is `cw` (MOR-3679); the loader rejects any other name, a mode that is not in `list` (names compare exactly as written in `list`), and a mode listed twice. Published as `modeFamilies` by `/api/v1/info` and `/api/v1/capabilities`; `{}` when absent. |
 
 ## `[filters]` — IF Filters
 
@@ -612,6 +643,42 @@ These optional sections provide detailed configuration for specific capabilities
 | `[cw]`         | CW pitch, speed, dash ratio ranges             |
 | `[nb]`         | Noise blanker depth and width ranges            |
 | `[power]`      | Maximum TX power in watts                      |
+| `[memory]`     | How stored memory channels are addressed       |
+
+### `[memory]`
+
+Optional: how stored memory channels are addressed, for the read-only listing
+(capability `memory_read`). CI-V profiles read with their `get_memory_contents`;
+the FTX-1 declares the CAT pair `get_memory_channel` (MR) and `get_memory_tag` (MT).
+`addressing` is `"group_channel"` (IC-705), `"band_channel"` (IC-9700) or
+`"channel"` (FTX-1, one numbered list, group 0 only); the first two also pick the
+`1A 00` record layout; `first_group`/`last_group` bound the
+group number or band code, `first_channel`/`last_channel` the channel;
+`recall = true` marks profiles whose select commands recall a listed channel.
+`dd_groups` lists groups/bands where mode byte `0x22` is DD;
+`offset_10mhz_groups` lists groups/bands with the offset's 10 MHz digit.
+Both default to `[]` and accept only lists of unique integers within
+`first_group..last_group`; booleans are rejected.
+
+## `[cw_text]` — Typed CW Text (MOR-3678)
+
+Whether `send_cw_text` works on this radio, published as `cwText`. Separate
+from the `cw` capability tag (decoder, console, keyer controls).
+
+| Key              | Type   | Default | Description |
+|------------------|--------|---------|-------------|
+| `supported`      | bool   | CI-V: whether `[commands]` has `send_cw` as CI-V bytes; Yaesu CAT and Kenwood CAT: `false` | `false` refuses `send_cw_text`. `true` is a load error without a `send_cw` the protocol can write (CI-V bytes on CI-V, a CAT write template on Yaesu CAT); on Yaesu CAT also without `memory_channel` 1-5 or a `write_keyer_memory` CAT write template; on Kenwood CAT always (no backend sends CW text) |
+| `max_length`     | int    | `512`   | Longest text one request may carry (positive); longer text is refused, never truncated. Yaesu CAT: at most `50` (one KM write, printed p.17), and required when `supported = true` |
+| `memory_channel` | int    | absent  | Keyer memory channel the text is written to (positive; 1-5 on Yaesu CAT, KM printed p.17); for radios that send text by writing a memory and playing it |
+| `memory_type`    | string | absent  | `"text"` or `"message"`: which keyer memory kind is played |
+
+```toml
+[cw_text]
+supported = false
+max_length = 50
+memory_channel = 5
+memory_type = "text"
+```
 
 ## Wire Byte Format
 

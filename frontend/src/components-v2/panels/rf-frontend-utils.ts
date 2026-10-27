@@ -26,7 +26,7 @@ export function formatAttLabel(value: number, labels?: Record<string, string>): 
 }
 
 /** Format a PRE level to a display label, using custom labels if provided. */
-export function formatPreLabel(level: number, labels?: Record<string, string>): string {
+export function formatPreLabel(level: number, labels?: Readonly<Record<string, string>>): string {
   if (labels && String(level) in labels) return labels[String(level)];
   return level === 0 ? 'OFF' : `P${level}`;
 }

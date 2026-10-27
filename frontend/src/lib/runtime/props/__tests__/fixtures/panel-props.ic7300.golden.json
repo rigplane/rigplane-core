@@ -213,7 +213,6 @@
     "autoNotchKnown": false
   },
   "toTxProps": {
-    "txActive": false,
     "rfPower": 0.011764705882352941,
     "atuActive": false,
     "atuTuning": false,
@@ -227,7 +226,6 @@
     "hasMonitor": false,
     "hasVox": true,
     "hasComp": true,
-    "txActiveAvailable": true,
     "rfPowerAvailable": true,
     "micGainAvailable": false,
     "atuAvailable": true,
@@ -276,7 +274,6 @@
     "comp": 0,
     "vd": 0,
     "id": 0,
-    "txActive": false,
     "hasTx": true
   },
   "toRxAudioProps": {

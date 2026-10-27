@@ -1729,6 +1729,8 @@ def _normalize_level_value(params: dict[str, Any]) -> None:
         params["power_level"] = round(value * 255)
     elif level in {"AF", "RF", "SQL", "NR", "NB", "COMP", "MICGAIN", "MONITOR_GAIN"}:
         params[receiver_control_names[level]] = max(0, min(255, round(value * 255)))
+    elif level == "PREAMP" and "preamp" in params:
+        params["preamp"] = _int_param(params["preamp"], "preamp")
     elif level in receiver_control_names:
         params[receiver_control_names[level]] = round(value)
 

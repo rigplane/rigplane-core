@@ -7,6 +7,11 @@ on:
         description: Exact 40-character lowercase commit SHA to check
         required: true
         type: string
+      diagnostics:
+        description: Enable bounded Python 3.11.17 pytest worker diagnostics
+        required: false
+        default: false
+        type: boolean
       pytest_targets:
         description: JSON array of tests/ files or pytest nodeids
         required: false
@@ -54,6 +59,7 @@ jobs:
           FOCUSED_PYTEST_TARGETS: ${{ inputs.pytest_targets }}
           FOCUSED_RUFF_TARGETS: ${{ inputs.ruff_targets }}
           FOCUSED_VITEST_TARGETS: ${{ inputs.vitest_targets }}
+          FOCUSED_DIAGNOSTICS: ${{ inputs.diagnostics }}
         run: >-
           python3 control/.github/scripts/run-focused-checks.py
           --repo target
@@ -71,13 +77,15 @@ jobs:
       - name: Set up Python 3.11
         if: steps.plan.outputs.has_python == 'true'
         working-directory: target
-        run: uv python install 3.11
+        env:
+          UV_PYTHON: ${{ inputs.diagnostics && '3.11.17' || '3.11' }}
+        run: uv python install "$UV_PYTHON"
 
       - name: Install Python dependencies
         if: steps.plan.outputs.has_python == 'true'
         working-directory: target
         env:
-          UV_PYTHON: "3.11"
+          UV_PYTHON: ${{ inputs.diagnostics && '3.11.17' || '3.11' }}
         run: uv sync --all-extras
 
       - name: Set up Node.js
@@ -99,13 +107,42 @@ jobs:
           FOCUSED_PYTEST_TARGETS: ${{ inputs.pytest_targets }}
           FOCUSED_RUFF_TARGETS: ${{ inputs.ruff_targets }}
           FOCUSED_VITEST_TARGETS: ${{ inputs.vitest_targets }}
-          UV_PYTHON: "3.11"
+          UV_PYTHON: ${{ inputs.diagnostics && '3.11.17' || '3.11' }}
+          FOCUSED_DIAGNOSTICS: ${{ inputs.diagnostics }}
         run: >-
           python3 control/.github/scripts/run-focused-checks.py
           --repo target
           --plan "$RUNNER_TEMP/focused-plan.json"
           --results "$RUNNER_TEMP/focused-results.json"
           --execute
+          --diagnostics-dir "${{ runner.temp }}/focused-worker-diagnostics"
+
+      - name: Bound worker diagnostics
+        id: bound_diagnostics
+        if: always() && inputs.diagnostics
+        working-directory: target
+        env:
+          UV_PYTHON: "3.11.17"
+        run: >-
+          uv run --no-sync python
+          "${{ github.workspace }}/control/.github/scripts/pytest_worker_diagnostics.py"
+          --finalize-strict "${{ runner.temp }}/focused-worker-diagnostics"
+
+      - name: Upload worker diagnostics
+        if: always() && inputs.diagnostics && steps.bound_diagnostics.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: focused-worker-diagnostics-${{ inputs.revision }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/focused-worker-diagnostics/events-*.jsonl
+            ${{ runner.temp }}/focused-worker-diagnostics/phases-*.jsonl
+            ${{ runner.temp }}/focused-worker-diagnostics/controller-*.jsonl
+            ${{ runner.temp }}/focused-worker-diagnostics/dump-*.txt
+            ${{ runner.temp }}/focused-worker-diagnostics/fatal-*.log
+            ${{ runner.temp }}/focused-worker-diagnostics/timeout-*.log
+            ${{ runner.temp }}/focused-worker-diagnostics/bounds.json
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload focused result
         if: always()

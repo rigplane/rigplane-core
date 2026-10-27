@@ -976,6 +976,44 @@ describe('SpectrumPanel component', () => {
   });
 });
 
+describe('SpectrumPanel TX-known overlay (MOR-2859)', () => {
+  it('shows the transmitting message instead of the disconnected overlay when TX is known', () => {
+    txHarness.emitServerSnapshot({ observedPtt: 'on' });
+    runtimeHarness.state.mockScopeConnected = false;
+    const target = mountPanel();
+
+    expect(target.querySelector('[data-testid="scope-tx-overlay"]')?.textContent)
+      .toBe('Transmitting — the radio sends no panorama during transmit');
+    expect(target.querySelector('.scope-disconnected-overlay')).toBeNull();
+  });
+
+  it('keeps the disconnected overlay on RX with no frame', () => {
+    runtimeHarness.state.mockScopeConnected = false;
+    const target = mountPanel();
+
+    expect(target.querySelector('.scope-disconnected-overlay')).not.toBeNull();
+    expect(target.querySelector('[data-testid="scope-tx-overlay"]')).toBeNull();
+  });
+
+  it('keeps the disconnected overlay when TX is only uncertain', () => {
+    txHarness.emitServerSnapshot({ intent: 'ptt', observedPtt: 'off' });
+    runtimeHarness.state.mockScopeConnected = false;
+    const target = mountPanel();
+
+    expect(target.querySelector('.scope-disconnected-overlay')).not.toBeNull();
+    expect(target.querySelector('[data-testid="scope-tx-overlay"]')).toBeNull();
+  });
+
+  it('shows no overlay when TX is known and frames are live', () => {
+    txHarness.emitServerSnapshot({ observedPtt: 'on' });
+    const target = mountPanel();
+    emitFrame();
+
+    expect(target.querySelector('[data-testid="scope-tx-overlay"]')).toBeNull();
+    expect(target.querySelector('.scope-disconnected-overlay')).toBeNull();
+  });
+});
+
 describe('SpectrumPanel spectrum/waterfall separator (MOR-2461)', () => {
   function splitElements(target: HTMLElement) {
     const region = target.querySelector<HTMLElement>('.spectrum-split-region')!;

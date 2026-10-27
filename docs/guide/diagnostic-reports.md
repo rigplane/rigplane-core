@@ -88,7 +88,7 @@ own subdirectory of the ZIP. The full schema lives in the design spec
 | `invocation`   | Filtered `sys.argv`, environment allowlist                                | `password=`, `pwd=`, `Bearer …`, API tokens → `***`          |
 | `radio`        | Model, firmware version, backend, capability matrix, audio codec          | Public IPs masked (RFC 1918 ranges kept — they're useful)    |
 | `audio`        | Legacy codec/rate/channel summary, requested and effective radio-native audio contracts, configured Web RX emission policy, device names, bridge state | macOS device names containing usernames are masked           |
-| `logs`         | Rolling diagnostic logs from `~/.cache/rigplane/logs/` (up to ~15 MiB)    | Path / IP / credential regex pass on copies                  |
+| `logs`         | `rigplane.log`, `.1`, `.2` from `~/.cache/rigplane/logs/` (size: see [Log size](#log-size)) | Path / IP / credential regex pass on copies                  |
 | `state`        | Current freq, mode, meters, last N CI-V exchanges (ring buffer)           | Optional callsign masking                                    |
 | `errors`       | Recent in-process tracebacks (ring buffer)                                | Paths scrubbed                                               |
 | `dependencies` | `pip freeze`-equivalent enumeration via `importlib.metadata`              | None — all-public package names + versions                   |
@@ -98,6 +98,33 @@ own subdirectory of the ZIP. The full schema lives in the design spec
 The manifest (`manifest.json`) lists which contributors ran, which
 files each produced, and which redaction passes were applied to the
 bundle.
+
+### Log size
+
+The `logs` contributor copies `rigplane.log`, `rigplane.log.1` and
+`rigplane.log.2` from the log directory. Only one writer owns
+`rigplane.log` at a time, and the owner decides how big those files get:
+
+- **Diagnostic handler (default).** The always-on handler rotates at
+  5 MiB and keeps 2 backups, so the logs come to about 15 MiB at most.
+- **CLI file log.** The CLI owns `rigplane.log` when its own file log
+  resolves to it: `rigplane web` (without `--managed`) and
+  `rigplane serve`, or any other command with `ICOM_DEBUG` set, while
+  `ICOM_LOG_FILE` is unset; or when `ICOM_LOG_FILE` points at
+  `rigplane.log` itself, a hard link to it, or a case variant of its name
+  on a case-insensitive filesystem. The diagnostic handler then stops
+  writing, and the CLI uses `ICOM_LOG_MAX_BYTES` (default 50,000,000
+  bytes) and `ICOM_LOG_BACKUP_COUNT` (default 5). The bundle still takes
+  only the current file and two backups, so up to 3 × 50,000,000 bytes
+  (about 150 MB) of log text before ZIP compression. With
+  `ICOM_LOG_BACKUP_COUNT=0` the CLI never rotates, and `rigplane.log`
+  has no size limit.
+- **Separate CLI file.** When `ICOM_LOG_FILE` names another file, and for
+  `rigplane station` / `rigplane web --managed` (which default to
+  `rigplane-managed.log`), both handlers keep writing. `rigplane.log`
+  stays at the 15 MiB cap, and the CLI file is not part of the bundle.
+- **`ICOM_LOG_FILE=off`** turns off both writers, so nothing new is
+  logged for the bundle.
 
 ### Audio contract fields
 
@@ -306,12 +333,17 @@ locally on rate-limit, so you don't lose the report.
 
 ### Bundle too large (413)
 
-The triage endpoint rejects bundles larger than **25 MiB**. The
-default rotating log cap is 15 MiB, so you'll usually be fine, but a
-long-running session that triggers many tracebacks plus a verbose
-extension contributor can push you over. `--include` and `--exclude` do
-not shrink the bundle yet: the CLI warns that filtering is not implemented
-and still runs every contributor.
+The triage endpoint rejects bundles larger than **25 MiB**. When the
+diagnostic handler owns `rigplane.log`, the logs are capped at about
+15 MiB, so you'll usually be fine, but a long-running session that
+triggers many tracebacks plus a verbose extension contributor can push
+you over. When the CLI owns `rigplane.log` (see [Log size](#log-size)),
+the collected logs can reach about 150 MB before compression with the
+default `ICOM_LOG_MAX_BYTES`. To stay under the limit, set
+`ICOM_LOG_MAX_BYTES` lower, or point `ICOM_LOG_FILE` at a different file
+so the bundle collects the 15 MiB diagnostic log instead.
+`--include` and `--exclude` do not shrink the bundle yet: the CLI warns
+that filtering is not implemented and still runs every contributor.
 
 ### Forbidden content rejected (422)
 

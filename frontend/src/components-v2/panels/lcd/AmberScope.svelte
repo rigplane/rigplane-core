@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { deriveAmberScopeProps } from '$lib/runtime/adapters/panel-adapters';
   import {
     toTxProps, toRitXitProps, toVfoOpsProps, toDspProps, toFilterProps,
@@ -11,6 +12,7 @@
   import AmberSmeter from './AmberSmeter.svelte';
   import type { IndToken } from './AmberIndStrip.svelte';
   import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
+  import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import { projectAgcReadback } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { isFieldAvailable } from '$lib/state/field-status';
   import { levelFormatsBelowMax } from '../../../semantic/format-level';
@@ -77,6 +79,20 @@
   let vfoOps = $derived(toVfoOpsProps(radioState, caps));
   let dsp = $derived(toDspProps(radioState, caps));
   let filterProps = $derived(toFilterProps(radioState, caps));
+
+  // MOR-2855. Safety invariant R9: the LCD's whole TX look takes its truth
+  // from the App-owned managed TX controller — the SAME source as the
+  // authoritative global lamp (MOR-1008/MOR-1059) and the meters dock
+  // (MOR-1235) — and never from `state.ptt`, a command/readback echo that
+  // reads RX while the key is still down and disappears while a release is
+  // still owed. Predicate is RadioLayout's own, verbatim; fail closed.
+  const txCtl = getManagedAppTxController();
+  let txState = $state.raw(txCtl.snapshot());
+  const stopWatchingTx = txCtl.subscribe((next) => { txState = next; });
+  onDestroy(() => stopWatchingTx());
+  let managedTxActive = $derived(
+    txState.radioTx === 'on' || txState.txRisk === 'confirmed-on' || txState.txRisk === 'uncertain',
+  );
 
   // MOR-1409 A14: `filterProps.filterWidth` is `Number.NaN` when
   // unobserved (panel-props honesty hardening, plan §4.1/§4.2 finding #3).
@@ -151,9 +167,13 @@
 
   // frontendTokens: TX-chain (TX/VOX/PROC/ATT/PRE)
   let frontendTokens = $derived<IndToken[]>([
-    ...(tx.txActiveAvailable ? [{
-      id: 'tx' as const, label: 'TX', active: tx.txActive,
-      variant: tx.txActive ? ('tx' as const) : undefined,
+    // MOR-2855: shown for a TX-capable radio (`hasTx`), never gated on the
+    // ptt reading's availability — the chip must stay visible exactly while
+    // the echo is stale or gone, when the managed snapshot is the only TX
+    // truth left.
+    ...(tx.hasTx ? [{
+      id: 'tx' as const, label: 'TX', active: managedTxActive,
+      variant: managedTxActive ? ('tx' as const) : undefined,
     }] : []),
     ...(hasCap('vox') && tx.voxAvailable
       ? [{ id: 'vox' as const, label: 'VOX', active: tx.voxActive }] : []),
@@ -270,7 +290,7 @@
   Issue #897 / epic #887 C-PR3 (dual-RX compact sub-VFO line).
   VFO A = always MAIN receiver; VFO B = always SUB receiver (fixes codex P2 tag semantics).
 -->
-<div class="amber-lcd amber-lcd-scope" class:tx-active={tx.txActive}>
+<div class="amber-lcd amber-lcd-scope" class:tx-active={managedTxActive}>
   <div class="lcd-screen">
     <div class="lcd-scanlines"></div>
 

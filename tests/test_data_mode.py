@@ -259,8 +259,9 @@ class TestHandlerPktUsb:
     async def test_set_non_packet_mode_does_not_force_data_change(
         self, handler: RigctldHandler, mock_radio: AsyncMock
     ) -> None:
+        mock_radio.supports_command.return_value = True
         await handler.execute(set_cmd("set_mode", "USB"))
-        mock_radio.set_data_mode.assert_not_awaited()
+        mock_radio.set_data_mode.assert_awaited_once_with(False)
 
     @pytest.mark.asyncio
     async def test_set_pktrtty_sets_mode_rtty_and_enables_data(

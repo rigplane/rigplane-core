@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from rigplane.core.serial_open import open_serial_port, serial_open_diagnostic
+from rigplane.core.usb_identity import UsbAudioIdentity
+from rigplane.profiles import get_radio_profile
 from rigplane.usb_audio_resolve import AudioDeviceMapping, resolve_audio_for_serial_port
 
 from .hamlib_probe import (
@@ -45,6 +47,7 @@ __all__ = [
     "probe_serial_yaesu_cat",
     "probe_xiegu_model_id",
     "rank_hamlib_probe",
+    "resolve_civ_radio_identity",
 ]
 
 _CIV_PROBE_CMD = bytes([0xFE, 0xFE, 0x00, 0xE0, 0x19, 0x00, 0xFD])
@@ -163,6 +166,11 @@ class CivProbeDiagnostic:
     open_failure_codes: tuple[_ProbeCode, ...] = ()
 
 
+# Documented CI-V baud rates, in the order a port is swept (MOR-3620: also the
+# retry order of a serial connect that gets silence at the configured baud).
+SERIAL_PROBE_BAUD_RATES: tuple[int, ...] = (19200, 9600, 115200, 4800)
+
+
 async def probe_serial_civ(
     port: str,
     baud_rates: list[int] | None = None,
@@ -179,7 +187,7 @@ async def probe_serial_civ(
     Args:
         port: Serial device path (e.g. ``/dev/ttyUSB0``).
         baud_rates: Baud rates to try, in order. Defaults to
-            ``[19200, 9600, 115200, 4800]``.
+            :data:`SERIAL_PROBE_BAUD_RATES`.
         timeout: Per-baud timeout in seconds.
         _open_serial: Overrides the open step of :func:`rigplane.core.serial_open.open_serial_port`;
             post-open control-line deassert still applies (used in tests).
@@ -189,7 +197,7 @@ async def probe_serial_civ(
         :class:`CivProbeResult` on success, or ``None`` if no radio responded.
     """
     if baud_rates is None:
-        baud_rates = [19200, 9600, 115200, 4800]
+        baud_rates = list(SERIAL_PROBE_BAUD_RATES)
 
     if diagnostics is not None:
         diagnostics.status = "not_attempted"
@@ -729,8 +737,64 @@ def enumerate_serial_ports() -> list[SerialPortCandidate]:
     return candidates
 
 
+def _local_ipv4_addresses() -> list[str]:
+    """Return a best-effort subset of the host's local IPv4 addresses.
+
+    Combines the default-route address — a UDP ``connect`` sends no packet,
+    it only makes the OS pick the outbound interface — with, on Windows,
+    the IPv4 addresses the hostname resolves to. Loopback and unspecified
+    addresses are dropped; duplicates are removed with a stable order.
+    """
+    import socket
+    import sys
+
+    addresses: list[str] = []
+
+    # UDP connect() transmits nothing; it just records the routing decision,
+    # so getsockname() reports the default-route interface's address. The
+    # target is TEST-NET-1 (RFC 5737, documentation only), so no real
+    # traffic can leave the host.
+    try:
+        probe_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe_sock.connect(("192.0.2.1", 9))
+            addresses.append(probe_sock.getsockname()[0])
+        finally:
+            probe_sock.close()
+    except OSError:
+        pass
+
+    # Windows-only: there the hostname resolves locally to every adapter's
+    # address, and Windows is where the single-adapter broadcast problem is;
+    # elsewhere getaddrinfo(gethostname()) can stall for seconds on a name
+    # that does not resolve locally (e.g. .local) before the scan's clock
+    # even starts. The UDP-connect probe above runs on every platform.
+    if sys.platform == "win32":
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                addresses.append(info[4][0])
+        except OSError:
+            pass
+
+    unique: list[str] = []
+    for address in addresses:
+        if address.startswith("127.") or address == "0.0.0.0" or address in unique:
+            continue
+        unique.append(address)
+    return unique
+
+
 async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
     """Discover Icom radios on LAN via UDP broadcast ("Are You There").
+
+    The probe is sent from one unbound socket and from one socket bound to
+    each enumerated local IPv4 address (best-effort). On Windows an unbound
+    socket sends the limited broadcast (255.255.255.255) out of a single
+    interface only, while a socket bound to an adapter's address sends it
+    through that adapter; on other platforms the extra bound sockets are
+    harmless duplicates. Per-socket receive errors (including the
+    WSAECONNRESET Windows raises after an ICMP port-unreachable) are
+    tolerated.
 
     Args:
         timeout: How long to listen for responses, in seconds.
@@ -747,6 +811,9 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
     # not hide a radio for the entire scan. A radio that only answers a later
     # probe is still discovered; responses are deduplicated by host.
     RESEND_INTERVAL = 0.6
+    # Per-socket receive poll. Polling N sockets costs up to N × 50 ms per
+    # loop iteration, so the scan may overshoot its deadline by that much.
+    RECV_POLL_INTERVAL = 0.05
 
     def _scan() -> list[dict[str, object]]:
         import random
@@ -761,58 +828,126 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
         struct.pack_into("<I", pkt, 8, my_id)  # sender_id (non-zero!)
         struct.pack_into("<I", pkt, 0x0C, 0)  # remote_id=0 (unknown)
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.settimeout(0.3)
+        # Enumeration is best-effort: any exception (a chroot without routing,
+        # exotic resolver errors) falls back to the unbound socket alone.
+        try:
+            local_addresses = _local_ipv4_addresses()
+        except Exception:
+            local_addresses = []
 
-        # Broadcast on common Icom ports. Returns False only if the very first
-        # send fails on every port (no usable socket); a later transient send
-        # failure is logged and tolerated so listening continues.
-        def _broadcast(*, first: bool) -> bool:
-            sent_any = False
-            for port in [50001]:
-                try:
-                    sock.sendto(bytes(pkt), ("255.255.255.255", port))
-                    sent_any = True
-                except OSError as exc:
-                    logger.warning(
-                        "discover: broadcast failed on port %d: %s", port, exc
-                    )
-            return sent_any or not first
-
-        if not _broadcast(first=True):
-            sock.close()
-            return []
+        def _open_probe_socket(address: str | None) -> socket.socket:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                if address is not None:
+                    sock.bind((address, 0))
+                sock.settimeout(RECV_POLL_INTERVAL)
+            except BaseException:
+                sock.close()
+                raise
+            return sock
 
         found: dict[str, dict[str, object]] = {}
-        start = time.monotonic()
-        deadline = start + timeout
-        next_resend = start + RESEND_INTERVAL
-        while time.monotonic() < deadline:
-            # Spread retransmits across the window; keep within `timeout`.
-            now = time.monotonic()
-            if now >= next_resend:
-                _broadcast(first=False)
-                next_resend = now + RESEND_INTERVAL
-            try:
-                data, addr = sock.recvfrom(256)
-                if len(data) >= 0x10:
-                    ptype = struct.unpack_from("<H", data, 4)[0]
-                    if ptype == 0x04:  # I_AM_HERE
-                        remote_id = struct.unpack_from("<I", data, 8)[0]
-                        if addr[0] not in found:
-                            logger.info(
-                                "discover_lan_radios: found %s id=0x%08X",
-                                addr[0],
-                                remote_id,
-                            )
-                        # Dedup by host: a radio answering multiple probes is
-                        # recorded once.
-                        found[addr[0]] = {"host": addr[0], "remote_id": remote_id}
-            except socket.timeout:
-                continue
+        sockets: list[socket.socket] = []
+        # Bound address per socket ("unbound" for the unbound socket), for
+        # send-failure log lines.
+        labels: dict[socket.socket, str] = {}
 
-        sock.close()
+        try:
+            # One unbound socket as before, plus one per local address so
+            # that, on Windows, the limited broadcast also leaves through
+            # each bound adapter; on other platforms the bound sockets are
+            # harmless duplicates (coverage is best-effort). A socket that
+            # fails to create/bind (address vanished, adapter removed) is
+            # logged and skipped; the remaining adapters still get probed.
+            try:
+                sock = _open_probe_socket(None)
+            except OSError as exc:
+                logger.debug("discover: could not open unbound socket: %s", exc)
+            else:
+                sockets.append(sock)
+                labels[sock] = "unbound"
+            for address in local_addresses:
+                try:
+                    sock = _open_probe_socket(address)
+                except OSError as exc:
+                    logger.debug("discover: could not bind %s: %s", address, exc)
+                else:
+                    sockets.append(sock)
+                    labels[sock] = address
+
+            # Broadcast on the Icom discovery port. Returns False only if
+            # the very first send fails on every socket (no usable socket);
+            # a send failure on one socket is logged — the first failure at
+            # WARNING with the bound address, repeats at DEBUG — and
+            # tolerated so listening continues.
+            send_failed: set[socket.socket] = set()
+
+            def _broadcast(*, first: bool) -> bool:
+                sent_any = False
+                for sock in sockets:
+                    try:
+                        sock.sendto(bytes(pkt), ("255.255.255.255", 50001))
+                        sent_any = True
+                    except OSError as exc:
+                        if sock in send_failed:
+                            logger.debug(
+                                "discover: broadcast failed again on %s: %s",
+                                labels[sock],
+                                exc,
+                            )
+                        else:
+                            send_failed.add(sock)
+                            logger.warning(
+                                "discover: broadcast failed on %s: %s",
+                                labels[sock],
+                                exc,
+                            )
+                return sent_any or not first
+
+            if not _broadcast(first=True):
+                return []
+
+            start = time.monotonic()
+            deadline = start + timeout
+            next_resend = start + RESEND_INTERVAL
+            while time.monotonic() < deadline:
+                # Spread retransmits across the window; keep within `timeout`.
+                now = time.monotonic()
+                if now >= next_resend:
+                    _broadcast(first=False)
+                    next_resend = now + RESEND_INTERVAL
+                for sock in sockets:
+                    try:
+                        data, addr = sock.recvfrom(256)
+                    except socket.timeout:
+                        continue
+                    except OSError as exc:
+                        # Windows surfaces the ICMP port-unreachable for a
+                        # previous broadcast as ConnectionResetError from
+                        # recvfrom; any other per-socket error also just
+                        # skips this poll. A socket in a permanent error
+                        # state returns immediately, so pace the loop.
+                        logger.debug("discover: recvfrom failed: %s", exc)
+                        time.sleep(0.01)
+                        continue
+                    if len(data) >= 0x10:
+                        ptype = struct.unpack_from("<H", data, 4)[0]
+                        if ptype == 0x04:  # I_AM_HERE
+                            remote_id = struct.unpack_from("<I", data, 8)[0]
+                            if addr[0] not in found:
+                                logger.info(
+                                    "discover_lan_radios: found %s id=0x%08X",
+                                    addr[0],
+                                    remote_id,
+                                )
+                            # Dedup by host: a radio answering multiple probes
+                            # is recorded once, whichever socket heard it.
+                            found[addr[0]] = {"host": addr[0], "remote_id": remote_id}
+        finally:
+            for sock in sockets:
+                sock.close()
+
         return list(found.values())
 
     return await asyncio.get_running_loop().run_in_executor(None, _scan)
@@ -849,6 +984,52 @@ def _resolve_xiegu_x6200_override(
     return None
 
 
+async def resolve_civ_radio_identity(
+    civ: CivProbeResult,
+    port: SerialPortCandidate | None = None,
+    *,
+    _open_serial: _OpenSerial | None = None,
+) -> tuple[str, str]:
+    """Resolve a CI-V probe hit to ``(model, profile_id)``.
+
+    Single owner of the serial identity rules (MOR-3777), shared by
+    :func:`discover_serial_radios` and by setup consumers that probe one
+    operator-chosen port:
+
+    1. the CI-V address/model-ID table
+       (:func:`rigplane.radios.identify_radio`, ``CIV_PROFILE_MAP``);
+    2. the X6200 USB-hardware fingerprint override at the shared 0xA4
+       address (MOR-170), when *port* metadata is supplied;
+    3. the Xiegu-only ``0x1D 0x19`` model-ID opcode when the fingerprint
+       is absent or inconclusive at 0xA4 (MOR-226) — the one extra probe,
+       never sent to radios outside 0xA4, with *port*/*baud* taken from
+       *civ* and the same ``_open_serial`` injection as the CI-V probe.
+
+    Callers own the address/model *match* decision; this helper only
+    names what answered.
+    """
+    from rigplane.radios import CIV_PROFILE_MAP, identify_radio
+
+    model = identify_radio(civ.address, civ.model_id)
+    profile_id = CIV_PROFILE_MAP.get(civ.address, "")
+    # Hardware-fingerprint override for the IC-705 / X6200 CI-V
+    # address collision (both default to 0xA4). MOR-170.
+    xiegu_override = (
+        _resolve_xiegu_x6200_override(civ.address, port) if port is not None else None
+    )
+    if xiegu_override is None and civ.address == 0xA4:
+        # When the USB fingerprint is missing or inconclusive at the shared
+        # 0xA4 address, confirm via the Xiegu-only CI-V model-ID opcode
+        # (0x1D 0x19) — survives future USB-chip changes the hwid
+        # fingerprint misses and never mislabels an IC-705 (which NAKs the
+        # opcode). MOR-226.
+        if await probe_xiegu_model_id(civ.port, civ.baud, _open_serial=_open_serial):
+            xiegu_override = ("X6200", "xiegu_x6200")
+    if xiegu_override is not None:
+        model, profile_id = xiegu_override
+    return model, profile_id
+
+
 async def discover_serial_radios(
     *,
     _open_serial: _OpenSerial | None = None,
@@ -868,30 +1049,15 @@ async def discover_serial_radios(
     Returns:
         List of :class:`RadioDiscoveryResult` for all detected radios.
     """
-    from rigplane.radios import CIV_PROFILE_MAP, identify_radio
-
     candidates = enumerate_serial_ports()
     results: list[RadioDiscoveryResult] = []
     for port in candidates:
         # --- CI-V probe ---
         civ = await probe_serial_civ(port.device, _open_serial=_open_serial)
         if civ:
-            model = identify_radio(civ.address, civ.model_id)
-            profile_id = CIV_PROFILE_MAP.get(civ.address, "")
-            # Hardware-fingerprint override for the IC-705 / X6200 CI-V
-            # address collision (both default to 0xA4). MOR-170.
-            xiegu_override = _resolve_xiegu_x6200_override(civ.address, port)
-            # When the USB hwid is inconclusive at the shared 0xA4 address,
-            # confirm via the Xiegu-only CI-V model-ID opcode (0x1D 0x19) —
-            # survives future USB-chip changes the hwid fingerprint misses
-            # and never mislabels an IC-705 (which NAKs the opcode). MOR-226.
-            if xiegu_override is None and civ.address == 0xA4:
-                if await probe_xiegu_model_id(
-                    civ.port, civ.baud, _open_serial=_open_serial
-                ):
-                    xiegu_override = ("X6200", "xiegu_x6200")
-            if xiegu_override is not None:
-                model, profile_id = xiegu_override
+            model, profile_id = await resolve_civ_radio_identity(
+                civ, port, _open_serial=_open_serial
+            )
             results.append(
                 RadioDiscoveryResult(
                     port=civ.port,
@@ -907,7 +1073,9 @@ async def discover_serial_radios(
                     manufacturer=port.manufacturer,
                     product=port.product,
                     serial_number=port.serial_number,
-                    usb_audio=_resolve_usb_audio_metadata(civ.port),
+                    usb_audio=await _resolve_profile_usb_audio_metadata(
+                        civ.port, profile_id
+                    ),
                 )
             )
             continue
@@ -925,7 +1093,9 @@ async def discover_serial_radios(
             yaesu.manufacturer = port.manufacturer
             yaesu.product = port.product
             yaesu.serial_number = port.serial_number
-            yaesu.usb_audio = _resolve_usb_audio_metadata(yaesu.port)
+            yaesu.usb_audio = await _resolve_profile_usb_audio_metadata(
+                yaesu.port, yaesu.profile_id
+            )
             results.append(yaesu)
             continue
 
@@ -939,17 +1109,32 @@ async def discover_serial_radios(
             kenwood.manufacturer = port.manufacturer
             kenwood.product = port.product
             kenwood.serial_number = port.serial_number
-            kenwood.usb_audio = _resolve_usb_audio_metadata(kenwood.port)
+            kenwood.usb_audio = await _resolve_profile_usb_audio_metadata(
+                kenwood.port, kenwood.profile_id
+            )
             results.append(kenwood)
 
     return results
 
 
-def _resolve_usb_audio_metadata(port: str) -> dict[str, object] | None:
+async def _resolve_profile_usb_audio_metadata(
+    port: str, profile_id: str
+) -> dict[str, object] | None:
+    try:
+        identity = get_radio_profile(profile_id).usb_identity if profile_id else None
+    except Exception as exc:
+        logger.debug("discover_serial_radios: USB audio resolve failed: %s", exc)
+        return None
+    return await asyncio.to_thread(_resolve_usb_audio_metadata, port, identity)
+
+
+def _resolve_usb_audio_metadata(
+    port: str, usb_identity: UsbAudioIdentity | None
+) -> dict[str, object] | None:
     """Return optional USB audio mapping metadata without failing discovery."""
     mapping: AudioDeviceMapping | None
     try:
-        mapping = resolve_audio_for_serial_port(port)
+        mapping = resolve_audio_for_serial_port(port, usb_identity=usb_identity)
     except Exception as exc:
         logger.debug("discover_serial_radios: USB audio resolve failed: %s", exc)
         return None

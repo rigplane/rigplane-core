@@ -37,6 +37,13 @@ way the transport's post-write drain expects a Yaesu set to behave.
 Unknown commands and out-of-domain SET values answer ``?;`` — the
 rejection ``YaesuCatTransport.query``/``write`` raise on.
 
+With ``recorded_answers`` (a ``RecordedCatAnswerTable`` from
+``rigplane_testkit.yaesu.replay``, built from a real-radio capture) a request the
+fake has no handler for is answered the way the real radio answered it —
+the recorded data line, its ``?;`` refusal, or its silence; a request the
+recording never saw still answers ``?;``. The fake's own handlers (state)
+come first, so the recording never overrides a value a test has set.
+
 Faults, each one method: ``garble_next_reply`` (the next matching reply
 carries a byte outside 0x20-0x7E, the ``CatGarbledFrameError`` case),
 ``reject`` (``?;`` for every command with a given verb), ``silence``
@@ -59,6 +66,8 @@ from typing import Any
 from rigplane.backends.yaesu_cat.parser import CatCommandParser, format_command
 from rigplane.commands.command_spec import CatCommandSpec
 from rigplane.profiles.rig_loader import RigConfig, load_rig
+
+from rigplane_testkit.yaesu.replay import RecordedCatAnswerTable
 
 # The repo-root rigs/ directory. ``rigplane.profiles`` exports no
 # helper that locates it (its ``__all__`` lists only profile types and
@@ -113,6 +122,7 @@ class FakeCatRadio:
         profile: str = "ftx1",
         frequency_hz: int = 14_074_000,
         mode_code: str = "2",
+        recorded_answers: RecordedCatAnswerTable | None = None,
     ) -> None:
         self._config: RigConfig = load_rig(_RIGS_DIR / f"{profile}.toml")
         if not self._config.expected_identity_ids:
@@ -139,6 +149,7 @@ class FakeCatRadio:
                 f"{', '.join(missing)}"
             )
 
+        self._recorded = recorded_answers
         self._identity_id = self._config.expected_identity_ids[0]
         self._frequency_hz = frequency_hz
         self._mode_code = mode_code
@@ -428,6 +439,9 @@ class FakeCatRadio:
                 tone=_IF_NEUTRAL,
                 shift=_IF_NEUTRAL,
             )
+        recorded = self._recorded.lookup(body + ";") if self._recorded else None
+        if recorded is not None:
+            return recorded.reply  # data line, refusal, or None = recorded silence
         return _REJECT  # unrecognized command: the Yaesu refusal
 
     def _info_line(self, verb: str) -> str:

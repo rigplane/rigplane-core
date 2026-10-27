@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import types
 import wave
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -15,6 +17,7 @@ import pytest
 from _caps import FULL_ICOM_CAPS
 from rigplane.backends.config import LanBackendConfig, SerialBackendConfig
 from rigplane.cli import (
+    _apply_log_level,
     _build_parser,
     _cmd_att,
     _cmd_audio_loopback,
@@ -32,6 +35,7 @@ from rigplane.cli import (
     main,
 )
 from rigplane.discovery import RadioDiscoveryResult
+from rigplane.profiles import get_radio_profile
 from rigplane.radio_protocol import (
     AdvancedControlCapable,
     AudioCapable,
@@ -614,6 +618,7 @@ async def test_cmd_audio_loopback_queue_full_and_worker_error(
 @pytest.mark.asyncio
 async def test_cmd_att_and_preamp_all_paths(capsys: pytest.CaptureFixture[str]) -> None:
     radio = AsyncMock()
+    radio.profile = get_radio_profile("ic7300")
     radio.get_attenuator_level = AsyncMock(return_value=0)
     radio.get_preamp = AsyncMock(return_value=2)
 
@@ -632,6 +637,170 @@ async def test_cmd_att_and_preamp_all_paths(capsys: pytest.CaptureFixture[str]) 
     output = capsys.readouterr().out
     assert "Attenuator" in output
     assert "Preamp" in output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("level,name", [(1, "INT"), (2, "EXT"), (3, "INT+EXT")])
+@pytest.mark.parametrize("setting", [False, True])
+@pytest.mark.parametrize("as_json", [False, True])
+async def test_cmd_preamp_ic9700_combined_level(
+    level: int,
+    name: str,
+    setting: bool,
+    as_json: bool,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    radio = MagicMock(spec=AdvancedControlCapable)
+    radio.profile = get_radio_profile("ic9700")
+    radio.get_preamp.return_value = level
+    value = str(level) if setting else None
+
+    assert await _cmd_preamp(radio, argparse.Namespace(value=value, json=as_json)) == 0
+
+    output = capsys.readouterr().out
+    if value is not None:
+        radio.set_preamp.assert_awaited_once_with(level)
+        assert output == f"Preamp: {name}\n"
+    elif as_json:
+        assert json.loads(output) == {"preamp_level": level, "preamp_name": name}
+    else:
+        assert output == f"Preamp: {name}\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("level,name", [(0, "OFF"), (1, "PRE1"), (2, "PRE2")])
+async def test_cmd_preamp_legacy_profile_names(
+    level: int, name: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    radio = MagicMock(spec=AdvancedControlCapable)
+    radio.profile = replace(
+        get_radio_profile("ic7300"), pre_values=(0, 1, 2), pre_labels=None
+    )
+    radio.get_preamp.return_value = level
+
+    assert (
+        await _cmd_preamp(radio, argparse.Namespace(value=str(level), json=False)) == 0
+    )
+    radio.set_preamp.assert_awaited_once_with(level)
+    assert capsys.readouterr().out == f"Preamp: {name}\n"
+    assert await _cmd_preamp(radio, argparse.Namespace(value=None, json=True)) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "preamp_level": level,
+        "preamp_name": name,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["3", "invalid"])
+async def test_cmd_preamp_legacy_profile_rejects_undeclared_values(
+    value: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    radio = MagicMock(spec=AdvancedControlCapable)
+    radio.profile = replace(
+        get_radio_profile("ic7300"), pre_values=(0, 1, 2), pre_labels=None
+    )
+
+    assert await _cmd_preamp(radio, argparse.Namespace(value=value, json=False)) == 1
+    radio.set_preamp.assert_not_awaited()
+    assert "0, 1, 2" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("labels,name", [({"3": "CUSTOM"}, "CUSTOM"), (None, "3")])
+@pytest.mark.parametrize("values,rejected", [((0, 3), "1"), ((3,), "off")])
+async def test_cmd_preamp_uses_declared_domain_and_name_fallback(
+    labels: dict[str, str] | None,
+    name: str,
+    values: tuple[int, ...],
+    rejected: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    radio = MagicMock(spec=AdvancedControlCapable)
+    radio.profile = replace(
+        get_radio_profile("ic7300"), pre_values=values, pre_labels=labels
+    )
+    radio.get_preamp.return_value = 3
+
+    assert await _cmd_preamp(radio, argparse.Namespace(value="3", json=False)) == 0
+    radio.set_preamp.assert_awaited_once_with(3)
+    assert capsys.readouterr().out == f"Preamp: {name}\n"
+    assert await _cmd_preamp(radio, argparse.Namespace(value=None, json=False)) == 0
+    assert capsys.readouterr().out == f"Preamp: {name}\n"
+    assert await _cmd_preamp(radio, argparse.Namespace(value=None, json=True)) == 0
+    assert json.loads(capsys.readouterr().out)["preamp_name"] == name
+    radio.set_preamp.reset_mock()
+    assert await _cmd_preamp(radio, argparse.Namespace(value=rejected, json=False)) == 1
+    radio.set_preamp.assert_not_awaited()
+    assert ", ".join(str(value) for value in values) in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value,level", [("off", 0), ("0", 0), ("1", 1), ("2", 2)])
+async def test_cmd_preamp_empty_profile_domain_uses_legacy_levels(
+    value: str, level: int
+) -> None:
+    radio = MagicMock(spec=AdvancedControlCapable)
+    radio.profile = replace(get_radio_profile("ic7300"), pre_values=())
+
+    assert await _cmd_preamp(radio, argparse.Namespace(value=value, json=False)) == 0
+    radio.set_preamp.assert_awaited_once_with(level)
+
+
+@pytest.mark.asyncio
+async def test_main_preamp_external_rigctld_wire_and_invalid_values(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fake_rigctld import FakeRigctldServer
+
+    monkeypatch.setenv("ICOM_DEBUG", "0")
+    monkeypatch.setenv("ICOM_LOG_FILE", "off")
+
+    def exit_as_exception(code: int) -> None:
+        raise SystemExit(code)
+
+    def invoke_main(argv: list[str]) -> int:
+        with (
+            patch("sys.argv", argv),
+            patch("rigplane.cli.signal.signal", autospec=True),
+            patch("rigplane.cli.logging.basicConfig", autospec=True),
+            patch(
+                "rigplane.cli.os._exit", autospec=True, side_effect=exit_as_exception
+            ),
+        ):
+            try:
+                main()
+            except SystemExit as exc:
+                return int(exc.code)
+        raise AssertionError("main() did not exit")
+
+    async with FakeRigctldServer() as server:
+        base = [
+            "rigplane",
+            "--backend",
+            "rigctld",
+            "--host",
+            server.host,
+            "--port",
+            str(server.port),
+            "preamp",
+        ]
+        for value, db in [("off", 0), ("1", 10), ("2", 20)]:
+            assert await asyncio.to_thread(invoke_main, [*base, value]) == 0
+            assert server.commands_seen[-1] == f"L PREAMP {db}"
+            assert server.state.preamp_db == db
+            capsys.readouterr()
+
+        before = [cmd for cmd in server.commands_seen if cmd.startswith("L PREAMP ")]
+        for value, error in [
+            ("7", "Error: preamp level must be 0, 1, or 2 (got 7)."),
+            ("abc", "Error: invalid preamp value 'abc'. Use 'off', 0, 1, or 2."),
+        ]:
+            assert await asyncio.to_thread(invoke_main, [*base, value]) == 1
+            assert capsys.readouterr().err.strip().splitlines()[-1] == error
+            assert [
+                cmd for cmd in server.commands_seen if cmd.startswith("L PREAMP ")
+            ] == before
 
 
 def _make_scope_capable_mock(base: MagicMock | None = None) -> MagicMock:
@@ -876,6 +1045,8 @@ def _web_cmd_args(*, web_bridge: str | None) -> argparse.Namespace:
         web_bridge=web_bridge,
         web_bridge_tx_device=None,
         web_bridge_rx_only=False,
+        web_bridge_input_gain_db=0.0,
+        web_bridge_output_gain_db=0.0,
         web_bridge_label=None,
         web_bridge_max_retries=1,
         web_bridge_retry_delay=0.1,
@@ -896,6 +1067,103 @@ def test_web_managed_parser_defaults_without_auth() -> None:
     assert args.web_rigctld is True
     assert args.auth_token is None
     assert args.auth_token_file is None
+
+
+def test_web_log_level_option() -> None:
+    parser = _build_parser()
+
+    assert parser.parse_args(["web"]).log_level is None
+    assert parser.parse_args(["web", "--log-level", "DEBUG"]).log_level == "DEBUG"
+
+
+def test_web_log_level_invalid_rejected() -> None:
+    parser = _build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["web", "--log-level", "VERBOSE"])
+
+
+@pytest.mark.asyncio
+async def test_cmd_web_applies_log_level_to_rigplane_logger() -> None:
+    radio = AsyncMock()
+
+    class FakeWebServer:
+        def __init__(self, _radio, cfg):
+            self.radio = _radio
+            self.cfg = cfg
+
+        async def serve_forever(self, *, on_started=None):
+            on_started()
+            raise asyncio.CancelledError
+
+    seen: dict[str, int] = {}
+
+    def _fake_get_logger(name: str = "") -> MagicMock:
+        logger_mock = MagicMock()
+        logger_mock.setLevel.side_effect = lambda level: seen.__setitem__(name, level)
+        return logger_mock
+
+    with (
+        patch("rigplane.web.server.WebServer", FakeWebServer),
+        patch("logging.getLogger", side_effect=_fake_get_logger),
+    ):
+        args = argparse.Namespace(
+            web_host="127.0.0.1",
+            web_port=9090,
+            web_static_dir=None,
+            log_level="DEBUG",
+        )
+        assert await _cmd_web(radio, args) == 0
+
+    assert seen.get("rigplane") == logging.DEBUG
+
+
+def test_apply_log_level_noops_without_flag() -> None:
+    """Without --log-level the helper must not touch any logger (#1905).
+
+    An unconditional setLevel(INFO) would override the root DEBUG level
+    installed for ICOM_DEBUG=1, so a missing (station) or None (web
+    default) value must leave the logger hierarchy alone.
+    """
+    with patch("logging.getLogger") as get_logger:
+        _apply_log_level(argparse.Namespace())
+        _apply_log_level(argparse.Namespace(log_level=None))
+    get_logger.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cmd_web_without_log_level_keeps_logger_untouched() -> None:
+    """_cmd_web with a Namespace lacking log_level must not call setLevel (#1905)."""
+    radio = AsyncMock()
+
+    class FakeWebServer:
+        def __init__(self, _radio, cfg):
+            self.radio = _radio
+            self.cfg = cfg
+
+        async def serve_forever(self, *, on_started=None):
+            on_started()
+            raise asyncio.CancelledError
+
+    seen: dict[str, int] = {}
+
+    def _fake_get_logger(name: str = "") -> MagicMock:
+        logger_mock = MagicMock()
+        logger_mock.setLevel.side_effect = lambda level: seen.__setitem__(name, level)
+        return logger_mock
+
+    with (
+        patch("rigplane.web.server.WebServer", FakeWebServer),
+        patch("logging.getLogger", side_effect=_fake_get_logger),
+    ):
+        args = argparse.Namespace(
+            web_host="127.0.0.1",
+            web_port=9090,
+            web_static_dir=None,
+        )
+        assert await _cmd_web(radio, args) == 0
+
+    assert "rigplane" not in seen
 
 
 def test_station_parser_is_managed_web_runtime() -> None:
@@ -1656,6 +1924,7 @@ def _fake_bridge_cls(start_err: Exception | None = None) -> type:
     """Return a fake AudioBridge class for testing."""
     start_mock = AsyncMock(side_effect=start_err)
     stop_mock = AsyncMock()
+    init_kwargs: list[dict[str, object]] = []
     _stats = {
         "running": False,
         "rx_frames": 5,
@@ -1672,7 +1941,7 @@ def _fake_bridge_cls(start_err: Exception | None = None) -> type:
         stop = stop_mock
 
         def __init__(self, *_a: object, **_kw: object) -> None:
-            pass
+            init_kwargs.append(_kw)
 
         @property
         def stats(self) -> dict:
@@ -1680,6 +1949,7 @@ def _fake_bridge_cls(start_err: Exception | None = None) -> type:
 
     _FakeBridge._start_mock = start_mock  # type: ignore[attr-defined]
     _FakeBridge._stop_mock = stop_mock  # type: ignore[attr-defined]
+    _FakeBridge._init_kwargs = init_kwargs  # type: ignore[attr-defined]
     return _FakeBridge
 
 
@@ -1721,21 +1991,169 @@ async def test_cmd_audio_bridge_list_devices_import_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cmd_audio_bridge_standalone_runs_until_cancelled() -> None:
-    """Bridge starts, runs, and stops cleanly when cancelled (standalone mode)."""
-    radio = _make_audio_capable_mock(MagicMock())
-    args = argparse.Namespace(list_devices=False, device="BlackHole 2ch", rx_only=False)
+@pytest.mark.parametrize("route", ["audio", "web", "deferred-web"])
+@pytest.mark.parametrize("with_gain", [False, True], ids=["identity", "gain"])
+async def test_cli_bridge_gain_flags_reach_playback_and_transmitted_pcm(
+    monkeypatch: pytest.MonkeyPatch, route: str, with_gain: bool
+) -> None:
+    """Parse and dispatch real CLI commands through real server/bridge lifetimes."""
+    import rigplane.audio.bridge as bridge_module
+    import rigplane.cli as cli
+    from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
+    from rigplane.audio.lan_stream import AudioPacket
+    from rigplane.audio_bridge import SAMPLES_PER_FRAME
+    from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
+    from rigplane.web.server import WebServer
+    from test_managed_tx_web_projection import _GatePort, _gate_authority
+    from test_web_audio_tx_session import _SessionLanRadio
 
-    fake_cls = _fake_bridge_cls()
-    with patch.object(_ab_mod, "AudioBridge", fake_cls):
-        task = asyncio.create_task(_cmd_audio_bridge(radio, args))
-        await asyncio.sleep(0.05)
+    deferred = route == "deferred-web"
+    serving = asyncio.Event()
+    servers: list[WebServer] = []
+    managed = _gate_authority()
+    backend = FakeAudioBackend(
+        [
+            AudioDeviceInfo(
+                id=AudioDeviceId(1),
+                name="Loopback",
+                input_channels=2,
+                output_channels=2,
+            )
+        ]
+    )
+
+    class Poller:
+        async def start(self) -> None:
+            pass
+
+        async def stop(self) -> None:
+            pass
+
+    class Radio(_SessionLanRadio):
+        control_connected = radio_ready = True
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.connected = not deferred
+            self.connection_identity = RadioIdentity(RadioIdentityStatus.CHECKING)
+
+        async def __aenter__(self) -> Radio:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            pass
+
+        def create_state_poller(self, **_kwargs: object) -> Poller:
+            return Poller()
+
+    class Listener:
+        sockets = [SimpleNamespace(getsockname=lambda: ("127.0.0.1", 8080))]
+
+        def close(self) -> None:
+            pass
+
+        async def wait_closed(self) -> None:
+            pass
+
+    radio = Radio()
+
+    async def listen(callback, **_kwargs: object) -> Listener:
+        server = callback.__self__
+        servers.append(server)
+        # Replace only the Core actuator; the server's TX predicate stays real.
+        server._production_managed_tx_port = _GatePort(managed)
+        if deferred:
+            assert server._audio_bridge is None
+            assert server._deferred_bridge_start is not None
+            radio.connected = True  # the held native identity read has answered
+        return Listener()
+
+    async def no_cache(_provider) -> dict[str, str]:
+        return {"status": "missing"}
+
+    async def config(_args: argparse.Namespace) -> LanBackendConfig:
+        return LanBackendConfig(host="127.0.0.1")
+
+    def installed_signal_handlers(_loop, _callback) -> None:
+        serving.set()
+
+    async def until(predicate) -> None:
+        async with asyncio.timeout(2):
+            while not predicate():
+                if task.done():
+                    assert await task == 0, "CLI exited before PCM reached its sink"
+                    pytest.fail("CLI exited before PCM reached its sink")
+                await asyncio.sleep(0)
+
+    monkeypatch.setattr(bridge_module, "PortAudioBackend", lambda: backend)
+    monkeypatch.setattr(cli, "_build_backend_config", config)
+    monkeypatch.setattr(cli, "create_radio", lambda _config: radio)
+    monkeypatch.setattr(cli, "guards_backend", lambda _config: False)
+    monkeypatch.setattr(cli, "check_ports_available", lambda _bindings: None)
+    # Core composition installation is outside this CLI gain contract. The
+    # accepting authority above is attached at the fake TCP-listener boundary.
+    monkeypatch.setattr(cli, "ManagedTxComposition", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "install_managed_tx_composition", lambda *_a: None)
+    monkeypatch.setattr(
+        "rigplane._platformdirs_migration.migrate_legacy_platformdirs", lambda: None
+    )
+    monkeypatch.setattr("rigplane.web.eibi.EiBiProvider.load_cache", no_cache)
+    monkeypatch.setattr("rigplane.web.web_startup.asyncio.start_server", listen)
+    monkeypatch.setattr(
+        "rigplane.web.server._install_shutdown_signal_handlers",
+        installed_signal_handlers,
+    )
+    if route == "audio":
+        argv = ["audio", "bridge", "--device", "Loopback"]
+        gain_prefix = "--"
+    else:
+        argv = ["web", "--no-rigctld", "--no-discovery", "--bridge"]
+        if not deferred:
+            argv.append("Loopback")
+        gain_prefix = "--bridge-"
+    # Omit flags for the identity case so argparse's public defaults are tested.
+    if with_gain:
+        argv += [
+            f"{gain_prefix}input-gain-db=6.020599913279624",
+            f"{gain_prefix}output-gain-db=-6.020599913279624",
+        ]
+    args = _build_parser().parse_args(argv)
+    task = asyncio.create_task(_run(args))
+    try:
+        await managed.ptt_down("web")
+        if route != "audio":
+            await asyncio.wait_for(serving.wait(), timeout=2)
+        await until(
+            lambda: (
+                backend.rx_streams
+                and backend.rx_streams[0].running
+                and radio.state == "transmitting"
+            )
+        )
+        frame = b"\xd0\x07\x30\xf8" * (SAMPLES_PER_FRAME // 2)  # +2000, -2000
+        radio.audio_bus._on_opus_packet(AudioPacket(ident=0x80, send_seq=1, data=frame))
+        backend.rx_streams[0].inject_frame(frame)
+        await until(lambda: backend.tx_streams[0].written_frames and radio.pushed)
+        playback = (
+            b"\xe8\x03\x18\xfc" * (SAMPLES_PER_FRAME // 2) if with_gain else frame
+        )
+        transmitted = (
+            b"\xa0\x0f\x60\xf0" * (SAMPLES_PER_FRAME // 2) if with_gain else frame
+        )
+        assert backend.tx_streams[0].written_frames == [playback]
+        assert radio.pushed == [transmitted]
+    finally:
         task.cancel()
-        rc = await asyncio.gather(task, return_exceptions=True)
-
-    assert rc[0] == 0
-    fake_cls._start_mock.assert_called_once()
-    fake_cls._stop_mock.assert_called_once()
+        try:
+            assert await asyncio.wait_for(task, timeout=2) == 0
+        finally:
+            for server in servers:
+                await server.stop()
+            await managed.ptt_up("web")
+            await managed.close()
+    assert radio.state == "idle"
+    assert not backend.rx_streams[0].running
+    assert not backend.tx_streams[0].running
 
 
 @pytest.mark.asyncio

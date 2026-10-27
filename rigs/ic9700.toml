@@ -102,6 +102,7 @@ features = [
     "agc",
     "tuning_step",
     "band_edge",
+    "memory_read",
     "xfc",
     # System
     "system_settings",
@@ -125,6 +126,10 @@ meter_coalescing_window_seconds = 0.2
 
 [state_acquisition.capabilities]
 polling_only = [
+    # 0x07 0xD2 (get_main_sub_band): IC-9700 CI-V Reference Guide p.4, "Send/read
+    # main band selection". Pinned by
+    # test_state_queries.py: test_main_sub_profiles_poll_active_receiver.
+    "global.slow_state.active",
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
     "receiver.main.operator_controls.af_level",
@@ -230,13 +235,14 @@ available_when = [
 # ── Parameterized Capabilities ───────────────────────────────────
 
 [attenuator]
-# CI-V 0x11: binary toggle only
-# 0x00=OFF, 0x20=20dB ON
-values = [0, 20]
+# CI-V 0x11: IC-9700 CI-V Reference Guide p.4 -- "00" OFF, "10" 10 dB.
+values = [0, 10]
 
 [preamp]
-# CI-V 0x16 0x02: 0=OFF, 1=P.AMP1, 2=P.AMP2
-values = [0, 1, 2]
+# CI-V 0x16 0x02: IC-9700 CI-V Reference Guide p.5 -- 00 both OFF, 01 P.AMP ON,
+# 02 EXT-P.AMP ON, 03 both ON.
+values = [0, 1, 2, 3]
+labels = { "0" = "OFF", "1" = "INT", "2" = "EXT", "3" = "INT+EXT" }
 
 [agc]
 # CI-V 0x16 0x12: 1=FAST, 2=MID, 3=SLOW (wfview IC-7300.rig lists Min/Max 0-2 for UI)
@@ -333,11 +339,27 @@ width_max = 255
 [power]
 max_watts = 100
 
+# ── Memory channels (MOR-3627) ───────────────────────────────────
+# CI-V 1A 00 reads a channel by band code (01 144, 02 430 MHz, 03 1.2 GHz) and
+# channel 0001-0099 (guide p.14); scan edges, call channels and satellite
+# memories are not listed. No recording of this model exists (tier B-).
+[memory]
+addressing = "band_channel"
+first_group = 1
+last_group = 3
+first_channel = 1
+last_channel = 99
+# CI-V Reference Guide rev 4, 1A 00 offset digit; Advanced manual, DD mode: 1.2 GHz only.
+dd_groups = [3]
+offset_10mhz_groups = [3]
+
 [ctcss]
 table = "standard_50"
 
 [modes]
 list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R"]
+# MOR-3679: the CW modes, named once here for every client.
+families = { cw = ["CW", "CW-R"] }
 
 [data_mode]
 # CI-V 0x1A 0x06: DATA sub-mode (0=OFF, 1=DATA1)
@@ -461,7 +483,8 @@ fixed = true
 defaults = [15000, 10000, 7000]
 
 [vfo]
-# IC-9700 has two receivers (MAIN/SUB), not VFO A/B at the radio level.
+# IC-9700 has MAIN/SUB receiver banks; normal split uses A/B within MAIN.
+# CI-V 25/26 selector 01 addresses unselected MAIN A/B, not the SUB bank.
 # CI-V 0x07 0xD0 = select MAIN receiver, 0x07 0xD1 = select SUB receiver.
 # CI-V 0x07 0xB0 = swap MAIN/SUB, 0x07 0xB1 = equal MAIN=SUB.
 # Bytes match the Icom CI-V dual-receiver convention also used by IC-7610.
@@ -469,6 +492,7 @@ defaults = [15000, 10000, 7000]
 #  "Equal M/S" opcode is documented in the IC-9700 CI-V reference guide and
 #  mirrors IC-7610 behaviour — untested on hardware for this file.)
 scheme = "main_sub"
+split_tx_target = "main_unselected"
 main_select = [0xD0]
 sub_select = [0xD1]
 swap_main_sub = [0xB0]
@@ -583,6 +607,9 @@ get_selected_freq = [0x25, 0x00]          # source: IC-9700 CI-V Reference Guide
 get_unselected_freq = [0x25, 0x01]        # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.11 (detail p.23)
 get_selected_mode = [0x26, 0x00]          # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.11 (detail p.23)
 get_unselected_mode = [0x26, 0x01]        # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.11 (detail p.23)
+# MOR-3754: IC-9700 CI-V Reference Guide (2019) p.11/p.23: 01 is unselected MAIN A/B, never SUB.
+set_unselected_freq = [0x25, 0x01]
+set_unselected_mode = [0x26, 0x01]
 # set_selected_mode -- PROVENANCE OPEN above, left undeclared
 
 # ── TX Band Edge ──

@@ -33,6 +33,10 @@ tx_codec = "PCM_1CH_16BIT"
 browser_rx_transport = "auto"
 browser_rx_transcode_to_opus = true
 
+[usb]
+# macOS USB and audio recording, 2026-10-22: codec under the internal hub.
+audio_codec = [{ vid = "08BB", pid = "2901" }]
+
 [scope]
 span_presets_hz = [2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000]
 
@@ -100,6 +104,7 @@ features = [
     "agc",
     "tuning_step",
     "band_edge",
+    "memory_read",
     "xfc",
     # System
     "system_settings",
@@ -489,6 +494,17 @@ width_max = 255
 [power]
 max_watts = 10
 
+# ── Memory channels (MOR-3627) ───────────────────────────────────
+# CI-V 1A 00 reads a channel by group and channel (guide p.18; empty slot
+# answers FF, real radio MOR-3650). Group 0100 (call channels) is not listed.
+[memory]
+addressing = "group_channel"
+first_group = 0
+last_group = 99
+first_channel = 0
+last_channel = 99
+recall = true  # 08 A0 selects the group, 08 the channel (guide p.3); not yet bench-verified
+
 [ctcss]
 table = "standard_50"
 
@@ -509,6 +525,8 @@ table = "standard_50"
 [modes]
 # wfview Modes: LSB, USB, AM, CW, RTTY, FM, CW-R, RTTY-R, DV, WFM
 list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "WFM", "RTTY", "RTTY-R", "DV"]
+# MOR-3679: the CW modes, named once here for every client.
+families = { cw = ["CW", "CW-R"] }
 
 [data_mode]
 count = 1
@@ -795,17 +813,34 @@ end_hz = 450_000_000
 default_hz = 446_000_000
 bsr_code = 0x0E
 
+# MOR-3782: receiver coverage per IC-705_ENG_Basic_9, "11 SPECIFICATIONS /
+# General / Frequency coverage (unit: MHz)": USA, EUR and UK versions all
+# list Receiver 0.030000 ~ 199.999999* and 400.000000 ~ 470.000000*
+# (asterisk: some ranges not guaranteed). The general-coverage range below
+# is trimmed to the published HF/VHF segment; the Gen band keeps its name,
+# default_hz and bsr_code (0x0F GENE). Not hardware-verified.
 [[freq_ranges.ranges]]
 label = "General coverage RX"
-start_hz = 10_000
-end_hz = 470_000_000
+start_hz = 30_000
+end_hz = 199_999_999
 
 [[freq_ranges.ranges.bands]]
 name = "Gen"
-start_hz = 10_000
-end_hz = 470_000_000
+start_hz = 30_000
+end_hz = 199_999_999
 default_hz = 14_200_000
 bsr_code = 0x0F
+
+# MOR-3782: the published UHF receive segment (400.000000 ~ 470.000000*,
+# same manual section) as its own range. Not hardware-verified. The UHF RX
+# range below carries no `bands` table on purpose: it is tune/receive
+# only, and transmit permission comes from `bands` — 70 cm transmit stays
+# governed by the 70cm range's own band above.
+
+[[freq_ranges.ranges]]
+label = "UHF RX"
+start_hz = 400_000_000
+end_hz = 470_000_000
 
 # ── CI-V Commands ────────────────────────────────────────────────
 # Every opcode from wfview IC-705.rig Commands\1–124 (excluding TRX placeholders 0x00/0x01).
@@ -860,8 +895,12 @@ memory_to_vfo = [0x0A]                     # source: IC-705 CI-V Reference Guide
 memory_clear = [0x0B]                      # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3 -- payload MOR-2055, see commands/memory.py: build_memory_clear
 
 # ── Offset / Scan / Split ──
-get_freq_offset = [0x0D]
-set_freq_offset = [0x0D]
+# Duplex offset: the guide's own rows read 0C = "Read frequency offset" and
+# 0D = "Send frequency offset" (IC-705 CI-V Reference Guide p.3, format p.17).
+# The read used to be mapped to 0D (the send opcode), which the radio NAKs.
+# 0C answered on the bench IC-705 (MOR-3650): 00 50 00 = 500 kHz.
+get_freq_offset = [0x0C]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
+set_freq_offset = [0x0D]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
 get_scan = [0x0E]
 set_scan = [0x0E]
 get_split = [0x0F]  # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
@@ -1059,17 +1098,14 @@ set_rit_tx_status = [0x21, 0x02]
 
 # ── Selected / unselected VFO ──
 get_selected_freq = [0x25, 0x00]          # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15
-# set_selected_freq: no Python builder exists yet -- orphan key, kept
-# undisturbed by MOR-2008 batch 4 (see that batch's PR body).
 set_selected_freq = [0x25, 0x00]
 get_unselected_freq = [0x25, 0x01]        # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15
 set_unselected_freq = [0x25, 0x01]
 get_selected_mode = [0x26, 0x00]          # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15 (detail p.26)
 set_selected_mode = [0x26, 0x00]          # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15 (detail p.26)
 get_unselected_mode = [0x26, 0x01]        # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15 (detail p.26)
-# set_unselected_mode: no Python builder exists yet -- orphan key, kept
-# undisturbed by MOR-2008 batch 4 (see that batch's PR body).
-set_unselected_mode = [0x26, 0x01]
+# Bench-probed 2026-10-22 on an IC-705 (RX only, MOR-3115): 26 01 SET with explicit mode/DATA/filter was ACKed, read back exactly, and left the selected VFO unchanged.
+set_unselected_mode = [0x26, 0x01]        # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15 (detail p.26)
 
 # ── TX Band Edge ──
 get_tx_band_count = [0x1E, 0x00]          # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.14

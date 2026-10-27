@@ -27,7 +27,6 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
-from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime.radio import IcomRadio
 from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.scope import ScopeFrame
@@ -2149,22 +2148,16 @@ async def test_handle_text_dispatches_supported_types() -> None:
     handler._handle_subscribe = AsyncMock()  # type: ignore[method-assign]
     handler._handle_unsubscribe = AsyncMock()  # type: ignore[method-assign]
     handler._handle_command = AsyncMock()  # type: ignore[method-assign]
-    handler._handle_radio_connect = AsyncMock()  # type: ignore[method-assign]
-    handler._handle_radio_disconnect = AsyncMock()  # type: ignore[method-assign]
 
     await handler._handle_text(encode_json({"type": "subscribe"}))
     await handler._handle_text(encode_json({"type": "unsubscribe"}))
     await handler._handle_text(encode_json({"type": "cmd"}))
-    await handler._handle_text(encode_json({"type": "radio_connect"}))
-    await handler._handle_text(encode_json({"type": "radio_disconnect"}))
     await handler._handle_text("not-json")
     await handler._handle_text(encode_json({"type": "unknown"}))
 
     handler._handle_subscribe.assert_awaited_once()
     handler._handle_unsubscribe.assert_awaited_once()
     handler._handle_command.assert_awaited_once()
-    handler._handle_radio_connect.assert_awaited_once()
-    handler._handle_radio_disconnect.assert_awaited_once()
 
 
 async def test_subscribe_unsubscribe_and_subscribed_streams_property() -> None:
@@ -2331,110 +2324,32 @@ async def test_websocket_set_freq_enters_command_service_and_preserves_queue() -
     assert events[0].source == "websocket"
 
 
-async def test_radio_connect_paths() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock())
-
-    h = _control_handler(ws=ws, radio=None)
-    await h._handle_radio_connect({"id": "x"})
-    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["error"] == "no_radio"
-
-    radio = SimpleNamespace(connected=True)
-    h = _control_handler(ws=ws, radio=radio)
-    await h._handle_radio_connect({"id": "x2"})
-    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["result"]["status"] == "already_connected"
-
-    radio = SimpleNamespace(
-        connected=False,
-        soft_reconnect=AsyncMock(),
-        connect=AsyncMock(),
-    )
-    h = _control_handler(ws=ws, radio=radio)
-    await h._handle_radio_connect({"id": "x3"})
-    msgs = [decode_json(c.args[0]) for c in ws.send_text.await_args_list[-2:]]
-    assert msgs[0]["result"]["status"] == "connected"
-    assert msgs[1]["type"] == "event" and msgs[1]["connected"] is True
-
-    radio = SimpleNamespace(
-        connected=False,
-        soft_reconnect=AsyncMock(side_effect=RuntimeError("nope")),
-        connect=AsyncMock(),
-    )
-    h = _control_handler(ws=ws, radio=radio)
-    await h._handle_radio_connect({"id": "x4"})
-    radio.connect.assert_awaited_once()
-
-    class _RadioNoSoft:
-        connected = False
-
-        def __init__(self) -> None:
-            self.connect = AsyncMock(side_effect=RuntimeError("fail"))
-
-    h = _control_handler(ws=ws, radio=_RadioNoSoft())
-    await h._handle_radio_connect({"id": "x5"})
-    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["ok"] is False and msg["error"] == "connect_failed"
-
-
-async def test_radio_connect_rejected_while_backend_recovering() -> None:
+async def test_ws_radio_connect_messages_are_unknown_types() -> None:
+    """MOR-3777: connect/disconnect is REST-only; the WS types are ignored."""
     ws = SimpleNamespace(send_text=AsyncMock())
     radio = SimpleNamespace(
-        connected=True,
-        radio_ready=False,
-        soft_reconnect=AsyncMock(),
-        connect=AsyncMock(),
-    )
-    h = _control_handler(ws=ws, radio=radio)
-    await h._handle_radio_connect({"id": "busy"})
-    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["ok"] is False
-    assert msg["error"] == "backend_recovering"
-    radio.soft_reconnect.assert_not_awaited()
-    radio.connect.assert_not_awaited()
-
-
-async def test_radio_disconnect_paths() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock())
-
-    h = _control_handler(ws=ws, radio=None)
-    await h._handle_radio_disconnect({"id": "d0"})
-    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["error"] == "no_radio"
-
-    radio = SimpleNamespace(
         connected=False,
-        conn_state=RadioConnectionState.DISCONNECTED,
+        connect=AsyncMock(),
         disconnect=AsyncMock(),
+        soft_reconnect=AsyncMock(),
         soft_disconnect=AsyncMock(),
     )
     h = _control_handler(ws=ws, radio=radio)
-    await h._handle_radio_disconnect({"id": "d1"})
-    msgs = [decode_json(c.args[0]) for c in ws.send_text.await_args_list[-2:]]
-    assert msgs[0]["result"]["status"] == "disconnected"
-    assert msgs[1]["event"] == "connection_state" and msgs[1]["connected"] is False
-    radio.disconnect.assert_awaited_once()
 
-    radio = SimpleNamespace(
-        connected=True,
-        soft_disconnect=AsyncMock(),
-        soft_reconnect=AsyncMock(),
-    )
-    h = _control_handler(ws=ws, radio=radio)
-    await h._handle_radio_disconnect({"id": "d2"})
-    msgs = [decode_json(c.args[0]) for c in ws.send_text.await_args_list[-2:]]
-    assert msgs[0]["result"]["status"] == "disconnected"
-    assert msgs[1]["event"] == "connection_state" and msgs[1]["connected"] is False
+    await h._handle_text(encode_json({"type": "radio_connect", "id": "c"}))
+    radio.connected = True
+    await h._handle_text(encode_json({"type": "radio_disconnect", "id": "d"}))
 
-    radio = SimpleNamespace(
-        connected=True,
-        soft_disconnect=AsyncMock(side_effect=RuntimeError("boom")),
-        soft_reconnect=AsyncMock(),
-    )
-    h = _control_handler(ws=ws, radio=radio)
-    await h._handle_radio_disconnect({"id": "d3"})
-    msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["ok"] is False and msg["error"] == "disconnect_failed"
+    for method in (
+        radio.connect,
+        radio.disconnect,
+        radio.soft_reconnect,
+        radio.soft_disconnect,
+    ):
+        method.assert_not_awaited()
+    ws.send_text.assert_not_awaited()
+    assert not hasattr(h, "_handle_radio_connect")
+    assert not hasattr(h, "_handle_radio_disconnect")
 
 
 async def test_scope_run_and_control_handling() -> None:
@@ -3658,19 +3573,6 @@ async def test_send_cw_text_multi_frame_text_reaches_radio_unchanged() -> None:
 
     assert result == {"text": text}
     radio.send_cw_text.assert_awaited_once_with(text)
-
-
-@pytest.mark.asyncio
-async def test_send_cw_text_over_payload_limit_raises() -> None:
-    """send_cw_text raises ValueError when text exceeds the web payload cap."""
-    radio = _capable_radio()
-    radio.send_cw_text = AsyncMock()
-    handler = _control_handler(radio=radio)
-    long_text = "A" * 513
-
-    with pytest.raises(ValueError, match="CW text too long: max 512 characters"):
-        await handler._enqueue_command("send_cw_text", {"text": long_text})
-    radio.send_cw_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio

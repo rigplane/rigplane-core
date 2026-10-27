@@ -32,6 +32,7 @@ vi.mock('$lib/transport/http-client', async (importOriginal) => ({
   ...await importOriginal<typeof import('$lib/transport/http-client')>(),
   fetchCapabilities: vi.fn(),
   fetchInfo: vi.fn().mockResolvedValue({}),
+  fetchMemoryPage: vi.fn(),
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({
@@ -99,6 +100,11 @@ vi.mock('$lib/stores/audio.svelte', () => ({
   setVolume: vi.fn(),
   setMuted: vi.fn(),
   toggleMute: vi.fn(),
+  // The real SystemController (loaded via importActual below) imports the
+  // MOR-3753 error setters; without them its disconnect paths throw on the
+  // mock. Vitest factory mocks throw on access to an undefined export.
+  setRxError: vi.fn(),
+  setTxError: vi.fn(),
 }));
 
 vi.mock('$lib/audio/audio-manager', () => ({
@@ -134,7 +140,7 @@ vi.mock('./system-controller', async () => {
 
 // ── Import modules under test after mocks are hoisted ──
 
-import { fetchCapabilities } from '$lib/transport/http-client';
+import { fetchCapabilities, fetchMemoryPage } from '$lib/transport/http-client';
 import { connect, disconnectAll, getChannel, getControlSession, onControlSessionTransition, onMessage, sendRaw, emitLocalNotification } from '$lib/transport/ws-client';
 import { getCapabilities, setCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 import { radio, subscribeRadioState } from '$lib/stores/radio.svelte';
@@ -178,6 +184,22 @@ async function freshRuntime() {
   rt._capabilitiesUnsubscribe = null;
   return mod.runtime;
 }
+
+it('delegates memory-page requests, cancellation, replies and failures', async () => {
+  const runtime = await freshRuntime();
+  const request = { group: 7, start: 25, count: 25 };
+  const signal = new AbortController().signal;
+  const page: Awaited<ReturnType<typeof fetchMemoryPage>> = {
+    addressing: 'group_channel', group: 7, recall: true, entries: [],
+    groups: { first: 0, last: 99 }, channels: { first: 0, last: 99 },
+  };
+  vi.mocked(fetchMemoryPage).mockResolvedValueOnce(page);
+  await expect(runtime.fetchMemoryPage(request, signal)).resolves.toBe(page);
+  expect(fetchMemoryPage).toHaveBeenLastCalledWith(request, signal);
+  const error = new Error('fetchMemoryPage: 503');
+  vi.mocked(fetchMemoryPage).mockRejectedValueOnce(error);
+  await expect(runtime.fetchMemoryPage(request, signal)).rejects.toBe(error);
+});
 
 describe('FrontendRuntime control-session facade (MOR-1723)', () => {
   it('reads through and directly delegates its disposer without transport effects', async () => {
@@ -560,6 +582,9 @@ describe('FrontendRuntime.bootstrap()', () => {
     const lost = controller.onLoss.mock.calls.at(-1)![0];
     lost();
     expect(audioManager.destroy).toHaveBeenCalled();
+    // MOR-3753 B: remote loss is automatic teardown — the reason must reach
+    // the audio destroy so a latched failure survives it.
+    expect(audioManager.destroy).toHaveBeenCalledWith({ automatic: true });
     await cleanup();
     await cleanup();
     expect(stop).toHaveBeenCalledOnce();
@@ -574,6 +599,9 @@ describe('FrontendRuntime.bootstrap()', () => {
     // no error toast — wiring the remote-loss UI into the local branch
     // fails every assertion below.
     expect(audioManager.stopTx).toHaveBeenCalledOnce();
+    // MOR-3753 B: the local-loss stop is automatic — it must preserve a
+    // latched TX failure instead of acknowledging it.
+    expect(audioManager.stopTx).toHaveBeenCalledWith({ automatic: true });
     expect(audioManager.destroy).not.toHaveBeenCalled();
     expect(disconnectAll).not.toHaveBeenCalled();
     expect(emitLocalNotification).not.toHaveBeenCalled();

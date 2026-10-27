@@ -1,7 +1,8 @@
 """Enums, dataclasses, and helper functions for the Icom LAN protocol."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
+from typing import Literal
 
 from rigplane.core.env_config import get_audio_sample_rate
 
@@ -28,6 +29,8 @@ __all__ = [
     "bcd_encode",
     "bcd_decode",
     "MemoryChannel",
+    "MemoryEntry",
+    "MemoryProfile",
     "BandStackRegister",
 ]
 
@@ -444,6 +447,53 @@ class MemoryChannel:
     tonemode: int
     tone_freq_hz: int | None = None
     tsql_freq_hz: int | None = None
+    name: str = ""
+
+
+MemoryAddressing = Literal["group_channel", "band_channel", "channel"]
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryProfile:
+    """How a radio's stored memory channels are addressed (MOR-3627).
+
+    ``group_channel`` is the IC-705 shape, ``band_channel`` the IC-9700's and
+    ``channel`` a single numbered list (FTX-1, group 0 only); the
+    bounds limit the group number (or band code) and the channel, and
+    ``recall`` says the profile's select commands recall a listed channel.
+    """
+
+    addressing: MemoryAddressing
+    first_group: int
+    last_group: int
+    first_channel: int
+    last_channel: int
+    recall: bool = False
+    dd_groups: tuple[int, ...] = field(default=(), kw_only=True)
+    offset_10mhz_groups: tuple[int, ...] = field(default=(), kw_only=True)
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryEntry:
+    """One stored memory channel as read from the radio (MOR-3627).
+
+    A read model, not what the write path (:class:`MemoryChannel`) sends.
+    ``group`` is the memory group (IC-705) or band code (IC-9700); an empty
+    slot carries only its address; tone values are centi-Hz (8850 = 88.5 Hz).
+    """
+
+    group: int
+    channel: int
+    empty: bool = False
+    frequency_hz: int | None = None
+    mode: str | None = None
+    data_mode: bool = False
+    duplex: RepeaterShiftDirection | None = None
+    offset_hz: int | None = None
+    tone_mode: ToneSquelchType | None = None
+    tone_centihz: int | None = None
+    tsql_centihz: int | None = None
+    dtcs_code: int | None = None
     name: str = ""
 
 

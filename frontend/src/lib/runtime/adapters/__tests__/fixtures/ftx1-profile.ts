@@ -17,6 +17,11 @@
  * values are the serializer's own output. MOR-2530 updates the selector
  * projection to match the empty `rigs/ftx1.toml` `[filters].list`; the
  * endpoint contract is pinned in `tests/test_web_capability_guards.py`.
+ * MOR-3679 adds `modeFamilies` (`{"cw": ["CW-U", "CW-L"]}`), the value the
+ * same handler serves once `rigs/ftx1.toml` declares `[modes] families`
+ * (pinned by `tests/web/test_state_wire_goldens.py`). MOR-3782 updates the
+ * `freqRanges` Gen row (30 kHz - 174 MHz) and adds the UHF RX row
+ * (400 - 470 MHz) by hand to mirror the same change in `rigs/ftx1.toml`.
  */
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';

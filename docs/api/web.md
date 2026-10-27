@@ -1073,6 +1073,38 @@ line as the startup contract instead of parsing the human-readable banner:
 
 Version, model, capability summary, and connection metadata.
 
+`audioReceive` retains the latest RX-start failure in schema version 1.
+Its `failure` is `null` when clear; otherwise it has `stage` (`rx_start`),
+`code` (`core_rx_start_failed`) and `reason`. Pairing refusals with candidates
+add this field to `failure`:
+
+```json
+{
+  "candidates": [{
+    "stableId": "MME|name:USB Audio CODEC",
+    "displayName": "USB Audio CODEC",
+    "direction": "capture",
+    "hostApi": "MME",
+    "portAudioIndex": 1,
+    "nearRadio": true
+  }]
+}
+```
+
+`direction` is `capture` (RX) or `render` (TX). Candidates cover both directions
+because pairing decides RX and TX together
+(`src/rigplane/audio/_usb_pairing.py: pair`). `candidates` is omitted when
+the failure has no pairing candidates. This is an additive field; the schema
+version remains 1 (`src/rigplane/web/handlers/audio.py: AudioBroadcaster.rx_start_status`).
+Pass a candidate's `stableId` through the existing `rx_device` / `tx_device`
+configuration or `--rx-device` / `--tx-device` flags. Its form is
+`HOSTAPI|endpoint-os-id`, or `HOSTAPI|name:PortAudio-device-name` when there
+is no unique endpoint name match. Explicit stable ids are resolved against
+current enumeration on each open, without automatic pairing; absent or
+ambiguous ids raise the existing unknown/ambiguous override error
+(`src/rigplane/audio/_usb_pairing.py: candidate_stable_id`,
+`src/rigplane/audio/usb_driver.py: _find_by_override`).
+
 ```json
 {
   "server": "rigplane",
@@ -1087,6 +1119,7 @@ Version, model, capability summary, and connection metadata.
     "hasDualReceiver": false,
     "hasTuner": true,
     "hasCw": true,
+    "cwText": { "supported": true, "maxLength": 512, "memoryChannel": null },
     "maxReceivers": 1,
     "modes": ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R"],
     "filters": ["FIL1", "FIL2", "FIL3"],
@@ -1178,12 +1211,73 @@ Notable fields:
 | Field | Type | Notes |
 |------|------|-------|
 | `receivers` | `int` | Receiver count from active profile |
+| `modeFamilies` | `object` | Profile `[modes] families`: family name -> mode names, e.g. `{"cw": ["CW-U", "CW-L"]}`. `{}` when the profile declares none. Also in `/api/v1/info` `capabilities`. Use it instead of guessing a radio's CW mode names. |
 | `vfoScheme` | `"ab"` \| `"main_sub"` \| `"ab_shared"` \| `"single"` | VFO label scheme |
 | `freqRanges[].bands[].bsrCode` | `int` (optional) | Band Stack Register code for `set_band` |
 | `scopeSource` | `"hardware"` \| `"audio_fft"` \| `null` | Spectrum data source |
 | `scopeConfig.defaultSpan` | `int` | Audio FFT bandwidth in Hz (48000 if unset) when the audio FFT scope exists, otherwise the constant 500000 |
 | `audioConfig` | object | Web audio transport defaults |
 | `webrtc.available` | `bool` | Whether the optional `rigplane[webrtc]` backend is importable; this does not indicate that the default-off `WebConfig.webrtc_enabled` transport gate is enabled |
+
+| `cwText` | object | Whether `send_cw_text` works on this radio; see below. Required whenever a profile is resolved |
+
+### `cwText`
+
+`cwText` (MOR-3678) says whether typed CW text can be sent, from the
+profile's `[cw_text]` section. It is inside `capabilities` on
+`/api/v1/info` (next to `hasCw`) and a top-level key on
+`/api/v1/capabilities`; both carry the same three fields. It is absent only
+when no profile is resolved (a provider-owned backend).
+
+| Field | Type | Notes |
+|------|------|-------|
+| `supported` | `bool` | `false`: `send_cw_text` is refused |
+| `maxLength` | `int` | Longest text one request may carry; longer text is refused, never truncated or split |
+| `memoryChannel` | `int` \| `null` | Keyer memory channel the text is written to and played from (FTX-1: KM then KY); `null` when the radio sends text directly (Icom) |
+
+`cwText.supported` is true only when the profile enables CW text and the
+active backend can send it: an external-rigctld backend publishes `false`
+even with an IC-7300 profile (the limits still come from the profile), the
+same check that makes it refuse the send.
+
+`cwText` is separate from the `cw` tag and `hasCw`, which keep driving the
+CW decoder, console and keyer controls: the FTX-1 publishes `hasCw: true`
+and `cwText.supported: false`. The `cw` tag does not gate sending: a radio
+with `cwText.supported: true` sends (and `POST /api/v1/radio/cw/stop`
+stops) without it. The server enforces both facts in one place
+(the radio's `send_cw_text`), so `POST /api/v1/radio/cw/send`, the
+WebSocket `send_cw_text` command and the CLI `cw` command refuse the same
+requests with the same message:
+
+| Refusal | Message | HTTP | WebSocket | CLI |
+|------|------|------|------|------|
+| Text too long | `CW text too long for <model>: got <n> characters, limit is <maxLength>` | `400` `invalid_request` | `command_failed` | `Error: <message>`, exit 1 |
+| Not supported | `<model> does not support sending CW text yet` | `409` `unsupported_command` | `unsupported_command` | `Error: <message>`, exit 1 |
+| Backend cannot send CW text (external rigctld) | `radio does not support this command` | `409` `unsupported_command` | `unsupported_command` | `Error: <message>`, exit 1 |
+| Ended by a CW stop before it was sent (Yaesu CAT only) | `CW text send to <model> was cancelled by a CW stop` | `409` `command_cancelled` | `command_cancelled` | `Error: <message>`, exit 1 |
+| Ended by a transmit abort before it was sent | `CW text send to <model> was cancelled by a transmit abort` | `409` `command_cancelled` | `command_cancelled` | not reached (see below) |
+
+Clients only display these values.
+
+The last two rows are sends that were accepted but still pending when a
+stop or a transmit abort arrived; the HTTP rows apply to
+`POST /api/v1/radio/cw/send` and to `send_cw_text` on
+`POST /api/v1/commands` (there in its `ok: false` envelope).
+
+- CW stop (`POST /api/v1/radio/cw/stop`, WebSocket `stop_cw_text`): on a
+  Yaesu CAT radio it ends every send admitted before it, including one
+  waiting behind another send; none of them writes its keyer memory or
+  plays it after the stop. On a CI-V radio the stop is sent at once but
+  does not end a multi-frame send in progress: its remaining frames are
+  still sent and it answers success.
+- Transmit abort (the managed TX abort fence going stale: `force_off` on
+  `POST /api/v1/managed-transmit/command`, the radio transport going away,
+  or shutdown): on both backends no frame or write of the send follows the
+  abort; what the radio already received stays sent.
+
+The CLI `cw` command runs without the managed TX composition, so no abort
+reaches it. A request whose own connection or server task is cancelled
+(shutdown, client gone) still ends without a response.
 
 When radio has audio but no hardware scope support, backend enables `AudioFftScope`
 and reports `scopeSource: "audio_fft"`. The same FFT frames are also available
@@ -1201,15 +1295,20 @@ from the radio's hardware scope.
 | `/api/v1/audio` | bi-directional | JSON control + binary audio frames |
 
 The optional gated WebRTC transport uses `control`, `scope`, and `audio`
-DataChannels that carry the same payloads as these WebSocket routes. WebRTC
-changes only the transport, not command names, event names, binary headers, or
-audio frame semantics.
+DataChannels that mirror these WebSocket routes. WebRTC changes only the
+transport, not command names, event names, or binary headers. One exception
+applies to TX audio: `0x12` (outside-only TX) is accepted only on the
+`/api/v1/audio` WebSocket route for a local (non-remote) controller ticket.
+The WebRTC `audio` channel builds its `AudioHandler` without an outside-TX
+admission callback (see the handler construction in
+`webrtc_session.py`), and a remote controller ticket yields no admission, so
+both paths drop every `0x12` frame in `AudioHandler._handle_tx_audio`.
 
 Binary audio frames use an 8-byte header followed by codec-specific payload:
 
 | Offset | Size | Field | Notes |
 |--------|------|-------|-------|
-| `0` | 1 | `msg_type` | `0x10` RX, `0x11` TX |
+| `0` | 1 | `msg_type` | `0x10` RX, `0x11` TX, `0x12` TX outside-only |
 | `1` | 1 | `codec` | `0x01` Opus, `0x02` PCM16 |
 | `2` | 2 | `sequence` | uint16 little-endian |
 | `4` | 2 | `sample_rate` | encoded as Hz / 100, uint16 little-endian |
@@ -1222,6 +1321,13 @@ payload and metadata, not from a fixed frame-duration assumption. For PCM16,
 use `payload_bytes / (channels * 2)` to compute sample frames and use the
 header sample rate for playback timing; Opus consumers should decode the
 payload and use decoder output metadata.
+
+`0x12` is the outside-only TX variant of `0x11` (same 8-byte header and
+payload): a frame is admitted only while the radio is observed keyed outside
+Core (managed TX intent `rx`, no release debt, a foreign TX observation) and
+is refused from the moment any Core client keys; see `managed_tx_authority.py:
+ManagedTxAuthority.outside_tx_submission`. A Core without this feature drops
+`0x12` as an unknown type (fail-closed); `0x11` behavior is unchanged.
 
 ### `/api/v1/ws` command envelope
 

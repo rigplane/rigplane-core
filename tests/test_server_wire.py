@@ -308,7 +308,7 @@ class TestGetSetRoundtrip:
 
 class TestDumpStateWire:
     _EXPECTED_DUMP_STATE = (
-        b"0\n3078\n1\n"
+        b"1\n3078\n1\n"
         b"100000.000000 60000000.000000 0x1ff -1 -1 0x3 0xf\n"
         b"0 0 0 0 0 0 0\n"
         b"1800000.000000 60000000.000000 0x1ff 5000 100000 0x3 0xf\n"
@@ -318,6 +318,7 @@ class TestDumpStateWire:
         b"0 0\n9999\n9999\n0\n0\n"
         b"12 20 0\n6 12 18 0\n"
         b"0x00011B3E\n0x00011B3E\n0x5401791B\n0x0001791B\n0\n0\n"
+        b"targetable_vfo=0x3\ndone\n"
     )
 
     async def test_dump_state_wire(self, wire_server: RigctldServer) -> None:
