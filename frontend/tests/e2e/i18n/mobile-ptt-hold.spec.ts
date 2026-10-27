@@ -15,6 +15,7 @@ import type { ServerState } from '../../../src/lib/types/state';
  *   tests/test_web_managed_ptt_rejection.py
  *   (test_first_client_ptt_admits_through_the_shared_queue,
  *   test_the_holder_releases_with_ptt_off);
+ * - only `cmd` frames are answered, as `ControlHandler._handle_text` dispatches only `cmd`;
  * - the WS success envelope `{type: 'response', id, ok: true, result}`:
  *   `web/handlers/control.py`, whose refusal envelope is pinned by
  *   test_second_client_ws_envelope_carries_the_conflict_message;
@@ -125,7 +126,7 @@ async function prepare(page: Page) {
         socket.send(JSON.stringify(mockControllerHeartbeatAck));
         return;
       }
-      if ((frame.type !== 'cmd' && frame.type !== 'command') || !frame.id || !frame.name) return;
+      if (frame.type !== 'cmd' || !frame.id || !frame.name) return;
       commands.push(frame.name);
       intent = admitted(frame.name) ?? intent;
       setTimeout(() => socket.send(JSON.stringify({ type: 'response', id: frame.id, ok: true, result: {} })), 0);
