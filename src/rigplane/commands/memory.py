@@ -300,6 +300,7 @@ def build_memory_contents_set(
     else:
         _dd_memory_mode(mem.mode, memory, group)
     _check_tone_representation(mem, layout, ctcss_tones_centihz)
+    _check_field_storage(mem, layout)
     record = _write_record(mem, memory, layout, ctcss_tones_centihz, data_mode_count)
     return _build_from_map(
         cmd_map,
@@ -380,7 +381,7 @@ def _check_frequency_digits(hi_byte: int, memory: MemoryProfile) -> None:
 
 
 def _encode_record_frequency(
-    frequency_hz: int, memory: MemoryProfile, max_hz: int | None
+    frequency_hz: int, memory: MemoryProfile, max_hz: int | None, group: int
 ) -> bytes:
     """The 5-byte LE BCD frequency, digit-checked and ceiling-checked."""
     if isinstance(frequency_hz, bool) or not isinstance(frequency_hz, int):
@@ -389,6 +390,13 @@ def _encode_record_frequency(
         raise ValueError(f"frequency must be positive, got {frequency_hz}")
     if max_hz is not None and frequency_hz > max_hz:
         raise ValueError(f"frequency {frequency_hz} exceeds the layout limit {max_hz}")
+    if memory.frequency_ranges and not any(
+        band == group and low <= frequency_hz <= high
+        for band, low, high in memory.frequency_ranges
+    ):
+        raise ValueError(
+            f"frequency {frequency_hz} is outside memory group {group} ranges"
+        )
     encoded = bcd_encode(frequency_hz)  # raises past 10 digits on its own
     _check_frequency_digits(encoded[4], memory)
     return encoded
@@ -396,6 +404,8 @@ def _encode_record_frequency(
 
 def _encode_record_name(name: str, length: int, pad: bytes) -> bytes:
     """An ASCII name padded to the declared field width."""
+    if not isinstance(name, str):
+        raise ValueError("memory name must be a string")
     if len(name) > length:
         raise ValueError(f"memory name is {len(name)} characters, limit is {length}")
     try:
@@ -405,6 +415,23 @@ def _encode_record_name(name: str, length: int, pad: bytes) -> bytes:
     if any(not 0x20 <= byte <= 0x7E for byte in encoded):
         raise ValueError("memory name must be printable ASCII")
     return encoded.ljust(length, pad)
+
+
+def _check_field_storage(mem: MemoryChannel, layout: MemoryWriteLayout) -> None:
+    encodings = {field.encoding for field in layout.fields}
+    for name, neutral, stored_by in (
+        ("filter", 1, {"filter"}),
+        ("scan", 0, {"scan"}),
+        ("datamode", 0, {"data_mode", "data_tone"}),
+        ("tonemode", 0, {"data_tone", "duplex_tone"}),
+        ("duplex", 0, {"duplex_tone"}),
+        ("tone_freq_hz", None, {"tone_hz_bcd"}),
+        ("tsql_freq_hz", None, {"tsql_hz_bcd"}),
+        ("tone_centihz", None, {"tone"}),
+        ("tsql_centihz", None, {"tsql"}),
+    ):
+        if getattr(mem, name) != neutral and not encodings & stored_by:
+            raise ValueError(f"memory layout cannot store {name}")
 
 
 def _check_tone_representation(
@@ -482,7 +509,9 @@ def _encode_write_field(
                 raise ValueError(f"scan flag must be 0 or 1, got {mem.scan}")
             return bytes([mem.scan])
         case "frequency":
-            return _encode_record_frequency(mem.frequency_hz, memory, field.max_hz)
+            return _encode_record_frequency(
+                mem.frequency_hz, memory, field.max_hz, mem.group or 0
+            )
         case "mode":
             # The raw CI-V mode code of the read block; DD (0x22) only in
             # the profile's DD groups (the shared reader rule).

@@ -26,18 +26,23 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from rigplane.commands import CONTROLLER_ADDR
+from rigplane.commands._frame import build_civ_frame
+from rigplane.core.exceptions import CommandError
+from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.profiles import MemoryWriteUnverifiedError
 from rigplane.radio import IcomRadio
 from rigplane.types import MemoryChannel
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import WebConfig, WebServer
-from _helpers import CIV_HEADER_SIZE
+from _helpers import CIV_HEADER_SIZE, wrap_civ_in_udp
 from test_memory_write_layouts import _MemoryAckTransport as MockTransport
 from test_web_server import _addr, _http_get
 from test_web_split_writes import _request
@@ -438,6 +443,200 @@ async def _shutdown(web: WebServer, radio: IcomRadio) -> None:
             task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
     radio._connected = False
+
+
+class _HttpMemoryTransport(MockTransport):
+    def __init__(self, reply_command: int | None = None) -> None:
+        super().__init__(reply_command)
+        self.sent = asyncio.Event()
+
+    async def send_tracked(self, data: bytes) -> None:
+        await super().send_tracked(data)
+        self.sent.set()
+
+    def release_ack(self) -> None:
+        address = self.sent_packets[0][CIV_HEADER_SIZE + 2]
+        self.queue_response(
+            wrap_civ_in_udp(build_civ_frame(CONTROLLER_ADDR, address, 0xFB))
+        )
+
+
+@asynccontextmanager
+async def _memory_http_peer(
+    model: str, transport: MockTransport
+) -> AsyncIterator[tuple[WebServer, asyncio.Event]]:
+    from rigplane.core.state_pipeline_contracts import (
+        FieldPath,
+        Observation,
+        SourceMetadata,
+    )
+
+    radio = _radio(model, transport)
+    web = await _serve(radio)
+    poller = RadioPoller(radio, web.command_queue, state_store=web.command_state_store)
+    web.command_state_store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=asyncio.get_running_loop().time(),
+            max_age=60,
+        )
+    )
+    completed = asyncio.Event()
+
+    async def consume() -> None:
+        while True:
+            await web.command_queue.wait(8)
+            entry = web.command_queue.take_entry()
+            assert entry is not None
+            try:
+                await poller._execute_queued_entry(entry)
+            except (CommandError, RigplaneTimeoutError):
+                pass
+            completed.set()
+
+    consumer = asyncio.create_task(consume())
+    try:
+        yield web, completed
+    finally:
+        consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
+        await _shutdown(web, radio)
+        await radio._stop_civ_rx_pump()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "overrides"),
+    [("IC-9700", {"group": 1, "frequency_hz": 446_000_000})]
+    + [
+        (model, {"name": name})
+        for model in ("IC-705", "IC-7300", "IC-7610")
+        for name in ([], {}, 7, None)
+    ]
+    + [
+        (
+            model,
+            {
+                "frequency_hz": 29_600_000,
+                "mode": 5,
+                "tonemode": 0,
+                "tone_centihz": None,
+                "tone_freq_hz": None,
+                "duplex": duplex,
+            },
+        )
+        for model in ("IC-7300", "IC-7300MK2", "IC-7610")
+        for duplex in (1, 2)
+    ],
+)
+async def test_http_memory_write_refuses_unrepresentable_input(
+    model: str, overrides: dict[str, Any]
+) -> None:
+    from test_memory_write_layouts import _mem as layout_mem
+
+    transport = MockTransport()
+    async with _memory_http_peer(model, transport) as (web, _completed):
+        status, body = await _request(
+            web, "http", "set_memory_contents", layout_mem(model, **overrides).__dict__
+        )
+        assert status == 400
+        assert body["error"] == "invalid_request"
+        assert web.command_queue.pending_count == 0
+        assert transport.sent_packets == []
+
+
+def _http_memory_step(model: str, operation: str) -> dict[str, Any]:
+    from test_memory_write_layouts import _mem as layout_mem
+
+    mem = layout_mem(model)
+    params = (
+        mem.__dict__
+        if operation == "set_memory_contents"
+        else {"channel": mem.channel, "group": mem.group}
+    )
+    return {"name": operation, "params": params}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+@pytest.mark.parametrize("operation", ["set_memory_contents", "memory_clear"])
+async def test_http_memory_mutation_waits_for_transport_ack(
+    model: str, operation: str
+) -> None:
+    transport = _HttpMemoryTransport()
+    async with _memory_http_peer(model, transport) as (web, completed):
+        request = asyncio.create_task(
+            _post_json(
+                web, "/api/v1/commands", _http_memory_step(model, operation), timeout=8
+            )
+        )
+        try:
+            await asyncio.wait_for(transport.sent.wait(), timeout=5)
+            done, _pending = await asyncio.wait((request,), timeout=0.1)
+            assert not done
+            assert not completed.is_set()
+            assert len(transport.sent_packets) == 1
+            transport.release_ack()
+            status, body = await asyncio.wait_for(request, timeout=5)
+        finally:
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+        assert status == 200
+        assert body["ok"] is True
+        assert body["result"] == {"channel": 7}
+        assert completed.is_set()
+        assert len(transport.sent_packets) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+@pytest.mark.parametrize("operation", ["set_memory_contents", "memory_clear"])
+@pytest.mark.parametrize(
+    ("reply", "status", "error", "step_status"),
+    [
+        (0xFA, 409, "radio_nak", "failed_execution"),
+        (None, 504, "command_timeout", "timed_out"),
+    ],
+)
+@pytest.mark.parametrize("batch", [False, True], ids=["single", "batch"])
+async def test_http_memory_mutation_reports_transport_failure(
+    model: str,
+    operation: str,
+    reply: int | None,
+    status: int,
+    error: str,
+    step_status: str,
+    batch: bool,
+) -> None:
+    transport = _HttpMemoryTransport(reply)
+    async with _memory_http_peer(model, transport) as (web, completed):
+        step = _http_memory_step(model, operation)
+        successor = _http_memory_step(
+            model,
+            "memory_clear"
+            if operation == "set_memory_contents"
+            else "set_memory_contents",
+        )
+        actual_status, body = await _post_json(
+            web,
+            "/api/v1/commands/batch" if batch else "/api/v1/commands",
+            {"steps": [step, successor]} if batch else step,
+            timeout=8,
+        )
+        assert actual_status == (200 if batch else status)
+        assert body["ok"] is False
+        result = body["results"][0] if batch else body
+        assert result["error"] == error
+        if batch:
+            assert len(body["results"]) == 2
+            assert result["status"] == step_status
+            assert body["results"][1]["status"] == "skipped"
+            assert body["results"][1]["error"] == "skipped_after_failure"
+        assert completed.is_set()
+        assert web.command_queue.pending_count == 0
+        assert len(transport.sent_packets) == 1
 
 
 @pytest.mark.asyncio

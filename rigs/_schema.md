@@ -659,6 +659,12 @@ group number or band code, `first_channel`/`last_channel` the channel;
 `offset_10mhz_groups` lists groups/bands with the offset's 10 MHz digit.
 Both default to `[]` and accept only lists of unique integers within
 `first_group..last_group`; booleans are rejected.
+`frequency_ranges` optionally lists `{group, min_hz, max_hz}` tables for
+memory writes. Bounds are inclusive positive integer Hz, at most 9999999999;
+groups must be within the memory bounds and ranges in one group cannot overlap.
+A nonempty list admits only matching group/frequency pairs; an absent or empty
+list adds no frequency restriction. See `rig_loader.py: _parse_memory` and
+`commands/memory.py: _encode_record_frequency`.
 `write_layout` (default absent) declares the write-side record layout
 accepted for the profile, as a field table (MOR-3644): `clear` names the
 channel-clear wire form (`"1a00_ff"` = the manuals' `1A 00` + the radio's

@@ -2170,6 +2170,7 @@ _MEMORY_KEYS = frozenset(
         "recall",
         "dd_groups",
         "offset_10mhz_groups",
+        "frequency_ranges",
         "write_layout",
     }
 )
@@ -2402,6 +2403,38 @@ def _parse_memory(
                 f"{filename}: [memory].{key} must not contain duplicates"
             )
         groups[key] = tuple(values)
+    ranges = raw.get("frequency_ranges", [])
+    if not isinstance(ranges, list):
+        raise RigLoadError(f"{filename}: [memory].frequency_ranges must be a list")
+    frequency_ranges: list[tuple[int, int, int]] = []
+    for row in ranges:
+        section = "[memory].frequency_ranges"
+        if not isinstance(row, dict):
+            raise RigLoadError(f"{filename}: {section} entries must be tables")
+        _reject_unknown_keys(
+            filename, section, row, frozenset({"group", "min_hz", "max_hz"})
+        )
+        range_values: list[int] = []
+        for key in ("group", "min_hz", "max_hz"):
+            value = row.get(key)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise RigLoadError(f"{filename}: {section} {key} must be an integer")
+            range_values.append(value)
+        group, low, high = range_values
+        if not bounds["first_group"] <= group <= bounds["last_group"]:
+            raise RigLoadError(f"{filename}: {section} group outside memory bounds")
+        if not 0 < low <= high <= 9_999_999_999:
+            raise RigLoadError(
+                f"{filename}: {section} needs 0 < min_hz <= max_hz <= 9999999999"
+            )
+        if any(
+            g == group and low <= end and start <= high
+            for g, start, end in frequency_ranges
+        ):
+            raise RigLoadError(
+                f"{filename}: {section} ranges for a group must not overlap"
+            )
+        frequency_ranges.append((group, low, high))
     write_layout = _parse_write_layout(
         filename, raw.get("write_layout"), ctcss_tones_centihz
     )
@@ -2409,6 +2442,7 @@ def _parse_memory(
         addressing=addressing,
         recall=recall,
         write_layout=write_layout,
+        frequency_ranges=tuple(frequency_ranges),
         **bounds,
         **groups,
     )

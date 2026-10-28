@@ -23,7 +23,9 @@ def test_shipped_profiles_declare_memory_addressing_and_capability() -> None:
         "group_channel", 0, 99, 0, 99, recall=True
     )
     ic9700 = get_radio_profile("IC-9700")
-    assert replace(ic9700.memory, write_layout=None) == MemoryProfile(
+    assert replace(
+        ic9700.memory, write_layout=None, frequency_ranges=()
+    ) == MemoryProfile(
         "band_channel", 1, 3, 1, 99, dd_groups=(3,), offset_10mhz_groups=(3,)
     )
     assert ic9700.memory.dd_groups == (3,)
@@ -85,6 +87,47 @@ def test_loader_reads_memory_group_rules(tmp_path: Path) -> None:
     assert defaults.dd_groups == defaults.offset_10mhz_groups == ()
     fields = {f.name: f for f in dataclasses.fields(MemoryProfile)}
     assert fields["dd_groups"].kw_only and fields["offset_10mhz_groups"].kw_only
+
+
+def test_loader_reads_optional_memory_frequency_ranges(tmp_path: Path) -> None:
+    memory = _load(
+        tmp_path,
+        _GOOD
+        + "frequency_ranges = [{group = 1, min_hz = 144000000, max_hz = 148000000}]\n",
+    ).memory
+    assert memory.frequency_ranges == ((1, 144_000_000, 148_000_000),)
+    assert _load(tmp_path, _GOOD).memory.frequency_ranges == ()
+    assert get_radio_profile("IC-705").memory.frequency_ranges == ()
+    assert get_radio_profile("IC-9700").memory.frequency_ranges == (
+        (1, 144_000_000, 148_000_000),
+        (2, 430_000_000, 450_000_000),
+        (3, 1_240_000_000, 1_300_000_000),
+    )
+
+
+@pytest.mark.parametrize(
+    "ranges",
+    [
+        "1",
+        "{}",
+        "[1]",
+        "[{group = true, min_hz = 1, max_hz = 2}]",
+        "[{group = 0, min_hz = 1, max_hz = 2}]",
+        "[{group = 4, min_hz = 1, max_hz = 2}]",
+        "[{group = 1, min_hz = true, max_hz = 2}]",
+        "[{group = 1, min_hz = 1, max_hz = 2.0}]",
+        "[{group = 1, min_hz = 0, max_hz = 2}]",
+        "[{group = 1, min_hz = 3, max_hz = 2}]",
+        "[{group = 1, min_hz = 1}]",
+        "[{group = 1, min_hz = 1, max_hz = 2, extra = 1}]",
+        "[{group = 1, min_hz = 1, max_hz = 2}, {group = 1, min_hz = 2, max_hz = 3}]",
+    ],
+)
+def test_loader_rejects_invalid_memory_frequency_ranges(
+    tmp_path: Path, ranges: str
+) -> None:
+    with pytest.raises(RigLoadError, match=r"\[memory\].frequency_ranges"):
+        _load(tmp_path, _GOOD + f"frequency_ranges = {ranges}\n")
 
 
 @pytest.mark.parametrize("key", ["dd_groups", "offset_10mhz_groups"])

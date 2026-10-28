@@ -783,6 +783,7 @@ class MemoryProfile:
     recall: bool = False
     dd_groups: tuple[int, ...] = field(default=(), kw_only=True)
     offset_10mhz_groups: tuple[int, ...] = field(default=(), kw_only=True)
+    frequency_ranges: tuple[tuple[int, int, int], ...] = field(default=(), kw_only=True)
     # The write-side record layout accepted for this profile (MOR-3644):
     # a field table declaring the verified ``1A 00`` SET record and the
     # channel-clear wire form, validated structurally by

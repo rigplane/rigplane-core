@@ -6322,10 +6322,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         :class:`CommandRejectedError`, silence a timeout -- a refused
         clear never reports success.
         """
+        self._check_connected()
         admit_memory_write(self._profile)
         memory = self._profile.memory
         assert memory is not None  # admit_memory_write just verified it
         async with memory_slot_operation(self):
+            self._check_connected()
             resp = await self._send_civ_expect(
                 self._commands.build_memory_clear(
                     memory, group, channel, to_addr=self._radio_addr
@@ -6368,10 +6370,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         answer: a NAK raises :class:`CommandRejectedError`, silence a
         timeout -- a refused write never reports success.
         """
+        self._check_connected()
         admit_memory_write(self._profile)
         memory = self._profile.memory
         assert memory is not None  # admit_memory_write just verified it
         async with memory_slot_operation(self):
+            self._check_connected()
             resp = await self._send_civ_expect(
                 self._commands.build_memory_contents_set(
                     mem,

@@ -352,6 +352,11 @@ last_channel = 99
 # CI-V Reference Guide rev 4, 1A 00 offset digit; Advanced manual, DD mode: 1.2 GHz only.
 dd_groups = [3]
 offset_10mhz_groups = [3]
+frequency_ranges = [
+  { group = 1, min_hz = 144_000_000, max_hz = 148_000_000 },
+  { group = 2, min_hz = 430_000_000, max_hz = 450_000_000 },
+  { group = 3, min_hz = 1_240_000_000, max_hz = 1_300_000_000 },
+]
 
 # The verified 1A 00 write record (MOR-3644), field by field from the
 # IC-9700 CI-V Reference Guide (2019, rev. 4) p.14 "Memory content". The
