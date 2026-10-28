@@ -22,6 +22,7 @@ from rigplane.core.tx_interlock_contract import (
     TxInterlockDisposition,
 )
 from rigplane.runtime._poller_types import (
+    MemoryClear,
     MemoryToVfo,
     PttOff,
     PttOn,
@@ -39,6 +40,7 @@ from rigplane.runtime._poller_types import (
     SetCivOutputAnt,
     SetDualWatch,
     SetFreq,
+    SetMemoryContents,
     SetVfoFreq,
     SetMainSubTracking,
     SetMemoryMode,
@@ -310,6 +312,11 @@ _DEFER_TYPES = (
     QuickSplitTrigger,
     SetMemoryMode,
     MemoryToVfo,
+    # MOR-3644: writing or clearing a stored channel while keyed can leave
+    # a wrong-frequency channel behind; deferred like the other memory
+    # family members, never a hard block (a known-RX pass must stay easy).
+    MemoryClear,
+    SetMemoryContents,
 )
 
 _HARD_BLOCK_TYPES = (
@@ -379,7 +386,9 @@ def get_tx_interlock_command_family_metadata(
         ),
     ):
         family = TxInterlockCommandFamily.VFO_TOPOLOGY
-    elif isinstance(command, (SetMemoryMode, MemoryToVfo)):
+    elif isinstance(
+        command, (SetMemoryMode, MemoryToVfo, MemoryClear, SetMemoryContents)
+    ):
         family = TxInterlockCommandFamily.MEMORY
     elif isinstance(command, (SetRitTxStatus, SetRitFrequency)):
         family = TxInterlockCommandFamily.RIT_XIT

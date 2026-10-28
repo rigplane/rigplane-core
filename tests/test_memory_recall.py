@@ -352,7 +352,10 @@ class TestRecallThroughTheControlHandler:
             "channel": 5
         }
         assert queue.drain() == [SetMemoryMode(5)]
-        with pytest.raises(ValueError, match="no groups"):
+        # MOR-3644 gave ic7610.toml a [memory] section (write layout only),
+        # so the group form now reaches the recall check instead of the
+        # no-section refusal; recall stays undeclared and refused.
+        with pytest.raises(ValueError, match="does not support recall"):
             await handler._enqueue_command(
                 "set_memory_mode", {"group": 0, "channel": 5}
             )

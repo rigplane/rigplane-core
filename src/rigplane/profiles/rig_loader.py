@@ -30,7 +30,7 @@ from rigplane.core.state_acquisition_policy import (
     ReconciliationPriority,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.core.types import ToneSquelchType
+from rigplane.core.types import MEMORY_WRITE_LAYOUTS, ToneSquelchType
 from rigplane.core.usb_identity import UsbAudioIdentity, UsbFunctionId
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.profiles.control_domain import (
@@ -2165,6 +2165,7 @@ _MEMORY_KEYS = frozenset(
         "recall",
         "dd_groups",
         "offset_10mhz_groups",
+        "write_layout",
     }
 )
 _MEMORY_ADDRESSING = frozenset({"group_channel", "band_channel", "channel"})
@@ -2227,7 +2228,21 @@ def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
                 f"{filename}: [memory].{key} must not contain duplicates"
             )
         groups[key] = tuple(values)
-    return MemoryProfile(addressing=addressing, recall=recall, **bounds, **groups)  # type: ignore[arg-type]
+    write_layout = raw.get("write_layout")
+    if write_layout is not None and (
+        not isinstance(write_layout, str) or write_layout not in MEMORY_WRITE_LAYOUTS
+    ):
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout must be one of "
+            f"{sorted(MEMORY_WRITE_LAYOUTS)} or absent, got {write_layout!r}"
+        )
+    return MemoryProfile(  # type: ignore[arg-type]
+        addressing=addressing,
+        recall=recall,
+        write_layout=write_layout,
+        **bounds,
+        **groups,
+    )
 
 
 _CW_TEXT_KEYS = frozenset({"supported", "max_length", "memory_channel", "memory_type"})

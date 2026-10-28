@@ -11,6 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Memory writes and clears refused without a verified write layout
+  (MOR-3644).** `set_memory_contents` builds one fixed 26-byte `1A 00`
+  record and `memory_clear` one fixed `0x0B` clear frame — wire forms this
+  package has only ever exercised on the IC-7610 (its `0x0B` channel
+  payload remains the open MOR-2055 question); on radios with a different
+  memory layout (IC-705, IC-9700, ...) a client call could corrupt a
+  stored channel. Both commands are now refused with the stable error
+  `memory_write_unverified` (HTTP 409, WebSocket `error` field) unless
+  the profile's `[memory]` section declares a `write_layout`; nothing is
+  sent to the radio. Only `ic7610.toml` declares it, retaining that
+  radio's existing write/clear behaviour unchanged. Both typed commands
+  are also classified in the TX interlock's MEMORY family (deferred while
+  keyed, like `SetMemoryMode`).
+
 ## [3.0.0] — 2026-10-27
 
 The same code as 3.0.0rc1 plus three fixes made during the release freeze.

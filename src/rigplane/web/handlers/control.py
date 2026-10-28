@@ -37,7 +37,9 @@ from ...core.state_store import FreshnessState, StateStore
 from ..monitor_mute import MonitorMuteState, apply_monitor_mute  # noqa: TID251
 from ...profiles import (
     CwTextSendCancelledError,
+    MemoryWriteUnverifiedError,
     RadioProfile,
+    admit_memory_write,
     cw_text_sender,
     resolve_radio_profile,
 )
@@ -1602,6 +1604,9 @@ class ControlHandler:
         if isinstance(exc, CwTextSendCancelledError):
             # MOR-3700: a CW stop or a transmit abort ended the send.
             error = "command_cancelled"
+        elif isinstance(exc, MemoryWriteUnverifiedError):
+            # MOR-3644: stable refusal code, not English prose matching.
+            error = exc.reason_code
         elif isinstance(exc, CommandUnsupportedError):
             error = "unsupported_command"
         elif isinstance(exc, CommandRejectedError):
@@ -3459,6 +3464,9 @@ class ControlHandler:
                         "command memory_clear is not supported by this radio "
                         "(missing MemoryCapable)"
                     )
+                # MOR-3644: every ingress (WS, HTTP) shares this arm; the
+                # profile is the only authority on the write record layout.
+                admit_memory_write(getattr(radio, "profile", None))
                 channel = _int_param(params["channel"], "channel")
                 if not 1 <= channel <= 101:
                     raise ValueError(f"channel must be 1-101, got {channel}")
@@ -3467,9 +3475,11 @@ class ControlHandler:
             case "set_memory_contents":
                 if not isinstance(radio, MemoryCapable):
                     raise ValueError(
-                        "command set_memory_contents is not supported by this radio "
-                        "(missing MemoryCapable)"
+                        "command set_memory_contents is not supported by this "
+                        "radio (missing MemoryCapable)"
                     )
+                # MOR-3644: same shared-arm gate as memory_clear above.
+                admit_memory_write(getattr(radio, "profile", None))
                 from ...types import MemoryChannel
 
                 mem_params = dict(params)

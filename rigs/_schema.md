@@ -659,6 +659,17 @@ group number or band code, `first_channel`/`last_channel` the channel;
 `offset_10mhz_groups` lists groups/bands with the offset's 10 MHz digit.
 Both default to `[]` and accept only lists of unique integers within
 `first_group..last_group`; booleans are rejected.
+`write_layout` (default absent) declares the write-side record layout
+accepted for the profile: `"civ_26"` names the 2-byte BCD channel +
+26-byte fixed record `1A 00` SET (and the `0x0B` clear) the builders in
+`commands/memory.py` emit. Declaring it retains the radio's existing
+write/clear behaviour; its open payload questions stay tracked (the
+`0x0B` channel bytes are MOR-2055). Absent means NOT verified: memory
+contents writes and clears are refused with the stable error
+`memory_write_unverified` before any byte reaches the wire, at the
+dispatch handler and in the backend. Declaring the read-side fields
+alone proves nothing about the write layout; the `memory_read`
+capability is still what turns on the read-only listing.
 
 ## `[cw_text]` — Typed CW Text (MOR-3678)
 

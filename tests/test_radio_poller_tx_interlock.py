@@ -24,6 +24,7 @@ from rigplane.core.state_store import (
 from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime._poller_types import (
+    MemoryClear,
     PttOff,
     PttOn,
     ScanStart,
@@ -33,6 +34,7 @@ from rigplane.runtime._poller_types import (
     SetAntenna1,
     SetBand,
     SetFreq,
+    SetMemoryContents,
     SetMode,
     SetPowerstat,
     SetSplit,
@@ -79,6 +81,18 @@ def _radio() -> SimpleNamespace:
         set_powerstat=AsyncMock(),
         set_ptt=AsyncMock(),
     )
+
+
+def _memory_radio() -> SimpleNamespace:
+    """``_radio()`` plus the MemoryCapable surface (MOR-3644)."""
+    radio = _radio()
+    radio.set_memory_mode = AsyncMock()
+    radio.memory_write = AsyncMock()
+    radio.memory_to_vfo = AsyncMock()
+    radio.memory_clear = AsyncMock()
+    radio.set_memory_contents = AsyncMock()
+    radio.set_bsr = AsyncMock()
+    return radio
 
 
 def _observe_ptt(
@@ -388,6 +402,46 @@ async def test_fresh_rx_deferred_class_dispatches_immediately_once() -> None:
 
     assert future.result() is None
     radio.set_split.assert_awaited_once_with(True)
+
+
+async def test_memory_write_and_clear_are_held_while_ptt_is_keyed() -> None:
+    """MOR-3644: keyed PTT holds memory writes/clears; fresh RX dispatches."""
+    from rigplane.types import MemoryChannel
+
+    mem = MemoryChannel(
+        channel=1,
+        frequency_hz=14_074_000,
+        mode=1,
+        filter=1,
+        scan=0,
+        datamode=0,
+        tonemode=0,
+    )
+    for command, method, arg in (
+        (MemoryClear(channel=5), "memory_clear", 5),
+        (SetMemoryContents(mem=mem), "set_memory_contents", mem),
+    ):
+        clock = FreshnessClock(start=10.0)
+        radio = _memory_radio()
+        store = StateStore(freshness_clock=clock)
+        store.begin_provider_generation()
+        poller = RadioPoller(radio, CommandQueue(), state_store=store)
+        _observe_ptt(store, True, observed_at=clock.now())  # PTT flipped: keyed
+        entry = CommandQueueEntry(command)
+
+        # The entry stays out of the ready list while the radio is keyed.
+        assert poller._stage_tx_interlocked_entries([entry]) == []  # noqa: SLF001
+        getattr(radio, method).assert_not_awaited()
+
+        # One second of quiet known RX releases it, and it then dispatches.
+        clock.advance(0.1)
+        _observe_ptt(store, False, observed_at=clock.now())
+        assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
+        clock.advance(1.0)
+        _observe_ptt(store, False, observed_at=clock.now())
+        assert poller._stage_tx_interlocked_entries([]) == [entry]  # noqa: SLF001
+        await poller._execute_queued_entry(entry)  # noqa: SLF001
+        getattr(radio, method).assert_awaited_once_with(arg)
 
 
 def test_authority_approved_commands_do_not_inspect_observed_rf() -> None:

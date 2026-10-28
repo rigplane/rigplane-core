@@ -25,11 +25,26 @@ def test_shipped_profiles_declare_memory_addressing_and_capability() -> None:
     # The capability is declared together with the reader (list API PR).
     for profile in (ic705, ic9700):
         assert "memory_read" in profile.capabilities
-    # Radios without a [memory] section stay without the listing.
-    for model in ("IC-7300", "IC-7610"):
-        profile = get_radio_profile(model)
-        assert profile.memory is None
-        assert "memory_read" not in profile.capabilities
+    # IC-7300 has no [memory] section at all.
+    profile = get_radio_profile("IC-7300")
+    assert profile.memory is None
+    assert "memory_read" not in profile.capabilities
+
+
+def test_shipped_profiles_declare_the_verified_write_layout() -> None:
+    """MOR-3644: only IC-7610 opts in; everyone else refuses by default."""
+    ic7610 = get_radio_profile("IC-7610")
+    assert ic7610.memory is not None
+    assert ic7610.memory.write_layout == "civ_26"
+    # The read-only listing stays off: no memory_read capability was added.
+    assert "memory_read" not in ic7610.capabilities
+    # Every other shipped [memory] section leaves the write layout unset.
+    for model in ("IC-705", "IC-9700", "FTX-1"):
+        memory = get_radio_profile(model).memory
+        assert memory is not None
+        assert memory.write_layout is None
+    # Radios with no [memory] section have no write layout either.
+    assert get_radio_profile("IC-7300").memory is None
 
 
 def _load(tmp_path: Path, memory: str):
@@ -108,6 +123,25 @@ def test_recall_is_accepted_only_for_group_channel_addressing(tmp_path: Path) ->
         "last_channel = 99", "last_channel = 99\nrecall = true"
     )
     assert _load(tmp_path, group).to_profile().memory.recall is True
+
+
+def test_loader_reads_the_write_layout(tmp_path: Path) -> None:
+    declared = _load(tmp_path, _GOOD + 'write_layout = "civ_26"\n').memory
+    assert declared is not None
+    assert declared.write_layout == "civ_26"
+    # The default refuses: no declaration, no memory writes or clears.
+    defaults = _load(tmp_path, _GOOD).memory
+    assert defaults is not None
+    assert defaults.write_layout is None
+    assert dataclasses.fields(MemoryProfile)[-1].kw_only
+
+
+@pytest.mark.parametrize(
+    "value", ['"morse"', "3", "[]", "{}", "true", '"CIV_26"', '""']
+)
+def test_loader_rejects_an_unknown_write_layout(tmp_path: Path, value: str) -> None:
+    with pytest.raises(RigLoadError, match=r"\[memory\].write_layout"):
+        _load(tmp_path, _GOOD + f"write_layout = {value}\n")
 
 
 def test_a_channel_list_has_only_group_zero(tmp_path: Path) -> None:

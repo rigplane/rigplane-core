@@ -1521,3 +1521,24 @@ refused_during_tx = []
 # keying attribution, so nothing else is mapped and the transmitting byte
 # is not-receiving without an invented source.
 tx_state_map = { "0" = "rx" }
+
+[memory]
+# Write-side declaration only (MOR-3644). The 26-byte 1A 00 SET record and
+# the 0x0B clear this package builds are pinned against THIS profile's own
+# command map by tests/test_memory_commands.py (TestMemoryContentsSetBuilder,
+# TestMemoryClearBuilder, and TestIcomRadioMemoryMethods's
+# test_memory_clear_calls_builder / test_set_memory_contents_calls_builder,
+# all loading ic7610.toml), tests/integration/test_memory_set_only.py, and
+# the complete-frame goldens in tests/test_memory_write_gate.py. Declaring
+# write_layout = "civ_26" RETAINS this radio's existing write/clear
+# behaviour (the 0x0B channel payload question stays open, MOR-2055);
+# every other profile leaves it absent and refuses writes/clears.
+# The read-side listing stays OFF for this radio: the memory_read capability
+# is deliberately not declared (the 47-byte 1A 00 read record is not proven
+# here; see runtime/radio.py get_memory_contents).
+addressing = "channel"
+first_group = 0
+last_group = 0
+first_channel = 1
+last_channel = 101
+write_layout = "civ_26"

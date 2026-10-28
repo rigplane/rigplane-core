@@ -31,6 +31,7 @@ __all__ = [
     "MemoryChannel",
     "MemoryEntry",
     "MemoryProfile",
+    "MEMORY_WRITE_LAYOUTS",
     "BandStackRegister",
 ]
 
@@ -452,6 +453,14 @@ class MemoryChannel:
 
 MemoryAddressing = Literal["group_channel", "band_channel", "channel"]
 
+# Write record layouts this package can build (MOR-3644): ``"civ_26"`` is
+# the 2-byte BCD channel + 26-byte fixed record ``1A 00`` SET (and the
+# ``0x0B`` clear) from ``commands/memory.py``. One authoritative vocabulary
+# shared by the TOML loader and the runtime admission gate, so an
+# SDK-supplied profile carrying an unlisted layout string is refused just
+# like a profile that declares none.
+MEMORY_WRITE_LAYOUTS: frozenset[str] = frozenset({"civ_26"})
+
 
 @dataclass(frozen=True, slots=True)
 class MemoryProfile:
@@ -471,6 +480,14 @@ class MemoryProfile:
     recall: bool = False
     dd_groups: tuple[int, ...] = field(default=(), kw_only=True)
     offset_10mhz_groups: tuple[int, ...] = field(default=(), kw_only=True)
+    # The write-side record layout accepted for this profile (MOR-3644):
+    # ``"civ_26"`` is the 2-byte BCD channel + 26-byte fixed record
+    # ``1A 00`` SET (and the ``0x0B`` clear) this package's builders emit,
+    # validated against :data:`MEMORY_WRITE_LAYOUTS`. Absent (the default)
+    # means NOT verified: memory contents writes and clears are refused
+    # before any byte reaches the wire. Declaring the read-side fields
+    # alone proves nothing about the write layout.
+    write_layout: str | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)

@@ -23,6 +23,7 @@ from rigplane.core.state_pipeline_contracts import (
 )
 from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
 from rigplane.runtime._poller_types import (
+    MemoryClear,
     MemoryToVfo,
     PttOff,
     PttOn,
@@ -38,6 +39,7 @@ from rigplane.runtime._poller_types import (
     SetData1ModInput,
     SetDualWatch,
     SetFreq,
+    SetMemoryContents,
     SetVfoFreq,
     SetMainSubTracking,
     SetMode,
@@ -74,6 +76,20 @@ def test_runtime_reexports_the_canonical_core_contract_by_identity() -> None:
     assert TxInterlockCommandFamily is CoreTxInterlockCommandFamily
     assert TxInterlockCommandFamilyMetadata is CoreTxInterlockCommandFamilyMetadata
     assert TX_INTERLOCK_COMMAND_FAMILY_METADATA is CORE_TX_INTERLOCK_METADATA
+
+
+def _mem() -> object:
+    from rigplane.types import MemoryChannel
+
+    return MemoryChannel(
+        channel=1,
+        frequency_hz=14_074_000,
+        mode=1,
+        filter=1,
+        scan=0,
+        datamode=0,
+        tonemode=0,
+    )
 
 
 def test_decision_preserves_legacy_equality_and_serialized_shape() -> None:
@@ -153,8 +169,21 @@ def test_unapproved_disruptive_operations_still_defer() -> None:
         QuickSplit(),
         QuickSplitTrigger(),
         MemoryToVfo(channel=1),
+        MemoryClear(channel=1),
+        SetMemoryContents(mem=_mem()),
     ):
         assert classify_tx_interlock(command) is TxInterlockDisposition.DEFER
+
+
+def test_memory_write_and_clear_defer_only_while_rf_is_tx() -> None:
+    """MOR-3644: a keyed radio holds memory writes/clears; known RX passes."""
+    for command in (MemoryClear(channel=1), SetMemoryContents(mem=_mem())):
+        held = evaluate_tx_interlock(command, rf_state=RfState.TX)
+        assert held.disposition is TxInterlockDisposition.DEFER
+        assert held.allowed is False
+        passed = evaluate_tx_interlock(command, rf_state=RfState.RX)
+        assert passed.disposition is TxInterlockDisposition.DEFER
+        assert passed.allowed is True
 
 
 def test_authority_approved_control_families_are_tx_safe_in_every_rf_state() -> None:
@@ -217,6 +246,8 @@ def test_command_family_metadata_pins_typed_policy_without_classifying_defaults(
         (VfoEqualize(), TxInterlockCommandFamily.VFO_CONTENTS),
         (SetSplit(on=True), TxInterlockCommandFamily.VFO_TOPOLOGY),
         (MemoryToVfo(channel=1), TxInterlockCommandFamily.MEMORY),
+        (MemoryClear(channel=1), TxInterlockCommandFamily.MEMORY),
+        (SetMemoryContents(mem=_mem()), TxInterlockCommandFamily.MEMORY),
         (SetRitTxStatus(on=True), TxInterlockCommandFamily.RIT_XIT),
     )
 
