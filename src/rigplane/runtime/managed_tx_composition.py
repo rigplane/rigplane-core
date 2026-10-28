@@ -153,6 +153,7 @@ class ManagedTxComposition:
         self._next_provider_generation = 0
         self._transition_lock = asyncio.Lock()
         self._transition_task: asyncio.Task[None] | None = None
+        self._recovery_task: asyncio.Task[None] | None = None
         self._shutdown_task: asyncio.Task[ShutdownResult] | None = None
 
     @property
@@ -344,12 +345,16 @@ class ManagedTxComposition:
             active = self._active_provider
             if active is None or active.provider_generation != generation:
                 return
-            identity = self._live_transport_identity
-            if identity is not None:
-                self._stale_transport_identities.append(identity)
-            self._live_transport_identity = None
             self._poison_active()
             await self._join_transition_locked()
+
+            async def recover() -> None:
+                async with self._transition_lock:
+                    if self._shutdown_task is None:
+                        await self._ensure_current_locked()
+
+            self._recovery_task = asyncio.create_task(recover())
+            self._recovery_task.add_done_callback(self._harvest)
 
     async def _retire_once(self, event: _ProviderEvent) -> None:
         if event.provider_generation in self._retired_generations:
@@ -379,6 +384,10 @@ class ManagedTxComposition:
 
     async def _complete_shutdown(self, termination: asyncio.Event) -> ShutdownResult:
         try:
+            recovery = self._recovery_task
+            if recovery is not None:
+                recovery.cancel()
+                await asyncio.gather(recovery, return_exceptions=True)
             task = self._transition_task
             if task is not None:
                 await asyncio.shield(task)
