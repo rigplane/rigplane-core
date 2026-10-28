@@ -307,7 +307,9 @@ def test_invalid_utf8_is_a_reported_violation(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Invalid UTF-8 must be one violation line, not an uncaught UnicodeDecodeError."""
-    rc, stderr = _run(tmp_path, capsys, rx=b'{"schema": 1, "\xff\xfe": 1}', tx=_tx_payload())
+    rc, stderr = _run(
+        tmp_path, capsys, rx=b'{"schema": 1, "\xff\xfe": 1}', tx=_tx_payload()
+    )
     assert rc != 0, "an undecodable receipt must fail the check"
     lines = _stderr_lines(stderr)
     utf8_lines = [line for line in lines if "UTF-8" in line]

@@ -219,7 +219,9 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             quick,
         )
 
-    def test_release_gate_changes_select_the_route_that_runs_receipt_tests(self) -> None:
+    def test_release_gate_changes_select_the_route_that_runs_receipt_tests(
+        self,
+    ) -> None:
         # MOR-3839 pre-review: the publish-path radio-smoke gate is pinned by
         # tests/test_check_radio_smoke.py and
         # tests/test_publish_radio_smoke_gate.py, and only the core route's

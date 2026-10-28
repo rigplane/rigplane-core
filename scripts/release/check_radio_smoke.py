@@ -147,6 +147,10 @@ def _check_file(
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return [f"{kind}: file not found: {path}"]
+    except UnicodeDecodeError as exc:
+        # A ValueError, not an OSError: without this case an undecodable
+        # receipt crashed the checker with an uncaught UnicodeDecodeError.
+        return [f"{kind}: invalid UTF-8 in {path}: {exc}"]
     except OSError as exc:
         return [f"{kind}: cannot read {path}: {exc}"]
     try:
