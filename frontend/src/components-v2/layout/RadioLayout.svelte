@@ -89,15 +89,19 @@
     if (!txSettingsTrigger || !txSettingsPopover || typeof window === 'undefined') return;
     const margin = 8;
     const gap = 5;
+    const app = document.getElementById('app');
+    const topLimit = margin + (app ? Number.parseFloat(getComputedStyle(app).paddingTop) || 0 : 0);
+    const maxHeight = Math.max(0, window.innerHeight - margin - topLimit);
+    txSettingsPopover.style.maxHeight = `${maxHeight}px`;
     const anchor = txSettingsTrigger.getBoundingClientRect();
     const popover = txSettingsPopover.getBoundingClientRect();
     const left = Math.min(window.innerWidth - margin - popover.width,
       Math.max(margin, anchor.right - popover.width));
-    const below = anchor.bottom + gap;
+    const below = Math.max(topLimit, anchor.bottom + gap);
     const top = below + popover.height <= window.innerHeight - margin
       ? below
-      : Math.max(margin, anchor.top - gap - popover.height);
-    txSettingsPosition = `left:${left}px;top:${top}px;max-height:${Math.max(80, window.innerHeight - margin * 2)}px`;
+      : Math.max(topLimit, anchor.top - gap - popover.height);
+    txSettingsPosition = `left:${left}px;top:${top}px;max-height:${maxHeight}px`;
   }
 
   async function toggleTxSettings(id: StandardTxSettings, event: MouseEvent): Promise<void> {
@@ -1270,7 +1274,7 @@
   }
   .tx-aux-scalar-seat { min-width: 0; }
   .radio-layout, .radio-layout.semantic-deck {
-    height: 100vh;
+    height: calc(100vh - var(--rp-chrome-top, 0px));
     background:
       linear-gradient(180deg, var(--v2-bg-gradient-start) 0%, var(--v2-bg-darkest) 100%),
       var(--v2-bg-app, var(--v2-bg-darker));
@@ -1453,6 +1457,7 @@
   .settings-backdrop {
     position: fixed;
     inset: 0;
+    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 200;
     background: rgba(0, 0, 0, 0.6);
     backdrop-filter: blur(3px);

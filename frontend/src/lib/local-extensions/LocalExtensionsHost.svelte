@@ -279,6 +279,7 @@
   .local-extension-host {
     position: fixed;
     inset: 0;
+    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 1250;
     pointer-events: none;
   }
@@ -295,12 +296,12 @@
     bottom: 12px;
     flex-direction: column;
     width: min(420px, calc(100vw - 24px));
-    max-height: calc(100dvh - 24px);
+    max-height: calc(100dvh - var(--rp-chrome-top, 0px) - 24px);
   }
 
   .local-extension-stack--dock-right,
   .local-extension-stack--dock-left {
-    top: 12px;
+    top: calc(var(--rp-chrome-top, 0px) + 12px);
     bottom: 12px;
     flex-direction: column;
     width: min(440px, 34vw, calc(100vw - 24px));
@@ -320,7 +321,7 @@
     left: 12px;
     flex-direction: row;
     align-items: flex-end;
-    max-height: min(360px, 45dvh);
+    max-height: min(360px, 45dvh, calc(100dvh - var(--rp-chrome-top, 0px) - 24px));
   }
 
   .local-extension-stack--collapsed {
@@ -332,8 +333,8 @@
 
   .local-extension-panel {
     display: flex;
-    min-height: 220px;
-    max-height: min(560px, calc(100dvh - 24px));
+    min-height: min(220px, calc(100dvh - var(--rp-chrome-top, 0px) - 24px));
+    max-height: min(560px, calc(100dvh - var(--rp-chrome-top, 0px) - 24px));
     flex: 1 1 auto;
     flex-direction: column;
     overflow: hidden;
@@ -352,8 +353,8 @@
 
   .local-extension-stack--dock-bottom .local-extension-panel {
     min-width: min(360px, calc(100vw - 24px));
-    min-height: 180px;
-    max-height: min(360px, 45dvh);
+    min-height: min(180px, 45dvh, calc(100dvh - var(--rp-chrome-top, 0px) - 24px));
+    max-height: min(360px, 45dvh, calc(100dvh - var(--rp-chrome-top, 0px) - 24px));
   }
 
   .local-extension-panel--collapsed {
@@ -454,7 +455,7 @@
       left: 8px;
       top: auto;
       width: auto;
-      max-height: min(52dvh, 420px);
+      max-height: min(52dvh, 420px, calc(100dvh - var(--rp-chrome-top, 0px) - 16px));
       flex-direction: column;
     }
 
@@ -468,8 +469,8 @@
     .local-extension-panel,
     .local-extension-stack--dock-bottom .local-extension-panel {
       min-width: 0;
-      min-height: 180px;
-      max-height: min(52dvh, 420px);
+      min-height: min(180px, 52dvh, calc(100dvh - var(--rp-chrome-top, 0px) - 16px));
+      max-height: min(52dvh, 420px, calc(100dvh - var(--rp-chrome-top, 0px) - 16px));
     }
   }
 </style>

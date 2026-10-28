@@ -432,6 +432,8 @@
   .error-overlay {
     position: fixed;
     inset: 0;
+    /* MOR-3845: start below a reserved top chrome bar, not at the viewport edge. */
+    top: var(--rp-chrome-top, 0px);
     z-index: 10000;
     display: flex;
     align-items: center;
