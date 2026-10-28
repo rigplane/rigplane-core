@@ -2332,15 +2332,9 @@ def _parse_write_layout(
     errors = layout.validation_errors()
     if errors:
         raise RigLoadError(f"{filename}: [memory].write_layout: {'; '.join(errors)}")
-    if layout.default_tone_centihz is not None and (
-        ctcss_tones_centihz is None
-        or layout.default_tone_centihz not in ctcss_tones_centihz
-    ):
-        raise RigLoadError(
-            f"{filename}: [memory].write_layout.default_tone_centihz "
-            f"{layout.default_tone_centihz} is not a member of the profile's "
-            "CTCSS domain ([ctcss])"
-        )
+    errors = layout.domain_errors(ctcss_tones_centihz)
+    if errors:
+        raise RigLoadError(f"{filename}: [memory].write_layout: {'; '.join(errors)}")
     return layout
 
 

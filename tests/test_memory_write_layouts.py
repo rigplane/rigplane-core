@@ -780,6 +780,33 @@ async def test_sdk_memory_write_refuses_before_sending(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+@pytest.mark.parametrize("default_tone", [-1, 12345])
+@pytest.mark.parametrize("operation", ["write", "clear"])
+async def test_a_default_tone_outside_the_ctcss_domain_is_not_admitted(
+    model: str, default_tone: int, operation: str
+) -> None:
+    """The SDK gate applies the loader's domain rule: a spliced-in default
+    tone the profile's CTCSS table lacks refuses like no layout at all."""
+    transport = _MemoryAckTransport()
+    radio = _radio(model, transport)
+    profile = radio._profile
+    layout = replace(profile.memory.write_layout, default_tone_centihz=default_tone)
+    radio._profile = replace(
+        profile, memory=replace(profile.memory, write_layout=layout)
+    )
+    try:
+        with pytest.raises(MemoryWriteUnverifiedError):
+            if operation == "write":
+                await radio.set_memory_contents(_mem(model))
+            else:
+                await radio.memory_clear(_CASES[model][2], group=_CASES[model][1])
+    finally:
+        radio._connected = False
+    assert transport.sent_packets == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
 @pytest.mark.parametrize("operation", ["write", "clear"])
 async def test_memory_mutations_report_nak(model: str, operation: str) -> None:
     transport = _MemoryAckTransport(reply_command=0xFA)

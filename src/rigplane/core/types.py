@@ -611,6 +611,21 @@ class MemoryWriteLayout:
             return self.record_length
         return self.record_length + (self.copies - 1) * (span[1] - span[0])
 
+    def domain_errors(
+        self, ctcss_tones_centihz: tuple[int, ...] | None
+    ) -> tuple[str, ...]:
+        """Errors against the profile's CTCSS domain (the loader and the
+        admission gate both apply them, after :meth:`validation_errors`)."""
+        tone = self.default_tone_centihz
+        if tone is None:
+            return ()
+        if ctcss_tones_centihz is None or tone not in ctcss_tones_centihz:
+            return (
+                f"default_tone_centihz {tone!r} is not a member of the "
+                "profile's CTCSS domain ([ctcss])",
+            )
+        return ()
+
     def validation_errors(self) -> tuple[str, ...]:
         """Structural errors that make this declaration unbuildable.
 
