@@ -575,12 +575,11 @@ async def test_two_read_release_matrix(
     release_radio, monkeypatch, case, prior, answer, expected
 ):
     from dataclasses import replace
-    from types import SimpleNamespace
     from _helpers import wrap_civ_in_udp
     from tx_observation_fakes import civ_transmit_state_reply
     from rigplane.core.civ import PttReplyLedger
     from rigplane.core.exceptions import CommandRejectedError, TimeoutError
-    from rigplane.runtime import radio as radio_module
+    from rigplane.runtime._civ_rx import _PttReadContext
 
     radio, script, read_sent, replay, inject, start_read = release_radio
     runtime = radio._civ_runtime
@@ -655,32 +654,34 @@ async def test_two_read_release_matrix(
             runtime._ptt_reply_packets[packet] -= 2.1
     read_sent.clear()
     before = script["reads"]
-    settling, resume = asyncio.Event(), asyncio.Event()
+    note_dispatch = runtime._note_ptt_dispatch
 
-    async def sleep(delay):
-        if (
-            asyncio.current_task() is task
-            and delay == radio._PTT_READBACK_SETTLE_S
-            and answer == "settle"
-        ):
-            settling.set()
-            await resume.wait()
-        else:
-            await asyncio.sleep(delay)
+    def observe(frame, is_current=None):
+        note_dispatch(frame, is_current)
+        if answer == "settle" and isinstance(is_current, _PttReadContext):
+            current = is_current.is_current
 
-    monkeypatch.setattr(
-        radio_module, "asyncio", SimpleNamespace(**(vars(asyncio) | {"sleep": sleep}))
-    )
+            def settle_current():
+                if (
+                    asyncio.current_task() is task
+                    and is_current.entry.answered_by is not None
+                ):
+                    ledger.note_reply(
+                        parse_civ_frame(
+                            civ_transmit_state_reply("rx", radio._radio_addr)
+                        )
+                    )
+                return current is None or current()
+
+            is_current.is_current = settle_current
+
+    monkeypatch.setattr(runtime, "_note_ptt_dispatch", observe)
     task = asyncio.create_task(
         radio.read_transmit_state()
         if case.endswith("settle-read")
         else _force_receive(radio)
     )
     try:
-        if answer == "settle":
-            await asyncio.wait_for(settling.wait(), 1)
-            await inject()
-            resume.set()
         if held:
             await asyncio.wait_for(read_sent.wait(), 1)
             if answer == "concurrent":
@@ -704,6 +705,7 @@ async def test_two_read_release_matrix(
         else:
             assert result is ActuationResult(expected)
         if answer == "settle":
+            assert ledger.orphan_count == 1
             assert (await radio.read_transmit_state()).failure == "not-quiescent"
         no_read = blocked or case in ("clean-fb", "clean-fa", "unsupported-read")
         assert script["reads"] - before == (
