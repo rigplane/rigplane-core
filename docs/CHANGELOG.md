@@ -11,7 +11,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] — 2026-10-28
+
+3.0.0 was prepared and tagged but never published to PyPI, so no user received
+it. 3.0.1 is the first release after 3.0.0rc1: it carries everything listed
+under 3.0.0 below, plus the changes in this section.
+
 ### Fixed
+
+- **A quick key, unkey, key, unkey could leave the radio transmitting
+  (MOR-3838, #4390).** A release that arrived while the previous key-on was
+  still being sent was lost: the key-on went out afterwards and nothing
+  unkeyed the radio. A release that supersedes a key-on still in flight now
+  waits for it to finish and then runs right after it; a release
+  requested while no TX provider is available is answered as pending and is
+  sent when the provider is back. Covered by simulator tests of the managed
+  transmit authority.
+
+- **Ambiguous Icom PTT release is confirmed by a verified read-back
+  (MOR-3818, #4388, #4389).** When the acknowledgement of an unkey is missing
+  or ambiguous, Core reads the transmit state back with `1C 00`. The answer
+  counts only if no earlier read of the same command can still be answering;
+  replies still owed are accounted for. A confirmed release clears the
+  debt and the next key-down is accepted; an unconfirmed one stays uncertain
+  and key-down is still refused, as before. Covered by LAN and serial
+  simulator tests.
+
+- **Clear message when the radio's audio devices cannot be paired (MOR-3823,
+  #4385).** When several identical USB radios (or an unreadable USB topology)
+  stop the station from pairing the radio's audio devices automatically, every
+  web client now gets one neutral message: the audio device must be chosen on
+  the station computer. Remote clients no longer receive host-side
+  instructions (device flags and paths) that apply only to the station.
 
 - **Verified memory write layouts as profile data (MOR-3644).**
   `set_memory_contents` used to build one fixed 26-byte `1A 00` record and
@@ -46,6 +77,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verified layout (FTX-1, X6100, X6200, TX-500) still refuse; the
   IC-7300/IC-7300MK2 read listing stays off — their `1A 00` read reply
   is not documented in the sourced manuals.
+
+### Changed
+
+- **Simulator `[timing]` keys (#4392).** The simulator profile and the CI-V
+  serial fake accept optional per-class delays (`ack_ms_set`,
+  `ptt_set_ack_ms`, `readback_ms`, `write_drain_ms`, `tx_on_switch_ms`,
+  `tx_off_switch_ms`), each defaulting to `reply_latency_ms`. Test tooling
+  only; no shipped profile sets them.
 
 ## [3.0.0] — 2026-10-27
 
@@ -4948,7 +4987,10 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b21...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.1...HEAD
+[3.0.1]: https://github.com/rigplane/rigplane-core/compare/v3.0.0...v3.0.1
+[3.0.0]: https://github.com/rigplane/rigplane-core/compare/v3.0.0rc1...v3.0.0
+[3.0.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b21...v3.0.0rc1
 [3.0.0b21]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b20...v3.0.0b21
 [3.0.0b20]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b19...v3.0.0b20
 [3.0.0b19]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b18...v3.0.0b19
