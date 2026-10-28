@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **RX audio start refusals no longer forward host-side exception text to
+  WebSocket clients (MOR-3823).** The audio WS error frame keeps the fixed
+  `audio_start: RX audio failed to start:` prefix but appends only the
+  publishable failure category (`usb_ambiguous`, `usb_topology_names`,
+  `usb_topology_unavailable`, `open_timeout`, `format`, `other`), also
+  exposed as a new `reason` field — the same category `/api/v1/info`
+  publishes under `audioReceive.failure.reason`. The web UI shows remote
+  clients a "the station must choose its audio device" toast and the local
+  operator an actionable "choose RX/TX devices explicitly" toast.
+
 - **Memory writes and clears refused without a verified write layout
   (MOR-3644).** `set_memory_contents` builds one fixed 26-byte `1A 00`
   record and `memory_clear` one fixed `0x0B` clear frame — wire forms this

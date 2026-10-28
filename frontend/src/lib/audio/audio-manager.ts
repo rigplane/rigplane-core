@@ -37,6 +37,15 @@ const AUDIO_STATS_INTERVAL_MS = 1500;
 // _failTxAudio (mid-TX death) falls back to txAudioStopped.
 const SERVER_TX_REFUSAL = 'audio_start: TX audio unavailable';
 const SERVER_RX_REFUSAL_PREFIX = 'audio_start: RX audio failed to start:';
+// The publishable RX-start failure categories (src/rigplane/audio/
+// usb_driver.py: audio_start_failure_reason) that mean the radio's USB
+// audio devices could not be paired automatically. The refusal frame
+// carries the category in `reason` (MOR-3823) and never exception text.
+const SERVER_RX_DEVICE_REASONS = new Set([
+  'usb_ambiguous',
+  'usb_topology_names',
+  'usb_topology_unavailable',
+]);
 const TX_START_SILENT_REASONS = new Set([
   'TX MIC: capture start cancelled',
   'TX MIC: capture stopped before start completed',
@@ -534,7 +543,7 @@ class AudioManager {
   private _handleServerMessage(raw: string): void {
     let msg: {
       type?: unknown; codec?: unknown; opus_decode?: unknown;
-      sample_rate?: unknown; message?: unknown;
+      sample_rate?: unknown; message?: unknown; reason?: unknown;
     };
     try {
       msg = JSON.parse(raw) as typeof msg;
@@ -555,7 +564,26 @@ class AudioManager {
         // or a new attempt; a failed retry re-latches.
         this.stopRx();
         setRxError(true);
-        this._operatorNotifier?.('error', 'Radio audio capture could not start.', 'rxAudioStartFailed');
+        // MOR-3823: the frame's `reason` is the publishable category. A USB
+        // pairing refusal is actionable only on the station host, so the
+        // toast differs for a remote client and the local operator.
+        if (typeof msg.reason === 'string' && SERVER_RX_DEVICE_REASONS.has(msg.reason)) {
+          if (this.controller?.remote()) {
+            this._operatorNotifier?.(
+              'error',
+              'The station must choose its audio device. Ask whoever runs the station computer.',
+              'rxAudioStationDeviceNeeded',
+            );
+          } else {
+            this._operatorNotifier?.(
+              'error',
+              'The radio\'s audio devices could not be paired automatically. Choose the RX and TX audio devices explicitly.',
+              'rxAudioChooseDeviceOnHost',
+            );
+          }
+        } else {
+          this._operatorNotifier?.('error', 'Radio audio capture could not start.', 'rxAudioStartFailed');
+        }
       }
       return;
     }

@@ -375,6 +375,101 @@ describe('[new contract] AudioManager failure persistence and recovery (MOR-3753
   });
 });
 
+describe('RX refusal reason routing (MOR-3823)', () => {
+  // The exact wire frame the backend emits for a pairing refusal, copied
+  // from tests/test_handlers_coverage.py
+  // ::test_audio_broadcaster_start_relay_failure_sends_category_only.
+  const RX_REFUSAL_FRAME = {
+    type: 'error',
+    message: 'audio_start: RX audio failed to start: usb_ambiguous',
+    reason: 'usb_ambiguous',
+  };
+  const remoteBinding = () => ({
+    remote: () => true,
+    ready: () => true,
+    epoch: () => 1,
+    current: () => true,
+    protocols: () => [] as string[],
+  });
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('location', { protocol: 'http:', host: 'localhost' });
+    vi.useFakeTimers();
+  });
+
+  afterEach(async () => {
+    const { audioManager } = await import('../audio-manager');
+    audioManager.destroy();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('a remote client is told the station must choose its audio device', async () => {
+    const { audioManager } = await import('../audio-manager');
+    const audio = await import('../../stores/audio.svelte');
+    const notify = vi.fn();
+    audioManager.setOperatorNotifier(notify);
+    audioManager.setControllerBinding(remoteBinding());
+
+    audioManager.startRx();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    serverText(socket, RX_REFUSAL_FRAME);
+
+    expect(notify).toHaveBeenCalledWith(
+      'error', expect.any(String), 'rxAudioStationDeviceNeeded',
+    );
+    expect(audioManager.rxEnabled).toBe(false);
+    expect(audio.getAudioState().rxError).toBe(true);
+  });
+
+  it.each(['usb_ambiguous', 'usb_topology_names', 'usb_topology_unavailable'])(
+    'a local operator is asked to choose the station devices (%s)',
+    async (reason) => {
+      const { audioManager } = await import('../audio-manager');
+      const audio = await import('../../stores/audio.svelte');
+      const notify = vi.fn();
+      audioManager.setOperatorNotifier(notify);
+
+      audioManager.startRx();
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      serverText(socket, { ...RX_REFUSAL_FRAME, reason });
+
+      expect(notify).toHaveBeenCalledWith(
+        'error', expect.any(String), 'rxAudioChooseDeviceOnHost',
+      );
+      expect(audioManager.rxEnabled).toBe(false);
+      expect(audio.getAudioState().rxError).toBe(true);
+    },
+  );
+
+  it.each([
+    ['unknown', 'other'],
+    ['missing', undefined],
+  ])('an %s reason keeps the generic toast', async (_label, reason) => {
+    const { audioManager } = await import('../audio-manager');
+    const audio = await import('../../stores/audio.svelte');
+    const notify = vi.fn();
+    audioManager.setOperatorNotifier(notify);
+    audioManager.setControllerBinding(remoteBinding());
+
+    audioManager.startRx();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    serverText(socket, { ...RX_REFUSAL_FRAME, reason });
+
+    expect(notify).toHaveBeenCalledWith(
+      'error', expect.any(String), 'rxAudioStartFailed',
+    );
+    expect(audio.getAudioState().rxError).toBe(true);
+  });
+});
+
 describe('real capture results after manager stop (MOR-3753)', () => {
   let savedMic: typeof import('../tx-mic');
   let secureContext: PropertyDescriptor | undefined;
