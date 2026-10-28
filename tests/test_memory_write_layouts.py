@@ -450,6 +450,7 @@ class _MemoryStoreTransport(MockTransport):
         self._select_len, self._name_offset = select.length, name.offset
         self._slots: dict[bytes, bytes] = {}
         self.cleared: list[bytes] = []
+        self.last_reply_data: bytes | None = None
 
     async def send_tracked(self, data: bytes) -> None:
         civ = data[CIV_HEADER_SIZE:]
@@ -465,13 +466,15 @@ class _MemoryStoreTransport(MockTransport):
                 reply_data = address + b"\xff"
             else:
                 reply_data = (
-                    stored[: self._select_len]
+                    address
+                    + stored[: self._select_len]
                     + stored[self._select_len : self._name_offset] * 2
                     + stored[self._name_offset :]
                 )
             reply = build_civ_frame(
                 CONTROLLER_ADDR, self._radio_addr, 0x1A, sub=0x00, data=reply_data
             )
+            self.last_reply_data = reply_data
             self.queue_response(wrap_civ_in_udp(reply))
             return
         if body == b"\xff":
@@ -497,7 +500,9 @@ async def test_write_then_read_returns_what_was_written(model: str) -> None:
     """Simulated round trip: the decoded entry equals the written channel
     (frequency, mode, duplex, tone mode/frequency, name) -- the write
     record and the verified read model agree through the real radio
-    methods."""
+    methods. The synthesized reply's own bytes are pinned too: the
+    address, the select byte, the 47-byte channel block TWICE (the reply
+    carries the split TX copy), then the name."""
     from rigplane.core.types import RepeaterShiftDirection, ToneSquelchType
 
     radio_addr, group, channel = _CASES[model]
@@ -520,6 +525,54 @@ async def test_write_then_read_returns_what_was_written(model: str) -> None:
     assert entry.tone_centihz == 13_650
     assert entry.tsql_centihz == 0
     assert entry.name == mem.name
+    # The reply data after ``1A 00``, by hand from the manual tables: the
+    # stored record with its channel block doubled (the record's own
+    # DTCS/offset/DV fields are their declared OFF values, all zeros).
+    block = bytes.fromhex(
+        {
+            "IC-705": "0000944601",
+            "IC-9700": "0000004604",
+        }[model]
+        + "0501"  # mode FM, filter 1
+        "00"  # data mode off
+        "21"  # duplex + | TONE
+        "00"  # digital squelch off
+        "001365"  # tone 136.5 Hz
+        "000000"  # tone squelch off
+        "000000"  # DTCS off
+        "00"  # DV code off
+        "000000"  # duplex offset 0
+         + _SP24
+    )
+    address = {
+        "IC-705": bytes.fromhex("00020007"),
+        "IC-9700": bytes.fromhex("020007"),
+    }[model]
+    assert transport.last_reply_data == (
+        address + b"\x00" + block + block + mem.name.encode("ascii").ljust(16, b" ")
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+async def test_boolean_addresses_refuse_without_sending(model: str) -> None:
+    """``True`` is an ``int`` to a range check and would silently encode
+    group/band 1; the shared encoder refuses it before any byte is built
+    (the SDK path -- the dispatch arm checks the same rule eagerly)."""
+    transport = MockTransport()
+    radio = _radio(model, transport)
+    try:
+        with pytest.raises(ValueError, match="group must be an integer"):
+            await radio.memory_clear(5, group=True)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="group must be an integer"):
+            await radio.set_memory_contents(
+                _mem(model, group=True)  # type: ignore[arg-type]
+            )
+        with pytest.raises(ValueError, match="channel must be an integer"):
+            await radio.memory_clear(True)  # type: ignore[arg-type]
+    finally:
+        radio._connected = False
+    assert transport.sent_packets == []
 
 
 @pytest.mark.asyncio

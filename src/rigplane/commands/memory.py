@@ -191,8 +191,9 @@ def build_memory_clear(
 ) -> bytes:
     """Build the channel-clear frame in the profile's declared form.
 
-    The clear form is profile data next to the record layout
-    (``[memory].write_layout.clear``, MOR-3644):
+    One command-map key (``memory_clear``) whose row carries each radio's
+    chosen clear bytes; the payload shape comes from the profile's layout
+    declaration (``[memory].write_layout.clear``, MOR-3644):
 
     - ``"1a00_ff"`` -- the IC-705 (guide p.17), IC-9700 (p.14), IC-7300
       (Advanced Manual 11a p.19-11) and IC-7300MK2 (p.17) form: the
@@ -208,19 +209,15 @@ def build_memory_clear(
     layout = _require_write_layout(memory)
     address = _encode_memory_address(memory, group, channel)
     if layout.clear == "0b_channel":
-        return _build_from_map(
-            cmd_map,
-            "memory_clear",
-            to_addr=to_addr,
-            from_addr=from_addr,
-            data=bcd_encode_value(channel, byte_count=2),
-        )
+        data = bcd_encode_value(channel, byte_count=2)
+    else:
+        data = address + b"\xff"
     return _build_from_map(
         cmd_map,
-        "set_memory_contents",
+        "memory_clear",
         to_addr=to_addr,
         from_addr=from_addr,
-        data=address + b"\xff",
+        data=data,
     )
 
 
@@ -623,8 +620,14 @@ def _encode_memory_address(memory: MemoryProfile, group: int, channel: int) -> b
     ``group_channel`` (IC-705): 2-byte BCD group + 2-byte BCD channel.
     ``band_channel`` (IC-9700): 1-byte BCD band code + 2-byte BCD channel.
     ``channel`` (IC-7300/MK2, IC-7610): 2-byte BCD channel only -- the
-    bounds check already pins the group to 0 on a channel list.
+    bounds check already pins the group to 0 on a channel list. A boolean
+    address (``True`` is an ``int`` to ``range``) is refused: it would
+    silently encode group/channel 1.
     """
+    if isinstance(group, bool) or not isinstance(group, int):
+        raise ValueError(f"memory group must be an integer, got {group!r}")
+    if isinstance(channel, bool) or not isinstance(channel, int):
+        raise ValueError(f"memory channel must be an integer, got {channel!r}")
     if not memory.first_group <= group <= memory.last_group:
         raise ValueError(
             f"memory group must be {memory.first_group}-{memory.last_group}, got {group}"

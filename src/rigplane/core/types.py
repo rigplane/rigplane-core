@@ -497,11 +497,14 @@ MEMORY_WRITE_ENCODINGS: frozenset[str] = frozenset(
     }
 )
 
-# How a channel is cleared (MOR-3644). ``"1a00_ff"`` is the form the
-# IC-705/IC-9700/IC-7300/IC-7300MK2 manuals document (``1A 00`` + the
-# radio's own address form + ``FF``); ``"0b_channel"`` is the legacy
-# ``0x0B`` + 2-byte BCD channel frame the IC-7610 profile keeps so its
-# wire bytes do not change in this PR (MOR-2055).
+# The channel-clear payload shapes (MOR-3644). The command bytes live in
+# each profile's ``memory_clear`` command-map row -- the same entry the
+# clear builder resolves, so the exposed metadata always matches the
+# emitted frame. ``"1a00_ff"`` is the IC-705/IC-9700/IC-7300/IC-7300MK2
+# manuals' clear: the ``1A 00`` command plus the radio's own address form
+# plus ``FF``. ``"0b_channel"`` is the legacy ``0x0B`` payload (a 2-byte
+# BCD channel) the IC-7610 profile keeps so its wire bytes do not change
+# in this PR (MOR-2055).
 MEMORY_WRITE_CLEAR_FORMS: frozenset[str] = frozenset({"1a00_ff", "0b_channel"})
 
 # Per-encoding byte widths the loader enforces on every declaration.

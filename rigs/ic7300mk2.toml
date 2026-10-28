@@ -1001,7 +1001,7 @@ set_bsr = [0x1A, 0x01]
 set_memory_mode = [0x08]
 memory_write = [0x09]
 memory_to_vfo = [0x0A]                    # payload per commands/memory.py builder
-memory_clear = [0x0B]                     # payload per commands/memory.py builder
+memory_clear = [0x1A, 0x00]               # the declared 1a00_ff clear form's command bytes (CI-V Reference Guide p.17: "send the command 1A 00 XX XX FF", MOR-3644); the radio's bare 0x0B clear is not the form this package sends -- MOR-2055 keeps the IC-7610 on 0x0B
 get_memory_contents = [0x1A, 0x00]
 set_memory_contents = [0x1A, 0x00]
 

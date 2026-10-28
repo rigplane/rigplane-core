@@ -1105,7 +1105,7 @@ set_bsr = [0x1A, 0x01]                    # source: IC-7300 Advanced Manual (11a
 set_memory_mode = [0x08]                  # source: IC-7300 Advanced Manual (11a) p.19-3
 memory_write = [0x09]                     # source: IC-7300 Advanced Manual (11a) p.19-3
 memory_to_vfo = [0x0A]                    # source: IC-7300 Advanced Manual (11a) p.19-3 -- payload MOR-2055, see commands/memory.py: build_memory_to_vfo
-memory_clear = [0x0B]                     # source: IC-7300 Advanced Manual (11a) p.19-3 -- payload MOR-2055, see commands/memory.py: build_memory_clear
+memory_clear = [0x1A, 0x00]               # the declared 1a00_ff clear form's command bytes (Advanced Manual 11a p.19-11: 1A 00 + channel + FF, MOR-3644); the radio's bare 0x0B clear (p.19-3) is not the form this package sends -- MOR-2055 keeps the IC-7610 on 0x0B
 get_memory_contents = [0x1A, 0x00]        # source: IC-7300 Advanced Manual (11a) p.19-4 (detail p.19-11)
 set_memory_contents = [0x1A, 0x00]        # source: IC-7300 Advanced Manual (11a) p.19-4 (detail p.19-11)
 

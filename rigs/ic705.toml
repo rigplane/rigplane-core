@@ -928,7 +928,7 @@ set_memory_group = [0x08, 0xA0]
 # half carried a source; the single surviving row below does).
 memory_write = [0x09]                     # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3
 memory_to_vfo = [0x0A]                     # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3 -- payload MOR-2055, see commands/memory.py: build_memory_to_vfo
-memory_clear = [0x0B]                      # source: IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3 -- payload MOR-2055, see commands/memory.py: build_memory_clear
+memory_clear = [0x1A, 0x00]               # the declared 1a00_ff clear form's command bytes (guide p.17: 1A 00 + the address + FF, MOR-3644); the radio's bare 0x0B clear (guide p.3) is not the form this package sends -- MOR-2055 keeps the IC-7610 on 0x0B
 
 # ── Offset / Scan / Split ──
 # Duplex offset: the guide's own rows read 0C = "Read frequency offset" and

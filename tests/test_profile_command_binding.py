@@ -374,10 +374,11 @@ _EXTRA_PROBE_KWARGS: dict[str, dict[str, Any]] = {
         ),
     },
     "build_memory_clear": {
-        # The legacy clear form keeps the exposed "memory_clear" key this
-        # drift guard asserts; the manual 1a00_ff form resolves the
-        # set_memory_contents entry instead and is pinned separately
-        # below (the form comes from the profile argument, not the map).
+        # Both clear forms resolve the same "memory_clear" entry (each
+        # profile's row carries its chosen clear bytes, MOR-3644); the
+        # legacy form is supplied here because the payload shape needs no
+        # address. The 1a00_ff form is pinned in
+        # test_memory_clear_resolves_the_key_of_its_declared_form below.
         "memory": MemoryProfile(
             "channel",
             0,
@@ -557,12 +558,11 @@ class TestExposedKeyDriftGuard:
     def test_memory_clear_resolves_the_key_of_its_declared_form(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """MOR-3644: ``build_memory_clear`` resolves the command-map entry
-        its declared clear form needs -- the manual ``1a00_ff`` form uses
-        the profile's ``set_memory_contents`` (1A 00) bytes, the legacy
-        ``0b_channel`` form the ``memory_clear`` (0x0B) bytes. The form is
-        profile data, so the generic drift probe above (same kwargs for
-        every map) pins the legacy branch and this test pins both."""
+        """MOR-3644: both clear forms resolve the same ``memory_clear``
+        command-map entry -- each profile's row carries its chosen clear
+        bytes (``1A 00`` for the manual form, ``0x0B`` for the IC-7610's
+        legacy form), so the exposed key, ``expect()`` and the emitted
+        frame cannot disagree."""
         from rigplane.commands import build_memory_clear
         from rigplane.commands import memory as memory_module
 
@@ -594,12 +594,13 @@ class TestExposedKeyDriftGuard:
                 ),
             )
 
-        probe_map = CommandMap({"set_memory_contents": (0x1A, 0x00)})
+        probe_map = CommandMap({"memory_clear": (0x1A, 0x00)})
         build_memory_clear(_layout("1a00_ff"), 0, 1, to_addr=0x94, cmd_map=probe_map)
-        assert captured["key"] == "set_memory_contents"
+        assert captured["key"] == "memory_clear"
         probe_map = CommandMap({"memory_clear": (0x0B,)})
         build_memory_clear(_layout("0b_channel"), 0, 1, to_addr=0x94, cmd_map=probe_map)
         assert captured["key"] == "memory_clear"
+        assert build_memory_clear.cmd_map_key(probe_map) == "memory_clear"
 
 
 def test_ptt_off_is_also_covered_directly() -> None:

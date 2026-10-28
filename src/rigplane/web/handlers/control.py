@@ -668,6 +668,42 @@ def is_typed_transmission_end_command(name: str, params: Mapping[str, Any]) -> b
     )
 
 
+def _strict_memory_address(
+    params: Mapping[str, Any], memory: MemoryProfile
+) -> tuple[int, int]:
+    """The strict ``(group, channel)`` memory address the profile admits.
+
+    The same rules the shared encoder applies (``_encode_memory_address``:
+    a boolean or fractional address must never silently encode 1 or its
+    integer part), checked before anything is enqueued so a malformed
+    address is a client error, not an ok answer that fails later at the
+    radio. ``group`` defaults to 0 (the channel-only radios).
+    """
+    channel = params["channel"]
+    group = params.get("group", 0)
+    for name, value in (("channel", channel), ("group", group)):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{name} must be an integer, got {value!r}")
+    if not memory.first_group <= group <= memory.last_group:
+        raise ValueError(
+            f"group must be {memory.first_group}-{memory.last_group}, got {group}"
+        )
+    if not memory.first_channel <= channel <= memory.last_channel:
+        raise ValueError(
+            f"channel must be {memory.first_channel}-{memory.last_channel}, "
+            f"got {channel}"
+        )
+    return group, channel
+
+
+def _verified_write_memory(radio: "Radio | None") -> MemoryProfile:
+    """The memory section of a profile the admission gate just passed."""
+    memory = getattr(getattr(radio, "profile", None), "memory", None)
+    if not isinstance(memory, MemoryProfile):
+        raise ValueError("this radio's memory has no verified write layout")
+    return memory
+
+
 class ControlHandler:
     """Handles the /api/v1/ws control WebSocket channel.
 
@@ -3465,38 +3501,13 @@ class ControlHandler:
                         "(missing MemoryCapable)"
                     )
                 # MOR-3644: every ingress (WS, HTTP) shares this arm; the
-                # profile is the only authority on the write record layout.
+                # profile is the only authority on the write record layout,
+                # and the address it needs is validated strictly here --
+                # before anything is enqueued, an accepted clear never
+                # answers ok and fails later at the radio.
                 admit_memory_write(getattr(radio, "profile", None))
-                # The address the profile needs: ``group`` is the memory
-                # group (IC-705) or band code (IC-9700), 0 on the
-                # channel-only radios. Bounds are the profile's own, so a
-                # malformed or out-of-range address refuses here, before
-                # anything is enqueued (an accepted clear never answers
-                # ok and fails later at the radio).
-                for field in ("channel", "group"):
-                    if field in params:
-                        value = params[field]
-                        if isinstance(value, bool) or (
-                            isinstance(value, float) and not value.is_integer()
-                        ):
-                            raise ValueError(
-                                f"{field} must be an integer, got {value!r}"
-                            )
-                channel = _int_param(params["channel"], "channel")
-                group = _int_param(params.get("group", 0), "group")
-                memory = getattr(getattr(radio, "profile", None), "memory", None)
-                if not isinstance(memory, MemoryProfile):
-                    raise ValueError("this radio's memory has no verified layout")
-                if not memory.first_group <= group <= memory.last_group:
-                    raise ValueError(
-                        f"group must be {memory.first_group}-{memory.last_group}, "
-                        f"got {group}"
-                    )
-                if not memory.first_channel <= channel <= memory.last_channel:
-                    raise ValueError(
-                        f"channel must be {memory.first_channel}-"
-                        f"{memory.last_channel}, got {channel}"
-                    )
+                memory = _verified_write_memory(radio)
+                group, channel = _strict_memory_address(params, memory)
                 q.put(MemoryClear(channel, group))
                 return {"channel": channel}
             case "set_memory_contents":
@@ -3505,13 +3516,18 @@ class ControlHandler:
                         "command set_memory_contents is not supported by this "
                         "radio (missing MemoryCapable)"
                     )
-                # MOR-3644: same shared-arm gate as memory_clear above.
+                # MOR-3644: same shared-arm gate as memory_clear above, and
+                # the same strict address validation before enqueueing.
                 admit_memory_write(getattr(radio, "profile", None))
+                memory = _verified_write_memory(radio)
                 from ...types import MemoryChannel
 
                 mem_params = dict(params)
                 mem_params.pop("session_id", None)
                 mem = MemoryChannel(**mem_params)
+                _strict_memory_address(
+                    {"channel": mem.channel, "group": mem.group}, memory
+                )
                 q.put(SetMemoryContents(mem))
                 return {"channel": mem.channel}
             case "set_bsr":
