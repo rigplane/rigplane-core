@@ -28,6 +28,26 @@ jobs:
           # The test suite's monotonic comparison needs the parent commit; quick.yml and full.yml check out the same depth.
           fetch-depth: 2
 
+      - name: Verify radio smoke receipts
+        # MOR-3839: live radio smoke is a mechanical condition of a PyPI
+        # publish. Both receipts must be attached to the triggering release
+        # and validate against the tag and the tagged commit; a missing asset
+        # fails the download, a red receipt fails the checker — either way
+        # this job is red and the needs chain keeps PyPI from starting.
+        # GITHUB_SHA of a release event is the tagged commit.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          smoke_dir="$(mktemp -d)"
+          gh release download "$TAG" -p 'radio-smoke-*.json' --dir "$smoke_dir"
+          python3 scripts/release/check_radio_smoke.py check \
+            --tag "$TAG" \
+            --git-sha "$GITHUB_SHA" \
+            --rx "$smoke_dir/radio-smoke-rx.json" \
+            --tx "$smoke_dir/radio-smoke-tx.json"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
         with:
