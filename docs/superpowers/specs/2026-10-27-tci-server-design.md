@@ -245,8 +245,7 @@ are the pin, plus the new boundary test.
 Consequence to accept: `web` now depends on the leaf for framing. The shim keeps
 `rigplane.web.websocket` working, so no web code changes its import. The
 alternative, a separate leaf `rigplane.ws` lifted together with `tci`, avoids
-that naming oddity at the price of a second package to extract (open question
-Q9).
+that naming oddity at the price of a second package to extract; decided against (Q9).
 
 Limits to keep: `_MAX_WS_FRAME` is 64 KiB. A TCI audio block is at most
 64 + 16384 bytes, so it fits. Per-message deflate stays off for TCI (clients do
@@ -961,50 +960,72 @@ API and logs (`radio-selfcheck`); evidence goes to `docs/validation/`. A TX
 check is a separate acceptance on a dummy load at minimum power with the owner's
 authorisation, and is not part of CI.
 
-## 11. PR phasing
+## 11. Delivery plan
 
-Sizes are rough changed lines including tests. Phase labels: P0 prerequisites,
-L leaf package, C control (adapter), A audio.
+The work is broken into **units**, then bundled into **five PRs** (coordinator
+decision Q8: the owner's rule is PRs up to 4000 lines, so fewer, larger PRs, not
+the 1000-line ceiling). Sizes are rough changed lines including tests. Unit
+labels: P0 prerequisites, L leaf package, C control (adapter), A audio.
 
-| PR | Content | Depends on | ~Lines |
-|---|---|---|---|
-| P0a | create `rigplane.tci` with `ws.py` (moved `web/websocket.py` plus server upgrade function with injected predicate; `web` behaviour, including its 60 s pong timeout, unchanged); move `host_guard` to `core/host_guard.py`; shims in `web`; `.importlinter` rows and `tests/test_tci_leaf_boundary.py` (written first, red) | none | 450 |
-| P0b | extract the fail-closed TX gate from `WebServer._bridge_tx_gate_open` into a shared function; `WebServer` and the bridge call it; add `ManagedTxAuthority.owned_tx_submission(owner)` and the `before_on` preparation hook of 7.3a, with their tests | none | 650 |
-| P0c | extract the managed-PTT/tuner submission choreography and session release out of `rigctld` into a shared module; `rigctld` calls it; add `"tci"` to `CommandSource` and `TxSource.TCI` | none | 900 |
-| P0d | share the WSJT-X data-mode/MOD-input glue now in `rigctld/server.py` (apply and readback; restoring the input is Q11, not included) | P0c (same file) | 300 |
-| P0e | widen `RelativeVfoModeWritable.write_relative_vfo_mode` to a numeric DATA sub-mode with readback, bounded by `data_mode_count`; IC-7610 simulator test | none | 300 |
-| C0 | recording proxy script with coverage report, C0-RX fixtures and findings note (C0-TX follows C3) | owner/bench time | 350 |
-| L1 | leaf `protocol.py` (grammar, formatting) and `frames.py` (stream header, sample types), with spec fixtures and `eesdr-tci` round trips | P0a | 600 |
-| L2 | leaf `server.py` and `handler.py`: listener, sessions, broadcast and coalescing, ping and independent deadline watchdog, Origin/Host predicate; conformance with a fake handler | L1 | 800 |
-| C1 | adapter skeleton: handler, init burst, read-only commands, notifier; `tci_adapter/LAYER.md`; `.importlinter` adapter rows | L2 | 700 |
-| C2 | adapter write commands: `vfo`, `modulation`, `split_enable`, `rit`/`xit`, `drive`, Tier B | C1 | 650 |
-| C3 | TX: `trx`, `tx_enable`, disconnect, `tune` answer; seam tests | C2, P0b, P0c, P0d, P0e | 800 |
-| C4 | CLI flags and wiring, `check_ports_available`, docs, changelog | C3 | 450 |
-| A1 | adapter RX path, shared decode helper, resample and channel mapping | C1 | 650 |
-| A2 | adapter TX path: playout buffer, `TX_CHRONO`, owner-specific admission, route policy | A1, C3, P0b | 900 |
-| A3 | real-app RX smoke evidence and fixtures | C4, A1 | 150 |
+| Unit | Content | ~Lines |
+|---|---|---|
+| P0a | create `rigplane.tci` with `ws.py` (moved `web/websocket.py` plus server upgrade function with injected predicate; `web` behaviour, including its 60 s pong timeout, unchanged); move `host_guard` to `core/host_guard.py`; shims in `web`; `.importlinter` rows and `tests/test_tci_leaf_boundary.py` (written first, red) | 450 |
+| P0b | extract the fail-closed TX gate from `WebServer._bridge_tx_gate_open` into a shared function; `WebServer` and the bridge call it; add `ManagedTxAuthority.owned_tx_submission(owner)` and the `before_on` preparation hook of 7.3a, with their tests | 650 |
+| P0c | extract the managed-PTT/tuner submission choreography and session release out of `rigctld` into a shared module; `rigctld` calls it; add `"tci"` to `CommandSource` and `TxSource.TCI` | 900 |
+| P0d | share the WSJT-X data-mode/MOD-input glue now in `rigctld/server.py` (apply and readback; restoring the input is Q11, not included) | 300 |
+| P0e | widen `RelativeVfoModeWritable.write_relative_vfo_mode` to a numeric DATA sub-mode with readback, bounded by `data_mode_count`; IC-7610 simulator test | 300 |
+| C0 | recording proxy script with coverage report, C0-RX fixtures and findings note (C0-TX follows C3) | 350 |
+| L1 | leaf `protocol.py` (grammar, formatting) and `frames.py` (stream header, sample types), with spec fixtures and `eesdr-tci` round trips | 600 |
+| L2 | leaf `server.py` and `handler.py`: listener, sessions, broadcast and coalescing, ping and independent deadline watchdog, Origin/Host predicate; conformance with a fake handler | 800 |
+| C1 | adapter skeleton: handler, init burst, read-only commands, notifier; `tci_adapter/LAYER.md`; `.importlinter` adapter rows | 700 |
+| C2 | adapter write commands: `vfo`, `modulation`, `split_enable`, `rit`/`xit`, `drive`, Tier B | 650 |
+| C3 | TX: `trx`, `tx_enable`, disconnect, `tune` answer; seam tests | 800 |
+| C4 | CLI flags and wiring, `check_ports_available`, docs, changelog | 450 |
+| A1 | adapter RX path, shared decode helper, resample and channel mapping | 650 |
+| A2 | adapter TX path: playout buffer, `TX_CHRONO`, owner-specific admission, route policy | 900 |
+| A3 | real-app RX smoke evidence and fixtures | 150 |
 
-About 8.7k lines in 15 PRs. P0a, P0b and P0c are file-disjoint and can run in
-parallel; L1 and L2 need only P0a, so the whole leaf can be built and tested
-while P0c is still in review.
+| PR | Units | What it delivers | Depends on | ~Lines |
+|---|---|---|---|---|
+| 1. Leaf package | P0a, L1, L2 | `rigplane.tci` complete and tested with no radio: WebSocket, grammar, frames, server, boundary rule | none | 1850 |
+| 2. Shared TX mechanisms | P0b, P0c, P0d, P0e | gate, `owned_tx_submission`, `before_on`, shared managed-key ingress, data-mode glue, numeric DATA sub-mode; `rigctld` and `web` call the shared code | none | 2150 |
+| 3. Capture tool | C0 | recorder with coverage report, C0-RX evidence | owner and bench time | 350 |
+| 4. Adapter, control | C1, C2, C3, C4 | `rigplane.tci_adapter`, control commands, TX safety, CLI wiring, docs | 1, 2 (3 informs C1 and C3) | 2600 |
+| 5. Adapter, audio | A1, A2, A3 | RX and TX audio, real-app RX smoke | 4 | 1700 |
 
-Sizing basis. The coordinator brief allows PRs up to 4000 lines. `CLAUDE.md` sets
-a hard ceiling of 10 files and 1000 changed lines (the line ceiling is the
-owner's to waive) and `docs/development/review-checklist.md` a 500-line target
-with a measured penalty above it. Every PR above is planned at or under 1000
-lines so none needs a ceiling exception. P0c is the one most likely to exceed it;
-if it does, split into the PTT choreography and the tuner/split pieces rather
-than ask for an exception.
+About 8.7k lines in 5 PRs. PR 3 touches no product code and can go any time. PR 1
+and PR 2 are independent in content but both edit `web/server.py` (in
+`_handle_websocket` and `_bridge_tx_gate_open`) and PR 2 also edits
+`rigctld/server.py` in two units, so they merge one after the other and the
+second rebases; that is a textual conflict risk, not a design dependency.
+
+How a large PR is kept reviewable:
+
+- **Logical commits, one per unit, in dependency order.** Inside PR 2 the
+  behaviour-preserving extractions (P0b gate, P0c, P0d) come first and are
+  separate from the added capability (`owned_tx_submission`, `before_on`, P0e).
+- **Failing test first, per unit.** Each unit is a RED commit (its tests, failing
+  for the stated reason) followed by a GREEN commit; `focused.yml` RED evidence
+  is taken on the exact RED SHA. The seam and E2E tests of 10.3 land with the
+  unit they pin; nothing is deferred to a later PR.
+- **Pins before moves.** For P0a to P0d the existing `rigctld`, web and bridge
+  suites are the pin (10.4) and are named in the PR body.
+- `tmp/pre-review.sh` clean for the final head, one natural `quick`, exact-head
+  review by a different model family from the builder.
+
+Ceilings. The owner's 4000-line rule applies to the line count. `CLAUDE.md` also
+caps a PR at 10 files; PR 4 (a new package with its tests) and PR 1 will exceed
+it, so each records the file-count exception as the first line of its body, as
+`N code + M other = K files`, under the coordinator's delegation of 2026-09-03.
+`docs/development/review-checklist.md` sets a 500-line target and measured 2.1
+Codex rounds above it; that is a review-efficiency target, and the logical
+commits above are the mitigation.
 
 Freeze. `AGENTS.md` prohibits new protocols during the stabilisation freeze
 without an exception. The owner decision of 2026-10-27 (MOR-3821) is the
 exception: each implementation PR carries `Freeze exception: owner decision
-2026-10-27, MOR-3821` as the first body line and the `freeze-exception` label.
-This design PR is `Change class: docs`.
-
-Each PR: failing test first with `focused.yml` evidence on the exact SHA,
-`tmp/pre-review.sh` clean, one natural `quick`, exact-head review by a
-different model family from the builder.
+2026-10-27, MOR-3821` as the first body line (the file-count line follows it)
+and the `freeze-exception` label. This design PR is `Change class: docs`.
 
 ## 12. Licensing and clean-room
 
@@ -1026,20 +1047,21 @@ different model family from the builder.
 
 | # | Item | Owner of the decision |
 |---|---|---|
-| Q1 | Default port 50001 (recommended) or 40001 | sumo |
+| Q1 | Default port. **Decided 2026-10-27 (coordinator): 50001.** | decided |
 | Q2 | Core default: TCI off unless `--tci` (recommended); Pro turns it on | owner |
 | Q3 | Honour `tune`? Recommended: no in the first release (6.4) | owner |
 | Q4 | `protocol:` and `device:` strings. AetherSDR announces `protocol:ExpertSDR3,<version>` and clients are reported to switch behaviour on it; the safest default is the same program name, with the version and `device:` settled by C0 | C0 evidence |
-| Q5 | `trx_count:1` first; dual-receiver radios later | sumo |
+| Q5 | Receiver count. **Decided 2026-10-27 (coordinator): `trx_count:1` first**; dual-receiver radios later | decided |
 | Q6 | Remote PTT from non-loopback peers: parity with `rigctld` (recommended) or require an opt-in | owner |
-| Q7 | Extract shared mechanisms first (recommended, P0a to P0e) versus duplicate; duplicating breaks "no two mechanisms" | sumo |
-| Q8 | Sizing: plan to the 1000-line ceiling, not 4000 | sumo |
-| Q9 | WebSocket framing lives inside the leaf (`tci/ws.py`, recommended: it travels with the package) or in its own leaf `rigplane.ws` (cleaner name for `web`, two packages to lift) | sumo |
+| Q7 | Shared mechanisms. **Decided 2026-10-27 (coordinator): extract first (P0a to P0e), no duplication.** | decided |
+| Q8 | PR sizing. **Decided 2026-10-27 (coordinator): the owner's rule is PRs up to 4000 lines; plan fewer, larger PRs, each with failing-first and seam tests (section 11).** | decided |
+| Q9 | WebSocket location. **Decided 2026-10-27 (coordinator): framing stays inside the leaf, `tci/ws.py`.** | decided |
 | Q10 | C0-TX session: dummy load, minimum power, owner's authorisation, after C3 | owner |
 | Q11 | Input restoration after a `source=tci` over. Today nothing restores it. If wanted, it is new behaviour: saved settings; cleanup on preparation failure, rejection, cancellation, unkey and disconnect; fresh confirmed RX and ownership/generation validation before restoring; an explicit unresolved obligation when the release is uncertain; tests that restoration never changes routing during another owner's TX or `RELEASE_REQUIRED`. Raised by the third review round as P2 and deliberately not designed here | owner |
 
-Risks, in order: P0c changes the TX path that `rigctld` users rely on, hence
-the strictest pin and an unchanged-behaviour review; client behaviour is
+Risks, in order: P0c (inside PR 2) changes the TX path that `rigctld` users rely
+on, hence the strictest pin and an unchanged-behaviour review; PRs of up to 4000
+lines cost review depth, mitigated only by the commit discipline of section 11; client behaviour is
 reported, not captured, until C0; JTDX is reported to crash on non-conforming
 servers; `length` semantics and `protocol` strings are open; the shared RX
 decode helper may expose backend gaps (FTX-1, serial Icom) that need their own
