@@ -297,6 +297,8 @@
     flex-direction: column;
     width: min(420px, calc(100vw - 24px));
     max-height: calc(100dvh - var(--rp-chrome-top, 0px) - 24px);
+    overflow-y: auto;
+    pointer-events: auto;
   }
 
   .local-extension-stack--dock-right,
