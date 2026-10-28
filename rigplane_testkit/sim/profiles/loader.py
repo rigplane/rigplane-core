@@ -347,7 +347,7 @@ def load_sim_profile(path: Path, *, root: Path) -> SimProfile:
         initial=initial,
         answers=AnswersConfig(recorded=tuple(recorded)),
         timing=TimingConfig(
-            reply_latency_ms=_timing_ms(tm_t, "reply_latency_ms"),
+            reply_latency_ms=_scalar(tm_t, "reply_latency_ms", "timing", float),
             ack_ms_set=_timing_ms(tm_t, "ack_ms_set"),
             ptt_set_ack_ms=_timing_ms(tm_t, "ptt_set_ack_ms"),
             readback_ms=_timing_ms(tm_t, "readback_ms"),

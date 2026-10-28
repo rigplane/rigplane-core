@@ -55,7 +55,8 @@ async def _ask(
     started = time.monotonic()
     writer.write(request)
     await writer.drain()
-    return time.monotonic() - started, await _read(reader, timeout)
+    reply = await _read(reader, timeout)
+    return time.monotonic() - started, reply
 
 
 # ---------------------------------------------------------------------------
