@@ -16,7 +16,7 @@ A time-based whole-packet replay cache in the CI-V receive pump suppresses ident
 This is conditional attribution, not a request identifier or an absolute no-false-release guarantee. Bounded lifetime,
 ordered command delivery/execution and exclusive controller-address use are explicit assumptions below. Reply
 reordering is safe under those assumptions; new-header re-emission remains a gap. Owner/coordinator acceptance of
-the changed safety criterion is pending. Default implementation delivery is PR-B1 plus the API-only PR-B2 (§10).
+the changed safety criterion is pending. Default implementation delivery is one PR with its API regression; §10 pre-declares an activation split if the measured diff is too large.
 
 ## 2. Problem and current behaviour
 
@@ -384,11 +384,16 @@ existing private-handler tests are useful admission checks but cannot substitute
 
 ## 10. Files expected to change
 
-Default delivery is PR-B1 (everything except the new API seam file: about 810 changed lines in seven files), then
-PR-B2 (`tests/integration/test_ptt_release_readback_api.py` only: about 180 lines in one file). Merge PR-B2 after PR-B1,
-based on main, never stacked. If the measured COMPLETE eight-file diff is under 900 changed lines, use one
-implementation PR-B instead. Estimates below count additions plus deletions and are planning budgets, not a measured
-diff. The single semantic unit is release attribution from wire accounting through API outcome.
+Default delivery is ONE implementation PR with all eight files, so the behaviour change (D4 activation) lands together
+with its regressions, including the real user-API seam test (repo rule: a fix and its test stay in one PR). Estimates
+below count additions plus deletions and are planning budgets, not a measured diff. The single semantic unit is release
+attribution from wire accounting through API outcome. If the MEASURED complete diff exceeds 900 changed lines or 10
+files, split by activation, never by moving tests away from the behaviour they pin: PR-B1 lands the inert
+prerequisites (D1 helper, D2 FIFO and hooks, D3 reader changes, D6' pump cache; about 630 changed lines in six files:
+`civ.py`, `_civ_rx.py`, the reader part of `radio.py`, `tests/test_ptt_quiescence_ledger.py`, `tests/tx_observation_fakes.py`
+and the conformance test) with their own failing-first tests and with `CoreRadio.actuate` unchanged; PR-B2 then activates
+D4 together with the actuator test updates and the three API seam cases (about 360 changed lines in three files). Both are
+based on main, never stacked; B2 is opened after B1 merges.
 
 | File | Work | Changed-line budget |
 |---|---|---:|
@@ -402,12 +407,11 @@ diff. The single semantic unit is release attribution from wire accounting throu
 | `tests/integration/test_ptt_release_readback_api.py` (new) | Local fixture using existing real stack; three API cases | 180 |
 | **Total** | **Eight files; expected budget, to measure during implementation** | **990** |
 
-PR-B1, or a qualifying single PR-B, exceeds the soft 6-file/600-line threshold; its body must explain the one semantic
-contract and shared verification matrix. Hard ceilings are 10 files and 1000 changed lines. The default split leaves
-room for complete regressions before approaching that ceiling; all ledger, pump/duplicate, actuator and conformance
-work stays together in PR-B1. PR-B2 adds the real API seam. Overall acceptance remains incomplete until all required
-scope lands. Do not omit scenarios or compress code to report a compliant count. No separate transport PR,
-transport flag or control-phase edit is proposed. This design-only revision changes only this Markdown file.
+The single PR exceeds the soft 6-file/600-line threshold; its body must explain the one semantic contract and shared
+verification matrix. Hard ceilings are 10 files and 1000 changed lines; the estimate leaves little margin, which is why
+the activation split above is pre-declared. Do not omit scenarios or compress code to report a compliant count. No
+separate transport PR, transport flag or control-phase edit is proposed. This design-only revision changes only this
+Markdown file.
 
 ## 11. Open questions
 
@@ -420,8 +424,8 @@ Pending owner/coordinator decisions are acceptance decisions:
 2. Resolve acceptance of new-header re-emission, same-address foreign replies and the other true limits in §9.
    A3c is closed by full-duration retention; B/C reply reordering is benign under F′ and the stated exclusions.
    Document review does not accept the remaining risks or establish the original absolute goal.
-3. Measure the complete eight-file implementation diff: use the default non-stacked PR-B1/PR-B2 split in §10, or
-   one PR-B only if that complete diff is under 900 changed lines. All required scope must land for acceptance.
+3. Measure the complete eight-file implementation diff: one PR if it is at most 900 changed lines and 10 files, else the
+   pre-declared non-stacked activation split in §10 (inert prerequisites first, then D4 with the API regressions).
 
 Independent review of this revision and explicit safety-criterion acceptance precede implementation. No hardware
 validation, absolute safety verdict or unconditional retry-convergence claim is made by this design.
