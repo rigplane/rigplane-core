@@ -1381,6 +1381,7 @@
     position: fixed;
     inset: 0;
     top: var(--rp-chrome-top, 0px); /* MOR-3845 */
+    height: auto;
     z-index: 100;
     border-radius: 0;
     border: none;

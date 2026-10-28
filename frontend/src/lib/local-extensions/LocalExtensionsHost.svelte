@@ -301,7 +301,7 @@
 
   .local-extension-stack--dock-right,
   .local-extension-stack--dock-left {
-    top: 12px;
+    top: calc(var(--rp-chrome-top, 0px) + 12px);
     bottom: 12px;
     flex-direction: column;
     width: min(440px, 34vw, calc(100vw - 24px));

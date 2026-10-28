@@ -1381,8 +1381,8 @@
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    height: 100vh;
-    height: 100dvh;
+    height: calc(100vh - var(--rp-chrome-top, 0px));
+    height: calc(100dvh - var(--rp-chrome-top, 0px));
     background: linear-gradient(180deg, var(--v2-bg-gradient-start) 0%, var(--v2-bg-darkest) 100%);
     overflow: hidden;
     padding-top: env(safe-area-inset-top, 0px);
