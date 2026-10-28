@@ -133,6 +133,7 @@ ALLOWLIST=(
     # Imports helpers from the existing test_icom_lan_identity_gate module;
     # the import line is the only brand reference in the file.
     'tests/test_owner_reconnect_audio_demand.py'
+    'tests/test_memory_identity_guard.py'  # same: imports from test_icom_lan_identity_gate
     # This script itself: contains literal pattern in its grep regex and
     # docstring.
     '.github/scripts/check-rebrand-allowlist.sh'

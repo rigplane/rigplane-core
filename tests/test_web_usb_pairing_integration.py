@@ -218,3 +218,95 @@ async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
                 await server.stop()
             finally:
                 await radio.disconnect()
+
+
+async def test_w1_serial_ambiguous_refusal_reaches_ws_client_as_category_only(
+    tmp_path, monkeypatch
+):
+    """MOR-3823 seam test: a REAL S3 ``serial_ambiguous`` pairing refusal —
+    the W1 recording plus a second UART on the same hub — travels pairing ->
+    driver -> broadcaster to the WebSocket client as the category token only.
+
+    The client frame must never carry the exception text (host-side
+    instructions such as "select explicit RX/TX devices" or the
+    ``serial_ambiguous`` stage name); the same category is what
+    ``/api/v1/info`` publishes under ``audioReceive.failure.reason``.
+    """
+    session = _w1_session()
+    hub = r"USB\VID_0451&PID_2046\6&3878EF1F&0&2"
+    serial_row = next(
+        row
+        for row in session["raw"]["windows"]["devnodes"]
+        if row["class_name"] == "Ports"
+    )
+    session["raw"]["windows"]["devnodes"].append(
+        {
+            **serial_row,
+            "instance_id": r"USB\VID_10C4&PID_EA70\EXTRAUART",
+            "parent_id": hub,
+            "friendly_name": "Second UART (COM9)",
+        }
+    )
+    backend, _ = _inject_windows(monkeypatch, session)
+    monkeypatch.setattr(usb_driver, "PortAudioBackend", lambda: backend)
+    radio = Ic7300SerialRadio(
+        device="COM3",
+        profile=get_radio_profile("IC-7300"),
+        audio_codec=AudioCodec.PCM_1CH_16BIT,
+        civ_link=_FakeSerialCivLink(model_id=0x94),
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    writer = None
+    try:
+        await radio.connect()
+        server._server = await asyncio.start_server(
+            server._accept_client, "127.0.0.1", 0
+        )
+        reader, writer, _ = await _ws_connect("127.0.0.1", server.port, "/api/v1/audio")
+        await _ws_send_text(
+            writer,
+            json.dumps(
+                {
+                    "type": "audio_start",
+                    "direction": "rx",
+                    "preferred_rx_codec": "pcm16",
+                }
+            ),
+        )
+        errors = []
+        async with asyncio.timeout(5):
+            while True:
+                opcode, payload = await _ws_recv_frame(reader)
+                assert opcode == WS_OP_TEXT
+                message = json.loads(payload)
+                if message["type"] == "error":
+                    # No part of the exception text may reach the wire.
+                    assert b"serial_ambiguous" not in payload
+                    assert b"USB audio parents" not in payload
+                    assert b"select explicit RX/TX devices" not in payload
+                    errors.append(message)
+                if message["type"] == "audio_format":
+                    break
+
+        assert errors == [
+            {
+                "type": "error",
+                "message": "audio_start: RX audio failed to start: usb_ambiguous",
+                "reason": "usb_ambiguous",
+            }
+        ]
+        status, _, body = await _http_get("127.0.0.1", server.port, "/api/v1/info")
+        assert status == 200
+        failure = json.loads(body)["audioReceive"]["failure"]
+        assert failure["reason"] == "usb_ambiguous"
+        assert radio.audio_session.rx_demand == 0
+    finally:
+        try:
+            if writer is not None:
+                await _close_ws(writer)
+        finally:
+            try:
+                await server.stop()
+            finally:
+                await radio.disconnect()

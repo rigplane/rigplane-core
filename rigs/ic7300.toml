@@ -633,6 +633,57 @@ width_max = 255
 [power]
 max_watts = 100
 
+# ── Memory channels, write side only (MOR-3644) ───────────────────
+# The IC-7300 addresses a memory channel by number alone: channels
+# 0001-0099 (01-99) plus the programmed scan edges 0100/0101 (P1/P2),
+# which the bounds below leave out (Advanced Manual 11a p.19-11). The
+# read listing stays OFF: the 1A 00 read reply is not documented in the
+# provided extracts, so no memory_read capability is declared and
+# read_memory_entries refuses.
+[memory]
+addressing = "channel"
+first_group = 0
+last_group = 0
+first_channel = 1
+last_channel = 99
+
+# The verified 1A 00 write record (MOR-3644), field by field from the
+# IC-7300 Advanced Manual (11a) p.19-11 "Memory content". The manual's
+# header row prints the channel-data span TWICE -- r-i, o, !0, !1, !2-!4,
+# !5-!7, then "r-!7" again, then the name !8-@7 -- and its NOTE spells it
+# out: "The same data as r-!7 are stored in r-!7 ... When the Split
+# function is ON, the data of r-!7 is used for transmit. Even if the
+# Split function is OFF, enter the data into r-!7 ..." -- so the record
+# is select byte + the 14-byte span x copies + the 10-character name.
+# The field table below declares ONE copy: offsets are relative to the
+# record AFTER the address (guide bytes q,w: channel 2-byte BCD); the
+# guide's position labels map as: e -> 0 (split|
+# select), r-i -> 1-5 (frequency), o -> 6 (mode), !0 -> 7 (filter), !1 ->
+# 8 (data|tone), !2-!4 -> 9-11 (tone), !5-!7 -> 12-14 (tsql); the name
+# (!8-@7, 10 characters) is declared at 15-24 and lands after the last
+# block copy. Mode and filter are the raw bytes of the
+# 47-byte read block's mode + filter pair (the manual's 2-byte "operating
+# mode setting"); the tone fields use the 1B 00 encoding. The record has
+# NO duplex, DTCS, DV or call-sign fields -- the IC-7300 memory channel
+# simply does not carry them. Split and select are written 00 (both OFF;
+# the manual documents 00 for P1/P2 and OFF as the normal value).
+[memory.write_layout]
+clear = "1a00_ff"  # Advanced Manual 11a p.19-11: 1A 00 + channel + FF (P1/P2 excluded)
+record_length = 25  # one copy: select + the 14-byte span + the 10-byte name
+copies = 2  # p.19-11 NOTE: the span is stored twice (TX copy = RX values when not split)
+tone_max = 2  # the !1 tone nibble is 0=OFF, 1=TONE, 2=TSQL (no DTCS on this radio)
+default_tone_centihz = 8850  # an unset tone/tsql writes the default tone (88.5 Hz); zeros are not a valid CTCSS value
+fields = [
+  { field = "select", offset = 0, length = 1, encoding = "select" },                            # e
+  { field = "frequency", offset = 1, length = 5, encoding = "frequency", max_hz = 74_800_000 },  # r-i: receiver tops at 74.8 MHz (spec, 4 m per MOR-3782)
+  { field = "mode", offset = 6, length = 1, encoding = "mode" },                                # o
+  { field = "filter", offset = 7, length = 1, encoding = "filter" },                            # !0
+  { field = "data_tone", offset = 8, length = 1, encoding = "data_tone" },                      # !1: tone 0=OFF, 1=TONE, 2=TSQL (no DTCS)
+  { field = "tone", offset = 9, length = 3, encoding = "tone" },                                # !2-!4
+  { field = "tsql", offset = 12, length = 3, encoding = "tsql" },                               # !5-!7
+  { field = "name", offset = 15, length = 10, encoding = "name" },                              # !8-@7
+]
+
 [ctcss]
 table = "standard_50"
 
@@ -1064,7 +1115,7 @@ set_bsr = [0x1A, 0x01]                    # source: IC-7300 Advanced Manual (11a
 set_memory_mode = [0x08]                  # source: IC-7300 Advanced Manual (11a) p.19-3
 memory_write = [0x09]                     # source: IC-7300 Advanced Manual (11a) p.19-3
 memory_to_vfo = [0x0A]                    # source: IC-7300 Advanced Manual (11a) p.19-3 -- payload MOR-2055, see commands/memory.py: build_memory_to_vfo
-memory_clear = [0x0B]                     # source: IC-7300 Advanced Manual (11a) p.19-3 -- payload MOR-2055, see commands/memory.py: build_memory_clear
+memory_clear = [0x1A, 0x00]               # the declared 1a00_ff clear form's command bytes (Advanced Manual 11a p.19-11: 1A 00 + channel + FF, MOR-3644); the radio's bare 0x0B clear (p.19-3) is not the form this package sends -- MOR-2055 keeps the IC-7610 on 0x0B
 get_memory_contents = [0x1A, 0x00]        # source: IC-7300 Advanced Manual (11a) p.19-4 (detail p.19-11)
 set_memory_contents = [0x1A, 0x00]        # source: IC-7300 Advanced Manual (11a) p.19-4 (detail p.19-11)
 

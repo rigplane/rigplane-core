@@ -352,12 +352,61 @@ last_channel = 99
 # CI-V Reference Guide rev 4, 1A 00 offset digit; Advanced manual, DD mode: 1.2 GHz only.
 dd_groups = [3]
 offset_10mhz_groups = [3]
+frequency_ranges = [
+  { group = 1, min_hz = 144_000_000, max_hz = 148_000_000 },
+  { group = 2, min_hz = 430_000_000, max_hz = 450_000_000 },
+  { group = 3, min_hz = 1_240_000_000, max_hz = 1_300_000_000 },
+]
+
+# The verified 1A 00 write record (MOR-3644), field by field from the
+# IC-9700 CI-V Reference Guide (2019, rev. 4) p.14 "Memory content". The
+# guide's table prints the channel block's position labels (5~51) TWICE,
+# with the name (52~67) after them, and its NOTE spells it out: the
+# second block is the TX data used when Split is ON, and even with Split
+# OFF the same data should be entered -- so the record is select byte +
+# the 47-byte block x copies + the 16-byte name, the same shape the read
+# reply carries (parse_memory_entry). The field table below declares ONE
+# copy: offsets are relative to the record after the address (guide bytes
+# 1-3: frequency band 1 byte + channel 2-byte BCD); the guide's position
+# labels map as: 4 -> 0 (select), 5-9 -> 1-5 (frequency), 10 -> 6 (mode),
+# 11 -> 7 (filter), 12 -> 8 (data mode), 13 -> 9 (duplex|tone), 14 -> 10
+# (digital squelch), 15-17 -> 11-13 (tone), 18-20 -> 14-16 (tsql), 21-23
+# -> 17-19 (DTCS), 24 -> 20 (DV code), 25-27 -> 21-23 (duplex offset),
+# 28-51 -> 24-47 (UR/R1/R2); the name (16 characters) is declared at
+# 48-63 and lands after the last block copy. Mode and filter are
+# the raw bytes of the read block (the guide's 2-byte "operating mode
+# setting" is the read block's mode + filter pair); the tone fields use
+# the 1B 00 encoding (guide p.19). The select byte's high nibble is fixed
+# 0 (guide: "Fixed"); duplex nibble 3 is RPS, valid in DD mode only
+# (guide p.14). Fields the write API does not expose yet carry their
+# documented OFF value (as on the IC-705 above).
+[memory.write_layout]
+clear = "1a00_ff"  # guide p.14: 1A 00 + the address + FF
+record_length = 64  # one copy: select + 47-byte block + 16-byte name
+copies = 2  # guide p.14 NOTE: the block is stored twice (TX copy = RX values when not split)
+default_tone_centihz = 8850  # an unset tone/tsql writes the default tone (88.5 Hz); zeros are not a valid CTCSS value
+fields = [
+  { field = "select", offset = 0, length = 1, encoding = "select" },                                # 4
+  { field = "frequency", offset = 1, length = 5, encoding = "frequency", max_hz = 1_499_999_999 },  # 5-9: GHz <= 1, 100 MHz <= 4 (read-side rules)
+  { field = "mode", offset = 6, length = 1, encoding = "mode" },                                    # 10
+  { field = "filter", offset = 7, length = 1, encoding = "filter" },                                # 11
+  { field = "data_mode", offset = 8, length = 1, encoding = "data_mode" },                          # 12
+  { field = "duplex_tone", offset = 9, length = 1, encoding = "duplex_tone" },                      # 13: duplex 0-3 (3 = RPS, DD only)
+  { field = "digital_squelch", offset = 10, length = 1, encoding = "fixed", value = "00" },         # 14: 00 = off
+  { field = "tone", offset = 11, length = 3, encoding = "tone" },                                   # 15-17
+  { field = "tsql", offset = 14, length = 3, encoding = "tsql" },                                   # 18-20
+  { field = "dtcs", offset = 17, length = 3, encoding = "fixed", value = "000023" },                # 21-23: polarity NN, code 023 (the same record shape as the IC-705)
+  { field = "dv_code", offset = 20, length = 1, encoding = "fixed", value = "00" },                 # 24
+  { field = "duplex_offset", offset = 21, length = 3, encoding = "fixed", value = "000000" },       # 25-27: 0 Hz (not exposed, MOR-3644 slice)
+  { field = "callsigns", offset = 24, length = 24, encoding = "fixed", value = "202020202020202020202020202020202020202020202020" },  # 28-51: UR/R1/R2 blank
+  { field = "name", offset = 48, length = 16, encoding = "name" },                                  # 52-67
+]
 
 [ctcss]
 table = "standard_50"
 
 [modes]
-list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R"]
+list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R", "DV"]
 # MOR-3679: the CW modes, named once here for every client.
 families = { cw = ["CW", "CW-R"] }
 
@@ -862,7 +911,7 @@ set_bsr = [0x1A, 0x01]                    # source: IC-9700 CI-V Reference Guide
 set_memory_mode = [0x08]                  # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.4
 memory_write = [0x09]                     # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.4
 memory_to_vfo = [0x0A]                    # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.4 -- payload MOR-2055, see commands/memory.py: build_memory_to_vfo
-memory_clear = [0x0B]                     # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.4 -- payload MOR-2055, see commands/memory.py: build_memory_clear
+memory_clear = [0x1A, 0x00]               # the declared 1a00_ff clear form's command bytes (guide p.14: 1A 00 + the address + FF, MOR-3644); the radio's bare 0x0B clear (guide p.4) is not the form this package sends -- MOR-2055 keeps the IC-7610 on 0x0B
 get_memory_contents = [0x1A, 0x00]        # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.5 (detail pp.14,15)
 set_memory_contents = [0x1A, 0x00]        # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.5 (detail pp.14,15)
 

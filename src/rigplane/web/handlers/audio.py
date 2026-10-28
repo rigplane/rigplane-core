@@ -23,7 +23,11 @@ from ...audio import route as audio_route
 from ...audio.bus import STAGE_RX_POST_DSP
 from ...audio.session import RxSubscription
 from ...audio._usb_pairing import AudioCandidate
-from ...audio.usb_driver import AudioAlreadyStartedError, audio_start_failure_details
+from ...audio.usb_driver import (
+    AudioAlreadyStartedError,
+    audio_start_failure_details,
+    audio_start_failure_reason,
+)
 from ...dsp.tap_registry import TapHandle, TapRegistry
 from ...env_config import (
     get_audio_broadcaster_high_watermark,
@@ -1335,13 +1339,21 @@ class AudioBroadcaster:
         Without this the browser was told nothing and waited on dead air
         forever (ADR §3.4 problem P2: "subscribed" with zero frames). Reuses
         the handler's error envelope shape: ``{"type": "error", "message"}``.
+
+        MOR-3823: the frame never carries exception text — host-side refusal
+        detail ("select explicit RX/TX devices") is meaningless to a remote
+        client. ``message`` keeps the fixed prefix the frontend matches on
+        and appends only the category token; the same token rides in
+        ``reason`` so clients can branch without parsing the message.
         """
         if not self._client_ws:
             return
+        reason = audio_start_failure_reason(exc)
         payload = encode_json(
             {
                 "type": "error",
-                "message": f"audio_start: RX audio failed to start: {exc}",
+                "message": f"audio_start: RX audio failed to start: {reason}",
+                "reason": reason,
             }
         )
         for ws in list(self._client_ws.values()):

@@ -30,7 +30,12 @@ from rigplane.core.state_acquisition_policy import (
     ReconciliationPriority,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.core.types import MEMORY_WRITE_LAYOUTS, ToneSquelchType
+from rigplane.core.types import (
+    MEMORY_WRITE_CLEAR_FORMS,
+    MemoryWriteField,
+    MemoryWriteLayout,
+    ToneSquelchType,
+)
 from rigplane.core.usb_identity import UsbAudioIdentity, UsbFunctionId
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.profiles.control_domain import (
@@ -2165,13 +2170,177 @@ _MEMORY_KEYS = frozenset(
         "recall",
         "dd_groups",
         "offset_10mhz_groups",
+        "frequency_ranges",
         "write_layout",
     }
 )
 _MEMORY_ADDRESSING = frozenset({"group_channel", "band_channel", "channel"})
+_WRITE_LAYOUT_KEYS = frozenset(
+    {"clear", "record_length", "tone_max", "copies", "fields", "default_tone_centihz"}
+)
+_WRITE_FIELD_KEYS = frozenset(
+    {"field", "offset", "length", "encoding", "max_hz", "value"}
+)
 
 
-def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
+def _parse_write_layout(
+    filename: str, raw: Any, ctcss_tones_centihz: tuple[int, ...] | None
+) -> MemoryWriteLayout | None:
+    """Parse the optional ``[memory.write_layout]`` table (MOR-3644).
+
+    The declaration is pure data: the clear form, the record length, the
+    block copy count, the tone a ``tone``/``tsql`` field carries when the
+    caller leaves it unset, and the field table. Structural correctness
+    (known encodings, exact tiling, one frequency/mode/name field, the
+    block span a ``copies`` repeat needs) is decided by
+    :meth:`MemoryWriteLayout.validation_errors`, the same rules the
+    runtime admission gate applies to SDK-supplied profiles; the tone
+    default's membership in the profile's CTCSS domain is checked here.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout must be a table with "
+            "'clear', 'record_length' and 'fields', got "
+            f"{type(raw).__name__}"
+        )
+    _reject_unknown_keys(filename, "[memory].write_layout", raw, _WRITE_LAYOUT_KEYS)
+    clear = raw.get("clear")
+    if not isinstance(clear, str) or clear not in MEMORY_WRITE_CLEAR_FORMS:
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout.clear must be one of "
+            f"{sorted(MEMORY_WRITE_CLEAR_FORMS)}, got {clear!r}"
+        )
+    record_length = raw.get("record_length")
+    if (
+        isinstance(record_length, bool)
+        or not isinstance(record_length, int)
+        or not 1 <= record_length <= 128
+    ):
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout.record_length must be an "
+            f"integer 1..128, got {record_length!r}"
+        )
+    tone_max = raw.get("tone_max", 3)
+    if (
+        isinstance(tone_max, bool)
+        or not isinstance(tone_max, int)
+        or (not 0 <= tone_max <= 3)
+    ):
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout.tone_max must be an integer "
+            f"0..3 (the tone-mode nibble this record can store), got {tone_max!r}"
+        )
+    copies = raw.get("copies", 1)
+    if isinstance(copies, bool) or not isinstance(copies, int) or not 1 <= copies <= 2:
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout.copies must be an integer "
+            "1..2 (how many times the channel-data block appears on the "
+            "wire; the sourced Icom manuals print the block's position "
+            f"labels twice for the TX/split copy), got {copies!r}"
+        )
+    default_tone = raw.get("default_tone_centihz")
+    if default_tone is not None and (
+        isinstance(default_tone, bool) or not isinstance(default_tone, int)
+    ):
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout.default_tone_centihz must be "
+            f"an integer in centi-Hz, got {default_tone!r}"
+        )
+    rows = raw.get("fields")
+    if not isinstance(rows, list) or not rows:
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout.fields must be a non-empty "
+            "array of field tables"
+        )
+    fields: list[MemoryWriteField] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise RigLoadError(
+                f"{filename}: [memory].write_layout.fields entries must be tables"
+            )
+        _reject_unknown_keys(
+            filename, "[memory].write_layout.fields", row, _WRITE_FIELD_KEYS
+        )
+        name = row.get("field")
+        offset = row.get("offset")
+        length = row.get("length")
+        encoding = row.get("encoding")
+        max_hz = row.get("max_hz")
+        value = row.get("value")
+        if value is not None and not isinstance(value, str):
+            raise RigLoadError(
+                f"{filename}: [memory].write_layout field 'value' must be a "
+                f"hex string, got {value!r}"
+            )
+        if value is not None and encoding != "fixed":
+            raise RigLoadError(
+                f"{filename}: [memory].write_layout field {name!r}: 'value' "
+                "is only valid on a fixed field"
+            )
+        if not isinstance(name, str) or not name:
+            raise RigLoadError(
+                f"{filename}: [memory].write_layout field 'field' must be a "
+                f"non-empty string, got {name!r}"
+            )
+        if (
+            isinstance(offset, bool)
+            or not isinstance(offset, int)
+            or isinstance(length, bool)
+            or not isinstance(length, int)
+        ):
+            raise RigLoadError(
+                f"{filename}: [memory].write_layout field {name!r}: 'offset' "
+                f"and 'length' must be integers"
+            )
+        if not isinstance(encoding, str):
+            raise RigLoadError(
+                f"{filename}: [memory].write_layout field {name!r}: "
+                f"'encoding' must be a string, got {encoding!r}"
+            )
+        if max_hz is not None and encoding != "frequency":
+            raise RigLoadError(
+                f"{filename}: [memory].write_layout field {name!r}: 'max_hz' "
+                "is only valid on a frequency field"
+            )
+        if max_hz is not None and (
+            isinstance(max_hz, bool) or not isinstance(max_hz, int)
+        ):
+            raise RigLoadError(
+                f"{filename}: [memory].write_layout field {name!r}: 'max_hz' "
+                "must be an integer"
+            )
+        fields.append(
+            MemoryWriteField(
+                field=name,
+                offset=offset,
+                length=length,
+                encoding=encoding,
+                max_hz=max_hz,
+                value=value,
+            )
+        )
+    layout = MemoryWriteLayout(
+        clear=clear,
+        record_length=record_length,
+        tone_max=tone_max,
+        copies=copies,
+        default_tone_centihz=default_tone,
+        fields=tuple(fields),
+    )
+    errors = layout.validation_errors()
+    if errors:
+        raise RigLoadError(f"{filename}: [memory].write_layout: {'; '.join(errors)}")
+    errors = layout.domain_errors(ctcss_tones_centihz)
+    if errors:
+        raise RigLoadError(f"{filename}: [memory].write_layout: {'; '.join(errors)}")
+    return layout
+
+
+def _parse_memory(
+    filename: str, raw: Any, ctcss_tones_centihz: tuple[int, ...] | None
+) -> MemoryProfile | None:
     """Parse the optional ``[memory]`` section (MOR-3627)."""
     if raw is None:
         return None
@@ -2228,18 +2397,46 @@ def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
                 f"{filename}: [memory].{key} must not contain duplicates"
             )
         groups[key] = tuple(values)
-    write_layout = raw.get("write_layout")
-    if write_layout is not None and (
-        not isinstance(write_layout, str) or write_layout not in MEMORY_WRITE_LAYOUTS
-    ):
-        raise RigLoadError(
-            f"{filename}: [memory].write_layout must be one of "
-            f"{sorted(MEMORY_WRITE_LAYOUTS)} or absent, got {write_layout!r}"
+    ranges = raw.get("frequency_ranges", [])
+    if not isinstance(ranges, list):
+        raise RigLoadError(f"{filename}: [memory].frequency_ranges must be a list")
+    frequency_ranges: list[tuple[int, int, int]] = []
+    for row in ranges:
+        section = "[memory].frequency_ranges"
+        if not isinstance(row, dict):
+            raise RigLoadError(f"{filename}: {section} entries must be tables")
+        _reject_unknown_keys(
+            filename, section, row, frozenset({"group", "min_hz", "max_hz"})
         )
+        range_values: list[int] = []
+        for key in ("group", "min_hz", "max_hz"):
+            value = row.get(key)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise RigLoadError(f"{filename}: {section} {key} must be an integer")
+            range_values.append(value)
+        group, low, high = range_values
+        if not bounds["first_group"] <= group <= bounds["last_group"]:
+            raise RigLoadError(f"{filename}: {section} group outside memory bounds")
+        if not 0 < low <= high <= 9_999_999_999:
+            raise RigLoadError(
+                f"{filename}: {section} needs 0 < min_hz <= max_hz <= 9999999999"
+            )
+        if any(
+            g == group and low <= end and start <= high
+            for g, start, end in frequency_ranges
+        ):
+            raise RigLoadError(
+                f"{filename}: {section} ranges for a group must not overlap"
+            )
+        frequency_ranges.append((group, low, high))
+    write_layout = _parse_write_layout(
+        filename, raw.get("write_layout"), ctcss_tones_centihz
+    )
     return MemoryProfile(  # type: ignore[arg-type]
         addressing=addressing,
         recall=recall,
         write_layout=write_layout,
+        frequency_ranges=tuple(frequency_ranges),
         **bounds,
         **groups,
     )
@@ -3277,7 +3474,7 @@ def load_rig(path: Path) -> RigConfig:
     )
     tx_policy = _parse_tx_policy(filename, data.get("tx_policy"))
     expected_identity_ids = _parse_identity(filename, data.get("identity"))
-    memory = _parse_memory(filename, data.get("memory"))
+    memory = _parse_memory(filename, data.get("memory"), ctcss_tones_centihz)
     cw_text = _parse_cw_text(
         filename,
         data.get("cw_text"),

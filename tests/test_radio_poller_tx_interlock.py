@@ -417,9 +417,13 @@ async def test_memory_write_and_clear_are_held_while_ptt_is_keyed() -> None:
         datamode=0,
         tonemode=0,
     )
-    for command, method, arg in (
-        (MemoryClear(channel=5), "memory_clear", 5),
-        (SetMemoryContents(mem=mem), "set_memory_contents", mem),
+    # The clear's group/band address reaches the radio (MOR-3644 part 2):
+    # the channel-only default passes ``group=None`` through (a grouped
+    # radio would refuse it), one grouped case names its group.
+    for command, method, call_args, call_kwargs in (
+        (MemoryClear(channel=5), "memory_clear", (5,), {"group": None}),
+        (MemoryClear(channel=5, group=3), "memory_clear", (5,), {"group": 3}),
+        (SetMemoryContents(mem=mem), "set_memory_contents", (mem,), {}),
     ):
         clock = FreshnessClock(start=10.0)
         radio = _memory_radio()
@@ -441,7 +445,7 @@ async def test_memory_write_and_clear_are_held_while_ptt_is_keyed() -> None:
         _observe_ptt(store, False, observed_at=clock.now())
         assert poller._stage_tx_interlocked_entries([]) == [entry]  # noqa: SLF001
         await poller._execute_queued_entry(entry)  # noqa: SLF001
-        getattr(radio, method).assert_awaited_once_with(arg)
+        getattr(radio, method).assert_awaited_once_with(*call_args, **call_kwargs)
 
 
 def test_authority_approved_commands_do_not_inspect_observed_rf() -> None:

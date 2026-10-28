@@ -188,6 +188,7 @@
   "core.toast.txAudioStartFailed": "TX audio could not start",
   "core.toast.rxAudioResumeFailed": "Local audio could not resume. Check application sound permissions and output settings.",
   "core.toast.rxAudioStartFailed": "Radio audio capture could not start. Check the audio diagnostics before retrying.",
+  "core.toast.rxAudioStationDeviceNeeded": "The radio's audio devices could not be paired automatically. The station's audio device has to be chosen on the station computer — whoever runs the station can do it in its audio device settings.",
   "core.toast.txAudioStopped": "TX audio stopped — the transmission ended early",
   "core.toast.unknown": "Something went wrong. Try again later.",
 
