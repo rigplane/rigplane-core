@@ -6309,15 +6309,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 self._commands.build_memory_to_vfo(channel, to_addr=self._radio_addr)
             )
 
-    async def memory_clear(self, channel: int, group: int = 0) -> None:
+    async def memory_clear(self, channel: int, group: int | None = None) -> None:
         """Clear memory channel.
 
-        ``group`` is the memory group (IC-705) or band code (IC-9700) when
-        the profile's memory is addressed that way; the channel-only
-        radios keep group 0. MOR-3644: refused unless the profile's
-        ``[memory]`` section declares a verified write layout; the clear
-        frame itself is the profile's declared form; nothing is sent
-        otherwise.
+        ``group`` is the memory group (IC-705) or band code (IC-9700) the
+        profile's memory is addressed by; a grouped radio REFUSES a clear
+        without one (never silently group 0), the channel-only radios
+        keep group 0. MOR-3644: refused unless the profile's ``[memory]``
+        section declares a verified write layout; the clear frame itself
+        is the profile's declared form; nothing is sent otherwise.
         """
         admit_memory_write(self._profile)
         memory = self._profile.memory

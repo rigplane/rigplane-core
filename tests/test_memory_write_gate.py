@@ -585,6 +585,7 @@ async def test_http_seam_writes_the_ic705_in_its_declared_layout() -> None:
 @pytest.mark.parametrize(
     "params",
     [
+        {"channel": 5},  # a grouped radio never clears an unnamed group
         {"channel": 5, "group": 2.9},  # a fractional group must not coerce
         {"channel": 5, "group": True},
         {"channel": 100, "group": 2},  # outside the profile bounds
@@ -595,8 +596,9 @@ async def test_http_clear_refuses_a_malformed_address_before_enqueueing(
     params: dict,
 ) -> None:
     """MOR-3644 part 2: the dispatch arm validates the address the profile
-    needs (strict integers, profile bounds) so a malformed clear is a
-    client error, not an ok answer that fails later at the radio."""
+    needs (an explicit group on a grouped radio, strict integers, profile
+    bounds) so a malformed clear is a client error, not an ok answer that
+    fails later at the radio."""
     transport = MockTransport()
     radio = _radio("IC-705", transport)
     radio._connected = False  # refused before enqueue; never touched

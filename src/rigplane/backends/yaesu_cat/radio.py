@@ -4252,7 +4252,7 @@ class YaesuCatRadio:
     async def memory_to_vfo(self, channel: int) -> None:
         raise NotImplementedError("Memory to VFO not supported on this radio")
 
-    async def memory_clear(self, channel: int, group: int = 0) -> None:
+    async def memory_clear(self, channel: int, group: int | None = None) -> None:
         raise NotImplementedError("Memory clear not supported on this radio")
 
     async def set_memory_contents(self, mem: "MemoryChannel") -> None:

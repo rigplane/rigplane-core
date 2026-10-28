@@ -182,7 +182,7 @@ def build_memory_to_vfo(
 @require_cmd_map
 def build_memory_clear(
     memory: MemoryProfile,
-    group: int,
+    group: int | None,
     channel: int,
     to_addr: int,
     from_addr: int = CONTROLLER_ADDR,
@@ -204,9 +204,11 @@ def build_memory_clear(
       ``1A 00 + channel + FF``; that discrepancy is deferred to MOR-2055.
 
     The address is bounds-checked by the profile before any byte is
-    built.
+    built. A grouped memory requires an explicit ``group``: clearing an
+    unnamed group could erase a slot in a group the caller never named.
     """
     layout = _require_write_layout(memory)
+    group = _required_memory_group(group, memory, "clear")
     address = _encode_memory_address(memory, group, channel)
     if layout.clear == "0b_channel":
         data = bcd_encode_value(channel, byte_count=2)
@@ -264,13 +266,18 @@ def build_memory_contents_set(
     refuses without emitting a byte. ``ctcss_tones_centihz`` is the
     profile's tone domain, the same one ``set_tone_freq`` admits through
     (``commands/tone.py``); a layout without a tone field ignores it.
+
+    A grouped memory (IC-705 groups, IC-9700 band codes) requires an
+    explicit ``group``: ``MemoryChannel.group`` left at ``None`` refuses
+    rather than silently writing group 0.
     """
     from ..types import MemoryChannel as MC
 
     if not isinstance(mem, MC):
         raise TypeError(f"Expected MemoryChannel, got {type(mem)}")
     layout = _require_write_layout(memory)
-    address = _encode_memory_address(memory, mem.group, mem.channel)
+    group = _required_memory_group(mem.group, memory, "write")
+    address = _encode_memory_address(memory, group, mem.channel)
     record = _write_record(mem, memory, layout, ctcss_tones_centihz)
     return _build_from_map(
         cmd_map,
@@ -279,6 +286,23 @@ def build_memory_contents_set(
         from_addr=from_addr,
         data=address + record,
     )
+
+
+def _required_memory_group(group: int | None, memory: MemoryProfile, verb: str) -> int:
+    """The explicit group a grouped memory needs; ``None`` is no choice.
+
+    A channel-list radio (IC-7300/MK2, IC-7610) has only group 0. A
+    grouped radio (IC-705 memory groups, IC-9700 band codes) refuses an
+    unspecified group: silently defaulting to 0 could erase or overwrite a
+    slot in a group the caller never named.
+    """
+    if group is None:
+        if memory.addressing != "channel":
+            raise ValueError(
+                f"a memory group/band is required to {verb} a channel on this radio"
+            )
+        return 0
+    return group
 
 
 def _require_write_layout(memory: MemoryProfile) -> MemoryWriteLayout:

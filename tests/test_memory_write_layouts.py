@@ -569,7 +569,27 @@ async def test_boolean_addresses_refuse_without_sending(model: str) -> None:
                 _mem(model, group=True)  # type: ignore[arg-type]
             )
         with pytest.raises(ValueError, match="channel must be an integer"):
-            await radio.memory_clear(True)  # type: ignore[arg-type]
+            await radio.memory_clear(True, group=2)  # type: ignore[arg-type]
+    finally:
+        radio._connected = False
+    assert transport.sent_packets == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+async def test_a_grouped_radio_refuses_an_unnamed_group(model: str) -> None:
+    """MOR-3644: a grouped memory never accepts an unnamed group -- a
+    channel-only clear or write would silently hit group/band 0 and could
+    erase or overwrite a slot in a group the caller never named (the UI's
+    channel-only store/clear flow is exactly that hazard; it is refused
+    until the UI carries one explicit slot address)."""
+    transport = MockTransport()
+    radio = _radio(model, transport)
+    try:
+        with pytest.raises(ValueError, match="a memory group/band is required"):
+            await radio.memory_clear(5)
+        with pytest.raises(ValueError, match="a memory group/band is required"):
+            await radio.set_memory_contents(_mem(model, group=None))
     finally:
         radio._connected = False
     assert transport.sent_packets == []

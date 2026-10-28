@@ -445,8 +445,10 @@ class MemoryChannel:
         tone_freq_hz: CTCSS tone in Hz (legacy record only).
         tsql_freq_hz: TSQL frequency in Hz (legacy record only).
         name: Memory channel name, bounded by the layout's name field.
-        group: Memory group (IC-705) or band code (IC-9700); 0 on the
-            channel-only radios.
+        group: Memory group (IC-705) or band code (IC-9700); ``None``
+            means the caller did not choose one, which a grouped profile
+            refuses (never silently group 0); the channel-only radios
+            treat it as 0.
         duplex: Duplex nibble (0=OFF, 1=DUP-, 2=DUP+, 3=RPS in DD).
         tone_centihz: CTCSS tone in exact centi-Hz (verified layouts).
         tsql_centihz: TSQL frequency in exact centi-Hz (verified layouts).
@@ -462,7 +464,7 @@ class MemoryChannel:
     tone_freq_hz: int | None = None
     tsql_freq_hz: int | None = None
     name: str = ""
-    group: int = 0
+    group: int | None = None
     duplex: int = 0
     tone_centihz: int | None = None
     tsql_centihz: int | None = None

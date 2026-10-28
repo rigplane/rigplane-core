@@ -205,8 +205,10 @@ async def test_web_memory_clear_runs_between_the_listed_slot_reads() -> None:
             _http_get(host, port, "/api/v1/memories?group=0&start=0&count=3")
         )
         await transport.wait_in_flight(0)
+        # The IC-705 is group-addressed, so the clear names its group
+        # (MOR-3644: a grouped radio refuses an unnamed group).
         post = asyncio.create_task(
-            _request(web, "http", "memory_clear", {"channel": 5})
+            _request(web, "http", "memory_clear", {"channel": 5, "group": 0})
         )
         await asyncio.wait_for(entry_taken.wait(), timeout=5)
         await asyncio.sleep(0)

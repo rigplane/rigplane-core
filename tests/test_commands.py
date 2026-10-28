@@ -1820,6 +1820,14 @@ class TestToneTsqlCommands:
         return rig.to_command_map()
 
     @pytest.fixture()
+    def ic7610_cmd_map(self):
+        """The IC-7610's own map, paired with the IC-7610 layout below:
+        its ``memory_clear`` row carries the legacy ``0x0B`` bytes, while
+        this class's default (IC-7300) map declares the manual
+        ``1A 00`` clear form (MOR-3644)."""
+        return load_rig(RIG_DIR / "ic7610.toml").to_command_map()
+
+    @pytest.fixture()
     def ic7610_memory(self):
         """The IC-7610's own ``[memory]`` section: the write builders take
         the profile whose layout they build from (MOR-3644); the builders
@@ -2133,11 +2141,11 @@ class TestToneTsqlCommands:
         # FE FE 98 E0 0A 00 99 FD (channel 99 in BCD)
         assert civ == b"\xfe\xfe\x98\xe0\x0a\x00\x99\xfd"
 
-    def test_build_memory_clear(self, cmd_map, ic7610_memory) -> None:
+    def test_build_memory_clear(self, ic7610_cmd_map, ic7610_memory) -> None:
         from rigplane.commands import build_memory_clear
 
-        civ = build_memory_clear(ic7610_memory, 0, 1, cmd_map=cmd_map)
-        # FE FE 98 E0 0B 00 01 FD (channel 1 in BCD)
+        civ = build_memory_clear(ic7610_memory, 0, 1, cmd_map=ic7610_cmd_map)
+        # FE FE 98 E0 0B 00 01 FD (channel 1 in BCD; the legacy form)
         assert civ == b"\xfe\xfe\x98\xe0\x0b\x00\x01\xfd"
 
     def test_build_memory_clear_requires_cmd_map(self, ic7610_memory) -> None:
@@ -2154,7 +2162,7 @@ class TestToneTsqlCommands:
         # FE FE 98 E0 1A 00 00 50 FD (0x1A sub=0x00, channel 50 BCD)
         assert civ == b"\xfe\xfe\x98\xe0\x1a\x00\x00\x50\xfd"
 
-    def test_build_memory_contents_set(self, cmd_map, ic7610_memory) -> None:
+    def test_build_memory_contents_set(self, ic7610_cmd_map, ic7610_memory) -> None:
         from rigplane.commands import build_memory_contents_set
         from rigplane.types import MemoryChannel
 
@@ -2170,7 +2178,7 @@ class TestToneTsqlCommands:
             tsql_freq_hz=None,
             name="FT8",
         )
-        civ = build_memory_contents_set(mem, ic7610_memory, cmd_map=cmd_map)
+        civ = build_memory_contents_set(mem, ic7610_memory, cmd_map=ic7610_cmd_map)
         # FE FE 98 E0 1A 00 <channel 2 bytes> <payload 26 bytes> FD
         # Structure: FE FE(2) + to/from(2) + cmd(1) + sub(1) + data(28) + FD(1) = 35 bytes
         assert len(civ) == 35
