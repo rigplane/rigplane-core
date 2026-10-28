@@ -100,15 +100,13 @@ function preferredRxCodec(): 'opus' | 'pcm16' {
   return typeof AudioDecoder === 'undefined' ? 'pcm16' : 'opus';
 }
 
-/** MOR-3823: a USB pairing refusal is actionable only from a page that runs
- *  on the station host itself. The controller MODE is not that signal — a
- *  mode:"local" Core (the default multi-session mode) reports local to every
- *  LAN client too — so the page proves it by its own hostname instead. */
-function pageRunsOnStationHost(): boolean {
-  const hostname = location.hostname;
-  return hostname === 'localhost' || hostname.endsWith('.localhost')
-    || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
-}
+/** MOR-3823: a loopback page URL is NOT proof the reader sits at the
+ *  station — the documented `ssh -L 8080:localhost:8080` tunnel
+ *  (docs/guide/remote-operation.md) gives a remote user a localhost URL —
+ *  and the controller MODE is not that signal either (a mode:"local" Core
+ *  reports local to every LAN client). The web UI therefore never guesses:
+ *  every USB pairing refusal shows the one neutral toast below, correct for
+ *  a remote reader and for whoever runs the station alike. */
 
 class AudioManager {
   private ws: WebSocket | null = null;
@@ -575,24 +573,15 @@ class AudioManager {
         this.stopRx();
         setRxError(true);
         // MOR-3823: the frame's `reason` is the publishable category. A USB
-        // pairing refusal is actionable only on the station host itself, so
-        // the host-actionable toast (--rx-device/--tx-device instructions) is
-        // shown only when this page proves — by its own loopback hostname —
-        // that it runs there; every other client gets the station wording.
+        // pairing refusal is actionable only on the station computer, but no
+        // client-side signal proves the reader sits there (see above), so
+        // every client gets the same neutral toast: no flags, no paths.
         if (typeof msg.reason === 'string' && SERVER_RX_DEVICE_REASONS.has(msg.reason)) {
-          if (pageRunsOnStationHost()) {
-            this._operatorNotifier?.(
-              'error',
-              'The radio\'s audio devices could not be paired automatically. Choose the RX and TX audio devices explicitly.',
-              'rxAudioChooseDeviceOnHost',
-            );
-          } else {
-            this._operatorNotifier?.(
-              'error',
-              'The station must choose its audio device. Ask whoever runs the station computer.',
-              'rxAudioStationDeviceNeeded',
-            );
-          }
+          this._operatorNotifier?.(
+            'error',
+            'The radio\'s audio devices could not be paired automatically. The station\'s audio device has to be chosen on the station computer — whoever runs the station can do it in its audio device settings.',
+            'rxAudioStationDeviceNeeded',
+          );
         } else {
           this._operatorNotifier?.('error', 'Radio audio capture could not start.', 'rxAudioStartFailed');
         }
