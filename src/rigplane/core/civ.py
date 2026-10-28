@@ -45,7 +45,7 @@ def is_directed_ptt_reply(frame: CivFrame, radio_addr: int) -> bool:
 
 @dataclass(slots=True)
 class OwedReplyEntry:
-    dispatched_at: float
+    dispatched_at: float | None = None
     answered_by: CivFrame | None = None
 
 
@@ -65,24 +65,36 @@ class PttReplyLedger:
         self._quarantine_until = 0.0
 
     def _expire(self, now: float) -> None:
-        while self._owed and now > self._owed[0].dispatched_at + self._lifetime:
-            self._owed.popleft()
+        self._owed = deque(
+            entry
+            for entry in self._owed
+            if entry.dispatched_at is None
+            or now <= entry.dispatched_at + self._lifetime
+        )
 
     def note_dispatch(self, frame: CivFrame) -> OwedReplyEntry | None:
         now = self._clock()
         self._expire(now)
         if frame.command != 0x1C or frame.sub != 0x00 or frame.data:
             return None
-        entry = OwedReplyEntry(now)
+        entry = OwedReplyEntry()
         self._owed.append(entry)
         return entry
+
+    def note_written(self, entry: OwedReplyEntry | None) -> None:
+        if entry is not None and entry.dispatched_at is None:
+            entry.dispatched_at = self._clock()
+
+    def discard(self, entry: OwedReplyEntry | None) -> None:
+        self._owed = deque(owed for owed in self._owed if owed is not entry)
 
     def note_reply(self, frame: CivFrame) -> OwedReplyEntry | None:
         """Account for a reply already classified by the runtime's D1 gate."""
         now = self._clock()
         self._expire(now)
-        if self._owed:
-            entry = self._owed.popleft()
+        # A reply can arrive while the sender is still awaiting serial drain.
+        entry = self._owed.popleft() if self._owed else None
+        if entry is not None:
             entry.answered_by = frame
             return entry
         self._orphan_count += 1
