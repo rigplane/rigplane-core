@@ -7,6 +7,7 @@ a positive integer, got 'fast'``. Capability facts stay in rigs/.
 
 from __future__ import annotations
 
+import math
 import re
 import tomllib
 from collections.abc import Mapping
@@ -26,6 +27,10 @@ _K_LAN = frozenset("control_port keepalive_hold_s single_owner identity".split()
 _K_INITIAL = frozenset("frequency_hz mode filter data_mode".split())
 _K_AUDIO = frozenset("transport sample_rate_hz channels sample_format".split())
 _K_SCOPE = frozenset("bins span_hz rate_hz frame".split())
+_K_TIMING = frozenset(
+    "reply_latency_ms ack_ms_set ptt_set_ack_ms readback_ms write_drain_ms "
+    "tx_on_switch_ms tx_off_switch_ms".split()
+)
 _K_TOP = frozenset(
     "schema sim transport initial answers timing unsolicited faults state audio scope".split()
 )
@@ -71,6 +76,12 @@ class AnswersConfig:
 @dataclass(frozen=True, slots=True)
 class TimingConfig:
     reply_latency_ms: float | None = None
+    ack_ms_set: float | None = None
+    ptt_set_ack_ms: float | None = None
+    readback_ms: float | None = None
+    write_drain_ms: float | None = None
+    tx_on_switch_ms: float | None = None
+    tx_off_switch_ms: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +152,14 @@ def _scalar(table, key, path, kind, minimum=None, required=False, strict=False):
         what = f"a {kind.__name__}"
     if not ok:
         _fail(f"{path}.{key}: must be {what}, got {value!r}")
+    return value
+
+
+def _timing_ms(table, key):
+    """One optional ``[timing]`` delay: a finite number >= 0, never a bool."""
+    value = _scalar(table, key, "timing", float)
+    if value is not None and not math.isfinite(value):
+        _fail(f"timing.{key}: must be a finite number >= 0, got {value!r}")
     return value
 
 
@@ -284,7 +303,7 @@ def load_sim_profile(path: Path, *, root: Path) -> SimProfile:
         if not resolved.is_file() or not resolved.is_relative_to(base):
             _fail(f"{e}.file: {answer_file!r} missing under root")
         recorded.append((answer_file, answer_transport))
-    tm_t = _section(data.get("timing", {}), "timing", frozenset({"reply_latency_ms"}))
+    tm_t = _section(data.get("timing", {}), "timing", _K_TIMING)
     faults_t = _section(data.get("faults", {}), "faults", frozenset({"defaults"}))
     state_t = _section(data.get("state", {}), "state", frozenset({"extra"}))
     extra = _section(state_t.get("extra", {}), "state.extra")
@@ -327,7 +346,15 @@ def load_sim_profile(path: Path, *, root: Path) -> SimProfile:
         transport=transport,
         initial=initial,
         answers=AnswersConfig(recorded=tuple(recorded)),
-        timing=TimingConfig(_scalar(tm_t, "reply_latency_ms", "timing", float)),
+        timing=TimingConfig(
+            reply_latency_ms=_timing_ms(tm_t, "reply_latency_ms"),
+            ack_ms_set=_timing_ms(tm_t, "ack_ms_set"),
+            ptt_set_ack_ms=_timing_ms(tm_t, "ptt_set_ack_ms"),
+            readback_ms=_timing_ms(tm_t, "readback_ms"),
+            write_drain_ms=_timing_ms(tm_t, "write_drain_ms"),
+            tx_on_switch_ms=_timing_ms(tm_t, "tx_on_switch_ms"),
+            tx_off_switch_ms=_timing_ms(tm_t, "tx_off_switch_ms"),
+        ),
         audio_rx=audio,
         scope=scope,
         unsolicited=_flags(data.get("unsolicited", {}), "unsolicited", True),

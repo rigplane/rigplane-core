@@ -54,7 +54,9 @@ either option the fake hears every rate and its writer has no ``transport``.
 A simulation profile (``rigplane_testkit/sim/profiles/ic7300.toml``, MOR-3597)
 configures the fake through :meth:`CivSerialFake.from_profile`: recorded
 answers, initial state, echo, the baud the radio is set to, the reply latency
-and a :class:`ScopeSource` of recorded wave sweeps. With a scope source mounted
+with its per-answer-class ``[timing]`` delays (the ACK latencies, the serial
+write drain and the PTT switch delays) and a :class:`ScopeSource` of recorded
+wave sweeps. With a scope source mounted
 the fake serves the scope switches natively (``27 10`` panel, ``27 11`` wave
 output; initially panel on, wave off, as recorded) and, while wave output is
 on, streams the recorded ``27 00`` sweeps at the profile's sweep rate. The
@@ -198,6 +200,14 @@ def _bcd_byte(value: int) -> int:
     return (value >> 4) * 10 + (value & 0x0F)
 
 
+def _reply_command(reply: bytes) -> int | None:
+    """The command byte of a reply frame, ``None`` when it does not parse."""
+    try:
+        return parse_civ_frame(reply).command
+    except ValueError:
+        return None  # a recorded reply that is not a parseable CI-V frame
+
+
 class CivSerialFake:
     """A stateful Icom radio on the far end of an in-memory serial duplex.
 
@@ -221,6 +231,12 @@ class CivSerialFake:
         answers_at_baud: int | None = None,
         locks_to_first_baud: bool = False,
         reply_latency_s: float = 0.0,
+        ack_set_s: float | None = None,
+        ptt_set_ack_s: float | None = None,
+        readback_s: float | None = None,
+        write_drain_s: float | None = None,
+        tx_on_switch_s: float | None = None,
+        tx_off_switch_s: float | None = None,
         scope: ScopeSource | None = None,
     ) -> None:
         if answers_at_baud is not None and locks_to_first_baud:
@@ -229,6 +245,16 @@ class CivSerialFake:
             raise ValueError(
                 f"reply_latency_s must be a finite number >= 0: {reply_latency_s!r}"
             )
+        for name, value in (
+            ("ack_set_s", ack_set_s),
+            ("ptt_set_ack_s", ptt_set_ack_s),
+            ("readback_s", readback_s),
+            ("write_drain_s", write_drain_s),
+            ("tx_on_switch_s", tx_on_switch_s),
+            ("tx_off_switch_s", tx_off_switch_s),
+        ):
+            if value is not None and not 0.0 <= value < float("inf"):
+                raise ValueError(f"{name} must be a finite number >= 0: {value!r}")
         profile = resolve_radio_profile(model=model)
         self._model = profile.model
         self._civ_addr = civ_addr if civ_addr is not None else profile.civ_addr
@@ -265,6 +291,17 @@ class CivSerialFake:
         self._locked_baud: int | None = None
         self._frame_bauds: list[int | None] = []
         self._reply_latency_s = reply_latency_s
+        # Per-class delays from [timing]; each falls back to reply latency
+        # (ptt_set_ack to ack_set first). None resolves to "no extra delay".
+        self._ack_set_s = reply_latency_s if ack_set_s is None else ack_set_s
+        self._ptt_set_ack_s = (
+            self._ack_set_s if ptt_set_ack_s is None else ptt_set_ack_s
+        )
+        self._readback_s = reply_latency_s if readback_s is None else readback_s
+        self._write_drain_s = 0.0 if write_drain_s is None else write_drain_s
+        self._tx_on_switch_s = 0.0 if tx_on_switch_s is None else tx_on_switch_s
+        self._tx_off_switch_s = 0.0 if tx_off_switch_s is None else tx_off_switch_s
+        self._ptt_switch_handle: asyncio.TimerHandle | None = None
         self._scope = scope
         self._sim_profile: SimProfile | None = None
         # As the bench radio stood when it was recorded: panel on, wave output off.
@@ -339,6 +376,11 @@ class CivSerialFake:
         latency_ms = profile.timing.reply_latency_ms
         if reply_latency_s is None:
             reply_latency_s = 0.0 if latency_ms is None else latency_ms / 1000.0
+
+        def _to_seconds(value: float | None) -> float | None:
+            return None if value is None else value / 1000.0
+
+        timing = profile.timing
         fake = cls(
             model=profile.sim.radio,
             echo=profile.transport.echo,
@@ -346,6 +388,12 @@ class CivSerialFake:
             mode=mode,
             answers_at_baud=baud if baud is not None else profile.transport.baud,
             reply_latency_s=reply_latency_s,
+            ack_set_s=_to_seconds(timing.ack_ms_set),
+            ptt_set_ack_s=_to_seconds(timing.ptt_set_ack_ms),
+            readback_s=_to_seconds(timing.readback_ms),
+            write_drain_s=_to_seconds(timing.write_drain_ms),
+            tx_on_switch_s=_to_seconds(timing.tx_on_switch_ms),
+            tx_off_switch_s=_to_seconds(timing.tx_off_switch_ms),
             scope=scope,
             **extra,
         )
@@ -572,13 +620,41 @@ class CivSerialFake:
         reply = self._answer(parsed, connection, frame)
         if reply is None:
             return
-        delay = self._reply_latency_s
+        delay = self._answer_delay_s(parsed, reply)
         if parsed.command == _CMD_TRANSCEIVER_ID:
             delay += self._identity_delay_s
         connection.deliver_after(delay, reply)
         if connection.scope_start_pending:
             connection.scope_start_pending = False
             connection.start_scope()  # the wave follows the ACK that enabled it
+
+    def _answer_delay_s(self, parsed: CivFrame, reply: bytes) -> float:
+        """The reply latency of *reply*: a per-class ``[timing]`` delay with
+        the reply latency as the fallback for every answer."""
+        if parsed.command == _CMD_PTT and parsed.sub == _SUB_PTT:
+            return self._ptt_set_ack_s if parsed.data else self._readback_s
+        if parsed.data and _reply_command(reply) in (_CMD_ACK, _CMD_NAK):
+            return self._ack_set_s  # the ACK/NAK to a set (write) command
+        return self._reply_latency_s
+
+    def _schedule_ptt_switch(self, on: bool) -> None:
+        """Flip PTT *on* after the profile's switch delay; the latest write
+        wins (a still-pending switch is cancelled), and a zero delay flips
+        synchronously, as an unset key behaves."""
+        if self._ptt_switch_handle is not None:
+            self._ptt_switch_handle.cancel()
+            self._ptt_switch_handle = None
+        delay = self._tx_on_switch_s if on else self._tx_off_switch_s
+        if delay <= 0.0:
+            self._ptt = on
+            return
+        loop = asyncio.get_running_loop()
+
+        def switch() -> None:
+            self._ptt_switch_handle = None
+            self._ptt = on
+
+        self._ptt_switch_handle = loop.call_later(delay, switch)
 
     def _answer(
         self, parsed: CivFrame, connection: "_Connection", frame: bytes
@@ -650,7 +726,7 @@ class CivSerialFake:
                     data=bytes([int(self._ptt)]),
                 )
             if parsed.data[0] in (0x00, 0x01):
-                self._ptt = bool(parsed.data[0])
+                self._schedule_ptt_switch(bool(parsed.data[0]))
                 return self._ack()
             return self._nak()
         if cmd == _CMD_METER and parsed.sub == _SUB_S_METER and not parsed.data:
@@ -889,7 +965,8 @@ class _FakeSerialWriter:
             self._fake._on_wire_frame(self._connection, frame)
 
     async def drain(self) -> None:
-        pass
+        if self._fake._write_drain_s:
+            await asyncio.sleep(self._fake._write_drain_s)
 
     def close(self) -> None:
         self.closed = True

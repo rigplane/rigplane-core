@@ -248,7 +248,13 @@ filter = 2
 recorded = [{ file = "tests/fixtures/ic7300/civ_pairs.jsonl", transport = "usb" }]
 
 [timing]                         # used in real-time mode only; never asserted as a value
-reply_latency_ms = 15
+reply_latency_ms = 15            # every answer; the fallback of each key below
+# ack_ms_set = 12                # the ACK/NAK answer to any set (write) command
+# ptt_set_ack_ms = 8             # the ACK to a PTT write (1C 00 with a data byte)
+# readback_ms = 20               # the answer to a PTT read (1C 00 without data)
+# write_drain_ms = 5             # how long draining written bytes takes
+# tx_on_switch_ms = 40           # delay from an accepted PTT-on write to the PTT state change
+# tx_off_switch_ms = 25          # delay from an accepted PTT-off write to the PTT state change
 
 [unsolicited]                    # periodic or event-driven pushes the real radio makes
 # transceive = false
@@ -285,6 +291,19 @@ profile fixes unambiguously (for example one declared sample rate) may be omitte
 then taken from it; where the capability profile offers no unique value (scope bins and
 span, as above) the simulation profile must state it. A simulation profile never restates a capability value just
 to repeat it.
+
+Every `[timing]` key is optional milliseconds, finite and `>= 0`; an unset key
+means "not set". `ack_ms_set` covers the ACK/NAK answer to any set (write)
+command and falls back to `reply_latency_ms`; `ptt_set_ack_ms` covers the ACK
+to a PTT write and falls back to `ack_ms_set`, then `reply_latency_ms`;
+`readback_ms` covers the PTT read answer only, falling back to
+`reply_latency_ms`. `write_drain_ms` is how long the simulated serial writer's
+`drain()` takes. `tx_on_switch_ms` / `tx_off_switch_ms` delay the simulated PTT
+state change after an accepted PTT write: the `ptt` property and PTT read
+answers keep the old value until the switch lands, the ACK is not delayed by
+them, and a later PTT write cancels a still-pending switch (the latest write
+wins). The CI-V serial fake honours every key; the Yaesu CAT adapter honours
+only `reply_latency_ms`.
 
 Contradiction examples the loader refuses: `echo` set with a non-serial
 transport, a `[scope]` section for a radio whose capability profile has no
