@@ -1071,6 +1071,7 @@ class CivRuntime:
         """Advance CI-V request generation and fail stale waiters."""
         source_generation = self._host._civ_epoch
         self._host.last_valid_frame_monotonic = None
+        self._host._scope_assembler.shed_incomplete()
         self._host._civ_epoch = self._host._civ_request_tracker.advance_generation(
             ConnectionError(f"CI-V generation advanced: {reason}")
         )
@@ -2193,7 +2194,8 @@ class CivRuntime:
             # from StateStore startup/power inference (MOR-3071).
             if (
                 len(frame.data) in (1, 2)
-                and store_provider_generation == self._host._state_store.provider_generation
+                and store_provider_generation
+                == self._host._state_store.provider_generation
             ):
                 self._host.last_valid_frame_monotonic = time.monotonic()
             return

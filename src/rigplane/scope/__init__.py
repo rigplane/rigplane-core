@@ -145,8 +145,12 @@ class _ReceiverState:
             self._seq_max = seq_max
 
             self._mode = raw_payload[2]
-            self._start_freq = bcd_decode(bytes(raw_payload[3:8]))
-            self._end_freq = bcd_decode(bytes(raw_payload[8:13]))
+            try:
+                self._start_freq = bcd_decode(bytes(raw_payload[3:8]))
+                self._end_freq = bcd_decode(bytes(raw_payload[8:13]))
+            except ValueError:
+                self._reset()
+                return None
             self._oor = bool(raw_payload[13])
 
             if self._oor:

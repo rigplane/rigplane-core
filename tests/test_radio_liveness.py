@@ -1077,3 +1077,39 @@ async def test_civ_incomplete_scope_sequence_preserves_stamp(
             frame, generation=civ_radio._civ_epoch
         )
     assert civ_radio.last_valid_frame_monotonic == 1.0
+
+
+async def test_civ_scope_assembly_cannot_cross_connection_generation(
+    civ_radio: IcomRadio,
+) -> None:
+    runtime = civ_radio._civ_runtime
+    metadata = (
+        b"\x00\x01\x02\x01" + bcd_encode(14_000_000) + bcd_encode(14_350_000) + b"\x00"
+    )
+    frame = parse_civ_frame(
+        build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x27, sub=0, data=metadata)
+    )
+    await runtime._route_civ_frame(frame, generation=civ_radio._civ_epoch)
+    runtime.advance_generation("retire partial scope")
+    frame = parse_civ_frame(
+        build_civ_frame(
+            CONTROLLER_ADDR, IC_7610_ADDR, 0x27, sub=0, data=b"\x00\x02\x02\x10"
+        )
+    )
+    await runtime._route_civ_frame(frame, generation=civ_radio._civ_epoch)
+    assert civ_radio.last_valid_frame_monotonic is None
+
+
+async def test_civ_invalid_scope_metadata_cannot_seed_liveness(
+    civ_radio: IcomRadio,
+) -> None:
+    civ_radio.last_valid_frame_monotonic = 1.0
+    metadata = b"\x00\x01\x02\x01" + b"\xff" * 5 + bcd_encode(14_350_000) + b"\x00"
+    for payload in (metadata, b"\x00\x02\x02\x10"):
+        frame = parse_civ_frame(
+            build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x27, sub=0, data=payload)
+        )
+        await civ_radio._civ_runtime._route_civ_frame(
+            frame, generation=civ_radio._civ_epoch
+        )
+    assert civ_radio.last_valid_frame_monotonic == 1.0
