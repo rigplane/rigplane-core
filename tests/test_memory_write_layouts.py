@@ -411,6 +411,12 @@ def test_dtcs_tone_mode_refuses_a_fixed_code(model: str) -> None:
         _build(model, _mem(model, tonemode=3))
 
 
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+def test_a_dv_memory_builds_on_both_dv_radios(model: str) -> None:
+    mem = _mem(model, mode=0x17, tonemode=0, duplex=0)
+    assert _build(model, mem)
+
+
 @pytest.mark.parametrize(("model", "mode"), [("IC-705", 0x06), ("IC-7610", 0x12)])
 def test_mode_declared_by_the_active_profile_still_builds(
     model: str, mode: int

@@ -526,7 +526,8 @@ recall = true  # 08 A0 selects the group, 08 the channel (guide p.3); not yet be
 # setting" is the read block's mode + filter pair); the tone fields use
 # the 1B 00 encoding (guide p.21). Fields the write API does not expose
 # yet carry their documented OFF value: select 00 (split OFF, select
-# OFF), digital squelch 00, DTCS 000000, DV code 00, duplex offset
+# OFF), digital squelch 00, DTCS 000023 (the radio's default code; it
+# rejects an all-zero field), DV code 00, duplex offset
 # 000000, call signs blank (spaces, the record's unused-field pad,
 # MOR-3650).
 [memory.write_layout]

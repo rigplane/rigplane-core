@@ -406,7 +406,7 @@ fields = [
 table = "standard_50"
 
 [modes]
-list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R"]
+list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R", "DV"]
 # MOR-3679: the CW modes, named once here for every client.
 families = { cw = ["CW", "CW-R"] }
 
