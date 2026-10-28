@@ -291,7 +291,11 @@ Reported client constraints that shape the design:
    waits for the echo. A write the radio refuses is answered with the state the
    radio is actually in, not with silence and not with an error.
 2. A refused PTT is answered with `trx:<n>,false;` ([AS]); the spec has no error
-   reply. WSJT-X shows "failed to set ptt".
+   reply. WSJT-X shows "failed to set ptt". The refusal goes **only to the
+   requester**. Broadcast notifications carry the actual radio state and nothing
+   else: if client B holds PTT and A's key is refused, A is told `false`, while B
+   and any observers keep `true` (they are told `false` only when the observed or
+   managed state really changes).
 3. `drive` and `tune_drive` replies and notifications always carry
    `<trx>,<power>`; a bare power value breaks ESDR3-mode WSJT-X/JTDX ([AS]).
    `drive:<trx>` is a read; only `drive:<trx>,<power>` writes.
@@ -309,7 +313,8 @@ channels per receiver (0 = A, 1 = B). The server announces `trx_count:1` and
 - Channel 0 is the frequency and mode the radio receives on.
 - Channel 1 is VFO B. It is addressed and reported independently of split
   (WSJT-X Improved programs it right after `split_enable:0,false`, [AS]).
-  Split only decides the *effective TX frequency*: B when split is on, else A.
+  Split and XIT only decide the *effective TX frequency*: the base is B when
+  split is on, else A, and an enabled XIT offset is added to it.
   On Core, channel 1 is the relative-VFO surface:
   `RelativeVfoReadbackCapable.read_relative_vfo(selected=False)` to read and
   `RelativeVfoFrequencyWritable.write_relative_vfo_frequency` to write, which
@@ -352,8 +357,10 @@ is omitted unless capture C0 shows a client waits for it.
 ### 5.5 Command table, phase "control"
 
 Direction: **R** read (no value argument), **S** set, **N** server notification.
-Reads and sets reply with the same command name, to the sender and, for sets, to
-every other client (spec 3.1: the server synchronises clients).
+Reads and sets reply with the same command name, to the sender and, for an
+accepted set, to every other client (spec 3.1: the server synchronises clients).
+A refusal or a failed write is answered to the requester only, with the actual
+state; the notifier, not the refusal, tells other clients about state changes.
 
 Tier A is required at connect and in a QSO. Tier B is accepted and answered
 from state or ignored harmlessly. Tier C is not honoured; how it is answered is
@@ -371,8 +378,8 @@ in 6.
 | `rit_enable`, `rit_offset` R/S | B | `RitXitCapable.get/set_rit_status`, `get/set_rit_frequency` | capability absent: `false` / `0` |
 | `xit_enable`, `xit_offset` R/S | B | `RitXitCapable.get/set_rit_tx_status`; offset mirrors the RIT value | `RitXitCapable` has one frequency method, so the two offsets are one value |
 | `tx_enable:0` N/R | B | server only: true when TX capability and managed composition are present | a client set is ignored and answered with the current value (spec 4.3) |
-| `tx_frequency` N | B | the effective TX frequency: channel 1 when split is on, else channel 0 | |
-| `dds`, `if` R | B | `dds:0,<ch0 hz>` ; `if:0,<ch>,0` | no panorama; read-only |
+| `tx_frequency` N | B | the effective TX frequency: (channel 1 when split is on, else channel 0) plus the XIT offset when XIT is enabled | notified on any change of its inputs: split on/off, either VFO, XIT enable, XIT offset |
+| `dds`, `if` R | B | `dds:0,<A hz>`; `if:0,0,0`; `if:0,1,<B hz - A hz>` (negative allowed) | TCI relates a channel to the receiver as VFO = DDS + IF, so DDS is anchored to A and channel B carries the difference; all three are re-sent together whenever A or B changes. No panorama; read-only |
 | `vfo_limits`, `modulations_list`, `trx_count`, `channels_count`, `device`, `protocol`, `receive_only`, `ready` | B | init only (5.4) | |
 | `rx_sensors_enable`, `tx_sensors_enable` S, `rx_sensors`, `tx_sensors` N | B | optional: `MetersCapable.get_s_meter` mapped to dBm if `runtime/meter_cal.py` provides such a mapping (to be checked in that PR); `get_power_meter`, `get_swr` | deferred to a later PR if no captured client sends the enables |
 | `cw_keyer_speed`, `cw_macros_speed` R/S | B | `CwControlCapable.get/set_key_speed` | non-TX state only |
@@ -382,12 +389,43 @@ in 6.
 
 ### 5.6 Mode names
 
-A table in `tci_adapter/commands.py` maps TCI names to Core `Mode` and a data-mode flag:
-`AM`, `LSB`, `USB`, `CW`, `FM` (and `NFM`) map to the same-named Core modes;
-`DIGL` is LSB with data mode on, `DIGU` is USB with data mode on, as `rigctld`
-maps `PKTLSB`/`PKTUSB`. `SAM`, `DSB`, `DRM`, `WFM` are not announced. This is
+A table in `tci_adapter/commands.py` maps TCI names to Core `Mode` and a
+data-mode flag, in both directions:
+
+| TCI name | Core |
+|---|---|
+| `AM`, `LSB`, `USB`, `CW`, `FM`, `WFM` | `Mode.AM`, `LSB`, `USB`, `CW`, `FM`, `WFM` |
+| `DIGL` | `Mode.LSB` with data mode on |
+| `DIGU` | `Mode.USB` with data mode on |
+
+`rigctld` maps `PKTLSB`/`PKTUSB` the same way. `NFM`, `SAM`, `DSB`, `DRM` are
+**not announced and not accepted**: `core/types.py: Mode` has no `NFM` member
+(narrow FM is a filter width, not a mode), and a request for a name outside
+`modulations_list` is ignored per 6.1. A Core mode with no TCI name (`RTTY`,
+`RTTY_R`, `CW_R`, `PSK`, `PSK_R`, `DV`) is not projected: `modulation` keeps the
+last announced value and the unmapped mode is logged once. The test iterates
+every member of the real `Mode` enum and requires each to be either mapped or
+listed as unmapped, so a new `Mode` member fails it until classified. This is
 TCI vocabulary, which belongs to the adapter; which names a radio actually
 supports is read from the profile, so no per-radio branch exists.
+
+### 5.7 One modulation, two VFOs (split)
+
+TCI carries one `modulation` per transceiver; Core keeps a mode and data-mode
+per VFO. With split on, transmission uses VFO B's tuple, so changing only A
+leaves B in whatever it had (an IC-7300 with A in USB and B in LSB/DATA-off
+would transmit LSB). Rule: the adapter keeps B's mode and data state equal to
+A's while split is on or channel 1 is being programmed. On `modulation` set, and
+on `split_enable:0,true`, it also writes B through the relative-VFO mode surface
+(`RelativeVfoModeWritable.write_relative_vfo_mode`, reached by `rigctld` as
+`set_split_mode`, gated on the capability). Before accepting a key it reads
+the TX tuple back (`read_relative_vfo`) and refuses (`trx:0,false;`, no PTT
+write) if mode or data state of the TX VFO differs from the announced
+modulation. Radios without the surface have no separate TX tuple to fix.
+Tests: start with mismatched A/B modes; change mode before and after enabling
+split; assert the tuple actually read at key-down
+(`tests/test_rigctld_wsjtx_split_mk2.py` is the existing rigctld precedent for
+this behaviour).
 
 ## 6. Commands we cannot honour
 
@@ -479,7 +517,11 @@ key (`_cmd_web`, MOR-3536). Relaxing it is a separate decision.
 
 1. Parse. The optional third argument selects the TX audio source (spec 4.2).
    Core selects TX input only through the route policy of 8.3, so:
-   - `tci`: requires phase "audio" (8) and a PCM TX route, otherwise refuse;
+   - `tci`: requires phase "audio" (8) and a PCM TX route. Before the key is
+     accepted the adapter **establishes and verifies** the TX input: it applies
+     the data-mode and MOD-input policy for the current mode (8.3, step 1) even
+     if the client never sent `modulation`, reads the result back, and refuses
+     if it cannot be established or verified;
    - absent: key with the radio's currently selected input (what a rigctld
      `set_ptt` does); the reply is the same whatever DIGU/DIGL selected earlier;
    - `mic1`, `mic2`, `micpc`, `ecoder2` or any other name: **refuse**
@@ -656,13 +698,22 @@ sample-versus-frame distinction is kept in the code by two named quantities,
 fake clock for mono and stereo: request timestamps and delivered sample
 throughput.
 
-1. Accept `trx ...,tci` only if `browser_tx_audio_facts`-equivalent route facts
-   say PCM TX is possible. The existing check lives in
-   `web/handlers/audio.py: browser_tx_audio_facts`; A2 moves the radio-only
-   part (codec, route, required MOD input source) to `audio/route.py`, or reuses
-   `resolve_audio_route` directly, whichever is smaller; the web function then
-   calls it. First release supports radios whose `audio_tx_codec` is
-   `PCM_1CH_16BIT`; an Opus TX codec refuses `source=tci`.
+1. Accept `trx ...,tci` only if two things hold. (i) Structure:
+   `browser_tx_audio_facts`-equivalent route facts say PCM TX is possible. The
+   existing check lives in `web/handlers/audio.py: browser_tx_audio_facts`; A2
+   moves the radio-only part (codec, route, required MOD input source) to
+   `audio/route.py`, or reuses `resolve_audio_route` directly, whichever is
+   smaller; the web function then calls it. It reports what the radio *can* use;
+   it does not select or verify the input in force. First release supports radios
+   whose `audio_tx_codec` is `PCM_1CH_16BIT`; an Opus TX codec refuses
+   `source=tci`. (ii) Input in force: the adapter applies the policy from
+   `rigctld_wsjtx_policy(resolve_audio_route(radio))` (required DATA state and MOD
+   input source) for the current mode, reads it back, and only then lets the key
+   proceed. The mode must be one the policy defines a data route for (SSB, AM,
+   FM per profile); in CW, RTTY or any other mode, or if the readback does not
+   match, the key is refused with no PTT write. The previous input is restored on
+   unkey and on disconnect with the restore mechanism the web path already has
+   (`ControlHandler._mod_input_restore`, `arm_mod_input_restore`).
 2. `lease = await radio.audio_session.acquire_tx("tci-<N>")` at the moment the
    key is accepted; release at unkey/disconnect.
 3. Convert client frames to s16le mono at the radio TX rate: de-interleave
@@ -702,9 +753,11 @@ throughput.
    dropped and counted with the throttled warning pattern
    `AudioHandler._warn_tx_throttled` uses. A frame never keys the radio.
 
-DATA-mode and MOD-input policy for digital modes is applied when the client
-selects DIGU/DIGL (5.5), through the same `rigctld_wsjtx_policy` result, so the
-TX audio lands on the input the radio uses for data.
+The same policy is also applied when the client selects DIGU/DIGL (5.5), so a
+client that sets the mode first and one that only sends `trx ...,tci` end in the
+same state. Test: start in USB with the microphone input selected and send
+`trx:0,true,tci` with no earlier `modulation`: the input is selected and
+verified before the PTT write, or there is no PTT write.
 
 ### 8.4 Latency and pacing
 
@@ -794,6 +847,13 @@ Against the real `ManagedTxAuthority` composition used by
   release leaves the documented `RELEASE_REQUIRED` outcome, not a silent success;
 - `trx:0,true,mic1` after DIGU: refused, no PTT write; absent source keys the
   current input;
+- refusal scope: B holds PTT, A's key is refused: A receives `trx:0,false;`,
+  B and an observer keep `trx:0,true;`;
+- `tx_frequency` and `dds`/`if` fixtures: split on/off, positive and negative
+  XIT, XIT enable/disable, unequal A/B including B below A;
+- split mode tuple: mismatched A/B modes, mode change before and after enabling
+  split, asserted at key-down; `trx:0,true,tci` from USB/MIC without a prior
+  `modulation`;
 - channel B: `split_enable:0,false`, `vfo:0,1,<hz>` echoes and reads B, then
   `split_enable:0,true` leaves B unchanged;
 - TX handoff A to B with A's frame suspended before admission and inside the
@@ -872,7 +932,7 @@ L leaf package, C control (adapter), A audio.
 | P0a | create `rigplane.tci` with `ws.py` (moved `web/websocket.py` plus server upgrade function with injected predicate; `web` behaviour, including its 60 s pong timeout, unchanged); move `host_guard` to `core/host_guard.py`; shims in `web`; `.importlinter` rows and `tests/test_tci_leaf_boundary.py` (written first, red) | none | 450 |
 | P0b | extract the fail-closed TX gate from `WebServer._bridge_tx_gate_open` into a shared function; `WebServer` and the bridge call it; add `ManagedTxAuthority.owned_tx_submission(owner)` with its tests | none | 450 |
 | P0c | extract the managed-PTT/tuner submission choreography and session release out of `rigctld` into a shared module; `rigctld` calls it; add `"tci"` to `CommandSource` and `TxSource.TCI` | none | 900 |
-| P0d | share the WSJT-X data-mode/MOD-input glue now in `rigctld/server.py` | P0c (same file) | 200 |
+| P0d | share the WSJT-X data-mode/MOD-input glue now in `rigctld/server.py` (apply, readback and restore, with the web path's restore mechanism) | P0c (same file) | 350 |
 | C0 | recording proxy script with coverage report, C0-RX fixtures and findings note (C0-TX follows C3) | owner/bench time | 350 |
 | L1 | leaf `protocol.py` (grammar, formatting) and `frames.py` (stream header, sample types), with spec fixtures and `eesdr-tci` round trips | P0a | 600 |
 | L2 | leaf `server.py` and `handler.py`: listener, sessions, broadcast and coalescing, ping and independent deadline watchdog, Origin/Host predicate; conformance with a fake handler | L1 | 800 |
@@ -884,7 +944,7 @@ L leaf package, C control (adapter), A audio.
 | A2 | adapter TX path: playout buffer, `TX_CHRONO`, owner-specific admission, route policy | A1, C3, P0b | 900 |
 | A3 | real-app RX smoke evidence and fixtures | C4, A1 | 150 |
 
-About 8.0k lines in 14 PRs. P0a, P0b and P0c are file-disjoint and can run in
+About 8.2k lines in 14 PRs. P0a, P0b and P0c are file-disjoint and can run in
 parallel; L1 and L2 need only P0a, so the whole leaf can be built and tested
 while P0c is still in review.
 
