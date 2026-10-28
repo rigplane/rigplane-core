@@ -11,7 +11,6 @@ from rigplane.core.exceptions import CommandError
 from rigplane.core.transport import IcomTransport
 from rigplane.runtime.managed_tx_authority import (
     ManagedTxAuthority,
-    RadioTxOrigin,
     ShutdownResult,
 )
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfig
@@ -1808,95 +1807,4 @@ async def test_running_and_completed_unkeys_retire_on_new_key_on(monkeypatch) ->
         release.set()
         await first
         await managed.force_off()
-        await managed.close()
-
-
-@pytest.mark.parametrize(
-    "origin,recovered",
-    [
-        (RadioTxOrigin.UNRELEASED, False),
-        (RadioTxOrigin.UNRELEASED, True),
-        (RadioTxOrigin.FOREIGN, False),
-        (None, False),
-    ],
-)
-async def test_accepted_release_readback_is_bounded(origin, recovered, caplog) -> None:
-    managed, clock, _, _, _, _ = authority(seconds=None)
-    writes, cutoffs = [], []
-
-    def warnings():
-        return [
-            r.message for r in caplog.records if "verification exhausted" in r.message
-        ]
-
-    class Radio:
-        result, released = ActuationResult.ACCEPTED, False
-
-        async def actuate(self, token, operation, *, is_current):
-            assert is_current()
-            if isinstance(operation, ActuationOperation):
-                writes.append((clock.now, operation))
-            return self.result
-
-        def radio_released(self, keyed_at):
-            self.released = True
-
-        def radio_tx_since(self, since):
-            cutoffs.append(since)
-            return origin if self.released else None
-
-    managed._radio_tx = radio = Radio()
-    managed._lane = ManagedTxEffectLane(radio, clock=clock)
-    await managed._stop_scheduler(managed._scheduler_task)
-    try:
-        await managed.transmit_on()
-        await managed.force_off()
-        cutoff, dt = clock.now, managed._retry_delay
-        cutoffs.clear()
-        expected = 5 if origin is RadioTxOrigin.UNRELEASED else 0
-        for tick in range(1, 8):
-            if tick == 6 and recovered:
-                origin = None
-            clock.now = cutoff + tick * dt - 0.01
-            before = len(writes)
-            await managed._process_due()
-            assert len(writes) == before
-            clock.now = cutoff + tick * dt
-            await managed._process_due()
-        assert len(writes) == 2 + expected
-        assert all(since == cutoff for since in cutoffs)
-        assert len(warnings()) == (bool(expected) and not recovered)
-        if expected:
-            assert recovered or "5" in warnings()[0]
-            assert [t for t, _ in writes[2:]] == [cutoff + n * dt for n in range(1, 6)]
-        await managed.force_off()
-        clock.now += dt
-        await managed._process_due()
-        assert len(writes) == 3 + expected
-        assert len(warnings()) == (bool(expected) and not recovered)
-        origin = None
-        await managed.transmit_on()
-        clock.now += dt
-        before = len(writes)
-        await managed._process_due()
-        assert len(writes) == before, "new managed TX disarms release verification"
-        await managed.force_off()
-        clock.now += 7 * dt
-        origin = RadioTxOrigin.UNRELEASED
-        before = len(writes)
-        await managed._process_due()
-        assert len(writes) == before, "expired window must not reassert"
-        origin = None
-        await managed.transmit_on()
-        await managed.force_off()
-        origin = RadioTxOrigin.UNRELEASED
-        radio.result = ActuationResult.UNCERTAIN
-        clock.now += dt
-        await managed._process_due()
-        assert managed._state.release_required and managed._retry_due is not None
-        radio.result = ActuationResult.ACCEPTED
-        clock.now = managed._retry_due
-        await managed._process_due()
-        assert not managed._state.release_required
-    finally:
         await managed.close()

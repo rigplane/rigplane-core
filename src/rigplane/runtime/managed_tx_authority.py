@@ -159,7 +159,6 @@ _ProviderRetirement = Callable[[int], Awaitable[None]]
 # retry_delay_seconds.
 ATTEMPT_TIMEOUT_S: float = 3.0
 RETRY_DELAY_S: float = 1.0
-RELEASE_VERIFY_LIMIT = 5
 
 # MOR-3764: upper bound for one admitted outside-only TX audio push. A stuck
 # push must never hold the keying-exclusion lock, so the caller's body is
@@ -228,9 +227,6 @@ class ManagedTxAuthority:
         )
         self._attempt = 0
         self._retry_due: float | None = None
-        self._verify_since: float | None = None
-        self._verify_due: float | None = None
-        self._verify_count = 0
         self._release_drained = asyncio.Event()
         self._release_drained.set()
         self._shutting_down = False
@@ -931,7 +927,6 @@ class ManagedTxAuthority:
             if task is None:
                 self._require_open_locked()
                 self._shutting_down = True
-                self._verify_due = None
                 self._shutdown_termination = termination
                 transition = self._force_off_locked()
                 self._wakeup.wake()
@@ -1201,8 +1196,6 @@ class ManagedTxAuthority:
         if was_clean and self._state.intent.kind is not ManagedTxIntentKind.RX:
             self._latest_on_epoch = self._state.effect_epoch
             self._keyed_at = self._clock()  # MOR-3537: Core keys
-            self._verify_since = self._verify_due = None
-            self._verify_count = 0
         if self._state_is_clean_locked():
             if not was_clean:
                 self._idle_since = self._clock()
@@ -1275,19 +1268,6 @@ class ManagedTxAuthority:
                     if (
                         transition.outcome is ManagedTxOutcome.APPLIED
                         and isinstance(event, ActuationSettled)
-                        and event.operation is ActuationOperation.FORCE_RECEIVE
-                        and event.result is ActuationResult.ACCEPTED
-                        and self._radio_tx is not None
-                        and self._verify_since is None
-                        and not self._shutting_down
-                    ):
-                        self._verify_since = self._clock()
-                        self._verify_due = self._verify_since + max(
-                            RETRY_DELAY_S, self._retry_delay
-                        )
-                    if (
-                        transition.outcome is ManagedTxOutcome.APPLIED
-                        and isinstance(event, ActuationSettled)
                         and event.operation
                         in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON)
                         and event.result is ActuationResult.UNCERTAIN
@@ -1326,40 +1306,6 @@ class ManagedTxAuthority:
                     transition = self._reduce_locked(
                         RetryForceReceive(generation, self._attempt_id_locked())
                     )
-            elif self._verify_due is not None and self._verify_due <= now:
-                since = self._verify_since
-                interval = max(RETRY_DELAY_S, self._retry_delay)
-                self._verify_due = None
-                if (
-                    since is not None
-                    and now <= since + (RELEASE_VERIFY_LIMIT + 1) * interval
-                ):
-                    self._verify_due = now + interval
-                    if (
-                        self._provider_generation is not None
-                        and self._state_is_clean_locked()
-                    ):
-                        try:
-                            origin = (
-                                self._radio_tx.radio_tx_since(since)
-                                if self._radio_tx
-                                else None
-                            )
-                        except Exception:
-                            origin = None
-                        if origin is RadioTxOrigin.UNRELEASED:
-                            if self._verify_count == RELEASE_VERIFY_LIMIT:
-                                logger.warning(
-                                    "managed TX release verification exhausted after %s reassertions",
-                                    self._verify_count,
-                                )
-                                self._verify_due = None
-                            else:
-                                self._verify_count += 1
-                                transition = self._force_off_locked()
-                                full_force = True
-                        elif origin is RadioTxOrigin.FOREIGN:
-                            self._verify_due = None
         if transition is not None:
             await self._execute(transition.effects, full_force=full_force)
 
@@ -1376,7 +1322,7 @@ class ManagedTxAuthority:
     def _next_due_locked(self) -> float | None:
         due = [
             item
-            for item in (self._tot_deadline_locked(), self._retry_due, self._verify_due)
+            for item in (self._tot_deadline_locked(), self._retry_due)
             if item is not None
         ]
         return min(due, default=None)

@@ -9,8 +9,6 @@ import pytest
 from rigplane.backends.ic705 import Ic705SerialRadio
 from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
 from rigplane.core.state_store import StateStore
-from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.runtime.managed_tx_authority import RadioTxOrigin
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
@@ -215,7 +213,7 @@ async def test_serial_force_off_survives_superseded_on(tmp_path, monkeypatch, ga
 
 
 @pytest.mark.mock_integration
-@pytest.mark.parametrize("gap_ms", (*_GAPS_MS, "never-wire", "pending", "late-radio"))
+@pytest.mark.parametrize("gap_ms", (*_GAPS_MS, "never-wire", "pending"))
 async def test_lan_force_off_survives_superseded_on(tmp_path, monkeypatch, gap_ms):
     stack = await _stand_up_stack(
         tmp_path,
@@ -238,10 +236,8 @@ async def test_lan_force_off_survives_superseded_on(tmp_path, monkeypatch, gap_m
 
     monkeypatch.setattr(stack.sim, "_handle_civ_data", receive)
     try:
-        if gap_ms in ("pending", "late-radio"):
-            await (_offline_rearm if gap_ms == "pending" else _late_radio_tx)(
-                stack, monkeypatch
-            )
+        if gap_ms == "pending":
+            await _offline_rearm(stack, monkeypatch)
             return
         await _sequence(
             stack.web,
@@ -287,46 +283,6 @@ async def _offline_rearm(stack, monkeypatch):
     assert _clean(composition.authority)
     assert len(stack.sim.ptt_set_writes) > before
     assert stack.sim.ptt_set_writes[-1][1] is False
-
-
-async def _late_radio_tx(stack, monkeypatch):
-    await _command(stack.web, "transmit_on")
-    assert await _until(lambda: stack.sim.ptt_on, 1)
-    ptt = FieldPath.global_("tx_state", "ptt")
-
-    def observed_on():
-        field = stack.web.command_state_store.snapshot().field(ptt)
-        return (
-            field.value is True
-            and field.last_observed_monotonic > stack.composition.authority._keyed_at
-        )
-
-    assert await _until(observed_on, 2)
-    honour = stack.sim._set_simulated_ptt
-    flipped, observed = asyncio.Event(), asyncio.Event()
-    probe = stack.composition.radio_tx_since
-
-    def observe(since):
-        origin = probe(since)
-        if flipped.is_set() and origin is RadioTxOrigin.UNRELEASED:
-            observed.set()
-        return origin
-
-    monkeypatch.setattr(stack.composition, "radio_tx_since", observe)
-
-    def flip_once(on, *, wire_set):
-        honour(on, wire_set=wire_set)
-        if wire_set and not on and not flipped.is_set():
-            honour(True, wire_set=False)
-            flipped.set()
-
-    monkeypatch.setattr(stack.sim, "_set_simulated_ptt", flip_once)
-    await _command(stack.web, "force_off")
-    await asyncio.wait_for(flipped.wait(), 1)
-    await asyncio.wait_for(observed.wait(), 3)
-    assert await _until(
-        lambda: not stack.sim.ptt_on and _clean(stack.composition.authority), 4
-    )
 
 
 async def _stop_composition(composition):
