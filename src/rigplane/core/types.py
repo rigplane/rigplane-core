@@ -488,14 +488,13 @@ MEMORY_WRITE_ENCODINGS: frozenset[str] = frozenset(
         "data_mode",  # the standalone data-mode byte, 00/01
         "data_tone",  # datamode<<4 | tonemode in one byte
         "duplex_tone",  # duplex<<4 | tonemode in one byte
-        "tone",  # 3-byte CTCSS BCD (the 1B 00 encoding) or zeros
+        "tone",  # 3-byte CTCSS BCD (the 1B 00 encoding), the layout default when unset
         "tsql",  # the tone-squelch twin of "tone"
         "tone_hz_bcd",  # BCD of tone_freq_hz (legacy record)
         "tsql_hz_bcd",  # BCD of tsql_freq_hz (legacy record)
         "name",  # ASCII, space padded
         "name_nul",  # ASCII, NUL padded (legacy record)
-        "zero",  # a fixed run of 00 bytes
-        "space",  # a fixed run of 20 bytes
+        "fixed",  # a fixed byte run, given as hex in the field's ``value``
     }
 )
 
@@ -535,7 +534,9 @@ class MemoryWriteField:
     ``encoding`` names one shared encoder from
     :data:`MEMORY_WRITE_ENCODINGS`; ``max_hz`` is the optional frequency
     ceiling the declaration enforces (the GHz/100 MHz digit rules the
-    read parser applies are shared code and always checked).
+    read parser applies are shared code and always checked). ``value`` is
+    the hex byte string a ``fixed`` field writes (its declared ``length``
+    in bytes); it is invalid on any other encoding.
     """
 
     field: str
@@ -543,6 +544,7 @@ class MemoryWriteField:
     length: int
     encoding: str
     max_hz: int | None = None
+    value: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -566,7 +568,11 @@ class MemoryWriteLayout:
     and the name lands after the
     last copy. The declared ``fields`` table always tiles ONE copy
     (``record_length`` is that one-copy length); the wire record is
-    :meth:`wire_record_length` bytes.
+    :meth:`wire_record_length` bytes. ``default_tone_centihz`` is the
+    tone a ``tone``/``tsql`` field carries when the caller leaves it
+    unset -- a zero field is not a valid CTCSS value -- and is required
+    exactly when the table declares such a field; the loader checks it is
+    a member of the profile's CTCSS domain.
     """
 
     clear: str
@@ -574,6 +580,7 @@ class MemoryWriteLayout:
     fields: tuple[MemoryWriteField, ...]
     tone_max: int = 3
     copies: int = 1
+    default_tone_centihz: int | None = None
 
     def data_block_span(self) -> tuple[int, int] | None:
         """``[start, end)`` of the channel-data block ``copies`` repeats.
@@ -635,6 +642,14 @@ class MemoryWriteLayout:
             # No sourced manual shows more than the block twice (the
             # TX/split copy); a third copy would need its manual first.
             errors.append(f"copies must be 1..2, got {self.copies}")
+        if self.default_tone_centihz is not None and (
+            isinstance(self.default_tone_centihz, bool)
+            or not isinstance(self.default_tone_centihz, int)
+        ):
+            errors.append(
+                "default_tone_centihz must be an int, "
+                f"got {self.default_tone_centihz!r}"
+            )
         if not isinstance(self.fields, tuple) or not all(
             isinstance(entry, MemoryWriteField) for entry in self.fields
         ):
@@ -663,6 +678,15 @@ class MemoryWriteLayout:
                     errors.append(
                         f"field {entry.field!r}: max_hz must be 1..9_999_999_999"
                     )
+            if entry.encoding == "fixed":
+                if not isinstance(entry.value, str):
+                    errors.append(
+                        f"field {entry.field!r}: a fixed field needs a hex string value"
+                    )
+            elif entry.value is not None:
+                errors.append(
+                    f"field {entry.field!r}: value is only valid on a fixed field"
+                )
         if errors:
             return tuple(errors)  # no tiling analysis over junk members
         # Exact tiling of [0, record_length): no gap, no overlap, no
@@ -687,6 +711,14 @@ class MemoryWriteLayout:
                     f"field {entry.field!r}: encoding {entry.encoding!r} "
                     f"needs length {width}, got {entry.length}"
                 )
+            if entry.encoding == "fixed" and isinstance(entry.value, str):
+                if len(entry.value) != 2 * entry.length or any(
+                    char not in "0123456789abcdefABCDEF" for char in entry.value
+                ):
+                    errors.append(
+                        f"field {entry.field!r}: the fixed value must be "
+                        f"{entry.length} bytes of hex"
+                    )
         if cursor != self.record_length:
             errors.append(
                 f"the table leaves the last "
@@ -703,6 +735,15 @@ class MemoryWriteLayout:
             count = sum(item.encoding == encoding for item in self.fields)
             if count > 1:
                 errors.append(f"the table declares {encoding} more than once")
+        has_tone_fields = any(item.encoding in ("tone", "tsql") for item in self.fields)
+        if has_tone_fields and self.default_tone_centihz is None:
+            # A zero tone field is not a valid CTCSS value: an unset
+            # tone/tsql must carry the layout's declared default instead.
+            errors.append(
+                "the table declares tone/tsql fields but no default_tone_centihz"
+            )
+        if not has_tone_fields and self.default_tone_centihz is not None:
+            errors.append("default_tone_centihz without a tone/tsql field")
         if (
             isinstance(self.copies, int)
             and not isinstance(self.copies, bool)

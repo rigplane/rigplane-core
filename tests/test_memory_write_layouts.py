@@ -76,7 +76,7 @@ _IC7300_BLOCK = (
     "01"  # filter 1
     "01"  # data OFF | TONE
     "001365"  # 136.5 Hz
-    "000000"  # tone squelch off
+    "000885"  # tsql unset: the declared default 88.5 Hz (the radio's own default, as seen in a real record; zeros are refused)
 )
 # The 47-byte channel blocks of the two-block records, written field by
 # field in manual order: frequency 5 | mode 1 | filter 1 | data mode 1 |
@@ -90,8 +90,8 @@ _IC705_BLOCK = (
     "21"  # duplex + | TONE
     "00"  # digital squelch off (X0, fixed low nibble)
     "001365"  # 136.5 Hz (the 1B 00 encoding, guide p.21)
-    "000000"  # tone squelch off
-    "000000"  # DTCS off
+    "000885"  # tsql unset: the declared default 88.5 Hz (the radio's own default, as seen in a real record; zeros are refused)
+    "000023"  # DTCS polarity NN, code 023 (the radio's own default, as seen in a real record; zeros are refused)
     "00"  # DV code squelch off
     "000000" + _SP24  # duplex offset 0 (not exposed in this slice)  # UR/R1/R2 blank
 )
@@ -103,8 +103,8 @@ _IC9700_BLOCK = (
     "21"  # duplex + | TONE
     "00"  # digital squelch off
     "001365"  # 136.5 Hz
-    "000000"  # tone squelch off
-    "000000"  # DTCS off
+    "000885"  # tsql unset: the declared default 88.5 Hz (as above)
+    "000023"  # DTCS polarity NN, code 023 (as above)
     "00"  # DV code squelch off
     "000000" + _SP24  # duplex offset 0  # UR/R1/R2 blank
 )
@@ -329,7 +329,7 @@ def test_the_write_body_decodes_with_the_read_parser(model: str) -> None:
     assert entry.duplex is RepeaterShiftDirection.PLUS
     assert entry.tone_mode is ToneSquelchType.TONE
     assert entry.tone_centihz == 13_650
-    assert entry.tsql_centihz == 0
+    assert entry.tsql_centihz == 8_850  # unset tsql wrote the declared default
     assert entry.name == mem.name
 
 
@@ -620,12 +620,11 @@ async def test_write_then_read_returns_what_was_written(model: str) -> None:
     assert entry.duplex is RepeaterShiftDirection.PLUS
     assert entry.tone_mode is ToneSquelchType.TONE
     assert entry.tone_centihz == 13_650
-    assert entry.tsql_centihz == 0
+    assert entry.tsql_centihz == 8_850  # unset tsql wrote the declared default
     assert entry.name == mem.name
     # The reply data after ``1A 00``, by hand from the manual tables: the
     # stored record, which carries its channel block twice (the record's
-    # own DTCS/offset/DV fields are their declared OFF values, all
-    # zeros).
+    # own DTCS/offset/DV fields are their declared fixed values).
     block = bytes.fromhex({"IC-705": _IC705_BLOCK, "IC-9700": _IC9700_BLOCK}[model])
     address = {
         "IC-705": bytes.fromhex("00020007"),

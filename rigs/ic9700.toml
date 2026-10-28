@@ -379,6 +379,7 @@ offset_10mhz_groups = [3]
 clear = "1a00_ff"  # guide p.14: 1A 00 + the address + FF
 record_length = 64  # one copy: select + 47-byte block + 16-byte name
 copies = 2  # guide p.14 NOTE: the block is stored twice (TX copy = RX values when not split)
+default_tone_centihz = 8850  # an unset tone/tsql writes the default tone (88.5 Hz); zeros are not a valid CTCSS value
 fields = [
   { field = "select", offset = 0, length = 1, encoding = "select" },                                # 4
   { field = "frequency", offset = 1, length = 5, encoding = "frequency", max_hz = 1_499_999_999 },  # 5-9: GHz <= 1, 100 MHz <= 4 (read-side rules)
@@ -386,13 +387,13 @@ fields = [
   { field = "filter", offset = 7, length = 1, encoding = "filter" },                                # 11
   { field = "data_mode", offset = 8, length = 1, encoding = "data_mode" },                          # 12
   { field = "duplex_tone", offset = 9, length = 1, encoding = "duplex_tone" },                      # 13: duplex 0-3 (3 = RPS, DD only)
-  { field = "digital_squelch", offset = 10, length = 1, encoding = "zero" },                        # 14: 00 = off
+  { field = "digital_squelch", offset = 10, length = 1, encoding = "fixed", value = "00" },         # 14: 00 = off
   { field = "tone", offset = 11, length = 3, encoding = "tone" },                                   # 15-17
   { field = "tsql", offset = 14, length = 3, encoding = "tsql" },                                   # 18-20
-  { field = "dtcs", offset = 17, length = 3, encoding = "zero" },                                   # 21-23: 000000 = off
-  { field = "dv_code", offset = 20, length = 1, encoding = "zero" },                                # 24
-  { field = "duplex_offset", offset = 21, length = 3, encoding = "zero" },                          # 25-27: 0 Hz (not exposed, MOR-3644 slice)
-  { field = "callsigns", offset = 24, length = 24, encoding = "space" },                            # 28-51: UR/R1/R2 blank
+  { field = "dtcs", offset = 17, length = 3, encoding = "fixed", value = "000023" },                # 21-23: polarity NN, code 023 (the same record shape as the IC-705)
+  { field = "dv_code", offset = 20, length = 1, encoding = "fixed", value = "00" },                 # 24
+  { field = "duplex_offset", offset = 21, length = 3, encoding = "fixed", value = "000000" },       # 25-27: 0 Hz (not exposed, MOR-3644 slice)
+  { field = "callsigns", offset = 24, length = 24, encoding = "fixed", value = "202020202020202020202020202020202020202020202020" },  # 28-51: UR/R1/R2 blank
   { field = "name", offset = 48, length = 16, encoding = "name" },                                  # 52-67
 ]
 

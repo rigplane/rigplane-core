@@ -670,13 +670,19 @@ many times the channel-data block — the fields between a leading
 Icom manuals print the block's position labels twice: the TX/split copy,
 which a non-split entry fills with the RX values, so the IC-705, IC-9700,
 IC-7300 and IC-7300MK2 profiles
-declare `copies = 2` and the name lands after the last copy), and
+declare `copies = 2` and the name lands after the last copy),
+`default_tone_centihz` the tone a `tone`/`tsql` field carries when the
+caller leaves it unset (a zero field is not a valid CTCSS value; required
+exactly when the table declares such a field, and checked against the
+profile's CTCSS domain), and
 `fields` an array of `{field, offset, length, encoding}`
-rows (plus `max_hz` on a frequency field) that must tile the record
+rows (plus `max_hz` on a frequency field and `value`, the hex byte
+string, on a `fixed` field) that must tile the record
 exactly, with no gap or overlap. The encodings come from one shared
 vocabulary (`core/types.py: MEMORY_WRITE_ENCODINGS`) — the raw mode code,
 the filter byte, the centi-Hz-exact CTCSS encoding of `1B 00`, ASCII
-names space- or NUL-padded, and fixed zero/space runs — so the per-radio
+names space- or NUL-padded, and `fixed` byte runs declared as hex — so
+the per-radio
 facts (offsets, name width, copy count) are data, and one table-driven
 encoder in `commands/memory.py` builds every radio's record. Absent means NOT
 verified: memory contents writes and clears are refused with the stable

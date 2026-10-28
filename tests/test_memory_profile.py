@@ -284,6 +284,92 @@ def test_loader_rejects_an_out_of_range_tone_max(tmp_path: Path, tone_max: str) 
         _load(tmp_path, _GOOD + _GOOD_WRITE_LAYOUT + f"\ntone_max = {tone_max}\n")
 
 
+# A layout with tone/tsql fields: an unset tone writes the declared
+# default (a zero field is not a valid CTCSS value), so the default is
+# required here and must be a member of the profile's CTCSS domain.
+_TONE_WRITE_LAYOUT = """
+[memory.write_layout]
+clear = "1a00_ff"
+record_length = 16
+default_tone_centihz = 8850
+fields = [
+  { field = "frequency", offset = 0, length = 5, encoding = "frequency" },
+  { field = "mode", offset = 5, length = 1, encoding = "mode" },
+  { field = "tone", offset = 6, length = 3, encoding = "tone" },
+  { field = "tsql", offset = 9, length = 3, encoding = "tsql" },
+  { field = "dtcs", offset = 12, length = 3, encoding = "fixed", value = "000023" },
+  { field = "name", offset = 15, length = 1, encoding = "name" },
+]
+"""
+
+_CTCSS_CATALOG = (
+    "schema_version = 1\n\n[tables.standard_50]\nvalues_centihz = [8850, 12300]\n"
+)
+
+
+def _load_with_ctcss(tmp_path: Path, memory: str):
+    (tmp_path / "_ctcss_tables_v1.toml").write_text(_CTCSS_CATALOG)
+    return load_rig(
+        _write_toml(
+            tmp_path, _minimal_toml('[ctcss]\ntable = "standard_50"\n' + memory)
+        )
+    )
+
+
+def test_loader_reads_the_fixed_encoding_and_the_tone_default(tmp_path: Path) -> None:
+    """``fixed`` is the one way to declare a constant byte run (its hex
+    ``value`` in the profile), and ``default_tone_centihz`` is the tone an
+    unset tone/tsql field carries."""
+    declared = _load_with_ctcss(tmp_path, _GOOD + _TONE_WRITE_LAYOUT).memory
+    assert declared is not None and declared.write_layout is not None
+    layout = declared.write_layout
+    assert layout.default_tone_centihz == 8850
+    dtcs = next(field for field in layout.fields if field.field == "dtcs")
+    assert dtcs.encoding == "fixed" and dtcs.value == "000023"
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        ('value = "000023"', 'value = "0002"'),  # shorter than the field
+        ('value = "000023"', 'value = "0000zz"'),  # not hex
+        ('value = "000023"', "value = 23"),  # not a string
+        (', value = "000023" },', " },"),  # a fixed field without a value
+        (
+            '{ field = "mode", offset = 5, length = 1, encoding = "mode" },',
+            '{ field = "mode", offset = 5, length = 1, encoding = "mode", value = "00" },',  # value off a fixed field
+        ),
+        ("default_tone_centihz = 8850", "default_tone_centihz = 9999"),  # off-domain
+        ("default_tone_centihz = 8850", 'default_tone_centihz = "8850"'),
+    ],
+)
+def test_loader_rejects_a_broken_fixed_field_or_tone_default(
+    tmp_path: Path, edit: tuple[str, str]
+) -> None:
+    with pytest.raises(RigLoadError, match=r"\[memory\].write_layout"):
+        _load_with_ctcss(tmp_path, _GOOD + _TONE_WRITE_LAYOUT.replace(*edit))
+
+
+def test_loader_requires_the_tone_default_with_tone_fields(tmp_path: Path) -> None:
+    with pytest.raises(RigLoadError, match=r"default_tone_centihz"):
+        _load_with_ctcss(
+            tmp_path,
+            _GOOD + _TONE_WRITE_LAYOUT.replace("default_tone_centihz = 8850\n", ""),
+        )
+
+
+def test_loader_rejects_a_tone_default_without_tone_fields(tmp_path: Path) -> None:
+    with pytest.raises(RigLoadError, match=r"default_tone_centihz"):
+        _load(
+            tmp_path,
+            _GOOD
+            + _GOOD_WRITE_LAYOUT.replace(
+                'clear = "1a00_ff"',
+                'clear = "1a00_ff"\ndefault_tone_centihz = 8850',
+            ),
+        )
+
+
 @pytest.mark.parametrize("value", ['"civ_26"', "3", "[]", "true", '""'])
 def test_loader_rejects_a_non_table_write_layout(tmp_path: Path, value: str) -> None:
     with pytest.raises(RigLoadError, match=r"\[memory\].write_layout"):

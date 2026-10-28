@@ -393,12 +393,15 @@ def _encode_record_name(name: str, length: int, pad: bytes) -> bytes:
 
 
 def _encode_record_tone(
-    centihz: int | None, ctcss_tones_centihz: tuple[int, ...] | None
+    centihz: int | None,
+    default_centihz: int | None,
+    ctcss_tones_centihz: tuple[int, ...] | None,
 ) -> bytes:
-    """A tone field: zeros when unset, else the ``1B 00`` encoding admitted
-    through the profile's CTCSS domain."""
+    """A tone field: the layout's declared default when the caller leaves
+    it unset -- a zero field is not a valid CTCSS value -- else the
+    caller's value; both admitted through the profile's CTCSS domain."""
     if centihz is None:
-        return b"\x00" * 3
+        centihz = default_centihz
     return _encode_tone_freq(_require_profile_tone(centihz, ctcss_tones_centihz))
 
 
@@ -472,9 +475,13 @@ def _encode_write_field(
                 )
             return bytes([(mem.duplex << 4) | mem.tonemode])
         case "tone":
-            return _encode_record_tone(mem.tone_centihz, ctcss_tones_centihz)
+            return _encode_record_tone(
+                mem.tone_centihz, layout.default_tone_centihz, ctcss_tones_centihz
+            )
         case "tsql":
-            return _encode_record_tone(mem.tsql_centihz, ctcss_tones_centihz)
+            return _encode_record_tone(
+                mem.tsql_centihz, layout.default_tone_centihz, ctcss_tones_centihz
+            )
         case "tone_hz_bcd" | "tsql_hz_bcd":  # the legacy record's Hz field
             hz = (
                 mem.tone_freq_hz
@@ -486,10 +493,12 @@ def _encode_write_field(
             return _encode_record_name(mem.name, field.length, b"\x20")
         case "name_nul":
             return _encode_record_name(mem.name, field.length, b"\x00")
-        case "zero":
-            return b"\x00" * field.length
-        case "space":
-            return b"\x20" * field.length
+        case "fixed":
+            # A declared constant run (the record's own default/OFF
+            # bytes); the loader checked the hex and the length.
+            if field.value is None:
+                raise ValueError(f"fixed field {field.field!r} declares no value")
+            return bytes.fromhex(field.value)
     raise ValueError(f"unknown write field encoding {field.encoding!r}")
 
 

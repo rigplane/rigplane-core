@@ -2175,20 +2175,26 @@ _MEMORY_KEYS = frozenset(
 )
 _MEMORY_ADDRESSING = frozenset({"group_channel", "band_channel", "channel"})
 _WRITE_LAYOUT_KEYS = frozenset(
-    {"clear", "record_length", "tone_max", "copies", "fields"}
+    {"clear", "record_length", "tone_max", "copies", "fields", "default_tone_centihz"}
 )
-_WRITE_FIELD_KEYS = frozenset({"field", "offset", "length", "encoding", "max_hz"})
+_WRITE_FIELD_KEYS = frozenset(
+    {"field", "offset", "length", "encoding", "max_hz", "value"}
+)
 
 
-def _parse_write_layout(filename: str, raw: Any) -> MemoryWriteLayout | None:
+def _parse_write_layout(
+    filename: str, raw: Any, ctcss_tones_centihz: tuple[int, ...] | None
+) -> MemoryWriteLayout | None:
     """Parse the optional ``[memory.write_layout]`` table (MOR-3644).
 
     The declaration is pure data: the clear form, the record length, the
-    block copy count and the field table. Structural correctness (known
-    encodings, exact tiling, one frequency/mode/name field, the block
-    span a ``copies`` repeat needs) is decided by
+    block copy count, the tone a ``tone``/``tsql`` field carries when the
+    caller leaves it unset, and the field table. Structural correctness
+    (known encodings, exact tiling, one frequency/mode/name field, the
+    block span a ``copies`` repeat needs) is decided by
     :meth:`MemoryWriteLayout.validation_errors`, the same rules the
-    runtime admission gate applies to SDK-supplied profiles.
+    runtime admission gate applies to SDK-supplied profiles; the tone
+    default's membership in the profile's CTCSS domain is checked here.
     """
     if raw is None:
         return None
@@ -2233,6 +2239,14 @@ def _parse_write_layout(filename: str, raw: Any) -> MemoryWriteLayout | None:
             "wire; the sourced Icom manuals print the block's position "
             f"labels twice for the TX/split copy), got {copies!r}"
         )
+    default_tone = raw.get("default_tone_centihz")
+    if default_tone is not None and (
+        isinstance(default_tone, bool) or not isinstance(default_tone, int)
+    ):
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout.default_tone_centihz must be "
+            f"an integer in centi-Hz, got {default_tone!r}"
+        )
     rows = raw.get("fields")
     if not isinstance(rows, list) or not rows:
         raise RigLoadError(
@@ -2253,6 +2267,17 @@ def _parse_write_layout(filename: str, raw: Any) -> MemoryWriteLayout | None:
         length = row.get("length")
         encoding = row.get("encoding")
         max_hz = row.get("max_hz")
+        value = row.get("value")
+        if value is not None and not isinstance(value, str):
+            raise RigLoadError(
+                f"{filename}: [memory].write_layout field 'value' must be a "
+                f"hex string, got {value!r}"
+            )
+        if value is not None and encoding != "fixed":
+            raise RigLoadError(
+                f"{filename}: [memory].write_layout field {name!r}: 'value' "
+                "is only valid on a fixed field"
+            )
         if not isinstance(name, str) or not name:
             raise RigLoadError(
                 f"{filename}: [memory].write_layout field 'field' must be a "
@@ -2292,6 +2317,7 @@ def _parse_write_layout(filename: str, raw: Any) -> MemoryWriteLayout | None:
                 length=length,
                 encoding=encoding,
                 max_hz=max_hz,
+                value=value,
             )
         )
     layout = MemoryWriteLayout(
@@ -2299,15 +2325,27 @@ def _parse_write_layout(filename: str, raw: Any) -> MemoryWriteLayout | None:
         record_length=record_length,
         tone_max=tone_max,
         copies=copies,
+        default_tone_centihz=default_tone,
         fields=tuple(fields),
     )
     errors = layout.validation_errors()
     if errors:
         raise RigLoadError(f"{filename}: [memory].write_layout: {'; '.join(errors)}")
+    if layout.default_tone_centihz is not None and (
+        ctcss_tones_centihz is None
+        or layout.default_tone_centihz not in ctcss_tones_centihz
+    ):
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout.default_tone_centihz "
+            f"{layout.default_tone_centihz} is not a member of the profile's "
+            "CTCSS domain ([ctcss])"
+        )
     return layout
 
 
-def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
+def _parse_memory(
+    filename: str, raw: Any, ctcss_tones_centihz: tuple[int, ...] | None
+) -> MemoryProfile | None:
     """Parse the optional ``[memory]`` section (MOR-3627)."""
     if raw is None:
         return None
@@ -2364,7 +2402,9 @@ def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
                 f"{filename}: [memory].{key} must not contain duplicates"
             )
         groups[key] = tuple(values)
-    write_layout = _parse_write_layout(filename, raw.get("write_layout"))
+    write_layout = _parse_write_layout(
+        filename, raw.get("write_layout"), ctcss_tones_centihz
+    )
     return MemoryProfile(  # type: ignore[arg-type]
         addressing=addressing,
         recall=recall,
@@ -3406,7 +3446,7 @@ def load_rig(path: Path) -> RigConfig:
     )
     tx_policy = _parse_tx_policy(filename, data.get("tx_policy"))
     expected_identity_ids = _parse_identity(filename, data.get("identity"))
-    memory = _parse_memory(filename, data.get("memory"))
+    memory = _parse_memory(filename, data.get("memory"), ctcss_tones_centihz)
     cw_text = _parse_cw_text(
         filename,
         data.get("cw_text"),

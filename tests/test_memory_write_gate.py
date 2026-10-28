@@ -218,6 +218,8 @@ async def test_sdk_supplied_profile_with_an_unlisted_layout_refuses(
         {"copies": True},
         {"copies": 0},
         {"copies": 3},
+        {"default_tone_centihz": "8850"},  # not an int
+        {"default_tone_centihz": None},  # the IC-705 layout has tone fields
         {"fields": "26 bytes"},
         {"fields": ()},
         {"fields": ({"field": "x", "offset": 0, "length": 1, "encoding": "mode"},)},
@@ -232,6 +234,8 @@ async def test_sdk_supplied_profile_with_an_unlisted_layout_refuses(
         "copies-bool",
         "copies-zero",
         "copies-three",
+        "default_tone-str",
+        "default_tone-none",
         "fields-str",
         "fields-empty",
         "fields-raw-dict",
