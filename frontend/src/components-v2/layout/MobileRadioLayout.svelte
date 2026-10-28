@@ -1158,7 +1158,7 @@
 
   /* MOR-2442: the landscape slot hosts the panel through SemanticRadioSurfaces'
      managed region, so a descendant selector fits the intermediate wrapper. */
-  .m-ls-spectrum :global(.spectrum-panel) {
+  .m-ls-spectrum :global(.spectrum-panel:not(.fullscreen)) {
     height: 100% !important;
     border: none !important;
     border-radius: 0 !important;
