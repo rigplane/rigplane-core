@@ -212,6 +212,7 @@
   "core.toast.txAudioStartFailed": "TX オーディオを開始できませんでした",
   "core.toast.rxAudioResumeFailed": "ローカル音声を再開できませんでした。アプリの音声アクセス権と出力設定を確認してください。",
   "core.toast.rxAudioStartFailed": "無線機の音声入力を開始できませんでした。再試行する前に音声診断を確認してください。",
+  "core.toast.rxAudioStationDeviceNeeded": "無線機の音声デバイスを自動でペアリングできませんでした。ステーションの音声デバイスはステーションのコンピューターで選択する必要があります。ステーションを運用している方が音声デバイス設定から選択できます。",
   "core.toast.txAudioStopped": "TX オーディオが停止しました — 送信が途中で終了しました",
   "core.toast.unknown": "問題が発生しました。しばらくしてから再試行してください。",
 

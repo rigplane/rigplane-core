@@ -696,7 +696,7 @@ disconnect -> close the subscription. Per client:
    packet-to-PCM helper. At least three places decode RX
    packets on their own (`AudioBridge._rx_loop`,
    `web/handlers/audio.py: AudioBroadcaster`, and `add_pcm_rx_tap`, which is
-   Icom-LAN-only and has no consumer in the tree). TCI would be the fourth. A1 first proves per backend which packets `subscribe_rx` delivers
+   Icom LAN-only and has no consumer in the tree). TCI would be the fourth. A1 first proves per backend which packets `subscribe_rx` delivers
    (fake LAN/USB/Yaesu audio, `FakeAudioBackend`) and adds one shared decode
    function in `audio/pcm.py` over the existing decoders. Migrating the three
    existing consumers to it is *not* in this program; it is filed as a follow-up

@@ -2475,7 +2475,10 @@ async def test_audio_broadcaster_start_relay_failure() -> None:
 
 async def test_audio_broadcaster_start_relay_failure_notifies_ws_client() -> None:
     """MOR-582: a failed RX start sends an ``error`` envelope to the WS
-    client instead of presenting "subscribed" with dead air forever."""
+    client instead of presenting "subscribed" with dead air forever.
+
+    MOR-3823: the envelope carries only the failure CATEGORY, never the
+    exception text — a remote client must not read host-side detail."""
     failing_radio = _RelayRadio(
         start_error=RuntimeError("start fail"),
     )
@@ -2489,9 +2492,40 @@ async def test_audio_broadcaster_start_relay_failure_notifies_ws_client() -> Non
 
     ws.send_text.assert_awaited_once()
     envelope = decode_json(ws.send_text.await_args.args[0])
-    assert envelope["type"] == "error"
-    assert "RX audio failed to start" in envelope["message"]
-    assert "start fail" in envelope["message"]
+    assert envelope == {
+        "type": "error",
+        "message": "audio_start: RX audio failed to start: other",
+        "reason": "other",
+    }
+
+
+async def test_audio_broadcaster_start_relay_failure_sends_category_only() -> None:
+    """MOR-3823: a real pairing refusal (S3 ``serial_ambiguous``) reaches the
+    WS client as the category token alone — no part of the exception text,
+    including any chained cause."""
+    from rigplane.audio._usb_pairing import PairRefused, pairing_refusal_error
+
+    refusal = PairRefused(
+        "serial_ambiguous", "usb_ambiguous", (), ("refused:serial_ambiguous",)
+    )
+    error = pairing_refusal_error(refusal)
+    error.__cause__ = RuntimeError("SECRET-HOST-DETAIL")
+    failing_radio = _RelayRadio(start_error=error)
+
+    ws = SimpleNamespace(send_text=AsyncMock(), is_alive=lambda: True)
+    broadcaster = AudioBroadcaster(failing_radio)
+    await broadcaster.subscribe(ws=ws)
+
+    ws.send_text.assert_awaited_once()
+    payload = ws.send_text.await_args.args[0]
+    assert decode_json(payload) == {
+        "type": "error",
+        "message": "audio_start: RX audio failed to start: usb_ambiguous",
+        "reason": "usb_ambiguous",
+    }
+    assert "SECRET-HOST-DETAIL" not in payload
+    assert "serial_ambiguous" not in payload
+    assert "select explicit RX/TX devices" not in payload
 
 
 async def test_audio_broadcaster_subscribe_success_sends_no_error_envelope() -> None:

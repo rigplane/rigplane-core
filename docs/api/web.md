@@ -1329,6 +1329,18 @@ is refused from the moment any Core client keys; see `managed_tx_authority.py:
 ManagedTxAuthority.outside_tx_submission`. A Core without this feature drops
 `0x12` as an unknown type (fail-closed); `0x11` behavior is unchanged.
 
+An `audio_start` with `direction: "rx"` whose stream fails to start is answered
+on `/api/v1/audio` with `{"type": "error", "message": ..., "reason": ...}`:
+`message` keeps the fixed prefix `audio_start: RX audio failed to start:` and
+appends only the failure category, and `reason` carries the same category
+(`src/rigplane/web/handlers/audio.py: AudioBroadcaster._notify_relay_start_failure`).
+The category is one of the publishable `AudioStartFailureReason` values
+(`usb_topology_names`, `usb_topology_unavailable`, `usb_ambiguous`,
+`open_timeout`, `format`, `other`) classified by
+`src/rigplane/audio/usb_driver.py: audio_start_failure_reason`. Exception text
+is never sent, so the frame is safe to show a remote client; the same category
+appears under `audioReceive.failure.reason` in `GET /api/v1/info`.
+
 ### `/api/v1/ws` command envelope
 
 ```json

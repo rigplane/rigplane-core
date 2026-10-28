@@ -89,7 +89,16 @@ async def test_a_reply_for_another_slot_or_a_corrupt_one_is_an_error() -> None:
 @pytest.mark.asyncio
 async def test_a_profile_without_memory_channels_refuses() -> None:
     with pytest.raises(CommandError, match="declares no memory channels"):
-        await _radio("IC-7300").read_memory_entries(0, [0])
+        await _radio("X6100").read_memory_entries(0, [0])
+
+
+@pytest.mark.asyncio
+async def test_a_channel_list_profile_has_no_verified_read_layout() -> None:
+    """IC-7300 declares a write-side [memory] section only (MOR-3644 part
+    2): its 1A 00 read reply is not in the sourced manuals, so the
+    listing refuses."""
+    with pytest.raises(CommandError, match="no verified CI-V memory read layout"):
+        await _radio("IC-7300").read_memory_entries(0, [1])
 
 
 async def _get(radio: Any, target: str) -> tuple[int, dict]:
