@@ -18,12 +18,17 @@ Subcommands:
   confirmed live, explicit ``--tx-armed --dummy-load-confirmed``, power at
   the profile minimum, 10 s keyed-time watchdog, emergency unkey in
   ``finally``).
-* ``summarize`` -- print the per-radio median/p95/max table for Linear.
+* ``summarize`` -- print the per-radio median/p95/max table for Linear, or
+  (``--timing-toml``) a ``[timing]`` TOML block per document for the sim
+  profiles. This tool only PRINTS; it never edits profile TOMLs.
 
 HARD SAFETY: the two ``capture`` modes are the only ones that open a serial
 port. ``capture rx`` never sends a PTT command. ``capture tx`` refuses
-(exit 2, nothing written) on any unmet precondition and unkeys in
-``finally`` on any failure (exit 1, evidence still written).
+(exit 2, nothing written) on any unmet precondition -- including an
+unavailable ``lsof`` (it fails closed; ``capture rx`` only notes it) -- and
+unkeys in ``finally`` on any failure (exit 1, evidence still written).
+Keyed time is counted from BEFORE the key frame is written until the radio
+is READ BACK as RX (or, when RX is never confirmed, until process end).
 """
 
 from __future__ import annotations
@@ -76,6 +81,8 @@ __all__ = [
     "run_rx_capture",
     "run_tx_capture",
     "summarize_documents",
+    "timing_toml_block",
+    "TIMING_TOML_MAPPING",
 ]
 
 SCHEMA = "rigplane-serial-timing/1"
@@ -136,15 +143,19 @@ def _p95(samples: Sequence[float]) -> float:
     return ordered[max(0, math.ceil(0.95 * len(ordered)) - 1)]
 
 
+def _median(samples: Sequence[float]) -> float:
+    ordered = sorted(samples)
+    n = len(ordered)
+    return ordered[n // 2] if n % 2 else (ordered[n // 2 - 1] + ordered[n // 2]) / 2
+
+
 def summarize_samples(samples: Sequence[float]) -> dict[str, object]:
     """One ``classes`` entry: n, the raw samples, median, p95, max (ms)."""
     ordered = sorted(samples)
-    n = len(ordered)
-    median = ordered[n // 2] if n % 2 else (ordered[n // 2 - 1] + ordered[n // 2]) / 2
     return {
-        "n": n,
+        "n": len(ordered),
         "samples_ms": [round(s, 3) for s in samples],
-        "median": round(median, 3),
+        "median": round(_median(samples), 3),
         "p95": round(_p95(samples), 3),
         "max": round(ordered[-1], 3),
     }
@@ -531,6 +542,8 @@ def open_serial_port(port: str, baud: int, serial_module: object | None = None):
     ser.dtr = False
     ser.rts = False
     ser.timeout = 0.05
+    # A blocked write must not hang past the keyed-time cap.
+    ser.write_timeout = 1.0
     ser.open()
     return ser
 
@@ -1022,6 +1035,7 @@ def run_tx_capture(
     watchdog = KeyedWatchdog(cap_keyed_s, tick_s=watchdog_tick_s)
     watchdog.start()
     abort_reason: str | None = None
+    confirmed: bool | None = None
     try:
         for rep in range(reps):
             watchdog.check()
@@ -1040,9 +1054,12 @@ def run_tx_capture(
                 raise RefusalError("radio is already keyed before the capture rep")
 
             # ── key on ──
+            # Keyed time counts from BEFORE the key frame is written: when
+            # the write keys the radio but the ACK is lost, the cap still
+            # applies and the abort path measures the real exposure.
+            watchdog.key_on()
             key_reply = civ_transact(ser, frames["ptt_on"], timeout_s=1.0, clock=clock)
             keyed_at = clock()
-            watchdog.key_on()
             add("write_drain", key_reply.write_drain_ms)
             add("ptt_set_ack_on", key_reply.ack_ms)
             add("ack_set", key_reply.ack_ms)
@@ -1073,7 +1090,6 @@ def run_tx_capture(
                 ser, frames["ptt_off"], timeout_s=1.0, clock=clock
             )
             unkeyed_at = clock()
-            watchdog.key_off()
             add("write_drain", unkey_reply.write_drain_ms)
             add("ptt_set_ack_off", unkey_reply.ack_ms)
             add("ack_set", unkey_reply.ack_ms)
@@ -1088,14 +1104,40 @@ def run_tx_capture(
                 clock=clock,
                 sleep=sleep,
             )
+            # Keyed time ends when the radio is READ BACK as RX, not at the
+            # unkey ACK (same conservative rule as the MOR-3818 bench).
+            watchdog.key_off()
             add("tx_off_switch", (switched_off_at - unkeyed_at) / 1e6)
             watchdog.check()
             notes.append(f"rep {rep + 1}/{reps} complete")
+
+        # Re-read the power once after the last rep: a mid-run change
+        # invalidates every timing in this document.
+        final_power = civ_transact(ser, frames["power"], timeout_s=1.0, clock=clock)
+        add("write_drain", final_power.write_drain_ms)
+        add("ack_read", final_power.ack_ms)
+        final_level = _decode_level_raw(final_power.frame.data)
+        notes.append(
+            f"final RF power raw {final_level} (profile minimum {power_min_raw})"
+        )
+        if final_level != power_min_raw:
+            abort_reason = (
+                f"RF power changed during the capture: {power_min_raw} -> "
+                f"{final_level}; document FAILED, discard these timings"
+            )
     except RefusalError:
         raise
     except BaseException as exc:  # deadline, watchdog, serial error, SIGINT/SIGTERM
         abort_reason = f"{type(exc).__name__}: {exc}"
     finally:
+        if abort_reason is not None:
+            confirmed = emergency_unkey(
+                ser, frames["ptt_off"], frames["ptt_read"], clock=clock, sleep=sleep
+            )
+            if confirmed:
+                # Keyed time ends at the emergency unkey's RX confirmation.
+                watchdog.key_off()
+            # Never confirmed: keyed time keeps counting until process end.
         keyed = watchdog.keyed_total_s()
         watchdog.close()
 
@@ -1112,9 +1154,6 @@ def run_tx_capture(
             EXIT_OK,
         )
 
-    confirmed = emergency_unkey(
-        ser, frames["ptt_off"], frames["ptt_read"], clock=clock, sleep=sleep
-    )
     doc = build_document(
         radio_id=radio_key,
         protocol="civ",
@@ -1127,7 +1166,12 @@ def run_tx_capture(
             f"emergency unkey sent up to {_UNKEY_ATTEMPTS}x; "
             f"radio confirmed RX: {confirmed}",
             f"total keyed time before abort {keyed:.3f}s",
-        ],
+        ]
+        + (
+            []
+            if confirmed
+            else ["RX never confirmed: keyed time kept counting until process end"]
+        ),
     )
     return doc, EXIT_ABORT
 
@@ -1160,20 +1204,84 @@ def summarize_documents(docs: Iterable[dict[str, object]]) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
+#: ``summarize --timing-toml`` mapping: TOML key -> source latency classes
+#: (median over all their samples together; a key is omitted when none of
+#: its classes has samples). Data for the simulator ``[timing]`` table.
+TIMING_TOML_MAPPING: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("reply_latency_ms", ("ack_read",)),
+    ("ack_ms_set", ("ack_set",)),
+    ("ptt_set_ack_ms", ("ptt_set_ack_on", "ptt_set_ack_off")),
+    ("write_drain_ms", ("write_drain",)),
+    ("tx_on_switch_ms", ("tx_on_switch",)),
+    ("tx_off_switch_ms", ("tx_off_switch",)),
+    ("readback_ms", ("ptt_read_idle",)),
+)
+
+
+def timing_toml_block(doc: dict[str, object]) -> str:
+    """One ``[timing]`` TOML block (float ms, median only) for a document.
+
+    PRINT-only output for the sim profile ``[timing]`` table; this tool
+    never edits profile TOMLs (another session owns the loader).
+    """
+    classes: dict[str, object] = doc.get("classes") or {}  # type: ignore[assignment]
+    lines = [
+        f"# {doc.get('radio_id')} ({doc.get('protocol')}, "
+        f"host={doc.get('host')}, {doc.get('generated_at')})",
+        "[timing]",
+    ]
+    for key, sources in TIMING_TOML_MAPPING:
+        samples: list[float] = []
+        for name in sources:
+            entry = classes.get(name)
+            if entry:
+                samples.extend(
+                    float(s)
+                    for s in entry["samples_ms"]  # type: ignore[index]
+                )
+        if not samples:
+            continue
+        lines.append(f"{key} = {round(_median(samples), 3)}")
+    return "\n".join(lines)
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────
+
+
+def _serial_recorder_rows(path: Path) -> list[dict[str, object]]:
+    """SerialCivRecorder JSONL (``{"t","dir","port","hex"}``) as pairing rows.
+
+    Frame splitting is the testkit's :func:`civ_frames` -- re-assembling
+    frames split across chunks is NOT re-implemented here.
+    """
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+    from rigplane_testkit.serial.recorder import civ_frames
+
+    return [
+        {"t": t, "dir": direction, "frame": frame.hex()}
+        for t, direction, frame in civ_frames(path)
+    ]
 
 
 def _cmd_from_recordings(
     args: argparse.Namespace,
 ) -> tuple[dict[str, object] | None, int]:
     fixture = Path(args.fixture)
-    rows = [
-        json.loads(line) for line in fixture.read_text().splitlines() if line.strip()
-    ]
+    lines = [line for line in fixture.read_text().splitlines() if line.strip()]
+    first = json.loads(lines[0]) if lines else {}
+    notes: list[str] = []
+    if "hex" in first:  # SerialCivRecorder JSONL: {"t","dir","port","hex"}
+        rows = _serial_recorder_rows(fixture)
+        notes.append(
+            f"SerialCivRecorder JSONL: re-assembled {len(rows)} frames "
+            "via rigplane_testkit civ_frames()"
+        )
+    else:
+        rows = [json.loads(line) for line in lines]
     radio_key = fixture.parent.name
     profiles = load_profiles()
     config = resolve_profile(radio_key, profiles)
-    notes: list[str] = []
     protocol = "cat" if any("line" in row for row in rows) else "civ"
     if protocol == "civ":
         sigs = _civ_signatures(config) if config is not None else []
@@ -1240,6 +1348,15 @@ def _cmd_capture(
             return None, EXIT_REFUSED
     holders = port_holders(args.port, runner=runner)
     if holders is None:
+        if args.capture_mode == "tx":
+            # TX keys a transmitter: without lsof the port's freeness is
+            # unverifiable, so fail closed (rx never keys: note only).
+            print(
+                f"refusal: lsof unavailable; cannot verify {args.port} is "
+                "free; capture tx fails closed",
+                file=sys.stderr,
+            )
+            return None, EXIT_REFUSED
         print(
             f"note: lsof unavailable; cannot verify {args.port} is free",
             file=sys.stderr,
@@ -1267,19 +1384,32 @@ def _cmd_capture(
                 ),
                 EXIT_OK,
             )
-        # tx: identity confirmed live BEFORE any keyed write.
+        # tx: SIGTERM must become a catchable KeyboardInterrupt so the
+        # finally unkey runs on termination too. Installed here (not only in
+        # __main__) BEFORE the first keyed write, restored in finally.
+        import signal
+
+        def _sigterm_as_interrupt(_sig: int, _frame: object) -> None:
+            raise KeyboardInterrupt()
+
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, _sigterm_as_interrupt)
         try:
-            _civ_identity_check(ser, config, time.perf_counter_ns)
-        except TimeoutError as exc:
-            print(f"refusal: identity read timed out: {exc}", file=sys.stderr)
-            return None, EXIT_REFUSED
-        return run_tx_capture(
-            ser=ser,
-            config=config,
-            radio_key=args.radio,
-            baud=args.baud,
-            reps=args.reps,
-        )
+            # identity confirmed live BEFORE any keyed write
+            try:
+                _civ_identity_check(ser, config, time.perf_counter_ns)
+            except TimeoutError as exc:
+                print(f"refusal: identity read timed out: {exc}", file=sys.stderr)
+                return None, EXIT_REFUSED
+            return run_tx_capture(
+                ser=ser,
+                config=config,
+                radio_key=args.radio,
+                baud=args.baud,
+                reps=args.reps,
+            )
+        finally:
+            signal.signal(signal.SIGTERM, previous_sigterm)
     except RefusalError as exc:
         print(f"refusal: {exc}", file=sys.stderr)
         return None, EXIT_REFUSED
@@ -1322,6 +1452,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     summ = sub.add_parser("summarize", help="print the per-radio table for Linear")
     summ.add_argument("files", nargs="+")
+    summ.add_argument(
+        "--timing-toml",
+        action="store_true",
+        help="print a [timing] TOML block per document (median ms) instead "
+        "of the table; PRINT-only, never edits profile TOMLs",
+    )
     return parser
 
 
@@ -1343,7 +1479,10 @@ def main(
         doc, code = _cmd_capture(args, serial_module=serial_module, runner=runner)
     else:
         docs = [json.loads(Path(f).read_text()) for f in args.files]
-        out(summarize_documents(docs))
+        if args.timing_toml:
+            out("\n\n".join(timing_toml_block(doc) for doc in docs))
+        else:
+            out(summarize_documents(docs))
         return EXIT_OK
     if doc is not None:
         out(json.dumps(doc, indent=2))
@@ -1351,13 +1490,8 @@ def main(
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "capture":
-        # Convert SIGTERM into a catchable KeyboardInterrupt so the finally
-        # unkey runs on termination too. Installed only for live captures.
-        import signal
-
-        signal.signal(
-            signal.SIGTERM,
-            lambda _sig, _frame: (_ for _ in ()).throw(KeyboardInterrupt()),
-        )
+    # The SIGTERM -> KeyboardInterrupt conversion for the tx path lives in
+    # _cmd_capture (installed before the first keyed write, restored in
+    # finally) so it also covers main() called from embeddings, not just
+    # this entry point.
     sys.exit(main())

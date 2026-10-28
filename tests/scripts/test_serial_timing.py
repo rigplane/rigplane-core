@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
+import signal
 import subprocess
 import sys
 import time
@@ -121,10 +123,17 @@ def make_ic705_responder(
     *,
     power_raw: int = 0,
     ptt_switch_s: float = 0.01,
+    ptt_off_switch_s: float | None = None,
     reply_delay_s: float = 0.001,
     wrong_identity: bool = False,
 ):
-    """Minimal IC-705 CI-V peer; returns (responder, state)."""
+    """Minimal IC-705 CI-V peer; returns (responder, state).
+
+    ``ptt_off_switch_s`` overrides the read-back delay for the TX->RX
+    switch only (defaults to ``ptt_switch_s``), so tests can give the two
+    directions different read-back latencies.
+    """
+    off_switch_s = ptt_switch_s if ptt_off_switch_s is None else ptt_off_switch_s
     state = {"ptt": False, "switched_at": 0.0}
 
     def reply(command: int, sub: int | None, payload: bytes | None):
@@ -158,7 +167,8 @@ def make_ic705_responder(
                 return [
                     (reply_delay_s, build_civ_frame(CONTROLLER_ADDR, RADIO_ADDR, 0xFB))
                 ]
-            if time.perf_counter() - state["switched_at"] < ptt_switch_s:
+            switch_s = ptt_switch_s if state["ptt"] else off_switch_s
+            if time.perf_counter() - state["switched_at"] < switch_s:
                 # still switching: report the OLD state
                 return reply(0x1C, 0x00, b"\x00" if state["ptt"] else b"\x01")
             return reply(0x1C, 0x00, b"\x01" if state["ptt"] else b"\x00")
@@ -714,3 +724,334 @@ def test_tx_via_main_end_to_end() -> None:
     assert doc["classes"]["tx_on_switch"]["n"] == 1
     assert KEY_ON.hex() in [w.hex() for w in ser.writes]
     assert not ser.opened  # port closed last
+
+
+# ── A. TX safety rework (MOR-3839 review) ────────────────────────────────
+
+
+def _keyed_total_from_notes(notes: list[str]) -> float:
+    note = next(n for n in notes if "total keyed time" in n)
+    match = re.search(r"([0-9]+\.[0-9]+)\s*s", note)
+    assert match is not None, note
+    return float(match.group(1))
+
+
+def test_tx_key_write_without_reply_still_counts_keyed_time() -> None:
+    # The key frame is written and keys the radio, but the ACK never comes:
+    # keyed time must count from BEFORE the write, not from the reply.
+    base_responder, state = make_ic705_responder(ptt_switch_s=0.005)
+
+    def responder(req: bytes):
+        frame = parse_civ_frame(req)
+        if (frame.command, frame.sub) == (0x1C, 0x00) and frame.data == b"\x01":
+            base_responder(req)  # the radio keys...
+            return []  # ...but the ACK is lost on the wire
+        return base_responder(req)
+
+    ser = FakeSerial(responder)
+    config = st.load_profiles()["ic705"]
+    doc, code = st.run_tx_capture(
+        ser=ser,
+        config=config,
+        radio_key="ic705",
+        baud=115200,
+        reps=1,
+        poll_s=0.001,
+        read_offset_s=0.005,
+        watchdog_tick_s=0.001,
+    )
+    assert code == 1  # reply timeout => abort path
+    hex_writes = [w.hex() for w in ser.writes]
+    assert KEY_ON.hex() in hex_writes
+    assert hex_writes.count(KEY_OFF.hex()) >= 1  # emergency unkey sent
+    assert state["ptt"] is False
+    assert _keyed_total_from_notes(doc["notes"]) > 0.0
+
+
+def test_tx_keyed_time_runs_until_rx_readback() -> None:
+    # RX read-back arrives 400 ms after the unkey ACK: the keyed total must
+    # include it (keyed time ends at the read-back, not at the ACK).
+    responder, _state = make_ic705_responder(ptt_switch_s=0.005, ptt_off_switch_s=0.4)
+    ser = FakeSerial(responder)
+    config = st.load_profiles()["ic705"]
+    doc, code = st.run_tx_capture(
+        ser=ser,
+        config=config,
+        radio_key="ic705",
+        baud=115200,
+        reps=1,
+        hold_s=0.01,
+        poll_s=0.002,
+        read_offset_s=0.005,
+        watchdog_tick_s=0.001,
+    )
+    assert code == 0
+    assert _keyed_total_from_notes(doc["notes"]) >= 0.3
+
+
+def test_open_serial_sets_write_timeout() -> None:
+    ser = FakeSerial()
+    st.open_serial_port("/dev/fake", 115200, serial_module=FakeSerialModule(ser))
+    assert ser.write_timeout == 1.0
+
+
+def _no_lsof_runner(*args, **kwargs):
+    raise FileNotFoundError("lsof")
+
+
+def test_capture_tx_refuses_when_lsof_unavailable() -> None:
+    code, printed, ser = _tx_main(
+        ["--tx-armed", "--dummy-load-confirmed", "--reps", "1"],
+        runner=_no_lsof_runner,
+    )
+    assert code == 2  # fail closed
+    assert printed == []
+    assert ser.writes == []
+    assert not ser.opened
+
+
+def test_capture_rx_keeps_only_a_note_when_lsof_unavailable() -> None:
+    responder, _state = make_ic705_responder()
+    printed: list[str] = []
+    code = st.main(
+        [
+            "capture",
+            "rx",
+            "--radio",
+            "ic705",
+            "--port",
+            "/dev/x",
+            "--baud",
+            "115200",
+            "--n",
+            "1",
+        ],
+        serial_module=FakeSerialModule(FakeSerial(responder)),
+        runner=_no_lsof_runner,
+        out=printed.append,
+    )
+    assert code == 0  # rx never keys: note, not refusal
+    assert json.loads(printed[0])["schema"] == "rigplane-serial-timing/1"
+
+
+def test_tx_sigterm_during_keyed_write_aborts_and_restores_handler() -> None:
+    previous = signal.getsignal(signal.SIGTERM)
+    base_responder, state = make_ic705_responder(ptt_switch_s=0.005)
+
+    def responder(req: bytes):
+        frame = parse_civ_frame(req)
+        if (frame.command, frame.sub) == (0x1C, 0x00) and frame.data == b"\x01":
+            handler = signal.getsignal(signal.SIGTERM)
+            # installed by _cmd_capture before the first keyed write
+            assert callable(handler) and handler is not previous
+            base_responder(req)  # the radio keys
+            handler(signal.SIGTERM, None)  # deliver SIGTERM the way the OS would
+        return base_responder(req)
+
+    ser = FakeSerial(responder)
+    printed: list[str] = []
+    code = st.main(
+        [
+            "capture",
+            "tx",
+            "--radio",
+            "ic705",
+            "--port",
+            "/dev/x",
+            "--baud",
+            "115200",
+            "--tx-armed",
+            "--dummy-load-confirmed",
+            "--reps",
+            "1",
+        ],
+        serial_module=FakeSerialModule(ser),
+        runner=_free_port_runner,
+        out=printed.append,
+    )
+    assert code == 1
+    doc = json.loads(printed[0])
+    assert any("KeyboardInterrupt" in note for note in doc["notes"])
+    hex_writes = [w.hex() for w in ser.writes]
+    assert hex_writes.count(KEY_OFF.hex()) >= 1  # emergency unkey sent
+    assert state["ptt"] is False
+    assert signal.getsignal(signal.SIGTERM) is previous  # restored in finally
+
+
+def test_tx_records_final_power_readback() -> None:
+    responder, _state = make_ic705_responder(power_raw=0)
+    ser = FakeSerial(responder)
+    config = st.load_profiles()["ic705"]
+    doc, code = st.run_tx_capture(
+        ser=ser,
+        config=config,
+        radio_key="ic705",
+        baud=115200,
+        reps=1,
+        hold_s=0.01,
+        poll_s=0.001,
+        read_offset_s=0.005,
+        watchdog_tick_s=0.001,
+    )
+    assert code == 0
+    assert any("final RF power raw 0" in note for note in doc["notes"])
+
+
+def test_tx_fails_document_when_power_changed() -> None:
+    base_responder, _state = make_ic705_responder(power_raw=0)
+    power_reads = {"n": 0}
+
+    def responder(req: bytes):
+        frame = parse_civ_frame(req)
+        if (frame.command, frame.sub) == (0x14, 0x0A):
+            power_reads["n"] += 1
+            if power_reads["n"] > 1:  # the re-read after the last rep
+                return [
+                    (
+                        0.001,
+                        build_civ_frame(
+                            CONTROLLER_ADDR,
+                            RADIO_ADDR,
+                            0x14,
+                            sub=0x0A,
+                            data=bytes([0x00, 0x05]),  # raw 5, was 0
+                        ),
+                    )
+                ]
+        return base_responder(req)
+
+    ser = FakeSerial(responder)
+    config = st.load_profiles()["ic705"]
+    doc, code = st.run_tx_capture(
+        ser=ser,
+        config=config,
+        radio_key="ic705",
+        baud=115200,
+        reps=1,
+        hold_s=0.01,
+        poll_s=0.001,
+        read_offset_s=0.005,
+        watchdog_tick_s=0.001,
+    )
+    assert code == 1  # document failed
+    assert any("final RF power raw 5" in note for note in doc["notes"])
+    assert any("power changed" in note.lower() for note in doc["notes"])
+
+
+# ── B. SerialCivRecorder JSONL input ───────────────────────────────────────
+
+
+def test_from_recordings_accepts_serial_recorder_jsonl(tmp_path) -> None:
+    fixture_dir = tmp_path / "ic705"
+    fixture_dir.mkdir()
+    fixture = fixture_dir / "recorder.jsonl"
+    request = _req(0x03)
+    reply = _rep(0x03, data=bytes.fromhex("0040071400"))
+    rows = [
+        # the request frame split across two chunks
+        {"t": 1.000, "dir": "c2r", "port": "serial", "hex": request[:3].hex()},
+        {"t": 1.001, "dir": "c2r", "port": "serial", "hex": request[3:].hex()},
+        {"t": 1.009, "dir": "r2c", "port": "serial", "hex": reply.hex()},
+    ]
+    fixture.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    printed: list[str] = []
+    code = st.main(["from-recordings", "--fixture", str(fixture)], out=printed.append)
+    assert code == 0
+    doc = json.loads(printed[0])
+    assert doc["protocol"] == "civ"
+    # the split frame carries the t of the chunk that completed it (1.001)
+    assert doc["classes"]["read"]["samples_ms"] == [pytest.approx(8.0)]
+    assert doc["classes"]["read"]["n"] == 1
+
+
+# ── C. summarize --timing-toml ────────────────────────────────────────────
+
+
+def test_timing_toml_mapping_constant() -> None:
+    assert [key for key, _sources in st.TIMING_TOML_MAPPING] == [
+        "reply_latency_ms",
+        "ack_ms_set",
+        "ptt_set_ack_ms",
+        "write_drain_ms",
+        "tx_on_switch_ms",
+        "tx_off_switch_ms",
+        "readback_ms",
+    ]
+    assert dict(st.TIMING_TOML_MAPPING) == {
+        "reply_latency_ms": ("ack_read",),
+        "ack_ms_set": ("ack_set",),
+        "ptt_set_ack_ms": ("ptt_set_ack_on", "ptt_set_ack_off"),
+        "write_drain_ms": ("write_drain",),
+        "tx_on_switch_ms": ("tx_on_switch",),
+        "tx_off_switch_ms": ("tx_off_switch",),
+        "readback_ms": ("ptt_read_idle",),
+    }
+
+
+def _timing_doc(samples: dict[str, list[float]]) -> dict[str, object]:
+    return st.build_document(
+        radio_id="ic705",
+        protocol="civ",
+        port_kind="serial",
+        baud=115200,
+        samples=samples,
+        notes=[],
+        host="h",
+        generated_at="g",
+        git_sha="s",
+    )
+
+
+def test_timing_toml_block_values() -> None:
+    doc = _timing_doc(
+        {
+            "ack_read": [10.0, 12.0, 14.0],
+            "ack_set": [20.0],
+            "ptt_set_ack_on": [30.0],
+            "ptt_set_ack_off": [40.0, 50.0],
+            "write_drain": [1.0, 3.0],
+            "tx_on_switch": [100.0],
+            "tx_off_switch": [200.0],
+            "ptt_read_idle": [5.0],
+        }
+    )
+    block = st.timing_toml_block(doc)
+    assert "[timing]" in block.splitlines()
+    assignments = dict(
+        line.split(" = ") for line in block.splitlines() if " = " in line
+    )
+    assert assignments == {
+        "reply_latency_ms": "12.0",
+        "ack_ms_set": "20.0",
+        "ptt_set_ack_ms": "40.0",  # median of the on+off samples together
+        "write_drain_ms": "2.0",
+        "tx_on_switch_ms": "100.0",
+        "tx_off_switch_ms": "200.0",
+        "readback_ms": "5.0",
+    }
+
+
+def test_timing_toml_block_omits_classes_without_samples() -> None:
+    block = st.timing_toml_block(_timing_doc({"ack_read": [7.0]}))
+    assert "reply_latency_ms = 7.0" in block
+    for key in (
+        "ack_ms_set",
+        "ptt_set_ack_ms",
+        "write_drain_ms",
+        "tx_on_switch_ms",
+        "tx_off_switch_ms",
+        "readback_ms",
+    ):
+        assert key not in block
+
+
+def test_main_summarize_timing_toml(tmp_path, capsys) -> None:
+    doc = _timing_doc({"ack_read": [7.0], "tx_on_switch": [100.0]})
+    path = tmp_path / "doc.json"
+    path.write_text(json.dumps(doc))
+    assert st.main(["summarize", "--timing-toml", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "[timing]" in out
+    assert "reply_latency_ms = 7.0" in out
+    assert "tx_on_switch_ms = 100.0" in out
+    assert "ack_ms_set" not in out
