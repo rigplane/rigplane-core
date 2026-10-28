@@ -23,7 +23,7 @@ from rigplane.runtime.managed_tx_state import (
     ActuationResult,
     EffectToken,
 )
-from rigplane.runtime.radio import IcomRadio
+from rigplane.runtime.radio import CoreRadio, IcomRadio
 from test_icom7610_serial_radio import _FakeSerialCivLink
 from test_serial_civ_link import _FakeWriter, _cleanup_writes, _make_link
 
@@ -167,13 +167,14 @@ async def test_force_receive_settles_on_the_radio_answer(
         await radio.disconnect()
 
     assert result is expected
-    # MOR-3071: connect() gates CONNECTED on the identity read (19 00)
-    # first, so it is pinned here ahead of the unkey traffic; the
-    # force-receive itself is still exactly one 1C 00 00 frame.
     assert sent == [
         bytes(radio._commands.get_transceiver_id(to_addr=radio._radio_addr)),
         bytes(radio._commands.ptt_off(to_addr=radio._radio_addr)),
-    ]
+    ] + (
+        [build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x1C, sub=0)]
+        if answer is None
+        else []
+    )
 
 
 async def _force_receive(radio: IcomRadio) -> ActuationResult:
@@ -189,12 +190,13 @@ async def test_a_late_answer_to_a_timed_out_unkey_does_not_settle_the_next() -> 
     again."""
     link = _FakeSerialCivLink(ptt_off_answer=None)
     radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
-    radio._civ_get_timeout = 0.2
+    radio._civ_get_timeout = 0.5
     await radio.connect()
     try:
         results = [await _force_receive(radio)]
         link.queue_response_on_send(
-            2, build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0xFB)
+            len(link.sent_frames) + 1,
+            build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0xFB),
         )
         results.append(await _force_receive(radio))
         await asyncio.sleep(radio._civ_get_timeout)
@@ -224,6 +226,7 @@ async def test_an_unkey_after_a_dropped_write_sink_stays_uncertain() -> None:
             wait_response=False,
         )
         result = await _force_receive(radio)
+        assert parse_civ_frame(link.sent_frames[-1]).data == b""
     finally:
         await radio.disconnect()
 
@@ -419,3 +422,351 @@ async def test_serial_writer_rechecks_managed_currency(
         assert link.ready and link._write_queue.empty()
     finally:
         await _cleanup_writes(link, [on] if on else [], writer)
+
+
+@pytest.fixture(params=["lan", "7610-serial", "7300-serial"])
+async def release_radio(request, monkeypatch):
+    from _perf_helpers import fast_connect
+    from rigplane.backends.ic7300 import Ic7300SerialRadio
+    from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
+    from rigplane_testkit.icom import MockIcomRadio
+    from rigplane_testkit.serial import CivSerialFake
+    from tx_observation_fakes import civ_transmit_state_reply
+
+    script = {"read": "rx", "off": "drop-ack", "reads": 0, "offs": 0}
+    read_sent = asyncio.Event()
+
+    def answer(frame, original):
+        if frame.command == 0x1C and frame.sub == 0:
+            if frame.data == b"\x00":
+                script["offs"] += 1
+                if script["off"] == "nak":
+                    return build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0xFA)
+                return original if script["off"] == "ack" else None
+            if not frame.data:
+                script["reads"] += 1
+                read_sent.set()
+                return civ_transmit_state_reply(script["read"], radio._radio_addr)
+        return original
+
+    sim = None
+    if request.param == "lan":
+        sim = MockIcomRadio(stateful_ptt=True, unsolicited_civ=False)
+        await sim.start()
+        radio = IcomRadio(
+            "127.0.0.1",
+            port=sim.control_port,
+            username="testuser",
+            password="testpass",
+            model="IC-7610",
+        )
+        with fast_connect():
+            await radio.connect()
+        dispatch = sim._dispatch_civ
+
+        def lan(cmd, payload, from_addr):
+            raw = build_civ_frame(sim._radio_addr, from_addr, cmd, data=payload)
+            frame = parse_civ_frame(raw)
+            original = (
+                None
+                if script["off"] == "lost" and frame.data == b"\x00" and cmd == 0x1C
+                else dispatch(cmd, payload, from_addr)
+            )
+            return answer(frame, original)
+
+        monkeypatch.setattr(sim, "_dispatch_civ", lan)
+    else:
+        model = "IC-7610" if request.param == "7610-serial" else "IC-7300"
+        fake = CivSerialFake(model=model)
+        link = SerialCivLink(
+            device="/dev/fake", open_serial_connection=fake.open_serial_connection
+        )
+        cls = Icom7610SerialRadio if model == "IC-7610" else Ic7300SerialRadio
+        radio = cls(
+            device="/dev/fake", civ_link=link, _enumerate_serial_ports_fn=lambda: []
+        )
+        await radio.connect()
+        dispatch = fake._answer
+
+        def serial(frame, conn, raw):
+            original = (
+                None
+                if script["off"] == "lost"
+                and frame.command == 0x1C
+                and frame.data == b"\x00"
+                else dispatch(frame, conn, raw)
+            )
+            return answer(frame, original)
+
+        monkeypatch.setattr(fake, "_answer", serial)
+    script["ptt"] = (lambda: sim.ptt_on) if sim is not None else (lambda: fake.ptt)
+    radio._civ_get_timeout = 0.03
+    monkeypatch.setattr(CoreRadio, "_PTT_READBACK_SETTLE_S", 0.001)
+    radio._civ_min_interval = radio._civ_ack_sink_grace = 0
+    radio._civ_runtime._ptt_ledger = None
+    assert radio.connected
+    runtime = radio._civ_runtime
+    raw = build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x1C, sub=0)
+
+    async def inject(shape="rx"):
+        frame = parse_civ_frame(civ_transmit_state_reply(shape, radio._radio_addr))
+        await runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+        return frame
+
+    async def start_read(wait_response=False):
+        read_sent.clear()
+        pending = asyncio.create_task(
+            runtime.execute_civ_raw(raw, wait_response=wait_response)
+        )
+        await asyncio.wait_for(read_sent.wait(), 1)
+        return pending, runtime._ptt_reply_ledger._owed[-1]
+
+    async def replay(packet):
+        radio._civ_transport._packet_queue.put_nowait(packet)
+        # A normal answer wakes a serial pump already awaiting its link reader.
+        await runtime.execute_civ_raw(
+            build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x03),
+            wait_response=False,
+        )
+
+    try:
+        yield radio, script, read_sent, replay, inject, start_read
+    finally:
+        with fast_connect():
+            await radio.disconnect()
+        if sim is not None:
+            await sim.stop()
+
+
+@pytest.mark.parametrize(
+    "case,prior,answer,expected",
+    [
+        ("A1a-silent", "silence", "rx", "uncertain"),
+        ("A1b-beyond-L", "expired", "stale", "accepted"),
+        ("A2-malformed", "unmapped", "rx", "uncertain"),
+        ("A2-broadcast", "broadcast", "rx", "uncertain"),
+        ("A3a-owed", "silence", "rx", "uncertain"),
+        ("A3b-twin", "cached", "twin", "uncertain"),
+        ("A3c-after-Q", "cached", "twin", "uncertain"),
+        ("A4-sink", "sink", "rx", "uncertain"),
+        ("A5-nak", "refusal", "rx", "uncertain"),
+        ("A6-rx", None, "rx", "accepted"),
+        ("A6-tx", None, "tx_cat", "uncertain"),
+        ("A7-second-emission", None, "rx", "accepted"),
+        ("A8-orphan", "orphan", "rx", "uncertain"),
+        ("A9-generation", "generation", "rx", "uncertain"),
+        ("A10-fb", None, "ack", "uncertain"),
+        ("A10-fa", None, "refusal", "uncertain"),
+        ("E0-single-reply-limit", None, "foreign", "accepted"),
+        ("E-in-code-predispatch", "orphan", "rx", "uncertain"),
+        ("E-in-code-settle-read", None, "settle", "uncertain"),
+        ("E-in-code-settle-release", None, "settle", "uncertain"),
+        ("FIFO-LAN-benign", None, "concurrent", "accepted"),
+        ("new-header", None, "re-emitted", "accepted"),
+        ("B-malformed", None, "unmapped", "uncertain"),
+        ("B-broadcast", None, "broadcast", "uncertain"),
+        ("clean-fb", None, "rx", "accepted"),
+        ("clean-fa", None, "rx", "rejected"),
+        ("ambiguous-fa", None, "rx", "accepted"),
+        ("unsupported-read", None, "rx", "uncertain"),
+    ],
+)
+async def test_two_read_release_matrix(
+    release_radio, monkeypatch, case, prior, answer, expected
+):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from _helpers import wrap_civ_in_udp
+    from tx_observation_fakes import civ_transmit_state_reply
+    from rigplane.core.civ import PttReplyLedger
+    from rigplane.core.exceptions import CommandRejectedError, TimeoutError
+    from rigplane.runtime import radio as radio_module
+
+    radio, script, read_sent, replay, inject, start_read = release_radio
+    runtime = radio._civ_runtime
+    clock = [0.0]
+    runtime._ptt_ledger = ledger = PttReplyLedger(
+        clock=lambda: clock[0], answer_window=2
+    )
+
+    blocked = prior not in (None, "expired", "cached")
+    script["read"] = "silence"
+    if prior not in (None, "orphan"):
+        waiter = prior in ("unmapped", "broadcast", "refusal", "silence", "cached")
+        pending, a = await start_read(waiter)
+        if prior in ("unmapped", "broadcast", "refusal"):
+            await inject(prior)
+        if prior in ("refusal", "silence"):
+            with pytest.raises(
+                CommandRejectedError if prior == "refusal" else TimeoutError
+            ):
+                await pending
+        elif prior != "cached":
+            await pending
+        assert (
+            ledger._owed[0] is a and a.answered_by is None and ledger.orphan_count == 0
+        )
+        if prior == "sink":
+            radio._civ_request_tracker.drop_ack_sinks()
+        if prior == "generation":
+            runtime.advance_generation("test replacement")
+    if prior == "orphan":
+        await inject()
+    if prior == "expired":
+        assert script["ptt"]() is False
+        clock[0] = ledger.lifetime + 0.001
+    if answer == "re-emitted" or case.startswith("A6-"):
+        script["read"] = "rx"
+        assert (await radio.read_transmit_state()).value is False
+        assert ledger.eligible() and ledger.orphan_count == 0
+    if answer in ("stale", "re-emitted"):
+        radio._civ_request_tracker.drop_ack_sinks()
+        await radio.actuate(
+            _token(), ActuationOperation.PTT_ON, is_current=lambda: True
+        )
+        async with asyncio.timeout(1):
+            while radio._civ_request_tracker.ack_sink_count:
+                await asyncio.sleep(0)
+        script["off"] = "lost"
+    if case in ("clean-fb", "clean-fa", "ambiguous-fa"):
+        script["off"] = "ack" if case == "clean-fb" else "nak"
+        if case == "ambiguous-fa":
+            radio._civ_request_tracker.note_ack_unclaimed()
+    if case == "unsupported-read":
+        radio._profile = replace(radio._profile, command_names=frozenset())
+    held = answer in (
+        "stale",
+        "re-emitted",
+        "foreign",
+        "concurrent",
+        "twin",
+        "ack",
+        "refusal",
+    )
+    script["read"] = "silence" if held else "rx" if answer == "settle" else answer
+    if prior == "cached":
+        packet = wrap_civ_in_udp(
+            civ_transmit_state_reply("rx", radio._radio_addr), seq=0
+        )
+        await replay(packet)
+        assert await pending is a.answered_by
+        assert ledger.eligible() and ledger.orphan_count == 0
+        if case == "A3c-after-Q":
+            runtime._ptt_reply_packets[packet] -= 2.1
+    read_sent.clear()
+    before = script["reads"]
+    settling, resume = asyncio.Event(), asyncio.Event()
+
+    async def sleep(delay):
+        if (
+            asyncio.current_task() is task
+            and delay == radio._PTT_READBACK_SETTLE_S
+            and answer == "settle"
+        ):
+            settling.set()
+            await resume.wait()
+        else:
+            await asyncio.sleep(delay)
+
+    monkeypatch.setattr(
+        radio_module, "asyncio", SimpleNamespace(**(vars(asyncio) | {"sleep": sleep}))
+    )
+    task = asyncio.create_task(
+        radio.read_transmit_state()
+        if case.endswith("settle-read")
+        else _force_receive(radio)
+    )
+    try:
+        if answer == "settle":
+            await asyncio.wait_for(settling.wait(), 1)
+            await inject()
+            resume.set()
+        if held:
+            await asyncio.wait_for(read_sent.wait(), 1)
+            if answer == "concurrent":
+                pending, c = await start_read()
+                await pending
+                b = ledger._owed[0]
+                assert await inject() is b.answered_by and c.answered_by is None
+            elif answer == "twin":
+                await replay(packet)
+            elif answer == "re-emitted":
+                await replay(
+                    wrap_civ_in_udp(
+                        civ_transmit_state_reply("rx", radio._radio_addr), seq=321
+                    )
+                )
+            else:
+                await inject(answer if answer in ("ack", "refusal") else "rx")
+        result = await asyncio.wait_for(task, 1)
+        if case.endswith("settle-read"):
+            assert result.value is None and result.failure == "unverifiable-provenance"
+        else:
+            assert result is ActuationResult(expected)
+        if answer == "settle":
+            assert (await radio.read_transmit_state()).failure == "not-quiescent"
+        no_read = blocked or case in ("clean-fb", "clean-fa", "unsupported-read")
+        assert script["reads"] - before == (
+            0 if no_read else 1 + (answer == "concurrent")
+        )
+        if answer in ("stale", "re-emitted"):
+            assert script["ptt"]() is True
+        if blocked and prior != "orphan":
+            assert ledger._owed[0] is a and a.answered_by is None
+            assert await inject() is a.answered_by
+            assert ledger.owed_count == ledger.orphan_count == 0
+        if case == "A7-second-emission":
+            await inject()
+            assert not runtime._ptt_reply_ledger.eligible()
+        if not case.endswith("settle-read"):
+            assert script["offs"] > 0
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_normal_polling_confirms_on_first_eligible_retry(
+    release_radio, monkeypatch
+):
+    from rigplane.runtime._civ_rx import _PttReadContext
+
+    radio, script, _, _, inject, start_read = release_radio
+    runtime = radio._civ_runtime
+    confirmations = []
+    note_dispatch = runtime._note_ptt_dispatch
+
+    def observe(frame, is_current=None):
+        note_dispatch(frame, is_current)
+        if isinstance(is_current, _PttReadContext):
+            confirmations.append(is_current.entry)
+
+    monkeypatch.setattr(runtime, "_note_ptt_dispatch", observe)
+    raw = build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x1C, sub=0)
+    script["read"] = "silence"
+    pending, a = await start_read()
+    await pending
+    assert await _force_receive(radio) is ActuationResult.UNCERTAIN
+    assert not confirmations
+    assert await inject() is a.answered_by
+    script["read"] = "rx"
+
+    async def polling():
+        while True:
+            await runtime.execute_civ_raw(raw, wait_response=False)
+            await asyncio.sleep(0.02)
+
+    poller = asyncio.create_task(polling())
+    await asyncio.sleep(0)
+    try:
+        async with asyncio.timeout(1):
+            while True:
+                result = await _force_receive(radio)
+                if confirmations:
+                    assert result is ActuationResult.ACCEPTED
+                    assert confirmations[0].answered_by.data == b"\x00"
+                    break
+                assert result is ActuationResult.UNCERTAIN
+        assert script["reads"] >= 3
+    finally:
+        poller.cancel()
+        await asyncio.gather(poller, return_exceptions=True)
