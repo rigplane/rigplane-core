@@ -45,6 +45,7 @@ class ManagedTxActuator(Protocol):
 class _Outcome:
     result: ActuationResult
     error: str | None
+    timed_out: bool = False
 
 
 @dataclass(slots=True)
@@ -57,6 +58,7 @@ class _Claim:
     driver: asyncio.Task[None] | None = None
     provider: asyncio.Task[ActuationResult] | None = None
     started: bool = False
+    poisoned: bool = False
     isolation: tuple[asyncio.Task[None], ...] = ()
 
 
@@ -78,8 +80,10 @@ class ManagedTxEffectLane:
         self._claims: dict[_ClaimKey, _Claim] = {}
         self._slots: dict[_Slot, tuple[EffectToken, _Operation]] = {}
         self._scope = (-1, -1)
+        self._latest_on_epoch = 0
         self._release_token: EffectToken | None = None
         self._isolation: tuple[int, asyncio.Task[None], bool] | None = None
+        self._displaced: dict[asyncio.Task[None], _Claim] = {}
 
     async def settle(
         self,
@@ -135,6 +139,13 @@ class ManagedTxEffectLane:
         is_current: Callable[[], bool] | None,
     ) -> _Claim | None:
         async with self._lock:
+            if is_current is not None and not is_current():
+                return None
+            if (
+                operation is ActuationOperation.FORCE_RECEIVE
+                and token.effect_epoch < self._latest_on_epoch
+            ):
+                return None
             scope = (token.provider_generation, token.effect_epoch)
             stale_release = (
                 scope < self._scope and operation is ActuationOperation.FORCE_RECEIVE
@@ -164,6 +175,8 @@ class ManagedTxEffectLane:
                 ):
                     return None
                 self._slots[slot] = (token, operation)
+            if operation in _ON_OPERATIONS:
+                self._latest_on_epoch = max(self._latest_on_epoch, token.effect_epoch)
             loop = asyncio.get_running_loop()
             claim = _Claim(token, operation, deadline, loop.create_future(), is_current)
             self._claims[(token, operation)] = claim
@@ -173,6 +186,7 @@ class ManagedTxEffectLane:
                     for active in self._claims.values()
                     if active is not claim and active.operation in _ON_OPERATIONS
                 )
+                claim.isolation = tuple(self._displaced)
                 for active in active_ons:
                     if barrier := self._displace_locked(active):
                         claim.isolation += (barrier,)
@@ -218,14 +232,35 @@ class ManagedTxEffectLane:
                 _Outcome(ActuationResult.REJECTED, "deadline expired before dispatch"),
             )
             return
+        repeat = any(not task.done() for task in claim.isolation)
+        outcome = await self._actuate(claim)
         if claim.isolation:
             error = await self._await_isolation(claim.isolation, claim.deadline)
             if error is not None:
-                await self._finish(claim, _Outcome(ActuationResult.UNCERTAIN, error))
-                return
+                async with self._lock:
+                    for task in claim.isolation:
+                        if (
+                            (displaced := self._displaced.get(task)) is not None
+                            and not task.done()
+                            and not displaced.poisoned
+                            and displaced.provider is not None
+                            and not displaced.provider.done()
+                        ):
+                            self._isolate_locked(displaced)
+            if repeat:
+                outcome = await self._actuate(claim)
+            if error is not None:
+                outcome = _Outcome(ActuationResult.UNCERTAIN, error)
+        await self._finish(
+            claim,
+            outcome,
+            poison=claim.operation in _ON_OPERATIONS and outcome.timed_out,
+        )
+
+    async def _actuate(self, claim: _Claim) -> _Outcome:
         async with self._lock:
-            if claim.result.done():
-                return
+            if not self._is_current(claim):
+                return _Outcome(ActuationResult.REJECTED, "stale before dispatch")
             claim.started = True
             claim.provider = asyncio.create_task(
                 self._actuator.actuate(
@@ -241,33 +276,23 @@ class ManagedTxEffectLane:
         if not done:
             provider.cancel()
             provider.add_done_callback(self._harvest)
-            await self._finish(
-                claim,
-                _Outcome(ActuationResult.UNCERTAIN, "attempt deadline expired"),
-                poison=claim.operation in _ON_OPERATIONS,
-            )
-            return
+            return _Outcome(ActuationResult.UNCERTAIN, "attempt deadline expired", True)
         try:
             result = provider.result()
             if not isinstance(result, ActuationResult):
                 raise TypeError("actuator returned a non-normalized result")
         except BaseException as error:
-            await self._finish(
-                claim,
-                _Outcome(ActuationResult.UNCERTAIN, _error_text(error)),
-            )
-            return
-        await self._finish(
-            claim,
-            _Outcome(
-                result,
-                None if result is ActuationResult.ACCEPTED else result.value,
-            ),
+            return _Outcome(ActuationResult.UNCERTAIN, _error_text(error))
+        return _Outcome(
+            result,
+            None if result is ActuationResult.ACCEPTED else result.value,
         )
 
     def _is_current(self, claim: _Claim) -> bool:
         if claim.operation is ActuationOperation.FORCE_RECEIVE:
-            return claim.is_current is None or claim.is_current()
+            return claim.token.effect_epoch >= self._latest_on_epoch and (
+                claim.is_current is None or claim.is_current()
+            )
         return (
             self._claims.get((claim.token, claim.operation)) is claim
             and not claim.result.done()
@@ -329,6 +354,11 @@ class ManagedTxEffectLane:
         self, claim: _Claim, *, poison: bool = True
     ) -> asyncio.Task[None]:
         provider_generation = claim.token.provider_generation
+        if poison:
+            claim.poisoned = True
+            for displaced in self._displaced.values():
+                if displaced.token.provider_generation == provider_generation:
+                    displaced.poisoned = True
         if (
             poison
             and self._poison_generation is not None
@@ -342,6 +372,9 @@ class ManagedTxEffectLane:
             self._isolate_provider(claim, previous, poison=poison)
         )
         task.add_done_callback(self._harvest)
+        if not poison:
+            self._displaced[task] = claim
+            task.add_done_callback(self._displaced.pop)
         self._isolation = (provider_generation, task, poison)
         return task
 

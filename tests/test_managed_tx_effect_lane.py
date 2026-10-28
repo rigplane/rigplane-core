@@ -188,6 +188,7 @@ async def test_started_timeout_is_uncertain_and_poisons_generation_once() -> Non
     "failure",
     [
         ConnectionError("provider disconnected"),
+        ConnectionError("attempt deadline expired"),
         asyncio.CancelledError(),
         ActuationResult.UNCERTAIN,
     ],
@@ -225,12 +226,16 @@ async def test_force_receive_cancels_and_joins_inflight_on_without_poison() -> N
     displaced = await asyncio.wait_for(on_task, 0.2)
     await asyncio.wait_for(cancelled.wait(), 0.2)
     assert not forced_task.done()
-    assert actuator.calls == [(effect().token, ActuationOperation.PTT_ON)]
+    async with asyncio.timeout(0.2):
+        while len(actuator.calls) < 2:
+            await asyncio.sleep(0)
+    assert actuator.calls[-1] == (force.token, ActuationOperation.FORCE_RECEIVE)
     release.set()
     forced = await asyncio.wait_for(forced_task, 0.2)
     assert forced.result is ActuationResult.ACCEPTED
     assert displaced.result is ActuationResult.UNCERTAIN
     assert displaced.error == "superseded after dispatch"
+    assert actuator.calls[-2:] == [(force.token, force.operation)] * 2
     await asyncio.sleep(0)
     assert poisoned == []
 
@@ -282,8 +287,8 @@ async def test_force_receive_awaits_isolation_and_maps_failure(mode: str) -> Non
         )
         await asyncio.wait_for(isolation_started.wait(), 0.2)
         if mode == "success":
-            await asyncio.sleep(0)
-            assert not force.done() and not off_started.is_set()
+            await asyncio.wait_for(off_started.wait(), 0.2)
+            assert not force.done()
             on_release.set()
             isolated.set()
         forced = await asyncio.wait_for(force, 0.2)
@@ -548,3 +553,6 @@ async def test_new_epoch_does_not_cancel_or_stale_running_unkey() -> None:
     assert all(item.result is ActuationResult.ACCEPTED for item in results)
     late = effect(ActuationOperation.FORCE_RECEIVE, epoch=2, attempt="late")
     assert (await settle(lane, late)).result is ActuationResult.ACCEPTED
+    await settle(lane, effect(epoch=5, attempt="new-on"))
+    assert not guard() and not actuator.guards[-2]()
+    assert await settle(lane, late) is None

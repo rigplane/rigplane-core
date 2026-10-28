@@ -220,6 +220,7 @@ class ManagedTxAuthority:
         # both); unkeying, settlement, scheduler and shutdown never take it.
         self._outside_tx_lock = asyncio.Lock()
         self._state = ManagedTxState()
+        self._latest_on_epoch = 0
         self._change_listeners: set[ManagedTxChangeListener] = set()
         self._provider_generation = provider_generation
         self._generation_high_water = (
@@ -685,9 +686,13 @@ class ManagedTxAuthority:
         self, token: EffectToken, operation: ActuationOperation | AbortOperation
     ) -> bool:
         if operation is ActuationOperation.FORCE_RECEIVE:
-            return not (self._closing or self._closed or self._terminated) and not (
-                self._shutdown_termination is not None
-                and self._shutdown_termination.is_set()
+            return (
+                token.effect_epoch >= self._latest_on_epoch
+                and not (self._closing or self._closed or self._terminated)
+                and not (
+                    self._shutdown_termination is not None
+                    and self._shutdown_termination.is_set()
+                )
             )
         pending = self._state.pending_effect
         if isinstance(operation, AbortOperation):
@@ -1194,6 +1199,7 @@ class ManagedTxAuthority:
         if self._state.intent.kind is not ManagedTxIntentKind.TRANSMIT:
             self._transmit_owner = None
         if was_clean and self._state.intent.kind is not ManagedTxIntentKind.RX:
+            self._latest_on_epoch = self._state.effect_epoch
             self._keyed_at = self._clock()  # MOR-3537: Core keys
             self._verify_since = self._verify_due = None
             self._verify_count = 0

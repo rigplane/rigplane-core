@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Final, TypedDict
+from typing import Final, NotRequired, TypedDict
 
 WEB_API_CONTRACT_VERSION: Final[int] = 1
 
@@ -23,6 +23,7 @@ class WebSocketRoute(TypedDict):
 
 class ResponseFieldContract(TypedDict):
     required: tuple[str, ...]
+    result_values: NotRequired[tuple[str, ...]]
 
 
 STABLE_HTTP_ENDPOINTS: Final[tuple[HttpEndpoint, ...]] = (

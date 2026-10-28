@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import logging
-import sys
 import time
 from collections.abc import Callable
-from pathlib import Path
 
 import pytest
 
@@ -13,19 +10,17 @@ from rigplane.backends.ic705 import Ic705SerialRadio
 from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
 from rigplane.core.state_store import StateStore
 from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.runtime.managed_tx_authority import ManagedTxAuthority, RadioTxOrigin
+from rigplane.runtime.managed_tx_authority import RadioTxOrigin
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
 )
-from rigplane.runtime.managed_tx_config import ManagedTxTotConfigStore
-from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
-from rigplane.runtime.managed_tx_fence import TxAbortFence
 from rigplane.runtime.managed_tx_state import (
     ActuationOperation,
     ActuationResult,
     ManagedTxIntentKind,
 )
+from rigplane.web.api_contract import RESPONSE_FIELD_CONTRACTS
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import attach_managed_tx_composition
 from integration.test_tx_under_fault_matrix import (
@@ -61,47 +56,31 @@ def _clean(authority):
 
 async def _command(web, operation, result="accepted"):
     status, body = await _http_json(web.port, "POST", _PATH, {"operation": operation})
-    assert (status, body) == (
-        202,
-        {"ok": True, "operation": operation, "result": result},
-    )
+    assert status == 202 and body == dict(ok=True, operation=operation, result=result)
 
 
 class _SecondOnGate:
     def __init__(self, radio, lane, monkeypatch, prewire=False):
         self.prewire, self.radio, self.transport = prewire, radio, radio._civ_transport
-        self.claim = None
+        self.claim = self.delivery = None
         self.running_at_entry = False
         self.entered, self.submitted, self.release, self.delivered, self.before_wire = (
             asyncio.Event() for _ in range(5)
         )
         self.frames = []
-        self.delivery = None
         self.received = self.submissions = 0
         original_send = radio._civ_transport.send_tracked
 
         async def send_tracked(data, **kwargs):
             frame = data[data.find(b"\xfe\xfe") :]
-            second = False
-            if frame[4:] == _ON:
-                self.submissions += 1
-                second = self.submissions == 2
-                if second:
-                    self.claim = next(
-                        (
-                            claim
-                            for claim in lane._claims.values()
-                            if claim.operation is ActuationOperation.TRANSMIT_ON
-                            and claim.started
-                            and claim.provider is not None
-                            and not claim.provider.done()
-                        ),
-                        None,
-                    )
-                    self.running_at_entry = self.claim is not None
-                    if self.prewire:
-                        self.before_wire.set()
-                        await self.release.wait()
+            self.submissions += frame[4:] == _ON
+            second = frame[4:] == _ON and self.submissions == 2
+            if second:
+                self.claim = lane._claims[lane._slots["on"]]
+                self.running_at_entry = not self.claim.provider.done()
+                if self.prewire:
+                    self.before_wire.set()
+                    await self.release.wait()
             await original_send(data, **kwargs)
             if second:
                 self.submitted.set()
@@ -110,51 +89,29 @@ class _SecondOnGate:
         monkeypatch.setattr(radio._civ_transport, "send_tracked", send_tracked)
 
     def receive(self, frame, deliver):
-        ptt = frame[4:] in (_ON, _OFF)
-        if ptt:
-            self.frames.append((time.monotonic(), "ingress", frame[4:]))
-        if frame[4:] == _ON:
-            self.received += 1
-            if self.received == 2:
-                self.entered.set()
+        if frame[4:] in (_ON, _OFF):
+            self.frames.append(frame[4:])
+        self.received += frame[4:] == _ON
+        if frame[4:] == _ON and self.received == 2:
+            self.entered.set()
 
-                async def finish_delivery():
-                    await self.release.wait()
-                    deliver()
-                    self.frames.append((time.monotonic(), "applied", frame[4:]))
-                    self.delivered.set()
+            async def finish_delivery():
+                await self.release.wait()
+                deliver()
+                self.delivered.set()
 
-                self.delivery = asyncio.create_task(finish_delivery())
-                return
+            self.delivery = asyncio.create_task(finish_delivery())
+            return
         deliver()
-        if ptt:
-            self.frames.append((time.monotonic(), "applied", frame[4:]))
-
-    async def close(self):
-        self.release.set()
-        try:
-            if self.delivery is not None:
-                await asyncio.wait_for(self.delivery, 1)
-        finally:
-            if self.claim is not None and self.claim.provider is not None:
-                await asyncio.wait_for(
-                    asyncio.gather(self.claim.provider, return_exceptions=True), 1
-                )
 
 
-def _assert_wire_order(frames, never_wire=False):
-    writes = [
-        frame
-        for _, stage, frame in frames
-        if stage == "ingress" and frame in (_ON, _OFF)
-    ]
-    assert writes and writes[0] == _ON and writes[-1] == _OFF, frames
+def _assert_wire_order(writes, never_wire=False):
+    assert writes and writes[0] == _ON and writes[-1] == _OFF, writes
     if never_wire:
-        assert writes.count(_ON) == 1 and set(writes[1:]) == {_OFF}, frames
+        assert writes.count(_ON) == 1 and set(writes[1:]) == {_OFF}, writes
 
 
-async def _sequence(web, composition, ptt, off_count, gate, gap_ms, caplog):
-    caplog.set_level(logging.DEBUG, logger="rigplane.runtime")
+async def _sequence(web, composition, ptt, off_count, gate, gap_ms):
     authority = composition.authority
     try:
         await _command(web, "transmit_on")
@@ -174,11 +131,10 @@ async def _sequence(web, composition, ptt, off_count, gate, gap_ms, caplog):
         generation = authority.snapshot_nowait().provider_generation
         await _command(web, "force_off")
         pending = authority.snapshot_nowait().state.pending_effect
-        generation_after = authority.snapshot_nowait().provider_generation
         gate.release.set()
         if not gate.prewire:
             await asyncio.wait_for(gate.delivered.wait(), 1)
-        recovered = await _until(lambda: not ptt() and _clean(authority), 8)
+        assert await _until(lambda: not ptt() and _clean(authority), 8)
         _assert_wire_order(gate.frames, never_wire=gate.prewire)
         assert not gate.prewire or not (
             gate.submitted.is_set() or gate.entered.is_set()
@@ -186,38 +142,35 @@ async def _sequence(web, composition, ptt, off_count, gate, gap_ms, caplog):
         assert gate.transport is gate.radio._civ_transport
         before = off_count()
         await _command(web, "force_off")
-        executed = await _until(
+        assert await _until(
             lambda: off_count() > before and not ptt() and _clean(authority), 3
         )
-        assert executed and generation == generation_after
         assert generation == authority.snapshot_nowait().provider_generation
         assert pending is None or pending.operation is ActuationOperation.FORCE_RECEIVE
         _assert_wire_order(gate.frames)
-        return recovered
-    except (AssertionError, TimeoutError) as error:
-        pytest.fail(
-            f"{error}\ngap={gap_ms} PTT={ptt()} state={authority.snapshot_nowait()} "
-            f"retry={authority._retry_due} frames={gate.frames}\n{caplog.text}",
-            pytrace=False,
-        )
     finally:
-        await gate.close()
+        gate.release.set()
+        try:
+            if gate.delivery is not None:
+                await asyncio.wait_for(gate.delivery, 1)
+        finally:
+            if provider := getattr(gate.claim, "provider", None):
+                await asyncio.wait_for(
+                    asyncio.gather(provider, return_exceptions=True), 1
+                )
 
 
 @pytest.mark.parametrize("gap_ms", (*_GAPS_MS, "never-wire"))
-async def test_serial_force_off_survives_superseded_on(
-    tmp_path, caplog, monkeypatch, gap_ms
-):
+async def test_serial_force_off_survives_superseded_on(tmp_path, monkeypatch, gap_ms):
     fake = ic705_usb_fake()
-    device = "civ-serial-fake"
+    port = "civ-serial-fake"
+    link = SerialCivLink(
+        device=port, baudrate=115200, open_serial_connection=fake.open_serial_connection
+    )
     radio = Ic705SerialRadio(
-        device=device,
+        device=port,
         baudrate=115200,
-        civ_link=SerialCivLink(
-            device=device,
-            baudrate=115200,
-            open_serial_connection=fake.open_serial_connection,
-        ),
+        civ_link=link,
         _enumerate_serial_ports_fn=lambda: [],
     )
     composition = ManagedTxComposition(radio, config_path=tmp_path / "tx.json")
@@ -240,7 +193,7 @@ async def test_serial_force_off_survives_superseded_on(
                 frame, lambda: original_wire(connection, frame)
             ),
         )
-        assert await _sequence(
+        await _sequence(
             web,
             composition,
             lambda: fake.ptt,
@@ -249,21 +202,21 @@ async def test_serial_force_off_survives_superseded_on(
             ),
             gate,
             gap_ms,
-            caplog,
-        ), (gap_ms, gate.frames, caplog.text)
-    finally:
-        await _finish(
-            lambda: _stop_composition(composition),
-            lambda: asyncio.wait_for(web.stop(), 5),
-            lambda: asyncio.wait_for(radio.disconnect(), 5),
         )
+        assert _clean(composition.authority) and not fake.ptt, gate.frames
+    finally:
+        try:
+            await _stop_composition(composition)
+        finally:
+            try:
+                await asyncio.wait_for(web.stop(), 5)
+            finally:
+                await asyncio.wait_for(radio.disconnect(), 5)
 
 
 @pytest.mark.mock_integration
 @pytest.mark.parametrize("gap_ms", (*_GAPS_MS, "never-wire", "pending", "late-radio"))
-async def test_lan_force_off_survives_superseded_on(
-    tmp_path, caplog, monkeypatch, gap_ms
-):
+async def test_lan_force_off_survives_superseded_on(tmp_path, monkeypatch, gap_ms):
     stack = await _stand_up_stack(
         tmp_path,
         loss="hold",
@@ -290,23 +243,25 @@ async def test_lan_force_off_survives_superseded_on(
                 stack, monkeypatch
             )
             return
-        assert await _sequence(
+        await _sequence(
             stack.web,
             stack.composition,
             lambda: stack.sim.ptt_on,
             lambda: sum(frame[4:] == _OFF for frame in stack.sim.civ_frames_received),
             gate,
             gap_ms,
-            caplog,
-        ), (gap_ms, gate.frames, caplog.text)
-    finally:
-        await _finish(
-            lambda: _stop_composition(stack.composition),
-            lambda: _tear_down_stack(stack),
         )
+        assert _clean(stack.composition.authority) and not stack.sim.ptt_on, gate.frames
+    finally:
+        try:
+            await _stop_composition(stack.composition)
+        finally:
+            await _tear_down_stack(stack)
 
 
 async def _offline_rearm(stack, monkeypatch):
+    contract = RESPONSE_FIELD_CONTRACTS[_PATH]
+    assert contract["result_values"] == ("accepted", "pending", "rejected")
     composition = stack.composition
     entered, release = asyncio.Event(), asyncio.Event()
     prepare = composition._prepare_provider
@@ -330,10 +285,8 @@ async def _offline_rearm(stack, monkeypatch):
         release.set()
         await asyncio.wait_for(composition._recovery_task, 2)
     assert _clean(composition.authority)
-    assert (
-        len(stack.sim.ptt_set_writes) > before
-        and stack.sim.ptt_set_writes[-1][1] is False
-    )
+    assert len(stack.sim.ptt_set_writes) > before
+    assert stack.sim.ptt_set_writes[-1][1] is False
 
 
 async def _late_radio_tx(stack, monkeypatch):
@@ -376,17 +329,6 @@ async def _late_radio_tx(stack, monkeypatch):
     )
 
 
-async def _finish(*steps):
-    failing, errors = sys.exception() is not None, []
-    for step in steps:
-        try:
-            await step()
-        except Exception as error:
-            errors.append(error)
-    if errors and not failing:
-        raise errors[0]
-
-
 async def _stop_composition(composition):
     termination = asyncio.Event()
     shutdown = asyncio.create_task(composition.shutdown(termination))
@@ -400,11 +342,11 @@ async def _stop_composition(composition):
 class _BlockedActuator:
     def __init__(self, late=False):
         self.started, self.release = asyncio.Event(), asyncio.Event()
-        self.ptt, self.late = False, late
-        self.writes, self.entries = [], []
+        self.writes, self.ptt, self.late = [], False, late
 
     async def actuate(self, token, operation, *, is_current):
         if operation is ActuationOperation.TRANSMIT_ON:
+            self.current = is_current
             self.ptt = not self.late
             self.started.set()
             try:
@@ -416,93 +358,56 @@ class _BlockedActuator:
             self.ptt = True
             self.writes.append(("ON", token.provider_generation))
         elif operation is ActuationOperation.FORCE_RECEIVE:
-            self.entries.append(is_current())
             assert is_current()
             self.ptt = False
             self.writes.append(("OFF", token.provider_generation))
         return ActuationResult.ACCEPTED
 
 
-async def test_authority_force_off_uses_current_claim_after_superseded_on(tmp_path):
-    actuator, poisoned = _BlockedActuator(), []
+@pytest.mark.parametrize("mode", ["quick", "late", "timeout", "terminate", "supersede"])
+async def test_force_off_attempts_before_and_after_on_isolation(tmp_path, mode):
+    late = mode not in ("quick", "supersede")
+    actuator, poisoned = _BlockedActuator(late=late), asyncio.Event()
+    retired = []
 
-    async def poison(generation):
-        poisoned.append(generation)
+    async def isolate(generation):
+        retired.append(generation)
+        await composition._poison_tx_generation(generation)
+        poisoned.set()
 
-    authority = ManagedTxAuthority(
-        ManagedTxEffectLane(actuator, poison_generation=poison),
-        ManagedTxTotConfigStore(tmp_path / "tx.json"),
-        TxAbortFence(),
-        provider_generation=7,
-    )
-    try:
-        await authority.submit_transmit_on()
-        await asyncio.wait_for(actuator.started.wait(), 1)
-        await authority.submit_force_off()
-        await asyncio.sleep(0)
-        held = not actuator.entries
-        generation = authority.snapshot_nowait().provider_generation
-        actuator.release.set()
-        recovered = await _until(
-            lambda: bool(actuator.writes) and _clean(authority) and not actuator.ptt, 8
-        )
-        await authority.force_off()
-        assert (
-            recovered
-            and held
-            and not poisoned
-            and generation == authority.snapshot_nowait().provider_generation == 7
-        )
-        assert actuator.writes == [("OFF", 7), ("OFF", 7)] and all(actuator.entries)
-    finally:
-        actuator.release.set()
-        termination = asyncio.Event()
-        termination.set()
-        await asyncio.wait_for(
-            authority.shutdown(
-                retire_provider=lambda _: asyncio.sleep(0), termination=termination
-            ),
-            3,
-        )
-
-
-@pytest.mark.parametrize("terminate", [False, True])
-async def test_timed_out_on_rearms_same_transport_and_later_force_off(
-    tmp_path: Path, terminate: bool
-):
-    actuator, poisoned = _BlockedActuator(late=True), asyncio.Event()
-
-    async def retire(event):
-        if event.provider_generation == 1:
-            poisoned.set()
-
-    composition = ManagedTxComposition(
-        actuator, config_path=tmp_path / "tx.json", retire_provider=retire
-    )
+    composition = ManagedTxComposition(actuator, config_path=tmp_path / "tx.json")
+    composition._effect_lane._poison_generation = isolate
     store, transport = StateStore(), object()
     store.begin_provider_generation()
     await composition.bind_state_store(store)
     await composition.transport_ready(transport)
     authority = composition.authority
-    authority._attempt_timeout = 0.05
+    snapshot = authority.snapshot_nowait
+    authority._attempt_timeout = 0.05 if mode in ("timeout", "terminate") else 0.2
     try:
         await authority.submit_transmit_on()
         await asyncio.wait_for(actuator.started.wait(), 1)
-        pending = authority.snapshot_nowait().state.pending_effect
-        assert composition._effect_lane._claims[
-            (pending.token, pending.operation)
-        ].started
+        if mode not in ("timeout", "terminate"):
+            await authority.submit_force_off()
+            assert await _until(lambda: bool(actuator.writes), 0.1)
+            assert not actuator.release.is_set() and not actuator.ptt
+            assert snapshot().state.release_required
+            assert actuator.writes == [("OFF", 1)] and not poisoned.is_set()
+        if mode in ("quick", "late"):
+            actuator.release.set()
+            assert await _until(lambda: _clean(authority) and not actuator.ptt, 8)
+            assert snapshot().provider_generation == 1
+            assert not composition._retired_generations and not retired
+            expected = [("OFF", 1), ("ON", 1), ("OFF", 1)] if late else [("OFF", 1)] * 2
+            assert actuator.writes == expected
+            return
         await asyncio.wait_for(poisoned.wait(), 1)
+        assert await _until(lambda: snapshot().provider_generation == 2, 1)
         await authority.force_off()
-        assert authority.snapshot_nowait().state.release_required
-        assert await _until(
-            lambda: (
-                authority.snapshot_nowait().provider_generation == 2
-                and authority._retry_due is not None
-            ),
-            1,
-        )
-        if terminate:
+        assert snapshot().state.release_required
+        assert await _until(lambda: authority._retry_due is not None, 1)
+        assert snapshot().provider_generation == 2
+        if mode == "terminate":
             termination = asyncio.Event()
             termination.set()
             await composition.shutdown(termination)
@@ -510,13 +415,21 @@ async def test_timed_out_on_rearms_same_transport_and_later_force_off(
             assert await _until(composition._effect_lane._isolation[1].done, 1)
             assert composition._active_provider is None
             assert not composition._recovery_task or composition._recovery_task.done()
-        else:
+            return
+        if mode == "timeout":
             actuator.release.set()
             assert await _until(lambda: _clean(authority) and not actuator.ptt, 3)
-            assert actuator.writes == [("ON", 1), ("OFF", 2)]
-            assert composition._active_provider.transport_identity is transport
-            await authority.force_off()
-            assert actuator.writes == [("ON", 1), ("OFF", 2), ("OFF", 2)]
+            assert actuator.writes[-2:] == [("ON", 1), ("OFF", 2)]
+        assert composition._active_provider.transport_identity is transport
+        assert not actuator.current()
+        before = len(actuator.writes)
+        await authority.force_off()
+        expected_offs = 2 if mode == "supersede" else 1
+        assert actuator.writes[before:] == [("OFF", 2)] * expected_offs
+        if mode == "supersede":
+            assert retired == [1] and not actuator.release.is_set()
+            assert not actuator.ptt and snapshot().state.release_required
+            assert snapshot().state.last_actuation.result is ActuationResult.UNCERTAIN
     finally:
         actuator.release.set()
         await _stop_composition(composition)
