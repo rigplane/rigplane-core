@@ -85,6 +85,86 @@ for (const inset of [0, 48]) {
     expect(box!.y + box!.height).toBeCloseTo(800, 0);
   });
 
+  test(`landscape mobile fullscreen fits both viewport edges with ${inset}px chrome`, async ({ page }) => {
+    await page.setViewportSize({ width: 812, height: 375 });
+    await open(page, '/fixtures/mobile-witness.html', inset);
+    const fullscreen = page.getByTitle('Toggle fullscreen', { exact: true });
+    await fullscreen.focus();
+    await fullscreen.press('Enter');
+    const panel = page.locator('.spectrum-panel.fullscreen');
+    await fits(panel, inset, 375);
+    const box = await panel.boundingBox();
+    expect(box!.y).toBeCloseTo(inset, 0);
+    expect(box!.y + box!.height).toBeCloseTo(375, 0);
+  });
+
+  test(`filter settings fit the remaining viewport with ${inset}px chrome`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 260 });
+    await open(page, '/fixtures/skin-witness.html?skin=desktop-v2', inset);
+    await page.evaluate(async () => {
+      const sveltePath = '/node_modules/.vite/deps/svelte.js';
+      const panelPath = '/src/components-v2/panels/FilterPanel.svelte';
+      const { mount } = await import(sveltePath);
+      const { default: FilterPanel } = await import(panelPath);
+      const target = document.createElement('div');
+      target.style.cssText = 'position:fixed;top:100px;left:0;z-index:9999';
+      document.body.append(target);
+      mount(FilterPanel, { target });
+    });
+    await page.getByRole('button', { name: 'Open filter settings' }).click();
+    const dialog = page.getByRole('dialog', { name: /Filter settings/ });
+    await expect(dialog).toBeVisible();
+    await fits(dialog, inset, 260);
+  });
+
+  test(`keyboard help fits the remaining viewport with ${inset}px chrome`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 260 });
+    await open(page, '/fixtures/skin-witness.html?skin=desktop-v2', inset);
+    await page.keyboard.press('?');
+    const card = page.locator('.keyboard-help-card');
+    await expect(card).toBeVisible();
+    await fits(card, inset, 260);
+  });
+
+  test(`two floating extensions stay reachable with ${inset}px chrome at 1280x500`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 500 });
+    await page.route('**/api/local/v1/ui/manifest', (route) => route.fulfill({ json: {
+      version: 1, host_api: '2.0', extensions: [
+        { id: 'geometry-a', title: 'Geometry A', mount: 'floating-overlay', entry: '/geometry-a.js' },
+        { id: 'geometry-b', title: 'Geometry B', mount: 'floating-overlay', entry: '/geometry-b.js' },
+      ],
+    } }));
+    for (const id of ['geometry-a', 'geometry-b']) {
+      await page.route(`**/${id}.js`, (route) => route.fulfill({
+        contentType: 'text/javascript',
+        body: `window.rigplaneExtensionHost.register({id:"${id}",render(node){const content=document.createElement("div");content.style.height="2000px";content.textContent="${id}";node.append(content);}});`,
+      }));
+    }
+    await open(page, '/fixtures/spectrum-witness.html', inset);
+    await page.evaluate(async () => {
+      const meta = document.createElement('meta');
+      meta.name = 'rigplane-local-supervisor';
+      document.head.append(meta);
+      localStorage.setItem('rigplane:local-extension-dock-layout:v1', JSON.stringify({
+        version: 1, extensions: { 'geometry-a': { mode: 'floating' }, 'geometry-b': { mode: 'floating' } },
+      }));
+      const sveltePath = '/node_modules/.vite/deps/svelte.js';
+      const hostPath = '/src/lib/local-extensions/LocalExtensionsHost.svelte';
+      const { mount } = await import(sveltePath);
+      const { default: Host } = await import(hostPath);
+      mount(Host, { target: document.body });
+    });
+    const stack = page.locator('.local-extension-stack--floating');
+    await expect(stack).toBeVisible();
+    await fits(stack, inset + 12, 500 - 12);
+    const panels = stack.locator('.local-extension-panel');
+    await expect(panels).toHaveCount(2);
+    const stackBox = await stack.boundingBox();
+    await fits(panels.nth(0), stackBox!.y, stackBox!.y + stackBox!.height);
+    await panels.nth(1).scrollIntoViewIfNeeded();
+    await fits(panels.nth(1), stackBox!.y, stackBox!.y + stackBox!.height);
+  });
+
   for (const withBar of [false, true]) {
     test(`short scope More panel with ${inset}px chrome, bottom bar ${withBar}`, async ({ page }) => {
       await page.setViewportSize({ width: 800, height: 260 });
