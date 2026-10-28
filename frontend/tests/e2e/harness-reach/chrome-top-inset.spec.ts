@@ -19,6 +19,15 @@ async function fits(locator: Locator, top: number, bottom: number) {
   expect(box!.y + box!.height).toBeLessThanOrEqual(bottom + 1);
 }
 
+test('desktop defaults to the full viewport without a shell inset', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 812 });
+  await page.goto('/fixtures/skin-witness.html?skin=desktop-v2');
+  await page.waitForSelector('body[data-harness-ready="true"]');
+  const box = await page.locator('.radio-layout').boundingBox();
+  expect(box!.y).toBe(0);
+  expect(box!.y + box!.height).toBe(812);
+});
+
 for (const inset of [0, 48]) {
   for (const layout of [
     { name: 'desktop', path: '/fixtures/skin-witness.html?skin=desktop-v2', selector: '.radio-layout', width: 1280 },
@@ -34,6 +43,36 @@ for (const inset of [0, 48]) {
       expect(box!.y + box!.height).toBeCloseTo(812, 0);
     });
   }
+
+  test(`landscape phone fits both viewport edges with ${inset}px chrome`, async ({ page }) => {
+    await page.setViewportSize({ width: 812, height: 375 });
+    await open(page, '/fixtures/mobile-witness.html', inset);
+    const layout = page.locator('.m-landscape');
+    await fits(layout, inset, 375);
+    const box = await layout.boundingBox();
+    expect(box!.y).toBeCloseTo(inset, 0);
+    expect(box!.y + box!.height).toBeCloseTo(375, 0);
+  });
+
+  test(`confirmation backdrop clears ${inset}px chrome`, async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 500 });
+    await open(page, '/fixtures/spectrum-witness.html', inset);
+    await page.evaluate(async () => {
+      const sveltePath = '/node_modules/.vite/deps/svelte.js';
+      const componentPath = '/src/components-v2/dialogs/ConfirmDialog.svelte';
+      const { mount } = await import(sveltePath);
+      const { default: ConfirmDialog } = await import(componentPath);
+      mount(ConfirmDialog, { target: document.body, props: {
+        open: true, message: 'Confirm geometry', confirmLabel: 'Confirm', cancelLabel: 'Cancel',
+        onConfirm: () => {}, onCancel: () => {},
+      } });
+    });
+    await fits(page.locator('.modal-backdrop'), inset, 500);
+    const box = await page.locator('.modal-backdrop').boundingBox();
+    expect(box!.y).toBeCloseTo(inset, 0);
+    expect(box!.y + box!.height).toBeCloseTo(500, 0);
+    await fits(page.getByRole('alertdialog'), inset, 500);
+  });
 
   test(`fullscreen spectrum fits both viewport edges with ${inset}px chrome`, async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
@@ -116,9 +155,15 @@ for (const inset of [0, 48]) {
     await fits(page.getByTestId('standard-tx-settings-popover'), inset + 8, 252);
   });
 
-  for (const mode of ['dock-left', 'dock-right']) {
-    test(`${mode} fits below ${inset}px chrome`, async ({ page }) => {
-      await page.setViewportSize({ width: 1280, height: 500 });
+  for (const { mode, height, width } of [
+    { mode: 'dock-left', height: 500, width: 1280 }, { mode: 'dock-right', height: 500, width: 1280 },
+    { mode: 'floating', height: 500, width: 1280 }, { mode: 'floating', height: 180, width: 1280 },
+    { mode: 'floating', height: 180, width: 375 },
+    { mode: 'dock-bottom', height: 180, width: 1280 },
+    { mode: 'dock-bottom', height: 180, width: 375 },
+  ]) {
+    test(`${mode} fits below ${inset}px chrome at ${width}x${height}`, async ({ page }) => {
+      await page.setViewportSize({ width, height });
       await page.route('**/api/local/v1/ui/manifest', (route) => route.fulfill({ json: {
         version: 1, host_api: '2.0', extensions: [
           { id: 'geometry', title: 'Geometry', mount: 'floating-overlay', entry: '/geometry-extension.js' },
@@ -126,7 +171,7 @@ for (const inset of [0, 48]) {
       } }));
       await page.route('**/geometry-extension.js', (route) => route.fulfill({
         contentType: 'text/javascript',
-        body: 'window.rigplaneExtensionHost.register({id:"geometry",render(node){node.textContent="Geometry";}});',
+        body: 'window.rigplaneExtensionHost.register({id:"geometry",render(node){const content=document.createElement("div");content.style.height="2000px";content.textContent="Geometry";node.append(content);}});',
       }));
       await open(page, '/fixtures/spectrum-witness.html', inset);
       await page.evaluate(async (dockMode) => {
@@ -144,8 +189,9 @@ for (const inset of [0, 48]) {
       }, mode);
       const stack = page.locator(`.local-extension-stack--${mode}`);
       await expect(stack).toBeVisible();
-      await fits(stack, inset + 12, 488);
-      await fits(stack.locator('.local-extension-panel'), inset + 12, 488);
+      const margin = width <= 760 ? 8 : 12;
+      await fits(stack, inset + margin, height - margin);
+      await fits(stack.locator('.local-extension-panel'), inset + margin, height - margin);
     });
   }
 }

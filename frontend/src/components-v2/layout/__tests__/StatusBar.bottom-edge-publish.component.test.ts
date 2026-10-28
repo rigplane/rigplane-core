@@ -234,7 +234,7 @@ describe('MOR-1240 — StatusBar publishes its bottom edge (--rp-status-bar-bott
     // No StatusBar yet: no property anywhere, overlay full-screen via the
     // CSS fallback.
     expect(bottomEdge()).toBe('');
-    expect(overlay!.style.top).toBe(`var(${BOTTOM_EDGE}, 0px)`);
+    expect(overlay!.style.top).toBe(`max(var(${BOTTOM_EDGE}, 0px), var(--rp-chrome-top, 0px))`);
 
     // The skin chunk finishes loading and mounts the bar afterwards.
     const bar = renderStatusBar();
