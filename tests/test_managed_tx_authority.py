@@ -8,7 +8,11 @@ from typing import Any, cast
 import pytest
 
 from rigplane.core.exceptions import CommandError
-from rigplane.runtime.managed_tx_authority import ManagedTxAuthority, ShutdownResult
+from rigplane.runtime.managed_tx_authority import (
+    ManagedTxAuthority,
+    RadioTxOrigin,
+    ShutdownResult,
+)
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfig
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
 from rigplane.runtime.managed_tx_fence import TxAbortFence
@@ -760,7 +764,7 @@ async def test_unavailable_start_and_shutdown_overlap_drains_new_generation(
         old_release = await asyncio.wait_for(lane.started.get(), 0.2)
         assert old_release.token.provider_generation == 7
         await managed.start_provider_unavailable()
-        assert lane.guards[-1]() is False
+        assert lane.guards[-1]() is True
 
     await managed.provider_available(8)
     if old_gate is not None:
@@ -1309,20 +1313,16 @@ async def test_late_physical_on_retains_debt_until_a_fresh_off(
     try:
         await asyncio.wait_for(started.wait(), 1)
         off = asyncio.create_task(managed.force_off())
-        await asyncio.wait_for(off_written.wait(), 1)
+        await asyncio.wait_for(on, 1)
+        assert not off_written.is_set()
         allow_late_on.set()
         await asyncio.wait_for(late_on.wait(), 1)
         await asyncio.wait_for(asyncio.gather(on, off), 1)
         state = (await managed.snapshot()).state
-        assert state.release_required
-        assert state.last_actuation.result is ActuationResult.UNCERTAIN
-        assert [value for value, _ in writes] == ["OFF", "ON"]
-        assert managed._retry_due is not None
-        clock.now = managed._retry_due
-        await managed._process_due()
-        assert [value for value, _ in writes] == ["OFF", "ON", "OFF"]
-        assert writes[0][1] != writes[-1][1]
-        assert not (await managed.snapshot()).state.release_required
+        assert not state.release_required
+        assert state.last_actuation.result is ActuationResult.ACCEPTED
+        assert [value for value, _ in writes] == ["ON", "OFF"]
+        assert managed._retry_due is None
     finally:
         allow_late_on.set()
         await asyncio.wait_for(asyncio.gather(on, *(() if off is None else (off,))), 1)
@@ -1748,3 +1748,134 @@ async def test_shutdown_logs_whether_its_release_was_confirmed(
             " drained the release",
         )
     ]
+
+
+async def test_offline_force_off_retains_debt_and_retries_after_rearm() -> None:
+    managed, clock, _, _, _, lane = authority(generation=None)
+    try:
+        submission = await managed.submit_force_off()
+        assert submission.pending_release
+        assert await submission.wait_settlement() is None
+        assert managed._state.release_required and not lane.effects
+        lane.results.append(ActuationResult.UNCERTAIN)
+        await managed.provider_available(7)
+        assert managed._state.release_required
+        assert managed._retry_due == clock.now + managed._retry_delay
+        clock.now = managed._retry_due
+        await managed._process_due()
+        assert not managed._state.release_required and len(lane.effects) == 2
+    finally:
+        await managed.close()
+
+
+async def test_running_unkey_currency_survives_force_off_epoch_change() -> None:
+    managed, _, _, _, _, lane = authority()
+    release = lane.block_next()
+    first = asyncio.create_task(managed.force_off())
+    await asyncio.wait_for(lane.started.get(), 1)
+    guard = lane.guards[-1]
+    await managed.force_off()
+    assert guard is not None and guard()
+    release.set()
+    await first
+    await managed.close()
+
+
+@pytest.mark.parametrize(
+    "origin,recovered",
+    [
+        (RadioTxOrigin.UNRELEASED, False),
+        (RadioTxOrigin.UNRELEASED, True),
+        (RadioTxOrigin.FOREIGN, False),
+        (None, False),
+    ],
+)
+async def test_accepted_release_readback_is_bounded(origin, recovered, caplog) -> None:
+    clock, wakeup, writes, cutoffs = FakeClock(), FakeWakeup(), [], []
+
+    class Radio:
+        result = ActuationResult.ACCEPTED
+        released = False
+
+        async def actuate(self, token, operation, *, is_current):
+            assert is_current()
+            if isinstance(operation, ActuationOperation):
+                writes.append((clock.now, operation))
+            return self.result
+
+        def radio_released(self, keyed_at):
+            self.released = True
+
+        def radio_tx_since(self, since):
+            cutoffs.append(since)
+            return origin if self.released else None
+
+    radio = Radio()
+    managed = ManagedTxAuthority(
+        ManagedTxEffectLane(radio, clock=clock),
+        FakeConfigStore(None),
+        TxAbortFence(),
+        provider_generation=7,
+        clock=clock,
+        wakeup=wakeup,
+        radio_tx=radio,
+    )
+    await managed._stop_scheduler(managed._scheduler_task)
+    try:
+        await managed.transmit_on()
+        await managed.force_off()
+        cutoff = clock.now
+        cutoffs.clear()
+        expected = 5 if origin is RadioTxOrigin.UNRELEASED else 0
+        for second in range(1, 8):
+            if second == 6 and recovered:
+                origin = None
+            clock.now = cutoff + second - 0.01
+            before = len(writes)
+            await managed._process_due()
+            assert len(writes) == before
+            clock.now = cutoff + second
+            await managed._process_due()
+        assert len(writes) == 2 + expected
+        assert all(since == cutoff for since in cutoffs)
+        warnings = [
+            r.message for r in caplog.records if "verification exhausted" in r.message
+        ]
+        assert len(warnings) == (bool(expected) and not recovered)
+        if expected:
+            assert recovered or "5" in warnings[0]
+            assert [at for at, _ in writes[2:]] == [cutoff + n for n in range(1, 6)]
+        await managed.force_off()
+        clock.now += 1
+        await managed._process_due()
+        assert len(writes) == 3 + expected
+        assert len(
+            [r for r in caplog.records if "verification exhausted" in r.message]
+        ) == (bool(expected) and not recovered)
+        origin = None
+        await managed.transmit_on()
+        clock.now += 1
+        before = len(writes)
+        await managed._process_due()
+        assert len(writes) == before, "new managed TX disarms release verification"
+        await managed.force_off()
+        cutoff = clock.now
+        clock.now += 7
+        origin = RadioTxOrigin.UNRELEASED
+        before = len(writes)
+        await managed._process_due()
+        assert len(writes) == before, "expired window must not reassert"
+        origin = None
+        await managed.transmit_on()
+        await managed.force_off()
+        origin = RadioTxOrigin.UNRELEASED
+        radio.result = ActuationResult.UNCERTAIN
+        clock.now += 1
+        await managed._process_due()
+        assert managed._state.release_required and managed._retry_due is not None
+        radio.result = ActuationResult.ACCEPTED
+        clock.now = managed._retry_due
+        await managed._process_due()
+        assert not managed._state.release_required
+    finally:
+        await managed.close()
