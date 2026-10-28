@@ -673,16 +673,22 @@ def _strict_memory_address(
 ) -> tuple[int, int]:
     """The strict ``(group, channel)`` memory address the profile admits.
 
-    The same rules the shared encoder applies (``_encode_memory_address``:
-    a boolean or fractional address must never silently encode 1 or its
-    integer part), checked before anything is enqueued so a malformed
-    address is a client error, not an ok answer that fails later at the
-    radio. ``group`` defaults to 0 (the channel-only radios); the caller
-    checks grouped profiles for an explicit group first.
+    The same rules the shared encoder applies (``_encode_memory_address``
+    and ``_required_memory_group``): a boolean or fractional address must
+    never silently encode 1 or its integer part, and a GROUPED radio
+    (IC-705 memory groups, IC-9700 band codes) never accepts an unnamed
+    or null group -- a channel-only request would silently hit group 0
+    while the UI's store path may have selected another group, erasing an
+    unrelated slot. Checked before anything is enqueued so a malformed
+    address is a client error, not an ok answer that fails at the radio.
     """
     channel = params["channel"]
     group = params.get("group")
     if group is None:
+        if memory.addressing != "channel":
+            raise ValueError(
+                "a group/band is required to address a memory channel on this radio"
+            )
         group = 0
     for name, value in (("channel", channel), ("group", group)):
         if isinstance(value, bool) or not isinstance(value, int):
@@ -697,21 +703,6 @@ def _strict_memory_address(
             f"got {channel}"
         )
     return group, channel
-
-
-def _require_explicit_group(params: Mapping[str, Any], memory: MemoryProfile) -> None:
-    """A grouped memory never accepts an unnamed group (MOR-3644).
-
-    The existing UI sends channel-only clears; on a grouped radio that
-    would silently hit group 0 while the UI's store path had selected
-    another group, erasing an unrelated slot. Until the UI carries one
-    explicit slot address through its store and clear actions, a grouped
-    profile refuses a request that does not name its group.
-    """
-    if "group" not in params and memory.addressing != "channel":
-        raise ValueError(
-            "a group/band is required to address a memory channel on this radio"
-        )
 
 
 def _verified_write_memory(radio: "Radio | None") -> MemoryProfile:
@@ -3525,7 +3516,6 @@ class ControlHandler:
                 # answers ok and fails later at the radio.
                 admit_memory_write(getattr(radio, "profile", None))
                 memory = _verified_write_memory(radio)
-                _require_explicit_group(params, memory)
                 group, channel = _strict_memory_address(params, memory)
                 q.put(MemoryClear(channel, group))
                 return {"channel": channel}
@@ -3543,7 +3533,6 @@ class ControlHandler:
 
                 mem_params = dict(params)
                 mem_params.pop("session_id", None)
-                _require_explicit_group(mem_params, memory)
                 mem = MemoryChannel(**mem_params)
                 _strict_memory_address(
                     {"channel": mem.channel, "group": mem.group}, memory

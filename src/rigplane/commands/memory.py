@@ -255,6 +255,7 @@ def build_memory_contents_set(
     *,
     cmd_map: CommandMap,
     ctcss_tones_centihz: tuple[int, ...] | None = None,
+    data_mode_count: int = 1,
 ) -> bytes:
     """Build the ``1A 00`` SET frame from the profile's declared layout.
 
@@ -265,7 +266,10 @@ def build_memory_contents_set(
     is built -- an out-of-range group/channel, tone, frequency or name
     refuses without emitting a byte. ``ctcss_tones_centihz`` is the
     profile's tone domain, the same one ``set_tone_freq`` admits through
-    (``commands/tone.py``); a layout without a tone field ignores it.
+    (``commands/tone.py``); ``data_mode_count`` is the profile's
+    ``[data_mode].count`` (the IC-7610's record stores DATA1-3, the other
+    manuals' records 0/1). A layout without the matching fields ignores
+    both.
 
     A grouped memory (IC-705 groups, IC-9700 band codes) requires an
     explicit ``group``: ``MemoryChannel.group`` left at ``None`` refuses
@@ -278,7 +282,7 @@ def build_memory_contents_set(
     layout = _require_write_layout(memory)
     group = _required_memory_group(mem.group, memory, "write")
     address = _encode_memory_address(memory, group, mem.channel)
-    record = _write_record(mem, memory, layout, ctcss_tones_centihz)
+    record = _write_record(mem, memory, layout, ctcss_tones_centihz, data_mode_count)
     return _build_from_map(
         cmd_map,
         "set_memory_contents",
@@ -401,6 +405,7 @@ def _encode_write_field(
     memory: MemoryProfile,
     layout: MemoryWriteLayout,
     ctcss_tones_centihz: tuple[int, ...] | None,
+    data_mode_count: int,
 ) -> bytes:
     """Encode one declared field; the value is validated first, so an
     out-of-range input refuses before the record holds a byte of it."""
@@ -435,12 +440,16 @@ def _encode_write_field(
                 raise ValueError(f"filter must be 1-3, got {mem.filter}")
             return bytes([mem.filter])
         case "data_mode":
-            if mem.datamode not in (0, 1):
-                raise ValueError(f"data mode must be 0 or 1, got {mem.datamode}")
+            if not 0 <= mem.datamode <= data_mode_count:
+                raise ValueError(
+                    f"data mode must be 0-{data_mode_count}, got {mem.datamode}"
+                )
             return bytes([mem.datamode])
         case "data_tone":
-            if mem.datamode not in (0, 1):
-                raise ValueError(f"data mode must be 0 or 1, got {mem.datamode}")
+            if not 0 <= mem.datamode <= data_mode_count:
+                raise ValueError(
+                    f"data mode must be 0-{data_mode_count}, got {mem.datamode}"
+                )
             if not 0 <= mem.tonemode <= layout.tone_max:
                 raise ValueError(
                     f"tone mode must be 0-{layout.tone_max}, got {mem.tonemode}"
@@ -486,12 +495,13 @@ def _write_record(
     memory: MemoryProfile,
     layout: MemoryWriteLayout,
     ctcss_tones_centihz: tuple[int, ...] | None,
+    data_mode_count: int,
 ) -> bytes:
     """The write record after the memory address, one field at a time."""
     record = bytearray(layout.record_length)
     for field in layout.fields:
         record[field.offset : field.offset + field.length] = _encode_write_field(
-            field, mem, memory, layout, ctcss_tones_centihz
+            field, mem, memory, layout, ctcss_tones_centihz, data_mode_count
         )
     return bytes(record)
 

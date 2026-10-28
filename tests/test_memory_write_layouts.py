@@ -202,12 +202,14 @@ def _mem(model: str, **overrides) -> MemoryChannel:
 
 
 def _build(model: str, mem: MemoryChannel) -> bytes:
+    profile = get_radio_profile(model)
     return build_memory_contents_set(
         mem,
         _memory(model),
         to_addr=_CASES[model][0],
         cmd_map=_cmd_map(model),
-        ctcss_tones_centihz=get_radio_profile(model).ctcss_tones_centihz,
+        ctcss_tones_centihz=profile.ctcss_tones_centihz,
+        data_mode_count=profile.data_mode_count,
     )
 
 
@@ -322,6 +324,24 @@ def test_dtcs_tone_mode_builds_where_the_record_declares_it() -> None:
     # byte 14 of the record: duplex 2 | DTCS 3
     record = frame[10:-1]  # after FE FE A4 E0 1A 00 + the 4-byte address
     assert record[9] == 0x23
+
+
+@pytest.mark.parametrize("datamode", [2, 3], ids=["DATA2", "DATA3"])
+def test_the_ic7610_record_stores_its_three_data_modes(datamode: int) -> None:
+    """The IC-7610's record carries DATA1-3 in the data nibble (guide
+    p.11: 0=OFF, 1=DATA 1, 2=DATA 2, 3=DATA 3 -- the profile's
+    ``[data_mode].count = 3``); the legacy behaviour, preserved."""
+    frame = _build("IC-7610", _mem("IC-7610", datamode=datamode, tonemode=0))
+    record = frame[8:-1]  # after FE FE 98 E0 1A 00 + the 2-byte channel
+    assert record[8] == datamode << 4
+
+
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700", "IC-7300", "IC-7300MK2"])
+def test_a_data_mode_the_radio_does_not_have_refuses(model: str) -> None:
+    """The other manuals' records carry data mode 0/1 only (their
+    profiles declare ``[data_mode].count = 1``)."""
+    with pytest.raises(ValueError, match="data mode"):
+        _build(model, _mem(model, datamode=2))
 
 
 @pytest.mark.parametrize(

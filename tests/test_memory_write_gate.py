@@ -328,7 +328,8 @@ class TestHandlerWriteGate:
         assert result == {"channel": 10}
         from rigplane.web.radio_poller import MemoryClear
 
-        assert queue.drain() == [MemoryClear(10)]
+        # A channel-list radio normalizes the omitted group to 0.
+        assert queue.drain() == [MemoryClear(10, 0)]
 
     @pytest.mark.asyncio
     async def test_ws_response_carries_the_stable_error_code(self) -> None:
@@ -586,6 +587,7 @@ async def test_http_seam_writes_the_ic705_in_its_declared_layout() -> None:
     "params",
     [
         {"channel": 5},  # a grouped radio never clears an unnamed group
+        {"channel": 5, "group": None},  # an explicit null is no choice either
         {"channel": 5, "group": 2.9},  # a fractional group must not coerce
         {"channel": 5, "group": True},
         {"channel": 100, "group": 2},  # outside the profile bounds
@@ -609,6 +611,28 @@ async def test_http_clear_refuses_a_malformed_address_before_enqueueing(
         await _shutdown(web, radio)
     assert status == 400
     assert body["error"] == "invalid_request"
+    assert transport.sent_packets == []
+
+
+@pytest.mark.asyncio
+async def test_http_write_refuses_a_groupless_address_before_enqueueing() -> None:
+    """The write arm shares the rule: a grouped radio refuses a write that
+    does not name its group (a null group is no choice either)."""
+    transport = MockTransport()
+    radio = _radio("IC-9700", transport)
+    radio._connected = False  # refused before enqueue; never touched
+    web = await _serve(radio)
+    try:
+        status, body = await _request(
+            web, "http", "set_memory_contents", _mem().__dict__
+        )
+        with_group_null = await _request(
+            web, "http", "set_memory_contents", {**_mem().__dict__, "group": None}
+        )
+    finally:
+        await _shutdown(web, radio)
+    assert status == 400 and body["error"] == "invalid_request"
+    assert with_group_null[0] == 400
     assert transport.sent_packets == []
 
 

@@ -6366,6 +6366,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                     memory,
                     to_addr=self._radio_addr,
                     ctcss_tones_centihz=self._profile.ctcss_tones_centihz,
+                    data_mode_count=self._profile.data_mode_count,
                 )
             )
 
