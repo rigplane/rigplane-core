@@ -291,8 +291,9 @@ class CivSerialFake:
         self._locked_baud: int | None = None
         self._frame_bauds: list[int | None] = []
         self._reply_latency_s = reply_latency_s
-        # Per-class delays from [timing]; each falls back to reply latency
-        # (ptt_set_ack to ack_set first). None resolves to "no extra delay".
+        # Per-class delays from [timing]; an unset key falls back to the
+        # reply latency (ptt_set_ack to ack_set first), and an unset write
+        # drain or switch delay to "no delay".
         self._ack_set_s = reply_latency_s if ack_set_s is None else ack_set_s
         self._ptt_set_ack_s = (
             self._ack_set_s if ptt_set_ack_s is None else ptt_set_ack_s
@@ -302,6 +303,10 @@ class CivSerialFake:
         self._tx_on_switch_s = 0.0 if tx_on_switch_s is None else tx_on_switch_s
         self._tx_off_switch_s = 0.0 if tx_off_switch_s is None else tx_off_switch_s
         self._ptt_switch_handle: asyncio.TimerHandle | None = None
+        # The ``time()``/``call_at()`` object delayed replies and the PTT
+        # switch schedule on; tests mount a manual clock here, and the
+        # running asyncio loop is resolved at use time by default.
+        self._clock: Any = None
         self._scope = scope
         self._sim_profile: SimProfile | None = None
         # As the bench radio stood when it was recorded: panel on, wave output off.
@@ -628,13 +633,27 @@ class CivSerialFake:
             connection.scope_start_pending = False
             connection.start_scope()  # the wave follows the ACK that enabled it
 
+    def _scheduler(self) -> Any:
+        """The ``time()``/``call_at()`` object delayed replies and the PTT
+        switch schedule on: the clock mounted at ``_clock`` when present,
+        else the running asyncio loop, resolved at use time."""
+        if self._clock is not None:
+            return self._clock
+        return asyncio.get_running_loop()
+
     def _answer_delay_s(self, parsed: CivFrame, reply: bytes) -> float:
-        """The reply latency of *reply*: a per-class ``[timing]`` delay with
-        the reply latency as the fallback for every answer."""
-        if parsed.command == _CMD_PTT and parsed.sub == _SUB_PTT:
-            return self._ptt_set_ack_s if parsed.data else self._readback_s
-        if parsed.data and _reply_command(reply) in (_CMD_ACK, _CMD_NAK):
-            return self._ack_set_s  # the ACK/NAK to a set (write) command
+        """The reply latency of *reply*, chosen by the frame the fake sends.
+
+        An ACK/NAK answer (FB/FA) takes ``ack_ms_set`` — and the ACK/NAK
+        to a PTT write (``1C 00`` with a data byte) takes ``ptt_set_ack_ms``
+        — while the answer to a PTT read (``1C 00`` without data) takes
+        ``readback_ms``; every other answer takes the reply latency.
+        """
+        ptt = parsed.command == _CMD_PTT and parsed.sub == _SUB_PTT
+        if _reply_command(reply) in (_CMD_ACK, _CMD_NAK):
+            return self._ptt_set_ack_s if ptt and parsed.data else self._ack_set_s
+        if ptt and not parsed.data:
+            return self._readback_s
         return self._reply_latency_s
 
     def _schedule_ptt_switch(self, on: bool) -> None:
@@ -648,13 +667,13 @@ class CivSerialFake:
         if delay <= 0.0:
             self._ptt = on
             return
-        loop = asyncio.get_running_loop()
+        loop = self._scheduler()
 
         def switch() -> None:
             self._ptt_switch_handle = None
             self._ptt = on
 
-        self._ptt_switch_handle = loop.call_later(delay, switch)
+        self._ptt_switch_handle = loop.call_at(loop.time() + delay, switch)
 
     def _answer(
         self, parsed: CivFrame, connection: "_Connection", frame: bytes
@@ -850,12 +869,17 @@ class _Connection:
         self._late.clear()
 
     def deliver_after(self, delay: float, data: bytes) -> None:
-        """Deliver *data* ``delay`` seconds from now, in the order scheduled."""
-        if delay <= 0.0:
+        """Deliver *data* ``delay`` seconds from now, in the order scheduled.
+
+        A non-positive delay delivers synchronously only while no delayed
+        reply is pending; behind one it is queued right after the pending
+        replies, so an answer never overtakes an earlier request's reply.
+        """
+        if delay <= 0.0 and not self._late:
             self.deliver(data)
             return
-        loop = asyncio.get_running_loop()
-        due = max(loop.time() + delay, self._last_due + 1e-6)
+        loop = self._fake._scheduler()
+        due = max(loop.time() + max(delay, 0.0), self._last_due + 1e-6)
         self._last_due = due
         baud = self.baud  # a reply sent at this rate is noise at another
 
