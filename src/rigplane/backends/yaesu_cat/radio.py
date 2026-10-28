@@ -1289,8 +1289,15 @@ class YaesuCatRadio:
 
         # Transport strips trailing ';'; add it back for the parser.
         result = parser.parse(raw + ";")
-        if isinstance(result.get("mode"), str):
+        if cmd_name in {
+            "get_mode",
+            "get_mode_sub",
+            "get_if_status",
+            "get_memory_channel",
+        }:
             self._mode_name(result["mode"])
+        elif cmd_name in {"get_agc", "get_agc_sub"}:
+            int(result["mode"])
         if (
             self._transport.connected
             and self._transport._writer is writer

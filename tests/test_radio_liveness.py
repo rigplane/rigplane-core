@@ -287,6 +287,36 @@ async def test_cat_query_match_stamps_liveness(
     assert cat_transport.last_valid_frame_monotonic is not None
 
 
+@pytest.mark.parametrize("receiver", [0, 1])
+@pytest.mark.parametrize("code", range(7))
+async def test_cat_agc_readback_is_valid_liveness(
+    cat_transport: YaesuCatTransport, receiver: int, code: int
+) -> None:
+    cat_transport._reader = FakeStreamReader([f"GT{receiver}{code};".encode()])  # type: ignore[assignment]  # noqa: SLF001
+    cat_transport._writer = FakeStreamWriter()  # type: ignore[assignment]  # noqa: SLF001
+    radio = YaesuCatRadio("/dev/test")
+    radio._transport = cat_transport  # noqa: SLF001
+    before = time.monotonic()
+    assert await radio.get_agc(receiver=receiver) == code
+    stamp = radio.last_valid_frame_monotonic
+    assert stamp is not None
+    assert before <= stamp <= time.monotonic()
+
+
+@pytest.mark.parametrize("receiver", [0, 1])
+async def test_cat_invalid_agc_preserves_stamp(
+    cat_transport: YaesuCatTransport, receiver: int
+) -> None:
+    cat_transport._reader = FakeStreamReader([f"GT{receiver}Z;".encode()])  # type: ignore[assignment]  # noqa: SLF001
+    cat_transport._writer = FakeStreamWriter()  # type: ignore[assignment]  # noqa: SLF001
+    cat_transport.last_valid_frame_monotonic = 1.0
+    radio = YaesuCatRadio("/dev/test")
+    radio._transport = cat_transport  # noqa: SLF001
+    with pytest.raises(ValueError):
+        await radio.get_agc(receiver=receiver)
+    assert radio.last_valid_frame_monotonic == 1.0
+
+
 @pytest.mark.parametrize(
     "response,method", [(b"FAgarbage;", "get_freq"), (b"MD0Z;", "get_mode")]
 )
