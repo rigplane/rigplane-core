@@ -176,6 +176,60 @@ def test_loader_reads_the_write_layout(tmp_path: Path) -> None:
     assert dataclasses.fields(MemoryProfile)[-1].kw_only
 
 
+def test_loader_reads_the_block_copy_count(tmp_path: Path) -> None:
+    """``copies`` is plain layout data (MOR-3644): 1 by default, 2 for the
+    manuals whose record carries the channel block twice (the TX/split
+    copy), which needs the select byte at offset 0 and the name after the
+    block."""
+    from rigplane.core.types import MemoryWriteField, MemoryWriteLayout
+
+    # The one-block layout above defaults to a single copy.
+    single = _load(tmp_path, _GOOD + _GOOD_WRITE_LAYOUT).memory
+    assert single is not None and single.write_layout is not None
+    assert single.write_layout.copies == 1
+    two_block = """
+[memory.write_layout]
+clear = "1a00_ff"
+record_length = 15
+copies = 2
+fields = [
+  { field = "select", offset = 0, length = 1, encoding = "select" },
+  { field = "frequency", offset = 1, length = 5, encoding = "frequency" },
+  { field = "mode", offset = 6, length = 1, encoding = "mode" },
+  { field = "name", offset = 7, length = 8, encoding = "name" },
+]
+"""
+    doubled = _load(tmp_path, _GOOD + two_block).memory
+    assert doubled is not None
+    assert doubled.write_layout == MemoryWriteLayout(
+        clear="1a00_ff",
+        record_length=15,
+        copies=2,
+        fields=(
+            MemoryWriteField("select", 0, 1, "select"),
+            MemoryWriteField("frequency", 1, 5, "frequency"),
+            MemoryWriteField("mode", 6, 1, "mode"),
+            MemoryWriteField("name", 7, 8, "name"),
+        ),
+    )
+    assert doubled.write_layout.data_block_span() == (1, 7)
+    # The wire record: select + 2 x the 6-byte block + the 8-byte name.
+    assert doubled.write_layout.wire_record_length() == 21
+
+
+@pytest.mark.parametrize("copies", ['"2"', "true", "0", "3", "-1"])
+def test_loader_rejects_an_out_of_range_copy_count(tmp_path: Path, copies: str) -> None:
+    with pytest.raises(RigLoadError, match=r"\[memory\].write_layout.copies"):
+        _load(tmp_path, _GOOD + _GOOD_WRITE_LAYOUT + f"\ncopies = {copies}\n")
+
+
+def test_loader_rejects_a_copy_count_without_a_block_span(tmp_path: Path) -> None:
+    """copies = 2 on a table with no leading select field (the repeat
+    starts after it) is a structural error, not a silently wrong wire."""
+    with pytest.raises(RigLoadError, match="copies > 1 needs the select field"):
+        _load(tmp_path, _GOOD + _GOOD_WRITE_LAYOUT + "\ncopies = 2\n")
+
+
 @pytest.mark.parametrize(
     "edit",
     [

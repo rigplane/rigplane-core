@@ -507,23 +507,32 @@ recall = true  # 08 A0 selects the group, 08 the channel (guide p.3); not yet be
 
 # The verified 1A 00 write record (MOR-3644), field by field from the
 # IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.17 "Memory
-# content". Offsets are relative to the record AFTER the address (guide
-# bytes 1-4: memory group 2-byte BCD + channel 2-byte BCD); the guide's
-# position labels map as: 5 -> 0 (select), 6-10 -> 1-5 (frequency), 11 ->
-# 6 (mode), 12 -> 7 (filter), 13 -> 8 (data mode), 14 -> 9 (duplex|tone),
-# 15 -> 10 (digital squelch), 16-18 -> 11-13 (tone), 19-21 -> 14-16
-# (tsql), 22-24 -> 17-19 (DTCS), 25 -> 20 (DV code), 26-28 -> 21-23
-# (duplex offset), 29-52 -> 24-47 (UR/R1/R2), 53-68 -> 48-63 (name).
-# Mode and filter are the raw bytes of the verified read block (MOR-3650;
-# the guide's 2-byte "operating mode setting" is the read block's mode +
-# filter pair); the tone fields use the 1B 00 encoding (guide p.21).
-# Fields the write API does not expose yet carry their documented OFF
-# value: select 00 (split OFF, select OFF), digital squelch 00, DTCS
-# 000000, DV code 00, duplex offset 000000, call signs blank (spaces, as
-# in the real record's unused fields, MOR-3650).
+# content". The guide's table prints the channel block's position labels
+# (6~52) TWICE, with the name (53~68) after them, and its NOTE spells it
+# out: the second block is the TX data used when Split is ON, and "even
+# if the Split function is OFF, enter the data ... we recommend that you
+# set the same data" -- so the record is select byte + the 47-byte block
+# x copies + the 16-byte name, the same shape the read reply carries
+# (parse_memory_entry). The field table below declares ONE copy: offsets
+# are relative to the record after the address (guide bytes 1-4: memory
+# group 2-byte BCD + channel 2-byte BCD); the guide's position labels
+# map as: 5 -> 0 (select), 6-10 -> 1-5 (frequency), 11 -> 6 (mode), 12
+# -> 7 (filter), 13 -> 8 (data mode), 14 -> 9 (duplex|tone), 15 -> 10
+# (digital squelch), 16-18 -> 11-13 (tone), 19-21 -> 14-16 (tsql), 22-24
+# -> 17-19 (DTCS), 25 -> 20 (DV code), 26-28 -> 21-23 (duplex offset),
+# 29-52 -> 24-47 (UR/R1/R2); the name (16 characters) is declared at
+# 48-63 and lands after the last block copy. Mode and filter are the raw
+# bytes of the read block (MOR-3650; the guide's 2-byte "operating mode
+# setting" is the read block's mode + filter pair); the tone fields use
+# the 1B 00 encoding (guide p.21). Fields the write API does not expose
+# yet carry their documented OFF value: select 00 (split OFF, select
+# OFF), digital squelch 00, DTCS 000000, DV code 00, duplex offset
+# 000000, call signs blank (spaces, the record's unused-field pad,
+# MOR-3650).
 [memory.write_layout]
 clear = "1a00_ff"  # guide p.17: 1A 00 + the address + FF
-record_length = 64
+record_length = 64  # one copy: select + 47-byte block + 16-byte name
+copies = 2  # guide p.17 NOTE: the block is stored twice (TX copy = RX values when not split)
 fields = [
   { field = "select", offset = 0, length = 1, encoding = "select" },                              # 5
   { field = "frequency", offset = 1, length = 5, encoding = "frequency", max_hz = 999_999_999 },  # 6-10: GHz digit fixed 0 (read-side rule, MOR-3650)

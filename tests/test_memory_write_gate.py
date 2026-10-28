@@ -3,7 +3,7 @@
 ``set_memory_contents`` and ``memory_clear`` pass one admission check
 (``profiles.admit_memory_write``) at every ingress: the profile must
 declare a structurally valid ``[memory].write_layout`` field table. The
-manual-verified layouts themselves -- per-radio fixture bytes, negative
+declared layouts themselves -- per-radio fixture bytes, negative
 pins and the write/read round trips -- live in
 ``tests/test_memory_write_layouts.py``; this file pins the GATE:
 
@@ -17,7 +17,8 @@ pins and the write/read round trips -- live in
 * a write-side ``[memory]`` section does not turn on the read listing
   (IC-7300, IC-7610: ``memory_read`` stays undeclared).
 
-All radios here are in-process mocks/simulators; no hardware is touched.
+Every radio here is an in-process mock/simulator; all results are
+simulated.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ def _radio(model: str, transport: MockTransport) -> IcomRadio:
     radio = IcomRadio("192.168.1.100", timeout=2.0, model=model)
     radio._civ_transport = radio._ctrl_transport = transport
     radio._connected = True
-    # The fields the real fire-and-forget send path checks (same as
+    # The fields the production fire-and-forget send path checks (same as
     # test_memory_slot_lock's harness) so an accepted write reaches the wire.
     radio._civ_stream_ready = True
     radio._last_civ_data_received = time.monotonic()
@@ -73,7 +74,7 @@ def _mem(channel: int = 1) -> MemoryChannel:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", ["X6100", "X6200"])
-async def test_unverified_profiles_refuse_set_memory_contents(model: str) -> None:
+async def test_layoutless_profiles_refuse_set_memory_contents(model: str) -> None:
     transport = MockTransport()
     radio = _radio(model, transport)
     try:
@@ -82,13 +83,14 @@ async def test_unverified_profiles_refuse_set_memory_contents(model: str) -> Non
     finally:
         radio._connected = False
     assert excinfo.value.reason_code == "memory_write_unverified"
-    # The wire shows no bytes: no record is built for an unverified radio.
+    # The wire shows no bytes: no record is built for a radio without a
+    # declared layout.
     assert transport.sent_packets == []
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", ["X6100", "X6200"])
-async def test_unverified_profiles_refuse_memory_clear(model: str) -> None:
+async def test_layoutless_profiles_refuse_memory_clear(model: str) -> None:
     transport = MockTransport()
     radio = _radio(model, transport)
     try:
@@ -103,9 +105,9 @@ async def test_unverified_profiles_refuse_memory_clear(model: str) -> None:
 @pytest.mark.asyncio
 async def test_ic7300_write_side_memory_section_does_not_enable_the_read() -> None:
     """IC-7300 declares ``[memory]`` for the WRITE layout only (MOR-3644
-    part 2): the 1A 00 read reply is unverified, so the radio method
-    refuses and the listing endpoint stays 404 (no ``memory_read``
-    capability was added)."""
+    part 2): the 1A 00 read reply is not in the sourced manuals, so the
+    radio method refuses and the listing endpoint stays 404 (no
+    ``memory_read`` capability was added)."""
     from rigplane.core.exceptions import CommandError
 
     transport = MockTransport()
@@ -212,6 +214,10 @@ async def test_sdk_supplied_profile_with_an_unlisted_layout_refuses(
         {"record_length": "26"},
         {"record_length": True},
         {"tone_max": "2"},
+        {"copies": "2"},
+        {"copies": True},
+        {"copies": 0},
+        {"copies": 3},
         {"fields": "26 bytes"},
         {"fields": ()},
         {"fields": ({"field": "x", "offset": 0, "length": 1, "encoding": "mode"},)},
@@ -222,6 +228,10 @@ async def test_sdk_supplied_profile_with_an_unlisted_layout_refuses(
         "record_length-str",
         "record_length-bool",
         "tone_max-str",
+        "copies-str",
+        "copies-bool",
+        "copies-zero",
+        "copies-three",
         "fields-str",
         "fields-empty",
         "fields-raw-dict",
@@ -303,7 +313,7 @@ class TestHandlerWriteGate:
     async def test_the_opted_in_radios_enqueue_the_write(
         self, model: str, group: int
     ) -> None:
-        """MOR-3644 part 2: the manual-verified layouts pass the gate and
+        """MOR-3644 part 2: the declared layouts pass the gate and
         the address reaches the queue (group/band for the addressed
         radios)."""
         from dataclasses import replace
@@ -447,7 +457,7 @@ async def _shutdown(web: WebServer, radio: IcomRadio) -> None:
         ),
     ],
 )
-async def test_http_seam_refuses_unverified_memory_writes(
+async def test_http_seam_refuses_memory_writes_without_a_layout(
     name: str, params: dict[str, Any]
 ) -> None:
     transport = MockTransport()
@@ -596,10 +606,11 @@ async def test_http_seam_writes_the_manual_layouts(model: str) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("datamode", [2, 3], ids=["DATA2", "DATA3"])
 async def test_http_seam_writes_the_ic7610_data_modes(datamode: int) -> None:
-    """The IC-7610's record carries DATA1-3 (guide p.11) through the real
-    API path: the profile's ``[data_mode].count`` domain reaches the
-    encoder (a write the builder's own default limit of 1 would refuse --
-    the regression pins the forwarding, not just the builder)."""
+    """The IC-7610's record carries DATA1-3 (guide p.11) through the
+    production API path: the profile's ``[data_mode].count`` domain
+    reaches the encoder (a write the builder's own default limit of 1
+    would refuse -- the regression pins the forwarding, not just the
+    builder)."""
     from rigplane.core.state_pipeline_contracts import (
         FieldPath,
         Observation,
@@ -714,7 +725,7 @@ async def test_http_write_refuses_a_groupless_address_before_enqueueing() -> Non
 
 
 @pytest.mark.asyncio
-async def test_http_batch_refuses_unverified_memory_writes_and_skips_the_rest() -> None:
+async def test_http_batch_refuses_layoutless_memory_writes_and_skips_the_rest() -> None:
     """The batch endpoint answers the refusal per step and marks the
     remaining steps skipped; nothing is executed or sent."""
     transport = MockTransport()
@@ -758,9 +769,9 @@ async def test_memory_writes_from_the_http_api_defer_until_quiet_rx(
     name: str, params: dict[str, Any], wire: bytes
 ) -> None:
     """API to drain while keyed, through the production poller loop: the
-    real request enqueues, the loop's own staging holds it (no wire bytes,
-    request unanswered), and the loop's own quiet-RX release lets it
-    complete with exactly one frame on the wire."""
+    posted request enqueues, the loop's own staging holds it (no wire
+    bytes, request unanswered), and the loop's own quiet-RX release lets
+    it complete with exactly one frame on the wire."""
     from rigplane.core.state_pipeline_contracts import (
         FieldPath,
         Observation,

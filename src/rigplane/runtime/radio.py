@@ -6388,8 +6388,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             raise CommandError(f"{self._profile.model} declares no memory channels")
         if memory.addressing not in ("group_channel", "band_channel"):
             # A channel-list profile (IC-7300, IC-7610) declares write-side
-            # data only: its 1A 00 read reply is not verified (MOR-3644),
-            # so the listing stays off rather than guessed.
+            # data only: its 1A 00 read reply is not in the sourced
+            # manuals (MOR-3644), so the listing stays off rather than
+            # guessed.
             raise CommandError(
                 f"{self._profile.model} has no verified CI-V memory read layout"
             )

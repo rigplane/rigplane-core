@@ -524,8 +524,8 @@ max_watts = 100  # HF/50 MHz SSB/CW/RTTY/FM 0.6-100 W (spec p.70)
 # 00 01-00 99 plus the programmed scan edges 01 00/01 01 (P1/P2), which
 # the bounds below leave out (CI-V Reference Guide p.17). The read
 # listing stays OFF: the 1A 00 read reply is not documented in the
-# provided extracts and is not verified, so no memory_read capability is
-# declared and read_memory_entries refuses.
+# provided extracts, so no memory_read capability is declared and
+# read_memory_entries refuses.
 [memory]
 addressing = "channel"
 first_group = 0
@@ -547,6 +547,7 @@ last_channel = 99
 [memory.write_layout]
 clear = "1a00_ff"  # guide p.17: "send the command 1A 00 XX XX FF" (P1/P2 excluded)
 record_length = 31
+copies = 1  # the manual extract's record carries the channel block once; the count is data, so a later correction is a data-only change
 tone_max = 2  # the 11 tone nibble is 0=OFF, 1=TONE, 2=TSQL (no DTCS on this radio)
 fields = [
   { field = "select", offset = 0, length = 1, encoding = "select" },                            # 3

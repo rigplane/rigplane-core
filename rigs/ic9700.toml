@@ -354,14 +354,21 @@ dd_groups = [3]
 offset_10mhz_groups = [3]
 
 # The verified 1A 00 write record (MOR-3644), field by field from the
-# IC-9700 CI-V Reference Guide (2019, rev. 4) p.14 "Memory content".
-# Offsets are relative to the record AFTER the address (guide bytes 1-3:
-# frequency band 1 byte + channel 2-byte BCD); the guide's position
+# IC-9700 CI-V Reference Guide (2019, rev. 4) p.14 "Memory content". The
+# guide's table prints the channel block's position labels (5~51) TWICE,
+# with the name (52~67) after them, and its NOTE spells it out: the
+# second block is the TX data used when Split is ON, and even with Split
+# OFF the same data should be entered -- so the record is select byte +
+# the 47-byte block x copies + the 16-byte name, the same shape the read
+# reply carries (parse_memory_entry). The field table below declares ONE
+# copy: offsets are relative to the record after the address (guide bytes
+# 1-3: frequency band 1 byte + channel 2-byte BCD); the guide's position
 # labels map as: 4 -> 0 (select), 5-9 -> 1-5 (frequency), 10 -> 6 (mode),
 # 11 -> 7 (filter), 12 -> 8 (data mode), 13 -> 9 (duplex|tone), 14 -> 10
 # (digital squelch), 15-17 -> 11-13 (tone), 18-20 -> 14-16 (tsql), 21-23
 # -> 17-19 (DTCS), 24 -> 20 (DV code), 25-27 -> 21-23 (duplex offset),
-# 28-51 -> 24-47 (UR/R1/R2), 52-67 -> 48-63 (name). Mode and filter are
+# 28-51 -> 24-47 (UR/R1/R2); the name (16 characters) is declared at
+# 48-63 and lands after the last block copy. Mode and filter are
 # the raw bytes of the read block (the guide's 2-byte "operating mode
 # setting" is the read block's mode + filter pair); the tone fields use
 # the 1B 00 encoding (guide p.19). The select byte's high nibble is fixed
@@ -370,7 +377,8 @@ offset_10mhz_groups = [3]
 # documented OFF value (as on the IC-705 above).
 [memory.write_layout]
 clear = "1a00_ff"  # guide p.14: 1A 00 + the address + FF
-record_length = 64
+record_length = 64  # one copy: select + 47-byte block + 16-byte name
+copies = 2  # guide p.14 NOTE: the block is stored twice (TX copy = RX values when not split)
 fields = [
   { field = "select", offset = 0, length = 1, encoding = "select" },                                # 4
   { field = "frequency", offset = 1, length = 5, encoding = "frequency", max_hz = 1_499_999_999 },  # 5-9: GHz <= 1, 100 MHz <= 4 (read-side rules)

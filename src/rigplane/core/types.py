@@ -556,13 +556,52 @@ class MemoryWriteLayout:
     ``clear`` names the channel-clear wire form from
     :data:`MEMORY_WRITE_CLEAR_FORMS`; ``tone_max`` bounds the tone-mode
     nibble (0=OFF, 1=TONE, 2=TSQL, 3=DTCS) for radios whose record has
-    no DTCS field.
+    no DTCS field. ``copies`` is the number of times the channel-data
+    block -- the fields between a leading ``select`` byte and the name
+    field -- appears on the wire: the IC-705/IC-9700 manuals' record
+    carries the block twice (the TX/split copy, which a non-split entry
+    fills with the RX values; IC-705 guide p.17 and IC-9700 guide p.14
+    print the block's position labels twice and say so in the NOTE), so
+    those layouts declare ``copies = 2`` and the name lands after the
+    last copy. The declared ``fields`` table always tiles ONE copy
+    (``record_length`` is that one-copy length); the wire record is
+    :meth:`wire_record_length` bytes.
     """
 
     clear: str
     record_length: int
     fields: tuple[MemoryWriteField, ...]
     tone_max: int = 3
+    copies: int = 1
+
+    def data_block_span(self) -> tuple[int, int] | None:
+        """``[start, end)`` of the channel-data block ``copies`` repeats.
+
+        The block starts after a leading ``select`` field (offset 0) and
+        ends at the name field. ``None`` when the table has no name field
+        or leaves no room -- structural validation reports the tables
+        where that is an error; the encoder only runs on valid layouts.
+        """
+        name = next(
+            (f for f in self.fields if f.encoding in ("name", "name_nul")), None
+        )
+        if name is None:
+            return None
+        start = 0
+        for entry in self.fields:
+            if entry.encoding == "select" and entry.offset == 0:
+                start = entry.offset + entry.length
+        if name.offset <= start:
+            return None
+        return (start, name.offset)
+
+    def wire_record_length(self) -> int:
+        """The record length on the wire: the declared one-copy tiling
+        plus the extra block repeats ``copies`` asks for."""
+        span = self.data_block_span()
+        if span is None or not isinstance(self.copies, int) or self.copies <= 1:
+            return self.record_length
+        return self.record_length + (self.copies - 1) * (span[1] - span[0])
 
     def validation_errors(self) -> tuple[str, ...]:
         """Structural errors that make this declaration unbuildable.
@@ -589,6 +628,12 @@ class MemoryWriteLayout:
             errors.append(f"tone_max must be an int, got {self.tone_max!r}")
         elif not 0 <= self.tone_max <= 3:
             errors.append(f"tone_max must be 0..3, got {self.tone_max}")
+        if isinstance(self.copies, bool) or not isinstance(self.copies, int):
+            errors.append(f"copies must be an int, got {self.copies!r}")
+        elif not 1 <= self.copies <= 2:
+            # No sourced manual shows more than the block twice (the
+            # TX/split copy); a third copy would need its manual first.
+            errors.append(f"copies must be 1..2, got {self.copies}")
         if not isinstance(self.fields, tuple) or not all(
             isinstance(entry, MemoryWriteField) for entry in self.fields
         ):
@@ -657,6 +702,24 @@ class MemoryWriteLayout:
             count = sum(item.encoding == encoding for item in self.fields)
             if count > 1:
                 errors.append(f"the table declares {encoding} more than once")
+        if (
+            isinstance(self.copies, int)
+            and not isinstance(self.copies, bool)
+            and self.copies > 1
+        ):
+            # A repeated block needs the select byte to lead the record
+            # (the repeat starts after it) and the name to trail it.
+            span = self.data_block_span()
+            if not any(
+                entry.encoding == "select" and entry.offset == 0
+                for entry in self.fields
+            ):
+                errors.append(
+                    "copies > 1 needs the select field at offset 0 "
+                    "(the block repeat starts after it)"
+                )
+            elif span is None:
+                errors.append("copies > 1 needs a name field after the repeated block")
         return tuple(errors)
 
 
