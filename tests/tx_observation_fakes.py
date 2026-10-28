@@ -29,13 +29,6 @@ path is a different scenario, covered separately by
 ``tests/contracts/test_tx_observation_conformance.py``, which is deliberately
 not driven through this harness.
 
-The CI-V column additionally scripts three shapes that must **never** satisfy a
-read (INV-13): an ACK, a setter echo, and a mis-addressed frame. They are not
-filtered here — they go onto the wire and are rejected by the shipped
-directed-exact-reply discipline (``runtime/_civ_rx.py:1489-1492`` routing
-guards and ``:2636-2650`` provenance narrowing), which is the whole point: the
-fake proves the *product's* validation discriminates, not its own.
-
 The ``unmapped`` CI-V answer is deliberately ``00 00`` rather than a junk byte.
 Its first byte is ``0x00``, so if the shape check were ever loosened it would
 decode as **receiving** — the fail-open direction. A junk byte like ``0x02``
@@ -87,7 +80,7 @@ TX_ANSWER_VOCABULARY: tuple[TxAnswer, ...] = (
 
 #: The CI-V shapes that must never satisfy a read (INV-13). Also an explicit
 #: literal.
-CIV_NON_ANSWERS: tuple[str, ...] = ("ack", "setter_echo", "misaddressed")
+CIV_NON_ANSWERS: tuple[str, ...] = ("ack", "setter_echo", "misaddressed", "broadcast")
 
 #: Answers that mean "the radio is transmitting". Explicit, never derived.
 TRANSMITTING_ANSWERS: tuple[TxAnswer, ...] = ("tx_cat", "tx_other")
@@ -132,6 +125,8 @@ def civ_transmit_state_reply(answer: str, radio_addr: int) -> bytes | None:
         return build_civ_frame(
             CONTROLLER_ADDR, FOREIGN_CIV_ADDR, 0x1C, sub=0x00, data=b"\x00"
         )
+    if answer == "broadcast":
+        return build_civ_frame(0x00, radio_addr, 0x1C, sub=0, data=b"\x00")
     if answer == "silence":
         return None
     raise AssertionError(f"unscripted transmit-state answer {answer!r}")
@@ -229,14 +224,20 @@ class ScriptedLanTransport(MockTransport):
         super().__init__()
         self.answer: str = "rx"
         self.radio_addr: int = 0x98
+        self._reply_seq = 0
 
-    async def send_tracked(self, data: bytes) -> None:
+    async def send_tracked(
+        self, data: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        if is_current is not None and not is_current():
+            raise CommandError("CI-V write is no longer current.")
         await super().send_tracked(data)
         payload = bytes(data)[0x15:]
         if _is_civ_transmit_state_read(payload):
             reply = civ_transmit_state_reply(self.answer, self.radio_addr)
             if reply is not None:
-                self.queue_response(wrap_civ_in_udp(reply))
+                self.queue_response(wrap_civ_in_udp(reply, seq=self._reply_seq))
+                self._reply_seq = (self._reply_seq + 1) & 0xFFFF
 
     def civ_wire(self) -> list[bytes]:
         """The CI-V payloads, unwrapped from their UDP envelopes."""
