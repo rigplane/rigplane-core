@@ -515,6 +515,35 @@ async def test_rigctld_cached_data_cannot_prove_radio_liveness(
             await transport.close()
 
 
+async def test_rigctld_physical_and_cached_frequency_are_indistinguishable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even a simulated physical read loses its provenance at the wire boundary."""
+    async with FakeRigctldServer() as server:
+        physical_reads = []
+        response_for = server._response_for
+
+        def physical_response(line: str, key: str) -> bytes:
+            if key == "f":
+                physical_reads.append(server.state.frequency_hz)
+            return response_for(line, key)
+
+        monkeypatch.setattr(server, "_response_for", physical_response)
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio._transport.connect()
+        try:
+            assert await radio.get_freq() == 14_074_000
+            assert physical_reads == [14_074_000]
+            assert radio.last_valid_frame_monotonic is None
+            # Byte-identical cache hit: the client cannot distinguish it.
+            server.behavior.malformed_responses["f"] = b"14074000\n"
+            assert await radio.get_freq() == 14_074_000
+            assert physical_reads == [14_074_000]
+            assert radio.last_valid_frame_monotonic is None
+        finally:
+            await radio.disconnect()
+
+
 async def test_rigctld_command_ack_does_not_stamp() -> None:
     async with FakeRigctldServer() as server:
         transport = RigctldTransport(host=server.host, port=server.port)
